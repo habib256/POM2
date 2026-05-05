@@ -1,0 +1,11 @@
+build/
+build-*/
+imgui/
+*.o
+*.obj
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.swp
+.DS_Store

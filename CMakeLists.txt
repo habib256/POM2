@@ -1,0 +1,163 @@
+cmake_minimum_required(VERSION 3.16)
+project(pom2_imgui CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+                 Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
+# ─── Dear ImGui (vendored) ────────────────────────────────────────────────
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
+if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
+    message(FATAL_ERROR
+        "Dear ImGui not found in ${IMGUI_DIR}. Run ./setup_imgui.sh first.")
+endif()
+
+file(GLOB IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+)
+
+# ─── POM2 sources ────────────────────────────────────────────────────────
+set(SOURCES
+    M6502.cpp
+    Memory.cpp
+    Apple2Display.cpp
+    AudioDevice.cpp
+    CassetteDevice.cpp
+    CassetteDeck_ImGui.cpp
+    CliDispatcher.cpp
+    Disassembler6502.cpp
+    DiskController_ImGui.cpp
+    DiskIICard.cpp
+    DiskImage.cpp
+    EmulationController.cpp
+    JoystickInput.cpp
+    JoystickPanel_ImGui.cpp
+    MainWindow.cpp
+    MemoryViewer_ImGui.cpp
+    RomLoader.cpp
+    SlotBus.cpp
+    SnapshotIO.cpp
+    SpeakerDevice.cpp
+    main.cpp
+)
+
+set(HEADERS
+    M6502.h
+    Memory.h
+    Apple2Display.h
+    AudioDevice.h
+    CassetteDevice.h
+    CassetteDeck_ImGui.h
+    CliDispatcher.h
+    Disassembler6502.h
+    DiskController_ImGui.h
+    DiskIICard.h
+    DiskImage.h
+    EmulationController.h
+    JoystickInput.h
+    JoystickPanel_ImGui.h
+    IconsFontAwesome6.h
+    MainWindow.h
+    MemoryViewer_ImGui.h
+    Logger.h
+    CpuClock.h
+    RomLoader.h
+    SlotBus.h
+    SlotPeripheral.h
+    SnapshotIO.h
+    SpeakerDevice.h
+)
+
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# ─── Platform deps ───────────────────────────────────────────────────────
+find_package(OpenGL REQUIRED)
+
+find_package(glfw3 3.3 QUIET CONFIG)
+if(glfw3_FOUND)
+    set(GLFW_TARGET glfw)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
+    set(GLFW_TARGET PkgConfig::GLFW3)
+endif()
+
+target_link_libraries(${PROJECT_NAME}
+    ${GLFW_TARGET}
+    ${OPENGL_LIBRARIES}
+)
+
+# Miniaudio + stb_vorbis (vendored single-header decoders) need libdl /
+# libpthread / libm on Linux; CoreAudio + AudioToolbox + AudioUnit on
+# macOS; nothing extra on Windows beyond winmm.
+if(UNIX AND NOT APPLE)
+    find_package(Threads REQUIRED)
+    target_link_libraries(${PROJECT_NAME} ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME}
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework AudioUnit"
+    )
+endif()
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} winmm)
+endif()
+
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME}
+        "-framework Cocoa"
+        "-framework IOKit"
+        "-framework CoreVideo"
+    )
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GL_SILENCE_DEPRECATION)
+endif()
+
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} opengl32)
+endif()
+
+if(MSVC)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN)
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+endif()
+
+# ─── Tests ───────────────────────────────────────────────────────────────
+option(POM2_ENABLE_TESTS "Build POM2 unit tests" ON)
+if(POM2_ENABLE_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# Enable LTO on non-Debug builds when the toolchain supports it.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT POM2_IPO_SUPPORTED OUTPUT POM2_IPO_ERROR)
+if(POM2_IPO_SUPPORTED)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY
+                 INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY
+                 INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+endif()

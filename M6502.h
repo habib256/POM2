@@ -1,0 +1,208 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2012 John D. Corrado
+// Copyright (C) 2000-2026 Verhille Arnaud
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program; if not, write to the Free Software
+// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#ifndef M6502_H
+#define M6502_H
+
+#include "Memory.h"
+
+class M6502
+{
+public:
+    /// Bits du registre P (éviter #define N,C,I,… qui cassent les en-têtes Windows).
+    struct Status {
+        static constexpr uint8_t N = 0x80;
+        static constexpr uint8_t V = 0x40;
+        static constexpr uint8_t B = 0x10;
+        static constexpr uint8_t D = 0x08;
+        static constexpr uint8_t I = 0x04;
+        static constexpr uint8_t Z = 0x02;
+        static constexpr uint8_t C = 0x01;
+    };
+
+    M6502();
+    M6502(Memory* mem);
+
+    void start(void);
+    void stop(void);
+    void softReset(void);
+    void hardReset(void);
+    void setIRQ(int state);
+    void setNMI(void);
+    void dumpPcTrace(const char* tag);
+
+    /// Debug: when true, BRK logs a full CPU+stack dump + recent control-flow
+    /// trace + bus state on every execution. Off by default. The `dumpPcTrace`
+    /// ring buffer is always live (cheap) and can be dumped on demand.
+    void setDebugBrkTrace(bool enabled) { debugBrkTrace = enabled; }
+    bool getDebugBrkTrace() const { return debugBrkTrace; }
+    uint16_t memReadAbsolute(uint16_t adr);
+    
+    // Nouvelles méthodes pour l'exécution et l'affichage
+    void step(void);  // Exécuter une instruction
+    /// Run until at least `maxCycles` 6502 cycles have elapsed (or `stop()`
+    /// is called). Per-instruction granularity means we typically overshoot
+    /// by 1-6 cycles; the actual cycle count is returned so callers pacing
+    /// against a wallclock budget can deduct what was really consumed
+    /// (otherwise the overshoot accumulates and the CPU runs faster than
+    /// the nominal POM2_CPU_CLOCK_HZ rate).
+    int run(int maxCycles);
+    bool isRunning(void) const { return running; }
+    
+    // Accesseurs pour les registres (pour le débogueur)
+    uint8_t getAccumulator(void) const { return accumulator; }
+    uint8_t getXRegister(void) const { return xRegister; }
+    uint8_t getYRegister(void) const { return yRegister; }
+    uint8_t getStatusRegister(void) const { return statusRegister; }
+    uint8_t getStackPointer(void) const { return stackPointer; }
+    uint16_t getProgramCounter(void) const { return programCounter; }
+    /// Jump the PC to an arbitrary address without going through RESET.
+    /// Used by the Klaus Dormann functional test harness (the test binary
+    /// sets its reset vector to an error trap and expects callers to jump
+    /// directly into $0400).
+    void setProgramCounter(uint16_t pc) { programCounter = pc; }
+
+    /// Cycles accumulated inside the *current* opcode (reset to 1 at the
+    /// fetch by executeOpcode and incremented as the instruction runs).
+    /// Memory::cycleCounter is updated only at the end of each step(), so
+    /// `cycleCounter + getCurrentInstructionCycles()` is the best
+    /// sub-instruction approximation of "absolute CPU cycle right now" —
+    /// used by the speaker to timestamp $C030 toggles. The error is
+    /// bounded by a single opcode (≤ 7 cycles, ~7 µs), well under one
+    /// audio sample at 44 kHz.
+    int getCurrentInstructionCycles() const { return cycles; }
+
+private:
+
+
+private :
+
+    Memory *memory;
+
+    bool debugBrkTrace = false;   // see setDebugBrkTrace()
+    uint8_t accumulator, xRegister, yRegister, statusRegister, stackPointer;
+    int IRQ, NMI;
+    uint16_t programCounter;
+    uint16_t op;
+    int tmp;
+    int cycles;
+    int running;
+
+
+    void pushProgramCounter(void);
+    void popProgramCounter(void);
+    void handleIRQ(void);
+    void handleNMI(void);
+    void Imp(void);
+    void Imm(void);
+    void Zero(void);
+    void ZeroX(void);
+    void ZeroY(void);
+    void Abs(void);
+    void AbsX(void);
+    void AbsY(void);
+    void Ind(void);
+    void IndZeroX(void);
+    void IndZeroY(void);
+    void Rel(void);
+    void WAbsX(void);
+    void WAbsY(void);
+    void WIndZeroY(void);
+    void setStatusRegisterNZ(unsigned char val);
+    void LDA(void);
+    void LDX(void);
+    void LDY(void);
+    void STA(void);
+    void STX(void);
+    void STY(void);
+    void setFlagCarry(int val);
+    void ADC(void);
+    void setFlagBorrow(int val);
+    void SBC(void);
+    void CMP(void);
+    void CPX(void);
+    void CPY(void);
+    void AND(void);
+    void ORA(void);
+    void EOR(void);
+    void ASL(void);
+    void ASL_A(void);
+    void LSR(void);
+    void LSR_A(void);
+    void ROL(void);
+    void ROL_A(void);
+    void ROR(void);
+    void ROR_A(void);
+    void INC(void);
+    void DEC(void);
+    void INX(void);
+    void INY(void);
+    void DEX(void);
+    void DEY(void);
+    void BIT(void);
+    void PHA(void);
+    void PHP(void);
+    void PLA(void);
+    void PLP(void);
+    void BRK(void);
+    void RTI(void);
+    void JMP(void);
+    void RTS(void);
+    void JSR(void);
+    void branch(void);
+    void BNE(void);
+    void BEQ(void);
+    void BVC(void);
+    void BVS(void);
+    void BCC(void);
+    void BCS(void);
+    void BPL(void);
+    void BMI(void);
+    void TAX(void);
+    void TXA(void);
+    void TAY(void);
+    void TYA(void);
+    void TXS(void);
+    void TSX(void);
+    void CLC(void);
+    void SEC(void);
+    void CLI(void);
+    void SEI(void);
+    void CLV(void);
+    void CLD(void);
+    void SED(void);
+    void NOP(void);
+    void Unoff(void);
+    void Unoff1(void);
+    void Unoff2(void);
+    void Unoff3(void);
+    void Hang(void);
+    void executeOpcode(void);
+
+    struct OpcodeEntry {
+        void (M6502::*addrMode)();
+        void (M6502::*operation)();
+    };
+    static const OpcodeEntry opcodeTable[256];
+
+
+
+
+};
+
+#endif // M6502_H
