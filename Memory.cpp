@@ -288,10 +288,12 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
         return 0;
     }
 
-    // Cassette INPUT ($C060-$C06F): bit-7 = sign of the audio comparator.
+    // Cassette INPUT ($C060 only): bit-7 = sign of the audio comparator.
     // The Monitor's READ routine ($FEFD) tight-loops on $C060 measuring
-    // sign-flip durations to recover bits from the tape.
-    if (low >= 0x60 && low <= 0x6F) {
+    // sign-flip durations to recover bits from the tape. Note: $C061-$C067
+    // are NOT cassette aliases on the II/II+ — they're the paddle buttons
+    // and paddle inputs, handled below.
+    if (low == 0x60) {
         if (cassette) return cassette->readTapeInput();
         return 0;
     }
