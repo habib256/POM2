@@ -183,6 +183,8 @@ void MainWindow::pasteFromFile(const std::string& path)
 
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
+#elif defined(__APPLE__)
+#include <OpenGL/gl.h>
 #else
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
