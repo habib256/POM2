@@ -31,6 +31,18 @@ namespace pom2 {
 /// Save-tape format hint. NoHint defers to the path's file extension.
 enum class CliSaveTapeFormat { NoHint, Aci, Wav };
 
+/// Initial hi-res rendering mode. NoHint leaves the Apple2Display default
+/// (Color NTSC) untouched. The other values mirror Apple2Display::HiResMode
+/// without making this header depend on the display class.
+enum class CliDisplayMode {
+    NoHint,
+    ColorNTSC,
+    ChatMauveRGB,
+    MonoWhite,
+    MonoGreen,
+    MonoAmber,
+};
+
 /// Apple II preset. POM2 ships two: II (Integer BASIC) and II+ (Applesoft
 /// + Autostart Monitor). Future presets (II Plus 64K with language card,
 /// //e, etc.) get appended without breaking the existing CLI.
@@ -66,6 +78,7 @@ struct CliPlan {
     bool                            initialTapeAutoPlay = false;
     std::string                     saveTapePath;          // --save-tape <path>
     CliSaveTapeFormat               saveTapeFormat = CliSaveTapeFormat::NoHint;
+    CliDisplayMode                  displayMode = CliDisplayMode::NoHint;
 
     // Phase C.
     std::vector<CliAction>          deferredActions;

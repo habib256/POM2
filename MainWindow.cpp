@@ -73,7 +73,48 @@ MainWindow::MainWindow()
         }
     }
 
-    controller.cpu().hardReset();
+    // Auto-plug a ProDOS block-device hard disk in slot 5 when the bundled
+    // Total Replay HDV is present. Slot 5 is the conventional SmartPort /
+    // hard-disk slot and keeps Disk II in slot 6 available for floppies.
+    {
+        static const char* hdvCandidates[] = {
+            "hdv/Total Replay v5.2.hdv",
+            "../hdv/Total Replay v5.2.hdv",
+            "../../hdv/Total Replay v5.2.hdv"
+        };
+        for (const char* p : hdvCandidates) {
+            if (fs::exists(p)) { hdvPath = p; break; }
+        }
+        auto card = std::make_unique<ProDOSHardDiskCard>();
+        if (card->loadImage(hdvPath)) {
+            hdvStatus = std::string("loaded: ") + hdvPath;
+            hdvCard = card.get();
+            controller.memory().slotBus().plug(5, std::move(card));
+        } else {
+            hdvStatus = std::string("NO HDV (") + hdvPath + ")";
+        }
+    }
+
+    // Plug the Le Chat Mauve RGB video card in slot 7. It's the convention
+    // for Apple II video adapters (Apple Color Card, Video-7) and matches
+    // the historical placement in French II+ machines that shipped with a
+    // Féline pre-installed. The card has no boot ROM and exposes nothing on
+    // the bus — Apple2Display queries it directly to choose the rendering
+    // path. Default mode at construction is COL140 (RGB 16 colors), so
+    // every HGR-capable program is rendered with the clean palette out of
+    // the box; AN3+80COL software can switch modes at runtime via the FIFO.
+    {
+        auto card = std::make_unique<LeChatMauveCard>();
+        chatMauveCard = card.get();
+        controller.memory().slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(chatMauveCard);
+    }
+
+    if (hdvCard && hdvCard->isImageLoaded()) {
+        bootHdvImage();
+    } else {
+        controller.cpu().hardReset();
+    }
     controller.setMode(EmulationController::Mode::Running);
     controller.start();
 }
@@ -123,7 +164,8 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         case GLFW_KEY_DOWN:         injectAscii(0x0A); break;
         case GLFW_KEY_ESCAPE:       injectAscii(0x1B); break;
         case GLFW_KEY_TAB:          injectAscii(0x09); break;
-        case GLFW_KEY_F2:           controller.hardReset(); break;
+        case GLFW_KEY_F11:          controller.softReset(); break;
+        case GLFW_KEY_F12:          controller.hardReset(); break;
         default:
             // Ctrl-A..Ctrl-Z generate $01..$1A — these matter for Applesoft
             // (Ctrl-C breaks out of a running program, Ctrl-G beeps, etc.)
@@ -272,8 +314,9 @@ void MainWindow::renderMenuBar()
         }
         if (ImGui::MenuItem("Step (one instr)")) controller.requestStep();
         ImGui::Separator();
-        if (ImGui::MenuItem("Reset (Ctrl-Reset)", "F2")) controller.hardReset();
-        if (ImGui::MenuItem("Hard reset (power cycle)")) controller.coldBoot();
+        if (ImGui::MenuItem("Reset (Ctrl-Reset)",     "F11")) controller.softReset();
+        if (ImGui::MenuItem("Hard reset",             "F12")) controller.hardReset();
+        if (ImGui::MenuItem("Cold boot (wipe RAM)"))          controller.coldBoot();
         ImGui::EndMenu();
     }
 
@@ -300,6 +343,14 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Color NTSC", nullptr,
                             cur == Apple2Display::HiResMode::ColorNTSC))
             display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
+        // no inter-byte fringing. Greyed out if the slot-7 card isn't
+        // plugged (the Apple II would just see composite video).
+        ImGui::BeginDisabled(chatMauveCard == nullptr);
+        if (ImGui::MenuItem("Le Chat Mauve (RGB)", nullptr,
+                            cur == Apple2Display::HiResMode::ChatMauveRGB))
+            display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        ImGui::EndDisabled();
         if (ImGui::MenuItem("Mono White",  nullptr,
                             cur == Apple2Display::HiResMode::MonoWhite))
             display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
@@ -315,7 +366,14 @@ void MainWindow::renderMenuBar()
     if (ImGui::BeginMenu("Hardware")) {
         ImGui::MenuItem("Cassette deck", nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)", nullptr, &showDiskPanel);
+        ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
+        ImGui::Separator();
+        ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
+        if (ImGui::MenuItem("Boot Total Replay HDV (slot 5)")) {
+            bootHdvImage();
+        }
+        ImGui::EndDisabled();
         ImGui::Separator();
         ImGui::BeginDisabled(diskCard == nullptr);
         if (ImGui::MenuItem("Insert disk image (.dsk)...")) {
@@ -447,8 +505,31 @@ void MainWindow::renderControlsWindow()
             }
         }
         ImGui::TextWrapped("ROM: %s", romStatus.c_str());
+        if (!hdvStatus.empty()) ImGui::TextWrapped("HDV: %s", hdvStatus.c_str());
     }
     ImGui::End();
+}
+
+void MainWindow::bootHdvImage()
+{
+    if (!hdvCard || !hdvCard->isImageLoaded()) {
+        tapeStatusMessage = "HDV boot failed: no image loaded";
+        tapeStatusUntil   = lastFrameTime + 4.0;
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        controller.memory().clearRam();
+        controller.memory().resetSoftSwitches();
+        controller.memory().slotBus().reset();
+        controller.cpu().hardReset();
+        controller.cpu().setProgramCounter(0xC500);
+        controller.setMode(EmulationController::Mode::Running);
+    }
+    tapeStatusMessage = "Booting HDV: " + hdvCard->getImagePath();
+    tapeStatusUntil   = lastFrameTime + 4.0;
+    pom2::log().info("HDV", "Boot via slot 5 ROM: " + hdvCard->getImagePath());
 }
 
 void MainWindow::renderPasteFileDialog()
@@ -523,6 +604,38 @@ void MainWindow::renderJoystickPanelWindow()
         bind.hostIdx  = result.hostIdx;
         bind.deadzone = result.deadzone;
         bind.invert   = result.invert;
+    }
+}
+
+// ─── Le Chat Mauve (slot 7) ──────────────────────────────────────────────
+
+void MainWindow::renderChatMauvePanelWindow()
+{
+    if (!showChatMauvePanel) return;
+
+    pom2::LeChatMauve_ImGui::Snapshot snap;
+    if (chatMauveCard) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        snap.plugged   = true;
+        snap.mode      = chatMauveCard->currentMode();
+        snap.fifoBits  = chatMauveCard->fifoBits();
+        snap.eightyCol = chatMauveCard->eightyCol();
+        snap.an3High   = chatMauveCard->an3High();
+    }
+
+    ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330,  500), ImGuiCond_FirstUseEver);
+
+    auto result = chatMauvePanel.render("Le Chat Mauve (slot 7)",
+                                        showChatMauvePanel, snap);
+
+    if (chatMauveCard && result.requestOverride) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        chatMauveCard->overrideMode(result.overrideTo);
+    }
+    if (chatMauveCard && result.requestReset) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        chatMauveCard->onReset();
     }
 }
 
@@ -724,7 +837,7 @@ void MainWindow::renderAboutDialog()
             "Apple II / II+ emulator. MOS 6502, 48 KB RAM,"
             " text / lo-res / hi-res display, soft-switch I/O.");
         ImGui::Spacing();
-        ImGui::Text("F2 = Hard reset");
+        ImGui::Text("F11 = Reset (Ctrl-Reset)   F12 = Hard reset");
         ImGui::Text("ESC, arrows, Ctrl-A..Z map straight to the keyboard");
         ImGui::Spacing();
         if (ImGui::Button("Close")) showAbout = false;
@@ -920,6 +1033,7 @@ void MainWindow::render()
     renderPasteFileDialog();
     renderDiskPanelWindow();
     renderDiskFileDialog();
+    renderChatMauvePanelWindow();
     renderJoystickPanelWindow();
     renderAboutDialog();
 }

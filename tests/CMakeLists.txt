@@ -121,6 +121,30 @@ add_test(NAME paste_smoke COMMAND test_paste)
 set_tests_properties(paste_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Language Card bank-switching smoke test ──────────────────────────────
+# Pins the 16 KB Apple II/II+ Language Card overlay at $D000-$FFFF. This is
+# required by ProDOS and hard-disk titles such as Total Replay.
+add_executable(test_language_card
+    language_card_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_language_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_language_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_language_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_language_card PRIVATE winmm)
+endif()
+
+add_test(NAME language_card_smoke COMMAND test_language_card)
+set_tests_properties(language_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Speaker 1-bit synthesis smoke test ───────────────────────────────────
 # Self-contained: SpeakerDevice only. Pins silence-default, square-wave
 # reconstruction at 1 kHz toggle rate, reset, and mute behaviour.
@@ -158,6 +182,37 @@ endif()
 
 add_test(NAME hgr_render_smoke COMMAND test_hgr_render)
 set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Le Chat Mauve RGB card smoke test ────────────────────────────────────
+# Pins the FIFO clocking (Arlequin AN3+80COL sequence), the direct-from-
+# byte ChatMauveRGB HGR decode (no MAME bit-doubler / half-dot delay /
+# 7-bit LUT), the BW560 strict-monochrome path, the 16-colour lo-res
+# palette with two distinct grays, and the silent NTSC fallback when the
+# card is absent. Gate for any change to LeChatMauveCard.cpp or the
+# ChatMauveRGB branches in Apple2Display.cpp.
+
+add_executable(test_le_chat_mauve
+    le_chat_mauve_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_le_chat_mauve PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_le_chat_mauve PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_le_chat_mauve PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_le_chat_mauve PRIVATE winmm)
+endif()
+
+add_test(NAME le_chat_mauve_smoke COMMAND test_le_chat_mauve)
+set_tests_properties(le_chat_mauve_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── DiskImage GCR round-trip smoke test ──────────────────────────────────

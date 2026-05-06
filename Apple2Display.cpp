@@ -2,6 +2,7 @@
 // Copyright (C) 2026
 
 #include "Apple2Display.h"
+#include "LeChatMauveCard.h"
 #include "Memory.h"
 
 #include <algorithm>
@@ -296,11 +297,39 @@ const uint32_t Apple2Display::kLoResPalette[16] = {
     0xFFFF9CBF, //  7 Light Blue     rgb(0xbf, 0x9c, 0xff)
     0xFF006340, //  8 Brown          rgb(0x40, 0x63, 0x00)
     0xFF006FE6, //  9 Orange         rgb(0xe6, 0x6f, 0x00)
-    0xFF808080, // 10 Light Gray     rgb(0x80, 0x80, 0x80)
+    0xFF808080, // 10 Light Gray     rgb(0x80, 0x80, 0x80)  ← same as 5 in NTSC
     0xFFBF8BFF, // 11 Pink           rgb(0xff, 0x8b, 0xbf)
     0xFF00D719, // 12 Light Green    rgb(0x19, 0xd7, 0x00)
     0xFF08E3BF, // 13 Yellow         rgb(0xbf, 0xe3, 0x08)
     0xFFBFF458, // 14 Aquamarine     rgb(0x58, 0xf4, 0xbf)
+    0xFFFFFFFF, // 15 White
+};
+
+// Le Chat Mauve / Video-7 lo-res palette. Lo-res is the place where the
+// "two distinct grays" Chat Mauve trademark actually shows up on standard
+// Apple II — because lo-res indexes its 16 colours directly from a 4-bit
+// nibble in screen RAM, no chroma decoding involved. The digital RGB
+// decoder turns the same nibble values into 16 visibly distinct colours,
+// where NTSC composite collapses indices 5 and 10 onto the same grey
+// because their phase signatures cancel through the chroma filter.
+// Saturation is bumped vs. the NTSC //gs-corrected palette to match
+// Péritel RGB drive levels.
+const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
+    0xFF000000, //  0 Black
+    0xFF3300DD, //  1 Magenta / Dark Red
+    0xFF990000, //  2 Dark Blue
+    0xFFDD22DD, //  3 Violet
+    0xFF228800, //  4 Dark Green
+    0xFF555555, //  5 Dark Gray      ← distinct from index 10 (Chat Mauve trademark)
+    0xFFFF4422, //  6 Medium Blue
+    0xFFFFBB66, //  7 Light Blue
+    0xFF005588, //  8 Brown
+    0xFF0066FF, //  9 Orange
+    0xFFAAAAAA, // 10 Light Gray     ← distinct from index 5 (Chat Mauve trademark)
+    0xFFCC99FF, // 11 Pink
+    0xFF22DD11, // 12 Light Green
+    0xFF22FFFF, // 13 Yellow
+    0xFFAAFF66, // 14 Aquamarine
     0xFFFFFFFF, // 15 White
 };
 
@@ -312,6 +341,14 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
     const auto state = mem.getDisplayState();
     const uint8_t* ram = mem.data();
 
+    // Palette selection. ChatMauveRGB swaps in the 16-colour Péritel
+    // table — same indices, but indices 5 and 10 are now visibly distinct
+    // grays (where the NTSC //gs-corrected default merges them onto a
+    // single neutral). The "Chat Mauve trademark" actually shows up here,
+    // not in HGR.
+    const bool useChatMauve = (hiResMode == HiResMode::ChatMauveRGB) && (chatMauve != nullptr);
+    const uint32_t* palette = useChatMauve ? kChatMauveLoResPalette : kLoResPalette;
+
     // Each lo-res row corresponds to half a text row (4 scanlines).
     for (int blockRow = firstRow; blockRow < lastRow; ++blockRow) {
         const int textRow = blockRow / 2;
@@ -320,7 +357,7 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
         for (int col = 0; col < 40; ++col) {
             const uint8_t b = ram[rowAddr + col];
             const uint8_t nibble = upperHalf ? (b & 0x0F) : (b >> 4);
-            const uint32_t rgb = kLoResPalette[nibble];
+            const uint32_t rgb = palette[nibble];
             const int x0 = col * 7;
             const int y0 = blockRow * 4;
             for (int dy = 0; dy < 4; ++dy)
@@ -449,14 +486,63 @@ inline uint32_t avgRgb(uint32_t a, uint32_t b)
 
 // Phosphor table for the monochrome modes. RGB is the fully-lit colour
 // (luminance 1.0); decay is the per-frame multiplier on the history
-// buffer (0.0 = no afterglow, 1.0 = freeze).
+// buffer (0.0 = no afterglow, 1.0 = freeze). Indexed by the HiResMode
+// enum's integer value — slots that aren't monochrome (ColorNTSC,
+// ChatMauveRGB) are placeholders that are never actually read.
 struct Phosphor { uint8_t r, g, b; float decay; };
 constexpr Phosphor kPhosphors[] = {
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC slot — never used (color path)
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC    — placeholder (color path)
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ChatMauveRGB — placeholder (color path)
     { 0xFF, 0xFF, 0xFF, 0.00f }, // MonoWhite
     { 0x33, 0xFF, 0x33, 0.85f }, // MonoGreen P31 (CIE x=0.280, y=0.595)
     { 0xFF, 0xB0, 0x00, 0.96f }, // MonoAmber (long persistence)
 };
+
+// Le Chat Mauve / Video-7 AppleColor RGB — 6-color HGR palette, applied
+// per-pixel-pair with the byte's MSB selecting the bank. ABGR-in-uint32
+// (R lowest byte) to match `kLoResPalette`.
+//
+// On STANDARD HGR (no DHGR), real Chat Mauve / Video-7 hardware sniffs
+// the digital pre-modulation video signal at the slot connector and
+// decodes it directly into RGB — bypassing the NTSC modulator entirely.
+// What this means concretely (cf. AppleWin RGBMonitor.cpp PR #837 and
+// *Le Chat Mauve* manual):
+//
+//   - The MSB ("high bit") of each byte is a **palette bank flag**, NOT
+//     a half-dot delay. Real Chat Mauve does NOT shift pixels by ½ dot;
+//     that shift is purely an NTSC artefact mechanism Wozniak co-opted
+//     to access the orange/blue half of the wheel via composite phase.
+//   - A clean RGB decoder doesn't double bits to 14 sub-pixels per byte
+//     either — it processes the raw 7-bit-per-byte stream directly.
+//   - Color comes from **pairs of consecutive bits**. With the byte's
+//     MSB selecting the bank:
+//          MSB=0:  00→black  01→VIOLET  10→GREEN   11→white
+//          MSB=1:  00→black  01→BLUE    10→ORANGE  11→white
+//     6 distinct colours total — same as NTSC HGR on a colour TV, but
+//     emitted cleanly with no inter-byte fringing and crisp edges
+//     because the MSB transition is instantaneous, not phase-encoded.
+//
+// The 16-color palette with two distinct grays (the famous Chat Mauve /
+// French Touch trademark) ONLY applies in DHGR mode (4-bit windows over
+// the aux+main interleaved stream). DHGR isn't modelled here — it would
+// require an aux RAM model first (see TODO.md §12). On standard HGR the
+// $5 / $A bit patterns that NTSC reads as "gray" actually decode to
+// VIOLET / GREEN (or BLUE / ORANGE with MSB=1) under Chat Mauve too —
+// they're never grays on plain HGR.
+//
+// Indexing convention: kChatMauveHGR[msb][bit_pair].
+constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
+    // MSB = 0 → "violet bank"
+    { 0xFF000000,   //  00  black
+      0xFFDD22DD,   //  01  violet  (purple)
+      0xFF22DD11,   //  10  green
+      0xFFFFFFFF }, //  11  white
+    // MSB = 1 → "blue bank"
+    { 0xFF000000,   //  00  black
+      0xFFFF2222,   //  01  blue    (medium blue)
+      0xFF1188FF,   //  10  orange
+      0xFFFFFFFF }, //  11  white
+}};
 
 } // namespace
 
@@ -467,7 +553,90 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
 
     std::array<uint32_t, kWidth> raw;
 
-    if (hiResMode == HiResMode::ColorNTSC) {
+    // Effective mode: ChatMauveRGB without a plugged card silently falls
+    // back to NTSC (matches a real Apple II that's been pulled out of its
+    // RGB adapter — the composite signal is still on the wire).
+    const HiResMode effMode =
+        (hiResMode == HiResMode::ChatMauveRGB && !chatMauve)
+            ? HiResMode::ColorNTSC
+            : hiResMode;
+
+    // Le Chat Mauve / Video-7 RGB card. Decoded DIRECTLY from the raw
+    // byte stream — bypassing every NTSC-specific transformation in this
+    // file: no `kArtifactColorLut` 7-bit window, no `buildHgrWordRow`
+    // bit doubler, no MSB half-dot delay. Real Chat Mauve hardware taps
+    // the digital video data line at the slot and performs its own
+    // hardware decode in TTL; the only Apple II video signal it consumes
+    // is the raw 7-bit-per-byte serial stream, which we reproduce here
+    // by walking `ram[rowAddr+col]` and shifting out the low 7 bits.
+    //
+    // Algorithm (see comment above kChatMauveHGR for the rationale):
+    //   - Each byte exposes 7 visible pixels (bits 0..6, bit 0 = leftmost).
+    //   - Bit 7 ("MSB") is a per-byte palette bank flag.
+    //   - Pixels are decoded in PAIRS aligned to the line origin (pair
+    //     boundaries on even pixel positions: (0,1), (2,3), …, (278,279)
+    //     — 140 pairs at 280-pixel resolution).
+    //   - Each pair → one palette entry, painted onto BOTH pixels of the
+    //     pair (140-color-clocks × 2 = 280 pixels of identical colour).
+    //   - For pairs that straddle a byte boundary, the MSB of the byte
+    //     containing the LEFT pixel of the pair selects the bank.
+    //
+    // FIFO mode (BW560 / Mixed / Chunky / COL140) sub-variants:
+    //   - BW560     → strict B&W: each pixel is just its raw bit, no
+    //                 colour decoding.
+    //   - everything else → the 6-colour HGR Chat Mauve palette above.
+    //
+    // The truly distinguishing visual against NTSC is NOT 16 vs 6 colours
+    // (we're on standard HGR, not DHGR) — it's the absence of fringing
+    // at byte boundaries when the MSB toggles, and the absence of phase
+    // ambiguity in alternating bit patterns. Edges are sharp.
+    if (effMode == HiResMode::ChatMauveRGB) {
+        using Mode = LeChatMauveCard::RenderMode;
+        const Mode mode = chatMauve->currentMode();
+        const bool monochrome = (mode == Mode::BW560);
+
+        for (int y = firstScanline; y < lastScanline; ++y) {
+            const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+
+            // Lay out the 280 raw pixels (low 7 bits per byte, no doubling).
+            uint8_t  pixels[kWidth];
+            uint8_t  msbHigh[40];
+            for (int col = 0; col < 40; ++col) {
+                const uint8_t b = ram[rowAddr + col];
+                msbHigh[col] = (b >> 7) & 1u;
+                pixels[col * 7 + 0] = (b >> 0) & 1u;
+                pixels[col * 7 + 1] = (b >> 1) & 1u;
+                pixels[col * 7 + 2] = (b >> 2) & 1u;
+                pixels[col * 7 + 3] = (b >> 3) & 1u;
+                pixels[col * 7 + 4] = (b >> 4) & 1u;
+                pixels[col * 7 + 5] = (b >> 5) & 1u;
+                pixels[col * 7 + 6] = (b >> 6) & 1u;
+            }
+
+            if (monochrome) {
+                for (int x = 0; x < kWidth; ++x) {
+                    raw[x] = pixels[x] ? 0xFFFFFFFFu : 0xFF000000u;
+                }
+            } else {
+                for (int p = 0; p < kWidth; p += 2) {
+                    // Left pixel of the pair determines which byte's MSB
+                    // we honour; that byte is at index p / 7. Two-bit
+                    // code: bit at p is LSB, bit at p+1 is bit 1.
+                    const unsigned code = pixels[p] | (pixels[p + 1] << 1);
+                    const int      byteIdx = p / 7;
+                    const uint32_t rgb = kChatMauveHGR[msbHigh[byteIdx]][code];
+                    raw[p]     = rgb;
+                    raw[p + 1] = rgb;
+                }
+            }
+
+            uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
+            std::memcpy(outRow, raw.data(), sizeof(raw));
+        }
+        return;
+    }
+
+    if (effMode == HiResMode::ColorNTSC) {
         // MAME-style 7-bit sliding-window decode. ContextBits = 3 leaves
         // the centre sub-pixel at bit 3 of the window, with 3 bits of
         // left context (the tail of the previous byte) and 3 bits of
@@ -519,7 +688,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     // mimics the additive re-excitation + passive fade of phosphor
     // chemistry. Switching modes clears the buffer (see setHiResMode).
     uint8_t stream[kStreamLen];
-    const Phosphor& phos = kPhosphors[static_cast<int>(hiResMode)];
+    const Phosphor& phos = kPhosphors[static_cast<int>(effMode)];
     for (int y = firstScanline; y < lastScanline; ++y) {
         const uint16_t rowAddr = hgrRowAddress(y, state.page2);
         buildBitStream(ram, rowAddr, stream);

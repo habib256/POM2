@@ -107,6 +107,8 @@ void printUsage()
         "  --save-tape <path>         Dump captured tape on shutdown\n"
         "  --save-tape-format <aci|wav>   Force save extension\n"
         "  --snapshot-load <path>     Restore state at boot (Phase C)\n"
+        "  --display <mode>           Hi-res render mode at boot. mode = ntsc | chatmauve\n"
+        "                              | mono-white | mono-green | mono-amber\n"
         "\n"
         "Phase-C deferred (run in CLI order after a short settle):\n"
         "  --load <addr>:<path>       Load raw binary at addr\n"
@@ -165,6 +167,22 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
         }
         else if (a == "--cpu-max") {
             plan.cpuMax = true;
+        }
+        else if (a == "--display") {
+            const char* v = needArg(i, "--display"); if (!v) return std::nullopt;
+            const std::string s = v;
+            if      (s == "ntsc"        || s == "color-ntsc")  plan.displayMode = CliDisplayMode::ColorNTSC;
+            else if (s == "chatmauve"   || s == "chat-mauve"
+                  || s == "rgb"         || s == "le-chat-mauve") plan.displayMode = CliDisplayMode::ChatMauveRGB;
+            else if (s == "mono-white"  || s == "white")       plan.displayMode = CliDisplayMode::MonoWhite;
+            else if (s == "mono-green"  || s == "green"
+                  || s == "p31")                                plan.displayMode = CliDisplayMode::MonoGreen;
+            else if (s == "mono-amber"  || s == "amber")       plan.displayMode = CliDisplayMode::MonoAmber;
+            else {
+                pom2::log().error("CLI", std::string("unknown --display mode: ") + v
+                    + " (expected ntsc|chatmauve|mono-white|mono-green|mono-amber)");
+                return std::nullopt;
+            }
         }
         else if (a == "--speed") {
             const char* v = needArg(i, "--speed"); if (!v) return std::nullopt;

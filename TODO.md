@@ -94,7 +94,7 @@ décodage Apple II est spécifique. Implémenté via `SlotBus` + interface
 - [x] `advanceCycles()` forwardé aux cartes (pour Disk II stepper, UART…)
 - [x] **Disk II en slot 6 branché** (auto-plug si `roms/disk2.rom` présent
       au démarrage). Reste à brancher d'autres cartes (Mockingboard,
-      printer, Language Card, …)
+      printer, …)
 
 ## 4. Disk II
 
@@ -172,10 +172,11 @@ Apple-1 n'a pas de paddle ; POM1 n'a rien. Implémenté dans POM2
 
 POM1 a JukeBox (paged ROM via `$CA00`) — modèle de banking **incompatible**.
 
-- [ ] 16 KB RAM bank-switched derrière la ROM `$D000-$FFFF`
-- [ ] Soft switches `$C080-$C08F` (read/write enable, BSR, prewrite latch)
-- [ ] Banque 1 vs banque 2 sur `$D000-$DFFF`
-- [ ] Indispensable pour ProDOS, Pascal, beaucoup de logiciels post-1980
+- [x] 16 KB RAM bank-switched derrière la ROM `$D000-$FFFF`
+- [x] Soft switches `$C080-$C08F` (read/write enable, BSR, prewrite latch)
+- [x] Banque 1 vs banque 2 sur `$D000-$DFFF` + 8 KB haut partagé
+- [x] Indispensable pour ProDOS, Pascal, beaucoup de logiciels post-1980
+- [x] Test `tests/language_card_smoke`
 
 ## 9. Reset / RDY / IRQ / VBL
 
@@ -193,6 +194,42 @@ blocks*.
 
 - [ ] À modéliser si on veut représenter la machine de 1977 d'origine
       (POM2 colle 48 K en dur aujourd'hui)
+
+## 12. Cartes vidéo RVB tierces (Le Chat Mauve, Video-7 AppleColor)
+
+POM1 n'a rien (pas de carte vidéo). Implémenté dans POM2 (`LeChatMauveCard`
++ `LeChatMauve_ImGui`) en slot 7, avec FIFO 2-bits piloté par AN3+80COL :
+
+- [x] Carte branchée slot 7, décode DIRECT depuis l'octet HGR brut — pas
+      de bit doubler MAME, pas de half-dot delay, pas de LUT artefact 7-bits.
+      MSB = flag de banque palette (bank 0 = violet/vert, bank 1 = bleu/orange).
+      6 couleurs HGR canoniques propres, sans fringing inter-octet.
+- [x] FIFO 2-bits : front montant `$C05F` push le bit `$C00C`/`$C00D` courant
+- [x] Modes BW560 / Mixed / Chunky / COL140 — sur standard HGR seul BW560 est
+      visuellement distinct (force monochrome strict) ; les trois autres
+      partagent le même rendu 6-couleurs (la séparation 16-couleurs n'apparaît
+      qu'en DHGR)
+- [x] Panneau Hardware → Le Chat Mauve (statut FIFO, override manuel, reset)
+- [x] Menu Display → Le Chat Mauve (RGB) coexiste avec NTSC + Mono White /
+      Green / Amber — 5 pipelines distincts, défaut NTSC (vrai Apple II)
+- [x] Soft-switches `$C00C/$C00D` (80COL) et `$C05E/$C05F` (AN3) câblés
+      dans `Memory::softSwitchAccess()` et diffusés via
+      `SlotBus::broadcastVideoSwitch()`
+- [ ] **DHGR (Double Hi-Res 560×192 + 16 couleurs avec 2 gris distincts)** —
+      pré-requis bloquant : modéliser la RAM auxiliaire `$00-$BFFF` + soft
+      switches 80STORE (`$C000/$C001`), RAMRD (`$C002/$C003`), RAMWRT
+      (`$C004/$C005`), ALTZP (`$C008/$C009`). C'est en DHGR seulement que
+      les motifs `0101`/`1010` deviennent #555555/#AAAAAA (signature
+      esthétique French Touch / *Latecomer* / Extasie). Sans cela, les
+      modes Mixed et COL140 partagent l'interprétation HGR-6-couleurs.
+- [ ] **Mode texte couleur EVE ($C0B9)** — attributs foreground/background
+      par caractère via banque aux dédiée. Bloqué par le même pré-requis
+      RAM aux. Spécifique à la carte Eve ; la Féline ne le supporte pas.
+- [ ] Carte Eve (variante 64 KB d'extension RAM intégrée + modes SPEC1/SPEC2/
+      DASH/COL280) — palette historiquement pertinente mais incompatible
+      Féline ; à n'envisager qu'après DHGR
+- [ ] Carte Video-7 AppleColor RGB (équivalent américain, mêmes soft switches
+      AN3+80COL avec encodage différent du FIFO)
 
 ## 11. Hors scope
 
@@ -217,14 +254,15 @@ blocks*.
 | Game I/O (RC discharge)                      | ✓ paddles + buttons + joystick GLFW host                  |
 | Cassette `$C020/$C060`                       | ✓ porté (CassetteDevice, deck UI, FA icons)               |
 | Snapshot CPU+RAM+display                     | ✓ (`POM2SNAP`, Disk II exclu)                             |
-| Language Card                                | ❌                                                        |
+| Carte RVB Le Chat Mauve (slot 7)             | ✓ HGR RGB ; DHGR + EVE Color TEXT en attente RAM aux      |
+| Language Card                                | ✓ 16 KB LC, `$C080-$C08F`, prewrite latch                |
 | Strapping RAM 4 K → 48 K                     | ❌                                                        |
 | VBL `$C019` / annunciators `$C058-$C05F`     | ❌                                                        |
 
 Le reste (M6502, Disassembler, MemoryViewer, shell ImGui, snapshot,
 miniaudio) est déjà porté.
 
-Les blocs encore manquants pour un II+ "complet" : Language Card
-(`$C080-$C08F` banking), VBL `$C019`, persistance des écritures Disk II,
-formats `.po`/`.nib`/`.woz`, sélecteur preset Integer BASIC, character
-ROM 2 KB (normal/inverse/flashing).
+Les blocs encore manquants pour un II+ "complet" : VBL `$C019`,
+persistance des écritures Disk II, formats `.po`/`.nib`/`.woz`, sélecteur
+preset Integer BASIC, character ROM 2 KB (normal/inverse/flashing), RAM
+auxiliaire (pré-requis DHGR + Color TEXT EVE pour Le Chat Mauve).

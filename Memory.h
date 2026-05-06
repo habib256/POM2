@@ -57,8 +57,8 @@ public:
     uint8_t memRead(uint16_t addr);
     void    memWrite(uint16_t addr, uint8_t value);
 
-    // Diagnostic — used by M6502's BRK trace. Cheap stub for now.
-    std::string busStateSummary() const { return " (no extra cards)"; }
+    // Diagnostic — used by M6502's BRK trace.
+    std::string busStateSummary() const;
 
     // ROM loading. Apple II distributions ship as a single 12 KB image
     // covering $D000-$FFFF. Returns 1 on success, 0 on failure (last
@@ -93,6 +93,13 @@ public:
         bool mixedMode = false;  // $C052 clear, $C053 set
         bool page2     = false;  // $C054 page 1, $C055 page 2
         bool hiRes     = false;  // $C056 lo-res, $C057 hi-res
+        // 80COL ($C00C off / $C00D on) and AN3 ($C05E off / $C05F on)
+        // are tracked here so the UI can show them. Le Chat Mauve / Video-7
+        // also subscribe to per-access edges via SlotBus::broadcastVideoSwitch
+        // — a cleared/set boolean is not enough on its own (the FIFO needs
+        // every rising edge), but the snapshot is useful for diagnostics.
+        bool eightyCol = false;
+        bool an3       = false;
     };
     DisplayState getDisplayState() const {
         std::lock_guard<std::mutex> lk(stateMutex);
@@ -155,6 +162,12 @@ public:
 private:
     std::array<uint8_t, 0x10000> mem{};       // flat 64 KB RAM/ROM mirror
     std::array<bool,    0x10000> writable{};  // false in ROM regions
+    // Apple II/II+ 16 KB Language Card. $D000-$DFFF has two 4 KB banks;
+    // $E000-$FFFF is one shared 8 KB bank. Together with base 48 KB RAM
+    // this gives the II+ its ProDOS-required 64 KB.
+    std::array<uint8_t, 0x1000> lcBank1{};
+    std::array<uint8_t, 0x1000> lcBank2{};
+    std::array<uint8_t, 0x2000> lcHigh{};
     std::vector<uint8_t> characterRom;        // 2048 bytes once loaded
     std::string lastError;
 
@@ -197,8 +210,20 @@ private:
     // Klaus harness flat-RAM mode. See setTestMode().
     bool testMode = false;
 
+    // Language Card latch state. Reset default is ROM visible, writes
+    // protected. Write-enable follows the real prewrite rule: an odd
+    // $C08x switch must be accessed twice consecutively before RAM writes
+    // to $D000-$FFFF are accepted.
+    bool lcReadRam      = false;
+    bool lcWriteEnable  = false;
+    bool lcBank2Active  = true;
+    bool lcPrewrite     = false;
+
     void markRomRegion(uint16_t lo, uint16_t hi);
     uint8_t softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal);
+    uint8_t languageCardSwitchAccess(uint16_t addr);
+    uint8_t languageCardRead(uint16_t addr) const;
+    void    languageCardWrite(uint16_t addr, uint8_t value);
 };
 
 #endif // POM2_MEMORY_H

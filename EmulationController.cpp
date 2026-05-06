@@ -99,6 +99,22 @@ void EmulationController::hardReset()
     pom2::log().info("Emul", "Hard reset");
 }
 
+void EmulationController::softReset()
+{
+    // Real Apple II Ctrl-Reset: the reset line is asserted briefly. The
+    // 6502 latches PC from $FFFC, sets the I flag, and rewinds SP to $FF.
+    // RAM, A/X/Y, and the zero page survive. Slot cards see their reset
+    // line too — Disk II spins down, Le Chat Mauve FIFO returns to its
+    // power-on default, etc. Soft-switch state is reset by the Apple II
+    // ROM's autostart code (SETVID/SETKBD called from the reset handler),
+    // which we mirror here so behaviour matches with or without ROM loaded.
+    std::lock_guard<std::mutex> lk(stateMtx);
+    mem.resetSoftSwitches();
+    mem.slotBus().reset();
+    processor.softReset();
+    pom2::log().info("Emul", "Soft reset (Ctrl-Reset)");
+}
+
 void EmulationController::coldBoot()
 {
     std::lock_guard<std::mutex> lk(stateMtx);

@@ -74,6 +74,13 @@ public:
     /// CPU pacing — forwarded from Memory::advanceCycles().
     void advanceCycles(int cycles);
 
+    /// System soft-switch broadcast — fan-out to every plugged card's
+    /// onVideoSoftSwitch(). Used by Memory::softSwitchAccess() for the
+    /// switches that aren't in the per-slot device-select range but that
+    /// video cards (Le Chat Mauve, Video-7) still need to observe:
+    /// $C00C/$C00D (80COL) and $C05E/$C05F (AN3).
+    void broadcastVideoSwitch(uint16_t addr);
+
     /// Apple II RESET line — calls onReset() on every plugged card.
     /// Does NOT touch activeExpansionSlot (matches hardware: RESET
     /// doesn't lift the expansion-ROM enable line).

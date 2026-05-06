@@ -24,6 +24,7 @@
 #include <vector>
 
 class Memory;
+class LeChatMauveCard;
 
 class Apple2Display
 {
@@ -33,12 +34,17 @@ public:
 
     // Hi-res rendering style. ColorNTSC is the "real Apple II on a colour TV"
     // experience — bit-stream artifact colour with authentic byte-boundary
-    // fringing. The three Mono variants render the same bit stream as
-    // luminance through a phosphor tint: White is a reference monitor, Green
+    // fringing. ChatMauveRGB is the French Péritel-RGB experience (clean
+    // 16-color decode, two distinct grays, no fringing) — only available
+    // when a LeChatMauveCard is plugged on the slot bus, and its FIFO
+    // mode (BW560 / Mixed / Chunky / COL140) selects the sub-variant.
+    // The three Mono variants render the same bit stream as luminance
+    // through a phosphor tint: White is a reference monitor, Green
     // approximates Apple's standard P31 CRT, Amber adds long persistence
     // (history-buffer lerp) on top of an amber tint.
     enum class HiResMode {
         ColorNTSC,
+        ChatMauveRGB,
         MonoWhite,
         MonoGreen,
         MonoAmber,
@@ -65,10 +71,19 @@ public:
     void      setHiResMode(HiResMode m);
     HiResMode getHiResMode() const { return hiResMode; }
 
+    /// Le Chat Mauve / Video-7 RGB card. When non-null AND its render mode
+    /// is anything other than NTSC-passthrough, the hi-res renderer takes
+    /// the clean-RGB path: 4-bit-window palette decode (no artifact LUT,
+    /// no inter-byte fringing, two distinct grays for the $5/$A patterns).
+    /// The pointer is non-owning; the card lifetime is managed by the
+    /// SlotBus that holds it.
+    void setChatMauveCard(LeChatMauveCard* c) { chatMauve = c; }
+
 private:
     std::vector<uint32_t> frame;   // kWidth * kHeight RGBA pixels
     bool cursorOverlay  = true;
     HiResMode hiResMode = HiResMode::ColorNTSC;
+    LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
     // History buffer for monochrome phosphor decay. One byte per pixel
     // (0..255 luminance). Color mode leaves this untouched; switching modes
     // clears it.
@@ -91,6 +106,10 @@ private:
 
     // Apple II lo-res palette (16 colours, IIGS-corrected approximation).
     static const uint32_t kLoResPalette[16];
+    // Le Chat Mauve / Video-7 lo-res palette — 16 distinct colours with
+    // visually distinct grays at indices 5 and 10 (the "Chat Mauve
+    // trademark" actually surfaces in lo-res, not HGR — see Apple2Display.cpp).
+    static const uint32_t kChatMauveLoResPalette[16];
 };
 
 #endif // POM2_APPLE2_DISPLAY_H

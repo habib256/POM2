@@ -67,6 +67,13 @@ public:
     /// future serial card's UART, …). Forwarded by SlotBus from
     /// Memory::advanceCycles().
     virtual void advanceCycles(int /*cycles*/) {}
+
+    /// System soft-switch broadcast — fires for switches outside the
+    /// per-slot device-select range that some cards still need to observe
+    /// (Le Chat Mauve / Video-7 sniff $C00C/$C00D 80COL and $C05E/$C05F
+    /// AN3 to clock their 2-bit FIFO mode register). Forwarded by
+    /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
+    virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
 };
 
 #endif // POM2_SLOT_PERIPHERAL_H

@@ -11,7 +11,10 @@
 #include "EmulationController.h"
 #include "JoystickInput.h"
 #include "JoystickPanel_ImGui.h"
+#include "LeChatMauveCard.h"
+#include "LeChatMauve_ImGui.h"
 #include "MemoryViewer_ImGui.h"
+#include "ProDOSHardDiskCard.h"
 
 #include "imgui.h"
 
@@ -28,6 +31,10 @@ public:
     ~MainWindow();
 
     EmulationController& emul() { return controller; }
+
+    /// Live access to the framebuffer renderer. Used by main() to honour
+    /// the `--display <mode>` CLI flag during Phase B.
+    Apple2Display& displayRef() { return display; }
 
     void setGlfwWindow(GLFWwindow* w) { window = w; }
     void render();
@@ -48,7 +55,10 @@ private:
     pom2::CassetteDeck_ImGui     cassetteDeck;
     pom2::DiskController_ImGui   diskPanel;
     pom2::JoystickPanel_ImGui    joystickPanel;
-    DiskIICard*                  diskCard = nullptr;   // non-owning, owned by SlotBus
+    pom2::LeChatMauve_ImGui      chatMauvePanel;
+    DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
+    ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
+    LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     JoystickInput                joystick;
     GLFWwindow*                  window = nullptr;
 
@@ -61,6 +71,7 @@ private:
     bool         showCassetteDeck = false;  // off by default — opt-in via Hardware menu
     bool         showDiskPanel = true;
     bool         showJoystickPanel = false;
+    bool         showChatMauvePanel = false;
 
     // Disk II insert dialog state.
     bool        showDiskInsertDialog = false;
@@ -73,6 +84,10 @@ private:
     bool        diskTurboWhileMotor = true;
     int         diskSavedCyclesPerFrame = 17045;
     bool        diskTurboActive = false;
+
+    // ProDOS hard disk / HDV state.
+    std::string hdvPath = "hdv/Total Replay v5.2.hdv";
+    std::string hdvStatus;
 
     // Cassette load/save dialog state.
     bool        showTapeLoadDialog = false;
@@ -108,6 +123,7 @@ private:
     void renderPasteFileDialog();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
+    void renderChatMauvePanelWindow();
     void renderJoystickPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
@@ -115,6 +131,9 @@ private:
     // Paste helpers — feed text into the keyboard buffer.
     void pasteFromClipboard();
     void pasteFromFile(const std::string& path);
+
+    // HDV helper — cold-boot through the slot-5 ProDOS block-device ROM.
+    void bootHdvImage();
 
     void uploadScreenTexture();
 

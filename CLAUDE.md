@@ -5,7 +5,7 @@ walkthrough → `README.md`.
 
 ## Project Overview
 
-Apple II / II+ emulator (Dear ImGui, MOS 6502 + 48 KB RAM + soft switches +
+Apple II / II+ emulator (Dear ImGui, MOS 6502 + 64 KB RAM via Language Card + soft switches +
 text/lo-res/hi-res framebuffer + 1-bit speaker + cassette + joystick +
 Disk II in slot 6). One concern per file: each `.cpp/.h` pair owns one
 subsystem.
@@ -32,11 +32,13 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   master oscillator is 14.31818 MHz; the CPU runs at that divided by 14.
   The "long cycle" every 65 cycles (TV scan-line alignment) is **not**
   modelled — nominal rate only.
-- **Memory** — flat 64 KB array + per-byte writable bitmap. ROM regions
-  ($C100-$C7FF and $D000-$FFFF) reject writes silently. **`memRead` /
-  `memWrite` route every $C000-$C07F access through `softSwitchAccess()`**;
-  RAM accesses bypass the dispatch entirely (cheap). Reset vector defaults
-  to $F800 so a no-ROM boot still has somewhere to land.
+- **Memory** — flat 64 KB motherboard mirror + per-byte writable bitmap,
+  plus a 16 KB Apple II/II+ Language Card overlay. ROM regions
+  ($C100-$C7FF and $D000-$FFFF when LC RAM is not write-enabled) reject
+  writes silently. **`memRead` / `memWrite` route every $C000-$C07F access
+  through `softSwitchAccess()`**; RAM accesses bypass the dispatch entirely
+  (cheap). Reset vector defaults to $F800 so a no-ROM boot still has
+  somewhere to land.
   - **Soft switches** are toggled by *either* read or write to their slot.
     $C000 returns the keyboard latch; the high bit of the byte reflects
     whether a key is ready (the strobe). $C010 clears the strobe (read or
@@ -44,6 +46,11 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
     $C030-$C03F range (alias decoded). $C050-$C057 = display mode pairs
     (text/graphics, mixed/full, page 1/2, lo/hi-res). $C064-$C067 paddles,
     $C070 paddle latch.
+  - **Language Card** — built into `Memory`, not a normal slot card because
+    it remaps `$D000-$FFFF`. `$C080-$C08F` implements bank 1/2 selection,
+    ROM-vs-RAM reads, and the two-access prewrite latch for write enable.
+    `$D000-$DFFF` has two 4 KB banks; `$E000-$FFFF` is one shared 8 KB RAM.
+    `$C011`/`$C012` report bank-2/read-RAM status for ProDOS-style probes.
   - **Apple II text/HGR row interleave**: not a bug, a Woz feature reusing
     the row counter to refresh DRAM. Formulae in `Apple2Display.cpp`:
     text: `addr = base + 0x80*(y%8) + 0x28*(y/8)`,

@@ -96,6 +96,11 @@ void SlotBus::advanceCycles(int cycles)
     for (auto& s : slots) if (s) s->advanceCycles(cycles);
 }
 
+void SlotBus::broadcastVideoSwitch(uint16_t addr)
+{
+    for (auto& s : slots) if (s) s->onVideoSoftSwitch(addr);
+}
+
 void SlotBus::reset()
 {
     for (auto& s : slots) if (s) s->onReset();

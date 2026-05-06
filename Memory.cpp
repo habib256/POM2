@@ -15,6 +15,9 @@ Memory::Memory()
 {
     mem.fill(0);
     writable.fill(true);
+    lcBank1.fill(0);
+    lcBank2.fill(0);
+    lcHigh.fill(0);
     // ROM region. The Apple II //e bank-switched language card is NOT
     // modelled — $D000-$FFFF is plain ROM. The slot ROM range
     // $C100-$C7FF is NOT marked as ROM here: SlotBus owns that window
@@ -32,6 +35,16 @@ Memory::Memory()
     mem[0xFFFF] = 0xF8;
     mem[0xFFFA] = 0x00;
     mem[0xFFFB] = 0xF8;
+}
+
+std::string Memory::busStateSummary() const
+{
+    if (!lcReadRam && !lcWriteEnable) return " (LC: ROM)";
+    std::string s = " (LC: ";
+    s += lcReadRam ? "RAM" : "ROM";
+    s += lcBank2Active ? " bank2" : " bank1";
+    s += lcWriteEnable ? " writable)" : " write-protected)";
+    return s;
 }
 
 void Memory::markRomRegion(uint16_t lo, uint16_t hi)
@@ -126,15 +139,22 @@ void Memory::resetSoftSwitches()
 {
     std::lock_guard<std::mutex> lk(stateMutex);
     display = DisplayState{};
+    lcReadRam     = false;
+    lcWriteEnable = false;
+    lcBank2Active = true;
+    lcPrewrite    = false;
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
 }
 
 void Memory::clearRam()
 {
-    // Wipe user RAM only — $C000-$C0FF (I/O), $C100-$C7FF (slot ROMs),
-    // and $D000-$FFFF (Monitor + BASIC) stay put.
+    // Wipe user RAM only. The Language Card is RAM too, so a power-cycle
+    // clears it even though its address window overlaps motherboard ROM.
     std::fill(mem.begin(), mem.begin() + 0xC000, 0);
+    lcBank1.fill(0);
+    lcBank2.fill(0);
+    lcHigh.fill(0);
 }
 
 void Memory::queueKey(uint8_t apple2Key)
@@ -247,6 +267,9 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
         clearKeyStrobe();
         return kbLatch & 0x7F;
     }
+    // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
+    if (low == 0x11) return lcBank2Active ? 0x80 : 0x00;  // RDLCBNK2
+    if (low == 0x12) return lcReadRam     ? 0x80 : 0x00;  // RDLCRAM
 
     // Display soft switches.
     if (low >= 0x50 && low <= 0x57) {
@@ -261,6 +284,30 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
             case 0x56: display.hiRes     = false; break;
             case 0x57: display.hiRes     = true;  break;
         }
+        return 0;
+    }
+
+    // 80COL ($C00C off / $C00D on). Apple II/II+ doesn't natively use this
+    // (it's a //e switch) but Le Chat Mauve / Video-7 RGB cards co-opt it
+    // as the data line of their 2-bit FIFO mode register, clocked by AN3.
+    if (low == 0x0C || low == 0x0D) {
+        {
+            std::lock_guard<std::mutex> lk(stateMutex);
+            display.eightyCol = (low == 0x0D);
+        }
+        slots.broadcastVideoSwitch(addr);
+        return 0;
+    }
+
+    // AN3 annunciator ($C05E off / $C05F on). Used as the FIFO clock by
+    // Le Chat Mauve — every $C05E→$C05F rising edge pushes the current
+    // 80COL bit into the card's mode register.
+    if (low == 0x5E || low == 0x5F) {
+        {
+            std::lock_guard<std::mutex> lk(stateMutex);
+            display.an3 = (low == 0x5F);
+        }
+        slots.broadcastVideoSwitch(addr);
         return 0;
     }
 
@@ -326,13 +373,58 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     return 0;
 }
 
+uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
+{
+    const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
+
+    // $C080-$C087 select bank 2, $C088-$C08F select bank 1. Within each
+    // half, the low two bits choose ROM/RAM read mode and whether the
+    // prewrite latch is armed. $C084-$C087 mirror $C080-$C083.
+    const bool bank2 = (low4 & 0x08) == 0;
+    const uint8_t mode = low4 & 0x03;
+    const bool readRam = (mode == 0x00 || mode == 0x03);
+    const bool writeCandidate = (mode == 0x01 || mode == 0x03);
+    const bool previousPrewrite = lcPrewrite;
+
+    lcBank2Active = bank2;
+    lcReadRam = readRam;
+    lcWriteEnable = writeCandidate && previousPrewrite;
+    lcPrewrite = writeCandidate;
+
+    return 0;
+}
+
+uint8_t Memory::languageCardRead(uint16_t addr) const
+{
+    if (!lcReadRam) return mem[addr];
+    if (addr < 0xE000) {
+        const uint16_t off = static_cast<uint16_t>(addr - 0xD000);
+        return lcBank2Active ? lcBank2[off] : lcBank1[off];
+    }
+    return lcHigh[addr - 0xE000];
+}
+
+void Memory::languageCardWrite(uint16_t addr, uint8_t value)
+{
+    if (!lcWriteEnable) return;
+    if (addr < 0xE000) {
+        const uint16_t off = static_cast<uint16_t>(addr - 0xD000);
+        if (lcBank2Active) lcBank2[off] = value;
+        else               lcBank1[off] = value;
+        return;
+    }
+    lcHigh[addr - 0xE000] = value;
+}
+
 uint8_t Memory::memRead(uint16_t addr)
 {
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) return mem[addr];
 
-    // Fast path: RAM below $C000 and main ROM above $CFFF.
-    if (addr < 0xC000 || addr > 0xCFFF) return mem[addr];
+    // Fast path: RAM below $C000. Main ROM may be replaced by Language Card
+    // RAM depending on the $C080-$C08F latch state.
+    if (addr < 0xC000) return mem[addr];
+    if (addr >= 0xD000) return languageCardRead(addr);
 
     // $C000-$C07F — built-in I/O page (keyboard, speaker, cassette,
     // display soft switches, paddles).
@@ -340,6 +432,7 @@ uint8_t Memory::memRead(uint16_t addr)
 
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
+    if (addr <= 0xC08F) return languageCardSwitchAccess(addr);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
     // $C100-$C7FF — slot ROM, 256 bytes per slot 1-7. Reading any byte
@@ -358,10 +451,14 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) { mem[addr] = value; return; }
 
-    // Fast path: writable RAM (and main ROM that drops writes silently).
-    if (addr < 0xC000 || addr > 0xCFFF) {
+    // Fast path: writable RAM and Language Card overlay for $D000-$FFFF.
+    if (addr < 0xC000) {
         if (!writable[addr]) return;
         mem[addr] = value;
+        return;
+    }
+    if (addr >= 0xD000) {
+        languageCardWrite(addr, value);
         return;
     }
 
@@ -370,6 +467,10 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         return;
     }
     if (addr <= 0xC0FF) {
+        if (addr <= 0xC08F) {
+            languageCardSwitchAccess(addr);
+            return;
+        }
         slots.deviceSelectWrite(addr, value);
         return;
     }

@@ -49,7 +49,8 @@ public:
 
     void start();
     void stop();
-    void hardReset();          // re-fetches reset vector and clears soft switches
+    void hardReset();          // power-cycle: zeros A/X/Y, wipes stack page, re-fetches reset vector, clears soft switches
+    void softReset();          // Ctrl-Reset behaviour: re-fetches reset vector, clears soft switches; A/X/Y/zp/RAM survive
     void coldBoot();           // wipes user RAM ($0000-$BFFF) then hardReset()
     void requestStep();        // single-instruction step
 

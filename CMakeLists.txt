@@ -44,9 +44,12 @@ set(SOURCES
     EmulationController.cpp
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
+    LeChatMauveCard.cpp
+    LeChatMauve_ImGui.cpp
     MainWindow.cpp
     MainWindow_MemoryMaps.cpp
     MemoryViewer_ImGui.cpp
+    ProDOSHardDiskCard.cpp
     RomLoader.cpp
     SlotBus.cpp
     SnapshotIO.cpp
@@ -70,8 +73,11 @@ set(HEADERS
     JoystickInput.h
     JoystickPanel_ImGui.h
     IconsFontAwesome6.h
+    LeChatMauveCard.h
+    LeChatMauve_ImGui.h
     MainWindow.h
     MemoryViewer_ImGui.h
+    ProDOSHardDiskCard.h
     Logger.h
     CpuClock.h
     RomLoader.h

@@ -38,8 +38,11 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
 {
     ImGui_ImplGlfw_KeyCallback(w, key, sc, action, mods);
     if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
-        if (!ImGui::GetIO().WantCaptureKeyboard ||
-            key == GLFW_KEY_F2 /* hard reset is global */) {
+        // F11 (soft reset) and F12 (hard reset) are routed unconditionally
+        // so the user can recover even when an ImGui widget has captured
+        // the keyboard focus.
+        const bool isResetKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12);
+        if (!ImGui::GetIO().WantCaptureKeyboard || isResetKey) {
             mw->onKey(key, sc, action, mods);
         }
     }
@@ -130,6 +133,25 @@ int main(int argc, char* argv[])
     }
     if (plan->executionSpeed) {
         mainWindow.emul().setCyclesPerFrame(*plan->executionSpeed);
+    }
+    if (plan->displayMode != pom2::CliDisplayMode::NoHint) {
+        Apple2Display::HiResMode m = Apple2Display::HiResMode::ColorNTSC;
+        const char* label = "ntsc";
+        switch (plan->displayMode) {
+            case pom2::CliDisplayMode::ColorNTSC:
+                m = Apple2Display::HiResMode::ColorNTSC;    label = "ntsc";        break;
+            case pom2::CliDisplayMode::ChatMauveRGB:
+                m = Apple2Display::HiResMode::ChatMauveRGB; label = "chatmauve";   break;
+            case pom2::CliDisplayMode::MonoWhite:
+                m = Apple2Display::HiResMode::MonoWhite;    label = "mono-white";  break;
+            case pom2::CliDisplayMode::MonoGreen:
+                m = Apple2Display::HiResMode::MonoGreen;    label = "mono-green";  break;
+            case pom2::CliDisplayMode::MonoAmber:
+                m = Apple2Display::HiResMode::MonoAmber;    label = "mono-amber";  break;
+            case pom2::CliDisplayMode::NoHint: break;
+        }
+        mainWindow.displayRef().setHiResMode(m);
+        pom2::log().info("CLI", std::string("--display ") + label);
     }
     if (!plan->initialTapePath.empty()) {
         if (mainWindow.emul().loadTape(plan->initialTapePath)) {
