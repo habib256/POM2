@@ -4,12 +4,23 @@
 #include "Apple2Display.h"
 #include "Memory.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
 Apple2Display::Apple2Display()
     : frame(kWidth * kHeight, 0xFF000000)
+    , persistenceL(kWidth * kHeight, 0)
 {
+}
+
+void Apple2Display::setHiResMode(HiResMode m)
+{
+    if (m == hiResMode) return;
+    hiResMode = m;
+    // Clear the phosphor history so a residual amber afterglow doesn't
+    // tint a freshly-selected green or colour mode for a few frames.
+    std::fill(persistenceL.begin(), persistenceL.end(), 0);
 }
 
 uint16_t Apple2Display::textRowAddress(int y, bool page2)
@@ -270,23 +281,27 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
 
 // ─── Lo-res mode ──────────────────────────────────────────────────────────
 
+// Palette verbatim from MAME `apple2video.cpp::apple2_palette[]` — the
+// reference sRGB values calibrated against real Apple II hardware. Same
+// 16 indices drive both lo-res blocks and the artefact LUT in
+// renderHiRes() (the LUT looks up these very entries).
 const uint32_t Apple2Display::kLoResPalette[16] = {
-    0xFF000000, // 0 black
-    0xFF722640, // 1 magenta
-    0xFF40337F, // 2 dark blue
-    0xFFE434FE, // 3 purple
-    0xFF0E5940, // 4 dark green
-    0xFF808080, // 5 grey 1
-    0xFF1B9AFE, // 6 medium blue
-    0xFFBFB3FF, // 7 light blue
-    0xFF404C00, // 8 brown
-    0xFFE46501, // 9 orange
-    0xFF808080, // 10 grey 2
-    0xFFF1A6BF, // 11 pink
-    0xFF1BCB01, // 12 green
-    0xFFBFCC80, // 13 yellow
-    0xFF40D9BF, // 14 aqua
-    0xFFFFFFFF, // 15 white
+    0xFF000000, //  0 Black
+    0xFF400BA7, //  1 Dark Red       rgb(0xa7, 0x0b, 0x40)
+    0xFFF71C40, //  2 Dark Blue      rgb(0x40, 0x1c, 0xf7)
+    0xFFFF28E6, //  3 Purple         rgb(0xe6, 0x28, 0xff)
+    0xFF407400, //  4 Dark Green     rgb(0x00, 0x74, 0x40)
+    0xFF808080, //  5 Dark Gray      rgb(0x80, 0x80, 0x80)
+    0xFFFF9019, //  6 Medium Blue    rgb(0x19, 0x90, 0xff)
+    0xFFFF9CBF, //  7 Light Blue     rgb(0xbf, 0x9c, 0xff)
+    0xFF006340, //  8 Brown          rgb(0x40, 0x63, 0x00)
+    0xFF006FE6, //  9 Orange         rgb(0xe6, 0x6f, 0x00)
+    0xFF808080, // 10 Light Gray     rgb(0x80, 0x80, 0x80)
+    0xFFBF8BFF, // 11 Pink           rgb(0xff, 0x8b, 0xbf)
+    0xFF00D719, // 12 Light Green    rgb(0x19, 0xd7, 0x00)
+    0xFF08E3BF, // 13 Yellow         rgb(0xbf, 0xe3, 0x08)
+    0xFFBFF458, // 14 Aquamarine     rgb(0x58, 0xf4, 0xbf)
+    0xFFFFFFFF, // 15 White
 };
 
 void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
@@ -317,78 +332,131 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
 
 // ─── Hi-res mode ──────────────────────────────────────────────────────────
 //
-// Apple II HGR NTSC artifact colour, ported from Uncle Bernie's GEN2 card
-// in POM1. Three passes per scanline:
+// Colour decode follows MAME's `apple2video.cpp` (PR #10773 by benrg) —
+// the gold-standard algorithm calibrated against real Apple II hardware.
+// Three building blocks:
 //
-//   1. LUT lookup — each (parity, byte) maps to 7 RGBA pixels. The table
-//      assumes the byte is "isolated" — neighbours treated as off — so
-//      bit 6 of byte N and bit 0 of byte N+1 may need a fix-up below.
-//   2. Inter-byte seam fix-up — when bit 6 of the current byte AND bit 0
-//      of the next byte are both lit, both seam pixels paint white. This
-//      is the only neighbour-dependent case the LUT can't cover.
-//   3. Optional horizontal glow — black pixels next to lit neighbours
-//      pick up a soft halo. Loose stand-in for NTSC chroma bandwidth
-//      smear; toggleable via setHiResGlow().
+//   1. **Bit doubler.** Each of the 7 visible HGR bits is duplicated to
+//      give a 14-bit word per byte (40 bytes × 14 = 560 sub-pixels per
+//      scanline at the master 14.32 MHz cadence).
+//   2. **Half-dot delay (MSB).** When a byte's bit 7 is set, the entire
+//      14-bit word is shifted left by 1 sub-pixel, with the *top* bit
+//      of the previous byte's word feeding bit 0. That single-cell
+//      shift is the 74LS74 flip-flop delay (~70 ns / 90° chroma phase)
+//      that real silicon implements. Because the delay lives in the
+//      stream, fringing at MSB-toggle byte boundaries falls out for
+//      free.
+//   3. **7-bit sliding window + 4-phase rotation.** A 7-bit window walks
+//      the 14-bit-per-byte stream with 3 bits of left context. For each
+//      sub-pixel position the window indexes a 128-entry static LUT
+//      (verbatim from MAME); the LUT entry is a byte that packs four
+//      4-bit "lo-res palette index" candidates, one per NTSC phase.
+//      `rotl4b(byte, x)` extracts the candidate matching the current
+//      absolute sub-pixel x mod 4. The 4-bit result is the lo-res
+//      palette index — the artefact colour drops out of the same
+//      16-colour table that drives `renderLoRes()`.
 //
-// The byte/bit/pixel convention follows Apple II silicon: the LSB of
-// each HGR byte (bit 0) is the LEFTMOST displayed pixel; bit 6 is the
-// rightmost. Bit 7 is the per-byte palette flag (0 = violet/green pair,
-// 1 = blue/orange pair). "Even pixel parity" relative to the screen's
-// absolute X selects which colour of the pair shows for a single
-// isolated lit pixel; lit pixels with a lit neighbour merge to white.
+// Output is at 560 sub-pixels per scanline; we average pairs into 280
+// framebuffer pixels (the chroma-bandwidth-limited downsample real
+// CRTs perform optically).
+//
+// Monochrome paths reuse the doubled bit stream but skip the LUT and
+// rotation — luminance only, multiplied by a phosphor tint. Persistence
+// for amber rides on a per-pixel history × decay buffer.
+//
+// Convention: bit 0 of an HGR byte is the LEFTMOST pixel, bit 6 the
+// RIGHTMOST, bit 7 the per-byte half-dot delay flag.
 
 namespace {
 
-constexpr uint32_t pack(uint8_t r, uint8_t g, uint8_t b)
+constexpr int kStreamLen = 560;   // 280 visible color clocks × 2 sub-pixels
+
+// Bit doubler. `kBitDoubler[i]` is the 14-bit word obtained by replacing
+// each of the 7 low bits of i with a doubled (b, b) pair.
+constexpr std::array<uint16_t, 128> makeBitDoubler()
 {
-    // Memory order R, G, B, A → little-endian uint32: (A<<24)|(B<<16)|(G<<8)|R.
-    // GL_RGBA + GL_UNSIGNED_BYTE consumes the bytes in that order.
-    return (uint32_t(0xFF) << 24)
-         | (uint32_t(b)    << 16)
-         | (uint32_t(g)    << 8)
-         |  uint32_t(r);
+    std::array<uint16_t, 128> t{};
+    for (unsigned i = 1; i < 128; ++i)
+        t[i] = static_cast<uint16_t>(t[i >> 1] * 4 + (i & 1) * 3);
+    return t;
+}
+constexpr std::array<uint16_t, 128> kBitDoubler = makeBitDoubler();
+
+// Verbatim from MAME `apple2video.cpp` `artifact_color_lut[0]` (the
+// composite/NTSC variant — the second LUT in the [2][128] table is for
+// the slightly differently-tuned RGB monitor mode and lives in the same
+// file should we ever need it). Each byte packs four 4-bit lo-res
+// palette indices, one per NTSC sub-cycle phase; `rotl4b` selects which.
+constexpr uint8_t kArtifactColorLut[128] = {
+    0x00,0x00,0x00,0x00,0x88,0x00,0x00,0x00,0x11,0x11,0x55,0x11,0x99,0x99,0xdd,0xff,
+    0x22,0x22,0x66,0x66,0xaa,0xaa,0xee,0xee,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
+    0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x55,0x55,0x55,0x55,0x99,0x99,0xdd,0xff,
+    0x00,0x22,0x66,0x66,0xee,0xaa,0xee,0xee,0x77,0x77,0x77,0x77,0xff,0xff,0xff,0xff,
+    0x00,0x00,0x00,0x00,0x88,0x88,0x88,0x88,0x11,0x11,0x55,0x11,0x99,0x99,0xdd,0xff,
+    0x00,0x22,0x66,0x66,0xaa,0xaa,0xaa,0xaa,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
+    0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x11,0x11,0x55,0x55,0x99,0x99,0xdd,0xdd,
+    0x00,0x22,0x66,0x66,0xee,0xaa,0xee,0xee,0xff,0xff,0xff,0x77,0xff,0xff,0xff,0xff,
+};
+
+// `rotl4b(n, count)` — extract the 4-bit nibble of `n` at logical
+// position `count` (mod 4). Maps to the NTSC phase rotation MAME uses.
+constexpr unsigned rotl4b(unsigned n, unsigned count)
+{
+    return (n >> ((-static_cast<int>(count)) & 3)) & 0x0fu;
 }
 
-constexpr uint32_t kHiResBlack  = 0xFF000000u;
-constexpr uint32_t kHiResWhite  = 0xFFFFFFFFu;
-constexpr uint32_t kHiResViolet = pack(148,  33, 246);  // group 1, even screenX
-constexpr uint32_t kHiResGreen  = pack( 20, 245,  60);  // group 1, odd screenX
-constexpr uint32_t kHiResBlue   = pack( 20, 207, 253);  // group 2, even screenX
-constexpr uint32_t kHiResOrange = pack(255, 106,  60);  // group 2, odd screenX
-
-using HgrPixelRow   = std::array<uint32_t, 7>;
-using HgrPixelTable = std::array<HgrPixelRow, 512>;
-
-constexpr uint32_t computeIsolatedPixel(int byte, int bit, int colParity)
+// Decode 40 HGR bytes into a 40-element array of 14-bit doubled words,
+// applying the half-dot delay when the source byte's MSB is set.
+void buildHgrWordRow(const uint8_t* ram, uint16_t rowAddr,
+                     uint16_t (&words)[40])
 {
-    const bool on = (byte & (1 << bit)) != 0;
-    if (!on) return kHiResBlack;
-    const bool prevOn = (bit > 0) && ((byte & (1 << (bit - 1))) != 0);
-    const bool nextOn = (bit < 6) && ((byte & (1 << (bit + 1))) != 0);
-    if (prevOn || nextOn) return kHiResWhite;
-    const bool group2 = (byte & 0x80) != 0;
-    const bool even   = ((colParity + bit) & 1) == 0;
-    if (!group2) return even ? kHiResViolet : kHiResGreen;
-    return even ? kHiResBlue : kHiResOrange;
+    unsigned last_output_bit = 0;
+    for (int col = 0; col < 40; ++col) {
+        const uint8_t b = ram[rowAddr + col];
+        uint16_t word = kBitDoubler[b & 0x7Fu];
+        if (b & 0x80u) {
+            word = static_cast<uint16_t>(((word << 1) | last_output_bit) & 0x3FFFu);
+        }
+        words[col] = word;
+        last_output_bit = (word >> 13) & 1u;
+    }
 }
 
-const HgrPixelTable& hgrPixelTable()
+// Build the 560-sub-pixel raw bit stream — one entry per sub-pixel,
+// 0/1. Used by the monochrome paths (which don't need the windowed
+// LUT). Equivalent to laying buildHgrWordRow's output end-to-end.
+void buildBitStream(const uint8_t* ram, uint16_t rowAddr,
+                    uint8_t (&stream)[kStreamLen])
 {
-    // 14 KB lazy-static table — built once per process. Index =
-    // (colParity << 8) | byte. colParity = parity of the absolute
-    // screenX where the byte starts. Since each byte is 7 pixels wide
-    // and 7 is odd, colParity == col & 1 (odd column → odd start).
-    static const HgrPixelTable table = []{
-        HgrPixelTable t{};
-        for (int parity = 0; parity < 2; ++parity)
-            for (int byte = 0; byte < 256; ++byte)
-                for (int bit = 0; bit < 7; ++bit)
-                    t[(parity << 8) | byte][bit] =
-                        computeIsolatedPixel(byte, bit, parity);
-        return t;
-    }();
-    return table;
+    uint16_t words[40];
+    buildHgrWordRow(ram, rowAddr, words);
+    int out = 0;
+    for (int col = 0; col < 40; ++col) {
+        const uint16_t w = words[col];
+        for (int b = 0; b < 14; ++b) {
+            stream[out++] = static_cast<uint8_t>((w >> b) & 1u);
+        }
+    }
 }
+
+inline uint32_t avgRgb(uint32_t a, uint32_t b)
+{
+    const uint32_t r = ((a & 0xFFu) + (b & 0xFFu)) >> 1;
+    const uint32_t g = (((a >> 8)  & 0xFFu) + ((b >> 8)  & 0xFFu)) >> 1;
+    const uint32_t bl = (((a >> 16) & 0xFFu) + ((b >> 16) & 0xFFu)) >> 1;
+    return (uint32_t(0xFF) << 24) | (bl << 16) | (g << 8) | r;
+}
+
+// Phosphor table for the monochrome modes. RGB is the fully-lit colour
+// (luminance 1.0); decay is the per-frame multiplier on the history
+// buffer (0.0 = no afterglow, 1.0 = freeze).
+struct Phosphor { uint8_t r, g, b; float decay; };
+constexpr Phosphor kPhosphors[] = {
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC slot — never used (color path)
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // MonoWhite
+    { 0x33, 0xFF, 0x33, 0.85f }, // MonoGreen P31 (CIE x=0.280, y=0.595)
+    { 0xFF, 0xB0, 0x00, 0.96f }, // MonoAmber (long persistence)
+};
 
 } // namespace
 
@@ -396,80 +464,82 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
 {
     const auto state = mem.getDisplayState();
     const uint8_t* ram = mem.data();
-    const auto& table = hgrPixelTable();
 
-    // Per-scanline scratch — LUT output before glow. 280 × 4 B = 1.1 KB
-    // on the stack, well below the default 8 MB thread stack.
     std::array<uint32_t, kWidth> raw;
 
-    for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+    if (hiResMode == HiResMode::ColorNTSC) {
+        // MAME-style 7-bit sliding-window decode. ContextBits = 3 leaves
+        // the centre sub-pixel at bit 3 of the window, with 3 bits of
+        // left context (the tail of the previous byte) and 3 bits of
+        // right context (the head of the next byte) on either side.
+        constexpr int kContextBits = 3;
+        uint16_t words[40];
+        std::array<uint32_t, kStreamLen> subPixels;
 
-        // Pass 1: LUT — 40 bytes × 7 pixels.
-        for (int col = 0; col < 40; ++col) {
-            const uint8_t b = ram[rowAddr + col];
-            const int parity = col & 1;
-            std::memcpy(raw.data() + col * 7,
-                        table[(parity << 8) | b].data(),
-                        sizeof(HgrPixelRow));
-        }
+        for (int y = firstScanline; y < lastScanline; ++y) {
+            const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+            buildHgrWordRow(ram, rowAddr, words);
 
-        // Pass 2: 39 inter-byte seams. The LUT was built assuming no
-        // external neighbour, so the only case it gets wrong is when bit
-        // 6 of the current byte AND bit 0 of the next byte are both lit
-        // — both seam pixels then paint white (matches HGR silicon).
-        for (int col = 0; col < 39; ++col) {
-            const uint8_t cur = ram[rowAddr + col];
-            const uint8_t nxt = ram[rowAddr + col + 1];
-            if ((cur & 0x40) && (nxt & 0x01)) {
-                raw[col * 7 + 6] = kHiResWhite;
-                raw[col * 7 + 7] = kHiResWhite;
+            // Scanline's 560 sub-pixels via incremental window. `w`
+            // accumulates up to (3 + 14 + 14) = 31 bits — fits in a
+            // uint32_t. Each iteration consumes one bit (`>>= 1`).
+            uint32_t w = static_cast<uint32_t>(words[0]) << kContextBits;
+            for (int col = 0; col < 40; ++col) {
+                if (col + 1 < 40) {
+                    w |= static_cast<uint32_t>(words[col + 1])
+                         << (14 + kContextBits);
+                }
+                for (int b = 0; b < 14; ++b) {
+                    const int absX = col * 14 + b;
+                    const uint8_t lutEntry = kArtifactColorLut[w & 0x7Fu];
+                    const unsigned loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
+                    subPixels[absX] = kLoResPalette[loresIdx];
+                    w >>= 1;
+                }
             }
-        }
 
-        // Pass 3: glow into the final framebuffer — or just memcpy if
-        // the user disabled the halo.
-        uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
-        if (hgrGlowEnabled) {
-            applyHgrGlow(raw.data(), outRow);
-        } else {
+            // Downsample 560 sub-pixels → 280 framebuffer pixels by
+            // pair averaging. This is the optical chroma-bandwidth-limit
+            // a real CRT applies — without it, the 14 MHz bit pattern
+            // would alias against the 7 MHz pixel grid.
+            for (int x = 0; x < kWidth; ++x) {
+                raw[x] = avgRgb(subPixels[2 * x], subPixels[2 * x + 1]);
+            }
+
+            uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
             std::memcpy(outRow, raw.data(), sizeof(raw));
         }
+        return;
     }
-}
 
-void Apple2Display::applyHgrGlow(const uint32_t* src, uint32_t* dst)
-{
-    // Horizontal-only additive glow. Each lit lateral neighbour
-    // contributes 9/20 of its colour into the current black pixel, summed
-    // and clamped per channel. A black pixel sandwiched between two
-    // identical lit pixels reaches 90 % of the source colour — bright
-    // enough to read as a CRT halo without bleeding into adjacent rows.
-    constexpr int kGlowNum = 9;
-    constexpr int kGlowDen = 20;
+    // Monochrome path. The bit stream is sampled at twice the visible
+    // pixel rate — averaging adjacent sub-pixels gives the soft
+    // horizontal anti-aliased luminance a real CRT's chroma-bandwidth
+    // limit produces. Persistence is per-pixel max(target, prev × decay):
+    // mimics the additive re-excitation + passive fade of phosphor
+    // chemistry. Switching modes clears the buffer (see setHiResMode).
+    uint8_t stream[kStreamLen];
+    const Phosphor& phos = kPhosphors[static_cast<int>(hiResMode)];
+    for (int y = firstScanline; y < lastScanline; ++y) {
+        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+        buildBitStream(ram, rowAddr, stream);
 
-    for (int x = 0; x < kWidth; ++x) {
-        const uint32_t c = src[x];
-        // Lit pixel? Pass through unchanged. Bit-test on the colour bytes
-        // (RGB only — alpha bits stay 0xFF for both lit and black).
-        if ((c & 0x00FFFFFFu) != 0) { dst[x] = c; continue; }
+        uint8_t* histRow = persistenceL.data() + static_cast<size_t>(y) * kWidth;
+        for (int x = 0; x < kWidth; ++x) {
+            const int sub = x * 2;
+            const int lit = stream[sub] + stream[sub + 1];   // 0..2
+            const int target = (lit * 255) / 2;
+            const int prev   = static_cast<int>(static_cast<float>(histRow[x]) * phos.decay);
+            const int merged = std::max(target, prev);
+            histRow[x] = static_cast<uint8_t>(merged);
 
-        const uint32_t L = (x > 0)          ? src[x - 1] : 0u;
-        const uint32_t R = (x + 1 < kWidth) ? src[x + 1] : 0u;
+            const uint32_t r = (static_cast<uint32_t>(phos.r) * merged + 127) / 255;
+            const uint32_t g = (static_cast<uint32_t>(phos.g) * merged + 127) / 255;
+            const uint32_t b = (static_cast<uint32_t>(phos.b) * merged + 127) / 255;
+            raw[x] = (uint32_t(0xFF) << 24) | (b << 16) | (g << 8) | r;
+        }
 
-        const int sr = int(L         & 0xFFu) + int(R         & 0xFFu);
-        const int sg = int((L >> 8)  & 0xFFu) + int((R >> 8)  & 0xFFu);
-        const int sb = int((L >> 16) & 0xFFu) + int((R >> 16) & 0xFFu);
-
-        int r = (sr * kGlowNum) / kGlowDen;
-        int g = (sg * kGlowNum) / kGlowDen;
-        int b = (sb * kGlowNum) / kGlowDen;
-        if (r > 255) r = 255;
-        if (g > 255) g = 255;
-        if (b > 255) b = 255;
-        dst[x] = (uint32_t(0xFF) << 24)
-               | (uint32_t(b)    << 16)
-               | (uint32_t(g)    << 8)
-               |  uint32_t(r);
+        uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
+        std::memcpy(outRow, raw.data(), sizeof(raw));
     }
 }

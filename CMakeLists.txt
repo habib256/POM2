@@ -45,6 +45,7 @@ set(SOURCES
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
     MainWindow.cpp
+    MainWindow_MemoryMaps.cpp
     MemoryViewer_ImGui.cpp
     RomLoader.cpp
     SlotBus.cpp

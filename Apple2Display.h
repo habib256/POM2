@@ -6,7 +6,10 @@
 // Three modes follow the soft-switch state held by Memory:
 //   - Text  (40×24, char ROM glyphs, normal / inverse / flashing)
 //   - Lo-res (40×48, 16 colours, same screen memory as text)
-//   - Hi-res (280×192, 6-colour NTSC palette per byte / pixel parity)
+//   - Hi-res (280×192, NTSC artifact decoded by a 7-bit sliding window over
+//             a linearised 560-sub-pixel bit stream — MSB-driven half-dot
+//             delay applied at the stream level so byte-boundary fringing
+//             emerges naturally)
 // Mixed mode shows hi-res in the top 160 pixels and four text rows below.
 //
 // The display owns no GL state — the MainWindow uploads `pixels()` to a
@@ -28,6 +31,19 @@ public:
     static constexpr int kWidth  = 280;
     static constexpr int kHeight = 192;
 
+    // Hi-res rendering style. ColorNTSC is the "real Apple II on a colour TV"
+    // experience — bit-stream artifact colour with authentic byte-boundary
+    // fringing. The three Mono variants render the same bit stream as
+    // luminance through a phosphor tint: White is a reference monitor, Green
+    // approximates Apple's standard P31 CRT, Amber adds long persistence
+    // (history-buffer lerp) on top of an amber tint.
+    enum class HiResMode {
+        ColorNTSC,
+        MonoWhite,
+        MonoGreen,
+        MonoAmber,
+    };
+
     Apple2Display();
 
     // Renders the current frame into the internal RGBA buffer based on
@@ -43,16 +59,20 @@ public:
     // park the cursor at $0024-$0025 zero-page; we just read those bytes.
     void setCursorOverlay(bool on) { cursorOverlay = on; }
 
-    /// Hi-res glow — soft horizontal halo around lit HGR pixels. Costs an
-    /// extra 280-wide pass per scanline; disabling it gives a sharper but
-    /// more "digital" look. Default ON to match the CRT feel of the era.
-    void setHiResGlow(bool on) { hgrGlowEnabled = on; }
-    bool getHiResGlow() const  { return hgrGlowEnabled; }
+    /// Hi-res rendering mode. Switching modes resets the persistence buffer
+    /// so an amber afterglow doesn't bleed into a freshly-selected green
+    /// phosphor.
+    void      setHiResMode(HiResMode m);
+    HiResMode getHiResMode() const { return hiResMode; }
 
 private:
     std::vector<uint32_t> frame;   // kWidth * kHeight RGBA pixels
     bool cursorOverlay  = true;
-    bool hgrGlowEnabled = true;
+    HiResMode hiResMode = HiResMode::ColorNTSC;
+    // History buffer for monochrome phosphor decay. One byte per pixel
+    // (0..255 luminance). Color mode leaves this untouched; switching modes
+    // clears it.
+    std::vector<uint8_t> persistenceL;
     // Frame counter — drives the FLASH attribute animation for screen
     // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
     // and inverse-blinking spaces). Wraps freely; only the parity of
@@ -63,11 +83,6 @@ private:
     void renderText (Memory& mem, int firstRow, int lastRow);
     void renderLoRes(Memory& mem, int firstRow, int lastRow);
     void renderHiRes(Memory& mem, int firstScanline, int lastScanline);
-
-    // Apply the horizontal additive glow filter to a 280-wide row of raw
-    // HGR pixels and write the result to `dst`. Lit pixels pass through
-    // unchanged; black pixels surrounded by lit neighbours pick up a halo.
-    static void applyHgrGlow(const uint32_t* src, uint32_t* dst);
 
     // Address of the first byte of text/lo-res row `y` in the active page.
     static uint16_t textRowAddress(int y, bool page2);

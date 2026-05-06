@@ -186,7 +186,6 @@ void MainWindow::pasteFromFile(const std::string& path)
 #elif defined(__APPLE__)
 #include <OpenGL/gl.h>
 #else
-#define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
 #endif
 
@@ -294,9 +293,22 @@ void MainWindow::renderMenuBar()
 
     if (ImGui::BeginMenu("Display")) {
         ImGui::SliderFloat("Pixel scale", &pixelScale, 1.0f, 4.0f, "%.1fx");
-        bool glow = display.getHiResGlow();
-        if (ImGui::MenuItem("Hi-res glow (CRT halo)", nullptr, &glow))
-            display.setHiResGlow(glow);
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Hi-res mode");
+        const Apple2Display::HiResMode cur = display.getHiResMode();
+        if (ImGui::MenuItem("Color NTSC", nullptr,
+                            cur == Apple2Display::HiResMode::ColorNTSC))
+            display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        if (ImGui::MenuItem("Mono White",  nullptr,
+                            cur == Apple2Display::HiResMode::MonoWhite))
+            display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
+        if (ImGui::MenuItem("Mono Green (P31)", nullptr,
+                            cur == Apple2Display::HiResMode::MonoGreen))
+            display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
+        if (ImGui::MenuItem("Mono Amber",  nullptr,
+                            cur == Apple2Display::HiResMode::MonoAmber))
+            display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
         ImGui::EndMenu();
     }
 
@@ -323,6 +335,10 @@ void MainWindow::renderMenuBar()
 
     if (ImGui::BeginMenu("Debug")) {
         ImGui::MenuItem("Memory viewer", nullptr, &showMemViewer);
+        ImGui::Separator();
+        ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
+        ImGui::MenuItem("Memory Map Bar (Horizontal)", nullptr, &showMemoryBarH);
+        ImGui::MenuItem("Memory Map Grid",             nullptr, &showMemoryGrid);
         ImGui::EndMenu();
     }
 
@@ -352,9 +368,12 @@ void MainWindow::renderMenuBar()
 
 void MainWindow::renderScreenWindow()
 {
-    const float winW = Apple2Display::kWidth  * pixelScale + 16.0f;
-    const float winH = Apple2Display::kHeight * pixelScale + 64.0f;
-    ImGui::SetNextWindowSize(ImVec2(winW, winH), ImGuiCond_FirstUseEver);
+    // Curated startup layout: Apple II Screen anchors the left ~75 % of
+    // the GLFW canvas, leaving the right margin for the Disk II + Emulation
+    // stack. FirstUseEver lets the user drag/resize freely after the first
+    // frame.
+    ImGui::SetNextWindowPos (ImVec2(5,    30),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1080, 960), ImGuiCond_FirstUseEver);
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
     if (ImGui::Begin("Apple II Screen")) {
@@ -380,7 +399,8 @@ void MainWindow::renderScreenWindow()
 
 void MainWindow::renderControlsWindow()
 {
-    ImGui::SetNextWindowSize(ImVec2(320, 220), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos (ImVec2(1095, 780), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330,  210), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Emulation")) {
         // CPU speed control.
         int cycPerFrame = controller.getCyclesPerFrame();
@@ -574,6 +594,10 @@ void MainWindow::renderDiskPanelWindow()
         diskTurboActive = false;
     }
 
+    // Curated startup pos/size — height accommodates the 2×-tall library
+    // list (360 px child) without forcing the panel itself to scroll.
+    ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330,  725), ImGuiCond_FirstUseEver);
     auto result = diskPanel.render("Disk II (slot 6)", showDiskPanel, snap);
     if (result.turboToggleChanged) {
         diskTurboWhileMotor = result.turboNewValue;
@@ -888,6 +912,9 @@ void MainWindow::render()
     renderScreenWindow();
     renderControlsWindow();
     renderMemoryViewerWindow();
+    if (showMemoryBar)  renderMemoryBarWindow();
+    if (showMemoryBarH) renderMemoryBarHorizontalWindow();
+    if (showMemoryGrid) renderMemoryGridWindow();
     renderCassetteDeckWindow(deltaSeconds);
     renderTapeFileDialogs();
     renderPasteFileDialog();

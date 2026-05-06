@@ -17,7 +17,9 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     FrameResult r;
     if (!open) return r;
 
-    ImGui::SetNextWindowSize(ImVec2(360, 200), ImGuiCond_FirstUseEver);
+    // Window pos/size are owned by the caller (MainWindow's curated startup
+    // layout) — we don't fight it from here. A standalone caller can still
+    // SetNextWindowSize before invoking us.
     if (!ImGui::Begin(title, &open)) {
         ImGui::End();
         return r;
@@ -112,7 +114,11 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     if (snap.library.empty()) {
         ImGui::TextDisabled("  (drop .dsk / .do files into disks/ to populate)");
     } else {
-        ImGui::BeginChild("##disk_lib", ImVec2(0, 180), true,
+        // 540 px (3× the original 180) — extended downward by half its
+        // previous height (360 + 180). If the surrounding Disk II panel
+        // is shorter than this child, the panel grows an outer scrollbar
+        // — by design; nothing else in the panel layout is touched.
+        ImGui::BeginChild("##disk_lib", ImVec2(0, 540), true,
                           ImGuiWindowFlags_HorizontalScrollbar);
         for (const auto& entry : snap.library) {
             const bool current = (entry.fullPath == snap.diskPath);

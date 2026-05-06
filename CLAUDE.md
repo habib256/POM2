@@ -6,8 +6,9 @@ walkthrough → `README.md`.
 ## Project Overview
 
 Apple II / II+ emulator (Dear ImGui, MOS 6502 + 48 KB RAM + soft switches +
-text/lo-res/hi-res framebuffer). One concern per file: each `.cpp/.h` pair
-owns one subsystem.
+text/lo-res/hi-res framebuffer + 1-bit speaker + cassette + joystick +
+Disk II in slot 6). One concern per file: each `.cpp/.h` pair owns one
+subsystem.
 
 ## Build & Run
 
@@ -61,7 +62,61 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   and the flat RAM array directly. **Owns no GL state** — UI uploads via
   `glTexSubImage2D`. Built-in 5×7 ASCII font fallback when the user hasn't
   provided a character ROM. Lo-res palette is the //gs-corrected approximation.
-  Hi-res renders monochrome — NTSC artifact colour pending.
+  Hi-res has four `HiResMode` variants: `ColorNTSC` (default — 14 KB LUT
+  indexed by `(parity << 8) | byte`, 39 inter-byte seam fix-ups, optional
+  additive horizontal glow) and three monochrome phosphors —
+  `MonoWhite` / `MonoGreen` (P31) / `MonoAmber`. Text inverse attribute
+  renders statically (2 Hz flashing animation pending).
+
+### Audio (speaker + cassette)
+
+- **AudioDevice** — miniaudio mono float32 mixer. Negotiates the actual
+  sample rate with the OS (often 48 kHz on Apple Silicon even when 44.1
+  is requested) — cycle-driven sources MUST query
+  `getActualSampleRate()` or playback drifts by the rate ratio.
+  `addSource(AudioSource*)` is thread-safe; the data callback runs on
+  miniaudio's thread.
+- **SpeakerDevice** — `AudioSource` for the 1-bit speaker. The CPU side
+  records each `$C030-$C03F` toggle with a sub-instruction timestamp
+  (`cycleCounter + cpu->getCurrentInstructionCycles()`) into a 16 K-event
+  ring; the audio thread drains it into a square wave at the negotiated
+  rate, applies a 1-pole low-pass (~5 kHz, models the speaker cone) and a
+  DC blocker (avoids drift across long silence). Auto catch-up if the
+  drain lags > 100 ms. UI volume + mute are atomics.
+- **CassetteDevice** — Apple II `$C020` (output toggle) and `$C060` (sign
+  of the audio comparator). Drives a separate `AudioSource` so tape loads
+  click through the speakers; Play / Record / Rewind are exposed by the
+  procedural `CassetteDeck_ImGui` panel (378×404, Font Awesome icons —
+  the runtime falls back to '?' glyphs if `fonts/fa-solid-900.ttf` is
+  missing). $C061-$C067 are **not** cassette aliases on the II/II+ —
+  they're paddles + buttons, dispatched separately in `softSwitchAccess`.
+
+### Joystick / paddles
+
+- **JoystickInput** — polls all 16 GLFW slots each UI frame so a
+  hot-plugged pad becomes selectable immediately. One active binding
+  drives PADL(0)/PADL(1) from the host X/Y axis and PB0/PB1/PB2 from
+  buttons 0/1/2. Auto-binds the first present host on first poll.
+  PADL(2)/PADL(3) read centred (127).
+- **Paddle RC discharge** is modelled inside `Memory::softSwitchAccess`:
+  `$C064-$C067` returns `0x80` while `(cycleCounter - paddleLatchCycle)
+  < paddleValue × 11`. `$C070` arms the latch. The 11-cycle constant is
+  the rough Apple II RC-step duration — close enough for paddle-driven
+  games, not a precision PASCAL clone.
+- **JoystickPanel_ImGui** — host-pad picker, deadzone slider, axis-invert
+  toggles, live axis / button readout. Visible via Hardware → Joystick.
+
+### Slot bus
+
+- **SlotBus** + **SlotPeripheral** — 8-slot dispatcher. `Memory::memRead`
+  / `memWrite` route four windows: `$C080-$C0FF` device-select (16 bytes
+  per slot N at `$C080+N*16`; slot 0 = Language Card hook, 1-7 =
+  expansion), `$C100-$C7FF` slot ROM (256 bytes per slot 1-7), and
+  `$C800-$CFFF` shared expansion ROM owned by whichever slot most
+  recently saw a `$CnXX` access. `$CFFF` (read or write) deactivates
+  the active slot; auto-latch on slot-ROM access. `advanceCycles()`
+  forwards to every plugged card (Disk II head stepping today).
+  Apple II Ctrl-Reset propagates `onReset()` to all cards.
 
 ### Disk II (slot 6)
 
@@ -97,10 +152,28 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   and head position; first-cut decision is to keep snapshots focused on
   CPU + RAM + soft switches.
 
+### Snapshot
+
+- **SnapshotIO** — `POM2SNAP` magic, named 8-byte sections, format
+  shared with POM1 (round-trip test in `tests/snapshot_io_smoke`).
+  Captures CPU + RAM + soft-switch display state. Disk II state is
+  **deliberately excluded** — head position + mounted-image identity
+  are kept out of v1.
+- **CliDispatcher** — three-phase startup: A (parse), B (apply pre-boot:
+  preset, ROM, snapshot-load, --load addr:file), C (post-boot: tape ops,
+  paste, run/step). Flags: `--preset ii|ii+`, `--speed`, `--cpu-max`,
+  `--tape`, `--load addr:file`, `--run`, `--paste`, `--step`,
+  `--play/--rec/--rewind`, `--snapshot-save/load`.
+
 ### UI (ImGui)
 
-- **MainWindow** — one main menu bar + three windows (Apple II Screen,
-  Emulation, Memory viewer). Owns the GL texture.
+- **MainWindow** — one main menu bar (File / Edit / Run / Presets /
+  Display / Hardware / Debug / Help) plus the Apple II Screen, Emulation
+  panel, and on-demand panels for cassette deck, Disk II, joystick, and
+  the memory tools below. Owns the GL texture for the screen.
+- **MainWindow_MemoryMaps.cpp** — three visual layouts of the 64 KB
+  memory map (Memory Map Bar / Bar Horizontal / Grid), toggled from
+  Debug menu. Region colours match the memory viewer.
 - **MemoryViewer_ImGui** — hex grid + ASCII column over the full 64 KB
   flat array. Region-coloured for the Apple II memory map (zero page,
   stack, text/HGR pages, I/O, slot ROMs, Applesoft, Monitor). Reads via
@@ -175,10 +248,12 @@ Strobe stays high until $C010 read/write.
 
 ### Speaker
 
-Toggle-on-access counter exposed via `getSpeakerToggleCount()`. No audio
-backend wired yet — the count is visible in the Emulation panel for
-debugging. Future: feed a square-wave generator at the audio sample rate
-based on the toggle delta per audio frame.
+Toggle-on-access counter exposed via `getSpeakerToggleCount()` for the
+Emulation panel. The audio path itself lives in `SpeakerDevice` (see
+*Audio* above): every `$C030-$C03F` access pushes a sub-instruction
+timestamp into a ring buffer; the audio callback drains it into a square
+wave through a 5 kHz LP + DC blocker. The toggle counter is debug-only —
+mute it in code and audio still plays.
 
 ## Version string locations
 

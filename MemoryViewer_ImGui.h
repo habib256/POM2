@@ -11,6 +11,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -30,6 +31,16 @@ public:
     // Programmatic navigation — used by future "go to PC" buttons or a
     // disassembly listing that wants to centre on a label.
     void navigateToAddress(int address);
+
+    // Inclusive byte range currently visible in the hex grid. Used by the
+    // memory-map widgets to draw a viewport overlay so the bar and the
+    // viewer stay in sync visually.
+    struct ViewportRange { int startAddress; int endAddress; };
+    ViewportRange getViewportRange() const {
+        const int span = bytesPerRow * displayRows;
+        const int end  = std::min(0xFFFF, startAddress + span - 1);
+        return { startAddress, end };
+    }
 
     // Hook fired when the user edits a byte. MainWindow plumbs this through
     // EmulationController so the write goes through Memory::memWrite under

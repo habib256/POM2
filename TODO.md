@@ -42,8 +42,10 @@ et `$C000/$C081` pour ACI). Le squelette est dans `Memory.cpp`, à compléter :
 - [x] Cassette **Apple II** : `$C020` (toggle sortie) / `$C060` (entrée
       comparateur, bit 7) — câblé dans `Memory::softSwitchAccess()`,
       forwarde vers `CassetteDevice::toggleOutput()` / `readTapeInput()`
-- [ ] Game I/O `$C061-$C067` + latch `$C070` : la décharge RC en cycles
-      n'est pas modélisée (signature présente, logique de discharge absente)
+- [x] Game I/O `$C061-$C067` + latch `$C070` : décharge RC modélisée
+      (`$C064-$C067` reste à `0x80` tant que `cycleCounter -
+      paddleLatchCycle < paddleValue × 11`), boutons PB0/PB1/PB2 sur
+      `$C061-$C063`, `$C070` arme la latch.
 - [ ] VBL/utility strobes `$C040` (annunciator)
 - [ ] Annunciators `$C058-$C05F`
 
@@ -90,20 +92,32 @@ décodage Apple II est spécifique. Implémenté via `SlotBus` + interface
 - [x] `Memory::memRead/memWrite` route les 4 fenêtres via `SlotBus`
 - [x] Reset Apple II (Ctrl-Reset) propage `onReset()` à toutes les cartes
 - [x] `advanceCycles()` forwardé aux cartes (pour Disk II stepper, UART…)
-- [ ] **Aucune carte n'est encore branchée** — l'infra est prête, la
-      première carte (Disk II en slot 6) reste à écrire
+- [x] **Disk II en slot 6 branché** (auto-plug si `roms/disk2.rom` présent
+      au démarrage). Reste à brancher d'autres cartes (Mockingboard,
+      printer, Language Card, …)
 
 ## 4. Disk II
 
 POM1 a CFFA1 (ATA/IDE) et microSD (VIA 65C22) — rien à voir avec un Disk II.
-À écrire intégralement :
+Écrit intégralement dans POM2 (`DiskImage` + `DiskIICard` +
+`DiskController_ImGui`) :
 
-- [ ] ROM de boot Disk II (256 B au slot 6 typiquement, le P5/P6 Woz)
-- [ ] Séquenceur d'état P5/P6 (16 états × 8 entrées)
-- [ ] Encodage 6-and-2 nibble
-- [ ] Phases moteur pas-à-pas `$C0n0-$C0n7`
-- [ ] Sélection drive 1/2, motor on/off, head load
-- [ ] Loaders `.dsk` / `.do` / `.po` / `.nib` / `.woz`
+- [x] ROM de boot Disk II (256 B P5A AppleWin chargée à `roms/disk2.rom`,
+      autodétection du slot via `JSR $FF58 / TSX / LDA $0100,X`)
+- [x] Encodage 6-and-2 nibble (gap sync 14 octets, address field
+      `D5 AA 96 [vol/trk/sec/chk 4-and-4] DE AA EB`, data field
+      `D5 AA AD [86 lo + 256 hi + 1 XOR] DE AA EB`) + DOS 3.3 sector
+      skewing
+- [x] Phases moteur pas-à-pas `$C0n0-$C0n7` en demi-pistes (les
+      quart-pistes ne sont pas modélisées)
+- [x] Sélection drive 1/2 (seul drive 1 modélisé), motor on/off,
+      Q6L/Q6H + Q7L/Q7H — write acquitté mais ignoré
+- [x] Loaders `.dsk` / `.do` (143 360 octets, ordre logique DOS 3.3) avec
+      pré-nibblisation en 35 × 6656 octets
+- [ ] Loaders `.po` (ProDOS) / `.nib` / `.woz`
+- [ ] Persistance des écritures (aujourd'hui le buffer nibble est jeté
+      à l'éjection, le fichier n'est jamais touché)
+- [ ] Drive 2, quart-pistes (jeux à protection lourde)
 
 ## 5. Audio speaker 1-bit
 
@@ -139,13 +153,20 @@ POM1 livre `WozMonitor.rom` (256 B) + `basic.rom` (Integer BASIC **Apple-1**)
 
 ## 7. Game I/O réel (paddles, joystick, boutons)
 
-Apple-1 n'a pas de paddle ; POM1 n'a rien.
+Apple-1 n'a pas de paddle ; POM1 n'a rien. Implémenté dans POM2
+(`JoystickInput` + `JoystickPanel_ImGui` + RC dans `Memory.cpp`).
 
-- [ ] Modèle de décharge RC : le bit 7 de `$C064-$C067` reste à 1 pendant
-      `~11 µs × valeur_paddle` après écriture sur `$C070`, puis tombe à 0
-- [ ] Mapping souris/joystick host vers axes paddle 0/1
-- [ ] Boutons `$C061-$C063` (touches pomme ouverte/fermée sur II+ via
-      `$C061/$C062`)
+- [x] Modèle de décharge RC : `$C064-$C067` reste à `0x80` tant que
+      `(cycleCounter - paddleLatchCycle) < paddleValue × 11`, puis
+      tombe à 0. `$C070` arme la latch. Constante 11 cycles ≈ pas RC
+      Apple II — suffisant pour les jeux à paddle, pas une réplique
+      PASCAL.
+- [x] Mapping joystick host (GLFW, 16 slots polled, hot-plug) vers axes
+      paddle 0/1, autobinding au premier pad présent, deadzone +
+      invert configurables
+- [x] Boutons `$C061-$C063` (PB0/PB1/PB2, "open-apple"/"closed-apple")
+- [ ] Mapping souris (alternative aux pads — paddle 0/1 sur X/Y)
+- [ ] PADL(2)/PADL(3) (second-stick rare, lus centrés à 127 actuellement)
 
 ## 8. Carte Language (Apple II+ → 64 K)
 
@@ -182,20 +203,28 @@ blocks*.
 
 ## Récapitulatif "II/II+ correct" — réutilisable POM1 ?
 
-| Bloc                                         | Réutilisable POM1 ?                          |
-|----------------------------------------------|----------------------------------------------|
-| Soft switches `$C000-$C07F`                  | ❌                                            |
-| Texte 40×24 entrelacé + inverse/flashing     | ✓ (clignotement 2 Hz à animer)                |
-| Lo-res 16 couleurs                           | ✓ (palette //gs-corrected)                    |
-| Hi-res NTSC + bit 7 palette + page 2 + mixed | ✓ porté GEN2 + seams + glow toggleable        |
-| Slots `$C0nX` / `$CnXX` / `$C800` / `$CFFF`  | ✓ porté (`SlotBus` + `SlotPeripheral`)        |
-| Disk II                                      | ❌                                            |
-| Speaker 1-bit (synthèse)                     | ✓ porté + LP/DC + UI vol/mute                 |
-| ROMs II / II+ + char ROM                     | ❌ (binaires)                                 |
-| Game I/O (RC discharge)                      | ❌                                            |
-| Cassette `$C020/$C060`                       | ✓ porté (CassetteDevice, deck UI, FA icons)   |
-| Language Card                                | ❌                                            |
-| Strapping RAM 4 K → 48 K                     | ❌                                            |
+| Bloc                                         | Statut POM2                                              |
+|----------------------------------------------|----------------------------------------------------------|
+| Soft switches `$C000-$C07F`                  | ✓ (KBD, speaker, vidéo, cassette, paddles RC, boutons)   |
+| Texte 40×24 entrelacé + inverse/flashing     | ✓ (clignotement 2 Hz à animer)                            |
+| Lo-res 16 couleurs                           | ✓ (palette //gs-corrected)                                |
+| Hi-res NTSC + bit 7 palette + page 2 + mixed | ✓ porté GEN2 + seams + glow toggleable                    |
+| Hi-res mono White / Green (P31) / Amber      | ✓ tints phosphore                                         |
+| Slots `$C0nX` / `$CnXX` / `$C800` / `$CFFF`  | ✓ porté (`SlotBus` + `SlotPeripheral`)                    |
+| Disk II                                      | ✓ slot 6, `.dsk`/`.do` DOS 3.3, read-only                 |
+| Speaker 1-bit (synthèse)                     | ✓ porté + LP/DC + UI vol/mute                             |
+| ROMs II / II+ + char ROM                     | ~ (Applesoft OK ; Integer + char layout 2 KB à venir)     |
+| Game I/O (RC discharge)                      | ✓ paddles + buttons + joystick GLFW host                  |
+| Cassette `$C020/$C060`                       | ✓ porté (CassetteDevice, deck UI, FA icons)               |
+| Snapshot CPU+RAM+display                     | ✓ (`POM2SNAP`, Disk II exclu)                             |
+| Language Card                                | ❌                                                        |
+| Strapping RAM 4 K → 48 K                     | ❌                                                        |
+| VBL `$C019` / annunciators `$C058-$C05F`     | ❌                                                        |
 
 Le reste (M6502, Disassembler, MemoryViewer, shell ImGui, snapshot,
-miniaudio) est déjà porté ou portable depuis POM1 sans difficulté.
+miniaudio) est déjà porté.
+
+Les blocs encore manquants pour un II+ "complet" : Language Card
+(`$C080-$C08F` banking), VBL `$C019`, persistance des écritures Disk II,
+formats `.po`/`.nib`/`.woz`, sélecteur preset Integer BASIC, character
+ROM 2 KB (normal/inverse/flashing).

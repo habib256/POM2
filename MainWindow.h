@@ -13,8 +13,11 @@
 #include "JoystickPanel_ImGui.h"
 #include "MemoryViewer_ImGui.h"
 
+#include "imgui.h"
+
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -33,6 +36,11 @@ public:
     void onChar(unsigned int codepoint);
     void onKey (int key, int scancode, int action, int mods);
 
+    // Apple II memory map region — used by the bar / grid widgets in
+    // MainWindow_MemoryMaps.cpp. Public so file-local helpers in that TU
+    // can take a `const std::vector<MemRegion>&`.
+    struct MemRegion { uint16_t start, end; ImU32 color; const char* label; };
+
 private:
     EmulationController          controller;
     Apple2Display                display;
@@ -47,7 +55,10 @@ private:
     unsigned int screenTexture = 0;     // GL texture name (lazy)
     float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
-    bool         showCassetteDeck = true;
+    bool         showMemoryBar      = false;   // tall vertical map
+    bool         showMemoryBarH     = false;   // wide-short horizontal variant
+    bool         showMemoryGrid     = false;   // 16×16 page grid
+    bool         showCassetteDeck = false;  // off by default — opt-in via Hardware menu
     bool         showDiskPanel = true;
     bool         showJoystickPanel = false;
 
@@ -87,6 +98,11 @@ private:
     void renderScreenWindow();
     void renderControlsWindow();
     void renderMemoryViewerWindow();
+    // Memory map visualisations — implemented in MainWindow_MemoryMaps.cpp.
+    std::vector<MemRegion> buildMemoryRegions();
+    void renderMemoryBarWindow();
+    void renderMemoryBarHorizontalWindow();
+    void renderMemoryGridWindow();
     void renderCassetteDeckWindow(float deltaSeconds);
     void renderTapeFileDialogs();
     void renderPasteFileDialog();
