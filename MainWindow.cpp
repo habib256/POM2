@@ -267,12 +267,21 @@ void MainWindow::renderMenuBar()
 
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Reload ROM")) {
-            if (controller.memory().loadAppleIIRom(romPath.c_str())) {
-                romStatus = std::string("loaded: ") + romPath;
-                controller.hardReset();
-            } else {
-                romStatus = controller.memory().getLastError();
+            bool ok = false;
+            std::string err;
+            {
+                // Must hold the emulation lock: loadAppleIIRom rewrites
+                // $D000-$FFFF and can race with the CPU thread otherwise.
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                ok = controller.memory().loadAppleIIRom(romPath.c_str());
+                if (ok) {
+                    controller.hardReset();
+                } else {
+                    err = controller.memory().getLastError();
+                }
             }
+            if (ok) romStatus = std::string("loaded: ") + romPath;
+            else    romStatus = err;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Quit")) {
@@ -467,11 +476,20 @@ void MainWindow::renderControlsWindow()
         const int maxX  = 1'000'000;
         ImGui::Text("Speed: %d cycles/frame (~%.2f MHz)",
                     cycPerFrame, cycPerFrame * 60.0 / 1e6);
-        if (ImGui::Button("1x"))  controller.setCyclesPerFrame(oneX);
+        if (ImGui::Button("1x"))  {
+            controller.setCyclesPerFrame(oneX);
+            if (diskTurboActive) diskSavedCyclesPerFrame = oneX;
+        }
         ImGui::SameLine();
-        if (ImGui::Button("2x"))  controller.setCyclesPerFrame(twoX);
+        if (ImGui::Button("2x"))  {
+            controller.setCyclesPerFrame(twoX);
+            if (diskTurboActive) diskSavedCyclesPerFrame = twoX;
+        }
         ImGui::SameLine();
-        if (ImGui::Button("MAX")) controller.setCyclesPerFrame(maxX);
+        if (ImGui::Button("MAX")) {
+            controller.setCyclesPerFrame(maxX);
+            if (diskTurboActive) diskSavedCyclesPerFrame = maxX;
+        }
 
         ImGui::Separator();
         ImGui::Text("PC=$%04X A=$%02X X=$%02X Y=$%02X SP=$%02X",

@@ -117,6 +117,8 @@ int main()
     // Reset hits all plugged cards.
     bus.reset();
     assert(card->resetCount == 1);
+    // Reset does NOT clear the expansion latch (intentional invariant).
+    assert(bus.getActiveExpansionSlot() == 6);
 
     // Unplug clears latch when active slot is removed.
     auto removed = bus.unplug(6);

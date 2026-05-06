@@ -3,6 +3,7 @@
 
 #include "Memory.h"
 #include "CassetteDevice.h"
+#include "CpuClock.h"
 #include "Logger.h"
 #include "M6502.h"
 #include "SpeakerDevice.h"
@@ -270,6 +271,17 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
     if (low == 0x11) return lcBank2Active ? 0x80 : 0x00;  // RDLCBNK2
     if (low == 0x12) return lcReadRam     ? 0x80 : 0x00;  // RDLCRAM
+    // VBL (vertical blank) strobe. Minimal model: bit 7 is high for a short
+    // window at the start of each 60 Hz frame. Many Apple II programs spin
+    // on $C019 to synchronize updates; returning a constant breaks them.
+    if (low == 0x19) {
+        constexpr uint64_t kFrameCycles = static_cast<uint64_t>(POM2_CPU_CYCLES_PER_FRAME_60HZ);
+        // Roughly 20% of the frame as "blanking" window. This is not a scanline
+        // accurate model; it's a compatibility strobe.
+        constexpr uint64_t kVblWindowCycles = (kFrameCycles * 2) / 10;
+        const uint64_t phase = (kFrameCycles != 0) ? (cycleCounter % kFrameCycles) : 0;
+        return (phase < kVblWindowCycles) ? 0x80 : 0x00;
+    }
 
     // Display soft switches.
     if (low >= 0x50 && low <= 0x57) {

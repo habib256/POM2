@@ -110,7 +110,7 @@ uint8_t ProDOSHardDiskCard::deviceSelectRead(uint8_t low4)
 {
     if (low4 == 0x2) return readDataByte();
     if (low4 == 0x3) return imageLoaded ? 0x00 : 0x80;
-    return 0;
+    return 0xFF;
 }
 
 uint8_t ProDOSHardDiskCard::readDataByte()
@@ -156,8 +156,15 @@ void ProDOSHardDiskCard::buildRom()
         0xA2, kUnitNumber,// LDX #unit
         0xA9, 0x00,       // LDA #$00
         0x4C, 0x01, 0x08, // JMP $0801
-        0x4C, 0x42, kSlotRomHi // error: JMP error
+        0x4C, 0xE0, kSlotRomHi // error: JMP $CnE0 (stable halt)
     });
+
+    // Boot error handler at $CnE0: simple infinite loop.
+    // We deliberately avoid calling monitor routines here: a failed HD boot
+    // should be safe even if the main ROM isn't fully initialised yet.
+    rom[0xE0] = 0x4C; // JMP $CnE0
+    rom[0xE1] = 0xE0;
+    rom[0xE2] = kSlotRomHi;
 
     pc = kDriverOff;
     emit(rom, pc, {

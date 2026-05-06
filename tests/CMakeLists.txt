@@ -145,6 +145,31 @@ add_test(NAME language_card_smoke COMMAND test_language_card)
 set_tests_properties(language_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── ProDOS HDV block-device card smoke test ──────────────────────────────
+# Pins the slot-5 block-device ROM signature and the $C0D0-$C0D2 block read
+# protocol used by the embedded ProDOS driver.
+add_executable(test_hdv_card
+    hdv_card_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+)
+target_include_directories(test_hdv_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_hdv_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_hdv_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_hdv_card PRIVATE winmm)
+endif()
+
+add_test(NAME hdv_card_smoke COMMAND test_hdv_card)
+set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Speaker 1-bit synthesis smoke test ───────────────────────────────────
 # Self-contained: SpeakerDevice only. Pins silence-default, square-wave
 # reconstruction at 1 kHz toggle rate, reset, and mute behaviour.
