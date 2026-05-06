@@ -196,8 +196,9 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   toggle to flip the row body from hex to one-instruction-per-line.
 - **main.cpp** — GLFW + ImGui boilerplate. Forwards GLFW char/key callbacks
   to MainWindow only when ImGui isn't capturing keyboard (so editing a
-  control widget doesn't leak keystrokes into the Apple II). F2 always
-  reaches MainWindow regardless (hard reset is global).
+  control widget doesn't leak keystrokes into the Apple II). F11 (soft
+  reset / Ctrl-Reset) and F12 (hard reset / power cycle) are routed
+  unconditionally so they remain reachable even when ImGui has focus.
 
 ## Memory Map
 

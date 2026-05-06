@@ -34,7 +34,7 @@ Working:
 - CLI: `--preset ii|ii+`, `--speed`, `--cpu-max`, `--tape`, `--load addr:file`,
   `--run`, `--paste`, `--step`, `--play/--rec/--rewind`, `--snapshot-save/load`
 - Threaded emulation (UI 60 Hz, CPU pinned to 1.0227 MHz, MAX uncapped)
-- Hard reset (F2)
+- Reset: F11 (Ctrl-Reset / soft) and F12 (hard reset / power-cycle)
 - Memory viewer / hex editor: region-coloured 64 KB grid, ASCII column,
   change-flash, undo/redo, hex / ASCII search, bookmarks, 6502 disassembly
   toggle. Plus three memory-map widgets (vertical bar, horizontal bar, grid).
@@ -97,7 +97,8 @@ The host keyboard maps straight to the Apple II keyboard latch. Special keys:
 | Down arrow  | ↓         |
 | Esc         | ESC       |
 | Ctrl-A..Z   | $01..$1A  |
-| F2          | Hard reset (host-side) |
+| F11         | Reset / Ctrl-Reset (soft, host-side) |
+| F12         | Hard reset / power-cycle (host-side) |
 
 Both upper and lower case letters pass straight through — POM2 doesn't
 force-uppercase what you type.
