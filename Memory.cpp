@@ -75,8 +75,10 @@ int Memory::loadAppleIIRom(const char* filename)
 
     // Common image sizes:
     //   12 KB ($D000-$FFFF) = Apple II+ Autostart + Applesoft
-    //   16 KB ($C000-$FFFF) = Apple //e (we drop the I/O page so soft
-    //                          switches keep working)
+    //   16 KB ($C000-$FFFF) = Apple //e — split into the internal I/O ROM
+    //     ($C100-$CFFF, motherboard firmware) and the main ROM ($D000-$FFFF)
+    //     when iieMode is on. On II+, the same 16 KB image just loads at
+    //     $C000 and skips the I/O page (legacy behaviour).
     uint16_t loadAddr = 0;
     if (size == 12 * 1024) {
         loadAddr = 0xD000;
@@ -97,14 +99,31 @@ int Memory::loadAppleIIRom(const char* filename)
         lastError = "Short read";
         return 0;
     }
-    // Don't overwrite the I/O page when loading a 16 KB image.
-    for (size_t i = 0; i < size; ++i) {
-        uint16_t addr = static_cast<uint16_t>(loadAddr + i);
-        if (addr >= 0xC000 && addr <= 0xC0FF) continue;
-        mem[addr] = buf[i];
+    if (iieMode && size == 16 * 1024) {
+        // IIe split: bytes 0x0000-0x00FF map to $C000-$C0FF (I/O page,
+        // ignored — those addresses are soft switches, not ROM). Bytes
+        // 0x0100-0x0FFF go into the internal I/O ROM, callable via
+        // INTCXROM=on or SLOTC3ROM=off (slot 3 only). Bytes 0x1000-0x3FFF
+        // load into $D000-$FFFF as the main Applesoft + Monitor ROM.
+        for (size_t i = 0x100; i < 0x1000; ++i) {
+            internalIORom[i] = buf[i];
+        }
+        for (size_t i = 0x1000; i < size; ++i) {
+            uint16_t addr = static_cast<uint16_t>(0xC000 + i);
+            mem[addr] = buf[i];
+        }
+    } else {
+        // II+ path (or non-16-KB): linear load, skipping the I/O page so
+        // soft switches keep working when a 16 KB II+ image is provided.
+        for (size_t i = 0; i < size; ++i) {
+            uint16_t addr = static_cast<uint16_t>(loadAddr + i);
+            if (addr >= 0xC000 && addr <= 0xC0FF) continue;
+            mem[addr] = buf[i];
+        }
     }
     pom2::log().info("ROM", std::string("Loaded ") + filename + " at $" +
-                     [&]{ char b[8]; std::snprintf(b, 8, "%04X", loadAddr); return std::string(b); }());
+                     [&]{ char b[8]; std::snprintf(b, 8, "%04X", loadAddr); return std::string(b); }() +
+                     (iieMode ? " (IIe)" : ""));
     return 1;
 }
 
@@ -144,6 +163,7 @@ void Memory::resetSoftSwitches()
     lcWriteEnable = false;
     lcBank2Active = true;
     lcPrewrite    = false;
+    iieMemMode    = 0;
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
 }
@@ -156,6 +176,25 @@ void Memory::clearRam()
     lcBank1.fill(0);
     lcBank2.fill(0);
     lcHigh.fill(0);
+    if (iieMode) {
+        aux.fill(0);
+        auxLcBank1.fill(0);
+        auxLcBank2.fill(0);
+        auxLcHigh.fill(0);
+    }
+}
+
+void Memory::setIIEMode(bool on)
+{
+    iieMode = on;
+    iieMemMode = 0;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        display.altChar     = false;
+        display.eightyStore = false;
+        display.eightyCol   = false;
+        display.dhgr        = false;
+    }
 }
 
 void Memory::queueKey(uint8_t apple2Key)
@@ -271,6 +310,19 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
     if (low == 0x11) return lcBank2Active ? 0x80 : 0x00;  // RDLCBNK2
     if (low == 0x12) return lcReadRam     ? 0x80 : 0x00;  // RDLCRAM
+
+    // IIe-only paging soft switches at $C000-$C00F (write or toggle).
+    // II+ traps fall through and are handled later — $C00C/$C00D and
+    // $C00E/$C00F still need to broadcast the Le Chat Mauve video edge.
+    if (iieMode && low <= 0x0F) {
+        iieHandleSoftSwitch(addr);
+    }
+    // IIe status reads at $C013-$C018 + $C01E-$C01F (high bit reflects
+    // the matching MF_* / DisplayState bit).
+    if (iieMode && low >= 0x13 && low <= 0x1F) {
+        const uint8_t s = iieReadStatus(addr);
+        if (s != 0xFE) return s;  // 0xFE = sentinel for "not handled here"
+    }
     // VBL (vertical blank) strobe. Minimal model: bit 7 is high for a short
     // window at the start of each 60 Hz frame. Many Apple II programs spin
     // on $C019 to synchronize updates; returning a constant breaks them.
@@ -314,10 +366,18 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     // AN3 annunciator ($C05E off / $C05F on). Used as the FIFO clock by
     // Le Chat Mauve — every $C05E→$C05F rising edge pushes the current
     // 80COL bit into the card's mode register.
+    //
+    // On a IIe the same two addresses are DHIRESON ($C05E) / DHIRESOFF
+    // ($C05F): they enable / disable double hi-res mode. The polarity is
+    // OPPOSITE the AN3 line (AN3 high ↔ DHGR off), so we track DHGR as a
+    // separate bit instead of inverting at the read site. The Le Chat
+    // Mauve hook below still fires on every access so its FIFO continues
+    // to clock on a IIe with the card plugged.
     if (low == 0x5E || low == 0x5F) {
         {
             std::lock_guard<std::mutex> lk(stateMutex);
             display.an3 = (low == 0x5F);
+            if (iieMode) display.dhgr = (low == 0x5E);
         }
         slots.broadcastVideoSwitch(addr);
         return 0;
@@ -385,6 +445,124 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     return 0;
 }
 
+void Memory::iieHandleSoftSwitch(uint16_t addr)
+{
+    // $C000-$C00F: 80STORE / RAMRD / RAMWRT / INTCXROM / ALTZP / SLOTC3ROM
+    // / 80COL / ALTCHAR. Even byte = OFF (clear bit), odd byte = ON.
+    const uint8_t low = static_cast<uint8_t>(addr & 0x0F);
+    const bool   on  = (low & 1) != 0;
+    uint16_t flag = 0;
+    switch (low >> 1) {
+        case 0: flag = MF_80STORE;   break;
+        case 1: flag = MF_RAMRD;     break;
+        case 2: flag = MF_RAMWRT;    break;
+        case 3: flag = MF_INTCXROM;  break;
+        case 4: flag = MF_ALTZP;     break;
+        case 5: flag = MF_SLOTC3ROM; break;
+        case 6: flag = MF_80COL;     break;
+        case 7: flag = MF_ALTCHAR;   break;
+    }
+    if (on) iieMemMode |= flag;
+    else    iieMemMode &= static_cast<uint16_t>(~flag);
+
+    // Mirror display-relevant bits into DisplayState so Apple2Display can
+    // pick them up via its single getDisplayState() snapshot per frame.
+    if (flag == MF_80STORE || flag == MF_80COL || flag == MF_ALTCHAR) {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        display.eightyStore = (iieMemMode & MF_80STORE) != 0;
+        display.eightyCol   = (iieMemMode & MF_80COL)   != 0;
+        display.altChar     = (iieMemMode & MF_ALTCHAR) != 0;
+    }
+}
+
+uint8_t Memory::iieReadStatus(uint16_t addr) const
+{
+    const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
+    auto bit = [](bool on) -> uint8_t { return on ? 0x80 : 0x00; };
+    DisplayState ds;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        ds = display;
+    }
+    switch (low) {
+        case 0x13: return bit((iieMemMode & MF_RAMRD)     != 0);  // RDRAMRD
+        case 0x14: return bit((iieMemMode & MF_RAMWRT)    != 0);  // RDRAMWRT
+        case 0x15: return bit((iieMemMode & MF_INTCXROM)  != 0);  // RDCXROM
+        case 0x16: return bit((iieMemMode & MF_ALTZP)     != 0);  // RDALTZP
+        case 0x17: return bit((iieMemMode & MF_SLOTC3ROM) != 0);  // RDC3ROM
+        case 0x18: return bit((iieMemMode & MF_80STORE)   != 0);  // RD80STORE
+        case 0x1A: return bit(ds.textMode);                       // RDTEXT
+        case 0x1B: return bit(ds.mixedMode);                      // RDMIXED
+        case 0x1C: return bit(ds.page2);                          // RDPAGE2
+        case 0x1D: return bit(ds.hiRes);                          // RDHIRES
+        case 0x1E: return bit((iieMemMode & MF_ALTCHAR)   != 0);  // RDALTCHAR
+        case 0x1F: return bit((iieMemMode & MF_80COL)     != 0);  // RD80COL
+    }
+    return 0xFE;  // not a status read — let the caller continue
+}
+
+uint8_t Memory::iieMemRead(uint16_t addr)
+{
+    // Routing rules (see header):
+    //   $0000-$01FF      ALTZP            → aux else main
+    //   $0200-$03FF      RAMRD            → aux else main
+    //   $0400-$07FF      80STORE on       → PAGE2 picks aux/main; else RAMRD
+    //   $0800-$1FFF      RAMRD            → aux else main
+    //   $2000-$3FFF      80STORE+HIRES on → PAGE2 picks aux/main; else RAMRD
+    //   $4000-$BFFF      RAMRD            → aux else main
+    if (addr < 0x0200) {
+        return (iieMemMode & MF_ALTZP) ? aux[addr] : mem[addr];
+    }
+    const bool ramrd = (iieMemMode & MF_RAMRD) != 0;
+    if (addr >= 0x0400 && addr <= 0x07FF) {
+        if (iieMemMode & MF_80STORE) {
+            const bool page2 = display.page2;
+            return page2 ? aux[addr] : mem[addr];
+        }
+        return ramrd ? aux[addr] : mem[addr];
+    }
+    if (addr >= 0x2000 && addr <= 0x3FFF) {
+        if ((iieMemMode & MF_80STORE) && display.hiRes) {
+            const bool page2 = display.page2;
+            return page2 ? aux[addr] : mem[addr];
+        }
+        return ramrd ? aux[addr] : mem[addr];
+    }
+    return ramrd ? aux[addr] : mem[addr];
+}
+
+void Memory::iieMemWrite(uint16_t addr, uint8_t value)
+{
+    if (addr < 0x0200) {
+        if (iieMemMode & MF_ALTZP) aux[addr] = value;
+        else                       mem[addr] = value;
+        return;
+    }
+    const bool ramwrt = (iieMemMode & MF_RAMWRT) != 0;
+    if (addr >= 0x0400 && addr <= 0x07FF) {
+        if (iieMemMode & MF_80STORE) {
+            if (display.page2) aux[addr] = value;
+            else               mem[addr] = value;
+            return;
+        }
+        if (ramwrt) aux[addr] = value;
+        else        mem[addr] = value;
+        return;
+    }
+    if (addr >= 0x2000 && addr <= 0x3FFF) {
+        if ((iieMemMode & MF_80STORE) && display.hiRes) {
+            if (display.page2) aux[addr] = value;
+            else               mem[addr] = value;
+            return;
+        }
+        if (ramwrt) aux[addr] = value;
+        else        mem[addr] = value;
+        return;
+    }
+    if (ramwrt) aux[addr] = value;
+    else        mem[addr] = value;
+}
+
 uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
 {
     const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
@@ -409,23 +587,33 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
 uint8_t Memory::languageCardRead(uint16_t addr) const
 {
     if (!lcReadRam) return mem[addr];
+    const bool useAux = iieMode && (iieMemMode & MF_ALTZP);
     if (addr < 0xE000) {
         const uint16_t off = static_cast<uint16_t>(addr - 0xD000);
+        if (useAux) return lcBank2Active ? auxLcBank2[off] : auxLcBank1[off];
         return lcBank2Active ? lcBank2[off] : lcBank1[off];
     }
+    if (useAux) return auxLcHigh[addr - 0xE000];
     return lcHigh[addr - 0xE000];
 }
 
 void Memory::languageCardWrite(uint16_t addr, uint8_t value)
 {
     if (!lcWriteEnable) return;
+    const bool useAux = iieMode && (iieMemMode & MF_ALTZP);
     if (addr < 0xE000) {
         const uint16_t off = static_cast<uint16_t>(addr - 0xD000);
-        if (lcBank2Active) lcBank2[off] = value;
-        else               lcBank1[off] = value;
+        if (useAux) {
+            if (lcBank2Active) auxLcBank2[off] = value;
+            else               auxLcBank1[off] = value;
+        } else {
+            if (lcBank2Active) lcBank2[off] = value;
+            else               lcBank1[off] = value;
+        }
         return;
     }
-    lcHigh[addr - 0xE000] = value;
+    if (useAux) auxLcHigh[addr - 0xE000] = value;
+    else        lcHigh[addr - 0xE000] = value;
 }
 
 uint8_t Memory::memRead(uint16_t addr)
@@ -433,9 +621,11 @@ uint8_t Memory::memRead(uint16_t addr)
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) return mem[addr];
 
-    // Fast path: RAM below $C000. Main ROM may be replaced by Language Card
-    // RAM depending on the $C080-$C08F latch state.
-    if (addr < 0xC000) return mem[addr];
+    // Fast path: RAM below $C000. In IIe mode the read may route to aux RAM
+    // (RAMRD / ALTZP / 80STORE+PAGE2). In II+ mode, plain main bank.
+    if (addr < 0xC000) {
+        return iieMode ? iieMemRead(addr) : mem[addr];
+    }
     if (addr >= 0xD000) return languageCardRead(addr);
 
     // $C000-$C07F — built-in I/O page (keyboard, speaker, cassette,
@@ -447,14 +637,25 @@ uint8_t Memory::memRead(uint16_t addr)
     if (addr <= 0xC08F) return languageCardSwitchAccess(addr);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
-    // $C100-$C7FF — slot ROM, 256 bytes per slot 1-7. Reading any byte
-    // in this window also marks that slot as the active expansion-ROM
-    // owner for $C800-$CFFF below.
+    // $C100-$CFFF — slot ROM dispatch.
+    //
+    // II+: $C100-$C7FF goes to slot bus, $C800-$CFFF is the shared expansion
+    // window owned by the most-recently-selected slot.
+    //
+    // IIe: INTCXROM=on swallows the entire $C100-$CFFF range into the
+    // motherboard internal I/O ROM. Even when INTCXROM=off, $C300-$C3FF
+    // is owned by the internal ROM unless SLOTC3ROM=on (so PR#3 reads
+    // the IIe 80-col firmware out of the box).
+    if (iieMode) {
+        if (iieMemMode & MF_INTCXROM) {
+            return internalIORom[addr - 0xC000];
+        }
+        if (addr >= 0xC300 && addr <= 0xC3FF &&
+            !(iieMemMode & MF_SLOTC3ROM)) {
+            return internalIORom[addr - 0xC000];
+        }
+    }
     if (addr <= 0xC7FF) return slots.slotRomRead(addr);
-
-    // $C800-$CFFF — shared 2 KB expansion ROM, owned by whichever slot
-    // was most recently selected through $C100-$C7FF. Read or write to
-    // $CFFF deactivates the active slot until the next slot-ROM access.
     return slots.expansionRomRead(addr);
 }
 
@@ -466,7 +667,8 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // Fast path: writable RAM and Language Card overlay for $D000-$FFFF.
     if (addr < 0xC000) {
         if (!writable[addr]) return;
-        mem[addr] = value;
+        if (iieMode) iieMemWrite(addr, value);
+        else         mem[addr] = value;
         return;
     }
     if (addr >= 0xD000) {

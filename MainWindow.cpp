@@ -28,8 +28,14 @@ MainWindow::MainWindow()
     });
 
     // Probe a few common locations so the binary works whether launched
-    // from build/ or the repo root.
+    // from build/ or the repo root. Apple IIe (16 KB ROM at $C000-$FFFF
+    // with internal I/O ROM in $C100-$CFFF) takes precedence: if
+    // roms/apple2e.rom is present we run as a IIe (128 KB, 80-col, IIe
+    // soft switches). Otherwise the legacy II+ path runs as before.
     namespace fs = std::filesystem;
+    static const char* iieRomCandidates[]   = { "roms/apple2e.rom",
+                                                "../roms/apple2e.rom",
+                                                "../../roms/apple2e.rom" };
     static const char* romCandidates[]      = { "roms/apple2.rom",
                                                 "../roms/apple2.rom",
                                                 "../../roms/apple2.rom" };
@@ -37,15 +43,26 @@ MainWindow::MainWindow()
                                                 "../roms/apple2_char.rom",
                                                 "../../roms/apple2_char.rom" };
 
-    for (const char* p : romCandidates) {
-        if (fs::exists(p)) { romPath = p; break; }
+    bool iiePresent = false;
+    for (const char* p : iieRomCandidates) {
+        if (fs::exists(p)) { romPath = p; iiePresent = true; break; }
+    }
+    if (!iiePresent) {
+        for (const char* p : romCandidates) {
+            if (fs::exists(p)) { romPath = p; break; }
+        }
     }
     for (const char* p : charRomCandidates) {
         if (fs::exists(p)) { charRomPath = p; break; }
     }
 
+    if (iiePresent) {
+        controller.memory().setIIEMode(true);
+        display.setAuxMemory(controller.memory().auxData());
+    }
+
     if (controller.memory().loadAppleIIRom(romPath.c_str())) {
-        romStatus = std::string("loaded: ") + romPath;
+        romStatus = std::string(iiePresent ? "IIe (128K): " : "loaded: ") + romPath;
     } else {
         romStatus = std::string("NO ROM (") + romPath +
                     ") — only $D000-$FFFF stub is active";
@@ -73,9 +90,10 @@ MainWindow::MainWindow()
         }
     }
 
-    // Auto-plug a ProDOS block-device hard disk in slot 5 when the bundled
-    // Total Replay HDV is present. Slot 5 is the conventional SmartPort /
-    // hard-disk slot and keeps Disk II in slot 6 available for floppies.
+    // Plug a ProDOS block-device hard disk in slot 5. Slot 5 is the
+    // conventional SmartPort / hard-disk slot and keeps Disk II in slot 6
+    // available for floppies. The card is always plugged so the user can
+    // mount any .hdv / .2mg image at runtime via Hardware → Mount HDV.
     {
         static const char* hdvCandidates[] = {
             "hdv/Total Replay v5.2.hdv",
@@ -88,11 +106,11 @@ MainWindow::MainWindow()
         auto card = std::make_unique<ProDOSHardDiskCard>();
         if (card->loadImage(hdvPath)) {
             hdvStatus = std::string("loaded: ") + hdvPath;
-            hdvCard = card.get();
-            controller.memory().slotBus().plug(5, std::move(card));
         } else {
-            hdvStatus = std::string("NO HDV (") + hdvPath + ")";
+            hdvStatus = "no image mounted";
         }
+        hdvCard = card.get();
+        controller.memory().slotBus().plug(5, std::move(card));
     }
 
     // Plug the Le Chat Mauve RGB video card in slot 7. It's the convention
@@ -240,9 +258,13 @@ void MainWindow::uploadScreenTexture()
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        // Initial allocation matches the 280-wide buffer; the real
+        // dimensions are set after the first display.render() below.
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
                      Apple2Display::kWidth, Apple2Display::kHeight,
                      0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        screenTextureWidth  = Apple2Display::kWidth;
+        screenTextureHeight = Apple2Display::kHeight;
     }
 
     {
@@ -253,10 +275,20 @@ void MainWindow::uploadScreenTexture()
         display.render(controller.memory());
     }
 
+    const int w = display.width();
+    const int h = display.height();
     glBindTexture(GL_TEXTURE_2D, screenTexture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                    Apple2Display::kWidth, Apple2Display::kHeight,
-                    GL_RGBA, GL_UNSIGNED_BYTE, display.pixels());
+    if (w != screenTextureWidth || h != screenTextureHeight) {
+        // 80-col toggled — reallocate. glTexImage2D releases the previous
+        // storage, so we don't leak GL memory across mode switches.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, display.pixels());
+        screenTextureWidth  = w;
+        screenTextureHeight = h;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
+                        GL_RGBA, GL_UNSIGNED_BYTE, display.pixels());
+    }
 }
 
 // ─── Render passes ───────────────────────────────────────────────────────
@@ -378,14 +410,28 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
         ImGui::Separator();
+        ImGui::BeginDisabled(hdvCard == nullptr);
+        if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
+            showHdvMountDialog = true;
+            if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
+        }
+        if (ImGui::MenuItem("Eject HDV", nullptr, false,
+                            hdvCard && hdvCard->isImageLoaded())) {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            hdvCard->ejectImage();
+            hdvStatus = "no image mounted";
+            tapeStatusMessage = "HDV ejected";
+            tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+        ImGui::EndDisabled();
         ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
-        if (ImGui::MenuItem("Boot Total Replay HDV (slot 5)")) {
+        if (ImGui::MenuItem("Boot HDV (slot 5)")) {
             bootHdvImage();
         }
         ImGui::EndDisabled();
         ImGui::Separator();
         ImGui::BeginDisabled(diskCard == nullptr);
-        if (ImGui::MenuItem("Insert disk image (.dsk)...")) {
+        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po)...")) {
             showDiskInsertDialog = true;
             if (diskDialogPath.empty()) diskDialogPath = "disks/";
         }
@@ -677,8 +723,8 @@ void MainWindow::renderDiskPanelWindow()
     snap.turboWhileMotor = diskTurboWhileMotor;
     snap.turboActive     = diskTurboActive;
 
-    // Disk library — scan disks/ for .dsk and .do files. Cheap (a few
-    // dirent reads per frame), but sorted alphabetically so the list
+    // Disk library — scan disks/ for .dsk, .do and .po files. Cheap (a
+    // few dirent reads per frame), but sorted alphabetically so the list
     // doesn't reshuffle each time the OS hands us a different order.
     {
         namespace fs = std::filesystem;
@@ -689,7 +735,7 @@ void MainWindow::renderDiskPanelWindow()
             for (const auto& entry : fs::directory_iterator(dir, ec)) {
                 if (!entry.is_regular_file()) continue;
                 const std::string ext = entry.path().extension().string();
-                if (ext != ".dsk" && ext != ".do") continue;
+                if (ext != ".dsk" && ext != ".do" && ext != ".po") continue;
                 pom2::DiskController_ImGui::LibraryEntry e;
                 e.displayName = entry.path().filename().string();
                 e.fullPath    = entry.path().string();
@@ -796,8 +842,9 @@ void MainWindow::renderDiskFileDialog()
     if (!ImGui::BeginPopupModal("Insert disk image", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
-    ImGui::TextUnformatted("Path to a 143 360-byte .dsk / .do image"
-                           " (DOS 3.3 sector order, read-only)");
+    ImGui::TextUnformatted("Path to a 143 360-byte 5.25\" image —"
+                           " .dsk / .do (DOS 3.3 order) or .po (ProDOS"
+                           " order). Read-only.");
     char buf[512] = {0};
     std::snprintf(buf, sizeof(buf), "%s", diskDialogPath.c_str());
     if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
@@ -806,7 +853,7 @@ void MainWindow::renderDiskFileDialog()
     else
         diskDialogPath = buf;
 
-    // Quick list of .dsk files in disks/ (mirrors the cassette dialog).
+    // Quick list of disk images in disks/ (mirrors the cassette dialog).
     namespace fs = std::filesystem;
     std::error_code ec;
     for (const char* dir : { "disks", "../disks", "../../disks" }) {
@@ -816,7 +863,7 @@ void MainWindow::renderDiskFileDialog()
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_regular_file()) continue;
             const std::string ext = entry.path().extension().string();
-            if (ext != ".dsk" && ext != ".do") continue;
+            if (ext != ".dsk" && ext != ".do" && ext != ".po") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
                 diskDialogPath = entry.path().string();
@@ -837,6 +884,82 @@ void MainWindow::renderDiskFileDialog()
         }
         ImGui::CloseCurrentPopup();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void MainWindow::renderHdvFileDialog()
+{
+    if (showHdvMountDialog) {
+        ImGui::OpenPopup("Mount HDV image");
+        showHdvMountDialog = false;
+    }
+    if (!ImGui::BeginPopupModal("Mount HDV image", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::TextUnformatted("ProDOS block-device image — .hdv (raw blocks)"
+                           " or .2mg (with 2IMG header, ProDOS order)");
+    char buf[512] = {0};
+    std::snprintf(buf, sizeof(buf), "%s", hdvDialogPath.c_str());
+    if (ImGui::InputText("##HdvPath", buf, sizeof(buf),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+        hdvDialogPath = buf;
+    else
+        hdvDialogPath = buf;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* dir : { "hdv", "../hdv", "../../hdv" }) {
+        if (!fs::is_directory(dir, ec)) continue;
+        ImGui::Separator();
+        ImGui::TextDisabled("%s/", dir);
+        for (const auto& entry : fs::directory_iterator(dir, ec)) {
+            if (!entry.is_regular_file()) continue;
+            const std::string ext = entry.path().extension().string();
+            if (ext != ".hdv" && ext != ".2mg") continue;
+            const std::string name = entry.path().filename().string();
+            if (ImGui::Selectable(name.c_str()))
+                hdvDialogPath = entry.path().string();
+        }
+        break;
+    }
+
+    ImGui::Separator();
+    const bool canMount = hdvCard && !hdvDialogPath.empty();
+    ImGui::BeginDisabled(!canMount);
+    if (ImGui::Button("Mount", ImVec2(120, 0))) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        if (hdvCard->loadImage(hdvDialogPath)) {
+            hdvPath   = hdvDialogPath;
+            hdvStatus = std::string("loaded: ") + hdvDialogPath;
+            tapeStatusMessage = "HDV mounted: " + hdvDialogPath;
+        } else {
+            hdvStatus = "no image mounted";
+            tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
+        }
+        tapeStatusUntil = lastFrameTime + 5.0;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Mount and Boot", ImVec2(160, 0))) {
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            ok = hdvCard->loadImage(hdvDialogPath);
+            if (ok) {
+                hdvPath   = hdvDialogPath;
+                hdvStatus = std::string("loaded: ") + hdvDialogPath;
+            } else {
+                hdvStatus = "no image mounted";
+                tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
+                tapeStatusUntil   = lastFrameTime + 5.0;
+            }
+        }
+        if (ok) bootHdvImage();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
@@ -1049,6 +1172,7 @@ void MainWindow::render()
     renderCassetteDeckWindow(deltaSeconds);
     renderTapeFileDialogs();
     renderPasteFileDialog();
+    renderHdvFileDialog();
     renderDiskPanelWindow();
     renderDiskFileDialog();
     renderChatMauvePanelWindow();

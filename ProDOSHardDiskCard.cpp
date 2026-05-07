@@ -36,27 +36,75 @@ bool ProDOSHardDiskCard::loadImage(const std::string& path)
     }
 
     f.seekg(0, std::ios::end);
-    const auto size = static_cast<size_t>(f.tellg());
+    const auto fileSize = static_cast<size_t>(f.tellg());
     f.seekg(0, std::ios::beg);
-    if (size == 0 || (size % kBlockBytes) != 0) {
-        lastError = "HDV image size is not a whole number of 512-byte blocks: " +
-                    std::to_string(size);
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-    if ((size / kBlockBytes) > 0x10000u) {
-        lastError = "HDV image has more than 65536 ProDOS blocks: " +
-                    std::to_string(size / kBlockBytes);
+    if (fileSize == 0) {
+        lastError = "HDV image is empty: " + path;
         pom2::log().warn("HDV", lastError);
         return false;
     }
 
-    std::vector<uint8_t> bytes(size);
+    std::vector<uint8_t> bytes(fileSize);
     f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!f) {
         lastError = "Short read on HDV image: " + path;
         pom2::log().warn("HDV", lastError);
         return false;
+    }
+
+    // 2IMG / .2mg container: 64-byte header followed by raw block data.
+    // Spec: https://apple2.org.za/gswv/a2zine/Docs/DiskImage_2MG_Info.txt
+    //   bytes  0..3  magic "2IMG"
+    //   bytes 12..15 image format (LE u32) — 0=DOS 3.3 sector, 1=ProDOS, 2=NIB
+    //   bytes 24..27 data offset (LE u32) — typically 64
+    //   bytes 28..31 data length (LE u32) — bytes of block data following
+    size_t dataOffset = 0;
+    size_t dataLength = bytes.size();
+    if (bytes.size() >= 64 &&
+        bytes[0] == '2' && bytes[1] == 'I' && bytes[2] == 'M' && bytes[3] == 'G') {
+        auto rd32 = [&](size_t o) {
+            return static_cast<uint32_t>(bytes[o]) |
+                   (static_cast<uint32_t>(bytes[o + 1]) << 8) |
+                   (static_cast<uint32_t>(bytes[o + 2]) << 16) |
+                   (static_cast<uint32_t>(bytes[o + 3]) << 24);
+        };
+        const uint32_t format = rd32(12);
+        const uint32_t off    = rd32(24);
+        const uint32_t len    = rd32(28);
+        if (format != 1) {
+            lastError = "2IMG image is not in ProDOS block order (format=" +
+                        std::to_string(format) + ")";
+            pom2::log().warn("HDV", lastError);
+            return false;
+        }
+        if (off < 64 || off > bytes.size() ||
+            len == 0 || static_cast<size_t>(off) + len > bytes.size()) {
+            lastError = "2IMG header points outside the file (offset=" +
+                        std::to_string(off) + ", length=" + std::to_string(len) + ")";
+            pom2::log().warn("HDV", lastError);
+            return false;
+        }
+        dataOffset = off;
+        dataLength = len;
+    }
+
+    if ((dataLength % kBlockBytes) != 0) {
+        lastError = "HDV image data is not a whole number of 512-byte blocks: " +
+                    std::to_string(dataLength);
+        pom2::log().warn("HDV", lastError);
+        return false;
+    }
+    if ((dataLength / kBlockBytes) > 0x10000u) {
+        lastError = "HDV image has more than 65536 ProDOS blocks: " +
+                    std::to_string(dataLength / kBlockBytes);
+        pom2::log().warn("HDV", lastError);
+        return false;
+    }
+
+    if (dataOffset != 0 || dataLength != bytes.size()) {
+        std::vector<uint8_t> stripped(bytes.begin() + static_cast<std::ptrdiff_t>(dataOffset),
+                                      bytes.begin() + static_cast<std::ptrdiff_t>(dataOffset + dataLength));
+        bytes.swap(stripped);
     }
 
     image = std::move(bytes);

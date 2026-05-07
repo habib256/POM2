@@ -63,6 +63,8 @@ private:
     GLFWwindow*                  window = nullptr;
 
     unsigned int screenTexture = 0;     // GL texture name (lazy)
+    int          screenTextureWidth  = 0;
+    int          screenTextureHeight = 0;
     float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
@@ -88,6 +90,8 @@ private:
     // ProDOS hard disk / HDV state.
     std::string hdvPath = "hdv/Total Replay v5.2.hdv";
     std::string hdvStatus;
+    bool        showHdvMountDialog = false;
+    std::string hdvDialogPath;
 
     // Cassette load/save dialog state.
     bool        showTapeLoadDialog = false;
@@ -123,6 +127,7 @@ private:
     void renderPasteFileDialog();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
+    void renderHdvFileDialog();
     void renderChatMauvePanelWindow();
     void renderJoystickPanelWindow();
     void pollJoystickAndPushToMemory();

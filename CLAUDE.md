@@ -5,10 +5,10 @@ walkthrough → `README.md`.
 
 ## Project Overview
 
-Apple II / II+ emulator (Dear ImGui, MOS 6502 + 64 KB RAM via Language Card + soft switches +
-text/lo-res/hi-res framebuffer + 1-bit speaker + cassette + joystick +
-Disk II in slot 6). One concern per file: each `.cpp/.h` pair owns one
-subsystem.
+Apple II / II+ / IIe emulator (Dear ImGui, MOS 6502 + 64 KB / 128 KB RAM
+via Language Card + soft switches + text / 80-col / lo-res / hi-res
+framebuffer + 1-bit speaker + cassette + joystick + Disk II in slot 6).
+One concern per file: each `.cpp/.h` pair owns one subsystem.
 
 ## Build & Run
 
@@ -18,16 +18,29 @@ cd build && cmake .. && make # build → build/POM2
 ./run_emulator.sh            # runs from repo root so roms/ probes resolve
 ```
 
-ROMs are user-provided. Place the Autostart + Applesoft image at
-`roms/apple2.rom` (12 KB or 16 KB).
+ROMs are user-provided. **`roms/apple2e.rom` (16 KB) takes precedence at
+startup** — its presence flips MainWindow into IIe mode (128 KB, IIe soft
+switches, 80-col, internal $C100-$CFFF I/O ROM). Otherwise the binary
+falls back to `roms/apple2.rom` (12 KB or 16 KB) and runs as a II+. No
+menu / CLI flag — pure auto-detect on file presence.
 
 ## Architecture
 
 ### Core
 
 - **M6502** — MOS 6502 with full instruction set, IRQ / NMI / BRK, decimal
-  mode, Klaus Dormann functional-test clean. `setProgramCounter()` is the
-  back-door used by future Klaus harness ports.
+  mode, Klaus Dormann functional-test clean. Plus the most-common 65C02
+  additions: STZ (zp / zp,X / abs / abs,X), BRA, INA / DEA, PHX / PHY /
+  PLX / PLY, BIT #imm / zp,X / abs,X, TSB / TRB, JMP (abs,X), and the
+  zero-page-indirect mode for ORA / AND / EOR / ADC / STA / LDA / CMP /
+  SBC. Pinned by `tests/cmos_6502_smoke_test.cpp`. Without these,
+  65C02-targeted ProDOS software (most IIe-Enhanced and IIc games on
+  `.2mg` hard-disk volumes) hits an opcode like `9C` (STZ abs) or `B2`
+  (LDA (zp)) on the first instruction and either no-ops past it or
+  freezes (the original 6502 mapped `B2` to a halt). Rockwell SMB / RMB /
+  BBR / BBS and WDC WAI / STP are deliberately *not* implemented — they
+  show up rarely outside specific niche software. `setProgramCounter()`
+  is the back-door used by the Klaus harness port.
 - **CpuClock.h** — `POM2_CPU_CLOCK_HZ = 1 022 727`. The Apple II
   master oscillator is 14.31818 MHz; the CPU runs at that divided by 14.
   The "long cycle" every 65 cycles (TV scan-line alignment) is **not**
@@ -39,6 +52,19 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   through `softSwitchAccess()`**; RAM accesses bypass the dispatch entirely
   (cheap). Reset vector defaults to $F800 so a no-ROM boot still has
   somewhere to land.
+  - **Apple IIe extension** (`isIIE()`). When `setIIEMode(true)` is called
+    before `loadAppleIIRom`, Memory adds: a second 64 KB `aux` array, a
+    4 KB `internalIORom` for $C100-$CFFF, and an aux Language Card bank
+    trio. The IIe paging soft switches at $C000-$C00F (80STORE / RAMRD /
+    RAMWRT / INTCXROM / ALTZP / SLOTC3ROM / 80COL / ALTCHAR) update an
+    `iieMemMode` bitmask; `iieMemRead` / `iieMemWrite` route per address
+    range (ALTZP for $0000-$01FF, RAMRD/WRT for $0200-$BFFF, 80STORE+PAGE2
+    swap for $0400-$07FF and $2000-$3FFF when HIRES). $C100-$CFFF reads
+    pull from `internalIORom` when INTCXROM=on; $C300-$C3FF stays internal
+    while SLOTC3ROM=off (so `PR#3` reaches the 80-col firmware out of the
+    box). Status reads at $C013-$C018, $C01E, $C01F mirror the bits. All
+    IIe code paths are gated behind `iieMode` — II+ behaviour is
+    untouched. Pinned by `tests/iie_memory_smoke_test.cpp`.
   - **Soft switches** are toggled by *either* read or write to their slot.
     $C000 returns the keyboard latch; the high bit of the byte reflects
     whether a key is ready (the strobe). $C010 clears the strobe (read or
@@ -64,16 +90,36 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
   Sleeps 50 ms when Stopped, runs `cyclesPerFrame` worth of CPU per 60 Hz
   tick when Running. Single `stateMutex` guarding the CPU/Memory pair —
   the UI thread takes it briefly each frame to render the framebuffer.
-- **Apple2Display** — pure software renderer into a 280×192 RGBA buffer.
-  Reads soft-switch state via `Memory::getDisplayState()` (cheap mutex copy)
-  and the flat RAM array directly. **Owns no GL state** — UI uploads via
-  `glTexSubImage2D`. Built-in 5×7 ASCII font fallback when the user hasn't
-  provided a character ROM. Lo-res palette is the //gs-corrected approximation.
-  Hi-res has four `HiResMode` variants: `ColorNTSC` (default — 14 KB LUT
-  indexed by `(parity << 8) | byte`, 39 inter-byte seam fix-ups, optional
-  additive horizontal glow) and three monochrome phosphors —
-  `MonoWhite` / `MonoGreen` (P31) / `MonoAmber`. Text inverse attribute
-  renders statically (2 Hz flashing animation pending).
+- **Apple2Display** — pure software renderer into a 280×192 RGBA buffer
+  (or a 560×192 buffer in IIe 80-col modes — `width()`/`height()` reflect
+  whichever is live each frame). Reads soft-switch state via
+  `Memory::getDisplayState()` (cheap mutex copy) and the flat RAM array
+  directly. **Owns no GL state** — UI uploads via `glTexImage2D` (on size
+  change) or `glTexSubImage2D`. Built-in 5×7 ASCII font fallback when the
+  user hasn't provided a character ROM. Lo-res palette is the
+  //gs-corrected approximation. Hi-res has four `HiResMode` variants:
+  `ColorNTSC` (default — 14 KB LUT indexed by `(parity << 8) | byte`, 39
+  inter-byte seam fix-ups, optional additive horizontal glow) and three
+  monochrome phosphors — `MonoWhite` / `MonoGreen` (P31) / `MonoAmber`.
+  Text inverse attribute renders statically (2 Hz flashing animation
+  pending).
+  - **80-column text** (IIe). When `setAuxMemory(...)` has been called and
+    the soft-switch state shows `eightyCol && textMode`, `render80ColumnText`
+    interleaves aux RAM (even cells: 0,2,…,78) with main RAM (odd cells:
+    1,3,…,79) into the 560-wide framebuffer. Mixed mode (HIRES + 80COL +
+    MIXED) renders HGR top 20 rows into the 280-wide frame, doubles them
+    horizontally into the 560-wide one, then overlays 80-col text rows
+    20..23. ALTCHAR is plumbed through but currently a no-op against the
+    built-in 5×7 fallback (a real charset ROM would consult the second
+    2 KB bank for mousetext + non-flashing inverse).
+  - **DHGR** (IIe). When `eightyCol && hiRes && dhgr && !textMode`,
+    `renderDhgr` interleaves aux byte (dots `c*14..c*14+6`) with main byte
+    (dots `c*14+7..c*14+13`) per byte position c, then walks a 4-bit
+    window over the 560-dot stream — each 4-dot cell is a lo-res palette
+    index 0..15 (16-color DHGR). Monochrome HiResModes paint each dot as
+    luminance × phosphor tint (no decay; `persistenceL` is sized for the
+    280-wide buffer). Mixed mode = DHGR top 160 + 80-col text bottom 4
+    rows. Pinned by `tests/dhgr_render_smoke_test.cpp`.
 
 ### Audio (speaker + cassette)
 
@@ -127,14 +173,21 @@ ROMs are user-provided. Place the Autostart + Applesoft image at
 
 ### Disk II (slot 6)
 
-- **DiskImage** — loads a 143 360-byte `.dsk` / `.do` (DOS 3.3 logical
-  sector order) and pre-nibblizes it into 35 × 6656-byte track buffers.
+- **DiskImage** — loads a 143 360-byte 5.25" floppy image: `.dsk` / `.do`
+  in DOS 3.3 logical sector order, or `.po` in ProDOS sector order
+  (extension-sniffed; `loadFile(path, SectorOrder)` lets a caller force
+  either skew). Pre-nibblizes it into 35 × 6656-byte track buffers.
   GCR encoding follows "Beneath Apple DOS": 14-byte sync gap, address
   field (`D5 AA 96 [vol/trk/sec/chk in 4-and-4] DE AA EB`), 5-byte sync
   gap, data field (`D5 AA AD [86 low-2-bit nibbles REVERSED + 256 high-6
-  nibbles + 1 XOR checksum] DE AA EB`). DOS 3.3 sector skewing is
-  applied: physical-to-logical map `{0,7,14,6,13,5,12,4,11,3,10,2,9,1,8,15}`.
-  Read-only — `.dsk` file is untouched.
+  nibbles + 1 XOR checksum] DE AA EB`). Sector skew tables (physical →
+  logical):
+    DOS 3.3:  `{0,7,14,6,13,5,12,4,11,3,10,2,9,1,8,15}`
+    ProDOS:   `{0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15}`
+  Both produce the same on-disk physical layout (16 sectors per track);
+  only the file-offset → physical-sector mapping differs. The `.po`
+  variant is what ProDOS-bootable disks ship as. Read-only — the source
+  file is never modified.
 - **DiskIICard** — SlotPeripheral plugged in slot 6. Holds the 256-byte
   P5A boot PROM (`roms/disk2.rom` from AppleWin) at `slotRomRead`; the
   PROM autodetects its slot via the `JSR $FF58 / TSX / LDA $0100,X`
@@ -215,6 +268,11 @@ $6000-$BFFF  User RAM
 $C000        Keyboard latch (low 7 bits = key, high bit = strobe / ready)
 $C010        Clear keyboard strobe (read or write)
 $C030-$C03F  Speaker toggle (flip-flop on any access)
+$C000-$C00F  IIe paging soft switches (80STORE / RAMRD / RAMWRT /
+             INTCXROM / ALTZP / SLOTC3ROM / 80COL / ALTCHAR — ignored on II+)
+$C013-$C018  IIe paging status reads (RDRAMRD/WRT, RDCXROM, RDALTZP,
+             RDC3ROM, RD80STORE — bit 7 = on)
+$C01E/$C01F  IIe RDALTCHAR / RD80COL
 $C050/$C051  Set graphics / set text
 $C052/$C053  Clear / set mixed
 $C054/$C055  Page 1 / page 2
@@ -222,13 +280,20 @@ $C056/$C057  Set lo-res / set hi-res
 $C061-$C063  Push-buttons (negative when pressed)
 $C064-$C067  Paddle inputs (negative while RC discharging)
 $C070        Paddle reset latch
+$C05E/$C05F  IIe DHGR enable / disable (DHIRESON / DHIRESOFF — also AN3
+             annunciator pulses on every access for Le Chat Mauve's FIFO)
 $C0E0-$C0EF  Disk II controller soft switches (slot 6)
-$C100-$C5FF  Slot ROMs (currently empty)
+$C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on)
+$C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)
 $C600-$C6FF  Disk II boot PROM (P5A, when roms/disk2.rom present)
 $C700-$C7FF  Slot ROMs (currently empty)
 $D000-$F7FF  Applesoft BASIC ROM
 $F800-$FFFF  Monitor ROM + 6502 vectors ($FFFA-$FFFF)
 ```
+
+In IIe mode the same map applies, but most of $0000-$BFFF can be routed
+to the auxiliary 64 KB bank under the IIe paging switches. See the
+table at the top of `Memory.h` for the per-range routing rules.
 
 ## Key implementation details
 

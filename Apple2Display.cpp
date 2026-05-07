@@ -11,6 +11,7 @@
 
 Apple2Display::Apple2Display()
     : frame(kWidth * kHeight, 0xFF000000)
+    , frame80(kWidth80 * kHeight, 0xFF000000)
     , persistenceL(kWidth * kHeight, 0)
 {
 }
@@ -49,6 +50,49 @@ void Apple2Display::render(Memory& mem)
 {
     ++frameCounter;     // drives the FLASH-attribute animation in renderText
     const auto state = mem.getDisplayState();
+
+    // IIe + 80COL active. Sub-cases:
+    //   (a) Full-screen 80-col text          → frame80 only.
+    //   (b) DHGR full-screen (HIRES + DHGR)  → frame80 only, no text.
+    //   (c) DHGR + MIXED                     → DHGR top 160 + 80-col text rows 20..23.
+    //   (d) Mixed HGR + 80-col text          → HGR top into frame, upscale 2× into
+    //                                           frame80, then 80-col text rows 20..23.
+    //   (e) Mixed lo-res + 80-col text       → same recipe with renderLoRes.
+    // Anything else (HGR full-screen without DHGR, lo-res full-screen) keeps
+    // the legacy 280-wide path even when 80COL is enabled — those modes
+    // don't use the text page so the column count is irrelevant for the
+    // framebuffer width.
+    if (mem.isIIE() && state.eightyCol) {
+        if (state.textMode) {
+            renderText80(mem, 0, 24, state.altChar);
+            useFrame80 = true;
+            return;
+        }
+        if (state.hiRes && state.dhgr) {
+            if (state.mixedMode) {
+                renderDhgr(mem, 0, 160);
+                renderText80(mem, 20, 24, state.altChar);
+            } else {
+                renderDhgr(mem, 0, 192);
+            }
+            useFrame80 = true;
+            return;
+        }
+        if (state.mixedMode) {
+            if (state.hiRes) {
+                renderHiRes(mem, 0, 160);
+                upscaleFrameToFrame80(0, 160);
+            } else {
+                renderLoRes(mem, 0, 40);   // 20 text rows × 2 lo-res rows
+                upscaleFrameToFrame80(0, 160);
+            }
+            renderText80(mem, 20, 24, state.altChar);
+            useFrame80 = true;
+            return;
+        }
+    }
+
+    useFrame80 = false;
     if (state.textMode) {
         renderText(mem, 0, 24);
     } else if (state.hiRes) {
@@ -681,6 +725,8 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         return;
     }
 
+    // (See bottom of file for IIe 80-col text helpers.)
+
     // Monochrome path. The bit stream is sampled at twice the visible
     // pixel rate — averaging adjacent sub-pixels gives the soft
     // horizontal anti-aliased luminance a real CRT's chroma-bandwidth
@@ -710,5 +756,176 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
 
         uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
         std::memcpy(outRow, raw.data(), sizeof(raw));
+    }
+}
+
+// ─── IIe 80-column text ──────────────────────────────────────────────────
+//
+// On a IIe with 80COL on, the screen is 560 native horizontal pixels:
+// 80 character cells × 7 px each. Aux RAM holds the EVEN columns (0,2,…)
+// and main RAM holds the ODD columns (1,3,…). The display reads aux byte
+// at the same logical address as the main byte — there's only one text
+// page, just split across two banks. PAGE2 still selects between page 1
+// and page 2 unless 80STORE is on (in which case writes to text page 1
+// route to aux per the memory dispatcher; the display keeps reading from
+// page 1 because only 80STORE+PAGE2 swaps banks at the memory layer, and
+// the read here uses page 1 either way).
+//
+// The 4 KB IIe character ROM doubles as the alternate-character source:
+// ALTCHAR=on selects the second 2 KB bank where flashing inverse becomes
+// mousetext + non-flashing inverse. When the user has not loaded a real
+// charset ROM (`roms/apple2_char.rom`), the built-in 5×7 fallback covers
+// the printable range; ALTCHAR is then a no-op.
+
+void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
+                                 bool altCharSet)
+{
+    (void)altCharSet;  // built-in 5×7 fallback ignores ALTCHAR; charset ROM
+                       // would consult banks here once one is loaded.
+    const auto state = mem.getDisplayState();
+    const uint8_t* main_ = mem.data();
+    const uint8_t* aux_  = auxRam ? auxRam : mem.data();
+    const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
+
+    for (int row = firstRow; row < lastRow; ++row) {
+        // 80STORE + PAGE2 already routes writes to aux at the memory
+        // layer, so reading from page 1 is the right thing for both halves.
+        const uint16_t rowAddr = textRowAddress(row, state.page2 && !state.eightyStore);
+        for (int col = 0; col < 40; ++col) {
+            // For each 40-byte text row, AUX byte renders the EVEN
+            // 80-col cell (chars 0,2,4,…) at xCell0, MAIN byte the
+            // ODD cell (chars 1,3,5,…) at xCell1.
+            for (int half = 0; half < 2; ++half) {
+                const uint8_t  src    = (half == 0) ? aux_[rowAddr + col]
+                                                    : main_[rowAddr + col];
+                const int      cellX  = col * 14 + half * 7;
+                const int      cellY  = row * 8;
+                uint8_t glyph[8];
+                bool invert = false;
+                bool flash  = false;
+                resolveGlyph(src, glyph, invert, flash);
+                if (flash && flashPhase) invert = !invert;
+                for (int gy = 0; gy < 8; ++gy) {
+                    const uint8_t row8 = glyph[gy];
+                    for (int gx = 0; gx < 7; ++gx) {
+                        bool lit = (gx >= 1 && gx <= 5)
+                                && ((row8 >> (5 - gx)) & 1);
+                        if (invert) lit = !lit;
+                        const int px = cellX + gx;
+                        const int py = cellY + gy;
+                        frame80[py * kWidth80 + px] = lit ? 0xFFFFFFFFu : 0xFF000000u;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
+{
+    // Pixel-double frame[] horizontally into frame80[] for the requested
+    // scanline range. Each native 280-wide pixel becomes two 560-wide
+    // pixels of identical colour. Used to bridge HGR (always rendered at
+    // 280 wide) into the 560-wide frame80 buffer when mixed-mode 80-col
+    // text is on at the bottom.
+    for (int y = firstScanline; y < lastScanline; ++y) {
+        const uint32_t* in  = frame.data()    + static_cast<size_t>(y) * kWidth;
+        uint32_t*       out = frame80.data()  + static_cast<size_t>(y) * kWidth80;
+        for (int x = 0; x < kWidth; ++x) {
+            const uint32_t p = in[x];
+            out[x * 2 + 0] = p;
+            out[x * 2 + 1] = p;
+        }
+    }
+}
+
+// ─── IIe Double Hi-Res (DHGR) ────────────────────────────────────────────
+//
+// DHGR doubles HGR's horizontal resolution by interleaving aux RAM with
+// main RAM at the byte level. Per scanline (HGR address formula already
+// resolves the base of the row):
+//
+//   for c in 0..39:
+//     aux_byte  = aux  [base + c]   → 7 dots at columns [c*14 .. c*14+6]
+//     main_byte = main [base + c]   → 7 dots at columns [c*14+7 .. c*14+13]
+//     bit 0 of each byte is the leftmost dot in its half.
+//
+// Total: 40 byte-pairs × 14 dots = 560 dots per scanline.
+//
+// Color: walk a 4-bit window over the 560-dot stream in 4-dot strides.
+// The 4 consecutive dots form a nibble (bit 0 = leftmost dot, bit 3 =
+// rightmost), which is a standard lo-res palette index 0..15. Each
+// 4-dot group is a single color cell painted onto all four dots.
+//
+// Monochrome: each dot is a luminance bit (1 = lit, 0 = off) tinted by
+// the active phosphor. The persistence buffer is sized for 280 wide so
+// we render mono DHGR without phosphor decay — the user can still pick
+// a green / amber tint, just without the long-tail afterglow.
+
+void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* main_ = mem.data();
+    const uint8_t* aux_  = auxRam ? auxRam : main_;
+
+    const HiResMode m = hiResMode;
+    const bool monochrome = (m == HiResMode::MonoWhite ||
+                             m == HiResMode::MonoGreen ||
+                             m == HiResMode::MonoAmber);
+
+    // Phosphor lookup. The kPhosphors table lives in the anonymous
+    // namespace above; kLoResPalette is a static class member.
+    static const struct { uint8_t r, g, b; } kMonoTint[] = {
+        { 0xFF, 0xFF, 0xFF }, // ColorNTSC    placeholder
+        { 0xFF, 0xFF, 0xFF }, // ChatMauveRGB placeholder
+        { 0xFF, 0xFF, 0xFF }, // MonoWhite
+        { 0x33, 0xFF, 0x33 }, // MonoGreen
+        { 0xFF, 0xB0, 0x00 }, // MonoAmber
+    };
+    const auto& tint = kMonoTint[static_cast<int>(m)];
+
+    uint8_t dots[kWidth80];
+    for (int y = firstScanline; y < lastScanline; ++y) {
+        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+
+        // Build the 560-dot stream from interleaved aux + main bytes.
+        for (int c = 0; c < 40; ++c) {
+            const uint8_t auxB  = aux_ [rowAddr + c];
+            const uint8_t mainB = main_[rowAddr + c];
+            const int base = c * 14;
+            for (int i = 0; i < 7; ++i) {
+                dots[base + i]     = static_cast<uint8_t>((auxB  >> i) & 1u);
+                dots[base + 7 + i] = static_cast<uint8_t>((mainB >> i) & 1u);
+            }
+        }
+
+        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
+        if (monochrome) {
+            // 1 dot = 1 luminance bit, tint applied.
+            for (int x = 0; x < kWidth80; ++x) {
+                if (dots[x]) {
+                    outRow[x] = (uint32_t(0xFF) << 24)
+                              | (uint32_t(tint.b) << 16)
+                              | (uint32_t(tint.g) << 8)
+                              |  uint32_t(tint.r);
+                } else {
+                    outRow[x] = 0xFF000000u;
+                }
+            }
+        } else {
+            // 4-dot color cells indexed into the lo-res 16-color palette.
+            for (int x = 0; x < kWidth80; x += 4) {
+                const uint8_t nibble = static_cast<uint8_t>(
+                      dots[x + 0]
+                    | (dots[x + 1] << 1)
+                    | (dots[x + 2] << 2)
+                    | (dots[x + 3] << 3));
+                const uint32_t rgb = kLoResPalette[nibble];
+                outRow[x + 0] = rgb;
+                outRow[x + 1] = rgb;
+                outRow[x + 2] = rgb;
+                outRow[x + 3] = rgb;
+            }
+        }
     }
 }

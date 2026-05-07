@@ -32,6 +32,29 @@ constexpr int kDos33LogicalForPhysical[16] = {
     0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15
 };
 
+// ProDOS sector skewing for 5.25" disks. Mirror skew of the DOS 3.3 table
+// — both are constant-skew variants of the standard +7/-8 Apple
+// interleave, with sectors 0 and 15 fixed. Used for .po images, which
+// store data in ProDOS-logical-sector order.
+constexpr int kProDosLogicalForPhysical[16] = {
+    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15
+};
+
+bool endsWithCi(const std::string& s, const char* suffix)
+{
+    const size_t n = std::strlen(suffix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        const char a = s[s.size() - n + i];
+        const char b = suffix[i];
+        const auto lc = [](char c) -> char {
+            return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+        };
+        if (lc(a) != lc(b)) return false;
+    }
+    return true;
+}
+
 // 4-and-4 encoding: split a byte into "odd" (high) and "even" (low) bit
 // halves, OR each with $AA so the result is always a valid disk nibble
 // (bit-7 set, alternating bits guarantee no zero runs).
@@ -62,6 +85,16 @@ uint8_t DiskImage::nibbleAt(int track, int index) const
 
 bool DiskImage::loadFile(const std::string& imgPath)
 {
+    // Sniff the extension. ".po" → ProDOS sector order, anything else
+    // (".dsk" / ".do" / no extension) → DOS 3.3.
+    const SectorOrder order = endsWithCi(imgPath, ".po")
+                              ? SectorOrder::ProDOS
+                              : SectorOrder::Dos33;
+    return loadFile(imgPath, order);
+}
+
+bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
+{
     std::ifstream f(imgPath, std::ios::binary);
     if (!f) {
         lastError = "Cannot open " + imgPath;
@@ -73,8 +106,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
     f.seekg(0, std::ios::beg);
     if (size != kBytesPerImage) {
         lastError = "Expected " + std::to_string(kBytesPerImage) +
-                    "-byte .dsk image (DOS 3.3 order), got " +
-                    std::to_string(size);
+                    "-byte 5.25\" image, got " + std::to_string(size);
         loaded = false;
         return false;
     }
@@ -88,17 +120,23 @@ bool DiskImage::loadFile(const std::string& imgPath)
     }
 
     constexpr uint8_t kVolume = 254;     // DOS 3.3 default volume
+    const int* skew = (order == SectorOrder::ProDOS)
+                      ? kProDosLogicalForPhysical
+                      : kDos33LogicalForPhysical;
     for (int t = 0; t < kTracks; ++t) {
         nibblizeTrack(t,
             buf.data() + t * kSectorsPerTrack * kSectorBytes,
-            kVolume);
+            kVolume, skew);
     }
 
-    path      = imgPath;
-    loaded    = true;
+    path        = imgPath;
+    loaded      = true;
+    sectorOrder = order;
     lastError.clear();
     pom2::log().info("Disk II", "Loaded " + imgPath +
-                     " (35 tracks, 16 sectors, GCR-encoded)");
+                     " (35 tracks, 16 sectors, GCR-encoded, " +
+                     (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
+                     " order)");
     return true;
 }
 
@@ -109,7 +147,8 @@ void DiskImage::eject()
     for (auto& t : tracks) t.fill(0xFF);
 }
 
-void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume)
+void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
+                              const int* logicalForPhysical)
 {
     auto& buf = tracks[track];
     buf.fill(0xFF);              // any unwritten tail stays as sync nibbles
@@ -125,7 +164,7 @@ void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume)
 
         for (int i = 0; i < 5; ++i) *dst++ = 0xFF;
 
-        const int logical = kDos33LogicalForPhysical[physical];
+        const int logical = logicalForPhysical[physical];
         writeDataField(dst, sectors + logical * kSectorBytes);
     }
 }

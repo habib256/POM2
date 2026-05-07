@@ -1,9 +1,13 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// DiskImage — loads a 143 360-byte Apple II floppy image (.dsk / .do,
-// DOS-3.3 logical sector order) and pre-nibblizes it into per-track
-// buffers ready for the Disk II controller to clock out.
+// DiskImage — loads a 143 360-byte Apple II floppy image (.dsk / .do
+// in DOS 3.3 logical sector order, or .po in ProDOS sector order) and
+// pre-nibblizes it into per-track buffers ready for the Disk II
+// controller to clock out. The on-disk physical sector layout is the
+// same in both cases (16 sectors per track, GCR-encoded); the file
+// format only changes which file offset maps to which physical sector
+// via the skew table.
 //
 // On-disk layout per sector (~382 nibbles), repeated 16 times per track:
 //
@@ -43,12 +47,21 @@ public:
     static constexpr int kBytesPerImage     = kTracks * kSectorsPerTrack * kSectorBytes; // 143360
     static constexpr int kNibblesPerTrack   = 6656;
 
+    /// File-format sector ordering. Both produce the same on-disk physical
+    /// sector layout — only the skew between file offset and physical
+    /// sector P differs.
+    enum class SectorOrder { Dos33, ProDOS };
+
     DiskImage();
 
-    /// Load a .dsk / .do image (DOS 3.3 logical sector order). Returns
-    /// true on success. On failure `getLastError()` has details. Mounting
-    /// a new image discards any previously loaded buffer.
+    /// Load a .dsk / .do image (DOS 3.3 logical sector order) or a .po
+    /// image (ProDOS sector order). When `order` is omitted, falls back
+    /// to extension sniffing: `.po` → ProDOS, anything else → DOS 3.3.
+    /// Returns true on success. On failure `getLastError()` has details.
+    /// Mounting a new image discards any previously loaded buffer.
     bool loadFile(const std::string& path);
+    bool loadFile(const std::string& path, SectorOrder order);
+    SectorOrder getSectorOrder() const { return sectorOrder; }
 
     /// Discard the loaded image. After eject, isLoaded() returns false
     /// and the controller will see the same "no media" behaviour as if
@@ -72,6 +85,7 @@ public:
 
 private:
     bool loaded = false;
+    SectorOrder sectorOrder = SectorOrder::Dos33;
     std::string path;
     std::string lastError;
 
@@ -80,7 +94,8 @@ private:
     using TrackBuffer = std::array<uint8_t, kNibblesPerTrack>;
     std::array<TrackBuffer, kTracks> tracks;
 
-    void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume);
+    void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
+                       const int* logicalForPhysical);
     static void writeAddressField(uint8_t*& dst, uint8_t volume,
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);

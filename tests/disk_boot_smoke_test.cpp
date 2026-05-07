@@ -54,6 +54,78 @@ bool readFile(const std::string& path, std::vector<uint8_t>& out)
 
 }  // namespace
 
+// Boot a single disk image and compare $0800-$08FD against the file's
+// first 256 bytes (logical sector 0, which always lands on physical
+// sector 0 regardless of skew). Returns 0 on success.
+int bootAndVerify(const std::string& romPath, const std::string& promPath,
+                  const std::string& imgPath, const char* label)
+{
+    Memory mem;
+    if (!mem.loadAppleIIRom(romPath.c_str())) {
+        std::fprintf(stderr, "%s: loadAppleIIRom failed\n", label);
+        return 1;
+    }
+    auto card = std::make_unique<DiskIICard>();
+    if (!card->loadBootRom(promPath)) {
+        std::fprintf(stderr, "%s: loadBootRom failed\n", label);
+        return 1;
+    }
+    if (!card->insertDisk(imgPath)) {
+        std::fprintf(stderr, "%s: insertDisk failed: %s\n", label,
+                     card->getLastError().c_str());
+        return 1;
+    }
+    DiskIICard* cardRaw = card.get();
+    mem.slotBus().plug(6, std::move(card));
+
+    M6502 cpu(&mem);
+    cpu.hardReset();
+    mem.slotBus().reset();
+    cpu.setProgramCounter(0xC600);
+    const uint8_t* ram = mem.data();
+
+    constexpr int kMaxCycles = 5'000'000;
+    int totalCycles = 0;
+    while (totalCycles < kMaxCycles) {
+        const int slice = cpu.run(1024);
+        totalCycles += slice;
+        const uint16_t pc = cpu.getProgramCounter();
+        if (pc >= 0x0800 && pc <= 0x08FF && ram[0x0800] != 0x00) break;
+    }
+
+    std::array<uint8_t, 256> loaded;
+    std::memcpy(loaded.data(), ram + 0x0800, 256);
+
+    std::vector<uint8_t> diskBytes;
+    if (!readFile(imgPath, diskBytes) || diskBytes.size() < 256) {
+        std::fprintf(stderr, "%s: cannot re-read for compare\n", label);
+        return 2;
+    }
+
+    std::printf("disk_boot_smoke[%s]: ran %d cycles, PC=$%04X, half-track %d\n",
+                label, totalCycles, cpu.getProgramCounter(),
+                cardRaw->getHalfTrack());
+
+    // Compare $0801-$08FD. Skip $0800 (block-count register, modified by
+    // the ProDOS boot loader during chain-loading; harmless to skip on
+    // DOS 3.3 too since boot1 leaves it alone). Skip $08FE/$08FF (DOS 3.3
+    // boot1 mutates them as page-shift state).
+    int diffs = 0;
+    int firstDiff = -1;
+    for (int i = 1; i < 254; ++i) {
+        if (loaded[i] != diskBytes[i]) {
+            if (firstDiff < 0) firstDiff = i;
+            ++diffs;
+        }
+    }
+    if (diffs == 0) return 0;
+    std::fprintf(stderr,
+        "%s FAIL: %d byte mismatches; first diff at $%02X"
+        " (got $%02X want $%02X)\n",
+        label, diffs, firstDiff, loaded[firstDiff], diskBytes[firstDiff]);
+    return 3;
+}
+
 int main()
 {
     // Probe the standard locations (relative to the build dir, which is
@@ -72,95 +144,21 @@ int main()
         return 0;
     }
 
-    Memory mem;
-    if (!mem.loadAppleIIRom(romPath.c_str())) {
-        std::fprintf(stderr, "loadAppleIIRom failed\n");
-        return 1;
+    if (const int r = bootAndVerify(romPath, promPath, dskPath, "DOS 3.3");
+        r != 0) return r;
+
+    // ProDOS image — only run if the user has placed it. The skew is
+    // already pinned by disk_image_smoke; this is a full PROM-driven boot
+    // check that the .po path round-trips through DiskIICard / GCR / the
+    // boot loader.
+    const std::string poPath = findFirst({
+        "../disks/ProDOS_2_4_3.po", "disks/ProDOS_2_4_3.po",
+        "../../disks/ProDOS_2_4_3.po" });
+    if (!poPath.empty()) {
+        if (const int r = bootAndVerify(romPath, promPath, poPath, "ProDOS .po");
+            r != 0) return r;
     }
 
-    auto card = std::make_unique<DiskIICard>();
-    if (!card->loadBootRom(promPath)) {
-        std::fprintf(stderr, "loadBootRom failed\n");
-        return 1;
-    }
-    if (!card->insertDisk(dskPath)) {
-        std::fprintf(stderr, "insertDisk failed: %s\n",
-                     card->getLastError().c_str());
-        return 1;
-    }
-    DiskIICard* cardRaw = card.get();
-    mem.slotBus().plug(6, std::move(card));
-
-    M6502 cpu(&mem);
-    cpu.hardReset();
-    mem.slotBus().reset();          // matches EmulationController::hardReset
-
-    // Jump straight to the boot PROM, like the "Boot disk" UI button does.
-    cpu.setProgramCounter(0xC600);
-    const uint8_t* ram = mem.data();
-
-    // Run for ~5 M cycles. The PROM's recalibration takes ~250K, then
-    // ~50K to find D5 AA 96 + read 343 nibbles, then JMP $0801 — total
-    // ~300K. We can't exit on "PC leaves slot ROM" because the PROM does
-    // JSR $FF58 / JSR $FCA8 (Monitor WAIT) routinely. Instead we stop
-    // once PC has reached the boot sector page ($0800-$08FF), and the
-    // sector size byte ($0800) is non-zero — i.e., the PROM has both
-    // loaded data AND jumped to $0801.
-    constexpr int kMaxCycles = 5'000'000;
-    int totalCycles = 0;
-    while (totalCycles < kMaxCycles) {
-        const int slice = cpu.run(1024);
-        totalCycles += slice;
-        const uint16_t pc = cpu.getProgramCounter();
-        if (pc >= 0x0800 && pc <= 0x08FF && ram[0x0800] != 0x00) break;
-    }
-
-    // Snapshot $0800-$08FF.
-    std::array<uint8_t, 256> loaded;
-    std::memcpy(loaded.data(), ram + 0x0800, 256);
-
-    // Compare with .dsk first 256 bytes (logical sector 0 of track 0).
-    std::vector<uint8_t> diskBytes;
-    if (!readFile(dskPath, diskBytes) || diskBytes.size() < 256) {
-        std::fprintf(stderr, "cannot re-read dsk for compare\n");
-        return 2;
-    }
-
-    // Diagnostic: print head state + first 16 bytes of $0800.
-    std::printf("disk_boot_smoke: ran %d cycles\n", totalCycles);
-    std::printf("  PC after boot: $%04X\n", cpu.getProgramCounter());
-    std::printf("  head half-track: %d, motor %s, disk pos: %d\n",
-                cardRaw->getHalfTrack(),
-                cardRaw->isMotorOn() ? "ON" : "off",
-                cardRaw->getTrackPosition());
-    std::printf("  $0800: ");
-    for (int i = 0; i < 16; ++i) std::printf("%02X ", loaded[i]);
-    std::printf("\n  .dsk : ");
-    for (int i = 0; i < 16; ++i) std::printf("%02X ", diskBytes[i]);
-    std::printf("\n");
-
-    // Compare only the static portion. Boot1 mutates $08FE/$08FF at
-    // runtime ($08FE += $08FF each time it loads another sector to a
-    // shifted page; the JMP indirect at $084A jumps via $08FD/$08FE), so
-    // those bytes can't be expected to still match the .dsk image once
-    // the CPU has begun executing.
-    constexpr int kStaticBytes = 254;     // $0800-$08FD inclusive
-    int diffs = 0;
-    int firstDiff = -1;
-    for (int i = 0; i < kStaticBytes; ++i) {
-        if (loaded[i] != diskBytes[i]) {
-            if (firstDiff < 0) firstDiff = i;
-            ++diffs;
-        }
-    }
-    if (diffs == 0) {
-        std::printf("disk_boot_smoke OK: $0800-$08FD matches .dsk[0..253]"
-                    " (PROM read + GCR decode round-tripped cleanly)\n");
-        return 0;
-    }
-    std::fprintf(stderr,
-        "disk_boot_smoke FAIL: %d byte mismatches in $0800-$08FD;"
-        " first diff at offset $%02X (got $%02X want $%02X)\n",
-        diffs, firstDiff, loaded[firstDiff], diskBytes[firstDiff]);
-    return 3;
+    std::printf("disk_boot_smoke OK\n");
+    return 0;
 }

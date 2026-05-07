@@ -1,9 +1,28 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// Apple II / II+ memory: 48 KB RAM ($0000-$BFFF), I/O page ($C000-$C0FF),
-// slot ROM area ($C100-$C7FF, currently empty), 12 KB Monitor + Applesoft
-// ROM ($D000-$FFFF). Soft switches at $C050-$C057 drive display modes.
+// Apple II / II+ / IIe memory.
+//
+// II+: 48 KB RAM ($0000-$BFFF), I/O page ($C000-$C0FF), slot ROM area
+// ($C100-$C7FF), 12 KB Monitor + Applesoft ROM ($D000-$FFFF), 16 KB
+// Language Card overlay. Soft switches at $C050-$C057 drive display modes.
+//
+// IIe (when isIIE() is true): adds a 64 KB auxiliary bank, a 4 KB internal
+// I/O ROM at $C100-$CFFF (motherboard firmware including the slot-3
+// 80-column driver), an aux Language Card overlay, and the IIe paging
+// soft switches at $C000-$C00F (80STORE, RAMRD, RAMWRT, INTCXROM, ALTZP,
+// SLOTC3ROM, 80COL, ALTCHAR) with status reads at $C013-$C018, $C01E,
+// $C01F. RAM routing per address range:
+//   $0000-$01FF      ALTZP        → aux else main
+//   $0200-$03FF      RAMRD/RAMWRT → aux else main
+//   $0400-$07FF      80STORE on   → PAGE2 picks aux/main; else RAMRD/WRT
+//   $0800-$1FFF      RAMRD/RAMWRT → aux else main
+//   $2000-$3FFF      80STORE+HIRES on → PAGE2 picks aux/main; else RAMRD/WRT
+//   $4000-$BFFF      RAMRD/RAMWRT → aux else main
+//   $C100-$CFFF      INTCXROM     → internal IO ROM else slot bus
+//                    SLOTC3ROM off → $C300-$C3FF reads internal ROM even
+//                                    when INTCXROM is off
+//   $D000-$FFFF      ALTZP picks the aux Language Card bank trio
 
 #ifndef POM2_MEMORY_H
 #define POM2_MEMORY_H
@@ -100,6 +119,20 @@ public:
         // every rising edge), but the snapshot is useful for diagnostics.
         bool eightyCol = false;
         bool an3       = false;
+        // IIe-only: ALTCHAR ($C00E off / $C00F on) selects between the
+        // standard charset (with flashing inverse) and the alternate set
+        // (mousetext + non-flashing inverse). Ignored on II+.
+        bool altChar   = false;
+        // IIe-only: DHIRESON ($C05E) / DHIRESOFF ($C05F). When 80COL is
+        // also on, DHGR mode reads aux + main HGR pages interleaved and
+        // doubles the horizontal resolution to 560. Ignored on II+
+        // (where the same soft switches are pure AN3 annunciator).
+        bool dhgr      = false;
+        // IIe-only: 80STORE ($C000 off / $C001 on) makes PAGE2 swap text
+        // page 1 (and HGR page 1 when HIRES is on) to aux RAM rather than
+        // selecting page 2. The display needs this to know whether to read
+        // the text page from aux when 80STORE+PAGE2 are both on.
+        bool eightyStore = false;
     };
     DisplayState getDisplayState() const {
         std::lock_guard<std::mutex> lk(stateMutex);
@@ -149,8 +182,34 @@ public:
     void resetSoftSwitches();
 
     // Power-cycle helper: wipe user RAM ($0000-$BFFF). Leaves the I/O page,
-    // slot ROM area, and main ROM ($D000-$FFFF) intact.
+    // slot ROM area, and main ROM ($D000-$FFFF) intact. In IIe mode also
+    // wipes the auxiliary 64 KB bank and the aux LC banks (but never the
+    // internal I/O ROM, which is ROM).
     void clearRam();
+
+    // Apple IIe extension. Off by default — call setIIEMode(true) BEFORE
+    // loadAppleIIRom() to switch the loader/dispatcher to IIe behaviour.
+    // When false, every IIe-specific code path is gated off and the class
+    // behaves as a plain II+.
+    void setIIEMode(bool on);
+    bool isIIE() const                       { return iieMode; }
+    uint16_t iieModeFlags() const            { return iieMemMode; }
+    const uint8_t* auxData() const           { return aux.data(); }
+    uint8_t*       auxDataMutable()          { return aux.data(); }
+    const uint8_t* internalIORomData() const { return internalIORom.data(); }
+
+    // IIe memory mode flags. Bit positions are arbitrary (we don't need to
+    // match AppleWin's MF_* layout); they only have to be stable for the
+    // life of the process. Tests pin the routing behaviour, not the flag
+    // values themselves.
+    static constexpr uint16_t MF_80STORE   = 0x0001;  // $C000/01
+    static constexpr uint16_t MF_RAMRD     = 0x0002;  // $C002/03
+    static constexpr uint16_t MF_RAMWRT    = 0x0004;  // $C004/05
+    static constexpr uint16_t MF_INTCXROM  = 0x0008;  // $C006/07
+    static constexpr uint16_t MF_ALTZP     = 0x0010;  // $C008/09
+    static constexpr uint16_t MF_SLOTC3ROM = 0x0020;  // $C00A/0B
+    static constexpr uint16_t MF_80COL     = 0x0040;  // $C00C/0D
+    static constexpr uint16_t MF_ALTCHAR   = 0x0080;  // $C00E/0F
 
     // CPU pacing hook — EmulationController calls this with the cycle
     // count returned by M6502::run() so the paddle RC discharge timer
@@ -168,6 +227,13 @@ private:
     std::array<uint8_t, 0x1000> lcBank1{};
     std::array<uint8_t, 0x1000> lcBank2{};
     std::array<uint8_t, 0x2000> lcHigh{};
+    // IIe extension. Allocated unconditionally (small) but only consulted
+    // by the dispatcher when iieMode is true.
+    std::array<uint8_t, 0x10000> aux{};       // auxiliary 64 KB
+    std::array<uint8_t, 0x1000>  internalIORom{}; // motherboard $C000-$CFFF
+    std::array<uint8_t, 0x1000>  auxLcBank1{};
+    std::array<uint8_t, 0x1000>  auxLcBank2{};
+    std::array<uint8_t, 0x2000>  auxLcHigh{};
     std::vector<uint8_t> characterRom;        // 2048 bytes once loaded
     std::string lastError;
 
@@ -219,11 +285,22 @@ private:
     bool lcBank2Active  = true;
     bool lcPrewrite     = false;
 
+    bool     iieMode      = false;
+    uint16_t iieMemMode   = 0;       // OR of MF_* flags
+
     void markRomRegion(uint16_t lo, uint16_t hi);
     uint8_t softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal);
     uint8_t languageCardSwitchAccess(uint16_t addr);
     uint8_t languageCardRead(uint16_t addr) const;
     void    languageCardWrite(uint16_t addr, uint8_t value);
+
+    // IIe-only routing helpers. Selected per address range based on the
+    // current iieMemMode + DisplayState; see the table at the top of the
+    // header for the rules.
+    uint8_t iieMemRead(uint16_t addr);
+    void    iieMemWrite(uint16_t addr, uint8_t value);
+    void    iieHandleSoftSwitch(uint16_t addr);
+    uint8_t iieReadStatus(uint16_t addr) const;
 };
 
 #endif // POM2_MEMORY_H

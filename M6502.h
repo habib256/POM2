@@ -117,6 +117,8 @@ private :
     void AbsX(void);
     void AbsY(void);
     void Ind(void);
+    void IndZero(void);    // 65C02 (zp)
+    void IndAbsX(void);    // 65C02 (abs,X) for JMP
     void IndZeroX(void);
     void IndZeroY(void);
     void Rel(void);
@@ -187,6 +189,21 @@ private :
     void CLD(void);
     void SED(void);
     void NOP(void);
+    // 65C02 instruction set additions. The original 6502 dispatched all
+    // these opcodes to Unoff (no-op) or Hang (PC-- spin) — fine for clean
+    // 6502 code, but it bricks 65C02-targeted ProDOS software (most IIe
+    // Enhanced / IIc / IIc Plus games and shells).
+    void BRA(void);          // $80 — branch always
+    void STZ(void);          // $64/$74/$9C/$9E — store zero
+    void INA(void);          // $1A — increment A
+    void DEA(void);          // $3A — decrement A
+    void PHX(void);          // $DA — push X
+    void PHY(void);          // $5A — push Y
+    void PLX(void);          // $FA — pull X
+    void PLY(void);          // $7A — pull Y
+    void BIT_imm(void);      // $89 — BIT #imm (only Z affected)
+    void TSB(void);          // $04/$0C — test + set bits
+    void TRB(void);          // $14/$1C — test + reset bits
     void Unoff(void);
     void Unoff1(void);
     void Unoff2(void);

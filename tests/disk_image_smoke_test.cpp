@@ -149,13 +149,13 @@ void buildSyntheticImage(std::vector<uint8_t>& buf)
     }
 }
 
-std::string writeTempImage(const std::vector<uint8_t>& buf)
+std::string writeTempImage(const std::vector<uint8_t>& buf, const char* name)
 {
-    // Use a fixed name in /tmp (or current dir) — ctest runs each test in
-    // its own working dir, so collisions across tests are unlikely.
-    const std::string path = "disk_image_smoke.dsk";
+    // Use a fixed name in the current dir — ctest runs each test in its
+    // own working dir, so collisions across tests are unlikely.
+    const std::string path = name;
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    assert(f && "cannot create temp .dsk");
+    assert(f && "cannot create temp image");
     f.write(reinterpret_cast<const char*>(buf.data()),
             static_cast<std::streamsize>(buf.size()));
     f.close();
@@ -173,27 +173,15 @@ void readNibbleBuffer(const DiskImage& img, int track,
 
 }  // namespace
 
-int main()
+// Walk track 0 of `img` and verify that every recovered physical sector
+// matches the logical-sector data in `source` according to the supplied
+// skew table. Returns 0 on success, otherwise a small non-zero error code
+// (printed via fprintf at the call site).
+int verifyTrack0(const DiskImage& img, const std::vector<uint8_t>& source,
+                 const int (&logicalForPhysical)[16],
+                 const std::array<uint8_t, 256>& gcrInv,
+                 const char* label)
 {
-    const auto gcrInv = buildGcrInverse();
-
-    // Build + load image.
-    std::vector<uint8_t> source;
-    buildSyntheticImage(source);
-    const std::string path = writeTempImage(source);
-
-    DiskImage img;
-    if (!img.loadFile(path)) {
-        std::fprintf(stderr, "loadFile failed: %s\n",
-                     img.getLastError().c_str());
-        std::remove(path.c_str());
-        return 1;
-    }
-
-    // Walk track 0's nibble buffer and recover all 16 sectors. We expect
-    // to find D5 AA 96 sixteen times; for each, decode the address field
-    // (vol must be 254, track 0, sector in 0..15 unique), then find the
-    // following D5 AA AD and decode the data.
     std::vector<uint8_t> nibs;
     readNibbleBuffer(img, 0, nibs);
 
@@ -207,77 +195,116 @@ int main()
 
         uint8_t vol, trk, sec;
         if (!decodeAddressField(nibs.data(), ap, vol, trk, sec)) {
-            std::fprintf(stderr, "address field checksum failed at %zu\n", ap);
-            std::remove(path.c_str());
+            std::fprintf(stderr, "%s: addr field checksum at %zu\n", label, ap);
             return 2;
         }
-        if (vol != 254) {
-            std::fprintf(stderr, "vol mismatch: got %u want 254\n", vol);
-            std::remove(path.c_str());
+        if (vol != 254 || trk != 0 || sec >= 16 || sawSector[sec]) {
+            std::fprintf(stderr, "%s: bad addr field vol=%u trk=%u sec=%u\n",
+                         label, vol, trk, sec);
             return 3;
-        }
-        if (trk != 0) {
-            std::fprintf(stderr, "track mismatch: got %u want 0\n", trk);
-            std::remove(path.c_str());
-            return 4;
-        }
-        if (sec >= 16 || sawSector[sec]) {
-            std::fprintf(stderr, "sector %u out of range or duplicated\n", sec);
-            std::remove(path.c_str());
-            return 5;
         }
         sawSector[sec] = true;
 
-        // Find the data field that goes with this address field.
         const size_t dp = findMarker(nibs.data(), nibs.size(), ap + 8,
                                      0xD5, 0xAA, 0xAD);
         if (dp == static_cast<size_t>(-1)) {
-            std::fprintf(stderr, "no data field after addr sector %u\n", sec);
-            std::remove(path.c_str());
+            std::fprintf(stderr, "%s: no data field after sec %u\n", label, sec);
             return 6;
         }
         uint8_t recovered[256];
         if (!decodeDataField(nibs.data(), dp, gcrInv, recovered)) {
-            std::fprintf(stderr,
-                         "data field checksum failed for sector %u\n", sec);
-            std::remove(path.c_str());
+            std::fprintf(stderr, "%s: data checksum sec %u\n", label, sec);
             return 7;
         }
-        // The address field's sector number is the PHYSICAL index
-        // (0..15 around the disk). The data inside this physical slot
-        // belongs to the LOGICAL sector that DOS 3.3's skew table maps
-        // to, mirroring DiskImage.cpp's encoder.
-        static constexpr int kDos33LogicalForPhysical[16] = {
-            0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15
-        };
-        const int logical = kDos33LogicalForPhysical[sec];
+        const int logical = logicalForPhysical[sec];
         const uint8_t* expected = source.data() + logical * 256;
         if (std::memcmp(recovered, expected, 256) != 0) {
             std::fprintf(stderr,
-                "physical %u (logical %d) data mismatch;"
+                "%s: physical %u (logical %d) data mismatch;"
                 " first byte got 0x%02X want 0x%02X\n",
-                sec, logical, recovered[0], expected[0]);
-            std::remove(path.c_str());
+                label, sec, logical, recovered[0], expected[0]);
             return 8;
         }
         ++found;
-        pos = dp + 343;     // skip past the data field we just consumed
+        pos = dp + 343;
     }
-
-    std::remove(path.c_str());
-
     if (found != 16) {
-        std::fprintf(stderr, "found %d address fields on track 0, want 16\n",
-                     found);
+        std::fprintf(stderr, "%s: found %d sectors, want 16\n", label, found);
         return 9;
     }
     for (int i = 0; i < 16; ++i) {
         if (!sawSector[i]) {
-            std::fprintf(stderr, "missing logical sector %d on track 0\n", i);
+            std::fprintf(stderr, "%s: missing logical sector %d\n", label, i);
             return 10;
         }
     }
+    return 0;
+}
 
-    std::printf("disk_image_smoke OK: track 0 round-trips all 16 sectors\n");
+int main()
+{
+    const auto gcrInv = buildGcrInverse();
+
+    // Build + load image.
+    std::vector<uint8_t> source;
+    buildSyntheticImage(source);
+    const std::string path = writeTempImage(source, "disk_image_smoke.dsk");
+
+    DiskImage img;
+    if (!img.loadFile(path)) {
+        std::fprintf(stderr, "loadFile failed: %s\n",
+                     img.getLastError().c_str());
+        std::remove(path.c_str());
+        return 1;
+    }
+
+    // DOS 3.3 round-trip — physical sector P holds DOS-logical
+    // kDos33LogicalForPhysical[P]. Mirrors DiskImage.cpp's encoder.
+    static constexpr int kDos33[16] = {
+        0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15
+    };
+    const int dosErr = verifyTrack0(img, source, kDos33, gcrInv, "DOS 3.3");
+    std::remove(path.c_str());
+    if (dosErr != 0) return dosErr;
+
+    // ProDOS round-trip. Same synthetic source bytes, but loaded via the
+    // .po extension so DiskImage applies the ProDOS skew. Physical sector
+    // P now holds ProDOS-logical kProDos[P].
+    static constexpr int kProDos[16] = {
+        0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15
+    };
+    const std::string poPath = writeTempImage(source, "disk_image_smoke.po");
+    DiskImage poImg;
+    if (!poImg.loadFile(poPath)) {
+        std::fprintf(stderr, ".po loadFile failed: %s\n",
+                     poImg.getLastError().c_str());
+        std::remove(poPath.c_str());
+        return 11;
+    }
+    if (poImg.getSectorOrder() != DiskImage::SectorOrder::ProDOS) {
+        std::fprintf(stderr, ".po extension didn't sniff ProDOS order\n");
+        std::remove(poPath.c_str());
+        return 12;
+    }
+    const int poErr = verifyTrack0(poImg, source, kProDos, gcrInv, "ProDOS");
+    std::remove(poPath.c_str());
+    if (poErr != 0) return poErr;
+
+    // Explicit-order overload: forcing DOS 3.3 on a synthetic image (no
+    // extension) must reproduce the DOS skew, even when the bytes are the
+    // same source.
+    const std::string anyPath = writeTempImage(source, "disk_image_smoke.bin");
+    DiskImage forced;
+    if (!forced.loadFile(anyPath, DiskImage::SectorOrder::Dos33)) {
+        std::fprintf(stderr, "forced DOS load failed\n");
+        std::remove(anyPath.c_str());
+        return 13;
+    }
+    const int forcedErr = verifyTrack0(forced, source, kDos33, gcrInv,
+                                       "forced DOS");
+    std::remove(anyPath.c_str());
+    if (forcedErr != 0) return forcedErr;
+
+    std::printf("disk_image_smoke OK: DOS 3.3 + ProDOS skews round-trip\n");
     return 0;
 }

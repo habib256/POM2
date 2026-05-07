@@ -285,3 +285,85 @@ endif()
 
 add_test(NAME disk_boot_smoke COMMAND test_disk_boot)
 set_tests_properties(disk_boot_smoke PROPERTIES TIMEOUT 30)
+
+
+# ─── Apple IIe memory smoke test ──────────────────────────────────────────
+# Pins the auxiliary 64 KB bank, the IIe paging soft switches (80STORE,
+# RAMRD, RAMWRT, INTCXROM, ALTZP, SLOTC3ROM, 80COL, ALTCHAR), the status
+# reads at $C013-$C018, $C01E, $C01F, and the internal I/O ROM dispatch
+# at $C100-$CFFF (with the SLOTC3ROM exception for $C300-$C3FF). Includes
+# an Apple II+ regression assertion (IIe paths must be gated behind
+# setIIEMode(true)).
+add_executable(test_iie_memory
+    iie_memory_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iie_memory PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iie_memory PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iie_memory PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iie_memory PRIVATE winmm)
+endif()
+
+add_test(NAME iie_memory_smoke COMMAND test_iie_memory)
+set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── IIe Double Hi-Res rendering smoke test ───────────────────────────────
+# Pins the DHGR soft switches ($C05E/$C05F gated by iieMode), the 4-dot
+# color-cell decode through the lo-res palette, the aux-then-main byte
+# interleave, and the dispatcher's fall-back to 280-wide HGR when DHGR
+# is disabled. Also exercises the mono phosphor tint path.
+add_executable(test_dhgr_render
+    dhgr_render_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dhgr_render PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dhgr_render PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dhgr_render PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dhgr_render PRIVATE winmm)
+endif()
+
+add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
+set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── 65C02 instruction smoke test ─────────────────────────────────────────
+# Pins the 65C02 additions on top of the 6502 base set: STZ, BRA, INA/DEA,
+# PHX/PHY/PLX/PLY, BIT #imm, the (zp) addressing mode for ORA/AND/EOR/ADC/
+# STA/LDA/CMP/SBC, TSB/TRB, JMP (abs,X). The Klaus 6502 functional test
+# continues to gate the original 6502 semantics; this file gates the
+# additions. Runs in flat-RAM Memory::setTestMode().
+add_executable(test_cmos_6502
+    cmos_6502_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_cmos_6502 PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cmos_6502 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_cmos_6502 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_cmos_6502 PRIVATE winmm)
+endif()
+
+add_test(NAME cmos_6502_smoke COMMAND test_cmos_6502)
+set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)

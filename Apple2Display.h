@@ -1,9 +1,9 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// Software framebuffer for the Apple II video subsystem. Renders into a
-// 280×192 RGBA buffer that the UI uploads as an OpenGL texture each frame.
-// Three modes follow the soft-switch state held by Memory:
+// Software framebuffer for the Apple II video subsystem. Renders into an
+// RGBA buffer that the UI uploads as an OpenGL texture each frame. Three
+// modes follow the soft-switch state held by Memory:
 //   - Text  (40×24, char ROM glyphs, normal / inverse / flashing)
 //   - Lo-res (40×48, 16 colours, same screen memory as text)
 //   - Hi-res (280×192, NTSC artifact decoded by a 7-bit sliding window over
@@ -11,6 +11,12 @@
 //             delay applied at the stream level so byte-boundary fringing
 //             emerges naturally)
 // Mixed mode shows hi-res in the top 160 pixels and four text rows below.
+//
+// IIe extension. When 80COL + TEXT are on the renderer emits at the native
+// 80-col resolution (560×192) by interleaving aux RAM (even columns) and
+// main RAM (odd columns) text bytes. Mixed-mode bottom-4-rows-text follows
+// the same path, with the top 20 HGR rows horizontally doubled into the
+// 560-wide buffer. width()/height() reflect whichever buffer is live.
 //
 // The display owns no GL state — the MainWindow uploads `pixels()` to a
 // texture it manages. Keeping this class GL-free makes it trivial to unit
@@ -29,8 +35,9 @@ class LeChatMauveCard;
 class Apple2Display
 {
 public:
-    static constexpr int kWidth  = 280;
-    static constexpr int kHeight = 192;
+    static constexpr int kWidth   = 280;
+    static constexpr int kHeight  = 192;
+    static constexpr int kWidth80 = 560;
 
     // Hi-res rendering style. ColorNTSC is the "real Apple II on a colour TV"
     // experience — bit-stream artifact colour with authentic byte-boundary
@@ -57,9 +64,16 @@ public:
     // 2 Hz flash phase used by the text mode.
     void render(Memory& mem);
 
-    const uint32_t* pixels() const { return frame.data(); }
-    int             width()  const { return kWidth;  }
+    const uint32_t* pixels() const { return useFrame80 ? frame80.data() : frame.data(); }
+    int             width()  const { return useFrame80 ? kWidth80 : kWidth; }
     int             height() const { return kHeight; }
+
+    /// Auxiliary 64 KB RAM pointer for IIe 80-column rendering. Set by
+    /// MainWindow once the IIe ROM is detected and Memory::setIIEMode(true)
+    /// has been called. Pointer is non-owning. May be nullptr; the 80-col
+    /// path then falls back to reading main RAM in both halves of each pair
+    /// (still produces 80 character cells, just without aux content).
+    void setAuxMemory(const uint8_t* aux) { auxRam = aux; }
 
     // Cursor row/col for the on-screen blinking caret. Apple II monitors
     // park the cursor at $0024-$0025 zero-page; we just read those bytes.
@@ -80,7 +94,10 @@ public:
     void setChatMauveCard(LeChatMauveCard* c) { chatMauve = c; }
 
 private:
-    std::vector<uint32_t> frame;   // kWidth * kHeight RGBA pixels
+    std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
+    std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA pixels (IIe)
+    bool useFrame80     = false;     // true for the current frame when 80-col
+    const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
     bool cursorOverlay  = true;
     HiResMode hiResMode = HiResMode::ColorNTSC;
     LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
@@ -95,9 +112,25 @@ private:
     uint32_t frameCounter = 0;
     static constexpr uint32_t kFlashHalfPeriodFrames = 30;  // 0.5 s at 60 Hz
 
-    void renderText (Memory& mem, int firstRow, int lastRow);
-    void renderLoRes(Memory& mem, int firstRow, int lastRow);
-    void renderHiRes(Memory& mem, int firstScanline, int lastScanline);
+    void renderText  (Memory& mem, int firstRow, int lastRow);
+    void renderLoRes (Memory& mem, int firstRow, int lastRow);
+    void renderHiRes (Memory& mem, int firstScanline, int lastScanline);
+    // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
+    // 560×192. Reads aux RAM for even columns and main RAM for odd
+    // columns (per AppleWin's scanner). `altCharSet` toggles flashing
+    // inverse vs. mousetext+non-flashing inverse (the IIe ALTCHAR switch).
+    void renderText80(Memory& mem, int firstRow, int lastRow, bool altCharSet);
+    // IIe-only. Renders DHGR scanlines [firstScanline, lastScanline) into
+    // `frame80`. Reads main + aux HGR pages: aux byte at offset c
+    // contributes 7 bits to dots [c*14 .. c*14+6], main byte contributes
+    // dots [c*14+7 .. c*14+13]. Color: each 4 consecutive dots form a
+    // 4-bit lo-res palette index (560 dots → 140 color cells per line).
+    // Monochrome HiResModes render dot-by-dot luminance through the
+    // selected phosphor.
+    void renderDhgr  (Memory& mem, int firstScanline, int lastScanline);
+    // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
+    // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
+    void upscaleFrameToFrame80(int firstScanline, int lastScanline);
 
     // Address of the first byte of text/lo-res row `y` in the active page.
     static uint16_t textRowAddress(int y, bool page2);
