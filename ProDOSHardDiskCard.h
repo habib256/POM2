@@ -35,6 +35,11 @@ public:
     ProDOSHardDiskCard();
 
     bool loadImage(const std::string& path);
+    /// Replace the in-memory image with synthesised bytes (e.g. produced by
+    /// pom2::buildVolumeFromFolder). `label` is what the UI shows; it does
+    /// not have to be a real filesystem path. Returns false if `bytes` is
+    /// empty or not a multiple of 512.
+    bool loadImageFromBytes(std::vector<uint8_t> bytes, const std::string& label);
     void ejectImage();
 
     bool isImageLoaded() const { return imageLoaded; }

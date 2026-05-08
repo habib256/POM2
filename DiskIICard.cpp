@@ -63,19 +63,35 @@ bool DiskIICard::loadBootRom(const std::string& path)
 
 bool DiskIICard::insertDisk(const std::string& path)
 {
+    // Save any pending writes from the previous image before we drop it.
+    if (image.isLoaded() && image.hasUnsavedChanges()) {
+        if (!image.saveDirty()) {
+            pom2::log().warn("Disk II",
+                "Save-on-swap failed: " + image.getLastError());
+        }
+    }
     if (!image.loadFile(path)) {
         pom2::log().warn("Disk II", "Insert failed: " + image.getLastError());
         return false;
     }
+    image.setWriteBackEnabled(writeBackEnabled);
     trackPos   = 0;
     cycleAccum = 0;
+    writeLatch = 0xFF;
     return true;
 }
 
 void DiskIICard::ejectDisk()
 {
+    if (image.isLoaded() && image.hasUnsavedChanges()) {
+        if (!image.saveDirty()) {
+            pom2::log().warn("Disk II",
+                "Save-on-eject failed: " + image.getLastError());
+        }
+    }
     image.eject();
     trackPos = 0;
+    writeLatch = 0xFF;
 }
 
 uint8_t DiskIICard::slotRomRead(uint8_t low8)
@@ -127,8 +143,17 @@ void DiskIICard::advanceCycles(int cycles)
     while (cycleAccum >= kCyclesPerNibble) {
         cycleAccum -= kCyclesPerNibble;
         trackPos  = (trackPos + 1) % DiskImage::kNibblesPerTrack;
-        dataLatch = image.nibbleAt(headHalfTrack / 2, trackPos);
-        byteReady = true;     // a fresh nibble is now in the data register
+        if (writeMode) {
+            // Write the most-recently-latched nibble onto the track.
+            // Real hardware streams bits through the LSS shift register;
+            // we model one nibble per ~32 CPU cycles, matching the read
+            // pacing. The CPU latches the next nibble via a soft-switch
+            // store (see deviceSelectWrite).
+            image.writeNibbleAt(headHalfTrack / 2, trackPos, writeLatch);
+        } else {
+            dataLatch = image.nibbleAt(headHalfTrack / 2, trackPos);
+            byteReady = true;
+        }
     }
 }
 
@@ -206,16 +231,26 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         return out;
     }
     // $C0nD in (Q6 high, Q7 low) = write-protect probe. Bit-7 set means
-    // protected; we ship read-only so always assert it when media is in.
+    // protected; reflects the user's write-back opt-in. When write-back
+    // is OFF (default) we return protected, so DOS will SAVE-error
+    // before scrambling the in-memory nibble buffer. Once the user opts
+    // in, the disk reports writable and updates land back in the file.
     if (low4 == 0xD && !writeMode) {
-        return image.isLoaded() ? 0x80 : 0x00;
+        if (!image.isLoaded()) return 0x00;
+        return image.isWriteProtected() ? 0x80 : 0x00;
     }
     return 0;
 }
 
-void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t /*v*/)
+void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
     // Apple II soft switches respond to writes too — DOS 3.3 occasionally
-    // pokes them via STA. We only need the side-effect, not the value.
+    // pokes them via STA. We only need the side-effect, not the value
+    // for control switches; for $C0nC/$C0nD in WRITE mode we also latch
+    // the byte: the LSS shift register clocks it onto the track at the
+    // next ~32-cycle bit-cell window (see advanceCycles).
     handleSwitchAccess(low4);
+    if (writeMode && (low4 == 0xC || low4 == 0xD)) {
+        writeLatch = v;
+    }
 }

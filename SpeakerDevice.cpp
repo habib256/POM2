@@ -127,8 +127,13 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
             ++evIdx;
         }
 
-        // Square-wave target with headroom.
-        const float target = currentLevel ? kSquareAmp : -kSquareAmp;
+        // Square-wave target with headroom. Encoded as 0 ↔ +kSquareAmp
+        // (single-ended) rather than ±kSquareAmp (bipolar) so that the
+        // power-on "no toggles" state produces a clean DC zero — the DC
+        // blocker drops the constant 0 trivially. The audible AC signal
+        // is unchanged: the DC blocker subtracts the kSquareAmp/2 mean
+        // of a 50%-duty square, leaving a ±kSquareAmp/2 wave around 0.
+        const float target = currentLevel ? kSquareAmp : 0.0f;
 
         // 1-pole LP — softens the click edges of every transition.
         lpState += lpAlpha * (target - lpState);

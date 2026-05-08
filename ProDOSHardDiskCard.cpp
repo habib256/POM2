@@ -118,6 +118,24 @@ bool ProDOSHardDiskCard::loadImage(const std::string& path)
     return true;
 }
 
+bool ProDOSHardDiskCard::loadImageFromBytes(std::vector<uint8_t> bytes,
+                                            const std::string& label)
+{
+    if (bytes.empty() || (bytes.size() % kBlockBytes) != 0) {
+        lastError = "synthesised image is empty or not a multiple of 512";
+        pom2::log().warn("HDV", lastError);
+        return false;
+    }
+    image = std::move(bytes);
+    imagePath = label;
+    imageLoaded = true;
+    selectedBlock = 0;
+    streamOffset = 0;
+    pom2::log().info("HDV", "Loaded synthesised volume: " + label +
+                            " (" + std::to_string(getBlockCount()) + " blocks)");
+    return true;
+}
+
 void ProDOSHardDiskCard::ejectImage()
 {
     image.clear();

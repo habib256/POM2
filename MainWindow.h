@@ -9,12 +9,14 @@
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
+#include "HdvController_ImGui.h"
 #include "JoystickInput.h"
 #include "JoystickPanel_ImGui.h"
 #include "LeChatMauveCard.h"
 #include "LeChatMauve_ImGui.h"
 #include "MemoryViewer_ImGui.h"
 #include "ProDOSHardDiskCard.h"
+#include "Settings.h"
 
 #include "imgui.h"
 
@@ -52,8 +54,10 @@ private:
     EmulationController          controller;
     Apple2Display                display;
     MemoryViewer_ImGui           memViewer;
+    pom2::Settings               settings;
     pom2::CassetteDeck_ImGui     cassetteDeck;
     pom2::DiskController_ImGui   diskPanel;
+    pom2::HdvController_ImGui    hdvPanel;
     pom2::JoystickPanel_ImGui    joystickPanel;
     pom2::LeChatMauve_ImGui      chatMauvePanel;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
@@ -72,6 +76,7 @@ private:
     bool         showMemoryGrid     = false;   // 16×16 page grid
     bool         showCassetteDeck = false;  // off by default — opt-in via Hardware menu
     bool         showDiskPanel = true;
+    bool         showHdvPanel  = true;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
 
@@ -87,8 +92,9 @@ private:
     int         diskSavedCyclesPerFrame = 17045;
     bool        diskTurboActive = false;
 
-    // ProDOS hard disk / HDV state.
-    std::string hdvPath = "hdv/Total Replay v5.2.hdv";
+    // ProDOS hard disk / HDV state. The default mounted image is whatever
+    // the constructor finds first under hdv/ (alphabetical) — no auto-boot.
+    std::string hdvPath;
     std::string hdvStatus;
     bool        showHdvMountDialog = false;
     std::string hdvDialogPath;
@@ -127,6 +133,7 @@ private:
     void renderPasteFileDialog();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
+    void renderHdvPanelWindow();
     void renderHdvFileDialog();
     void renderChatMauvePanelWindow();
     void renderJoystickPanelWindow();

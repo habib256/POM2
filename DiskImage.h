@@ -54,14 +54,17 @@ public:
 
     DiskImage();
 
-    /// Load a .dsk / .do image (DOS 3.3 logical sector order) or a .po
-    /// image (ProDOS sector order). When `order` is omitted, falls back
-    /// to extension sniffing: `.po` → ProDOS, anything else → DOS 3.3.
+    /// Load a .dsk / .do image (DOS 3.3 logical sector order), a .po
+    /// image (ProDOS sector order), or a .nib raw nibble stream
+    /// (35 × 6656 bytes, no encoding/decoding). When `order` is omitted,
+    /// falls back to extension sniffing: `.po` → ProDOS, `.nib` → raw,
+    /// anything else → DOS 3.3.
     /// Returns true on success. On failure `getLastError()` has details.
     /// Mounting a new image discards any previously loaded buffer.
     bool loadFile(const std::string& path);
     bool loadFile(const std::string& path, SectorOrder order);
     SectorOrder getSectorOrder() const { return sectorOrder; }
+    bool isNib() const { return nibFormat; }
 
     /// Discard the loaded image. After eject, isLoaded() returns false
     /// and the controller will see the same "no media" behaviour as if
@@ -78,27 +81,55 @@ public:
     /// when no image is loaded or the track is out of range.
     uint8_t nibbleAt(int track, int index) const;
 
-    /// We only ship read-only support for now; the bit reflects what the
-    /// controller's $C0nD-in-read-mode probe should return (write-protect
-    /// = bit 7 set).
-    bool isWriteProtected() const { return true; }
+    /// Write one nibble at `track[index]`. Marks the track dirty so a
+    /// subsequent saveDirty() will persist it back to the source file.
+    /// No-op when no image is loaded or the track is out of range.
+    void writeNibbleAt(int track, int index, uint8_t value);
+
+    /// True if any track has been written since load. Cleared by
+    /// saveDirty() and load.
+    bool hasUnsavedChanges() const { return anyDirty; }
+
+    /// Decode each dirty track back to the source-file format (.dsk/
+    /// .do/.po: 16 logical sectors × 256 bytes per track; .nib: raw
+    /// nibble buffer) and overwrite the source file. Returns true on
+    /// success. On failure `getLastError()` has details. After save
+    /// the dirty bits are cleared.
+    bool saveDirty();
+
+    /// User opt-in for write-back. Default: false (read-only) to avoid
+    /// silently mutating the source file. Mainwindow flips this before
+    /// eject if the user has opted in.
+    bool isWriteProtected() const { return !writeBackEnabled; }
+    void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:
     bool loaded = false;
     SectorOrder sectorOrder = SectorOrder::Dos33;
+    bool nibFormat = false;
     std::string path;
     std::string lastError;
+    bool writeBackEnabled = false;
+    bool anyDirty = false;
 
     // 35 × 6656 = ~228 KB. Heap allocation would also work but a flat
     // member fits the "one concern, plain data" style of POM2.
     using TrackBuffer = std::array<uint8_t, kNibblesPerTrack>;
     std::array<TrackBuffer, kTracks> tracks;
+    std::array<bool, kTracks>        dirty{};
 
     void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
                        const int* logicalForPhysical);
     static void writeAddressField(uint8_t*& dst, uint8_t volume,
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);
+
+    /// Decode one track's nibble buffer back into 16 × 256-byte logical
+    /// sectors. Returns true if any sector was successfully decoded.
+    /// Sectors that can't be parsed (no prologue, bad checksum) are
+    /// left untouched in `outSectors` (which the caller pre-fills with
+    /// the existing file content so unmodified sectors persist).
+    bool decodeTrack(int track, uint8_t outSectors[kSectorsPerTrack][kSectorBytes]) const;
 };
 
 #endif // POM2_DISK_IMAGE_H

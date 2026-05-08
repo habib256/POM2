@@ -104,6 +104,20 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "(active)");
     }
 
+    // Write-back opt-in. OFF by default — turning it on lets the
+    // emulator save modified sectors back to the source .dsk/.do/.po/
+    // .nib file when the disk is ejected. Off → DOS sees a write-
+    // protect error before scrambling the in-memory nibble buffer.
+    bool writeBack = snap.writeBackEnabled;
+    if (ImGui::Checkbox("Write-back (save on eject)", &writeBack)) {
+        r.writeBackToggleChanged = true;
+        r.writeBackNewValue      = writeBack;
+    }
+    if (snap.hasUnsavedChanges) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "(unsaved)");
+    }
+
     // ─── Disk library ───────────────────────────────────────────────────
     // One-click insert + cold-boot for any .dsk found in disks/.
     ImGui::Separator();

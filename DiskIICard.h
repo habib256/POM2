@@ -77,6 +77,13 @@ public:
     int  getHalfTrack()    const { return headHalfTrack; }
     bool isMotorOn()       const { return motorOn; }
     int  getTrackPosition() const { return trackPos; }
+    bool hasUnsavedChanges() const { return image.hasUnsavedChanges(); }
+
+    /// User opt-in for write-back. When true, eject (and explicit save)
+    /// rewrites the source file with any modified sectors. Default off
+    /// to avoid silently mutating the user's image file.
+    void setWriteBackEnabled(bool on) { image.setWriteBackEnabled(on); writeBackEnabled = on; }
+    bool isWriteBackEnabled() const   { return writeBackEnabled; }
 
     // ─── SlotPeripheral overrides ────────────────────────────────────────
     std::string_view name() const override { return "Disk II"; }
@@ -92,8 +99,10 @@ private:
     bool bootRomLoaded = false;
 
     bool motorOn   = false;
-    bool writeMode = false;     // Q7 latch: false=read, true=write (no-op)
+    bool writeMode = false;     // Q7 latch: false=read, true=write
     bool loadMode  = false;     // Q6 latch: false=shift, true=load
+    bool writeBackEnabled = false;     // forwarded to DiskImage on toggle
+    uint8_t writeLatch = 0xFF;         // latched data nibble for next bit-cell flush
 
     // Head stepper. phaseOn[i] = magnet i currently energized.
     std::array<bool, 4> phaseOn{};

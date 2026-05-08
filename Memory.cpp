@@ -3,7 +3,6 @@
 
 #include "Memory.h"
 #include "CassetteDevice.h"
-#include "CpuClock.h"
 #include "Logger.h"
 #include "M6502.h"
 #include "SpeakerDevice.h"
@@ -144,7 +143,51 @@ int Memory::loadCharRom(const char* filename)
     }
     characterRom.resize(size);
     f.read(reinterpret_cast<char*>(characterRom.data()), size);
-    return f ? 1 : 0;
+    if (!f) return 0;
+
+    // Normalize to AppleWin's "csbits" convention so the renderer can
+    // treat all ROM dumps uniformly:
+    //   * Each byte represents one row of 7 visible pixels.
+    //   * Bit 0 = leftmost pixel; 1 = lit pixel.
+    //   * For codes $00-$3F (inverse range), the stored pattern is
+    //     pre-flipped so it already matches inverse video (white BG,
+    //     dark glyph). For codes $40-$7F, the stored pattern is the
+    //     non-flashing (= normal-looking) glyph; the renderer XORs
+    //     with 0x7F when the flash phase is on.
+    //
+    // 2K II/II+ ROM (e.g. AppleWin's `Apple2_Video.rom`):
+    //   - For codes $00-$7F (offsets 0x000-0x3FF): if bit 7 of byte is
+    //     0, XOR low 7 bits with 0x7F. (Inverse range bytes have bit
+    //     7 = 0; XOR gives the inverse-display pattern. Flashing range
+    //     bytes have bit 7 = 1 and stay as the normal-display pattern.)
+    //   - All bytes: reverse the low 7 bits (Apple II video shift
+    //     register reads MSB-first, so the ROM stores bit 6 = leftmost;
+    //     after reverse we end up with bit 0 = leftmost).
+    //
+    // 4K IIe Enhanced ROM (e.g. AppleWin's `Apple2e_Enhanced_Video.rom`):
+    //   - The ROM stores pixels with inverted polarity (1 = OFF) and
+    //     bit 0 = leftmost natively. XOR every byte with 0xFF flips to
+    //     1 = ON; no reverse needed.
+    if (size == 2048) {
+        for (size_t i = 0; i < 2048; ++i) {
+            uint8_t n = characterRom[i];
+            if (i < 1024 && !(n & 0x80)) n ^= 0x7F;
+            uint8_t d = 0;
+            for (int j = 0; j < 7; ++j) {
+                d = static_cast<uint8_t>((d << 1) | (n & 1));
+                n >>= 1;
+            }
+            characterRom[i] = d;
+        }
+    } else if (size == 4096) {
+        for (size_t i = 0; i < 4096; ++i) {
+            characterRom[i] ^= 0xFF;
+        }
+    }
+    // 8K (PAL or langsw variants) not preprocessed yet.
+    pom2::log().info("ROM",
+        "Loaded char ROM (" + std::to_string(size) + " B): " + filename);
+    return 1;
 }
 
 void Memory::advanceCycles(int cycles)
@@ -153,6 +196,26 @@ void Memory::advanceCycles(int cycles)
     cycleCounter += cycles;
     if (cassette) cassette->advanceCycles(cycles);
     slots.advanceCycles(cycles);
+
+    // Scanline-accurate VBL transition detection. Apple II video timing:
+    // 262 NTSC scanlines × 65 CPU cycles each. Visible: 0..191. VBL:
+    // 192..261. The "long cycle" every line (1 extra cycle every 65) is
+    // not modelled; the nominal 65 cycles/line is close enough.
+    constexpr uint64_t kCyclesPerScanline = 65;
+    constexpr uint64_t kScanlinesPerFrame = 262;
+    constexpr uint64_t kVisibleScanlines  = 192;
+    const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
+    const bool nowActive = scanline < kVisibleScanlines;
+
+    // Edge: active video → VBL. On IIe with `vblIrqMask` enabled, raise
+    // the CPU IRQ line. Mirrors MAME's `apple2e.cpp` scanline-192 timer.
+    if (vblWasActive && !nowActive) {
+        if (iieMode && vblIrqMask) {
+            vblIrqPending = true;
+            if (cpu) cpu->setIRQ(1);
+        }
+    }
+    vblWasActive = nowActive;
 }
 
 void Memory::resetSoftSwitches()
@@ -287,7 +350,7 @@ void Memory::setPaddleButton(int idx, bool down)
     if (idx >= 0 && idx < 3) paddleButton[idx] = down;
 }
 
-uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writeVal*/)
+uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal*/)
 {
     // Soft-switch byte is in $C000-$C07F. Many switches respond to either
     // a read OR a write (both edges work as toggles). We snapshot the
@@ -299,6 +362,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
     }
 
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
+
+    // IIe paging soft switch at $C000 (80STORE OFF) shares its address
+    // with the keyboard read latch. Reads return the latch (don't toggle
+    // — matches real IIe), but writes must dispatch to iieHandleSoftSwitch
+    // before the early-return below.
+    if (iieMode && low == 0x00 && isWrite) {
+        iieHandleSoftSwitch(addr);
+    }
 
     // Keyboard data — same byte regardless of read/write.
     if (low == 0x00) return kbLatch;
@@ -323,16 +394,39 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool /*isWrite*/, uint8_t /*writ
         const uint8_t s = iieReadStatus(addr);
         if (s != 0xFE) return s;  // 0xFE = sentinel for "not handled here"
     }
-    // VBL (vertical blank) strobe. Minimal model: bit 7 is high for a short
-    // window at the start of each 60 Hz frame. Many Apple II programs spin
-    // on $C019 to synchronize updates; returning a constant breaks them.
+    // VBL (vertical blank) strobe — scanline-accurate. Apple II frame:
+    // 262 scanlines × 65 cycles. Visible video = 0..191, VBL = 192..261.
+    // Bit 7 of $C019 reflects the active-video state per MAME's
+    // `apple2e.cpp` convention: HIGH during active, LOW during VBL.
+    // Reading $C019 also acknowledges any pending VBL IRQ (clears it).
     if (low == 0x19) {
-        constexpr uint64_t kFrameCycles = static_cast<uint64_t>(POM2_CPU_CYCLES_PER_FRAME_60HZ);
-        // Roughly 20% of the frame as "blanking" window. This is not a scanline
-        // accurate model; it's a compatibility strobe.
-        constexpr uint64_t kVblWindowCycles = (kFrameCycles * 2) / 10;
-        const uint64_t phase = (kFrameCycles != 0) ? (cycleCounter % kFrameCycles) : 0;
-        return (phase < kVblWindowCycles) ? 0x80 : 0x00;
+        constexpr uint64_t kCyclesPerScanline = 65;
+        constexpr uint64_t kScanlinesPerFrame = 262;
+        constexpr uint64_t kVisibleScanlines  = 192;
+        const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
+        const bool nowActive = scanline < kVisibleScanlines;
+        if (vblIrqPending) {
+            vblIrqPending = false;
+            if (cpu) cpu->setIRQ(0);
+        }
+        return nowActive ? 0x80 : 0x00;
+    }
+
+    // IIe VBL IRQ mask: $C05A disables the VBL interrupt, $C05B enables it.
+    // (On II/II+ these are AN1/AN2 annunciators with no IRQ semantics; we
+    // gate behind iieMode.) Either read or write toggles, matching the
+    // soft-switch convention used elsewhere.
+    if (iieMode && (low == 0x5A || low == 0x5B)) {
+        if (low == 0x5A) {
+            vblIrqMask = false;
+            if (vblIrqPending) {
+                vblIrqPending = false;
+                if (cpu) cpu->setIRQ(0);
+            }
+        } else {
+            vblIrqMask = true;
+        }
+        return 0;
     }
 
     // Display soft switches.

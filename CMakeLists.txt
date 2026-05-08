@@ -42,6 +42,7 @@ set(SOURCES
     DiskIICard.cpp
     DiskImage.cpp
     EmulationController.cpp
+    HdvController_ImGui.cpp
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
     LeChatMauveCard.cpp
@@ -50,7 +51,9 @@ set(SOURCES
     MainWindow_MemoryMaps.cpp
     MemoryViewer_ImGui.cpp
     ProDOSHardDiskCard.cpp
+    ProDOSVolume.cpp
     RomLoader.cpp
+    Settings.cpp
     SlotBus.cpp
     SnapshotIO.cpp
     SpeakerDevice.cpp
@@ -70,6 +73,7 @@ set(HEADERS
     DiskIICard.h
     DiskImage.h
     EmulationController.h
+    HdvController_ImGui.h
     JoystickInput.h
     JoystickPanel_ImGui.h
     IconsFontAwesome6.h
@@ -78,7 +82,9 @@ set(HEADERS
     MainWindow.h
     MemoryViewer_ImGui.h
     ProDOSHardDiskCard.h
+    ProDOSVolume.h
     Logger.h
+    Settings.h
     CpuClock.h
     RomLoader.h
     SlotBus.h

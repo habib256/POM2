@@ -252,9 +252,11 @@ static const uint8_t kAscii5x7[96 * 8] = {
 // Map a screen byte to a glyph row pattern + video attributes.
 //   $00-$3F  inverse   ─ low 6 bits = char index (always inverse)
 //   $40-$7F  flashing  ─ low 6 bits = char index (alternates inverse/normal
-//                        at ~1 Hz — drives the Monitor cursor blink and
+//                        at ~2 Hz — drives the Monitor cursor blink and
 //                        any inverse-blinking spaces left behind by
-//                        Applesoft when it moves to a new line)
+//                        Applesoft when it moves to a new line). On IIe
+//                        with ALTCHAR=on, this range becomes mousetext
+//                        (non-flashing, glyph from second 2 KB ROM bank).
 //   $80-$FF  normal    ─ low 7 bits = ASCII (//e exposes lowercase here)
 static void resolveGlyph(uint8_t screenByte, uint8_t out[8],
                          bool& invert, bool& flash)
@@ -282,42 +284,153 @@ static void resolveGlyph(uint8_t screenByte, uint8_t out[8],
     }
 }
 
+// Char-ROM-backed glyph resolver. The ROM has been pre-processed at
+// load time (`Memory::loadCharRom`) into AppleWin-style csbits format:
+//
+//   * Each byte = one displayed row of 7 pixels.
+//   * Bit 0 = leftmost pixel, bit 6 = rightmost; 1 = lit pixel.
+//   * Codes $00-$3F (inverse range) are pre-flipped to look like inverse
+//     video already (white BG with dark glyph). Codes $80-$FF (normal)
+//     are stored as normal video (dark BG with white glyph). Codes
+//     $40-$7F (flashing) hold the normal-looking pattern; the renderer
+//     XORs with 0x7F when the flash phase is on.
+//   * IIe ALTCHAR additions (4 KB ROM only): codes $40-$5F look up the
+//     second 2 KB bank (mousetext glyphs); codes $60-$7F display the
+//     lowercase glyph from $E0-$FF as inverse video.
+//   * 2 KB ROMs (II/II+) have no lowercase: codes $61-$7A and $E1-$FA
+//     are remapped to their uppercase equivalents (clear bit 5).
+//
+// The renderer reads each row's 7 pixels by `(row >> i) & 1` for i=0..6
+// after the optional flash XOR.
+struct GlyphLookup {
+    uint8_t bytes[8];
+    bool    flash = false;
+};
+
+static GlyphLookup lookupCsbitsGlyph(uint8_t screenByte,
+                                     const uint8_t* charRom,
+                                     std::size_t charRomSize,
+                                     bool altCharSet)
+{
+    GlyphLookup g{};
+    if (charRomSize < 2048) { return g; }
+
+    uint8_t mapped = screenByte;
+
+    // Lowercase fallback for 2 KB II/II+ ROMs (no lowercase glyphs).
+    // Maps a-z to A-Z by clearing bit 5, mirroring the IIe firmware's
+    // own fallback when no IIe char ROM is installed.
+    if (charRomSize < 4096) {
+        const uint8_t ascii = mapped & 0x7F;
+        if (ascii >= 0x61 && ascii <= 0x7A) {
+            mapped = static_cast<uint8_t>((mapped & 0x80) | (ascii - 0x20));
+        }
+    }
+
+    // Code-range routing (mirrors MAME's IIe `get_text_character`):
+    //
+    //   ALTCHAR off (II/II+ behaviour, IIe boot default):
+    //     $00-$3F  inverse (always)
+    //     $40-$7F  flashing — remap to $00-$3F and toggle invert at the
+    //              flash phase (renderer does the XOR per row).
+    //     $80-$FF  normal
+    //
+    //   ALTCHAR on (IIe-only, requires 4 KB ROM):
+    //     $00-$3F  inverse (same as above)
+    //     $40-$5F  mousetext — keep code as-is so the lookup hits the
+    //              4 KB ROM's mousetext slot at offsets $200-$2FF.
+    //              Non-flashing inverse-style display.
+    //     $60-$7F  lowercase inverse — remap to $E0-$FF (= lowercase
+    //              normal range) and force display-time invert so the
+    //              user sees lowercase on a bright background.
+    //     $80-$FF  normal (lowercase included on a 4 KB ROM)
+    std::size_t code = mapped;
+    bool extraInvert = false;
+
+    if (altCharSet && charRomSize >= 4096) {
+        if (mapped >= 0x40 && mapped <= 0x5F) {
+            // Mousetext: csbits hold the closed-apple / heart / etc.
+            // glyphs at this offset (the 4 KB ROM repurposes the
+            // flashing slot for mousetext).
+            // Leave `code = mapped` (i.e. $40-$5F).
+        } else if (mapped >= 0x60 && mapped <= 0x7F) {
+            code = static_cast<std::size_t>(mapped | 0x80);
+            extraInvert = true;
+        }
+    } else if (mapped >= 0x40 && mapped <= 0x7F) {
+        // Flashing — remap to inverse range so the LOOKUP hits the
+        // inverse glyph; flash flag drives the per-row XOR at render.
+        code = static_cast<std::size_t>(mapped & 0x3F);
+        g.flash = true;
+    }
+
+    const std::size_t off = code * 8;
+    for (int i = 0; i < 8; ++i) {
+        g.bytes[i] = (off + i < charRomSize) ? charRom[off + i] & 0x7Fu : 0;
+    }
+    if (extraInvert) {
+        for (int i = 0; i < 8; ++i) g.bytes[i] ^= 0x7Fu;
+    }
+    return g;
+}
+
 void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
 {
     const auto state = mem.getDisplayState();
     const uint8_t* ram = mem.data();
 
     // Flash phase: 0 = invert as-stored, 1 = flip back to normal. Toggles
-    // every kFlashHalfPeriodFrames frames (~0.5 s at 60 Hz → 1 Hz cycle,
-    // matches Apple II silicon).
+    // every kFlashHalfPeriodFrames frames. Half-period = 15 frames @ 60 Hz
+    // → 2 Hz cycle, matching MAME's `screen.frame_number() & 0x10` (II/II+
+    // 555-timer approximation).
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
+
+    // Char ROM path: when a real character ROM is loaded, render each
+    // cell as 7 actual pixels from the ROM (bit 0 = leftmost). 2 KB ROM
+    // = II/II+ standard (no mousetext); 4 KB+ = IIe (second bank holds
+    // mousetext glyphs, used when ALTCHAR=on).
+    const auto& charRom    = mem.charRom();
+    const bool useCharRom  = charRom.size() >= 2048;
+    const bool altCharSet  = state.altChar;
 
     for (int row = firstRow; row < lastRow; ++row) {
         const uint16_t rowAddr = textRowAddress(row, state.page2);
         for (int col = 0; col < 40; ++col) {
-            uint8_t glyph[8];
-            bool invert = false;
-            bool flash  = false;
-            resolveGlyph(ram[rowAddr + col], glyph, invert, flash);
-            if (flash && flashPhase) invert = !invert;
-
-            // Each cell is 7 wide × 8 tall. Bits 0-4 of the glyph are the 5
-            // active pixels with one column of leading and one of trailing
-            // padding, matching the Apple II character cell width. In
-            // inverse mode the whole cell flips, padding columns included,
-            // so a flashing space ($60 — the Monitor's cursor) renders as
-            // a solid block.
+            const uint8_t src = ram[rowAddr + col];
             const int cellX = col * 7;
             const int cellY = row * 8;
-            for (int gy = 0; gy < 8; ++gy) {
-                const uint8_t row8 = glyph[gy];
-                for (int gx = 0; gx < 7; ++gx) {
-                    bool lit = (gx >= 1 && gx <= 5)
-                            && ((row8 >> (5 - gx)) & 1);
-                    if (invert) lit = !lit;
-                    const int px = cellX + gx;
-                    const int py = cellY + gy;
-                    frame[py * kWidth + px] = lit ? 0xFFFFFFFFu : 0xFF000000u;
+
+            if (useCharRom) {
+                // csbits convention: bit 0 = leftmost pixel, 1 = lit.
+                // For flashing range, XOR with 0x7F when flash phase on.
+                const auto g = lookupCsbitsGlyph(
+                    src, charRom.data(), charRom.size(), altCharSet);
+                for (int gy = 0; gy < 8; ++gy) {
+                    uint8_t bits = g.bytes[gy];
+                    if (g.flash && flashPhase) bits ^= 0x7Fu;
+                    for (int gx = 0; gx < 7; ++gx) {
+                        const bool lit = ((bits >> gx) & 1) != 0;
+                        frame[(cellY + gy) * kWidth + (cellX + gx)] =
+                            lit ? 0xFFFFFFFFu : 0xFF000000u;
+                    }
+                }
+            } else {
+                // 5×7 fallback: bits 0-4 = 5 active pixels, with 1 col
+                // of leading + trailing padding for the 7-wide cell.
+                uint8_t glyph[8];
+                bool invert = false;
+                bool flash  = false;
+                resolveGlyph(src, glyph, invert, flash);
+                if (flash && flashPhase) invert = !invert;
+                for (int gy = 0; gy < 8; ++gy) {
+                    const uint8_t row8 = glyph[gy];
+                    for (int gx = 0; gx < 7; ++gx) {
+                        bool lit = (gx >= 1 && gx <= 5)
+                                && ((row8 >> (5 - gx)) & 1);
+                        if (invert) lit = !lit;
+                        frame[(cellY + gy) * kWidth + (cellX + gx)] =
+                            lit ? 0xFFFFFFFFu : 0xFF000000u;
+                    }
                 }
             }
         }
@@ -780,12 +893,13 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
 void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
                                  bool altCharSet)
 {
-    (void)altCharSet;  // built-in 5×7 fallback ignores ALTCHAR; charset ROM
-                       // would consult banks here once one is loaded.
     const auto state = mem.getDisplayState();
     const uint8_t* main_ = mem.data();
     const uint8_t* aux_  = auxRam ? auxRam : mem.data();
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
+
+    const auto& charRom   = mem.charRom();
+    const bool useCharRom = charRom.size() >= 2048;
 
     for (int row = firstRow; row < lastRow; ++row) {
         // 80STORE + PAGE2 already routes writes to aux at the memory
@@ -796,24 +910,38 @@ void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
             // 80-col cell (chars 0,2,4,…) at xCell0, MAIN byte the
             // ODD cell (chars 1,3,5,…) at xCell1.
             for (int half = 0; half < 2; ++half) {
-                const uint8_t  src    = (half == 0) ? aux_[rowAddr + col]
-                                                    : main_[rowAddr + col];
-                const int      cellX  = col * 14 + half * 7;
-                const int      cellY  = row * 8;
-                uint8_t glyph[8];
-                bool invert = false;
-                bool flash  = false;
-                resolveGlyph(src, glyph, invert, flash);
-                if (flash && flashPhase) invert = !invert;
-                for (int gy = 0; gy < 8; ++gy) {
-                    const uint8_t row8 = glyph[gy];
-                    for (int gx = 0; gx < 7; ++gx) {
-                        bool lit = (gx >= 1 && gx <= 5)
-                                && ((row8 >> (5 - gx)) & 1);
-                        if (invert) lit = !lit;
-                        const int px = cellX + gx;
-                        const int py = cellY + gy;
-                        frame80[py * kWidth80 + px] = lit ? 0xFFFFFFFFu : 0xFF000000u;
+                const uint8_t src   = (half == 0) ? aux_[rowAddr + col]
+                                                  : main_[rowAddr + col];
+                const int     cellX = col * 14 + half * 7;
+                const int     cellY = row * 8;
+
+                if (useCharRom) {
+                    const auto g = lookupCsbitsGlyph(
+                        src, charRom.data(), charRom.size(), altCharSet);
+                    for (int gy = 0; gy < 8; ++gy) {
+                        uint8_t bits = g.bytes[gy];
+                        if (g.flash && flashPhase) bits ^= 0x7Fu;
+                        for (int gx = 0; gx < 7; ++gx) {
+                            const bool lit = ((bits >> gx) & 1) != 0;
+                            frame80[(cellY + gy) * kWidth80 + (cellX + gx)] =
+                                lit ? 0xFFFFFFFFu : 0xFF000000u;
+                        }
+                    }
+                } else {
+                    uint8_t glyph[8];
+                    bool invert = false;
+                    bool flash  = false;
+                    resolveGlyph(src, glyph, invert, flash);
+                    if (flash && flashPhase) invert = !invert;
+                    for (int gy = 0; gy < 8; ++gy) {
+                        const uint8_t row8 = glyph[gy];
+                        for (int gx = 0; gx < 7; ++gx) {
+                            bool lit = (gx >= 1 && gx <= 5)
+                                    && ((row8 >> (5 - gx)) & 1);
+                            if (invert) lit = !lit;
+                            frame80[(cellY + gy) * kWidth80 + (cellX + gx)] =
+                                lit ? 0xFFFFFFFFu : 0xFF000000u;
+                        }
                     }
                 }
             }
@@ -850,17 +978,32 @@ void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
 //     main_byte = main [base + c]   → 7 dots at columns [c*14+7 .. c*14+13]
 //     bit 0 of each byte is the leftmost dot in its half.
 //
-// Total: 40 byte-pairs × 14 dots = 560 dots per scanline.
+// Total: 40 byte-pairs × 14 dots = 560 dots per scanline. MAME masks each
+// byte with `& 0x7f` (the high bit is unused in DHGR); POM2 reads only
+// bits 0..6 explicitly, so the masking is implicit.
 //
-// Color: walk a 4-bit window over the 560-dot stream in 4-dot strides.
-// The 4 consecutive dots form a nibble (bit 0 = leftmost dot, bit 3 =
-// rightmost), which is a standard lo-res palette index 0..15. Each
-// 4-dot group is a single color cell painted onto all four dots.
+// Three color paths, picked by `hiResMode`:
 //
-// Monochrome: each dot is a luminance bit (1 = lit, 0 = off) tinted by
-// the active phosphor. The persistence buffer is sized for 280 wide so
-// we render mono DHGR without phosphor decay — the user can still pick
-// a green / amber tint, just without the long-tail afterglow.
+//   ColorNTSC   — composite artifact decode. 7-bit sliding window over
+//                 the raw 560-dot stream, indexed into MAME's
+//                 `kArtifactColorLut[128]`, then `rotl4b(value, absX+1)`
+//                 selects the 4-bit lo-res palette index. Per-pixel
+//                 (560 lookups/scanline) → produces the inter-cell
+//                 fringing real composite Apple IIe monitors show. The
+//                 `+1` matches MAME's `is_80_column = 1` for DHGR in
+//                 `apple2video.cpp::render_line_artifact_color`.
+//
+//   ChatMauveRGB — clean RGB-card 4-dot block decode. Each 4 consecutive
+//                  dots form a nibble (bit 0 = leftmost), the nibble is
+//                  rotated left by 1 (matches MAME's Video-7 rgbmode==3
+//                  path in `dhgr_update`), and the result indexes
+//                  `kChatMauveLoResPalette` — the Péritel palette where
+//                  indices 5 and 10 are *distinct* grays (the famous
+//                  "two distinct grays" Le Chat Mauve trademark).
+//
+//   Mono*       — each dot = luminance bit × phosphor tint. No artifact
+//                 decoding. The persistence buffer is sized for 280
+//                 (HGR), so DHGR mono renders without afterglow.
 
 void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
 {
@@ -872,9 +1015,13 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
     const bool monochrome = (m == HiResMode::MonoWhite ||
                              m == HiResMode::MonoGreen ||
                              m == HiResMode::MonoAmber);
+    // ChatMauveRGB without a plugged card silently falls back to NTSC
+    // (matches a real IIe pulled out of its RGB adapter).
+    const bool useChatMauve = (m == HiResMode::ChatMauveRGB) && (chatMauve != nullptr);
+    const bool useComposite = !monochrome && !useChatMauve;
+    const uint32_t* rgbCardPalette = useChatMauve
+        ? kChatMauveLoResPalette : kLoResPalette;
 
-    // Phosphor lookup. The kPhosphors table lives in the anonymous
-    // namespace above; kLoResPalette is a static class member.
     static const struct { uint8_t r, g, b; } kMonoTint[] = {
         { 0xFF, 0xFF, 0xFF }, // ColorNTSC    placeholder
         { 0xFF, 0xFF, 0xFF }, // ChatMauveRGB placeholder
@@ -884,11 +1031,49 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
     };
     const auto& tint = kMonoTint[static_cast<int>(m)];
 
-    uint8_t dots[kWidth80];
+    constexpr int kContextBits = 3;
+
+    uint8_t  dots [kWidth80];   // raw 560-dot stream (mono + RGB-card paths)
+    uint16_t pairs[40];         // aux+main packed words (composite path)
+
     for (int y = firstScanline; y < lastScanline; ++y) {
         const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
 
-        // Build the 560-dot stream from interleaved aux + main bytes.
+        if (useComposite) {
+            // Pack the aux+main pair as 14 bits: aux's bits 0..6 in the low
+            // 7 (leftmost 7 dots of the cell pair), main's bits 0..6 in
+            // bits 7..13 (rightmost 7 dots). Mirrors MAME's
+            //   words[col] = (vaux & 0x7f) | ((vram & 0x7f) << 7);
+            for (int c = 0; c < 40; ++c) {
+                const uint8_t auxB  = aux_ [rowAddr + c] & 0x7Fu;
+                const uint8_t mainB = main_[rowAddr + c] & 0x7Fu;
+                pairs[c] = static_cast<uint16_t>(auxB | (mainB << 7));
+            }
+
+            // Incremental 7-bit window (3 left context + current + 3 right
+            // context). At each step the lookup uses bits 0..6 of `w`,
+            // then `w >>= 1` shifts the whole stream by one dot.
+            uint32_t w = static_cast<uint32_t>(pairs[0]) << kContextBits;
+            for (int col = 0; col < 40; ++col) {
+                if (col + 1 < 40) {
+                    w |= static_cast<uint32_t>(pairs[col + 1])
+                         << (14 + kContextBits);
+                }
+                for (int b = 0; b < 14; ++b) {
+                    const int absX = col * 14 + b;
+                    const uint8_t lutEntry = kArtifactColorLut[w & 0x7Fu];
+                    // is_80_column = 1 for DHGR → rotation = absX + 1.
+                    const unsigned loresIdx =
+                        rotl4b(lutEntry, static_cast<unsigned>(absX + 1));
+                    outRow[absX] = kLoResPalette[loresIdx];
+                    w >>= 1;
+                }
+            }
+            continue;
+        }
+
+        // Build the 560-dot stream (mono + RGB-card both walk it).
         for (int c = 0; c < 40; ++c) {
             const uint8_t auxB  = aux_ [rowAddr + c];
             const uint8_t mainB = main_[rowAddr + c];
@@ -899,9 +1084,7 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
             }
         }
 
-        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
         if (monochrome) {
-            // 1 dot = 1 luminance bit, tint applied.
             for (int x = 0; x < kWidth80; ++x) {
                 if (dots[x]) {
                     outRow[x] = (uint32_t(0xFF) << 24)
@@ -913,14 +1096,17 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                 }
             }
         } else {
-            // 4-dot color cells indexed into the lo-res 16-color palette.
+            // RGB-card 4-dot block decode (ChatMauveRGB). Rotated left by
+            // 1 to match MAME's `rotl4(n, 1)` Video-7 RGB color path.
             for (int x = 0; x < kWidth80; x += 4) {
-                const uint8_t nibble = static_cast<uint8_t>(
+                const uint8_t raw = static_cast<uint8_t>(
                       dots[x + 0]
                     | (dots[x + 1] << 1)
                     | (dots[x + 2] << 2)
                     | (dots[x + 3] << 3));
-                const uint32_t rgb = kLoResPalette[nibble];
+                const uint8_t nibble = static_cast<uint8_t>(
+                    ((raw << 1) | (raw >> 3)) & 0x0Fu);
+                const uint32_t rgb = rgbCardPalette[nibble];
                 outRow[x + 0] = rgb;
                 outRow[x + 1] = rgb;
                 outRow[x + 2] = rgb;

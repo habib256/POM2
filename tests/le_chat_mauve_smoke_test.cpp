@@ -143,7 +143,8 @@ int main()
         clearHgrLine(mem, 1);
         writeHgrByte(mem, 1, 0, 0x02);
         display.render(mem);
-        const uint32_t green = pack(0x22, 0xDD, 0x11);
+        // kChatMauveHGR[0][2] = 0xFF22DD11 → R=0x11, G=0xDD, B=0x22.
+        const uint32_t green = pack(0x11, 0xDD, 0x22);
         assert(*pixelAt(display, 0, 1) == green);
         assert(*pixelAt(display, 1, 1) == green);
 
@@ -153,7 +154,8 @@ int main()
         clearHgrLine(mem, 2);
         writeHgrByte(mem, 2, 0, 0x81);
         display.render(mem);
-        const uint32_t blue = pack(0xFF, 0x22, 0x22);
+        // kChatMauveHGR[1][1] = 0xFFFF2222 → R=0x22, G=0x22, B=0xFF.
+        const uint32_t blue = pack(0x22, 0x22, 0xFF);
         assert(*pixelAt(display, 0, 2) == blue);
         assert(*pixelAt(display, 1, 2) == blue);
         // Critically, x=2 should be BLACK (no fringing — NTSC would smear

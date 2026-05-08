@@ -288,6 +288,17 @@ private:
     bool     iieMode      = false;
     uint16_t iieMemMode   = 0;       // OR of MF_* flags
 
+    // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
+    // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not
+    // modelled here; nominal 17046 cycles/frame is close enough).
+    // Visible video = scanlines 0..191; vertical blank = 192..261.
+    // `vblIrqMask` (IIe only) gates the IRQ. The pending flag is set
+    // when entering VBL with mask on; cleared on $C019 read or $C05A
+    // (disable) write. Asserted on the CPU IRQ line via cpu->setIRQ.
+    bool vblIrqMask    = false;
+    bool vblIrqPending = false;
+    bool vblWasActive  = true;       // tracks transition into VBL window
+
     void markRomRegion(uint16_t lo, uint16_t hi);
     uint8_t softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal);
     uint8_t languageCardSwitchAccess(uint16_t addr);

@@ -69,6 +69,24 @@ inline void write4and4(uint8_t*& dst, uint8_t b)
 // checksum recover the original byte cleanly on read-back.
 inline uint8_t rev2(uint8_t b) { return ((b & 1) << 1) | ((b >> 1) & 1); }
 
+// Inverse of kGcrTable: maps a disk byte ($96-$FF) back to its 6-bit
+// value (0..63), or 0xFF if the byte isn't a valid GCR nibble.
+constexpr std::array<uint8_t, 256> makeGcrInverse()
+{
+    std::array<uint8_t, 256> t{};
+    for (int i = 0; i < 256; ++i) t[i] = 0xFF;
+    for (uint8_t v = 0; v < 64; ++v) t[kGcrTable[v]] = v;
+    return t;
+}
+constexpr std::array<uint8_t, 256> kGcrInverse = makeGcrInverse();
+
+// Decode one 4-and-4 byte (8 nibbles → 4 bytes). Returns the byte; the
+// caller advances the cursor by 2.
+inline uint8_t decode4and4(const uint8_t* p)
+{
+    return static_cast<uint8_t>(((p[0] << 1) & 0xAA) | (p[1] & 0x55));
+}
+
 }  // namespace
 
 DiskImage::DiskImage()
@@ -85,8 +103,47 @@ uint8_t DiskImage::nibbleAt(int track, int index) const
 
 bool DiskImage::loadFile(const std::string& imgPath)
 {
-    // Sniff the extension. ".po" → ProDOS sector order, anything else
-    // (".dsk" / ".do" / no extension) → DOS 3.3.
+    // Sniff the extension:
+    //   .nib → raw nibble stream (no encoding)
+    //   .po  → ProDOS sector order
+    //   else → DOS 3.3 sector order (.dsk, .do, or no extension)
+    if (endsWithCi(imgPath, ".nib")) {
+        std::ifstream f(imgPath, std::ios::binary);
+        if (!f) {
+            lastError = "Cannot open " + imgPath;
+            loaded = false;
+            return false;
+        }
+        f.seekg(0, std::ios::end);
+        const auto size = static_cast<size_t>(f.tellg());
+        f.seekg(0, std::ios::beg);
+        const size_t expected = static_cast<size_t>(kTracks) * kNibblesPerTrack;
+        if (size != expected) {
+            lastError = "Expected " + std::to_string(expected) +
+                        "-byte .nib image, got " + std::to_string(size);
+            loaded = false;
+            return false;
+        }
+        for (int t = 0; t < kTracks; ++t) {
+            f.read(reinterpret_cast<char*>(tracks[t].data()), kNibblesPerTrack);
+        }
+        if (!f) {
+            lastError = "Short read on " + imgPath;
+            loaded = false;
+            return false;
+        }
+        path        = imgPath;
+        loaded      = true;
+        nibFormat   = true;
+        sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
+        dirty.fill(false);
+        anyDirty    = false;
+        lastError.clear();
+        pom2::log().info("Disk II", "Loaded " + imgPath +
+                         " (.nib raw nibble stream, 35 tracks)");
+        return true;
+    }
+
     const SectorOrder order = endsWithCi(imgPath, ".po")
                               ? SectorOrder::ProDOS
                               : SectorOrder::Dos33;
@@ -131,7 +188,10 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
 
     path        = imgPath;
     loaded      = true;
+    nibFormat   = false;
     sectorOrder = order;
+    dirty.fill(false);
+    anyDirty    = false;
     lastError.clear();
     pom2::log().info("Disk II", "Loaded " + imgPath +
                      " (35 tracks, 16 sectors, GCR-encoded, " +
@@ -143,8 +203,22 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
 void DiskImage::eject()
 {
     loaded = false;
+    nibFormat = false;
     path.clear();
     for (auto& t : tracks) t.fill(0xFF);
+    dirty.fill(false);
+    anyDirty = false;
+}
+
+void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
+{
+    if (!loaded || track < 0 || track >= kTracks) return;
+    const int n = ((index % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack;
+    if (tracks[track][n] != value) {
+        tracks[track][n] = value;
+        dirty[track]     = true;
+        anyDirty         = true;
+    }
 }
 
 void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
@@ -179,6 +253,165 @@ void DiskImage::writeAddressField(uint8_t*& dst, uint8_t volume,
     write4and4(dst, static_cast<uint8_t>(volume ^ track ^ sector));
     *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;
 }
+
+// ── Decoder ─────────────────────────────────────────────────────────────
+
+bool DiskImage::decodeTrack(int track, uint8_t outSectors[kSectorsPerTrack][kSectorBytes]) const
+{
+    if (track < 0 || track >= kTracks) return false;
+    const auto& buf = tracks[track];
+    bool decodedAny = false;
+
+    // Wrap-around scan: walk 2× the track length so a sector that
+    // straddles the buffer end can be matched. Index modulo'd into buf.
+    auto at = [&](int i) -> uint8_t {
+        return buf[((i % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack];
+    };
+
+    int curSector = -1;
+    for (int i = 0; i < 2 * kNibblesPerTrack; ++i) {
+        // Address-field prologue: D5 AA 96.
+        if (at(i) == 0xD5 && at(i + 1) == 0xAA && at(i + 2) == 0x96) {
+            // 4-and-4 fields: vol, trk, sec, chk (8 nibbles).
+            uint8_t addr[4];
+            for (int k = 0; k < 4; ++k) {
+                uint8_t pair[2] = { at(i + 3 + k * 2), at(i + 4 + k * 2) };
+                addr[k] = decode4and4(pair);
+            }
+            curSector = addr[2];
+            // Skip past the address field (3 + 8 + 3 epilogue = 14).
+            i += 13;
+            continue;
+        }
+        // Data-field prologue: D5 AA AD.
+        if (at(i) == 0xD5 && at(i + 1) == 0xAA && at(i + 2) == 0xAD &&
+            curSector >= 0 && curSector < kSectorsPerTrack) {
+            // 86 secondary nibbles + 256 primary nibbles + 1 checksum.
+            const int dataStart = i + 3;
+            uint8_t low2[86];
+            uint8_t high6[256];
+            uint8_t prev = 0;
+            bool ok = true;
+            // The encoder's stream order is `for j=85 down to 0: write
+            // low2_enc[j]`, where low2_enc[85-i] = src[i]'s packed low2.
+            // After decoding disk[0..85] in stream order, decoded[j] =
+            // low2_enc[85-j] = src[j]'s packed low2 bits. So our local
+            // `low2[j]` (indexed by source byte slot) gets decoded[j].
+            for (int j = 0; j < 86; ++j) {
+                const uint8_t disk = at(dataStart + j);
+                const uint8_t v6   = kGcrInverse[disk];
+                if (v6 == 0xFF) { ok = false; break; }
+                const uint8_t cur  = static_cast<uint8_t>(prev ^ v6);
+                low2[j] = cur;
+                prev = cur;
+            }
+            if (ok) {
+                for (int j = 0; j < 256; ++j) {
+                    const uint8_t disk = at(dataStart + 86 + j);
+                    const uint8_t v6   = kGcrInverse[disk];
+                    if (v6 == 0xFF) { ok = false; break; }
+                    const uint8_t cur  = static_cast<uint8_t>(prev ^ v6);
+                    high6[j] = cur;
+                    prev = cur;
+                }
+            }
+            if (ok) {
+                // Checksum nibble must XOR to 0 with the running prev.
+                const uint8_t chk = kGcrInverse[at(dataStart + 86 + 256)];
+                if (chk == 0xFF || (prev ^ chk) != 0) ok = false;
+            }
+            if (ok) {
+                // Recombine: byte[i] = (high6[i] << 2) | low2 bits for slot i.
+                for (int b = 0; b < 256; ++b) {
+                    const int slot = b % 86;
+                    const uint8_t low2pack = low2[slot];
+                    uint8_t lo;
+                    if (b < 86)        lo = rev2(static_cast<uint8_t>( low2pack       & 3));
+                    else if (b < 172)  lo = rev2(static_cast<uint8_t>((low2pack >> 2) & 3));
+                    else                lo = rev2(static_cast<uint8_t>((low2pack >> 4) & 3));
+                    outSectors[curSector][b] = static_cast<uint8_t>((high6[b] << 2) | lo);
+                }
+                decodedAny = true;
+            }
+            // Skip past the data field (3 + 343 + 3 epilogue = 349).
+            i += 348;
+            curSector = -1;
+            continue;
+        }
+    }
+    return decodedAny;
+}
+
+bool DiskImage::saveDirty()
+{
+    if (!loaded || !anyDirty || !writeBackEnabled) {
+        return true;   // nothing to save (or save disabled) — no error
+    }
+
+    // .nib: just write the raw nibble buffers verbatim.
+    if (nibFormat) {
+        std::ofstream f(path, std::ios::binary | std::ios::out);
+        if (!f) {
+            lastError = "Cannot open " + path + " for write";
+            return false;
+        }
+        for (int t = 0; t < kTracks; ++t) {
+            f.write(reinterpret_cast<const char*>(tracks[t].data()), kNibblesPerTrack);
+        }
+        if (!f) { lastError = "Short write on " + path; return false; }
+        dirty.fill(false);
+        anyDirty = false;
+        pom2::log().info("Disk II", "Saved (.nib): " + path);
+        return true;
+    }
+
+    // .dsk/.do/.po: read existing file, decode dirty tracks, overwrite.
+    std::vector<uint8_t> bytes(kBytesPerImage, 0);
+    {
+        std::ifstream rf(path, std::ios::binary);
+        if (rf) rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage);
+        // Missing/short read is ok — we'll fill from decode below for
+        // every dirty track, leaving non-dirty tracks at 0 (worst case).
+    }
+
+    const int* skew = (sectorOrder == SectorOrder::ProDOS)
+                      ? kProDosLogicalForPhysical
+                      : kDos33LogicalForPhysical;
+
+    int decodedTracks = 0;
+    for (int t = 0; t < kTracks; ++t) {
+        if (!dirty[t]) continue;
+        uint8_t sectors[kSectorsPerTrack][kSectorBytes];
+        // Pre-fill with the existing file content so sectors that fail
+        // to decode (or weren't rewritten by the guest) keep their
+        // original bytes.
+        for (int p = 0; p < kSectorsPerTrack; ++p) {
+            const int logical = skew[p];
+            const size_t off  = (t * kSectorsPerTrack + logical) * kSectorBytes;
+            std::memcpy(sectors[p], bytes.data() + off, kSectorBytes);
+        }
+        if (!decodeTrack(t, sectors)) continue;   // no parseable sector
+        // Re-pack into the file at logical positions.
+        for (int p = 0; p < kSectorsPerTrack; ++p) {
+            const int logical = skew[p];
+            const size_t off  = (t * kSectorsPerTrack + logical) * kSectorBytes;
+            std::memcpy(bytes.data() + off, sectors[p], kSectorBytes);
+        }
+        ++decodedTracks;
+    }
+
+    std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
+    wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage);
+    if (!wf) { lastError = "Short write on " + path; return false; }
+    dirty.fill(false);
+    anyDirty = false;
+    pom2::log().info("Disk II", "Saved " + std::to_string(decodedTracks) +
+                     " modified track(s) to " + path);
+    return true;
+}
+
+// ────────────────────────────────────────────────────────────────────────
 
 void DiskImage::writeDataField(uint8_t*& dst, const uint8_t* src)
 {

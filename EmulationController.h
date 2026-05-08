@@ -52,6 +52,11 @@ public:
     void hardReset();          // power-cycle: zeros A/X/Y, wipes stack page, re-fetches reset vector, clears soft switches
     void softReset();          // Ctrl-Reset behaviour: re-fetches reset vector, clears soft switches; A/X/Y/zp/RAM survive
     void coldBoot();           // wipes user RAM ($0000-$BFFF) then hardReset()
+    /// Cold-boot through the boot ROM of slot N. Atomically wipes RAM,
+    /// resets soft switches + slot bus + speaker, hard-resets the CPU,
+    /// sets PC = $C000 + slot*256, and switches to Running. `slot` must be
+    /// in [1..7]; out-of-range is a no-op.
+    void bootFromSlot(int slot);
     void requestStep();        // single-instruction step
 
     void setMode(Mode m);

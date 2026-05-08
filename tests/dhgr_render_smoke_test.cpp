@@ -3,14 +3,19 @@
 //  - Aux/main interleave: aux byte at column c covers dots [c*14..c*14+6],
 //    main byte covers [c*14+7..c*14+13]; bit 0 of each byte is the
 //    leftmost dot of its half.
-//  - 4-dot color cells decode to the lo-res palette.
-//  - Mono variants render dot-by-dot luminance × phosphor tint.
-//  - The display dispatcher selects the DHGR path only when iieMode +
-//    eightyCol + hiRes + dhgr are all on AND textMode is off.
+//  - Three color paths (one per HiResMode group):
+//      ColorNTSC    → MAME composite artifact LUT, per-pixel decode with
+//                     `rotl4b(_, absX+1)` (matches MAME's is_80_column=1).
+//      ChatMauveRGB → MAME RGB-card 4-dot block decode, `rotl4(n,1)`,
+//                     indexes the Chat Mauve palette (distinct grays).
+//      MonoWhite/Green/Amber → dot-by-dot luminance × phosphor tint.
+//  - The DHGR dispatcher only triggers on iieMode + 80COL + HIRES + DHGR
+//    AND textMode is off.
 //
-// Headless: builds a Memory + Apple2Display directly.
+// Headless: builds a Memory + Apple2Display + LeChatMauveCard directly.
 
 #include "Apple2Display.h"
+#include "LeChatMauveCard.h"
 #include "Memory.h"
 
 #include <cassert>
@@ -29,6 +34,15 @@ constexpr uint16_t CLR_HIRES       = 0xC056;
 constexpr uint16_t DHIRES_ON       = 0xC05E;
 constexpr uint16_t DHIRES_OFF      = 0xC05F;
 
+// Lo-res palette indices used in the assertions below. Values are in
+// `kLoResPalette[]` (NTSC) and `kChatMauveLoResPalette[]` (Péritel).
+constexpr uint32_t kBlack            = 0xFF000000u;
+constexpr uint32_t kNtscDark5_Light10 = 0xFF808080u; // NTSC: idx 5 == idx 10
+constexpr uint32_t kCmDark5          = 0xFF555555u;  // Chat Mauve idx 5
+constexpr uint32_t kCmLight10        = 0xFFAAAAAAu;  // Chat Mauve idx 10
+constexpr uint32_t kNtscMediumBlue6  = 0xFFFF9019u;  // NTSC idx 6
+constexpr uint32_t kCmMediumBlue6    = 0xFFFF4422u;  // Chat Mauve idx 6
+
 uint16_t hgrAddr(int y)
 {
     return static_cast<uint16_t>(0x2000
@@ -44,7 +58,8 @@ void clearAux(Memory& mem)
 
 void clearMain(Memory& mem)
 {
-    for (uint32_t a = 0x2000; a < 0x4000; ++a) mem.memWrite(static_cast<uint16_t>(a), 0);
+    for (uint32_t a = 0x2000; a < 0x4000; ++a)
+        mem.memWrite(static_cast<uint16_t>(a), 0);
 }
 
 }  // namespace
@@ -56,112 +71,159 @@ int main()
     Apple2Display disp;
     disp.setAuxMemory(mem.auxData());
 
-    // Verify dhgr soft switch defaults off.
-    assert(!mem.getDisplayState().dhgr);
+    // Plug a Le Chat Mauve card so ChatMauveRGB DHGR doesn't fall back.
+    // The card's render-time interface is not exercised by DHGR (we only
+    // check `chatMauve != nullptr` to gate the palette + 4-dot path).
+    LeChatMauveCard chatMauve;
+    disp.setChatMauveCard(&chatMauve);
 
-    // Toggle DHGR on / off via the soft switches.
-    mem.memRead(DHIRES_ON);
-    assert(mem.getDisplayState().dhgr);
-    mem.memRead(DHIRES_OFF);
+    // ── Soft-switch wiring: dhgr bit toggles on $C05E/$C05F.
     assert(!mem.getDisplayState().dhgr);
-    mem.memRead(DHIRES_ON);
-    assert(mem.getDisplayState().dhgr);
+    mem.memRead(DHIRES_ON);   assert( mem.getDisplayState().dhgr);
+    mem.memRead(DHIRES_OFF);  assert(!mem.getDisplayState().dhgr);
+    mem.memRead(DHIRES_ON);   assert( mem.getDisplayState().dhgr);
 
     // Switch to graphics + 80col + hires + dhgr.
     mem.memRead(CLR_TEXT);
     mem.memRead(SET_HIRES);
     mem.memRead(IIE_80COL_ON);
 
-    // Build a known DHGR scanline pattern at scanline 0.
-    // Aux byte 0 = 0x55 (dots 0,2,4,6 = 1; dots 1,3,5 = 0)
-    // Main byte 0 = 0x2A (dots 7=0, 8=1, 9=0, 10=1, 11=0, 12=1, 13=0)
-    // → dot stream (dots 0..13): 1 0 1 0 1 0 1 | 0 1 0 1 0 1 0
+    // ── Test pattern A: aux=0x55, main=0x14 — designed to put two
+    // *distinct* gray-coded cells side by side, so the Chat Mauve
+    // "two-grays" trademark is empirically visible.
     //
-    // First color cell (dots 0..3): nibble bits = 1,0,1,0 → 0x5 = "Dark Gray" (idx 5)
-    // Second cell (dots 4..7):       nibble bits = 1,0,1,0 → 0x5 again (Dark Gray)
-    // Third cell  (dots 8..11):      0,1,0,1 → 0xA = Light Gray (idx 10)
-    // Fourth cell (dots 12..13 + … from byte pair 1 below):
-    //   dots 12,13 = 1,0; dots 14,15 (next aux byte) = ?
+    //   aux 0x55  → dots 0..6 = 1,0,1,0,1,0,1
+    //   main 0x14 → dots 7..13 = 0,0,1,0,1,0,0      (0x14 = 0b0001_0100)
     //
-    // Keep the next aux/main bytes 0 so dot 14, 15 = 0.
-    //   Cell 4 (dots 12..15): 1, 0, 0, 0 → 0x1 = "Magenta/Dark Red" (idx 1)
-    //
-    // Note: the auxData direct pointer bypasses the Memory write paths, so
-    // we use it to drop the bytes directly into aux RAM.
-    uint16_t addr0 = hgrAddr(0);
-    clearAux(mem);
-    clearMain(mem);
-    mem.auxDataMutable()[addr0]     = 0x55;
-    mem.memWrite(addr0,                     0x2A); // main byte 0
-    // Leave subsequent bytes zero.
+    // RGB-card "raw nibble" interpretation (bit 0 = leftmost):
+    //   Cell 0 (dots 0..3):  raw = 0b0101 = 5  → rotl4 = 0b1010 = 10
+    //   Cell 1 (dots 4..7):  raw = 0b0101 = 5  → rotl4 = 0b1010 = 10
+    //   Cell 2 (dots 8..11): raw = 0b1010 = 10 → rotl4 = 0b0101 = 5
+    //   Cell 3 (dots 12..15, last 2 zero from byte 1):
+    //                        raw = 0b0000 = 0  → rotl4 = 0b0000 = 0  (black)
+    {
+        const uint16_t addr0 = hgrAddr(0);
+        clearAux(mem);
+        clearMain(mem);
+        mem.auxDataMutable()[addr0] = 0x55;
+        mem.memWrite(addr0, 0x14);
+    }
 
+    // ── ColorNTSC (composite) path. Per-pixel decode via kArtifactColorLut.
+    // For the leftmost pixels the LUT produces palette idx 10 (Light Gray
+    // in NTSC = 0xFF808080). We don't pin every pixel — composite per-
+    // pixel coloring varies — but the leftmost cell anchor and the all-
+    // zero region are stable.
+    disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
     disp.render(mem);
     assert(disp.width()  == 560);
     assert(disp.height() == 192);
-    const uint32_t* pix = disp.pixels();
+    {
+        const uint32_t* pix = disp.pixels();
+        // Anchor: far-right scanline of the all-zero region is black.
+        assert(pix[100 * 560 + 540] == kBlack);
+        // Composite at the leftmost pixel: LUT[0x28]=0x55, rotl4b(0x55,1)
+        // = 10 → kLoResPalette[10] = 0xFF808080.
+        assert(pix[0] == kNtscDark5_Light10);
+    }
 
-    // Re-derive expected color values from the lo-res palette via two
-    // anchor pixels we know cold:
-    //   - all-zero dots → kLoResPalette[0]  = black ($FF000000)
-    //   - white square would be kLoResPalette[15], but we don't render one
-    //     here; just sanity-check the black anchor.
-    const uint32_t black = pix[100 * 560 + 540];   // far right, scanline 100, all zeroed
-    assert(black == 0xFF000000u);
+    // ── ChatMauveRGB (RGB-card) path. Same pattern, but per-cell (4-dot
+    // block), `rotl4(n,1)` rotation, and the Chat Mauve palette.
+    //   Cells 0..1 → idx 10 = #AAAAAA (Light Gray Chat Mauve).
+    //   Cell 2     → idx 5  = #555555 (Dark Gray Chat Mauve, distinct
+    //                from Light Gray — the famous two-grays trademark).
+    //   Cell 3     → idx 0  = black.
+    disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+    disp.render(mem);
+    {
+        const uint32_t* pix = disp.pixels();
+        // Cells 0 + 1 → idx 10 (Light Gray Chat Mauve).
+        assert(pix[0]  == kCmLight10);
+        assert(pix[3]  == kCmLight10);   // last pixel of cell 0
+        assert(pix[4]  == kCmLight10);   // first pixel of cell 1
+        assert(pix[7]  == kCmLight10);   // last pixel of cell 1
+        // Cell 2 → idx 5 (Dark Gray Chat Mauve, distinct from Light).
+        assert(pix[8]  == kCmDark5);
+        assert(pix[9]  == kCmDark5);
+        assert(pix[10] == kCmDark5);
+        assert(pix[11] == kCmDark5);
+        // Cell 3 → black.
+        assert(pix[12] == kBlack);
+        assert(pix[15] == kBlack);
+        // The trademark: idx 5 and idx 10 are *distinct* under Chat Mauve.
+        assert(kCmDark5 != kCmLight10);
+    }
 
-    // Cell 1 (dots 0..3), cell 2 (dots 4..7) should be the same color.
-    const uint32_t c1 = pix[0 * 560 + 0];
-    const uint32_t c2 = pix[0 * 560 + 4];
-    assert(c1 == c2);
+    // ── MAME "too much mauve" regression pin.
+    // Pattern [1,1,0,0] (raw nibble 3) must produce Medium Blue (idx 6 =
+    // 0xFFFF9019) and *not* Purple (idx 3 = 0xFFFF28E6). Both the
+    // composite path (LUT → rotl4b yields idx 6 at absX=0) and the RGB-card
+    // path (rotl4(3,1)=6) agree at the leftmost pixel.
+    {
+        const uint16_t addr1 = hgrAddr(1);
+        mem.auxDataMutable()[addr1] = 0x03;     // dots 0,1 = 1,1; dots 2..6 = 0
+        mem.memWrite(addr1, 0x00);
 
-    // Cell 3 (dots 8..11) is the bit-reverse of cells 1/2 → distinct color
-    // (in lo-res palette indices 5 vs 10 are both gray-ish but different
-    // entries; in the //gs-corrected default they happen to share an RGB
-    // value but the LUT entry is still indexed differently. Either way
-    // the pair (c1, c3) must NOT both be black — confirms the dispatcher
-    // is taking the DHGR path and producing real pixels).
-    const uint32_t c3 = pix[0 * 560 + 8];
-    assert(c1 != 0xFF000000u);
-    assert(c3 != 0xFF000000u);
+        // Composite first: pix[0..1] should be Medium Blue (NTSC palette,
+        // 0xFFFF9019), pix[2..3] black. The "different colours within a
+        // single 4-dot cell" property is unique to composite — proves the
+        // per-pixel artifact decode is active (the RGB-card path would
+        // paint all 4 the same).
+        disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        disp.render(mem);
+        const uint32_t* pix = disp.pixels();
+        assert(pix[1 * 560 + 0] == kNtscMediumBlue6);
+        assert(pix[1 * 560 + 1] == kNtscMediumBlue6);
+        assert(pix[1 * 560 + 2] == kBlack);
+        assert(pix[1 * 560 + 3] == kBlack);
+        assert(pix[1 * 560 + 0] != pix[1 * 560 + 2]);   // intra-cell variation
 
-    // Cell 4 (dots 12..15) — bits 1,0,0,0 → palette idx 1.
-    const uint32_t c4 = pix[0 * 560 + 12];
-    assert(c4 != 0xFF000000u);
-    // Dots 16..19 are entirely zero → black.
-    const uint32_t c5 = pix[0 * 560 + 16];
-    assert(c5 == 0xFF000000u);
+        // RGB-card path on the same pattern: cell 0 is all Medium Blue
+        // (Chat Mauve palette idx 6 = 0xFFFF4422 — different shade from
+        // NTSC idx 6 because Péritel RGB has a different blue saturation).
+        disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        disp.render(mem);
+        const uint32_t* pix2 = disp.pixels();
+        assert(pix2[1 * 560 + 0] == kCmMediumBlue6);
+        assert(pix2[1 * 560 + 1] == kCmMediumBlue6);
+        assert(pix2[1 * 560 + 2] == kCmMediumBlue6);
+        assert(pix2[1 * 560 + 3] == kCmMediumBlue6);
+        // Both modes agree the colour is in the "blue" family — neither
+        // is purple. This is the original "too much mauve" regression pin.
+        assert(pix [1 * 560 + 0] != 0xFFFF28E6u);  // NTSC Purple idx 3
+        assert(pix2[1 * 560 + 0] != 0xFFDD22DDu);  // Chat Mauve Violet idx 3
+    }
 
-    // Mixed-mode flag: DHGR top + 80-col text bottom. Just exercise the
-    // dispatcher; we don't pin pixel values for the text rows here.
+    // ── Mixed-mode flag: DHGR top + 80-col text bottom. Just exercise the
+    // dispatcher; pixel values for the text rows aren't pinned here.
+    disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
     mem.memRead(0xC053);  // SET_MIXED
     disp.render(mem);
     assert(disp.width() == 560);
 
-    // Disable DHGR — display should fall back to the legacy 280-wide HGR
-    // path even though 80COL is still on.
+    // ── Disable DHGR: dispatcher falls back to the 280-wide HGR path.
     mem.memRead(DHIRES_OFF);
     mem.memRead(0xC052);  // CLR_MIXED
     assert(!mem.getDisplayState().dhgr);
     disp.render(mem);
     assert(disp.width() == 280);
 
-    // Mono path: enable DHGR, switch HiResMode to MonoGreen, confirm the
-    // lit dots appear green-tinted (approximately).
+    // ── Mono path: enable DHGR, MonoGreen tint must be greenish at the
+    // first lit dot (aux bit 0 = 1).
     mem.memRead(DHIRES_ON);
     disp.setHiResMode(Apple2Display::HiResMode::MonoGreen);
     disp.render(mem);
     assert(disp.width() == 560);
-    const uint32_t* pix2 = disp.pixels();
-    // The dot at column 0, scanline 0 is lit (aux bit 0 = 1) → MonoGreen
-    // tint $33FF33 with alpha $FF.
-    const uint32_t litGreen = pix2[0];
-    assert(((litGreen >> 24) & 0xFF) == 0xFF);
-    // Green channel should be the high one. RGBA layout: ABGR-in-uint32
-    // with R as the lowest byte (matches kLoResPalette).
-    const uint32_t rPix = (litGreen >>  0) & 0xFF;
-    const uint32_t gPix = (litGreen >>  8) & 0xFF;
-    const uint32_t bPix = (litGreen >> 16) & 0xFF;
-    assert(gPix > rPix);
-    assert(gPix > bPix);
+    {
+        const uint32_t* pix = disp.pixels();
+        const uint32_t litGreen = pix[0];
+        assert(((litGreen >> 24) & 0xFF) == 0xFF);
+        const uint32_t rPix = (litGreen >>  0) & 0xFF;
+        const uint32_t gPix = (litGreen >>  8) & 0xFF;
+        const uint32_t bPix = (litGreen >> 16) & 0xFF;
+        assert(gPix > rPix);
+        assert(gPix > bPix);
+    }
 
     std::printf("dhgr_render_smoke OK\n");
     return 0;

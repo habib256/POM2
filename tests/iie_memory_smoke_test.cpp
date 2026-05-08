@@ -106,7 +106,7 @@ void test80STOREPAGE2(Memory& mem)
     mem.memRead(IIE_RAMRD_OFF);
     mem.memRead(IIE_RAMWRT_OFF);
     mem.memRead(SET_PAGE1);
-    mem.memRead(IIE_80STORE_OFF);
+    mem.memWrite(IIE_80STORE_OFF, 0);  // $C000 read is kbLatch; only write toggles 80STORE
     mem.memWrite(0x0400, 0x77);  // → main
     assert(mem.memRead(0x0400) == 0x77);
 
@@ -121,7 +121,7 @@ void test80STOREPAGE2(Memory& mem)
     // Confirm aux really got the byte by inspecting auxData() directly.
     assert(mem.auxData()[0x0400] == 0xEE);
 
-    mem.memRead(IIE_80STORE_OFF);
+    mem.memWrite(IIE_80STORE_OFF, 0);  // $C000 read is kbLatch; only write toggles 80STORE
     mem.memRead(SET_PAGE1);
 }
 
@@ -175,8 +175,8 @@ void testStatusReads(Memory& mem)
     mem.memRead(IIE_SLOTC3_ON);   assert( rdHi(IIE_RD_SLOTC3ROM));
     mem.memRead(IIE_SLOTC3_OFF);  assert(!rdHi(IIE_RD_SLOTC3ROM));
 
-    mem.memRead(IIE_80STORE_ON);  assert( rdHi(IIE_RD_80STORE));
-    mem.memRead(IIE_80STORE_OFF); assert(!rdHi(IIE_RD_80STORE));
+    mem.memRead(IIE_80STORE_ON);          assert( rdHi(IIE_RD_80STORE));
+    mem.memWrite(IIE_80STORE_OFF, 0);     assert(!rdHi(IIE_RD_80STORE));
 
     mem.memRead(IIE_80COL_ON);    assert( rdHi(IIE_RD_80COL));
     mem.memRead(IIE_80COL_OFF);   assert(!rdHi(IIE_RD_80COL));

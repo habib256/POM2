@@ -4,6 +4,13 @@
 # drive the M6502 + Memory directly without an ImGui context, so they link
 # only the bare emulator core (no GLFW, no OpenGL, no Dear ImGui).
 
+# CRITICAL: tests use assert() heavily, but the parent CMakeLists builds in
+# Release by default which adds -DNDEBUG (silently stripping every assert).
+# We re-enable asserts for *test* compilation only via -UNDEBUG, applied
+# after the Release flags so the last definition wins. Without this every
+# test would print "OK" regardless of whether its checks actually held.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
+
 # ─── Klaus Dormann 6502 functional test ───────────────────────────────────
 # Downloads the pre-assembled 64 KB image once at configure time (SHA-256
 # pinned) and registers a ctest target that runs the emulator core against
@@ -170,6 +177,47 @@ add_test(NAME hdv_card_smoke COMMAND test_hdv_card)
 set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── ProDOS host-folder volume synthesizer smoke test ─────────────────────
+# Builds a synthetic ProDOS volume from a temp folder of host files.
+# Pins: volume header bytes (storage_type, name, file_count, total_blocks),
+# file entry bytes for both seedling and sapling files, sapling index
+# block layout, and round-trip data integrity (first block of a sapling
+# file matches the first 512 bytes of the host file).
+add_executable(test_prodos_volume
+    prodos_volume_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_prodos_volume PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME prodos_volume_smoke COMMAND test_prodos_volume)
+set_tests_properties(prodos_volume_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── VBL ($C019) scanline-accurate smoke test ─────────────────────────────
+# Pins the 262-scanline × 65-cycle frame model, the bit-7 polarity (HIGH
+# during active video 0..191, LOW during VBL 192..261), and the IIe VBL
+# IRQ mask plumbing via $C05A/$C05B + clear-on-$C019-read.
+add_executable(test_vbl
+    vbl_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_vbl PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_vbl PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_vbl PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_vbl PRIVATE winmm)
+endif()
+
+add_test(NAME vbl_smoke COMMAND test_vbl)
+set_tests_properties(vbl_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Speaker 1-bit synthesis smoke test ───────────────────────────────────
 # Self-contained: SpeakerDevice only. Pins silence-default, square-wave
 # reconstruction at 1 kHz toggle rate, reset, and mute behaviour.
@@ -257,6 +305,19 @@ add_test(NAME disk_image_smoke COMMAND test_disk_image)
 set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Disk II write-back + .nib loader smoke test ──────────────────────────
+# Pins .nib raw load+save (verbatim), .dsk write-back round-trip via the
+# inverse GCR decoder, and the opt-in write-protect semantics.
+add_executable(test_disk_writeback
+    disk_writeback_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_writeback PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_writeback_smoke COMMAND test_disk_writeback)
+set_tests_properties(disk_writeback_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Disk II end-to-end boot smoke test ───────────────────────────────────
 # Runs the full boot pipeline: Apple II ROM + Disk II PROM + .dsk image,
 # CPU jumps to $C600, runs until the PROM exits, then compares the loaded
@@ -323,6 +384,7 @@ set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_dhgr_render
     dhgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dhgr_render PRIVATE ${CMAKE_SOURCE_DIR})

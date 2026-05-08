@@ -110,7 +110,10 @@ private:
     // and inverse-blinking spaces). Wraps freely; only the parity of
     // (frameCounter / kFlashHalfPeriodFrames) is read.
     uint32_t frameCounter = 0;
-    static constexpr uint32_t kFlashHalfPeriodFrames = 30;  // 0.5 s at 60 Hz
+    // Half-period of the inverse-flashing animation. 15 frames @ 60 Hz =
+    // 250 ms → 2 Hz cycle, matching MAME's `screen.frame_number() & 0x10`
+    // model (Apple II/II+ 555-timer).
+    static constexpr uint32_t kFlashHalfPeriodFrames = 15;
 
     void renderText  (Memory& mem, int firstRow, int lastRow);
     void renderLoRes (Memory& mem, int firstRow, int lastRow);

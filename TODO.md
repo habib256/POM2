@@ -238,6 +238,90 @@ POM1 n'a rien (pas de carte vidéo). Implémenté dans POM2 (`LeChatMauveCard`
 
 ---
 
+## 13. Audit MAME (mai 2026) — gaps restants vs `mame/apple/`
+
+Audit effectué contre `apple2video.cpp`, `apple2e.cpp`, `apple2common.cpp`
+et `bus/a2bus/`. Les items déjà listés dans les sections 1-12 ci-dessus
+sont rappelés ici avec leur priorité ; les **nouveaux** items
+(mousetext, no-slot clock, 65C02 manquants, etc.) sont marqués 🆕.
+
+### Tier 1 — Forte valeur, effort raisonnable
+
+- [x] **VBL `$C019` scanline-accurate + IRQ mask** (cf. §9)
+      ✓ 2026-05 : modèle 262 scanlines × 65 cycles, bit 7 réfléchit
+      l'état video active (HIGH 0..191, LOW 192..261). IIe IRQ mask
+      via `$C05A` (off) / `$C05B` (on) ; lecture `$C019` acquitte
+      l'IRQ pending. Pinned by `tests/vbl_smoke_test.cpp`.
+
+- [x] **Disk II : write-back + loader `.nib`** (cf. §4)
+      ✓ 2026-05 : decoder GCR inverse (kGcrInverse + decode4and4 +
+      6-and-2 reverse) → write-back .dsk/.do/.po au moment de
+      l'eject. Loader `.nib` (35 × 6656 B raw nibbles) + write-back
+      verbatim. **Opt-in via UI** (`writeBackEnabled`, default off)
+      pour éviter la corruption silencieuse des fichiers source.
+      Pinned by `tests/disk_writeback_smoke_test.cpp`. *.woz toujours
+      non implémenté — format flux-based plus complexe ; à voir.*
+
+- [x] **Character ROM 2 KB + ALTCHAR mousetext IIe** 🆕 (étend §6)
+      ✓ 2026-05 : `Apple2Display::resolveGlyphRom` charge
+      `roms/apple2_char.rom` (2 KB II/II+ ou 4 KB IIe).
+      Range $00-$3F = inverse, $40-$7F = flashing, $80-$FF = normal.
+      Avec un ROM 4 KB en IIe + ALTCHAR=on, codes $40-$7F basculent
+      sur le bank mousetext (offset $800). Flash period 2 Hz
+      (15 frames @ 60 fps, MAME parity). Fallback 5×7 conservé si
+      pas de ROM.
+
+### Tier 2 — Effort modéré, gain ciblé
+
+- [ ] **Quart-pistes Disk II** (cf. §4)
+      Demi-pistes OK ; quart-pistes non modélisés (jeux à protection
+      lourde). MAME : `DISKII_FDC` modèle 4-phase complet. Débloque :
+      Karateka original, Dragon Wars, Bard's Tale, Ultima II.
+      Effort : moyen (~80-120 L dans `DiskIICard`).
+
+- [ ] **Mockingboard slot 4 (AY-3-8910 × 2 + 6522 VIA)** 🆕
+      Carte son Apple II classique (POM1 n'a aucun générateur 8910 —
+      à écrire from scratch). MAME : `bus/a2bus/mockingboard.cpp`.
+      Débloque : musique Karateka intro, SFX Joust / Robotron /
+      Ms. Pac-Man, démos sonores. Effort : large (300-500 L —
+      VIA + AY-3-8910 PSG complet ; AudioSource pour mix).
+
+- [x] **Text flashing 2 Hz** 🆕
+      ✓ 2026-05 : `kFlashHalfPeriodFrames = 15` (250 ms @ 60 fps =
+      2 Hz cycle, MAME `frame_number() & 0x10` parity).
+
+### Tier 3 — Petits ajouts opportunistes
+
+- [ ] **No-slot clock / RTC** 🆕
+      ProDOS time-of-day, timestamps fichiers. MAME :
+      `bus/a2bus/nippelclock.cpp` ~80 L (MC146818) ou
+      `a2thunderclock.cpp` ~150 L (uPD1990A). Effort : trivial.
+
+- [ ] **65C02 instructions manquantes : SMB/RMB/BBR/BBS, WAI/STP** 🆕
+      Rockwell + WDC additions. ~5 L par opcode dans `M6502.cpp`,
+      mais **quasi-aucun jeu retail ne les utilise** (utilitaires
+      système niche). Effort : trivial, impact cosmétique.
+
+- [ ] **NTSC artifact LUT alternate (`color_mode = 1`)** 🆕
+      MAME a deux variantes (`artifact_color_lut[2][128]`), POM2
+      n'utilise que `[0]` (composite/NTSC primary). La seconde table
+      diffère sur 8 entrées (rules `0010000` vs `0110000`). Effort :
+      trivial, impact cosmétique sur les bordures de texte 40-col.
+
+### Hors-scope confirmé après audit
+
+- **Z-80 SoftCard** (`bus/a2bus/softcard.cpp`) — CP/M, niche
+  business. DMA banking + Z80 CPU. Large effort, pas de jeux.
+- **Mouse Card slot 4** (`bus/a2bus/mouse.cpp`) — 68705 µC + 6821 PIA.
+  Rare sur II/IIe pour les jeux ; les paddles sufficient.
+- **CFFA CompactFlash** (`bus/a2bus/cffa.cpp`) — IDE + EEPROM. POM2 a
+  déjà le ProDOS HD slot 5 + host folder mount, qui couvre l'usage.
+- **RAMWorks 1 MB** — IIe-only, ProDOS 3+ ; usage très rare.
+- **Disk II 13-sector (Apple II 1977-1979)** — disquettes pré-DOS 3.3,
+  software de test seulement.
+
+---
+
 ## Récapitulatif "II/II+ correct" — réutilisable POM1 ?
 
 | Bloc                                         | Statut POM2                                              |

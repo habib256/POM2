@@ -39,6 +39,8 @@ public:
         std::string diskPath;
         bool        turboWhileMotor = true;   // user toggle, persisted by host
         bool        turboActive     = false;  // currently boosting?
+        bool        writeBackEnabled = false; // user opt-in for save-on-eject
+        bool        hasUnsavedChanges = false;// track has been written
         // Disks library — populated by the host from the disks/ directory.
         // The panel shows them as a one-click "insert + cold boot" list.
         std::vector<LibraryEntry> library;
@@ -53,6 +55,8 @@ public:
         std::string requestInsertAndBoot;
         bool        turboToggleChanged  = false;
         bool        turboNewValue       = true;
+        bool        writeBackToggleChanged = false;
+        bool        writeBackNewValue      = false;
         std::string statusMessage;
     };
 

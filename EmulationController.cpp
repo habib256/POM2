@@ -125,6 +125,23 @@ void EmulationController::coldBoot()
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
 
+void EmulationController::bootFromSlot(int slot)
+{
+    if (slot < 1 || slot > 7) return;
+    std::lock_guard<std::mutex> lk(stateMtx);
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.slotBus().reset();
+    if (spk) spk->reset();
+    processor.hardReset();
+    processor.setProgramCounter(static_cast<uint16_t>(0xC000 + slot * 0x100));
+    mode.store(Mode::Running);
+    wakeCv.notify_all();
+    pom2::log().info("Emul",
+        "Boot via slot " + std::to_string(slot) + " ROM ($C" +
+        std::to_string(slot) + "00)");
+}
+
 void EmulationController::requestStep()
 {
     stepRequested.store(true);

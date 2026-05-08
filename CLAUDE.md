@@ -114,12 +114,36 @@ menu / CLI flag — pure auto-detect on file presence.
     2 KB bank for mousetext + non-flashing inverse).
   - **DHGR** (IIe). When `eightyCol && hiRes && dhgr && !textMode`,
     `renderDhgr` interleaves aux byte (dots `c*14..c*14+6`) with main byte
-    (dots `c*14+7..c*14+13`) per byte position c, then walks a 4-bit
-    window over the 560-dot stream — each 4-dot cell is a lo-res palette
-    index 0..15 (16-color DHGR). Monochrome HiResModes paint each dot as
-    luminance × phosphor tint (no decay; `persistenceL` is sized for the
-    280-wide buffer). Mixed mode = DHGR top 160 + 80-col text bottom 4
-    rows. Pinned by `tests/dhgr_render_smoke_test.cpp`.
+    (dots `c*14+7..c*14+13`) per byte position c, building a 560-dot
+    stream. **Three color paths**, picked by `hiResMode`, all matching
+    MAME `apple/apple2video.cpp` source-of-truth:
+    - **`ColorNTSC`** — composite artifact decode. 7-bit sliding window
+      over the raw 560-dot stream → indexes the shared 128-entry
+      `kArtifactColorLut` (same table as HGR, MAME `artifact_color_lut[0]`)
+      → `rotl4b(value, absX + 1)` extracts the 4-bit lo-res palette
+      index. Per-pixel decode (560 lookups/scanline) reproduces the
+      inter-cell fringing real composite IIe monitors show. The `+1`
+      matches MAME's `is_80_column = 1` for DHGR in
+      `render_line_artifact_color`.
+    - **`ChatMauveRGB`** — clean RGB-card 4-dot block decode. Each 4
+      consecutive dots → raw nibble (bit 0 = leftmost), rotated left by
+      1 (matches MAME's `dhgr_update` Video-7 RGB color path
+      `rotl4(n, 1)`), indexes **`kChatMauveLoResPalette`** so the "two
+      distinct grays" trademark survives in DHGR (idx 5 = `#555555`,
+      idx 10 = `#AAAAAA`).
+    - **`Mono*`** — each dot = luminance bit × phosphor tint. No
+      artifact decoding. Persistence sized for 280-wide HGR, so DHGR
+      mono renders without afterglow.
+
+    Mixed mode = DHGR top 160 + 80-col text bottom 4 rows. Pinned by
+    `tests/dhgr_render_smoke_test.cpp` (composite, RGB-card, Chat Mauve
+    palette, mauve-regression and per-pixel coloring assertions).
+
+    **Test-framework gotcha:** tests build with the parent project's
+    Release flags (`-O3 -DNDEBUG`), which would silently strip every
+    `assert()`. `tests/CMakeLists.txt` adds `-UNDEBUG` so test asserts
+    actually run. Without that override, every smoke test prints "OK"
+    regardless of whether its checks held.
 
 ### Audio (speaker + cassette)
 
@@ -211,6 +235,28 @@ menu / CLI flag — pure auto-detect on file presence.
   `SnapshotIO`. Save-state would have to capture mounted-image identity
   and head position; first-cut decision is to keep snapshots focused on
   CPU + RAM + soft switches.
+
+### ProDOS host folder (`prodos_disk/`)
+
+- **`ProDOSVolume`** synthesises a read-only ProDOS volume image (block
+  array) from the contents of a host folder. Layout: blocks 0-1 boot
+  (zeroed — volume is not directly bootable), 2-5 volume directory key
+  + 3 extension blocks (51 entries max), block 6 volume bitmap (1 block
+  = 4096 blocks coverage = 2 MB cap), 7+ file data + sapling indexes.
+- **Scope**: flat directory only; ≤ 51 files; ≤ 128 KB per file
+  (seedling + sapling, tree files skipped with a warning); file type
+  guessed from extension (`.bas/.bin/.sys/.txt/.int`, default BIN);
+  filenames sanitised to A-Z/0-9/. with collision suffixes `.1/.2`.
+- **Wiring**: the HDV slot 5 panel's Library shows a synthetic
+  `[host folder] prodos_disk/` entry. Click it → `buildVolumeFromFolder`
+  produces bytes → `ProDOSHardDiskCard::loadImageFromBytes` swaps them
+  into the card. **No auto-boot** for the synth: the user must boot
+  ProDOS from a Disk II disk (slot 6) or another HDV image first; once
+  ProDOS is up, `/HOST/` appears as a slot 5 drive (`CAT,S5,D1`).
+- **Read-only**: the card's driver returns `$2B` (write-protected) on
+  any write — host files are never modified by the guest. To refresh
+  after editing a host file, click the entry again.
+- Pinned by `tests/prodos_volume_smoke_test.cpp`.
 
 ### Snapshot
 

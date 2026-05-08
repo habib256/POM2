@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 #include "CassetteDevice.h"
 #include "Logger.h"
+#include "ProDOSVolume.h"
 #include "SpeakerDevice.h"
 
 #include "imgui.h"
@@ -16,6 +17,14 @@
 #include <fstream>
 #include <iterator>
 
+namespace {
+// Sentinel prefix used in HdvController_ImGui::LibraryEntry::fullPath to
+// flag the synthetic prodos_disk/ host-folder mount. The dispatcher in
+// renderHdvPanelWindow detects this prefix and routes to the synthesiser
+// instead of treating the path as a real .hdv file.
+constexpr const char* kProDOSHostSentinel = "@PRODOS_HOST_FOLDER@:";
+} // namespace
+
 MainWindow::MainWindow()
     : memViewer(&controller.memory())
 {
@@ -26,6 +35,10 @@ MainWindow::MainWindow()
         std::lock_guard<std::mutex> lk(controller.stateMutex());
         controller.memory().memWrite(a, v);
     });
+
+    // Load any persisted runtime config. Missing/malformed file → use
+    // defaults; the fields below honour the saved values when present.
+    settings.load();
 
     // Probe a few common locations so the binary works whether launched
     // from build/ or the repo root. Apple IIe (16 KB ROM at $C000-$FFFF
@@ -39,7 +52,14 @@ MainWindow::MainWindow()
     static const char* romCandidates[]      = { "roms/apple2.rom",
                                                 "../roms/apple2.rom",
                                                 "../../roms/apple2.rom" };
-    static const char* charRomCandidates[]  = { "roms/apple2_char.rom",
+    // Char ROM probing. Prefer the 4 KB IIe Enhanced variant (mousetext
+    // + lowercase) when running in IIe mode; fall back to the 2 KB II/II+
+    // ROM otherwise. Both formats are normalised to AppleWin-style
+    // csbits in `Memory::loadCharRom`, so the renderer is uniform.
+    static const char* charRomIIeCandidates[] = { "roms/apple2e_char.rom",
+                                                  "../roms/apple2e_char.rom",
+                                                  "../../roms/apple2e_char.rom" };
+    static const char* charRomCandidates[]   = { "roms/apple2_char.rom",
                                                 "../roms/apple2_char.rom",
                                                 "../../roms/apple2_char.rom" };
 
@@ -52,8 +72,16 @@ MainWindow::MainWindow()
             if (fs::exists(p)) { romPath = p; break; }
         }
     }
-    for (const char* p : charRomCandidates) {
-        if (fs::exists(p)) { charRomPath = p; break; }
+    charRomPath.clear();
+    if (iiePresent) {
+        for (const char* p : charRomIIeCandidates) {
+            if (fs::exists(p)) { charRomPath = p; break; }
+        }
+    }
+    if (charRomPath.empty()) {
+        for (const char* p : charRomCandidates) {
+            if (fs::exists(p)) { charRomPath = p; break; }
+        }
     }
 
     if (iiePresent) {
@@ -94,17 +122,35 @@ MainWindow::MainWindow()
     // conventional SmartPort / hard-disk slot and keeps Disk II in slot 6
     // available for floppies. The card is always plugged so the user can
     // mount any .hdv / .2mg image at runtime via Hardware → Mount HDV.
+    // The image to mount is, in priority order:
+    //   1. The path saved in the previous session (settings.cfg `hdv_path`),
+    //      if the file still exists.
+    //   2. Otherwise, the first .hdv/.2mg found under hdv/ alphabetically,
+    //      as a friendly default. Never auto-booted — the user clicks the
+    //      Library entry to boot.
     {
-        static const char* hdvCandidates[] = {
-            "hdv/Total Replay v5.2.hdv",
-            "../hdv/Total Replay v5.2.hdv",
-            "../../hdv/Total Replay v5.2.hdv"
-        };
-        for (const char* p : hdvCandidates) {
-            if (fs::exists(p)) { hdvPath = p; break; }
+        const std::string saved = settings.getString("hdv_path", "");
+        std::error_code ec;
+        if (!saved.empty() && fs::is_regular_file(saved, ec)) {
+            hdvPath = saved;
+        } else {
+            static const char* hdvDirs[] = { "hdv", "../hdv", "../../hdv" };
+            for (const char* dir : hdvDirs) {
+                if (!fs::is_directory(dir, ec)) continue;
+                std::vector<std::string> found;
+                for (const auto& entry : fs::directory_iterator(dir, ec)) {
+                    if (!entry.is_regular_file()) continue;
+                    const std::string ext = entry.path().extension().string();
+                    if (ext != ".hdv" && ext != ".2mg") continue;
+                    found.push_back(entry.path().string());
+                }
+                std::sort(found.begin(), found.end());
+                if (!found.empty()) { hdvPath = found.front(); break; }
+            }
         }
+
         auto card = std::make_unique<ProDOSHardDiskCard>();
-        if (card->loadImage(hdvPath)) {
+        if (!hdvPath.empty() && card->loadImage(hdvPath)) {
             hdvStatus = std::string("loaded: ") + hdvPath;
         } else {
             hdvStatus = "no image mounted";
@@ -128,11 +174,50 @@ MainWindow::MainWindow()
         display.setChatMauveCard(chatMauveCard);
     }
 
-    if (hdvCard && hdvCard->isImageLoaded()) {
-        bootHdvImage();
-    } else {
-        controller.cpu().hardReset();
+    // ── Restore display + UI prefs from previous session ─────────────
+    {
+        const std::string mode = settings.getString("hi_res_mode", "");
+        if      (mode == "ColorNTSC")    display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        else if (mode == "ChatMauveRGB") display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        else if (mode == "MonoWhite")    display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
+        else if (mode == "MonoGreen")    display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
+        else if (mode == "MonoAmber")    display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
+
+        pixelScale         = settings.getFloat("pixel_scale",     pixelScale);
+        showDiskPanel      = settings.getBool ("show_disk_panel", showDiskPanel);
+        showHdvPanel       = settings.getBool ("show_hdv_panel",  showHdvPanel);
+        showCassetteDeck   = settings.getBool ("show_cassette",   showCassetteDeck);
+        showJoystickPanel  = settings.getBool ("show_joystick",   showJoystickPanel);
+        showChatMauvePanel = settings.getBool ("show_chatmauve",  showChatMauvePanel);
+        diskTurboWhileMotor = settings.getBool("disk_turbo",      diskTurboWhileMotor);
     }
+
+    // ── Restore Disk II state ─────────────────────────────────────────
+    if (diskCard) {
+        const bool wb = settings.getBool("disk_writeback", false);
+        diskCard->setWriteBackEnabled(wb);
+
+        const std::string diskPath = settings.getString("disk_path", "");
+        std::error_code ec;
+        if (!diskPath.empty() && fs::is_regular_file(diskPath, ec)) {
+            if (diskCard->insertDisk(diskPath)) {
+                pom2::log().info("Disk II", "Re-inserted from settings: " + diskPath);
+            }
+        }
+    }
+
+    // ── Restore audio levels ─────────────────────────────────────────
+    {
+        const float spkVol = settings.getFloat("speaker_volume", 1.0f);
+        controller.speaker().setVolume(spkVol);
+        controller.speaker().setMuted(settings.getBool("speaker_muted", false));
+        controller.setCassetteVolume(settings.getFloat("cassette_volume", 0.6f));
+    }
+
+    // Always wake up at the Applesoft prompt. A default HDV / disk may be
+    // mounted (above), but we never auto-boot — the user picks via the
+    // Disk II / HDV panel libraries.
+    controller.cpu().hardReset();
     controller.setMode(EmulationController::Mode::Running);
     controller.start();
 }
@@ -140,6 +225,51 @@ MainWindow::MainWindow()
 MainWindow::~MainWindow()
 {
     controller.stop();
+
+    // Persist the current state so the next launch restores the same
+    // mounted disks, video mode, panels, and audio levels.
+    if (hdvCard && hdvCard->isImageLoaded()) {
+        // Don't persist the synthesised host-folder volume — the path is
+        // a sentinel, not a real file. Re-synthesis happens on click.
+        const std::string& p = hdvCard->getImagePath();
+        if (p.rfind("[host folder] ", 0) == std::string::npos) {
+            settings.setString("hdv_path", p);
+        } else {
+            settings.setString("hdv_path", "");
+        }
+    } else {
+        settings.setString("hdv_path", "");
+    }
+
+    if (diskCard) {
+        settings.setString("disk_path",
+            diskCard->isDiskLoaded() ? diskCard->getDiskPath() : std::string());
+        settings.setBool("disk_writeback", diskCard->isWriteBackEnabled());
+    }
+
+    auto modeName = [](Apple2Display::HiResMode m) -> const char* {
+        switch (m) {
+            case Apple2Display::HiResMode::ColorNTSC:    return "ColorNTSC";
+            case Apple2Display::HiResMode::ChatMauveRGB: return "ChatMauveRGB";
+            case Apple2Display::HiResMode::MonoWhite:    return "MonoWhite";
+            case Apple2Display::HiResMode::MonoGreen:    return "MonoGreen";
+            case Apple2Display::HiResMode::MonoAmber:    return "MonoAmber";
+        }
+        return "ColorNTSC";
+    };
+    settings.setString("hi_res_mode", modeName(display.getHiResMode()));
+    settings.setFloat ("pixel_scale", pixelScale);
+    settings.setBool  ("show_disk_panel", showDiskPanel);
+    settings.setBool  ("show_hdv_panel",  showHdvPanel);
+    settings.setBool  ("show_cassette",   showCassetteDeck);
+    settings.setBool  ("show_joystick",   showJoystickPanel);
+    settings.setBool  ("show_chatmauve",  showChatMauvePanel);
+    settings.setBool  ("disk_turbo",      diskTurboWhileMotor);
+    settings.setFloat ("speaker_volume",  controller.speaker().getVolume());
+    settings.setBool  ("speaker_muted",   controller.speaker().isMuted());
+    settings.setFloat ("cassette_volume", controller.cassette().getVolume());
+
+    settings.save();
 }
 
 // ─── Keyboard ─────────────────────────────────────────────────────────────
@@ -407,6 +537,7 @@ void MainWindow::renderMenuBar()
     if (ImGui::BeginMenu("Hardware")) {
         ImGui::MenuItem("Cassette deck", nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)", nullptr, &showDiskPanel);
+        ImGui::MenuItem("HDV (slot 5)", nullptr, &showHdvPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
         ImGui::Separator();
@@ -431,7 +562,7 @@ void MainWindow::renderMenuBar()
         ImGui::EndDisabled();
         ImGui::Separator();
         ImGui::BeginDisabled(diskCard == nullptr);
-        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po)...")) {
+        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib)...")) {
             showDiskInsertDialog = true;
             if (diskDialogPath.empty()) diskDialogPath = "disks/";
         }
@@ -581,19 +712,10 @@ void MainWindow::bootHdvImage()
         tapeStatusUntil   = lastFrameTime + 4.0;
         return;
     }
-
-    {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        controller.memory().clearRam();
-        controller.memory().resetSoftSwitches();
-        controller.memory().slotBus().reset();
-        controller.cpu().hardReset();
-        controller.cpu().setProgramCounter(0xC500);
-        controller.setMode(EmulationController::Mode::Running);
-    }
-    tapeStatusMessage = "Booting HDV: " + hdvCard->getImagePath();
+    const std::string p = hdvCard->getImagePath();
+    controller.bootFromSlot(5);
+    tapeStatusMessage = "Booting HDV: " + p;
     tapeStatusUntil   = lastFrameTime + 4.0;
-    pom2::log().info("HDV", "Boot via slot 5 ROM: " + hdvCard->getImagePath());
 }
 
 void MainWindow::renderPasteFileDialog()
@@ -712,13 +834,15 @@ void MainWindow::renderDiskPanelWindow()
     pom2::DiskController_ImGui::DriveSnapshot snap;
     if (diskCard) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
-        snap.bootRomLoaded = diskCard->hasBootRom();
-        snap.diskLoaded    = diskCard->isDiskLoaded();
-        snap.motorOn       = diskCard->isMotorOn();
-        snap.track         = diskCard->getCurrentTrack();
-        snap.halfTrack     = diskCard->getHalfTrack();
-        snap.trackPos      = diskCard->getTrackPosition();
-        snap.diskPath      = diskCard->getDiskPath();
+        snap.bootRomLoaded     = diskCard->hasBootRom();
+        snap.diskLoaded        = diskCard->isDiskLoaded();
+        snap.motorOn           = diskCard->isMotorOn();
+        snap.track             = diskCard->getCurrentTrack();
+        snap.halfTrack         = diskCard->getHalfTrack();
+        snap.trackPos          = diskCard->getTrackPosition();
+        snap.diskPath          = diskCard->getDiskPath();
+        snap.writeBackEnabled  = diskCard->isWriteBackEnabled();
+        snap.hasUnsavedChanges = diskCard->hasUnsavedChanges();
     }
     snap.turboWhileMotor = diskTurboWhileMotor;
     snap.turboActive     = diskTurboActive;
@@ -735,7 +859,8 @@ void MainWindow::renderDiskPanelWindow()
             for (const auto& entry : fs::directory_iterator(dir, ec)) {
                 if (!entry.is_regular_file()) continue;
                 const std::string ext = entry.path().extension().string();
-                if (ext != ".dsk" && ext != ".do" && ext != ".po") continue;
+                if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
+                    ext != ".nib") continue;
                 pom2::DiskController_ImGui::LibraryEntry e;
                 e.displayName = entry.path().filename().string();
                 e.fullPath    = entry.path().string();
@@ -779,6 +904,14 @@ void MainWindow::renderDiskPanelWindow()
     if (result.turboToggleChanged) {
         diskTurboWhileMotor = result.turboNewValue;
     }
+    if (result.writeBackToggleChanged && diskCard) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        diskCard->setWriteBackEnabled(result.writeBackNewValue);
+        tapeStatusMessage = result.writeBackNewValue
+            ? "Disk II: write-back ENABLED (saves on eject)"
+            : "Disk II: write-back disabled";
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
     if (result.requestInsertDialog) {
         showDiskInsertDialog = true;
         if (diskDialogPath.empty()) diskDialogPath = "disks/";
@@ -798,34 +931,185 @@ void MainWindow::renderDiskPanelWindow()
         tapeStatusUntil   = lastFrameTime + 3.0;
     }
     if (!result.requestInsertAndBoot.empty() && diskCard) {
-        // Library-click "insert + boot" — mirrors the manual flow of
-        // "wipe RAM → reset slots/CPU → insert new disk → jump straight
-        // into the PROM at $C600". Doing it as one mutex-held atomic
-        // operation prevents the worker thread from running a single
-        // instruction with stale state (e.g., the old disk still
-        // mounted but the CPU already at $C600).
+        // Library-click "insert + boot": insert under the lock so the
+        // image is in the drive before we hand off to the unified boot
+        // helper. bootFromSlot(6) re-takes the lock and atomically wipes
+        // RAM, resets soft switches + slot bus + CPU, jumps PC = $C600,
+        // and switches to Running — no instruction can run between the
+        // two locked sections (the worker only proceeds when mode flips).
         const std::string path = result.requestInsertAndBoot;
         bool ok = false;
         std::string err;
         {
             std::lock_guard<std::mutex> lk(controller.stateMutex());
-            controller.memory().clearRam();
-            controller.memory().resetSoftSwitches();
-            controller.memory().slotBus().reset();
             ok = diskCard->insertDisk(path);
+            if (ok) diskCard->seekTrack0();
+            else    err = diskCard->getLastError();
+        }
+        if (ok) {
+            controller.bootFromSlot(6);
+            pom2::log().info("Disk II",
+                std::string("Library click → insert + boot: ") + path);
+            tapeStatusMessage = "Booting: " + path;
+        } else {
+            tapeStatusMessage = "Boot failed: " + err;
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+}
+
+// ─── HDV (slot 5) ────────────────────────────────────────────────────────
+
+void MainWindow::renderHdvPanelWindow()
+{
+    if (!showHdvPanel) return;
+
+    pom2::HdvController_ImGui::DriveSnapshot snap;
+    if (hdvCard) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        snap.imageLoaded = hdvCard->isImageLoaded();
+        snap.imagePath   = hdvCard->getImagePath();
+        snap.blockCount  = hdvCard->getBlockCount();
+    }
+
+    // Library scan — hdv/ for .hdv and .2mg, sorted alphabetically so the
+    // list stays stable across frames regardless of dirent order. Plus a
+    // synthetic entry for prodos_disk/ if that folder exists (host-folder
+    // mount: contents are synthesised into a read-only ProDOS volume on
+    // click, see kProDOSHostSentinel below).
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const char* dirCandidates[] = { "hdv", "../hdv", "../../hdv" };
+        for (const char* dir : dirCandidates) {
+            if (!fs::is_directory(dir, ec)) continue;
+            for (const auto& entry : fs::directory_iterator(dir, ec)) {
+                if (!entry.is_regular_file()) continue;
+                const std::string ext = entry.path().extension().string();
+                if (ext != ".hdv" && ext != ".2mg") continue;
+                pom2::HdvController_ImGui::LibraryEntry e;
+                e.displayName = entry.path().filename().string();
+                e.fullPath    = entry.path().string();
+                snap.library.push_back(std::move(e));
+            }
+            break;
+        }
+        std::sort(snap.library.begin(), snap.library.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.displayName < b.displayName;
+                  });
+
+        // Synthetic entry for the host-folder mount.
+        const char* prodosCandidates[] = {
+            "prodos_disk", "../prodos_disk", "../../prodos_disk"
+        };
+        std::string prodosDir;
+        for (const char* d : prodosCandidates) {
+            if (fs::is_directory(d, ec)) { prodosDir = d; break; }
+        }
+        if (!prodosDir.empty()) {
+            std::size_t fileCount = 0;
+            for (const auto& e : fs::directory_iterator(prodosDir, ec)) {
+                if (e.is_regular_file()) ++fileCount;
+            }
+            pom2::HdvController_ImGui::LibraryEntry e;
+            e.displayName = "[host folder] " + prodosDir + "/  ("
+                          + std::to_string(fileCount) + " files)";
+            e.fullPath    = std::string(kProDOSHostSentinel) + prodosDir;
+            snap.library.push_back(std::move(e));
+        }
+    }
+
+    // Curated startup pos — sit below the Disk II panel so both are
+    // visible side-by-side with the screen.
+    ImGui::SetNextWindowPos (ImVec2(1430, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330,  725), ImGuiCond_FirstUseEver);
+    auto result = hdvPanel.render("HDV (slot 5)", showHdvPanel, snap);
+
+    if (result.requestMountDialog) {
+        showHdvMountDialog = true;
+        if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
+    }
+    if (result.requestEject && hdvCard) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        hdvCard->ejectImage();
+        hdvStatus = "no image mounted";
+        tapeStatusMessage = "HDV ejected";
+        tapeStatusUntil   = lastFrameTime + 3.0;
+    }
+    if (result.requestBoot && hdvCard) {
+        bootHdvImage();
+    }
+    if (!result.requestMountAndBoot.empty() && hdvCard) {
+        const std::string path = result.requestMountAndBoot;
+        const std::string sentinel(kProDOSHostSentinel);
+
+        if (path.rfind(sentinel, 0) == 0) {
+            // Host-folder mount: synthesise a read-only ProDOS volume from
+            // the folder contents and load it into the slot 5 card. We do
+            // NOT auto-boot — block 0 is zero, so the volume isn't
+            // bootable. The user boots ProDOS from elsewhere (Disk II or
+            // an HDV) and ProDOS then sees /HOST/ as a second drive.
+            const std::string hostDir = path.substr(sentinel.size());
+            std::vector<std::uint8_t> bytes;
+            auto br = pom2::buildVolumeFromFolder(hostDir, "HOST", bytes);
+            if (!br.ok) {
+                tapeStatusMessage = "ProDOS synth failed: " + br.error;
+                tapeStatusUntil   = lastFrameTime + 5.0;
+                return;
+            }
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                ok = hdvCard->loadImageFromBytes(std::move(bytes),
+                                                 std::string("[host folder] ") + hostDir);
+                if (ok) {
+                    hdvPath   = path;
+                    hdvStatus = std::string("synth from ") + hostDir +
+                                " (" + std::to_string(br.filesIncluded) + " files)";
+                } else {
+                    hdvStatus = "synth load failed";
+                }
+            }
             if (ok) {
-                diskCard->seekTrack0();
-                controller.cpu().hardReset();
-                controller.cpu().setProgramCounter(0xC600);
-                controller.setMode(EmulationController::Mode::Running);
-                pom2::log().info("Disk II",
-                    std::string("Library click → insert + boot: ") + path);
+                char msg[200];
+                std::snprintf(msg, sizeof(msg),
+                    "/HOST/ mounted from %s (%zu files, %zu skipped, %zu blocks). Boot ProDOS from another drive.",
+                    hostDir.c_str(), br.filesIncluded, br.filesSkipped, br.totalBlocks);
+                tapeStatusMessage = msg;
+                pom2::log().info("HDV",
+                    std::string("Synthesised volume from ") + hostDir +
+                    " (" + std::to_string(br.filesIncluded) + " files, " +
+                    std::to_string(br.totalBlocks) + " blocks)");
             } else {
-                err = diskCard->getLastError();
+                tapeStatusMessage = "Synth load failed";
+            }
+            tapeStatusUntil = lastFrameTime + 8.0;
+            return;
+        }
+
+        // Real .hdv / .2mg / .po file: load under the lock so the card
+        // has the right blocks before bootFromSlot(5) wipes RAM and
+        // jumps PC = $C500. Two-step lock is safe — the CPU worker only
+        // resumes when bootFromSlot flips mode to Running.
+        bool ok = false;
+        std::string err;
+        {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            ok = hdvCard->loadImage(path);
+            if (ok) {
+                hdvPath   = path;
+                hdvStatus = std::string("loaded: ") + path;
+            } else {
+                err = hdvCard->getLastError();
+                hdvStatus = "no image mounted";
             }
         }
         if (ok) {
-            tapeStatusMessage = "Booting: " + path;
+            controller.bootFromSlot(5);
+            pom2::log().info("HDV",
+                std::string("Library click → mount + boot: ") + path);
+            tapeStatusMessage = "Booting HDV: " + path;
         } else {
             tapeStatusMessage = "Boot failed: " + err;
         }
@@ -842,9 +1126,11 @@ void MainWindow::renderDiskFileDialog()
     if (!ImGui::BeginPopupModal("Insert disk image", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
-    ImGui::TextUnformatted("Path to a 143 360-byte 5.25\" image —"
-                           " .dsk / .do (DOS 3.3 order) or .po (ProDOS"
-                           " order). Read-only.");
+    ImGui::TextUnformatted("Path to a 5.25\" image —"
+                           " .dsk / .do (DOS 3.3, 143 360 B) or"
+                           " .po (ProDOS, 143 360 B) or .nib (raw"
+                           " nibble stream, 232 960 B). Write-back"
+                           " is opt-in via the panel checkbox.");
     char buf[512] = {0};
     std::snprintf(buf, sizeof(buf), "%s", diskDialogPath.c_str());
     if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
@@ -863,7 +1149,8 @@ void MainWindow::renderDiskFileDialog()
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_regular_file()) continue;
             const std::string ext = entry.path().extension().string();
-            if (ext != ".dsk" && ext != ".do" && ext != ".po") continue;
+            if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
+                ext != ".nib") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
                 diskDialogPath = entry.path().string();
@@ -1175,6 +1462,7 @@ void MainWindow::render()
     renderHdvFileDialog();
     renderDiskPanelWindow();
     renderDiskFileDialog();
+    renderHdvPanelWindow();
     renderChatMauvePanelWindow();
     renderJoystickPanelWindow();
     renderAboutDialog();
