@@ -35,6 +35,8 @@ public:
         static constexpr uint8_t C = 0x01;
     };
 
+    enum class CpuMode { NMOS, CMOS };
+
     M6502();
     M6502(Memory* mem);
 
@@ -45,6 +47,18 @@ public:
     void setIRQ(int state);
     void setNMI(void);
     void dumpPcTrace(const char* tag);
+
+    /// Switch the dispatch table between NMOS 6502 and 65C02 (CMOS)
+    /// behaviour at runtime. NMOS mode replaces every 65C02-only
+    /// addition (STZ, BRA, INA/DEA, PHX/PHY/PLX/PLY, BIT #imm/zp,X/abs,X,
+    /// TSB/TRB, JMP (abs,X), zp-indirect ORA/AND/EOR/ADC/STA/LDA/CMP/SBC,
+    /// SMBn/RMBn/BBRn/BBSn, WAI/STP) with the matching NMOS 1/2/3-byte
+    /// NOP placeholder so programs that don't use them keep running.
+    /// `code 0xB2` and the other (zp)-mode opcodes that NMOS treats as
+    /// `KIL` (halt) become Hang in NMOS mode — exactly what real silicon
+    /// would do.
+    void    setCpuMode(CpuMode mode);
+    CpuMode getCpuMode() const { return cpuMode; }
 
     /// Debug: when true, BRK logs a full CPU+stack dump + recent control-flow
     /// trace + bus state on every execution. Off by default. The `dumpPcTrace`
@@ -204,6 +218,28 @@ private :
     void BIT_imm(void);      // $89 — BIT #imm (only Z affected)
     void TSB(void);          // $04/$0C — test + set bits
     void TRB(void);          // $14/$1C — test + reset bits
+
+    // Rockwell 65C02 SMBn / RMBn (set/reset bit n in zp), 2 bytes,
+    // 5 cycles. Distinct opcodes per bit so the dispatch table can
+    // call them directly. SMB0=0x07, SMB1=0x17, ..., SMB7=0x77.
+    // RMB0=0x87, RMB1=0x97, ..., RMB7=0xF7.
+    template <int N> void SMBn(void);
+    template <int N> void RMBn(void);
+
+    // Rockwell 65C02 BBRn / BBSn (branch on bit reset/set in zp),
+    // 3 bytes (opcode + zp + signed offset), 5 cycles + 1 if branch
+    // taken (+1 more if page-crossed). BBR0=0x0F, ..., BBR7=0x7F.
+    // BBS0=0x8F, ..., BBS7=0xFF.
+    template <int N> void BBRn(void);
+    template <int N> void BBSn(void);
+
+    // WDC 65C02 WAI / STP. WAI halts the CPU until an IRQ/NMI fires;
+    // we model the halt by parking PC at the WAI instruction (so it
+    // re-executes once IRQ clears the I flag and wakes the CPU).
+    // STP halts until reset; we just hang PC the same way.
+    void WAI(void);
+    void STP(void);
+
     void Unoff(void);
     void Unoff1(void);
     void Unoff2(void);
@@ -215,7 +251,13 @@ private :
         void (M6502::*addrMode)();
         void (M6502::*operation)();
     };
-    static const OpcodeEntry opcodeTable[256];
+    // Master 65C02 table — used as the source for every setCpuMode()
+    // rebuild. The instance `opcodeTable` is mutated in place when
+    // switching to NMOS so the dispatch loop stays a simple array
+    // lookup.
+    static const OpcodeEntry kCmosTable[256];
+    OpcodeEntry opcodeTable[256]{};
+    CpuMode     cpuMode = CpuMode::CMOS;
 
 
 

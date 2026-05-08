@@ -234,11 +234,200 @@ static void testNameSanitisationAndCollisions()
     std::printf("prodos_volume_smoke: name sanitisation + collisions OK\n");
 }
 
+static void testRoundTripFolderToVolumeToFolder()
+{
+    // Source folder: 3 files with distinct types and a sapling.
+    fs::path src = makeTempDir("round_src");
+    std::vector<std::uint8_t> bas(120);
+    for (std::size_t i = 0; i < bas.size(); ++i) bas[i] = static_cast<std::uint8_t>('a' + (i % 26));
+    std::vector<std::uint8_t> txt(80);
+    for (std::size_t i = 0; i < txt.size(); ++i) txt[i] = static_cast<std::uint8_t>('1' + (i % 9));
+    std::vector<std::uint8_t> bin(2500);             // sapling, 5 data blocks
+    for (std::size_t i = 0; i < bin.size(); ++i) bin[i] = static_cast<std::uint8_t>((i * 11u + 5u) & 0xFF);
+
+    writeFile(src / "hello.bas",  bas);
+    writeFile(src / "readme.txt", txt);
+    writeFile(src / "game.bin",   bin);
+
+    std::vector<std::uint8_t> img;
+    auto br = pom2::buildVolumeFromFolder(src.string(), "HOST", img);
+    assert(br.ok && br.filesIncluded == 3);
+
+    // Simulate a guest write: flip one byte in HELLO's data block. Find
+    // HELLO's seedling key_pointer via the directory; HELLO is 5 chars,
+    // so we scan for storage=$1 and name "HELLO".
+    const std::uint8_t* b2 = img.data() + 2 * kBlockBytes;
+    std::uint16_t helloKey = 0;
+    for (std::size_t i = 0; i < 12; ++i) {
+        const std::uint8_t* e = b2 + 4 + 39 + i * 39;
+        if ((e[0] >> 4) != 0x1) continue;
+        const std::uint8_t nl = e[0] & 0x0F;
+        if (nl == 5 && std::memcmp(e + 1, "HELLO", 5) == 0) {
+            helloKey = rd16(e + 0x11);
+            break;
+        }
+    }
+    assert(helloKey != 0);
+    img[helloKey * kBlockBytes + 7] = 0xEE;       // mutate one byte
+
+    // Decode into a fresh folder.
+    fs::path dst = makeTempDir("round_dst");
+    auto dr = pom2::decodeVolumeToFolder(img, dst.string());
+    assert(dr.ok);
+    assert(dr.filesWritten == 3);
+    assert(dr.filesSkipped == 0);
+
+    // Check the 3 files are present with the right names and extensions.
+    auto readBack = [](const fs::path& p) {
+        std::ifstream f(p, std::ios::binary);
+        if (!f) return std::vector<std::uint8_t>{};
+        f.seekg(0, std::ios::end);
+        const auto sz = static_cast<std::size_t>(f.tellg());
+        f.seekg(0, std::ios::beg);
+        std::vector<std::uint8_t> out(sz);
+        f.read(reinterpret_cast<char*>(out.data()),
+               static_cast<std::streamsize>(sz));
+        return out;
+    };
+
+    auto helloOut  = readBack(dst / "HELLO.bas");
+    auto readmeOut = readBack(dst / "README.txt");
+    auto gameOut   = readBack(dst / "GAME.bin");
+    assert(!helloOut.empty());
+    assert(!readmeOut.empty());
+    assert(!gameOut.empty());
+
+    // HELLO must reflect the guest mutation at offset 7.
+    assert(helloOut.size() == bas.size());
+    assert(helloOut[7] == 0xEE);
+    for (std::size_t i = 0; i < bas.size(); ++i) {
+        if (i == 7) continue;
+        assert(helloOut[i] == bas[i]);
+    }
+
+    // README + GAME must round-trip exactly.
+    assert(readmeOut == txt);
+    assert(gameOut   == bin);
+
+    // No-delete safety: a file that exists in the destination but isn't
+    // in the volume must NOT be removed.
+    writeFile(dst / "do_not_delete.txt", { 'X', 'Y' });
+    auto dr2 = pom2::decodeVolumeToFolder(img, dst.string());
+    assert(dr2.ok);
+    assert(fs::exists(dst / "do_not_delete.txt"));
+
+    std::printf("prodos_volume_smoke: folder→volume→folder round-trip OK\n");
+}
+
+static void testSubdirsBuildAndDecode()
+{
+    // Source folder with one nested subdir:
+    //   src/INTRO.txt           ("hi")
+    //   src/GAMES/PACMAN.bin    256 bytes
+    //   src/GAMES/SCORES.txt    ("100")
+    fs::path src = makeTempDir("subdirs_src");
+    fs::create_directories(src / "GAMES");
+    writeFile(src / "intro.txt", { 'h', 'i' });
+    std::vector<std::uint8_t> pacman(256);
+    for (std::size_t i = 0; i < pacman.size(); ++i) pacman[i] = static_cast<std::uint8_t>(i);
+    writeFile(src / "GAMES" / "pacman.bin", pacman);
+    writeFile(src / "GAMES" / "scores.txt", { '1', '0', '0' });
+
+    std::vector<std::uint8_t> img;
+    auto br = pom2::buildVolumeFromFolder(src.string(), "HOST", img);
+    assert(br.ok);
+    assert(br.filesIncluded == 3);                  // 3 regular files (subdir not counted)
+
+    // Volume directory must have a child entry with storage_type=$D for
+    // GAMES. Find it in block 2.
+    const std::uint8_t* b2 = img.data() + 2 * kBlockBytes;
+    bool foundDir = false, foundIntro = false;
+    std::uint16_t gamesKey = 0;
+    std::uint8_t  gamesParentSlot = 0;
+    for (std::size_t i = 0; i < 12; ++i) {
+        const std::uint8_t* e = b2 + 4 + 39 + i * 39;
+        const std::uint8_t st = e[0] >> 4;
+        if (st == 0) continue;
+        const std::uint8_t nl = e[0] & 0x0F;
+        std::string nm(reinterpret_cast<const char*>(e + 1), nl);
+        if (st == 0xD && nm == "GAMES") {
+            foundDir = true;
+            gamesKey = rd16(e + 0x11);
+            gamesParentSlot = static_cast<std::uint8_t>(i + 2);  // 1-based, +1 for vol header
+            assert(e[0x10] == 0x0F);                              // file_type DIR
+        }
+        if (st == 0x1 && nm == "INTRO") {
+            foundIntro = true;
+            assert(e[0x10] == 0x04);                              // TXT
+        }
+    }
+    assert(foundDir && foundIntro);
+    assert(gamesKey != 0);
+
+    // GAMES subdir header at its first block, offset 4. Validate fields.
+    const std::uint8_t* gamesBlock = img.data() + gamesKey * kBlockBytes;
+    const std::uint8_t* hdr = gamesBlock + 4;
+    assert((hdr[0] >> 4) == 0xE);                                 // subdir header
+    assert((hdr[0] & 0x0F) == 5);                                 // "GAMES"
+    assert(std::memcmp(hdr + 1, "GAMES", 5) == 0);
+    assert(hdr[0x14] == 0x75);                                    // sentinel
+    assert(rd16(hdr + 0x21) == 2);                                // 2 children
+    assert(rd16(hdr + 0x23) == 2);                                // parent block = vol dir block 2
+    assert(hdr[0x25] == gamesParentSlot);                         // 1-based parent slot
+
+    // Two file entries in the GAMES dir block (slots 1 and 2 — slot 0 = header).
+    bool foundPac = false, foundScores = false;
+    for (std::size_t s = 1; s < 13; ++s) {
+        const std::uint8_t* e = gamesBlock + 4 + s * 39;
+        const std::uint8_t st = e[0] >> 4;
+        if (st == 0) continue;
+        const std::uint8_t nl = e[0] & 0x0F;
+        std::string nm(reinterpret_cast<const char*>(e + 1), nl);
+        if (nm == "PACMAN" && st == 0x1) {
+            foundPac = true;
+            assert(e[0x10] == 0x06);                              // BIN
+            const std::uint16_t key = rd16(e + 0x11);
+            const std::uint32_t eof = rd24(e + 0x15);
+            assert(eof == 256);
+            const std::uint8_t* d = img.data() + key * kBlockBytes;
+            assert(std::memcmp(d, pacman.data(), 256) == 0);
+            // header_pointer = first block of GAMES subdir
+            assert(rd16(e + 0x25) == gamesKey);
+        }
+        if (nm == "SCORES" && st == 0x1) {
+            foundScores = true;
+            assert(e[0x10] == 0x04);                              // TXT
+            assert(rd24(e + 0x15) == 3);
+        }
+    }
+    assert(foundPac && foundScores);
+
+    // Now decode and verify round-trip into a fresh folder.
+    fs::path dst = makeTempDir("subdirs_dst");
+    auto dr = pom2::decodeVolumeToFolder(img, dst.string());
+    assert(dr.ok);
+    assert(dr.filesWritten == 3);
+
+    assert(fs::exists(dst / "INTRO.txt"));
+    assert(fs::is_directory(dst / "GAMES"));
+    assert(fs::exists(dst / "GAMES" / "PACMAN.bin"));
+    assert(fs::exists(dst / "GAMES" / "SCORES.txt"));
+
+    std::ifstream pacOut(dst / "GAMES" / "PACMAN.bin", std::ios::binary);
+    std::vector<std::uint8_t> pacOutBytes((std::istreambuf_iterator<char>(pacOut)),
+                                           std::istreambuf_iterator<char>());
+    assert(pacOutBytes == pacman);
+
+    std::printf("prodos_volume_smoke: subdirs build+decode OK\n");
+}
+
 int main()
 {
     testEmptyFolder();
     testSeedlingAndSapling();
     testNameSanitisationAndCollisions();
+    testRoundTripFolderToVolumeToFolder();
+    testSubdirsBuildAndDecode();
     std::printf("prodos_volume_smoke: PASS\n");
     return 0;
 }

@@ -156,6 +156,12 @@ public:
     size_t pasteText(const char* data, size_t length);
     size_t pasteText(const std::string& s) { return pasteText(s.data(), s.size()); }
 
+    /// Like pasteText but does NOT filter control bytes — used by tests
+    /// that need to drive a launcher's arrow keys (Ctrl-J / Ctrl-K) or
+    /// ESC. Bytes are stripped to 7 bits but otherwise pass through
+    /// verbatim. Same FIFO + strobe drain as pasteText.
+    size_t pasteRawKeys(const char* data, size_t length);
+
     /// How many bytes are still waiting in the paste queue. UI shows this
     /// in the Emulation panel + Edit menu so the user knows the paste is
     /// in flight.

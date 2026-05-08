@@ -17,6 +17,7 @@
 #include "MemoryViewer_ImGui.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
+#include "SuperSerialCard.h"
 
 #include "imgui.h"
 
@@ -63,6 +64,7 @@ private:
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
+    SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     JoystickInput                joystick;
     GLFWwindow*                  window = nullptr;
 
@@ -74,11 +76,18 @@ private:
     bool         showMemoryBar      = false;   // tall vertical map
     bool         showMemoryBarH     = false;   // wide-short horizontal variant
     bool         showMemoryGrid     = false;   // 16×16 page grid
-    bool         showCassetteDeck = false;  // off by default — opt-in via Hardware menu
+    // Default UI layout: Apple II Screen on the left, HDV top-right,
+    // Disk II bottom-right. Every other panel (Emulation controls,
+    // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
+    // hidden — toggle from the Debug / Hardware menus.
+    bool         showCassetteDeck = false;
     bool         showDiskPanel = true;
     bool         showHdvPanel  = true;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
+    bool         showSscPanel       = false;
+    bool         showEmulationPanel = false;
+    int          sscPortInput       = SuperSerialCard::kDefaultPort;
 
     // Disk II insert dialog state.
     bool        showDiskInsertDialog = false;
@@ -136,6 +145,7 @@ private:
     void renderHdvPanelWindow();
     void renderHdvFileDialog();
     void renderChatMauvePanelWindow();
+    void renderSscPanelWindow();
     void renderJoystickPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
@@ -146,6 +156,11 @@ private:
 
     // HDV helper — cold-boot through the slot-5 ProDOS block-device ROM.
     void bootHdvImage();
+
+    // Write the current display framebuffer to ./screenshot_NNN.ppm. The
+    // sequence number auto-increments to avoid overwriting prior captures
+    // within the same session.
+    void saveScreenshot();
 
     void uploadScreenTexture();
 

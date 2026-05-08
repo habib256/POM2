@@ -207,12 +207,18 @@ void Memory::advanceCycles(int cycles)
     const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
     const bool nowActive = scanline < kVisibleScanlines;
 
-    // Edge: active video → VBL. On IIe with `vblIrqMask` enabled, raise
-    // the CPU IRQ line. Mirrors MAME's `apple2e.cpp` scanline-192 timer.
+    // Edge: active video → VBL. On a real IIe, `$C05B` (EnVBL) raises
+    // the IRQ line each frame, but only when the IOUDIS register is
+    // enabled (the boot-time default). With IOUDIS disabled the same
+    // address is the AN1 annunciator (legacy II/II+ behaviour) and
+    // many programs poke $C05B for paddle / annunciator reasons —
+    // raising an IRQ in that case crashes ProDOS (no handler installed).
+    // Until POM2 models IOUDIS we keep the pending flag for software
+    // that polls it via $C019 read but never assert the CPU IRQ line.
     if (vblWasActive && !nowActive) {
         if (iieMode && vblIrqMask) {
             vblIrqPending = true;
-            if (cpu) cpu->setIRQ(1);
+            // (Intentionally NOT calling cpu->setIRQ — see comment.)
         }
     }
     vblWasActive = nowActive;
@@ -317,6 +323,24 @@ size_t Memory::pasteText(const char* data, size_t length)
 
         // First byte goes straight into the latch if it's empty; rest go
         // into the queue and drain via clearKeyStrobe().
+        if (!keyReady && pasteQueue.empty()) {
+            lastKey  = b;
+            keyReady = true;
+        } else {
+            pasteQueue.push_back(b);
+        }
+        ++queued;
+    }
+    return queued;
+}
+
+size_t Memory::pasteRawKeys(const char* data, size_t length)
+{
+    if (!data || length == 0) return 0;
+    std::lock_guard<std::mutex> lk(kbMutex);
+    size_t queued = 0;
+    for (size_t i = 0; i < length && queued < kPasteMaxChars; ++i) {
+        const uint8_t b = static_cast<uint8_t>(data[i]) & 0x7F;
         if (!keyReady && pasteQueue.empty()) {
             lastKey  = b;
             keyReady = true;

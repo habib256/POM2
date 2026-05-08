@@ -27,10 +27,15 @@
 // and JMPs to the loaded boot1 at $0801.
 //
 // Head stepping: real Disk II hardware pulls the head magnet coils in a
-// 4-phase rotational pattern. We track phase on/off bits and, on each
-// rising edge, examine the two adjacent phases to compute the step
-// direction. State is held in *half-tracks* (0..68); quarter-track
-// precision (used by some copy-protected disks) is not modelled.
+// 4-phase rotational pattern. The head's mechanical position is at any
+// quarter-track offset; each phase magnet has a "well" at a quarter-track
+// position whose index (mod 4) matches the phase number. With one magnet
+// energized the head settles at that magnet's well; with two adjacent
+// magnets energized the head settles between them; opposing magnets
+// (0+2 or 1+3) cancel and the head holds. State is held in
+// *quarter-tracks* (0..139 = 35 tracks × 4) so disks with quarter-track
+// copy protection step accurately. The same algorithm is what MAME's
+// `apple2_floppy_image_device` uses (see its phase-to-target lookup).
 //
 // Timing: at 1.0227 MHz with 4 µs bit cells, the LSS shift register
 // outputs one nibble every ~32 CPU cycles. We accumulate cycles via
@@ -57,7 +62,7 @@ public:
     /// Force the head back to track 0 and reset the LSS state. Used by the
     /// "Boot disk" UI shortcut so the boot PROM finds D5 AA 96 quickly even
     /// if the head wandered while waiting for a disk insert.
-    void seekTrack0() { headHalfTrack = 0; trackPos = 0; cycleAccum = 0; }
+    void seekTrack0() { headQuarterTrack = 0; trackPos = 0; cycleAccum = 0; }
 
     /// Load the 256-byte Disk II boot PROM from disk. Must succeed before
     /// the card is useful — without the PROM, $C600-$C6FF reads back
@@ -73,11 +78,16 @@ public:
     const std::string& getDiskPath()  const { return image.getPath(); }
     const std::string& getLastError() const { return image.getLastError(); }
 
-    int  getCurrentTrack() const { return headHalfTrack / 2; }
-    int  getHalfTrack()    const { return headHalfTrack; }
+    int  getCurrentTrack() const { return headQuarterTrack / 4; }
+    int  getHalfTrack()    const { return headQuarterTrack / 2; }
+    int  getQuarterTrack() const { return headQuarterTrack; }
     bool isMotorOn()       const { return motorOn; }
     int  getTrackPosition() const { return trackPos; }
     bool hasUnsavedChanges() const { return image.hasUnsavedChanges(); }
+    /// Total nibble write flushes since last reset. Used by the
+    /// dos33_save smoke test to confirm SAVE actually exercised the
+    /// write pipeline (vs. erroring out before any write).
+    uint64_t getWriteFlushCount() const { return writeFlushCount; }
 
     /// User opt-in for write-back. When true, eject (and explicit save)
     /// rewrites the source file with any modified sectors. Default off
@@ -106,9 +116,11 @@ private:
 
     // Head stepper. phaseOn[i] = magnet i currently energized.
     std::array<bool, 4> phaseOn{};
-    // Head position in half-tracks (0..68 = 35 tracks × 2). Quarter-
-    // tracks are not modelled, but DOS 3.3 / ProDOS only use whole tracks.
-    int headHalfTrack = 0;
+    // Head position in quarter-tracks. 35 tracks × 4 qt = 140; the head
+    // can sit at any qt from 0 (track 0) to 4*(kTracks-1) = 136 (track 34).
+    // Quarter-tracks are needed for some copy protections; the standard
+    // DOS 3.3 / ProDOS skew uses whole tracks (qt mod 4 == 0).
+    int headQuarterTrack = 0;
 
     // Position into the current track's nibble buffer (0..6655). Wraps
     // continuously while the motor is on.
@@ -122,6 +134,8 @@ private:
     // sequence sees the same nibble twice and loops forever.
     uint8_t dataLatch = 0;
     bool    byteReady = false;
+
+    uint64_t writeFlushCount = 0;
 
     void handleSwitchAccess(uint8_t low4);
     void onPhaseEdge(int phase, bool turningOn);

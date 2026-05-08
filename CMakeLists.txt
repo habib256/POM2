@@ -57,6 +57,7 @@ set(SOURCES
     SlotBus.cpp
     SnapshotIO.cpp
     SpeakerDevice.cpp
+    SuperSerialCard.cpp
     main.cpp
 )
 
@@ -91,6 +92,7 @@ set(HEADERS
     SlotPeripheral.h
     SnapshotIO.h
     SpeakerDevice.h
+    SuperSerialCard.h
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
@@ -148,6 +150,46 @@ endif()
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} opengl32)
+endif()
+
+# ─── pom2_headless ────────────────────────────────────────────────────────
+# Console-only binary: same emulator core (Memory + M6502 + SlotBus + the
+# Disk II / Super Serial cards) wired to a TCP listener via the SSC, so
+# you can `telnet 127.0.0.1 6502` and drive the Apple II from anywhere
+# without an X server / Cocoa window. Used for self-tests and CI.
+add_executable(pom2_headless
+    pom2_headless.cpp
+    AudioDevice.cpp
+    CassetteDevice.cpp
+    DiskImage.cpp
+    DiskIICard.cpp
+    EmulationController.cpp
+    LeChatMauveCard.cpp
+    M6502.cpp
+    Memory.cpp
+    RomLoader.cpp
+    SlotBus.cpp
+    SnapshotIO.cpp
+    SpeakerDevice.cpp
+    SuperSerialCard.cpp
+)
+target_include_directories(pom2_headless PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(pom2_headless PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(pom2_headless PRIVATE
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework AudioUnit"
+    )
+endif()
+if(WIN32)
+    target_link_libraries(pom2_headless PRIVATE winmm)
 endif()
 
 if(MSVC)

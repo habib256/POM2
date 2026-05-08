@@ -40,9 +40,11 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
     if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
         // F11 (soft reset) and F12 (hard reset) are routed unconditionally
         // so the user can recover even when an ImGui widget has captured
-        // the keyboard focus.
-        const bool isResetKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12);
-        if (!ImGui::GetIO().WantCaptureKeyboard || isResetKey) {
+        // the keyboard focus. F9 (screenshot) is routed the same way so
+        // a screenshot can be triggered from a focused control widget.
+        const bool isGlobalKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12 ||
+                                  key == GLFW_KEY_F9);
+        if (!ImGui::GetIO().WantCaptureKeyboard || isGlobalKey) {
             mw->onKey(key, sc, action, mods);
         }
     }

@@ -13,8 +13,45 @@ namespace {
 // ~32 CPU cycles per nibble = 4 µs bit cells × 8 bits at 1.0227 MHz. Real
 // hardware varies with the LSS state, but DOS 3.3 / ProDOS only need
 // average-rate accuracy because they re-sync on every D5-AA prologue.
-constexpr int kCyclesPerNibble = 32;
-constexpr int kHalfTrackMax    = (DiskImage::kTracks - 1) * 2;   // 68
+constexpr int kCyclesPerNibble  = 32;
+constexpr int kQuarterTrackMax  = (DiskImage::kTracks - 1) * 4;  // 136
+
+// Stepper "magnetic well" model (Apple Disk II hardware behaviour).
+//
+// Each of the 4 phase magnets attracts the head toward a quarter-track
+// position whose index mod 4 equals the phase number. With multiple
+// magnets energized, the head settles at the resultant of their pulls:
+//   - one magnet  → its own well  (single attractor)
+//   - two adjacent magnets → between them (e.g. phases 0+1 → ½ qt)
+//   - two opposing magnets (0+2 or 1+3) → forces cancel, head holds
+//   - three magnets → centroid of the three wells
+//   - all four (or none) → no net pull, head holds
+//
+// Indexed by the 4-bit phaseOn bitmask (bit i = phase i). Each entry is
+// the desired qt offset modulo 4, or -1 when there is no clear target
+// (head should not move). This 16-entry table is derived from the spec
+// described in Sather's "Understanding the Apple II", chap. 9; the same
+// pattern is reproduced in MAME's apple2 floppy device. Adjacent-pair
+// rows snap toward the lower phase number, except 0+3 which wraps and
+// snaps to phase 3.
+constexpr int kPhaseTarget[16] = {
+    /* 0000 none           */ -1,
+    /* 0001 phase 0        */  0,
+    /* 0010 phase 1        */  1,
+    /* 0011 phases 0+1     */  0,
+    /* 0100 phase 2        */  2,
+    /* 0101 phases 0+2 opp */ -1,
+    /* 0110 phases 1+2     */  1,
+    /* 0111 phases 0+1+2   */  1,
+    /* 1000 phase 3        */  3,
+    /* 1001 phases 0+3     */  3,
+    /* 1010 phases 1+3 opp */ -1,
+    /* 1011 phases 0+1+3   */  0,
+    /* 1100 phases 2+3     */  2,
+    /* 1101 phases 0+2+3   */  2,
+    /* 1110 phases 1+2+3   */  2,
+    /* 1111 all            */ -1,
+};
 
 // Opt-in diagnostic — set POM2_DEBUG_DISK=1 to see one-shot lines marking
 // each milestone of the Disk II boot sequence. Cheap when off (one bool
@@ -123,17 +160,18 @@ void DiskIICard::onReset()
 
 void DiskIICard::onPhaseEdge(int /*phase*/, bool turningOn)
 {
-    // Standard rule: the head moves toward whichever neighbour magnet is
-    // currently energized. Examining the on/off state of the two phases
-    // adjacent to our half-track (mod 4) gives the step direction.
-    // Only rising edges actually pull the head; a phase-off transition
-    // releases the magnet but doesn't move the head on its own.
+    // Step the head ±1 half-track (= 2 qt) per rising edge, with the
+    // direction chosen by which adjacent phase magnet is currently on.
+    // Identical to the prior half-track algorithm, just expressed in
+    // quarter-track storage so future LSS-driven sub-half-track stepping
+    // (used by some copy-protected disks) can layer on top without
+    // changing this rule.
     if (!turningOn) return;
     int dir = 0;
-    const int cur = headHalfTrack & 3;
+    const int cur = (headQuarterTrack / 2) & 3;     // half-track mod 4
     if (phaseOn[(cur + 1) & 3]) dir += 1;
     if (phaseOn[(cur + 3) & 3]) dir -= 1;
-    headHalfTrack = std::clamp(headHalfTrack + dir, 0, kHalfTrackMax);
+    headQuarterTrack = std::clamp(headQuarterTrack + 2 * dir, 0, kQuarterTrackMax);
 }
 
 void DiskIICard::advanceCycles(int cycles)
@@ -149,9 +187,10 @@ void DiskIICard::advanceCycles(int cycles)
             // we model one nibble per ~32 CPU cycles, matching the read
             // pacing. The CPU latches the next nibble via a soft-switch
             // store (see deviceSelectWrite).
-            image.writeNibbleAt(headHalfTrack / 2, trackPos, writeLatch);
+            image.writeNibbleAt(headQuarterTrack / 4, trackPos, writeLatch);
+            ++writeFlushCount;
         } else {
-            dataLatch = image.nibbleAt(headHalfTrack / 2, trackPos);
+            dataLatch = image.nibbleAt(headQuarterTrack / 4, trackPos);
             byteReady = true;
         }
     }
@@ -184,8 +223,8 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
                     trace.sawMotorOn = true;
                     char buf[96];
                     std::snprintf(buf, sizeof(buf),
-                        "motor ON (head at half-track %d, disk %s)",
-                        headHalfTrack,
+                        "motor ON (head at quarter-track %d, disk %s)",
+                        headQuarterTrack,
                         image.isLoaded() ? "loaded" : "MISSING");
                     pom2::log().info("Disk II", buf);
                 }
@@ -224,7 +263,7 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
             char buf[96];
             std::snprintf(buf, sizeof(buf),
                 "first GCR nibble served: $%02X (track %d, pos %d)",
-                dataLatch, headHalfTrack / 2, trackPos);
+                dataLatch, headQuarterTrack / 4, trackPos);
             pom2::log().info("Disk II", buf);
         }
         byteReady = false;
@@ -246,11 +285,26 @@ void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
     // Apple II soft switches respond to writes too — DOS 3.3 occasionally
     // pokes them via STA. We only need the side-effect, not the value
-    // for control switches; for $C0nC/$C0nD in WRITE mode we also latch
-    // the byte: the LSS shift register clocks it onto the track at the
-    // next ~32-cycle bit-cell window (see advanceCycles).
+    // for control switches; for $C0nD in WRITE mode (Q6H + Q7H) the store
+    // loads the LSS data latch. $C0nC stores are SHIFT strobes on real
+    // hardware (Sather "Understanding the Apple II" 9-13) — they do not
+    // load the latch register.
     handleSwitchAccess(low4);
-    if (writeMode && (low4 == 0xC || low4 == 0xD)) {
+    if (writeMode && low4 == 0xD) {
         writeLatch = v;
+        // Realign the LSS to the CPU's store cadence. Real Disk II
+        // hardware reloads its WRITE shift register from the data latch
+        // at the start of every 8-bit cell; if the CPU's store-to-store
+        // interval drifts a few cycles past 32 (DOS RWTS WRITE6 has
+        // small gaps between the data prologue and the first secondary
+        // nibble — bookkeeping, not part of the inner write loop), our
+        // free-running cycleAccum would overflow and flush a duplicate
+        // of the still-stale latch into the next nibble slot. That
+        // extra nibble shifts the running-XOR checksum and DOS reports
+        // I/O ERROR. Resetting cycleAccum here pins each flush to
+        // exactly 32 cycles after the most recent latch load — which
+        // matches DOS's intent and AppleWin's per-access LSS sync
+        // (Disk_t::DataLatchWriteWOZ → UpdateBitStreamOffsets).
+        cycleAccum = 0;
     }
 }

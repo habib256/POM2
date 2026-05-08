@@ -159,6 +159,7 @@ add_executable(test_hdv_card
     hdv_card_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_card PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
@@ -175,6 +176,34 @@ endif()
 
 add_test(NAME hdv_card_smoke COMMAND test_hdv_card)
 set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── HDV write-back smoke test ────────────────────────────────────────────
+# Pins .hdv plain round-trip, .2mg header preservation (incl. trailing
+# comment chunk), 2MG WP flag honoured even with user opt-in, and opt-in
+# default off (writes to a non-write-back card silently dropped, file
+# untouched on eject).
+add_executable(test_hdv_writeback
+    hdv_writeback_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_hdv_writeback PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_hdv_writeback PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_hdv_writeback PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_hdv_writeback PRIVATE winmm)
+endif()
+
+add_test(NAME hdv_writeback_smoke COMMAND test_hdv_writeback)
+set_tests_properties(hdv_writeback_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── ProDOS host-folder volume synthesizer smoke test ─────────────────────
@@ -318,6 +347,25 @@ add_test(NAME disk_writeback_smoke COMMAND test_disk_writeback)
 set_tests_properties(disk_writeback_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Disk II controller write-side smoke test ────────────────────────────
+# Drives the controller as a CPU would (write-mode + cycle-paced Q6H stores)
+# and reads back the track to confirm the LSS pacing actually lands distinct
+# bytes on disk. Pins the SAVE/LOAD I/O ERROR regression: before the fix
+# every store collapsed to one value because writeLatch was overwritten
+# without per-store cycle stamping.
+
+add_executable(test_disk_write_controller
+    disk_write_controller_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_disk_write_controller PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_write_controller_smoke COMMAND test_disk_write_controller)
+set_tests_properties(disk_write_controller_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Disk II end-to-end boot smoke test ───────────────────────────────────
 # Runs the full boot pipeline: Apple II ROM + Disk II PROM + .dsk image,
 # CPU jumps to $C600, runs until the PROM exits, then compares the loaded
@@ -346,6 +394,107 @@ endif()
 
 add_test(NAME disk_boot_smoke COMMAND test_disk_boot)
 set_tests_properties(disk_boot_smoke PROPERTIES TIMEOUT 30)
+
+
+# ─── DOS 3.3 SAVE / LOAD round-trip smoke test ────────────────────────────
+# End-to-end: boot DOS 3.3 into a writable .dsk copy, paste a small BASIC
+# program, SAVE it, scan the text page for "I/O ERROR". Skips silently if
+# the user hasn't placed apple2.rom + disk2.rom + dos33_master.dsk in the
+# usual locations. Pin for the Disk II write pipeline.
+
+add_executable(test_dos33_save
+    dos33_save_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dos33_save PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dos33_save PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dos33_save PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dos33_save PRIVATE winmm)
+endif()
+
+add_test(NAME dos33_save_smoke COMMAND test_dos33_save)
+set_tests_properties(dos33_save_smoke PROPERTIES TIMEOUT 60)
+
+
+# ─── ProDOS 2.4.3 SAVE / LOAD round-trip smoke test ──────────────────────
+# Same regression gate as dos33_save but driving a ProDOS .po image
+# through BITSY BYE → BASIC → SAVE/LOAD. Skips silently when ProDOS_2_4_3.po
+# isn't in disks/.
+
+add_executable(test_prodos_save
+    prodos_save_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_prodos_save PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_prodos_save PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_prodos_save PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_prodos_save PRIVATE winmm)
+endif()
+
+add_test(NAME prodos_save_smoke COMMAND test_prodos_save)
+set_tests_properties(prodos_save_smoke PROPERTIES TIMEOUT 90)
+
+
+# ─── Copy II Plus boot probe (diagnostic, not a CTest target) ────────────
+add_executable(c2plus_boot_probe
+    c2plus_boot_probe.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(c2plus_boot_probe PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(c2plus_boot_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(c2plus_boot_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(c2plus_boot_probe PRIVATE winmm)
+endif()
+
+
+# ─── Copy II Plus boot dump (diagnostic, not a CTest target) ─────────────
+add_executable(copy2plus_boot_dump
+    copy2plus_boot_dump.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(copy2plus_boot_dump PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(copy2plus_boot_dump PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(copy2plus_boot_dump PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(copy2plus_boot_dump PRIVATE winmm)
+endif()
 
 
 # ─── Apple IIe memory smoke test ──────────────────────────────────────────

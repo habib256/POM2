@@ -175,6 +175,63 @@ int main()
     runUntilBrk(cpu, mem, 100000);
     assert(cpu.getAccumulator() == 0xBB);
 
+    // ── Rockwell RMBn ($07-$77) / SMBn ($87-$F7) ──────────────────────
+    // Per the Rockwell datasheet: $07/$17/.../$77 = RMB0..RMB7 (RESET bit n
+    // of zp); $87/$97/.../$F7 = SMB0..SMB7 (SET bit n of zp). Pin both,
+    // because POM2 had them swapped at the dispatch level until 2026-05-08.
+    // Set bit 3 of $40 (starting at 0) via SMB3 ($B7); then clear via RMB3 ($37).
+    mem.memWrite(0x0040, 0x00);
+    runProgram(mem, cpu, {
+        0xB7, 0x40,            // SMB3 $40 → $40 |= $08 = $08
+    });
+    assert(mem.memRead(0x0040) == 0x08);
+    runProgram(mem, cpu, {
+        0x37, 0x40,            // RMB3 $40 → $40 &= ~$08 = $00
+    });
+    assert(mem.memRead(0x0040) == 0x00);
+    // RMB0 + RMB7 + SMB7 on the same byte to verify independent bits.
+    mem.memWrite(0x0041, 0xFF);
+    runProgram(mem, cpu, {
+        0x07, 0x41,            // RMB0 $41 → $FF & ~$01 = $FE
+        0x77, 0x41,            // RMB7 $41 → $FE & ~$80 = $7E
+        0xF7, 0x41,            // SMB7 $41 → $7E | $80  = $FE
+    });
+    assert(mem.memRead(0x0041) == 0xFE);
+
+    // ── Rockwell BBRn / BBSn ($0F,$1F,...,$7F / $8F,$9F,...,$FF) ──────
+    // BBR0 zp,offset — branch when bit 0 is reset.
+    mem.memWrite(0x0050, 0x02);    // bit 1 set, bit 0 clear
+    runProgram(mem, cpu, {
+        0xA9, 0x11,            // LDA #$11
+        0x0F, 0x50, 0x02,      // BBR0 $50, +2 → branch (bit 0 clear)
+        0xA9, 0xFF,            // LDA #$FF (must be skipped)
+        0xA2, 0x77,            // LDX #$77
+    });
+    assert(cpu.getAccumulator() == 0x11);
+    assert(cpu.getXRegister()    == 0x77);
+
+    // BBS7 ($FF) — branch when bit 7 set. The opcode byte itself is $FF;
+    // the canonical "first byte falls into a slot 2 ROM" case from
+    // CLAUDE.md / the ScoSwamp investigation. Pin it explicitly.
+    mem.memWrite(0x0051, 0x80);    // bit 7 set
+    runProgram(mem, cpu, {
+        0xA9, 0x22,            // LDA #$22
+        0xFF, 0x51, 0x02,      // BBS7 $51, +2 → branch (bit 7 set)
+        0xA9, 0xEE,            // LDA #$EE (must be skipped)
+        0xA2, 0x55,            // LDX #$55
+    });
+    assert(cpu.getAccumulator() == 0x22);
+    assert(cpu.getXRegister()    == 0x55);
+
+    // BBS7 with bit clear → no branch, fall through.
+    mem.memWrite(0x0052, 0x00);
+    runProgram(mem, cpu, {
+        0xA9, 0x33,            // LDA #$33
+        0xFF, 0x52, 0x02,      // BBS7 $52, +2 → NO branch (bit 7 clear)
+        0xA9, 0xCC,            // LDA #$CC (must execute)
+    });
+    assert(cpu.getAccumulator() == 0xCC);
+
     std::printf("cmos_6502_smoke OK\n");
     return 0;
 }

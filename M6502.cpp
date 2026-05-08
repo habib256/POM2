@@ -19,6 +19,7 @@
 #include "M6502.h"
 #include "Logger.h"
 #include "Memory.h"
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 
@@ -37,6 +38,7 @@ M6502::M6502()
    programCounter = 0;
    cycles = 0;
    running = 0;
+   setCpuMode(CpuMode::CMOS);
 }
 
 M6502::M6502(Memory * mem)
@@ -53,7 +55,8 @@ M6502::M6502(Memory * mem)
    stackPointer = 0xFF;
    cycles = 0;
    running = 0;
-   
+   setCpuMode(CpuMode::CMOS);
+
    // Initialiser le program counter depuis le vecteur de reset
    // Si la mémoire est disponible, lire le vecteur, sinon utiliser 0xF800 (Monitor Apple II)
    if (memory != nullptr) {
@@ -941,9 +944,164 @@ void M6502::TRB(void)
     cycles += 3;
 }
 
+// ── Rockwell SMBn / RMBn / BBRn / BBSn ────────────────────────────────
+// Templated on the bit index N (0..7). Each generates a distinct
+// member-function instantiation that the dispatch table can target.
+
+template <int N>
+void M6502::SMBn(void)
+{
+    const uint8_t zp = memory->memRead(programCounter++);
+    uint8_t v = memory->memRead(zp);
+    v |= static_cast<uint8_t>(1u << N);
+    memory->memWrite(zp, v);
+    cycles += 5;
+}
+
+template <int N>
+void M6502::RMBn(void)
+{
+    const uint8_t zp = memory->memRead(programCounter++);
+    uint8_t v = memory->memRead(zp);
+    v &= static_cast<uint8_t>(~(1u << N));
+    memory->memWrite(zp, v);
+    cycles += 5;
+}
+
+template <int N>
+void M6502::BBRn(void)
+{
+    const uint8_t zp     = memory->memRead(programCounter++);
+    const int8_t  offset = static_cast<int8_t>(memory->memRead(programCounter++));
+    const uint8_t v      = memory->memRead(zp);
+    cycles += 5;
+    if ((v & (1u << N)) == 0) {
+        const uint16_t old = programCounter;
+        programCounter = static_cast<uint16_t>(programCounter + offset);
+        cycles += 1;
+        if ((old & 0xFF00u) != (programCounter & 0xFF00u)) cycles += 1;
+    }
+}
+
+template <int N>
+void M6502::BBSn(void)
+{
+    const uint8_t zp     = memory->memRead(programCounter++);
+    const int8_t  offset = static_cast<int8_t>(memory->memRead(programCounter++));
+    const uint8_t v      = memory->memRead(zp);
+    cycles += 5;
+    if ((v & (1u << N)) != 0) {
+        const uint16_t old = programCounter;
+        programCounter = static_cast<uint16_t>(programCounter + offset);
+        cycles += 1;
+        if ((old & 0xFF00u) != (programCounter & 0xFF00u)) cycles += 1;
+    }
+}
+
+// Explicit instantiations so the function pointers in opcodeTable resolve.
+template void M6502::SMBn<0>(); template void M6502::SMBn<1>();
+template void M6502::SMBn<2>(); template void M6502::SMBn<3>();
+template void M6502::SMBn<4>(); template void M6502::SMBn<5>();
+template void M6502::SMBn<6>(); template void M6502::SMBn<7>();
+template void M6502::RMBn<0>(); template void M6502::RMBn<1>();
+template void M6502::RMBn<2>(); template void M6502::RMBn<3>();
+template void M6502::RMBn<4>(); template void M6502::RMBn<5>();
+template void M6502::RMBn<6>(); template void M6502::RMBn<7>();
+template void M6502::BBRn<0>(); template void M6502::BBRn<1>();
+template void M6502::BBRn<2>(); template void M6502::BBRn<3>();
+template void M6502::BBRn<4>(); template void M6502::BBRn<5>();
+template void M6502::BBRn<6>(); template void M6502::BBRn<7>();
+template void M6502::BBSn<0>(); template void M6502::BBSn<1>();
+template void M6502::BBSn<2>(); template void M6502::BBSn<3>();
+template void M6502::BBSn<4>(); template void M6502::BBSn<5>();
+template void M6502::BBSn<6>(); template void M6502::BBSn<7>();
+
+// WDC WAI / STP. We model the halt by rewinding PC to the WAI/STP
+// opcode so the next step() re-fetches it (and the IRQ/NMI handler
+// runs first if asserted, breaking the loop).
+void M6502::WAI(void)
+{
+    // The CPU is supposed to halt until an interrupt arrives. Parking PC
+    // makes step() re-fetch WAI; if IRQ is asserted (and I is clear) or
+    // NMI is pending, step() handles it before re-fetching. Subsequent
+    // RTI lands at PC+1, past the WAI byte. We add 3 cycles to mirror
+    // the documented latency.
+    programCounter--;
+    cycles += 3;
+}
+
+void M6502::STP(void)
+{
+    // Halts the CPU until a reset. Same parking trick — PC stays put
+    // and only a hardReset() will move it.
+    programCounter--;
+    cycles += 3;
+}
+
 void M6502::Unoff(void)
 {
     cycles += 2;
+}
+
+void M6502::setCpuMode(CpuMode mode)
+{
+    cpuMode = mode;
+    std::memcpy(opcodeTable, kCmosTable, sizeof(opcodeTable));
+    if (mode == CpuMode::CMOS) return;
+
+    // NMOS 6502: replace every 65C02-only addition with a placeholder
+    // matching the original NMOS behaviour (NOP of correct byte length,
+    // or KIL/Hang for the (zp)-mode opcodes that NMOS halts on).
+    auto u1 = OpcodeEntry{&M6502::Unoff,  nullptr};
+    auto u2 = OpcodeEntry{&M6502::Unoff2, nullptr};
+    auto u3 = OpcodeEntry{&M6502::Unoff3, nullptr};
+    auto kil = OpcodeEntry{&M6502::Hang,  nullptr};
+
+    // 1-byte additions.
+    opcodeTable[0x1A] = u1; // INA
+    opcodeTable[0x3A] = u1; // DEA
+    opcodeTable[0x5A] = u1; // PHY
+    opcodeTable[0x7A] = u1; // PLY
+    opcodeTable[0xDA] = u1; // PHX
+    opcodeTable[0xFA] = u1; // PLX
+
+    // 2-byte additions.
+    opcodeTable[0x04] = u2; // TSB zp
+    opcodeTable[0x14] = u2; // TRB zp
+    opcodeTable[0x34] = u2; // BIT zp,X
+    opcodeTable[0x64] = u2; // STZ zp
+    opcodeTable[0x74] = u2; // STZ zp,X
+    opcodeTable[0x80] = u2; // BRA
+    opcodeTable[0x89] = u2; // BIT #imm
+
+    // (zp)-indirect mode opcodes — NMOS treats these as KIL (halt).
+    opcodeTable[0x12] = kil; // ORA (zp)
+    opcodeTable[0x32] = kil; // AND (zp)
+    opcodeTable[0x52] = kil; // EOR (zp)
+    opcodeTable[0x72] = kil; // ADC (zp)
+    opcodeTable[0x92] = kil; // STA (zp)
+    opcodeTable[0xB2] = kil; // LDA (zp) — the canonical NMOS halt
+    opcodeTable[0xD2] = kil; // CMP (zp)
+    opcodeTable[0xF2] = kil; // SBC (zp)
+
+    // 3-byte additions.
+    opcodeTable[0x0C] = u3; // TSB abs
+    opcodeTable[0x1C] = u3; // TRB abs
+    opcodeTable[0x3C] = u3; // BIT abs,X
+    opcodeTable[0x7C] = u3; // JMP (abs,X)
+    opcodeTable[0x9C] = u3; // STZ abs
+    opcodeTable[0x9E] = u3; // STZ abs,X
+
+    // Rockwell SMBn / RMBn (2-byte) and BBRn / BBSn (3-byte).
+    for (int n = 0; n < 8; ++n) {
+        opcodeTable[0x07 + n * 0x10] = u2; // SMBn zp
+        opcodeTable[0x87 + n * 0x10] = u2; // RMBn zp
+        opcodeTable[0x0F + n * 0x10] = u3; // BBRn zp,offset
+        opcodeTable[0x8F + n * 0x10] = u3; // BBSn zp,offset
+    }
+    // WDC WAI / STP (1-byte) — undefined on NMOS, treat as 1-byte NOP.
+    opcodeTable[0xCB] = u1;
+    opcodeTable[0xDB] = u1;
 }
 
 void M6502::Unoff1(void)
@@ -969,9 +1127,11 @@ void M6502::Hang(void)
     cycles += 2;
 }
 
-// Opcode dispatch table: each entry is {addressingMode, operation}
-// For single-function opcodes (JSR, Hang, Unoff*), operation is nullptr
-const M6502::OpcodeEntry M6502::opcodeTable[256] = {
+// Master 65C02 dispatch table: each entry is {addressingMode, operation}.
+// For single-function opcodes (JSR, Hang, Unoff*), operation is nullptr.
+// The instance `opcodeTable` is initialised from this and may be mutated
+// by `setCpuMode(CpuMode::NMOS)` to remove 65C02 additions.
+const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x00 */ {&M6502::Imp,      &M6502::BRK},
     /* 0x01 */ {&M6502::IndZeroX,  &M6502::ORA},
     /* 0x02 */ {&M6502::Hang,      nullptr},
@@ -979,7 +1139,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x04 */ {&M6502::Zero,      &M6502::TSB},     // 65C02 TSB zp
     /* 0x05 */ {&M6502::Zero,      &M6502::ORA},
     /* 0x06 */ {&M6502::Zero,      &M6502::ASL},
-    /* 0x07 */ {&M6502::Unoff,     nullptr},
+    /* 0x07 */ {&M6502::RMBn<0>,   nullptr},
     /* 0x08 */ {&M6502::Imp,       &M6502::PHP},
     /* 0x09 */ {&M6502::Imm,       &M6502::ORA},
     /* 0x0A */ {&M6502::Imp,       &M6502::ASL_A},
@@ -987,7 +1147,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x0C */ {&M6502::Abs,       &M6502::TSB},     // 65C02 TSB abs
     /* 0x0D */ {&M6502::Abs,       &M6502::ORA},
     /* 0x0E */ {&M6502::Abs,       &M6502::ASL},
-    /* 0x0F */ {&M6502::Unoff,     nullptr},
+    /* 0x0F */ {&M6502::BBRn<0>,   nullptr},
 
     /* 0x10 */ {&M6502::Rel,       &M6502::BPL},
     /* 0x11 */ {&M6502::IndZeroY,  &M6502::ORA},
@@ -996,7 +1156,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x14 */ {&M6502::Zero,      &M6502::TRB},     // 65C02 TRB zp
     /* 0x15 */ {&M6502::ZeroX,     &M6502::ORA},
     /* 0x16 */ {&M6502::ZeroX,     &M6502::ASL},
-    /* 0x17 */ {&M6502::Unoff,     nullptr},
+    /* 0x17 */ {&M6502::RMBn<1>,   nullptr},
     /* 0x18 */ {&M6502::Imp,       &M6502::CLC},
     /* 0x19 */ {&M6502::AbsY,      &M6502::ORA},
     /* 0x1A */ {&M6502::Imp,       &M6502::INA},     // 65C02 INA
@@ -1004,7 +1164,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x1C */ {&M6502::Abs,       &M6502::TRB},     // 65C02 TRB abs
     /* 0x1D */ {&M6502::AbsX,      &M6502::ORA},
     /* 0x1E */ {&M6502::WAbsX,     &M6502::ASL},
-    /* 0x1F */ {&M6502::Unoff,     nullptr},
+    /* 0x1F */ {&M6502::BBRn<1>,   nullptr},
 
     /* 0x20 */ {&M6502::JSR,       nullptr},
     /* 0x21 */ {&M6502::IndZeroX,  &M6502::AND},
@@ -1013,7 +1173,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x24 */ {&M6502::Zero,      &M6502::BIT},
     /* 0x25 */ {&M6502::Zero,      &M6502::AND},
     /* 0x26 */ {&M6502::Zero,      &M6502::ROL},
-    /* 0x27 */ {&M6502::Unoff,     nullptr},
+    /* 0x27 */ {&M6502::RMBn<2>,   nullptr},
     /* 0x28 */ {&M6502::Imp,       &M6502::PLP},
     /* 0x29 */ {&M6502::Imm,       &M6502::AND},
     /* 0x2A */ {&M6502::Imp,       &M6502::ROL_A},
@@ -1021,7 +1181,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x2C */ {&M6502::Abs,       &M6502::BIT},
     /* 0x2D */ {&M6502::Abs,       &M6502::AND},
     /* 0x2E */ {&M6502::Abs,       &M6502::ROL},
-    /* 0x2F */ {&M6502::Unoff,     nullptr},
+    /* 0x2F */ {&M6502::BBRn<2>,   nullptr},
 
     /* 0x30 */ {&M6502::Rel,       &M6502::BMI},
     /* 0x31 */ {&M6502::IndZeroY,  &M6502::AND},
@@ -1030,7 +1190,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x34 */ {&M6502::ZeroX,     &M6502::BIT},     // 65C02 BIT zp,X
     /* 0x35 */ {&M6502::ZeroX,     &M6502::AND},
     /* 0x36 */ {&M6502::ZeroX,     &M6502::ROL},
-    /* 0x37 */ {&M6502::Unoff,     nullptr},
+    /* 0x37 */ {&M6502::RMBn<3>,   nullptr},
     /* 0x38 */ {&M6502::Imp,       &M6502::SEC},
     /* 0x39 */ {&M6502::AbsY,      &M6502::AND},
     /* 0x3A */ {&M6502::Imp,       &M6502::DEA},     // 65C02 DEA
@@ -1038,7 +1198,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x3C */ {&M6502::AbsX,      &M6502::BIT},     // 65C02 BIT abs,X
     /* 0x3D */ {&M6502::AbsX,      &M6502::AND},
     /* 0x3E */ {&M6502::WAbsX,     &M6502::ROL},
-    /* 0x3F */ {&M6502::Unoff,     nullptr},
+    /* 0x3F */ {&M6502::BBRn<3>,   nullptr},
 
     /* 0x40 */ {&M6502::Imp,       &M6502::RTI},
     /* 0x41 */ {&M6502::IndZeroX,  &M6502::EOR},
@@ -1047,7 +1207,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x44 */ {&M6502::Unoff2,    nullptr},
     /* 0x45 */ {&M6502::Zero,      &M6502::EOR},
     /* 0x46 */ {&M6502::Zero,      &M6502::LSR},
-    /* 0x47 */ {&M6502::Unoff,     nullptr},
+    /* 0x47 */ {&M6502::RMBn<4>,   nullptr},
     /* 0x48 */ {&M6502::Imp,       &M6502::PHA},
     /* 0x49 */ {&M6502::Imm,       &M6502::EOR},
     /* 0x4A */ {&M6502::Imp,       &M6502::LSR_A},
@@ -1055,7 +1215,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x4C */ {&M6502::Abs,       &M6502::JMP},
     /* 0x4D */ {&M6502::Abs,       &M6502::EOR},
     /* 0x4E */ {&M6502::Abs,       &M6502::LSR},
-    /* 0x4F */ {&M6502::Unoff,     nullptr},
+    /* 0x4F */ {&M6502::BBRn<4>,   nullptr},
 
     /* 0x50 */ {&M6502::Rel,       &M6502::BVC},
     /* 0x51 */ {&M6502::IndZeroY,  &M6502::EOR},
@@ -1064,7 +1224,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x54 */ {&M6502::Unoff2,    nullptr},
     /* 0x55 */ {&M6502::ZeroX,     &M6502::EOR},
     /* 0x56 */ {&M6502::ZeroX,     &M6502::LSR},
-    /* 0x57 */ {&M6502::Unoff,     nullptr},
+    /* 0x57 */ {&M6502::RMBn<5>,   nullptr},
     /* 0x58 */ {&M6502::Imp,       &M6502::CLI},
     /* 0x59 */ {&M6502::AbsY,      &M6502::EOR},
     /* 0x5A */ {&M6502::Imp,       &M6502::PHY},     // 65C02 PHY
@@ -1072,7 +1232,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x5C */ {&M6502::Unoff3,    nullptr},
     /* 0x5D */ {&M6502::AbsX,      &M6502::EOR},
     /* 0x5E */ {&M6502::WAbsX,     &M6502::LSR},
-    /* 0x5F */ {&M6502::Unoff,     nullptr},
+    /* 0x5F */ {&M6502::BBRn<5>,   nullptr},
 
     /* 0x60 */ {&M6502::Imp,       &M6502::RTS},
     /* 0x61 */ {&M6502::IndZeroX,  &M6502::ADC},
@@ -1081,7 +1241,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x64 */ {&M6502::Zero,      &M6502::STZ},     // 65C02 STZ zp
     /* 0x65 */ {&M6502::Zero,      &M6502::ADC},
     /* 0x66 */ {&M6502::Zero,      &M6502::ROR},
-    /* 0x67 */ {&M6502::Unoff,     nullptr},
+    /* 0x67 */ {&M6502::RMBn<6>,   nullptr},
     /* 0x68 */ {&M6502::Imp,       &M6502::PLA},
     /* 0x69 */ {&M6502::Imm,       &M6502::ADC},
     /* 0x6A */ {&M6502::Imp,       &M6502::ROR_A},
@@ -1089,7 +1249,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x6C */ {&M6502::Ind,       &M6502::JMP},
     /* 0x6D */ {&M6502::Abs,       &M6502::ADC},
     /* 0x6E */ {&M6502::Abs,       &M6502::ROR},
-    /* 0x6F */ {&M6502::Unoff,     nullptr},
+    /* 0x6F */ {&M6502::BBRn<6>,   nullptr},
 
     /* 0x70 */ {&M6502::Rel,       &M6502::BVS},
     /* 0x71 */ {&M6502::IndZeroY,  &M6502::ADC},
@@ -1098,7 +1258,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x74 */ {&M6502::ZeroX,     &M6502::STZ},     // 65C02 STZ zp,X
     /* 0x75 */ {&M6502::ZeroX,     &M6502::ADC},
     /* 0x76 */ {&M6502::ZeroX,     &M6502::ROR},
-    /* 0x77 */ {&M6502::Unoff,     nullptr},
+    /* 0x77 */ {&M6502::RMBn<7>,   nullptr},
     /* 0x78 */ {&M6502::Imp,       &M6502::SEI},
     /* 0x79 */ {&M6502::AbsY,      &M6502::ADC},
     /* 0x7A */ {&M6502::Imp,       &M6502::PLY},     // 65C02 PLY
@@ -1106,7 +1266,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x7C */ {&M6502::IndAbsX,   &M6502::JMP},     // 65C02 JMP (abs,X)
     /* 0x7D */ {&M6502::AbsX,      &M6502::ADC},
     /* 0x7E */ {&M6502::WAbsX,     &M6502::ROR},
-    /* 0x7F */ {&M6502::Unoff,     nullptr},
+    /* 0x7F */ {&M6502::BBRn<7>,   nullptr},
 
     /* 0x80 */ {&M6502::Rel,       &M6502::BRA},     // 65C02 BRA
     /* 0x81 */ {&M6502::IndZeroX,  &M6502::STA},
@@ -1115,7 +1275,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x84 */ {&M6502::Zero,      &M6502::STY},
     /* 0x85 */ {&M6502::Zero,      &M6502::STA},
     /* 0x86 */ {&M6502::Zero,      &M6502::STX},
-    /* 0x87 */ {&M6502::Unoff,     nullptr},
+    /* 0x87 */ {&M6502::SMBn<0>,   nullptr},
     /* 0x88 */ {&M6502::Imp,       &M6502::DEY},
     /* 0x89 */ {&M6502::Imm,       &M6502::BIT_imm}, // 65C02 BIT #imm
     /* 0x8A */ {&M6502::Imp,       &M6502::TXA},
@@ -1123,7 +1283,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x8C */ {&M6502::Abs,       &M6502::STY},
     /* 0x8D */ {&M6502::Abs,       &M6502::STA},
     /* 0x8E */ {&M6502::Abs,       &M6502::STX},
-    /* 0x8F */ {&M6502::Unoff,     nullptr},
+    /* 0x8F */ {&M6502::BBSn<0>,   nullptr},
 
     /* 0x90 */ {&M6502::Rel,       &M6502::BCC},
     /* 0x91 */ {&M6502::WIndZeroY, &M6502::STA},
@@ -1132,7 +1292,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x94 */ {&M6502::ZeroX,     &M6502::STY},
     /* 0x95 */ {&M6502::ZeroX,     &M6502::STA},
     /* 0x96 */ {&M6502::ZeroY,     &M6502::STX},
-    /* 0x97 */ {&M6502::Unoff,     nullptr},
+    /* 0x97 */ {&M6502::SMBn<1>,   nullptr},
     /* 0x98 */ {&M6502::Imp,       &M6502::TYA},
     /* 0x99 */ {&M6502::WAbsY,     &M6502::STA},
     /* 0x9A */ {&M6502::Imp,       &M6502::TXS},
@@ -1140,7 +1300,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0x9C */ {&M6502::Abs,       &M6502::STZ},     // 65C02 STZ abs
     /* 0x9D */ {&M6502::WAbsX,     &M6502::STA},
     /* 0x9E */ {&M6502::WAbsX,     &M6502::STZ},     // 65C02 STZ abs,X
-    /* 0x9F */ {&M6502::Unoff,     nullptr},
+    /* 0x9F */ {&M6502::BBSn<1>,   nullptr},
 
     /* 0xA0 */ {&M6502::Imm,       &M6502::LDY},
     /* 0xA1 */ {&M6502::IndZeroX,  &M6502::LDA},
@@ -1149,7 +1309,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xA4 */ {&M6502::Zero,      &M6502::LDY},
     /* 0xA5 */ {&M6502::Zero,      &M6502::LDA},
     /* 0xA6 */ {&M6502::Zero,      &M6502::LDX},
-    /* 0xA7 */ {&M6502::Unoff,     nullptr},
+    /* 0xA7 */ {&M6502::SMBn<2>,   nullptr},
     /* 0xA8 */ {&M6502::Imp,       &M6502::TAY},
     /* 0xA9 */ {&M6502::Imm,       &M6502::LDA},
     /* 0xAA */ {&M6502::Imp,       &M6502::TAX},
@@ -1157,7 +1317,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xAC */ {&M6502::Abs,       &M6502::LDY},
     /* 0xAD */ {&M6502::Abs,       &M6502::LDA},
     /* 0xAE */ {&M6502::Abs,       &M6502::LDX},
-    /* 0xAF */ {&M6502::Unoff,     nullptr},
+    /* 0xAF */ {&M6502::BBSn<2>,   nullptr},
 
     /* 0xB0 */ {&M6502::Rel,       &M6502::BCS},
     /* 0xB1 */ {&M6502::IndZeroY,  &M6502::LDA},
@@ -1166,7 +1326,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xB4 */ {&M6502::ZeroX,     &M6502::LDY},
     /* 0xB5 */ {&M6502::ZeroX,     &M6502::LDA},
     /* 0xB6 */ {&M6502::ZeroY,     &M6502::LDX},
-    /* 0xB7 */ {&M6502::Unoff,     nullptr},
+    /* 0xB7 */ {&M6502::SMBn<3>,   nullptr},
     /* 0xB8 */ {&M6502::Imp,       &M6502::CLV},
     /* 0xB9 */ {&M6502::AbsY,      &M6502::LDA},
     /* 0xBA */ {&M6502::Imp,       &M6502::TSX},
@@ -1174,7 +1334,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xBC */ {&M6502::AbsX,      &M6502::LDY},
     /* 0xBD */ {&M6502::AbsX,      &M6502::LDA},
     /* 0xBE */ {&M6502::AbsY,      &M6502::LDX},
-    /* 0xBF */ {&M6502::Unoff,     nullptr},
+    /* 0xBF */ {&M6502::BBSn<3>,   nullptr},
 
     /* 0xC0 */ {&M6502::Imm,       &M6502::CPY},
     /* 0xC1 */ {&M6502::IndZeroX,  &M6502::CMP},
@@ -1183,15 +1343,15 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xC4 */ {&M6502::Zero,      &M6502::CPY},
     /* 0xC5 */ {&M6502::Zero,      &M6502::CMP},
     /* 0xC6 */ {&M6502::Zero,      &M6502::DEC},
-    /* 0xC7 */ {&M6502::Unoff,     nullptr},
+    /* 0xC7 */ {&M6502::SMBn<4>,   nullptr},
     /* 0xC8 */ {&M6502::Imp,       &M6502::INY},
     /* 0xC9 */ {&M6502::Imm,       &M6502::CMP},
     /* 0xCA */ {&M6502::Imp,       &M6502::DEX},
-    /* 0xCB */ {&M6502::Unoff,     nullptr},
+    /* 0xCB */ {&M6502::WAI,       nullptr},
     /* 0xCC */ {&M6502::Abs,       &M6502::CPY},
     /* 0xCD */ {&M6502::Abs,       &M6502::CMP},
     /* 0xCE */ {&M6502::Abs,       &M6502::DEC},
-    /* 0xCF */ {&M6502::Unoff,     nullptr},
+    /* 0xCF */ {&M6502::BBSn<4>,   nullptr},
 
     /* 0xD0 */ {&M6502::Rel,       &M6502::BNE},
     /* 0xD1 */ {&M6502::IndZeroY,  &M6502::CMP},
@@ -1200,15 +1360,15 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xD4 */ {&M6502::Unoff2,    nullptr},
     /* 0xD5 */ {&M6502::ZeroX,     &M6502::CMP},
     /* 0xD6 */ {&M6502::ZeroX,     &M6502::DEC},
-    /* 0xD7 */ {&M6502::Unoff,     nullptr},
+    /* 0xD7 */ {&M6502::SMBn<5>,   nullptr},
     /* 0xD8 */ {&M6502::Imp,       &M6502::CLD},
     /* 0xD9 */ {&M6502::AbsY,      &M6502::CMP},
     /* 0xDA */ {&M6502::Imp,       &M6502::PHX},     // 65C02 PHX
-    /* 0xDB */ {&M6502::Unoff,     nullptr},
+    /* 0xDB */ {&M6502::STP,       nullptr},
     /* 0xDC */ {&M6502::Unoff3,    nullptr},
     /* 0xDD */ {&M6502::AbsX,      &M6502::CMP},
     /* 0xDE */ {&M6502::WAbsX,     &M6502::DEC},
-    /* 0xDF */ {&M6502::Unoff,     nullptr},
+    /* 0xDF */ {&M6502::BBSn<5>,   nullptr},
 
     /* 0xE0 */ {&M6502::Imm,       &M6502::CPX},
     /* 0xE1 */ {&M6502::IndZeroX,  &M6502::SBC},
@@ -1217,7 +1377,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xE4 */ {&M6502::Zero,      &M6502::CPX},
     /* 0xE5 */ {&M6502::Zero,      &M6502::SBC},
     /* 0xE6 */ {&M6502::Zero,      &M6502::INC},
-    /* 0xE7 */ {&M6502::Unoff,     nullptr},
+    /* 0xE7 */ {&M6502::SMBn<6>,   nullptr},
     /* 0xE8 */ {&M6502::Imp,       &M6502::INX},
     /* 0xE9 */ {&M6502::Imm,       &M6502::SBC},
     /* 0xEA */ {&M6502::Imp,       &M6502::NOP},
@@ -1225,7 +1385,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xEC */ {&M6502::Abs,       &M6502::CPX},
     /* 0xED */ {&M6502::Abs,       &M6502::SBC},
     /* 0xEE */ {&M6502::Abs,       &M6502::INC},
-    /* 0xEF */ {&M6502::Unoff,     nullptr},
+    /* 0xEF */ {&M6502::BBSn<6>,   nullptr},
 
     /* 0xF0 */ {&M6502::Rel,       &M6502::BEQ},
     /* 0xF1 */ {&M6502::IndZeroY,  &M6502::SBC},
@@ -1234,7 +1394,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xF4 */ {&M6502::Unoff2,    nullptr},
     /* 0xF5 */ {&M6502::ZeroX,     &M6502::SBC},
     /* 0xF6 */ {&M6502::ZeroX,     &M6502::INC},
-    /* 0xF7 */ {&M6502::Unoff,     nullptr},
+    /* 0xF7 */ {&M6502::SMBn<7>,   nullptr},
     /* 0xF8 */ {&M6502::Imp,       &M6502::SED},
     /* 0xF9 */ {&M6502::AbsY,      &M6502::SBC},
     /* 0xFA */ {&M6502::Imp,       &M6502::PLX},     // 65C02 PLX
@@ -1242,7 +1402,7 @@ const M6502::OpcodeEntry M6502::opcodeTable[256] = {
     /* 0xFC */ {&M6502::Unoff3,    nullptr},
     /* 0xFD */ {&M6502::AbsX,      &M6502::SBC},
     /* 0xFE */ {&M6502::WAbsX,     &M6502::INC},
-    /* 0xFF */ {&M6502::Unoff,     nullptr},
+    /* 0xFF */ {&M6502::BBSn<7>,   nullptr},
 };
 
 // Temporary diagnostic — ring buffer of the last N non-sequential PC

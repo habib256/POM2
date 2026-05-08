@@ -33,14 +33,19 @@ menu / CLI flag — pure auto-detect on file presence.
   additions: STZ (zp / zp,X / abs / abs,X), BRA, INA / DEA, PHX / PHY /
   PLX / PLY, BIT #imm / zp,X / abs,X, TSB / TRB, JMP (abs,X), and the
   zero-page-indirect mode for ORA / AND / EOR / ADC / STA / LDA / CMP /
-  SBC. Pinned by `tests/cmos_6502_smoke_test.cpp`. Without these,
-  65C02-targeted ProDOS software (most IIe-Enhanced and IIc games on
-  `.2mg` hard-disk volumes) hits an opcode like `9C` (STZ abs) or `B2`
-  (LDA (zp)) on the first instruction and either no-ops past it or
-  freezes (the original 6502 mapped `B2` to a halt). Rockwell SMB / RMB /
-  BBR / BBS and WDC WAI / STP are deliberately *not* implemented — they
-  show up rarely outside specific niche software. `setProgramCounter()`
-  is the back-door used by the Klaus harness port.
+  SBC. Plus the **Rockwell** additions RMB0..7 (`$07/$17/…/$77`),
+  SMB0..7 (`$87/$97/…/$F7`), BBR0..7 (`$0F/$1F/…/$7F`), BBS0..7
+  (`$8F/$9F/…/$FF`); and the **WDC** WAI / STP halts (`$CB`/`$DB`),
+  modelled by parking PC at the instruction so an IRQ wakes the CPU.
+  Pinned by `tests/cmos_6502_smoke_test.cpp`. Without these, 65C02-
+  targeted ProDOS software (most IIe-Enhanced and IIc games on `.2mg`
+  hard-disk volumes) hits an opcode like `9C` (STZ abs) or `B2` (LDA
+  (zp)) on the first instruction and either no-ops past it or freezes
+  (the original 6502 mapped `B2` to a halt). The Rockwell `$FF` (BBS7)
+  byte matters specifically because it's also the canonical fill in
+  empty slot ROMs; mis-decoding it as a 1-byte NOP makes PC drift
+  through slot 2/3/4 territory and trap unpredictably.
+  `setProgramCounter()` is the back-door used by the Klaus harness port.
 - **CpuClock.h** — `POM2_CPU_CLOCK_HZ = 1 022 727`. The Apple II
   master oscillator is 14.31818 MHz; the CPU runs at that divided by 14.
   The "long cycle" every 65 cycles (TV scan-line alignment) is **not**
@@ -236,6 +241,34 @@ menu / CLI flag — pure auto-detect on file presence.
   and head position; first-cut decision is to keep snapshots focused on
   CPU + RAM + soft switches.
 
+### Super Serial Card (slot 2) + telnet bridge
+
+- **SuperSerialCard** — minimal 6551-ACIA-shaped card in slot 2, paired
+  with a TCP listener so a host terminal can talk to the running Apple
+  II as a serial peer. Soft switches at `$C0A8-$C0AB`: data, status
+  (`bit 4 = TDRE` always 1, `bit 3 = RDRF` follows RX queue, bits 5/6 =
+  DCD/DSR mirror the TCP connect state), command, control. Unconnected
+  reads of $C0A8 return 0 (no-data) — software polls bit 3 of the
+  status to gate.
+- **Slot ROM** at `$C200-$C2FF` exposes the SSC autodetect bytes
+  (`$Cn05=$38`, `$Cn07=$18`, `$Cn0B=$01`, `$Cn0C=$31`) at the spec'd
+  positions and routes execution around them via `JMP $Cn20` at
+  entry. PR#2 hooks CSWL/CSWH ($36/$37) to `$C2B0` (output: spin on
+  TDRE, store to data); IN#2 hooks KSWL/KSWH ($38/$39) to `$C2E0`
+  (input: spin on RDRF, load + ORA #$80 for Apple-keyboard high-bit
+  convention). Reset clears both ring buffers.
+- **TCP bridge** — a worker thread listens on `127.0.0.1:port` (default
+  6502, configurable via Hardware → Super Serial). One client at a
+  time. Bytes flow through 4 KB ring buffers; telnet IAC negotiation
+  (3-byte WILL/WONT/DO/DONT, 2-byte commands, $FF $FF literal) is
+  silently swallowed by `swallowTelnetIac` so a stock `telnet` binary
+  connects cleanly. `TCP_NODELAY` is on so single-character writes
+  appear at the client immediately.
+- **Wiring**: the card is auto-plugged at startup but the listener
+  starts only when `ssc_listening=true` in settings (or via the
+  Hardware panel's Start button). Both state and port are persisted
+  across runs.
+
 ### ProDOS host folder (`prodos_disk/`)
 
 - **`ProDOSVolume`** synthesises a read-only ProDOS volume image (block
@@ -295,9 +328,15 @@ menu / CLI flag — pure auto-detect on file presence.
   toggle to flip the row body from hex to one-instruction-per-line.
 - **main.cpp** — GLFW + ImGui boilerplate. Forwards GLFW char/key callbacks
   to MainWindow only when ImGui isn't capturing keyboard (so editing a
-  control widget doesn't leak keystrokes into the Apple II). F11 (soft
-  reset / Ctrl-Reset) and F12 (hard reset / power cycle) are routed
-  unconditionally so they remain reachable even when ImGui has focus.
+  control widget doesn't leak keystrokes into the Apple II). F9
+  (screenshot), F11 (soft reset / Ctrl-Reset) and F12 (hard reset /
+  power cycle) are routed unconditionally so they remain reachable
+  even when ImGui has focus.
+- **Screenshot (F9)** — `MainWindow::saveScreenshot` snapshots the live
+  framebuffer (under `stateMutex`) and writes `screenshot_NNN.ppm`
+  in the working directory. The sequence number auto-advances so
+  successive presses don't clobber. P6 binary RGB; preview.app on
+  macOS opens it directly.
 
 ## Memory Map
 
@@ -328,6 +367,7 @@ $C064-$C067  Paddle inputs (negative while RC discharging)
 $C070        Paddle reset latch
 $C05E/$C05F  IIe DHGR enable / disable (DHIRESON / DHIRESOFF — also AN3
              annunciator pulses on every access for Le Chat Mauve's FIFO)
+$C0A8-$C0AB  Super Serial Card ACIA (slot 2 — data/status/cmd/ctrl)
 $C0E0-$C0EF  Disk II controller soft switches (slot 6)
 $C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on)
 $C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)

@@ -155,6 +155,7 @@ MainWindow::MainWindow()
         } else {
             hdvStatus = "no image mounted";
         }
+        card->setWriteBackEnabled(settings.getBool("hdv_writeback", false));
         hdvCard = card.get();
         controller.memory().slotBus().plug(5, std::move(card));
     }
@@ -174,6 +175,35 @@ MainWindow::MainWindow()
         display.setChatMauveCard(chatMauveCard);
     }
 
+    // Super Serial Card in slot 2 with a TCP-bridged listener: telnet to
+    // 127.0.0.1:6502 (default) and the resulting stream lands at the
+    // SSC's ACIA registers, so PR#2 / IN#2 from the Apple II talks to
+    // the host terminal. Off by default to avoid grabbing a port the
+    // user didn't ask for; toggle from Hardware → Super Serial.
+    //
+    // The TCP RX path also forwards every received byte to the Apple
+    // II keyboard latch via Memory::queueKey, so an outside session
+    // can drive PR#2 / IN#2 themselves before any redirect is active.
+    {
+        auto card = std::make_unique<SuperSerialCard>();
+        sscCard = card.get();
+        // Use pasteText (not queueKey) — pasteText respects the paste
+        // queue, so a stream of bytes from telnet doesn't clobber earlier
+        // characters that BASIC hasn't picked up yet.
+        sscCard->setKeyboardSink(
+            [&mem = controller.memory()](uint8_t b) {
+                const char buf[1] = { static_cast<char>(b) };
+                mem.pasteText(buf, 1);
+            });
+        controller.memory().slotBus().plug(SuperSerialCard::kSlot,
+                                           std::move(card));
+        if (settings.getBool("ssc_listening", false)) {
+            const int p = settings.getInt("ssc_port",
+                                          SuperSerialCard::kDefaultPort);
+            sscCard->startListening(static_cast<uint16_t>(p));
+        }
+    }
+
     // ── Restore display + UI prefs from previous session ─────────────
     {
         const std::string mode = settings.getString("hi_res_mode", "");
@@ -189,6 +219,8 @@ MainWindow::MainWindow()
         showCassetteDeck   = settings.getBool ("show_cassette",   showCassetteDeck);
         showJoystickPanel  = settings.getBool ("show_joystick",   showJoystickPanel);
         showChatMauvePanel = settings.getBool ("show_chatmauve",  showChatMauvePanel);
+        showSscPanel       = settings.getBool ("show_ssc",        showSscPanel);
+        sscPortInput       = settings.getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings.getBool("disk_turbo",      diskTurboWhileMotor);
     }
 
@@ -247,6 +279,15 @@ MainWindow::~MainWindow()
         settings.setBool("disk_writeback", diskCard->isWriteBackEnabled());
     }
 
+    if (hdvCard) {
+        settings.setBool("hdv_writeback", hdvCard->isWriteBackEnabled());
+    }
+
+    if (sscCard) {
+        settings.setBool("ssc_listening", sscCard->isListening());
+        settings.setInt ("ssc_port",      sscCard->getPort());
+    }
+
     auto modeName = [](Apple2Display::HiResMode m) -> const char* {
         switch (m) {
             case Apple2Display::HiResMode::ColorNTSC:    return "ColorNTSC";
@@ -264,12 +305,71 @@ MainWindow::~MainWindow()
     settings.setBool  ("show_cassette",   showCassetteDeck);
     settings.setBool  ("show_joystick",   showJoystickPanel);
     settings.setBool  ("show_chatmauve",  showChatMauvePanel);
+    settings.setBool  ("show_ssc",        showSscPanel);
     settings.setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings.setFloat ("speaker_volume",  controller.speaker().getVolume());
     settings.setBool  ("speaker_muted",   controller.speaker().isMuted());
     settings.setFloat ("cassette_volume", controller.cassette().getVolume());
 
     settings.save();
+}
+
+// ─── Screenshot ───────────────────────────────────────────────────────────
+
+void MainWindow::saveScreenshot()
+{
+    // Snapshot the framebuffer under stateMutex — the worker thread is
+    // happily running but the renderer will never resize the buffer
+    // mid-copy, so a brief lock is enough.
+    int w = 0, h = 0;
+    std::vector<uint32_t> pixels;
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        w = display.width();
+        h = display.height();
+        const uint32_t* src = display.pixels();
+        pixels.assign(src, src + w * h);
+    }
+
+    // Pick the next unused screenshot_NNN.ppm in the current directory so
+    // captures from successive F9 presses don't clobber each other.
+    static int lastIdx = 0;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string path;
+    while (true) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "screenshot_%03d.ppm", lastIdx);
+        path = buf;
+        if (!fs::exists(path, ec)) break;
+        ++lastIdx;
+        if (lastIdx > 999) { lastIdx = 0; break; }
+    }
+
+    // PPM "P6" — binary RGB, 1 row per scanline. Apple2Display's pixels
+    // are 0xAABBGGRR (RGBA little-endian); strip alpha and swizzle to RGB.
+    std::ofstream f(path, std::ios::binary);
+    if (!f) {
+        tapeStatusMessage = "Screenshot: cannot write " + path;
+        tapeStatusUntil   = lastFrameTime + 3.0;
+        return;
+    }
+    f << "P6\n" << w << " " << h << "\n255\n";
+    std::vector<uint8_t> rgb(static_cast<size_t>(w) * h * 3);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        const uint32_t p = pixels[i];
+        rgb[i * 3 + 0] = static_cast<uint8_t>( p        & 0xFF);
+        rgb[i * 3 + 1] = static_cast<uint8_t>((p >>  8) & 0xFF);
+        rgb[i * 3 + 2] = static_cast<uint8_t>((p >> 16) & 0xFF);
+    }
+    f.write(reinterpret_cast<const char*>(rgb.data()),
+            static_cast<std::streamsize>(rgb.size()));
+
+    pom2::log().info("Screenshot", "wrote " + path +
+                     " (" + std::to_string(w) + "x" + std::to_string(h) + ")");
+    tapeStatusMessage = "Screenshot: " + path;
+    tapeStatusUntil   = lastFrameTime + 3.0;
+    ++lastIdx;
 }
 
 // ─── Keyboard ─────────────────────────────────────────────────────────────
@@ -312,6 +412,7 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         case GLFW_KEY_DOWN:         injectAscii(0x0A); break;
         case GLFW_KEY_ESCAPE:       injectAscii(0x1B); break;
         case GLFW_KEY_TAB:          injectAscii(0x09); break;
+        case GLFW_KEY_F9:           saveScreenshot(); break;
         case GLFW_KEY_F11:          controller.softReset(); break;
         case GLFW_KEY_F12:          controller.hardReset(); break;
         default:
@@ -488,6 +589,26 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Reset (Ctrl-Reset)",     "F11")) controller.softReset();
         if (ImGui::MenuItem("Hard reset",             "F12")) controller.hardReset();
         if (ImGui::MenuItem("Cold boot (wipe RAM)"))          controller.coldBoot();
+        ImGui::Separator();
+        // CPU type selector — affects which 65C02 additions the
+        // dispatch table honours. Switching at runtime is safe; it just
+        // mutates the per-instance opcodeTable.
+        const auto curCpu = controller.cpu().getCpuMode();
+        if (ImGui::BeginMenu("CPU")) {
+            if (ImGui::MenuItem("NMOS 6502", nullptr, curCpu == M6502::CpuMode::NMOS)) {
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                controller.cpu().setCpuMode(M6502::CpuMode::NMOS);
+            }
+            if (ImGui::MenuItem("65C02 (CMOS)", nullptr, curCpu == M6502::CpuMode::CMOS)) {
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                controller.cpu().setCpuMode(M6502::CpuMode::CMOS);
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("NMOS = original 1975. Disables");
+            ImGui::TextDisabled("STZ/BRA/PHX/etc. and SMB/RMB/");
+            ImGui::TextDisabled("BBR/BBS extensions.");
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
 
@@ -539,6 +660,7 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Disk II (slot 6)", nullptr, &showDiskPanel);
         ImGui::MenuItem("HDV (slot 5)", nullptr, &showHdvPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
+        ImGui::MenuItem("Super Serial (slot 2)", nullptr, &showSscPanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
         ImGui::Separator();
         ImGui::BeginDisabled(hdvCard == nullptr);
@@ -578,7 +700,8 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Debug")) {
-        ImGui::MenuItem("Memory viewer", nullptr, &showMemViewer);
+        ImGui::MenuItem("Emulation panel", nullptr, &showEmulationPanel);
+        ImGui::MenuItem("Memory viewer",   nullptr, &showMemViewer);
         ImGui::Separator();
         ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
         ImGui::MenuItem("Memory Map Bar (Horizontal)", nullptr, &showMemoryBarH);
@@ -643,9 +766,10 @@ void MainWindow::renderScreenWindow()
 
 void MainWindow::renderControlsWindow()
 {
+    if (!showEmulationPanel) return;
     ImGui::SetNextWindowPos (ImVec2(1095, 780), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330,  210), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Emulation")) {
+    if (ImGui::Begin("Emulation", &showEmulationPanel)) {
         // CPU speed control.
         int cycPerFrame = controller.getCyclesPerFrame();
         const int oneX  = 17045;
@@ -760,6 +884,71 @@ void MainWindow::pollJoystickAndPushToMemory()
     Memory& mem = controller.memory();
     for (int i = 0; i < 4; ++i)  mem.setPaddle(i, joystick.paddleValue(i));
     for (int i = 0; i < 3; ++i)  mem.setPaddleButton(i, joystick.buttonDown(i));
+}
+
+void MainWindow::renderSscPanelWindow()
+{
+    if (!showSscPanel || !sscCard) return;
+
+    ImGui::SetNextWindowSize(ImVec2(440, 280), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Super Serial (slot 2)", &showSscPanel)) {
+        ImGui::End();
+        return;
+    }
+
+    const bool listening = sscCard->isListening();
+    const bool connected = sscCard->clientConnected();
+
+    ImGui::Text("Status: %s%s",
+        listening ? "listening" : "stopped",
+        connected ? " — client connected" : "");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(slot %d)", SuperSerialCard::kSlot);
+
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(120);
+    ImGui::InputInt("TCP port", &sscPortInput, 0, 0);
+    if (sscPortInput < 1)     sscPortInput = 1;
+    if (sscPortInput > 65535) sscPortInput = 65535;
+
+    ImGui::SameLine();
+    if (!listening) {
+        if (ImGui::Button("Start listener")) {
+            if (!sscCard->startListening(static_cast<uint16_t>(sscPortInput))) {
+                tapeStatusMessage = "SSC: bind failed (port busy?)";
+                tapeStatusUntil   = lastFrameTime + 4.0;
+            }
+        }
+    } else {
+        if (ImGui::Button("Stop listener")) sscCard->stopListening();
+    }
+
+    if (listening) {
+        ImGui::TextWrapped("Connect from a host terminal:");
+        ImGui::TextWrapped("  telnet 127.0.0.1 %d", sscCard->getPort());
+        ImGui::TextWrapped("In the Apple II:  PR#%d  (or IN#%d for input)",
+            SuperSerialCard::kSlot, SuperSerialCard::kSlot);
+    } else {
+        ImGui::TextDisabled("Click Start, then telnet to the port to bridge "
+                            "I/O between your host shell and the Apple II.");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("RX (telnet → A2): %llu B",
+        static_cast<unsigned long long>(sscCard->bytesRx()));
+    ImGui::Text("TX (A2 → telnet): %llu B",
+        static_cast<unsigned long long>(sscCard->bytesTx()));
+
+    if (ImGui::CollapsingHeader("Recent traffic")) {
+        ImGui::TextDisabled("Last bytes the Apple II printed via PR#%d:",
+                            SuperSerialCard::kSlot);
+        ImGui::TextWrapped("%s", sscCard->recentTxText().c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("Last bytes the host typed:");
+        ImGui::TextWrapped("%s", sscCard->recentRxText().c_str());
+    }
+
+    ImGui::End();
 }
 
 void MainWindow::renderJoystickPanelWindow()
@@ -896,10 +1085,9 @@ void MainWindow::renderDiskPanelWindow()
         diskTurboActive = false;
     }
 
-    // Curated startup pos/size — height accommodates the 2×-tall library
-    // list (360 px child) without forcing the panel itself to scroll.
-    ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(330,  725), ImGuiCond_FirstUseEver);
+    // Disk II = bottom-right panel in the curated layout.
+    ImGui::SetNextWindowPos (ImVec2(1095, 525), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(665,  465), ImGuiCond_FirstUseEver);
     auto result = diskPanel.render("Disk II (slot 6)", showDiskPanel, snap);
     if (result.turboToggleChanged) {
         diskTurboWhileMotor = result.turboNewValue;
@@ -967,9 +1155,13 @@ void MainWindow::renderHdvPanelWindow()
     pom2::HdvController_ImGui::DriveSnapshot snap;
     if (hdvCard) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
-        snap.imageLoaded = hdvCard->isImageLoaded();
-        snap.imagePath   = hdvCard->getImagePath();
-        snap.blockCount  = hdvCard->getBlockCount();
+        snap.imageLoaded       = hdvCard->isImageLoaded();
+        snap.imagePath         = hdvCard->getImagePath();
+        snap.blockCount        = hdvCard->getBlockCount();
+        snap.writeBackEnabled  = hdvCard->isWriteBackEnabled();
+        snap.hasUnsavedChanges = hdvCard->hasUnsavedChanges();
+        snap.supportsWriteBack = hdvCard->canWriteBack();
+        snap.isSynthVolume     = hdvCard->isSynthVolumeMounted();
     }
 
     // Library scan — hdv/ for .hdv and .2mg, sorted alphabetically so the
@@ -1020,15 +1212,22 @@ void MainWindow::renderHdvPanelWindow()
         }
     }
 
-    // Curated startup pos — sit below the Disk II panel so both are
-    // visible side-by-side with the screen.
-    ImGui::SetNextWindowPos (ImVec2(1430, 45),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(330,  725), ImGuiCond_FirstUseEver);
+    // HDV = top-right panel in the curated layout.
+    ImGui::SetNextWindowPos (ImVec2(1095, 30),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(665,  485), ImGuiCond_FirstUseEver);
     auto result = hdvPanel.render("HDV (slot 5)", showHdvPanel, snap);
 
     if (result.requestMountDialog) {
         showHdvMountDialog = true;
         if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
+    }
+    if (result.writeBackToggleChanged && hdvCard) {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        hdvCard->setWriteBackEnabled(result.writeBackNewValue);
+        tapeStatusMessage = result.writeBackNewValue
+            ? "HDV: write-back ENABLED (saves on eject)"
+            : "HDV: write-back disabled";
+        tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (result.requestEject && hdvCard) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
@@ -1062,7 +1261,8 @@ void MainWindow::renderHdvPanelWindow()
             {
                 std::lock_guard<std::mutex> lk(controller.stateMutex());
                 ok = hdvCard->loadImageFromBytes(std::move(bytes),
-                                                 std::string("[host folder] ") + hostDir);
+                                                 std::string("[host folder] ") + hostDir,
+                                                 hostDir);
                 if (ok) {
                     hdvPath   = path;
                     hdvStatus = std::string("synth from ") + hostDir +
@@ -1464,6 +1664,7 @@ void MainWindow::render()
     renderDiskFileDialog();
     renderHdvPanelWindow();
     renderChatMauvePanelWindow();
+    renderSscPanelWindow();
     renderJoystickPanelWindow();
     renderAboutDialog();
 }

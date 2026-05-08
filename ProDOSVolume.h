@@ -55,6 +55,23 @@ ProDOSBuildResult buildVolumeFromFolder(const std::string& hostFolder,
                                         const std::string& volumeName,
                                         std::vector<std::uint8_t>& outImage);
 
+struct ProDOSDecodeResult {
+    bool        ok = false;
+    std::string error;
+    std::size_t filesWritten  = 0;
+    std::size_t filesSkipped  = 0;
+};
+
+/// Reverse of `buildVolumeFromFolder`: walk a synthesised volume's directory
+/// blocks (2..5) and write every seedling/sapling file back into `hostFolder`
+/// using the inverse of the file_type → extension mapping. Files in the
+/// folder that are *absent* from the volume are LEFT UNTOUCHED — never
+/// deleted. Existing files whose bytes already match the volume are skipped
+/// (no write, no mtime bump). Tree files (>128 KB) are skipped with a warn.
+/// `hostFolder` is created if missing.
+ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
+                                        const std::string& hostFolder);
+
 } // namespace pom2
 
 #endif // POM2_PRODOS_VOLUME_H

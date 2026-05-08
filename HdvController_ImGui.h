@@ -28,6 +28,10 @@ public:
         bool        imageLoaded = false;
         std::string imagePath;
         size_t      blockCount  = 0;
+        bool        writeBackEnabled  = false;
+        bool        hasUnsavedChanges = false;
+        bool        supportsWriteBack = false;
+        bool        isSynthVolume     = false;
         std::vector<LibraryEntry> library;
     };
 
@@ -38,6 +42,8 @@ public:
         // Single-click library entry: host mounts the image AND triggers
         // a cold boot through the slot-5 ROM.
         std::string requestMountAndBoot;
+        bool        writeBackToggleChanged = false;
+        bool        writeBackNewValue      = false;
     };
 
     /// Draw the panel. Called every frame from MainWindow::render().

@@ -34,7 +34,22 @@ HdvController_ImGui::FrameResult HdvController_ImGui::render(
         ImGui::Text("Blocks: %zu (~%.1f MB)",
                     snap.blockCount,
                     (snap.blockCount * 512.0) / (1024.0 * 1024.0));
-        ImGui::TextDisabled("(read-only)");
+        if (snap.supportsWriteBack) {
+            bool wb = snap.writeBackEnabled;
+            const char* lbl = snap.isSynthVolume
+                ? "Sync to host folder (on eject)"
+                : "Write-back (save on eject)";
+            if (ImGui::Checkbox(lbl, &wb)) {
+                r.writeBackToggleChanged = true;
+                r.writeBackNewValue      = wb;
+            }
+            if (snap.hasUnsavedChanges) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "(unsaved)");
+            }
+        } else {
+            ImGui::TextDisabled("(read-only — 2MG WP flag set)");
+        }
     } else {
         ImGui::TextDisabled("No image mounted.");
     }
