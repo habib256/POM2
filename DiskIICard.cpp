@@ -16,43 +16,6 @@ namespace {
 constexpr int kCyclesPerNibble  = 32;
 constexpr int kQuarterTrackMax  = (DiskImage::kTracks - 1) * 4;  // 136
 
-// Stepper "magnetic well" model (Apple Disk II hardware behaviour).
-//
-// Each of the 4 phase magnets attracts the head toward a quarter-track
-// position whose index mod 4 equals the phase number. With multiple
-// magnets energized, the head settles at the resultant of their pulls:
-//   - one magnet  → its own well  (single attractor)
-//   - two adjacent magnets → between them (e.g. phases 0+1 → ½ qt)
-//   - two opposing magnets (0+2 or 1+3) → forces cancel, head holds
-//   - three magnets → centroid of the three wells
-//   - all four (or none) → no net pull, head holds
-//
-// Indexed by the 4-bit phaseOn bitmask (bit i = phase i). Each entry is
-// the desired qt offset modulo 4, or -1 when there is no clear target
-// (head should not move). This 16-entry table is derived from the spec
-// described in Sather's "Understanding the Apple II", chap. 9; the same
-// pattern is reproduced in MAME's apple2 floppy device. Adjacent-pair
-// rows snap toward the lower phase number, except 0+3 which wraps and
-// snaps to phase 3.
-constexpr int kPhaseTarget[16] = {
-    /* 0000 none           */ -1,
-    /* 0001 phase 0        */  0,
-    /* 0010 phase 1        */  1,
-    /* 0011 phases 0+1     */  0,
-    /* 0100 phase 2        */  2,
-    /* 0101 phases 0+2 opp */ -1,
-    /* 0110 phases 1+2     */  1,
-    /* 0111 phases 0+1+2   */  1,
-    /* 1000 phase 3        */  3,
-    /* 1001 phases 0+3     */  3,
-    /* 1010 phases 1+3 opp */ -1,
-    /* 1011 phases 0+1+3   */  0,
-    /* 1100 phases 2+3     */  2,
-    /* 1101 phases 0+2+3   */  2,
-    /* 1110 phases 1+2+3   */  2,
-    /* 1111 all            */ -1,
-};
-
 // Opt-in diagnostic — set POM2_DEBUG_DISK=1 to see one-shot lines marking
 // each milestone of the Disk II boot sequence. Cheap when off (one bool
 // check on hot-path reads, but only inside the diagnostic state struct's
