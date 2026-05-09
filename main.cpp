@@ -123,7 +123,10 @@ int main(int argc, char* argv[])
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    MainWindow mainWindow;
+    MainWindow mainWindow(plan->forceIIPlus);
+    if (plan->forceIIPlus) {
+        pom2::log().info("CLI", "--ii-plus: ignoring apple2e.rom, booting as II+");
+    }
     mainWindow.setGlfwWindow(window);
     glfwSetWindowUserPointer(window, &mainWindow);
     glfwSetCharCallback(window, glfw_char_callback);

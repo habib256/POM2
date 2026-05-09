@@ -70,6 +70,17 @@ public:
     bool loadBootRom(const std::string& path);
     bool hasBootRom() const { return bootRomLoaded; }
 
+    /// Load the 256-byte Disk II Logic State Sequencer PROM (Apple part
+    /// 341-0028-A, "P6"). When loaded, the card switches to a cycle-
+    /// accurate bit-level LSS that drives Q6/Q7 and the data register
+    /// per the PROM's state-table — a faithful port of MAME's
+    /// `wozfdc.cpp lss_sync()`. Without this PROM, reads fall back to
+    /// the simplified 32-cycle byteReady gate (which is good enough for
+    /// stock DOS 3.3 / ProDOS RWTS but not for software like Copy II
+    /// Plus that scans for sync-gap-shifted byte boundaries).
+    bool loadLssRom(const std::string& path);
+    bool hasLssRom() const { return p6RomLoaded; }
+
     /// Insert / eject a .dsk image in drive 1 (the only drive modelled).
     bool insertDisk(const std::string& path);
     void ejectDisk();
@@ -123,22 +134,68 @@ private:
     int headQuarterTrack = 0;
 
     // Position into the current track's nibble buffer (0..6655). Wraps
-    // continuously while the motor is on.
+    // continuously while the motor is on. Used by the legacy 32-cycle
+    // gate and the LSS write path (where a complete write nibble lands
+    // at trackPos).
     int trackPos   = 0;
     int cycleAccum = 0;       // CPU cycles since the last nibble advance
 
-    // LSS shift-register model. While a new nibble is assembling, the
-    // data register's bit 7 reads as 0 (intermediate shift state), so
-    // the host CPU's `LDA $C0EC ; BPL loop` busy-wait holds until the
-    // full byte is in. Without this, the PROM's "match D5 then read AA"
-    // sequence sees the same nibble twice and loops forever.
+    // LSS shift-register model (legacy 32-cycle gate). While a new
+    // nibble is assembling, the data register's bit 7 reads as 0
+    // (intermediate shift state), so the host CPU's `LDA $C0EC ; BPL
+    // loop` busy-wait holds until the full byte is in.
     uint8_t dataLatch = 0;
     bool    byteReady = false;
+
+    // ── Bit-level LSS state (when useBitLss == true) ─────────────────
+    //
+    // Port of the Apple Disk II Logic State Sequencer per the published
+    // 16-sector P6 PROM (Apple part 341-0028-A) and apple2js's reference
+    // implementation. The 256-byte ROM is indexed by an 8-bit address:
+    //
+    //   bit 7..4  current LSS state (4 bits — 16 states)
+    //   bit 3     Q7   (write enable: 0=read, 1=write)
+    //   bit 2     Q6   (load mode:    0=shift, 1=load)
+    //   bit 1     QA   (data register MSB)
+    //   bit 0     !PULSE — set when the current bit cell carries no flux
+    //
+    // The ROM byte is the opcode for this LSS tick:
+    //   bits 7..4 next LSS state
+    //   bits 3..0 ALU op on the data register:
+    //     0x0 CLR  data ← 0
+    //     0x8 NOP
+    //     0x9 SL0  data ← (data << 1)
+    //     0xA SR   data ← (data >> 1) | (write-protect ? 0x80 : 0)
+    //     0xB LD   data ← writeLatch (= CPU bus)
+    //     0xD SL1  data ← (data << 1) | 1
+    //
+    // In write mode, bit 3 of the *state* is the WRITE_DATA bit driven
+    // out per cell — the head writes that bit to the disk surface.
+    std::array<uint8_t, 256> p6Rom{};
+    bool    p6RomLoaded = false;
+    bool    useBitLss   = false;        // false → legacy 32-cycle gate
+    uint8_t lssState    = 0;            // 4-bit state register
+    uint8_t lssData     = 0;            // 8-bit shift / data register
+    int     bitPos      = 0;            // cell index in current track stream
+    int     subCellTick = 0;            // 0..7 — pos within one bit-cell window
+    // Write-side accumulator: opcode bit 7 = WRITE_DATA per cell. We
+    // sample once per cell window (at subCellTick == 7) and shift the
+    // bit into writeShifter; once 8 bits are in, write the resulting
+    // nibble to image[trackPos] and advance.
+    uint8_t writeShifter      = 0;
+    int     writeShifterBits  = 0;
 
     uint64_t writeFlushCount = 0;
 
     void handleSwitchAccess(uint8_t low4);
     void onPhaseEdge(int phase, bool turningOn);
+    // Legacy 32-cycle gate body, retained as a fallback when no P6 PROM
+    // is loaded. Removed in step 5 of the LSS migration.
+    void legacyAdvance(int cycles);
+    // One LSS tick = ½ CPU cycle. Called 2× per CPU cycle by
+    // advanceCycles(), and once extra by deviceSelectRead at $C0EC for
+    // the read-pipe latency (matches MAME's `lss_sync(1)` semantics).
+    void lssTick();
 
     // Boot-trace one-shot flags (POM2_DEBUG_DISK=1). Reset at onReset().
     struct {

@@ -139,6 +139,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
         dirty.fill(false);
         anyDirty    = false;
         lastError.clear();
+        invalidateAllBitStreams();
         pom2::log().info("Disk II", "Loaded " + imgPath +
                          " (.nib raw nibble stream, 35 tracks)");
         return true;
@@ -193,6 +194,7 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
     dirty.fill(false);
     anyDirty    = false;
     lastError.clear();
+    invalidateAllBitStreams();
     pom2::log().info("Disk II", "Loaded " + imgPath +
                      " (35 tracks, 16 sectors, GCR-encoded, " +
                      (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
@@ -208,6 +210,7 @@ void DiskImage::eject()
     for (auto& t : tracks) t.fill(0xFF);
     dirty.fill(false);
     anyDirty = false;
+    invalidateAllBitStreams();
 }
 
 void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
@@ -218,7 +221,73 @@ void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
         tracks[track][n] = value;
         dirty[track]     = true;
         anyDirty         = true;
+        // Bit-cell cache for this track is now stale; next bitAt() call
+        // will rebuild it from the new nibble buffer.
+        invalidateBitStream(track);
     }
+}
+
+// ── LSS bit-cell stream expansion ────────────────────────────────────────
+//
+// Walks the 6656-byte nibble buffer once and emits the LSS-shaped bit
+// stream into bitStream[track]. Sync $FF runs get 2 zero cells appended
+// per byte so the byte boundary drifts +2 bits across each gap — that's
+// the timing artefact real Disk II software uses to recover sync after
+// the head crosses a track boundary or the controller drops alignment.
+void DiskImage::expandTrackBits(int track) const
+{
+    auto& bits = bitStream[track];
+    bits.clear();
+    if (track < 0 || track >= kTracks) {
+        bitStreamValid[track] = true;   // empty; caller wraps mod 0 → 0
+        return;
+    }
+    bits.reserve(static_cast<size_t>(kNibblesPerTrack) * 9);
+
+    const auto& buf = tracks[track];
+    const bool noSyncPad = nibFormat;   // .nib has no sync semantics
+
+    // Detect whether nibble[i] is part of a 2+-byte $FF run by checking
+    // its neighbours (with wrap-around so the tail stretches into the
+    // next-revolution leading bytes correctly).
+    auto isInFFRun = [&](int i) {
+        if (noSyncPad) return false;
+        if (buf[i] != 0xFF) return false;
+        const int prev = (i - 1 + kNibblesPerTrack) % kNibblesPerTrack;
+        const int next = (i + 1) % kNibblesPerTrack;
+        return buf[prev] == 0xFF || buf[next] == 0xFF;
+    };
+
+    for (int i = 0; i < kNibblesPerTrack; ++i) {
+        const uint8_t b = buf[i];
+        // 8 data cells, MSB-first.
+        for (int bit = 7; bit >= 0; --bit) {
+            bits.push_back(static_cast<uint8_t>((b >> bit) & 1));
+        }
+        // Sync padding: 2 trailing zero cells for $FF in a run.
+        if (isInFFRun(i)) {
+            bits.push_back(0);
+            bits.push_back(0);
+        }
+    }
+    bitStreamValid[track] = true;
+}
+
+int DiskImage::trackBitLength(int track) const
+{
+    if (track < 0 || track >= kTracks) return 0;
+    if (!bitStreamValid[track]) expandTrackBits(track);
+    return static_cast<int>(bitStream[track].size());
+}
+
+uint8_t DiskImage::bitAt(int track, int bitIdx) const
+{
+    if (track < 0 || track >= kTracks) return 0;
+    if (!bitStreamValid[track]) expandTrackBits(track);
+    const auto& bits = bitStream[track];
+    if (bits.empty()) return 0;
+    const int n = static_cast<int>(bits.size());
+    return bits[((bitIdx % n) + n) % n];
 }
 
 void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,

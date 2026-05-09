@@ -135,6 +135,17 @@ int main(int argc, char** argv)
 
     auto disk = std::make_unique<DiskIICard>();
     if (!disk->loadBootRom(promPath))         { std::fprintf(stderr, "PROM load failed\n");   return 1; }
+    // Optional: load the bit-level LSS PROM if available. Falls back to
+    // the legacy 32-cycle gate when missing.
+    {
+        namespace fs = std::filesystem;
+        for (const char* p : { "roms/diskii_p6.rom",
+                                "../roms/diskii_p6.rom",
+                                "../../roms/diskii_p6.rom" }) {
+            std::error_code ec;
+            if (fs::is_regular_file(p, ec)) { (void)disk->loadLssRom(p); break; }
+        }
+    }
     if (!disk->insertDisk(diskPath))          {
         std::fprintf(stderr, "insertDisk failed: %s\n", disk->getLastError().c_str()); return 1;
     }

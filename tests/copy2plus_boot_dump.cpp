@@ -8,6 +8,7 @@
 // Compiled but not registered as a CTest target — it's a debug aid.
 
 #include "DiskIICard.h"
+#include "Disassembler6502.h"
 #include "M6502.h"
 #include "Memory.h"
 #include "ProDOSHardDiskCard.h"
@@ -18,6 +19,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -71,6 +73,9 @@ int main(int argc, char** argv)
         : iieRom;
     const std::string promPath = findFirst({
         "../roms/disk2.rom", "roms/disk2.rom", "../../roms/disk2.rom" });
+    const std::string lssPromPath = findFirst({
+        "../roms/diskii_p6.rom", "roms/diskii_p6.rom",
+        "../../roms/diskii_p6.rom" });
     const std::string dskPath  = !diskOverride.empty() ? diskOverride :
         findFirst({
             "../disks/Copy II Plus v8.3.do",
@@ -100,6 +105,9 @@ int main(int argc, char** argv)
     if (!disk->loadBootRom(promPath)) {
         std::fprintf(stderr, "Disk II PROM load failed\n");
         return 1;
+    }
+    if (!lssPromPath.empty()) {
+        (void)disk->loadLssRom(lssPromPath);
     }
     if (!disk->insertDisk(dskPath)) {
         std::fprintf(stderr, "insertDisk failed: %s\n",
@@ -227,6 +235,86 @@ int main(int argc, char** argv)
     std::printf("retry counter $D36B = $%02X\n", mem.memRead(0xD36B));
     std::printf("addr-found $D5A = $%02X (0=match, !=0=keep searching)\n",
                 mem.memRead(0xD5A));
+
+    // ── Crash-site dump: bytes + disassembly around final PC ─────────
+    {
+        const uint16_t pc = cpu.getProgramCounter();
+        std::printf("\n=== CRASH-SITE @ PC=$%04X ===\n", pc);
+        // 64-byte raw window (32 before, 32 after PC).
+        const uint16_t winLo = static_cast<uint16_t>(pc - 32);
+        std::printf("bytes $%04X..$%04X:\n", winLo,
+                    static_cast<uint16_t>(winLo + 63));
+        for (int row = 0; row < 4; ++row) {
+            const uint16_t base = static_cast<uint16_t>(winLo + row * 16);
+            std::printf("  $%04X:", base);
+            for (int c = 0; c < 16; ++c) {
+                std::printf(" %02X", mem.memRead(static_cast<uint16_t>(base + c)));
+            }
+            std::printf("\n");
+        }
+        // Disassembly: snapshot the window via memRead (so LC/aux
+        // routing is honoured). Skip $C000-$C0FF because reading those
+        // toggles soft switches — we'd corrupt paging state mid-dump.
+        std::vector<uint8_t> snap(0x10000, 0);
+        for (int i = 0; i < 0x10000; ++i) {
+            if (i >= 0xC000 && i <= 0xC0FF) continue;
+            snap[i] = mem.memRead(static_cast<uint16_t>(i));
+        }
+        std::printf("disasm $%04X..$%04X (* = current PC):\n",
+                    winLo, static_cast<uint16_t>(winLo + 63));
+        uint16_t cur = winLo;
+        const uint16_t end = static_cast<uint16_t>(winLo + 64);
+        while (cur < end) {
+            int len = 0;
+            const std::string mn = pom2::disassemble6502(snap.data(), cur, len);
+            std::printf("  %s$%04X:", cur == pc ? "*" : " ", cur);
+            for (int j = 0; j < 3; ++j) {
+                if (j < len) std::printf(" %02X", snap[cur + j]);
+                else         std::printf("   ");
+            }
+            std::printf("  %s\n", mn.c_str());
+            cur = static_cast<uint16_t>(cur + (len > 0 ? len : 1));
+        }
+        // Zero page snapshot for context (Copy II+ stores all its working
+        // state in $00..$FF and $D000-area in LC).
+        std::printf("zero page $00..$3F:\n");
+        for (int row = 0; row < 4; ++row) {
+            std::printf("  $%02X:", row * 16);
+            for (int c = 0; c < 16; ++c) {
+                std::printf(" %02X", mem.memRead(static_cast<uint16_t>(row * 16 + c)));
+            }
+            std::printf("\n");
+        }
+        // IIe paging + Disk II state. Read status flags non-intrusively
+        // through the status soft switches at $C013-$C018, $C01E/$C01F.
+        std::printf("IIe paging:");
+        std::printf(" RAMRD=%d",  (mem.memRead(0xC013) & 0x80) != 0);
+        std::printf(" RAMWRT=%d", (mem.memRead(0xC014) & 0x80) != 0);
+        std::printf(" CXROM=%d",  (mem.memRead(0xC015) & 0x80) != 0);
+        std::printf(" ALTZP=%d",  (mem.memRead(0xC016) & 0x80) != 0);
+        std::printf(" SLOTC3=%d", (mem.memRead(0xC017) & 0x80) != 0);
+        std::printf(" 80STORE=%d",(mem.memRead(0xC018) & 0x80) != 0);
+        std::printf(" 80COL=%d",  (mem.memRead(0xC01F) & 0x80) != 0);
+        std::printf(" ALTCHAR=%d",(mem.memRead(0xC01E) & 0x80) != 0);
+        std::printf("\n");
+        std::printf("Disk II: track=%d (qt=%d) motor=%d wf=%llu\n",
+            diskRaw->getCurrentTrack(),
+            diskRaw->getQuarterTrack(),
+            diskRaw->isMotorOn() ? 1 : 0,
+            static_cast<unsigned long long>(diskRaw->getWriteFlushCount()));
+        // Sample 32 successive nibbles WITHOUT advancing the CPU. Toggling
+        // the soft switches that read $C0EC has side effects on the LSS so
+        // we use the controller's read API once and then walk the nibble
+        // buffer directly via getQuarterTrack/getCurrentTrack — which only
+        // expose head position, not raw bytes. So just dump the latched
+        // dataLatch via a sequence of $C0EC reads through memRead. This
+        // changes byteReady but doesn't move the head.
+        std::printf("nibble samples @ $C0EC (32 reads):");
+        for (int i = 0; i < 32; ++i) {
+            std::printf(" %02X", mem.memRead(0xC0EC));
+        }
+        std::printf("\n");
+    }
 
     cpu.dumpPcTrace("trace");
     (void)diskRaw;

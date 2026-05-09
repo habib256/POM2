@@ -1410,7 +1410,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 // single slot that records the *first* PC of the run, so the dump shows the
 // 24 most recent control-flow transfers leading up to a BRK.
 namespace {
-constexpr int kPcTraceSize = 24;
+constexpr int kPcTraceSize = 256;
 struct PcEdge {
     uint16_t from;   // PC of the last instruction before the transfer
     uint16_t to;     // PC landed on after the transfer

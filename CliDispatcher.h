@@ -73,6 +73,11 @@ struct CliPlan {
     // Phase A — read by main() / MainWindow constructor.
     CliPreset                       preset = CliPreset::Default;
     bool                            cpuMax = false;
+    /// `--ii-plus`: ignore `roms/apple2e.rom` even when present and force
+    /// II+ mode. Useful for software that boots cleanly under the legacy
+    /// 12 KB ROM but trips a still-unresolved IIe-paging bug under the
+    /// 16 KB Enhanced ROM.
+    bool                            forceIIPlus = false;
     std::optional<int>              executionSpeed;        // cycles/frame
     std::string                     initialTapePath;       // --tape <path>
     bool                            initialTapeAutoPlay = false;

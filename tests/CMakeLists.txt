@@ -333,6 +333,36 @@ target_include_directories(test_disk_image PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_image_smoke COMMAND test_disk_image)
 set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
+# Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
+# apple2js WozDiskDriver) against a synthetic single-prologue track and
+# asserts the controller surfaces D5 AA 96 at $C0EC. Also pins the
+# legacy 32-cycle gate fallback so removing roms/diskii_p6.rom does not
+# regress stock DOS/ProDOS reads.
+
+add_executable(test_diskii_lss
+    diskii_lss_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_diskii_lss PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_diskii_lss PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_diskii_lss PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_diskii_lss PRIVATE winmm)
+endif()
+
+add_test(NAME diskii_lss_smoke COMMAND test_diskii_lss
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(diskii_lss_smoke PROPERTIES TIMEOUT 10)
+
 
 # ─── Disk II write-back + .nib loader smoke test ──────────────────────────
 # Pins .nib raw load+save (verbatim), .dsk write-back round-trip via the
@@ -458,6 +488,7 @@ add_executable(c2plus_boot_probe
     c2plus_boot_probe.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(c2plus_boot_probe PRIVATE ${CMAKE_SOURCE_DIR})
@@ -479,6 +510,7 @@ add_executable(copy2plus_boot_dump
     copy2plus_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -523,6 +555,33 @@ endif()
 
 add_test(NAME iie_memory_smoke COMMAND test_iie_memory)
 set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── IIe Language Card + ALTZP + RAMRD/WRT smoke test ────────────────────
+# Pins the ProDOS-style LC paging sequences that the existing iie_memory
+# test only partially covers: the prewrite latch under all four mode bits,
+# ALTZP swapping the entire LC view to aux banks (incl. the shared $E000+
+# 8 KB), and the write-enable surviving an ALTZP toggle.
+
+add_executable(test_iie_lc_paging
+    iie_lc_paging_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iie_lc_paging PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iie_lc_paging PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iie_lc_paging PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iie_lc_paging PRIVATE winmm)
+endif()
+
+add_test(NAME iie_lc_paging_smoke COMMAND test_iie_lc_paging)
+set_tests_properties(iie_lc_paging_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── IIe Double Hi-Res rendering smoke test ───────────────────────────────

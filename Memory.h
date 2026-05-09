@@ -311,6 +311,17 @@ private:
     uint8_t languageCardRead(uint16_t addr) const;
     void    languageCardWrite(uint16_t addr, uint8_t value);
 
+    /// "Floating bus" — the byte the video DMA is currently fetching.
+    /// On a real Apple II, reading any soft switch that doesn't actively
+    /// drive the data lines returns whichever byte the video circuit just
+    /// latched off the DRAM. ProDOS / firmware code uses this as a poor-
+    /// man's RNG and as the implicit return value of LC bank-select
+    /// triggers ($C080-$C08F) and IIe paging triggers ($C001-$C00F that
+    /// don't otherwise return state). Approximates the address by
+    /// converting `cycleCounter` into a (line, column) pair and applying
+    /// the standard text/HGR row-interleave formulas.
+    uint8_t floatingBus() const;
+
     // IIe-only routing helpers. Selected per address range based on the
     // current iieMemMode + DisplayState; see the table at the top of the
     // header for the rules.

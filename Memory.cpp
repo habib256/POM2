@@ -558,9 +558,12 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return 0;
     }
 
-    // Unknown soft switch — Apple II hardware floats the bus. Returning 0
-    // is good enough for everything we ship.
-    return 0;
+    // Unknown soft switch — Apple II hardware floats the bus. For reads,
+    // return whatever the video DMA is currently fetching (matches real
+    // hardware so software that uses $C0xx as a poor RNG, or that BMI/BPL
+    // on a status read's low 7 bits, behaves correctly). Writes don't
+    // care about the return value.
+    return isWrite ? 0 : floatingBus();
 }
 
 void Memory::iieHandleSoftSwitch(uint16_t addr)
@@ -699,7 +702,65 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
     lcWriteEnable = writeCandidate && previousPrewrite;
     lcPrewrite = writeCandidate;
 
-    return 0;
+    // The card itself does not drive the data lines for $C08x — the byte
+    // the CPU reads is whatever the video DMA last latched onto the bus.
+    return floatingBus();
+}
+
+uint8_t Memory::floatingBus() const
+{
+    // Apple II video timing: master 14.31818 MHz / 14 = 1.02273 MHz CPU.
+    // 65 cycles per scanline, 262 scanlines per frame. HBL = first 25
+    // cycles of each line; visible video = cycles 25..64 (40 columns).
+    // Lines 0..191 are active video; 192..261 are VBL.
+    constexpr uint64_t kCyclesPerLine  = 65;
+    constexpr uint64_t kLinesPerFrame  = 262;
+    constexpr uint64_t kCyclesPerFrame = kCyclesPerLine * kLinesPerFrame;
+    constexpr int      kHblCycles      = 25;
+
+    const uint64_t cyc  = cycleCounter % kCyclesPerFrame;
+    const int      line = static_cast<int>(cyc / kCyclesPerLine);
+    const int      col  = static_cast<int>(cyc % kCyclesPerLine);
+    // Visible column offset 0..39. During HBL the video circuit fetches
+    // junk from earlier addresses; treat as column 0.
+    const int      hOff = (col >= kHblCycles) ? (col - kHblCycles) : 0;
+
+    // V counter wraps at frame end; during VBL the row counter rolls
+    // through earlier text rows. Approximate by mapping back to active.
+    const int v = (line < 192) ? line : (line - 192);
+
+    DisplayState ds;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        ds = display;
+    }
+
+    // Pick text vs HGR exactly like MAME's `scanner_address`: HGR only
+    // when graphics is on AND HIRES is set; if MIXED is on, the bottom 4
+    // rows (v >= 160) revert to text. Otherwise we'd fetch HGR pixels
+    // from underneath the visible text and software using floating-bus
+    // for IIe text-mode artifact detection would see the wrong byte.
+    const bool useHgr = !ds.textMode && ds.hiRes && !(ds.mixedMode && v >= 160);
+
+    uint16_t addr;
+    if (useHgr) {
+        // HGR row interleave: addr = $2000 + 0x400*(row%8)
+        //                            + 0x80*((row/8)%8) + 0x28*(row/64)
+        addr = static_cast<uint16_t>(0x2000
+            + ((v & 7) << 10)
+            + (((v >> 3) & 7) << 7)
+            + (v >> 6) * 0x28
+            + hOff);
+        if (ds.page2) addr = static_cast<uint16_t>(addr + 0x2000);
+    } else {
+        // Text/lores row interleave: addr = $0400 + 0x80*(row%8) + 0x28*(row/8)
+        addr = static_cast<uint16_t>(0x0400
+            + (((v >> 3) & 7) << 7)
+            + (v >> 6) * 0x28
+            + hOff);
+        if (ds.page2) addr = static_cast<uint16_t>(addr + 0x0400);
+    }
+    return mem[addr];
 }
 
 uint8_t Memory::languageCardRead(uint16_t addr) const

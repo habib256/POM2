@@ -223,12 +223,37 @@ menu / CLI flag — pure auto-detect on file presence.
   trick, so the Apple II main ROM must be loaded for boot to work.
   Soft switches at `$C0E0-$C0EF`: phases 0-3 off/on, motor off/on, drive
   1/2 select (only drive 1 modelled), Q6L/Q6H (shift/load), Q7L/Q7H
-  (read/write — write is acknowledged but ignored). Head position in
-  half-tracks; quarter-tracks unused. Nibble cursor advances every
-  ~32 CPU cycles in `advanceCycles()`. `$C0EC` in read mode returns
-  `image.nibbleAt(track, trackPos)`; bit-7 is implicitly always set
-  because every valid GCR nibble has it set, so DOS 3.3's
-  `LDA $C0EC ; BPL loop` exits immediately.
+  (read/write — write goes via the LSS shifter when `useBitLss` is on,
+  otherwise the legacy 32-cycle gate). Head position in half-tracks;
+  quarter-tracks unused.
+  - **Two read paths share the same data register**:
+    - **Bit-level LSS** (default when `roms/diskii_p6.rom` is present)
+      — port of MAME `wozfdc.cpp lss_sync()` / apple2js
+      `WozDiskDriver.moveHead`. Each LSS tick = ½ CPU cycle (2 ticks per
+      cycle); 8 ticks per bit cell; 8 cells per byte. The 256-byte P6
+      sequencer PROM (Apple part 341-0028-A, embedded as a default + load
+      override from `roms/diskii_p6.rom`) is indexed by
+      `(state << 4) | (Q7 << 3) | (Q6 << 2) | (QA << 1) | (!PULSE)`. The
+      ROM byte's high nibble is the next state (its bit 3 also drives
+      WRITE_DATA in write mode); the low nibble is the ALU op on the data
+      register: `0x0` CLR, `0x8` NOP, `0x9` SL0, `0xA` SR-with-WP, `0xB`
+      LD-from-CPU, `0xD` SL1. Reads of $C0EC tick the LSS one extra time
+      to model the 1-cycle read-pipe latency, then return the data
+      register. Pinned by `tests/diskii_lss_smoke_test.cpp`.
+    - **Legacy 32-cycle gate** (fallback when no P6 ROM is loaded) —
+      `kCyclesPerNibble = 32`; one nibble appears at the data register
+      every 32 cycles, with `byteReady` toggling so the BPL spin holds
+      until the next nibble is in. Good enough for stock DOS 3.3 / ProDOS
+      RWTS. Roughly 2-3× faster than the LSS in real-world boots — kept
+      as the path the disk_boot / disk_write_controller / dos33_save /
+      prodos_save smoke tests exercise (they don't load the P6 ROM).
+  - **Bit-stream expansion** — `DiskImage::bitAt(track, idx)` lazily
+    walks the 6656-byte nibble buffer once per track and emits 8 cells
+    per non-FF byte, plus 2 trailing zero cells per $FF in a run of 2+
+    consecutive $FFs. Sync-FF padding is what lets the LSS *lose*
+    alignment in sync gaps and *re-sync* on the next data prologue. The
+    `.nib` raw-nibble path skips sync padding (every byte = exactly 8
+    cells, total 53248 cells). Cache invalidates on `writeNibbleAt`.
 - **DiskController_ImGui** — minimal status panel: PROM loaded LED,
   motor LED, current track / half-track / nibble cursor, Insert / Eject
   buttons. No procedural-art chassis like the cassette deck — the
@@ -368,7 +393,8 @@ $C070        Paddle reset latch
 $C05E/$C05F  IIe DHGR enable / disable (DHIRESON / DHIRESOFF — also AN3
              annunciator pulses on every access for Le Chat Mauve's FIFO)
 $C0A8-$C0AB  Super Serial Card ACIA (slot 2 — data/status/cmd/ctrl)
-$C0E0-$C0EF  Disk II controller soft switches (slot 6)
+$C0E0-$C0EF  Disk II controller soft switches (slot 6) — also the LSS
+             ($C0EC = Q6L data register, $C0ED = Q6H load latch)
 $C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on)
 $C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)
 $C600-$C6FF  Disk II boot PROM (P5A, when roms/disk2.rom present)

@@ -101,6 +101,7 @@ void printUsage()
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
         "  -p, --preset <ii|ii+>      Apple II original or Apple II Plus\n"
+        "  --ii-plus                  Force II+ mode (ignore roms/apple2e.rom)\n"
         "  --speed <cycles/frame>     Override CPU pacing (1x = 17045)\n"
         "  --cpu-max                  Run flat-out (~58 MHz emulated)\n"
         "  --tape <path>              Preload + auto-play tape\n"
@@ -167,6 +168,9 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
         }
         else if (a == "--cpu-max") {
             plan.cpuMax = true;
+        }
+        else if (a == "--ii-plus" || a == "--ii+") {
+            plan.forceIIPlus = true;
         }
         else if (a == "--display") {
             const char* v = needArg(i, "--display"); if (!v) return std::nullopt;

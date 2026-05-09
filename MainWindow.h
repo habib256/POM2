@@ -30,7 +30,11 @@ struct GLFWwindow;
 class MainWindow
 {
 public:
-    MainWindow();
+    /// `forceIIPlus`: when true, skip the auto-probe for `roms/apple2e.rom`
+    /// even if it is present and load `roms/apple2.rom` instead. Used by
+    /// the `--ii-plus` CLI flag to fall back to II+ mode for software
+    /// (e.g. Copy II Plus 8.3) that boots cleanly under the legacy ROM.
+    explicit MainWindow(bool forceIIPlus = false);
     ~MainWindow();
 
     EmulationController& emul() { return controller; }

@@ -37,6 +37,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class DiskImage
 {
@@ -86,6 +87,35 @@ public:
     /// No-op when no image is loaded or the track is out of range.
     void writeNibbleAt(int track, int index, uint8_t value);
 
+    // ── LSS bit-cell stream ─────────────────────────────────────────────
+    //
+    // The Disk II's Logic State Sequencer reads bit cells, not nibbles —
+    // each cell is 4 µs on real hardware. Sync $FF bytes carry two
+    // trailing zero cells (10 cells total) so the byte boundary slips by
+    // 2 bits per sync gap; this is what lets the LSS *lose* alignment
+    // during a sync run and *re-sync* on the next data prologue's leading
+    // 1-bit. Without this padding, a soft-LSS that always emits 8 cells
+    // per byte stays aligned forever — DOS / ProDOS RWTS still works
+    // (they probe the latch one byte at a time) but Copy II Plus's RWTS
+    // and any copy-protection that bit-bangs $C0EC fails.
+    //
+    // Standard .dsk/.do/.po expansion (per MAME `ap2_dsk.cpp`):
+    //   • each $FF in a run of 2+ contiguous $FFs → 10 cells
+    //   • lone $FF                                 → 8 cells
+    //   • everything else                          → 8 cells
+    // .nib raw nibble images have no sync semantics — every byte = 8 cells.
+
+    /// Total bit-cell count for `track`. Standard 16-sector .dsk/.do/.po:
+    /// ~54944 cells (varies a few hundred either way depending on tail
+    /// padding). .nib raw images: exactly 53248 cells (= 6656 × 8).
+    int trackBitLength(int track) const;
+
+    /// Read one bit cell (0 or 1) from `track[bitIdx]`. `bitIdx` wraps
+    /// modulo trackBitLength(track). First call per (image, track) lazily
+    /// expands the bit-cell cache; subsequent reads are O(1) array index.
+    /// `writeNibbleAt` invalidates that track's cache.
+    uint8_t bitAt(int track, int bitIdx) const;
+
     /// True if any track has been written since load. Cleared by
     /// saveDirty() and load.
     bool hasUnsavedChanges() const { return anyDirty; }
@@ -117,6 +147,22 @@ private:
     using TrackBuffer = std::array<uint8_t, kNibblesPerTrack>;
     std::array<TrackBuffer, kTracks> tracks;
     std::array<bool, kTracks>        dirty{};
+
+    // Lazy per-track bit-cell expansion cache. Populated on first
+    // `bitAt`/`trackBitLength` call; invalidated by `writeNibbleAt` /
+    // `eject` / new `loadFile`. Mutable so that const `bitAt` can fill
+    // the cache on demand.
+    mutable std::array<std::vector<uint8_t>, kTracks> bitStream;
+    mutable std::array<bool, kTracks>                 bitStreamValid{};
+    void expandTrackBits(int track) const;
+    void invalidateBitStream(int track) {
+        bitStreamValid[track] = false;
+        bitStream[track].clear();
+    }
+    void invalidateAllBitStreams() {
+        bitStreamValid.fill(false);
+        for (auto& bs : bitStream) bs.clear();
+    }
 
     void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
                        const int* logicalForPhysical);

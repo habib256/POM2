@@ -25,7 +25,7 @@ namespace {
 constexpr const char* kProDOSHostSentinel = "@PRODOS_HOST_FOLDER@:";
 } // namespace
 
-MainWindow::MainWindow()
+MainWindow::MainWindow(bool forceIIPlus)
     : memViewer(&controller.memory())
 {
     // Memory viewer writes go through Memory::memWrite under stateMutex,
@@ -64,8 +64,10 @@ MainWindow::MainWindow()
                                                 "../../roms/apple2_char.rom" };
 
     bool iiePresent = false;
-    for (const char* p : iieRomCandidates) {
-        if (fs::exists(p)) { romPath = p; iiePresent = true; break; }
+    if (!forceIIPlus) {
+        for (const char* p : iieRomCandidates) {
+            if (fs::exists(p)) { romPath = p; iiePresent = true; break; }
+        }
     }
     if (!iiePresent) {
         for (const char* p : romCandidates) {
@@ -110,6 +112,21 @@ MainWindow::MainWindow()
         auto card = std::make_unique<DiskIICard>();
         if (card->loadBootRom(diskRomPath)) {
             diskRomStatus = std::string("loaded: ") + diskRomPath;
+            // Optional: load the P6 LSS sequencer PROM (Apple part
+            // 341-0028-A) for the cycle-accurate bit-level controller
+            // path. Bundled at `roms/diskii_p6.rom` — when present, the
+            // card uses the LSS on every disk insert; when missing, it
+            // falls back to the legacy 32-cycle nibble gate. The card
+            // ships with an embedded default copy of the same ROM bytes,
+            // so this load is a "verified-by-file" override rather than
+            // a hard requirement.
+            static const char* lssRomCandidates[] = {
+                "roms/diskii_p6.rom", "../roms/diskii_p6.rom",
+                "../../roms/diskii_p6.rom"
+            };
+            for (const char* p : lssRomCandidates) {
+                if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
+            }
             diskCard = card.get();
             controller.memory().slotBus().plug(6, std::move(card));
         } else {
