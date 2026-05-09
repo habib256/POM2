@@ -99,140 +99,11 @@ MainWindow::MainWindow(bool forceIIPlus)
     }
     controller.memory().loadCharRom(charRomPath.c_str());
 
-    // Auto-plug the Disk II in slot 6 if a boot PROM is available. The
-    // card is constructed empty (no disk inserted); a `.dsk` can be
-    // mounted later via Hardware → Insert Disk.
-    {
-        static const char* diskRomCandidates[] = {
-            "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom"
-        };
-        for (const char* p : diskRomCandidates) {
-            if (fs::exists(p)) { diskRomPath = p; break; }
-        }
-        auto card = std::make_unique<DiskIICard>();
-        if (card->loadBootRom(diskRomPath)) {
-            diskRomStatus = std::string("loaded: ") + diskRomPath;
-            // Optional: load the P6 LSS sequencer PROM (Apple part
-            // 341-0028-A) for the cycle-accurate bit-level controller
-            // path. Bundled at `roms/diskii_p6.rom` — when present, the
-            // card uses the LSS on every disk insert; when missing, it
-            // falls back to the legacy 32-cycle nibble gate. The card
-            // ships with an embedded default copy of the same ROM bytes,
-            // so this load is a "verified-by-file" override rather than
-            // a hard requirement.
-            static const char* lssRomCandidates[] = {
-                "roms/diskii_p6.rom", "../roms/diskii_p6.rom",
-                "../../roms/diskii_p6.rom"
-            };
-            for (const char* p : lssRomCandidates) {
-                if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
-            }
-            diskCard = card.get();
-            controller.memory().slotBus().plug(6, std::move(card));
-        } else {
-            diskRomStatus = std::string("NO Disk II PROM (") + diskRomPath + ")";
-            // Keep diskCard = nullptr; UI will still render but greyed out.
-        }
-    }
-
-    // Plug a ProDOS block-device hard disk in slot 5. Slot 5 is the
-    // conventional SmartPort / hard-disk slot and keeps Disk II in slot 6
-    // available for floppies. The card is always plugged so the user can
-    // mount any .hdv / .2mg image at runtime via Hardware → Mount HDV.
-    // The image to mount is, in priority order:
-    //   1. The path saved in the previous session (settings.cfg `hdv_path`),
-    //      if the file still exists.
-    //   2. Otherwise, the first .hdv/.2mg found under hdv/ alphabetically,
-    //      as a friendly default. Never auto-booted — the user clicks the
-    //      Library entry to boot.
-    {
-        const std::string saved = settings.getString("hdv_path", "");
-        std::error_code ec;
-        if (!saved.empty() && fs::is_regular_file(saved, ec)) {
-            hdvPath = saved;
-        } else {
-            static const char* hdvDirs[] = { "hdv", "../hdv", "../../hdv" };
-            for (const char* dir : hdvDirs) {
-                if (!fs::is_directory(dir, ec)) continue;
-                std::vector<std::string> found;
-                for (const auto& entry : fs::directory_iterator(dir, ec)) {
-                    if (!entry.is_regular_file()) continue;
-                    const std::string ext = entry.path().extension().string();
-                    if (ext != ".hdv" && ext != ".2mg") continue;
-                    found.push_back(entry.path().string());
-                }
-                std::sort(found.begin(), found.end());
-                if (!found.empty()) { hdvPath = found.front(); break; }
-            }
-        }
-
-        auto card = std::make_unique<ProDOSHardDiskCard>();
-        if (!hdvPath.empty() && card->loadImage(hdvPath)) {
-            hdvStatus = std::string("loaded: ") + hdvPath;
-        } else {
-            hdvStatus = "no image mounted";
-        }
-        card->setWriteBackEnabled(settings.getBool("hdv_writeback", false));
-        hdvCard = card.get();
-        controller.memory().slotBus().plug(5, std::move(card));
-    }
-
-    // Plug the Le Chat Mauve RGB video card in slot 7. It's the convention
-    // for Apple II video adapters (Apple Color Card, Video-7) and matches
-    // the historical placement in French II+ machines that shipped with a
-    // Féline pre-installed. The card has no boot ROM and exposes nothing on
-    // the bus — Apple2Display queries it directly to choose the rendering
-    // path. Default mode at construction is COL140 (RGB 16 colors), so
-    // every HGR-capable program is rendered with the clean palette out of
-    // the box; AN3+80COL software can switch modes at runtime via the FIFO.
-    {
-        auto card = std::make_unique<LeChatMauveCard>();
-        chatMauveCard = card.get();
-        controller.memory().slotBus().plug(7, std::move(card));
-        display.setChatMauveCard(chatMauveCard);
-    }
-
-    // Super Serial Card in slot 2 with a TCP-bridged listener: telnet to
-    // 127.0.0.1:6502 (default) and the resulting stream lands at the
-    // SSC's ACIA registers, so PR#2 / IN#2 from the Apple II talks to
-    // the host terminal. Off by default to avoid grabbing a port the
-    // user didn't ask for; toggle from Hardware → Super Serial.
-    //
-    // The TCP RX path also forwards every received byte to the Apple
-    // II keyboard latch via Memory::queueKey, so an outside session
-    // can drive PR#2 / IN#2 themselves before any redirect is active.
-    {
-        auto card = std::make_unique<SuperSerialCard>();
-        sscCard = card.get();
-        // Use pasteText (not queueKey) — pasteText respects the paste
-        // queue, so a stream of bytes from telnet doesn't clobber earlier
-        // characters that BASIC hasn't picked up yet.
-        sscCard->setKeyboardSink(
-            [&mem = controller.memory()](uint8_t b) {
-                const char buf[1] = { static_cast<char>(b) };
-                mem.pasteText(buf, 1);
-            });
-        controller.memory().slotBus().plug(SuperSerialCard::kSlot,
-                                           std::move(card));
-        if (settings.getBool("ssc_listening", false)) {
-            const int p = settings.getInt("ssc_port",
-                                          SuperSerialCard::kDefaultPort);
-            sscCard->startListening(static_cast<uint16_t>(p));
-        }
-    }
-
-    // Plug a ThunderClock+-compatible clock card in slot 4. The card
-    // emulates the bit-banged uPD1990AC RTC chip at $C0C0; ProDOS sees
-    // the canonical detection signature in the slot ROM, copies its
-    // hardcoded ThunderClock driver into RAM at boot, and that driver
-    // talks to our chip emulation to fill the system DATE/TIME at
-    // $BF90-$BF93. DOS 3.3 disks ignore the card entirely.
-    if (settings.getBool("clock_card_enable", true)) {
-        auto card = std::make_unique<ClockCard>(ClockCard::kDefaultSlot);
-        clockCard = card.get();
-        controller.memory().slotBus().plug(ClockCard::kDefaultSlot,
-                                           std::move(card));
-    }
+    // Plug all expansion cards in their user-configured slots. The
+    // mapping is read from `slot_1_card`..`slot_7_card` settings; absent
+    // keys fall back to the legacy defaults (DiskII=6, HDV=5, SSC=2,
+    // Clock=4, ChatMauve=7) so first-run users see no regression.
+    plugSlotsFromSettings();
 
     // ── Restore display + UI prefs from previous session ─────────────
     {
@@ -318,6 +189,12 @@ MainWindow::~MainWindow()
         settings.setInt ("ssc_port",      sscCard->getPort());
     }
 
+    // Persist the per-slot card mapping so changes via the Slot
+    // Configuration panel survive a restart.
+    for (int s = 1; s <= 7; ++s) {
+        settings.setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
+    }
+
     auto modeName = [](Apple2Display::HiResMode m) -> const char* {
         switch (m) {
             case Apple2Display::HiResMode::ColorNTSC:    return "ColorNTSC";
@@ -342,6 +219,238 @@ MainWindow::~MainWindow()
     settings.setFloat ("cassette_volume", controller.cassette().getVolume());
 
     settings.save();
+}
+
+// ─── Slot configuration ─────────────────────────────────────────────────
+//
+// `plugSlotsFromSettings()` is the single source of truth for which card
+// is in which slot. It reads `slot_1_card`..`slot_7_card` from the runtime
+// settings store, falling back to the historical defaults below when a
+// slot key is absent (so first-run users see no regression). Each card is
+// constructed with its slot number passed to the constructor — the slot
+// is baked into card slot ROMs (PR#n entry points, ProDOS unit numbers,
+// etc.) so we can't just plug a "slot-2-style" SSC into slot 5 and expect
+// PR#5 to find it.
+//
+// Validation: each card-type identifier appears in at most one slot. A
+// duplicate request logs a warning and skips the second instance. Empty
+// slots are simply not plugged.
+//
+// Identifiers (canonical strings stored in settings):
+//   ""           empty slot
+//   "diskii"     DiskIICard
+//   "hdv"        ProDOSHardDiskCard
+//   "ssc"        SuperSerialCard
+//   "clock"      ClockCard
+//   "chatmauve"  LeChatMauveCard
+//   "mouse"      MouseCard (Phase 4 — falls through with a warning until then)
+void MainWindow::plugSlotsFromSettings()
+{
+    namespace fs = std::filesystem;
+
+    // Default mapping when no `slot_N_card` keys are present. Matches the
+    // historical hard-wired layout from before the slot-config refactor.
+    static const char* kDefaults[8] = {
+        "",          // slot 0 (Language Card — owned by Memory, not us)
+        "",          // slot 1
+        "ssc",       // slot 2
+        "",          // slot 3
+        "clock",     // slot 4
+        "hdv",       // slot 5
+        "diskii",    // slot 6
+        "chatmauve"  // slot 7
+    };
+
+    // Resolve each slot from settings, with the legacy `clock_card_enable`
+    // flag as a one-shot fallback: if the user has clock_card_enable=false
+    // AND no slot_4_card key, slot 4 stays empty. Once any slot_N_card key
+    // is set in the file, that key is the source of truth.
+    for (int s = 1; s <= 7; ++s) {
+        const std::string key = "slot_" + std::to_string(s) + "_card";
+        slotCards[s] = settings.getString(key, kDefaults[s]);
+    }
+    if (!settings.getBool("clock_card_enable", true)) {
+        // Legacy opt-out: only respect when no explicit slot_N_card key
+        // was set (settings.getString returned the default for slot 4).
+        if (settings.getString("slot_4_card", "__missing__") == "__missing__"
+            && slotCards[4] == "clock") {
+            slotCards[4] = "";
+        }
+    }
+
+    // Validate uniqueness — each card type plugs into at most one slot.
+    auto firstOccurrence = [&](const std::string& type) -> int {
+        for (int s = 1; s <= 7; ++s) if (slotCards[s] == type) return s;
+        return -1;
+    };
+    for (int s = 1; s <= 7; ++s) {
+        if (slotCards[s].empty()) continue;
+        const int first = firstOccurrence(slotCards[s]);
+        if (first != s) {
+            pom2::log().warn("Slots",
+                "Slot " + std::to_string(s) + " requested '" + slotCards[s] +
+                "' but that card is already in slot " + std::to_string(first) +
+                " — leaving slot " + std::to_string(s) + " empty");
+            slotCards[s] = "";
+        }
+    }
+
+    // ── Per-card construction helpers. Each one populates the matching
+    //    raw `*Card` member pointer (non-owning) for the rest of MainWindow
+    //    to find, and plugs the card into the SlotBus. ────────────────
+
+    auto plugDiskII = [&](int s) {
+        static const char* diskRomCandidates[] = {
+            "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom"
+        };
+        for (const char* p : diskRomCandidates) {
+            if (fs::exists(p)) { diskRomPath = p; break; }
+        }
+        auto card = std::make_unique<DiskIICard>(s);
+        if (!card->loadBootRom(diskRomPath)) {
+            diskRomStatus = std::string("NO Disk II PROM (") + diskRomPath + ")";
+            return;     // no boot PROM → card stays unplugged
+        }
+        diskRomStatus = std::string("loaded: ") + diskRomPath;
+        // Optional: load the P6 LSS sequencer PROM (Apple part 341-0028-A)
+        // for the cycle-accurate bit-level controller path. Bundled at
+        // `roms/diskii_p6.rom`; falls back to the embedded default.
+        static const char* lssRomCandidates[] = {
+            "roms/diskii_p6.rom", "../roms/diskii_p6.rom",
+            "../../roms/diskii_p6.rom"
+        };
+        for (const char* p : lssRomCandidates) {
+            if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
+        }
+        diskCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugHdv = [&](int s) {
+        // Pick an image to mount: the path saved in the previous session
+        // first; otherwise the first .hdv/.2mg under hdv/ alphabetically.
+        const std::string saved = settings.getString("hdv_path", "");
+        std::error_code ec;
+        if (!saved.empty() && fs::is_regular_file(saved, ec)) {
+            hdvPath = saved;
+        } else {
+            static const char* hdvDirs[] = { "hdv", "../hdv", "../../hdv" };
+            for (const char* dir : hdvDirs) {
+                if (!fs::is_directory(dir, ec)) continue;
+                std::vector<std::string> found;
+                for (const auto& entry : fs::directory_iterator(dir, ec)) {
+                    if (!entry.is_regular_file()) continue;
+                    const std::string ext = entry.path().extension().string();
+                    if (ext != ".hdv" && ext != ".2mg") continue;
+                    found.push_back(entry.path().string());
+                }
+                std::sort(found.begin(), found.end());
+                if (!found.empty()) { hdvPath = found.front(); break; }
+            }
+        }
+
+        auto card = std::make_unique<ProDOSHardDiskCard>(s);
+        if (!hdvPath.empty() && card->loadImage(hdvPath)) {
+            hdvStatus = std::string("loaded: ") + hdvPath;
+        } else {
+            hdvStatus = "no image mounted";
+        }
+        card->setWriteBackEnabled(settings.getBool("hdv_writeback", false));
+        hdvCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugChatMauve = [&](int s) {
+        auto card = std::make_unique<LeChatMauveCard>(s);
+        chatMauveCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+        display.setChatMauveCard(chatMauveCard);
+    };
+
+    auto plugSsc = [&](int s) {
+        auto card = std::make_unique<SuperSerialCard>(s);
+        sscCard = card.get();
+        // Use pasteText (not queueKey) — pasteText respects the paste
+        // queue, so a stream of bytes from telnet doesn't clobber earlier
+        // characters that BASIC hasn't picked up yet.
+        sscCard->setKeyboardSink(
+            [&mem = controller.memory()](uint8_t b) {
+                const char buf[1] = { static_cast<char>(b) };
+                mem.pasteText(buf, 1);
+            });
+        controller.memory().slotBus().plug(s, std::move(card));
+        if (settings.getBool("ssc_listening", false)) {
+            const int p = settings.getInt("ssc_port",
+                                          SuperSerialCard::kDefaultPort);
+            sscCard->startListening(static_cast<uint16_t>(p));
+        }
+    };
+
+    auto plugClock = [&](int s) {
+        auto card = std::make_unique<ClockCard>(s);
+        clockCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugMouse = [&](int s) {
+        // Mouse Card (MAME-faithful 68705P3 + 6821 PIA + Apple ROMs).
+        // Both Apple ROMs are required — without them the card has no
+        // firmware and refuses to plug.
+        std::string slotRomPath, mcuRomPath;
+        static const char* slotRomCandidates[] = {
+            "roms/mouse_341-0270-c.bin", "../roms/mouse_341-0270-c.bin",
+            "../../roms/mouse_341-0270-c.bin"
+        };
+        static const char* mcuRomCandidates[] = {
+            "roms/mouse_341-0269.bin", "../roms/mouse_341-0269.bin",
+            "../../roms/mouse_341-0269.bin"
+        };
+        for (const char* p : slotRomCandidates) {
+            if (fs::exists(p)) { slotRomPath = p; break; }
+        }
+        for (const char* p : mcuRomCandidates) {
+            if (fs::exists(p)) { mcuRomPath = p; break; }
+        }
+        if (slotRomPath.empty() || mcuRomPath.empty()) {
+            mouseRomStatus = "ROMs missing (need roms/mouse_341-0270-c.bin "
+                             "and roms/mouse_341-0269.bin)";
+            pom2::log().warn("Mouse",
+                "Mouse Card requested in slot " + std::to_string(s) +
+                " but " + mouseRomStatus + " — leaving slot empty");
+            return;
+        }
+        auto card = std::make_unique<MouseCard>(s);
+        if (!card->loadRoms(slotRomPath, mcuRomPath)) {
+            mouseRomStatus = "ROM load failed (size mismatch?)";
+            return;
+        }
+        // Wire the slot IRQ line straight into the M6502 — MAME's
+        // raise_slot_irq() forwards via the bus; here SlotBus has no
+        // shared IRQ aggregator (each card asserts directly).
+        card->setCpuIrqLine(&controller.cpu());
+        mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
+        mouseCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+    };
+
+    // Dispatch: walk slots 1..7 and plug whichever card the settings ask
+    // for. Anything we don't recognise is logged and skipped.
+    for (int s = 1; s <= 7; ++s) {
+        const std::string& kind = slotCards[s];
+        if      (kind.empty())          continue;
+        else if (kind == "diskii")      plugDiskII(s);
+        else if (kind == "hdv")         plugHdv(s);
+        else if (kind == "ssc")         plugSsc(s);
+        else if (kind == "clock")       plugClock(s);
+        else if (kind == "chatmauve")   plugChatMauve(s);
+        else if (kind == "mouse")       plugMouse(s);
+        else {
+            pom2::log().warn("Slots",
+                "Slot " + std::to_string(s) + " has unknown card type '" +
+                kind + "' — leaving empty");
+            slotCards[s] = "";
+        }
+    }
 }
 
 // ─── Screenshot ───────────────────────────────────────────────────────────
@@ -692,6 +801,7 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Super Serial (slot 2)", nullptr, &showSscPanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
+        ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
         ImGui::Separator();
         ImGui::BeginDisabled(hdvCard == nullptr);
         if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
@@ -714,7 +824,7 @@ void MainWindow::renderMenuBar()
         ImGui::EndDisabled();
         ImGui::Separator();
         ImGui::BeginDisabled(diskCard == nullptr);
-        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib)...")) {
+        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
             showDiskInsertDialog = true;
             if (diskDialogPath.empty()) diskDialogPath = "disks/";
         }
@@ -789,9 +899,59 @@ void MainWindow::renderScreenWindow()
             cur.y + std::max(0.0f, (avail.y - size.y) * 0.5f)));
 
         ImGui::Image(static_cast<ImTextureID>(screenTexture), size);
+        // Capture the screen widget's screen-space rect so the GLFW
+        // cursor-pos callback (Phase 5) can route motion over the
+        // screen to the Mouse Card.
+        screenRectMin = ImGui::GetItemRectMin();
+        screenRectMax = ImGui::GetItemRectMax();
     }
     ImGui::End();
     ImGui::PopStyleColor();
+}
+
+// ─── Mouse Card input routing ───────────────────────────────────────────
+
+void MainWindow::onMouseMove(double x, double y)
+{
+    // First call after startup just seeds last-position; no delta yet.
+    if (!mouseInited) {
+        lastMouseHostX = x;
+        lastMouseHostY = y;
+        mouseInited = true;
+        return;
+    }
+    const double dx = x - lastMouseHostX;
+    const double dy = y - lastMouseHostY;
+    lastMouseHostX = x;
+    lastMouseHostY = y;
+
+    if (!mouseCard) return;
+
+    // Only route to the Apple II Mouse Card when the cursor is INSIDE
+    // the screen widget rect. Outside, leave the host mouse free for
+    // ImGui interaction.
+    if (x < screenRectMin.x || x > screenRectMax.x ||
+        y < screenRectMin.y || y > screenRectMax.y) {
+        return;
+    }
+
+    // Accumulate host-pixel deltas into the 8-bit running counter the
+    // MCU firmware reads as IPT_MOUSE_X/Y. Wraps freely — the MCU's
+    // 8-bit subtraction handles deltas across the wrap boundary.
+    mouseAppleX = static_cast<uint8_t>(mouseAppleX + static_cast<int>(dx));
+    mouseAppleY = static_cast<uint8_t>(mouseAppleY + static_cast<int>(dy));
+    mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+}
+
+void MainWindow::onMouseButton(int button, int action)
+{
+    // Only the primary button is wired to the Apple Mouse Card (PB7 of
+    // the MCU). GLFW button 0 = left.
+    if (button != 0) return;
+    mouseButtonHeld = (action != 0);     // GLFW_RELEASE = 0, others = press/repeat
+    if (mouseCard) {
+        mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+    }
 }
 
 void MainWindow::renderControlsWindow()
@@ -933,7 +1093,7 @@ void MainWindow::renderSscPanelWindow()
         listening ? "listening" : "stopped",
         connected ? " — client connected" : "");
     ImGui::SameLine();
-    ImGui::TextDisabled("(slot %d)", SuperSerialCard::kSlot);
+    ImGui::TextDisabled("(slot %d)", sscCard->getSlot());
 
     ImGui::Separator();
     ImGui::SetNextItemWidth(120);
@@ -957,7 +1117,7 @@ void MainWindow::renderSscPanelWindow()
         ImGui::TextWrapped("Connect from a host terminal:");
         ImGui::TextWrapped("  telnet 127.0.0.1 %d", sscCard->getPort());
         ImGui::TextWrapped("In the Apple II:  PR#%d  (or IN#%d for input)",
-            SuperSerialCard::kSlot, SuperSerialCard::kSlot);
+            sscCard->getSlot(), sscCard->getSlot());
     } else {
         ImGui::TextDisabled("Click Start, then telnet to the port to bridge "
                             "I/O between your host shell and the Apple II.");
@@ -971,7 +1131,7 @@ void MainWindow::renderSscPanelWindow()
 
     if (ImGui::CollapsingHeader("Recent traffic")) {
         ImGui::TextDisabled("Last bytes the Apple II printed via PR#%d:",
-                            SuperSerialCard::kSlot);
+                            sscCard->getSlot());
         ImGui::TextWrapped("%s", sscCard->recentTxText().c_str());
         ImGui::Spacing();
         ImGui::TextDisabled("Last bytes the host typed:");
@@ -1079,7 +1239,7 @@ void MainWindow::renderDiskPanelWindow()
                 if (!entry.is_regular_file()) continue;
                 const std::string ext = entry.path().extension().string();
                 if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
-                    ext != ".nib") continue;
+                    ext != ".nib" && ext != ".woz") continue;
                 pom2::DiskController_ImGui::LibraryEntry e;
                 e.displayName = entry.path().filename().string();
                 e.fullPath    = entry.path().string();
@@ -1359,8 +1519,9 @@ void MainWindow::renderDiskFileDialog()
     ImGui::TextUnformatted("Path to a 5.25\" image —"
                            " .dsk / .do (DOS 3.3, 143 360 B) or"
                            " .po (ProDOS, 143 360 B) or .nib (raw"
-                           " nibble stream, 232 960 B). Write-back"
-                           " is opt-in via the panel checkbox.");
+                           " nibble stream, 232 960 B) or .woz"
+                           " (bit-cell, copy-protected disks; read-only)."
+                           " Write-back is opt-in via the panel checkbox.");
     char buf[512] = {0};
     std::snprintf(buf, sizeof(buf), "%s", diskDialogPath.c_str());
     if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
@@ -1380,7 +1541,7 @@ void MainWindow::renderDiskFileDialog()
             if (!entry.is_regular_file()) continue;
             const std::string ext = entry.path().extension().string();
             if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
-                ext != ".nib") continue;
+                ext != ".nib" && ext != ".woz") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
                 diskDialogPath = entry.path().string();
@@ -1696,5 +1857,6 @@ void MainWindow::render()
     renderChatMauvePanelWindow();
     renderSscPanelWindow();
     renderJoystickPanelWindow();
+    renderSlotConfigPanel();
     renderAboutDialog();
 }

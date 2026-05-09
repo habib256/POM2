@@ -108,3 +108,14 @@ void SlotBus::reset()
     // hardware reset doesn't drop the expansion-ROM enable, the latch is
     // cleared only by $CFFF or by losing the slot's $CnXX access.
 }
+
+void SlotBus::clear()
+{
+    for (auto& s : slots) {
+        if (s) {
+            s->onUnplug();
+            s.reset();
+        }
+    }
+    activeExpansionSlot = -1;
+}

@@ -231,29 +231,68 @@ presence.
   only the file-offset → physical-sector mapping differs. The `.po`
   variant is what ProDOS-bootable disks ship as. Read-only — the source
   file is never modified.
+  - **`.woz` support** (`isWoz()`). Verbatim port of MAME's
+    `src/lib/formats/woz_dsk.cpp` chunk parser. WOZ stores raw bit cells
+    (the LSS's natural input) instead of nibbles or sectors, which is
+    why .woz disks survive copy protections that tweak inter-byte
+    timing or bit alignment — re-encoded `.dsk` synthesises idealised
+    GCR and loses the protection signature. Both **WOZ1** (160 fixed
+    6656-byte slots; `bit_count` at offset +6648 LE u16) and **WOZ2**
+    (160 × 8-byte TRK headers; track data at file offset
+    `starting_block × 512` with `bit_count` as u32) are supported.
+    Bits are MSB-first within each byte. `loadWoz()` walks INFO/TMAP/
+    TRKS in any order, ignores META/WRIT/FLUX, and populates
+    `bitStream[track]` directly — bypassing the nibble synthesis path.
+    Each whole track 0..34 sources its bits from `TMAP[track*4]` (the
+    canonical centre-of-track quarter-track slot); per-quarter-track
+    sub-positions used by some advanced protections (Locksmith,
+    David-DOS) are not yet preserved — first-cut tradeoff for the
+    minimum patch that lets stock-protection disks boot. WOZ images
+    always report `isWriteProtected() == true` (writes are dropped via
+    `writeFlux` early-out); `setWriteBackEnabled(true)` on a WOZ disk
+    is a no-op. `DiskIICard::insertDisk` also forces `useBitLss=true`
+    when any drive holds a WOZ — the legacy 32-cycle nibble gate
+    cannot decode bit-cell data. Pinned by
+    `tests/woz_load_smoke_test.cpp` (synthetic WOZ1 + WOZ2 +
+    end-to-end LSS recovery without `roms/diskii_p6.rom`).
 - **DiskIICard** — SlotPeripheral plugged in slot 6. Holds the 256-byte
   P5A boot PROM (`roms/disk2.rom` from AppleWin) at `slotRomRead`; the
   PROM autodetects its slot via the `JSR $FF58 / TSX / LDA $0100,X`
   trick, so the Apple II main ROM must be loaded for boot to work.
-  Soft switches at `$C0E0-$C0EF`: phases 0-3 off/on, motor off/on, drive
-  1/2 select (only drive 1 modelled), Q6L/Q6H (shift/load), Q7L/Q7H
-  (read/write — write goes via the LSS shifter when `useBitLss` is on,
-  otherwise the legacy 32-cycle gate). Head position in half-tracks;
-  quarter-tracks unused.
+  Soft switches at `$C0E0-$C0EF`: phases 0-3 off/on, motor off/on,
+  drive_select (`$C0nA` = drive 1 / `$C0nB` = drive 2 — both wired,
+  `activeDrive` routes the LSS and the legacy gate to `images[0]` /
+  `images[1]`), Q6L/Q6H (shift/load), Q7L/Q7H (read/write — write goes
+  via the LSS shifter when `useBitLss` is on, otherwise the legacy
+  32-cycle gate). Each drive carries its own `DiskImage`, head position
+  in quarter-tracks (`headQuarterTrack[2]`), and nibble-buffer cursor
+  (`trackPos[2]`); phase magnets and motor-on are controller state and
+  shared between drives (matching real hardware where only the selected
+  drive's stepper responds). Pinned by
+  `tests/disk_drive2_smoke_test.cpp` (LSS + legacy paths, plus per-drive
+  head independence).
   - **Two read paths share the same data register**:
     - **Bit-level LSS** (default when `roms/diskii_p6.rom` is present)
-      — port of MAME `wozfdc.cpp lss_sync()` / apple2js
-      `WozDiskDriver.moveHead`. Each LSS tick = ½ CPU cycle (2 ticks per
-      cycle); 8 ticks per bit cell; 8 cells per byte. The 256-byte P6
-      sequencer PROM (Apple part 341-0028-A, embedded as a default + load
-      override from `roms/diskii_p6.rom`) is indexed by
-      `(state << 4) | (Q7 << 3) | (Q6 << 2) | (QA << 1) | (!PULSE)`. The
-      ROM byte's high nibble is the next state (its bit 3 also drives
-      WRITE_DATA in write mode); the low nibble is the ALU op on the data
-      register: `0x0` CLR, `0x8` NOP, `0x9` SL0, `0xA` SR-with-WP, `0xB`
-      LD-from-CPU, `0xD` SL1. Reads of $C0EC tick the LSS one extra time
-      to model the 1-cycle read-pipe latency, then return the data
-      register. Pinned by `tests/diskii_lss_smoke_test.cpp`.
+      — *verbatim* port of MAME `src/devices/machine/wozfdc.cpp` and the
+      flux-event subset of `src/devices/imagedev/floppy.cpp` (fetched
+      2026-05-09 from `github.com/mamedev/mame` master). MAME's `cycles`
+      runs at 2× CPU clock (= LSS clock); one PROM lookup per LSS cycle.
+      `lssSync(extra)` catches the LSS up from a persistent `lssCycle`
+      counter to a `cyclesLimit = cpuCycleTotal*2 + extra` derived from
+      `advanceCycles()` totals. PULSE detection comes from
+      `DiskImage::getNextTransition(track, lssCycle)` — the flux-event
+      view, with one event per "1" cell at LSS-cycle `cellIdx*8 + 4`
+      (cell centre). Reads of $C0EC pass `extra=1` after `control()` to
+      model MAME's read-pipe latency. The 256-byte P6 sequencer PROM
+      (Apple part 341-0028-A, embedded as a default + load override from
+      `roms/diskii_p6.rom`) is indexed by
+      `(state << 4) | (Q7 << 3) | (Q6 << 2) | (QA << 1) | (!PULSE)`. ALU
+      dispatch: `0x0..0x7` CLR, `0x8/0xC` NOP, `0x9` SL0, `0xA/0xE`
+      SR-with-WP, `0xB/0xF` LD from `last_6502_write`, `0xD` SL1. Pinned
+      by `tests/diskii_lss_smoke_test.cpp` and
+      `tests/mame_lss_parity_smoke_test.cpp` (the latter checks the flux
+      cache layout, `getNextTransition` wrap semantics, and the
+      `writeFlux` round-trip against MAME's algorithmic invariants).
     - **Legacy 32-cycle gate** (fallback when no P6 ROM is loaded) —
       `kCyclesPerNibble = 32`; one nibble appears at the data register
       every 32 cycles, with `byteReady` toggling so the BPL spin holds
@@ -268,6 +307,16 @@ presence.
     alignment in sync gaps and *re-sync* on the next data prologue. The
     `.nib` raw-nibble path skips sync padding (every byte = exactly 8
     cells, total 53248 cells). Cache invalidates on `writeNibbleAt`.
+  - **Flux-event view** (`fluxEvents(track)` / `trackPeriod(track)`) —
+    sits on top of the bit-cell stream and emits one event per "1" cell
+    at LSS-cycle `cellIdx*8 + 4`. `getNextTransition(track, fromLssCycle)`
+    is the verbatim port of MAME `floppy_image_device::get_next_transition`,
+    wrapping across revolutions when no further events exist past the
+    cursor. `writeFlux(track, start, end, count, transitions)` splices
+    a window of flux events back into the nibble buffer (cell-windowed,
+    8-bit packed), used by the LSS write side on Q7 falling edge and on
+    the 30-event pre-emptive flush. Lazy build, invalidated together
+    with `bitStream` on `writeNibbleAt`/`eject`/`loadFile`.
 - **DiskController_ImGui** — minimal status panel: PROM loaded LED,
   motor LED, current track / half-track / nibble cursor, Insert / Eject
   buttons. No procedural-art chassis like the cassette deck — the

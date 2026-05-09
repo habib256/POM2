@@ -364,6 +364,37 @@ add_test(NAME diskii_lss_smoke COMMAND test_diskii_lss
 set_tests_properties(diskii_lss_smoke PROPERTIES TIMEOUT 10)
 
 
+# ─── MAME wozfdc / floppy_image flux-model parity smoke test ──────────────
+# Pins the verbatim port of MAME's Disk II LSS algorithm against MAME's
+# source-of-truth invariants: flux event placement at cell centres,
+# get_next_transition wrap semantics, end-to-end LSS read recovery, and
+# writeFlux splice round-trip. Runs without the P6 ROM file (uses the
+# embedded default) but the LSS read parity test skips silently if the
+# bundled roms/diskii_p6.rom is missing.
+add_executable(test_mame_lss_parity
+    mame_lss_parity_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_mame_lss_parity PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mame_lss_parity PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mame_lss_parity PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mame_lss_parity PRIVATE winmm)
+endif()
+
+add_test(NAME mame_lss_parity_smoke COMMAND test_mame_lss_parity
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(mame_lss_parity_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── Disk II write-back + .nib loader smoke test ──────────────────────────
 # Pins .nib raw load+save (verbatim), .dsk write-back round-trip via the
 # inverse GCR decoder, and the opt-in write-protect semantics.
@@ -394,6 +425,64 @@ target_include_directories(test_disk_write_controller PRIVATE ${CMAKE_SOURCE_DIR
 
 add_test(NAME disk_write_controller_smoke COMMAND test_disk_write_controller)
 set_tests_properties(disk_write_controller_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── WOZ1 / WOZ2 loader smoke test ───────────────────────────────────────
+# Pins the verbatim port of MAME `src/lib/formats/woz_dsk.cpp`: minimal
+# in-memory WOZ1 + WOZ2 files, chunk walk, MSB-first bit unpack, the
+# always-WP override, plus an end-to-end LSS read that recovers the
+# prologue from a synthetic .woz disk without loading the optional P6
+# PROM file (the embedded default in DiskIICard's constructor suffices).
+add_executable(test_woz_load
+    woz_load_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_woz_load PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_woz_load PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_woz_load PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_woz_load PRIVATE winmm)
+endif()
+
+add_test(NAME woz_load_smoke COMMAND test_woz_load
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(woz_load_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── Disk II two-drive routing smoke test ────────────────────────────────
+# Pins drive_select ($C0EA / $C0EB) routing the LSS and the legacy 32-cycle
+# gate to the correct image, plus per-drive head-position independence.
+# Self-contained: synthetic .nib images, no Apple II ROM dependency.
+add_executable(test_disk_drive2
+    disk_drive2_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_disk_drive2 PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_disk_drive2 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_disk_drive2 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_disk_drive2 PRIVATE winmm)
+endif()
+
+add_test(NAME disk_drive2_smoke COMMAND test_disk_drive2
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(disk_drive2_smoke PROPERTIES TIMEOUT 10)
 
 
 # ─── Disk II end-to-end boot smoke test ───────────────────────────────────
@@ -638,6 +727,140 @@ endif()
 
 add_test(NAME cmos_6502_smoke COMMAND test_cmos_6502)
 set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── M68705P3 CPU decode smoke test ──────────────────────────────────────
+# Pins the verbatim port of MAME's HMOS 6805 instruction set
+# (src/devices/cpu/m6805/m6805.cpp) used by the Apple II Mouse Card. Drives
+# synthetic 2 KB EPROM images and checks decode, addressing modes, stack
+# semantics, IRQ vectoring + push order, and per-opcode cycle counts
+# against MAME's documented invariants.
+add_executable(test_m68705_decode
+    m68705_decode_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+)
+target_include_directories(test_m68705_decode PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_m68705_decode PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_m68705_decode PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_m68705_decode PRIVATE winmm)
+endif()
+
+add_test(NAME m68705_decode_smoke COMMAND test_m68705_decode)
+set_tests_properties(m68705_decode_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── MC6821 PIA smoke test ───────────────────────────────────────────────
+# Pins the verbatim port of MAME's `src/devices/machine/6821pia.cpp`
+# against MAME-equivalent invariants: DDR / data-port toggling via CRA
+# bit 2, port composite read formula, CA1 edge-triggered IRQ flag, and
+# the read-only nature of CRA/CRB bits 6/7.
+add_executable(test_mc6821
+    mc6821_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+)
+target_include_directories(test_mc6821 PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME mc6821_smoke COMMAND test_mc6821)
+set_tests_properties(mc6821_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Apple II Mouse Card wiring smoke test ───────────────────────────────
+# Pins the verbatim port of MAME `bus/a2bus/mouse.cpp`: slot ROM bank
+# select via PIA Port B bits 1..3 (8 banks of 256 bytes), the canonical
+# detection signature passes through to the slot ROM window, and the
+# card refuses to load without the two Apple-copyright ROMs.
+add_executable(test_mouse_card
+    mouse_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_mouse_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mouse_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mouse_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mouse_card PRIVATE winmm)
+endif()
+
+add_test(NAME mouse_card_smoke COMMAND test_mouse_card)
+set_tests_properties(mouse_card_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── MouseCard quadrature edge smoke test ───────────────────────────────
+# Pins MouseCard::updateAxis against MAME mouse.cpp's update_axis<>: each
+# call emits at most one quadrature edge (CLK toggle + conditional DIR
+# update) per axis when motion is pending; 8-bit wrap correction handles
+# the unsigned-8-bit host coordinate input.
+add_executable(test_mouse_card_quadrature
+    mouse_card_quadrature_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_mouse_card_quadrature PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mouse_card_quadrature PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mouse_card_quadrature PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mouse_card_quadrature PRIVATE winmm)
+endif()
+
+add_test(NAME mouse_card_quadrature_smoke COMMAND test_mouse_card_quadrature)
+set_tests_properties(mouse_card_quadrature_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Slot configuration smoke test ───────────────────────────────────────
+# Pins the slot constructor refactor (Phase 1 of the Mouse Card / Slot
+# Configuration UI work): SuperSerialCard / ProDOSHardDiskCard rebuild
+# their slot ROM signatures and trampolines around the constructor-
+# supplied slot, and DiskIICard / LeChatMauveCard expose their slot via
+# `getSlot()` for the slot-panel UI even when the ROM itself doesn't bake
+# the slot in.
+add_executable(test_slot_config
+    slot_config_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/SuperSerialCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_slot_config PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_slot_config PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_slot_config PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_slot_config PRIVATE winmm)
+endif()
+
+add_test(NAME slot_config_smoke COMMAND test_slot_config)
+set_tests_properties(slot_config_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── ProDOS clock card smoke test ────────────────────────────────────────

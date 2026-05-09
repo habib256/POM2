@@ -29,10 +29,17 @@
 class ProDOSHardDiskCard : public SlotPeripheral
 {
 public:
-    static constexpr int kSlot = 5;
+    static constexpr int kDefaultSlot = 5;
     static constexpr size_t kBlockBytes = 512;
 
-    ProDOSHardDiskCard();
+    /// Construct with the slot number this card will be plugged into.
+    /// The slot is baked into the slot ROM (signature byte $Cn02, ProDOS
+    /// driver entry $Cn50, soft-switch addresses inside the read/write
+    /// trampolines) so changing it after construction would require
+    /// rebuilding the ROM.
+    explicit ProDOSHardDiskCard(int slot = kDefaultSlot);
+
+    int getSlot() const { return slot; }
 
     bool loadImage(const std::string& path);
     /// Replace the in-memory image with synthesised bytes (e.g. produced by
@@ -72,6 +79,7 @@ public:
     void    onReset() override;
 
 private:
+    int slot;
     std::array<uint8_t, 256> rom{};
     std::vector<uint8_t> image;
     std::vector<uint8_t> headerBytes;     // 2MG container bytes [0..dataOffset)

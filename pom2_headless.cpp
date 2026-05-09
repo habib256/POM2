@@ -153,7 +153,7 @@ int main(int argc, char** argv)
     DiskIICard* diskRaw = disk.get();
     controller.memory().slotBus().plug(6, std::move(disk));
 
-    auto ssc = std::make_unique<SuperSerialCard>();
+    auto ssc = std::make_unique<SuperSerialCard>(SuperSerialCard::kDefaultSlot);
     ssc->setKeyboardSink(
         [&mem = controller.memory()](uint8_t b) {
             const char buf[1] = { static_cast<char>(b) };
@@ -162,7 +162,7 @@ int main(int argc, char** argv)
     if (!ssc->startListening(static_cast<uint16_t>(port))) {
         std::fprintf(stderr, "SSC listener failed (port busy?)\n"); return 1;
     }
-    controller.memory().slotBus().plug(SuperSerialCard::kSlot, std::move(ssc));
+    controller.memory().slotBus().plug(SuperSerialCard::kDefaultSlot, std::move(ssc));
 
     // ThunderClock+-compatible RTC in slot 4 — uPD1990AC bit-bang chip
     // emulation; ProDOS auto-detects and links its driver to it.

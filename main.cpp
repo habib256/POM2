@@ -50,6 +50,31 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
     }
 }
 
+static void glfw_cursor_pos_callback(GLFWwindow* w, double x, double y)
+{
+    // Forward to ImGui first so it tracks the cursor for hover detection.
+    ImGui_ImplGlfw_CursorPosCallback(w, x, y);
+    // Then route to the Apple II Mouse Card. MainWindow gates on
+    // whether the cursor is inside the Apple II Screen widget rect —
+    // outside, this is a no-op and ImGui handles the cursor normally.
+    if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
+        mw->onMouseMove(x, y);
+    }
+}
+
+static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, int mods)
+{
+    ImGui_ImplGlfw_MouseButtonCallback(w, button, action, mods);
+    if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
+        // Don't route to the Mouse Card if ImGui is capturing the click
+        // (e.g. the user clicked an ImGui menu button). MainWindow's
+        // own rect check still gates the cursor-in-screen case.
+        if (!ImGui::GetIO().WantCaptureMouse) {
+            mw->onMouseButton(button, action);
+        }
+    }
+}
+
 int main(int argc, char* argv[])
 {
     pom2::log().info("POM2", "v0.1 - Apple II Emulator (Dear ImGui)");
@@ -131,6 +156,8 @@ int main(int argc, char* argv[])
     glfwSetWindowUserPointer(window, &mainWindow);
     glfwSetCharCallback(window, glfw_char_callback);
     glfwSetKeyCallback (window, glfw_key_callback);
+    glfwSetCursorPosCallback  (window, glfw_cursor_pos_callback);
+    glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
 
     // ─── Phase B: apply boot-time overrides on the live emulator ─────────
     if (plan->cpuMax) {

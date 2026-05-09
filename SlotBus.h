@@ -86,6 +86,13 @@ public:
     /// doesn't lift the expansion-ROM enable line).
     void reset();
 
+    /// Unplug every card. Each is given an `onUnplug()` callback first.
+    /// `activeExpansionSlot` is also cleared. Used by MainWindow's
+    /// "restart emulation" path when the Slot Configuration panel
+    /// applies a new mapping — no reason to keep a card whose slot or
+    /// presence is about to change.
+    void clear();
+
 private:
     std::array<std::unique_ptr<SlotPeripheral>, kSlotCount> slots{};
     /// -1 = no slot driving expansion ROM. Set by slotRomRead, cleared

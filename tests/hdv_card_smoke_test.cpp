@@ -39,7 +39,7 @@ int main()
     const std::string path = writeTempHdv(hdv);
     assert(card->loadImage(path));
 
-    mem.slotBus().plug(ProDOSHardDiskCard::kSlot, std::move(card));
+    mem.slotBus().plug(ProDOSHardDiskCard::kDefaultSlot, std::move(card));
 
     // ProDOS signature bytes for block devices:
     // $Cn01=$20, $Cn03=$00, $Cn05=$03.
@@ -90,7 +90,7 @@ int main()
         auto c2 = std::make_unique<ProDOSHardDiskCard>();
         assert(c2->loadImage(p2));
         assert(c2->getBlockCount() == 2);
-        mem2.slotBus().plug(ProDOSHardDiskCard::kSlot, std::move(c2));
+        mem2.slotBus().plug(ProDOSHardDiskCard::kDefaultSlot, std::move(c2));
         mem2.memWrite(0xC0D0, 0x01);
         mem2.memWrite(0xC0D1, 0x00);
         for (size_t i = 0; i < 16; ++i) {

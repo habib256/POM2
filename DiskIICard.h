@@ -2,8 +2,9 @@
 // Copyright (C) 2026
 //
 // DiskIICard — Apple Disk II Interface card (slot 6 by convention).
-// Read-only first cut: a single drive, 16-sector DOS 3.3 (.dsk / .do)
-// images, no nibble write-back.
+// Two-drive controller, 16-sector DOS 3.3 (.dsk / .do) and ProDOS-order
+// (.po) images, plus raw .nib. Read-back via the bit-level LSS (default)
+// or the legacy 32-cycle gate (fallback when no P6 PROM is loaded).
 //
 // Soft-switch map (slot N at $C080+N*16; for slot 6 → $C0E0-$C0EF):
 //
@@ -13,12 +14,21 @@
 //   $C0n6/n7   Phase 3 off / on
 //   $C0n8      Drive (motor) off
 //   $C0n9      Drive (motor) on
-//   $C0nA      Select drive 1
-//   $C0nB      Select drive 2
+//   $C0nA      Select drive 1   (activeDrive ← 0 → uses images[0])
+//   $C0nB      Select drive 2   (activeDrive ← 1 → uses images[1])
 //   $C0nC      Q6L  — shift / read data register
 //   $C0nD      Q6H  — load / write-protect probe
 //   $C0nE      Q7L  — read mode
 //   $C0nF      Q7H  — write mode (we acknowledge but never alter media)
+//
+// Each drive owns its own DiskImage, head position (in quarter-tracks),
+// and nibble-buffer cursor. Phase magnet energization is controller
+// state and shared between the two drives — same as real hardware,
+// where only the selected drive's head responds to phase pulses.
+// Motor on/off is also a single controller signal; in real hardware it
+// reaches the selected drive only, but POM2 models it as global since
+// a stopped drive sees no LSS activity anyway (active==MODE_IDLE skips
+// sync).
 //
 // Slot ROM ($Cs00-$CsFF, s=6 → $C600-$C6FF) is the Apple-Disk-II "P5A"
 // 256-byte boot PROM. The PROM autodetects its slot via the standard
@@ -57,12 +67,28 @@
 class DiskIICard : public SlotPeripheral
 {
 public:
-    DiskIICard();
+    static constexpr int kDefaultSlot = 6;
 
-    /// Force the head back to track 0 and reset the LSS state. Used by the
-    /// "Boot disk" UI shortcut so the boot PROM finds D5 AA 96 quickly even
-    /// if the head wandered while waiting for a disk insert.
-    void seekTrack0() { headQuarterTrack = 0; trackPos = 0; cycleAccum = 0; }
+    /// Construct with the slot number this card will be plugged into.
+    /// The Disk II boot PROM is slot-agnostic at runtime — the P5A PROM
+    /// auto-detects its own slot via the standard `JSR $FF58 / TSX /
+    /// LDA $0100,X` trick — so the slot number is held only for
+    /// diagnostics / UI display.
+    explicit DiskIICard(int slot = kDefaultSlot);
+
+    int getSlot() const { return slot_; }
+
+    /// Force every drive's head back to track 0 and reset the LSS state.
+    /// Used by the "Boot disk" UI shortcut so the boot PROM finds
+    /// D5 AA 96 quickly even if a head wandered while waiting for a disk
+    /// insert.
+    void seekTrack0() {
+        for (int d = 0; d < kDriveCount; ++d) {
+            headQuarterTrack[d] = 0;
+            trackPos[d]         = 0;
+        }
+        cycleAccum = 0;
+    }
 
     /// Load the 256-byte Disk II boot PROM from disk. Must succeed before
     /// the card is useful — without the PROM, $C600-$C6FF reads back
@@ -81,30 +107,47 @@ public:
     bool loadLssRom(const std::string& path);
     bool hasLssRom() const { return p6RomLoaded; }
 
-    /// Insert / eject a .dsk image in drive 1 (the only drive modelled).
-    bool insertDisk(const std::string& path);
-    void ejectDisk();
+    /// Number of drives the controller models. The Disk II Interface
+    /// has two slots in the daisy chain (drive 1 = images[0], drive 2 =
+    /// images[1]).
+    static constexpr int kDriveCount = 2;
 
-    bool isDiskLoaded() const { return image.isLoaded(); }
-    const std::string& getDiskPath()  const { return image.getPath(); }
-    const std::string& getLastError() const { return image.getLastError(); }
+    /// Insert / eject a disk image. The single-arg variants target
+    /// drive 1 (= index 0) for backwards compatibility with existing UI
+    /// and test call sites; pass an explicit drive index (0 or 1) for
+    /// the two-arg form.
+    bool insertDisk(int drive, const std::string& path);
+    bool insertDisk(const std::string& path) { return insertDisk(0, path); }
+    void ejectDisk(int drive);
+    void ejectDisk() { ejectDisk(0); }
 
-    int  getCurrentTrack() const { return headQuarterTrack / 4; }
-    int  getHalfTrack()    const { return headQuarterTrack / 2; }
-    int  getQuarterTrack() const { return headQuarterTrack; }
-    bool isMotorOn()       const { return motorOn; }
-    int  getTrackPosition() const { return trackPos; }
-    bool hasUnsavedChanges() const { return image.hasUnsavedChanges(); }
-    /// Total nibble write flushes since last reset. Used by the
-    /// dos33_save smoke test to confirm SAVE actually exercised the
-    /// write pipeline (vs. erroring out before any write).
+    bool isDiskLoaded(int drive = 0) const { return images[drive].isLoaded(); }
+    const std::string& getDiskPath (int drive = 0) const { return images[drive].getPath(); }
+    const std::string& getLastError(int drive = 0) const { return images[drive].getLastError(); }
+
+    int  getCurrentTrack(int drive = 0) const { return headQuarterTrack[drive] / 4; }
+    int  getHalfTrack   (int drive = 0) const { return headQuarterTrack[drive] / 2; }
+    int  getQuarterTrack(int drive = 0) const { return headQuarterTrack[drive]; }
+    bool isMotorOn() const { return motorOn; }
+    /// Index of the drive currently selected by the most recent
+    /// $C0nA / $C0nB access (0 = drive 1, 1 = drive 2).
+    int  getActiveDrive() const { return activeDrive; }
+    int  getTrackPosition(int drive = 0) const { return trackPos[drive]; }
+    bool hasUnsavedChanges(int drive = 0) const { return images[drive].hasUnsavedChanges(); }
+    /// Total nibble write flushes (across both drives) since last reset.
+    /// Used by the dos33_save smoke test to confirm SAVE actually
+    /// exercised the write pipeline (vs. erroring out before any write).
     uint64_t getWriteFlushCount() const { return writeFlushCount; }
 
     /// User opt-in for write-back. When true, eject (and explicit save)
     /// rewrites the source file with any modified sectors. Default off
-    /// to avoid silently mutating the user's image file.
-    void setWriteBackEnabled(bool on) { image.setWriteBackEnabled(on); writeBackEnabled = on; }
-    bool isWriteBackEnabled() const   { return writeBackEnabled; }
+    /// to avoid silently mutating the user's image file. The toggle is
+    /// card-wide and applies to both drives.
+    void setWriteBackEnabled(bool on) {
+        for (int d = 0; d < kDriveCount; ++d) images[d].setWriteBackEnabled(on);
+        writeBackEnabled = on;
+    }
+    bool isWriteBackEnabled() const { return writeBackEnabled; }
 
     // ─── SlotPeripheral overrides ────────────────────────────────────────
     std::string_view name() const override { return "Disk II"; }
@@ -115,36 +158,45 @@ public:
     void    onReset() override;
 
 private:
-    DiskImage image;
+    int slot_;
+    std::array<DiskImage, kDriveCount> images{};
+    /// Drive currently routed to the LSS / legacy gate. Set by control()
+    /// in response to $C0nA ($activeDrive=0) or $C0nB ($activeDrive=1).
+    /// Persists across onReset() — matches the 74LS259 latch on real
+    /// hardware which is not cleared by 6502 RES.
+    int activeDrive = 0;
     std::array<uint8_t, 256> bootRom{};
     bool bootRomLoaded = false;
 
     bool motorOn   = false;
-    // MAME's MODE_DELAY semantic: a motor-off ($C0E8) command does NOT
-    // stop the drive immediately — the disk keeps spinning for ~1 second
-    // (real-world spin-down from 300 RPM). During the delay the LSS
-    // continues to run; only when this counter hits 0 does motorOn flip
-    // to false. A fresh motor-on ($C0E9) cancels any pending spin-down.
-    // Constant: 1 022 727 cycles ≈ 1 sec at the Apple II's 1.0227 MHz.
+    // MAME `wozfdc_device::active` — MODE_IDLE / MODE_ACTIVE / MODE_DELAY.
+    // MODE_DELAY: a motor-off ($C0E8) command does NOT stop the drive
+    // immediately; `delay_timer` holds the LSS active for ~1 second of
+    // CPU cycles before the head transitions to MODE_IDLE. A fresh
+    // motor-on ($C0E9) during the delay cancels it (back to MODE_ACTIVE).
+    enum ActiveMode { MODE_IDLE = 0, MODE_ACTIVE, MODE_DELAY };
+    ActiveMode active = MODE_IDLE;
     int  motorOffDelay = 0;
     bool writeMode = false;     // Q7 latch: false=read, true=write
     bool loadMode  = false;     // Q6 latch: false=shift, true=load
     bool writeBackEnabled = false;     // forwarded to DiskImage on toggle
     uint8_t writeLatch = 0xFF;         // latched data nibble for next bit-cell flush
 
-    // Head stepper. phaseOn[i] = magnet i currently energized.
+    // Head stepper. phaseOn[i] = magnet i currently energized. The phase
+    // signals are controller state and shared between the two drives —
+    // only the selected drive's head physically moves in response.
     std::array<bool, 4> phaseOn{};
-    // Head position in quarter-tracks. 35 tracks × 4 qt = 140; the head
-    // can sit at any qt from 0 (track 0) to 4*(kTracks-1) = 136 (track 34).
-    // Quarter-tracks are needed for some copy protections; the standard
-    // DOS 3.3 / ProDOS skew uses whole tracks (qt mod 4 == 0).
-    int headQuarterTrack = 0;
+    // Head position in quarter-tracks, per drive. 35 tracks × 4 qt = 140;
+    // the head can sit at any qt from 0 (track 0) to 4*(kTracks-1) = 136
+    // (track 34). Quarter-tracks are needed for some copy protections;
+    // the standard DOS 3.3 / ProDOS skew uses whole tracks (qt mod 4 == 0).
+    int headQuarterTrack[kDriveCount] = {0, 0};
 
-    // Position into the current track's nibble buffer (0..6655). Wraps
-    // continuously while the motor is on. Used by the legacy 32-cycle
-    // gate and the LSS write path (where a complete write nibble lands
-    // at trackPos).
-    int trackPos   = 0;
+    // Position into the active drive's track nibble buffer (0..6655).
+    // Wraps continuously while the motor is on. Used by the legacy
+    // 32-cycle gate and the LSS write path (where a complete write
+    // nibble lands at trackPos[activeDrive]).
+    int trackPos[kDriveCount] = {0, 0};
     int cycleAccum = 0;       // CPU cycles since the last nibble advance
 
     // LSS shift-register model (legacy 32-cycle gate). While a new
@@ -195,14 +247,34 @@ private:
     bool    useBitLss   = false;        // false → legacy 32-cycle gate
     uint8_t address     = 0x10;         // MAME's persistent LSS address reg
     uint8_t lssData     = 0;            // 8-bit shift / data register
-    int     bitPos      = 0;            // cell index in current track stream
-    int     subCellTick = 0;            // 0..7 — pos within one bit-cell window
-    // Write-side accumulator: opcode bit 7 = WRITE_DATA per cell. We
-    // sample once per cell window (at subCellTick == 7) and shift the
-    // bit into writeShifter; once 8 bits are in, write the resulting
-    // nibble to image[trackPos] and advance.
-    uint8_t writeShifter      = 0;
-    int     writeShifterBits  = 0;
+
+    // ── MAME wozfdc cycle bookkeeping ───────────────────────────────────
+    //
+    // MAME's `wozfdc_device::cycles` is the absolute LSS-cycle counter
+    // (clock = 2× CPU clock; one PROM lookup per LSS cycle). The CPU side
+    // calls `lss_sync()` whose loop runs from `cycles` up to a `cycles_limit`
+    // computed from `time_to_cycles(machine().time())`. POM2 doesn't have
+    // a global emu time; we recover the equivalent via `cpuCycleTotal` —
+    // a running CPU cycle counter that `advanceCycles(n)` bumps before
+    // calling `lss_sync(0)`. The LSS limit is `cpuCycleTotal*2 + extra`.
+    //
+    // This is a verbatim port of MAME's algorithm; only the time-base
+    // substrate changes (LSS cycles directly, instead of attotime
+    // converted via clock()*2).
+    uint64_t lssCycle       = 0;
+    uint64_t cpuCycleTotal  = 0;
+
+    // MAME `write_buffer[32]` — flux event timestamps (LSS cycles)
+    // captured from WRITE_DATA edge transitions during the active write
+    // session. Flushed via `image.writeFlux(...)` either on Q7 falling
+    // edge (control() $C0nE) or pre-emptively when write_position ≥ 30
+    // (avoids ever hitting the assert at 32, mirroring MAME's flush
+    // condition exactly).
+    static constexpr int  kWriteBufferSize = 32;
+    int64_t  writeBuffer[kWriteBufferSize] = {};
+    int      writePosition  = 0;
+    int64_t  writeStartTime = 0;       // LSS cycle of last splice start
+    bool     writeLineActive = false;  // tracks WRITE_DATA edge state
 
     uint64_t writeFlushCount = 0;
 
@@ -210,16 +282,22 @@ private:
     /// MAME `floppy_image_device::seek_phase_w`: settle the head into the
     /// well of the current 4-bit magnet pattern, capped at ±4 quarter-
     /// tracks per call. Called from handleSwitchAccess after every phase
-    /// soft-switch hit (rising AND falling). Replaces the prior rising-
-    /// edge half-track stepper.
+    /// soft-switch hit (rising AND falling).
     void seekPhaseW(int phases);
     // Legacy 32-cycle gate body, retained as a fallback when no P6 PROM
-    // is loaded. Removed in step 5 of the LSS migration.
+    // is loaded.
     void legacyAdvance(int cycles);
-    // One LSS tick = ½ CPU cycle. Called 2× per CPU cycle by
-    // advanceCycles(), and once extra by deviceSelectRead at $C0EC for
-    // the read-pipe latency (matches MAME's `lss_sync(1)` semantics).
-    void lssTick();
+
+    // ── MAME wozfdc API ─────────────────────────────────────────────────
+    //
+    // Verbatim ports of `wozfdc_device::lss_start()`, `lss_sync(extra)`,
+    // and `control(offset)`. Together these implement the full Disk II
+    // controller behaviour as MAME models it: per-LSS-cycle PROM lookup,
+    // per-cycle WRITE_DATA toggle detection, and flux event splicing on
+    // mode transitions.
+    void lssStart();
+    void lssSync(uint64_t extraCycles = 0);
+    void control(int offset);
 
     // Boot-trace one-shot flags (POM2_DEBUG_DISK=1). Reset at onReset().
     struct {

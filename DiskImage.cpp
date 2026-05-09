@@ -4,6 +4,7 @@
 #include "DiskImage.h"
 #include "Logger.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -104,9 +105,13 @@ uint8_t DiskImage::nibbleAt(int track, int index) const
 bool DiskImage::loadFile(const std::string& imgPath)
 {
     // Sniff the extension:
+    //   .woz → WOZ1 / WOZ2 bit-cell image (MAME woz_dsk.cpp port)
     //   .nib → raw nibble stream (no encoding)
     //   .po  → ProDOS sector order
     //   else → DOS 3.3 sector order (.dsk, .do, or no extension)
+    if (endsWithCi(imgPath, ".woz")) {
+        return loadWoz(imgPath);
+    }
     if (endsWithCi(imgPath, ".nib")) {
         std::ifstream f(imgPath, std::ios::binary);
         if (!f) {
@@ -135,6 +140,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
         path        = imgPath;
         loaded      = true;
         nibFormat   = true;
+        wozFormat   = false;
         sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
         dirty.fill(false);
         anyDirty    = false;
@@ -190,6 +196,7 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
     path        = imgPath;
     loaded      = true;
     nibFormat   = false;
+    wozFormat   = false;
     sectorOrder = order;
     dirty.fill(false);
     anyDirty    = false;
@@ -202,10 +209,240 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
     return true;
 }
 
+// ── WOZ1 / WOZ2 loader ─────────────────────────────────────────────────────
+//
+// Verbatim follower of MAME `src/lib/formats/woz_dsk.cpp`. The WOZ format
+// stores raw bit cells (the LSS's natural input) instead of nibbles or
+// sectors; that's why .woz disks survive copy protections that tweak
+// inter-byte timing or bit alignment, where re-encoded .dsk synthesises
+// idealised GCR and loses the protection signature.
+//
+// File layout (both versions):
+//   12-byte header: magic "WOZ1\xFF\n\r\n" or "WOZ2\xFF\n\r\n"
+//                  + 4-byte CRC32 of the rest of the file (LE; we skip
+//                    validation — corrupt CRC is rare in practice and
+//                    MAME's behaviour is to load anyway, log a warning).
+//   chunks: 4-byte chunk_id + 4-byte LE length + payload, repeated.
+//           Mandatory: INFO, TMAP, TRKS. Optional: META, WRIT, FLUX.
+//
+// INFO (>= 60 bytes):
+//   [0]  info_version  (1 = WOZ1 style INFO, 2+ = WOZ2 fields)
+//   [1]  disk_type     (1 = 5.25", 2 = 3.5") — POM2 only handles 5.25"
+//   [2]  write_protected
+//   [3]  synchronized
+//   [4]  cleaned
+//   [5..36]  creator (32 chars, space-padded)
+//   v2+: disk_sides, boot_sector_format, optimal_bit_timing,
+//        compatible_hardware (LE u16), required_ram (LE u16),
+//        largest_track (LE u16, in 512-byte blocks)
+//
+// TMAP (160 bytes):
+//   One byte per quarter-track 0..159. Value = TRK index (0..159) or
+//   $FF when that quarter-track is unused. Multiple quarter-tracks
+//   typically share a TRK (e.g. TMAP[0..2] = 0, TMAP[3] = $FF for the
+//   classic "track 0 covers 3 of 4 quarter-track positions").
+//
+// TRKS:
+//   WOZ1: 160 fixed-size 6656-byte slots.
+//     bytes 0..6645  bit data (MSB-first within each byte)
+//     6646..6647     bytes_used    (LE u16)
+//     6648..6649     bit_count     (LE u16)
+//     6650..6651     splice_point  (LE u16, $FFFF = none)
+//     6652           splice_nibble
+//     6653           splice_bit_count
+//   WOZ2: 160 × 8-byte TRK headers, then track bit data:
+//     hdr  starting_block (LE u16, 0 = unused; offset = block × 512)
+//          block_count    (LE u16)
+//          bit_count      (LE u32)
+//
+// POM2 only resolves whole tracks (35), pulling each from TMAP[track*4]
+// — the canonical "centre of the track" quarter-track slot. Distinct
+// per-quarter-track bit data (used by some advanced protections like
+// David-DOS or Locksmith) is collapsed; that's a deliberate first-cut
+// shortcut. Once we extend DiskIICard's head-position interface to
+// quarter-track resolution, this can be lifted.
+bool DiskImage::loadWoz(const std::string& imgPath)
+{
+    std::ifstream f(imgPath, std::ios::binary);
+    if (!f) {
+        lastError = "Cannot open " + imgPath;
+        loaded = false; return false;
+    }
+    f.seekg(0, std::ios::end);
+    const auto fileSize = static_cast<size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    if (fileSize < 12) {
+        lastError = "WOZ file truncated (" + std::to_string(fileSize) + " bytes)";
+        loaded = false; return false;
+    }
+    std::vector<uint8_t> buf(fileSize);
+    f.read(reinterpret_cast<char*>(buf.data()),
+           static_cast<std::streamsize>(fileSize));
+    if (!f) {
+        lastError = "Short read on " + imgPath;
+        loaded = false; return false;
+    }
+
+    const bool isWoz1 = std::memcmp(buf.data(), "WOZ1", 4) == 0;
+    const bool isWoz2 = std::memcmp(buf.data(), "WOZ2", 4) == 0;
+    if (!isWoz1 && !isWoz2) {
+        lastError = "Not a WOZ file (missing WOZ1/WOZ2 magic)";
+        loaded = false; return false;
+    }
+    if (buf[4] != 0xFF || buf[5] != 0x0A
+        || buf[6] != 0x0D || buf[7] != 0x0A) {
+        lastError = "WOZ header sentinel bytes wrong";
+        loaded = false; return false;
+    }
+    // bytes 8..11 = CRC32 of the rest of the file. We follow MAME's
+    // permissive policy and don't fail on mismatch (some archived .woz
+    // files have stale CRCs). Future enhancement: recompute and warn.
+
+    // Walk chunks starting at offset 12.
+    int      diskType = 1;
+    bool     fileWriteProtected = false;
+    int      infoVersion = isWoz2 ? 2 : 1;
+    bool     haveInfo = false;
+    bool     haveTmap = false;
+    std::array<uint8_t, 160> tmap{};
+    tmap.fill(0xFF);
+    size_t   trksOff = 0;
+    size_t   trksLen = 0;
+
+    auto readU16LE = [&](size_t o) -> uint32_t {
+        return static_cast<uint32_t>(buf[o])
+             | (static_cast<uint32_t>(buf[o + 1]) << 8);
+    };
+    auto readU32LE = [&](size_t o) -> uint32_t {
+        return static_cast<uint32_t>(buf[o])
+             | (static_cast<uint32_t>(buf[o + 1]) << 8)
+             | (static_cast<uint32_t>(buf[o + 2]) << 16)
+             | (static_cast<uint32_t>(buf[o + 3]) << 24);
+    };
+
+    size_t off = 12;
+    while (off + 8 <= fileSize) {
+        const uint32_t len = readU32LE(off + 4);
+        const size_t   dataOff = off + 8;
+        if (dataOff + len > fileSize) {
+            lastError = "WOZ chunk length runs past EOF";
+            loaded = false; return false;
+        }
+        if (std::memcmp(buf.data() + off, "INFO", 4) == 0) {
+            if (len >= 5) {
+                infoVersion        = buf[dataOff + 0];
+                diskType           = buf[dataOff + 1];
+                fileWriteProtected = buf[dataOff + 2] != 0;
+            }
+            haveInfo = true;
+        } else if (std::memcmp(buf.data() + off, "TMAP", 4) == 0) {
+            if (len >= 160) {
+                std::memcpy(tmap.data(), buf.data() + dataOff, 160);
+                haveTmap = true;
+            }
+        } else if (std::memcmp(buf.data() + off, "TRKS", 4) == 0) {
+            trksOff = dataOff;
+            trksLen = len;
+        }
+        // META / WRIT / FLUX / unknown: ignored (matches MAME's
+        // "load anyway" policy for forward-compatible chunks).
+        off = dataOff + len;
+    }
+
+    if (!haveInfo || !haveTmap || trksLen == 0) {
+        lastError = "WOZ file missing INFO/TMAP/TRKS";
+        loaded = false; return false;
+    }
+    if (diskType != 1) {
+        lastError = "WOZ disk_type " + std::to_string(diskType)
+                  + " not supported (only 5.25\" / type 1)";
+        loaded = false; return false;
+    }
+
+    // Reset state. Tracks[] is filled with sync $FF — the legacy gate
+    // returns endless sync (won't boot, but won't crash) if someone
+    // accidentally bypasses the LSS path on a WOZ image.
+    for (auto& t : tracks) t.fill(0xFF);
+    invalidateAllBitStreams();
+    dirty.fill(false);
+    anyDirty = false;
+
+    // Per-whole-track bit-stream unpack.
+    int populatedTracks = 0;
+    for (int t = 0; t < kTracks; ++t) {
+        const uint8_t trkIdx = tmap[t * 4];
+        if (trkIdx == 0xFF) continue;     // track absent
+
+        size_t bitDataOff   = 0;
+        size_t bitDataBytes = 0;
+        size_t bitCount     = 0;
+        if (isWoz1) {
+            // WOZ1 fixed-slot layout. Each TRK is exactly 6656 bytes.
+            const size_t slotOff = trksOff + static_cast<size_t>(trkIdx) * 6656;
+            if (slotOff + 6656 > trksOff + trksLen) continue;
+            bitDataOff   = slotOff;
+            bitDataBytes = 6646;
+            bitCount     = readU16LE(slotOff + 6648);
+        } else {
+            // WOZ2: 8-byte TRK headers at the start of TRKS, data at
+            // file-absolute block offsets.
+            const size_t hdrOff = trksOff + static_cast<size_t>(trkIdx) * 8;
+            if (hdrOff + 8 > trksOff + trksLen) continue;
+            const uint32_t startBlock = readU16LE(hdrOff + 0);
+            const uint32_t blockCount = readU16LE(hdrOff + 2);
+            const uint32_t bc         = readU32LE(hdrOff + 4);
+            if (startBlock == 0 || blockCount == 0 || bc == 0) continue;
+            bitDataOff   = static_cast<size_t>(startBlock) * 512;
+            bitDataBytes = static_cast<size_t>(blockCount) * 512;
+            bitCount     = bc;
+        }
+        if (bitCount == 0
+            || bitCount > bitDataBytes * 8
+            || bitDataOff + bitDataBytes > fileSize) {
+            // Defensive: skip malformed track rather than aborting load.
+            continue;
+        }
+
+        auto& bits = bitStream[t];
+        bits.resize(bitCount);
+        for (size_t b = 0; b < bitCount; ++b) {
+            const size_t byteIdx   = b / 8;
+            const int    bitInByte = 7 - static_cast<int>(b % 8);
+            bits[b] = static_cast<uint8_t>(
+                (buf[bitDataOff + byteIdx] >> bitInByte) & 1);
+        }
+        bitStreamValid[t] = true;
+        ++populatedTracks;
+    }
+
+    if (populatedTracks == 0) {
+        lastError = "WOZ file has no usable whole tracks";
+        loaded = false; return false;
+    }
+
+    path        = imgPath;
+    loaded      = true;
+    nibFormat   = false;
+    wozFormat   = true;
+    sectorOrder = SectorOrder::Dos33;     // not meaningful for .woz
+    lastError.clear();
+    // fileWriteProtected is informational — isWriteProtected() always
+    // returns true for WOZ regardless. Logged so the user sees it.
+    pom2::log().info("Disk II",
+        std::string("Loaded ") + imgPath + " (.woz "
+        + (isWoz2 ? "v2" : "v1")
+        + ", info_v" + std::to_string(infoVersion)
+        + ", " + std::to_string(populatedTracks) + " tracks"
+        + (fileWriteProtected ? ", file-WP" : "")
+        + ")");
+    return true;
+}
+
 void DiskImage::eject()
 {
     loaded = false;
     nibFormat = false;
+    wozFormat = false;
     path.clear();
     for (auto& t : tracks) t.fill(0xFF);
     dirty.fill(false);
@@ -288,6 +525,191 @@ uint8_t DiskImage::bitAt(int track, int bitIdx) const
     if (bits.empty()) return 0;
     const int n = static_cast<int>(bits.size());
     return bits[((bitIdx % n) + n) % n];
+}
+
+// ── MAME flux event view ───────────────────────────────────────────────
+//
+// Verbatim port of `floppy_image_device::cache_fill` data layout, adapted
+// to LSS cycles. For each "1" bit cell at index k in the bit-cell stream,
+// we emit one flux event at LSS cycle `k * 8 + 4` (cell center). For "0"
+// cells we emit nothing — the LSS sees those as the gap between events,
+// which is exactly MAME's continuous-flux model: flux changes are point
+// events; absence of an event over an 8-LSS-cycle window means a "0".
+//
+// Cells per byte mirrors `expandTrackBits` (8 cells/byte; sync $FF runs
+// pad +2 zero cells per byte). So the total period in LSS cycles equals
+// `bitStream.size() * 8`, and PULSE timing under the flux model matches
+// PULSE timing the bit-cell view would produce — by construction.
+void DiskImage::expandTrackFlux(int track) const
+{
+    auto& flux = fluxStream[track];
+    flux.clear();
+    if (track < 0 || track >= kTracks) {
+        fluxStreamValid[track] = true;
+        return;
+    }
+    if (!bitStreamValid[track]) expandTrackBits(track);
+    const auto& bits = bitStream[track];
+    flux.reserve(bits.size() / 2);            // ~half the cells are 1
+    for (int i = 0; i < static_cast<int>(bits.size()); ++i) {
+        if (bits[i]) flux.push_back(i * 8 + 4);
+    }
+    fluxStreamValid[track] = true;
+}
+
+int DiskImage::trackPeriod(int track) const
+{
+    return trackBitLength(track) * 8;
+}
+
+const std::vector<int>& DiskImage::fluxEvents(int track) const
+{
+    static const std::vector<int> empty;
+    if (track < 0 || track >= kTracks) return empty;
+    if (!fluxStreamValid[track]) expandTrackFlux(track);
+    return fluxStream[track];
+}
+
+// MAME `floppy_image_device::get_next_transition` — returns the time of
+// the next flux event at or after `fromLssCycle`. If none in the current
+// revolution, wraps and returns the first event of the next revolution
+// (offset by one period, so the result remains ≥ fromLssCycle). Only
+// returns kFluxNever when the track has no flux events at all (blank
+// disk), matching MAME's `attotime::never` for the empty-track case.
+int64_t DiskImage::getNextTransition(int track, int64_t fromLssCycle) const
+{
+    if (track < 0 || track >= kTracks) return kFluxNever;
+    const auto& flux = fluxEvents(track);
+    if (flux.empty()) return kFluxNever;
+    const int period = trackPeriod(track);
+    if (period <= 0) return kFluxNever;
+
+    // Reduce fromLssCycle into [0, period) for the lookup; remember the
+    // base so we can re-add it to the returned timestamp.
+    int64_t base = (fromLssCycle / period) * period;
+    int     pos  = static_cast<int>(fromLssCycle - base);
+    // upper_bound — first element > pos. We then back up by one to find
+    // the largest ≤ pos, but for "next AT OR AFTER" we want the first ≥
+    // pos. lower_bound suits us better.
+    auto it = std::lower_bound(flux.begin(), flux.end(), pos);
+    if (it == flux.end()) {
+        // Wrap to next revolution.
+        return base + period + flux.front();
+    }
+    return base + *it;
+}
+
+// MAME `floppy_image_device::write_flux` — splice `count` flux events
+// (LSS-cycle timestamps in `transitions`) into the track over the LSS-
+// cycle range `[startLssCycle, endLssCycle)`. The operation is
+// idempotent: any prior flux events in that range are replaced.
+//
+// POM2 stores tracks as nibbles, not as a flux array, so the splice is
+// realised by:
+//   1. Computing the cell-index range covered by [start, end) (each cell
+//      is 8 LSS cycles wide).
+//   2. For each cell window, deciding bit = 1 iff any of the supplied
+//      transitions falls strictly inside the cell's interior window
+//      [k*8 + 1, k*8 + 7) — matches MAME's PULSE-detect window when the
+//      LSS later reads back this region.
+//   3. Re-packing 8 consecutive cells per byte into the nibble buffer at
+//      the byte index `cell_start_byte = startCell / 8`. Cells past the
+//      first byte boundary that don't fit a full byte are deferred until
+//      the next splice — which mirrors how the LSS write side flushes in
+//      32-event chunks (≥ ~1 byte each).
+//
+// The bit→nibble re-pack assumes 8 cells per byte (no sync padding) for
+// the written region. That matches what the LSS actually writes: it
+// shifts 8 bits per byte regardless of WP run. Subsequent reads of the
+// re-packed nibble buffer will re-introduce sync padding for any $FF
+// nibble that ends up in a 2+ run, which is exactly what real Disk II
+// hardware does on read-back.
+void DiskImage::writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
+                          int count, const int64_t* transitions)
+{
+    if (!loaded || track < 0 || track >= kTracks) return;
+    if (endLssCycle <= startLssCycle) return;
+    // First-cut WOZ support is read-only. The bit cells in `bitStream`
+    // are canonical; running the splice would also re-pack into the
+    // (unused) `tracks[]` nibble buffer and invalidate the bit stream
+    // (forcing a re-derivation from nibbles that wipes the WOZ data).
+    // Software shouldn't attempt writes anyway because isWriteProtected
+    // returns true for WOZ images.
+    if (wozFormat) return;
+
+    const int period = trackPeriod(track);
+    if (period <= 0) return;
+
+    // Reduce both endpoints into [0, period). If the window wraps the
+    // revolution boundary, recurse on the two halves.
+    int64_t startMod = ((startLssCycle % period) + period) % period;
+    int64_t endMod   = startMod + (endLssCycle - startLssCycle);
+    if (endMod > period) {
+        // Split: [startMod, period) and [0, endMod - period).
+        std::vector<int64_t> firstHalf, secondHalf;
+        firstHalf.reserve(count);
+        secondHalf.reserve(count);
+        const int64_t origBase = startLssCycle - startMod;
+        const int64_t splitAt  = origBase + period;
+        for (int i = 0; i < count; ++i) {
+            if (transitions[i] < splitAt) firstHalf.push_back(transitions[i]);
+            else                          secondHalf.push_back(transitions[i]);
+        }
+        writeFlux(track, startLssCycle, splitAt,
+                  static_cast<int>(firstHalf.size()), firstHalf.data());
+        writeFlux(track, splitAt, endLssCycle,
+                  static_cast<int>(secondHalf.size()), secondHalf.data());
+        return;
+    }
+
+    // Cell-window the [startMod, endMod) range. Inclusive of partial
+    // cells at the start and end so a sub-cell-wide write doesn't drop
+    // bits.
+    const int firstCell = static_cast<int>(startMod / 8);
+    const int lastCell  = static_cast<int>((endMod + 7) / 8);   // exclusive
+
+    // Map each transition into a cell index and mark that cell's bit = 1.
+    // PULSE-detect window per MAME: address bit 4 goes low for exactly one
+    // LSS cycle, at the cycle equal to the transition's timestamp. Any
+    // transition timestamped inside [k*8, k*8+8) lights cell k.
+    const int64_t origBase = startLssCycle - startMod;
+    std::vector<bool> newBits(lastCell - firstCell, false);
+    for (int i = 0; i < count; ++i) {
+        const int64_t t = ((transitions[i] - origBase) % period + period) % period;
+        const int cell  = static_cast<int>(t / 8) - firstCell;
+        if (cell >= 0 && cell < static_cast<int>(newBits.size())) {
+            newBits[cell] = true;
+        }
+    }
+
+    // Pack 8 cells per byte starting at the first complete byte boundary
+    // inside [firstCell, lastCell). Partial bytes at the leading or
+    // trailing edge are dropped — the LSS naturally flushes only complete
+    // shifter contents (8 cells = 1 nibble), so writing a half-cell-aligned
+    // region during a splice would only happen on a write that didn't
+    // complete a full byte, which DOS / RWTS never does.
+    auto& buf = tracks[track];
+    bool changed = false;
+    for (int byteIdx = (firstCell + 7) / 8; byteIdx * 8 + 8 <= firstCell + static_cast<int>(newBits.size()); ++byteIdx) {
+        uint8_t v = 0;
+        for (int b = 0; b < 8; ++b) {
+            const int cellWithinSpan = byteIdx * 8 + b - firstCell;
+            if (cellWithinSpan >= 0 && cellWithinSpan < static_cast<int>(newBits.size())
+                && newBits[cellWithinSpan]) {
+                v |= static_cast<uint8_t>(0x80 >> b);
+            }
+        }
+        const int n = ((byteIdx % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack;
+        if (buf[n] != v) {
+            buf[n] = v;
+            changed = true;
+        }
+    }
+    if (changed) {
+        dirty[track]    = true;
+        anyDirty        = true;
+        invalidateBitStream(track);
+    }
 }
 
 void DiskImage::nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,

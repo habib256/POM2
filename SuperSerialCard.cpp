@@ -48,7 +48,8 @@ size_t swallowTelnetIac(uint8_t* data, size_t n)
 
 }  // namespace
 
-SuperSerialCard::SuperSerialCard()
+SuperSerialCard::SuperSerialCard(int slotNum)
+    : slot(slotNum)
 {
     buildRom();
 }
@@ -97,7 +98,7 @@ bool SuperSerialCard::startListening(uint16_t newPort)
     worker        = std::thread(&SuperSerialCard::runWorker, this);
     pom2::log().info("SSC",
         "listening on 127.0.0.1:" + std::to_string(port) +
-        " (telnet to connect to slot " + std::to_string(kSlot) + ")");
+        " (telnet to connect to slot " + std::to_string(slot) + ")");
     return true;
 }
 
@@ -342,8 +343,8 @@ void SuperSerialCard::buildRom()
 {
     rom.fill(0xEA);     // NOP padding
 
-    const uint8_t slotHi = static_cast<uint8_t>(0xC0 + kSlot);
-    const uint8_t devLo  = static_cast<uint8_t>(0x80 + kSlot * 16);
+    const uint8_t slotHi = static_cast<uint8_t>(0xC0 + slot);
+    const uint8_t devLo  = static_cast<uint8_t>(0x80 + slot * 16);
     const uint8_t statusReg = static_cast<uint8_t>(devLo + 0x9);
     const uint8_t dataReg   = static_cast<uint8_t>(devLo + 0x8);
 

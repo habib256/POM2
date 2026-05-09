@@ -48,9 +48,13 @@ set(SOURCES
     JoystickPanel_ImGui.cpp
     LeChatMauveCard.cpp
     LeChatMauve_ImGui.cpp
+    M68705P3.cpp
     MainWindow.cpp
     MainWindow_MemoryMaps.cpp
+    MainWindow_Slots.cpp
+    MC6821.cpp
     MemoryViewer_ImGui.cpp
+    MouseCard.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
     RomLoader.cpp
@@ -82,8 +86,11 @@ set(HEADERS
     IconsFontAwesome6.h
     LeChatMauveCard.h
     LeChatMauve_ImGui.h
+    M68705P3.h
     MainWindow.h
+    MC6821.h
     MemoryViewer_ImGui.h
+    MouseCard.h
     ProDOSHardDiskCard.h
     ProDOSVolume.h
     Logger.h

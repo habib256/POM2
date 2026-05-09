@@ -57,7 +57,15 @@ public:
         COL140    = 0b11,
     };
 
-    LeChatMauveCard() = default;
+    static constexpr int kDefaultSlot = 7;
+
+    /// The card has no slot ROM and no device-select space (it sniffs
+    /// $C00C/$C00D and $C05E/$C05F via the video soft-switch broadcast),
+    /// so the slot number is purely informational — held for the UI /
+    /// diagnostics panel.
+    explicit LeChatMauveCard(int slot = kDefaultSlot) : slot_(slot) {}
+
+    int getSlot() const { return slot_; }
 
     std::string_view name() const override { return "Le Chat Mauve"; }
 
@@ -84,6 +92,7 @@ public:
     void overrideMode(RenderMode m) { mode = m; fifo = static_cast<uint8_t>(m); }
 
 private:
+    int         slot_;
     bool        an3Prev          = false;          // last seen AN3 level
     bool        eightyColLatched = false;          // last seen 80COL level
     uint8_t     fifo             = 0b11;           // 2 bits, MSB shifted out

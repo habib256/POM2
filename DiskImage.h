@@ -56,16 +56,24 @@ public:
     DiskImage();
 
     /// Load a .dsk / .do image (DOS 3.3 logical sector order), a .po
-    /// image (ProDOS sector order), or a .nib raw nibble stream
-    /// (35 × 6656 bytes, no encoding/decoding). When `order` is omitted,
-    /// falls back to extension sniffing: `.po` → ProDOS, `.nib` → raw,
-    /// anything else → DOS 3.3.
+    /// image (ProDOS sector order), a .nib raw nibble stream (35 × 6656
+    /// bytes, no encoding/decoding), or a .woz bit-cell image
+    /// (Apple //e copy-protected disks; verbatim port of MAME's
+    /// `src/lib/formats/woz_dsk.cpp` chunk parser). When `order` is
+    /// omitted, falls back to extension sniffing: `.po` → ProDOS,
+    /// `.nib` → raw, `.woz` → WOZ1/WOZ2, anything else → DOS 3.3.
     /// Returns true on success. On failure `getLastError()` has details.
     /// Mounting a new image discards any previously loaded buffer.
     bool loadFile(const std::string& path);
     bool loadFile(const std::string& path, SectorOrder order);
     SectorOrder getSectorOrder() const { return sectorOrder; }
     bool isNib() const { return nibFormat; }
+    /// True iff the image was loaded from a .woz file. WOZ images are
+    /// bit-cell-native: the legacy 32-cycle nibble gate cannot decode
+    /// them; DiskIICard forces the LSS path on insert. Always reported
+    /// write-protected for now (write-back to .woz is not yet
+    /// implemented — incoming flux events get dropped).
+    bool isWoz() const { return wozFormat; }
 
     /// Discard the loaded image. After eject, isLoaded() returns false
     /// and the controller will see the same "no media" behaviour as if
@@ -116,6 +124,58 @@ public:
     /// `writeNibbleAt` invalidates that track's cache.
     uint8_t bitAt(int track, int bitIdx) const;
 
+    // ── MAME-style flux event view ──────────────────────────────────────
+    //
+    // Verbatim port of MAME's `floppy_image_device` flux model. A track is
+    // a sorted list of flux transition timestamps. Each transition is one
+    // physical flux orientation flip on the magnetic surface; the LSS's
+    // PULSE input goes high for one LSS cycle when the head crosses one.
+    //
+    // Time unit: 1 LSS cycle = 0.5 µs (2 per CPU cycle). Per revolution =
+    // `trackPeriod(track)` LSS cycles. For a stock 16-sector .dsk that's
+    // ~440k LSS cycles (≈ 215 ms ≈ 280 RPM — slightly slow vs MAME's
+    // 200 ms / 300 RPM but consistent across reads/writes within POM2).
+    //
+    // The flux array is derived lazily from the nibble buffer: each "1"
+    // bit cell becomes one flux event at the cell center. Per-cell layout
+    // matches the bit-cell stream above (8 cells/byte, 10 cells per $FF
+    // in a sync run), so reads through the flux model and reads through
+    // the bit-cell view produce identical PULSE timing for the same
+    // nibble buffer. Cache invalidates on `writeNibbleAt` and `eject`.
+
+    /// Per-track period in LSS cycles. Equal to `trackBitLength(track) * 8`.
+    int trackPeriod(int track) const;
+
+    /// Sorted vector of flux event timestamps (LSS cycles, in [0, period)).
+    /// Returns a static empty vector for out-of-range tracks. Lazy-built
+    /// on first call per (image, track); reused across calls until the
+    /// underlying nibble buffer changes.
+    const std::vector<int>& fluxEvents(int track) const;
+
+    /// MAME `floppy_image_device::get_next_transition(from_when)` —
+    /// returns the LSS-cycle timestamp of the next flux transition at or
+    /// after `fromLssCycle`. Wraps across revolution boundaries: if the
+    /// current revolution has no further events past `fromLssCycle`, the
+    /// returned time is in the next revolution (so result ≥ fromLssCycle
+    /// always). Returns `kFluxNever` only if the track has zero events.
+    static constexpr int64_t kFluxNever = INT64_MAX;
+    int64_t getNextTransition(int track, int64_t fromLssCycle) const;
+
+    /// MAME `floppy_image_device::write_flux(start, end, count, transitions)`
+    /// — splice a window of flux events into `track`, replacing whatever
+    /// was previously in that LSS-cycle range. Re-derives the affected
+    /// span of the nibble buffer (cell-windowed flux→bit conversion, then
+    /// 8-bit packing into nibble cells starting at the cell containing
+    /// `startLssCycle`) so save-back, decode, and bit-cell read-back all
+    /// see the new contents. Marks the track dirty.
+    void writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
+                   int count, const int64_t* transitions);
+
+    /// MAME `floppy_image_device::set_write_splice(when)` — informational
+    /// hook for the upcoming IWM port; currently a no-op for the Disk II
+    /// path because the splice point is implicit in `writeFlux`.
+    void setWriteSplice(int /*track*/, int64_t /*lssCycle*/) {}
+
     /// True if any track has been written since load. Cleared by
     /// saveDirty() and load.
     bool hasUnsavedChanges() const { return anyDirty; }
@@ -129,14 +189,22 @@ public:
 
     /// User opt-in for write-back. Default: false (read-only) to avoid
     /// silently mutating the source file. Mainwindow flips this before
-    /// eject if the user has opted in.
-    bool isWriteProtected() const { return !writeBackEnabled; }
+    /// eject if the user has opted in. WOZ images stay write-protected
+    /// regardless of this flag — first-cut WOZ support is read-only.
+    bool isWriteProtected() const { return wozFormat || !writeBackEnabled; }
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:
     bool loaded = false;
     SectorOrder sectorOrder = SectorOrder::Dos33;
     bool nibFormat = false;
+    /// Set when loadFile parses a .woz successfully. WOZ stores bit cells
+    /// directly so loadWoz populates `bitStream[track]` instead of the
+    /// nibble buffer; the existing `expandTrackFlux` derives flux events
+    /// from the bit stream as usual. Persisted writes (writeFlux) are
+    /// suppressed for WOZ — the splice would clobber the canonical bit
+    /// data. Cleared on eject() / non-WOZ load.
+    bool wozFormat = false;
     std::string path;
     std::string lastError;
     bool writeBackEnabled = false;
@@ -155,13 +223,25 @@ private:
     mutable std::array<std::vector<uint8_t>, kTracks> bitStream;
     mutable std::array<bool, kTracks>                 bitStreamValid{};
     void expandTrackBits(int track) const;
+
+    // Lazy per-track flux event cache (sorted ascending, in [0, period)).
+    // Mirrors MAME's m_image flux-event vector but stored in LSS cycles
+    // rather than 200M-position units.
+    mutable std::array<std::vector<int>, kTracks> fluxStream;
+    mutable std::array<bool, kTracks>             fluxStreamValid{};
+    void expandTrackFlux(int track) const;
+
     void invalidateBitStream(int track) {
-        bitStreamValid[track] = false;
+        bitStreamValid[track]  = false;
+        fluxStreamValid[track] = false;
         bitStream[track].clear();
+        fluxStream[track].clear();
     }
     void invalidateAllBitStreams() {
         bitStreamValid.fill(false);
-        for (auto& bs : bitStream) bs.clear();
+        fluxStreamValid.fill(false);
+        for (auto& bs : bitStream)  bs.clear();
+        for (auto& fs : fluxStream) fs.clear();
     }
 
     void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
@@ -169,6 +249,20 @@ private:
     static void writeAddressField(uint8_t*& dst, uint8_t volume,
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);
+
+    /// WOZ1/WOZ2 parser. Verbatim follower of MAME's
+    /// `src/lib/formats/woz_dsk.cpp` chunk walk: looks for INFO, TMAP,
+    /// TRKS in any order; accepts both WOZ1 (160 fixed 6656-byte slots,
+    /// bit_count at offset +6648 LE u16) and WOZ2 (160 × 8-byte TRK
+    /// headers; data at file offset starting_block × 512 with
+    /// bit_count as u32). Bits are MSB-first within each byte. Each
+    /// physical track 0..34 sources its bit stream from
+    /// TMAP[track*4] (the canonical quarter-track slot at the centre
+    /// of the track — same convention as MAME's `cell_data_index`).
+    /// Quarter-track sub-positions used by some copy protections are
+    /// not yet preserved; this is the smallest patch that lets
+    /// stock-protection .woz disks boot.
+    bool loadWoz(const std::string& imgPath);
 
     /// Decode one track's nibble buffer back into 16 × 256-byte logical
     /// sectors. Returns true if any sector was successfully decoded.

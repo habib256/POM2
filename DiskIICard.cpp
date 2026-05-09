@@ -67,7 +67,8 @@ bool debugEnabled()
 
 }  // namespace
 
-DiskIICard::DiskIICard()
+DiskIICard::DiskIICard(int slot)
+    : slot_(slot)
 {
     bootRom.fill(0xFF);
     // Pre-fill with the published 16-sector P6 PROM so the LSS path
@@ -132,53 +133,68 @@ bool DiskIICard::loadLssRom(const std::string& path)
     return true;
 }
 
-bool DiskIICard::insertDisk(const std::string& path)
+bool DiskIICard::insertDisk(int drive, const std::string& path)
 {
-    // Save any pending writes from the previous image before we drop it.
-    if (image.isLoaded() && image.hasUnsavedChanges()) {
-        if (!image.saveDirty()) {
-            pom2::log().warn("Disk II",
-                "Save-on-swap failed: " + image.getLastError());
-        }
-    }
-    if (!image.loadFile(path)) {
-        pom2::log().warn("Disk II", "Insert failed: " + image.getLastError());
+    if (drive < 0 || drive >= kDriveCount) {
+        pom2::log().warn("Disk II",
+            "insertDisk: invalid drive index " + std::to_string(drive));
         return false;
     }
-    image.setWriteBackEnabled(writeBackEnabled);
-    trackPos    = 0;
-    cycleAccum  = 0;
-    writeLatch  = 0xFF;
-    // Reset LSS bit-stream cursor + state. The default P6 ROM is in
-    // p6Rom (see constructor) so the LSS path works without the
-    // optional roms/diskii_p6.rom override. We still gate on
-    // `p6RomLoaded` so the user can opt out by removing the file.
-    bitPos           = 0;
-    subCellTick      = 0;
-    address          = 0x10;          // !PULSE high (no pulse), state=0
-    lssData          = 0;
-    writeShifter     = 0;
-    writeShifterBits = 0;
+    DiskImage& img = images[drive];
+    // Save any pending writes from the previous image before we drop it.
+    if (img.isLoaded() && img.hasUnsavedChanges()) {
+        if (!img.saveDirty()) {
+            pom2::log().warn("Disk II",
+                "Save-on-swap failed: " + img.getLastError());
+        }
+    }
+    if (!img.loadFile(path)) {
+        pom2::log().warn("Disk II", "Insert failed: " + img.getLastError());
+        return false;
+    }
+    img.setWriteBackEnabled(writeBackEnabled);
+    trackPos[drive] = 0;
+    cycleAccum      = 0;
+    writeLatch      = 0xFF;
+    // Reset MAME wozfdc state. The default P6 ROM is in p6Rom (see
+    // constructor) so the LSS path works without the optional
+    // roms/diskii_p6.rom override. We still gate on `p6RomLoaded` so
+    // the user can opt out by removing the file. (Done unconditionally
+    // here so a drive-2 insert mid-session also resyncs the LSS rather
+    // than carrying over flux state from the prior drive-1 image.)
+    address         = 0x10;          // !PULSE high (no pulse), state=0
+    lssData         = 0;
+    writePosition   = 0;
+    writeLineActive = false;
+    writeStartTime  = 0;
     // Active iff P6 PROM file was loaded explicitly via loadLssRom.
     // The embedded default is also valid (and MAME-layout) but the
-    // gating keeps the legacy 32-cycle gate available for tests until
-    // the LSS write path matches MAME's flux model end-to-end (Phase
-    // 2/3 work, then Phase 6 deletes the legacy fallback).
-    useBitLss        = p6RomLoaded;
+    // gating keeps the legacy 32-cycle gate available for tests that
+    // pin pre-LSS behaviour until they're updated. Plus: any drive
+    // holding a .woz image *forces* the LSS path. WOZ stores raw bit
+    // cells, the legacy 32-cycle nibble gate cannot decode them, and
+    // the embedded default P6 PROM in p6Rom is sufficient — so this
+    // override works even without roms/diskii_p6.rom on disk.
+    useBitLss       = p6RomLoaded;
+    for (int d = 0; d < kDriveCount; ++d) {
+        if (images[d].isWoz()) { useBitLss = true; break; }
+    }
     return true;
 }
 
-void DiskIICard::ejectDisk()
+void DiskIICard::ejectDisk(int drive)
 {
-    if (image.isLoaded() && image.hasUnsavedChanges()) {
-        if (!image.saveDirty()) {
+    if (drive < 0 || drive >= kDriveCount) return;
+    DiskImage& img = images[drive];
+    if (img.isLoaded() && img.hasUnsavedChanges()) {
+        if (!img.saveDirty()) {
             pom2::log().warn("Disk II",
-                "Save-on-eject failed: " + image.getLastError());
+                "Save-on-eject failed: " + img.getLastError());
         }
     }
-    image.eject();
-    trackPos = 0;
-    writeLatch = 0xFF;
+    img.eject();
+    trackPos[drive] = 0;
+    writeLatch      = 0xFF;
 }
 
 uint8_t DiskIICard::slotRomRead(uint8_t low8)
@@ -203,17 +219,18 @@ void DiskIICard::onReset()
     cycleAccum = 0;
     dataLatch  = 0;
     byteReady  = false;
+    active    = MODE_IDLE;
     // LSS state. Real Disk II hardware does NOT lose the head's bit-
     // stream alignment on a soft (Ctrl-Reset) — the disk keeps spinning
     // and the LSS shift register settles back to a stable value within
     // the next sync gap. We zero the address (state=0, QA=0) and data
     // register to start from a clean PROM state, with bit 4 of address
-    // (!PULSE) high — no pulse pending. bitPos / subCellTick survive
-    // (the PROM re-syncs naturally on the next sync run).
+    // (!PULSE) high — no pulse pending. lssCycle survives (the PROM
+    // re-syncs naturally on the next sync run).
     address          = 0x10;
     lssData          = 0;
-    writeShifter     = 0;
-    writeShifterBits = 0;
+    writePosition    = 0;
+    writeLineActive  = false;
     trace = {};
     // Head position and trackPos are intentionally NOT reset — a real
     // Disk II loses neither when the host CPU is reset; the boot PROM
@@ -257,7 +274,10 @@ void DiskIICard::seekPhaseW(int phases)
     const int req = reqPosTable[phases & 0xF];
     if (req < 0) return;
 
-    const int cur = headQuarterTrack;
+    // Move only the active drive's head. The phase magnets are wired to
+    // the controller; only the selected drive's stepper responds.
+    int& head = headQuarterTrack[activeDrive];
+    const int cur = head;
     // Opposite-phase pattern (e.g. cur in well 0 and req=4): head sits
     // between two opposing magnets and doesn't move.
     if (((cur ^ req) & 7) == 4) return;
@@ -265,159 +285,332 @@ void DiskIICard::seekPhaseW(int phases)
     int next = (cur & ~7) | req;
     if (next < cur - 4) next += 8;
     else if (next > cur + 4) next -= 8;
-    headQuarterTrack = std::clamp(next, 0, kQuarterTrackMax);
+    head = std::clamp(next, 0, kQuarterTrackMax);
 }
 
 void DiskIICard::advanceCycles(int cycles)
 {
-    if (!motorOn || !image.isLoaded()) return;
+    cpuCycleTotal += static_cast<uint64_t>(cycles);
 
-    // Run the LSS for the cycle slice while the motor is providing data
-    // (whether ACTIVE or in MODE_DELAY spin-down — both feed the LSS).
-    // Real hardware: 2 LSS ticks per CPU cycle (LSS clock = 2.04 MHz,
-    // CPU clock = 1.02 MHz). Each LSS tick runs one PROM lookup + ALU
-    // op on the data register and consumes 1/8 of a bit cell.
-    if (!useBitLss) {
-        legacyAdvance(cycles);
-    } else {
-        int ticks = cycles * 2;
-        while (ticks-- > 0) lssTick();
+    // Either path no-ops cleanly when the active drive has no media —
+    // the LSS path bails after updating lssCycle, the legacy path bails
+    // on motor-off below.
+    if (!images[activeDrive].isLoaded()) {
+        return;
     }
 
-    // Tick the spin-down delay. When it expires the motor truly stops.
+    if (!useBitLss) {
+        if (!motorOn) return;
+        legacyAdvance(cycles);
+    } else {
+        // MAME wozfdc: catch up the LSS to the new CPU time. lss_sync
+        // skips when active == MODE_IDLE so a stopped drive is cheap.
+        lssSync();
+    }
+
+    // Tick the spin-down delay. When it expires the motor truly stops
+    // (active drops to MODE_IDLE).
     if (motorOffDelay > 0) {
         motorOffDelay -= cycles;
         if (motorOffDelay <= 0) {
             motorOffDelay = 0;
             motorOn       = false;
+            if (active == MODE_DELAY) active = MODE_IDLE;
         }
     }
 }
 
 void DiskIICard::legacyAdvance(int cycles)
 {
+    DiskImage& img = images[activeDrive];
+    int& pos       = trackPos[activeDrive];
+    const int track = headQuarterTrack[activeDrive] / 4;
     cycleAccum += cycles;
     while (cycleAccum >= kCyclesPerNibble) {
         cycleAccum -= kCyclesPerNibble;
-        trackPos  = (trackPos + 1) % DiskImage::kNibblesPerTrack;
+        pos = (pos + 1) % DiskImage::kNibblesPerTrack;
         if (writeMode) {
             // Write the most-recently-latched nibble onto the track.
             // Real hardware streams bits through the LSS shift register;
             // we model one nibble per ~32 CPU cycles, matching the read
             // pacing. The CPU latches the next nibble via a soft-switch
             // store (see deviceSelectWrite).
-            image.writeNibbleAt(headQuarterTrack / 4, trackPos, writeLatch);
+            img.writeNibbleAt(track, pos, writeLatch);
             ++writeFlushCount;
         } else {
-            dataLatch = image.nibbleAt(headQuarterTrack / 4, trackPos);
+            dataLatch = img.nibbleAt(track, pos);
             byteReady = true;
         }
     }
 }
 
-// One LSS tick = 0.5 µs = 1/8 of a bit cell. Verbatim algorithm port of
-// MAME `wozfdc.cpp lss_sync()` — the persistent `address` register
-// shuffles state bits into PROM-pin positions exactly as the real
-// 341-0028-A is wired:
-//
-//   (address & 0x1E) | (op & 0xC0) | ((op & 0x20) >> 5) | ((op & 0x10) << 1)
-//
-// preserving Q7/Q6/QA/!PULSE while injecting state[3,2,1,0] into address
-// bits [7,6,0,5]. The PROM byte's high nibble re-encodes via the same
-// pack on the next iteration; the low nibble is the ALU op on the data
-// register. Below, PULSE detection still uses POM2's discrete bit-cell
-// sampling (subCellTick==4); MAME's flux-event model arrives in Phase 2.
-void DiskIICard::lssTick()
+// MAME `wozfdc_device::lss_start` — called from control() when the motor
+// transitions to MODE_ACTIVE. Resets the LSS bookkeeping so we don't
+// carry stale state from the last spin-up. Note we explicitly do NOT
+// re-pin the data register on a MODE_DELAY → MODE_ACTIVE transition
+// (real hardware preserves it across the spin-down window).
+void DiskIICard::lssStart()
 {
-    if (!image.isLoaded()) return;
+    DiskImage& img = images[activeDrive];
+    lssCycle        = cpuCycleTotal * 2;
+    lssData         = 0;
+    address         = static_cast<uint8_t>(address & ~0x0E);
+    writePosition   = 0;
+    writeStartTime  = writeMode ? static_cast<int64_t>(lssCycle) : 0;
+    writeLineActive = false;
+    if (writeMode && img.isLoaded()) {
+        img.setWriteSplice(headQuarterTrack[activeDrive] / 4, writeStartTime);
+    }
+}
 
-    const int track = headQuarterTrack / 4;
-    const int len   = image.trackBitLength(track);
-
-    // 1. Sample PULSE for the current sub-cell. A "1" cell carries a
-    //    single PULSE at sub-tick 4; all other sub-ticks see PULSE=0.
-    int pulse = 0;
-    if (subCellTick == 4 && len > 0) {
-        pulse = image.bitAt(track, bitPos) ? 1 : 0;
+// MAME `wozfdc_device::lss_sync(extra_cycles)` — verbatim port. The LSS
+// runs at 2× CPU clock; one PROM lookup per LSS cycle. We catch up from
+// the persistent `lssCycle` counter to a target derived from the CPU
+// total, optionally with an `extra` LSS-cycle bump to model the read-
+// pipe latency on $C0nC reads. PULSE is set for exactly one LSS cycle
+// when the head crosses a flux transition, fed from
+// DiskImage::getNextTransition (the flux model port).
+void DiskIICard::lssSync(uint64_t extraCycles)
+{
+    if (active == MODE_IDLE) return;
+    DiskImage& img = images[activeDrive];
+    if (!img.isLoaded()) {
+        lssCycle = cpuCycleTotal * 2 + extraCycles;
+        return;
     }
 
-    // 2. Refresh the externally-driven bits of the address register for
-    //    THIS lookup: !PULSE (bit 4), Q7 (bit 3), Q6 (bit 2). The state
-    //    bits (7,6,5,0) and QA (bit 1) carry forward from the bottom of
-    //    the previous tick. Re-pinning Q6/Q7 each tick is defensive —
-    //    handleSwitchAccess also keeps them aligned on soft-switch hits.
-    address = static_cast<uint8_t>((address & ~0x1C)
-            | (pulse ? 0x00 : 0x10)
-            | (writeMode ? 0x08 : 0x00)
-            | (loadMode  ? 0x04 : 0x00));
+    const int track = headQuarterTrack[activeDrive] / 4;
 
-    // 3. PROM lookup at MAME's scrambled address.
-    const uint8_t op = p6Rom[address];
+    // MAME: `next_flux = floppy ? floppy->get_next_transition(cycles_to_time(cycles-1)) : never;`
+    int64_t nextFlux = img.getNextTransition(track,
+                          static_cast<int64_t>(lssCycle) - 1);
+    int64_t nextFluxDown = (nextFlux != DiskImage::kFluxNever)
+                              ? nextFlux + 1
+                              : DiskImage::kFluxNever;
 
-    // 4. Dispatch low nibble = ALU op on data register. MAME's full
-    //    range — every bit pattern is accounted for, so a stray opcode
-    //    nibble can never silently fall through:
-    //      0x0..0x7 CLR    data ← 0
-    //      0x8, 0xC NOP
-    //      0x9      SL0    data ← (data << 1)
-    //      0xA, 0xE SR     data ← (data >> 1) | (WP ? 0x80 : 0)
-    //      0xB, 0xF LD     data ← writeLatch
-    //      0xD      SL1    data ← (data << 1) | 1
-    switch (op & 0x0F) {
-        case 0x0: case 0x1: case 0x2: case 0x3:
-        case 0x4: case 0x5: case 0x6: case 0x7:
-            lssData = 0;
-            break;
-        case 0x8: case 0xC:
+    // Initial PULSE state: address bit 4 low for the LSS-cycle range
+    // [nextFlux, nextFluxDown), high otherwise. (MAME: `if(cycles >= cycles_next_flux && cycles < cycles_next_flux_down) address &= ~0x10; else address |= 0x10;`)
+    if (static_cast<int64_t>(lssCycle) >= nextFlux
+        && static_cast<int64_t>(lssCycle) < nextFluxDown) {
+        address = static_cast<uint8_t>(address & ~0x10);
+    } else {
+        address = static_cast<uint8_t>(address | 0x10);
+    }
+
+    const uint64_t cyclesLimit = cpuCycleTotal * 2 + extraCycles;
+    if (lssCycle > cyclesLimit) return;        // safety: never go back
+
+    while (lssCycle < cyclesLimit) {
+        // Advance to the next "transition" — either the catch-up limit,
+        // the next flux rising edge, or the falling edge after it.
+        int64_t cyclesNextTrans = static_cast<int64_t>(cyclesLimit);
+        if (cyclesNextTrans > nextFlux
+            && static_cast<int64_t>(lssCycle) < nextFlux) {
+            cyclesNextTrans = nextFlux;
+        }
+        if (cyclesNextTrans > nextFluxDown
+            && static_cast<int64_t>(lssCycle) < nextFluxDown) {
+            cyclesNextTrans = nextFluxDown;
+        }
+
+        while (static_cast<int64_t>(lssCycle) < cyclesNextTrans) {
+            const uint8_t op = p6Rom[address];
+
+            // Write side: edge-detect on WRITE_DATA (= address bit 7).
+            // Each toggle becomes one flux event in the splice buffer,
+            // timestamped at the current LSS cycle. When the buffer
+            // approaches its 32-entry capacity, pre-emptively flush via
+            // image.writeFlux so we never miss a transition.
+            if (writeMode) {
+                const bool prev = writeLineActive;
+                const bool curr = (address & 0x80) != 0;
+                if (prev != curr) {
+                    writeLineActive = curr;
+                    if (writePosition < kWriteBufferSize) {
+                        writeBuffer[writePosition++] =
+                            static_cast<int64_t>(lssCycle);
+                    }
+                } else if (writePosition >= 30) {
+                    const int64_t now = static_cast<int64_t>(lssCycle);
+                    if (writeBackEnabled) {
+                        img.writeFlux(track, writeStartTime, now,
+                                      writePosition, writeBuffer);
+                        ++writeFlushCount;
+                    }
+                    writeStartTime = now;
+                    writePosition  = 0;
+                }
+            }
+
+            // Update state bits of address (7,6,5,0) from opcode bits
+            // (7,6,4,5) using MAME's exact PROM-pin pack.
+            address = static_cast<uint8_t>((address & 0x1E)
+                    | (op & 0xC0)
+                    | ((op & 0x20) >> 5)
+                    | ((op & 0x10) << 1));
+
+            // ALU dispatch — MAME's full opcode range, no fall-through.
+            switch (op & 0x0F) {
+                case 0x0: case 0x1: case 0x2: case 0x3:
+                case 0x4: case 0x5: case 0x6: case 0x7:
+                    lssData = 0;
+                    break;
+                case 0x8: case 0xC:
+                    break;
+                case 0x9:
+                    lssData = static_cast<uint8_t>(lssData << 1);
+                    break;
+                case 0xA: case 0xE:
+                    lssData = static_cast<uint8_t>((lssData >> 1)
+                        | (img.isWriteProtected() ? 0x80 : 0x00));
+                    break;
+                case 0xB: case 0xF:
+                    lssData = writeLatch;
+                    break;
+                case 0xD:
+                    lssData = static_cast<uint8_t>((lssData << 1) | 0x01);
+                    break;
+            }
+
+            // QA = data MSB.
+            if (lssData & 0x80) address |= 0x02; else address &= ~0x02;
+            ++lssCycle;
+        }
+
+        // Cross the flux transition. PULSE goes low at nextFlux and
+        // high again at nextFluxDown; advance the flux cursor when we
+        // exit the high region.
+        if (static_cast<int64_t>(lssCycle) == nextFlux) {
+            address = static_cast<uint8_t>(address & ~0x10);
+        } else if (static_cast<int64_t>(lssCycle) == nextFluxDown) {
+            address = static_cast<uint8_t>(address | 0x10);
+            nextFlux = img.getNextTransition(track,
+                          static_cast<int64_t>(lssCycle));
+            nextFluxDown = (nextFlux != DiskImage::kFluxNever)
+                               ? nextFlux + 1
+                               : DiskImage::kFluxNever;
+        }
+    }
+
+    if (debugEnabled() && (lssData & 0x80) && !trace.sawFirstNibble) {
+        trace.sawFirstNibble = true;
+        char buf[96];
+        std::snprintf(buf, sizeof(buf),
+            "first GCR nibble served: $%02X (LSS, track %d)",
+            lssData, track);
+        pom2::log().info("Disk II", buf);
+    }
+}
+
+// MAME `wozfdc_device::control(offset)` — verbatim port. Only POM2-
+// specific bits: we lack the F9334 phaselatch device, so we expand the
+// `m_phaselatch->write_bit(phase, on)` path inline (sets phaseOn[i] and
+// invokes seekPhaseW with the resulting 4-bit mask).
+void DiskIICard::control(int offset)
+{
+    if (offset < 8) {
+        const int  phase = offset >> 1;
+        const bool on    = (offset & 1) != 0;
+        phaseOn[phase]   = on;
+        int mask = 0;
+        for (int i = 0; i < 4; ++i) if (phaseOn[i]) mask |= (1 << i);
+        if (active) seekPhaseW(mask);
+        return;
+    }
+
+    switch (offset) {
+        case 0x8:
+            if (active == MODE_ACTIVE) {
+                motorOffDelay = 1'022'727;   // 1 sec @ 1.0227 MHz
+                active = MODE_DELAY;
+            }
             break;
         case 0x9:
-            lssData = static_cast<uint8_t>(lssData << 1);
+            switch (active) {
+                case MODE_IDLE:
+                    motorOn = true;
+                    active  = MODE_ACTIVE;
+                    if (images[activeDrive].isLoaded()) lssStart();
+                    if (debugEnabled() && !trace.sawMotorOn) {
+                        trace.sawMotorOn = true;
+                        char buf[96];
+                        std::snprintf(buf, sizeof(buf),
+                            "motor ON (drive %d, head at quarter-track %d, disk %s)",
+                            activeDrive + 1,
+                            headQuarterTrack[activeDrive],
+                            images[activeDrive].isLoaded() ? "loaded" : "MISSING");
+                        pom2::log().info("Disk II", buf);
+                    }
+                    break;
+                case MODE_DELAY:
+                    active        = MODE_ACTIVE;
+                    motorOffDelay = 0;
+                    motorOn       = true;
+                    break;
+                case MODE_ACTIVE:
+                    break;
+            }
             break;
-        case 0xA: case 0xE:
-            lssData = static_cast<uint8_t>((lssData >> 1)
-                | (image.isWriteProtected() ? 0x80 : 0x00));
+        case 0xa:
+            // Drive 1 select. The 74LS259 latch on the controller drops
+            // its drive_select output low; the daisy chain wires this to
+            // floppy[0]. Switching mid-spin is fine — the next lssSync
+            // re-fetches flux events from the new drive's image at the
+            // current LSS cycle (the LSS clock keeps running across the
+            // swap, mirroring the LSS cycle counter on real hardware).
+            activeDrive = 0;
             break;
-        case 0xB: case 0xF:
-            lssData = writeLatch;
+        case 0xb:
+            // Drive 2 select. Same model as 0xa, just to images[1].
+            activeDrive = 1;
             break;
-        case 0xD:
-            lssData = static_cast<uint8_t>((lssData << 1) | 0x01);
+        case 0xc:
+            if (loadMode) {
+                if (active) address = static_cast<uint8_t>(address & ~0x04);
+                loadMode = false;
+            }
             break;
-        default:
+        case 0xd:
+            if (!loadMode) {
+                if (active) address = static_cast<uint8_t>(address | 0x04);
+                loadMode = true;
+            }
             break;
-    }
-
-    // 5. Update the state bits of address (7,6,5,0) from the opcode
-    //    bits (7,6,4,5) using MAME's exact PROM-pin pack, and refresh
-    //    QA (bit 1) from the new data MSB.
-    address = static_cast<uint8_t>((address & 0x1E)
-            | (op & 0xC0)
-            | ((op & 0x20) >> 5)
-            | ((op & 0x10) << 1));
-    if (lssData & 0x80) address |= 0x02; else address &= ~0x02;
-
-    // 6. Sub-cell tick advance, write accumulation, bit-cell wrap. Phase 1
-    //    keeps the existing nibble-buffer write path: at each cell
-    //    boundary, sample WRITE_DATA = address bit 7 (= new state[3] =
-    //    opcode bit 7) and shift it into writeShifter; flush a complete
-    //    nibble every 8 cells. Phase 3 will replace this with a flux
-    //    transition buffer feeding image.writeFlux().
-    if (++subCellTick == 8) {
-        subCellTick = 0;
-        if (writeMode) {
-            const bool writeBit = (address & 0x80) != 0;
-            writeShifter = static_cast<uint8_t>((writeShifter << 1)
-                | (writeBit ? 1 : 0));
-            if (++writeShifterBits == 8) {
-                if (writeBackEnabled) {
-                    image.writeNibbleAt(track, trackPos, writeShifter);
+        case 0xe:
+            if (writeMode) {
+                if (active) address = static_cast<uint8_t>(address & ~0x08);
+                writeMode = false;
+                // MAME: `floppy->write_flux(write_start_time, now,
+                // write_position, write_buffer);` — splice the in-flight
+                // events into the track on Q7 falling edge.
+                DiskImage& img = images[activeDrive];
+                if (img.isLoaded() && writeBackEnabled
+                    && writePosition > 0) {
+                    img.writeFlux(headQuarterTrack[activeDrive] / 4,
+                                  writeStartTime,
+                                  static_cast<int64_t>(lssCycle),
+                                  writePosition, writeBuffer);
                     ++writeFlushCount;
                 }
-                trackPos = (trackPos + 1) % DiskImage::kNibblesPerTrack;
-                writeShifterBits = 0;
+                writePosition = 0;
             }
-        }
-        if (len > 0) bitPos = (bitPos + 1) % len;
+            break;
+        case 0xf:
+            if (!writeMode) {
+                if (active) {
+                    address = static_cast<uint8_t>(address | 0x08);
+                    writeStartTime = static_cast<int64_t>(lssCycle);
+                    writePosition  = 0;
+                    DiskImage& img = images[activeDrive];
+                    if (img.isLoaded()) {
+                        img.setWriteSplice(headQuarterTrack[activeDrive] / 4,
+                                           writeStartTime);
+                    }
+                }
+                writeMode = true;
+            }
+            break;
+        default: break;
     }
 }
 
@@ -431,157 +624,126 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
         pom2::log().info("Disk II", buf);
     }
 
-    if (low4 < 8) {
-        const int  phase = low4 >> 1;
-        const bool on    = (low4 & 1) != 0;
-        phaseOn[phase]   = on;
-        // Pack the 4-bit magnet mask and let the MAME-faithful stepper
-        // settle the head into the matching well. Calling on every
-        // soft-switch hit (rising AND falling) is what gives quarter-
-        // track resolution — edge-detection alone would miss patterns
-        // like "phase 0 alone" -> "phases 0+1 together" -> "phase 1 alone"
-        // which Copy II Plus uses to land on odd quarter-tracks.
-        int mask = 0;
-        for (int i = 0; i < 4; ++i) if (phaseOn[i]) mask |= (1 << i);
-        seekPhaseW(mask);
+    if (!useBitLss) {
+        // Legacy gate behaviour — preserved verbatim from pre-MAME-port
+        // code so disk_boot_smoke / dos33_save_smoke / prodos_save tests
+        // (which don't load the P6 ROM) keep their pinned semantics.
+        if (low4 < 8) {
+            const int  phase = low4 >> 1;
+            const bool on    = (low4 & 1) != 0;
+            phaseOn[phase]   = on;
+            int mask = 0;
+            for (int i = 0; i < 4; ++i) if (phaseOn[i]) mask |= (1 << i);
+            seekPhaseW(mask);
+            return;
+        }
+        switch (low4) {
+            case 0x8:
+                motorOn = false;
+                motorOffDelay = 0;
+                break;
+            case 0x9:
+                if (!motorOn) {
+                    cycleAccum = 0;
+                    if (debugEnabled() && !trace.sawMotorOn) {
+                        trace.sawMotorOn = true;
+                        char buf[96];
+                        std::snprintf(buf, sizeof(buf),
+                            "motor ON (drive %d, head at quarter-track %d, disk %s)",
+                            activeDrive + 1,
+                            headQuarterTrack[activeDrive],
+                            images[activeDrive].isLoaded() ? "loaded" : "MISSING");
+                        pom2::log().info("Disk II", buf);
+                    }
+                }
+                motorOn = true;
+                motorOffDelay = 0;
+                break;
+            // $C0nA / $C0nB: drive_select. Both code paths (LSS and
+            // legacy gate) honour the same activeDrive so the legacy
+            // tests can exercise drive 2 too.
+            case 0xA: activeDrive = 0; break;
+            case 0xB: activeDrive = 1; break;
+            case 0xC: loadMode  = false; break;
+            case 0xD: loadMode  = true;  break;
+            case 0xE: writeMode = false; break;
+            case 0xF: writeMode = true;  break;
+            default: break;
+        }
         return;
     }
-    switch (low4) {
-        case 0x8:
-            // MAME's MODE_DELAY: schedule the motor to actually stop in
-            // ~1 second of cycles. Data keeps flowing in the meantime;
-            // a fresh motor-on within the window cancels the spin-down
-            // and avoids paying re-spin-up latency. Re-arming an already
-            // running countdown would extend it; only arm if idle.
-            //
-            // Gated on useBitLss because the legacy 32-cycle gate is a
-            // deterministic clock model with no flux-time concept — its
-            // trackPos walks unconditionally per CPU cycle, so extending
-            // the "motor on" window puts it out of sync with DOS RWTS
-            // motor-off-during-processing. The MAME flux model in
-            // Phase 2/3 will retire this branch (and the gate itself).
-            if (useBitLss) {
-                if (motorOn && motorOffDelay == 0) {
-                    motorOffDelay = 1'022'727;  // 1 sec @ 1.0227 MHz
-                }
-            } else {
-                motorOn       = false;
-                motorOffDelay = 0;
-            }
-            break;
-        case 0x9:
-            if (!motorOn) {
-                cycleAccum = 0;
-                if (debugEnabled() && !trace.sawMotorOn) {
-                    trace.sawMotorOn = true;
-                    char buf[96];
-                    std::snprintf(buf, sizeof(buf),
-                        "motor ON (head at quarter-track %d, disk %s)",
-                        headQuarterTrack,
-                        image.isLoaded() ? "loaded" : "MISSING");
-                    pom2::log().info("Disk II", buf);
-                }
-            }
-            motorOn = true;
-            motorOffDelay = 0;       // cancel any pending spin-down
-            break;
-        case 0xA: /* drive 1 select — only drive modelled */ break;
-        case 0xB: /* drive 2 select — silently ignored      */ break;
-        case 0xC: loadMode  = false; break;     // Q6L
-        case 0xD: loadMode  = true;  break;     // Q6H
-        case 0xE: writeMode = false; break;     // Q7L
-        case 0xF: writeMode = true;  break;     // Q7H (no-op for read-only)
-        default: break;
-    }
+
+    // MAME path: control() handles every soft-switch effect.
+    control(low4);
 }
 
 uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
 {
-    handleSwitchAccess(low4);
-
-    // $C0nC in (Q6 low, Q7 low) = read mode → return current track nibble.
-    // The DOS 3.3 fast read loop is `LDA $C0EC ; BPL loop` — every valid
-    // GCR nibble has bit-7 set, so the BPL terminates immediately.
-    if (low4 == 0xC && !writeMode && !loadMode) {
-        if (!image.isLoaded() || !motorOn) return 0xFF;
-        if (useBitLss) {
-            // MAME's `read_data_register` ticks the LSS once *before*
-            // sampling the data register — this models the real read-
-            // pipe latency where the latched value the CPU sees was
-            // valid one LSS clock ago. Without this, address marks
-            // arrive one bit early in the BPL spin.
-            lssTick();
-            if (debugEnabled() && (lssData & 0x80) && !trace.sawFirstNibble) {
-                trace.sawFirstNibble = true;
-                char buf[96];
-                std::snprintf(buf, sizeof(buf),
-                    "first GCR nibble served: $%02X (LSS, track %d, bit %d)",
-                    lssData, headQuarterTrack / 4, bitPos);
-                pom2::log().info("Disk II", buf);
-            }
+    if (useBitLss) {
+        // MAME `wozfdc_device::read(offset)`:
+        //   lss_sync();
+        //   control(offset);
+        //   if(!(offset & 1)) { lss_sync(1); return data_reg; }
+        //   return 0xff;
+        lssSync(0);
+        handleSwitchAccess(low4);
+        if (!(low4 & 1)) {
+            lssSync(1);
             return lssData;
         }
-        // Legacy gate. Bit-7 of the data register goes high only after a
-        // full nibble has shifted in. While `byteReady` is false, the PROM
-        // sees a "still assembling" value — bit-7 clear keeps the BPL spin
-        // running until advanceCycles latches the next nibble. After one
-        // successful read the latch stays valid (real hardware doesn't
-        // clear it on read), but `byteReady` drops back to false so the
-        // next LDA waits the full 32-cycle window.
+        // For odd offsets MAME returns 0xFF (open bus), but POM2 still
+        // needs the write-protect probe at $C0nD (low4=0xD, !writeMode).
+        if (low4 == 0xD && !writeMode) {
+            DiskImage& img = images[activeDrive];
+            if (!img.isLoaded()) return 0x00;
+            return img.isWriteProtected() ? 0x80 : 0x00;
+        }
+        return 0xFF;
+    }
+
+    // Legacy gate path.
+    handleSwitchAccess(low4);
+    DiskImage& img = images[activeDrive];
+    if (low4 == 0xC && !writeMode && !loadMode) {
+        if (!img.isLoaded() || !motorOn) return 0xFF;
         const uint8_t out = byteReady ? dataLatch : (dataLatch & 0x7F);
         if (debugEnabled() && byteReady && !trace.sawFirstNibble) {
             trace.sawFirstNibble = true;
             char buf[96];
             std::snprintf(buf, sizeof(buf),
-                "first GCR nibble served: $%02X (track %d, pos %d)",
-                dataLatch, headQuarterTrack / 4, trackPos);
+                "first GCR nibble served: $%02X (drive %d, track %d, pos %d)",
+                dataLatch, activeDrive + 1,
+                headQuarterTrack[activeDrive] / 4,
+                trackPos[activeDrive]);
             pom2::log().info("Disk II", buf);
         }
         byteReady = false;
         return out;
     }
-    // $C0nD in (Q6 high, Q7 low) = write-protect probe. Bit-7 set means
-    // protected; reflects the user's write-back opt-in. When write-back
-    // is OFF (default) we return protected, so DOS will SAVE-error
-    // before scrambling the in-memory nibble buffer. Once the user opts
-    // in, the disk reports writable and updates land back in the file.
     if (low4 == 0xD && !writeMode) {
-        if (!image.isLoaded()) return 0x00;
-        return image.isWriteProtected() ? 0x80 : 0x00;
+        if (!img.isLoaded()) return 0x00;
+        return img.isWriteProtected() ? 0x80 : 0x00;
     }
-    // MAME open-bus semantic: every other slot in $C0E0..$C0EF leaves
-    // the data bus floating, and the last value the controller drove
-    // there is the data register. Software like Bag of Tricks polls
-    // these slots assuming the data register's high bit reflects the
-    // most recent nibble. POM2 used to return 0 (== "ready, no nibble"),
-    // which broke that probe pattern.
-    return useBitLss ? lssData : 0;
+    return 0;
 }
 
 void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
-    // Apple II soft switches respond to writes too — DOS 3.3 occasionally
-    // pokes them via STA. We only need the side-effect, not the value
-    // for control switches; for $C0nD in WRITE mode (Q6H + Q7H) the store
-    // loads the LSS data latch. $C0nC stores are SHIFT strobes on real
-    // hardware (Sather "Understanding the Apple II" 9-13) — they do not
-    // load the latch register.
+    if (useBitLss) {
+        // MAME `wozfdc_device::write(offset, data)`:
+        //   lss_sync();
+        //   control(offset);
+        //   last_6502_write = data;
+        lssSync(0);
+        handleSwitchAccess(low4);
+        writeLatch = v;
+        return;
+    }
+
+    // Legacy gate path.
     handleSwitchAccess(low4);
     if (writeMode && low4 == 0xD) {
         writeLatch = v;
-        // Realign the LSS to the CPU's store cadence. Real Disk II
-        // hardware reloads its WRITE shift register from the data latch
-        // at the start of every 8-bit cell; if the CPU's store-to-store
-        // interval drifts a few cycles past 32 (DOS RWTS WRITE6 has
-        // small gaps between the data prologue and the first secondary
-        // nibble — bookkeeping, not part of the inner write loop), our
-        // free-running cycleAccum would overflow and flush a duplicate
-        // of the still-stale latch into the next nibble slot. That
-        // extra nibble shifts the running-XOR checksum and DOS reports
-        // I/O ERROR. Resetting cycleAccum here pins each flush to
-        // exactly 32 cycles after the most recent latch load — which
-        // matches DOS's intent and AppleWin's per-access LSS sync
-        // (Disk_t::DataLatchWriteWOZ → UpdateBitStreamOffsets).
         cycleAccum = 0;
     }
 }

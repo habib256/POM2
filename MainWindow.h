@@ -16,12 +16,14 @@
 #include "LeChatMauveCard.h"
 #include "LeChatMauve_ImGui.h"
 #include "MemoryViewer_ImGui.h"
+#include "MouseCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
 #include "SuperSerialCard.h"
 
 #include "imgui.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -50,6 +52,11 @@ public:
     // Hooks installed by main.cpp into GLFW callbacks.
     void onChar(unsigned int codepoint);
     void onKey (int key, int scancode, int action, int mods);
+    /// GLFW cursor-position callback. Window-relative coordinates.
+    /// Routes to the Apple II Mouse Card when the cursor is inside
+    /// the Apple II Screen widget; otherwise no-op (ImGui handles it).
+    void onMouseMove  (double x, double y);
+    void onMouseButton(int button, int action);
 
     // Apple II memory map region — used by the bar / grid widgets in
     // MainWindow_MemoryMaps.cpp. Public so file-local helpers in that TU
@@ -71,6 +78,19 @@ private:
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
+    MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
+    /// Status of the Mouse Card ROM probe — used by the Slot
+    /// Configuration UI to indicate whether 'mouse' is selectable.
+    /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
+    /// failure message.
+    std::string                  mouseRomStatus;
+
+    /// Canonical per-slot card-type strings, as resolved by
+    /// `plugSlotsFromSettings()` (and persisted on shutdown). Index 0 is
+    /// the language-card slot and is always empty here.
+    /// Values: "", "diskii", "hdv", "ssc", "clock", "chatmauve", "mouse".
+    std::array<std::string, 8> slotCards{};
+
     JoystickInput                joystick;
     GLFWwindow*                  window = nullptr;
 
@@ -93,6 +113,7 @@ private:
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
     bool         showEmulationPanel = false;
+    bool         showSlotConfigPanel = false;
     int          sscPortInput       = SuperSerialCard::kDefaultPort;
 
     // Disk II insert dialog state.
@@ -134,6 +155,32 @@ private:
 
     bool showAbout = false;
 
+    // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
+    // Apple II Screen widget rect, window-relative. Updated every
+    // frame by `renderScreenWindow()` so the GLFW cursor-pos callback
+    // (which fires async to the render loop) can decide whether to
+    // route motion to the Mouse Card.
+    ImVec2 screenRectMin{ 0, 0 };
+    ImVec2 screenRectMax{ 0, 0 };
+    // Running 8-bit Apple II "mouse units" counter — mirrors MAME's
+    // IPT_MOUSE_X/Y (0..0xFF wrapping). The MCU firmware computes
+    // deltas with 8-bit subtraction.
+    uint8_t mouseAppleX = 0;
+    uint8_t mouseAppleY = 0;
+    // Last GLFW cursor position; used to compute per-frame deltas.
+    double  lastMouseHostX = 0;
+    double  lastMouseHostY = 0;
+    bool    mouseInited    = false;
+    bool    mouseButtonHeld = false;
+
+    /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
+    /// instantiating each card with its slot number. Falls back to legacy
+    /// defaults (DiskII=6, HDV=5, SSC=2, Clock=4, ChatMauve=7) when a
+    /// slot key is absent. Validates uniqueness — duplicate card-type
+    /// requests log a warning and skip the second instance. Populates the
+    /// raw `*Card` pointer fields and the `slotCards[]` index.
+    void plugSlotsFromSettings();
+
     void renderMenuBar();
     void renderScreenWindow();
     void renderControlsWindow();
@@ -155,6 +202,13 @@ private:
     void renderJoystickPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
+    /// Slot Configuration panel. Implemented in MainWindow_Slots.cpp.
+    void renderSlotConfigPanel();
+    /// Tear down the SlotBus and re-run plugSlotsFromSettings(). Called
+    /// by the Slot Configuration panel's Apply button. Stops the
+    /// emulation worker around the rebuild so card destructors / new
+    /// constructors don't race against a running CPU thread.
+    void restartEmulationFromSettings();
 
     // Paste helpers — feed text into the keyboard buffer.
     void pasteFromClipboard();

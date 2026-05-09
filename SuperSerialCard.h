@@ -51,11 +51,19 @@
 class SuperSerialCard : public SlotPeripheral
 {
 public:
-    static constexpr int kSlot = 2;
+    static constexpr int kDefaultSlot = 2;
     static constexpr uint16_t kDefaultPort = 6502;
 
-    SuperSerialCard();
+    /// Construct with the slot number this card will be plugged into.
+    /// The slot is baked into the slot ROM (PR#n / IN#n trampolines and
+    /// the absolute device-select addresses inside the spin-on-TDRE
+    /// output / spin-on-RDRF input routines), so changing it after
+    /// construction would require rebuilding the ROM — pass the right
+    /// slot up front.
+    explicit SuperSerialCard(int slot = kDefaultSlot);
     ~SuperSerialCard() override;
+
+    int getSlot() const { return slot; }
 
     /// Start listening on 127.0.0.1:port. Returns false if the bind fails;
     /// the card stays plugged but `clientConnected()` will always be false.
@@ -97,6 +105,7 @@ public:
     void    onReset() override;
 
 private:
+    int slot;
     std::array<uint8_t, 256> rom{};
     std::atomic<bool> listening { false };
     std::atomic<bool> connected { false };

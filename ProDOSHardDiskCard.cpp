@@ -10,9 +10,6 @@
 
 namespace {
 
-constexpr uint16_t kDeviceBase = 0xC080 + ProDOSHardDiskCard::kSlot * 16; // $C0D0
-constexpr uint8_t  kSlotRomHi  = 0xC0 + ProDOSHardDiskCard::kSlot;        // $C5
-constexpr uint8_t  kUnitNumber = ProDOSHardDiskCard::kSlot << 4;          // $50
 constexpr uint8_t  kDriverOff  = 0x50;
 constexpr uint8_t  kBootOff    = 0x20;
 
@@ -23,7 +20,8 @@ void emit(std::array<uint8_t, 256>& rom, uint8_t& pc, std::initializer_list<uint
 
 } // namespace
 
-ProDOSHardDiskCard::ProDOSHardDiskCard()
+ProDOSHardDiskCard::ProDOSHardDiskCard(int slotNum)
+    : slot(slotNum)
 {
     buildRom();
 }
@@ -310,9 +308,13 @@ void ProDOSHardDiskCard::buildRom()
 {
     rom.fill(0xEA); // NOP padding
 
-    // Entry used by PR#5 / direct boot: load block 0 at $0800, then jump to
+    const uint16_t kDeviceBase = static_cast<uint16_t>(0xC080 + slot * 16);
+    const uint8_t  kSlotRomHi  = static_cast<uint8_t>(0xC0 + slot);
+    const uint8_t  kUnitNumber = static_cast<uint8_t>(slot << 4);
+
+    // Entry used by PR#n / direct boot: load block 0 at $0800, then jump to
     // the universal ProDOS boot loader's real entry at $0801 with X=unit.
-    rom[0x00] = 0x4C;        // JMP $C520
+    rom[0x00] = 0x4C;        // JMP $Cn20
     rom[0x01] = kBootOff;    // ProDOS signature byte: $Cn01 = $20
     rom[0x02] = kSlotRomHi;
     rom[0x03] = 0x00;        // ProDOS signature byte: $Cn03 = $00
@@ -326,7 +328,7 @@ void ProDOSHardDiskCard::buildRom()
         0xA9, 0x01,       // LDA #$01        ; read command
         0x85, 0x42,       // STA $42
         0xA9, kUnitNumber,
-        0x85, 0x43,       // STA $43         ; slot 5, drive 1
+        0x85, 0x43,       // STA $43         ; slot N, drive 1
         0xA9, 0x00,
         0x85, 0x44,       // STA $44         ; buffer low = $00
         0xA9, 0x08,
@@ -334,7 +336,7 @@ void ProDOSHardDiskCard::buildRom()
         0xA9, 0x00,
         0x85, 0x46,       // STA $46         ; block low = 0
         0x85, 0x47,       // STA $47         ; block high = 0
-        0x20, kDriverOff, kSlotRomHi, // JSR $C550
+        0x20, kDriverOff, kSlotRomHi, // JSR $Cn50
         0xB0, 0x07,       // BCS error
         0xA2, kUnitNumber,// LDX #unit
         0xA9, 0x00,       // LDA #$00
