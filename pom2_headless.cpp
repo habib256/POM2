@@ -16,6 +16,7 @@
 // Designed for headless self-test: launch in the background, telnet in,
 // type DOS 3.3 commands, observe behaviour. Exits cleanly on SIGINT.
 
+#include "ClockCard.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
 #include "Memory.h"
@@ -162,6 +163,11 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "SSC listener failed (port busy?)\n"); return 1;
     }
     controller.memory().slotBus().plug(SuperSerialCard::kSlot, std::move(ssc));
+
+    // ThunderClock+-compatible RTC in slot 4 — uPD1990AC bit-bang chip
+    // emulation; ProDOS auto-detects and links its driver to it.
+    controller.memory().slotBus().plug(ClockCard::kDefaultSlot,
+        std::make_unique<ClockCard>(ClockCard::kDefaultSlot));
 
     // Mirror the live-emulator boot ritual: hard reset, propagate that
     // through the slot bus (so DiskIICard can re-arm its trace flags),

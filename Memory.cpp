@@ -78,11 +78,25 @@ int Memory::loadAppleIIRom(const char* filename)
     //     ($C100-$CFFF, motherboard firmware) and the main ROM ($D000-$FFFF)
     //     when iieMode is on. On II+, the same 16 KB image just loads at
     //     $C000 and skips the I/O page (legacy behaviour).
+    //   32 KB = Apple //e "system + video" combined dump. The standard
+    //     16 KB //e firmware lives at file offsets 0x4000-0x7FFF (so its
+    //     reset vector at file offset 0x7FFC maps to $FFFC); the lower
+    //     16 KB carries the video / character data we don't load through
+    //     this path. We extract the upper 16 KB and treat it like a
+    //     plain 16 KB //e ROM.
     uint16_t loadAddr = 0;
+    bool iieFromUpper16K = false;
     if (size == 12 * 1024) {
         loadAddr = 0xD000;
     } else if (size == 16 * 1024) {
         loadAddr = 0xC000;
+    } else if (size == 32 * 1024) {
+        // Treat as a //e dump whose firmware sits in the upper 16 KB.
+        // We don't sniff iieMode here — even in II+ mode we still want
+        // the firmware (Applesoft + Monitor) at $D000-$FFFF, and the
+        // reset vector at $FFFC, both of which live in the upper half.
+        loadAddr = 0xC000;
+        iieFromUpper16K = true;
     } else if (size >= 0x800 && size <= 0x10000) {
         // Best effort: fit at the high end so vectors land at $FFFA-$FFFF.
         loadAddr = static_cast<uint16_t>(0x10000 - size);
@@ -98,26 +112,38 @@ int Memory::loadAppleIIRom(const char* filename)
         lastError = "Short read";
         return 0;
     }
-    if (iieMode && size == 16 * 1024) {
+
+    // Slice out the firmware payload — for 32 KB dumps this drops the
+    // unused lower half. After this, `payload` is a 16 KB block that
+    // covers $C000-$FFFF (or 12 KB for II+, or whatever the user gave
+    // us in the best-effort branch).
+    const uint8_t* payload      = buf.data();
+    size_t         payloadSize  = size;
+    if (iieFromUpper16K) {
+        payload     = buf.data() + 0x4000;
+        payloadSize = 0x4000;
+    }
+
+    if (iieMode && payloadSize == 16 * 1024) {
         // IIe split: bytes 0x0000-0x00FF map to $C000-$C0FF (I/O page,
         // ignored — those addresses are soft switches, not ROM). Bytes
         // 0x0100-0x0FFF go into the internal I/O ROM, callable via
         // INTCXROM=on or SLOTC3ROM=off (slot 3 only). Bytes 0x1000-0x3FFF
         // load into $D000-$FFFF as the main Applesoft + Monitor ROM.
         for (size_t i = 0x100; i < 0x1000; ++i) {
-            internalIORom[i] = buf[i];
+            internalIORom[i] = payload[i];
         }
-        for (size_t i = 0x1000; i < size; ++i) {
+        for (size_t i = 0x1000; i < payloadSize; ++i) {
             uint16_t addr = static_cast<uint16_t>(0xC000 + i);
-            mem[addr] = buf[i];
+            mem[addr] = payload[i];
         }
     } else {
         // II+ path (or non-16-KB): linear load, skipping the I/O page so
         // soft switches keep working when a 16 KB II+ image is provided.
-        for (size_t i = 0; i < size; ++i) {
+        for (size_t i = 0; i < payloadSize; ++i) {
             uint16_t addr = static_cast<uint16_t>(loadAddr + i);
             if (addr >= 0xC000 && addr <= 0xC0FF) continue;
-            mem[addr] = buf[i];
+            mem[addr] = payload[i];
         }
     }
     pom2::log().info("ROM", std::string("Loaded ") + filename + " at $" +

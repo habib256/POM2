@@ -7,6 +7,7 @@
 //
 // Compiled but not registered as a CTest target — it's a debug aid.
 
+#include "ClockCard.h"
 #include "DiskIICard.h"
 #include "Disassembler6502.h"
 #include "M6502.h"
@@ -56,12 +57,14 @@ int main(int argc, char** argv)
 {
     bool plugHdv = true;
     bool forceIIPlus = false;
+    bool plugClock = false;
     int budgetSec = 30;
     std::string diskOverride;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--no-hdv") plugHdv = false;
         else if (a == "--ii+") forceIIPlus = true;
+        else if (a == "--clock") plugClock = true;
         else if (a == "--seconds" && i + 1 < argc) budgetSec = std::atoi(argv[++i]);
         else if (a == "--disk" && i + 1 < argc) diskOverride = argv[++i];
     }
@@ -123,10 +126,20 @@ int main(int argc, char** argv)
         mem.slotBus().plug(5, std::move(hdv));
     }
 
+    if (plugClock) {
+        mem.slotBus().plug(ClockCard::kDefaultSlot,
+            std::make_unique<ClockCard>(ClockCard::kDefaultSlot));
+    }
+
     M6502 cpu(&mem);
     cpu.hardReset();
     mem.slotBus().reset();
-    cpu.setProgramCounter(0xC600);
+    // Honour the firmware reset vector. Our previous behaviour
+    // (`setProgramCounter(0xC600)`) bypassed the //e autoboot scan
+    // entirely, hiding any regression in firmware-driven slot selection.
+    // The Apple //e ROM at the reset vector ($FA62) does the
+    // SETKBD/SETVID init and then scans slots 7→1 for a boot device,
+    // JMPing to $C600 when it finds Disk II.
 
     constexpr int kSliceCycles = 100'000;
     const int kBudget = budgetSec * 1'022'727;
@@ -136,7 +149,7 @@ int main(int argc, char** argv)
         const int slice = cpu.run(kSliceCycles);
         total += slice;
         const int sec = total / 1'022'727;
-        if (sec != last && (sec % 10 == 0)) {
+        if (sec != last && (sec % 5 == 0)) {
             char buf[64];
             std::snprintf(buf, sizeof(buf),
                 "t=%ds PC=$%04X", sec, cpu.getProgramCounter());

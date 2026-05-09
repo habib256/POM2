@@ -5,6 +5,7 @@
 #include "CpuClock.h"
 #include "Logger.h"
 
+#include <algorithm>
 #include <chrono>
 
 EmulationController::EmulationController()
@@ -194,10 +195,28 @@ void EmulationController::workerLoop()
         // Running: execute one frame's worth of cycles, then sleep until
         // the next 60 Hz boundary. Using steady_clock keeps wallclock pace
         // without drifting on busy machines.
+        //
+        // We chunk the budget into small pieces and release `stateMtx`
+        // between each — the UI thread takes that mutex many times per
+        // render pass (display snapshot, every panel's state read,
+        // every menu click handler), and even one ~25 ms hold under
+        // turbo (cyclesPerFrame = 1M with the heavier IIe firmware
+        // dispatch) was enough to drop the GUI to a few fps. A 4096-
+        // cycle chunk is < 0.1 ms wall on Apple Silicon, so the UI
+        // gets the lock between chunks within a frame's UI budget —
+        // ~250 chunks per emulated turbo frame, ~50 µs of pure
+        // lock/unlock overhead per frame, which is invisible.
+        //
+        // Smaller chunks would mostly amortise into wasted contention;
+        // larger chunks (we tried 16K first) leave the UI noticeably
+        // laggy during long disk reads.
+        constexpr int kLockChunkCycles = 4096;
         const int budget = cyclesPerFrame.load();
-        {
+        for (int done = 0; done < budget; ) {
+            const int chunk = std::min(kLockChunkCycles, budget - done);
             std::lock_guard<std::mutex> lk(stateMtx);
-            (void)processor.run(budget);
+            const int actually = processor.run(chunk);
+            done += (actually > 0 ? actually : chunk);
             // No mem.advanceCycles here — see Step branch above.
         }
         nextTick += std::chrono::microseconds(1'000'000 / 60);

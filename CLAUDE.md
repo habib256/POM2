@@ -18,11 +18,25 @@ cd build && cmake .. && make # build → build/POM2
 ./run_emulator.sh            # runs from repo root so roms/ probes resolve
 ```
 
-ROMs are user-provided. **`roms/apple2e.rom` (16 KB) takes precedence at
-startup** — its presence flips MainWindow into IIe mode (128 KB, IIe soft
-switches, 80-col, internal $C100-$CFFF I/O ROM). Otherwise the binary
-falls back to `roms/apple2.rom` (12 KB or 16 KB) and runs as a II+. No
-menu / CLI flag — pure auto-detect on file presence.
+ROMs are user-provided. **`roms/apple2e.rom` (16 KB or 32 KB) takes
+precedence at startup** — its presence flips MainWindow into IIe mode
+(128 KB, IIe soft switches, 80-col, internal $C100-$CFFF I/O ROM).
+Otherwise the binary falls back to `roms/apple2.rom` (12 KB or 16 KB)
+and runs as a II+. No menu / CLI flag — pure auto-detect on file
+presence.
+
+`Memory::loadAppleIIRom` accepts both common //e dump variants:
+- **16 KB**: $C000-$FFFF directly. The standard MAME / AppleWin layout.
+- **32 KB**: "system + video" combined dump. The standard 16 KB
+  firmware lives at file offsets `0x4000-0x7FFF` (so the reset vector
+  at file offset `0x7FFC` maps to `$FFFC`); the lower 16 KB carries
+  the video / character data which is loaded through `loadCharRom`
+  separately. Both halves are sliced and the upper one is fed through
+  the normal 16 KB IIe split path so `internalIORom` gets populated.
+  Falling through to the generic "best-effort" branch instead would
+  load all 32 KB linearly at `$8000` and skip the internalIORom split,
+  leaving `$C100-$CFFF` empty when `INTCXROM=on` — the //e firmware
+  then crashes before reaching the slot 6 boot PROM.
 
 ## Architecture
 
@@ -294,6 +308,40 @@ menu / CLI flag — pure auto-detect on file presence.
   Hardware panel's Start button). Both state and port are persisted
   across runs.
 
+### ProDOS clock card (slot 4)
+
+- **ClockCard** — ThunderClock+-compatible RTC, auto-plugged in slot 4.
+  The card emulates the **bit-banged uPD1990AC** RTC chip at `$C0C0`;
+  ProDOS does NOT route through the slot ROM for clock reads — at boot
+  it copies its hardcoded ThunderClock driver into RAM (around `$D742`)
+  and patches `$BF06-$BF08` to JMP into that copy, then the driver
+  speaks to the chip via the device-select range. Our slot ROM only
+  needs the detection signature.
+- **Slot ROM** at `$C400-$C4FF`: signature bytes at the four even
+  offsets ProDOS scans for — `$08, $28, $58, $70` at offsets `0, 2, 4,
+  6`. Odd-offset fillers (CLD/CLD/SEI) plus `BVS +0` form a benign
+  fall-through path; `$Cs08 = RTS` so any stray `JMP $Cs00` returns
+  cleanly.
+- **uPD1990AC bit-bang protocol** at `$C0n0` (slot 4 → `$C0C0`):
+    write bit 0 = DATA_IN  (serial command bit input)
+    write bit 1 = CLK      (rising edge → shift one bit)
+    write bit 2 = STB      (rising edge → latch mode bits)
+    write bits 3..5 = C0/C1/C2 (mode select)
+    read  bit 7 = DATA_OUT (LSB of shift register, "live")
+  Mode `0b011` = `MODE_TIME_READ`. The host arms it via `$C0C0=$18`,
+  pulses STB high (`$1C`) to snapshot host time into a 48-bit shift
+  register, drops STB, then reads bit 7 of `$C0C0` and pulses CLK
+  (`$1A`/`$18`) 48 times to clock out 6 BCD bytes in order:
+  `sec, min, hour, day, (month<<4)|dow, year`. The host driver converts
+  BCD → binary and packs into ProDOS DATE/TIME at `$BF90-$BF93`.
+- **Pinned by** `tests/clock_card_smoke_test.cpp`: detection signature,
+  full bit-bang round-trip with a fixed timestamp (asserts every byte
+  bit-exactly), shift register drains to zero after 48 bits, STB
+  re-latching, and open-bus on non-`$C0n0` reads.
+- **Wiring**: auto-plugged when the `clock_card_enable` setting is
+  true (default). DOS 3.3 disks ignore the card entirely. The headless
+  build (`pom2_headless`) plugs it unconditionally for the live demo.
+
 ### ProDOS host folder (`prodos_disk/`)
 
 - **`ProDOSVolume`** synthesises a read-only ProDOS volume image (block
@@ -393,10 +441,13 @@ $C070        Paddle reset latch
 $C05E/$C05F  IIe DHGR enable / disable (DHIRESON / DHIRESOFF — also AN3
              annunciator pulses on every access for Le Chat Mauve's FIFO)
 $C0A8-$C0AB  Super Serial Card ACIA (slot 2 — data/status/cmd/ctrl)
+$C0C0        ThunderClock+ uPD1990AC bit-bang register (slot 4 —
+             write: DATA_IN/CLK/STB/C0..C2; read bit 7: DATA_OUT)
 $C0E0-$C0EF  Disk II controller soft switches (slot 6) — also the LSS
              ($C0EC = Q6L data register, $C0ED = Q6H load latch)
 $C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on)
 $C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)
+$C400-$C4FF  ProDOS clock card slot ROM (signature + clock-read body)
 $C600-$C6FF  Disk II boot PROM (P5A, when roms/disk2.rom present)
 $C700-$C7FF  Slot ROMs (currently empty)
 $D000-$F7FF  Applesoft BASIC ROM

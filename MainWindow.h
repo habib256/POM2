@@ -6,6 +6,7 @@
 
 #include "Apple2Display.h"
 #include "CassetteDeck_ImGui.h"
+#include "ClockCard.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
@@ -69,6 +70,7 @@ private:
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
+    ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     JoystickInput                joystick;
     GLFWwindow*                  window = nullptr;
 

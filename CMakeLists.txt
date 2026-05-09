@@ -37,6 +37,7 @@ set(SOURCES
     CassetteDevice.cpp
     CassetteDeck_ImGui.cpp
     CliDispatcher.cpp
+    ClockCard.cpp
     Disassembler6502.cpp
     DiskController_ImGui.cpp
     DiskIICard.cpp
@@ -69,6 +70,7 @@ set(HEADERS
     CassetteDevice.h
     CassetteDeck_ImGui.h
     CliDispatcher.h
+    ClockCard.h
     Disassembler6502.h
     DiskController_ImGui.h
     DiskIICard.h
@@ -161,6 +163,7 @@ add_executable(pom2_headless
     pom2_headless.cpp
     AudioDevice.cpp
     CassetteDevice.cpp
+    ClockCard.cpp
     DiskImage.cpp
     DiskIICard.cpp
     EmulationController.cpp

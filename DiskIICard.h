@@ -120,6 +120,13 @@ private:
     bool bootRomLoaded = false;
 
     bool motorOn   = false;
+    // MAME's MODE_DELAY semantic: a motor-off ($C0E8) command does NOT
+    // stop the drive immediately — the disk keeps spinning for ~1 second
+    // (real-world spin-down from 300 RPM). During the delay the LSS
+    // continues to run; only when this counter hits 0 does motorOn flip
+    // to false. A fresh motor-on ($C0E9) cancels any pending spin-down.
+    // Constant: 1 022 727 cycles ≈ 1 sec at the Apple II's 1.0227 MHz.
+    int  motorOffDelay = 0;
     bool writeMode = false;     // Q7 latch: false=read, true=write
     bool loadMode  = false;     // Q6 latch: false=shift, true=load
     bool writeBackEnabled = false;     // forwarded to DiskImage on toggle
@@ -149,32 +156,44 @@ private:
 
     // ── Bit-level LSS state (when useBitLss == true) ─────────────────
     //
-    // Port of the Apple Disk II Logic State Sequencer per the published
-    // 16-sector P6 PROM (Apple part 341-0028-A) and apple2js's reference
-    // implementation. The 256-byte ROM is indexed by an 8-bit address:
+    // Port of the Apple Disk II Logic State Sequencer, faithful to MAME's
+    // `wozfdc.cpp lss_sync()`. The 256-byte P6 PROM (Apple part 341-0028-A)
+    // is indexed by a persistent 8-bit address register whose bits are:
     //
-    //   bit 7..4  current LSS state (4 bits — 16 states)
-    //   bit 3     Q7   (write enable: 0=read, 1=write)
-    //   bit 2     Q6   (load mode:    0=shift, 1=load)
-    //   bit 1     QA   (data register MSB)
-    //   bit 0     !PULSE — set when the current bit cell carries no flux
+    //   bit 7  state[3]  (= prev opcode bit 7)
+    //   bit 6  state[2]  (= prev opcode bit 6)
+    //   bit 5  state[0]  (= prev opcode bit 4)  ← scrambled with state[1]
+    //   bit 4  !PULSE    (no flux transition this sub-cell)
+    //   bit 3  Q7        (mode_write — 0=read, 1=write)
+    //   bit 2  Q6        (mode_load — 0=shift, 1=load)
+    //   bit 1  QA        (data register MSB, sampled AFTER each opcode)
+    //   bit 0  state[1]  (= prev opcode bit 5)  ← scrambled with state[0]
     //
-    // The ROM byte is the opcode for this LSS tick:
-    //   bits 7..4 next LSS state
-    //   bits 3..0 ALU op on the data register:
-    //     0x0 CLR  data ← 0
-    //     0x8 NOP
-    //     0x9 SL0  data ← (data << 1)
-    //     0xA SR   data ← (data >> 1) | (write-protect ? 0x80 : 0)
-    //     0xB LD   data ← writeLatch (= CPU bus)
-    //     0xD SL1  data ← (data << 1) | 1
+    // The PROM byte read at that address is the opcode for the current
+    // LSS tick. Its high nibble becomes the *new* state (re-scrambled into
+    // address bits 7,6,5,0 via MAME's exact pack: `(opcode & 0xC0) |
+    // ((opcode & 0x20) >> 5) | ((opcode & 0x10) << 1)`). Its low nibble is
+    // the ALU op on the data register, dispatched per MAME's full range:
     //
-    // In write mode, bit 3 of the *state* is the WRITE_DATA bit driven
-    // out per cell — the head writes that bit to the disk surface.
+    //     0x0..0x7      CLR  data ← 0
+    //     0x8, 0xC      NOP
+    //     0x9           SL0  data ← (data << 1)
+    //     0xA, 0xE      SR   data ← (data >> 1) | (write-protect ? 0x80 : 0)
+    //     0xB, 0xF      LD   data ← writeLatch (CPU bus)
+    //     0xD           SL1  data ← (data << 1) | 1
+    //
+    // In write mode, bit 7 of the new address (= opcode bit 7 = new
+    // state[3]) is the WRITE_DATA bit driven onto the disk surface for
+    // the next cell.
+    //
+    // The PROM bytes embedded as kP6RomDefault[] are pre-permuted into
+    // MAME's address layout by scripts/permute_p6_rom.py from the
+    // apple2js `SEQUENCER_ROM_16` table; same 256 logical bytes, indexed
+    // differently. roms/diskii_p6.rom on disk is also MAME-layout.
     std::array<uint8_t, 256> p6Rom{};
     bool    p6RomLoaded = false;
     bool    useBitLss   = false;        // false → legacy 32-cycle gate
-    uint8_t lssState    = 0;            // 4-bit state register
+    uint8_t address     = 0x10;         // MAME's persistent LSS address reg
     uint8_t lssData     = 0;            // 8-bit shift / data register
     int     bitPos      = 0;            // cell index in current track stream
     int     subCellTick = 0;            // 0..7 — pos within one bit-cell window
@@ -188,7 +207,12 @@ private:
     uint64_t writeFlushCount = 0;
 
     void handleSwitchAccess(uint8_t low4);
-    void onPhaseEdge(int phase, bool turningOn);
+    /// MAME `floppy_image_device::seek_phase_w`: settle the head into the
+    /// well of the current 4-bit magnet pattern, capped at ±4 quarter-
+    /// tracks per call. Called from handleSwitchAccess after every phase
+    /// soft-switch hit (rising AND falling). Replaces the prior rising-
+    /// edge half-track stepper.
+    void seekPhaseW(int phases);
     // Legacy 32-cycle gate body, retained as a fallback when no P6 PROM
     // is loaded. Removed in step 5 of the LSS migration.
     void legacyAdvance(int cycles);

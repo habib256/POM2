@@ -221,6 +221,19 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
     }
 
+    // Plug a ThunderClock+-compatible clock card in slot 4. The card
+    // emulates the bit-banged uPD1990AC RTC chip at $C0C0; ProDOS sees
+    // the canonical detection signature in the slot ROM, copies its
+    // hardcoded ThunderClock driver into RAM at boot, and that driver
+    // talks to our chip emulation to fill the system DATE/TIME at
+    // $BF90-$BF93. DOS 3.3 disks ignore the card entirely.
+    if (settings.getBool("clock_card_enable", true)) {
+        auto card = std::make_unique<ClockCard>(ClockCard::kDefaultSlot);
+        clockCard = card.get();
+        controller.memory().slotBus().plug(ClockCard::kDefaultSlot,
+                                           std::move(card));
+    }
+
     // ── Restore display + UI prefs from previous session ─────────────
     {
         const std::string mode = settings.getString("hi_res_mode", "");

@@ -508,6 +508,7 @@ endif()
 # ─── Copy II Plus boot dump (diagnostic, not a CTest target) ─────────────
 add_executable(copy2plus_boot_dump
     copy2plus_boot_dump.cpp
+    ${CMAKE_SOURCE_DIR}/ClockCard.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
@@ -637,3 +638,30 @@ endif()
 
 add_test(NAME cmos_6502_smoke COMMAND test_cmos_6502)
 set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── ProDOS clock card smoke test ────────────────────────────────────────
+# Pins the ProDOS clock-detection signature ($08/$28/$58/$70 at offsets
+# 0/2/4/6), the date/time wire format under a fixed timestamp, and an
+# end-to-end CPU walk through the slot ROM (JSR $C400 → routine fills
+# $BF90-$BF93 → RTS).
+add_executable(test_clock_card
+    clock_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/ClockCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_clock_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_clock_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_clock_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_clock_card PRIVATE winmm)
+endif()
+
+add_test(NAME clock_card_smoke COMMAND test_clock_card)
+set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
