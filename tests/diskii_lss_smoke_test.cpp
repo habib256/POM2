@@ -19,6 +19,7 @@
 
 #include "DiskIICard.h"
 #include "DiskImage.h"
+#include "M6502.h"
 
 #include <cassert>
 #include <cstdio>
@@ -78,11 +79,11 @@ std::string makeSyntheticNib() {
 // bit cell between samples.
 std::vector<uint8_t> spinAndCollect(DiskIICard& card,
                                     int cpuCycles,
-                                    size_t maxBytes)
+                                    size_t maxBytes,
+                                    int cyclesPerRead = 8)
 {
     std::vector<uint8_t> out;
     out.reserve(maxBytes);
-    constexpr int kCyclesPerRead = 8;     // 1 bit cell at 4 µs / 0.5 µs per LSS tick
 
     // Make sure motor's running and we're in read mode (Q6L+Q7L).
     card.deviceSelectRead(0x9);   // motor on
@@ -91,8 +92,8 @@ std::vector<uint8_t> spinAndCollect(DiskIICard& card,
 
     int spent = 0;
     while (spent < cpuCycles && out.size() < maxBytes) {
-        card.advanceCycles(kCyclesPerRead);
-        spent += kCyclesPerRead;
+        card.advanceCycles(cyclesPerRead);
+        spent += cyclesPerRead;
         const uint8_t b = card.deviceSelectRead(0xC);
         if (b & 0x80) {
             // Avoid spamming duplicates: only record when the latch
@@ -309,6 +310,182 @@ bool testLegacyFallback() {
     return true;
 }
 
+// Test: SubInstructionScope guard is no-op when cpu->cycles == 0.
+//
+// `DiskIICard::setCpu(M6502*)` enables sub-instruction cycle accuracy
+// for MMIO accesses: during deviceSelectRead/Write, cpuCycleTotal is
+// temporarily inflated by `cpu->getCurrentInstructionCycles()` so the
+// LSS catches up to the precise sub-cycle of the access (mirroring
+// MAME's per-cycle state machine in `m6502.cpp`).
+//
+// We can't drive M6502::cycles to a non-zero value from outside (no
+// public setter — it's owned by the per-instruction dispatcher). What
+// we CAN pin: with a default-constructed M6502 (cycles=0), wiring up
+// `setCpu(&cpu)` must be a no-op vs the unwired path. If the
+// SubInstructionScope ever starts adding cycles when `cpu->cycles` is
+// 0 — e.g. through a refactor that mistakenly adds something else — the
+// recovered byte stream will diverge from the unwired path and this
+// test will catch it.
+//
+// (For the stronger invariant — that nonzero cpu->cycles actually
+// shifts the LSS read window — we'd need cycle-accurate end-to-end
+// scenarios driving an actual 6502 program at $C0EC, which is the job
+// of `disk_boot_smoke` / `dos33_save_smoke`. Those tests exercise the
+// real `M6502::step` → `cycles=4` → MMIO access at sub-cycle 3 path.)
+bool testSubInstructionCycleAccuracyNoOpWithZero() {
+    const std::string lssPath = findFirst({
+        "../roms/diskii_p6.rom", "roms/diskii_p6.rom",
+        "../../roms/diskii_p6.rom"
+    });
+    if (lssPath.empty()) {
+        std::printf("[SKIP] roms/diskii_p6.rom not found — "
+                    "skipping sub-instruction test\n");
+        return true;
+    }
+    const std::string nibPath = makeSyntheticNib();
+
+    auto runReads = [&](DiskIICard& card) {
+        card.deviceSelectRead(0x9); card.deviceSelectRead(0xE); card.deviceSelectRead(0xC);
+        card.advanceCycles(1024);
+        std::vector<uint8_t> out;
+        for (int i = 0; i < 64; ++i) {
+            card.advanceCycles(6);
+            const uint8_t v = card.deviceSelectRead(0xC);
+            if (v & 0x80) {
+                if (out.empty() || out.back() != v) out.push_back(v);
+            }
+        }
+        return out;
+    };
+
+    DiskIICard cardA;
+    if (!cardA.loadLssRom(lssPath) || !cardA.insertDisk(nibPath)) return false;
+    M6502 cpu;     // freshly constructed → cycles == 0
+    cardA.setCpu(&cpu);
+    const auto a = runReads(cardA);
+
+    DiskIICard cardB;
+    if (!cardB.loadLssRom(lssPath) || !cardB.insertDisk(nibPath)) return false;
+    // No setCpu.
+    const auto b = runReads(cardB);
+
+    if (a != b) {
+        std::printf("FAIL: setCpu(&cpu, cycles=0) diverged from no-cpu path "
+                    "(a.size=%zu, b.size=%zu)\n", a.size(), b.size());
+        return false;
+    }
+    std::printf("[ OK ] SubInstructionScope no-op with cpu->cycles=0 "
+                "(%zu bytes match no-cpu path)\n", a.size());
+    return true;
+}
+
+// Test 6: end-to-end LSS recovers the FULL byte stream (not just the
+// prologue) without dropping cells. Pin against the off-by-one bug in
+// `lss_sync` where `getNextTransition(lssCycle - 1)` returned the
+// previous (already-processed) flux event whenever lss_sync re-entered
+// at exactly `prev_nextFluxDown`, causing the inner loop to skip every
+// flux event in (prev_event, cyclesLimit] and silently corrupt sustained
+// reads. The bug is invisible to `testAddressMarkRecovery` because that
+// test only requires D5 AA 96 to surface *somewhere* in a 5-revolution
+// scan — D5 AA 96 has wide enough margin that re-finding it on the next
+// revolution masks the lost cells.
+//
+// CRITICAL — the bug triggers only when lssCycle lands at exactly
+// `prev_event_cycle + 1` at lss_sync entry. For our flux placement at
+// `cell*8 + 4`, that's lssCycle ≡ 5 (mod 8). With the canonical RWTS
+// spin loop `LDA $C0EC ; BPL loop` (4 + 2 = 6 CPU cycles per iter), the
+// LSS-cycle stride is 12, and post-`advanceCycles(4)` lssCycles land at
+// `12k + 1` ≡ {1, 5} alternating, hitting the trigger every other LDA.
+// The 8-cycle stride spin used by the previous tests lands at lssCycle
+// ≡ 1 (mod 8) only, NEVER touching 5 (mod 8) — which is precisely why
+// the existing diskii_lss_smoke and dos33_save / prodos_save tests miss
+// the bug despite being end-to-end disk-read tests.
+//
+// This test pins the EXACT byte sequence the synthetic track encodes:
+// D5 AA 96 EB followed by sync $FF runs, all repeating after one
+// revolution. We deliberately use 6 CPU cycles per read (RWTS pacing)
+// so the bug condition fires every other iteration. With the off-by-one
+// fix, every D5 occurrence in the recovered stream must be followed by
+// AA 96 EB. With the bug, the pattern desyncs and follow-on bytes are
+// garbage.
+bool testFullSectorReadback() {
+    const std::string lssPath = findFirst({
+        "../roms/diskii_p6.rom", "roms/diskii_p6.rom",
+        "../../roms/diskii_p6.rom"
+    });
+    if (lssPath.empty()) {
+        std::printf("[SKIP] roms/diskii_p6.rom not found — "
+                    "skipping full-readback test\n");
+        return true;
+    }
+    DiskIICard card;
+    if (!card.loadLssRom(lssPath)) {
+        std::printf("FAIL: loadLssRom\n"); return false;
+    }
+    const std::string nibPath = makeSyntheticNib();
+    if (!card.insertDisk(nibPath)) {
+        std::printf("FAIL: insertDisk: %s\n", card.getLastError().c_str());
+        return false;
+    }
+
+    // 6 CPU cycles per read = RWTS-canonical `LDA $C0EC ; BPL loop`
+    // pacing. This forces the bug condition (lssCycle ≡ 5 mod 8 at
+    // lss_sync entry) to fire on every other LDA. Spin for ~5
+    // revolutions; 256 unique-transition bytes spans many prologues.
+    const auto bytes = spinAndCollect(card, 2'000'000, 256, /*cyclesPerRead=*/6);
+
+    // Find the FIRST valid prologue. Before that point, the LSS may be
+    // mid-byte from startup and any spurious D5 lookalikes are tolerated.
+    size_t firstValid = bytes.size();
+    for (size_t i = 0; i + 3 < bytes.size(); ++i) {
+        if (bytes[i] == 0xD5 && bytes[i+1] == 0xAA
+            && bytes[i+2] == 0x96 && bytes[i+3] == 0xEB) {
+            firstValid = i;
+            break;
+        }
+    }
+    if (firstValid >= bytes.size()) {
+        std::printf("FAIL: no valid D5 AA 96 EB prologue in %zu bytes\n",
+                    bytes.size());
+        return false;
+    }
+
+    // From the first valid prologue forward, EVERY D5 must be followed
+    // by AA 96 EB. With the lss_sync off-by-one bug, reads desync after
+    // the first prologue and subsequent D5s are followed by garbage.
+    int prologuesSeen = 0;
+    int prologuesValid = 0;
+    for (size_t i = firstValid; i + 3 < bytes.size(); ++i) {
+        if (bytes[i] != 0xD5) continue;
+        ++prologuesSeen;
+        if (bytes[i+1] == 0xAA && bytes[i+2] == 0x96 && bytes[i+3] == 0xEB) {
+            ++prologuesValid;
+        } else {
+            std::printf("    D5 at offset %zu followed by %02X %02X %02X "
+                        "(expected AA 96 EB)\n",
+                        i, bytes[i+1], bytes[i+2], bytes[i+3]);
+        }
+    }
+
+    if (prologuesSeen < 2) {
+        std::printf("FAIL: only saw %d D5 occurrences after startup in "
+                    "%zu bytes — not enough revolutions\n",
+                    prologuesSeen, bytes.size());
+        return false;
+    }
+    if (prologuesValid < prologuesSeen) {
+        std::printf("FAIL: %d / %d D5 occurrences had a corrupt "
+                    "follow-on after the first valid prologue at offset "
+                    "%zu (expected AA 96 EB after every D5)\n",
+                    prologuesValid, prologuesSeen, firstValid);
+        return false;
+    }
+    std::printf("[ OK ] full readback: %d / %d D5 prologues followed by "
+                "AA 96 EB (first valid at offset %zu of %zu)\n",
+                prologuesValid, prologuesSeen, firstValid, bytes.size());
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -318,6 +495,8 @@ int main() {
     ok &= testAddressMarkRecovery();
     ok &= testLssWrite();
     ok &= testLegacyFallback();
+    ok &= testFullSectorReadback();
+    ok &= testSubInstructionCycleAccuracyNoOpWithZero();
     if (ok) {
         std::printf("diskii_lss_smoke OK\n");
         return 0;

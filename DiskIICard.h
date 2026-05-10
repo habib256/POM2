@@ -64,6 +64,8 @@
 #include <string>
 #include <string_view>
 
+class M6502;
+
 class DiskIICard : public SlotPeripheral
 {
 public:
@@ -77,6 +79,18 @@ public:
     explicit DiskIICard(int slot = kDefaultSlot);
 
     int getSlot() const { return slot_; }
+
+    /// Inject the host CPU pointer so the LSS can resolve the precise
+    /// sub-instruction cycle of every $C0EX MMIO access. Without this,
+    /// the LSS treats every MMIO access as happening at the START of the
+    /// instruction, when in reality (per MAME's per-cycle state machine)
+    /// the data fetch of `LDA $C0EC` happens on the 4th cycle (sub-cycle
+    /// 3) and the LSS state at that exact moment is what software sees.
+    /// Cycle-precise copy-protection schemes (Spiradisc, Locksmith, some
+    /// Sirius / Sierra titles) rely on this. Stock DOS / ProDOS RWTS
+    /// doesn't notice the difference. Safe to leave unset (nullptr) —
+    /// behaviour falls back to instruction-aligned access timing.
+    void setCpu(M6502* cpu) { cpu_ = cpu; }
 
     /// Force every drive's head back to track 0 and reset the LSS state.
     /// Used by the "Boot disk" UI shortcut so the boot PROM finds
@@ -159,6 +173,9 @@ public:
 
 private:
     int slot_;
+    /// Optional CPU pointer for sub-instruction cycle resolution at MMIO
+    /// access points. See `setCpu()` doc above.
+    M6502* cpu_ = nullptr;
     std::array<DiskImage, kDriveCount> images{};
     /// Drive currently routed to the LSS / legacy gate. Set by control()
     /// in response to $C0nA ($activeDrive=0) or $C0nB ($activeDrive=1).

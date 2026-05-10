@@ -327,6 +327,11 @@ void MainWindow::plugSlotsFromSettings()
         for (const char* p : lssRomCandidates) {
             if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
         }
+        // Wire the CPU pointer for sub-instruction cycle accuracy on
+        // MMIO reads/writes (cycle-precise copy protections rely on the
+        // LSS state at the exact sub-cycle of the data fetch, not at
+        // instruction-start). See DiskIICard::setCpu doc for context.
+        card->setCpu(&controller.cpu());
         diskCard = card.get();
         controller.memory().slotBus().plug(s, std::move(card));
     };

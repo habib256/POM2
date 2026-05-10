@@ -3,6 +3,7 @@
 
 #include "DiskIICard.h"
 #include "Logger.h"
+#include "M6502.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -381,9 +382,39 @@ void DiskIICard::lssSync(uint64_t extraCycles)
 
     const int track = headQuarterTrack[activeDrive] / 4;
 
-    // MAME: `next_flux = floppy ? floppy->get_next_transition(cycles_to_time(cycles-1)) : never;`
+    // MAME passes `cycles_to_time(cycles - 1)` to `get_next_transition`, but
+    // that's NOT a "look one cycle into the past" — it's compensating for
+    // MAME's `cycles_to_time` ⇄ `time_to_cycles` round-trip having a +1
+    // LSS-tick offset baked into both halves (see `time_to_cycles` body in
+    // `wozfdc.cpp` line 331). In MAME's reference frame, `cycles_to_time(c)`
+    // returns a time *strictly after* the floppy-stored time of the event at
+    // MAME cycle c — so passing `c-1` finds the event at c (or later), never
+    // at c-1.
+    //
+    // Our port stores flux events as raw LSS-cycle indexes (`cell*8 + 4` per
+    // `expandTrackFlux`), so we don't need — and must not apply — the
+    // compensation. Pass `lssCycle` directly: `getNextTransition` has
+    // lower-bound semantics, returning the event at lssCycle if there is
+    // one and the next one otherwise.
+    //
+    // Subtracting 1 here was a misapplied transcription of MAME's compensation.
+    // It made `getNextTransition` return the *previous* event (the one we
+    // just processed) whenever lssSync re-entered at `prev_nextFluxDown`.
+    // The loop then computed `cyclesNextTrans = cyclesLimit` (since both
+    // `lssCycle < nextFlux` and `lssCycle < nextFluxDown` were false for a
+    // past event), ran the inner loop straight to cyclesLimit, and silently
+    // skipped every flux event in the open interval (prev_event, cyclesLimit].
+    // The skipped events were dropped permanently — the next call's
+    // `getNextTransition` rolled past them too. With ~1.0227 MHz CPU and
+    // ~125 KB/s read rate, that worked out to lost cells under sustained
+    // reads, surfacing as DOS / ProDOS I/O errors and RWTS retries on real
+    // disks even though the boot-prologue smoke test (which only validates
+    // a single D5 AA 96 match in a 5-revolution scan) couldn't see it.
+    //
+    // Pinned by `tests/diskii_lss_smoke_test.cpp::testFullSectorReadback`
+    // (added with this fix).
     int64_t nextFlux = img.getNextTransition(track,
-                          static_cast<int64_t>(lssCycle) - 1);
+                          static_cast<int64_t>(lssCycle));
     int64_t nextFluxDown = (nextFlux != DiskImage::kFluxNever)
                               ? nextFlux + 1
                               : DiskImage::kFluxNever;
@@ -677,6 +708,49 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
     control(low4);
 }
 
+// ─── Sub-instruction cycle accuracy ────────────────────────────────────
+//
+// MMIO accesses from the 6502 happen at a specific cycle within the
+// instruction (e.g. `LDA $C0EC`'s data fetch is the 4th of 4 cycles).
+// MAME's `m6502.cpp` is a per-cycle state machine — its `wozfdc_device`
+// observes each access at the precise sub-instruction time.
+//
+// POM2's M6502 batches the whole instruction's cycles into a single
+// `memory->advanceCycles(N)` after `executeOpcode` returns; during
+// execution, `cpuCycleTotal` reflects the START of the instruction. For
+// stock DOS / ProDOS RWTS the difference is invisible — the LSS lands
+// the same nibbles either way. But cycle-precise copy protections that
+// time their reads against the LSS state ARE off by a few cycles.
+//
+// The fix is to query `cpu->getCurrentInstructionCycles()` at the
+// access point: that's the count of cycles already elapsed within the
+// current instruction (e.g. 3 at the data fetch of `LDA abs`). We
+// temporarily inflate `cpuCycleTotal` by this delta during the access,
+// run `lssSync` against the inflated value, and restore on the way out
+// (so the post-instruction `advanceCycles(N)` accounts for the right
+// total). The RAII guard below makes this exception-safe and keeps the
+// save/restore out of every code path of `deviceSelectRead/Write`.
+//
+// Mid-instruction inflation pattern:
+//   cpuCycleTotal_before_inst = X
+//   in deviceSelectRead: cpuCycleTotal += subCycles  (X + 3 for LDA $C0EC)
+//                        lssSync(0) catches LSS to 2*(X+3)
+//                        lssSync(1) catches to 2*(X+3) + 1
+//                        cpuCycleTotal restored to X (RAII dtor)
+//   after instruction: advanceCycles(4) → cpuCycleTotal = X + 4
+//                      lssSync(0) catches LSS to 2*(X+4) = 2*(X+3) + 2
+//
+// Net: LSS runs 8 cycles per instruction (same as before), but the data
+// register is sampled at the correct sub-cycle within the instruction.
+struct SubInstructionScope
+{
+    uint64_t& target;
+    uint64_t saved;
+    SubInstructionScope(uint64_t& counter, uint64_t add)
+        : target(counter), saved(counter) { target += add; }
+    ~SubInstructionScope() { target = saved; }
+};
+
 uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
 {
     if (useBitLss) {
@@ -685,6 +759,8 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         //   control(offset);
         //   if(!(offset & 1)) { lss_sync(1); return data_reg; }
         //   return 0xff;
+        SubInstructionScope sub(cpuCycleTotal,
+            cpu_ ? static_cast<uint64_t>(cpu_->getCurrentInstructionCycles()) : 0);
         lssSync(0);
         handleSwitchAccess(low4);
         if (!(low4 & 1)) {
@@ -734,6 +810,8 @@ void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
         //   lss_sync();
         //   control(offset);
         //   last_6502_write = data;
+        SubInstructionScope sub(cpuCycleTotal,
+            cpu_ ? static_cast<uint64_t>(cpu_->getCurrentInstructionCycles()) : 0);
         lssSync(0);
         handleSwitchAccess(low4);
         writeLatch = v;

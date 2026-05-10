@@ -344,6 +344,12 @@ add_executable(test_diskii_lss
     diskii_lss_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_diskii_lss PRIVATE ${CMAKE_SOURCE_DIR})
