@@ -35,8 +35,18 @@
 #  endif
 #endif
 
+// GCC's -Wstringop-overflow trips a false positive on miniaudio's atomic
+// intrinsics (ma_atomic_load_64 on &pSound->seekTarget). Silence locally;
+// no other warnings appear in the miniaudio TU at our level.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
 #define MINIAUDIO_IMPLEMENTATION
 #include "third_party/miniaudio.h"
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #if defined(_WIN32)
 #  ifdef min
