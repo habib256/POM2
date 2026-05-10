@@ -38,13 +38,14 @@ struct CardType {
 };
 
 constexpr CardType kCardTypes[] = {
-    { "",          "(empty)"           },
-    { "diskii",    "Disk II"           },
-    { "hdv",       "ProDOS HDV"        },
-    { "ssc",       "Super Serial"      },
-    { "clock",     "Clock (ProDOS)"    },
-    { "chatmauve", "Le Chat Mauve"     },
-    { "mouse",     "Mouse Interface"   },
+    { "",             "(empty)"           },
+    { "diskii",       "Disk II"           },
+    { "hdv",          "ProDOS HDV"        },
+    { "ssc",          "Super Serial"      },
+    { "clock",        "Clock (ProDOS)"    },
+    { "chatmauve",    "Le Chat Mauve"     },
+    { "mouse",        "Mouse Interface"   },
+    { "mockingboard", "Mockingboard A/C"  },
 };
 
 bool mouseRomsPresent()
@@ -197,12 +198,20 @@ void MainWindow::restartEmulationFromSettings()
     //    might be peeking.
     {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
-        diskCard      = nullptr;
-        hdvCard       = nullptr;
-        chatMauveCard = nullptr;
-        sscCard       = nullptr;
-        clockCard     = nullptr;
-        mouseCard     = nullptr;
+        // Mockingboard's AudioSource lives inside the card. We must
+        // unregister it from the audio device BEFORE the slot bus
+        // destroys the card, otherwise the audio thread's next callback
+        // would dereference a freed source.
+        if (mockingboardCard && controller.audio().isAvailable()) {
+            controller.audio().removeSource(mockingboardCard->audioSource());
+        }
+        diskCard         = nullptr;
+        hdvCard          = nullptr;
+        chatMauveCard    = nullptr;
+        sscCard          = nullptr;
+        clockCard        = nullptr;
+        mouseCard        = nullptr;
+        mockingboardCard = nullptr;
         controller.memory().slotBus().clear();
         // Also drop any cached display.setChatMauveCard pointer — the
         // next plug call will set it again.

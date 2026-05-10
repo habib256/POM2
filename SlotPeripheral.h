@@ -45,9 +45,14 @@ public:
     virtual void    deviceSelectWrite(uint8_t /*low4*/, uint8_t /*v*/) {}
 
     /// $C(N)XX — 256-byte slot ROM. `low8` is the low byte of the address
-    /// (0..255). Slot ROM is read-only on real hardware; writes never
-    /// reach this method (the SlotBus drops them).
-    virtual uint8_t slotRomRead(uint8_t /*low8*/) { return 0xFF; }
+    /// (0..255). On real hardware most cards leave this read-only, but a
+    /// handful (notably the Sweet Microsystems Mockingboard, which decodes
+    /// its 6522 VIAs at $Cn00 / $Cn80 instead of in the 16-byte device-
+    /// select range) treat $CnXX as memory-mapped I/O. The SlotBus
+    /// forwards both reads and writes; cards that don't override
+    /// `slotRomWrite` get the default no-op (matching ROM behaviour).
+    virtual uint8_t slotRomRead (uint8_t /*low8*/)              { return 0xFF; }
+    virtual void    slotRomWrite(uint8_t /*low8*/, uint8_t /*v*/) {}
 
     /// $C800-$CFFF — 2 KB expansion ROM. `offset` is the byte offset into
     /// the 2 KB window (0..0x7FE; 0x7FF is intercepted by SlotBus as the

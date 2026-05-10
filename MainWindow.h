@@ -16,6 +16,7 @@
 #include "LeChatMauveCard.h"
 #include "LeChatMauve_ImGui.h"
 #include "MemoryViewer_ImGui.h"
+#include "Mockingboard.h"
 #include "MouseCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
@@ -79,6 +80,7 @@ private:
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
+    MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the

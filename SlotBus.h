@@ -62,6 +62,10 @@ public:
     uint8_t deviceSelectRead (uint16_t addr);   // $C080-$C0FF
     void    deviceSelectWrite(uint16_t addr, uint8_t v);
     uint8_t slotRomRead      (uint16_t addr);   // $C100-$C7FF
+    void    slotRomWrite     (uint16_t addr, uint8_t v); // for cards
+                                                  // (e.g. Mockingboard) that
+                                                  // decode MMIO inside the
+                                                  // slot ROM window
     uint8_t expansionRomRead (uint16_t addr);   // $C800-$CFFF (CFFF disables)
     void    expansionRomWrite(uint16_t addr, uint8_t v);
 

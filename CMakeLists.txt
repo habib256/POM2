@@ -54,6 +54,7 @@ set(SOURCES
     MainWindow_Slots.cpp
     MC6821.cpp
     MemoryViewer_ImGui.cpp
+    Mockingboard.cpp
     MouseCard.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
@@ -90,6 +91,7 @@ set(HEADERS
     MainWindow.h
     MC6821.h
     MemoryViewer_ImGui.h
+    Mockingboard.h
     MouseCard.h
     ProDOSHardDiskCard.h
     ProDOSVolume.h
@@ -177,6 +179,7 @@ add_executable(pom2_headless
     LeChatMauveCard.cpp
     M6502.cpp
     Memory.cpp
+    Mockingboard.cpp
     RomLoader.cpp
     SlotBus.cpp
     SnapshotIO.cpp

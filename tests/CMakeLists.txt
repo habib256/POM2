@@ -888,3 +888,38 @@ endif()
 
 add_test(NAME clock_card_smoke COMMAND test_clock_card)
 set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Mockingboard smoke test ─────────────────────────────────────────────
+# Pins the four behaviours music drivers depend on: $Cn0X / $Cn8X address
+# decode (VIA1 / VIA2 selection from the slot ROM window), VIA → AY
+# register addressing via the canonical LATCH → WRITE control sequence,
+# 6522 timer 1 IRQ generation in both continuous and one-shot modes
+# (incl. T1CL-read clearing IFR.T1 and dropping the slot IRQ line), and
+# end-to-end AY tone synthesis producing a non-silent waveform.
+add_executable(test_mockingboard
+    mockingboard_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+)
+target_include_directories(test_mockingboard PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_smoke COMMAND test_mockingboard)
+set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)

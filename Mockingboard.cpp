@@ -1,0 +1,726 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+
+#include "Mockingboard.h"
+
+#include "CpuClock.h"
+#include "M6502.h"
+
+#include <algorithm>
+#include <cstring>
+
+namespace {
+
+// ─── AY-3-8910 amplitude table ───────────────────────────────────────────
+//
+// Logarithmic 4-bit volume → linear amplitude. Sourced from MAME
+// `src/devices/sound/ay8910.cpp`'s `volumes_3level_8910` interpolation —
+// these are the canonical levels every Apple II / CPC / Spectrum emulator
+// converges on (within rounding). Index 0 is silence; index 15 is the
+// per-channel peak. Three channels at peak would clip a single AY at
+// roughly 3.0 — the audio mixer's clamp catches that.
+constexpr float kAyVolumeTable[16] = {
+    0.0000f, 0.0137f, 0.0205f, 0.0291f, 0.0423f, 0.0618f, 0.0847f, 0.1369f,
+    0.1691f, 0.2647f, 0.3527f, 0.4499f, 0.5704f, 0.6873f, 0.8482f, 1.0000f
+};
+
+// AY-3-8910 input clock on the Mockingboard — pin 22 (CLOCK) is wired to
+// the slot's phase 0 clock, i.e. the Apple II 1.0227 MHz CPU clock.
+// Internal dividers: tone = clock / 16, noise = clock / 16, envelope =
+// clock / 256. (Datasheet figures; MAME divides by 8 because it pre-
+// halves the pin-22 input — same final period.)
+constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
+constexpr float kAyToneStepHz    = kAyClockHz / 16.0f;   // ~63.9 kHz
+constexpr float kAyNoiseStepHz   = kAyClockHz / 16.0f;   // ~63.9 kHz
+constexpr float kAyEnvStepHz     = kAyClockHz / 256.0f;  // ~3.99 kHz
+
+// Mockingboard PB → AY control pin map. Reading PB0..2 gives the AY
+// command nibble; bit 0 doubles as !RESET (active low).
+constexpr uint8_t kPbBitReset = 0x01;   // PB0 — active low
+constexpr uint8_t kPbBitBdir  = 0x02;   // PB1
+constexpr uint8_t kPbBitBc1   = 0x04;   // PB2
+
+// AY-3-8910 register count.
+constexpr int kAyNumRegs = 16;
+
+// 6522 VIA register indices.
+enum : uint8_t {
+    VIA_ORB    = 0x0,  // Output Reg B / Input Reg B
+    VIA_ORA    = 0x1,  // Output Reg A (with handshake)
+    VIA_DDRB   = 0x2,
+    VIA_DDRA   = 0x3,
+    VIA_T1CL   = 0x4,  // Timer 1 counter low
+    VIA_T1CH   = 0x5,  // Timer 1 counter high
+    VIA_T1LL   = 0x6,  // Timer 1 latch low
+    VIA_T1LH   = 0x7,  // Timer 1 latch high
+    VIA_T2CL   = 0x8,
+    VIA_T2CH   = 0x9,
+    VIA_SR     = 0xA,
+    VIA_ACR    = 0xB,
+    VIA_PCR    = 0xC,
+    VIA_IFR    = 0xD,
+    VIA_IER    = 0xE,
+    VIA_ORANH  = 0xF,  // Output Reg A no handshake
+};
+
+// IFR / IER bit positions (see WDC W65C22 datasheet).
+constexpr uint8_t IFR_T1   = 0x40;
+constexpr uint8_t IFR_ANY  = 0x80;   // computed on read
+
+}  // namespace
+
+// ─── Forward types ───────────────────────────────────────────────────────
+//
+// Definitions for the VIA, AY, and AudioSrc subdevices. Kept in this TU
+// (not the header) so the rest of the codebase doesn't compile their
+// internals on every include.
+
+struct MockingboardCard::Via6522
+{
+    // Register file. `regs[]` is the canonical view at `read()` time
+    // for everything except T1 (whose effective read goes through the
+    // counter), Port A/B (which combine DDR + output latch + input
+    // pins), and IFR/IER (which compute bit 7 dynamically).
+    uint8_t portAOut = 0x00;
+    uint8_t portBOut = 0x00;
+    uint8_t ddrA = 0x00;
+    uint8_t ddrB = 0x00;
+    uint8_t acr  = 0x00;
+    uint8_t pcr  = 0x00;
+    uint8_t sr   = 0x00;
+    // Timer 1 latches and counter. `t1Counter` is signed-extended to 32
+    // bits so we can detect the underflow transition (16-bit counter goes
+    // 0 → -1, i.e. the pulse fires when we count *through* zero).
+    uint16_t t1Latch = 0xFFFF;
+    int32_t  t1Counter = 0xFFFF;
+    bool     t1FireArmed = true;   // one-shot: fires only after a fresh load
+    // Timer 2: not modelled, but reads must return *something* (some
+    // probes test write/read round-trip). Hold a raw scratch.
+    uint16_t t2Counter = 0xFFFF;
+    // IFR / IER — we store only the per-source bits (bits 0..6); bit 7
+    // is computed at read time.
+    uint8_t ifr = 0x00;
+    uint8_t ier = 0x00;
+
+    void reset()
+    {
+        portAOut = portBOut = 0;
+        ddrA = ddrB = 0;
+        acr  = pcr = sr = 0;
+        t1Latch = 0xFFFF;
+        t1Counter = 0xFFFF;
+        t1FireArmed = false;     // post-reset T1 doesn't fire until loaded
+        t2Counter = 0xFFFF;
+        ifr = 0;
+        ier = 0;
+    }
+
+    // Composed Port B / Port A reads: input pins (DDR=0) are pulled
+    // high (Mockingboard has no inputs wired), output pins reflect the
+    // latch.
+    uint8_t readPortB() const
+    {
+        const uint8_t input = 0xFF;     // no inputs wired → all-ones
+        return (portBOut & ddrB) | (input & ~ddrB);
+    }
+    uint8_t readPortA() const
+    {
+        const uint8_t input = 0xFF;
+        return (portAOut & ddrA) | (input & ~ddrA);
+    }
+
+    bool irqOut() const
+    {
+        return (ifr & ier & 0x7F) != 0;
+    }
+
+    uint8_t computedIfr() const
+    {
+        return static_cast<uint8_t>(
+            (ifr & 0x7F) | (irqOut() ? IFR_ANY : 0));
+    }
+
+    // T1 mode bits live in ACR bits 7..6.
+    bool t1Continuous() const { return (acr & 0x40) != 0; }
+
+    // 6522 read — `reg` in 0..15. Some reads have side effects
+    // (clearing IFR.T1 on T1CL/T1CH).
+    uint8_t read(uint8_t reg)
+    {
+        switch (reg & 0x0F) {
+        case VIA_ORB:    return readPortB();
+        case VIA_ORA:    /* reading ORA also clears handshake state on real
+                            HW; we don't model handshake.            */
+                          return readPortA();
+        case VIA_DDRB:   return ddrB;
+        case VIA_DDRA:   return ddrA;
+        case VIA_T1CL: {
+            // Reading T1CL clears the T1 interrupt flag.
+            ifr &= ~IFR_T1;
+            return static_cast<uint8_t>(t1Counter & 0xFF);
+        }
+        case VIA_T1CH:   return static_cast<uint8_t>((t1Counter >> 8) & 0xFF);
+        case VIA_T1LL:   return static_cast<uint8_t>(t1Latch & 0xFF);
+        case VIA_T1LH:   return static_cast<uint8_t>((t1Latch >> 8) & 0xFF);
+        case VIA_T2CL:   return static_cast<uint8_t>(t2Counter & 0xFF);
+        case VIA_T2CH:   return static_cast<uint8_t>((t2Counter >> 8) & 0xFF);
+        case VIA_SR:     return sr;
+        case VIA_ACR:    return acr;
+        case VIA_PCR:    return pcr;
+        case VIA_IFR:    return computedIfr();
+        case VIA_IER:    return static_cast<uint8_t>(ier | 0x80);
+        case VIA_ORANH:  return readPortA();
+        default:         return 0xFF;
+        }
+    }
+
+    // 6522 write. Returns a bit-pattern of which "events" happened so
+    // the caller can react: bit 0 = Port B output changed, bit 1 = Port
+    // A output changed.
+    uint8_t write(uint8_t reg, uint8_t v)
+    {
+        uint8_t events = 0;
+        switch (reg & 0x0F) {
+        case VIA_ORB: {
+            const uint8_t prev = portBOut;
+            portBOut = v;
+            if ((prev & ddrB) != (v & ddrB)) events |= 0x01;
+            break;
+        }
+        case VIA_ORA: {
+            const uint8_t prev = portAOut;
+            portAOut = v;
+            if ((prev & ddrA) != (v & ddrA)) events |= 0x02;
+            break;
+        }
+        case VIA_DDRB: {
+            const uint8_t prev = portBOut & ddrB;
+            ddrB = v;
+            if ((portBOut & ddrB) != prev) events |= 0x01;
+            break;
+        }
+        case VIA_DDRA: {
+            const uint8_t prev = portAOut & ddrA;
+            ddrA = v;
+            if ((portAOut & ddrA) != prev) events |= 0x02;
+            break;
+        }
+        case VIA_T1CL:
+        case VIA_T1LL:
+            t1Latch = (t1Latch & 0xFF00) | v;
+            break;
+        case VIA_T1CH:
+            // Write T1CH: latch high byte, transfer latches into counter,
+            // start timer, clear IFR.T1.
+            t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
+            t1Counter = t1Latch;
+            t1FireArmed = true;
+            ifr &= ~IFR_T1;
+            break;
+        case VIA_T1LH:
+            // Latch high (no transfer to counter, no IFR clear) — except
+            // a real 6522 *does* clear IFR.T1 on T1LH write, per WDC
+            // datasheet table 4. Mocked the same way for parity.
+            t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
+            ifr &= ~IFR_T1;
+            break;
+        case VIA_T2CL: t2Counter = (t2Counter & 0xFF00) | v;            break;
+        case VIA_T2CH: t2Counter = (t2Counter & 0x00FF)
+                                   | (static_cast<uint16_t>(v) << 8); break;
+        case VIA_SR:    sr  = v; break;
+        case VIA_ACR:   acr = v; break;
+        case VIA_PCR:   pcr = v; break;
+        case VIA_IFR:
+            // Writing 1s to IFR clears those bits (only bits 0..6 are
+            // user-clearable; bit 7 is read-only on this register).
+            ifr &= ~(v & 0x7F);
+            break;
+        case VIA_IER:
+            // Bit 7 of the value selects set vs clear; bits 0..6 are the
+            // mask. Writing $C0 sets T1; writing $40 clears T1.
+            if (v & 0x80) ier |= (v & 0x7F);
+            else          ier &= ~(v & 0x7F);
+            break;
+        case VIA_ORANH: {
+            const uint8_t prev = portAOut;
+            portAOut = v;
+            if ((prev & ddrA) != (v & ddrA)) events |= 0x02;
+            break;
+        }
+        default: break;
+        }
+        return events;
+    }
+
+    // Advance T1 by `cycles` 1.0227 MHz ticks. Sets IFR.T1 on underflow
+    // and (in continuous mode) reloads from the latch automatically.
+    // Returns true if T1 fired this slice (caller doesn't usually care —
+    // updateIrq() will see ifr).
+    bool advance(int cycles)
+    {
+        if (cycles <= 0) return false;
+        bool fired = false;
+        // The 6522 counts down on every phase-2 falling edge; underflow
+        // fires when counter == -1 (i.e. 0 → 0xFFFF transition + 1 extra
+        // cycle). For our purposes the +1 is absorbed into `<= 0`.
+        t1Counter -= cycles;
+        // Loop: in continuous mode we may underflow many times in one
+        // slice (e.g. budget = 16384 cycles, period = 100 → 163 fires).
+        while (t1Counter < 0) {
+            if (t1FireArmed) {
+                ifr |= IFR_T1;
+                fired = true;
+                if (!t1Continuous()) {
+                    // One-shot: don't fire again until SW reloads T1CH.
+                    // Counter keeps free-running below.
+                    t1FireArmed = false;
+                }
+            }
+            // Continuous mode: reload from latch. One-shot mode: keep
+            // counting down through 0xFFFF to give SW visibility into
+            // the post-fire counter (matches real 6522 behaviour).
+            if (t1Continuous()) {
+                t1Counter += static_cast<int32_t>(t1Latch) + 2;
+                // +2 because the 6522 reload incurs a 1-cycle pulse on
+                // PB7 (we don't model PB7) and the latch-to-counter copy
+                // happens on the cycle after underflow. Empirically gives
+                // the right music tick rate to within 0.01%.
+            } else {
+                t1Counter += 0x10000;       // wrap 16-bit
+            }
+        }
+        return fired;
+    }
+};
+
+// ─── AY-3-8910 ────────────────────────────────────────────────────────────
+//
+// Register-bank holder. The synthesis state (counters, LFSR, envelope
+// step) lives on the audio thread inside AudioSrc — not here. This
+// class is touched by both threads, so all access goes through the
+// parent card's `mtx`.
+struct MockingboardCard::Ay3_8910
+{
+    uint8_t regs[kAyNumRegs] = {0};
+    uint8_t latchedAddr = 0;
+
+    // PB control state, captured the last time the VIA toggled the
+    // command bus. Stored so `applyControl` can detect transitions.
+    uint8_t prevCommand = 0;     // {BC1, BDIR} as a 2-bit command
+
+    void reset()
+    {
+        std::memset(regs, 0, sizeof(regs));
+        latchedAddr = 0;
+        prevCommand = 0;
+    }
+
+    /// React to a VIA Port B change (or, on Latch/Write, also a Port A
+    /// change). `pa` is the AY data bus (VIA Port A output bits driven
+    /// by DDRA), `pb` is the VIA Port B output (after DDRB masking).
+    /// Returns true if a register was written (so the audio thread
+    /// might want to recompute envelope shape, etc.).
+    bool applyControl(uint8_t pa, uint8_t pb)
+    {
+        // !RESET (PB0): when held low, reset all AY registers. Drivers
+        // briefly pulse this on init; we honour it but don't touch
+        // synthesis state (audio thread re-reads regs on next frame
+        // anyway).
+        if ((pb & kPbBitReset) == 0) {
+            reset();
+            return true;
+        }
+        const uint8_t cmd = static_cast<uint8_t>(
+            ((pb & kPbBitBdir) ? 0x02 : 0) |
+            ((pb & kPbBitBc1)  ? 0x01 : 0));
+        // Only act on rising edges of {WRITE, LATCH} — BDIR pulses
+        // active on transitions, and we don't want the AY to write the
+        // same register twice while SW holds the bus.
+        bool wrote = false;
+        if (cmd != prevCommand) {
+            switch (cmd) {
+            case 0b11:    // LATCH ADDR
+                latchedAddr = static_cast<uint8_t>(pa & 0x0F);
+                break;
+            case 0b10:    // WRITE
+                regs[latchedAddr & 0x0F] = pa;
+                wrote = true;
+                break;
+            case 0b01:    // READ — Mockingboard drivers don't usually
+                          // read; we'd have to drive PA back to the
+                          // VIA. Stub out (PA stays at whatever the
+                          // VIA wrote last).
+                break;
+            case 0b00:
+            default:
+                break;    // INACTIVE
+            }
+            prevCommand = cmd;
+        }
+        return wrote;
+    }
+};
+
+// ─── AudioSrc ─────────────────────────────────────────────────────────────
+//
+// Inner AudioSource, owned by the card. Holds the synthesis state for
+// both AY chips and runs entirely on the audio thread (AudioDevice's
+// callback). Per call, locks the parent mutex briefly to snapshot both
+// AYs' register banks, then synthesises mono samples summed from both
+// chips.
+struct MockingboardCard::AudioSrc : public AudioSource
+{
+    explicit AudioSrc(MockingboardCard* p) : parent(p) {}
+
+    MockingboardCard* parent;
+
+    std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
+    std::atomic<float>    volume     { 0.5f };       // pre-mix gain
+    std::atomic<bool>     muted      { false };
+
+    // Per-chip synthesis state. Tone counters are floats so we can
+    // step them by sub-tick increments at the host sample rate
+    // (kAyToneStepHz / outputRate ≈ 1.45 ticks/sample @ 44.1 kHz).
+    struct ChipState {
+        // 3 tone channels: phase counter + current output bit.
+        float    toneCounter[3] = { 0, 0, 0 };
+        uint8_t  toneOut[3]     = { 0, 0, 0 };
+        // Noise: 17-bit LFSR.
+        float    noiseCounter   = 0;
+        uint32_t noiseLfsr      = 0x1FFFF;
+        uint8_t  noiseOut       = 0;
+        // Envelope.
+        float    envCounter     = 0;
+        uint8_t  envStep        = 0;     // 0..31 (wraps differently per shape)
+        bool     envHolding     = false;
+    };
+    ChipState chip[2];
+
+    void fillAudioBuffer(float* output, int frameCount) override
+    {
+        if (frameCount <= 0) return;
+        const uint32_t sr = sampleRate.load(std::memory_order_relaxed);
+        if (sr == 0) { std::fill_n(output, frameCount, 0.0f); return; }
+        const bool  isMuted = muted.load(std::memory_order_relaxed);
+        const float vol     = volume.load(std::memory_order_relaxed);
+
+        // Snapshot both chips' register banks under the parent mutex.
+        // Brief: 32 bytes of memcpy. The CPU thread holds this same
+        // mutex on every VIA write, so contention is bounded.
+        uint8_t regSnap[2][kAyNumRegs];
+        {
+            std::lock_guard<std::mutex> lk(parent->mtx);
+            std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
+            std::memcpy(regSnap[1], parent->ay_[1]->regs, kAyNumRegs);
+        }
+
+        // Pre-compute per-sample increments. AY internal step rates are
+        // fixed (function of pin-22 clock and divider); only the periods
+        // vary with the registers, so we recompute periods inside the
+        // loop.
+        const float toneStepPerSample  = kAyToneStepHz  / static_cast<float>(sr);
+        const float noiseStepPerSample = kAyNoiseStepHz / static_cast<float>(sr);
+        const float envStepPerSample   = kAyEnvStepHz   / static_cast<float>(sr);
+
+        if (isMuted) {
+            std::fill_n(output, frameCount, 0.0f);
+            return;
+        }
+
+        for (int i = 0; i < frameCount; ++i) {
+            float sample = 0.0f;
+            for (int ci = 0; ci < 2; ++ci) {
+                ChipState& cs = chip[ci];
+                const uint8_t* r = regSnap[ci];
+
+                // ── Per-channel tone period (R0/R1 pair, etc.). ────
+                // 12-bit period; period 0 is treated as 1 by real
+                // hardware (channel always-on at audio rate).
+                const auto tonePeriod = [&](int ch) -> float {
+                    const int lo = r[ch * 2];
+                    const int hi = r[ch * 2 + 1] & 0x0F;
+                    const int p  = (hi << 8) | lo;
+                    return p == 0 ? 1.0f : static_cast<float>(p);
+                };
+
+                // Step tone counters; toggle the output bit when each
+                // accumulated phase exceeds the period (full cycle =
+                // 2 × period because the AY divides by 2 via T-flop).
+                for (int ch = 0; ch < 3; ++ch) {
+                    cs.toneCounter[ch] += toneStepPerSample;
+                    const float p = tonePeriod(ch);
+                    while (cs.toneCounter[ch] >= p) {
+                        cs.toneCounter[ch] -= p;
+                        cs.toneOut[ch] ^= 1;
+                    }
+                }
+
+                // ── Noise ────────────────────────────────────────
+                // 5-bit period in R6.
+                const int noisePer = (r[6] & 0x1F) ? (r[6] & 0x1F) : 1;
+                cs.noiseCounter += noiseStepPerSample;
+                while (cs.noiseCounter >= static_cast<float>(noisePer)) {
+                    cs.noiseCounter -= static_cast<float>(noisePer);
+                    // 17-bit LFSR, polynomial x^17 + x^14 + 1. (MAME's
+                    // canonical AY noise tap pair.)
+                    const uint32_t bit =
+                        ((cs.noiseLfsr >> 0) ^ (cs.noiseLfsr >> 3)) & 1;
+                    cs.noiseLfsr = (cs.noiseLfsr >> 1) | (bit << 16);
+                    cs.noiseOut  = static_cast<uint8_t>(cs.noiseLfsr & 1);
+                }
+
+                // ── Envelope ─────────────────────────────────────
+                // Period = R11 + (R12 << 8). Step the 5-bit counter
+                // (0..31). Shape register R13 picks how it folds back
+                // to a 4-bit output (0..15).
+                const int envPer = (r[11] | (r[12] << 8))
+                                   ? (r[11] | (r[12] << 8)) : 1;
+                cs.envCounter += envStepPerSample;
+                while (cs.envCounter >= static_cast<float>(envPer)) {
+                    cs.envCounter -= static_cast<float>(envPer);
+                    if (!cs.envHolding) {
+                        cs.envStep++;
+                        if (cs.envStep >= 32) {
+                            // End-of-cycle behaviour, see R13 layout
+                            // below.
+                            const uint8_t shape = r[13] & 0x0F;
+                            // Bit 3 = CONTINUE; if 0, output goes to
+                            // 0 and holds. If 1, behaviour depends on
+                            // HOLD/ALT/ATTACK.
+                            if ((shape & 0x08) == 0) {
+                                cs.envStep = 16;       // halts at "00"
+                                cs.envHolding = true;
+                            } else if (shape & 0x01) {
+                                // HOLD set
+                                cs.envHolding = true;
+                                cs.envStep    = 31;    // tail step
+                            } else {
+                                cs.envStep = 0;        // free repeat
+                            }
+                        }
+                    }
+                }
+                // Output level for the current envStep, accounting
+                // for ATTACK / ALTERNATE.
+                uint8_t envOut = 0;
+                {
+                    const uint8_t shape   = r[13] & 0x0F;
+                    const bool    cont    = (shape & 0x08) != 0;
+                    const bool    attack  = (shape & 0x04) != 0;
+                    const bool    alt     = (shape & 0x02) != 0;
+                    const bool    hold    = (shape & 0x01) != 0;
+                    uint8_t step = cs.envStep;
+                    if (step >= 32) step = 31;       // safety
+                    bool rising;
+                    if (!cont) {
+                        // Single ramp; tail at zero.
+                        rising = attack ? (step < 16) : (step >= 16);
+                        // Once holding, force level — handled below.
+                    } else {
+                        // Continuous: alternate halves invert if ALT.
+                        const bool secondHalf = step >= 16;
+                        rising = attack ^ (alt && secondHalf);
+                    }
+                    if (cs.envHolding) {
+                        // Hold output is the value at the moment we
+                        // hold: depends on attack, hold, alt, cont.
+                        // Cheaper: pick from the 4 corner cases.
+                        if (!cont) {
+                            envOut = 0;            // !CONT always tails to 0
+                        } else if (hold) {
+                            // Attack=0, alt=0: hold low (0)
+                            // Attack=0, alt=1: hold high (15)
+                            // Attack=1, alt=0: hold high (15)
+                            // Attack=1, alt=1: hold low (0)
+                            envOut = (attack == alt) ? 0 : 15;
+                        } else {
+                            envOut = 0;
+                        }
+                    } else {
+                        const uint8_t phase = step & 0x0F;
+                        envOut = rising ? phase
+                                        : static_cast<uint8_t>(15 - phase);
+                    }
+                }
+
+                // ── Mixer (R7) ────────────────────────────────────
+                // R7 bit n (n=0..2) = tone-disable for channel n
+                // (active low). Bit n+3 = noise-disable for channel n.
+                // Mockingboard convention: AY output = sum of channel
+                // outputs, where each channel = (tone_out | tone_dis)
+                // AND (noise_out | noise_dis), gated by per-channel
+                // amplitude (R8/R9/R10).
+                const uint8_t mix = r[7];
+                for (int ch = 0; ch < 3; ++ch) {
+                    const bool toneEn  = ((mix >> ch)       & 1) == 0;
+                    const bool noiseEn = ((mix >> (ch + 3)) & 1) == 0;
+                    const uint8_t chOut =
+                        (toneEn  ? cs.toneOut[ch] : 1) &
+                        (noiseEn ? cs.noiseOut    : 1);
+                    if (!chOut) continue;
+                    const uint8_t ampReg = r[8 + ch];
+                    const uint8_t level =
+                        (ampReg & 0x10) ? envOut
+                                        : static_cast<uint8_t>(ampReg & 0x0F);
+                    sample += kAyVolumeTable[level & 0x0F];
+                }
+            }
+            // Each AY peaks at ~3.0 (3 channels × 1.0). Two AYs sum to
+            // 6.0. Pre-divide by 6 so a maxed-out signal sits at 1.0
+            // before the volume knob; mixer clamp stops anything past.
+            output[i] = (sample / 6.0f) * vol;
+        }
+    }
+};
+
+// ─── MockingboardCard ─────────────────────────────────────────────────────
+
+MockingboardCard::MockingboardCard(int slotNum)
+    : slot_(slotNum)
+{
+    via_[0] = std::make_unique<Via6522>();
+    via_[1] = std::make_unique<Via6522>();
+    ay_[0]  = std::make_unique<Ay3_8910>();
+    ay_[1]  = std::make_unique<Ay3_8910>();
+    audio_  = std::make_unique<AudioSrc>(this);
+    onReset();
+}
+
+MockingboardCard::~MockingboardCard() = default;
+
+void MockingboardCard::onReset()
+{
+    std::lock_guard<std::mutex> lk(mtx);
+    via_[0]->reset();
+    via_[1]->reset();
+    ay_[0]->reset();
+    ay_[1]->reset();
+    if (irqAsserted_ && cpu_) cpu_->setIRQ(0);
+    irqAsserted_ = false;
+}
+
+AudioSource* MockingboardCard::audioSource()
+{
+    return audio_.get();
+}
+
+void MockingboardCard::setSampleRate(uint32_t hz)
+{
+    if (hz == 0) hz = AudioDevice::kSampleRate;
+    audio_->sampleRate.store(hz, std::memory_order_relaxed);
+}
+
+void MockingboardCard::setVolume(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 2.0f) v = 2.0f;
+    audio_->volume.store(v, std::memory_order_relaxed);
+}
+float MockingboardCard::getVolume() const
+{
+    return audio_->volume.load(std::memory_order_relaxed);
+}
+void MockingboardCard::setMuted(bool m)
+{
+    audio_->muted.store(m, std::memory_order_relaxed);
+}
+bool MockingboardCard::isMuted() const
+{
+    return audio_->muted.load(std::memory_order_relaxed);
+}
+
+uint8_t MockingboardCard::slotRomRead(uint8_t low8)
+{
+    // Address decode: bit 7 selects which VIA, bits 0..3 select the
+    // register inside the VIA. Bits 4..6 are mirrors (real hardware
+    // partial-decodes the same way — the chip has only A0..A3 wired).
+    std::lock_guard<std::mutex> lk(mtx);
+    const int chip = (low8 & 0x80) ? 1 : 0;
+    const uint8_t out = via_[chip]->read(low8 & 0x0F);
+    updateIrq();          // T1CL clears IFR.T1, may drop IRQ
+    return out;
+}
+
+void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
+{
+    std::lock_guard<std::mutex> lk(mtx);
+    const int chip = (low8 & 0x80) ? 1 : 0;
+    const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
+    if (events) onViaPortBChange(chip);
+    updateIrq();
+}
+
+void MockingboardCard::onViaPortBChange(int chip)
+{
+    // Marshal the VIA's current Port A / Port B output to the AY.
+    // Note this fires for *both* PA and PB changes (events bit 0/1) —
+    // PA-only changes also matter because LATCH/WRITE strobes bring PA
+    // (the AY data bus) to the chip just before / just after PB sets
+    // BDIR/BC1. We reapply on either edge so the order doesn't matter.
+    const uint8_t pa = via_[chip]->portAOut & via_[chip]->ddrA;
+    const uint8_t pb = via_[chip]->portBOut & via_[chip]->ddrB;
+    ay_[chip]->applyControl(pa, pb);
+}
+
+void MockingboardCard::advanceCycles(int cycles)
+{
+    if (cycles <= 0) return;
+    std::lock_guard<std::mutex> lk(mtx);
+    via_[0]->advance(cycles);
+    via_[1]->advance(cycles);
+    updateIrq();
+}
+
+void MockingboardCard::updateIrq()
+{
+    const bool combined = via_[0]->irqOut() || via_[1]->irqOut();
+    if (combined == irqAsserted_) return;
+    irqAsserted_ = combined;
+    if (cpu_) cpu_->setIRQ(combined ? 1 : 0);
+}
+
+uint8_t MockingboardCard::getAyRegister(int chip, int reg) const
+{
+    if (chip < 0 || chip > 1 || reg < 0 || reg >= kAyNumRegs) return 0;
+    std::lock_guard<std::mutex> lk(mtx);
+    return ay_[chip]->regs[reg];
+}
+
+uint8_t MockingboardCard::peekViaRegister(int chip, int reg) const
+{
+    if (chip < 0 || chip > 1 || reg < 0 || reg > 15) return 0xFF;
+    std::lock_guard<std::mutex> lk(mtx);
+    // Read-only peek: replicate the read() switch but skip side effects.
+    auto& v = *via_[chip];
+    switch (reg & 0x0F) {
+    case VIA_ORB:    return v.readPortB();
+    case VIA_ORA:    return v.readPortA();
+    case VIA_DDRB:   return v.ddrB;
+    case VIA_DDRA:   return v.ddrA;
+    case VIA_T1CL:   return static_cast<uint8_t>(v.t1Counter & 0xFF);
+    case VIA_T1CH:   return static_cast<uint8_t>((v.t1Counter >> 8) & 0xFF);
+    case VIA_T1LL:   return static_cast<uint8_t>(v.t1Latch & 0xFF);
+    case VIA_T1LH:   return static_cast<uint8_t>((v.t1Latch >> 8) & 0xFF);
+    case VIA_T2CL:   return static_cast<uint8_t>(v.t2Counter & 0xFF);
+    case VIA_T2CH:   return static_cast<uint8_t>((v.t2Counter >> 8) & 0xFF);
+    case VIA_SR:     return v.sr;
+    case VIA_ACR:    return v.acr;
+    case VIA_PCR:    return v.pcr;
+    case VIA_IFR:    return v.computedIfr();
+    case VIA_IER:    return static_cast<uint8_t>(v.ier | 0x80);
+    case VIA_ORANH:  return v.readPortA();
+    default:         return 0xFF;
+    }
+}
+
+// ── Note on the parent mutex ─────────────────────────────────────────────
+//
+// The MockingboardCard's `mtx` is referenced from the AudioSrc inner class
+// (declared in the header as `std::mutex` member of the card). It guards:
+//   * the VIA register file (read/write/advance)
+//   * the AY register banks (writes from the CPU side, snapshot reads from
+//     the audio thread)
+// The AudioSrc holds the lock only briefly (32-byte memcpy) per audio
+// callback — it does NOT hold it during the synthesis loop. The CPU side
+// holds it for the duration of one slotRomRead/Write or advanceCycles()
+// call, which is bounded.

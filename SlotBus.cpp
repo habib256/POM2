@@ -63,6 +63,22 @@ uint8_t SlotBus::slotRomRead(uint16_t addr)
     return 0xFF;     // open bus on empty slot
 }
 
+void SlotBus::slotRomWrite(uint16_t addr, uint8_t v)
+{
+    // Mirror of slotRomRead's address decode. Forwards to the card's
+    // `slotRomWrite` (default no-op for ROM-only cards) and latches the
+    // slot as the active expansion-ROM owner — same Apple II semantics
+    // as a read into the slot ROM window.
+    if (addr < 0xC100 || addr > 0xC7FF) return;
+    const int slot = (addr >> 8) & 0x07;
+    if (slot < 1 || slot > 7) return;
+
+    activeExpansionSlot = slot;
+
+    if (auto* p = slots[slot].get())
+        p->slotRomWrite(static_cast<uint8_t>(addr & 0xFF), v);
+}
+
 uint8_t SlotBus::expansionRomRead(uint16_t addr)
 {
     if (addr < 0xC800 || addr > 0xCFFF) return 0xFF;

@@ -279,12 +279,14 @@ sont rappelés ici avec leur priorité ; les **nouveaux** items
       Karateka original, Dragon Wars, Bard's Tale, Ultima II.
       Effort : moyen (~80-120 L dans `DiskIICard`).
 
-- [ ] **Mockingboard slot 4 (AY-3-8910 × 2 + 6522 VIA)** 🆕
-      Carte son Apple II classique (POM1 n'a aucun générateur 8910 —
-      à écrire from scratch). MAME : `bus/a2bus/mockingboard.cpp`.
-      Débloque : musique Karateka intro, SFX Joust / Robotron /
-      Ms. Pac-Man, démos sonores. Effort : large (300-500 L —
-      VIA + AY-3-8910 PSG complet ; AudioSource pour mix).
+- [x] **Mockingboard slot 4 (AY-3-8910 × 2 + 6522 VIA)** 🆕
+      ✓ 2026-05-10 : `Mockingboard.h/.cpp` — 6522 VIA (ports A/B, T1
+      one-shot/continuous, IFR/IER) + AY-3-8910 PSG (3 tone channels +
+      noise + envelope). Inner `AudioSource` registered with
+      `AudioDevice`. Pinned by `tests/mockingboard_smoke_test.cpp`.
+      Slot ROM range used for MMIO (`$Cn00-$Cn0F` / `$Cn80-$Cn8F`) —
+      added `slotRomWrite` to `SlotPeripheral` for this. Selectable
+      from the Slot Configuration UI; not auto-plugged.
 
 - [x] **Text flashing 2 Hz** 🆕
       ✓ 2026-05 : `kFlashHalfPeriodFrames = 15` (250 ms @ 60 fps =

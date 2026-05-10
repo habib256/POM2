@@ -217,6 +217,10 @@ MainWindow::~MainWindow()
     settings.setFloat ("speaker_volume",  controller.speaker().getVolume());
     settings.setBool  ("speaker_muted",   controller.speaker().isMuted());
     settings.setFloat ("cassette_volume", controller.cassette().getVolume());
+    if (mockingboardCard) {
+        settings.setFloat("mockingboard_volume", mockingboardCard->getVolume());
+        settings.setBool ("mockingboard_muted",  mockingboardCard->isMuted());
+    }
 
     settings.save();
 }
@@ -244,6 +248,7 @@ MainWindow::~MainWindow()
 //   "clock"      ClockCard
 //   "chatmauve"  LeChatMauveCard
 //   "mouse"      MouseCard (Phase 4 — falls through with a warning until then)
+//   "mockingboard"  MockingboardCard (Sweet Microsystems A/C — 6522×2 + AY×2)
 void MainWindow::plugSlotsFromSettings()
 {
     namespace fs = std::filesystem;
@@ -392,6 +397,29 @@ void MainWindow::plugSlotsFromSettings()
         controller.memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugMockingboard = [&](int s) {
+        // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
+        // image to mount: software detects it by writing to the VIA at
+        // $C(s)00 and observing the read-back. We always-plug when
+        // requested. The inner AudioSource is registered with the audio
+        // device so synthesised samples mix with the speaker output, and
+        // the CPU IRQ line is wired so VIA T1 can drive the music
+        // driver's tick.
+        auto card = std::make_unique<MockingboardCard>(s);
+        card->setSampleRate(controller.audio().getActualSampleRate());
+        card->setCpuIrqLine(&controller.cpu());
+        // Default volume is conservative — the card's three-channel mix
+        // can dwarf the speaker at peak; the user can crank via the
+        // Mockingboard panel (TODO).
+        card->setVolume(settings.getFloat("mockingboard_volume", 0.5f));
+        card->setMuted(settings.getBool ("mockingboard_muted",  false));
+        if (controller.audio().isAvailable()) {
+            controller.audio().addSource(card->audioSource());
+        }
+        mockingboardCard = card.get();
+        controller.memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMouse = [&](int s) {
         // Mouse Card (MAME-faithful 68705P3 + 6821 PIA + Apple ROMs).
         // Both Apple ROMs are required — without them the card has no
@@ -444,6 +472,7 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "clock")       plugClock(s);
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
+        else if (kind == "mockingboard") plugMockingboard(s);
         else {
             pom2::log().warn("Slots",
                 "Slot " + std::to_string(s) + " has unknown card type '" +

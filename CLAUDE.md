@@ -391,6 +391,62 @@ presence.
   true (default). DOS 3.3 disks ignore the card entirely. The headless
   build (`pom2_headless`) plugs it unconditionally for the live demo.
 
+### Mockingboard (slot 4 by convention)
+
+- **MockingboardCard** — Sweet Microsystems-compatible sound card, two
+  6522 VIAs each driving an AY-3-8910 PSG (3 tone channels + noise +
+  envelope). No ROM dependency; software detects the card by writing to
+  the VIA at `$Cn00` and reading back. The 6522s are decoded in the
+  *slot ROM* window — `$Cn00-$Cn0F` = VIA #1, `$Cn80-$Cn8F` = VIA #2 —
+  not in the per-slot device-select range, which is why the card needed
+  the new `slotRomWrite` callback (see `SlotPeripheral.h`).
+- **VIA → AY wiring**:
+  ```
+  Port A (8 bits)   →  AY data bus  (D0..D7)
+  Port B bit 0      →  AY !RESET    (active low)
+  Port B bit 1      →  BDIR
+  Port B bit 2      →  BC1
+  ```
+  Control sequence: `{BDIR, BC1}` = `00` inactive, `01` read, `10`
+  write to latched register, `11` latch register address. Drivers do
+  LATCH then WRITE (with INACTIVE between) to deposit a byte in any AY
+  register. `$Cn00` (Port B) toggling between LATCH/WRITE/INACTIVE on
+  rising edges is what `Ay3_8910::applyControl` keys off of.
+- **6522 VIA subset** modelled: ports A/B with DDR masking, T1 timer
+  (latch + counter, one-shot and continuous modes), IFR/IER (bits 6/7
+  for T1; bit 7 computed dynamically from `ifr & ier & 0x7F`). The
+  T1CL read clears `IFR.T1` exactly as on real silicon; IER `$80` set
+  bit selects set-vs-clear semantics (write `$C0` enables T1, write
+  `$40` disables). T2, SR, PCR, CA1/CB1 handshake — not modelled.
+  Music drivers exclusively use T1.
+- **AY-3-8910 synthesis** runs on the audio thread inside the inner
+  `AudioSrc` (an `AudioSource` registered with `AudioDevice`). The
+  CPU thread updates AY register state under the card's `mtx`; the
+  audio callback grabs a 32-byte snapshot of both register banks
+  under that mutex, releases, then synthesises samples lock-free.
+  Tone counters use float phase accumulators stepping at
+  `clockHz/16/sampleRate`; the 17-bit noise LFSR uses the canonical
+  `x^17 + x^14 + 1` taps; envelope walks 32 steps with the WDC R13
+  shape register controlling continue/attack/alternate/hold. Both AY
+  chips are summed to mono (Mockingboard is stereo on real hardware,
+  but `AudioDevice` is mono-only — minor loss for 3-voice arpeggios).
+- **IRQ aggregation**: each VIA's `irqOut()` (= `(ifr & ier & 0x7F)
+  != 0`) is OR'd onto the slot IRQ, forwarded to `M6502::setIRQ()`.
+  The card caches the combined state so transitions only call the
+  CPU asserter once. Pinned by both the continuous and one-shot T1
+  IRQ tests in `mockingboard_smoke_test.cpp`.
+- **Wiring**: not auto-plugged. The user picks "Mockingboard A/C" in
+  the Slot Configuration UI for any free slot (4 by convention; some
+  software hard-codes that). Volume + mute persist via
+  `mockingboard_volume` / `mockingboard_muted` settings keys. Tear-down
+  on slot-config restart removes the audio source from `AudioDevice`
+  before destroying the card — the `AudioSource` lives inside the
+  card, so order matters.
+- **Pinned by** `tests/mockingboard_smoke_test.cpp`: $Cn0X / $Cn8X
+  address decode, VIA → AY register addressing via the LATCH→WRITE
+  sequence, T1 IRQ continuous + one-shot, T1CL read clearing IFR.T1,
+  AY tone synthesis producing non-silent output for a non-zero period.
+
 ### ProDOS host folder (`prodos_disk/`)
 
 - **`ProDOSVolume`** synthesises a read-only ProDOS volume image (block

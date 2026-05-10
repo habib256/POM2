@@ -894,10 +894,13 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         return;
     }
     if (addr <= 0xC7FF) {
-        // Slot ROM is read-only on real hardware. Drop the write but
-        // still let the bus mark the slot as active so a write-into-rom
-        // strobe (uncommon but legal) selects the slot for $C800-$CFFF.
-        slots.slotRomRead(addr);
+        // Slot ROM is read-only on most cards, but a handful (Mockingboard
+        // in particular) decode 6522 VIA MMIO inside the $CnXX window.
+        // SlotBus::slotRomWrite forwards to the card and latches the slot
+        // as the active expansion-ROM owner (same as a read into the
+        // window), so cards that genuinely have read-only ROM still see
+        // their slot select on writes.
+        slots.slotRomWrite(addr, value);
         return;
     }
     // $C800-$CFFF — expansion ROM, conventionally read-only. Forward
