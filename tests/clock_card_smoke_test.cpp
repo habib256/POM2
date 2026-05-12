@@ -159,14 +159,16 @@ void testStbRelatchesTime()
     assert(readSeconds() == 0x42);
 }
 
-// Reads outside $C0n0 are open bus — pinned so any future register
-// expansion is intentional rather than accidental.
-void testOpenBusOnOtherDeviceSelectOffsets()
+// Reads across $C0n0-$C0nF all mirror DATA_OUT (MAME
+// `a2thunderclock.cpp:112-115` ignores `offset` on read). After
+// `onReset` the shift register is zero, so bit 7 = 0 on every offset.
+void testDataOutMirrorOnAllDeviceSelectOffsets()
 {
     ClockCard card(4);
-    assert(card.deviceSelectRead(1)  == 0xFF);
-    assert(card.deviceSelectRead(2)  == 0xFF);
-    assert(card.deviceSelectRead(15) == 0xFF);
+    assert(card.deviceSelectRead(0)  == 0x00);
+    assert(card.deviceSelectRead(1)  == 0x00);
+    assert(card.deviceSelectRead(2)  == 0x00);
+    assert(card.deviceSelectRead(15) == 0x00);
 }
 
 }  // namespace
@@ -185,8 +187,8 @@ int main()
     testStbRelatchesTime();
     std::printf("STB rising-edge relatches time: OK\n");
 
-    testOpenBusOnOtherDeviceSelectOffsets();
-    std::printf("Open bus on non-$C0n0 device selects: OK\n");
+    testDataOutMirrorOnAllDeviceSelectOffsets();
+    std::printf("DATA_OUT mirrored across $C0n0-$C0nF: OK\n");
 
     std::printf("clock_card_smoke OK\n");
     return 0;

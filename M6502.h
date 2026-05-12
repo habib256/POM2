@@ -269,6 +269,14 @@ private :
     OpcodeEntry opcodeTable[256]{};
     CpuMode     cpuMode = CpuMode::CMOS;
 
+    /// Set by `STP` ($CB on 65C02 / W65C02). When true, `step()` skips
+    /// opcode dispatch *and* IRQ/NMI service — only `softReset()` /
+    /// `hardReset()` can clear it (matches WDC + MAME
+    /// `ow65c02.lst:715-718` where STP is a `for(;;)` loop that only
+    /// `reset_c` can exit). Previously POM2 parked PC and let NMI vector
+    /// out, which woke STP spuriously.
+    bool halted = false;
+
 
 
 

@@ -86,7 +86,7 @@ int main()
     // Switch to graphics + 80col + hires + dhgr.
     mem.memRead(CLR_TEXT);
     mem.memRead(SET_HIRES);
-    mem.memRead(IIE_80COL_ON);
+    mem.memWrite(IIE_80COL_ON, 0);
 
     // ── Test pattern A: aux=0x55, main=0x14 — designed to put two
     // *distinct* gray-coded cells side by side, so the Chat Mauve

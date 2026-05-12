@@ -730,23 +730,31 @@ bool CassetteDevice::pcmToDurations(const std::vector<float>& mono,
     if (mono.empty())     { outErr = "Audio file does not contain samples"; return false; }
     if (sampleRate == 0)  { outErr = "Audio file has an invalid sample rate"; return false; }
 
-    static constexpr float kThreshold = 0.02f;
+    // Sign-based transition detection — matches MAME `apple2.cpp:362`
+    // `(m_cassette->input() > 0.0 ? 0 : 0x80)`. Real hardware reads the
+    // raw sign of the audio comparator at runtime, so faint rips
+    // decode just as well as loud ones. The previous `±0.02` deadband
+    // rejected any file whose first ~16 ms of sync gap had amplitude
+    // under that floor (common with archived `wav` rips that were
+    // normalised long after the master tape demagnetised).
     size_t firstActive = 0;
-    while (firstActive < mono.size() && std::fabs(mono[firstActive]) < kThreshold)
+    // Skip exact-zero leading silence so we have a defined initial
+    // sign. The first non-zero sample seeds outInitialLevel.
+    while (firstActive < mono.size() && mono[firstActive] == 0.0f)
         ++firstActive;
     if (firstActive == mono.size()) {
         outErr = "Audio file does not contain a detectable cassette signal";
         return false;
     }
 
-    outInitialLevel = mono[firstActive] >= 0.0f;
+    outInitialLevel = mono[firstActive] > 0.0f;
     bool currentLevel = outInitialLevel;
     size_t lastTransition = firstActive;
 
     for (size_t i = firstActive + 1; i < mono.size(); ++i) {
         bool newLevel = currentLevel;
-        if (mono[i] >=  kThreshold) newLevel = true;
-        else if (mono[i] <= -kThreshold) newLevel = false;
+        if (mono[i] >  0.0f) newLevel = true;
+        else if (mono[i] < 0.0f) newLevel = false;
         if (newLevel != currentLevel) {
             const size_t deltaSamples = i - lastTransition;
             const uint32_t cycles = std::max<uint32_t>(1, static_cast<uint32_t>(

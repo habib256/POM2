@@ -331,6 +331,17 @@ private:
     bool vblIrqPending = false;
     bool vblWasActive  = true;       // tracks transition into VBL window
 
+    // Annunciator output state. AN0..AN3 are toggled by paired soft
+    // switches ($C058/9 = AN0, $C05A/B = AN1, $C05C/D = AN2,
+    // $C05E/F = AN3 — AN3 lives in `display.an3` because it also
+    // drives Le Chat Mauve's FIFO clock). POM2 doesn't currently
+    // forward AN0/1/2 to any external sink; the state is tracked so
+    // a future GameI/O-style pin model can pick it up without
+    // restructuring the soft-switch handler.
+    bool an0 = false;
+    bool an1 = false;
+    bool an2 = false;
+
     void markRomRegion(uint16_t lo, uint16_t hi);
     uint8_t softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal);
     uint8_t languageCardSwitchAccess(uint16_t addr, bool isWrite);

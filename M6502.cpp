@@ -377,6 +377,15 @@ void M6502::ADC(void)
             statusRegister &= ~M6502::Status::C;
 
         accumulator = tmp & 0xFF;
+        // 65C02 decimal mode: recompute N and Z from the final BCD-
+        // adjusted accumulator + add 1 extra cycle (MAME
+        // `ow65c02.lst:11-14` `adc_c_aba`: `if(P & F_D) { read_pc();
+        // set_nz(m_A); }`). NMOS leaves N/Z from the intermediate
+        // binary sum (which is what the code above set).
+        if (cpuMode == CpuMode::CMOS) {
+            setStatusRegisterNZ(accumulator);
+            cycles++;
+        }
     }
     else
     {
@@ -408,14 +417,29 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
 
     if (statusRegister & M6502::Status::D)
     {
-       // V flag in BCD mode is undefined on NMOS 6502; N/Z set from binary result
        tmp = (Op1 & 0x0F) - (Op2 & 0x0F) - (statusRegister & M6502::Status::C ? 0 : 1);
         accumulator = !(tmp & 0x10) ? tmp : tmp - 6;
       tmp = (Op1 & 0xF0) - (Op2 & 0xF0) - (accumulator & 0x10);
         accumulator = (accumulator & 0x0F) | (!(tmp & 0x100) ? tmp : tmp - 0x60);
      tmp = Op1 - Op2 - (statusRegister & M6502::Status::C ? 0 : 1);
         setFlagBorrow(tmp);
-        setStatusRegisterNZ((uint8_t)tmp);
+        // NMOS: V undefined in BCD; N/Z from binary intermediate
+        // `tmp`. CMOS: N/Z recomputed from final adjusted accumulator
+        // + V also valid + 1 extra cycle (MAME `ow65c02.lst:11-14`
+        // sbc_c_aba mirrors adc_c_aba).
+        if (cpuMode == CpuMode::CMOS) {
+            setStatusRegisterNZ(accumulator);
+            // V on CMOS SBC decimal: compute from final accumulator
+            // using same NMOS-style binary overflow test (works
+            // because the BCD adjustment is monotonic).
+            if (((Op1 ^ Op2) & (Op1 ^ accumulator)) & 0x80)
+                statusRegister |= M6502::Status::V;
+            else
+                statusRegister &= ~M6502::Status::V;
+            cycles++;
+        } else {
+            setStatusRegisterNZ((uint8_t)tmp);
+        }
     }
     else
     {
@@ -1108,9 +1132,16 @@ void M6502::WAI(void)
 
 void M6502::STP(void)
 {
-    // Halts the CPU until a reset. Same parking trick — PC stays put
-    // and only a hardReset() will move it.
-    programCounter--;
+    // WDC `STP` ($CB) halts the CPU until a RESET. Per MAME
+    // `ow65c02.lst:715-718` this is a `for(;;) { eat_all_cycles; }`
+    // loop inside the dispatch handler — only `reset_c` (RESET line)
+    // can break out. NMI does **not** wake STP (unlike WAI).
+    //
+    // POM2 can't run a forever loop inside one instruction (we're
+    // cooperative-stepping), so we set a sticky `halted` flag.
+    // `step()` short-circuits to a cycle-consuming no-op while the
+    // flag is set, and `softReset()` / `hardReset()` clear it.
+    halted = true;
     cycles += 3;
 }
 
@@ -1544,6 +1575,7 @@ void M6502::hardReset(void)
     accumulator = 0;
     xRegister = 0;
     yRegister = 0;
+    halted = false;
 
     if (memory != nullptr) {
         for (int i = 0x100; i <= 0x1FF; i++) {
@@ -1556,6 +1588,13 @@ void M6502::hardReset(void)
 void M6502::softReset(void)
 {
     statusRegister |= M6502::Status::I;
+    // 65C02 (CMOS) reset also clears D — MAME `ow65c02.lst:814`:
+    // `m_P = (m_P | F_I) & ~F_D;`. NMOS leaves D undefined; the safer
+    // behaviour is to NOT touch D in NMOS mode.
+    if (cpuMode == CpuMode::CMOS) {
+        statusRegister &= ~M6502::Status::D;
+    }
+    halted = false;
     stackPointer = 0xFF;
     programCounter = memReadAbsolute(0xFFFC);
 }
@@ -1572,6 +1611,14 @@ void M6502::setNMI(void)
 
 void M6502::step(void)
 {
+    // STP-halted CPU: burn cycles, ignore IRQ/NMI (only RESET wakes,
+    // and that's `softReset()` / `hardReset()` clearing `halted`).
+    if (halted) {
+        cycles = 2;
+        if (memory != nullptr) memory->advanceCycles(cycles);
+        return;
+    }
+
     // NMI has higher priority than IRQ on real silicon. MAME models
     // this by picking the NMI vector inside `brk_c_imp` when both are
     // pending (ow65c02.lst:247 + m6502.cpp prefetch_end). The previous

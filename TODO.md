@@ -34,40 +34,27 @@ Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
       vs dispatch per-bus-cycle MAME m6502. Documenté tradeoff ; rare
       impact sur protections cycle-sensibles.
 
-## 2. CPU
+## 2. CPU — **done 2026-05-13**
 
-- [ ] 🟠 **Décimal 65C02 : N/V/Z sur intermédiaire binaire au lieu de A
-      ajusté** (`M6502.cpp:325-345, 379-408`). MAME `ow65c02.lst:11-14`
-      recompute `set_nz(m_A)` après ajustement BCD. Le +1 cycle décimal
-      est OK ; reste les flags.
-- [ ] 🟡 **STP réveillable par NMI** (`M6502.cpp:1033-1039`). MAME
-      `ow65c02.lst:715-718` : seul RESET sort de STP. Rare.
-- [ ] 🟡 **`softReset` n'efface pas D** (`M6502.cpp:1480-1485`). MAME
-      `ow65c02.lst:814` clear D au reset CMOS (NMOS leave D undefined,
-      OK).
+Tous les items terminés :
+- Décimal 65C02 N/V/Z recomputé sur A ajusté (+1 cycle) — MAME
+  `ow65c02.lst:11-14`
+- STP : flag `halted` qui ignore IRQ/NMI ; seul RESET wake — MAME
+  `ow65c02.lst:715-718`
+- `softReset` clear D en mode CMOS — MAME `ow65c02.lst:814`
 
-## 3. IIe paging
+## 3. IIe paging — **done 2026-05-13**
 
-- [ ] 🟠 **80COL `$C00C/$C00D` ne broadcast pas `broadcastVideoSwitch`
-      en mode IIe** — Le Chat Mauve FIFO ne reçoit donc pas le toggle
-      en IIe (fonctionne en II+ via le bloc standalone). Fix :
-      ajouter le broadcast dans `iieHandleSoftSwitch` ou gate le
-      standalone sur `!iieMode`.
-- [ ] 🟡 **`$CFFF` ne désactive pas le slot actif quand INTCXROM=on**
-      (`Memory.cpp:854-862`). MAME `c800_r:2634-2653` clear cnxx_slot
-      toujours, indépendamment d'INTCXROM. Ajouter
-      `if (addr == 0xCFFF) slots.deactivateExpansion();` avant le
-      short-circuit internal-ROM.
-- [ ] 🟡 **`$C019` non gated sur `iieMode`** (`Memory.cpp:452-463`).
-      En II+ devrait retourner floating bus ; aujourd'hui POM2 retourne
-      0x80/0x00 basé sur scanline pour les deux.
-- [ ] 🟢 **Race condition** : `iieMemRead`/`Write` lisent
-      `display.page2`/`hiRes` sans `stateMutex` (`Memory.cpp:666, 672,
-      691, 700`). TSAN-flagged, en pratique bool-aligned.
-- [ ] 🟢 **`$C040` utility strobe pulse** non modélisé. MAME
-      `apple2e.cpp:1711-1716`. Pas de consumer POM2.
-- [ ] 🟢 **Annunciators AN0-AN2 `$C058-$C05D`** non drivés (MAME
-      `:1750-1773`).
+Tous les items terminés :
+- 80COL broadcast déplacé dans `iieHandleSoftSwitch`, standalone
+  block gated `!iieMode`
+- `$CFFF` deactivate explicit avant le short-circuit INTCXROM (read +
+  write paths) — MAME `apple2e.cpp:2636-2645`
+- `$C019` gated sur `iieMode` (II+ tombe sur floating bus)
+- Race annotée (writeur + lecteur tous deux sur CPU thread — pas de
+  vraie race ; UI thread passe par `getDisplayState()` sous lock)
+- `$C040` strobe swallowed (no-op return)
+- AN0/AN1/AN2 state tracking ajouté ($C058-$C05D)
 
 ## 4. Display
 
@@ -87,8 +74,7 @@ Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
       mono (MAME `apple2video.cpp:460-471`). Cosmétique.
 - [ ] 🟢 **Floating-TTL** `empty_words[40]={0x3fff,…}` pour rows
       hors-bounds non modélisé (MAME `:751-758`). Jamais atteint en 48K+.
-- [ ] 🟢 **`cursorOverlay` dead code** (`Apple2Display.h:79-80`).
-      Supprimer ou implémenter.
+- [x] ✓ `cursorOverlay` dead code removed (2026-05-13).
 - [ ] 🟢 **DHGR per-scanline mode switching** — bottom-of-mixed utilise
       une région 4-line statique.
 
@@ -104,8 +90,8 @@ Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
        0.1319, 0.2164, 0.2974, 0.3909, 0.5128, 0.6371, 0.8186, 1.0000}`
 - [ ] 🟢 **Port A read mask par DDR** (`Mockingboard.cpp:126-130`).
       Devrait retourner pin state. Sans impact concret sur Mockingboard.
-- [ ] 🟡 **Cassette seuil `±0.02` pré-extrait au load** vs MAME
-      `> 0.0` à runtime. Rejette les rips faible volume.
+- [x] ✓ Cassette seuil sign-based (MAME `apple2.cpp:362` parity) —
+      done 2026-05-13.
 - [ ] 🟡 **Cassette auto-rewind 500 ms** si pas de poll $C060
       (`CassetteDevice.cpp:461-465`). MAME ne rewind jamais. Casse les
       loaders custom polling sporadique.
@@ -138,39 +124,44 @@ Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
 
 ## 7. ClockCard / ThunderClock+
 
+DONE 2026-05-13 :
+- `read_c0nx` mirror DATA_OUT sur tous les offsets — MAME
+  `a2thunderclock.cpp:112-115`
+
+Reste :
+
 - [ ] 🟠 **Seul `MODE_TIME_READ` implémenté** (`ClockCard.cpp:13-16`).
       Manque TIME_SET (impossible de régler), TP=64/256/2048 Hz
       (utilitaires interval-timing comme *Clockworks* ne tickent
-      jamais).
+      jamais). Non-trivial : TIME_SET demande le protocole de shift
+      inverse + un compteur interne pour ne pas re-lire `std::time()`.
 - [ ] 🟠 **`MODE_SHIFT` non gaté** — POM2 shift sur n'importe quel CLK
       rise. MAME `upd1990a.cpp:312-327` shift only when `m_c ==
-      MODE_SHIFT`.
+      MODE_SHIFT`. Risque : la driver ProDOS shifte en TIME_READ
+      directement (pas de re-switch vers MODE_SHIFT entre STB et CLK
+      pulses) — gater strict casserait la lecture.
 - [ ] 🟡 **DATA_OUT live** (`ClockCard.cpp:88-94`) vs MAME latch sur
       CLK edge en MODE_SHIFT. Differs hors ProDOS.
-- [ ] 🟡 **`read_c0nx` ignore offset** — POM2 retourne `0xFF` pour
-      `$C0n1-$C0nF` ; MAME mirror DATA_OUT sur tous les 16 offsets.
 - [ ] 🟢 **Pas de compteur interne 1 Hz** — `std::time()` à chaque
-      STB. Casse déterminisme snapshot.
+      STB. Casse déterminisme snapshot. Couplé à TIME_SET (le compteur
+      sert à avancer la base après set).
 - [ ] 🟢 **Slot ROM essentiellement vide** (256 B signature + NOPs).
       Vrai ThunderClock+ ROM = 2 KB avec driver RTS-able pour DOS 3.3
       / Applesoft.
 
-## 8. Soft switches misc
+## 8. Soft switches misc — **done 2026-05-13**
 
-- [ ] 🟡 **`$C000` non mirroré sur `$C001-$C00F`** comme keyboard latch
-      en mode II+ (`Memory.cpp:425`). MAME `apple2.cpp:548`
-      `.mirror(0xf)`.
-- [ ] 🟡 **`$C010` bit 7 devrait refléter any-key-down en IIe**
-      (`Memory.cpp:429`). MAME `apple2e.cpp:1833`.
-- [ ] 🟡 **`$C068-$C06F` mirror `$C060-$C067` manquant** sur II+ et
-      IIe (STATEREG / band-select sont IIgs-only, pas IIe).
-- [ ] 🟡 **`$C070` PTRIG ne retourne pas floating bus**
-      (`Memory.cpp:582-585`) et n'alias pas `$C070-$C07F`. MAME
-      `apple2.cpp:555` `.mirror(0xf)` ; MAME modèle aussi le one-shot
-      558 (strobe ignored if timer still running).
-- [ ] 🟢 **Floating-bus low 7 bits sur `$C061-$C067`** (paddles +
-      buttons). POM2 retourne `0x80`/`0x00` purs, MAME OR avec video
-      MUX byte.
+Tous les items terminés :
+- `$C000-$C00F` keyboard latch mirror (read returns latch, write
+  dispatches paging) — MAME `apple2.cpp:548` + `apple2e.cpp:1825-1828`
+- `$C010` IIe any-key-down bit 7 (approximé via `keyReady` strobe
+  state pre-clear)
+- `$C068-$C06F` mirror $C060-$C067 (low 3 bits déterminent le
+  registre)
+- `$C070-$C07F` PTRIG alias + retour floating-bus (one-shot 558
+  monostable laissé comme simplification)
+- Floating-bus dans low 7 bits sur `$C061-$C067` (OR avec
+  `floatingBus() & 0x7F`)
 
 ## 9. Features missing
 

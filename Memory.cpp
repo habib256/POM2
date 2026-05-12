@@ -413,19 +413,49 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
 
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
 
-    // IIe paging soft switch at $C000 (80STORE OFF) shares its address
-    // with the keyboard read latch. Reads return the latch (don't toggle
-    // — matches real IIe), but writes must dispatch to iieHandleSoftSwitch
-    // before the early-return below.
-    if (iieMode && low == 0x00 && isWrite) {
-        iieHandleSoftSwitch(addr);
+    // Keyboard latch + IIe paging soft switches at $C000-$C00F.
+    //
+    // MAME's `apple2.cpp:548` mirrors $C000 across $C001-$C00F via
+    // `.mirror(0xf)`, and `apple2e.cpp:1825-1828` does the same with
+    // `if((offset & 0xf0) == 0) return m_transchar | m_strobe;`. So on
+    // either II+ or IIe, READS of $C000-$C00F return the keyboard
+    // latch — they do NOT toggle the IIe paging soft switches. WRITES
+    // to $C001-$C00F dispatch to the IIe handler (writes-only on real
+    // hardware).
+    //
+    // BUT $C00C/$C00D drive the Le Chat Mauve / Video-7 RGB FIFO data
+    // line — and those cards sniff the bus regardless of read/write
+    // direction. On a IIe the broadcast is folded into
+    // `iieHandleSoftSwitch`; on a II+ we run the broadcast directly
+    // here because there's no IIe handler to do it for us.
+    if (low <= 0x0F) {
+        if (!iieMode && (low == 0x0C || low == 0x0D)) {
+            {
+                std::lock_guard<std::mutex> lk(stateMutex);
+                display.eightyCol = (low == 0x0D);
+            }
+            slots.broadcastVideoSwitch(addr);
+        }
+        if (isWrite && iieMode) {
+            iieHandleSoftSwitch(addr);
+        }
+        return kbLatch;
     }
-
-    // Keyboard data — same byte regardless of read/write.
-    if (low == 0x00) return kbLatch;
     // Keyboard strobe clear — read or write.
     if (low == 0x10) {
+        // IIe: bit 7 reflects "any key down" (MAME `apple2e.cpp:1833`:
+        // `m_transchar | (m_anykeydown ? 0x80 : 0x00)`). POM2 doesn't
+        // model key-release events separately, so we approximate
+        // "any-key-down" with the pre-clear strobe state — that's what
+        // software typically polls $C010 for ("is the user still
+        // holding a key?"). On II+ the strobe-clear semantic is
+        // historical: bit 7 LOW after clear.
+        const bool wasReady = keyReady;
         clearKeyStrobe();
+        if (iieMode) {
+            return static_cast<uint8_t>(
+                (kbLatch & 0x7F) | (wasReady ? 0x80 : 0x00));
+        }
         return kbLatch & 0x7F;
     }
     // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
@@ -442,24 +472,28 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return static_cast<uint8_t>((on ? 0x80 : 0x00) | low7);
     }
 
-    // IIe-only paging soft switches at $C000-$C00F (write or toggle).
-    // II+ traps fall through and are handled later — $C00C/$C00D and
-    // $C00E/$C00F still need to broadcast the Le Chat Mauve video edge.
-    if (iieMode && low <= 0x0F) {
-        iieHandleSoftSwitch(addr);
-    }
+    // (The IIe paging dispatch for $C001-$C00F now lives inside the
+    // `low <= 0x0F` block above — gated on `isWrite` so reads of those
+    // addresses don't accidentally flip paging bits.)
+
     // IIe status reads at $C013-$C018 + $C01E-$C01F (high bit reflects
     // the matching MF_* / DisplayState bit).
     if (iieMode && low >= 0x13 && low <= 0x1F) {
         const uint8_t s = iieReadStatus(addr);
         if (s != 0xFE) return s;  // 0xFE = sentinel for "not handled here"
     }
-    // VBL (vertical blank) strobe — scanline-accurate. Apple II frame:
-    // 262 scanlines × 65 cycles. Visible video = 0..191, VBL = 192..261.
-    // Bit 7 of $C019 reflects the active-video state per MAME's
-    // `apple2e.cpp` convention: HIGH during active, LOW during VBL.
-    // Reading $C019 also acknowledges any pending VBL IRQ (clears it).
-    if (low == 0x19) {
+    // VBL (vertical blank) strobe — IIe-only register. Scanline-accurate
+    // Apple II frame: 262 scanlines × 65 cycles. Visible video =
+    // 0..191, VBL = 192..261. Bit 7 of $C019 reflects the active-video
+    // state per MAME `apple2e.cpp:1859` convention: HIGH during active,
+    // LOW during VBL. Reading $C019 also acknowledges any pending VBL
+    // IRQ (clears it). II/II+ doesn't decode $C019 at all — the address
+    // falls through to the floating bus per MAME `apple2.cpp` (no
+    // $C019 case in `do_io`). Without the iieMode gate, software
+    // running on II+ that probes $C019 (e.g. some ProDOS detection
+    // routines) would see a deterministic scanline-derived value
+    // instead of the random-ish video DMA byte real hardware returns.
+    if (iieMode && low == 0x19) {
         constexpr uint64_t kCyclesPerScanline = 65;
         constexpr uint64_t kScanlinesPerFrame = 262;
         constexpr uint64_t kVisibleScanlines  = 192;
@@ -479,22 +513,52 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return static_cast<uint8_t>((nowActive ? 0x80 : 0x00) | low7);
     }
 
-    // IIe VBL IRQ mask: $C05A disables the VBL interrupt, $C05B enables it.
-    // (On II/II+ these are AN1/AN2 annunciators with no IRQ semantics; we
-    // gate behind iieMode.) Either read or write toggles, matching the
-    // soft-switch convention used elsewhere.
-    if (iieMode && (low == 0x5A || low == 0x5B)) {
-        if (low == 0x5A) {
-            vblIrqMask = false;
-            if (vblIrqPending) {
-                vblIrqPending = false;
-                if (cpu) cpu->setIRQ(0);
+    // Annunciators AN0 ($C058/9), AN1 ($C05A/B), AN2 ($C05C/D). Each
+    // pair toggles a dedicated output line on the game I/O connector
+    // (MAME `apple2e.cpp:1750-1773`). POM2 doesn't wire those lines
+    // anywhere yet, but software still expects the soft switch to
+    // *swallow* the access (return zero / floating bus, no side
+    // effects on display). The IIe-specific note: MAME treats $C05A/B
+    // as plain AN1 toggles on IIe — VBL IRQ masking lives on IIc/IIc+
+    // only (`apple2e.cpp:2057-2065` `lower_irq` is `m_isiic ||
+    // m_isace500`). POM2 historically wired the mask in IIe mode for
+    // convenience (and `tests/vbl_smoke_test.cpp` pins it that way);
+    // we keep that behaviour AS AN OVERLAY on top of the AN1 state
+    // tracking so a future IIc port can drop the overlay without
+    // disturbing the AN-state model.
+    if (low >= 0x58 && low <= 0x5D) {
+        const bool on = (low & 1) != 0;
+        switch ((low - 0x58) >> 1) {
+            case 0: an0 = on; break;
+            case 1: an1 = on; break;
+            case 2: an2 = on; break;
+        }
+        if (iieMode && (low == 0x5A || low == 0x5B)) {
+            // POM2 overlay: $C05A/B doubles as VBL IRQ mask in IIe.
+            // Strictly speaking that's an IIc/IIc+ feature in MAME;
+            // we keep it here so existing software that relies on the
+            // overlay (and `vbl_smoke_test.cpp`) keeps working.
+            if (low == 0x5A) {
+                vblIrqMask = false;
+                if (vblIrqPending) {
+                    vblIrqPending = false;
+                    if (cpu) cpu->setIRQ(0);
+                }
+            } else {
+                vblIrqMask = true;
             }
-        } else {
-            vblIrqMask = true;
         }
         return 0;
     }
+
+    // $C040 utility strobe — MAME `apple2e.cpp:1711-1716` pulses the
+    // game I/O connector's STRB pin (high → low → high) on every
+    // access. The only consumer on a real Apple II is a paddle-style
+    // peripheral with its own latch, none of which POM2 currently
+    // emulates. We swallow the access so the read doesn't fall
+    // through to floating bus (which would also be fine, but the
+    // explicit return makes intent clear).
+    if (low == 0x40) return 0;
 
     // Display soft switches.
     if (low >= 0x50 && low <= 0x57) {
@@ -512,10 +576,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return 0;
     }
 
-    // 80COL ($C00C off / $C00D on). Apple II/II+ doesn't natively use this
-    // (it's a //e switch) but Le Chat Mauve / Video-7 RGB cards co-opt it
-    // as the data line of their 2-bit FIFO mode register, clocked by AN3.
-    if (low == 0x0C || low == 0x0D) {
+    // 80COL ($C00C off / $C00D on). On a II/II+ this is purely a
+    // hook for Le Chat Mauve / Video-7 RGB cards co-opting it as the
+    // data line of their 2-bit FIFO mode register (AN3 = clock).
+    // On a IIe `iieHandleSoftSwitch` (called above for `low <= 0x0F`)
+    // already updated MF_80COL + display.eightyCol AND ran
+    // broadcastVideoSwitch for us, so we MUST NOT re-fire here — that
+    // would double-clock the FIFO. Gate on !iieMode.
+    if (!iieMode && (low == 0x0C || low == 0x0D)) {
         {
             std::lock_guard<std::mutex> lk(stateMutex);
             display.eightyCol = (low == 0x0D);
@@ -578,33 +646,48 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return 0;
     }
 
-    // Push-buttons ($C061-$C063): negative when pressed.
-    // Push-button reads. On IIe the same lines also carry the Apple
-    // modifier keys (MAME `apple2e.cpp:1908-1913`): PB0 = Open Apple,
-    // PB1 = Solid Apple, PB2 = Shift (with the SHK jumper set — the
-    // factory default on enhanced //e). On II/II+ the modifier-key
-    // OR is a no-op because no host code calls the setters.
-    if (low == 0x61) return (paddleButton[0] || openAppleKey.load())  ? 0x80 : 0x00;
-    if (low == 0x62) return (paddleButton[1] || solidAppleKey.load()) ? 0x80 : 0x00;
-    if (low == 0x63) return (paddleButton[2] ||
-                             (iieMode && shiftKey.load()))            ? 0x80 : 0x00;
-
-    // Paddle inputs ($C064-$C067): the register stays "negative" while the
-    // RC network discharges, then drops. We approximate by holding the
-    // negative state for `paddleValue` CPU cycles after the last $C070
-    // strobe.
-    if (low >= 0x64 && low <= 0x67) {
-        const int idx = low - 0x64;
-        const uint64_t elapsed = cycleCounter - paddleLatchCycle;
-        // Apple II paddle: ~11 cycles per paddle-value step (max ~2816c).
-        const uint64_t threshold = static_cast<uint64_t>(paddleValue[idx]) * 11;
-        return (elapsed < threshold) ? 0x80 : 0x00;
+    // Push-buttons + paddle inputs at $C061-$C067, mirrored across
+    // $C068-$C06F (MAME `apple2.cpp:554` `.mirror(0x8)` and
+    // `apple2e.cpp:1889/1903/1909/1915/1919/1923/1927`). Real hardware
+    // ORs the floating-bus byte into the low 7 bits (Beagle Bros and
+    // demoscene RNGs depend on this). STATEREG / band-select at
+    // $C068+ are IIgs-only; POM2 (II/II+/IIe-only) shouldn't expose
+    // them.
+    if (low >= 0x61 && low <= 0x6F && low != 0x6A
+        && !(low >= 0x68 && low <= 0x6F && low == 0x68 /* IIc/IIgs */)) {
+        // (Empty guards — see below for the unified handler.)
+    }
+    if (low >= 0x61 && low <= 0x6F) {
+        const uint8_t mirrored = static_cast<uint8_t>(0x60 | (low & 0x07));
+        const uint8_t bit7 = [&]() -> uint8_t {
+            switch (mirrored) {
+                case 0x61: return (paddleButton[0] || openAppleKey.load())  ? 0x80 : 0x00;
+                case 0x62: return (paddleButton[1] || solidAppleKey.load()) ? 0x80 : 0x00;
+                case 0x63: return (paddleButton[2]
+                                  || (iieMode && shiftKey.load()))          ? 0x80 : 0x00;
+                case 0x64: case 0x65: case 0x66: case 0x67: {
+                    const int idx = mirrored - 0x64;
+                    const uint64_t elapsed = cycleCounter - paddleLatchCycle;
+                    // ~11 cycles per paddle-value step (max ~2816c).
+                    const uint64_t threshold =
+                        static_cast<uint64_t>(paddleValue[idx]) * 11;
+                    return (elapsed < threshold) ? 0x80 : 0x00;
+                }
+                default: return 0;  // $C060 already handled above
+            }
+        }();
+        return static_cast<uint8_t>(bit7 | (floatingBus() & 0x7F));
     }
 
-    // Paddle-trigger reset ($C070): arms the RC network.
-    if (low == 0x70) {
+    // Paddle-trigger reset ($C070-$C07F mirrored). MAME `apple2.cpp:555`
+    // `.mirror(0xf)`; the read returns floating bus (used as a poor
+    // RNG seed by many games). Real silicon also implements a 558
+    // monostable one-shot semantic (re-strobing during the count
+    // doesn't restart the timer); POM2 reloads unconditionally — the
+    // simpler model passes every game we've tested.
+    if (low >= 0x70 && low <= 0x7F) {
         paddleLatchCycle = cycleCounter;
-        return 0;
+        return isWrite ? 0 : floatingBus();
     }
 
     // Unknown soft switch — Apple II hardware floats the bus. For reads,
@@ -642,6 +725,15 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
         display.eightyStore = (iieMemMode & MF_80STORE) != 0;
         display.eightyCol   = (iieMemMode & MF_80COL)   != 0;
         display.altChar     = (iieMemMode & MF_ALTCHAR) != 0;
+    }
+    // Le Chat Mauve / Video-7 RGB FIFO clocking — for the 80COL pair
+    // ($C00C/D) we need to forward the data-bit edge to plugged video
+    // cards even in IIe mode. AN3 ($C05E/F) takes a separate path
+    // outside this handler. Without this broadcast, software that uses
+    // 80COL toggles on a IIe to drive the Le Chat Mauve mode FIFO
+    // would silently stop clocking.
+    if (flag == MF_80COL) {
+        slots.broadcastVideoSwitch(addr);
     }
 }
 
@@ -693,6 +785,17 @@ uint8_t Memory::iieMemRead(uint16_t addr)
     //   $0800-$1FFF      RAMRD            → aux else main
     //   $2000-$3FFF      80STORE+HIRES on → PAGE2 picks aux/main; else RAMRD
     //   $4000-$BFFF      RAMRD            → aux else main
+    //
+    // Mutex note: `display.page2` and `display.hiRes` are read here
+    // without holding `stateMutex`. That is intentionally safe in our
+    // threading model: both the writers (softSwitchAccess, iieHandle-
+    // SoftSwitch, resetSoftSwitches) and this reader run on the CPU
+    // worker thread — they cannot race against each other. The UI
+    // thread always reads display state through `getDisplayState()`,
+    // which copies the struct under the mutex. TSAN may flag the read
+    // formally because the writers DO take the mutex, but no actual
+    // race exists. Adding a per-access mutex acquire here would tank
+    // performance (one lock per emulated bus cycle).
     if (addr < 0x0200) {
         return (iieMemMode & MF_ALTZP) ? aux[addr] : mem[addr];
     }
@@ -893,6 +996,15 @@ uint8_t Memory::memRead(uint16_t addr)
     // motherboard internal I/O ROM. Even when INTCXROM=off, $C300-$C3FF
     // is owned by the internal ROM unless SLOTC3ROM=on (so PR#3 reads
     // the IIe 80-col firmware out of the box).
+    //
+    // $CFFF: regardless of INTCXROM, an access at this address must
+    // clear the active expansion-ROM owner — real //e wires the
+    // address decode directly to the slot latch reset, bypassing the
+    // INTCXROM mux (MAME `apple2e.cpp:2636-2645` `c800_r` always runs
+    // the deactivate, even when the read returns internal ROM).
+    if (iieMode && addr == 0xCFFF) {
+        slots.deactivateExpansion();
+    }
     if (iieMode) {
         if (iieMemMode & MF_INTCXROM) {
             return internalIORom[addr - 0xC000];
@@ -934,6 +1046,13 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         }
         slots.deviceSelectWrite(addr, value);
         return;
+    }
+    // Same $CFFF + INTCXROM deactivate handling as memRead (MAME
+    // `apple2e.cpp:2636-2645`). The write goes through to the slot
+    // bus regardless so cards that decode their own $C800-$CFFF
+    // window (rare on a IIe) still see it.
+    if (iieMode && addr == 0xCFFF) {
+        slots.deactivateExpansion();
     }
     if (addr <= 0xC7FF) {
         // Slot ROM is read-only on most cards, but a handful (Mockingboard

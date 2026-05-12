@@ -82,14 +82,14 @@ void ClockCard::latchTimeToShiftReg()
 
 uint8_t ClockCard::deviceSelectRead(uint8_t low4)
 {
-    // Only $C0n0 carries the chip output; everything else is open bus.
-    // We expose DATA_OUT in bit 7, with all other bits zero — the host
-    // driver does `BIT $C0n0 / BMI ...` to test it.
-    if (low4 == 0) {
-        const uint8_t out = (shiftReg[0] & 0x01) ? 0x80 : 0x00;
-        return out;
-    }
-    return 0xFF;
+    // DATA_OUT in bit 7, all other bits zero — the host driver does
+    // `BIT $C0n0 / BMI ...` to test it. MAME `a2thunderclock.cpp:112-115`
+    // ignores the low 4 bits of `offset` entirely and mirrors DATA_OUT
+    // across all of $C0n0-$C0nF, so a probe at $C0n5 sees the same
+    // bit 7 as $C0n0. POM2 used to return 0xFF for non-zero offsets,
+    // which broke some software-detect probes that scan the slot.
+    (void)low4;
+    return (shiftReg[0] & 0x01) ? 0x80 : 0x00;
 }
 
 void ClockCard::deviceSelectWrite(uint8_t low4, uint8_t v)

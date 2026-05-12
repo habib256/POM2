@@ -64,7 +64,7 @@ void testBank1RoundTrip(Memory& mem) {
 
 void testAltzpSwapsLcBanks(Memory& mem) {
     // Set up: in main banks, write known sentinels.
-    mem.memRead(ALTZP_OFF);
+    mem.memWrite(ALTZP_OFF, 0);
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     mem.memWrite(0xD600, 0x11);            // main LC bank 2
     enableLcWrite(mem, LC_RAM_RW_BANK1);
@@ -73,7 +73,7 @@ void testAltzpSwapsLcBanks(Memory& mem) {
 
     // Now toggle ALTZP and verify the LC view is the AUX banks (initially
     // zero — we haven't written to them yet).
-    mem.memRead(ALTZP_ON);
+    mem.memWrite(ALTZP_ON, 0);
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     assert(mem.memRead(0xD600) == 0x00);   // aux LC bank 2: untouched
 
@@ -88,7 +88,7 @@ void testAltzpSwapsLcBanks(Memory& mem) {
     mem.memWrite(0xE000, 0xCC);            // aux LC high
 
     // Toggle back and confirm main banks are unchanged.
-    mem.memRead(ALTZP_OFF);
+    mem.memWrite(ALTZP_OFF, 0);
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     assert(mem.memRead(0xD600) == 0x11);
     assert(mem.memRead(0xE000) == 0x33);
@@ -96,14 +96,14 @@ void testAltzpSwapsLcBanks(Memory& mem) {
     assert(mem.memRead(0xD600) == 0x22);
 
     // And aux banks still hold our second-pass values.
-    mem.memRead(ALTZP_ON);
+    mem.memWrite(ALTZP_ON, 0);
     enableLcWrite(mem, LC_RAM_RW_BANK1);
     assert(mem.memRead(0xD600) == 0xAA);
     assert(mem.memRead(0xE000) == 0xCC);
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     assert(mem.memRead(0xD600) == 0xBB);
 
-    mem.memRead(ALTZP_OFF);                // restore
+    mem.memWrite(ALTZP_OFF, 0);                // restore
 }
 
 void testWriteEnableSurvivesAltzpToggle(Memory& mem) {
@@ -112,21 +112,21 @@ void testWriteEnableSurvivesAltzpToggle(Memory& mem) {
     // access at $C008/$C009.
     enableLcWrite(mem, LC_RAM_RW_BANK2);
 
-    mem.memRead(ALTZP_ON);
+    mem.memWrite(ALTZP_ON, 0);
     mem.memWrite(0xD700, 0x77);            // expect to land in aux LC bank 2
 
-    mem.memRead(ALTZP_OFF);
+    mem.memWrite(ALTZP_OFF, 0);
     // Same address in main LC bank 2 should still hold whatever it was.
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     const uint8_t mainVal = mem.memRead(0xD700);
     (void)mainVal;     // we don't assert a specific main value here —
                        // a previous test may have set it. We only care
                        // that the aux write actually went to aux.
-    mem.memRead(ALTZP_ON);
+    mem.memWrite(ALTZP_ON, 0);
     enableLcWrite(mem, LC_RAM_RW_BANK2);
     assert(mem.memRead(0xD700) == 0x77);
 
-    mem.memRead(ALTZP_OFF);
+    mem.memWrite(ALTZP_OFF, 0);
 }
 
 void testInductiveSpinLoop(Memory& mem) {

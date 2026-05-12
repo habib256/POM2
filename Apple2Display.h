@@ -82,10 +82,6 @@ public:
     /// (still produces 80 character cells, just without aux content).
     void setAuxMemory(const uint8_t* aux) { auxRam = aux; }
 
-    // Cursor row/col for the on-screen blinking caret. Apple II monitors
-    // park the cursor at $0024-$0025 zero-page; we just read those bytes.
-    void setCursorOverlay(bool on) { cursorOverlay = on; }
-
     /// Hi-res rendering mode. Switching modes resets the persistence buffer
     /// so an amber afterglow doesn't bleed into a freshly-selected green
     /// phosphor.
@@ -105,7 +101,6 @@ private:
     std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA pixels (IIe)
     bool useFrame80     = false;     // true for the current frame when 80-col
     const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
-    bool cursorOverlay  = true;
     HiResMode hiResMode = HiResMode::ColorNTSC;
     LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
     // History buffer for monochrome phosphor decay. One byte per pixel
