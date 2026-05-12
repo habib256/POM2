@@ -308,303 +308,576 @@ auxiliaire (pré-requis DHGR + Color TEXT EVE pour Le Chat Mauve).
 
 ---
 
-## 14. Divergences vs MAME (audit Opus mai 2026)
+## 14. Divergences vs MAME (audit Opus, vérifié 2026-05-12)
 
-10 sous-systèmes audités en parallèle contre MAME source-of-truth. Chaque
-entrée = un écart **fonctionnel** (pas plomberie/style).
+10 sous-systèmes audités en parallèle contre MAME `master` (fetch via
+Scrapling le 2026-05-12). Première passe avait été faite de mémoire et
+livrait beaucoup de **faux positifs** ; cette section les a purgés et
+ancre chaque finding restant sur une référence MAME `file:line` directe.
 
-> **Caveat important** : aucun agent n'a pu fetcher le tree MAME live
-> (WebFetch + Bash curl refusés). Analyses faites contre la connaissance
-> interne MAME des agents. Les constantes exactes (e.g. 11.617 cycles paddle,
-> `ay8910_default_levels[]`, `optimal_bit_timing` handling, valeurs PROM P6
-> Disk II, ALU dispatch wozfdc) doivent être **re-vérifiées ligne-à-ligne
-> contre `mame/master`** avant patch.
+> **Note méthodologique** : sur les ~85 findings de la passe 1, ~20 ont
+> été retirés comme faux positifs (POM2 matche déjà MAME) et ~25 ont été
+> reformulés. Ce sont les findings **survivants** qui sont conservés
+> ici. Les références MAME pointent vers `src/devices/cpu/m6502/`,
+> `src/devices/machine/`, `src/devices/sound/`, `src/devices/bus/a2bus/`,
+> `src/lib/formats/as_dsk.cpp` (formerly `woz_dsk.cpp`), et
+> `src/mame/apple/`.
 
 Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
 
 ### 14.1 CPU 6502 / 65C02 (`M6502.cpp`)
 
-- [ ] 🔴 D flag pas effacé sur entrée IRQ/BRK/NMI en mode 65C02
-      (`M6502.cpp:95-103, 105-114, 656-695`). MAME `m65c02_device::do_exec_full`
-      fait `P &= ~F_D` avant vector. POM2 reste en décimal si IRQ arrive
-      avec D=1.
-- [ ] 🔴 PLP/RTI n'imposent pas U=1 / B=0 sur le P pushé
-      (`M6502.cpp:649-654, 697-702`). MAME force bit 5=1 et masque bit 4.
-- [ ] 🔴 RMW sur `$C0xx` double-toggle les soft switches
-      (`M6502.cpp:455-573, 927-945`). ASL/LSR/ROL/ROR/INC/DEC/TSB/TRB appellent
-      `memRead` *puis* `memWrite`, deux dispatchs vers `softSwitchAccess`.
-      Audible sur le speaker pour `INC $C030`.
-- [ ] 🔴 Compteurs de cycles 65C02 multiples faux :
-      - `JMP (abs)` = 6 (POM2=5), `JMP (abs,X)` = 6 (POM2=5)
-      - RMW abs,X CMOS sans page-cross = 6 (POM2=7)
-      - `BIT #imm` = 2 (POM2=1)
-      - `STZ zp,X` = 4 (POM2=3)
-      - RMBn/SMBn = 5 (POM2=6), BBR/BBS baseline = 5 (POM2=6)
-      - BRK = 7 (POM2=9), RTI = 6 (POM2=7)
-- [ ] 🟠 WAI ne sort pas à PC+1 sur IRQ masqué (I=1)
-      (`M6502.cpp:1022-1031`). WDC : WAI sort sans vector si I=1.
-- [ ] 🟠 JMP (abs) page-wrap bug appliqué en CMOS aussi (`M6502.cpp:173-181`).
-      Le 65C02 corrige ce bug et coûte 6 cycles ; POM2 reproduit le bug NMOS.
-- [ ] 🟠 Décimal 65C02 : N/V/Z non calculés sur ADC/SBC D=1 (`M6502.cpp:379-408`).
-      +1 cycle manquant aussi.
-- [ ] 🟠 BRK push wrong status + cycle count
+MAME base CMOS = `w65c02` (pas `m65c02` qui n'existe pas), tables dans
+`om6502.lst` / `ow65c02.lst`.
+
+- [ ] 🔴 D flag pas effacé sur IRQ/BRK/NMI en mode 65C02
+      (`M6502.cpp:95-103, 105-114, 656-695`). MAME `ow65c02.lst:259`
+      `brk_c_imp` : `m_P = (m_P | F_I) & ~F_D;`. Trois call sites POM2
+      à corriger (handleIRQ, handleNMI, BRK).
+- [ ] 🔴 PLP/RTI ne forcent pas U=1 ET B=1 sur P pop
+      (`M6502.cpp:649-654, 697-702`). MAME `om6502.lst:959` :
+      `m_TMP = read(m_SP) | (F_B|F_E);` (OR avec `0x30`, pas mask).
+      Importe parce que IRQ push B=0/U=1, donc sans le OR PLP/RTI
+      perdent B.
+- [ ] 🔴 RMW sur `$C0xx` triple-dispatche softSwitchAccess
+      (`M6502.cpp:455-573, 927-945`). Réel : **1 read + 2 writes**
+      (orig puis modifié — MAME `om6502.lst:161-164`). POM2 fait
+      1 read + 1 write. Speaker toggle sur `INC $C030` fire 1× au
+      lieu de 2×.
+- [ ] 🟠 Compteurs de cycles 65C02 (POM2 / MAME) :
+      - `JMP (abs)` 0x6C : 5 / **6** (`ow65c02.lst:387-395`)
+      - `JMP (abs,X)` 0x7C : 5 / **6** (`ow65c02.lst:377-386`)
+      - `BIT #imm` 0x89 : 1 / **2** (`ow65c02.lst:210-217`)
+      - `STZ zp,X` 0x74 : 3 / **4** (`ow65c02.lst:739-744`)
+      - RMBn / SMBn : 6 / **5** (`ow65c02.lst:497-504, 700-707`)
+      - BBRn / BBSn baseline : 6 / **5** (`ow65c02.lst:168-181`)
+      - BRK : 8 / **7** (`ow65c02.lst:234-261`)
+      - RTI : 7 / **6** (`om6502.lst:1050-1059`)
+- [ ] 🟠 WAI parke PC au lieu de continuer (`M6502.cpp:1022-1031`).
+      MAME `ow65c02.lst:797-803` : WAI loop jusqu'à `!m_nmi_pending &&
+      !m_irq_state` (réveille même si I=1, sans vector si masqué).
+      Fix : NE PAS decrement PC ; consommer des cycles ; tomber sur
+      PC+1 quand IRQ pin se lève.
+- [ ] 🟠 JMP (abs) page-wrap bug NMOS appliqué en CMOS aussi
+      (`M6502.cpp:173-181`). MAME splitté : `om6502.lst:649-656`
+      buggy (NMOS) ; `ow65c02.lst:387-395` fixed (CMOS, +1 cycle —
+      cf. cycles ci-dessus).
+- [ ] 🟠 Décimal 65C02 : POM2 calcule N/V/Z mais sur intermédiaire
+      binaire, pas sur A ajusté (`M6502.cpp:325-345, 379-408`). MAME
+      `ow65c02.lst:11-14` : `if(F_D) { read_pc(); set_nz(m_A); }` —
+      +1 cycle + NZ recomputé sur A ajusté final.
+- [ ] 🟠 IRQ/NMI priorité inversée dans `step()`
+      (`M6502.cpp:1499-1502`). POM2 check IRQ d'abord puis NMI. MAME
+      `prefetch_end` (m6502.cpp:455) + `brk_c_imp` (ow65c02.lst:247)
+      pick le **vector NMI** quand `m_irq_taken && m_nmi_pending`.
 - [ ] 🟡 STP réveillable par NMI dans POM2 (`M6502.cpp:1033-1039`).
-      WDC : seul RESET sort de STP.
-- [ ] 🟡 NMI traitée comme level dans POM2 (`M6502.cpp:1492-1495`).
-      Réel : edge-triggered. Risque double-trigger côté Mockingboard.
-- [ ] 🟡 `softReset` n'efface pas D (`M6502.cpp:1480-1485`). 65C02 le clear
-      au reset hardware.
+      MAME `ow65c02.lst:715-718` : seul `reset_c` (`:805`) sort.
+- [ ] 🟡 `softReset` n'efface pas D (`M6502.cpp:1480-1485`). MAME
+      `ow65c02.lst:814` : `m_P = (m_P | F_I) & ~F_D;` (CMOS-only ;
+      NMOS `om6502.lst:1279` ne clear que I).
 
 ### 14.2 Disk II LSS (`DiskIICard.cpp`, `DiskImage.cpp`)
 
-- [ ] 🔴 PULSE width = 1 cycle LSS (`DiskIICard.cpp:514-523`). MAME tient PULSE
-      bas pendant toute la largeur d'une cellule. Casse protections cycle-précises
-      (Spiradisc, RWTS-18, Locksmith calibration).
-- [ ] 🟠 Spin-up moteur instantané (`DiskIICard.cpp:559-575`). MAME : ~500-1000 ms
-      via attotime `mon_w`. Casse Locksmith RPM measurement.
+MAME ref `src/devices/machine/wozfdc.cpp`. **4 faux positifs purgés**
+de la passe 1 (PULSE width, motor spin-up, phase magnets re-emit,
+flush threshold 30 vs 31 — tous matchent MAME).
+
 - [ ] 🟠 `last_6502_write` legacy-gate seulement capturé sur `$C0ED`
-      (`DiskIICard.cpp:823`). MAME : toute écriture `$C0Ex` la latche.
-- [ ] 🟠 Phase magnets : si `activeDrive` change en plein step, l'autre lecteur
-      ne reçoit pas le mask en cours (`DiskIICard.cpp:540-549`). MAME re-émet
-      sur le drive nouvellement sélectionné.
-- [ ] 🟠 `getNextTransition` sémantique `lower_bound` (= match-at-cursor)
-      vs MAME strict-greater (`DiskImage.cpp:579-600`). Marche par compensation
-      mais fragile au refactor.
-- [ ] 🟡 Inflation sub-instruction via `getCurrentInstructionCycles()`
-      (`DiskIICard.cpp:745-752`) au lieu du dispatch per-bus-cycle MAME.
-      Cf. spec M6502 — confirmer la sémantique avant patch.
+      (`DiskIICard.cpp:822-826`). MAME `wozfdc.cpp:181-186` :
+      latche sur **toute** écriture `$C0Ex` inconditionnellement.
+      Path LSS POM2 est OK (line 817).
+- [ ] 🟠 `$C0EB` (drive 2 select) ne cycle pas `mon_w` (`DiskIICard.cpp:594-597`).
+      MAME `wozfdc.cpp:229-241` : `mon_w(true)` sur l'ancien drive,
+      `mon_w(false)` sur le nouveau (efface cache, reset
+      `m_revolution_start_time`). POM2 ne fait que flipper
+      `activeDrive` — intentionnel mais à documenter comme
+      divergence MAME.
+- [ ] 🟡 Inflation sub-instruction RAII (`DiskIICard.cpp:711-744`)
+      vs dispatch per-bus-cycle MAME m6502. Documenté comme tradeoff ;
+      audible si on porte de l'audio précis ou des protections
+      cycle-sensibles.
 - [ ] 🟡 `writeBackEnabled` gate le LSS splice mais pas le legacy
-      (`DiskIICard.cpp:614-627` vs legacyAdvance). Asymétrie.
-- [ ] 🟡 Threshold flush pre-emptif : 30 events (POM2) vs 31 (MAME).
-- [ ] 🟢 `lssCycle` préservé au reset (POM2) vs zéro MAME.
+      (`DiskIICard.cpp:339, 466, 618`). Asymétrie : legacy mute la
+      source file même en `writeBackEnabled=false`.
+- [ ] 🟢 `lower_bound` vs MAME `upper_bound + cycles-1`
+      (`DiskImage.cpp:579-600`). Équivalent par construction (cf.
+      commentaire ligne 385-415) ; fragile au refactor.
+- [ ] 🟢 `device_reset` MAME `wozfdc.cpp:85` re-anchor `cycles =
+      time_to_cycles(machine().time())`. POM2 préserve `lssCycle`.
+      Équivalent sous compteur monotonique CPU.
+- [ ] 🟢 Pas de timer périodique 10 ms de catch-up (MAME
+      `wozfdc.cpp:94`). POM2 sync seulement sur access ou
+      `advanceCycles`. OK avec notre cadence per-instruction.
 
 ### 14.3 WOZ / Flux events (`DiskImage.cpp`)
 
-- [ ] 🔴 **Quarter-tracks ignorés** (`DiskImage.cpp:373`). POM2 ne lit que
-      `TMAP[t*4]` (35 entrées sur 160 → 78% perdues). Casse toutes les
-      protections Roland Gustafsson (Spiradisc → Choplifter, Print Shop,
-      Wings of Fury, Rescue Raiders), RWTS18 (Lode Runner, Karateka),
-      Locksmith Fast Copy.
-- [ ] 🟠 WOZ2 `optimal_bit_timing` (INFO offset +39) ignoré
-      (`DiskImage.h:147`). Hard-codé à 32 ticks = 4 µs/cell. Casse WOZ
-      à timing non-standard (3.0 µs, slow flux protection).
-- [ ] 🟠 FLUX chunk (WOZ2 v2.1+) complètement skipped (`DiskImage.cpp:347`).
-      Tout WOZ Applesauce 1.5+ avec FLUX-only lit des bits vides
-      (Wings of Fury original, Captain Goodnight, Ankh).
-- [ ] 🟡 `INFO.synchronized` et `INFO.cleaned` (offsets +3, +4) non consultés
-      (`DiskImage.cpp:332-337`). Sync cross-track manquante.
-- [ ] 🟡 WOZ1 `bytes_used` (@+6646) ignoré, hard-codé 6646 (`DiskImage.cpp:384`).
-- [ ] 🟢 CRC32 jamais validé ni warné (`DiskImage.cpp:297-299`). Hand-edited /
-      truncated files passent silencieusement.
+MAME ref `src/lib/formats/as_dsk.cpp` class `woz_format` (le fichier
+`woz_dsk.cpp` cité dans `DiskImage.cpp:214` n'existe **plus** dans
+MAME master — renommé). **2 faux positifs purgés**.
+
+- [ ] 🔴 **Quarter-tracks ignorés** (`DiskImage.cpp:373` + `DiskImage.h:223`
+      `bitStream[kTracks=35]` + `DiskIICard.cpp:328, 383, 620, 637, 792`
+      tous divisent `headQuarterTrack[d] / 4`). MAME `as_dsk.cpp:300-313`
+      charge 141 sous-pistes avec `subtrack = trkid & 3` ; `floppy.cpp:835`
+      garde `m_subcyl` séparé. Bug enjambe les deux fichiers (image + card).
+      Casse Spiradisc (Choplifter / Print Shop / Wings of Fury / Rescue
+      Raiders), RWTS18 (Lode Runner, Karateka), Locksmith Fast Copy.
+- [ ] 🟠 FLUX chunk WOZ2 v2.1+ ignoré (`DiskImage.cpp:347`). MAME
+      `as_dsk.cpp:287-290` lit `off_flux = u16le[info+46]` puis
+      `:320-322` walk `load_flux_track` (8-bit delta ticks). Casse Wings
+      of Fury original, Captain Goodnight, Ankh, Sundog.
+- [ ] 🟠 CRC32 jamais validé (`DiskImage.cpp:297-299`). MAME
+      `as_dsk.cpp:275-277` **rejette** le load sur mismatch
+      (`if(crc != get_u32le(&img[8])) return false;`). Algorithme :
+      `crc32r` reversed poly `0xedb88320` (`as_dsk.cpp:10-23`).
+      POM2 accepte du garbage silencieusement.
+- [ ] 🟡 WOZ2 `optimal_bit_timing` (INFO+39) ignoré (`DiskImage.h:147`).
+      MAME aussi ne le lit pas au load — drive le pacing depuis
+      `track_size*2` ticks via `flopimg.cpp:673`. Vrai gap : placement
+      `cellIdx*8+4` fixe (`DiskImage.cpp:555`) ne varie pas par sous-piste.
+- [ ] 🟡 Splice point WOZ1 (`+6650, u16, $FFFF=none`) ignoré
+      (`DiskImage.cpp:381-398`). MAME `as_dsk.cpp:309` lit et passe à
+      `set_write_splice_position`. Important pour write-back angulaire
+      correct (sinon corruption FAT-like chains au format).
+- [ ] 🟡 `info_version` bornes 1..3 non vérifiées (`DiskImage.cpp:332-337`).
+      MAME `as_dsk.cpp:284-286` : `if(info_vers < 1 || info_vers > 3)
+      return false;`.
 - [ ] 🟢 `INFO.write_protected` lu mais jamais imposé (`DiskImage.cpp:194`).
       Footgun pour write-back futur — utiliser ce flag, pas `wozFormat`.
+- [ ] 🟢 Commentaire stale (`DiskImage.cpp:214`) cite `woz_dsk.cpp` qui
+      n'existe plus dans MAME master. Renommer en `as_dsk.cpp` /
+      `class woz_format`.
+
+**Faux positifs retirés** : `INFO.synchronized/cleaned` (MAME ne les
+lit pas au load non plus — save-side only) ; WOZ1 `bytes_used` (MAME
+utilise aussi `bit_count` comme borne autoritative).
 
 ### 14.4 IIe memory paging (`Memory.cpp`)
 
-- [ ] 🔴 Status reads `$C013-$C018, $C019, $C01E, $C01F` renvoient `0x00` dans
-      les 7 bits bas (`Memory.cpp:625-649, 432-433`). MAME : floating-bus byte
-      vidéo dans les bits bas. Utilisé par démos/protections pour timing.
-      Idem `$C011, $C012, $C015, $C061-$C063, $C064-$C067`.
-- [ ] 🟠 `$C001-$C00F` write-only sur HW réel — POM2 toggle aussi sur lecture
-      (`Memory.cpp:438-440`).
-- [ ] 🟠 ALTZP + Language Card : POM2 a des banques séparées main/aux mais une
-      seule paire de latches partagés (`lcBank2Active`, `lcReadRam`,
-      `lcWriteEnable` — `Memory.cpp:713-734`). Sather 5-5 : sélection
-      indépendante main vs aux. Toggle `$C088` avec ALTZP on puis off
-      change la sélection main → bug observable.
-- [ ] 🟠 Reset Ctrl-Reset efface tout `iieMemMode` (`Memory.cpp:253-264`).
-      Le vrai //e ne clear que `80STORE, RAMRD, RAMWRT, INTCXROM, SLOTC3ROM,
-      HIRES, PAGE2, TEXT` ; **conserve** `ALTZP, 80COL, ALTCHAR, DHIRES` sur
-      soft reset (seul power-on les efface).
-- [ ] 🟠 VBL IRQ jamais asserté (`Memory.cpp:244-249`, commentaire évoque
-      "IOUDIS non modélisé"). Casse music players IIe, mouse firmware.
-      Modéliser IOUDIS (~3 lignes).
-- [ ] 🟡 80COL dispatch redondant : `$C00C/$C00D` traités à la fois en
-      `iieHandleSoftSwitch` (Memory.cpp:439) et dans le bloc standalone
-      `low == 0x0C` (501-508). Gate le 2e sur `!iieMode`.
+MAME ref `src/mame/apple/apple2e.cpp`. **2 faux positifs purgés**
+(Ctrl-Reset preserve, VBL IRQ jamais asserté).
+
+- [ ] 🟠 Status reads bits 0-6 = `0x00` au lieu de `m_transchar`
+      (`Memory.cpp:625-649`). MAME `apple2e.cpp:1842-1871` `c000_r`
+      retourne `(bit ? 0x80 : 0x00) | m_transchar` pour `$C011-$C01F` —
+      les bits bas portent le **dernier char clavier**, pas le
+      floating bus comme la passe 1 disait. Floating-bus réel seulement
+      pour `$C061-$C067` (paddles/buttons) et `$C019` IIc mouse path
+      (`:1972`).
+- [ ] 🟠 `$C001-$C00F` write-only sur HW réel — POM2 toggle aussi sur
+      lecture (`Memory.cpp:438-440`). MAME `apple2e.cpp:1821-1957`
+      `c000_r` retourne `m_transchar | m_strobe` sur `$C001-$C00F`
+      sans flipper de bit paging.
+- [ ] 🟠 ALTZP + Language Card : latches partagés `lcBank2Active /
+      lcReadRam / lcWriteEnable` (`Memory.cpp:713-734`). **MAME même
+      modèle** (`apple2e.cpp:2801-2882` `lc_r/lc_w` testent `m_altzp`
+      pour le storage mais `lc_update :1506-1561` gère les latches en
+      single global). POM2 matche MAME. Sather 5-5 lirait "indépendant"
+      mais MAME et POM2 partagent. Documenter, pas patcher.
+- [ ] 🟠 `iieHandleSoftSwitch` ne broadcast pas `slots.broadcastVideoSwitch`
+      pour `$C00C/$C00D` (80COL) en mode IIe. POM2 a un dispatch
+      redondant (`Memory.cpp:439` + bloc standalone `:501-508`). Fix :
+      gate le standalone sur `!iieMode` ET ajouter `broadcastVideoSwitch`
+      dans `iieHandleSoftSwitch` pour Le Chat Mauve.
 - [ ] 🟡 `$CFFF` ne désactive pas le slot actif quand INTCXROM=on
-      (`Memory.cpp:854-862`). SlotBus reste latché.
-- [ ] 🟢 Race condition : `iieMemRead`/`Write` lisent `display.page2`/`hiRes`
-      sans `stateMutex` (`Memory.cpp:666, 672, 691, 700`). TSAN-flagged.
+      (`Memory.cpp:854-862`). MAME `c800_r :2634-2653` : `if (offset
+      == 0x7ff) { m_cnxx_slot = CNXX_UNCLAIMED; m_intc8rom = false; }`
+      **toujours**, indépendamment d'INTCXROM. Fix : ajouter
+      `if (addr == 0xCFFF) slots.deactivateExpansion();` avant le
+      short-circuit internal-ROM.
+- [ ] 🟡 `$C019` non gated sur `iieMode` (`Memory.cpp:452-463`). Sur
+      II+, devrait retourner floating bus ; POM2 retourne `0x80`/`0x00`
+      basé sur scanline. Gate sur `iieMode`.
+- [ ] 🟢 Race : `iieMemRead`/`Write` lisent `display.page2`/`hiRes` sans
+      `stateMutex` (`Memory.cpp:666, 672, 691, 700`). TSAN flag, en
+      pratique bool-aligned.
+- [ ] 🟢 `$C040` utility strobe pulse non modélisé. MAME `apple2e.cpp:1711-1716`
+      `m_gameio->strobe_w(0); strobe_w(1);`. Pas de consumer POM2 actuel.
+- [ ] 🟢 AN0-AN2 annunciators `$C058-$C05D` non drivés. MAME `:1750-1773`.
+
+**Faux positifs retirés** :
+- "Ctrl-Reset préserve ALTZP/80COL/ALTCHAR/DHIRES" : MAME
+  `apple2e.cpp:1284-1347` clear bien **tout** sur Ctrl-Reset (Sather
+  Fig 5.13 / 7.1 cités). POM2 matche.
+- "VBL IRQ jamais asserté casse music players" : VBL IRQ est gated sur
+  `m_isiic || m_isace500` (`apple2e.cpp:1617`) — feature IIc/IIc+/IIgs
+  **seulement**. Sur IIe `$C05A/$C05B` ne setent jamais `m_vblmask`.
+  POM2 matche MAME. Music players IIe ne sont pas cassés par ça.
 
 ### 14.5 Display HGR / DHGR (`Apple2Display.cpp`)
 
-- [ ] 🔴 `renderHiRes`/`renderLoRes`/`renderText` lisent `mem.data()` (main)
-      **sans jamais consulter l'aux RAM** en IIe (`Apple2Display.cpp:380, 499,
-      709`). Avec `80STORE+PAGE2+HIRES`, le scanner doit source de l'aux
-      `$2000-$3FFF`. DHGR path le fait correctement, HGR/text/lo-res non.
-- [ ] 🟠 Sélection de page incohérente : 80-col path force page 1 si 80STORE
-      on (`Apple2Display.cpp:907`), 40-col path suit `page2` même si 80STORE
-      (`:397, :513`). MAME : 80STORE force page 1 partout.
-- [ ] 🟠 `artifact_color_lut` est `[2][128]` dans MAME (row 0 = TV composite,
-      row 1 = RGB monitor tinted). POM2 utilise seulement row 0, pas d'enum
-      pour row 1 (`Apple2Display.cpp:584-593`).
-- [ ] 🟠 Palette Chat Mauve lo-res `#3300DD, #990000...` (`Apple2Display.cpp:474-491`)
-      = POM2-original. Pas dans MAME. Documenter comme stylistique ou aligner.
+MAME ref `src/mame/apple/apple2video.cpp`. Palette + formules
+interleave + DHGR ordering + rotl4b offset **tous byte-exacts** vs
+MAME. Tous les claims existants confirmés + 5 NEW.
+
+- [ ] 🔴 `renderHiRes`/`renderLoRes`/`renderText` lisent `mem.data()`
+      (main) sans jamais consulter l'aux RAM en IIe (`Apple2Display.cpp:380,
+      499, 709`). Avec `80STORE+PAGE2+HIRES`, le scanner doit source aux
+      `$2000-$3FFF`. DHGR (`:1011-1012`) le fait. **Caveat** : MAME
+      `hgr_update :766` partage la même limitation — donc divergence
+      avec le HARDWARE, pas avec MAME. Fixer pour précision matérielle.
+- [ ] 🟠 Sélection de page incohérente : 80-col path force page 1 si
+      80STORE on (`Apple2Display.cpp:907`), 40-col path suit `page2`
+      même si 80STORE (`:397, :513`). MAME `use_page_2()` (`apple2video.cpp:359`):
+      `m_page2 && !m_80store` appliqué uniformément
+      (text_update :671, lores :588, hgr :739, dhgr :799).
+- [ ] 🟠 `artifact_color_lut[2][128]` : row 1 inutilisée
+      (`Apple2Display.cpp:584-593`). MAME `apple2video.cpp:376` :
+      row 1 = "medium-color biased" LUT, utilisée par `hgr_update :788`
+      pour Video-7 RGB color-bias path ET dispatched via
+      `composite_color_mode()`.
+- [ ] 🟠 DHIRES annunciator sur HGR standard non honoré
+      (`Apple2Display.cpp:706+`). MAME `apple2video.cpp:747` :
+      `bit7_mask = m_dhires ? 0 : 0x80` — suppression du half-dot
+      delay (Rev 0 emulation sans orange/bleu).
+- [ ] 🟠 `composite_color_mode()` : seul mode 0 implémenté. MAME
+      `apple2video.cpp:479-498` a 3 modes (0=composite artifact,
+      1=medium-bias LUT row 1, 2=hard 4-bit square filter).
+- [ ] 🟠 Palette Chat Mauve lo-res (`Apple2Display.cpp:474-491`,
+      `#3300DD/#990000/...`) ET HGR (`:691-702`) = POM2-original.
+      MAME n'a qu'une palette `apple2_palette[]`. Documenter
+      comme stylistique.
 - [ ] 🟡 Path HGR Chat Mauve écrit dans buffer 280-wide au lieu de 560
-      (`Apple2Display.cpp:778-787`) → perd la netteté qui est la raison d'être
-      de la carte.
-- [ ] 🟡 Persistence buffer (afterglow mono) dimensionné 280×192 → DHGR mono
-      (560) sans afterglow (`Apple2Display.cpp:107, 1087-1097`). Inconsistance UX.
-- [ ] 🟢 `cursorOverlay` déclaré mais jamais dessiné (`Apple2Display.h:79-80`).
-      Dead code à supprimer ou implémenter.
-- [ ] 🟢 Stale claims dans CLAUDE.md à corriger :
+      (`Apple2Display.cpp:778-787`). Perd la netteté qui est la raison
+      d'être de la carte. Cf. DHGR qui écrit dans `frame80`.
+- [ ] 🟡 Persistence buffer (afterglow mono) dimensionné 280×192 →
+      DHGR mono 560 sans afterglow (`Apple2Display.cpp:107, 1087-1097`).
+      Inconsistance UX. Resize lazy ou documenter.
+- [ ] 🟢 `monochrome_dhr_shift()` 1-px alignment manquant en DHGR mono
+      (MAME `apple2video.cpp:460-471`). Cosmétique.
+- [ ] 🟢 Pas de floating-TTL `empty_words[40] = {0x3fff,…}` pour rows
+      hors-bounds (MAME `:751-758`). Jamais atteint en 48K+.
+- [ ] 🟢 `cursorOverlay` déclaré mais jamais dessiné
+      (`Apple2Display.h:79-80`). Dead code.
+- [ ] 🟢 Stale claims CLAUDE.md à corriger :
       - "39 inter-byte seam fix-ups" : n'existe plus dans le code
       - "additive horizontal glow" : n'a jamais existé
-      - "2 Hz flashing animation pending" : déjà implémenté (`:386, 410,
-        423-424, 899, 923, 934`)
-      - "//gs-corrected approximation" lo-res : en réalité MAME `apple2_palette`
-        benrg NTSC
+      - "2 Hz flashing animation pending" : déjà implémenté
+        (`:386, 410, 423-424, 899, 923, 935`)
+      - "//gs-corrected approximation" lo-res : en réalité
+        `apple2_palette[]` benrg NTSC byte-exact
 
 ### 14.6 Mockingboard (`Mockingboard.cpp`)
 
-- [ ] 🔴 Table d'amplitude AY pas la courbe log canonique
-      (`Mockingboard.cpp:22-25`). MAME `ay8910_default_levels[]` (steps ≈3 dB,
-      facteur √2). POM2 dévie jusqu'à 2× sur les indices 6-12. Comment cite
-      `volumes_3level_8910` qui est en fait pour le 8913 3-level. Remplacer
-      par la table 8910 canonique.
-- [ ] 🟠 `T1LH` write clear `IFR.T1` (`Mockingboard.cpp:225`). **Incorrect** —
-      WDC datasheet Table 4 : T1 IRQ cleared seulement par T1CH write et T1CL
-      read. Supprimer la ligne `ifr &= ~IFR_T1`.
-- [ ] 🟠 Envelope decoder shapes 10/12/14 (`\/\/`, `/|/|`, etc.) probablement
-      incorrects (`Mockingboard.cpp:478-543`). MAME utilise une table 16
-      shapes × 32 steps pré-calculée. Refondre sur lookup table.
-- [ ] 🟡 T2 timer absent (`Mockingboard.cpp:227-229`). Casse driver speech
-      d'Ultima IV (Echo+ daughter), démos FrenchTouch utilisant T2 pour
-      sample playback.
+MAME refs `src/devices/machine/6522via.cpp`, `src/devices/sound/ay8910.cpp`.
+**1 faux positif purgé** (T1LH IFR clear), 1 sévérité downgradée
+(amplitude table).
+
+- [ ] 🟠 Envelope decoder POM2 (`Mockingboard.cpp:478-543`) ne match
+      pas MAME `ay8910.cpp:989-1020` + `ay8910.h:204-221`. MAME utilise
+      un state machine **4-flag** (`attack/hold/alternate/holding`),
+      pas une LUT 16×32. Bugs POM2 concrets :
+      - ligne 491 `envStep = 16` halt position : MAME hold à step 0
+        avec attack flipped, pas step 16
+      - ligne 522 `rising = attack ^ (alt && secondHalf)` correct pour
+        cont=1 mais branche cont=0 séparée est wrong ; MAME unifie en
+        mappant cont=0 vers `hold=1, alternate=attack`
+      → shapes 10 (`/\/\`), 12, 14 produisent des waveforms incorrects.
+- [ ] 🟡 T2 timer absent (`Mockingboard.cpp:227-229`). MAME `6522via.cpp:73`
+      `INT_T2=0x20`, lignes 97-114 implémentation complète (one-shot +
+      PB6 pulse-count + IFR bit 5). Casse driver speech Ultima IV
+      (Echo+ daughter), démos FrenchTouch sample playback.
 - [ ] 🟡 Float tone counter aliase à périodes très courtes (1-3)
-      (`Mockingboard.cpp:449-456`). MAME : compteur entier.
-- [ ] 🟢 Port A read mask par DDR (devrait retourner pin state)
-      (`Mockingboard.cpp:126-130`). Sans impact concret sur Mockingboard mais
-      techniquement faux ; le test `mockingboard_smoke_test.cpp:87-95` pin
-      la valeur incorrecte.
+      (`Mockingboard.cpp:449-456`). MAME `ay8910.cpp:954-962` :
+      compteur **entier** `count += 1; while (count >= period) { ... }`.
+      Float ε accumule sur milliers de toggles → pitch drift.
+- [ ] 🟢 Table amplitude AY (`Mockingboard.cpp:22-25`) dévie de **15-22%**
+      vs MAME (pas 2× comme la passe 1 disait). MAME utilise un
+      modèle de réseau résistif (`ay8910.cpp:631-637` `ay8910_param`
+      Westcott 2001 + `:718-748` `build_single_table`), pas
+      `ay8910_default_levels[]` qui n'existe pas. Si swap, valeurs
+      canoniques `normalize=1` :
+      ```
+      {0.0000, 0.0105, 0.0154, 0.0223, 0.0321, 0.0468, 0.0635, 0.1061,
+       0.1319, 0.2164, 0.2974, 0.3909, 0.5128, 0.6371, 0.8186, 1.0000}
+      ```
+- [ ] 🟢 Port A read mask par DDR (`Mockingboard.cpp:126-130`).
+      MAME `6522via.cpp:464-468` : commentaire "port a in the real
+      6522 does not mask off the output pins". Sans impact concret
+      pour Mockingboard (PA = output uniquement) ; test
+      `mockingboard_smoke_test.cpp:87-95` pin la valeur incorrecte.
+
+**Faux positif retiré** : "T1LH write clear `IFR.T1`" — MAME
+**fait pareil** (`6522via.cpp:746-749` `case VIA_T1LH:
+clear_int(INT_T1)`). POM2 ligne 225 est correct, surtout pas
+supprimer.
 
 ### 14.7 Super Serial Card (`SuperSerialCard.cpp`)
 
-- [ ] 🔴 **Aucun câblage IRQ**. Pattern à copier de `Mockingboard.cpp:598, 679`.
-      Casse ProTERM 3.x ("Use Interrupts"), firmware modem //c, MODEM.MGR,
-      GS/OS SerialPort driver, drivers CP/M Z80.
-- [ ] 🔴 Status read ne clear pas les bits sticky (`SuperSerialCard.cpp:266-276`).
-      Vrai 6551 clear IRQ flag (bit 7) sur read — requis par tout driver
-      IRQ-driven pour ACK.
+MAME refs `src/devices/machine/mos6551.cpp` + `src/devices/bus/a2bus/a2ssc.cpp`.
+Tous claims confirmés + 6 NEW.
+
+- [ ] 🔴 **Aucun câblage IRQ**. MAME `a2ssc.cpp:243` :
+      `m_acia->irq_handler().set(FUNC(...acia_irq_w))`, `:369-385`
+      `raise_slot_irq()/lower_slot_irq()` gated sur DIP `m_dswx & 4`.
+      MAME `mos6551.cpp:135-150` `output_irq()` est l'asserter. Pattern
+      à copier de `Mockingboard.cpp:598, 679`.
+- [ ] 🔴 Status read ne clear pas `m_irq_state` (`SuperSerialCard.cpp:266-276`).
+      MAME `mos6551.cpp:237-250` : `read_status()` fait `m_irq_state = 0;
+      update_irq();`. SR_IRQ tracké via `output_irq` (`:142-147`) en
+      reflet inversé du pin IRQ. Aussi : MAME mask TDRE sur read si
+      `m_cts` (`:240-243`).
 - [ ] 🔴 Status write (soft reset) efface tout `cmdReg`
-      (`SuperSerialCard.cpp:308-312`). MAME : `cmdReg &= ~0x1F` (préserve
-      parity bits 5-7), clear overrun, clear IFR.
-- [ ] 🟠 Bit 7 strippé en TX (`SuperSerialCard.cpp:297` `outByte = v & 0x7F`).
-      Casse XMODEM, YMODEM, ZMODEM, Kermit-binary, BinSCII, ADTPro upload.
-      Le strip bit 7 est une politique terminal, pas UART.
-- [ ] 🟠 TDRE toujours = 1 (`SuperSerialCard.cpp:269`). Invisible sur poll,
-      casse tout driver IRQ-driven (cf. ci-dessus).
-- [ ] 🟠 Pas de tracking d'overrun (`SuperSerialCard.cpp:163-179`). Buffer
-      RX plein → `pop_front` silencieux. Casse retransmit Kermit/XMODEM-CRC.
+      (`SuperSerialCard.cpp:308-312`). MAME `mos6551.cpp:264-270`
+      `write_reset()` : `m_status &= ~SR_OVERRUN; m_irq_state &=
+      ~(IRQ_DCD | IRQ_DSR); update_irq(); write_command(m_command &
+      ~0x1f)` — clear bits 0-4 du command, **préserve parity bits 5-7**.
+- [ ] 🟠 Bit 7 strippé en TX (`SuperSerialCard.cpp:297`
+      `outByte = v & 0x7F`). MAME `mos6551.cpp:636-680` shift verbatim
+      jusqu'à `m_wordlength` (bits ctrl 5-6). Casse XMODEM/YMODEM/
+      ZMODEM/Kermit-binary/BinSCII/ADTPro upload.
+- [ ] 🟠 TDRE toujours = 1 (`SuperSerialCard.cpp:269`). MAME
+      `mos6551.cpp:259-263` `write_tdr` fait `m_status &= ~SR_TDRE`
+      immédiatement ; remis à 1 par `transmitter_clock` (`:618`)
+      au shift-out du start bit. Casse tout driver IRQ-driven.
+- [ ] 🟠 Pas de tracking d'overrun (`SuperSerialCard.cpp:163-179`).
+      MAME `mos6551.cpp:542-543` set SR_OVERRUN quand byte arrive avec
+      RDRF déjà set. Casse retransmit Kermit / XMODEM-CRC.
 - [ ] 🟠 Echo mode (REM, command bit 4) stocké mais jamais appliqué.
-      Casse diagnostic Apple "SSC TEST".
-- [ ] 🟠 Control reg jamais consulté : baud rate, word length, stop bits
-      stockés mais ignorés.
-- [ ] 🟠 DIP-switch readback aux mauvais offsets (`SuperSerialCard.cpp:279-281`).
-      Vrai SSC les expose dans le slot ROM `$Cn01, $Cn02, $Cn04, $Cn05`,
-      pas dans le 6551 register space. `$C0A0-$C0A3` réel = latch 74LS259.
-- [ ] 🟠 Pas de mirror A0-A1 only sur 6551 : `low4 = C/D/E/F` doit mirror
-      `8/9/A/B`. Fix : `low4 &= 0x03` après détection ACIA window.
-- [ ] 🟡 Signature slot ROM incomplète pour GS/OS / Pascal 1.1 : manque OS
-      zero-byte ID block `$CnFB-$CnFF`, `$CnFE` low-nibble = device class.
+      MAME `mos6551.cpp:584-594` route m_rxd → output_txd. Casse
+      diagnostic Apple "SSC TEST".
+- [ ] 🟠 Control reg jamais consulté. MAME `mos6551.cpp:271-285`
+      `write_control` dérive `m_wordlength`, `m_extrastop`,
+      `m_rx_internal_clock`, baud divider via `update_divider()`
+      (`:203-230`, table `:44-47`).
+- [ ] 🟠 DIP-switch readback **mal placés** (`SuperSerialCard.cpp:279-281`).
+      MAME `a2ssc.cpp:339-353` : DIPs en **device-select** `$C0n0-$C0n7`,
+      avec bit 1 sélectionnant DSW1 (AND-mask actif-bas), bit 0 DSW2,
+      bit 3 routant vers ACIA. POM2 mettait DIPs à `low4 = 1, 2, 3`
+      avec duplication. Pas dans slot ROM.
+- [ ] 🟠 Pas de mirror A0-A1 only sur 6551 : `low4 = C/D/E/F` doit
+      mirror `8/9/A/B`. MAME `a2ssc.cpp:343` : `m_acia->read(offset &
+      3)`. Fix : `low4 &= 0x03` après détection ACIA window.
+- [ ] 🟠 `read_rdr` (data register read) doit clear PARITY_ERROR /
+      FRAMING_ERROR / OVERRUN / RDRF. MAME `mos6551.cpp:231-236`.
+- [ ] 🟠 DTR (command bit 0) drive side-effects. MAME `mos6551.cpp:290-292` :
+      `output_dtr(!(bit 0))`, puis `m_rx_irq_enable = !(bit 1) &&
+      !m_dtr`. Drop DTR → disable RX/TX-IRQ, reset RX state, txd
+      forcé MARK.
+- [ ] 🟠 DCD/DSR transitions doivent raise IRQ via `m_irq_state |=
+      IRQ_DCD/IRQ_DSR` (MAME `mos6551.cpp:443-461`, gated sur `!m_dtr`).
+      POM2 set SR_DCD/SR_DSR mais ne raise jamais. Casse modem dialer
+      ProTERM "carrier detect".
+- [ ] 🟡 Signature slot ROM incomplète pour GS/OS / Pascal 1.1 : manque
+      Pascal 1.1 ID block `$CnFB-$CnFF` (`$CnFE` low-nibble = device
+      class, `$CnFF` = entry-point offset). MAME ship le vrai
+      `341-0065-a.bin` (2 KB, `a2ssc.cpp:68-69`).
 - [ ] 🟡 Telnet IAC strip mange les `$FF` valides en RX 8-bit binaire.
       Proposer toggle "raw mode" dans le panneau.
-- [ ] 🟡 LF→CR mapping appliqué uniquement sur keyboard sink, pas sur `rxBuf`
-      (`SuperSerialCard.cpp:187-198`). Incohérence selon que le guest lit
-      via clavier vs IN#2.
+- [ ] 🟡 LF→CR mapping appliqué uniquement sur keyboard sink, pas sur
+      `rxBuf` (`SuperSerialCard.cpp:187-198`). Incohérence selon que
+      le guest lit via clavier vs IN#2.
+- [ ] 🟢 IRQ gate sur DIP : quand on câblera IRQ, gater sur un setting
+      persistable (équivalent du SW2:6 "Interrupts"). MAME
+      `a2ssc.cpp:373`.
 
 ### 14.8 ThunderClock+ / uPD1990AC (`ClockCard.cpp`)
 
+MAME refs `src/devices/machine/upd1990a.cpp` + `src/devices/bus/a2bus/a2thunderclock.cpp`.
+**1 faux positif purgé** (VIA pinout).
+
 - [ ] 🟠 **Bug month nibble dans `shiftReg[4]`** (`ClockCard.cpp:79-80`).
-      `(toBcd(month) & 0xF0) | (dow & 0x0F)` efface le mois pour mois 1-9
-      (toBcd(5)=0x05, & 0xF0 = 0x00). Fix :
-      `((toBcd(month) & 0x0F) << 4) | (dow & 0x0F)`.
-      **Le test `clock_card_smoke_test.cpp:124` pin la valeur cassée** — à
-      corriger aussi.
+      `(toBcd(month) & 0xF0) | (dow & 0x0F)` efface le mois pour mois
+      1-9 (toBcd(5)=0x05, &0xF0=0x00). **Fix correct** (MAME
+      `upd1990a.cpp:95`): `(month << 4) | (dow & 0x0F)` — **mois stocké
+      en 4-bit binaire, pas BCD**. L'autre fix proposé `(toBcd(month)
+      & 0x0F) << 4` casserait octobre-décembre (`toBcd(10)=0x10,
+      &0x0F=0`). Test `clock_card_smoke_test.cpp:124` pin la valeur
+      cassée `0x06` — devrait être `0x56` (mai/sat).
 - [ ] 🟠 Seul `MODE_TIME_READ` implémenté (`ClockCard.cpp:13-16, 109-116`).
-      Pas de TIME_SET (impossible de régler), pas de TP=64/256/2048 Hz
-      (utilitaires interval-timing comme *Clockworks* ne tickent jamais).
-- [ ] 🟠 Pinout simplifié — POM2 mappe directement sur `$C0n0` (`ClockCard.cpp:19-21`),
-      le vrai ThunderClock+ passe par un 6522 VIA. ProDOS marche (driver
-      hardcodé à `$D742`) ; tout soft écrivant les registres VIA `$C0n1-$C0nF`
-      lit du 0xFF.
-- [ ] 🟡 Pas de mode TEST, pas de CS gating, DATA_OUT "live" vs MAME qui
-      latch sur edge CLK.
-- [ ] 🟢 Pas de compteur interne 1 Hz — `std::time(nullptr)` à chaque STB.
-      Casse déterminisme snapshot.
-- [ ] 🟢 Slot ROM essentiellement vide (juste signature). Vrai ThunderClock+
-      ROM contient ~250 octets de driver RTS-able utilisé par DOS 3.3
-      patches et Applesoft.
+      MAME `upd1990a.h:56-74` liste 16 modes ; `upd1990a.cpp:194-289`
+      implémente TIME_SET (shift→time), TP=64/256/2048 Hz (`:248-267`),
+      TEST (`:274-286`). Pas de TIME_SET → impossible de régler l'horloge ;
+      pas de TP → utilitaires interval-timing (*Clockworks*) ne tickent
+      jamais.
+- [ ] 🟠 `MODE_SHIFT` aussi non implémenté — POM2 shift sur **n'importe
+      quel CLK rise** (`ClockCard.cpp:123-129`). MAME `upd1990a.cpp:312-327`
+      ne shift que si `m_c == MODE_SHIFT`. Marche par accident parce
+      que le driver ProDOS hardcodé est tolérant.
+- [ ] 🟡 DATA_OUT live (`ClockCard.cpp:88-94`) vs MAME latch sur CLK
+      edge en MODE_SHIFT (`upd1990a.cpp:312-327`) ; pré-loaded sur
+      STB en TIME_READ (`:226-247`). Differs hors ProDOS.
+- [ ] 🟡 `read_c0nx` ignore offset — POM2 retourne `0xFF` pour
+      `$C0n1-$C0nF` (`ClockCard.cpp:89-93`). MAME `a2thunderclock.cpp:112-115`
+      mirror DATA_OUT sur tous les 16 offsets.
+- [ ] 🟢 Pas de compteur interne 1 Hz (`ClockCard.cpp:64-82`). MAME
+      `upd1990a.cpp:67-68` alloue `m_timer_clock` à 1 Hz via XTAL/32768
+      et avance via `advance_seconds()`. POM2 `std::time()` à chaque
+      STB → casse déterminisme snapshot, et bloquerait TIME_SET si
+      implémenté.
+- [ ] 🟢 Slot ROM essentiellement vide (`ClockCard.cpp:134-155`, 256 B
+      avec signature + NOPs). MAME `a2thunderclock.cpp:31-34` ship le
+      vrai `thunderclock plus rom.bin` (2 KB) avec driver RTS-able
+      utilisé par DOS 3.3 patches et Applesoft (via `read_c800`).
+
+**Faux positif retiré** : "Pinout passe par un 6522 VIA". Le vrai
+ThunderClock+ MAME (`a2thunderclock.cpp:71-75`) instancie **seulement**
+un `UPD1990A`, pas de VIA. Bit layout POM2 match MAME exactly
+(`:119-139`).
 
 ### 14.9 Speaker + Cassette (`SpeakerDevice.cpp`, `CassetteDevice.cpp`)
 
-- [ ] 🟠 `setSampleRate()` jamais câblé depuis `AudioDevice::getActualSampleRate()`
-      (`SpeakerDevice.cpp:60-61`). Speaker reste sur `kSampleRate=44100` par
-      défaut. Sur host Apple Silicon 48 kHz → tons **~8.8% trop aigus**.
-      Vérifier wiring dans `MainWindow.cpp` / `EmulationController.cpp`.
+MAME refs `src/devices/sound/spkrdev.cpp` + `src/devices/imagedev/cassette.cpp`.
+**3 faux positifs purgés** (setSampleRate non câblé, $C028=ALTCHAR,
+DC blocker non-MAME).
+
 - [ ] 🟠 Reconstruction square-wave naïve (`SpeakerDevice.cpp:136-139`).
-      Snap+LP au lieu de l'intégration rectangle-area de MAME
-      `spkrdev::sound_stream_update`. Pour toggles >sample_rate/4 (Karateka
-      4-5 kHz, click effects), POM2 alias / perd de l'énergie.
-- [ ] 🟠 Timestamp `cycleCounter + getCurrentInstructionCycles()`
-      (`Memory.cpp:538-540`) : à confirmer que `getCurrentInstructionCycles()`
-      donne l'offset au bus access exact, pas le total instruction.
-      MAME : `machine().time()` snapshotté au moment précis.
-- [ ] 🟠 `$C020` décodé 16-byte aliased `$C020-$C02F` (`Memory.cpp:549-552`).
-      Sur IIe : **`$C028 = ALTCHAR write`** dans certaines configs. Risque
-      de stomper ALTCHAR si l'ordre `softSwitchAccess` ne préempte pas.
-      À vérifier.
-- [ ] 🟡 DC blocker (p=0.995) non-MAME (`SpeakerDevice.cpp:108, 142-144`).
-      MAME n'en a pas, encode symétrique ±level. Atténue contenu <12 Hz
-      (inaudible mais divergence).
-- [ ] 🟡 LP 5 kHz hard-coded "cone model" (`SpeakerDevice.h:74`). MAME laisse
-      cela aux filtres machine-config externes (FILTER_RC). Son moins
-      "snappy" sur transients.
-- [ ] 🟡 Cassette seuil `±0.02` pré-extrait au load (vs MAME `> 0.0` à
-      runtime). Rejette les rips faible volume.
+      MAME `spkrdev.cpp:163-197` (`sound_stream_update`) +
+      `update_interm_samples` (`:241-259`) + `finalize_interm_sample`
+      (`:287-297`) implémente **rectangle-area integration** via
+      attotime fractions, puis **4× oversampling + 64-tap windowed
+      sinc anti-alias** (`get_filtered_volume :313-327`, `RATE_MULTIPLIER=4`,
+      `FILTER_LENGTH=64`). POM2's snap+1-pole LP alias sur >sr/4
+      (Karateka 4-5 kHz click sequences).
+- [ ] 🟡 Cassette seuil `±0.02` pré-extrait au load
+      (`CassetteDevice.cpp:723-749`) vs MAME runtime `> 0.0`
+      (`apple2.cpp:362` : `(m_cassette->input() > 0.0 ? 0 : 0x80)`).
+      Rejette les rips faible volume.
 - [ ] 🟡 Auto-rewind 500 ms si pas de poll `$C060` (`CassetteDevice.cpp:461-465`).
-      MAME ne rewind jamais. Casse les loaders custom qui poll sporadiquement.
+      MAME ne rewind jamais (`cassette.cpp` `m_position` advance
+      monotonique). Casse loaders custom polling sporadique.
+- [ ] 🟡 LP 5 kHz hard-coded (`SpeakerDevice.h:74`). MAME utilise un
+      **sinc 64-tap interne** à spkrdev (`spkrdev.cpp:109-133`,
+      cutoff ≈ sr/4), pas un external FILTER_RC. Filtres
+      qualitativement différents.
+- [ ] 🟢 Timestamp `cycleCounter + getCurrentInstructionCycles()`
+      (`Memory.cpp:538-540`) : `M6502.h:99-101` documente
+      end-of-opcode (≤7 cycles, ~7 µs, sous-résolution audio à 44 kHz).
+      Intentionnel et borné, pas un bug. MAME bus-cycle-exact via
+      attotime mais sans impact audible.
+
+**Faux positifs retirés** :
+- "setSampleRate() jamais câblé → drift 8.8% sur 48 kHz" : câblé à
+  `EmulationController.cpp:29` (`spk->setSampleRate(audioDev->getActualSampleRate())`
+  avant `addSource`). Pas de drift.
+- "$C028 = ALTCHAR write" : ALTCHAR est sur `$C00E/$C00F` (MAME
+  `apple2e.cpp:2168-2172` et POM2 `Memory.cpp:610`). `$C028` sur IIe
+  est bien cassette (MAME `apple2e.cpp:1682-1708` : "all models with
+  a tape interface will respond to any of the $c02x addresses").
+- "DC blocker non-MAME" : MAME `spkrdev.cpp:280-285` a le **strictement
+  identique** filtre 1-pôle 0.995 (`filtered_volume = tempx - m_prevx
+  + 0.995 * m_prevy`). POM2 reproduit exactement.
 
 ### 14.10 Soft switches + Paddle (`Memory.cpp`, `JoystickInput.cpp`)
 
+MAME refs `src/mame/apple/apple2.cpp` + `apple2e.cpp`. **1 faux
+positif purgé** (paddle constant 11→12), 1 reframé (STATEREG IIgs-only).
+
 - [ ] 🟠 Language Card prewrite latch armé sur **écritures** aussi
-      (`Memory.cpp:713-734`). Vrai LC : prewrite armé seulement sur read
-      (ou `BIT $C08x`) ; `STA $C08x` doit clear le latch. Casse les patterns
-      `LDA $C081 / STA $C08B` (Sather 5-12, MAME `lc_w` n'arme pas prewrite).
-      Fix : passer `isWrite` à `languageCardSwitchAccess`.
-- [ ] 🟠 Paddle RC constant `paddleValue * 11` (`Memory.cpp:577`). Vrai RC
-      Apple II = ~11.34 µs/step à 1.022727 MHz → **~11.617 cycles**.
-      Erreur 8% → full deflection à ~92% de 255. Fix : `* 12` ou fixed-point
-      `* 1162 / 100`.
-- [ ] 🟠 `paddleValue[]` init à 128 (`Memory.cpp:267`) au lieu de 0 → 1408
-      cycles de "hold" même sans joystick branché. Casse auto-test //e.
-      MAME : 0 jusqu'à `setPaddle` host-driven.
-- [ ] 🟠 PB3 / Shift-Key Mod manquant en mode IIe : `$C063` retourne
-      `paddleButton[2]` inconditionnellement (`Memory.cpp:567`). Sur IIe
-      avec jumper SHK, `$C063` est câblé sur Shift — utilisé par Lode Runner,
-      Choplifter. Devrait OR `shiftHeld` en `iieMode`.
-- [ ] 🟡 `$C070` PTRIG ne retourne pas floating bus (`Memory.cpp:582-585`)
-      et n'alias pas sur tout `$C070-$C07F`. POM2 ne catch que `low == 0x70`.
-- [ ] 🟡 `$C068-$C06F` décode manquant — sur IIe `$C068 = STATEREG`,
-      `$C06C-$C06F = band-select`.
+      (`Memory.cpp:713-734`). MAME `ramcard16k.cpp:61-64` (II/II+) +
+      `apple2e.cpp:1515-1520` (IIe) : "any write disables pre-write".
+      Le `lcPrewrite = writeCandidate` ligne 728-729 fire depuis
+      read (`:842`) ET write (`:890`). Fix : passer `isWrite` ;
+      sur write, force `lcPrewrite = false`.
+- [ ] 🟠 `paddleLatchCycle` init à 0 + `paddleValue` à 128
+      (`Memory.h:267-269`). MAME `apple2.cpp:259` init
+      `m_joystick_x1_time = 0` — timer **déjà expiré** au boot
+      indépendamment de la valeur paddle (qui sera ce que l'host pousse).
+      Au boot POM2 : 1408 cycles de "hold" parasite, casse auto-test
+      //e. Fix : init `paddleLatchCycle` tel que le test elapsed soit
+      au-dessus du threshold dès le boot (pas init de `paddleValue`).
+- [ ] 🟠 PB3 / Shift-Key Mod manquant sur IIe `$C063`
+      (`Memory.cpp:567`). MAME `apple2e.cpp:1908-1913` :
+      `(sw2_r() || (shift_key_mod && (kbspecial & 0x06)==0) ? 0x80 : 0)
+      | uFloatingBus7`. Idem manquant : `$C061` OR Open Apple
+      (`kbspecial & 0x10`), `$C062` OR Solid Apple (`kbspecial & 0x20`).
+- [ ] 🟠 IIe status reads `$C011-$C01F` doivent OR `m_transchar` dans
+      les bits bas (`Memory.cpp:625-649`). Cf. §14.4 — même bug.
+- [ ] 🟡 `$C000` non mirroré `$C001-$C00F` comme keyboard latch en mode
+      II+ (`Memory.cpp:425`). MAME `apple2.cpp:548` `.mirror(0xf)`.
+- [ ] 🟡 `$C010` bit 7 devrait refléter any-key-down en mode IIe
+      (`Memory.cpp:429` retourne `kbLatch & 0x7F`). MAME `apple2e.cpp:1833` :
+      `m_transchar | (m_anykeydown ? 0x80 : 0x00)`.
+- [ ] 🟡 `$C068-$C06F` décode manquant — sur II+ ET IIe ils **mirror
+      $C060-$C067** (MAME `apple2.cpp:554` `.mirror(0x8)` ;
+      `apple2e.cpp:1889/1903/1909/1915/1919/1923/1927`). STATEREG et
+      band-select sont IIgs-only, pas IIe.
+- [ ] 🟡 `$C070` PTRIG ne retourne pas floating bus et n'alias pas
+      `$C070-$C07F` (`Memory.cpp:582-585`). MAME `apple2.cpp:555`
+      `map(0xc070, 0xc070).mirror(0xf)`. MAME `:395-411` aussi : 558
+      monostable, strobe ignored if timer still running.
+- [ ] 🟢 Floating-bus low 7 bits sur `$C061-$C067` (paddles + buttons).
+      Cf. §14.4 — POM2 retourne `0x80`/`0x00` purs, MAME OR `uFloatingBus7`.
 
-### 14.11 Actions prioritaires
+**Faux positifs retirés** :
+- "Paddle RC constant 11 → 12" : MAME `apple2.cpp:247-248` utilise
+  `attotime::from_nsec(10800)` = **11.045 cycles** à 1.022727 MHz.
+  POM2's `* 11` est à 0.4% — pas 11.34/11.617. **Le fix `* 12`
+  rendrait moins précis** ; si on veut affiner, utiliser
+  `* 11045 / 1000`.
+- "$C068-$C06F = STATEREG / band-select" : IIgs-only, pas IIe.
+  POM2 a quand même un vrai bug : pas de mirror $C060-$C067.
 
-Top 10 par ratio impact / effort :
+### 14.11 Actions prioritaires (révisées 2026-05-12)
 
-1. **Bug month nibble ClockCard** (1 ligne + fix test) — §14.8
-2. **Câbler `setSampleRate()` speaker** depuis `AudioDevice` — §14.9
-3. **Câbler IRQ SSC** (copier pattern Mockingboard) — §14.7
-4. **Retirer `& 0x7F` TX SSC** (débloque XMODEM/Kermit/ADTPro) — §14.7
-5. **Retirer `ifr &= ~IFR_T1` Mockingboard T1LH** — §14.6
-6. **Table amplitude AY 8910 canonique** — §14.6
-7. **Paddle constant 11 → 12** + init 128 → 0 — §14.10
-8. **LC prewrite gate sur `!isWrite`** — §14.10
-9. **D flag clear sur IRQ 65C02** — §14.1
-10. **Aux RAM dans renderHiRes/renderText/renderLoRes IIe** — §14.5
+**Quick wins** (1-5 lignes, débloquent des cas concrets) :
 
-Effort plus lourd mais valeur élevée :
-- Quarter-tracks WOZ (débloque Spiradisc/RWTS-18, ~120 L `DiskImage`) — §14.3
-- Envelope shape table AY (refonte ~80 L) — §14.6
-- Floating-bus dans low-7 bits des status reads (transverse) — §14.4
+1. **Month nibble ClockCard** : `shiftReg[4] = (month << 4) | (dow &
+   0x0F)` ; corriger `clock_card_smoke_test.cpp:124` (attendu `0x56`).
+   §14.8
+2. **LC prewrite gate sur `!isWrite`** : passer `isWrite` à
+   `languageCardSwitchAccess`, sur write `lcPrewrite = false`. §14.10
+3. **CPU D flag clear sur IRQ/BRK/NMI CMOS** : ajouter `& ~F_D` dans
+   `handleIRQ`, `handleNMI`, `BRK`. §14.1
+4. **CPU PLP/RTI force U=1 ET B=1** : OR popped status avec `0x30`. §14.1
+5. **`paddleLatchCycle` init pour que le test soit "expiré" au boot**
+   (pas changer `paddleValue` 128). §14.10
+6. **IRQ/NMI priorité** dans `step()` : check NMI **avant** IRQ. §14.1
+
+**Mid-effort, high-value** :
+
+7. **SSC : câbler IRQ** (copier pattern Mockingboard) +
+   **clear `m_irq_state` sur status read** + **`cmdReg &= ~0x1F`
+   sur status write** + **retirer `& 0x7F` en TX** + **mirror A0-A1
+   only**. Débloque XMODEM/Kermit/ADTPro 8-bit binaire et tous les
+   drivers IRQ-driven. §14.7
+8. **CPU cycle counts CMOS** : table à corriger (JMP indirect+6 cycles
+   avec fix page-wrap, BIT #imm=2, STZ zp,X=4, RMB/SMB/BBR/BBS=5,
+   BRK=7, RTI=6). §14.1
+9. **WAI à PC+1 sur IRQ masqué** : ne pas decrement PC, consommer
+   des cycles, fall through sur IRQ même si I=1. §14.1
+10. **RMW $C0xx triple dispatch** : MAME fait read + 2 writes ; POM2
+    fait read + 1 write. Affecte speaker, paddle reset, etc. §14.1
+11. **IIe status reads OR `m_transchar`** dans bits 0-6 (`$C011-$C01F`).
+    Transverse §14.4 + §14.10.
+12. **PB3 Shift-Key Mod + Open/Solid Apple** sur `$C061-$C063` en IIe.
+    §14.10
+13. **Aux RAM dans renderHiRes/renderText/renderLoRes** en
+    `80STORE+PAGE2+HIRES`. Caveat : MAME `hgr_update:766` partage
+    cette limitation, donc divergence avec le HARDWARE, pas MAME.
+    §14.5
+
+**Heavy lifts** (refonte ciblée) :
+
+14. **Quarter-tracks WOZ** — étendre `bitStream[35]` → `[160]`,
+    threader `headQuarterTrack[d]` (sans /4) à travers `DiskImage` +
+    5 sites dans `DiskIICard`. Débloque Spiradisc / RWTS18 /
+    Locksmith. §14.3
+15. **FLUX chunk parser** (WOZ2 v2.1+). Débloque Wings of Fury orig,
+    Captain Goodnight, Ankh. §14.3
+16. **CRC32 validation** WOZ (`crc32r`, reject sur mismatch). §14.3
+17. **AY envelope state machine 4-flag** (attack/hold/alternate/holding)
+    pour shapes 10/12/14 corrects. §14.6
+18. **Sinc 64-tap + 4× oversampling speaker** (port MAME
+    `spkrdev.cpp:163-327`). Real MAME-grade audio. §14.9
+19. **Composite color mode 1/2** (Video-7 RGB color-bias, hard
+    4-bit) — déjà 50% (mode 0 OK). §14.5
+20. **VIA T2 timer Mockingboard** — débloque Ultima IV speech
+    driver. §14.6
+
+**Faux positifs purgés de la passe 1** (à ne PAS appliquer) :
+- `setSampleRate()` speaker (était déjà câblé)
+- `ifr &= ~IFR_T1` Mockingboard T1LH (MAME fait pareil)
+- Paddle constant 11 → 12 (MAME utilise 11.045)
+- PULSE width 1 cycle Disk II (les deux pareil)
+- Motor spin-up Disk II (MAME ne delay pas flux non plus)
+- Phase magnets re-emit Disk II (MAME ne re-émet pas non plus)
+- Flush threshold 30 vs 31 Disk II (les deux sont 30)
+- Ctrl-Reset preserve ALTZP/80COL/etc. (MAME clear tout)
+- VBL IRQ jamais asserté (VBL IRQ IIc-only dans MAME aussi)
+- $C028 = ALTCHAR (ALTCHAR est en $C00E/F)
+- DC blocker non-MAME (MAME a le même 0.995)
+- ThunderClock+ pinout via 6522 VIA (pas de VIA dans MAME)
+- WOZ `INFO.synchronized/cleaned`, `bytes_used` (MAME les ignore aussi
+  au load)
+- NMI level-triggered (POM2 est edge-triggered comme MAME)
