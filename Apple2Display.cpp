@@ -377,7 +377,17 @@ static GlyphLookup lookupCsbitsGlyph(uint8_t screenByte,
 void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
 {
     const auto state = mem.getDisplayState();
+    // IIe scanner routing for text/lo-res page 1 ($0400-$07FF): when
+    // 80STORE is on, PAGE2 selects aux instead of main RAM (Sather
+    // Fig 5.14). Same routing applies in DHGR's 80-col path
+    // (renderText80) but POM2 historically had this gated only there.
+    // Without it, IIe software that uses aux text $0400-$07FF (e.g.
+    // any DHGR text panel, or 40-col code that pre-stages aux) renders
+    // stale/blank in 40-col mode. Note MAME `hgr_update` shares this
+    // limitation, so this fix takes POM2 closer to real hardware than
+    // to MAME parity strictly.
     const uint8_t* ram = mem.data();
+    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
 
     // Flash phase: 0 = invert as-stored, 1 = flip back to normal. Toggles
     // every kFlashHalfPeriodFrames frames. Half-period = 15 frames @ 60 Hz
@@ -496,7 +506,10 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
     // byte stores TWO blocks: low nibble is the upper block, high nibble
     // the lower one.
     const auto state = mem.getDisplayState();
+    // IIe: 80STORE+PAGE2 routes text/lo-res page 1 to aux RAM. Same
+    // path as renderText — see the comment there.
     const uint8_t* ram = mem.data();
+    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
 
     // Palette selection. ChatMauveRGB swaps in the 16-colour Péritel
     // table — same indices, but indices 5 and 10 are now visibly distinct
@@ -576,12 +589,15 @@ constexpr std::array<uint16_t, 128> makeBitDoubler()
 }
 constexpr std::array<uint16_t, 128> kBitDoubler = makeBitDoubler();
 
-// Verbatim from MAME `apple2video.cpp` `artifact_color_lut[0]` (the
-// composite/NTSC variant — the second LUT in the [2][128] table is for
-// the slightly differently-tuned RGB monitor mode and lives in the same
-// file should we ever need it). Each byte packs four 4-bit lo-res
-// palette indices, one per NTSC sub-cycle phase; `rotl4b` selects which.
-constexpr uint8_t kArtifactColorLut[128] = {
+// Verbatim from MAME `apple2video.cpp:376-419` `artifact_color_lut[2][128]`.
+// Each byte packs four 4-bit lo-res palette indices, one per NTSC sub-
+// cycle phase; `rotl4b` selects which. Row 0 is the canonical
+// composite/NTSC table; row 1 is MAME's "medium-color biased" variant
+// (4n colored pixels for runs of medium colors against black/white, at
+// the cost of uglier 40-col text). Picked by `composite_color_mode()`
+// in MAME — driven here by `HiResMode::ColorNTSC` vs `ColorCompMedium`.
+constexpr uint8_t kArtifactColorLut[2][128] = {
+{
     0x00,0x00,0x00,0x00,0x88,0x00,0x00,0x00,0x11,0x11,0x55,0x11,0x99,0x99,0xdd,0xff,
     0x22,0x22,0x66,0x66,0xaa,0xaa,0xee,0xee,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
     0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x55,0x55,0x55,0x55,0x99,0x99,0xdd,0xff,
@@ -590,7 +606,20 @@ constexpr uint8_t kArtifactColorLut[128] = {
     0x00,0x22,0x66,0x66,0xaa,0xaa,0xaa,0xaa,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
     0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x11,0x11,0x55,0x55,0x99,0x99,0xdd,0xdd,
     0x00,0x22,0x66,0x66,0xee,0xaa,0xee,0xee,0xff,0xff,0xff,0x77,0xff,0xff,0xff,0xff,
-};
+}, {
+    // composite_color_mode = 1: medium-color biased variant. 8 entries
+    // differ from row 0 (highlighted by MAME's comment: 0110000 maps
+    // to a permutation of 0110 instead of black; counterparts under
+    // the symmetries do the same).
+    0x00,0x00,0x00,0x00,0x88,0x00,0xcc,0x00,0x11,0x11,0x55,0x11,0x99,0x99,0xdd,0xff,
+    0x22,0x22,0x66,0x66,0xaa,0xaa,0xee,0xee,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
+    0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x55,0x55,0x55,0x55,0x99,0x99,0xdd,0xff,
+    0x66,0x22,0x66,0x66,0xee,0xaa,0xee,0xee,0x77,0x77,0x77,0x77,0xff,0xff,0xff,0xff,
+    0x00,0x00,0x00,0x00,0x88,0x88,0x88,0x88,0x11,0x11,0x55,0x11,0x99,0x99,0xdd,0x99,
+    0x00,0x22,0x66,0x66,0xaa,0xaa,0xaa,0xaa,0x33,0x33,0x33,0x33,0xbb,0xbb,0xff,0xff,
+    0x00,0x00,0x44,0x44,0xcc,0xcc,0xcc,0xcc,0x11,0x11,0x55,0x55,0x99,0x99,0xdd,0xdd,
+    0x00,0x22,0x66,0x66,0xee,0xaa,0xee,0xee,0xff,0x33,0xff,0x77,0xff,0xff,0xff,0xff,
+}};
 
 // `rotl4b(n, count)` — extract the 4-bit nibble of `n` at logical
 // position `count` (mod 4). Maps to the NTSC phase rotation MAME uses.
@@ -648,8 +677,10 @@ inline uint32_t avgRgb(uint32_t a, uint32_t b)
 // ChatMauveRGB) are placeholders that are never actually read.
 struct Phosphor { uint8_t r, g, b; float decay; };
 constexpr Phosphor kPhosphors[] = {
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC    — placeholder (color path)
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ChatMauveRGB — placeholder (color path)
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC       — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorCompMedium — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorComp4Bit   — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ChatMauveRGB    — placeholder
     { 0xFF, 0xFF, 0xFF, 0.00f }, // MonoWhite
     { 0x33, 0xFF, 0x33, 0.85f }, // MonoGreen P31 (CIE x=0.280, y=0.595)
     { 0xFF, 0xB0, 0x00, 0.96f }, // MonoAmber (long persistence)
@@ -706,7 +737,14 @@ constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
 void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline)
 {
     const auto state = mem.getDisplayState();
+    // IIe HGR page 1 routing: when 80STORE is on AND HIRES is on AND
+    // PAGE2 is on, the scanner pulls $2000-$3FFF from aux RAM instead
+    // of main (Sather 5-25 + MAME `apple2e.cpp:1401`). Without this,
+    // IIe games that build a HGR frame in aux page 1 (rare but it
+    // exists, e.g. some Beagle Bros demos and the IIe self-test
+    // splash) draw stale/main content.
     const uint8_t* ram = mem.data();
+    if (state.eightyStore && state.hiRes && state.page2 && auxRam) ram = auxRam;
 
     std::array<uint32_t, kWidth> raw;
 
@@ -793,12 +831,21 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         return;
     }
 
-    if (effMode == HiResMode::ColorNTSC) {
+    if (effMode == HiResMode::ColorNTSC
+        || effMode == HiResMode::ColorCompMedium
+        || effMode == HiResMode::ColorComp4Bit) {
         // MAME-style 7-bit sliding-window decode. ContextBits = 3 leaves
         // the centre sub-pixel at bit 3 of the window, with 3 bits of
         // left context (the tail of the previous byte) and 3 bits of
         // right context (the head of the next byte) on either side.
+        // Composite modes 0 / 1 use the artifact LUT (row 0 = canonical,
+        // row 1 = medium-color-biased per MAME `apple2video.cpp:479-485`).
+        // Mode 2 is a 4-bit square filter: each 4-dot nibble in the
+        // bit stream maps DIRECTLY to a palette index, no artifact
+        // window (MAME `:486-493` — `rotl4(w & 0x0f, x + is_80_column - 1)`).
         constexpr int kContextBits = 3;
+        const int lutRow = (effMode == HiResMode::ColorCompMedium) ? 1 : 0;
+        const bool squareFilter = (effMode == HiResMode::ColorComp4Bit);
         uint16_t words[40];
         std::array<uint32_t, kStreamLen> subPixels;
 
@@ -817,8 +864,18 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
                 }
                 for (int b = 0; b < 14; ++b) {
                     const int absX = col * 14 + b;
-                    const uint8_t lutEntry = kArtifactColorLut[w & 0x7Fu];
-                    const unsigned loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
+                    unsigned loresIdx;
+                    if (squareFilter) {
+                        // 4-bit square filter: take the 4-dot nibble
+                        // at the window centre, rotate by absX-1 (MAME
+                        // `is_80_column - 1` = -1 for HGR).
+                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
+                        loresIdx = rotl4b(static_cast<uint8_t>(nibble | (nibble << 4)),
+                                          static_cast<unsigned>(absX - 1));
+                    } else {
+                        const uint8_t lutEntry = kArtifactColorLut[lutRow][w & 0x7Fu];
+                        loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
+                    }
                     subPixels[absX] = kLoResPalette[loresIdx];
                     w >>= 1;
                 }
@@ -1023,8 +1080,10 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
         ? kChatMauveLoResPalette : kLoResPalette;
 
     static const struct { uint8_t r, g, b; } kMonoTint[] = {
-        { 0xFF, 0xFF, 0xFF }, // ColorNTSC    placeholder
-        { 0xFF, 0xFF, 0xFF }, // ChatMauveRGB placeholder
+        { 0xFF, 0xFF, 0xFF }, // ColorNTSC        placeholder
+        { 0xFF, 0xFF, 0xFF }, // ColorCompMedium  placeholder
+        { 0xFF, 0xFF, 0xFF }, // ColorComp4Bit    placeholder
+        { 0xFF, 0xFF, 0xFF }, // ChatMauveRGB     placeholder
         { 0xFF, 0xFF, 0xFF }, // MonoWhite
         { 0x33, 0xFF, 0x33 }, // MonoGreen
         { 0xFF, 0xB0, 0x00 }, // MonoAmber
@@ -1041,6 +1100,11 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
         uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
 
         if (useComposite) {
+            // Composite color mode selection: NTSC = LUT row 0, Medium =
+            // LUT row 1, 4Bit = square filter. Matches MAME
+            // `apple2video.cpp:479-498` for DHGR.
+            const int lutRow = (m == HiResMode::ColorCompMedium) ? 1 : 0;
+            const bool squareFilter = (m == HiResMode::ColorComp4Bit);
             // Pack the aux+main pair as 14 bits: aux's bits 0..6 in the low
             // 7 (leftmost 7 dots of the cell pair), main's bits 0..6 in
             // bits 7..13 (rightmost 7 dots). Mirrors MAME's
@@ -1062,10 +1126,23 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                 }
                 for (int b = 0; b < 14; ++b) {
                     const int absX = col * 14 + b;
-                    const uint8_t lutEntry = kArtifactColorLut[w & 0x7Fu];
-                    // is_80_column = 1 for DHGR → rotation = absX + 1.
-                    const unsigned loresIdx =
-                        rotl4b(lutEntry, static_cast<unsigned>(absX + 1));
+                    unsigned loresIdx;
+                    if (squareFilter) {
+                        // Mode 2: each 4-dot block → palette index
+                        // directly (MAME `:486-493` `rotl4(w & 0x0f,
+                        // x + is_80_column - 1)` with is_80_column=1
+                        // for DHGR → rotation by absX).
+                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
+                        loresIdx = rotl4b(
+                            static_cast<uint8_t>(nibble | (nibble << 4)),
+                            static_cast<unsigned>(absX));
+                    } else {
+                        const uint8_t lutEntry =
+                            kArtifactColorLut[lutRow][w & 0x7Fu];
+                        // is_80_column = 1 for DHGR → rotation = absX + 1.
+                        loresIdx = rotl4b(
+                            lutEntry, static_cast<unsigned>(absX + 1));
+                    }
                     outRow[absX] = kLoResPalette[loresIdx];
                     w >>= 1;
                 }

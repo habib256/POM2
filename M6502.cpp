@@ -95,11 +95,14 @@ void M6502::popProgramCounter(void)
 void M6502::handleIRQ(void)
 {
     pushProgramCounter();
-  memory->memWrite((unsigned short)(0x100 + stackPointer), (unsigned char)((statusRegister & ~0x10) | 0x20));
-stackPointer--;
-statusRegister |= M6502::Status::I;
-programCounter = memReadAbsolute(0xFFFE);
-cycles += 5;
+    memory->memWrite((unsigned short)(0x100 + stackPointer), (unsigned char)((statusRegister & ~0x10) | 0x20));
+    stackPointer--;
+    statusRegister |= M6502::Status::I;
+    // 65C02 clears D on interrupt entry (MAME ow65c02.lst:259 brk_c_imp:
+    // `m_P = (m_P | F_I) & ~F_D;`). NMOS leaves D untouched.
+    if (cpuMode == CpuMode::CMOS) statusRegister &= ~M6502::Status::D;
+    programCounter = memReadAbsolute(0xFFFE);
+    cycles += 5;
 }
 
 void M6502::handleNMI(void)
@@ -108,6 +111,7 @@ void M6502::handleNMI(void)
     memory->memWrite((unsigned short)(0x100 + stackPointer), (unsigned char)((statusRegister & ~0x10) | 0x20));
     stackPointer--;
     statusRegister |= M6502::Status::I;
+    if (cpuMode == CpuMode::CMOS) statusRegister &= ~M6502::Status::D;
     NMI = 0;
     programCounter = memReadAbsolute(0xFFFA);
     cycles += 5;
@@ -133,14 +137,19 @@ void M6502::Zero(void)
 
 void M6502::ZeroX(void)
 {
+    // zp,X cost = 2 bus cycles (zp fetch + dummy read at the unindexed
+    // address before the indexed read). MAME's m6502 tables charge 4
+    // cycles for `LDA $zp,X` / 4 for `STZ $zp,X` / 6 for `ASL $zp,X`,
+    // which only works if the addressing mode itself contributes 2.
     op = (memory->memRead(programCounter++) + xRegister) & 0xFF;
-    cycles++;
+    cycles += 2;
 }
 
 void M6502::ZeroY(void)
 {
+    // Same dummy-read accounting as ZeroX — used by LDX $zp,Y (4 cycles).
     op = (memory->memRead(programCounter++) + yRegister) & 0xFF;
-    cycles++;
+    cycles += 2;
 }
 
 void M6502::Abs(void)
@@ -172,12 +181,27 @@ void M6502::AbsY(void)
 
 void M6502::Ind(void)
 {
-    uint8_t lo = memory->memRead(programCounter++);
+    // JMP ($abs) indirect. The NMOS 6502 has a famous page-wrap bug:
+    // when the pointer's low byte is $FF, the high byte is read from
+    // the SAME page rather than the next page. The 65C02 fixes that at
+    // the cost of one extra cycle (5 → 6). MAME `om6502.lst:649-656`
+    // (jmp_ind, NMOS, buggy) vs `ow65c02.lst:387-395` (jmp_c_ind, CMOS,
+    // fixed + extra cycle).
+    uint8_t  lo = memory->memRead(programCounter++);
     uint16_t hi = (uint16_t)memory->memRead(programCounter++) << 8;
-    op = memory->memRead((uint16_t)(hi + lo));
-    lo = (lo + 1) & 0xFF;
-    op |= (uint16_t)memory->memRead((uint16_t)(hi + lo)) << 8;
-    cycles += 4;
+    uint16_t ptrLo;
+    uint16_t ptrHi;
+    if (cpuMode == CpuMode::CMOS) {
+        ptrLo = (uint16_t)(hi | lo);
+        ptrHi = (uint16_t)(ptrLo + 1);  // linear, carries into hi byte
+        cycles += 5;                    // CMOS: 6 total with fetch
+    } else {
+        ptrLo = (uint16_t)(hi | lo);
+        ptrHi = (uint16_t)(hi | ((lo + 1) & 0xFF));  // NMOS page-wrap bug
+        cycles += 4;                    // NMOS: 5 total with fetch
+    }
+    op  = memory->memRead(ptrLo);
+    op |= (uint16_t)memory->memRead(ptrHi) << 8;
 }
 
 void M6502::IndZeroX(void)
@@ -198,7 +222,8 @@ void M6502::IndZero(void)
 }
 
 // 65C02 (abs,X) for JMP. Reads the 16-bit pointer at base+X, no page-wrap
-// bug (the 6502 JMP () bug doesn't apply on 65C02).
+// bug (the 6502 JMP () bug doesn't apply on 65C02). MAME
+// `ow65c02.lst:377-386` charges 6 cycles.
 void M6502::IndAbsX(void)
 {
     uint16_t base = memory->memRead(programCounter++);
@@ -206,7 +231,7 @@ void M6502::IndAbsX(void)
     base = static_cast<uint16_t>(base + xRegister);
     op = memory->memRead(base);
     op |= (uint16_t)memory->memRead(static_cast<uint16_t>(base + 1)) << 8;
-    cycles += 4;
+    cycles += 5;  // 6 total with fetch
 }
 
 void M6502::IndZeroY(void)
@@ -452,16 +477,33 @@ void M6502::EOR(void)
     setStatusRegisterNZ(accumulator);
 }
 
+void M6502::rmwSecondBusCycle(uint16_t addr, uint8_t origValue)
+{
+    if (cpuMode == CpuMode::CMOS) {
+        // CMOS: dummy read of the same address. softSwitchAccess will
+        // toggle on the read just like on a write.
+        (void)memory->memRead(addr);
+    } else {
+        // NMOS: explicit write of the original value back to the bus.
+        memory->memWrite(addr, origValue);
+    }
+}
+
 void M6502::ASL(void)
 {
-    uint8_t val = memory->memRead(op);
+    const uint8_t orig = memory->memRead(op);
+    // RMW bus pattern (MAME `om6502.lst:161-164` for NMOS,
+    // `ow65c02.lst` for CMOS). The third bus cycle is a write of the
+    // original on NMOS, a dummy read on CMOS. Both cases dispatch the
+    // intermediate cycle through `softSwitchAccess` when `op` is in
+    // $C000-$C07F, so `INC $C030` / `ROL $C030` toggle the speaker
+    // twice on writes, paddle resets fire twice on $C070, etc.
+    rmwSecondBusCycle(op, orig);
 
-    if (val & 0x80)
-        statusRegister |= M6502::Status::C;
-    else
-        statusRegister &= ~M6502::Status::C;
+    if (orig & 0x80) statusRegister |= M6502::Status::C;
+    else             statusRegister &= ~M6502::Status::C;
 
-    val <<= 1;
+    uint8_t val = static_cast<uint8_t>(orig << 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
     cycles += 3;
@@ -477,14 +519,13 @@ void M6502::ASL_A(void)
 
 void M6502::LSR(void)
 {
-    uint8_t val = memory->memRead(op);
+    const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
 
-    if (val & 1)
-        statusRegister |= M6502::Status::C;
-    else
-        statusRegister &= ~M6502::Status::C;
+    if (orig & 1) statusRegister |= M6502::Status::C;
+    else          statusRegister &= ~M6502::Status::C;
 
-    val >>= 1;
+    uint8_t val = static_cast<uint8_t>(orig >> 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
     cycles += 3;
@@ -503,14 +544,14 @@ void M6502::LSR_A(void)
 
 void M6502::ROL(void)
 {
-    uint8_t val = memory->memRead(op);
-    uint8_t newCarry = val & 0x80;
-    val = (val << 1) | (statusRegister & M6502::Status::C ? 1 : 0);
+    const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
+    const uint8_t newCarry = orig & 0x80;
+    uint8_t val = static_cast<uint8_t>(
+        (orig << 1) | (statusRegister & M6502::Status::C ? 1 : 0));
 
-    if (newCarry)
-        statusRegister |= M6502::Status::C;
-    else
-        statusRegister &= ~M6502::Status::C;
+    if (newCarry) statusRegister |= M6502::Status::C;
+    else          statusRegister &= ~M6502::Status::C;
 
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
@@ -527,14 +568,14 @@ void M6502::ROL_A(void)
 
 void M6502::ROR(void)
 {
-    uint8_t val = memory->memRead(op);
-    int newCarry = val & 1;
-    val = (val >> 1) | (statusRegister & M6502::Status::C ? 0x80 : 0);
+    const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
+    const int newCarry = orig & 1;
+    uint8_t val = static_cast<uint8_t>(
+        (orig >> 1) | (statusRegister & M6502::Status::C ? 0x80 : 0));
 
-    if (newCarry)
-        statusRegister |= M6502::Status::C;
-    else
-        statusRegister &= ~M6502::Status::C;
+    if (newCarry) statusRegister |= M6502::Status::C;
+    else          statusRegister &= ~M6502::Status::C;
 
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
@@ -556,8 +597,9 @@ void M6502::ROR_A(void)
 
 void M6502::INC(void)
 {
-    uint8_t val = memory->memRead(op);
-    val++;
+    const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
+    uint8_t val = static_cast<uint8_t>(orig + 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
     cycles += 2;
@@ -565,8 +607,9 @@ void M6502::INC(void)
 
 void M6502::DEC(void)
 {
-    uint8_t val = memory->memRead(op);
-    val--;
+    const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
+    uint8_t val = static_cast<uint8_t>(orig - 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
     cycles += 2;
@@ -649,7 +692,13 @@ accumulator = memory->memRead((uint16_t)(stackPointer + 0x100));
 void M6502::PLP(void)
 {
     stackPointer++;
-  statusRegister = memory->memRead((uint16_t)(stackPointer + 0x100));
+    // MAME om6502.lst:959 + m6502.cpp:408 force U=1 AND B=1 on every P
+    // pop (PLP/RTI). The "B" and "U" bits aren't physical flags; the
+    // pushed byte carries them as 1 from PHP/BRK and as B=0/U=1 from
+    // IRQ/NMI. Without the OR with 0x30, an RTI from IRQ leaves B=0 in
+    // the popped status, which a subsequent PHP would then push back —
+    // visible to any handler that inspects pushed P.
+    statusRegister = memory->memRead((uint16_t)(stackPointer + 0x100)) | 0x30;
     cycles += 2;
 }
 
@@ -690,15 +739,20 @@ void M6502::BRK(void)
     memory->memWrite((uint16_t)(0x100 + stackPointer), statusRegister | M6502::Status::B | 0x20);
     stackPointer--;
     statusRegister |= M6502::Status::I;
+    if (cpuMode == CpuMode::CMOS) statusRegister &= ~M6502::Status::D;
     programCounter = memReadAbsolute(0xFFFE);
-    cycles += 4;
+    // BRK = 7 cycles on both NMOS and CMOS (MAME `om6502.lst` /
+    // `ow65c02.lst:234-261`). fetch(1)+Imp(1)+pushPC(2)+body(3) = 7.
+    cycles += 3;
 }
 
 void M6502::RTI(void)
 {
+    // RTI = 6 cycles. fetch(1)+Imp(1)+PLP body(2)+popPC body(2) = 6,
+    // matching MAME `om6502.lst:1050-1059`. The previous extra
+    // `cycles++` over-counted by 1.
     PLP();
     popProgramCounter();
-    cycles++;
 }
 
 void M6502::JMP(void)
@@ -918,16 +972,20 @@ void M6502::BIT_imm(void)
 {
     // BIT #imm (65C02 only). Unlike BIT zp/abs, the immediate variant only
     // affects Z — V and N stay put. (Imm() set op to the PC of the
-    // immediate byte, so memRead(op) reads the value.)
+    // immediate byte, so memRead(op) reads the value.) MAME
+    // `ow65c02.lst:210-217` charges 2 cycles; we add 1 here to bring
+    // fetch(1)+Imm(0)+BIT_imm(1) to MAME's 2.
     const uint8_t val = memory->memRead(op);
     if (!(val & accumulator)) statusRegister |= M6502::Status::Z;
     else                      statusRegister &= ~M6502::Status::Z;
+    cycles += 1;
 }
 
 void M6502::TSB(void)
 {
     // Test and Set Bits: Z = (mem AND A == 0); mem = mem | A.
     const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
     if (!(orig & accumulator)) statusRegister |= M6502::Status::Z;
     else                       statusRegister &= ~M6502::Status::Z;
     memory->memWrite(op, static_cast<uint8_t>(orig | accumulator));
@@ -938,6 +996,7 @@ void M6502::TRB(void)
 {
     // Test and Reset Bits: Z = (mem AND A == 0); mem = mem & ~A.
     const uint8_t orig = memory->memRead(op);
+    rmwSecondBusCycle(op, orig);
     if (!(orig & accumulator)) statusRegister |= M6502::Status::Z;
     else                       statusRegister &= ~M6502::Status::Z;
     memory->memWrite(op, static_cast<uint8_t>(orig & ~accumulator));
@@ -948,6 +1007,12 @@ void M6502::TRB(void)
 // Templated on the bit index N (0..7). Each generates a distinct
 // member-function instantiation that the dispatch table can target.
 
+// Rockwell zp-bit ops are 5-cycle on real silicon. MAME
+// `ow65c02.lst:497-504, 700-707` (RMB/SMB) and `:168-181` (BBR/BBS
+// not-taken) all charge 5; BBR/BBS-taken adds +1, +1 more on page cross.
+// `executeOpcode` seeds cycles=1 for the opcode fetch, so the bodies
+// below add 4 (RMB/SMB) or 4 baseline (BBR/BBS).
+
 template <int N>
 void M6502::SMBn(void)
 {
@@ -955,7 +1020,7 @@ void M6502::SMBn(void)
     uint8_t v = memory->memRead(zp);
     v |= static_cast<uint8_t>(1u << N);
     memory->memWrite(zp, v);
-    cycles += 5;
+    cycles += 4;
 }
 
 template <int N>
@@ -965,7 +1030,7 @@ void M6502::RMBn(void)
     uint8_t v = memory->memRead(zp);
     v &= static_cast<uint8_t>(~(1u << N));
     memory->memWrite(zp, v);
-    cycles += 5;
+    cycles += 4;
 }
 
 template <int N>
@@ -974,7 +1039,7 @@ void M6502::BBRn(void)
     const uint8_t zp     = memory->memRead(programCounter++);
     const int8_t  offset = static_cast<int8_t>(memory->memRead(programCounter++));
     const uint8_t v      = memory->memRead(zp);
-    cycles += 5;
+    cycles += 4;
     if ((v & (1u << N)) == 0) {
         const uint16_t old = programCounter;
         programCounter = static_cast<uint16_t>(programCounter + offset);
@@ -989,7 +1054,7 @@ void M6502::BBSn(void)
     const uint8_t zp     = memory->memRead(programCounter++);
     const int8_t  offset = static_cast<int8_t>(memory->memRead(programCounter++));
     const uint8_t v      = memory->memRead(zp);
-    cycles += 5;
+    cycles += 4;
     if ((v & (1u << N)) != 0) {
         const uint16_t old = programCounter;
         programCounter = static_cast<uint16_t>(programCounter + offset);
@@ -1021,12 +1086,23 @@ template void M6502::BBSn<6>(); template void M6502::BBSn<7>();
 // runs first if asserted, breaking the loop).
 void M6502::WAI(void)
 {
-    // The CPU is supposed to halt until an interrupt arrives. Parking PC
-    // makes step() re-fetch WAI; if IRQ is asserted (and I is clear) or
-    // NMI is pending, step() handles it before re-fetching. Subsequent
-    // RTI lands at PC+1, past the WAI byte. We add 3 cycles to mirror
-    // the documented latency.
-    programCounter--;
+    // WDC `WAI` suspends the CPU until an IRQ or NMI is asserted. Crucial
+    // detail (MAME `ow65c02.lst:797-803`): WAI wakes even when I=1 —
+    // the wake is unconditional on the interrupt line, only the
+    // vectoring step honours the I flag. Concretely, if WAI runs with
+    // I=1 and IRQ is then asserted, execution continues at PC+1
+    // **without** taking the vector. Some low-power patterns rely on
+    // this (poll-and-wait-for-IRQ-with-CLI-deferred).
+    //
+    // Previously we modelled the halt by decrementing PC so step()
+    // re-fetched WAI; that deadlocks with I=1 because step() bails on
+    // `!(P & I) && IRQ` and the PC never advances. Removing the decrement
+    // makes WAI act as "consume 3 cycles, fall through to PC+1" — the
+    // next step() then sees IRQ/NMI (handled at top of step()) and
+    // either vectors (NMI / IRQ+I=0) or just executes the byte after
+    // WAI (IRQ+I=1). Software relying on WAI as a "wait here forever"
+    // is rare on the Apple II target and would equally well use a
+    // BNE-to-self loop.
     cycles += 3;
 }
 
@@ -1496,11 +1572,16 @@ void M6502::setNMI(void)
 
 void M6502::step(void)
 {
-    if (!(statusRegister & M6502::Status::I) && IRQ)
-        handleIRQ();
+    // NMI has higher priority than IRQ on real silicon. MAME models
+    // this by picking the NMI vector inside `brk_c_imp` when both are
+    // pending (ow65c02.lst:247 + m6502.cpp prefetch_end). The previous
+    // order here let an IRQ run first when both fired in the same
+    // instruction window, masking the NMI for one instruction.
     if (NMI)
         handleNMI();
-    
+    else if (!(statusRegister & M6502::Status::I) && IRQ)
+        handleIRQ();
+
     executeOpcode();
     if (memory != nullptr) {
         memory->advanceCycles(cycles);

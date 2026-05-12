@@ -48,6 +48,8 @@
 #include <string_view>
 #include <thread>
 
+class M6502;
+
 class SuperSerialCard : public SlotPeripheral
 {
 public:
@@ -86,6 +88,14 @@ public:
         keyboardSink = std::move(sink);
     }
 
+    /// Wire the slot IRQ line to the CPU. Safe to leave null (the card
+    /// still runs polled). Once set, RDRF transitions (gated by
+    /// `cmdReg.bit1 == 0` — RX IRQ enable per the 6551 spec) and DCD/DSR
+    /// transitions raise the line; status read or programmed reset
+    /// lowers it (matches MAME `mos6551.cpp::read_status` /
+    /// `write_reset`). Pattern mirrors `MockingboardCard::setCpuIrqLine`.
+    void setCpuIrqLine(M6502* cpu) { cpu_ = cpu; }
+
     bool isListening()      const { return listening; }
     bool clientConnected()  const { return connected;  }
     uint16_t getPort()      const { return port;       }
@@ -122,6 +132,24 @@ private:
     // Optional latches the ROM may probe but our model doesn't care about.
     uint8_t lastDip1   = 0xA8;     // 19200 8N1, full duplex
     uint8_t lastDip2   = 0x60;     // CR + LF, no echo, etc.
+
+    // IRQ state — `irqPending_` is the latched "something happened" flag
+    // (cleared by status read or programmed reset, MAME-style); the
+    // public IRQ line follows `irqAsserted_` so we only call setIRQ on
+    // transitions. `cpu_` may be null when the card is plugged headlessly.
+    M6502* cpu_         = nullptr;
+    bool   irqPending_  = false;
+    bool   irqAsserted_ = false;
+
+    /// Latch a new IRQ source (RDRF transition, DCD/DSR change) and push
+    /// the line to the CPU if it transitioned. Caller must hold
+    /// `bufferMtx` if it touched `rxBuf` to compute the source — but the
+    /// CPU asserter call itself does not need the mutex.
+    void raiseRxIrq();
+    /// Clear `irqPending_` and lower the line. Called from status read
+    /// and from programmed reset.
+    void clearIrq();
+    void pushIrqLine();
 
     // TX (Apple II → TCP) and RX (TCP → Apple II) ring buffers.
     mutable std::mutex bufferMtx;

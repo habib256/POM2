@@ -3,6 +3,7 @@
 
 #include "SuperSerialCard.h"
 #include "Logger.h"
+#include "M6502.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -179,6 +180,15 @@ void SuperSerialCard::runWorker()
                         sink = keyboardSink;
                     }
                     rxCount += n;
+                    // RDRF transition: if bytes just arrived AND the
+                    // command register's RX IRQ enable bit allows it
+                    // (cmd bit 1 = 0 means RX IRQ enabled, MAME
+                    // mos6551.cpp:290-292), latch the IRQ and push to
+                    // the CPU. Real 6551 also fires on TDRE rising edge
+                    // when cmd bits 2-3 = 01, but POM2 keeps TDRE
+                    // pinned at 1 (TCP buffers TX) so that path is
+                    // currently a no-op.
+                    if (!(cmdReg & 0x02)) raiseRxIrq();
                     if (sink) {
                         // Forward each byte to the Apple II keyboard latch.
                         // Telnet line-endings: a stock telnet client sends
@@ -242,9 +252,31 @@ void SuperSerialCard::onReset()
 {
     cmdReg = 0;
     ctlReg = 0;
-    std::lock_guard<std::mutex> lk(bufferMtx);
-    txBuf.clear();
-    rxBuf.clear();
+    {
+        std::lock_guard<std::mutex> lk(bufferMtx);
+        txBuf.clear();
+        rxBuf.clear();
+    }
+    clearIrq();
+}
+
+void SuperSerialCard::raiseRxIrq()
+{
+    irqPending_ = true;
+    pushIrqLine();
+}
+
+void SuperSerialCard::clearIrq()
+{
+    irqPending_ = false;
+    pushIrqLine();
+}
+
+void SuperSerialCard::pushIrqLine()
+{
+    if (irqPending_ == irqAsserted_) return;
+    irqAsserted_ = irqPending_;
+    if (cpu_) cpu_->setIRQ(irqAsserted_ ? 1 : 0);
 }
 
 uint8_t SuperSerialCard::slotRomRead(uint8_t low8)
@@ -254,63 +286,83 @@ uint8_t SuperSerialCard::slotRomRead(uint8_t low8)
 
 uint8_t SuperSerialCard::deviceSelectRead(uint8_t low4)
 {
-    switch (low4) {
-        case 0x8: {
-            // ACIA data register — pop one RX byte. Returns 0 if empty.
-            std::lock_guard<std::mutex> lk(bufferMtx);
-            if (rxBuf.empty()) return 0;
-            const uint8_t b = rxBuf.front();
-            rxBuf.pop_front();
-            return b;
-        }
-        case 0x9: {
-            // ACIA status. TX always ready; RX flag follows queue depth;
-            // DSR/DCD reflect the TCP connection.
-            uint8_t s = 0x10;     // TDRE
-            {
+    // Address decode (MAME `a2ssc.cpp:339-353`):
+    //   bit 3 set ($C0n8-$C0nF) → ACIA, with **A0-A1 only** decoded
+    //     so $C0nC-$C0nF mirror $C0n8-$C0nB.
+    //   bit 3 clear ($C0n0-$C0n7) → 74LS259 DIP-switch reads, with bits
+    //     1/0 selecting which DSW to AND-mask: bit 1 clear ⇒ AND DSW1,
+    //     bit 0 clear ⇒ AND DSW2 (so $C0n0 returns DSW1 & DSW2,
+    //     $C0n1 returns DSW1, $C0n2 returns DSW2, $C0n3 returns 0xFF).
+    if (low4 & 0x08) {
+        const uint8_t reg = low4 & 0x03;
+        switch (reg) {
+            case 0x0: {  // RDR (data register)
                 std::lock_guard<std::mutex> lk(bufferMtx);
-                if (!rxBuf.empty()) s |= 0x08;     // RDRF
+                if (rxBuf.empty()) return 0;
+                const uint8_t b = rxBuf.front();
+                rxBuf.pop_front();
+                return b;
             }
-            if (connected) s |= 0x60;              // DCD + DSR
-            return s;
+            case 0x1: {  // status register
+                uint8_t s = 0x10;     // TDRE — TCP buffers TX
+                {
+                    std::lock_guard<std::mutex> lk(bufferMtx);
+                    if (!rxBuf.empty()) s |= 0x08;     // RDRF
+                }
+                if (connected) s |= 0x60;              // DCD + DSR
+                if (irqPending_) s |= 0x80;            // SR_IRQ
+                // MAME `mos6551.cpp:237-250`: status read clears
+                // `m_irq_state` and re-evaluates the line. Without this,
+                // every IRQ-driven driver (ProTERM, MODEM.MGR, GS/OS
+                // SerialPort) spins forever waiting for the ACK.
+                clearIrq();
+                return s;
+            }
+            case 0x2: return cmdReg;
+            case 0x3: return ctlReg;
         }
-        case 0xA: return cmdReg;
-        case 0xB: return ctlReg;
-        case 0x1:           // DIP-switch register 1 readback (some firmwares)
-        case 0x2: return lastDip1;
-        case 0x3: return lastDip2;
-        default:  return 0;
     }
+    // DIP-switch readback ($C0n0-$C0n7).
+    uint8_t result = 0xFF;
+    if (!(low4 & 0x02)) result &= lastDip1;
+    if (!(low4 & 0x01)) result &= lastDip2;
+    return result;
 }
 
 void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
-    switch (low4) {
-        case 0x8: {
-            // Write a TX byte. Apple II ASCII has bit 7 set on printable
-            // characters by convention (the keyboard/COUT path stores
-            // them that way), so we strip it before forwarding to TCP —
-            // a stock telnet client treats $C1 as "non-ASCII" and prints
-            // a placeholder, whereas $41 ('A') comes through cleanly.
-            // 8-bit-clean software that needs raw bytes can read back
-            // the ACIA state via the ROM and choose to set bit 7 itself.
-            const uint8_t outByte = v & 0x7F;
+    // Only $C0n8-$C0nF carries the ACIA registers (A0-A1 mirror); writes
+    // to $C0n0-$C0n7 hit the 74LS259 latch which we don't model.
+    if (!(low4 & 0x08)) return;
+    const uint8_t reg = low4 & 0x03;
+    switch (reg) {
+        case 0x0: {  // TDR (data register) — push to TX queue.
+            // Real 6551 transmits all 8 bits up to `m_wordlength`.
+            // Previously POM2 stripped bit 7 unconditionally, which
+            // broke any 8-bit-clean transfer (XMODEM, YMODEM, ZMODEM,
+            // Kermit-binary, BinSCII, ADTPro upload). The bit-7 strip
+            // is a *terminal* policy, not a UART one — let the host
+            // terminal decide via telnet binary mode if it wants 7-bit.
             std::lock_guard<std::mutex> lk(bufferMtx);
             if (txBuf.size() >= kBufCap) txBuf.pop_front();
-            txBuf.push_back(outByte);
-            txTail.push_back(outByte);
+            txBuf.push_back(v);
+            txTail.push_back(v);
             if (txTail.size() > kTailCap) txTail.pop_front();
             ++txCount;
             break;
         }
-        case 0xA: cmdReg = v; break;
-        case 0xB: ctlReg = v; break;
-        case 0x9:
-            // Programmed reset on write to status. Clears IRQ; we just
-            // forget any partial framing/parity flags we don't model.
-            cmdReg = 0;
+        case 0x1:
+            // Programmed reset (write to status). MAME
+            // `mos6551.cpp:264-270`: clears OVERRUN, clears
+            // IRQ_DCD|IRQ_DSR, then `write_command(m_command & ~0x1f)`
+            // — **preserves parity bits 5-7**. The previous
+            // `cmdReg = 0` wiped the parity config too, leaving
+            // drivers in undefined state after a soft reset.
+            cmdReg &= ~uint8_t{0x1F};
+            clearIrq();
             break;
-        default: break;
+        case 0x2: cmdReg = v; break;
+        case 0x3: ctlReg = v; break;
     }
 }
 

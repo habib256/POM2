@@ -73,11 +73,10 @@ void ClockCard::latchTimeToShiftReg()
     shiftReg[1] = toBcd(lt.tm_min);
     shiftReg[2] = toBcd(lt.tm_hour);
     shiftReg[3] = toBcd(lt.tm_mday);
-    // shiftReg[4]: high nibble = month BCD, low nibble = day-of-week.
-    // Months are 1..12 so the high BCD digit is 0 or 1, both fit in
-    // the upper 4 bits of the byte.
-    shiftReg[4] = static_cast<uint8_t>((toBcd(month) & 0xF0)
-                                       | (dow & 0x0F));
+    // shiftReg[4]: high nibble = month (4-bit binary, NOT BCD — MAME
+    // upd1990a.cpp:95 stores month as plain 1..12 in the high 4 bits),
+    // low nibble = day-of-week. Months 1..12 all fit in 4 bits.
+    shiftReg[4] = static_cast<uint8_t>((month << 4) | (dow & 0x0F));
     shiftReg[5] = toBcd(lt.tm_year % 100);
 }
 

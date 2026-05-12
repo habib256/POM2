@@ -388,6 +388,9 @@ void MainWindow::plugSlotsFromSettings()
                 const char buf[1] = { static_cast<char>(b) };
                 mem.pasteText(buf, 1);
             });
+        // Wire the slot IRQ line so any RDRF transition with RX-IRQ-enable
+        // on raises the CPU's IRQ. Same pattern as Mockingboard above.
+        sscCard->setCpuIrqLine(&controller.cpu());
         controller.memory().slotBus().plug(s, std::move(card));
         if (settings.getBool("ssc_listening", false)) {
             const int p = settings.getInt("ssc_port",

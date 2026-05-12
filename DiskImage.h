@@ -48,6 +48,14 @@ public:
     static constexpr int kBytesPerImage     = kTracks * kSectorsPerTrack * kSectorBytes; // 143360
     static constexpr int kNibblesPerTrack   = 6656;
 
+    /// Quarter-track positions per WOZ TMAP (4 per whole track ×
+    /// kTracks). The LSS-side bit-cell / flux storage indexes on this
+    /// granularity so .woz disks can expose distinct streams per
+    /// quarter-track (Spiradisc / RWTS18 / Locksmith Fast Copy rely on
+    /// this). Non-WOZ formats only carry whole-track data; quarter-track
+    /// accesses on those alias down to the containing whole track.
+    static constexpr int kQuarterTracks     = 160;
+
     /// File-format sector ordering. Both produce the same on-disk physical
     /// sector layout — only the skew between file offset and physical
     /// sector P differs.
@@ -113,16 +121,21 @@ public:
     //   • everything else                          → 8 cells
     // .nib raw nibble images have no sync semantics — every byte = 8 cells.
 
-    /// Total bit-cell count for `track`. Standard 16-sector .dsk/.do/.po:
-    /// ~54944 cells (varies a few hundred either way depending on tail
-    /// padding). .nib raw images: exactly 53248 cells (= 6656 × 8).
-    int trackBitLength(int track) const;
+    /// Total bit-cell count for quarter-track `qt` (0..159). For non-WOZ
+    /// formats, all four quarter-tracks of a whole-track alias to the
+    /// same stream (matching the "snap to nearest whole track" behaviour
+    /// real Disk II hardware approximates when reading a standard .dsk).
+    /// For WOZ, each quarter-track has its own bit stream sourced from
+    /// the matching TMAP entry. Standard 16-sector .dsk/.do/.po:
+    /// ~54944 cells. .nib raw images: exactly 53248 cells (= 6656 × 8).
+    int trackBitLength(int qt) const;
 
-    /// Read one bit cell (0 or 1) from `track[bitIdx]`. `bitIdx` wraps
-    /// modulo trackBitLength(track). First call per (image, track) lazily
-    /// expands the bit-cell cache; subsequent reads are O(1) array index.
-    /// `writeNibbleAt` invalidates that track's cache.
-    uint8_t bitAt(int track, int bitIdx) const;
+    /// Read one bit cell (0 or 1) from quarter-track `qt` (0..159) at
+    /// `bitIdx`. `bitIdx` wraps modulo trackBitLength(qt). First call
+    /// per (image, qt) lazily expands the bit-cell cache; subsequent
+    /// reads are O(1) array index. `writeNibbleAt` invalidates the
+    /// containing whole-track's cache.
+    uint8_t bitAt(int qt, int bitIdx) const;
 
     // ── MAME-style flux event view ──────────────────────────────────────
     //
@@ -143,38 +156,40 @@ public:
     // the bit-cell view produce identical PULSE timing for the same
     // nibble buffer. Cache invalidates on `writeNibbleAt` and `eject`.
 
-    /// Per-track period in LSS cycles. Equal to `trackBitLength(track) * 8`.
-    int trackPeriod(int track) const;
+    /// Per-quarter-track period in LSS cycles. Equal to
+    /// `trackBitLength(qt) * 8`.
+    int trackPeriod(int qt) const;
 
     /// Sorted vector of flux event timestamps (LSS cycles, in [0, period)).
-    /// Returns a static empty vector for out-of-range tracks. Lazy-built
-    /// on first call per (image, track); reused across calls until the
-    /// underlying nibble buffer changes.
-    const std::vector<int>& fluxEvents(int track) const;
+    /// Returns a static empty vector for out-of-range quarter-tracks.
+    /// Lazy-built on first call; reused across calls until the underlying
+    /// nibble or WOZ bit buffer changes.
+    const std::vector<int>& fluxEvents(int qt) const;
 
     /// MAME `floppy_image_device::get_next_transition(from_when)` —
-    /// returns the LSS-cycle timestamp of the next flux transition at or
-    /// after `fromLssCycle`. Wraps across revolution boundaries: if the
-    /// current revolution has no further events past `fromLssCycle`, the
-    /// returned time is in the next revolution (so result ≥ fromLssCycle
-    /// always). Returns `kFluxNever` only if the track has zero events.
+    /// returns the LSS-cycle timestamp of the next flux transition on
+    /// quarter-track `qt` at or after `fromLssCycle`. Wraps across
+    /// revolution boundaries: if the current revolution has no further
+    /// events past `fromLssCycle`, the returned time is in the next
+    /// revolution (so result ≥ fromLssCycle always). Returns
+    /// `kFluxNever` only if the track has zero events (= unformatted
+    /// quarter-track, which MAME reports as `attotime::never`).
     static constexpr int64_t kFluxNever = INT64_MAX;
-    int64_t getNextTransition(int track, int64_t fromLssCycle) const;
+    int64_t getNextTransition(int qt, int64_t fromLssCycle) const;
 
     /// MAME `floppy_image_device::write_flux(start, end, count, transitions)`
-    /// — splice a window of flux events into `track`, replacing whatever
-    /// was previously in that LSS-cycle range. Re-derives the affected
-    /// span of the nibble buffer (cell-windowed flux→bit conversion, then
-    /// 8-bit packing into nibble cells starting at the cell containing
-    /// `startLssCycle`) so save-back, decode, and bit-cell read-back all
-    /// see the new contents. Marks the track dirty.
-    void writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
+    /// — splice a window of flux events into quarter-track `qt`. For
+    /// non-WOZ formats this re-derives the nibble buffer at the whole
+    /// track containing `qt` (cell-windowed flux→bit conversion). For
+    /// WOZ formats it is a no-op today: WOZ images are read-only until
+    /// the Applesauce WRIT / FLUX write path lands.
+    void writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
                    int count, const int64_t* transitions);
 
     /// MAME `floppy_image_device::set_write_splice(when)` — informational
     /// hook for the upcoming IWM port; currently a no-op for the Disk II
     /// path because the splice point is implicit in `writeFlux`.
-    void setWriteSplice(int /*track*/, int64_t /*lssCycle*/) {}
+    void setWriteSplice(int /*qt*/, int64_t /*lssCycle*/) {}
 
     /// True if any track has been written since load. Cleared by
     /// saveDirty() and load.
@@ -216,26 +231,42 @@ private:
     std::array<TrackBuffer, kTracks> tracks;
     std::array<bool, kTracks>        dirty{};
 
-    // Lazy per-track bit-cell expansion cache. Populated on first
-    // `bitAt`/`trackBitLength` call; invalidated by `writeNibbleAt` /
-    // `eject` / new `loadFile`. Mutable so that const `bitAt` can fill
-    // the cache on demand.
-    mutable std::array<std::vector<uint8_t>, kTracks> bitStream;
-    mutable std::array<bool, kTracks>                 bitStreamValid{};
-    void expandTrackBits(int track) const;
+    // Lazy per-quarter-track bit-cell expansion cache. Populated on
+    // first `bitAt`/`trackBitLength` call; invalidated by `writeNibbleAt`
+    // / `eject` / new `loadFile`. For non-WOZ formats only the slots at
+    // `qt % 4 == 0` are populated (mirroring whole-track data); WOZ may
+    // populate any slot where TMAP[qt] != 0xFF. Mutable so that const
+    // `bitAt` can fill the cache on demand.
+    mutable std::array<std::vector<uint8_t>, kQuarterTracks> bitStream;
+    mutable std::array<bool, kQuarterTracks>                 bitStreamValid{};
+    void expandTrackBits(int qt) const;
 
-    // Lazy per-track flux event cache (sorted ascending, in [0, period)).
-    // Mirrors MAME's m_image flux-event vector but stored in LSS cycles
-    // rather than 200M-position units.
-    mutable std::array<std::vector<int>, kTracks> fluxStream;
-    mutable std::array<bool, kTracks>             fluxStreamValid{};
-    void expandTrackFlux(int track) const;
+    // Lazy per-quarter-track flux event cache (sorted ascending, in
+    // [0, period)). Mirrors MAME's m_image flux-event vector but stored
+    // in LSS cycles rather than 200M-position units.
+    mutable std::array<std::vector<int>, kQuarterTracks> fluxStream;
+    mutable std::array<bool, kQuarterTracks>             fluxStreamValid{};
+    void expandTrackFlux(int qt) const;
 
-    void invalidateBitStream(int track) {
-        bitStreamValid[track]  = false;
-        fluxStreamValid[track] = false;
-        bitStream[track].clear();
-        fluxStream[track].clear();
+    /// Aliasing function: maps an externally-supplied quarter-track index
+    /// to the actual storage slot. Non-WOZ formats only carry whole-track
+    /// data, so qt 0..3 alias to slot 0, qt 4..7 alias to slot 4, etc.
+    /// WOZ formats keep distinct streams per quarter-track and pass the
+    /// index through unchanged.
+    int qtSlot(int qt) const {
+        return wozFormat ? qt : (qt & ~3);
+    }
+
+    void invalidateBitStream(int slot) {
+        bitStreamValid[slot]  = false;
+        fluxStreamValid[slot] = false;
+        bitStream[slot].clear();
+        fluxStream[slot].clear();
+    }
+    void invalidateWholeTrack(int wholeTrack) {
+        // For non-WOZ writes (writeNibbleAt / writeFlux), only the slot
+        // at qt = wholeTrack*4 has cached data; the others alias to it.
+        invalidateBitStream(wholeTrack * 4);
     }
     void invalidateAllBitStreams() {
         bitStreamValid.fill(false);
@@ -250,18 +281,16 @@ private:
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);
 
-    /// WOZ1/WOZ2 parser. Verbatim follower of MAME's
-    /// `src/lib/formats/woz_dsk.cpp` chunk walk: looks for INFO, TMAP,
-    /// TRKS in any order; accepts both WOZ1 (160 fixed 6656-byte slots,
-    /// bit_count at offset +6648 LE u16) and WOZ2 (160 × 8-byte TRK
-    /// headers; data at file offset starting_block × 512 with
-    /// bit_count as u32). Bits are MSB-first within each byte. Each
-    /// physical track 0..34 sources its bit stream from
-    /// TMAP[track*4] (the canonical quarter-track slot at the centre
-    /// of the track — same convention as MAME's `cell_data_index`).
-    /// Quarter-track sub-positions used by some copy protections are
-    /// not yet preserved; this is the smallest patch that lets
-    /// stock-protection .woz disks boot.
+    /// WOZ1/WOZ2 parser. Follower of MAME's
+    /// `src/lib/formats/as_dsk.cpp` `woz_format` chunk walk: looks for
+    /// INFO, TMAP, TRKS in any order; accepts both WOZ1 (160 fixed
+    /// 6656-byte slots, bit_count at offset +6648 LE u16) and WOZ2
+    /// (160 × 8-byte TRK headers; data at file offset
+    /// starting_block × 512 with bit_count as u32). Bits are MSB-first
+    /// within each byte. Each quarter-track 0..159 sources its bit
+    /// stream from its own TMAP entry, so disks that bury protection
+    /// data on quarter- or half-tracks (Spiradisc, RWTS18, Locksmith
+    /// Fast Copy) decode correctly.
     bool loadWoz(const std::string& imgPath);
 
     /// Decode one track's nibble buffer back into 16 × 256-byte logical

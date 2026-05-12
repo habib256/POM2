@@ -247,6 +247,16 @@ private :
     void Hang(void);
     void executeOpcode(void);
 
+    /// Emit the intermediate RMW bus cycle between the initial read and
+    /// the modified-value write. On NMOS (MAME `om6502.lst:161-164`)
+    /// it's a write of the *original* value; on CMOS (`ow65c02.lst`)
+    /// it's a dummy read. Both dispatch through `softSwitchAccess`
+    /// when the address is in $C000-$C07F, which is what makes
+    /// `INC $C030` actually toggle the speaker twice on writes (vs
+    /// once before this fix). The reset-arm of $C070 paddle latch
+    /// similarly fires twice for `INC $C070`, etc.
+    void rmwSecondBusCycle(uint16_t addr, uint8_t origValue);
+
     struct OpcodeEntry {
         void (M6502::*addrMode)();
         void (M6502::*operation)();

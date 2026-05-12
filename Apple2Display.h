@@ -50,7 +50,14 @@ public:
     // approximates Apple's standard P31 CRT, Amber adds long persistence
     // (history-buffer lerp) on top of an amber tint.
     enum class HiResMode {
-        ColorNTSC,
+        ColorNTSC,              // MAME composite_color_mode=0, LUT row 0
+        ColorCompMedium,        // MAME composite_color_mode=1, LUT row 1
+                                //   (4n medium-color runs; uglier 40-col
+                                //    text but cleaner mid-tones)
+        ColorComp4Bit,          // MAME composite_color_mode=2, no artifact —
+                                //   each 4-dot nibble maps directly to one
+                                //   palette index. The sharp / hard-edge
+                                //   variant.
         ChatMauveRGB,
         MonoWhite,
         MonoGreen,

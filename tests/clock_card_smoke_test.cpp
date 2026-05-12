@@ -107,21 +107,16 @@ void testTimeReadProtocol()
     const uint8_t year   = readByteLsbFirst(*card, baseline);
 
     // 2026-05-09 14:37:42 Saturday → BCD bytes:
-    //   sec=$42, min=$37, hour=$14, day=$09, month=$05, year=$26
-    //   shiftReg[4] = (toBcd(5) & 0xF0) | (6 & 0x0F) = $00 | $06 = $06
-    //     (Because BCD 5 is $05, with the '5' digit in the LOW nibble —
-    //      `toBcd(5) & 0xF0` masks it out, leaving the low-nibble dow.
-    //      That mismatches what a real chip expects; see the comment in
-    //      ClockCard::latchTimeToShiftReg for why ProDOS doesn't care.)
-    assert(sec  == 0x42);
-    assert(min  == 0x37);
-    assert(hour == 0x14);
-    assert(day  == 0x09);
-    assert(year == 0x26);
-    // The month/dow byte is the place where the chip's quirky packing
-    // shows; assert it bit-exactly so changes to the latch routine are
-    // forced through this test.
-    assert(mthDow == 0x06);
+    //   sec=$42, min=$37, hour=$14, day=$09, year=$26.
+    //   shiftReg[4] packs month (4-bit binary, NOT BCD) in the high
+    //   nibble and day-of-week in the low nibble (MAME upd1990a.cpp:95).
+    //   May=5, Saturday=6 → (5 << 4) | 6 = $56.
+    assert(sec    == 0x42);
+    assert(min    == 0x37);
+    assert(hour   == 0x14);
+    assert(day    == 0x09);
+    assert(year   == 0x26);
+    assert(mthDow == 0x56);
 }
 
 // After all bits have been shifted out, further CLK pulses should keep

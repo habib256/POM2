@@ -325,6 +325,11 @@ void DiskIICard::legacyAdvance(int cycles)
 {
     DiskImage& img = images[activeDrive];
     int& pos       = trackPos[activeDrive];
+    // Legacy 32-cycle gate operates on whole-track nibble buffers
+    // (.dsk/.do/.po/.nib formats only — WOZ disks force the LSS path
+    // via `useBitLss=true` on insert). Quarter-track granularity isn't
+    // meaningful on the legacy gate; snap to the containing whole
+    // track.
     const int track = headQuarterTrack[activeDrive] / 4;
     cycleAccum += cycles;
     while (cycleAccum >= kCyclesPerNibble) {
@@ -360,7 +365,7 @@ void DiskIICard::lssStart()
     writeStartTime  = writeMode ? static_cast<int64_t>(lssCycle) : 0;
     writeLineActive = false;
     if (writeMode && img.isLoaded()) {
-        img.setWriteSplice(headQuarterTrack[activeDrive] / 4, writeStartTime);
+        img.setWriteSplice(headQuarterTrack[activeDrive], writeStartTime);
     }
 }
 
@@ -380,7 +385,11 @@ void DiskIICard::lssSync(uint64_t extraCycles)
         return;
     }
 
-    const int track = headQuarterTrack[activeDrive] / 4;
+    // Quarter-track index drives every LSS-side image access — WOZ
+    // images expose a distinct flux stream per quarter-track (Spiradisc
+    // / RWTS18 / Locksmith protections rely on this); non-WOZ aliases
+    // four quarter-tracks per whole-track inside DiskImage.
+    const int qt = headQuarterTrack[activeDrive];
 
     // MAME passes `cycles_to_time(cycles - 1)` to `get_next_transition`, but
     // that's NOT a "look one cycle into the past" — it's compensating for
@@ -413,7 +422,7 @@ void DiskIICard::lssSync(uint64_t extraCycles)
     //
     // Pinned by `tests/diskii_lss_smoke_test.cpp::testFullSectorReadback`
     // (added with this fix).
-    int64_t nextFlux = img.getNextTransition(track,
+    int64_t nextFlux = img.getNextTransition(qt,
                           static_cast<int64_t>(lssCycle));
     int64_t nextFluxDown = (nextFlux != DiskImage::kFluxNever)
                               ? nextFlux + 1
@@ -464,7 +473,7 @@ void DiskIICard::lssSync(uint64_t extraCycles)
                 } else if (writePosition >= 30) {
                     const int64_t now = static_cast<int64_t>(lssCycle);
                     if (writeBackEnabled) {
-                        img.writeFlux(track, writeStartTime, now,
+                        img.writeFlux(qt, writeStartTime, now,
                                       writePosition, writeBuffer);
                         ++writeFlushCount;
                     }
@@ -515,7 +524,7 @@ void DiskIICard::lssSync(uint64_t extraCycles)
             address = static_cast<uint8_t>(address & ~0x10);
         } else if (static_cast<int64_t>(lssCycle) == nextFluxDown) {
             address = static_cast<uint8_t>(address | 0x10);
-            nextFlux = img.getNextTransition(track,
+            nextFlux = img.getNextTransition(qt,
                           static_cast<int64_t>(lssCycle));
             nextFluxDown = (nextFlux != DiskImage::kFluxNever)
                                ? nextFlux + 1
@@ -527,8 +536,8 @@ void DiskIICard::lssSync(uint64_t extraCycles)
         trace.sawFirstNibble = true;
         char buf[96];
         std::snprintf(buf, sizeof(buf),
-            "first GCR nibble served: $%02X (LSS, track %d)",
-            lssData, track);
+            "first GCR nibble served: $%02X (LSS, qt %d / track %d)",
+            lssData, qt, qt / 4);
         pom2::log().info("Disk II", buf);
     }
 }
@@ -617,7 +626,7 @@ void DiskIICard::control(int offset)
                 DiskImage& img = images[activeDrive];
                 if (img.isLoaded() && writeBackEnabled
                     && writePosition > 0) {
-                    img.writeFlux(headQuarterTrack[activeDrive] / 4,
+                    img.writeFlux(headQuarterTrack[activeDrive],
                                   writeStartTime,
                                   static_cast<int64_t>(lssCycle),
                                   writePosition, writeBuffer);
@@ -634,7 +643,7 @@ void DiskIICard::control(int offset)
                     writePosition  = 0;
                     DiskImage& img = images[activeDrive];
                     if (img.isLoaded()) {
-                        img.setWriteSplice(headQuarterTrack[activeDrive] / 4,
+                        img.setWriteSplice(headQuarterTrack[activeDrive],
                                            writeStartTime);
                     }
                 }

@@ -429,8 +429,18 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return kbLatch & 0x7F;
     }
     // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
-    if (low == 0x11) return lcBank2Active ? 0x80 : 0x00;  // RDLCBNK2
-    if (low == 0x12) return lcReadRam     ? 0x80 : 0x00;  // RDLCRAM
+    // In iieMode the low 7 bits carry m_transchar (last keyboard char)
+    // per MAME `apple2e.cpp:1842-1871`. On II+ they're zero (real II+
+    // would return the floating bus; not modelled here).
+    if (low == 0x11 || low == 0x12) {
+        const bool on = (low == 0x11) ? lcBank2Active : lcReadRam;
+        uint8_t low7 = 0;
+        if (iieMode) {
+            std::lock_guard<std::mutex> lk(kbMutex);
+            low7 = static_cast<uint8_t>(lastKey & 0x7F);
+        }
+        return static_cast<uint8_t>((on ? 0x80 : 0x00) | low7);
+    }
 
     // IIe-only paging soft switches at $C000-$C00F (write or toggle).
     // II+ traps fall through and are handled later — $C00C/$C00D and
@@ -459,7 +469,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
             vblIrqPending = false;
             if (cpu) cpu->setIRQ(0);
         }
-        return nowActive ? 0x80 : 0x00;
+        // IIe: OR m_transchar into the low 7 bits (MAME
+        // `apple2e.cpp:1859`). II+ has no $C019; leave low 7 = 0.
+        uint8_t low7 = 0;
+        if (iieMode) {
+            std::lock_guard<std::mutex> lk(kbMutex);
+            low7 = static_cast<uint8_t>(lastKey & 0x7F);
+        }
+        return static_cast<uint8_t>((nowActive ? 0x80 : 0x00) | low7);
     }
 
     // IIe VBL IRQ mask: $C05A disables the VBL interrupt, $C05B enables it.
@@ -562,9 +579,15 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
     }
 
     // Push-buttons ($C061-$C063): negative when pressed.
-    if (low == 0x61) return paddleButton[0] ? 0x80 : 0x00;
-    if (low == 0x62) return paddleButton[1] ? 0x80 : 0x00;
-    if (low == 0x63) return paddleButton[2] ? 0x80 : 0x00;
+    // Push-button reads. On IIe the same lines also carry the Apple
+    // modifier keys (MAME `apple2e.cpp:1908-1913`): PB0 = Open Apple,
+    // PB1 = Solid Apple, PB2 = Shift (with the SHK jumper set — the
+    // factory default on enhanced //e). On II/II+ the modifier-key
+    // OR is a no-op because no host code calls the setters.
+    if (low == 0x61) return (paddleButton[0] || openAppleKey.load())  ? 0x80 : 0x00;
+    if (low == 0x62) return (paddleButton[1] || solidAppleKey.load()) ? 0x80 : 0x00;
+    if (low == 0x63) return (paddleButton[2] ||
+                             (iieMode && shiftKey.load()))            ? 0x80 : 0x00;
 
     // Paddle inputs ($C064-$C067): the register stays "negative" while the
     // RC network discharges, then drops. We approximate by holding the
@@ -625,12 +648,25 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
 uint8_t Memory::iieReadStatus(uint16_t addr) const
 {
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
-    auto bit = [](bool on) -> uint8_t { return on ? 0x80 : 0x00; };
     DisplayState ds;
     {
         std::lock_guard<std::mutex> lk(stateMutex);
         ds = display;
     }
+    // MAME `apple2e.cpp:1842-1871` `c000_r`: every status read in
+    // $C011-$C01F returns `(bit ? 0x80 : 0x00) | m_transchar`. The low
+    // 7 bits carry the last latched keyboard character — software like
+    // Beagle Bros' Pro-Byter, Print Shop, and the IIe Self-Test rely on
+    // this to read "key + status flag" in one byte. POM2's
+    // `lastKey` is the same latch as MAME's m_transchar.
+    uint8_t transchar = 0;
+    {
+        std::lock_guard<std::mutex> lk(kbMutex);
+        transchar = static_cast<uint8_t>(lastKey & 0x7F);
+    }
+    auto bit = [transchar](bool on) -> uint8_t {
+        return static_cast<uint8_t>((on ? 0x80 : 0x00) | transchar);
+    };
     switch (low) {
         case 0x13: return bit((iieMemMode & MF_RAMRD)     != 0);  // RDRAMRD
         case 0x14: return bit((iieMemMode & MF_RAMWRT)    != 0);  // RDRAMWRT
@@ -710,7 +746,7 @@ void Memory::iieMemWrite(uint16_t addr, uint8_t value)
     else        mem[addr] = value;
 }
 
-uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
+uint8_t Memory::languageCardSwitchAccess(uint16_t addr, bool isWrite)
 {
     const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
 
@@ -726,7 +762,13 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr)
     lcBank2Active = bank2;
     lcReadRam = readRam;
     lcWriteEnable = writeCandidate && previousPrewrite;
-    lcPrewrite = writeCandidate;
+    // Pre-write latch: armed only by READ-cycle accesses (`LDA $C08x`,
+    // `BIT $C08x`). Any STORE to $C08x clears the latch — MAME
+    // ramcard16k.cpp:61-64 + apple2e.cpp:1515-1520 "any write disables
+    // pre-write". This is what makes the classic enable sequence
+    // `LDA $C081 / LDA $C081` work (two reads arm + commit) while
+    // `STA $C081 / STA $C081` does NOT enable RAM writes.
+    lcPrewrite = isWrite ? false : writeCandidate;
 
     // The card itself does not drive the data lines for $C08x — the byte
     // the CPU reads is whatever the video DMA last latched onto the bus.
@@ -839,7 +881,7 @@ uint8_t Memory::memRead(uint16_t addr)
 
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
-    if (addr <= 0xC08F) return languageCardSwitchAccess(addr);
+    if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
     // $C100-$CFFF — slot ROM dispatch.
@@ -887,7 +929,7 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     }
     if (addr <= 0xC0FF) {
         if (addr <= 0xC08F) {
-            languageCardSwitchAccess(addr);
+            languageCardSwitchAccess(addr, /*isWrite=*/true);
             return;
         }
         slots.deviceSelectWrite(addr, value);

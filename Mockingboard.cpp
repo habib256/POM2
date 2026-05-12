@@ -64,6 +64,7 @@ enum : uint8_t {
 };
 
 // IFR / IER bit positions (see WDC W65C22 datasheet).
+constexpr uint8_t IFR_T2   = 0x20;
 constexpr uint8_t IFR_T1   = 0x40;
 constexpr uint8_t IFR_ANY  = 0x80;   // computed on read
 
@@ -94,9 +95,15 @@ struct MockingboardCard::Via6522
     uint16_t t1Latch = 0xFFFF;
     int32_t  t1Counter = 0xFFFF;
     bool     t1FireArmed = true;   // one-shot: fires only after a fresh load
-    // Timer 2: not modelled, but reads must return *something* (some
-    // probes test write/read round-trip). Hold a raw scratch.
-    uint16_t t2Counter = 0xFFFF;
+    // Timer 2. Verbatim port of MAME `6522via.cpp:761-782` (write)
+    // and `:588-625` (read). T2 is a one-shot timer on phase-2 (the
+    // ACR.bit5 PB6 pulse-counting mode is *not* modelled — POM2
+    // exposes no PB6 pin so that mode would never tick). Unlocks
+    // Ultima IV's Echo+ speech driver and FrenchTouch sample demos.
+    uint8_t  t2ll   = 0xFF;
+    uint16_t t2Latch  = 0xFFFF;     // {t2lh:t2ll}, set by T2CH write
+    int32_t  t2Counter = 0xFFFF;
+    bool     t2Active  = false;     // armed → fires one IRQ on underflow
     // IFR / IER — we store only the per-source bits (bits 0..6); bit 7
     // is computed at read time.
     uint8_t ifr = 0x00;
@@ -110,7 +117,10 @@ struct MockingboardCard::Via6522
         t1Latch = 0xFFFF;
         t1Counter = 0xFFFF;
         t1FireArmed = false;     // post-reset T1 doesn't fire until loaded
-        t2Counter = 0xFFFF;
+        t2ll       = 0xFF;
+        t2Latch    = 0xFFFF;
+        t2Counter  = 0xFFFF;
+        t2Active   = false;
         ifr = 0;
         ier = 0;
     }
@@ -162,7 +172,11 @@ struct MockingboardCard::Via6522
         case VIA_T1CH:   return static_cast<uint8_t>((t1Counter >> 8) & 0xFF);
         case VIA_T1LL:   return static_cast<uint8_t>(t1Latch & 0xFF);
         case VIA_T1LH:   return static_cast<uint8_t>((t1Latch >> 8) & 0xFF);
-        case VIA_T2CL:   return static_cast<uint8_t>(t2Counter & 0xFF);
+        case VIA_T2CL: {
+            // T2CL read clears IFR.T2 (MAME `6522via.cpp:590-594`).
+            ifr &= ~IFR_T2;
+            return static_cast<uint8_t>(t2Counter & 0xFF);
+        }
         case VIA_T2CH:   return static_cast<uint8_t>((t2Counter >> 8) & 0xFF);
         case VIA_SR:     return sr;
         case VIA_ACR:    return acr;
@@ -224,9 +238,24 @@ struct MockingboardCard::Via6522
             t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
             ifr &= ~IFR_T1;
             break;
-        case VIA_T2CL: t2Counter = (t2Counter & 0xFF00) | v;            break;
-        case VIA_T2CH: t2Counter = (t2Counter & 0x00FF)
-                                   | (static_cast<uint16_t>(v) << 8); break;
+        case VIA_T2CL:
+            // T2CL write: store the low latch. No effect on the running
+            // counter — only T2CH write reloads (MAME
+            // `6522via.cpp:764-766`).
+            t2ll    = v;
+            t2Latch = static_cast<uint16_t>((t2Latch & 0xFF00) | v);
+            break;
+        case VIA_T2CH:
+            // T2CH write: latch high, transfer {t2lh:t2ll} into the
+            // counter, clear IFR.T2, arm T2 (MAME `6522via.cpp:767-782`).
+            // PB6 pulse-counting mode (ACR bit 5 == 1) is acknowledged
+            // but never ticks in POM2 because no card we model drives
+            // the PB6 pin from outside.
+            t2Latch    = static_cast<uint16_t>((static_cast<uint16_t>(v) << 8) | t2ll);
+            t2Counter  = t2Latch;
+            ifr       &= ~IFR_T2;
+            t2Active   = true;
+            break;
         case VIA_SR:    sr  = v; break;
         case VIA_ACR:   acr = v; break;
         case VIA_PCR:   pcr = v; break;
@@ -287,6 +316,27 @@ struct MockingboardCard::Via6522
                 // the right music tick rate to within 0.01%.
             } else {
                 t1Counter += 0x10000;       // wrap 16-bit
+            }
+        }
+
+        // T2 advance — one-shot phase-2 mode only (ACR.bit5 == 0). PB6
+        // pulse-counting (ACR.bit5 == 1) is acknowledged but never
+        // ticks: no Mockingboard driver wires PB6 externally, so the
+        // counter would simply hold while POM2 still services the
+        // armed/disarmed semantics correctly via T2CH writes.
+        if ((acr & 0x20) == 0) {
+            t2Counter -= cycles;
+            // Underflow fires AT MOST ONCE per arming — real chip: "an
+            // underflow causes only one interrupt between T2CH writes"
+            // (MAME `6522via.cpp:107-112`). After firing, the counter
+            // keeps free-running through 0xFFFF for SW visibility.
+            while (t2Counter < 0) {
+                if (t2Active) {
+                    ifr |= IFR_T2;
+                    fired = true;
+                    t2Active = false;
+                }
+                t2Counter += 0x10000;
             }
         }
         return fired;
@@ -389,10 +439,22 @@ struct MockingboardCard::AudioSrc : public AudioSource
         float    noiseCounter   = 0;
         uint32_t noiseLfsr      = 0x1FFFF;
         uint8_t  noiseOut       = 0;
-        // Envelope.
+        // Envelope state machine. Verbatim port of MAME `ay8910.h:182-219`
+        // + `ay8910.cpp:989-1020`. The 4 flags (attack, hold, alternate,
+        // holding) are derived from R13 via `setShape`, called whenever
+        // we detect R13 has changed. `step` walks 15→0 (down); when it
+        // hits -1, hold/alternate decide the wrap behaviour. `volume =
+        // step ^ attack` is the live 4-bit DAC level. Replaces the
+        // earlier branchy `envStep` 0..31 model which mis-handled
+        // shapes 10 (/\/\), 12 (\\\\), and 14 (\/\/) — vibrato patterns
+        // used by Mockingboard music drivers.
         float    envCounter     = 0;
-        uint8_t  envStep        = 0;     // 0..31 (wraps differently per shape)
-        bool     envHolding     = false;
+        int      envStep        = 15;    // walks 15 → 0
+        uint8_t  envAttack      = 0;     // 0 or 15
+        uint8_t  envHold        = 0;
+        uint8_t  envAlternate   = 0;
+        uint8_t  envHolding     = 0;
+        int      lastShape      = -1;    // forces setShape on first sample
     };
     ChipState chip[2];
 
@@ -469,79 +531,82 @@ struct MockingboardCard::AudioSrc : public AudioSource
                     cs.noiseOut  = static_cast<uint8_t>(cs.noiseLfsr & 1);
                 }
 
-                // ── Envelope ─────────────────────────────────────
-                // Period = R11 + (R12 << 8). Step the 5-bit counter
-                // (0..31). Shape register R13 picks how it folds back
-                // to a 4-bit output (0..15).
-                const int envPer = (r[11] | (r[12] << 8))
-                                   ? (r[11] | (r[12] << 8)) : 1;
-                cs.envCounter += envStepPerSample;
-                while (cs.envCounter >= static_cast<float>(envPer)) {
-                    cs.envCounter -= static_cast<float>(envPer);
-                    if (!cs.envHolding) {
-                        cs.envStep++;
-                        if (cs.envStep >= 32) {
-                            // End-of-cycle behaviour, see R13 layout
-                            // below.
-                            const uint8_t shape = r[13] & 0x0F;
-                            // Bit 3 = CONTINUE; if 0, output goes to
-                            // 0 and holds. If 1, behaviour depends on
-                            // HOLD/ALT/ATTACK.
-                            if ((shape & 0x08) == 0) {
-                                cs.envStep = 16;       // halts at "00"
-                                cs.envHolding = true;
-                            } else if (shape & 0x01) {
-                                // HOLD set
-                                cs.envHolding = true;
-                                cs.envStep    = 31;    // tail step
+                // ── Envelope (MAME-verbatim 4-flag state machine) ─
+                // R13 = shape register, 4 bits.  On every R13 write
+                // MAME's `set_shape` reinitialises the machine; we
+                // detect the write by comparing against the cached
+                // `lastShape`. Period = R11 + (R12 << 8). The base
+                // counter rate matches MAME's `clock/16` (= same as
+                // tone counters); MAME's `m_step = 2` for AY-3-8910
+                // means each step takes `period * 2` base ticks.
+                {
+                    const int shape = r[13] & 0x0F;
+                    if (shape != cs.lastShape) {
+                        // MAME `ay8910.h:204-219` set_shape:
+                        //   attack = (shape & 0x04) ? mask : 0
+                        //   if (!(shape & 0x08))  // continue == 0
+                        //       hold = 1; alternate = attack;
+                        //   else
+                        //       hold      = shape & 0x01;
+                        //       alternate = shape & 0x02;
+                        //   step = mask; holding = 0;
+                        constexpr uint8_t kMask = 0x0F;
+                        cs.envAttack = (shape & 0x04) ? kMask : uint8_t{0};
+                        if ((shape & 0x08) == 0) {
+                            cs.envHold      = 1;
+                            cs.envAlternate = cs.envAttack;
+                        } else {
+                            cs.envHold      = (shape & 0x01) ? 1 : 0;
+                            cs.envAlternate = (shape & 0x02) ? 1 : 0;
+                        }
+                        cs.envStep      = kMask;
+                        cs.envHolding   = 0;
+                        cs.envCounter   = 0;
+                        cs.lastShape    = shape;
+                    }
+                    const int envPer = (r[11] | (r[12] << 8))
+                                       ? (r[11] | (r[12] << 8)) : 1;
+                    // MAME `ay8910.cpp:994`: `period = envelope->period * m_step`
+                    // where `m_step = 2` for AY-3-8910. Each envelope
+                    // tick is one base counter tick (clock/16), same
+                    // rate as tone — so we use `toneStepPerSample`
+                    // here, not the legacy `clock/256` rate, which
+                    // was 8× too slow.
+                    const float threshold = static_cast<float>(envPer * 2);
+                    cs.envCounter += toneStepPerSample;
+                    while (cs.envCounter >= threshold) {
+                        cs.envCounter -= threshold;
+                        if (cs.envHolding) continue;
+                        cs.envStep--;
+                        if (cs.envStep < 0) {
+                            // MAME `ay8910.cpp:1000-1015` end-of-ramp:
+                            //   if (hold) {
+                            //       if (alternate) attack ^= mask;
+                            //       holding = 1; step = 0;
+                            //   } else {
+                            //       if (alternate && (step & (mask+1)))
+                            //           attack ^= mask;
+                            //       step &= mask;
+                            //   }
+                            constexpr uint8_t kMask = 0x0F;
+                            if (cs.envHold) {
+                                if (cs.envAlternate) cs.envAttack ^= kMask;
+                                cs.envHolding = 1;
+                                cs.envStep    = 0;
                             } else {
-                                cs.envStep = 0;        // free repeat
+                                if (cs.envAlternate
+                                    && (cs.envStep & (kMask + 1))) {
+                                    cs.envAttack ^= kMask;
+                                }
+                                cs.envStep &= kMask;
                             }
                         }
                     }
                 }
-                // Output level for the current envStep, accounting
-                // for ATTACK / ALTERNATE.
-                uint8_t envOut = 0;
-                {
-                    const uint8_t shape   = r[13] & 0x0F;
-                    const bool    cont    = (shape & 0x08) != 0;
-                    const bool    attack  = (shape & 0x04) != 0;
-                    const bool    alt     = (shape & 0x02) != 0;
-                    const bool    hold    = (shape & 0x01) != 0;
-                    uint8_t step = cs.envStep;
-                    if (step >= 32) step = 31;       // safety
-                    bool rising;
-                    if (!cont) {
-                        // Single ramp; tail at zero.
-                        rising = attack ? (step < 16) : (step >= 16);
-                        // Once holding, force level — handled below.
-                    } else {
-                        // Continuous: alternate halves invert if ALT.
-                        const bool secondHalf = step >= 16;
-                        rising = attack ^ (alt && secondHalf);
-                    }
-                    if (cs.envHolding) {
-                        // Hold output is the value at the moment we
-                        // hold: depends on attack, hold, alt, cont.
-                        // Cheaper: pick from the 4 corner cases.
-                        if (!cont) {
-                            envOut = 0;            // !CONT always tails to 0
-                        } else if (hold) {
-                            // Attack=0, alt=0: hold low (0)
-                            // Attack=0, alt=1: hold high (15)
-                            // Attack=1, alt=0: hold high (15)
-                            // Attack=1, alt=1: hold low (0)
-                            envOut = (attack == alt) ? 0 : 15;
-                        } else {
-                            envOut = 0;
-                        }
-                    } else {
-                        const uint8_t phase = step & 0x0F;
-                        envOut = rising ? phase
-                                        : static_cast<uint8_t>(15 - phase);
-                    }
-                }
+                // Output level: `volume = step ^ attack` (MAME
+                // `ay8910.cpp:1020`). step ∈ [0..15], attack ∈ {0, 15}.
+                const uint8_t envOut = static_cast<uint8_t>(
+                    cs.envStep ^ cs.envAttack);
 
                 // ── Mixer (R7) ────────────────────────────────────
                 // R7 bit n (n=0..2) = tone-disable for channel n

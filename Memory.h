@@ -182,6 +182,17 @@ public:
     void setPaddle(int idx, uint8_t value);    // 0..3
     void setPaddleButton(int idx, bool down);  // 0..2
 
+    // IIe modifier keys. Real //e wires Open Apple to PB0 ($C061),
+    // Solid Apple to PB1 ($C062), and Shift (with the SHK jumper set,
+    // which is the factory default on enhanced //e) to PB2 ($C063).
+    // MAME `apple2e.cpp:1908-1913` honours this. The host keyboard
+    // handler can call these from a GLFW key callback when the IIe
+    // ROM is loaded; they're OR'd into the joystick button states at
+    // read time.
+    void setOpenAppleKey  (bool down) { openAppleKey  = down; }
+    void setSolidAppleKey (bool down) { solidAppleKey = down; }
+    void setShiftKey      (bool down) { shiftKey      = down; }
+
     // Reset — clears the keyboard strobe, returns to text/page 1 mode.
     // Does NOT touch RAM (matches Apple II reset behaviour: RESET only
     // jumps through ($FFFC) without zeroing memory).
@@ -266,7 +277,22 @@ private:
     // register flips. We model that by remembering when the latch was armed.
     std::array<uint8_t, 4> paddleValue{ 128, 128, 128, 128 };
     std::array<bool,    3> paddleButton{ false, false, false };
-    uint64_t paddleLatchCycle = 0;
+    // IIe modifier keys, wired alongside the gameport buttons at
+    // $C061-$C063. Atomic because the GLFW key callback runs on the
+    // UI thread while the CPU worker polls them.
+    std::atomic<bool> openAppleKey  { false };
+    std::atomic<bool> solidAppleKey { false };
+    std::atomic<bool> shiftKey      { false };
+    // Init the latch "deep in the past" so the elapsed test
+    // `(cycleCounter - paddleLatchCycle) >= paddleValue*11` is true at
+    // boot regardless of paddleValue (max threshold = 255*11 = 2805).
+    // Matches MAME apple2.cpp:259 `m_joystick_x1_time = 0` semantics
+    // (timer already expired at startup). Without this, $C064-$C067
+    // would return 0x80 for ~1408 cycles after every power-on and
+    // confuse the //e auto-test that detects "no paddle connected".
+    // Concretely: 0 - paddleLatchCycle in uint64 wraps to 0x10000 here,
+    // which is well above any plausible threshold.
+    uint64_t paddleLatchCycle = ~uint64_t(0) - 0xFFFFu;
     uint64_t cycleCounter     = 0;       // hand-rolled, see advanceCycles()
 
     // Cassette: non-owning pointer set by EmulationController.
@@ -307,7 +333,7 @@ private:
 
     void markRomRegion(uint16_t lo, uint16_t hi);
     uint8_t softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal);
-    uint8_t languageCardSwitchAccess(uint16_t addr);
+    uint8_t languageCardSwitchAccess(uint16_t addr, bool isWrite);
     uint8_t languageCardRead(uint16_t addr) const;
     void    languageCardWrite(uint16_t addr, uint8_t value);
 

@@ -7,20 +7,22 @@
 // between ~50 Hz and ~5 kHz; the cone's natural mechanical low-pass
 // turns the resulting square wave into recognisable tones.
 //
-// Pipeline:
-//   CPU thread ─ Memory's $C030 handler calls recordToggle(absoluteCpuCycle)
-//                 → push event onto an SPSC-style deque (mutex-guarded)
-//   Audio thread ─ fillAudioBuffer():
-//                   * advance audioCpuCursor by cyclesPerSample per frame
-//                   * for every event ≤ cursor, flip currentLevel
-//                   * 1-pole low-pass (~5 kHz) softens the click edges
-//                   * DC blocker prevents long-term offset saturation
+// Reconstruction pipeline (MAME `spkrdev.cpp:74-327` verbatim port):
 //
-// The CPU thread holds EmulationController::stateMutex while writing
-// events; the audio thread holds its own eventMutex briefly to drain
-// them. They never block each other for long — the audio thread copies
-// pending events into a local vector under the mutex (one allocation
-// at most), then synthesises samples lock-free.
+//   CPU thread ─ Memory's $C030 handler calls recordToggle(absoluteCpuCycle)
+//                 → push event onto an SPSC-style deque (mutex-guarded).
+//   Audio thread ─ fillAudioBuffer():
+//                   * For each output sample, fill 4 intermediate samples
+//                     (RATE_MULTIPLIER=4 oversampling) by rectangle-area
+//                     integration of the latch level over each sub-window.
+//                   * Convolve the rolling 64-entry composed_volume ring
+//                     with a windowed sinc kernel (FILTER_STEP =
+//                     π/(2*RATE_MULTIPLIER), cutoff ≈ sr/4).
+//                   * 0.995-pole DC blocker (matches MAME `:280-285`).
+//
+// This replaces the earlier "snap-to-level + 1-pole LP" reconstruction
+// which aliased badly on tight click sequences (Karateka music, click-
+// rate effects above sample_rate/4 — pinned by `tests/speaker_smoke`).
 
 #ifndef POM2_SPEAKER_DEVICE_H
 #define POM2_SPEAKER_DEVICE_H
@@ -28,6 +30,7 @@
 #include "AudioDevice.h"
 #include "CpuClock.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -36,7 +39,7 @@
 class SpeakerDevice : public AudioSource
 {
 public:
-    SpeakerDevice() = default;
+    SpeakerDevice();
     ~SpeakerDevice() override = default;
 
     /// Called from the CPU thread synchronously when $C030-$C03F is
@@ -69,30 +72,48 @@ public:
     size_t   getQueuedEventCount() const;
 
 private:
-    static constexpr float kCpuClockHz   = static_cast<float>(POM2_CPU_CLOCK_HZ);
-    static constexpr float kSquareAmp    = 0.18f;     // headroom vs cassette mix
-    static constexpr float kLpCutoffHz   = 5000.0f;   // speaker cone bandwidth
-    static constexpr float kCatchUpSecs  = 0.10f;     // snap forward if behind
-    static constexpr size_t kMaxEvents   = 16384;     // ~750 ms at 22 kHz toggles
+    static constexpr float  kCpuClockHz   = static_cast<float>(POM2_CPU_CLOCK_HZ);
+    static constexpr float  kSquareAmp    = 0.18f;     // headroom vs cassette mix
+    static constexpr float  kCatchUpSecs  = 0.10f;     // snap forward if behind
+    static constexpr size_t kMaxEvents    = 16384;     // ~750 ms at 22 kHz toggles
+    // MAME parity: 4× oversampling × 64-tap windowed sinc.
+    // RATE_MULTIPLIER must divide FILTER_LENGTH evenly.
+    static constexpr int    kRateMultiplier = 4;       // MAME `spkrdev.cpp:74`
+    static constexpr int    kFilterLength   = 64;      // MAME `spkrdev_h.txt:28`
 
     mutable std::mutex   eventMutex;
     std::deque<uint64_t> events;
 
-    // Audio-thread state (only touched inside fillAudioBuffer + reset).
-    uint64_t audioCpuCursor   = 0;
-    double   cursorRem        = 0.0;
+    // Audio-thread state. Touched only inside fillAudioBuffer + reset.
+    uint64_t audioCpuCursor   = 0;     // CPU cycle at start of next sample
+    double   subSampleAccum   = 0.0;   // fractional CPU cycles into next sub
+    double   lastUpdateFrac   = 0.0;   // accumulator since last sub-sample
+                                       //   boundary (units: sub-sample
+                                       //   periods, range [0, 1)).
     bool     currentLevel     = false;
-    float    lpState          = 0.0f;
-    float    dcInputPrev      = 0.0f;
-    float    dcOutputPrev     = 0.0f;
+    // Rolling ring of integrated sub-sample windows. Each slot stores the
+    // time-weighted average of `level` over one sub-sample period
+    // (= [0..1] given binary level). Indexed by `composedIdx` (write
+    // head); the sinc convolution walks the 64 most-recent slots
+    // newest-last via `composedIdx + 1 .. composedIdx + 64`.
+    std::array<double, kFilterLength> composedVolume{};
+    int                               composedIdx = 0;
+    // DC blocker state (MAME's y[n] = x[n] - x[n-1] + 0.995 * y[n-1]).
+    double dcPrevX = 0.0;
+    double dcPrevY = 0.0;
 
-    // Producer-published high-water mark — used by the audio thread to
-    // detect when the cursor has lagged too far and snap forward.
+    // Sinc kernel + its abs-sum (used as the convolution normaliser).
+    std::array<double, kFilterLength> ampl{};
+    double ampSum = 1.0;
+
+    // Producer-published high-water mark.
     std::atomic<uint64_t> latestEventCycle{0};
 
     std::atomic<float>    volume{1.0f};
     std::atomic<bool>     muted{false};
     std::atomic<uint32_t> outputSampleRate{AudioDevice::kSampleRate};
+
+    void buildSincKernel();
 };
 
 #endif // POM2_SPEAKER_DEVICE_H

@@ -294,9 +294,39 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         lastError = "WOZ header sentinel bytes wrong";
         loaded = false; return false;
     }
-    // bytes 8..11 = CRC32 of the rest of the file. We follow MAME's
-    // permissive policy and don't fail on mismatch (some archived .woz
-    // files have stale CRCs). Future enhancement: recompute and warn.
+    // Bytes 8..11 = CRC32 of bytes [12..EOF). Verbatim port of MAME
+    // `as_dsk.cpp:10-23` `crc32r` (reversed-polynomial 0xedb88320,
+    // bit-reflected output). The spec allows CRC=0 as a sentinel
+    // meaning "not computed by the imager"; MAME's `as_dsk.cpp:275-277`
+    // rejects on mismatch unless the stored CRC is zero — we match
+    // that policy.
+    {
+        const uint32_t expected =
+            static_cast<uint32_t>(buf[ 8])        |
+            (static_cast<uint32_t>(buf[ 9]) <<  8) |
+            (static_cast<uint32_t>(buf[10]) << 16) |
+            (static_cast<uint32_t>(buf[11]) << 24);
+        if (expected != 0) {
+            uint32_t crc = 0xFFFFFFFFu;
+            for (size_t i = 12; i < fileSize; ++i) {
+                crc ^= buf[i];
+                for (int b = 0; b < 8; ++b) {
+                    crc = (crc & 1u)
+                            ? (crc >> 1) ^ 0xEDB88320u
+                            : (crc >> 1);
+                }
+            }
+            crc = ~crc;
+            if (crc != expected) {
+                char msg[96];
+                std::snprintf(msg, sizeof(msg),
+                    "WOZ CRC32 mismatch (header=$%08X, computed=$%08X)",
+                    expected, crc);
+                lastError = msg;
+                loaded = false; return false;
+            }
+        }
+    }
 
     // Walk chunks starting at offset 12.
     int      diskType = 1;
@@ -306,8 +336,16 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     bool     haveTmap = false;
     std::array<uint8_t, 160> tmap{};
     tmap.fill(0xFF);
-    size_t   trksOff = 0;
-    size_t   trksLen = 0;
+    size_t   trksOff   = 0;
+    size_t   trksLen   = 0;
+    // FLUX chunk (WOZ2 v2.1+, info_version >= 3). When present, it
+    // overrides TRKS bit-cell data for any quarter-track whose
+    // `fluxFidx[qt]` is not 0xFF. The flux delta stream preserves
+    // sub-cell timing that idealised bit cells lose — required for
+    // tightly-mastered protections like Wings of Fury original,
+    // Captain Goodnight, Ankh, Sundog: Frozen Legacy.
+    uint16_t fluxBlock        = 0;   // INFO+46 (u16 LE, file-block units)
+    uint16_t fluxLargestTrack = 0;   // INFO+48 (u16 LE, in blocks)
 
     auto readU16LE = [&](size_t o) -> uint32_t {
         return static_cast<uint32_t>(buf[o])
@@ -334,6 +372,14 @@ bool DiskImage::loadWoz(const std::string& imgPath)
                 diskType           = buf[dataOff + 1];
                 fileWriteProtected = buf[dataOff + 2] != 0;
             }
+            // INFO version 3 (WOZ2 v2.1+) adds flux_block / largest_flux_track
+            // at offsets +46 / +48. Older versions report 0. MAME
+            // `as_dsk.cpp:287-290`.
+            if (infoVersion >= 3 && len >= 50) {
+                fluxBlock        = static_cast<uint16_t>(readU16LE(dataOff + 46));
+                fluxLargestTrack = static_cast<uint16_t>(readU16LE(dataOff + 48));
+                if (fluxLargestTrack == 0) fluxBlock = 0;
+            }
             haveInfo = true;
         } else if (std::memcmp(buf.data() + off, "TMAP", 4) == 0) {
             if (len >= 160) {
@@ -344,13 +390,21 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             trksOff = dataOff;
             trksLen = len;
         }
-        // META / WRIT / FLUX / unknown: ignored (matches MAME's
-        // "load anyway" policy for forward-compatible chunks).
+        // META / WRIT / unknown: ignored. FLUX is located indirectly via
+        // INFO+46 (fluxBlock) above; we don't need its in-stream offset
+        // because the spec guarantees the chunk lives at block-aligned
+        // file position `fluxBlock * 512`.
         off = dataOff + len;
     }
 
     if (!haveInfo || !haveTmap || trksLen == 0) {
         lastError = "WOZ file missing INFO/TMAP/TRKS";
+        loaded = false; return false;
+    }
+    if (infoVersion < 1 || infoVersion > 3) {
+        // MAME `as_dsk.cpp:284-286` rejects info_version outside 1..3.
+        lastError = "WOZ info_version " + std::to_string(infoVersion)
+                  + " outside supported range 1..3";
         loaded = false; return false;
     }
     if (diskType != 1) {
@@ -367,11 +421,120 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     dirty.fill(false);
     anyDirty = false;
 
-    // Per-whole-track bit-stream unpack.
-    int populatedTracks = 0;
-    for (int t = 0; t < kTracks; ++t) {
-        const uint8_t trkIdx = tmap[t * 4];
-        if (trkIdx == 0xFF) continue;     // track absent
+    // FLUX FIDX lookup: when WOZ2 v2.1+ provides a FLUX chunk, each
+    // quarter-track may carry a flux delta stream that overrides the
+    // bit-cell stream from TRKS. The FLUX chunk's payload starts with
+    // an 8-byte chunk header followed by 160 bytes of FIDX (one per
+    // QT) mapping to the same TRK header table used by bit cells
+    // (just with a different fidx index — the TRK header's
+    // `track_size` field is then a count of delta bytes rather than
+    // a bit count).
+    std::array<uint8_t, 160> fluxFidx{};
+    fluxFidx.fill(0xFF);
+    bool haveFlux = false;
+    if (fluxBlock != 0) {
+        const size_t chunkOff = static_cast<size_t>(fluxBlock) * 512;
+        // The 8-byte chunk header (4-byte ID "FLUX" + 4-byte size)
+        // precedes the FIDX array. MAME `as_dsk.cpp:320` reads
+        // `img[off_flux*512 + 8 + trkid]` directly without verifying
+        // the chunk ID; we add a defensive verification to avoid
+        // misreading a non-aligned blob as flux.
+        if (chunkOff + 8 + 160 <= fileSize
+            && std::memcmp(buf.data() + chunkOff, "FLUX", 4) == 0) {
+            std::memcpy(fluxFidx.data(), buf.data() + chunkOff + 8, 160);
+            haveFlux = true;
+        }
+    }
+
+    // Helper: parse one flux track into bitStream[qt] + fluxStream[qt].
+    //
+    // Flux delta encoding (MAME `as_dsk.cpp:61-81`):
+    //   - The TRK header at trks_off + fidx*8 has the same layout as
+    //     bit-cell tracks: u16 starting_block, u16 block_count, u32
+    //     track_size — but `track_size` here is the byte count of the
+    //     delta stream, not a bit count.
+    //   - Walk bytes; each byte is a tick count (1 tick = 125 ns).
+    //   - A byte == 0xFF means "no flux this step" (continuation).
+    //   - Otherwise emit one flux event at cumulative cpos ticks.
+    //   - The LAST byte never emits a flux event (it represents the
+    //     wrap to the index pulse).
+    //   - There's an implicit pulse at position 0 too (the index
+    //     pulse), but MAME emits MG_F|0 which is the floppy_image
+    //     time-zero marker — for our LSS model we skip the explicit
+    //     index pulse (the LSS doesn't read an index line).
+    //
+    // POM2 storage: LSS-cycle timestamps in fluxStream[qt] (1 LSS
+    // cycle = 4 ticks = 500 ns). Synthesise bitStream[qt] sized to
+    // `(total_ticks + 31) / 32` cells with a 1 at every cell that
+    // contains at least one flux event, so trackBitLength /
+    // trackPeriod / bitAt continue to return sensible values.
+    // Sub-cell precision is preserved in fluxStream and read by the
+    // LSS via `getNextTransition` without going through bitStream.
+    auto loadFluxTrack = [&](int qt, uint8_t fidx) -> bool {
+        const size_t hdrOff = trksOff + static_cast<size_t>(fidx) * 8;
+        if (hdrOff + 8 > trksOff + trksLen) return false;
+        const uint32_t startBlock = readU16LE(hdrOff + 0);
+        const uint32_t trackSize  = readU32LE(hdrOff + 4);
+        if (startBlock == 0 || trackSize == 0) return false;
+        const size_t dataOff = static_cast<size_t>(startBlock) * 512;
+        if (dataOff + trackSize > fileSize) return false;
+
+        // First pass: sum total ticks to size the synthetic bitStream.
+        uint64_t totalTicks = 0;
+        for (uint32_t i = 0; i < trackSize; ++i)
+            totalTicks += buf[dataOff + i];
+        if (totalTicks == 0) return false;
+
+        // 1 LSS cycle = 4 ticks. Cells are 8 LSS cycles each.
+        const uint64_t periodLss = (totalTicks + 3) / 4;
+        const size_t   cellCount = static_cast<size_t>((periodLss + 7) / 8);
+        if (cellCount == 0) return false;
+
+        auto& bits = bitStream[qt];
+        auto& flux = fluxStream[qt];
+        bits.assign(cellCount, 0);
+        flux.clear();
+        flux.reserve(trackSize);          // upper bound
+
+        uint64_t cpos = 0;                // cumulative ticks
+        for (uint32_t i = 0; i < trackSize; ++i) {
+            const uint8_t step = buf[dataOff + i];
+            cpos += step;
+            if (step != 0xFF && i != trackSize - 1) {
+                const int64_t lssCycle = static_cast<int64_t>(cpos / 4);
+                flux.push_back(static_cast<int>(lssCycle));
+                const size_t cell = static_cast<size_t>(lssCycle / 8);
+                if (cell < bits.size()) bits[cell] = 1;
+            }
+        }
+        bitStreamValid[qt]  = true;
+        fluxStreamValid[qt] = true;        // populated directly, skip expand
+        return true;
+    };
+
+    // Walk all 160 TMAP entries (= every quarter-track). For each
+    // non-FF slot, unpack the matching TRK chunk into bitStream[qt].
+    // FLUX takes precedence over TMAP when both are present (matches
+    // MAME `as_dsk.cpp:316-326`). This is the change from the
+    // original "whole-tracks-only" port that walked `tmap[t*4]` for
+    // t in 0..34 and lost the inter-track protection data carried
+    // at qt%4 != 0 by copy-protected disks.
+    int populatedSlots = 0;
+    int populatedWholeTracks = 0;
+    int populatedFluxSlots = 0;
+    for (int qt = 0; qt < kQuarterTracks; ++qt) {
+        // FLUX path: highest precedence for v2.1+ images.
+        if (haveFlux && fluxFidx[qt] != 0xFF) {
+            if (loadFluxTrack(qt, fluxFidx[qt])) {
+                ++populatedSlots;
+                if ((qt & 3) == 0) ++populatedWholeTracks;
+                ++populatedFluxSlots;
+                continue;
+            }
+            // fall through to bit-cell stream if flux parse fails
+        }
+        const uint8_t trkIdx = tmap[qt];
+        if (trkIdx == 0xFF) continue;     // quarter-track absent
 
         size_t bitDataOff   = 0;
         size_t bitDataBytes = 0;
@@ -403,7 +566,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             continue;
         }
 
-        auto& bits = bitStream[t];
+        auto& bits = bitStream[qt];
         bits.resize(bitCount);
         for (size_t b = 0; b < bitCount; ++b) {
             const size_t byteIdx   = b / 8;
@@ -411,11 +574,12 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             bits[b] = static_cast<uint8_t>(
                 (buf[bitDataOff + byteIdx] >> bitInByte) & 1);
         }
-        bitStreamValid[t] = true;
-        ++populatedTracks;
+        bitStreamValid[qt] = true;
+        ++populatedSlots;
+        if ((qt & 3) == 0) ++populatedWholeTracks;
     }
 
-    if (populatedTracks == 0) {
+    if (populatedWholeTracks == 0) {
         lastError = "WOZ file has no usable whole tracks";
         loaded = false; return false;
     }
@@ -432,7 +596,14 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         std::string("Loaded ") + imgPath + " (.woz "
         + (isWoz2 ? "v2" : "v1")
         + ", info_v" + std::to_string(infoVersion)
-        + ", " + std::to_string(populatedTracks) + " tracks"
+        + ", " + std::to_string(populatedWholeTracks) + " tracks"
+        + (populatedSlots > populatedWholeTracks
+              ? " + " + std::to_string(populatedSlots - populatedWholeTracks)
+                + " quarter-track slots"
+              : "")
+        + (populatedFluxSlots > 0
+              ? " (" + std::to_string(populatedFluxSlots) + " FLUX)"
+              : "")
         + (fileWriteProtected ? ", file-WP" : "")
         + ")");
     return true;
@@ -458,9 +629,11 @@ void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
         tracks[track][n] = value;
         dirty[track]     = true;
         anyDirty         = true;
-        // Bit-cell cache for this track is now stale; next bitAt() call
-        // will rebuild it from the new nibble buffer.
-        invalidateBitStream(track);
+        // Bit-cell cache for the whole track is now stale; next bitAt()
+        // call rebuilds it from the new nibble buffer. Non-WOZ formats
+        // only ever populate the slot at `qt = track*4`, so a single
+        // invalidate covers all four aliased quarter-track positions.
+        invalidateWholeTrack(track);
     }
 }
 
@@ -471,17 +644,29 @@ void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
 // per byte so the byte boundary drifts +2 bits across each gap — that's
 // the timing artefact real Disk II software uses to recover sync after
 // the head crosses a track boundary or the controller drops alignment.
-void DiskImage::expandTrackBits(int track) const
+void DiskImage::expandTrackBits(int qt) const
 {
-    auto& bits = bitStream[track];
-    bits.clear();
-    if (track < 0 || track >= kTracks) {
-        bitStreamValid[track] = true;   // empty; caller wraps mod 0 → 0
+    if (qt < 0 || qt >= kQuarterTracks) return;
+    const int slot = qtSlot(qt);
+    // For WOZ images, slot == qt and the bit data was already populated
+    // by `loadWoz`; `bitStreamValid[slot]` is true so callers short-
+    // circuit before reaching here. Defensive bail in case of a refactor.
+    if (wozFormat) {
+        bitStreamValid[slot] = true;
         return;
     }
+    auto& bits = bitStream[slot];
+    bits.clear();
     bits.reserve(static_cast<size_t>(kNibblesPerTrack) * 9);
 
-    const auto& buf = tracks[track];
+    // Non-WOZ: source from the whole-track nibble buffer that contains
+    // this quarter-track position.
+    const int wholeTrack = slot / 4;
+    if (wholeTrack < 0 || wholeTrack >= kTracks) {
+        bitStreamValid[slot] = true;     // empty
+        return;
+    }
+    const auto& buf = tracks[wholeTrack];
     const bool noSyncPad = nibFormat;   // .nib has no sync semantics
 
     // Detect whether nibble[i] is part of a 2+-byte $FF run by checking
@@ -507,21 +692,23 @@ void DiskImage::expandTrackBits(int track) const
             bits.push_back(0);
         }
     }
-    bitStreamValid[track] = true;
+    bitStreamValid[slot] = true;
 }
 
-int DiskImage::trackBitLength(int track) const
+int DiskImage::trackBitLength(int qt) const
 {
-    if (track < 0 || track >= kTracks) return 0;
-    if (!bitStreamValid[track]) expandTrackBits(track);
-    return static_cast<int>(bitStream[track].size());
+    if (qt < 0 || qt >= kQuarterTracks) return 0;
+    const int slot = qtSlot(qt);
+    if (!bitStreamValid[slot]) expandTrackBits(qt);
+    return static_cast<int>(bitStream[slot].size());
 }
 
-uint8_t DiskImage::bitAt(int track, int bitIdx) const
+uint8_t DiskImage::bitAt(int qt, int bitIdx) const
 {
-    if (track < 0 || track >= kTracks) return 0;
-    if (!bitStreamValid[track]) expandTrackBits(track);
-    const auto& bits = bitStream[track];
+    if (qt < 0 || qt >= kQuarterTracks) return 0;
+    const int slot = qtSlot(qt);
+    if (!bitStreamValid[slot]) expandTrackBits(qt);
+    const auto& bits = bitStream[slot];
     if (bits.empty()) return 0;
     const int n = static_cast<int>(bits.size());
     return bits[((bitIdx % n) + n) % n];
@@ -540,34 +727,33 @@ uint8_t DiskImage::bitAt(int track, int bitIdx) const
 // pad +2 zero cells per byte). So the total period in LSS cycles equals
 // `bitStream.size() * 8`, and PULSE timing under the flux model matches
 // PULSE timing the bit-cell view would produce — by construction.
-void DiskImage::expandTrackFlux(int track) const
+void DiskImage::expandTrackFlux(int qt) const
 {
-    auto& flux = fluxStream[track];
+    if (qt < 0 || qt >= kQuarterTracks) return;
+    const int slot = qtSlot(qt);
+    auto& flux = fluxStream[slot];
     flux.clear();
-    if (track < 0 || track >= kTracks) {
-        fluxStreamValid[track] = true;
-        return;
-    }
-    if (!bitStreamValid[track]) expandTrackBits(track);
-    const auto& bits = bitStream[track];
+    if (!bitStreamValid[slot]) expandTrackBits(qt);
+    const auto& bits = bitStream[slot];
     flux.reserve(bits.size() / 2);            // ~half the cells are 1
     for (int i = 0; i < static_cast<int>(bits.size()); ++i) {
         if (bits[i]) flux.push_back(i * 8 + 4);
     }
-    fluxStreamValid[track] = true;
+    fluxStreamValid[slot] = true;
 }
 
-int DiskImage::trackPeriod(int track) const
+int DiskImage::trackPeriod(int qt) const
 {
-    return trackBitLength(track) * 8;
+    return trackBitLength(qt) * 8;
 }
 
-const std::vector<int>& DiskImage::fluxEvents(int track) const
+const std::vector<int>& DiskImage::fluxEvents(int qt) const
 {
     static const std::vector<int> empty;
-    if (track < 0 || track >= kTracks) return empty;
-    if (!fluxStreamValid[track]) expandTrackFlux(track);
-    return fluxStream[track];
+    if (qt < 0 || qt >= kQuarterTracks) return empty;
+    const int slot = qtSlot(qt);
+    if (!fluxStreamValid[slot]) expandTrackFlux(qt);
+    return fluxStream[slot];
 }
 
 // MAME `floppy_image_device::get_next_transition` — returns the time of
@@ -576,12 +762,12 @@ const std::vector<int>& DiskImage::fluxEvents(int track) const
 // (offset by one period, so the result remains ≥ fromLssCycle). Only
 // returns kFluxNever when the track has no flux events at all (blank
 // disk), matching MAME's `attotime::never` for the empty-track case.
-int64_t DiskImage::getNextTransition(int track, int64_t fromLssCycle) const
+int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle) const
 {
-    if (track < 0 || track >= kTracks) return kFluxNever;
-    const auto& flux = fluxEvents(track);
+    if (qt < 0 || qt >= kQuarterTracks) return kFluxNever;
+    const auto& flux = fluxEvents(qt);
     if (flux.empty()) return kFluxNever;
-    const int period = trackPeriod(track);
+    const int period = trackPeriod(qt);
     if (period <= 0) return kFluxNever;
 
     // Reduce fromLssCycle into [0, period) for the lookup; remember the
@@ -624,10 +810,10 @@ int64_t DiskImage::getNextTransition(int track, int64_t fromLssCycle) const
 // re-packed nibble buffer will re-introduce sync padding for any $FF
 // nibble that ends up in a 2+ run, which is exactly what real Disk II
 // hardware does on read-back.
-void DiskImage::writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
+void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
                           int count, const int64_t* transitions)
 {
-    if (!loaded || track < 0 || track >= kTracks) return;
+    if (!loaded || qt < 0 || qt >= kQuarterTracks) return;
     if (endLssCycle <= startLssCycle) return;
     // First-cut WOZ support is read-only. The bit cells in `bitStream`
     // are canonical; running the splice would also re-pack into the
@@ -636,8 +822,13 @@ void DiskImage::writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
     // Software shouldn't attempt writes anyway because isWriteProtected
     // returns true for WOZ images.
     if (wozFormat) return;
+    // Non-WOZ: write-back lands on the whole track containing `qt`.
+    // Quarter-track sub-positions on standard .dsk/.do/.po share their
+    // nibble buffer with the parent whole track (`qtSlot` alias).
+    const int track = qt / 4;
+    if (track < 0 || track >= kTracks) return;
 
-    const int period = trackPeriod(track);
+    const int period = trackPeriod(qt);
     if (period <= 0) return;
 
     // Reduce both endpoints into [0, period). If the window wraps the
@@ -655,9 +846,9 @@ void DiskImage::writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
             if (transitions[i] < splitAt) firstHalf.push_back(transitions[i]);
             else                          secondHalf.push_back(transitions[i]);
         }
-        writeFlux(track, startLssCycle, splitAt,
+        writeFlux(qt, startLssCycle, splitAt,
                   static_cast<int>(firstHalf.size()), firstHalf.data());
-        writeFlux(track, splitAt, endLssCycle,
+        writeFlux(qt, splitAt, endLssCycle,
                   static_cast<int>(secondHalf.size()), secondHalf.data());
         return;
     }
@@ -708,7 +899,7 @@ void DiskImage::writeFlux(int track, int64_t startLssCycle, int64_t endLssCycle,
     if (changed) {
         dirty[track]    = true;
         anyDirty        = true;
-        invalidateBitStream(track);
+        invalidateWholeTrack(track);
     }
 }
 

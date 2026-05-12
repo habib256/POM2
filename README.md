@@ -7,35 +7,46 @@ cassette deck, joystick, and an 8-slot peripheral bus carrying Disk II,
 Super Serial, ProDOS clock, ProDOS HDV, Mockingboard, and Le Chat Mauve
 RGB cards.
 
-## Status (v0.2)
+## Status (v0.3)
 
 Working:
 
-- **CPU** — MOS 6502 (Klaus Dormann functional-test clean, IRQ / NMI / BRK,
-  BCD) plus the common 65C02 / Rockwell additions (STZ, BRA, INA/DEA,
-  PHX/PHY/PLX/PLY, BIT #imm, TSB/TRB, JMP (abs,X), (zp) indirect mode,
-  RMB/SMB/BBR/BBS, WAI/STP), so ProDOS hard-disk software targeting
-  IIe Enhanced / IIc runs without hanging on the first CMOS-only opcode.
+- **CPU** — MOS 6502 (Klaus Dormann functional-test clean, IRQ / NMI /
+  BRK, BCD) plus the common 65C02 / Rockwell additions (STZ, BRA,
+  INA/DEA, PHX/PHY/PLX/PLY, BIT #imm, TSB/TRB, JMP (abs,X), (zp)
+  indirect mode, RMB/SMB/BBR/BBS, WAI/STP). MAME-parity on D-flag clear
+  at CMOS interrupt entry, PLP/RTI U=B=1 force, JMP (abs) page-wrap
+  bug NMOS-only, RMW `$C0xx` triple-dispatch through `softSwitchAccess`,
+  WAI fall-through on IRQ-with-I=1, NMI > IRQ priority, and the
+  CMOS-specific cycle counts (JMP indirect = 6, BIT #imm = 2, RMB/SMB
+  = 5, BBR/BBS = 5, BRK = 7, RTI = 6).
 - **Memory** — 48 KB main + 16 KB ROM (`$C100-$FFFF`) for II/II+; or
   128 KB (main + auxiliary 64 KB bank) for IIe with all paging soft
   switches (80STORE / RAMRD / RAMWRT / INTCXROM / ALTZP / SLOTC3ROM /
-  80COL / ALTCHAR), status reads at `$C013-$C018` / `$C01E` / `$C01F`,
-  and the internal $C100-$CFFF I/O ROM. Auto-detected from
-  `roms/apple2e.rom` presence.
+  80COL / ALTCHAR), status reads at `$C013-$C018` / `$C01E` / `$C01F`
+  with the last keyboard character OR'd into the low 7 bits
+  (`m_transchar` parity per MAME `apple2e.cpp:1842-1871`), and the
+  internal $C100-$CFFF I/O ROM. Auto-detected from `roms/apple2e.rom`
+  presence.
 - **Language Card** — 16 KB RAM bank-switched behind `$D000-$FFFF`,
-  `$C080-$C08F` (read/write enable, BSR, prewrite latch), bank 1 / bank 2
-  on `$D000-$DFFF`, separate aux LC banks under ALTZP.
+  `$C080-$C08F` (read/write enable, BSR, prewrite latch — armed only by
+  reads, cleared by writes per Sather 5-12), bank 1 / bank 2 on
+  `$D000-$DFFF`, separate aux LC banks under ALTZP.
 - **Soft switches** `$C000-$C07F` — keyboard + strobe, speaker,
-  cassette in/out, display modes, paddles (RC discharge), push-buttons,
-  VBL `$C019` (scanline-accurate, with IIe IRQ mask via `$C05A`/`$C05B`).
+  cassette in/out, display modes, paddles (RC discharge ~11 cycles/step
+  per MAME `apple2.cpp:247-248`), push-buttons with Open Apple / Solid
+  Apple / Shift-key mod OR'd on `$C061-$C063` in IIe mode, VBL `$C019`
+  (scanline-accurate, with IIe IRQ mask via `$C05A`/`$C05B`).
 - **Display** — text 40×24 with normal / inverse / flashing attribute
   (2 Hz, MAME `frame_number() & 0x10` parity); lo-res 40×48 (16 colours,
   benrg NTSC palette ported verbatim from MAME `apple2video.cpp`);
-  hi-res 280×192 with NTSC artifact LUT (`artifact_color_lut[0]`,
-  7-bit sliding window — also verbatim from MAME); monochrome variants
-  White / Green (P31) / Amber with phosphor afterglow. IIe adds
-  80-column text and DHGR 560×192 with three color paths (composite
-  NTSC, Video-7-style RGB-card 4-dot block decode, and monochrome).
+  hi-res 280×192 with three composite color modes (canonical artifact
+  LUT, medium-color biased LUT, and 4-bit square filter — MAME's
+  `composite_color_mode 0/1/2`); monochrome variants White / Green (P31)
+  / Amber with phosphor afterglow. IIe adds 80-column text and DHGR
+  560×192 with all three color paths (composite NTSC, Video-7-style
+  RGB-card 4-dot block decode, and monochrome). The HGR / lo-res / text
+  scanners honour `80STORE+PAGE2(+HIRES)` aux-RAM routing.
 - **Character ROM** — 2 KB II/II+ or 4 KB IIe accepted; mousetext bank
   in IIe ALTCHAR mode; built-in 5×7 fallback if no ROM provided.
 - **Mixed mode** — text rows 20-23 over hi-res / lo-res / DHGR;
@@ -45,31 +56,44 @@ Working:
   blue/orange bank), AN3+80COL FIFO for mode select, four modes
   (BW560 / Mixed / Chunky / COL140). Coexists with the NTSC / mono
   pipelines.
-- **Audio** — 1-bit speaker through miniaudio with sub-instruction
-  event timestamps and 1-pole low-pass; cassette mixed in alongside.
+- **Audio** — 1-bit speaker through miniaudio with MAME-grade
+  reconstruction: rectangle-area integration of every $C030 toggle
+  into 4× oversampled intermediate samples, 64-tap windowed sinc
+  convolution (cutoff ≈ sr/4), and a 0.995-pole DC blocker. Verbatim
+  port of MAME `spkrdev.cpp:74-327`. Cassette mixed in alongside.
   Volume / mute UI.
 - **Cassette** — `$C020` write-toggle and `$C060` comparator wired to
   a procedural cassette deck (Play / Record / Rewind, Font Awesome icons,
   WAV / MP3 / OGG / FLAC / `.aci` input).
 - **Disk II controller** in slot 6 — boot via `PR#6`, two drives, 35
-  half-tracks. Loaders: `.dsk` / `.do` (DOS 3.3 logical sector order),
-  `.po` (ProDOS), `.nib` (raw nibbles), `.woz` (WOZ1 + WOZ2, read-only —
-  unlocks copy-protected disks that idealised GCR can't carry). LSS-level
-  bit-cell read path (verbatim port of MAME `wozfdc.cpp` + P6 PROM)
-  plus a legacy 32-cycle gate. Write-back to `.dsk`/`.do`/`.po`/`.nib`
-  is opt-in (default off — source files are never touched unless you
-  enable it).
+  whole tracks × 4 quarter-tracks (160 quarter-track slots on WOZ).
+  Loaders: `.dsk` / `.do` (DOS 3.3 logical sector order), `.po`
+  (ProDOS), `.nib` (raw nibbles), `.woz` (WOZ1 + WOZ2 with full
+  quarter-track decode + FLUX chunk + CRC32 validation —
+  unlocks Spiradisc / RWTS18 / Locksmith Fast Copy and the FLUX-mastered
+  protections like Wings of Fury original / Captain Goodnight / Ankh).
+  LSS-level bit-cell read path (verbatim port of MAME `wozfdc.cpp` +
+  P6 PROM) plus a legacy 32-cycle gate. Write-back to
+  `.dsk`/`.do`/`.po`/`.nib` is opt-in (default off — source files are
+  never touched unless you enable it). WOZ stays read-only.
 - **ProDOS Clock card** (slot 4) — ThunderClock+-compatible RTC,
   bit-bang uPD1990AC at `$C0C0`. ProDOS file timestamps work out of the
   box; DOS 3.3 disks ignore the card.
 - **ProDOS HardDisk** (slot 5) — 32 MB ProDOS HDV image mount, plus a
   synthetic read-only volume built on the fly from any host folder
   (`prodos_disk/` by default — appears as `/HOST/` once ProDOS is up).
-- **Super Serial Card** (slot 2) — minimal 6551 ACIA + TCP listener on
-  `127.0.0.1:6502` with telnet IAC stripping, so a host terminal can
-  speak serial to the guest.
+- **Super Serial Card** (slot 2) — 6551 ACIA model with full slot-IRQ
+  wiring (RDRF / DCD / DSR transitions, gated by command-register
+  RX-IRQ-enable bit), A0-A1 mirror across `$C0nC-$C0nF`, DIP-switch
+  readback at `$C0n0-$C0n7` per MAME `a2ssc.cpp:339-353`, 8-bit clean
+  TX (XMODEM / Kermit / ADTPro friendly), MAME-correct status-write
+  semantics (`cmdReg &= ~0x1F`). TCP listener on `127.0.0.1:6502` with
+  telnet IAC stripping.
 - **Mockingboard** — dual 6522 VIA + dual AY-3-8910 PSG, user-pluggable
-  into any free slot (slot 4 by convention). Volume + mute persist.
+  into any free slot (slot 4 by convention). Full T1 + T2 timers
+  (Ultima IV speech driver works), MAME-verbatim 4-flag envelope state
+  machine (shapes 0-15 including the vibrato-friendly 10 / 12 / 14),
+  17-bit noise LFSR. Volume + mute persist.
 - **Joystick** — GLFW host pad → paddles 0/1 + buttons PB0/PB1/PB2
   (`$C061-$C063`, `$C064-$C067`), hot-plug-friendly, autobinds first
   present pad.
@@ -93,19 +117,20 @@ Working:
 Not yet:
 
 - Integer BASIC preset (only Applesoft / Autostart is exercised today)
-- Disk II quarter-tracks — only whole tracks read from WOZ TMAP, which
-  blocks Spiradisc / RWTS-18 / Locksmith-class copy protection
-- WOZ FLUX chunk parsing (post-WOZ2 v2.1 raw flux images)
-- WOZ write-back (always read-only, even when write-back is enabled
-  for the legacy formats)
-- VIA T2 timer on Mockingboard (blocks Ultima IV speech driver)
-- Annunciators `$C058-$C05F`
-- Mouse Card, RAMWorks, CP/M Z80 SoftCard
+- WOZ write-back (always read-only — Applesauce WRIT/FLUX writer not
+  implemented; the legacy formats do persist when opt-in is on)
+- SSC modem-side niceties: echo mode (command bit 4), software baud
+  rate, DTR side effects, DCD/DSR transition IRQs
+- ClockCard TIME_SET / TP-pin / MODE_SHIFT (only TIME_READ is wired —
+  fine for ProDOS, blocks setting the clock from software)
+- Annunciators `$C058-$C05F`, `$C040` utility strobe (no consumer in
+  POM2 today, but pinned by some niche software)
+- Mouse Card, RAMWorks, CP/M Z80 SoftCard, Video-7 AppleColor RGB,
+  Eve Color-text mode
 - DHGR per-scanline mode switching (the bottom-of-mixed region uses a
   static 4-line region)
 
-See `TODO.md` for the full backlog including the MAME-divergence audit
-(§14).
+See `TODO.md` for the full backlog.
 
 ## Build
 
@@ -151,8 +176,8 @@ Drop images into `disks/`:
 - `.dsk` / `.do` — 143 360 B, DOS 3.3 logical sector order
 - `.po` — 143 360 B, ProDOS sector order (boots ProDOS, A2DeskTop, …)
 - `.nib` — 232 960 B, raw nibble image
-- `.woz` — WOZ1 or WOZ2 (Applesauce); read-only, unlocks stock
-  copy-protected disks
+- `.woz` — WOZ1 or WOZ2 (Applesauce), with full quarter-track + FLUX
+  chunk decoding; CRC32-validated on load. Read-only.
 
 Use **Hardware → Insert disk image** to mount, then boot with `PR#6`,
 or click the "boot disk" button in the Disk II panel. The image file
