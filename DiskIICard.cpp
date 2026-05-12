@@ -340,9 +340,14 @@ void DiskIICard::legacyAdvance(int cycles)
             // Real hardware streams bits through the LSS shift register;
             // we model one nibble per ~32 CPU cycles, matching the read
             // pacing. The CPU latches the next nibble via a soft-switch
-            // store (see deviceSelectWrite).
-            img.writeNibbleAt(track, pos, writeLatch);
-            ++writeFlushCount;
+            // store (see deviceSelectWrite). Honour writeBackEnabled
+            // symmetrically with the LSS path — the user toggle off
+            // must keep host files intact regardless of which gate is
+            // active.
+            if (writeBackEnabled) {
+                img.writeNibbleAt(track, pos, writeLatch);
+                ++writeFlushCount;
+            }
         } else {
             dataLatch = img.nibbleAt(track, pos);
             byteReady = true;
@@ -827,10 +832,15 @@ void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
         return;
     }
 
-    // Legacy gate path.
+    // Legacy gate path. Mirror MAME wozfdc's `last_6502_write = data` —
+    // latch every $C0Ex write regardless of low nibble, so a write to
+    // any switch in the range (Q6 toggle, drive select, …) refreshes
+    // the byte the next nibble flush will emit. The legacy advance
+    // still consumes `writeLatch` only when `writeMode` is on, so
+    // unconditional latching is harmless in read mode.
     handleSwitchAccess(low4);
+    writeLatch = v;
     if (writeMode && low4 == 0xD) {
-        writeLatch = v;
         cycleAccum = 0;
     }
 }

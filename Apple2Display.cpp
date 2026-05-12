@@ -630,12 +630,16 @@ constexpr unsigned rotl4b(unsigned n, unsigned count)
 
 // Decode 40 HGR bytes into a 40-element array of 14-bit doubled words,
 // applying the half-dot delay when the source byte's MSB is set.
+// `bit7Mask` honours the IIe DHIRES annunciator's rev-0 emulation: pass
+// `0x7F` to force-mask the MSB (no half-dot delay, no orange/blue
+// palette) when DHIRES=on + 80COL=off, mirroring MAME `apple2video.cpp`
+// `bit7_mask = m_dhires ? 0 : 0x80`. Default 0xFF = transparent.
 void buildHgrWordRow(const uint8_t* ram, uint16_t rowAddr,
-                     uint16_t (&words)[40])
+                     uint16_t (&words)[40], uint8_t bit7Mask = 0xFFu)
 {
     unsigned last_output_bit = 0;
     for (int col = 0; col < 40; ++col) {
-        const uint8_t b = ram[rowAddr + col];
+        const uint8_t b = ram[rowAddr + col] & bit7Mask;
         uint16_t word = kBitDoubler[b & 0x7Fu];
         if (b & 0x80u) {
             word = static_cast<uint16_t>(((word << 1) | last_output_bit) & 0x3FFFu);
@@ -649,10 +653,10 @@ void buildHgrWordRow(const uint8_t* ram, uint16_t rowAddr,
 // 0/1. Used by the monochrome paths (which don't need the windowed
 // LUT). Equivalent to laying buildHgrWordRow's output end-to-end.
 void buildBitStream(const uint8_t* ram, uint16_t rowAddr,
-                    uint8_t (&stream)[kStreamLen])
+                    uint8_t (&stream)[kStreamLen], uint8_t bit7Mask = 0xFFu)
 {
     uint16_t words[40];
-    buildHgrWordRow(ram, rowAddr, words);
+    buildHgrWordRow(ram, rowAddr, words, bit7Mask);
     int out = 0;
     for (int col = 0; col < 40; ++col) {
         const uint16_t w = words[col];
@@ -745,6 +749,14 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     // splash) draw stale/main content.
     const uint8_t* ram = mem.data();
     if (state.eightyStore && state.hiRes && state.page2 && auxRam) ram = auxRam;
+
+    // IIe DHIRES annunciator on + 80COL off = rev-0 emulation: mask
+    // bit 7 of every HGR byte so no half-dot delay / no orange-blue
+    // palette. MAME `apple2video.cpp:747`: `bit7_mask = m_dhires ? 0 :
+    // 0x80`. POM2's DHGR path is gated on `eightyCol`, so when this
+    // function runs with `state.dhgr` true we are necessarily in
+    // standard-HGR rev-0 territory (II+ always has `state.dhgr=false`).
+    const uint8_t bit7Mask = state.dhgr ? uint8_t{0x7F} : uint8_t{0xFF};
 
     std::array<uint32_t, kWidth> raw;
 
@@ -851,7 +863,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
 
         for (int y = firstScanline; y < lastScanline; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, state.page2);
-            buildHgrWordRow(ram, rowAddr, words);
+            buildHgrWordRow(ram, rowAddr, words, bit7Mask);
 
             // Scanline's 560 sub-pixels via incremental window. `w`
             // accumulates up to (3 + 14 + 14) = 31 bits — fits in a
@@ -907,7 +919,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     const Phosphor& phos = kPhosphors[static_cast<int>(effMode)];
     for (int y = firstScanline; y < lastScanline; ++y) {
         const uint16_t rowAddr = hgrRowAddress(y, state.page2);
-        buildBitStream(ram, rowAddr, stream);
+        buildBitStream(ram, rowAddr, stream, bit7Mask);
 
         uint8_t* histRow = persistenceL.data() + static_cast<size_t>(y) * kWidth;
         for (int x = 0; x < kWidth; ++x) {

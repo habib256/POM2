@@ -141,6 +141,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
         loaded      = true;
         nibFormat   = true;
         wozFormat   = false;
+        fileWriteProtected = false;
         sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
         dirty.fill(false);
         anyDirty    = false;
@@ -197,6 +198,7 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
     loaded      = true;
     nibFormat   = false;
     wozFormat   = false;
+    fileWriteProtected = false;
     sectorOrder = order;
     dirty.fill(false);
     anyDirty    = false;
@@ -330,7 +332,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
 
     // Walk chunks starting at offset 12.
     int      diskType = 1;
-    bool     fileWriteProtected = false;
+    fileWriteProtected = false;
     int      infoVersion = isWoz2 ? 2 : 1;
     bool     haveInfo = false;
     bool     haveTmap = false;
@@ -590,8 +592,9 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     wozFormat   = true;
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .woz
     lastError.clear();
-    // fileWriteProtected is informational — isWriteProtected() always
-    // returns true for WOZ regardless. Logged so the user sees it.
+    // fileWriteProtected is now folded into isWriteProtected() — when
+    // WOZ write-back lands, dropping the `wozFormat` blanket from the
+    // predicate will leave INFO.write_protected in charge automatically.
     pom2::log().info("Disk II",
         std::string("Loaded ") + imgPath + " (.woz "
         + (isWoz2 ? "v2" : "v1")
@@ -614,6 +617,7 @@ void DiskImage::eject()
     loaded = false;
     nibFormat = false;
     wozFormat = false;
+    fileWriteProtected = false;
     path.clear();
     for (auto& t : tracks) t.fill(0xFF);
     dirty.fill(false);

@@ -206,7 +206,12 @@ public:
     /// silently mutating the source file. Mainwindow flips this before
     /// eject if the user has opted in. WOZ images stay write-protected
     /// regardless of this flag — first-cut WOZ support is read-only.
-    bool isWriteProtected() const { return wozFormat || !writeBackEnabled; }
+    /// `fileWriteProtected` mirrors the WOZ INFO `write_protected` byte
+    /// so that when WOZ write-back lands, dropping the `wozFormat`
+    /// blanket gate automatically preserves per-file protection.
+    bool isWriteProtected() const {
+        return wozFormat || fileWriteProtected || !writeBackEnabled;
+    }
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:
@@ -220,6 +225,10 @@ private:
     /// suppressed for WOZ — the splice would clobber the canonical bit
     /// data. Cleared on eject() / non-WOZ load.
     bool wozFormat = false;
+    /// Mirror of WOZ INFO byte +2 (`write_protected`). Folded into
+    /// `isWriteProtected()` so the per-file flag survives once the WOZ
+    /// blanket gate is lifted. Stays false for non-WOZ formats.
+    bool fileWriteProtected = false;
     std::string path;
     std::string lastError;
     bool writeBackEnabled = false;

@@ -15,21 +15,20 @@ Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
       (`DiskIICard.cpp:594-597`). MAME `wozfdc.cpp:229-241` :
       `mon_w(true)` sur ancien drive, `mon_w(false)` sur nouveau.
       Important pour les protections multi-drive.
-- [ ] 🟠 **`last_6502_write` legacy-gate seulement sur `$C0ED`**
-      (`DiskIICard.cpp:822-826`). MAME latche sur **toute** écriture
-      `$C0Ex`. Le chemin LSS est déjà OK.
+- [x] ✓ **`last_6502_write` legacy-gate sur tout `$C0Ex`** — aligned
+      with MAME `wozfdc.cpp` (2026-05-13). Le chemin LSS l'était déjà ;
+      le legacy le fait maintenant aussi.
 - [ ] 🟡 **WOZ2 `optimal_bit_timing` (INFO+39) ignoré**. Hard-codé à
       32 ticks = 4 µs/cell. MAME aussi ne le lit pas au load mais
       utilise `track_size*2` ; vrai gap = placement `cellIdx*8+4` fixe.
 - [ ] 🟡 **WOZ1 splice point (TRK +6650)** ignoré
       (`DiskImage.cpp:381-398`). MAME passe via `set_write_splice`.
       Important quand on activera le WOZ write-back.
-- [ ] 🟡 **`writeBackEnabled` gate asymétrique** — bloque le LSS
-      splice mais pas le legacy 32-cycle write
-      (`DiskIICard.cpp:339, 466, 618`).
-- [ ] 🟢 **`INFO.write_protected` lu mais jamais imposé**
-      (`DiskImage.cpp:194`). Footgun pour write-back futur — utiliser
-      ce flag plutôt que `wozFormat`.
+- [x] ✓ **`writeBackEnabled` gate symétrique** — legacy
+      `writeNibbleAt` désormais gaté comme le LSS splice (2026-05-13).
+- [x] ✓ **`INFO.write_protected` intégré à `isWriteProtected()`**
+      (2026-05-13). Aujourd'hui no-op (WOZ déjà bloqué par `wozFormat`)
+      mais évite le footgun quand WOZ write-back sera implémenté.
 - [ ] 🟢 **Inflation sub-instruction RAII** (`DiskIICard.cpp:711-744`)
       vs dispatch per-bus-cycle MAME m6502. Documenté tradeoff ; rare
       impact sur protections cycle-sensibles.
@@ -58,10 +57,9 @@ Tous les items terminés :
 
 ## 4. Display
 
-- [ ] 🟠 **DHIRES annunciator non honoré en HGR standard** (rev-0
-      emulation, sans orange/bleu quand DHIRES=on + 80COL=off). MAME
-      `apple2video.cpp:747` : `bit7_mask = m_dhires ? 0 : 0x80`. POM2
-      honore toujours bit 7.
+- [x] ✓ **DHIRES annunciator HGR rev-0** — `buildHgrWordRow` /
+      `buildBitStream` acceptent un `bit7Mask` ; passé à `0x7F` quand
+      `state.dhgr` est on en `renderHiRes` (2026-05-13).
 - [ ] 🟠 **Palette Chat Mauve = POM2-original** (lo-res
       `Apple2Display.cpp:474-491` + HGR `:691-702`). Pas dans MAME ;
       à documenter comme stylistique ou aligner sur `apple2_palette[]`.
@@ -83,11 +81,8 @@ Tous les items terminés :
 - [ ] 🟡 **AY float tone counter aliase à périodes très courtes (1-3)**
       (`Mockingboard.cpp:449-456`). MAME utilise compteur entier.
       Inaudible à period normal, manifeste sur tricks PWM.
-- [ ] 🟢 **AY amplitude table** dévie ~15-22% de la courbe canonique
-      MAME `ay8910_param` Westcott 2001 + `build_single_table(normalize=1)`.
-      Valeurs à swapper :
-      `{0.0000, 0.0105, 0.0154, 0.0223, 0.0321, 0.0468, 0.0635, 0.1061,
-       0.1319, 0.2164, 0.2974, 0.3909, 0.5128, 0.6371, 0.8186, 1.0000}`
+- [x] ✓ **AY amplitude table** aligned with MAME `build_single_table
+      (normalize=1)` + `ay8910_param` Westcott 2001 (2026-05-13).
 - [ ] 🟢 **Port A read mask par DDR** (`Mockingboard.cpp:126-130`).
       Devrait retourner pin state. Sans impact concret sur Mockingboard.
 - [x] ✓ Cassette seuil sign-based (MAME `apple2.cpp:362` parity) —

@@ -14,14 +14,14 @@ namespace {
 // ─── AY-3-8910 amplitude table ───────────────────────────────────────────
 //
 // Logarithmic 4-bit volume → linear amplitude. Sourced from MAME
-// `src/devices/sound/ay8910.cpp`'s `volumes_3level_8910` interpolation —
-// these are the canonical levels every Apple II / CPC / Spectrum emulator
-// converges on (within rounding). Index 0 is silence; index 15 is the
-// per-channel peak. Three channels at peak would clip a single AY at
-// roughly 3.0 — the audio mixer's clamp catches that.
+// `src/devices/sound/ay8910.cpp`'s `build_single_table(normalize=1)` with
+// `ay8910_param` (Westcott 2001 measurements). Canonical Apple II / CPC /
+// Spectrum reference. Index 0 is silence; index 15 is the per-channel
+// peak. Three channels at peak would clip a single AY at roughly 3.0 —
+// the audio mixer's clamp catches that.
 constexpr float kAyVolumeTable[16] = {
-    0.0000f, 0.0137f, 0.0205f, 0.0291f, 0.0423f, 0.0618f, 0.0847f, 0.1369f,
-    0.1691f, 0.2647f, 0.3527f, 0.4499f, 0.5704f, 0.6873f, 0.8482f, 1.0000f
+    0.0000f, 0.0105f, 0.0154f, 0.0223f, 0.0321f, 0.0468f, 0.0635f, 0.1061f,
+    0.1319f, 0.2164f, 0.2974f, 0.3909f, 0.5128f, 0.6371f, 0.8186f, 1.0000f
 };
 
 // AY-3-8910 input clock on the Mockingboard — pin 22 (CLOCK) is wired to
