@@ -1595,11 +1595,18 @@ bool DiskImage::saveDirty()
     // images use 6384 bytes/track instead of 6656; the load path padded
     // each track up to the runtime width with $FF and the saveDirty
     // path truncates back so the round-trip preserves the source size.
+    // If the source was wrapped in a 2IMG envelope, re-emit the captured
+    // header bytes + payload + trailer so the file remains a valid 2IMG
+    // after the round-trip.
     if (nibFormat) {
-        std::ofstream f(path, std::ios::binary | std::ios::out);
+        std::ofstream f(path, std::ios::binary | std::ios::out | std::ios::trunc);
         if (!f) {
             lastError = "Cannot open " + path + " for write";
             return false;
+        }
+        if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+            f.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                    static_cast<std::streamsize>(twoImgHeaderRaw.size()));
         }
         const std::size_t bytesPerTrack =
             cnib2Format ? static_cast<std::size_t>(6384)
@@ -1608,20 +1615,33 @@ bool DiskImage::saveDirty()
             f.write(reinterpret_cast<const char*>(tracks[t].data()),
                     static_cast<std::streamsize>(bytesPerTrack));
         }
+        if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+            f.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                    static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+        }
         if (!f) { lastError = "Short write on " + path; return false; }
         dirty.fill(false);
         anyDirty = false;
         pom2::log().info("Disk II",
-            std::string("Saved (.nib") + (cnib2Format ? " CNib2 6384/track" : "")
-            + "): " + path);
+            std::string("Saved (.nib") +
+            (cnib2Format ? " CNib2 6384/track" : "") +
+            (twoImgFormat ? ", 2IMG-wrapped" : "") + "): " + path);
         return true;
     }
 
     // .dsk/.do/.po: read existing file, decode dirty tracks, overwrite.
+    // For a 2IMG-wrapped source, the existing payload starts past the
+    // captured header (twoImgHeaderRaw.size() bytes in).
+    const std::size_t payloadStart =
+        (twoImgFormat && !twoImgHeaderRaw.empty()) ? twoImgHeaderRaw.size()
+                                                   : 0;
     std::vector<uint8_t> bytes(kBytesPerImage, 0);
     {
         std::ifstream rf(path, std::ios::binary);
-        if (rf) rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage);
+        if (rf) {
+            rf.seekg(static_cast<std::streamoff>(payloadStart));
+            rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage);
+        }
         // Missing/short read is ok — we'll fill from decode below for
         // every dirty track, leaving non-dirty tracks at 0 (worst case).
     }
@@ -1654,12 +1674,21 @@ bool DiskImage::saveDirty()
 
     std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
+    if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+        wf.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                 static_cast<std::streamsize>(twoImgHeaderRaw.size()));
+    }
     wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage);
+    if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+        wf.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                 static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+    }
     if (!wf) { lastError = "Short write on " + path; return false; }
     dirty.fill(false);
     anyDirty = false;
     pom2::log().info("Disk II", "Saved " + std::to_string(decodedTracks) +
-                     " modified track(s) to " + path);
+                     " modified track(s) to " + path +
+                     (twoImgFormat ? " (2IMG envelope preserved)" : ""));
     return true;
 }
 

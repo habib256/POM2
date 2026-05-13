@@ -496,6 +496,21 @@ target_include_directories(test_disk_2mg PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_2mg_smoke COMMAND test_disk_2mg)
 set_tests_properties(disk_2mg_smoke PROPERTIES TIMEOUT 5)
 
+# ─── 2IMG / .2mg write-back round-trip smoke test ───────────────────────
+# Pins saveDirty()'s ability to re-emit the 64-byte 2IMG header AND any
+# trailing comment/creator chunk verbatim, while reflecting the new
+# payload bytes. Mutates a nibble on track 17 then verifies the header
+# and trailer are byte-identical post-save and the payload region has
+# moved.
+add_executable(test_disk_2mg_writeback
+    disk_2mg_writeback_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_2mg_writeback PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_2mg_writeback_smoke COMMAND test_disk_2mg_writeback)
+set_tests_properties(disk_2mg_writeback_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk image refuse-strict error-path smoke test ─────────────────────
 # Pins the "loadFile refuses with a specific lastError" behaviour for the
 # main classes of malformed inputs (wrong size, 2IMG with bad offset,
