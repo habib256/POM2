@@ -72,6 +72,7 @@ public:
         Dsk143k,       // 143 360-byte image, DOS 3.3 sector order
         ProDos143k,    // 143 360-byte image, ProDOS sector order
         Nib232k,       // 232 960-byte raw nibble stream (35 × 6656)
+        CNib2,         // 223 440-byte raw nibble stream (35 × 6384)
     };
 
     DiskImage();
@@ -231,6 +232,13 @@ private:
     bool loaded = false;
     SectorOrder sectorOrder = SectorOrder::Dos33;
     bool nibFormat = false;
+    /// True iff the source was the rarer 6384-byte/track NIB variant
+    /// (`CNib2` in AppleWin's terminology). The on-disk format omits the
+    /// last 272 sync nibbles per track; the runtime pads each track up
+    /// to the standard 6656 with $FF so the rest of the controller and
+    /// LSS pipeline stays oblivious. `saveDirty()` truncates back to
+    /// 6384/track on write, so a round-trip preserves the source layout.
+    bool cnib2Format = false;
     /// Set when loadFile parses a .woz successfully. WOZ stores bit cells
     /// directly so loadWoz populates `bitStream[track]` instead of the
     /// nibble buffer; the existing `expandTrackFlux` derives flux events
@@ -349,7 +357,14 @@ private:
     /// format-specific state) from the supplied byte slice, sets the
     /// appropriate `*Format` flags, and invalidates the bit-cell cache.
     /// Return false (with `lastError` filled) on internal failure.
+    ///
+    /// `nibblesPerTrack` controls how many source bytes are read per
+    /// track. The standard `.nib` format uses 6656 (= the runtime
+    /// storage width). The rarer CNib2 variant uses 6384; the loader
+    /// pads each track up to 6656 with $FF (sync gap) so the rest of
+    /// the controller is format-agnostic.
     bool loadNibFromBuffer(const uint8_t* data, std::size_t len,
+                           int nibblesPerTrack,
                            const std::string& imgPath);
     bool loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
                                    SectorOrder order, uint8_t volume,

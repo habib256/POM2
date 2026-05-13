@@ -178,6 +178,19 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         return r;
     }
 
+    // ── CNib2 .nib variant — exactly 223 440 bytes (35 × 6384) ────────
+    // Rarer 6384/track encoding used by some pre-WOZ tooling. The loader
+    // pads each track to the standard 6656 width with $FF sync bytes;
+    // saveDirty truncates back when writing.
+    if (n == static_cast<std::size_t>(kTracks) * 6384) {
+        r.kind       = ImageKind::CNib2;
+        r.payloadOff = baseOff;
+        r.payloadLen = n;
+        r.diag       = ".nib (CNib2) raw nibble stream (35 × 6384 bytes)";
+        addMacBinaryNote(r);
+        return r;
+    }
+
     // ── 143 360-byte sector image — DOS 3.3 vs ProDOS skew ─────────────
     if (n == static_cast<std::size_t>(kBytesPerImage)) {
         // Default from extension hint. `.po` → ProDOS, else DOS 3.3.
@@ -244,15 +257,23 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
                 : "file ") +
               "size " + std::to_string(n) +
               " bytes doesn't match any supported format "
-              "(143360=.dsk/.po, 232960=.nib, WOZ magic missing)";
+              "(143360=.dsk/.po, 232960=.nib, 223440=.nib/CNib2, "
+              "WOZ magic missing)";
     return r;
 }
 
 bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
+                                  int nibblesPerTrack,
                                   const std::string& imgPath)
 {
+    if (nibblesPerTrack <= 0 || nibblesPerTrack > kNibblesPerTrack) {
+        lastError = "loadNibFromBuffer: invalid nibblesPerTrack=" +
+                    std::to_string(nibblesPerTrack);
+        loaded = false;
+        return false;
+    }
     const std::size_t expected =
-        static_cast<std::size_t>(kTracks) * kNibblesPerTrack;
+        static_cast<std::size_t>(kTracks) * static_cast<std::size_t>(nibblesPerTrack);
     if (len != expected) {
         lastError = "loadNibFromBuffer: expected " +
                     std::to_string(expected) + " bytes, got " +
@@ -261,13 +282,24 @@ bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
         return false;
     }
     for (int t = 0; t < kTracks; ++t) {
+        // Copy the source nibbles, then pad the remainder of the
+        // 6656-wide track buffer with $FF (sync gap). For the standard
+        // 6656/track case the pad loop is empty; for CNib2's 6384/track
+        // it backfills the 272 trailing nibbles so the LSS sees a normal
+        // sync run at the track wrap-around point.
         std::memcpy(tracks[t].data(),
-                    data + t * kNibblesPerTrack,
-                    kNibblesPerTrack);
+                    data + static_cast<std::size_t>(t) * nibblesPerTrack,
+                    static_cast<std::size_t>(nibblesPerTrack));
+        if (nibblesPerTrack < kNibblesPerTrack) {
+            std::memset(tracks[t].data() + nibblesPerTrack,
+                        0xFF,
+                        static_cast<std::size_t>(kNibblesPerTrack - nibblesPerTrack));
+        }
     }
     path        = imgPath;
     loaded      = true;
     nibFormat   = true;
+    cnib2Format = (nibblesPerTrack == 6384);
     wozFormat   = false;
     fileWriteProtected = false;
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
@@ -300,6 +332,7 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
     path        = imgPath;
     loaded      = true;
     nibFormat   = false;
+    cnib2Format = false;
     wozFormat   = false;
     fileWriteProtected = false;
     sectorOrder = order;
@@ -355,7 +388,16 @@ bool DiskImage::loadFile(const std::string& imgPath)
             ok = loadWoz(imgPath);
             break;
         case ImageKind::Nib232k:
-            ok = loadNibFromBuffer(payload, payloadLen, imgPath);
+            ok = loadNibFromBuffer(payload, payloadLen,
+                                   kNibblesPerTrack, imgPath);
+            if (ok) {
+                pom2::log().info("Disk II",
+                    "Loaded " + imgPath + " — " + det.diag);
+            }
+            break;
+        case ImageKind::CNib2:
+            ok = loadNibFromBuffer(payload, payloadLen,
+                                   /*nibblesPerTrack=*/6384, imgPath);
             if (ok) {
                 pom2::log().info("Disk II",
                     "Loaded " + imgPath + " — " + det.diag);
@@ -805,6 +847,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     path        = imgPath;
     loaded      = true;
     nibFormat   = false;
+    cnib2Format = false;
     wozFormat   = true;
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .woz
     lastError.clear();
@@ -837,6 +880,7 @@ void DiskImage::eject()
 {
     loaded = false;
     nibFormat = false;
+    cnib2Format = false;
     wozFormat = false;
     fileWriteProtected = false;
     path.clear();
@@ -1381,20 +1425,29 @@ bool DiskImage::saveDirty()
         return true;
     }
 
-    // .nib: just write the raw nibble buffers verbatim.
+    // .nib: just write the raw nibble buffers verbatim. CNib2 source
+    // images use 6384 bytes/track instead of 6656; the load path padded
+    // each track up to the runtime width with $FF and the saveDirty
+    // path truncates back so the round-trip preserves the source size.
     if (nibFormat) {
         std::ofstream f(path, std::ios::binary | std::ios::out);
         if (!f) {
             lastError = "Cannot open " + path + " for write";
             return false;
         }
+        const std::size_t bytesPerTrack =
+            cnib2Format ? static_cast<std::size_t>(6384)
+                        : static_cast<std::size_t>(kNibblesPerTrack);
         for (int t = 0; t < kTracks; ++t) {
-            f.write(reinterpret_cast<const char*>(tracks[t].data()), kNibblesPerTrack);
+            f.write(reinterpret_cast<const char*>(tracks[t].data()),
+                    static_cast<std::streamsize>(bytesPerTrack));
         }
         if (!f) { lastError = "Short write on " + path; return false; }
         dirty.fill(false);
         anyDirty = false;
-        pom2::log().info("Disk II", "Saved (.nib): " + path);
+        pom2::log().info("Disk II",
+            std::string("Saved (.nib") + (cnib2Format ? " CNib2 6384/track" : "")
+            + "): " + path);
         return true;
     }
 

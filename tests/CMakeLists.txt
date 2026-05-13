@@ -469,6 +469,19 @@ target_include_directories(test_disk_macbinary PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_macbinary_smoke COMMAND test_disk_macbinary)
 set_tests_properties(disk_macbinary_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk image CNib2 (6384/track NIB variant) smoke test ───────────────
+# Pins the recognition of the rarer 35 × 6384 NIB layout. Loader pads
+# each track up to the runtime 6656 width with $FF; saveDirty truncates
+# back. Synthetic pattern verifies both the source bytes and the pad.
+add_executable(test_disk_cnib2
+    disk_cnib2_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_cnib2 PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_cnib2_smoke COMMAND test_disk_cnib2)
+set_tests_properties(disk_cnib2_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
 # Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
 # apple2js WozDiskDriver) against a synthetic single-prologue track and
