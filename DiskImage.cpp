@@ -102,90 +102,62 @@ uint8_t DiskImage::nibbleAt(int track, int index) const
     return tracks[track][n];
 }
 
-bool DiskImage::loadFile(const std::string& imgPath)
+// ── Content-driven format detection ────────────────────────────────────────
+//
+// `detectFormat()` is the single decision point for what an image file is.
+// loadFile() slurps the file once, hands the bytes to detectFormat, and
+// dispatches per ImageKind. Each kind has a matching per-format buffer
+// loader. Adding a new format (2MG, MacBinary wrapper, CNib2, …) means
+// extending the kind enum + adding a detection branch here, not editing
+// the dispatch logic.
+DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
+                                                const std::vector<uint8_t>& bytes)
 {
-    // Sniff the extension:
-    //   .woz → WOZ1 / WOZ2 bit-cell image (MAME woz_dsk.cpp port)
-    //   .nib → raw nibble stream (no encoding)
-    //   .po  → ProDOS sector order
-    //   else → DOS 3.3 sector order (.dsk, .do, or no extension)
-    if (endsWithCi(imgPath, ".woz")) {
-        return loadWoz(imgPath);
-    }
-    if (endsWithCi(imgPath, ".nib")) {
-        std::ifstream f(imgPath, std::ios::binary);
-        if (!f) {
-            lastError = "Cannot open " + imgPath;
-            loaded = false;
-            return false;
-        }
-        f.seekg(0, std::ios::end);
-        const auto size = static_cast<size_t>(f.tellg());
-        f.seekg(0, std::ios::beg);
-        const size_t expected = static_cast<size_t>(kTracks) * kNibblesPerTrack;
-        if (size != expected) {
-            lastError = "Expected " + std::to_string(expected) +
-                        "-byte .nib image, got " + std::to_string(size);
-            loaded = false;
-            return false;
-        }
-        for (int t = 0; t < kTracks; ++t) {
-            f.read(reinterpret_cast<char*>(tracks[t].data()), kNibblesPerTrack);
-        }
-        if (!f) {
-            lastError = "Short read on " + imgPath;
-            loaded = false;
-            return false;
-        }
-        path        = imgPath;
-        loaded      = true;
-        nibFormat   = true;
-        wozFormat   = false;
-        fileWriteProtected = false;
-        sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
-        dirty.fill(false);
-        anyDirty    = false;
-        lastError.clear();
-        invalidateAllBitStreams();
-        pom2::log().info("Disk II", "Loaded " + imgPath +
-                         " (.nib raw nibble stream, 35 tracks)");
-        return true;
+    DetectResult r;
+    const std::size_t n = bytes.size();
+
+    // ── WOZ — magic bytes (case-sensitive ASCII + sentinel) ────────────
+    // Per Applesauce WOZ 2.1 spec: first 8 bytes are 'WOZ1' or 'WOZ2'
+    // followed by 0xFF 0x0A 0x0D 0x0A. The extension is a hint but the
+    // magic is authoritative.
+    if (n >= 8 &&
+        bytes[0] == 'W' && bytes[1] == 'O' && bytes[2] == 'Z' &&
+        (bytes[3] == '1' || bytes[3] == '2') &&
+        bytes[4] == 0xFF && bytes[5] == 0x0A &&
+        bytes[6] == 0x0D && bytes[7] == 0x0A) {
+        r.kind       = ImageKind::Woz;
+        r.payloadOff = 0;
+        r.payloadLen = n;
+        r.diag       = "WOZ" + std::string(1, static_cast<char>(bytes[3])) +
+                       " bit-cell image (" + std::to_string(n) + " bytes)";
+        return r;
     }
 
-    // Extension sniff first: .po → ProDOS, else default DOS 3.3.
-    SectorOrder order = endsWithCi(imgPath, ".po")
-                        ? SectorOrder::ProDOS
-                        : SectorOrder::Dos33;
-    // Content sniff: inspect the ProDOS volume directory key block
-    // (block 2) at the position implied by each skew, and override the
-    // extension-based guess if the other skew clearly fits better.
-    //
-    // In a `.po` (ProDOS-ordered) file, block 2 lives at file offset
-    // 0x400 contiguously; its storage_type/name_length byte sits at
-    // 0x404. In a `.dsk` (DOS-ordered) file the same data is split
-    // across DOS-logical sectors 11 and 3 of track 0 (since ProDOS
-    // physical sectors 8 and 9 hold ProDOS-logical sectors 4 and 5);
-    // the equivalent storage_type byte lands at file offset 0xB04.
-    //
-    // The canonical ProDOS boot block (`01 38 B0 03 4C`) is identical
-    // at file offset 0 in both skews because logical/physical sector 0
-    // coincide, so it alone cannot disambiguate. The vol dir position
-    // can. Real-world miss-orderings we've seen:
-    //   - `.dsk` containing a ProDOS image (cc65 / ADTPro / AppleCommander)
-    //   - `.po`  containing a DOS-3.3-skewed ProDOS image (older cc65
-    //     `ac --d33` then renamed; the cc65-Chess.po build was one)
-    std::ifstream peek(imgPath, std::ios::binary);
-    std::vector<uint8_t> head(0xB10);
-    if (peek && peek.read(reinterpret_cast<char*>(head.data()),
-                          static_cast<std::streamsize>(head.size()))) {
-        auto looksLikeVolHeader = [](const uint8_t* p) -> bool {
-            // Vol dir KEY block: prev_block = 0, next_block in [1..280],
-            // first entry's storage_type = $F (volume directory header)
-            // with name_length in [1..15] AND the name bytes themselves
-            // matching the ProDOS character set (uppercase A-Z, 0-9, dot).
-            // The name-character check rules out the failure mode where a
-            // random `$Fx` byte in a DOS catalog at the alternate-skew
-            // position would otherwise spoof a vol header.
+    // ── Raw .nib — exactly 232 960 bytes (35 × 6656) ──────────────────
+    if (n == static_cast<std::size_t>(kTracks) * kNibblesPerTrack) {
+        r.kind       = ImageKind::Nib232k;
+        r.payloadOff = 0;
+        r.payloadLen = n;
+        r.diag       = ".nib raw nibble stream (35 × 6656 bytes)";
+        return r;
+    }
+
+    // ── 143 360-byte sector image — DOS 3.3 vs ProDOS skew ─────────────
+    if (n == static_cast<std::size_t>(kBytesPerImage)) {
+        // Default from extension hint. `.po` → ProDOS, else DOS 3.3.
+        // Will be overridden below if the vol-dir content sniff disagrees.
+        const bool extIsProdos = endsWithCi(path, ".po");
+        SectorOrder order = extIsProdos ? SectorOrder::ProDOS
+                                        : SectorOrder::Dos33;
+
+        // Content sniff: a ProDOS volume directory key block lives at
+        // file offset 0x400 in a ProDOS-skewed image. Its mirror in a
+        // DOS-skewed image (which holds the same ProDOS data via DOS
+        // sector order) lands at 0xB00. Inspect both; if one matches and
+        // the other doesn't, that's the truth — regardless of extension.
+        auto looksLikeVolHeader = [&bytes, n](std::size_t off) -> bool {
+            if (off + 20 > n) return false;
+            const uint8_t* p = bytes.data() + off;
             if (p[0] != 0x00 || p[1] != 0x00) return false;
             const uint16_t next =
                 static_cast<uint16_t>(p[2]) |
@@ -197,67 +169,93 @@ bool DiskImage::loadFile(const std::string& imgPath)
             if (nlen < 1 || nlen > 15) return false;
             for (uint8_t i = 0; i < nlen; ++i) {
                 const uint8_t c = p[5 + i];
-                const bool ok =
-                    (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') ||
-                    c == '.';
+                const bool ok = (c >= 'A' && c <= 'Z') ||
+                                (c >= '0' && c <= '9') ||
+                                c == '.';
                 if (!ok) return false;
             }
             return true;
         };
-        const bool prodosVolHere = looksLikeVolHeader(head.data() + 0x400);
-        const bool dosVolHere    = looksLikeVolHeader(head.data() + 0xB00);
+        const bool prodosVolHere = looksLikeVolHeader(0x400);
+        const bool dosVolHere    = looksLikeVolHeader(0xB00);
+        bool overridden = false;
         if (order == SectorOrder::Dos33 && prodosVolHere && !dosVolHere) {
             order = SectorOrder::ProDOS;
-            pom2::log().info("Disk II",
-                "ProDOS vol dir found at .po position in " + imgPath +
-                " — overriding to ProDOS sector order");
+            overridden = true;
         } else if (order == SectorOrder::ProDOS && !prodosVolHere && dosVolHere) {
             order = SectorOrder::Dos33;
-            pom2::log().info("Disk II",
-                "ProDOS vol dir found at .dsk position in " + imgPath +
-                " — overriding to DOS 3.3 sector order");
+            overridden = true;
         }
+
+        r.kind = (order == SectorOrder::ProDOS) ? ImageKind::ProDos143k
+                                                : ImageKind::Dsk143k;
+        r.payloadOff   = 0;
+        r.payloadLen   = n;
+        r.order        = order;
+        r.volumeNumber = 254;  // DOS 3.3 default; 2MG header may override later
+        r.diag = std::string("143 360-byte image, ") +
+                 (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
+                 " sector order" +
+                 (overridden ? " (overridden by vol-dir content sniff)" : "");
+        return r;
     }
-    return loadFile(imgPath, order);
+
+    // ── No match → Unknown with a diagnostic error ─────────────────────
+    r.error = "Refused " + path + ": file size " + std::to_string(n) +
+              " bytes doesn't match any supported format "
+              "(143360=.dsk/.po, 232960=.nib, WOZ magic missing)";
+    return r;
 }
 
-bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
+bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
+                                  const std::string& imgPath)
 {
-    std::ifstream f(imgPath, std::ios::binary);
-    if (!f) {
-        lastError = "Cannot open " + imgPath;
+    const std::size_t expected =
+        static_cast<std::size_t>(kTracks) * kNibblesPerTrack;
+    if (len != expected) {
+        lastError = "loadNibFromBuffer: expected " +
+                    std::to_string(expected) + " bytes, got " +
+                    std::to_string(len);
         loaded = false;
         return false;
     }
-    f.seekg(0, std::ios::end);
-    const auto size = static_cast<size_t>(f.tellg());
-    f.seekg(0, std::ios::beg);
-    if (size != kBytesPerImage) {
-        lastError = "Expected " + std::to_string(kBytesPerImage) +
-                    "-byte 5.25\" image, got " + std::to_string(size);
-        loaded = false;
-        return false;
+    for (int t = 0; t < kTracks; ++t) {
+        std::memcpy(tracks[t].data(),
+                    data + t * kNibblesPerTrack,
+                    kNibblesPerTrack);
     }
+    path        = imgPath;
+    loaded      = true;
+    nibFormat   = true;
+    wozFormat   = false;
+    fileWriteProtected = false;
+    sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
+    dirty.fill(false);
+    anyDirty    = false;
+    lastError.clear();
+    invalidateAllBitStreams();
+    return true;
+}
 
-    std::vector<uint8_t> buf(size);
-    f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size));
-    if (!f) {
-        lastError = "Short read";
+bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
+                                          SectorOrder order, uint8_t volume,
+                                          const std::string& imgPath)
+{
+    if (len != static_cast<std::size_t>(kBytesPerImage)) {
+        lastError = "loadSectorImageFromBuffer: expected " +
+                    std::to_string(kBytesPerImage) + " bytes, got " +
+                    std::to_string(len);
         loaded = false;
         return false;
     }
-
-    constexpr uint8_t kVolume = 254;     // DOS 3.3 default volume
     const int* skew = (order == SectorOrder::ProDOS)
                       ? kProDosLogicalForPhysical
                       : kDos33LogicalForPhysical;
     for (int t = 0; t < kTracks; ++t) {
         nibblizeTrack(t,
-            buf.data() + t * kSectorsPerTrack * kSectorBytes,
-            kVolume, skew);
+            data + t * kSectorsPerTrack * kSectorBytes,
+            volume, skew);
     }
-
     path        = imgPath;
     loaded      = true;
     nibFormat   = false;
@@ -268,11 +266,114 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
     anyDirty    = false;
     lastError.clear();
     invalidateAllBitStreams();
-    pom2::log().info("Disk II", "Loaded " + imgPath +
-                     " (35 tracks, 16 sectors, GCR-encoded, " +
-                     (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
-                     " order)");
     return true;
+}
+
+bool DiskImage::loadFile(const std::string& imgPath)
+{
+    // Slurp the whole file once; detectFormat needs the magic bytes and
+    // size, and each per-format loader takes a buffer slice.
+    std::ifstream f(imgPath, std::ios::binary);
+    if (!f) {
+        lastError = "Cannot open " + imgPath;
+        loaded = false;
+        return false;
+    }
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes(size);
+    if (size > 0) {
+        f.read(reinterpret_cast<char*>(bytes.data()),
+               static_cast<std::streamsize>(size));
+        if (!f) {
+            lastError = "Short read on " + imgPath;
+            loaded = false;
+            return false;
+        }
+    }
+
+    const DetectResult det = detectFormat(imgPath, bytes);
+    if (det.kind == ImageKind::Unknown) {
+        lastError = det.error.empty()
+                    ? std::string("Unknown image format: ") + imgPath
+                    : det.error;
+        pom2::log().warn("Disk II", lastError);
+        loaded = false;
+        return false;
+    }
+
+    const uint8_t* payload = bytes.data() + det.payloadOff;
+    const std::size_t payloadLen = det.payloadLen;
+
+    bool ok = false;
+    switch (det.kind) {
+        case ImageKind::Woz:
+            // loadWoz reopens the file itself; refactor to take a buffer
+            // is deferred to a follow-up commit (touches the WOZ parser).
+            ok = loadWoz(imgPath);
+            break;
+        case ImageKind::Nib232k:
+            ok = loadNibFromBuffer(payload, payloadLen, imgPath);
+            if (ok) {
+                pom2::log().info("Disk II",
+                    "Loaded " + imgPath + " — " + det.diag);
+            }
+            break;
+        case ImageKind::Dsk143k:
+        case ImageKind::ProDos143k:
+            ok = loadSectorImageFromBuffer(payload, payloadLen,
+                                           det.order, det.volumeNumber,
+                                           imgPath);
+            if (ok) {
+                pom2::log().info("Disk II",
+                    "Loaded " + imgPath + " — " + det.diag);
+            }
+            break;
+        case ImageKind::Unknown:
+            break;  // already handled above; keeps the switch exhaustive
+    }
+    return ok;
+}
+
+bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
+{
+    // Manual sector-order override (bypasses content sniff). Reads the
+    // file and pipes it straight to the sector-image loader regardless
+    // of what `detectFormat` would have concluded. Useful for a future
+    // "Force DOS / Force ProDOS" UI option when the auto-detect mis-fires.
+    std::ifstream f(imgPath, std::ios::binary);
+    if (!f) {
+        lastError = "Cannot open " + imgPath;
+        loaded = false;
+        return false;
+    }
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    if (size != static_cast<std::size_t>(kBytesPerImage)) {
+        lastError = "Expected " + std::to_string(kBytesPerImage) +
+                    "-byte 5.25\" image, got " + std::to_string(size);
+        loaded = false;
+        return false;
+    }
+    std::vector<uint8_t> buf(size);
+    f.read(reinterpret_cast<char*>(buf.data()),
+           static_cast<std::streamsize>(size));
+    if (!f) {
+        lastError = "Short read";
+        loaded = false;
+        return false;
+    }
+    const bool ok = loadSectorImageFromBuffer(buf.data(), buf.size(),
+                                              order, /*volume=*/254, imgPath);
+    if (ok) {
+        pom2::log().info("Disk II", "Loaded " + imgPath +
+                         " (35 tracks, 16 sectors, GCR-encoded, " +
+                         (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
+                         " order — manual override)");
+    }
+    return ok;
 }
 
 // ── WOZ1 / WOZ2 loader ─────────────────────────────────────────────────────

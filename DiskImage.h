@@ -61,6 +61,19 @@ public:
     /// sector P differs.
     enum class SectorOrder { Dos33, ProDOS };
 
+    /// What the content-driven format detector decides a buffer is. The
+    /// detector inspects the raw bytes (size, magic numbers, embedded
+    /// header positions) and produces an `ImageKind` plus the offsets
+    /// inside the buffer at which the payload starts and ends. Each kind
+    /// has a matching loader path inside loadFile().
+    enum class ImageKind {
+        Unknown,       // detection failed; loadFile refuses with lastError
+        Woz,           // .woz bit-cell native
+        Dsk143k,       // 143 360-byte image, DOS 3.3 sector order
+        ProDos143k,    // 143 360-byte image, ProDOS sector order
+        Nib232k,       // 232 960-byte raw nibble stream (35 × 6656)
+    };
+
     DiskImage();
 
     /// Load a .dsk / .do image (DOS 3.3 logical sector order), a .po
@@ -307,6 +320,40 @@ private:
     static void writeAddressField(uint8_t*& dst, uint8_t volume,
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);
+
+    /// Result of the content-driven format detector. `payloadOff` and
+    /// `payloadLen` describe the slice of the input buffer that the
+    /// matching per-format loader should consume — e.g. for a 2MG-wrapped
+    /// image these skip the 64-byte header. For plain `.dsk`/`.po`/`.nib`
+    /// the payload is the whole file. `order` and `volume` carry the
+    /// decoded sector skew + volume number when applicable.
+    struct DetectResult {
+        ImageKind   kind         = ImageKind::Unknown;
+        std::size_t payloadOff   = 0;
+        std::size_t payloadLen   = 0;
+        SectorOrder order        = SectorOrder::Dos33;
+        uint8_t     volumeNumber = 254;
+        std::string diag;   // human-readable trace, logged on success
+        std::string error;  // populated when kind == Unknown
+    };
+
+    /// Inspect the raw bytes of an image file and decide what it is.
+    /// Pure — no I/O, no member mutation. The file path is only used as
+    /// a hint (extension fallback when the content is ambiguous, e.g.
+    /// distinguishing a 143 360-byte ProDOS-skewed image from a
+    /// DOS-skewed one when the volume directory sniff returns nothing).
+    static DetectResult detectFormat(const std::string& path,
+                                     const std::vector<uint8_t>& bytes);
+
+    /// Per-format buffer loaders. Each populates `tracks[]` (and any
+    /// format-specific state) from the supplied byte slice, sets the
+    /// appropriate `*Format` flags, and invalidates the bit-cell cache.
+    /// Return false (with `lastError` filled) on internal failure.
+    bool loadNibFromBuffer(const uint8_t* data, std::size_t len,
+                           const std::string& imgPath);
+    bool loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
+                                   SectorOrder order, uint8_t volume,
+                                   const std::string& imgPath);
 
     /// WOZ1/WOZ2 parser. Follower of MAME's
     /// `src/lib/formats/as_dsk.cpp` `woz_format` chunk walk: looks for
