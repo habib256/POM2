@@ -149,8 +149,13 @@ MainWindow::MainWindow(bool forceIIPlus)
 
     // Always wake up at the Applesoft prompt. A default HDV / disk may be
     // mounted (above), but we never auto-boot — the user picks via the
-    // Disk II / HDV panel libraries.
-    controller.cpu().hardReset();
+    // Disk II / HDV panel libraries. Use coldBoot (not just a CPU reset)
+    // so the Apple II Monitor runs its full cold-start sequence: HOME
+    // clears the freshly-zeroed text page so the user briefly sees the
+    // "Apple //e" banner instead of the `@`-tile garbage that the text
+    // page renders when full of $00, then it tries slot 6, fails (no
+    // disk in drive at first launch), and falls through to AppleSoft.
+    controller.coldBoot();
     controller.setMode(EmulationController::Mode::Running);
     controller.start();
 
