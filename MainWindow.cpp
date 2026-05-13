@@ -1416,11 +1416,14 @@ void MainWindow::renderDiskPanelWindow()
     }
     if (!result.requestInsertAndBoot.empty() && diskCard) {
         // Library-click "insert + boot": insert under the lock so the
-        // image is in the drive before we hand off to the unified boot
-        // helper. bootFromSlot(6) re-takes the lock and atomically wipes
-        // RAM, resets soft switches + slot bus + CPU, jumps PC = $C600,
-        // and switches to Running — no instruction can run between the
-        // two locked sections (the worker only proceeds when mode flips).
+        // image is in the drive, then cold-boot from the reset vector
+        // so the Apple II Monitor ROM runs its normal cold-start
+        // sequence (HOME clears the text page, banner is displayed,
+        // autostart scans slots and JSRs $C600). Going straight to
+        // PC=$C600 (the old bootFromSlot path) skipped the ROM banner
+        // and left the freshly-wiped text page showing as an `@`-tile
+        // garbage frame until cc65/ProDOS switched to HGR — visible
+        // for several real-time seconds on slow-loading binaries.
         const std::string path = result.requestInsertAndBoot;
         bool ok = false;
         std::string err;
@@ -1431,7 +1434,8 @@ void MainWindow::renderDiskPanelWindow()
             else    err = diskCard->getLastError();
         }
         if (ok) {
-            controller.bootFromSlot(6);
+            controller.coldBoot();
+            controller.setMode(EmulationController::Mode::Running);
             pom2::log().info("Disk II",
                 std::string("Library click → insert + boot: ") + path);
             tapeStatusMessage = "Booting: " + path;
