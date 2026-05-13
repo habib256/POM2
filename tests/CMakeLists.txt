@@ -901,6 +901,34 @@ add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
 set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Display persistence + Chat Mauve 560 smoke test ──────────────────────
+# Pins (1) the DHGR mono persistence buffer (persistenceL80, 560×192) so
+# MonoAmber DHGR retains afterglow across frames, and (2) the HGR + Chat
+# Mauve native-560 rendering path so the framebuffer is 560-wide whenever
+# Chat Mauve mode is active (the card's whole reason to exist).
+add_executable(test_display_persistence
+    display_persistence_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_display_persistence PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_display_persistence PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_display_persistence PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_display_persistence PRIVATE winmm)
+endif()
+
+add_test(NAME display_persistence_smoke COMMAND test_display_persistence)
+set_tests_properties(display_persistence_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── 65C02 instruction smoke test ─────────────────────────────────────────
 # Pins the 65C02 additions on top of the 6502 base set: STZ, BRA, INA/DEA,
 # PHX/PHY/PLX/PLY, BIT #imm, the (zp) addressing mode for ORA/AND/EOR/ADC/
@@ -1228,6 +1256,41 @@ endif()
 add_test(NAME mockingboard_irq_delivery_smoke
          COMMAND test_mockingboard_irq_delivery)
 set_tests_properties(mockingboard_irq_delivery_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Mockingboard IRQ through the //e Enhanced Monitor ROM ──────────────
+# Reproduces the exact path Ultima IV / Nox Archaist / Total Replay use:
+# IRQ vector $FFFE → //e Monitor IRQ entry at $C3FA → save state →
+# JMP through $03FE/$03FF to a user handler. The user handler acks T1
+# by writing $7F to $C40D (Nox Archaist's pattern, found at HDV file
+# offset 0x00B6F0). Skips silently if apple2e.rom is missing.
+add_executable(test_mockingboard_iie_irq
+    mockingboard_iie_irq_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+)
+target_include_directories(test_mockingboard_iie_irq PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_iie_irq PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_iie_irq PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_iie_irq PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_iie_irq_smoke
+         COMMAND test_mockingboard_iie_irq)
+set_tests_properties(mockingboard_iie_irq_smoke PROPERTIES TIMEOUT 10)
 
 
 # ─── Super Serial Card ACIA smoke test ───────────────────────────────────
