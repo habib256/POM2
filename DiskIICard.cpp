@@ -547,6 +547,61 @@ void DiskIICard::lssSync(uint64_t extraCycles)
     }
 }
 
+// MAME `wozfdc_device::control()` cases 0xa/0xb — drive_select switch.
+// When motor is active, mon_w(true) is sent to the old drive (commits
+// in-flight writes, freezes the flux cursor) and mon_w(false) to the
+// new drive (revolution_start_time = now, restart spin). The equivalent
+// in POM2's model:
+//   1. If `writeMode` and there are pending events in the write buffer,
+//      flush them to the OLD drive's track at the current LSS cycle.
+//      (Real silicon: the write head stops driving the surface; any
+//      flux events captured since the last splice land in the track.)
+//   2. Reset the LSS-cycle base to `cpuCycleTotal*2` so the NEW drive's
+//      flux reads start at position 0 of its current quarter-track.
+//      Mirrors MAME `floppy_image_device::mon_w(false)` setting
+//      `revolution_start_time = machine().time()` — the new spin-up
+//      conceptually starts now.
+//   3. Re-init the write-state cursor for the new drive so a write that
+//      survives the drive swap (rare but legal: WRITE mode + drive swap
+//      mid-burst) splices into the right track at the right LSS cycle.
+//   4. Clear PULSE in the LSS address — the new drive's flux stream is
+//      fresh, the previous-drive's pending pulse no longer applies.
+//
+// Reference: MAME `wozfdc.cpp:219-241`.
+void DiskIICard::selectDrive(int newDrive)
+{
+    if (newDrive == activeDrive) return;
+    const int oldDrive = activeDrive;
+    if (active != MODE_IDLE) {
+        // Flush in-flight writes to OLD drive (mon_w(true) → commit_image).
+        DiskImage& oldImg = images[oldDrive];
+        if (writeMode && oldImg.isLoaded() && writeBackEnabled
+            && writePosition > 0) {
+            oldImg.writeFlux(headQuarterTrack[oldDrive],
+                             writeStartTime,
+                             static_cast<int64_t>(lssCycle),
+                             writePosition, writeBuffer);
+            ++writeFlushCount;
+        }
+        writePosition   = 0;
+        writeLineActive = false;
+
+        // Switch drives, then reset LSS for NEW drive.
+        activeDrive = newDrive;
+        lssCycle = cpuCycleTotal * 2;
+        address  = static_cast<uint8_t>(address | 0x10);   // PULSE = no pulse
+        writeStartTime = writeMode ? static_cast<int64_t>(lssCycle) : 0;
+        if (writeMode && images[newDrive].isLoaded()) {
+            images[newDrive].setWriteSplice(
+                headQuarterTrack[newDrive], writeStartTime);
+        }
+    } else {
+        // Motor off — no mon_w transition to model. Just remember the
+        // selection for the next motor-on event.
+        activeDrive = newDrive;
+    }
+}
+
 // MAME `wozfdc_device::control(offset)` — verbatim port. Only POM2-
 // specific bits: we lack the F9334 phaselatch device, so we expand the
 // `m_phaselatch->write_bit(phase, on)` path inline (sets phaseOn[i] and
@@ -597,17 +652,22 @@ void DiskIICard::control(int offset)
             }
             break;
         case 0xa:
-            // Drive 1 select. The 74LS259 latch on the controller drops
-            // its drive_select output low; the daisy chain wires this to
-            // floppy[0]. Switching mid-spin is fine — the next lssSync
-            // re-fetches flux events from the new drive's image at the
-            // current LSS cycle (the LSS clock keeps running across the
-            // swap, mirroring the LSS cycle counter on real hardware).
-            activeDrive = 0;
+            // Drive 1 select. MAME `wozfdc.cpp:219-227`: when active,
+            // mon_w(true) on the old drive (commit writes, freeze flux)
+            // + mon_w(false) on the new drive (revolution_start_time =
+            // now). `selectDrive()` models both halves of the swap.
+            selectDrive(0);
             break;
         case 0xb:
-            // Drive 2 select. Same model as 0xa, just to images[1].
-            activeDrive = 1;
+            // Drive 2 select. MAME `wozfdc.cpp:229-241`. Same as 0xa
+            // but onto images[1]. The TODO regression we fix here: the
+            // previous `activeDrive = 1` direct assignment left the LSS
+            // cycle base unchanged, so drive 2 was reading flux at the
+            // shared lssCycle modulo its track period — not from
+            // position 0 of its current track the way MAME models it.
+            // Multi-drive copy protections (Locksmith, Copy II Plus)
+            // that switch drive mid-spin depend on this.
+            selectDrive(1);
             break;
         case 0xc:
             if (loadMode) {
@@ -706,9 +766,13 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
                 break;
             // $C0nA / $C0nB: drive_select. Both code paths (LSS and
             // legacy gate) honour the same activeDrive so the legacy
-            // tests can exercise drive 2 too.
-            case 0xA: activeDrive = 0; break;
-            case 0xB: activeDrive = 1; break;
+            // tests can exercise drive 2 too. The legacy 32-cycle gate
+            // doesn't model a per-drive flux phase, so the mon_w
+            // transition is a near-no-op here — selectDrive() still
+            // flushes any pending write buffer (defence in depth, even
+            // though the legacy path doesn't populate it).
+            case 0xA: selectDrive(0); break;
+            case 0xB: selectDrive(1); break;
             case 0xC: loadMode  = false; break;
             case 0xD: loadMode  = true;  break;
             case 0xE: writeMode = false; break;

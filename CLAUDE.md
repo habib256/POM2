@@ -148,8 +148,13 @@ presence.
       consecutive dots → raw nibble (bit 0 = leftmost), rotated left by
       1 (matches MAME's `dhgr_update` Video-7 RGB color path
       `rotl4(n, 1)`), indexes **`kChatMauveLoResPalette`** so the "two
-      distinct grays" trademark survives in DHGR (idx 5 = `#555555`,
-      idx 10 = `#AAAAAA`).
+      distinct grays" trademark survives in DHGR. Palette values
+      verbatim from AppleWin `RGBMonitor.cpp::PaletteRGB_Feline` —
+      an empirical white-balanced RGB capture of a real Le Chat Mauve
+      "Feline" board (idx 5 = olive-gray `rgb(0x9f,0x97,0x7e)`,
+      idx 10 = mauve-gray `rgb(0x78,0x68,0x7f)`). MAME has no separate
+      Chat Mauve palette (its Video-7 mode reuses `apple2_palette[]`
+      which collapses 5 ≡ 10), so we follow AppleWin instead.
     - **`Mono*`** — each dot = luminance bit × phosphor tint. No
       artifact decoding. Persistence sized for 280-wide HGR, so DHGR
       mono renders without afterglow.
@@ -247,14 +252,21 @@ presence.
     canonical centre-of-track quarter-track slot); per-quarter-track
     sub-positions used by some advanced protections (Locksmith,
     David-DOS) are not yet preserved — first-cut tradeoff for the
-    minimum patch that lets stock-protection disks boot. WOZ images
-    always report `isWriteProtected() == true` (writes are dropped via
-    `writeFlux` early-out); `setWriteBackEnabled(true)` on a WOZ disk
-    is a no-op. `DiskIICard::insertDisk` also forces `useBitLss=true`
-    when any drive holds a WOZ — the legacy 32-cycle nibble gate
-    cannot decode bit-cell data. Pinned by
-    `tests/woz_load_smoke_test.cpp` (synthetic WOZ1 + WOZ2 +
-    end-to-end LSS recovery without `roms/diskii_p6.rom`).
+    minimum patch that lets stock-protection disks boot.
+    **Write-back is supported**: `loadWoz()` snapshots the entire
+    file into `wozRaw` plus a per-quarter-track
+    `(byteOff, byteLen, bitCount)` triple; `writeFlux()` splices
+    cell-by-cell into `bitStream[qt]`; `saveDirty()` repacks dirty
+    quarter-tracks back into `wozRaw` (MSB-first), zeroes the CRC32
+    header bytes (Applesauce sentinel for "not computed") and rewrites
+    the file in place. `isWriteProtected()` honours both the user
+    `setWriteBackEnabled` toggle and `INFO.write_protected` (the
+    physical-disk WP byte) so a WP'd source stays WP regardless of
+    opt-in. `DiskIICard::insertDisk` forces `useBitLss=true` when any
+    drive holds a WOZ — the legacy 32-cycle nibble gate cannot decode
+    bit-cell data. Pinned by `tests/woz_load_smoke_test.cpp` (loader +
+    LSS recovery) and `tests/woz_writeback_smoke_test.cpp` (WOZ1 + WOZ2
+    write-back round-trip + INFO.write_protected honoured).
 - **DiskIICard** — SlotPeripheral plugged in slot 6. Holds the 256-byte
   P5A boot PROM (`roms/disk2.rom` from AppleWin) at `slotRomRead`; the
   PROM autodetects its slot via the `JSR $FF58 / TSX / LDA $0100,X`
@@ -264,8 +276,16 @@ presence.
   `activeDrive` routes the LSS and the legacy gate to `images[0]` /
   `images[1]`), Q6L/Q6H (shift/load), Q7L/Q7H (read/write — write goes
   via the LSS shifter when `useBitLss` is on, otherwise the legacy
-  32-cycle gate). Each drive carries its own `DiskImage`, head position
-  in quarter-tracks (`headQuarterTrack[2]`), and nibble-buffer cursor
+  32-cycle gate). Drive_select switches go through
+  `selectDrive(int newDrive)` which mirrors MAME `wozfdc.cpp:219-241`
+  on `mon_w(true)`/`mon_w(false)`: when motor is active, the old
+  drive's in-flight write buffer is flushed (commits to disk), then
+  `lssCycle` is reset to `cpuCycleTotal*2` so the new drive's flux
+  reads start at position 0 of its current track (MAME's
+  `revolution_start_time = now`). Important for multi-drive copy
+  protections (Locksmith, Copy II Plus) that swap drives mid-spin.
+  Each drive carries its own `DiskImage`, head position in
+  quarter-tracks (`headQuarterTrack[2]`), and nibble-buffer cursor
   (`trackPos[2]`); phase magnets and motor-on are controller state and
   shared between drives (matching real hardware where only the selected
   drive's stepper responds). Pinned by
@@ -383,10 +403,35 @@ presence.
   (`$1A`/`$18`) 48 times to clock out 6 BCD bytes in order:
   `sec, min, hour, day, (month<<4)|dow, year`. The host driver converts
   BCD → binary and packs into ProDOS DATE/TIME at `$BF90-$BF93`.
+  Mode `0b010` = `MODE_TIME_SET` lets the host *write* the clock: load
+  48 bits into the shift register via DATA_IN + 48 CLK pulses (any mode
+  — POM2 shifts lax, see below), then STB-in-TIME_SET commits the
+  shifted-in time. `commitTimeSetFromShiftReg()` decodes the 6 BCD
+  bytes via `std::mktime`, captures the delta vs `timeFn()` as
+  `userOffsetSeconds`, and `effectiveTime()` composes `timeFn() +
+  offset` on every subsequent read. Equivalent to MAME's 1 Hz
+  `m_timer_clock` advancing the internal counter, but without a
+  background thread — the advancement is derived from the host clock
+  on demand. TP tick-pulse modes (64/256/2048/4096 Hz + interval
+  timers, MAME `upd1990a.cpp:248-267`) are not yet hooked up: they
+  need a slot-bus IRQ line that `SlotPeripheral` doesn't expose.
+- **MODE_SHIFT gating** — POM2 deliberately diverges from MAME
+  `upd1990a.cpp:312-327` which gates CLK-shift on `m_c == MODE_SHIFT`.
+  POM2 shifts on every CLK rising edge regardless of the mode bits
+  because ProDOS's hardcoded ThunderClock driver pulses CLK while
+  still in MODE_TIME_READ (no re-switch to MODE_SHIFT between STB and
+  the CLK serial-out). Strict gating breaks stock ProDOS reads;
+  observed ThunderClock+ hardware permits the shortcut so we keep
+  POM2 lax. DATA_IN is still latched into the MSB of the shift
+  register on every CLK rise so MODE_TIME_SET can load bytes the
+  normal way. Pinned by
+  `tests/clock_card_smoke_test.cpp::testShiftLaxAcrossModes`.
 - **Pinned by** `tests/clock_card_smoke_test.cpp`: detection signature,
-  full bit-bang round-trip with a fixed timestamp (asserts every byte
-  bit-exactly), shift register drains to zero after 48 bits, STB
-  re-latching, and open-bus on non-`$C0n0` reads.
+  full bit-bang TIME_READ round-trip with a fixed timestamp (asserts
+  every byte bit-exactly), shift register drains to zero after 48
+  bits, STB re-latching, open-bus on non-`$C0n0` reads, MODE_TIME_SET
+  round-trip (load shift via MODE_SHIFT + DATA_IN + commit + readback),
+  and the lax-shift divergence from MAME.
 - **Wiring**: auto-plugged when the `clock_card_enable` setting is
   true (default). DOS 3.3 disks ignore the card entirely. The headless
   build (`pom2_headless`) plugs it unconditionally for the live demo.

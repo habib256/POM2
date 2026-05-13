@@ -20,6 +20,35 @@ namespace {
 constexpr size_t kBufCap   = 4096;     // bounded ring buffer (TX and RX)
 constexpr size_t kTailCap  = 256;      // recent-bytes peephole
 
+// MAME `mos6551.cpp:46` — internal baud-rate divider table indexed by
+// control bits 0-3. Index 0 is the "16x external clock" mode (effectively
+// unconstrained for POM2). Otherwise baud = xtal / (divider * 16) with
+// the SSC's 1.8432 MHz crystal — the resulting standard rates run from
+// 50 baud (index 1) to 19200 (index 15).
+constexpr int kInternalDivider[16] = {
+    1, 2304, 1536, 1048, 856, 768, 384, 192, 96, 64, 48, 32, 24, 16, 12, 6
+};
+constexpr double kSscXtalHz = 1843200.0;
+
+// MAME `mos6551.cpp:49-55`: per-cmd[2:3] table of {tx_irq, rts_active, brk}.
+// Only `tx_irq` is consulted in POM2 (TDRE is pinned high so the IRQ never
+// fires anyway, but we still mirror the state so cmdReg readback matches a
+// real driver's expectation).
+constexpr bool kTxIrqEnableByCmd[4] = { false, true, false, false };
+
+double baudIndexToBytesPerSec(uint8_t idx)
+{
+    if (idx == 0) return 0.0;     // 16x ext clk — treat as unconstrained
+    const int divider = kInternalDivider[idx & 0xF];
+    if (divider <= 0) return 0.0;
+    const double baud = kSscXtalHz / (divider * 16.0);
+    // 8-N-1 framing: 1 start + 8 data + 1 stop = 10 bit-times per byte.
+    // (We don't refine by extraStop/wordlength since this is the most
+    // common configuration and the error is ≤10% — negligible vs the
+    // wall-clock jitter of the worker's 2 ms idle.)
+    return baud / 10.0;
+}
+
 // Telnet IAC = $FF. We swallow IAC + 2 bytes (the most common 3-byte
 // commands: WILL/WONT/DO/DONT) so a stock `telnet` client's option
 // negotiation doesn't leak garbage bytes into the Apple II keyboard.
@@ -151,6 +180,7 @@ void SuperSerialCard::runWorker()
 
         clientFd  = fd;
         connected = true;
+        onConnectionEdge(true);
         pom2::log().info("SSC",
             std::string("client connected from ") +
             ::inet_ntoa(peer.sin_addr));
@@ -164,31 +194,16 @@ void SuperSerialCard::runWorker()
             if (got > 0) {
                 size_t n = swallowTelnetIac(scratch, static_cast<size_t>(got));
                 if (n > 0) {
-                    // Snapshot the keyboard sink under the same lock that
-                    // protects the RX queues, then drop the lock before
-                    // calling out — `Memory::queueKey` takes its own
-                    // mutex and we MUST NOT hold ours during that.
+                    deliverRxBytes(scratch, n);
+                    // Snapshot the keyboard sink under the same lock the
+                    // queues use, then drop the lock before calling out —
+                    // `Memory::queueKey` takes its own mutex and we MUST
+                    // NOT hold ours during that.
                     std::function<void(uint8_t)> sink;
                     {
                         std::lock_guard<std::mutex> lk(bufferMtx);
-                        for (size_t i = 0; i < n; ++i) {
-                            if (rxBuf.size() >= kBufCap) rxBuf.pop_front();
-                            rxBuf.push_back(scratch[i]);
-                            rxTail.push_back(scratch[i]);
-                            if (rxTail.size() > kTailCap) rxTail.pop_front();
-                        }
                         sink = keyboardSink;
                     }
-                    rxCount += n;
-                    // RDRF transition: if bytes just arrived AND the
-                    // command register's RX IRQ enable bit allows it
-                    // (cmd bit 1 = 0 means RX IRQ enabled, MAME
-                    // mos6551.cpp:290-292), latch the IRQ and push to
-                    // the CPU. Real 6551 also fires on TDRE rising edge
-                    // when cmd bits 2-3 = 01, but POM2 keeps TDRE
-                    // pinned at 1 (TCP buffers TX) so that path is
-                    // currently a no-op.
-                    if (!(cmdReg & 0x02)) raiseRxIrq();
                     if (sink) {
                         // Forward each byte to the Apple II keyboard latch.
                         // Telnet line-endings: a stock telnet client sends
@@ -218,17 +233,38 @@ void SuperSerialCard::runWorker()
                 break;
             }
 
-            // Drain TX buffer to socket.
+            // Drain TX buffer to socket. Rate-limited if a baud-rate
+            // divider has been programmed; otherwise dumped wholesale.
             std::vector<uint8_t> outChunk;
             {
                 std::lock_guard<std::mutex> lk(bufferMtx);
-                if (!txBuf.empty()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (bytesPerSecond_ > 0.0) {
+                    const double dt = std::chrono::duration<double>(
+                        now - lastDrainTime_).count();
+                    // Cap the budget at one ring's worth so a long idle
+                    // followed by a flush doesn't dump a backlog at once
+                    // — real silicon clocks one byte at a time, not in
+                    // bursts.
+                    sendBudget_ += dt * bytesPerSecond_;
+                    if (sendBudget_ > static_cast<double>(kBufCap))
+                        sendBudget_ = static_cast<double>(kBufCap);
+                    const size_t take = static_cast<size_t>(sendBudget_);
+                    size_t n = 0;
+                    while (n < take && !txBuf.empty()) {
+                        outChunk.push_back(txBuf.front());
+                        txBuf.pop_front();
+                        ++n;
+                    }
+                    sendBudget_ -= static_cast<double>(n);
+                } else if (!txBuf.empty()) {
                     outChunk.reserve(txBuf.size());
                     while (!txBuf.empty()) {
                         outChunk.push_back(txBuf.front());
                         txBuf.pop_front();
                     }
                 }
+                lastDrainTime_ = now;
             }
             if (!outChunk.empty() && clientFd >= 0) {
                 const ssize_t sent = ::send(clientFd, outChunk.data(),
@@ -245,37 +281,178 @@ void SuperSerialCard::runWorker()
             ::usleep(2000);
         }
         closeClient();
+        onConnectionEdge(false);
     }
+}
+
+void SuperSerialCard::deliverRxBytes(const uint8_t* data, size_t n)
+{
+    if (n == 0) return;
+    bool armRxIrq = false;
+    bool echoLoopback = false;
+    {
+        std::lock_guard<std::mutex> lk(bufferMtx);
+        for (size_t i = 0; i < n; ++i) {
+            // MAME `mos6551.cpp:542-543`: SR_RDRF still set on the next
+            // byte's arrival → set SR_OVERRUN. We model the same on ring
+            // overflow — a host driver that hasn't drained rxBuf loses
+            // the oldest unread byte and gets OVERRUN flagged on its
+            // next status read. Critical for Kermit-CRC / XMODEM-CRC
+            // retransmit logic.
+            if (rxBuf.size() >= kBufCap) {
+                rxBuf.pop_front();
+                statusErrors_ |= SR_OVERRUN;
+            }
+            rxBuf.push_back(data[i]);
+            rxTail.push_back(data[i]);
+            if (rxTail.size() > kTailCap) rxTail.pop_front();
+        }
+        armRxIrq = rxIrqEnable_;
+        echoLoopback = echoMode_;
+        // MAME `mos6551.cpp:584-594`: REM=1 routes the RX line to TX
+        // (unless OVERRUN is set, in which case the line idles high).
+        // POM2 doesn't have bit-time accuracy, so the byte-level
+        // equivalent is to push each received byte straight into txBuf.
+        if (echoLoopback && !(statusErrors_ & SR_OVERRUN)) {
+            for (size_t i = 0; i < n; ++i) {
+                if (txBuf.size() >= kBufCap) txBuf.pop_front();
+                txBuf.push_back(data[i]);
+                txTail.push_back(data[i]);
+                if (txTail.size() > kTailCap) txTail.pop_front();
+                ++txCount;
+            }
+        }
+        if (armRxIrq) raiseIrqSource(IRQ_RDRF);
+    }
+    rxCount += n;
+}
+
+size_t SuperSerialCard::rxQueueDepth() const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    return rxBuf.size();
+}
+
+size_t SuperSerialCard::txQueueDepth() const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    return txBuf.size();
 }
 
 void SuperSerialCard::onReset()
 {
-    cmdReg = 0;
-    ctlReg = 0;
-    {
-        std::lock_guard<std::mutex> lk(bufferMtx);
-        txBuf.clear();
-        rxBuf.clear();
-    }
-    clearIrq();
-}
-
-void SuperSerialCard::raiseRxIrq()
-{
-    irqPending_ = true;
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    txBuf.clear();
+    rxBuf.clear();
+    statusErrors_ = 0;
+    sendBudget_   = 0.0;
+    lastDrainTime_ = std::chrono::steady_clock::now();
+    // Full hardware reset (Ctrl-Reset). MAME `mos6551.cpp:117-134`:
+    //   write_command(0); write_control(0); m_irq_state = 0;
+    // applyCommandReg(0) will lower DTR (→ disable both IRQs), force MARK,
+    // and clear any pending IRQ source.
+    applyCommandReg(0);
+    applyControlReg(0);
+    irqState_ = 0;
     pushIrqLine();
 }
 
-void SuperSerialCard::clearIrq()
+void SuperSerialCard::applyCommandReg(uint8_t v)
 {
-    irqPending_ = false;
+    // MAME `mos6551.cpp:286-323`. `m_dtr` in MAME tracks the inverted pin
+    // (output_dtr(!(cmd&1))), so dtrAsserted_ here = (cmd & 1) — the
+    // "device ready, please interrupt me" state.
+    cmdReg = v;
+    const bool prevDtr = dtrAsserted_;
+    dtrAsserted_ = (v & 0x01) != 0;
+    rxIrqEnable_ = !((v >> 1) & 1) && dtrAsserted_;
+    const int txCtl = (v >> 2) & 0x3;
+    const bool txIrqEnable = kTxIrqEnableByCmd[txCtl] && dtrAsserted_;
+    (void)txIrqEnable;  // never consulted — TDRE is pinned high
+    echoMode_ = (v & 0x10) != 0;
+
+    // Pending-IRQ cleanup when an enable bit goes off, MAME
+    // `mos6551.cpp:293-307`.
+    if (!rxIrqEnable_ && (irqState_ & IRQ_RDRF)) {
+        irqState_ &= ~uint8_t{IRQ_RDRF};
+    }
+    if (!txIrqEnable && (irqState_ & IRQ_TDRE)) {
+        irqState_ &= ~uint8_t{IRQ_TDRE};
+    }
+
+    // DTR transitions: MAME `mos6551.cpp:317-321` — when DTR is
+    // de-asserted (m_dtr=1, i.e. cmd bit 0 == 0 here), force TX MARK +
+    // output_txd(1). For POM2 that means dropping the pending TX buffer
+    // and the rate-limit budget — the line is held high, no bytes go
+    // out. Going the other way (de-assert → assert) doesn't auto-resume:
+    // the driver writes new bytes to TDR which we'll then send.
+    if (prevDtr && !dtrAsserted_) {
+        txBuf.clear();
+        sendBudget_ = 0.0;
+    }
+    pushIrqLine();
+}
+
+void SuperSerialCard::applyControlReg(uint8_t v)
+{
+    // MAME `mos6551.cpp:271-285`. We don't model rx/tx clock direction
+    // (bit 4) since POM2 has no external clock source; word length and
+    // extra-stop are stored but not enforced on TX (a TX bit-clip would
+    // break the 8-bit-clean policy we already documented in the previous
+    // bit-7-strip removal); only the baud-rate divider drives behaviour.
+    ctlReg = v;
+    baudIndex_       = v & 0x0F;
+    wordLength_      = static_cast<uint8_t>(8 - ((v >> 5) & 0x3));
+    extraStop_       = (v & 0x80) != 0;
+    bytesPerSecond_  = baudIndexToBytesPerSec(baudIndex_);
+    sendBudget_      = 0.0;
+    lastDrainTime_   = std::chrono::steady_clock::now();
+}
+
+void SuperSerialCard::applyProgrammedReset()
+{
+    // MAME `mos6551.cpp:264-270`. Programmed reset clears OVERRUN +
+    // DCD/DSR IRQ sources, then write_command(cmd & ~0x1F) — preserves
+    // parity bits 5-7. The previous POM2 code wiped cmdReg entirely,
+    // leaving any parity config in undefined state.
+    statusErrors_ &= ~uint8_t{SR_OVERRUN};
+    irqState_ &= ~uint8_t{IRQ_DCD | IRQ_DSR};
+    applyCommandReg(cmdReg & ~uint8_t{0x1F});
+}
+
+void SuperSerialCard::onConnectionEdge(bool nowConnected)
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    if (prevConnected_ == nowConnected) return;
+    prevConnected_ = nowConnected;
+    // MAME `mos6551.cpp:443-461`: a DCD or DSR pin change toggles the
+    // matching status bit and raises IRQ_DCD/IRQ_DSR — but only when DTR
+    // is asserted. ProTERM, MODEM.MGR and similar carrier-aware drivers
+    // arm DTR before watching for IRQ-driven connect/disconnect notices;
+    // a plain `IN#2 / PR#2` listing run leaves DTR low and won't be
+    // woken by us.
+    if (dtrAsserted_) {
+        raiseIrqSource(IRQ_DCD | IRQ_DSR);
+    }
+}
+
+void SuperSerialCard::raiseIrqSource(uint8_t mask)
+{
+    irqState_ |= mask;
+    pushIrqLine();
+}
+
+void SuperSerialCard::clearIrqSource(uint8_t mask)
+{
+    irqState_ &= ~mask;
     pushIrqLine();
 }
 
 void SuperSerialCard::pushIrqLine()
 {
-    if (irqPending_ == irqAsserted_) return;
-    irqAsserted_ = irqPending_;
+    const bool want = irqState_ != 0;
+    if (want == irqAsserted_) return;
+    irqAsserted_ = want;
     if (cpu_) cpu_->setIRQ(irqAsserted_ ? 1 : 0);
 }
 
@@ -298,24 +475,38 @@ uint8_t SuperSerialCard::deviceSelectRead(uint8_t low4)
         switch (reg) {
             case 0x0: {  // RDR (data register)
                 std::lock_guard<std::mutex> lk(bufferMtx);
-                if (rxBuf.empty()) return 0;
-                const uint8_t b = rxBuf.front();
-                rxBuf.pop_front();
+                uint8_t b = 0;
+                if (!rxBuf.empty()) {
+                    b = rxBuf.front();
+                    rxBuf.pop_front();
+                }
+                // MAME `mos6551.cpp:231-236`: read of RDR clears
+                // PARITY_ERROR / FRAMING_ERROR / OVERRUN / RDRF. RDRF
+                // here is computed from `rxBuf.empty()` at read time so
+                // it clears for free; the sticky error flags need an
+                // explicit reset. Also drop IRQ_RDRF so a polled driver
+                // that *doesn't* read the status register (rare but
+                // legal — the SSC spec lets you arrive directly at RDR
+                // once you know a byte is there) still releases the
+                // line. Mirror of MAME drop-on-RDR via `update_irq`.
+                statusErrors_ &= ~uint8_t{SR_PARITY_ERROR |
+                                          SR_FRAMING_ERROR |
+                                          SR_OVERRUN};
+                clearIrqSource(IRQ_RDRF);
                 return b;
             }
             case 0x1: {  // status register
-                uint8_t s = 0x10;     // TDRE — TCP buffers TX
-                {
-                    std::lock_guard<std::mutex> lk(bufferMtx);
-                    if (!rxBuf.empty()) s |= 0x08;     // RDRF
-                }
-                if (connected) s |= 0x60;              // DCD + DSR
-                if (irqPending_) s |= 0x80;            // SR_IRQ
+                std::lock_guard<std::mutex> lk(bufferMtx);
+                uint8_t s = SR_TDRE;                   // TCP buffers TX
+                s |= statusErrors_;
+                if (!rxBuf.empty()) s |= SR_RDRF;
+                if (connected) s |= (SR_DCD | SR_DSR);
+                if (irqState_ != 0) s |= SR_IRQ;
                 // MAME `mos6551.cpp:237-250`: status read clears
                 // `m_irq_state` and re-evaluates the line. Without this,
                 // every IRQ-driven driver (ProTERM, MODEM.MGR, GS/OS
                 // SerialPort) spins forever waiting for the ACK.
-                clearIrq();
+                clearIrqSource(0xFF);
                 return s;
             }
             case 0x2: return cmdReg;
@@ -335,6 +526,7 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // to $C0n0-$C0n7 hit the 74LS259 latch which we don't model.
     if (!(low4 & 0x08)) return;
     const uint8_t reg = low4 & 0x03;
+    std::lock_guard<std::mutex> lk(bufferMtx);
     switch (reg) {
         case 0x0: {  // TDR (data register) — push to TX queue.
             // Real 6551 transmits all 8 bits up to `m_wordlength`.
@@ -343,7 +535,11 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             // Kermit-binary, BinSCII, ADTPro upload). The bit-7 strip
             // is a *terminal* policy, not a UART one — let the host
             // terminal decide via telnet binary mode if it wants 7-bit.
-            std::lock_guard<std::mutex> lk(bufferMtx);
+            //
+            // DTR de-asserted (cmd bit 0 == 0) parks the transmitter at
+            // MARK in MAME (`mos6551.cpp:317-321`) — drop the byte on
+            // the floor rather than queue it for a future re-assert.
+            if (!dtrAsserted_) break;
             if (txBuf.size() >= kBufCap) txBuf.pop_front();
             txBuf.push_back(v);
             txTail.push_back(v);
@@ -351,18 +547,9 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             ++txCount;
             break;
         }
-        case 0x1:
-            // Programmed reset (write to status). MAME
-            // `mos6551.cpp:264-270`: clears OVERRUN, clears
-            // IRQ_DCD|IRQ_DSR, then `write_command(m_command & ~0x1f)`
-            // — **preserves parity bits 5-7**. The previous
-            // `cmdReg = 0` wiped the parity config too, leaving
-            // drivers in undefined state after a soft reset.
-            cmdReg &= ~uint8_t{0x1F};
-            clearIrq();
-            break;
-        case 0x2: cmdReg = v; break;
-        case 0x3: ctlReg = v; break;
+        case 0x1: applyProgrammedReset(); break;
+        case 0x2: applyCommandReg(v);     break;
+        case 0x3: applyControlReg(v);     break;
     }
 }
 

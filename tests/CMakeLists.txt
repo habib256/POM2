@@ -929,3 +929,75 @@ endif()
 
 add_test(NAME mockingboard_smoke COMMAND test_mockingboard)
 set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Super Serial Card ACIA smoke test ───────────────────────────────────
+# Pins the 6551-shaped register behaviour against MAME `mos6551.cpp` as
+# source of truth: echo mode (REM), read_rdr clearing OVERRUN/FRAMING/
+# PARITY/RDRF, DTR side-effects (cmd bit 0 = 0 disables RX/TX IRQ + drops
+# pending TX), DCD/DSR transition state tracking, overrun latching on
+# ring overflow, control-register baud-rate decode (1.8432 MHz xtal), and
+# programmed-reset preserving parity bits 5-7 in the command register.
+# Pure ACIA unit test — the TCP bridge / worker thread is not exercised.
+add_executable(test_ssc_acia
+    ssc_acia_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SuperSerialCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_ssc_acia PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ssc_acia PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_ssc_acia PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_ssc_acia PRIVATE winmm)
+endif()
+
+add_test(NAME ssc_acia_smoke COMMAND test_ssc_acia)
+set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── WOZ write-back smoke test ────────────────────────────────────────────
+# Pins the WOZ write-back path: writeFlux splices into bitStream[qt],
+# saveDirty() repacks dirty quarter-tracks back into the original file
+# bytes (CRC32 zeroed per Applesauce WOZ 2.1 spec), and INFO.write_protected
+# survives setWriteBackEnabled(true). Exercises both WOZ1 (fixed slot)
+# and WOZ2 (block-indexed) variants. Pure DiskImage unit test — no
+# DiskIICard / LSS plumbing involved.
+add_executable(test_woz_writeback
+    woz_writeback_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_woz_writeback PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME woz_writeback_smoke COMMAND test_woz_writeback)
+set_tests_properties(woz_writeback_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── H.E.R.O. read-hang probe (diagnostic, not a CTest target) ────────────
+# Loads a .dsk image and walks the nibble buffer, the bit stream, and
+# the actual LSS read path to spot where the prologue D5 AA 96 disappears.
+# Used to investigate the long-standing "$96 repeated, no D5/AA seen"
+# stall during the H.E.R.O. title screen load.
+add_executable(hero_probe
+    hero_probe.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(hero_probe PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(hero_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(hero_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(hero_probe PRIVATE winmm)
+endif()

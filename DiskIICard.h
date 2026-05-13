@@ -316,6 +316,17 @@ private:
     void lssSync(uint64_t extraCycles = 0);
     void control(int offset);
 
+    /// MAME `wozfdc_device::control()` cases 0xa/0xb — drive_select
+    /// switch. When the motor is on (`active != MODE_IDLE`), MAME calls
+    /// `floppy->mon_w(true)` on the old drive (commits in-flight writes
+    /// and freezes the flux cursor) and `floppy->mon_w(false)` on the
+    /// new drive (sets `revolution_start_time = now`, so the new drive
+    /// resumes reading from position 0 of its current track). POM2's
+    /// equivalent: flush the write buffer to the old drive, then reset
+    /// the LSS-cycle base so the new drive's flux stream starts fresh.
+    /// No-op if `newDrive == activeDrive`.
+    void selectDrive(int newDrive);
+
     // Boot-trace one-shot flags (POM2_DEBUG_DISK=1). Reset at onReset().
     struct {
         bool sawSlotRom     = false;

@@ -209,8 +209,11 @@ bool testWoz1Parse() {
     if (!img.isWoz()) {
         std::printf("FAIL: isWoz() false after .woz load\n"); return false;
     }
+    // WOZ images are write-protected until the user opts in via
+    // setWriteBackEnabled. Buildable WOZ1 fixtures don't set
+    // INFO.write_protected, so flipping the gate must lift WP.
     if (!img.isWriteProtected()) {
-        std::printf("FAIL: WOZ should always report WP\n"); return false;
+        std::printf("FAIL: WOZ should be WP when writeBackEnabled=false\n"); return false;
     }
     if (img.trackBitLength(0) != bitCount) {
         std::printf("FAIL: trackBitLength(0)=%d, expected %d\n",
@@ -230,13 +233,17 @@ bool testWoz1Parse() {
             return false;
         }
     }
-    // Even with setWriteBackEnabled(true), WOZ should still report WP.
+    // WOZ write-back: opt-in via setWriteBackEnabled(true) must lift
+    // the WP gate as long as INFO.write_protected is clear. (The
+    // buildMinimalWoz1 fixture leaves byte +2 of INFO at 0, so the
+    // file-level WP is not set — flipping the toggle alone is enough.)
     img.setWriteBackEnabled(true);
-    if (!img.isWriteProtected()) {
-        std::printf("FAIL: WOZ WP override broken under setWriteBackEnabled\n");
+    if (img.isWriteProtected()) {
+        std::printf("FAIL: WOZ should be writable when writeBackEnabled=true "
+                    "and INFO.write_protected=0\n");
         return false;
     }
-    std::printf("[ OK ] WOZ1 parse + bit unpack + WP override\n");
+    std::printf("[ OK ] WOZ1 parse + bit unpack + writeBack gate\n");
     return true;
 }
 

@@ -40,6 +40,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -101,6 +102,24 @@ public:
     uint16_t getPort()      const { return port;       }
     uint64_t bytesRx()      const { return rxCount;    }
     uint64_t bytesTx()      const { return txCount;    }
+
+    /// Inject bytes as if they had just arrived on the TCP socket. The
+    /// path matches the worker thread's: SR_OVERRUN on ring overflow,
+    /// RX IRQ raise gated by `rxIrqEnable_`, echo-mode loopback into the
+    /// TX queue. Test-only public entry point — production code uses the
+    /// worker thread which calls the same method internally.
+    void deliverRxBytes(const uint8_t* data, size_t n);
+
+    // Test/debug introspection — read-only reflection of the decoded
+    // command/control register state.
+    double  bytesPerSecond() const { return bytesPerSecond_; }
+    bool    dtrAsserted()    const { return dtrAsserted_;    }
+    bool    echoMode()       const { return echoMode_;       }
+    bool    rxIrqEnabled()   const { return rxIrqEnable_;    }
+    uint8_t statusErrorBits()const { return statusErrors_;   }
+    uint8_t irqState()       const { return irqState_;       }
+    size_t  rxQueueDepth()   const;
+    size_t  txQueueDepth()   const;
     /// Snapshot of "what the Apple II most recently received" (RX) and
     /// "most recently sent over TCP" (TX). Cheap circular ring of the last
     /// ~256 bytes; used by the status panel as a debug peephole.
@@ -126,6 +145,24 @@ private:
     std::thread worker;
     std::atomic<bool> stopRequested { false };
 
+    // 6551 status-register bit layout (MAME `mos6551.h:53-61`).
+    static constexpr uint8_t SR_PARITY_ERROR  = 0x01;
+    static constexpr uint8_t SR_FRAMING_ERROR = 0x02;
+    static constexpr uint8_t SR_OVERRUN       = 0x04;
+    static constexpr uint8_t SR_RDRF          = 0x08;
+    static constexpr uint8_t SR_TDRE          = 0x10;
+    static constexpr uint8_t SR_DCD           = 0x20;
+    static constexpr uint8_t SR_DSR           = 0x40;
+    static constexpr uint8_t SR_IRQ           = 0x80;
+
+    // 6551 internal IRQ-source mask (MAME `mos6551.h:71-77`). RX IRQ +
+    // DCD/DSR change are the only sources POM2 generates; TDRE-on-empty
+    // is a no-op here because we pin TDRE high (TCP buffers TX).
+    static constexpr uint8_t IRQ_DCD  = 0x01;
+    static constexpr uint8_t IRQ_DSR  = 0x02;
+    static constexpr uint8_t IRQ_RDRF = 0x04;
+    static constexpr uint8_t IRQ_TDRE = 0x08;
+
     // ACIA register state.
     uint8_t cmdReg     = 0x00;
     uint8_t ctlReg     = 0x00;
@@ -133,22 +170,73 @@ private:
     uint8_t lastDip1   = 0xA8;     // 19200 8N1, full duplex
     uint8_t lastDip2   = 0x60;     // CR + LF, no echo, etc.
 
-    // IRQ state — `irqPending_` is the latched "something happened" flag
-    // (cleared by status read or programmed reset, MAME-style); the
-    // public IRQ line follows `irqAsserted_` so we only call setIRQ on
-    // transitions. `cpu_` may be null when the card is plugged headlessly.
-    M6502* cpu_         = nullptr;
-    bool   irqPending_  = false;
-    bool   irqAsserted_ = false;
+    // Decoded command-register state (mirrors MAME `mos6551.cpp::write_command`).
+    // dtrAsserted_  := cmd bit 0 == 1 (real DTR pin pulled low = device ready)
+    // rxIrqEnable_  := !cmd[1] && dtrAsserted_  — see MAME `mos6551.cpp:292`
+    // echoMode_     := cmd bit 4 — see MAME `mos6551.cpp:309`
+    bool dtrAsserted_ = false;
+    bool rxIrqEnable_ = false;
+    bool echoMode_    = false;
 
-    /// Latch a new IRQ source (RDRF transition, DCD/DSR change) and push
-    /// the line to the CPU if it transitioned. Caller must hold
-    /// `bufferMtx` if it touched `rxBuf` to compute the source — but the
-    /// CPU asserter call itself does not need the mutex.
-    void raiseRxIrq();
-    /// Clear `irqPending_` and lower the line. Called from status read
-    /// and from programmed reset.
-    void clearIrq();
+    // Decoded control-register state. Stored for completeness; only the
+    // baud-rate index actually drives behaviour (TX drain pacing).
+    uint8_t  wordLength_     = 8;
+    bool     extraStop_      = false;
+    uint8_t  baudIndex_      = 0;       // ctl[3:0]
+    double   bytesPerSecond_ = 0.0;     // 0 → unconstrained (16x ext clk)
+
+    // Persistent status flags (RDRF/TDRE/DCD/DSR computed dynamically at
+    // read-time, but OVERRUN/FRAMING/PARITY are sticky — cleared only by
+    // read of RDR per MAME `mos6551.cpp:234`).
+    uint8_t statusErrors_ = 0;
+
+    // IRQ state (MAME-style mask). The pin level pushed to the CPU is
+    // simply `irqState_ != 0`; we cache the last asserted level in
+    // `irqAsserted_` so we only call setIRQ on transitions.
+    M6502*  cpu_         = nullptr;
+    uint8_t irqState_    = 0;
+    bool    irqAsserted_ = false;
+
+    // Connection-edge tracking for DCD/DSR IRQ generation. Both bits move
+    // together in this model (SSC + telnet has no separate carrier-vs-DTR
+    // signalling), but we keep two IRQ source bits to mirror MAME.
+    bool prevConnected_ = false;
+
+    // TX rate-limit accounting (worker thread). `lastDrainTime_` is the
+    // last wall-clock at which we replenished `sendBudget_`. Both reset on
+    // every control-reg write so a change of baud rate doesn't dump a
+    // backlog at once.
+    double sendBudget_ = 0.0;
+    std::chrono::steady_clock::time_point lastDrainTime_;
+
+    /// Apply a write to the command register: decode DTR/echo/RX-IRQ,
+    /// clear pending RX IRQ when its enable bit goes off (MAME
+    /// `mos6551.cpp:293-296`), force TX MARK when DTR de-asserts.
+    /// Caller must hold `bufferMtx`.
+    void applyCommandReg(uint8_t v);
+    /// Apply a write to the control register: decode word length, stop
+    /// bits, baud-rate divider, recompute `bytesPerSecond_`, reset the
+    /// rate-limit accumulator. Caller must hold `bufferMtx`.
+    void applyControlReg(uint8_t v);
+    /// Programmed reset (write to status register, MAME
+    /// `mos6551.cpp:264-270`): clear OVERRUN, clear DCD/DSR IRQ sources,
+    /// then `write_command(cmd & ~0x1F)` (preserve parity bits 5-7).
+    /// Caller must hold `bufferMtx`.
+    void applyProgrammedReset();
+    /// Called from the TCP worker when a client connects or disconnects.
+    /// Mirrors MAME's "DCD/DSR pin change → status XOR → IRQ if !DTR"
+    /// logic (`mos6551.cpp:443-461`) but driven by connect events rather
+    /// than per-bit-clock polling.
+    void onConnectionEdge(bool nowConnected);
+
+    /// Latch new IRQ sources and push the line if it transitioned.
+    /// Caller must hold `bufferMtx`.
+    void raiseIrqSource(uint8_t mask);
+    /// Clear specific IRQ sources (e.g. status read clears all, RDR read
+    /// clears IRQ_RDRF). Caller must hold `bufferMtx`.
+    void clearIrqSource(uint8_t mask);
+    /// Apply `irqState_ != 0` to the CPU pin if it differs from the
+    /// previously asserted level. Caller must hold `bufferMtx`.
     void pushIrqLine();
 
     // TX (Apple II → TCP) and RX (TCP → Apple II) ring buffers.

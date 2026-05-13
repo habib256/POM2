@@ -204,13 +204,13 @@ public:
 
     /// User opt-in for write-back. Default: false (read-only) to avoid
     /// silently mutating the source file. Mainwindow flips this before
-    /// eject if the user has opted in. WOZ images stay write-protected
-    /// regardless of this flag — first-cut WOZ support is read-only.
-    /// `fileWriteProtected` mirrors the WOZ INFO `write_protected` byte
-    /// so that when WOZ write-back lands, dropping the `wozFormat`
-    /// blanket gate automatically preserves per-file protection.
+    /// eject if the user has opted in. WOZ images now go through the
+    /// same gate — once `writeBackEnabled` is on and the WOZ INFO byte
+    /// doesn't mark the source as physically write-protected, writes
+    /// splice into `bitStream[qt]` and serialise back through
+    /// saveDirty() (zeroing CRC32 per Applesauce WOZ spec).
     bool isWriteProtected() const {
-        return wozFormat || fileWriteProtected || !writeBackEnabled;
+        return fileWriteProtected || !writeBackEnabled;
     }
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
@@ -248,6 +248,24 @@ private:
     // `bitAt` can fill the cache on demand.
     mutable std::array<std::vector<uint8_t>, kQuarterTracks> bitStream;
     mutable std::array<bool, kQuarterTracks>                 bitStreamValid{};
+
+    // ── WOZ write-back state ────────────────────────────────────────────
+    // The entire WOZ file is snapshotted into `wozRaw` at load time so
+    // saveDirty() can splice modified bit-cell streams back into their
+    // original chunk slots. Each populated quarter-track gets a stable
+    // (byteOff, byteLen, bitCount) triple pointing at the matching TRKS
+    // sub-chunk; writeFlux only updates `bitStream[qt]`, and saveDirty
+    // walks the dirty bits to re-pack into `wozRaw` before writing.
+    //
+    // Per the Applesauce WOZ 2.1 spec, we zero the CRC32 header bytes on
+    // save (the spec explicitly allows CRC=0 as "not computed by the
+    // imager"); recomputing would also be valid but adds little safety
+    // because we always re-validate on the next load anyway.
+    std::vector<uint8_t> wozRaw;
+    std::array<size_t, kQuarterTracks> wozQtByteOff  {};
+    std::array<size_t, kQuarterTracks> wozQtByteLen  {};
+    std::array<size_t, kQuarterTracks> wozQtBitCount {};
+    std::array<bool,   kQuarterTracks> wozQtDirty    {};
     void expandTrackBits(int qt) const;
 
     // Lazy per-quarter-track flux event cache (sorted ascending, in

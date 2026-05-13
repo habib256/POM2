@@ -171,6 +171,126 @@ void testDataOutMirrorOnAllDeviceSelectOffsets()
     assert(card.deviceSelectRead(15) == 0x00);
 }
 
+// MODE_TIME_SET round-trip: load 48 bits via DATA_IN + CLK in MODE_SHIFT,
+// commit via STB rising edge with mode=TIME_SET, then read back through
+// the normal TIME_READ path and confirm the bytes match. Pins both the
+// DATA_IN → MSB-of-shiftReg[5] injection on CLK and the shiftReg →
+// time-base commit on STB-in-TIME_SET (MAME `upd1990a.cpp:194-225`).
+void testTimeSetRoundTrip()
+{
+    // The injector returns a fixed "host" time; the chip should layer
+    // the user-set offset on top, so subsequent reads return the SET
+    // bytes regardless of what the injector says.
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+
+    // Desired set time: 1995-12-31 23:58:59 Sunday. BCD bytes shifted
+    // out LSB-first: sec=$59, min=$58, hour=$23, day=$31,
+    // mthDow = (12<<4) | 0 = $C0 (Sunday = day-of-week 0), year=$95.
+    // We need to clock these in MSB-first across the *48-bit* register
+    // so the LAST bit clocked ends up at the LSB of shiftReg[0].
+    //
+    // The shift register's serial-out layout is byte0 → byte1 → ... →
+    // byte5 (each byte LSB-first). The corresponding serial-in order
+    // — what we need to drive on DATA_IN as we pulse CLK 48 times —
+    // is the *reverse*: send byte5's MSB first, ... down to byte0's
+    // LSB last. (Each CLK pulse injects DATA_IN into shiftReg[5]'s MSB
+    // and shifts everything one bit right.)
+
+    const uint8_t target[6] = {
+        0x59, 0x58, 0x23, 0x31, 0xC0, 0x95
+    };
+    constexpr uint8_t kModeShiftShifted   = 0x01 << 3;     // C0/C1/C2 = 001
+    constexpr uint8_t kModeTimeSetShifted = 0x02 << 3;     // C0/C1/C2 = 010
+
+    // Arm MODE_SHIFT (no STB pulse yet — just hold the mode bits).
+    card->deviceSelectWrite(0, kModeShiftShifted);
+
+    // Clock 48 bits in. For position k in [0, 48), the bit value is
+    // bit (k % 8) of target[(k/8)] — i.e. byte 0's LSB first, then
+    // byte 0's bit 1, …, byte 5's MSB last. As each CLK pulse injects
+    // DATA_IN at shiftReg[5]'s MSB and shifts right by one bit, the
+    // bit that lands at shiftReg[0]'s LSB after 48 cycles is the one
+    // that was clocked in FIRST. So clock byte 0 bit 0 first, byte 0
+    // bit 1 next, …, byte 5 bit 7 last.
+    for (int k = 0; k < 48; ++k) {
+        const int byteIdx = k / 8;
+        const int bitIdx  = k % 8;
+        const uint8_t bit = (target[byteIdx] >> bitIdx) & 1;
+        const uint8_t baseline =
+            static_cast<uint8_t>(kModeShiftShifted | (bit ? kBitDataIn : 0));
+        card->deviceSelectWrite(0, baseline);                 // CLK low
+        card->deviceSelectWrite(0, baseline | kBitClk);       // CLK rising → shift
+        card->deviceSelectWrite(0, baseline);                 // CLK back low
+    }
+
+    // Switch to MODE_TIME_SET and pulse STB to commit the shift register
+    // to the chip's time base (MAME `upd1990a.cpp:194-225`).
+    card->deviceSelectWrite(0, kModeTimeSetShifted);
+    card->deviceSelectWrite(0, kModeTimeSetShifted | kBitStb);
+    card->deviceSelectWrite(0, kModeTimeSetShifted);
+
+    // Now read back via the standard TIME_READ path. The bytes should
+    // match the target (the injector returns the same fixed timestamp
+    // each call so the effective time stays pinned at our set value).
+    card->deviceSelectWrite(0, kModeTimeReadShifted);
+    card->deviceSelectWrite(0, kModeTimeReadShifted | kBitStb);
+    const uint8_t baseline = kModeTimeReadShifted;
+    card->deviceSelectWrite(0, baseline);
+
+    const uint8_t got[6] = {
+        readByteLsbFirst(*card, baseline),
+        readByteLsbFirst(*card, baseline),
+        readByteLsbFirst(*card, baseline),
+        readByteLsbFirst(*card, baseline),
+        readByteLsbFirst(*card, baseline),
+        readByteLsbFirst(*card, baseline),
+    };
+
+    // mktime normalises the input — DST and locale boundaries can
+    // shift seconds by up to one hour. Assert the secondary fields
+    // exactly (they don't move under normalisation), and let hour /
+    // dow flex by one hour / one day.
+    assert(got[0] == 0x59);              // seconds
+    assert(got[1] == 0x58);              // minutes
+    // hour might shift ±1 across DST, but for Dec 31 / May 9 the
+    // injector pair sits comfortably outside any DST transition; we
+    // still allow a window of ±1 to keep the test portable.
+    assert(got[2] == 0x23 || got[2] == 0x22 || got[2] == 0x00);
+    assert(got[3] == 0x31);              // day
+    // mthDow: month (high nibble) must be 12. dow may be normalised by
+    // mktime against the real Dec 31 1995 (Sunday → tm_wday=0). Either
+    // value 0 or 0xC0 is acceptable.
+    assert((got[4] & 0xF0) == 0xC0);
+    assert(got[5] == 0x95);              // year
+}
+
+// MODE_SHIFT is *not* strictly gated in POM2 (deliberate divergence
+// from MAME `upd1990a.cpp:312-327` — see ClockCard.cpp commentary).
+// This test pins the divergence: clocking CLK while in MODE_TIME_READ
+// also shifts the register. ProDOS's ThunderClock driver depends on
+// this, and the testTimeReadProtocol() case above already exercises it
+// implicitly — here we just spell out that the mode bits don't matter
+// for the shift action.
+void testShiftLaxAcrossModes()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+
+    // Pre-load shift register via TIME_READ.
+    card->deviceSelectWrite(0, kModeTimeReadShifted);
+    card->deviceSelectWrite(0, kModeTimeReadShifted | kBitStb);
+
+    // Read 4 bits while keeping mode = REGISTER_HOLD (mode bits 000),
+    // which in MAME would block any shift. POM2's lax behaviour shifts
+    // anyway — the first 4 bits of $42 ($42 = 0100_0010 LSB-first: 0,1,0,0,0,0,1,0).
+    const uint8_t baseline = 0x00;       // mode = HOLD, STB=0, CLK=0
+    card->deviceSelectWrite(0, baseline);
+
+    assert(readBitThenAdvance(*card, baseline) == 0);
+    assert(readBitThenAdvance(*card, baseline) == 1);
+    assert(readBitThenAdvance(*card, baseline) == 0);
+    assert(readBitThenAdvance(*card, baseline) == 0);
+}
+
 }  // namespace
 
 int main()
@@ -189,6 +309,12 @@ int main()
 
     testDataOutMirrorOnAllDeviceSelectOffsets();
     std::printf("DATA_OUT mirrored across $C0n0-$C0nF: OK\n");
+
+    testTimeSetRoundTrip();
+    std::printf("MODE_TIME_SET round-trip (DATA_IN → shift → STB+SET → read): OK\n");
+
+    testShiftLaxAcrossModes();
+    std::printf("MODE_SHIFT lax: CLK shifts in any mode (ProDOS compat): OK\n");
 
     std::printf("clock_card_smoke OK\n");
     return 0;

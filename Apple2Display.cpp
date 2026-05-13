@@ -472,31 +472,43 @@ const uint32_t Apple2Display::kLoResPalette[16] = {
     0xFFFFFFFF, // 15 White
 };
 
-// Le Chat Mauve / Video-7 lo-res palette. Lo-res is the place where the
-// "two distinct grays" Chat Mauve trademark actually shows up on standard
-// Apple II — because lo-res indexes its 16 colours directly from a 4-bit
-// nibble in screen RAM, no chroma decoding involved. The digital RGB
-// decoder turns the same nibble values into 16 visibly distinct colours,
-// where NTSC composite collapses indices 5 and 10 onto the same grey
-// because their phase signatures cancel through the chroma filter.
-// Saturation is bumped vs. the NTSC //gs-corrected palette to match
-// Péritel RGB drive levels.
+// Le Chat Mauve / Video-7 lo-res palette. Lo-res is where the
+// "two distinct grays" Chat Mauve trademark actually shows up on
+// standard Apple II — because lo-res indexes its 16 colours directly
+// from a 4-bit nibble in screen RAM, no chroma decoding involved. NTSC
+// composite collapses indices 5 and 10 onto the same grey because
+// their phase signatures cancel through the chroma filter, but the
+// Chat Mauve digital RGB decoder produces two visibly distinct tinted
+// grays (5 = olive-ish, 10 = mauve-ish) — *that* is the trademark.
+//
+// Values verbatim from AppleWin `RGBMonitor.cpp::PaletteRGB_Feline`
+// (commit ec3b03c, source-of-truth for Apple II RGB decoder emulation;
+// upstream tag "Feline" = the Le Chat Mauve "Feline" board, the most
+// commonly emulated variant). Per AppleWin's own comment block on the
+// table: "extracted from a white-balanced RGB video capture" of a real
+// card — so these are empirical pixel values, not a synthetic palette
+// choice. MAME has no separate Chat Mauve palette (its Video-7 RGB
+// mode reuses the standard `apple2_palette[]`, which collapses the two
+// grays); we follow AppleWin instead because the whole point of
+// modelling Le Chat Mauve is the two-grays trademark.
+//
+// Stored as ABGR-in-uint32 (R = lowest byte) to match `kLoResPalette`.
 const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
     0xFF000000, //  0 Black
-    0xFF3300DD, //  1 Magenta / Dark Red
-    0xFF990000, //  2 Dark Blue
-    0xFFDD22DD, //  3 Violet
-    0xFF228800, //  4 Dark Green
-    0xFF555555, //  5 Dark Gray      ← distinct from index 10 (Chat Mauve trademark)
-    0xFFFF4422, //  6 Medium Blue
-    0xFFFFBB66, //  7 Light Blue
-    0xFF005588, //  8 Brown
-    0xFF0066FF, //  9 Orange
-    0xFFAAAAAA, // 10 Light Gray     ← distinct from index 5 (Chat Mauve trademark)
-    0xFFCC99FF, // 11 Pink
-    0xFF22DD11, // 12 Light Green
-    0xFF22FFFF, // 13 Yellow
-    0xFFAAFF66, // 14 Aquamarine
+    0xFF4C12AC, //  1 Deep Red       rgb(0xac, 0x12, 0x4c)
+    0xFF830700, //  2 Dark Blue      rgb(0x00, 0x07, 0x83)
+    0xFFD11AAA, //  3 Magenta        rgb(0xaa, 0x1a, 0xd1)
+    0xFF2F8300, //  4 Dark Green     rgb(0x00, 0x83, 0x2f)
+    0xFF7E979F, //  5 Dark Gray      rgb(0x9f, 0x97, 0x7e) ← Feline gray #1 (olive tint)
+    0xFFB58A00, //  6 Medium Blue    rgb(0x00, 0x8a, 0xb5)
+    0xFFFF9E9F, //  7 Light Blue     rgb(0x9f, 0x9e, 0xff)
+    0xFF005F7A, //  8 Brown          rgb(0x7a, 0x5f, 0x00)
+    0xFF4772FF, //  9 Orange         rgb(0xff, 0x72, 0x47)
+    0xFF7F6878, // 10 Light Gray     rgb(0x78, 0x68, 0x7f) ← Feline gray #2 (mauve tint)
+    0xFFCF7AFF, // 11 Pink           rgb(0xff, 0x7a, 0xcf)
+    0xFF2CE66F, // 12 Light Green    rgb(0x6f, 0xe6, 0x2c)
+    0xFF7BF6FF, // 13 Yellow         rgb(0xff, 0xf6, 0x7b)
+    0xFFB2EE6C, // 14 Aquamarine     rgb(0x6c, 0xee, 0xb2)
     0xFFFFFFFF, // 15 White
 };
 
@@ -722,17 +734,20 @@ constexpr Phosphor kPhosphors[] = {
 // VIOLET / GREEN (or BLUE / ORANGE with MSB=1) under Chat Mauve too —
 // they're never grays on plain HGR.
 //
-// Indexing convention: kChatMauveHGR[msb][bit_pair].
+// Indexing convention: kChatMauveHGR[msb][bit_pair]. Colour values from
+// AppleWin `RGBMonitor.cpp::PaletteRGB_Feline` (same empirical capture
+// of a real Le Chat Mauve "Feline" board used by kChatMauveLoResPalette
+// — kept in sync so HGR and lo-res share the same visual identity).
 constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
     // MSB = 0 → "violet bank"
     { 0xFF000000,   //  00  black
-      0xFFDD22DD,   //  01  violet  (purple)
-      0xFF22DD11,   //  10  green
+      0xFFD11AAA,   //  01  magenta  rgb(0xaa, 0x1a, 0xd1) (Feline MAGENTA)
+      0xFF2CE66F,   //  10  green    rgb(0x6f, 0xe6, 0x2c) (Feline GREEN)
       0xFFFFFFFF }, //  11  white
     // MSB = 1 → "blue bank"
     { 0xFF000000,   //  00  black
-      0xFFFF2222,   //  01  blue    (medium blue)
-      0xFF1188FF,   //  10  orange
+      0xFFB58A00,   //  01  blue     rgb(0x00, 0x8a, 0xb5) (Feline BLUE)
+      0xFF4772FF,   //  10  orange   rgb(0xff, 0x72, 0x47) (Feline ORANGE)
       0xFFFFFFFF }, //  11  white
 }};
 

@@ -38,10 +38,13 @@ constexpr uint16_t DHIRES_OFF      = 0xC05F;
 // `kLoResPalette[]` (NTSC) and `kChatMauveLoResPalette[]` (Péritel).
 constexpr uint32_t kBlack            = 0xFF000000u;
 constexpr uint32_t kNtscDark5_Light10 = 0xFF808080u; // NTSC: idx 5 == idx 10
-constexpr uint32_t kCmDark5          = 0xFF555555u;  // Chat Mauve idx 5
-constexpr uint32_t kCmLight10        = 0xFFAAAAAAu;  // Chat Mauve idx 10
-constexpr uint32_t kNtscMediumBlue6  = 0xFFFF9019u;  // NTSC idx 6
-constexpr uint32_t kCmMediumBlue6    = 0xFFFF4422u;  // Chat Mauve idx 6
+// Chat Mauve palette = AppleWin `PaletteRGB_Feline` (empirical capture
+// of a real Le Chat Mauve "Feline" board). Indices 5 and 10 are tinted
+// (olive / mauve) but still visibly distinct — the two-grays trademark.
+constexpr uint32_t kCmDark5          = 0xFF7E979Fu;  // rgb(0x9f,0x97,0x7e)
+constexpr uint32_t kCmLight10        = 0xFF7F6878u;  // rgb(0x78,0x68,0x7f)
+constexpr uint32_t kNtscMediumBlue6  = 0xFFFF9019u;  // NTSC idx 6 unchanged
+constexpr uint32_t kCmMediumBlue6    = 0xFFB58A00u;  // rgb(0x00,0x8a,0xb5)
 
 uint16_t hgrAddr(int y)
 {
@@ -179,8 +182,9 @@ int main()
         assert(pix[1 * 560 + 0] != pix[1 * 560 + 2]);   // intra-cell variation
 
         // RGB-card path on the same pattern: cell 0 is all Medium Blue
-        // (Chat Mauve palette idx 6 = 0xFFFF4422 — different shade from
-        // NTSC idx 6 because Péritel RGB has a different blue saturation).
+        // (Chat Mauve palette idx 6 = rgb(0x00,0x8a,0xb5), the AppleWin
+        // Feline BLUE — different shade from NTSC idx 6 because the
+        // Péritel RGB decoder reads a different point on the colour wheel).
         disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
         disp.render(mem);
         const uint32_t* pix2 = disp.pixels();
@@ -190,8 +194,8 @@ int main()
         assert(pix2[1 * 560 + 3] == kCmMediumBlue6);
         // Both modes agree the colour is in the "blue" family — neither
         // is purple. This is the original "too much mauve" regression pin.
-        assert(pix [1 * 560 + 0] != 0xFFFF28E6u);  // NTSC Purple idx 3
-        assert(pix2[1 * 560 + 0] != 0xFFDD22DDu);  // Chat Mauve Violet idx 3
+        assert(pix [1 * 560 + 0] != 0xFFFF28E6u);   // NTSC Purple idx 3
+        assert(pix2[1 * 560 + 0] != 0xFFD11AAAu);   // Chat Mauve idx 3 (Feline magenta)
     }
 
     // ── Mixed-mode flag: DHGR top + 80-col text bottom. Just exercise the

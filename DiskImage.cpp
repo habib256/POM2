@@ -422,6 +422,10 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     invalidateAllBitStreams();
     dirty.fill(false);
     anyDirty = false;
+    wozQtByteOff.fill(0);
+    wozQtByteLen.fill(0);
+    wozQtBitCount.fill(0);
+    wozQtDirty.fill(false);
 
     // FLUX FIDX lookup: when WOZ2 v2.1+ provides a FLUX chunk, each
     // quarter-track may carry a flux delta stream that overrides the
@@ -577,6 +581,12 @@ bool DiskImage::loadWoz(const std::string& imgPath)
                 (buf[bitDataOff + byteIdx] >> bitInByte) & 1);
         }
         bitStreamValid[qt] = true;
+        // Record the file offset / capacity / bit count for the
+        // write-back path: saveDirty() re-packs the live bitStream[qt]
+        // back into `wozRaw` at this exact location.
+        wozQtByteOff[qt]  = bitDataOff;
+        wozQtByteLen[qt]  = bitDataBytes;
+        wozQtBitCount[qt] = bitCount;
         ++populatedSlots;
         if ((qt & 3) == 0) ++populatedWholeTracks;
     }
@@ -592,9 +602,14 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     wozFormat   = true;
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .woz
     lastError.clear();
-    // fileWriteProtected is now folded into isWriteProtected() — when
-    // WOZ write-back lands, dropping the `wozFormat` blanket from the
-    // predicate will leave INFO.write_protected in charge automatically.
+    // Move the entire WOZ file bytes into wozRaw — saveDirty() will
+    // splice modified bitStream[qt] back into these bytes and rewrite
+    // the file in one shot. `buf` is no longer needed after this.
+    wozRaw = std::move(buf);
+    // fileWriteProtected is folded into isWriteProtected(); WOZ now
+    // participates in the same writeBackEnabled / fileWriteProtected
+    // gate as .dsk/.nib (the `wozFormat ||` blanket was removed when
+    // write-back landed).
     pom2::log().info("Disk II",
         std::string("Loaded ") + imgPath + " (.woz "
         + (isWoz2 ? "v2" : "v1")
@@ -623,6 +638,11 @@ void DiskImage::eject()
     dirty.fill(false);
     anyDirty = false;
     invalidateAllBitStreams();
+    wozRaw.clear();
+    wozQtByteOff.fill(0);
+    wozQtByteLen.fill(0);
+    wozQtBitCount.fill(0);
+    wozQtDirty.fill(false);
 }
 
 void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
@@ -819,13 +839,81 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
 {
     if (!loaded || qt < 0 || qt >= kQuarterTracks) return;
     if (endLssCycle <= startLssCycle) return;
-    // First-cut WOZ support is read-only. The bit cells in `bitStream`
-    // are canonical; running the splice would also re-pack into the
-    // (unused) `tracks[]` nibble buffer and invalidate the bit stream
-    // (forcing a re-derivation from nibbles that wipes the WOZ data).
-    // Software shouldn't attempt writes anyway because isWriteProtected
-    // returns true for WOZ images.
-    if (wozFormat) return;
+    // The DiskIICard caller already gates writeFlux behind the user
+    // writeBackEnabled toggle; we mirror that gate at the per-image
+    // level only via saveDirty()'s `writeBackEnabled` check so unit
+    // tests can splice into the in-memory bit/nibble buffer without
+    // needing to flip the toggle. fileWriteProtected (the WOZ INFO
+    // byte) is surfaced through $C0nD WP-status reads — software that
+    // honours WP won't reach writeFlux in the first place.
+    if (wozFormat) {
+        // WOZ canonical storage = bitStream[qt]. The flux→bit-cell
+        // conversion is the same cell-window logic as the non-WOZ path
+        // (PULSE timestamp / 8 → cell index), but we splice straight
+        // into bitStream rather than re-deriving the whole track from
+        // a nibble buffer. saveDirty() later re-packs the live bits
+        // back into wozRaw at wozQtByteOff[qt].
+        if (wozQtBitCount[qt] == 0) return;        // unpopulated qt
+        const int period = trackPeriod(qt);
+        if (period <= 0) return;
+
+        // Handle revolution wrap by recursing on the two halves —
+        // mirrors the non-WOZ split below.
+        int64_t startMod = ((startLssCycle % period) + period) % period;
+        int64_t endMod   = startMod + (endLssCycle - startLssCycle);
+        if (endMod > period) {
+            std::vector<int64_t> firstHalf, secondHalf;
+            firstHalf.reserve(count);
+            secondHalf.reserve(count);
+            const int64_t origBase = startLssCycle - startMod;
+            const int64_t splitAt  = origBase + period;
+            for (int i = 0; i < count; ++i) {
+                if (transitions[i] < splitAt) firstHalf.push_back(transitions[i]);
+                else                          secondHalf.push_back(transitions[i]);
+            }
+            writeFlux(qt, startLssCycle, splitAt,
+                      static_cast<int>(firstHalf.size()), firstHalf.data());
+            writeFlux(qt, splitAt, endLssCycle,
+                      static_cast<int>(secondHalf.size()), secondHalf.data());
+            return;
+        }
+
+        const int firstCell = static_cast<int>(startMod / 8);
+        const int lastCell  = static_cast<int>((endMod + 7) / 8);
+        const int spanCells = lastCell - firstCell;
+        std::vector<bool> newBits(spanCells, false);
+        const int64_t origBase = startLssCycle - startMod;
+        for (int i = 0; i < count; ++i) {
+            const int64_t t = ((transitions[i] - origBase) % period + period) % period;
+            const int cell  = static_cast<int>(t / 8) - firstCell;
+            if (cell >= 0 && cell < spanCells) newBits[cell] = true;
+        }
+
+        // Splice cell-by-cell into bitStream[qt]. The LSS writes a full
+        // cell at a time (every PULSE/no-PULSE event is one cell), so
+        // both 1s and 0s in `newBits` overwrite whatever was there
+        // before. Partial cells at the edges are dropped — same policy
+        // as the non-WOZ branch below (which drops partial bytes for
+        // the same reason).
+        auto& bits = bitStream[qt];
+        const int bitCount = static_cast<int>(wozQtBitCount[qt]);
+        bool changed = false;
+        for (int c = 0; c < spanCells; ++c) {
+            const int dst = ((firstCell + c) % bitCount + bitCount) % bitCount;
+            const uint8_t v = newBits[c] ? 1 : 0;
+            if (bits[dst] != v) { bits[dst] = v; changed = true; }
+        }
+        if (changed) {
+            wozQtDirty[qt] = true;
+            anyDirty       = true;
+            // Flux cache for this qt is now stale — drop it. Do NOT
+            // call invalidateBitStream(qt): that would clear the bit
+            // stream we just edited.
+            fluxStreamValid[qt] = false;
+            fluxStream[qt].clear();
+        }
+        return;
+    }
     // Non-WOZ: write-back lands on the whole track containing `qt`.
     // Quarter-track sub-positions on standard .dsk/.do/.po share their
     // nibble buffer with the parent whole track (`qtSlot` alias).
@@ -1032,6 +1120,59 @@ bool DiskImage::saveDirty()
 {
     if (!loaded || !anyDirty || !writeBackEnabled) {
         return true;   // nothing to save (or save disabled) — no error
+    }
+
+    // .woz: splice each dirty quarter-track's bit cells back into wozRaw
+    // at the offset captured at load time, then write the whole file out.
+    // Per Applesauce WOZ 2.1 spec the header CRC32 is allowed to be zero
+    // ("not computed by the imager"); we use that sentinel so a reader
+    // that mismatches our recomputed CRC doesn't reject the file.
+    if (wozFormat) {
+        if (wozRaw.size() < 12) {
+            lastError = "WOZ raw buffer missing (load did not populate)";
+            return false;
+        }
+        int dirtyQts = 0;
+        for (int qt = 0; qt < kQuarterTracks; ++qt) {
+            if (!wozQtDirty[qt]) continue;
+            const size_t byteOff = wozQtByteOff[qt];
+            const size_t byteLen = wozQtByteLen[qt];
+            const size_t bitCnt  = wozQtBitCount[qt];
+            const auto&  bits    = bitStream[qt];
+            if (byteLen == 0 || bitCnt == 0 || bits.size() < bitCnt) continue;
+            if (byteOff + (bitCnt + 7) / 8 > wozRaw.size()) continue;
+            // Re-pack MSB-first within each byte — same encoding as
+            // loadWoz's unpack loop. Untouched trailing bits in the
+            // final byte and the rest of the slot stay at their
+            // original wozRaw value (Applesauce zero-pads after
+            // bitCount, but preserving the on-disk pad keeps the file
+            // byte-identical when no writes happened on this track).
+            for (size_t b = 0; b < bitCnt; ++b) {
+                const size_t byteIdx   = b / 8;
+                const int    bitInByte = 7 - static_cast<int>(b % 8);
+                uint8_t&     dst       = wozRaw[byteOff + byteIdx];
+                const uint8_t mask     = static_cast<uint8_t>(1u << bitInByte);
+                if (bits[b]) dst |=  mask;
+                else         dst &= static_cast<uint8_t>(~mask);
+            }
+            ++dirtyQts;
+        }
+        // Zero the CRC32 sentinel — readers will skip CRC validation
+        // (matches MAME `as_dsk.cpp:275-277` and the loadWoz path here
+        // which treats CRC==0 as "not computed").
+        wozRaw[ 8] = 0; wozRaw[ 9] = 0; wozRaw[10] = 0; wozRaw[11] = 0;
+
+        std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
+        wf.write(reinterpret_cast<const char*>(wozRaw.data()),
+                 static_cast<std::streamsize>(wozRaw.size()));
+        if (!wf) { lastError = "Short write on " + path; return false; }
+        wozQtDirty.fill(false);
+        anyDirty = false;
+        pom2::log().info("Disk II",
+            "Saved " + std::to_string(dirtyQts)
+            + " modified quarter-track(s) to " + path + " (.woz, CRC zeroed)");
+        return true;
     }
 
     // .nib: just write the raw nibble buffers verbatim.

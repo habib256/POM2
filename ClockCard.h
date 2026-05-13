@@ -111,11 +111,39 @@ private:
                                   // (for CLK / STB rising-edge detection)
     uint8_t lastMode  = 0;        // most recently latched C0/C1/C2 (0..7)
 
+    // ── MODE_TIME_SET state ────────────────────────────────────────────
+    //
+    // When the host commits MODE_TIME_SET (STB rising edge after loading
+    // the shift register via 48 CLK pulses in MODE_SHIFT), the resulting
+    // BCD bytes are converted back to a `time_t` and the delta against
+    // the host clock at that moment is stored as `userOffsetSeconds`.
+    // Subsequent reads compose `timeFn() + userOffsetSeconds` so the
+    // "set time" advances naturally with wall-clock (mirroring MAME's
+    // internal time counter that ticks at 1 Hz from `m_timer_clock`).
+    //
+    // For a test injector returning a fixed timestamp, the offset is
+    // captured once and the effective time stays pinned — matching the
+    // existing fixed-snapshot behaviour the smoke test relies on.
+    bool        userOffsetActive  = false;
+    std::time_t userOffsetSeconds = 0;
+
     void buildRom();
 
-    /// Snapshot host time into shiftReg as 6 BCD bytes. Called on STB
-    /// rising edge when MODE_TIME_READ is selected.
+    /// Resolve the time the next MODE_TIME_READ snapshot should emit.
+    /// Without a prior TIME_SET this is just `timeFn()`; with a TIME_SET
+    /// it is `timeFn()` adjusted by `userOffsetSeconds`.
+    std::tm effectiveTime() const;
+
+    /// Snapshot the effective time into shiftReg as 6 BCD bytes.
+    /// Called on STB rising edge when MODE_TIME_READ is selected.
     void latchTimeToShiftReg();
+
+    /// Commit the contents of shiftReg as the new "set time" — converts
+    /// the 6 BCD bytes back to `time_t` (via `std::mktime`) and stores
+    /// the delta vs the current host clock so future reads carry the
+    /// adjustment. Called on STB rising edge when MODE_TIME_SET is
+    /// selected.
+    void commitTimeSetFromShiftReg();
 
     ClockCard(int slot, TimeFn fn);
 };

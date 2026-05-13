@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/hero_probe.dir/hero_probe.cpp.o CMakeFiles/hero_probe.dir/__/DiskImage.cpp.o CMakeFiles/hero_probe.dir/__/DiskIICard.cpp.o CMakeFiles/hero_probe.dir/__/SlotBus.cpp.o -o hero_probe  -ldl -lm 

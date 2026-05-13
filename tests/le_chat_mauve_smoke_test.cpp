@@ -132,10 +132,11 @@ int main()
         clearHgrLine(mem, 0);
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
-        // Pair (0,1): bits = 01 → kChatMauveHGR[0][1] = violet 0xFFDD22DD
-        const uint32_t violet = pack(0xDD, 0x22, 0xDD);
-        assert(*pixelAt(display, 0, 0) == violet);
-        assert(*pixelAt(display, 1, 0) == violet);
+        // Pair (0,1): bits = 01 → kChatMauveHGR[0][1] = Feline MAGENTA
+        // rgb(0xaa, 0x1a, 0xd1).
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+        assert(*pixelAt(display, 0, 0) == magenta);
+        assert(*pixelAt(display, 1, 0) == magenta);
         // The rest of the row: pairs 00 → black.
         for (int x = 2; x < 280; ++x) assert(*pixelAt(display, x, 0) == kBlack);
 
@@ -143,8 +144,8 @@ int main()
         clearHgrLine(mem, 1);
         writeHgrByte(mem, 1, 0, 0x02);
         display.render(mem);
-        // kChatMauveHGR[0][2] = 0xFF22DD11 → R=0x11, G=0xDD, B=0x22.
-        const uint32_t green = pack(0x11, 0xDD, 0x22);
+        // kChatMauveHGR[0][2] = Feline GREEN rgb(0x6f, 0xe6, 0x2c).
+        const uint32_t green = pack(0x6F, 0xE6, 0x2C);
         assert(*pixelAt(display, 0, 1) == green);
         assert(*pixelAt(display, 1, 1) == green);
 
@@ -154,8 +155,8 @@ int main()
         clearHgrLine(mem, 2);
         writeHgrByte(mem, 2, 0, 0x81);
         display.render(mem);
-        // kChatMauveHGR[1][1] = 0xFFFF2222 → R=0x22, G=0x22, B=0xFF.
-        const uint32_t blue = pack(0x22, 0x22, 0xFF);
+        // kChatMauveHGR[1][1] = Feline BLUE rgb(0x00, 0x8a, 0xb5).
+        const uint32_t blue = pack(0x00, 0x8A, 0xB5);
         assert(*pixelAt(display, 0, 2) == blue);
         assert(*pixelAt(display, 1, 2) == blue);
         // Critically, x=2 should be BLACK (no fringing — NTSC would smear
@@ -220,15 +221,23 @@ int main()
         // Block (col=1, blockRow=0) covers x=[7..13], y=[0..3].
         const uint32_t gray2 = *pixelAt(display, 10, 1);
 
-        // Both should be greyscale (R≈G≈B) and DIFFERENT (the whole point
-        // of the Chat Mauve palette).
-        assert(std::abs(int(r8(gray1)) - int(g8(gray1))) <= 2);
-        assert(std::abs(int(g8(gray1)) - int(b8(gray1))) <= 2);
-        assert(std::abs(int(r8(gray2)) - int(g8(gray2))) <= 2);
-        assert(std::abs(int(g8(gray2)) - int(b8(gray2))) <= 2);
-        assert(r8(gray1) != r8(gray2));
-        // Index 5 should be visibly darker than index A.
-        assert(r8(gray1) < r8(gray2));
+        // AppleWin Feline palette: index 5 = rgb(0x9f,0x97,0x7e) (olive
+        // tint), index 10 = rgb(0x78,0x68,0x7f) (mauve tint). They are
+        // tinted (R/G/B differ by ~30 within each gray), but visibly
+        // DISTINCT from each other — that's the whole point of the
+        // Chat Mauve palette vs NTSC composite (which collapses 5 ≡ 10).
+        //
+        // The empirical capture's perceived luminance puts gray1 (idx 5)
+        // *brighter* than gray2 (idx 10) — the opposite of POM2's old
+        // synthetic 0x55 / 0xAA pair. We pin the trademark (distinct +
+        // tinted) rather than the previous arbitrary "darker → lighter"
+        // ordering.
+        assert(gray1 != gray2);
+        const int lum1 = (int(r8(gray1)) + int(g8(gray1)) + int(b8(gray1))) / 3;
+        const int lum2 = (int(r8(gray2)) + int(g8(gray2)) + int(b8(gray2))) / 3;
+        assert(std::abs(lum1 - lum2) >= 16);                // distinct luminance
+        assert(std::abs(int(r8(gray1)) - int(b8(gray1))) >= 8);   // tinted (not pure)
+        assert(std::abs(int(r8(gray2)) - int(b8(gray2))) >= 4);   // tinted (not pure)
     }
 
     // ─── 5. ColorNTSC fallback when card not plugged ─────────────────────
