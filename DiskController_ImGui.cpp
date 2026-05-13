@@ -63,6 +63,15 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
         ImGui::TextDisabled("(read-only)");
     } else {
         ImGui::TextDisabled("No disk inserted.");
+        // If a previous insert attempt failed, surface the underlying
+        // reason here so the user can act on it (rename, convert, etc.)
+        // rather than guessing why nothing happened.
+        if (!snap.lastError.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                IM_COL32(220, 70, 70, 255));
+            ImGui::TextWrapped("Last error: %s", snap.lastError.c_str());
+            ImGui::PopStyleColor();
+        }
     }
 
     ImGui::Separator();

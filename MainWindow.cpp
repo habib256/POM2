@@ -1330,6 +1330,7 @@ void MainWindow::renderDiskPanelWindow()
         snap.halfTrack         = diskCard->getHalfTrack();
         snap.trackPos          = diskCard->getTrackPosition();
         snap.diskPath          = diskCard->getDiskPath();
+        snap.lastError         = diskCard->getLastError();
         snap.writeBackEnabled  = diskCard->isWriteBackEnabled();
         snap.hasUnsavedChanges = diskCard->hasUnsavedChanges();
     }

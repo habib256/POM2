@@ -37,6 +37,12 @@ public:
         int         halfTrack     = 0;
         int         trackPos      = 0;
         std::string diskPath;
+        // Mirrors `DiskImage::getLastError()` for the active drive. Shown
+        // in red under the slot when no disk is currently loaded and the
+        // last insert attempt set an error. Lets the user see why a
+        // refused-format / corrupt-2IMG / wrong-size file didn't mount,
+        // instead of guessing.
+        std::string lastError;
         bool        turboWhileMotor = true;   // user toggle, persisted by host
         bool        turboActive     = false;  // currently boosting?
         bool        writeBackEnabled = false; // user opt-in for save-on-eject
