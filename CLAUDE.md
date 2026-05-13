@@ -60,6 +60,16 @@ presence.
   empty slot ROMs; mis-decoding it as a 1-byte NOP makes PC drift
   through slot 2/3/4 territory and trap unpredictably.
   `setProgramCounter()` is the back-door used by the Klaus harness port.
+
+  **65C02 reserved NOPs**: the column-2 opcodes `$02 $22 $42 $62 $82
+  $C2 $E2` are 2-byte NOPs on the 65C02 (`Unoff2` in POM2's table) but
+  KIL halts on NMOS — POM2's CMOS table holds the 65C02 behaviour and
+  `setCpuMode(NMOS)` re-overrides the four formerly-KIL entries
+  ($02/$22/$42/$62) back to halt. The `$0B $2B $EB` opcodes are 1-byte
+  NOPs on 65C02 (`Unoff`); on NMOS they were undocumented ANC/SBC
+  immediate but POM2 doesn't gate-test that and leaves them as NOPs.
+  Pinned by `tests/klaus_65c02_extended_test.cpp` (PASSES @ `$24F1`,
+  22 M cycles).
 - **CpuClock.h** — `POM2_CPU_CLOCK_HZ = 1 022 727`. The Apple II
   master oscillator is 14.31818 MHz; the CPU runs at that divided by 14.
   The "long cycle" every 65 cycles (TV scan-line alignment) is **not**
@@ -560,6 +570,59 @@ presence.
   in the working directory. The sequence number auto-advances so
   successive presses don't clobber. P6 binary RGB; preview.app on
   macOS opens it directly.
+
+## System profiles (Apple II / II+ / IIe / IIc / IIc+)
+
+POM2 exposes five canonical Apple II model profiles via the `Presets`
+menu. Each profile resolves to a CPU type, a ROM probe order, a charset
+ROM probe order, an IIe-paging flag, and a default CPU pacing. Defined
+in `SystemProfile.h/.cpp`; pinned by `tests/system_profile_smoke_test.cpp`.
+
+| Profile | CPU default | iieMode | Main ROM probes | Default cycles/frame |
+|---|---|---|---|---|
+| Apple ][ Original (1977) | NMOS 6502 | off | `roms/apple2o.rom`, `roms/apple2.rom` | 17045 (1×) |
+| Apple ][+ (1979) | NMOS 6502 | off | `roms/apple2p.rom`, `roms/apple2.rom` | 17045 |
+| Apple //e Enhanced (1985) | 65C02 (CMOS) | on | `roms/apple2e.rom` | 17045 |
+| Apple //c (1984) | 65C02 | on | `roms/apple2c-32Kv0.rom`, `roms/apple2c-16K.rom` | 17045 |
+| Apple //c Plus (1988) | 65C02 | on | `roms/apple2cp.rom`, `roms/apple2c-plus.rom`, `roms/apple2c-32Kv0.rom` | 17045 (real silicon 4×) |
+
+**Profile switching = full cold reset.** Selecting a Presets entry calls
+`MainWindow::applyProfile(SystemProfile)` which:
+1. Stops the CPU worker thread.
+2. Tears down all slot cards under the state mutex (Mockingboard's
+   `AudioSource` detached from `AudioDevice` first to avoid the audio
+   thread dereferencing freed memory on its next callback).
+3. Wipes user RAM, aux RAM (if IIe), LC banks, and resets soft switches.
+4. Flips `Memory::setIIEMode(...)` (must be BEFORE `loadAppleIIRom` —
+   the loader's IIe-vs-II+ split depends on the flag).
+5. Loads the profile's main + char ROM (probes the candidate list,
+   first existing file wins; falls back gracefully when no ROM matches).
+6. Re-plugs the slot cards from the user's persisted slot config.
+7. Re-mounts the previously inserted disk + HDV paths (cross-profile
+   media persistence — the user can test the same disk under II+ vs IIe
+   vs IIc without re-mounting).
+8. Sets the CPU mode via `resolveCpuMode()` — honours the
+   `cpu_mode_override` setting (`auto` = profile default, `nmos` /
+   `65c02` = manual override).
+9. Resets cycles-per-frame to the profile default.
+10. `hardReset()` (CPU re-fetches PC from the new ROM's reset vector).
+11. Restarts the worker thread.
+12. Persists `system_profile = <key>` to `~/.config/POM2/state.cfg`.
+
+The CLI flag `--preset <ii|ii+|iie|iic|iic+>` triggers the same path
+during boot, after the legacy constructor's auto-probe — so it always
+wins. Common aliases accepted: `apple2`, `apple2plus`, `apple2e`,
+`apple2c`, `apple2cplus`, `//e`, `//c`, `//c+`.
+
+The CPU type follows the profile by default. The `Machine → CPU` menu
+exposes an override with three values:
+- **Auto (profile default)** — follows whatever the active profile says.
+- **NMOS 6502** — force NMOS (`Hang`/KIL on `$x2`, no `STZ/BRA/PHX`,
+  no `RMB/SMB/BBR/BBS`).
+- **65C02 (CMOS)** — force CMOS regardless of profile (e.g. run
+  6502 software on a 65C02-style CPU to test compatibility).
+
+The override is persisted as `cpu_mode_override = auto|nmos|65c02`.
 
 ## Memory Map
 

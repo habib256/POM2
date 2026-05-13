@@ -29,6 +29,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/pom2_headless.dir/SpeakerDevice.cpp.o.d"
   "CMakeFiles/pom2_headless.dir/SuperSerialCard.cpp.o"
   "CMakeFiles/pom2_headless.dir/SuperSerialCard.cpp.o.d"
+  "CMakeFiles/pom2_headless.dir/SystemProfile.cpp.o"
+  "CMakeFiles/pom2_headless.dir/SystemProfile.cpp.o.d"
   "CMakeFiles/pom2_headless.dir/pom2_headless.cpp.o"
   "CMakeFiles/pom2_headless.dir/pom2_headless.cpp.o.d"
   "pom2_headless"

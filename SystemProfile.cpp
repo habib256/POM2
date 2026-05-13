@@ -85,15 +85,39 @@ const ProfileConfig& cfgAppleIIc()
     return cfg;
 }
 
+const ProfileConfig& cfgAppleIIcPlus()
+{
+    static const ProfileConfig cfg{
+        SystemProfile::AppleIIcPlus,
+        "iic+",
+        "Apple //c Plus (1988)",
+        // //c Plus shipped with a 32 KB ROM (ROM X4). The "ROM 5" dump
+        // some users have isn't the IIc Plus, that's a IIc revision —
+        // double-check via the displayed boot screen. Falls back to
+        // the IIc 32K dump if no IIc Plus-specific ROM is present.
+        { "roms/apple2cp.rom", "roms/apple2c-plus.rom",
+          "roms/apple2c-32Kv0.rom" },
+        { "roms/apple2e_char.rom", "roms/apple2_char.rom" },
+        /*iieMode=*/true,        // same paging as IIe/IIc
+        M6502::CpuMode::CMOS,    // 65C02 at 4 MHz on real silicon
+        // Real //c Plus runs at 4 MHz; default to 1× here so disk
+        // timing-sensitive software doesn't fail. The user can flip to
+        // 4× via the speed menu — typical //c Plus workflow.
+        17045,
+    };
+    return cfg;
+}
+
 }  // namespace
 
 const ProfileConfig& profileConfig(SystemProfile p)
 {
     switch (p) {
-        case SystemProfile::AppleII:     return cfgAppleII();
-        case SystemProfile::AppleIIPlus: return cfgAppleIIPlus();
-        case SystemProfile::AppleIIe:    return cfgAppleIIe();
-        case SystemProfile::AppleIIc:    return cfgAppleIIc();
+        case SystemProfile::AppleII:      return cfgAppleII();
+        case SystemProfile::AppleIIPlus:  return cfgAppleIIPlus();
+        case SystemProfile::AppleIIe:     return cfgAppleIIe();
+        case SystemProfile::AppleIIc:     return cfgAppleIIc();
+        case SystemProfile::AppleIIcPlus: return cfgAppleIIcPlus();
     }
     return cfgAppleIIPlus();   // unreachable, silences compiler
 }
@@ -107,6 +131,9 @@ SystemProfile profileFromKey(std::string_view key)
         || key == "//e")                                            return SystemProfile::AppleIIe;
     if (key == "iic"  || key == "apple2c"  || key == "appleiic"
         || key == "//c")                                            return SystemProfile::AppleIIc;
+    if (key == "iic+" || key == "iicplus" || key == "apple2cplus"
+        || key == "apple2cp" || key == "//c+"
+        || key == "appleiicplus")                                   return SystemProfile::AppleIIcPlus;
     return SystemProfile::AppleIIPlus;
 }
 
@@ -115,13 +142,14 @@ std::string_view profileKey(SystemProfile p)
     return profileConfig(p).key;
 }
 
-const std::array<SystemProfile, 4>& allProfiles()
+const std::array<SystemProfile, 5>& allProfiles()
 {
-    static const std::array<SystemProfile, 4> all = {
+    static const std::array<SystemProfile, 5> all = {
         SystemProfile::AppleII,
         SystemProfile::AppleIIPlus,
         SystemProfile::AppleIIe,
         SystemProfile::AppleIIc,
+        SystemProfile::AppleIIcPlus,
     };
     return all;
 }

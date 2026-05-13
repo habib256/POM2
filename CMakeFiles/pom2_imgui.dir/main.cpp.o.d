@@ -227,6 +227,7 @@ CMakeFiles/pom2_imgui.dir/main.cpp.o: /home/gistarcade/src/POM2/main.cpp \
  /usr/include/c++/13/bits/stl_tree.h /usr/include/c++/13/bits/stl_map.h \
  /usr/include/c++/13/bits/stl_multimap.h \
  /home/gistarcade/src/POM2/SuperSerialCard.h /usr/include/c++/13/chrono \
+ /home/gistarcade/src/POM2/SystemProfile.h \
  /home/gistarcade/src/POM2/imgui/backends/imgui_impl_glfw.h \
  /home/gistarcade/src/POM2/imgui/backends/imgui_impl_opengl3.h \
  /usr/include/GLFW/glfw3.h /usr/include/GL/gl.h /usr/include/GL/glext.h \

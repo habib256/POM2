@@ -54,6 +54,7 @@ enum class CliPreset {
     AppleIIPlus,    // → pom2::SystemProfile::AppleIIPlus
     AppleIIe,       // → pom2::SystemProfile::AppleIIe
     AppleIIc,       // → pom2::SystemProfile::AppleIIc
+    AppleIIcPlus,   // → pom2::SystemProfile::AppleIIcPlus
 };
 
 /// One deferred action consumed in Phase C, in CLI order.

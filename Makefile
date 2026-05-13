@@ -179,6 +179,19 @@ test_klaus_65c02/fast:
 .PHONY : test_klaus_65c02/fast
 
 #=============================================================================
+# Target rules for targets named test_system_profile
+
+# Build rule for target.
+test_system_profile: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_system_profile
+.PHONY : test_system_profile
+
+# fast build rule for target.
+test_system_profile/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_system_profile.dir/build.make tests/CMakeFiles/test_system_profile.dir/build
+.PHONY : test_system_profile/fast
+
+#=============================================================================
 # Target rules for targets named test_snapshot_io
 
 # Build rule for target.
@@ -1520,6 +1533,33 @@ SuperSerialCard.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_headless.dir/build.make CMakeFiles/pom2_headless.dir/SuperSerialCard.cpp.s
 .PHONY : SuperSerialCard.cpp.s
 
+SystemProfile.o: SystemProfile.cpp.o
+.PHONY : SystemProfile.o
+
+# target to build an object file
+SystemProfile.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_headless.dir/build.make CMakeFiles/pom2_headless.dir/SystemProfile.cpp.o
+.PHONY : SystemProfile.cpp.o
+
+SystemProfile.i: SystemProfile.cpp.i
+.PHONY : SystemProfile.i
+
+# target to preprocess a source file
+SystemProfile.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_headless.dir/build.make CMakeFiles/pom2_headless.dir/SystemProfile.cpp.i
+.PHONY : SystemProfile.cpp.i
+
+SystemProfile.s: SystemProfile.cpp.s
+.PHONY : SystemProfile.s
+
+# target to generate assembly for a file
+SystemProfile.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_headless.dir/build.make CMakeFiles/pom2_headless.dir/SystemProfile.cpp.s
+.PHONY : SystemProfile.cpp.s
+
 imgui/backends/imgui_impl_glfw.o: imgui/backends/imgui_impl_glfw.cpp.o
 .PHONY : imgui/backends/imgui_impl_glfw.o
 
@@ -1783,6 +1823,7 @@ help:
 	@echo "... test_snapshot_io"
 	@echo "... test_speaker"
 	@echo "... test_ssc_acia"
+	@echo "... test_system_profile"
 	@echo "... test_vbl"
 	@echo "... test_woz_load"
 	@echo "... test_woz_writeback"
@@ -1888,6 +1929,9 @@ help:
 	@echo "... SuperSerialCard.o"
 	@echo "... SuperSerialCard.i"
 	@echo "... SuperSerialCard.s"
+	@echo "... SystemProfile.o"
+	@echo "... SystemProfile.i"
+	@echo "... SystemProfile.s"
 	@echo "... imgui/backends/imgui_impl_glfw.o"
 	@echo "... imgui/backends/imgui_impl_glfw.i"
 	@echo "... imgui/backends/imgui_impl_glfw.s"

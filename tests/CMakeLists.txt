@@ -131,6 +131,34 @@ add_test(NAME klaus_65c02_extended
 set_tests_properties(klaus_65c02_extended PROPERTIES TIMEOUT 60)
 
 
+# ─── System profile smoke test ─────────────────────────────────────────────
+# Pins the 5 SystemProfile entries (II / II+ / IIe / IIc / IIc+) and their
+# CPU/iieMode defaults. Walks a canonical profile-switch cycle (II+ →
+# IIe → IIc → IIc+ → II → II+) and verifies Memory+CPU state stays
+# consistent. Doesn't exercise the GUI applyProfile path (needs
+# ImGui+GLFW) but locks the core invariants.
+add_executable(test_system_profile
+    system_profile_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_system_profile PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_system_profile PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_system_profile PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_system_profile PRIVATE winmm)
+endif()
+
+add_test(NAME system_profile_smoke COMMAND test_system_profile)
+set_tests_properties(system_profile_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Snapshot round-trip smoke test ───────────────────────────────────────
 # Validates SnapshotIO end-to-end: writes a synthetic header + 2 sections,
 # reads them back, asserts payloads match. Pure unit test — no Memory or

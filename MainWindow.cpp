@@ -792,16 +792,43 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Hard reset",             "F12")) controller.hardReset();
         if (ImGui::MenuItem("Cold boot (wipe RAM)"))          controller.coldBoot();
         ImGui::Separator();
-        // CPU type selector — affects which 65C02 additions the
-        // dispatch table honours. Switching at runtime is safe; it just
-        // mutates the per-instance opcodeTable.
+        // CPU type selector. Three settings:
+        //   * Auto (profile default) — NMOS for II/II+, CMOS for IIe/IIc/IIc+
+        //   * NMOS 6502 — force NMOS regardless of profile (e.g. test
+        //     IIe NMOS-unenhanced behaviour)
+        //   * 65C02 — force CMOS (e.g. run NMOS-era software on 65C02)
+        // Persisted to settings as `cpu_mode_override` so the choice
+        // survives a relaunch. A profile switch re-applies the override.
         const auto curCpu = controller.cpu().getCpuMode();
+        const std::string curOverride = settings.getString("cpu_mode_override", "auto");
         if (ImGui::BeginMenu("CPU")) {
-            if (ImGui::MenuItem("NMOS 6502", nullptr, curCpu == M6502::CpuMode::NMOS)) {
+            const auto& cfg = pom2::profileConfig(activeProfile);
+            const char* profileLabel =
+                (cfg.defaultCpu == M6502::CpuMode::CMOS) ? "65C02" : "NMOS 6502";
+            char autoLabel[64];
+            std::snprintf(autoLabel, sizeof(autoLabel),
+                "Auto (profile default: %s)", profileLabel);
+            if (ImGui::MenuItem(autoLabel, nullptr, curOverride == "auto")) {
+                settings.setString("cpu_mode_override", "auto");
+                settings.save();
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                controller.cpu().setCpuMode(cfg.defaultCpu);
+            }
+            if (ImGui::MenuItem("NMOS 6502", nullptr,
+                                curOverride == "nmos" ||
+                                (curOverride == "auto" && curCpu == M6502::CpuMode::NMOS
+                                 && curOverride != "65c02"))) {
+                settings.setString("cpu_mode_override", "nmos");
+                settings.save();
                 std::lock_guard<std::mutex> lk(controller.stateMutex());
                 controller.cpu().setCpuMode(M6502::CpuMode::NMOS);
             }
-            if (ImGui::MenuItem("65C02 (CMOS)", nullptr, curCpu == M6502::CpuMode::CMOS)) {
+            if (ImGui::MenuItem("65C02 (CMOS)", nullptr,
+                                curOverride == "65c02" ||
+                                (curOverride == "auto" && curCpu == M6502::CpuMode::CMOS
+                                 && curOverride != "nmos"))) {
+                settings.setString("cpu_mode_override", "65c02");
+                settings.save();
                 std::lock_guard<std::mutex> lk(controller.stateMutex());
                 controller.cpu().setCpuMode(M6502::CpuMode::CMOS);
             }
@@ -809,6 +836,8 @@ void MainWindow::renderMenuBar()
             ImGui::TextDisabled("NMOS = original 1975. Disables");
             ImGui::TextDisabled("STZ/BRA/PHX/etc. and SMB/RMB/");
             ImGui::TextDisabled("BBR/BBS extensions.");
+            ImGui::TextDisabled("Override persists across profile");
+            ImGui::TextDisabled("switches.");
             ImGui::EndMenu();
         }
         ImGui::EndMenu();

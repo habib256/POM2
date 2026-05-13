@@ -152,6 +152,20 @@ int main(int argc, char* argv[])
     if (plan->forceIIPlus) {
         pom2::log().info("CLI", "--ii-plus: ignoring apple2e.rom, booting as II+");
     }
+    // CLI --preset selection (must come AFTER MainWindow's legacy boot so
+    // it overrides via the full cold-reset path applyProfile uses).
+    if (plan->preset != pom2::CliPreset::Default) {
+        pom2::SystemProfile sp = pom2::SystemProfile::AppleIIPlus;
+        switch (plan->preset) {
+            case pom2::CliPreset::AppleII:      sp = pom2::SystemProfile::AppleII;      break;
+            case pom2::CliPreset::AppleIIPlus:  sp = pom2::SystemProfile::AppleIIPlus;  break;
+            case pom2::CliPreset::AppleIIe:     sp = pom2::SystemProfile::AppleIIe;     break;
+            case pom2::CliPreset::AppleIIc:     sp = pom2::SystemProfile::AppleIIc;     break;
+            case pom2::CliPreset::AppleIIcPlus: sp = pom2::SystemProfile::AppleIIcPlus; break;
+            case pom2::CliPreset::Default: break;
+        }
+        mainWindow.applyProfile(sp);
+    }
     mainWindow.setGlfwWindow(window);
     glfwSetWindowUserPointer(window, &mainWindow);
     glfwSetCharCallback(window, glfw_char_callback);

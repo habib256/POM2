@@ -35,6 +35,7 @@ enum class SystemProfile {
     AppleIIPlus,   // Apple II+ (1979), Applesoft + Autostart, 6502 NMOS
     AppleIIe,      // Apple //e (1983, Enhanced revision targets 65C02)
     AppleIIc,      // Apple //c (1984), 65C02, IIe-class soft switches
+    AppleIIcPlus,  // Apple //c Plus (1988), 65C02 @ 4 MHz, built-in SmartPort
 };
 
 struct ProfileConfig {
@@ -65,8 +66,8 @@ SystemProfile profileFromKey(std::string_view key);
 /// Forward — get the persistence key for a profile.
 std::string_view profileKey(SystemProfile p);
 
-/// All four profiles in display order. Used by the Presets menu loop.
-const std::array<SystemProfile, 4>& allProfiles();
+/// All profiles in display order. Used by the Presets menu loop.
+const std::array<SystemProfile, 5>& allProfiles();
 
 }  // namespace pom2
 

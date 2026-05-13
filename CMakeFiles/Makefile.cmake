@@ -65,6 +65,7 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/pom2_headless.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_klaus_6502.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_klaus_65c02.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_system_profile.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_snapshot_io.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_slot_bus.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_paste.dir/DependInfo.cmake"

@@ -42,6 +42,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/gistarcade/src/POM2/SnapshotIO.cpp" "CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o.d"
   "/home/gistarcade/src/POM2/SpeakerDevice.cpp" "CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o.d"
   "/home/gistarcade/src/POM2/SuperSerialCard.cpp" "CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o.d"
+  "/home/gistarcade/src/POM2/SystemProfile.cpp" "CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o.d"
   "/home/gistarcade/src/POM2/imgui/backends/imgui_impl_glfw.cpp" "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o.d"
   "/home/gistarcade/src/POM2/imgui/backends/imgui_impl_opengl3.cpp" "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o.d"
   "/home/gistarcade/src/POM2/imgui/imgui.cpp" "CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o.d"

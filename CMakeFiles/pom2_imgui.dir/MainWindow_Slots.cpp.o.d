@@ -221,6 +221,7 @@ CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o: \
  /usr/include/c++/13/bits/stl_tree.h /usr/include/c++/13/bits/stl_map.h \
  /usr/include/c++/13/bits/stl_multimap.h \
  /home/gistarcade/src/POM2/SuperSerialCard.h /usr/include/c++/13/chrono \
+ /home/gistarcade/src/POM2/SystemProfile.h \
  /home/gistarcade/src/POM2/Logger.h /usr/include/c++/13/filesystem \
  /usr/include/c++/13/bits/fs_fwd.h /usr/include/c++/13/system_error \
  /usr/include/c++/13/stdexcept /usr/include/c++/13/bits/fs_path.h \

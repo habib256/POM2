@@ -67,6 +67,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o.d"
   "CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o"
   "CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o.d"
+  "CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o"
+  "CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o.d"
   "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o"
   "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o.d"
   "CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o"

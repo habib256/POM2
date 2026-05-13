@@ -221,6 +221,7 @@ CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o: \
  /usr/include/c++/13/bits/stl_tree.h /usr/include/c++/13/bits/stl_map.h \
  /usr/include/c++/13/bits/stl_multimap.h \
  /home/gistarcade/src/POM2/SuperSerialCard.h /usr/include/c++/13/chrono \
+ /home/gistarcade/src/POM2/SystemProfile.h \
  /home/gistarcade/src/POM2/Logger.h \
  /home/gistarcade/src/POM2/ProDOSVolume.h /usr/include/GLFW/glfw3.h \
  /usr/include/GL/gl.h /usr/include/GL/glext.h \

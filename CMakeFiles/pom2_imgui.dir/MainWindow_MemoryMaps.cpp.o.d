@@ -221,4 +221,4 @@ CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o: \
  /usr/include/c++/13/bits/stl_tree.h /usr/include/c++/13/bits/stl_map.h \
  /usr/include/c++/13/bits/stl_multimap.h \
  /home/gistarcade/src/POM2/SuperSerialCard.h /usr/include/c++/13/chrono \
- /usr/include/c++/13/cstring
+ /home/gistarcade/src/POM2/SystemProfile.h /usr/include/c++/13/cstring
