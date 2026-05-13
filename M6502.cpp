@@ -29,6 +29,7 @@ M6502::M6502()
    memory = nullptr;
    statusRegister = 0x24;
    IRQ = 0;
+   irqSourceMask = 0;
    NMI = 0;
    // Initialiser tous les registres
    accumulator = 0;
@@ -46,6 +47,7 @@ M6502::M6502(Memory * mem)
    statusRegister = 0x24;
    statusRegister |= M6502::Status::I; // Set interrupt disable flag
    IRQ = 0;
+   irqSourceMask = 0;
    NMI = 0;
    memory = mem;
    // Initialiser tous les registres
@@ -1613,9 +1615,25 @@ void M6502::softReset(void)
     programCounter = memReadAbsolute(0xFFFC);
 }
 
+void M6502::setIrqLine(int sourceId, bool asserted)
+{
+    // Wire-OR semantics: every asserting source sets its own bit; the
+    // CPU IRQ flag follows `irqSourceMask != 0`. Without this, two
+    // cards plugged at once (e.g. Mockingboard + SSC) would race —
+    // whichever one released last won, even if the other still wanted
+    // the line asserted.
+    const uint32_t bit = 1u << (sourceId & 31);
+    const uint32_t prev = irqSourceMask;
+    if (asserted) irqSourceMask |=  bit;
+    else          irqSourceMask &= ~bit;
+    if (irqSourceMask != prev) {
+        IRQ = (irqSourceMask != 0) ? 1 : 0;
+    }
+}
+
 void M6502::setIRQ(int state)
 {
-    IRQ = state;
+    setIrqLine(IRQ_SRC_LEGACY, state != 0);
 }
 
 void M6502::setNMI(void)

@@ -93,6 +93,7 @@ tests/all: tests/CMakeFiles/test_hdv_card.dir/all
 tests/all: tests/CMakeFiles/test_hdv_writeback.dir/all
 tests/all: tests/CMakeFiles/test_prodos_volume.dir/all
 tests/all: tests/CMakeFiles/test_vbl.dir/all
+tests/all: tests/CMakeFiles/test_irq_aggregator.dir/all
 tests/all: tests/CMakeFiles/test_speaker.dir/all
 tests/all: tests/CMakeFiles/test_hgr_render.dir/all
 tests/all: tests/CMakeFiles/test_le_chat_mauve.dir/all
@@ -140,6 +141,7 @@ tests/clean: tests/CMakeFiles/test_hdv_card.dir/clean
 tests/clean: tests/CMakeFiles/test_hdv_writeback.dir/clean
 tests/clean: tests/CMakeFiles/test_prodos_volume.dir/clean
 tests/clean: tests/CMakeFiles/test_vbl.dir/clean
+tests/clean: tests/CMakeFiles/test_irq_aggregator.dir/clean
 tests/clean: tests/CMakeFiles/test_speaker.dir/clean
 tests/clean: tests/CMakeFiles/test_hgr_render.dir/clean
 tests/clean: tests/CMakeFiles/test_le_chat_mauve.dir/clean
@@ -178,12 +180,12 @@ tests/clean: tests/CMakeFiles/hero_probe.dir/clean
 CMakeFiles/pom2_imgui.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=13,14,15,16,17,18,19,20,21,22,23 "Built target pom2_imgui"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=13,14,15,16,17,18,19,20,21,22 "Built target pom2_imgui"
 .PHONY : CMakeFiles/pom2_imgui.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/pom2_imgui.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 11
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 10
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/pom2_imgui.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : CMakeFiles/pom2_imgui.dir/rule
@@ -230,7 +232,7 @@ CMakeFiles/pom2_headless.dir/clean:
 tests/CMakeFiles/test_klaus_6502.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=57,58,59 "Built target test_klaus_6502"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=58,59,60 "Built target test_klaus_6502"
 .PHONY : tests/CMakeFiles/test_klaus_6502.dir/all
 
 # Build rule for subdir invocation for target.
@@ -256,7 +258,7 @@ tests/CMakeFiles/test_klaus_6502.dir/clean:
 tests/CMakeFiles/test_klaus_65c02.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=60,61 "Built target test_klaus_65c02"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=61,62 "Built target test_klaus_65c02"
 .PHONY : tests/CMakeFiles/test_klaus_65c02.dir/all
 
 # Build rule for subdir invocation for target.
@@ -282,12 +284,12 @@ tests/CMakeFiles/test_klaus_65c02.dir/clean:
 tests/CMakeFiles/test_system_profile.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_system_profile.dir/build.make tests/CMakeFiles/test_system_profile.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_system_profile.dir/build.make tests/CMakeFiles/test_system_profile.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=93,94,95 "Built target test_system_profile"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=94,95 "Built target test_system_profile"
 .PHONY : tests/CMakeFiles/test_system_profile.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_system_profile.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_system_profile.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_system_profile.dir/rule
@@ -308,12 +310,12 @@ tests/CMakeFiles/test_system_profile.dir/clean:
 tests/CMakeFiles/test_snapshot_io.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_snapshot_io.dir/build.make tests/CMakeFiles/test_snapshot_io.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_snapshot_io.dir/build.make tests/CMakeFiles/test_snapshot_io.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=89 "Built target test_snapshot_io"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num= "Built target test_snapshot_io"
 .PHONY : tests/CMakeFiles/test_snapshot_io.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_snapshot_io.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 1
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_snapshot_io.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_snapshot_io.dir/rule
@@ -360,12 +362,12 @@ tests/CMakeFiles/test_slot_bus.dir/clean:
 tests/CMakeFiles/test_paste.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=79,80 "Built target test_paste"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=79,80,81 "Built target test_paste"
 .PHONY : tests/CMakeFiles/test_paste.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_paste.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_paste.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_paste.dir/rule
@@ -386,12 +388,12 @@ tests/CMakeFiles/test_paste.dir/clean:
 tests/CMakeFiles/test_language_card.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=62,63,64 "Built target test_language_card"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=63,64 "Built target test_language_card"
 .PHONY : tests/CMakeFiles/test_language_card.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_language_card.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_language_card.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_language_card.dir/rule
@@ -412,7 +414,7 @@ tests/CMakeFiles/test_language_card.dir/clean:
 tests/CMakeFiles/test_hdv_card.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=44,45,46 "Built target test_hdv_card"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=43,44,45 "Built target test_hdv_card"
 .PHONY : tests/CMakeFiles/test_hdv_card.dir/all
 
 # Build rule for subdir invocation for target.
@@ -438,7 +440,7 @@ tests/CMakeFiles/test_hdv_card.dir/clean:
 tests/CMakeFiles/test_hdv_writeback.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=47,48,49 "Built target test_hdv_writeback"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=46,47,48 "Built target test_hdv_writeback"
 .PHONY : tests/CMakeFiles/test_hdv_writeback.dir/all
 
 # Build rule for subdir invocation for target.
@@ -510,6 +512,32 @@ tests/CMakeFiles/test_vbl.dir/clean:
 .PHONY : tests/CMakeFiles/test_vbl.dir/clean
 
 #=============================================================================
+# Target rules for target tests/CMakeFiles/test_irq_aggregator.dir
+
+# All Build rule for target.
+tests/CMakeFiles/test_irq_aggregator.dir/all:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/depend
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=56,57 "Built target test_irq_aggregator"
+.PHONY : tests/CMakeFiles/test_irq_aggregator.dir/all
+
+# Build rule for subdir invocation for target.
+tests/CMakeFiles/test_irq_aggregator.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_irq_aggregator.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
+.PHONY : tests/CMakeFiles/test_irq_aggregator.dir/rule
+
+# Convenience name for target.
+test_irq_aggregator: tests/CMakeFiles/test_irq_aggregator.dir/rule
+.PHONY : test_irq_aggregator
+
+# clean rule for target.
+tests/CMakeFiles/test_irq_aggregator.dir/clean:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/clean
+.PHONY : tests/CMakeFiles/test_irq_aggregator.dir/clean
+
+#=============================================================================
 # Target rules for target tests/CMakeFiles/test_speaker.dir
 
 # All Build rule for target.
@@ -542,7 +570,7 @@ tests/CMakeFiles/test_speaker.dir/clean:
 tests/CMakeFiles/test_hgr_render.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=50,51 "Built target test_hgr_render"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=49,50 "Built target test_hgr_render"
 .PHONY : tests/CMakeFiles/test_hgr_render.dir/all
 
 # Build rule for subdir invocation for target.
@@ -568,12 +596,12 @@ tests/CMakeFiles/test_hgr_render.dir/clean:
 tests/CMakeFiles/test_le_chat_mauve.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=65,66 "Built target test_le_chat_mauve"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=65,66,67 "Built target test_le_chat_mauve"
 .PHONY : tests/CMakeFiles/test_le_chat_mauve.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_le_chat_mauve.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_le_chat_mauve.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_le_chat_mauve.dir/rule
@@ -594,12 +622,12 @@ tests/CMakeFiles/test_le_chat_mauve.dir/clean:
 tests/CMakeFiles/test_disk_image.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num= "Built target test_disk_image"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=35 "Built target test_disk_image"
 .PHONY : tests/CMakeFiles/test_disk_image.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_disk_image.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 1
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_image.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_disk_image.dir/rule
@@ -620,12 +648,12 @@ tests/CMakeFiles/test_disk_image.dir/clean:
 tests/CMakeFiles/test_diskii_lss.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=38,39,40 "Built target test_diskii_lss"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=38,39 "Built target test_diskii_lss"
 .PHONY : tests/CMakeFiles/test_diskii_lss.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_diskii_lss.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_diskii_lss.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_diskii_lss.dir/rule
@@ -646,7 +674,7 @@ tests/CMakeFiles/test_diskii_lss.dir/clean:
 tests/CMakeFiles/test_mame_lss_parity.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mame_lss_parity.dir/build.make tests/CMakeFiles/test_mame_lss_parity.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mame_lss_parity.dir/build.make tests/CMakeFiles/test_mame_lss_parity.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=68 "Built target test_mame_lss_parity"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=69 "Built target test_mame_lss_parity"
 .PHONY : tests/CMakeFiles/test_mame_lss_parity.dir/all
 
 # Build rule for subdir invocation for target.
@@ -672,12 +700,12 @@ tests/CMakeFiles/test_mame_lss_parity.dir/clean:
 tests/CMakeFiles/test_disk_writeback.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_writeback.dir/build.make tests/CMakeFiles/test_disk_writeback.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_writeback.dir/build.make tests/CMakeFiles/test_disk_writeback.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num= "Built target test_disk_writeback"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=37 "Built target test_disk_writeback"
 .PHONY : tests/CMakeFiles/test_disk_writeback.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_disk_writeback.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 1
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_writeback.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_disk_writeback.dir/rule
@@ -698,12 +726,12 @@ tests/CMakeFiles/test_disk_writeback.dir/clean:
 tests/CMakeFiles/test_disk_write_controller.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_write_controller.dir/build.make tests/CMakeFiles/test_disk_write_controller.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_write_controller.dir/build.make tests/CMakeFiles/test_disk_write_controller.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=36,37 "Built target test_disk_write_controller"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=36 "Built target test_disk_write_controller"
 .PHONY : tests/CMakeFiles/test_disk_write_controller.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_disk_write_controller.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 1
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_write_controller.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_disk_write_controller.dir/rule
@@ -750,7 +778,7 @@ tests/CMakeFiles/test_woz_load.dir/clean:
 tests/CMakeFiles/test_disk_drive2.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_drive2.dir/build.make tests/CMakeFiles/test_disk_drive2.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_drive2.dir/build.make tests/CMakeFiles/test_disk_drive2.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=35 "Built target test_disk_drive2"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=34 "Built target test_disk_drive2"
 .PHONY : tests/CMakeFiles/test_disk_drive2.dir/all
 
 # Build rule for subdir invocation for target.
@@ -776,7 +804,7 @@ tests/CMakeFiles/test_disk_drive2.dir/clean:
 tests/CMakeFiles/test_disk_boot.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=32,33,34 "Built target test_disk_boot"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=31,32,33 "Built target test_disk_boot"
 .PHONY : tests/CMakeFiles/test_disk_boot.dir/all
 
 # Build rule for subdir invocation for target.
@@ -802,7 +830,7 @@ tests/CMakeFiles/test_disk_boot.dir/clean:
 tests/CMakeFiles/test_dos33_save.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dos33_save.dir/build.make tests/CMakeFiles/test_dos33_save.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dos33_save.dir/build.make tests/CMakeFiles/test_dos33_save.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=41,42,43 "Built target test_dos33_save"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=40,41,42 "Built target test_dos33_save"
 .PHONY : tests/CMakeFiles/test_dos33_save.dir/all
 
 # Build rule for subdir invocation for target.
@@ -828,12 +856,12 @@ tests/CMakeFiles/test_dos33_save.dir/clean:
 tests/CMakeFiles/test_prodos_save.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_prodos_save.dir/build.make tests/CMakeFiles/test_prodos_save.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_prodos_save.dir/build.make tests/CMakeFiles/test_prodos_save.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=81,82,83 "Built target test_prodos_save"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=82,83 "Built target test_prodos_save"
 .PHONY : tests/CMakeFiles/test_prodos_save.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_prodos_save.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_prodos_save.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_prodos_save.dir/rule
@@ -880,12 +908,12 @@ tests/CMakeFiles/c2plus_boot_probe.dir/clean:
 tests/CMakeFiles/copy2plus_boot_dump.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=4,5,6,7 "Built target copy2plus_boot_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=4,5,6 "Built target copy2plus_boot_dump"
 .PHONY : tests/CMakeFiles/copy2plus_boot_dump.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/copy2plus_boot_dump.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 4
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/copy2plus_boot_dump.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/copy2plus_boot_dump.dir/rule
@@ -906,7 +934,7 @@ tests/CMakeFiles/copy2plus_boot_dump.dir/clean:
 tests/CMakeFiles/test_iie_memory.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=55,56 "Built target test_iie_memory"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=54,55 "Built target test_iie_memory"
 .PHONY : tests/CMakeFiles/test_iie_memory.dir/all
 
 # Build rule for subdir invocation for target.
@@ -932,7 +960,7 @@ tests/CMakeFiles/test_iie_memory.dir/clean:
 tests/CMakeFiles/test_iie_lc_paging.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=52,53,54 "Built target test_iie_lc_paging"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=51,52,53 "Built target test_iie_lc_paging"
 .PHONY : tests/CMakeFiles/test_iie_lc_paging.dir/all
 
 # Build rule for subdir invocation for target.
@@ -958,7 +986,7 @@ tests/CMakeFiles/test_iie_lc_paging.dir/clean:
 tests/CMakeFiles/test_dhgr_render.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=29,30,31 "Built target test_dhgr_render"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=28,29,30 "Built target test_dhgr_render"
 .PHONY : tests/CMakeFiles/test_dhgr_render.dir/all
 
 # Build rule for subdir invocation for target.
@@ -984,12 +1012,12 @@ tests/CMakeFiles/test_dhgr_render.dir/clean:
 tests/CMakeFiles/test_cmos_6502.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=26,27,28 "Built target test_cmos_6502"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=26,27 "Built target test_cmos_6502"
 .PHONY : tests/CMakeFiles/test_cmos_6502.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_cmos_6502.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_cmos_6502.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_cmos_6502.dir/rule
@@ -1010,7 +1038,7 @@ tests/CMakeFiles/test_cmos_6502.dir/clean:
 tests/CMakeFiles/test_m68705_decode.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_m68705_decode.dir/build.make tests/CMakeFiles/test_m68705_decode.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_m68705_decode.dir/build.make tests/CMakeFiles/test_m68705_decode.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=67 "Built target test_m68705_decode"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=68 "Built target test_m68705_decode"
 .PHONY : tests/CMakeFiles/test_m68705_decode.dir/all
 
 # Build rule for subdir invocation for target.
@@ -1036,7 +1064,7 @@ tests/CMakeFiles/test_m68705_decode.dir/clean:
 tests/CMakeFiles/test_mc6821.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mc6821.dir/build.make tests/CMakeFiles/test_mc6821.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mc6821.dir/build.make tests/CMakeFiles/test_mc6821.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=69 "Built target test_mc6821"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=70 "Built target test_mc6821"
 .PHONY : tests/CMakeFiles/test_mc6821.dir/all
 
 # Build rule for subdir invocation for target.
@@ -1062,12 +1090,12 @@ tests/CMakeFiles/test_mc6821.dir/clean:
 tests/CMakeFiles/test_mouse_card.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=72,73,74,75 "Built target test_mouse_card"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=73,74,75 "Built target test_mouse_card"
 .PHONY : tests/CMakeFiles/test_mouse_card.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_mouse_card.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 4
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_mouse_card.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_mouse_card.dir/rule
@@ -1114,12 +1142,12 @@ tests/CMakeFiles/test_mouse_card_quadrature.dir/clean:
 tests/CMakeFiles/test_slot_config.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=86,87,88 "Built target test_slot_config"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=86,87,88,89 "Built target test_slot_config"
 .PHONY : tests/CMakeFiles/test_slot_config.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_slot_config.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 4
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_slot_config.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_slot_config.dir/rule
@@ -1140,12 +1168,12 @@ tests/CMakeFiles/test_slot_config.dir/clean:
 tests/CMakeFiles/test_clock_card.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=24,25 "Built target test_clock_card"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=23,24,25 "Built target test_clock_card"
 .PHONY : tests/CMakeFiles/test_clock_card.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_clock_card.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_clock_card.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_clock_card.dir/rule
@@ -1166,7 +1194,7 @@ tests/CMakeFiles/test_clock_card.dir/clean:
 tests/CMakeFiles/test_mockingboard.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=70,71 "Built target test_mockingboard"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=71,72 "Built target test_mockingboard"
 .PHONY : tests/CMakeFiles/test_mockingboard.dir/all
 
 # Build rule for subdir invocation for target.
@@ -1192,12 +1220,12 @@ tests/CMakeFiles/test_mockingboard.dir/clean:
 tests/CMakeFiles/test_ssc_acia.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=91,92 "Built target test_ssc_acia"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=91,92,93 "Built target test_ssc_acia"
 .PHONY : tests/CMakeFiles/test_ssc_acia.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/test_ssc_acia.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 3
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_ssc_acia.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/test_ssc_acia.dir/rule
@@ -1244,12 +1272,12 @@ tests/CMakeFiles/test_woz_writeback.dir/clean:
 tests/CMakeFiles/hero_probe.dir/all:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/depend
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=8 "Built target hero_probe"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=7,8 "Built target hero_probe"
 .PHONY : tests/CMakeFiles/hero_probe.dir/all
 
 # Build rule for subdir invocation for target.
 tests/CMakeFiles/hero_probe.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 1
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/hero_probe.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles 0
 .PHONY : tests/CMakeFiles/hero_probe.dir/rule

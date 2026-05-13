@@ -281,6 +281,20 @@ test_vbl/fast:
 .PHONY : test_vbl/fast
 
 # Convenience name for target.
+tests/CMakeFiles/test_irq_aggregator.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_irq_aggregator.dir/rule
+.PHONY : tests/CMakeFiles/test_irq_aggregator.dir/rule
+
+# Convenience name for target.
+test_irq_aggregator: tests/CMakeFiles/test_irq_aggregator.dir/rule
+.PHONY : test_irq_aggregator
+
+# fast build rule for target.
+test_irq_aggregator/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/build
+.PHONY : test_irq_aggregator/fast
+
+# Convenience name for target.
 tests/CMakeFiles/test_speaker.dir/rule:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_speaker.dir/rule
 .PHONY : tests/CMakeFiles/test_speaker.dir/rule
@@ -729,6 +743,7 @@ __/AudioDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/AudioDevice.cpp.o
@@ -762,6 +777,7 @@ __/AudioDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/AudioDevice.cpp.i
@@ -795,6 +811,7 @@ __/AudioDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/AudioDevice.cpp.s
@@ -828,6 +845,7 @@ __/CassetteDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/CassetteDevice.cpp.o
@@ -861,6 +879,7 @@ __/CassetteDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/CassetteDevice.cpp.i
@@ -894,6 +913,7 @@ __/CassetteDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/CassetteDevice.cpp.s
@@ -1134,6 +1154,7 @@ __/M6502.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/M6502.cpp.o
@@ -1167,6 +1188,7 @@ __/M6502.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/M6502.cpp.i
@@ -1200,6 +1222,7 @@ __/M6502.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/M6502.cpp.s
@@ -1293,6 +1316,7 @@ __/Memory.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/Memory.cpp.o
@@ -1326,6 +1350,7 @@ __/Memory.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/Memory.cpp.i
@@ -1359,6 +1384,7 @@ __/Memory.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/Memory.cpp.s
@@ -1512,6 +1538,7 @@ __/RomLoader.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/RomLoader.cpp.o
@@ -1545,6 +1572,7 @@ __/RomLoader.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/RomLoader.cpp.i
@@ -1578,6 +1606,7 @@ __/RomLoader.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/RomLoader.cpp.s
@@ -1612,6 +1641,7 @@ __/SlotBus.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/SlotBus.cpp.o
@@ -1651,6 +1681,7 @@ __/SlotBus.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/SlotBus.cpp.i
@@ -1690,6 +1721,7 @@ __/SlotBus.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/SlotBus.cpp.s
@@ -1729,6 +1761,7 @@ __/SnapshotIO.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SnapshotIO.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/__/SnapshotIO.cpp.o
@@ -1761,6 +1794,7 @@ __/SnapshotIO.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SnapshotIO.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/__/SnapshotIO.cpp.i
@@ -1793,6 +1827,7 @@ __/SnapshotIO.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SnapshotIO.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/__/SnapshotIO.cpp.s
@@ -1824,6 +1859,7 @@ __/SpeakerDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_speaker.dir/build.make tests/CMakeFiles/test_speaker.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SpeakerDevice.cpp.o
@@ -1858,6 +1894,7 @@ __/SpeakerDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_speaker.dir/build.make tests/CMakeFiles/test_speaker.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SpeakerDevice.cpp.i
@@ -1892,6 +1929,7 @@ __/SpeakerDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_writeback.dir/build.make tests/CMakeFiles/test_hdv_writeback.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_vbl.dir/build.make tests/CMakeFiles/test_vbl.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_speaker.dir/build.make tests/CMakeFiles/test_speaker.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/SpeakerDevice.cpp.s
@@ -2395,6 +2433,30 @@ iie_memory_smoke_test.s: iie_memory_smoke_test.cpp.s
 iie_memory_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/iie_memory_smoke_test.cpp.s
 .PHONY : iie_memory_smoke_test.cpp.s
+
+irq_aggregator_smoke_test.o: irq_aggregator_smoke_test.cpp.o
+.PHONY : irq_aggregator_smoke_test.o
+
+# target to build an object file
+irq_aggregator_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/irq_aggregator_smoke_test.cpp.o
+.PHONY : irq_aggregator_smoke_test.cpp.o
+
+irq_aggregator_smoke_test.i: irq_aggregator_smoke_test.cpp.i
+.PHONY : irq_aggregator_smoke_test.i
+
+# target to preprocess a source file
+irq_aggregator_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/irq_aggregator_smoke_test.cpp.i
+.PHONY : irq_aggregator_smoke_test.cpp.i
+
+irq_aggregator_smoke_test.s: irq_aggregator_smoke_test.cpp.s
+.PHONY : irq_aggregator_smoke_test.s
+
+# target to generate assembly for a file
+irq_aggregator_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/irq_aggregator_smoke_test.cpp.s
+.PHONY : irq_aggregator_smoke_test.cpp.s
 
 klaus_6502_functional_test.o: klaus_6502_functional_test.cpp.o
 .PHONY : klaus_6502_functional_test.o
@@ -2951,6 +3013,7 @@ help:
 	@echo "... test_hgr_render"
 	@echo "... test_iie_lc_paging"
 	@echo "... test_iie_memory"
+	@echo "... test_irq_aggregator"
 	@echo "... test_klaus_6502"
 	@echo "... test_klaus_65c02"
 	@echo "... test_language_card"
@@ -3093,6 +3156,9 @@ help:
 	@echo "... iie_memory_smoke_test.o"
 	@echo "... iie_memory_smoke_test.i"
 	@echo "... iie_memory_smoke_test.s"
+	@echo "... irq_aggregator_smoke_test.o"
+	@echo "... irq_aggregator_smoke_test.i"
+	@echo "... irq_aggregator_smoke_test.s"
 	@echo "... klaus_6502_functional_test.o"
 	@echo "... klaus_6502_functional_test.i"
 	@echo "... klaus_6502_functional_test.s"

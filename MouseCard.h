@@ -113,6 +113,7 @@ public:
     uint8_t slotRomRead(uint8_t low8) override;
     void    advanceCycles(int cycles) override;
     void    onReset() override;
+    void    onUnplug() override;
 
 private:
     int slot_;

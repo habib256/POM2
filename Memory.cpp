@@ -501,7 +501,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         const bool nowActive = scanline < kVisibleScanlines;
         if (vblIrqPending) {
             vblIrqPending = false;
-            if (cpu) cpu->setIRQ(0);
+            if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
         }
         // IIe: OR m_transchar into the low 7 bits (MAME
         // `apple2e.cpp:1859`). II+ has no $C019; leave low 7 = 0.
@@ -542,7 +542,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
                 vblIrqMask = false;
                 if (vblIrqPending) {
                     vblIrqPending = false;
-                    if (cpu) cpu->setIRQ(0);
+                    if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
                 }
             } else {
                 vblIrqMask = true;

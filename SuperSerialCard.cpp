@@ -357,6 +357,14 @@ void SuperSerialCard::onReset()
     pushIrqLine();
 }
 
+void SuperSerialCard::onUnplug()
+{
+    // Drop this slot's contribution to the wire-OR IRQ so the
+    // aggregator doesn't keep the bit stuck once the card vanishes.
+    irqState_ = 0;
+    pushIrqLine();
+}
+
 void SuperSerialCard::applyCommandReg(uint8_t v)
 {
     // MAME `mos6551.cpp:286-323`. `m_dtr` in MAME tracks the inverted pin
@@ -453,7 +461,8 @@ void SuperSerialCard::pushIrqLine()
     const bool want = irqState_ != 0;
     if (want == irqAsserted_) return;
     irqAsserted_ = want;
-    if (cpu_) cpu_->setIRQ(irqAsserted_ ? 1 : 0);
+    // Per-source IRQ keyed by slot — see M6502::setIrqLine() doc.
+    if (cpu_) cpu_->setIrqLine(slot, irqAsserted_);
 }
 
 uint8_t SuperSerialCard::slotRomRead(uint8_t low8)

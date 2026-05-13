@@ -110,6 +110,7 @@ public:
     void    slotRomWrite(uint8_t low8, uint8_t v) override;
     void    advanceCycles(int cycles) override;
     void    onReset() override;
+    void    onUnplug() override;
 
     // ─── Test hooks ──────────────────────────────────────────────────────
     /// Direct read of an AY register (peeks the latched register bank).

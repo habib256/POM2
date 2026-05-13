@@ -331,6 +331,32 @@ add_test(NAME vbl_smoke COMMAND test_vbl)
 set_tests_properties(vbl_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── IRQ aggregator smoke test ────────────────────────────────────────────
+# Pins the wire-OR semantics of `M6502::setIrqLine(sourceId, asserted)`:
+# multiple sources can assert in parallel; releasing one does NOT drop
+# the line while another is still asserting; legacy `setIRQ(int)` lives
+# on its own back-compat source bit and coexists.
+add_executable(test_irq_aggregator
+    irq_aggregator_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_irq_aggregator PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_irq_aggregator PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_irq_aggregator PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_irq_aggregator PRIVATE winmm)
+endif()
+
+add_test(NAME irq_aggregator_smoke COMMAND test_irq_aggregator)
+set_tests_properties(irq_aggregator_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Speaker 1-bit synthesis smoke test ───────────────────────────────────
 # Self-contained: SpeakerDevice only. Pins silence-default, square-wave
 # reconstruction at 1 kHz toggle rate, reset, and mute behaviour.

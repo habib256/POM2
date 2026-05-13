@@ -14,6 +14,7 @@
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_hdv_writeback.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_prodos_volume.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_vbl.dir
+/home/gistarcade/src/POM2/tests/CMakeFiles/test_irq_aggregator.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_speaker.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_hgr_render.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_le_chat_mauve.dir

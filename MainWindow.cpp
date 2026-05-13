@@ -486,9 +486,10 @@ void MainWindow::plugSlotsFromSettings()
             mouseRomStatus = "ROM load failed (size mismatch?)";
             return;
         }
-        // Wire the slot IRQ line straight into the M6502 — MAME's
-        // raise_slot_irq() forwards via the bus; here SlotBus has no
-        // shared IRQ aggregator (each card asserts directly).
+        // Wire the slot IRQ line. The card asserts via
+        // `M6502::setIrqLine(slot, asserted)` — a wire-OR aggregator
+        // keyed by slot, so other cards' IRQs stay live even if this
+        // card releases. See M6502::setIrqLine() doc.
         card->setCpuIrqLine(&controller.cpu());
         mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
         mouseCard = card.get();

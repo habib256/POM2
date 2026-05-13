@@ -296,6 +296,19 @@ test_vbl/fast:
 .PHONY : test_vbl/fast
 
 #=============================================================================
+# Target rules for targets named test_irq_aggregator
+
+# Build rule for target.
+test_irq_aggregator: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_irq_aggregator
+.PHONY : test_irq_aggregator
+
+# fast build rule for target.
+test_irq_aggregator/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_irq_aggregator.dir/build.make tests/CMakeFiles/test_irq_aggregator.dir/build
+.PHONY : test_irq_aggregator/fast
+
+#=============================================================================
 # Target rules for targets named test_speaker
 
 # Build rule for target.
@@ -1805,6 +1818,7 @@ help:
 	@echo "... test_hgr_render"
 	@echo "... test_iie_lc_paging"
 	@echo "... test_iie_memory"
+	@echo "... test_irq_aggregator"
 	@echo "... test_klaus_6502"
 	@echo "... test_klaus_65c02"
 	@echo "... test_language_card"

@@ -1,13 +1,13 @@
 # POM2 — Apple II Emulator
 
-POM2 is a small Apple II / II+ / IIe emulator built around a Dear ImGui
-shell: MOS 6502 / 65C02 CPU, 48 KB / 128 KB RAM, soft-switch I/O, full
-text / 80-column / lo-res / hi-res / DHGR video, 1-bit speaker audio,
-cassette deck, joystick, and an 8-slot peripheral bus carrying Disk II,
-Super Serial, ProDOS clock, ProDOS HDV, Mockingboard, and Le Chat Mauve
-RGB cards.
+POM2 is a small Apple II / II+ / IIe / IIc / IIc+ emulator built around
+a Dear ImGui shell: MOS 6502 / 65C02 CPU, 48 KB / 128 KB RAM, soft-switch
+I/O, full text / 80-column / lo-res / hi-res / DHGR video, 1-bit speaker
+audio, cassette deck, joystick, mouse, and an 8-slot peripheral bus
+carrying Disk II, Super Serial, ProDOS clock, ProDOS HDV, Mockingboard,
+Mouse Interface, and Le Chat Mauve RGB cards.
 
-## Status (v0.3)
+## Status
 
 Working:
 
@@ -19,24 +19,34 @@ Working:
   bug NMOS-only, RMW `$C0xx` triple-dispatch through `softSwitchAccess`,
   WAI fall-through on IRQ-with-I=1, NMI > IRQ priority, and the
   CMOS-specific cycle counts (JMP indirect = 6, BIT #imm = 2, RMB/SMB
-  = 5, BBR/BBS = 5, BRK = 7, RTI = 6).
+  = 5, BBR/BBS = 5, BRK = 7, RTI = 6). Klaus 65C02-extended test
+  passes at `$24F1` (22 M cycles). NMOS / 65C02 mode selectable via
+  `Machine → CPU` (auto-follows the active system profile).
+- **Five system profiles** — Apple ][ Original (1977, NMOS, Integer
+  BASIC ROM), Apple ][+ (1979, NMOS, Applesoft), Apple //e Enhanced
+  (1985, 65C02, 128 KB), Apple //c (1984, 65C02), Apple //c Plus
+  (1988, 65C02). Each profile has its own ROM probe order, CPU mode,
+  and IIe-paging flag; switching profiles is a full cold reset that
+  re-plugs slot cards and re-mounts the previously inserted disks.
+  Mounted media persists across profile switches.
 - **Memory** — 48 KB main + 16 KB ROM (`$C100-$FFFF`) for II/II+; or
-  128 KB (main + auxiliary 64 KB bank) for IIe with all paging soft
+  128 KB (main + auxiliary 64 KB bank) for IIe/IIc with all paging soft
   switches (80STORE / RAMRD / RAMWRT / INTCXROM / ALTZP / SLOTC3ROM /
   80COL / ALTCHAR), status reads at `$C013-$C018` / `$C01E` / `$C01F`
-  with the last keyboard character OR'd into the low 7 bits
-  (`m_transchar` parity per MAME `apple2e.cpp:1842-1871`), and the
-  internal $C100-$CFFF I/O ROM. Auto-detected from `roms/apple2e.rom`
-  presence.
+  with the last keyboard character OR'd into the low 7 bits, and the
+  internal $C100-$CFFF I/O ROM.
 - **Language Card** — 16 KB RAM bank-switched behind `$D000-$FFFF`,
   `$C080-$C08F` (read/write enable, BSR, prewrite latch — armed only by
   reads, cleared by writes per Sather 5-12), bank 1 / bank 2 on
   `$D000-$DFFF`, separate aux LC banks under ALTZP.
-- **Soft switches** `$C000-$C07F` — keyboard + strobe, speaker,
-  cassette in/out, display modes, paddles (RC discharge ~11 cycles/step
-  per MAME `apple2.cpp:247-248`), push-buttons with Open Apple / Solid
-  Apple / Shift-key mod OR'd on `$C061-$C063` in IIe mode, VBL `$C019`
-  (scanline-accurate, with IIe IRQ mask via `$C05A`/`$C05B`).
+- **Soft switches** `$C000-$C07F` — keyboard + strobe, speaker, cassette
+  in/out, display modes, paddles (RC discharge ~11 cycles/step per MAME
+  `apple2.cpp:247-248`), push-buttons with Open Apple / Solid Apple /
+  Shift-key mod OR'd on `$C061-$C063` in IIe mode, annunciators
+  `$C058-$C05F` (AN0/AN1/AN2 state tracked, AN3 doubles as DHGR enable
+  + Le Chat Mauve FIFO clock), VBL `$C019` (scanline-accurate, with IIe
+  IRQ mask via `$C05A`/`$C05B`), `$C040` strobe swallowed,
+  `$C068-$C07F` mirrors + floating-bus on `$C061-$C067` low 7 bits.
 - **Display** — text 40×24 with normal / inverse / flashing attribute
   (2 Hz, MAME `frame_number() & 0x10` parity); lo-res 40×48 (16 colours,
   benrg NTSC palette ported verbatim from MAME `apple2video.cpp`);
@@ -51,11 +61,12 @@ Working:
   in IIe ALTCHAR mode; built-in 5×7 fallback if no ROM provided.
 - **Mixed mode** — text rows 20-23 over hi-res / lo-res / DHGR;
   Page 1 / Page 2.
-- **Le Chat Mauve / Féline** RGB card (slot 7) — direct 6-colour HGR
-  decode with no inter-byte fringing (MSB selects violet/green vs.
+- **Le Chat Mauve / Féline** RGB card — direct 6-colour HGR decode
+  with no inter-byte fringing (MSB selects violet/green vs.
   blue/orange bank), AN3+80COL FIFO for mode select, four modes
-  (BW560 / Mixed / Chunky / COL140). Coexists with the NTSC / mono
-  pipelines.
+  (BW560 / Mixed / Chunky / COL140). Lo-res + HGR + DHGR palettes use
+  the AppleWin `PaletteRGB_Feline` capture (two distinct grays
+  preserved). Coexists with the NTSC / mono pipelines.
 - **Audio** — 1-bit speaker through miniaudio with MAME-grade
   reconstruction: rectangle-area integration of every $C030 toggle
   into 4× oversampled intermediate samples, 64-tap windowed sinc
@@ -63,49 +74,60 @@ Working:
   port of MAME `spkrdev.cpp:74-327`. Cassette mixed in alongside.
   Volume / mute UI.
 - **Cassette** — `$C020` write-toggle and `$C060` comparator wired to
-  a procedural cassette deck (Play / Record / Rewind, Font Awesome icons,
-  WAV / MP3 / OGG / FLAC / `.aci` input).
+  a procedural cassette deck (Play / Record / Rewind, Font Awesome
+  icons, WAV / MP3 / OGG / FLAC / `.aci` input).
 - **Disk II controller** in slot 6 — boot via `PR#6`, two drives, 35
   whole tracks × 4 quarter-tracks (160 quarter-track slots on WOZ).
   Loaders: `.dsk` / `.do` (DOS 3.3 logical sector order), `.po`
   (ProDOS), `.nib` (raw nibbles), `.woz` (WOZ1 + WOZ2 with full
-  quarter-track decode + FLUX chunk + CRC32 validation —
-  unlocks Spiradisc / RWTS18 / Locksmith Fast Copy and the FLUX-mastered
-  protections like Wings of Fury original / Captain Goodnight / Ankh).
-  LSS-level bit-cell read path (verbatim port of MAME `wozfdc.cpp` +
-  P6 PROM) plus a legacy 32-cycle gate. Write-back to
-  `.dsk`/`.do`/`.po`/`.nib` is opt-in (default off — source files are
-  never touched unless you enable it). WOZ stays read-only.
+  quarter-track decode + CRC32 validation — unlocks Spiradisc /
+  RWTS18 / Locksmith Fast Copy). LSS-level bit-cell read path
+  (verbatim port of MAME `wozfdc.cpp` + P6 PROM) plus a legacy
+  32-cycle gate. Write-back to `.dsk`/`.do`/`.po`/`.nib` AND `.woz`
+  (WOZ1 + WOZ2, MSB-first cell-by-cell splice, CRC32 zeroed as
+  Applesauce "not computed" sentinel) — opt-in, default off. Source
+  files are never touched unless you enable the toggle.
 - **ProDOS Clock card** (slot 4) — ThunderClock+-compatible RTC,
-  bit-bang uPD1990AC at `$C0C0`. ProDOS file timestamps work out of the
-  box; DOS 3.3 disks ignore the card.
+  bit-bang uPD1990AC at `$C0C0`. TIME_READ and TIME_SET both wired:
+  ProDOS file timestamps + software clock-set utilities both work.
+  DOS 3.3 disks ignore the card.
 - **ProDOS HardDisk** (slot 5) — 32 MB ProDOS HDV image mount, plus a
   synthetic read-only volume built on the fly from any host folder
   (`prodos_disk/` by default — appears as `/HOST/` once ProDOS is up).
 - **Super Serial Card** (slot 2) — 6551 ACIA model with full slot-IRQ
-  wiring (RDRF / DCD / DSR transitions, gated by command-register
-  RX-IRQ-enable bit), A0-A1 mirror across `$C0nC-$C0nF`, DIP-switch
-  readback at `$C0n0-$C0n7` per MAME `a2ssc.cpp:339-353`, 8-bit clean
-  TX (XMODEM / Kermit / ADTPro friendly), MAME-correct status-write
-  semantics (`cmdReg &= ~0x1F`). TCP listener on `127.0.0.1:6502` with
-  telnet IAC stripping.
-- **Mockingboard** — dual 6522 VIA + dual AY-3-8910 PSG, user-pluggable
-  into any free slot (slot 4 by convention). Full T1 + T2 timers
-  (Ultima IV speech driver works), MAME-verbatim 4-flag envelope state
-  machine (shapes 0-15 including the vibrato-friendly 10 / 12 / 14),
-  17-bit noise LFSR. Volume + mute persist.
+  wiring (RDRF / TDRE / DCD / DSR transitions, gated by command-register
+  RX-IRQ-enable bit AND DTR), echo mode (REM, command bit 4),
+  software baud-rate divider (MAME `mos6551.cpp` table — 1.8432 MHz
+  xtal ÷ divider ÷ 16 ÷ 10), DTR side effects (drops IRQs, flushes
+  TX, rejects further writes), overrun tracking, A0-A1 mirror across
+  `$C0nC-$C0nF`, DIP-switch readback at `$C0n0-$C0n7`, 8-bit clean
+  TX (XMODEM / Kermit / ADTPro friendly). TCP listener on
+  `127.0.0.1:6502` with telnet IAC stripping.
+- **Mockingboard** — dual 6522 VIA + dual AY-3-8910 PSG,
+  user-pluggable into any free slot (slot 4 by convention). Full T1
+  + T2 timers (Ultima IV speech driver works), MAME-verbatim 4-flag
+  envelope state machine (shapes 0-15 including the vibrato-friendly
+  10 / 12 / 14), 17-bit noise LFSR. Volume + mute persist.
+- **Mouse Interface** — Apple Mouse Card, slot 4 by convention.
+  Verbatim port of MAME `bus/a2bus/mouse.cpp`: M68705P3 microcontroller
+  (Apple 341-0269) + MC6821 PIA + 2 KB bank-switched EPROM (Apple
+  341-0270-c). Slot ROM is bank-selected via PIA Port B; PB6 of the
+  MCU asserts the slot IRQ. Host mouse position + button forwarded
+  through the Apple II screen's bounding box. Requires both ROMs
+  (`roms/mouse_341-0269.bin` and `roms/mouse_341-0270-c.bin`); the
+  slot-config UI greys the entry out when they're missing.
 - **Joystick** — GLFW host pad → paddles 0/1 + buttons PB0/PB1/PB2
   (`$C061-$C063`, `$C064-$C067`), hot-plug-friendly, autobinds first
   present pad.
 - **8-slot expansion bus** — `$C080-$C0FF` device-select, `$C100-$C7FF`
   slot ROM, `$C800-$CFFF` shared expansion ROM with `$CFFF` disable.
-  Slot configuration UI (Hardware → Slot configuration) lets you assign
-  cards to slots, with state persisted across runs.
+  Slot configuration UI (Hardware → Slot configuration) lets you
+  assign cards to slots, with state persisted across runs.
 - **Snapshot** — save / load (`POM2SNAP` magic, named 8-byte sections,
   CPU + RAM + soft-switches; Disk II + peripheral state intentionally
   excluded).
-- **CLI** — `--preset ii|ii+`, `--speed`, `--cpu-max`, `--tape`,
-  `--load addr:file`, `--run`, `--paste`, `--step`,
+- **CLI** — `--preset <ii|ii+|iie|iic|iic+>`, `--speed`, `--cpu-max`,
+  `--tape`, `--load addr:file`, `--run`, `--paste`, `--step`,
   `--play/--rec/--rewind`, `--snapshot-save/load`.
 - **Threading** — UI 60 Hz, CPU pinned to 1.0227 MHz nominal (uncapped
   MAX available), single `stateMutex` between worker and renderer.
@@ -114,23 +136,20 @@ Working:
   6502 disassembly toggle. Three memory-map widgets (vertical bar,
   horizontal bar, grid).
 
-Not yet:
+Not yet (see `TODO.md` for the full backlog):
 
-- Integer BASIC preset (only Applesoft / Autostart is exercised today)
-- WOZ write-back (always read-only — Applesauce WRIT/FLUX writer not
-  implemented; the legacy formats do persist when opt-in is on)
-- SSC modem-side niceties: echo mode (command bit 4), software baud
-  rate, DTR side effects, DCD/DSR transition IRQs
-- ClockCard TIME_SET / TP-pin / MODE_SHIFT (only TIME_READ is wired —
-  fine for ProDOS, blocks setting the clock from software)
-- Annunciators `$C058-$C05F`, `$C040` utility strobe (no consumer in
-  POM2 today, but pinned by some niche software)
-- Mouse Card, RAMWorks, CP/M Z80 SoftCard, Video-7 AppleColor RGB,
-  Eve Color-text mode
-- DHGR per-scanline mode switching (the bottom-of-mixed region uses a
+- ClockCard TP-pin tick rates (64/256/2048/4096 Hz + interval timers)
+  — needs a slot-bus IRQ line first
+- WOZ2 `optimal_bit_timing` honoured, WOZ1 splice point
+- PADL(2)/PADL(3) host binding (currently centred at 127)
+- Mouse → paddles 0/1 alternative mapping
+- Eve Color text mode (`$C0B9`), Video-7 AppleColor RGB
+- RAMWorks (IIe-only, ProDOS 3+), CP/M Z80 SoftCard
+- DHGR per-scanline mode switching (bottom-of-mixed region uses a
   static 4-line region)
-
-See `TODO.md` for the full backlog.
+- Integer BASIC ROM (the `Apple ][ Original` profile probes
+  `roms/apple2o.rom` — works if you provide one; Applesoft is what
+  most users actually exercise)
 
 ## Build
 
@@ -146,29 +165,42 @@ run CMake manually.
 
 ## ROM placement
 
-Drop your own Apple II / II+ / IIe ROMs at:
+Drop your own Apple II / II+ / IIe / IIc / IIc+ ROMs into `roms/`.
+ROMs are probed per the active system profile (selectable via
+`Presets` menu or `--preset` CLI flag):
 
-- `roms/apple2e.rom` — **takes precedence**. 16 KB or 32 KB IIe main ROM
-  (`$C000-$FFFF` plus optional video / character data in the lower
-  16 KB). When present POM2 boots as a IIe (128 KB RAM via auxiliary
-  bank, IIe paging soft switches, 80-column text, DHGR). The status
-  pill in the menu bar reads `IIe (128K): roms/apple2e.rom`.
-- `roms/apple2.rom` — 12 KB Autostart Monitor + Applesoft
-  (`$D000-$FFFF`) or 16 KB II+ image (`$C000-$FFFF`); the I/O page is
-  preserved. Used when no IIe ROM is present.
+| Profile          | Main ROM probes                                       |
+|------------------|-------------------------------------------------------|
+| Apple ][ (1977)  | `apple2o.rom`, `apple2.rom`                           |
+| Apple ][+ (1979) | `apple2p.rom`, `apple2.rom`                           |
+| Apple //e (1985) | `apple2e.rom`                                         |
+| Apple //c (1984) | `apple2c-32Kv0.rom`, `apple2c-16K.rom`                |
+| Apple //c+ (1988)| `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` |
+
+First existing file wins. Sizes accepted:
+- 12 KB Autostart Monitor + Applesoft (`$D000-$FFFF`) — II/II+
+- 16 KB (`$C000-$FFFF`) — II+, IIe, IIc
+- 32 KB "system + video" combined dump — IIe / IIc (the lower 16 KB
+  carries video/char data; loaded through the char-ROM path)
+
+Other ROMs:
+
 - `roms/apple2_char.rom` — 2 KB (II/II+) or 4 KB (IIe with mousetext)
-  character ROM (optional; POM2 falls back to a built-in 5×7 ASCII font).
-- `roms/disk2.rom` — 256 B P5A boot PROM (AppleWin's copy works). When
-  present POM2 auto-plugs the Disk II card in slot 6 at startup.
+  character ROM (optional; POM2 falls back to a built-in 5×7 ASCII
+  font).
+- `roms/disk2.rom` — 256 B P5A boot PROM (AppleWin's copy works).
+  When present POM2 auto-plugs the Disk II card in slot 6 at startup.
 - `roms/diskii_p6.rom` — 256 B sequencer PROM. When present, the LSS
-  bit-level path activates (required for `.woz` decode and cycle-accurate
-  protection); otherwise the legacy 32-cycle nibble gate is used.
+  bit-level path activates (required for `.woz` decode and
+  cycle-accurate protection); otherwise the legacy 32-cycle nibble
+  gate is used.
+- `roms/mouse_341-0270-c.bin` (2 KB) and `roms/mouse_341-0269.bin`
+  (2 KB) — Apple Mouse Card slot EPROM + MCU mask ROM. Both required
+  to enable the `Mouse Interface` slot entry.
 
-Without any of the above the CPU still runs but executes whatever stub
-is left at `$F800` — the screen will stay dark. POM2 prints the ROM
-status in the menu bar (`IIe (128K): ...`, `loaded: ...`, or `NO ROM`).
-To switch between IIe and II+ at runtime, move `roms/apple2e.rom` aside
-(or rename it) and restart.
+The status pill in the menu bar shows the resolved profile + ROM.
+Without any main ROM the CPU still runs but executes whatever stub is
+left at `$F800`.
 
 ## Disk images
 
@@ -176,24 +208,25 @@ Drop images into `disks/`:
 - `.dsk` / `.do` — 143 360 B, DOS 3.3 logical sector order
 - `.po` — 143 360 B, ProDOS sector order (boots ProDOS, A2DeskTop, …)
 - `.nib` — 232 960 B, raw nibble image
-- `.woz` — WOZ1 or WOZ2 (Applesauce), with full quarter-track + FLUX
-  chunk decoding; CRC32-validated on load. Read-only.
+- `.woz` — WOZ1 or WOZ2 (Applesauce), with full quarter-track
+  decoding; CRC32-validated on load.
 
 Use **Hardware → Insert disk image** to mount, then boot with `PR#6`,
 or click the "boot disk" button in the Disk II panel. The image file
 is read-only by default; toggle write-back in the panel to persist
-writes back to `.dsk`/`.do`/`.po`/`.nib` (WOZ stays read-only).
+writes back to `.dsk`/`.do`/`.po`/`.nib` AND `.woz`. WOZ
+`INFO.write_protected` (the physical-disk WP byte) is always honoured.
 
 For ProDOS hard-disk volumes drop `.hdv` / `.2mg` images into `hdv/`
-and mount via **Hardware → ProDOS HardDisk (slot 5)**. The Library tab
-also lists a synthetic `[host folder] prodos_disk/` entry that builds a
-read-only volume on the fly from the contents of `prodos_disk/` — once
-ProDOS is up it appears as `/HOST/`.
+and mount via **Hardware → ProDOS HardDisk (slot 5)**. The Library
+tab also lists a synthetic `[host folder] prodos_disk/` entry that
+builds a read-only volume on the fly from the contents of
+`prodos_disk/` — once ProDOS is up it appears as `/HOST/`.
 
 ## Keyboard
 
-The host keyboard maps straight to the Apple II keyboard latch. Special
-keys:
+The host keyboard maps straight to the Apple II keyboard latch.
+Special keys:
 
 | Host        | Apple II  |
 |-------------|-----------|
@@ -209,15 +242,15 @@ keys:
 | F11         | Reset / Ctrl-Reset (soft) |
 | F12         | Hard reset / power-cycle |
 
-Both upper and lower case letters pass straight through — POM2 doesn't
-force-uppercase what you type.
+Both upper and lower case letters pass straight through — POM2
+doesn't force-uppercase what you type.
 
 ## Joystick
 
-Plug a USB pad before launch (or hot-plug — POM2 polls all 16 GLFW slots
-each frame). The first present pad auto-binds; **Hardware → Joystick**
-opens a panel to pick a different one, set deadzone, and invert axes.
-Mapping:
+Plug a USB pad before launch (or hot-plug — POM2 polls all 16 GLFW
+slots each frame). The first present pad auto-binds;
+**Hardware → Joystick** opens a panel to pick a different one, set
+deadzone, and invert axes. Mapping:
 
 | Host        | Apple II        |
 |-------------|-----------------|
@@ -231,18 +264,21 @@ PADL(2) and PADL(3) read centred (127).
 
 ## Slot configuration
 
-Cards are wired through `SlotBus`. The default layout matches the
-classic Apple II/IIe convention:
+Cards are wired through `SlotBus`. Eight available card types:
+`(empty)`, `Disk II`, `ProDOS HDV`, `Super Serial`, `Clock (ProDOS)`,
+`Le Chat Mauve`, `Mouse Interface`, `Mockingboard A/C`. Each type may
+appear in at most one slot. Default layout matches the classic
+Apple II/IIe convention:
 
-| Slot | Card                                |
-|------|-------------------------------------|
-| 1    | (free — printer card hook reserved) |
-| 2    | Super Serial Card (TCP `127.0.0.1:6502`) |
+| Slot | Card                                                   |
+|------|--------------------------------------------------------|
+| 1    | (free — printer card hook reserved)                    |
+| 2    | Super Serial Card (TCP `127.0.0.1:6502`)               |
 | 3    | (IIe internal 80-column firmware when `SLOTC3ROM=off`) |
-| 4    | ProDOS Clock card (ThunderClock+) — or Mockingboard, user choice |
-| 5    | ProDOS HardDisk (HDV + host folder)  |
-| 6    | Disk II (auto-plugged if `roms/disk2.rom` is present) |
-| 7    | Le Chat Mauve RGB monitor             |
+| 4    | ProDOS Clock card — or Mockingboard, or Mouse Interface |
+| 5    | ProDOS HardDisk (HDV + host folder)                    |
+| 6    | Disk II (auto-plugged if `roms/disk2.rom` is present)  |
+| 7    | Le Chat Mauve RGB monitor                              |
 
 Open **Hardware → Slot configuration** to swap cards in or out. The
 chosen layout, individual card volume / mute / port settings, and
@@ -256,18 +292,20 @@ ImGui main window with one menu bar and several panels:
   texture rendered each frame.
 - **Emulation** — CPU registers, cycle counter, speed selector
   (1×, 2×, MAX), ROM status, audio volume / mute.
-- **Cassette deck** — procedural 378×404 deck (Hardware → Cassette deck).
-- **Disk II (slot 6)** — PROM/motor LEDs, current track, Insert / Eject,
-  write-back toggle.
+- **Cassette deck** — procedural 378×404 deck
+  (Hardware → Cassette deck).
+- **Disk II (slot 6)** — PROM/motor LEDs, current track, Insert /
+  Eject, write-back toggle.
 - **ProDOS HDV (slot 5)** — image picker, library tab with the
   `[host folder]` synth entry.
-- **Super Serial (slot 2)** — start/stop the TCP listener, change port.
-- **Le Chat Mauve (slot 7)** — FIFO state, manual mode override, reset.
+- **Super Serial (slot 2)** — start/stop the TCP listener, change
+  port.
+- **Le Chat Mauve** — FIFO state, manual mode override, reset.
 - **Mockingboard** — per-VIA register dump, AY register state, volume.
 - **Joystick** — host-pad picker, live axis / button readout.
-- **Memory viewer** — togglable via Debug → Memory viewer. Region-coloured
-  hex grid + ASCII column + 6502 disassembly toggle, search / edit /
-  bookmarks / undo-redo.
+- **Memory viewer** — togglable via Debug → Memory viewer.
+  Region-coloured hex grid + ASCII column + 6502 disassembly toggle,
+  search / edit / bookmarks / undo-redo.
 - **Memory Map widgets** — three layouts (Bar, Bar Horizontal, Grid)
   for visualising the 64 KB layout at a glance.
 

@@ -74,6 +74,7 @@ set(CMAKE_DEPEND_INFO_FILES
   "tests/CMakeFiles/test_hdv_writeback.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_prodos_volume.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_vbl.dir/DependInfo.cmake"
+  "tests/CMakeFiles/test_irq_aggregator.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_speaker.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_hgr_render.dir/DependInfo.cmake"
   "tests/CMakeFiles/test_le_chat_mauve.dir/DependInfo.cmake"

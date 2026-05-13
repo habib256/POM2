@@ -44,6 +44,38 @@ public:
     void stop(void);
     void softReset(void);
     void hardReset(void);
+
+    /// IRQ source identifiers for `setIrqLine()`. The 6502 IRQ pin is
+    /// active-low and **wire-OR**'d on real hardware — any device pulling
+    /// it asserts IRQ, and the line only releases once *every* device
+    /// stops pulling. `setIrqLine()` maintains a 32-bit OR'd source mask
+    /// so multiple cards can assert independently without one card's
+    /// deassertion clobbering another card's still-pending IRQ.
+    ///
+    /// Slot N (1..7) reserves bit N. Source-level IDs above 7 cover
+    /// motherboard interrupts. Bit 31 is the back-compat slot used by
+    /// the legacy `setIRQ(int)` entry point.
+    enum IrqSource : int {
+        IRQ_SRC_SLOT1   = 1,
+        IRQ_SRC_SLOT2   = 2,
+        IRQ_SRC_SLOT3   = 3,
+        IRQ_SRC_SLOT4   = 4,
+        IRQ_SRC_SLOT5   = 5,
+        IRQ_SRC_SLOT6   = 6,
+        IRQ_SRC_SLOT7   = 7,
+        IRQ_SRC_VBL     = 8,
+        IRQ_SRC_LEGACY  = 31,
+    };
+    /// Set or clear one source's contribution to the IRQ line.
+    /// Cards assert with their slot number (`slot_`). Idempotent.
+    void setIrqLine(int sourceId, bool asserted);
+    /// Wire-OR mask of currently asserted sources. Debug / test hook.
+    uint32_t getIrqSourceMask() const { return irqSourceMask; }
+
+    /// Legacy entry — equivalent to `setIrqLine(IRQ_SRC_LEGACY, state!=0)`.
+    /// Kept so existing callers (and the Klaus harness, snapshot tools)
+    /// still compile. Prefer `setIrqLine` for new code so deassertions
+    /// don't drop other sources' IRQs.
     void setIRQ(int state);
     void setNMI(void);
     void dumpPcTrace(const char* tag);
@@ -111,6 +143,10 @@ private :
     bool debugBrkTrace = false;   // see setDebugBrkTrace()
     uint8_t accumulator, xRegister, yRegister, statusRegister, stackPointer;
     int IRQ, NMI;
+    /// OR'd contributions from every IRQ source registered via
+    /// `setIrqLine()`. `IRQ` mirrors `(irqSourceMask != 0)` after every
+    /// update so the dispatch loop stays a single-int test.
+    uint32_t irqSourceMask = 0;
     uint16_t programCounter;
     uint16_t op;
     int tmp;

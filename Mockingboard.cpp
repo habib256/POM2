@@ -653,6 +653,16 @@ MockingboardCard::MockingboardCard(int slotNum)
 
 MockingboardCard::~MockingboardCard() = default;
 
+void MockingboardCard::onUnplug()
+{
+    // Release this slot's contribution to the wire-OR IRQ line before
+    // the card disappears, otherwise the aggregator would keep the bit
+    // set and a freshly plugged card on the same slot (or just no card
+    // at all) would inherit a stuck IRQ.
+    if (irqAsserted_ && cpu_) cpu_->setIrqLine(slot_, false);
+    irqAsserted_ = false;
+}
+
 void MockingboardCard::onReset()
 {
     std::lock_guard<std::mutex> lk(mtx);
@@ -660,7 +670,7 @@ void MockingboardCard::onReset()
     via_[1]->reset();
     ay_[0]->reset();
     ay_[1]->reset();
-    if (irqAsserted_ && cpu_) cpu_->setIRQ(0);
+    if (irqAsserted_ && cpu_) cpu_->setIrqLine(slot_, false);
     irqAsserted_ = false;
 }
 
@@ -741,7 +751,10 @@ void MockingboardCard::updateIrq()
     const bool combined = via_[0]->irqOut() || via_[1]->irqOut();
     if (combined == irqAsserted_) return;
     irqAsserted_ = combined;
-    if (cpu_) cpu_->setIRQ(combined ? 1 : 0);
+    // Route via the per-source aggregator keyed by slot — wire-OR
+    // semantics so another card on a different slot stays asserted
+    // even when this one releases. See M6502::setIrqLine().
+    if (cpu_) cpu_->setIrqLine(slot_, combined);
 }
 
 uint8_t MockingboardCard::getAyRegister(int chip, int reg) const

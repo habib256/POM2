@@ -147,6 +147,12 @@ void MouseCard::onReset()
     mcuCycleAccum = 0;
 }
 
+void MouseCard::onUnplug()
+{
+    // Release this slot's IRQ bit before the card disappears.
+    raiseIrq(false);
+}
+
 // ─── PIA → MCU bridge ───────────────────────────────────────────────────
 
 void MouseCard::onPiaPortAOut(uint8_t v)
@@ -254,5 +260,8 @@ void MouseCard::raiseIrq(bool assert)
 {
     if (assert == slotIrqAsserted) return;
     slotIrqAsserted = assert;
-    if (cpu_) cpu_->setIRQ(assert ? 1 : 0);
+    // Per-source IRQ keyed by slot. See M6502::setIrqLine() doc — a
+    // wire-OR aggregator means another card on a different slot stays
+    // asserted while we release.
+    if (cpu_) cpu_->setIrqLine(slot_, assert);
 }

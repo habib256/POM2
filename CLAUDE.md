@@ -5,10 +5,12 @@ walkthrough → `README.md`.
 
 ## Project Overview
 
-Apple II / II+ / IIe emulator (Dear ImGui, MOS 6502 + 64 KB / 128 KB RAM
-via Language Card + soft switches + text / 80-col / lo-res / hi-res
-framebuffer + 1-bit speaker + cassette + joystick + Disk II in slot 6).
-One concern per file: each `.cpp/.h` pair owns one subsystem.
+Apple II / II+ / IIe / IIc / IIc+ emulator (Dear ImGui, MOS 6502 +
+65C02, 64 KB / 128 KB RAM via Language Card + aux bank + soft switches
++ text / 80-col / lo-res / hi-res / DHGR framebuffer + 1-bit speaker +
+cassette + joystick + Mouse Card + 8-slot peripheral bus). Five system
+profiles selectable at runtime (see **System profiles** below). One
+concern per file: each `.cpp/.h` pair owns one subsystem.
 
 ## Build & Run
 
@@ -18,12 +20,12 @@ cd build && cmake .. && make # build → build/POM2
 ./run_emulator.sh            # runs from repo root so roms/ probes resolve
 ```
 
-ROMs are user-provided. **`roms/apple2e.rom` (16 KB or 32 KB) takes
-precedence at startup** — its presence flips MainWindow into IIe mode
-(128 KB, IIe soft switches, 80-col, internal $C100-$CFFF I/O ROM).
-Otherwise the binary falls back to `roms/apple2.rom` (12 KB or 16 KB)
-and runs as a II+. No menu / CLI flag — pure auto-detect on file
-presence.
+ROMs are user-provided. The active system profile (default
+`Apple ][+`, overridable via `Presets` menu or `--preset` CLI flag)
+drives the ROM probe order — see **System profiles** below. The
+legacy auto-detect that flipped to IIe mode on `roms/apple2e.rom`
+presence at startup is preserved as a fallback when no profile is
+forced.
 
 `Memory::loadAppleIIRom` accepts both common //e dump variants:
 - **16 KB**: $C000-$FFFF directly. The standard MAME / AppleWin layout.
@@ -125,13 +127,25 @@ presence.
   `Memory::getDisplayState()` (cheap mutex copy) and the flat RAM array
   directly. **Owns no GL state** — UI uploads via `glTexImage2D` (on size
   change) or `glTexSubImage2D`. Built-in 5×7 ASCII font fallback when the
-  user hasn't provided a character ROM. Lo-res palette is the
-  //gs-corrected approximation. Hi-res has four `HiResMode` variants:
-  `ColorNTSC` (default — 14 KB LUT indexed by `(parity << 8) | byte`, 39
-  inter-byte seam fix-ups, optional additive horizontal glow) and three
-  monochrome phosphors — `MonoWhite` / `MonoGreen` (P31) / `MonoAmber`.
-  Text inverse attribute renders statically (2 Hz flashing animation
-  pending).
+  user hasn't provided a character ROM. Lo-res palette is the benrg
+  NTSC palette ported verbatim from MAME `apple2video.cpp`. Hi-res
+  has **seven** `HiResMode` variants:
+  - `ColorNTSC` (default, MAME `composite_color_mode=0`) — 14 KB LUT
+    indexed by `(parity << 8) | byte`, 39 inter-byte seam fix-ups,
+    optional additive horizontal glow.
+  - `ColorCompMedium` (MAME `composite_color_mode=1`) — medium-color
+    biased variant; uglier 40-col text, cleaner mid-tones.
+  - `ColorComp4Bit` (MAME `composite_color_mode=2`) — no artifact;
+    each 4-dot nibble maps directly to one palette index. Hard-edge
+    variant.
+  - `ChatMauveRGB` — clean RGB-card decode (no fringing, two distinct
+    grays); only active when a `LeChatMauveCard` is plugged. The
+    card's FIFO mode (BW560 / Mixed / Chunky / COL140) selects the
+    sub-variant.
+  - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` — luminance ×
+    phosphor tint, with afterglow (history-buffer lerp on Amber).
+  Text flash attribute drives a 2 Hz cycle via `frame_number() & 0x10`
+  (MAME parity).
   - **80-column text** (IIe). When `setAuxMemory(...)` has been called and
     the soft-switch state shows `eightyCol && textMode`, `render80ColumnText`
     interleaves aux RAM (even cells: 0,2,…,78) with main RAM (odd cells:
@@ -187,13 +201,17 @@ presence.
   `getActualSampleRate()` or playback drifts by the rate ratio.
   `addSource(AudioSource*)` is thread-safe; the data callback runs on
   miniaudio's thread.
-- **SpeakerDevice** — `AudioSource` for the 1-bit speaker. The CPU side
-  records each `$C030-$C03F` toggle with a sub-instruction timestamp
-  (`cycleCounter + cpu->getCurrentInstructionCycles()`) into a 16 K-event
-  ring; the audio thread drains it into a square wave at the negotiated
-  rate, applies a 1-pole low-pass (~5 kHz, models the speaker cone) and a
-  DC blocker (avoids drift across long silence). Auto catch-up if the
-  drain lags > 100 ms. UI volume + mute are atomics.
+- **SpeakerDevice** — `AudioSource` for the 1-bit speaker. Verbatim
+  port of MAME `spkrdev.cpp:74-327`. The CPU side records each
+  `$C030-$C03F` toggle with a sub-instruction timestamp
+  (`cycleCounter + cpu->getCurrentInstructionCycles()`) into a 16 K
+  event ring. Audio-thread reconstruction pipeline:
+  rectangle-area integration of each toggle into 4× oversampled
+  intermediate samples → 64-tap windowed sinc convolution (cutoff
+  ≈ sr/4, `kRateMultiplier=4`, `kFilterLength=64`) → 0.995-pole DC
+  blocker (`y[n] = x[n] - x[n-1] + 0.995 * y[n-1]`, MAME
+  `spkrdev.cpp:280-285`). Auto catch-up if the drain lags > 100 ms.
+  UI volume + mute are atomics.
 - **CassetteDevice** — Apple II `$C020` (output toggle) and `$C060` (sign
   of the audio comparator). Drives a separate `AudioSource` so tape loads
   click through the speakers; Play / Record / Rewind are exposed by the
@@ -228,6 +246,25 @@ presence.
   the active slot; auto-latch on slot-ROM access. `advanceCycles()`
   forwards to every plugged card (Disk II head stepping today).
   Apple II Ctrl-Reset propagates `onReset()` to all cards.
+
+### IRQ aggregation
+
+- **`M6502::setIrqLine(sourceId, asserted)`** — wire-OR IRQ aggregator.
+  The 6502 IRQ pin is active-low and pulled by *any* device on a real
+  Apple II; the line releases only once *every* device stops pulling.
+  POM2 maintains a 32-bit OR'd contributor mask keyed by source ID:
+  slot N (1..7) reserves bit N, motherboard VBL = bit 8, the legacy
+  `setIRQ(int)` back-compat entry = bit 31. Cards assert via their
+  `slot_` so two plugged cards (Mockingboard + SSC + Mouse) can drive
+  the line independently without one card's deassertion masking
+  another's still-pending IRQ. Previously each card called
+  `cpu->setIRQ(0|1)` directly and the last writer won — that bug is
+  why mixing IRQ-driven cards in the same session was unreliable.
+  Pinned by `tests/irq_aggregator_smoke_test.cpp` (wire-OR semantics,
+  legacy entry coexistence, idempotent assert/release). Cards release
+  their bit in `onUnplug()` so a profile switch / slot-config rebuild
+  doesn't leave a stuck bit. NMI is still a single latch — there's
+  only one NMI source in POM2 (none today).
 
 ### Disk II (slot 6)
 
@@ -502,6 +539,46 @@ presence.
   sequence, T1 IRQ continuous + one-shot, T1CL read clearing IFR.T1,
   AY tone synthesis producing non-silent output for a non-zero period.
 
+### Mouse Card (slot 4 by convention)
+
+- **MouseCard** — Apple Mouse Interface card, verbatim port of MAME
+  `src/devices/bus/a2bus/mouse.cpp`. PCB ingredients:
+  - **M68705P3** 8-bit microcontroller running the on-card firmware
+    (Apple 341-0269, 2 KB mask ROM). Paced at 2× the Apple II clock
+    from `advanceCycles()` via a fractional accumulator.
+  - **MC6821** PIA — bus-side interface. Apple II 6502 hits 4
+    registers in the device-select window (`$C0n0-$C0n3`).
+  - **8516 EPROM** — 2 KB Apple II-side slot ROM (Apple 341-0270-c),
+    bank-switched into `$Cn00-$CnFF` via PIA Port B bits 1-3 (8 banks
+    of 256 bytes; `bank = (PortB & 0x0E) << 7`).
+- **Wiring** (PIA ↔ MCU bridge):
+  - PIA Port A ↔ MCU Port A (bidirectional, internal pull-ups).
+  - PIA PB4..PB7 ↔ MCU PC0..PC3.
+  - PIA PB1..PB3 → EPROM A8..A10 (slot ROM bank select).
+  - MCU PB6 → slot IRQ (active low — firmware writes 0 to PB6 to
+    assert; cached so the bus asserter only fires on transitions).
+  - MCU PB7 ← mouse button (active low).
+  - MCU PB0/PB1 / PB2/PB3 ← X / Y quadrature (CLK + DIR per axis).
+- **Host mouse routing**. `MainWindow::onMouseMove` / `onMouseButton`
+  forward the cursor (clipped to the Apple II screen rect) and primary
+  button into `setHostMouse(rawX, rawY, button)`. The MCU firmware
+  computes deltas via 8-bit subtraction with wrap; POM2 emits at most
+  one quadrature edge per axis per MCU `Port B` read, matching MAME's
+  `m_last` / `m_count` arrays.
+- **ROM gating**. Both ROMs required to plug. The slot-config UI
+  greys the entry out when either is missing; `plugSlotsFromSettings`
+  refuses with a `Mouse` log warn so the user is told why. Default
+  paths: `roms/mouse_341-0270-c.bin` + `roms/mouse_341-0269.bin`.
+- **Not modelled** (deliberate, firmware-invisible): PAL16R4 chip-select
+  sequencer at U2A, PIA Port B bit 0 sync latch (firmware uses it to
+  pace against video timing — we just enable IRQs unconditionally),
+  motion clamping (the MCU firmware does it).
+- **Pinned by** `tests/mouse_card_smoke_test.cpp` (PIA decode + bank
+  select + IRQ assertion) and `tests/mouse_card_quadrature_smoke_test.cpp`
+  (one edge per axis per Port B read, host delta → quadrature
+  translation). M68705P3 decode + MC6821 register semantics each
+  have their own smoke tests.
+
 ### ProDOS host folder (`prodos_disk/`)
 
 - **`ProDOSVolume`** synthesises a read-only ProDOS volume image (block
@@ -699,10 +776,10 @@ Strobe stays high until $C010 read/write.
 
 Toggle-on-access counter exposed via `getSpeakerToggleCount()` for the
 Emulation panel. The audio path itself lives in `SpeakerDevice` (see
-*Audio* above): every `$C030-$C03F` access pushes a sub-instruction
-timestamp into a ring buffer; the audio callback drains it into a square
-wave through a 5 kHz LP + DC blocker. The toggle counter is debug-only —
-mute it in code and audio still plays.
+*Audio* above) — MAME `spkrdev.cpp` port: 4× oversampled
+rectangle-area integration → 64-tap windowed sinc → 0.995-pole DC
+blocker. The toggle counter is debug-only — mute it in code and audio
+still plays.
 
 ## Version string locations
 
@@ -710,5 +787,6 @@ Bump version in:
 
 - `main.cpp` (window title + console banner)
 - `MainWindow.cpp` (About dialog)
-- `README.md` (status section)
-- `CMakeLists.txt` (project version, when one is added)
+- `README.md` (status section, if a version pill is reintroduced)
+- `CMakeLists.txt` — currently `project(pom2_imgui CXX)` with no
+  `VERSION`; add one if a release tag is cut.

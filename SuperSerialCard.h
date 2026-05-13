@@ -132,6 +132,7 @@ public:
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead(uint8_t low8) override;
     void    onReset() override;
+    void    onUnplug() override;
 
 private:
     int slot;
