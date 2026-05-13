@@ -190,57 +190,40 @@ DOS". Skew tables (physical → logical):
 - ProDOS:  `{0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15}`
 
 Both produce same on-disk layout; only file-offset → physical-sector
-mapping differs.
+mapping differs. Write-back via `saveDirty()` (`.dsk`/`.do`/`.po`/`.nib`
++ `.2mg` envelopes + `.woz`) is opt-in via `setWriteBackEnabled(true)`;
+default off so the source file is never touched without consent.
 
 ### Format detection (`detectFormat()` + `enum ImageKind`)
-`loadFile(path)` slurps the file once and hands the bytes to a content-
-driven dispatcher. Detection order: MacBinary strip → 2IMG envelope →
-WOZ magic → 35×6656 NIB → 35×6384 CNib2 → 143 360-byte sector image.
-Each branch sets an `ImageKind` plus `payloadOff/Len`, and the per-format
-loader (`loadNibFromBuffer` / `loadSectorImageFromBuffer` / `loadWoz`)
-consumes the slice. Unknown → returns false with a specific `lastError`
-("file size N doesn't match any supported format" or "2IMG header points
-outside the file"); no silent fallback. Inspired by AppleWin
-`source/DiskImageHelper.cpp`.
+`loadFile(path)` slurps once, hands bytes to a content-driven
+dispatcher. Order: MacBinary strip → 2IMG envelope → WOZ magic →
+35×6656 NIB → 35×6384 CNib2 → 143 360-byte sector. Unknown → false +
+specific `lastError` (mirrored into the Disk II ImGui panel as red
+text); no silent fallback. Inspired by AppleWin `DiskImageHelper.cpp`.
 
-- **Sector-skew sniff**: when the file is 143 360 bytes the dispatcher
-  validates the ProDOS volume directory header at the position implied
-  by each skew (file offset `0x404` for `.po`, `0xB04` for `.dsk`) and
-  overrides the extension-based guess if the other position clearly
-  fits. The predicate checks `prev=0`, plausible `next`, storage_type
-  `$F`, name length 1..15, AND that the name bytes are valid ProDOS
-  chars (`A-Z 0-9 .`) — the last check is what rules out a `$Fx` byte
-  in a DOS catalog spoofing a vol header. Real-world cases caught:
-  `.dsk` containing ProDOS (cc65 / ADTPro), `.po` containing
-  DOS-skewed ProDOS (`cc65-Chess.po` via `acmd --d33` then renamed).
-- **2IMG / `.2mg`**: 64-byte (or longer) header wrapping a DOS-skew
-  (format=0), ProDOS-skew (format=1), or NIB (format=2) payload. The
-  header carries volume number (flags bit 8 or 31 + low 8 bits) and
-  write-protect (flags bit 0). The full header AND any trailing
-  comment/creator chunks are captured into `twoImgHeaderRaw` /
-  `twoImgTrailerRaw`; `saveDirty()` re-emits both around the re-derived
-  payload so a round-trip leaves the envelope byte-identical.
-- **MacBinary**: legacy Mac downloads sometimes carry a 128-byte
-  prefix. Predicate per AppleWin: `b[0]==0`, `b[1]` in [1..63], byte
-  past the Pascal-name terminator is 0, bytes 122-123 are 0. Stripped
-  before any other detection runs.
-- **CNib2** (35×6384 = 223 440 bytes): rarer NIB variant. Loader pads
-  each track up to the 6656-wide runtime buffer with `$FF` (sync gap);
-  `saveDirty()` truncates back to 6384/track on write. The flag
-  `cnib2Format` gates the truncation.
-- **Volume number**: was hardcoded to 254. Now sourced from the 2IMG
-  flags field when present, else defaults to 254. Threaded through
-  `nibblizeTrack(track, sectors, volume, skew)`.
-- **`getLastError()`** is mirrored into the Disk II ImGui panel
-  (`DiskController_ImGui.cpp`) so refused inserts surface a red
-  message under the slot instead of silently doing nothing.
+- **Skew sniff** (143 360-byte branch): validates a ProDOS vol-dir key
+  block at `file[0x404]` (`.po` skew) vs `file[0xB04]` (`.dsk` skew),
+  overrides extension when only the other position fits. Predicate
+  requires `prev=0`, plausible `next`, storage_type `$F`, AND name
+  chars in `A-Z 0-9 .` — the name check kills `$Fx`-byte spoofs in a
+  DOS catalog. Catches the cc65-Chess.po case (`.po` ext, DOS skew).
+- **2IMG / `.2mg`**: 64-byte header → format byte (0=DOS, 1=ProDOS,
+  2=NIB), flags (bit 0 = WP, bit 8 or 31 = vol# present), dataOffset,
+  dataLength. Raw header + trailer captured into `twoImgHeaderRaw` /
+  `twoImgTrailerRaw`; `saveDirty()` re-emits both around the new
+  payload so the envelope stays byte-identical across round-trip.
+- **MacBinary**: 128-byte prefix from old Mac downloads. AppleWin
+  predicate (`b[0]==0`, name length [1..63], terminator + reserved
+  zeros). Stripped before any other detection.
+- **CNib2** (35×6384): pad to 6656/track on load with `$FF` (sync),
+  truncate to 6384 on save. `cnib2Format` gates the truncation.
+- **Volume number**: was hardcoded 254, now per-image (2IMG flags or
+  default). Threaded through `nibblizeTrack(track, sectors, vol, skew)`.
 
-Pinned: `disk_image_smoke_test.cpp` (round-trip), `disk_skew_sniff_smoke_test.cpp`
-(cc65-Chess override + spoof negative), `disk_2mg_smoke_test.cpp` (DOS/
-ProDOS/NIB + bad-format byte), `disk_2mg_writeback_smoke_test.cpp` (header
-+ trailer preservation), `disk_macbinary_smoke_test.cpp`,
-`disk_cnib2_smoke_test.cpp`, `disk_refuse_smoke_test.cpp` (5 refusal
-cases).
+Pinned: `disk_image_smoke_test.cpp`, `disk_skew_sniff_smoke_test.cpp`,
+`disk_2mg_smoke_test.cpp`, `disk_2mg_writeback_smoke_test.cpp`,
+`disk_macbinary_smoke_test.cpp`, `disk_cnib2_smoke_test.cpp`,
+`disk_refuse_smoke_test.cpp`.
 
 ### `.woz` (`isWoz()`)
 Verbatim port of MAME `src/lib/formats/woz_dsk.cpp`. WOZ stores raw bit

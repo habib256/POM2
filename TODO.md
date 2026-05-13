@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-État au 2026-05-13. Pour l'architecture en place voir `CLAUDE.md`, pour
+État au 2026-05-14. Pour l'architecture en place voir `CLAUDE.md`, pour
 l'historique git voir `git log`.
 
 Légende sévérité : 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low.
@@ -40,9 +40,23 @@ Sections triées par poids des items 🟠 (le plus urgent d'abord).
       (`DiskImage.cpp:381-398`). MAME passe via `set_write_splice`.
       Maintenant que WOZ write-back est en place ce hint compte
       vraiment (re-master parité avec l'imager Applesauce).
+- [ ] 🟡 **UI "Force DOS / Force ProDOS"** pour le manual override
+      path. `loadFile(path, SectorOrder)` existe (`DiskImage.cpp:212`)
+      mais aucun bouton UI ne l'invoque. Utile quand l'auto-détection
+      content-driven se trompe sur une image atypique.
 - [ ] 🟢 **Inflation sub-instruction RAII** (`DiskIICard.cpp:711-744`)
       vs dispatch per-bus-cycle MAME m6502. Tradeoff documenté ; rare
       impact sur protections cycle-sensibles.
+- [ ] 🟢 **Half-tracked NIB (88 tracks)** non supporté. Locksmith /
+      David-DOS bury protections sur des half-tracks ; WOZ couvre déjà
+      ce besoin via TMAP donc priorité basse.
+- [ ] 🟢 **Applesauce `.nib2` / `.app`** (encodages bit-shift, multi-
+      track-per-byte) non supportés. Hors scope tant que WOZ couvre les
+      protections.
+- [ ] 🟢 **Disk II dans le snapshot `POM2SNAP`** — délibérément exclu
+      aujourd'hui (`CLAUDE.md` "Snapshot"). Reprise après reload
+      nécessite identité de l'image montée + position de tête + dirty
+      bits par piste.
 
 ## 4. Display
 

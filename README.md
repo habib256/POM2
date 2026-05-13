@@ -78,15 +78,20 @@ Working:
   icons, WAV / MP3 / OGG / FLAC / `.aci` input).
 - **Disk II controller** in slot 6 — boot via `PR#6`, two drives, 35
   whole tracks × 4 quarter-tracks (160 quarter-track slots on WOZ).
-  Loaders: `.dsk` / `.do` (DOS 3.3 logical sector order), `.po`
-  (ProDOS), `.nib` (raw nibbles), `.woz` (WOZ1 + WOZ2 with full
-  quarter-track decode + CRC32 validation — unlocks Spiradisc /
-  RWTS18 / Locksmith Fast Copy). LSS-level bit-cell read path
+  Loaders: `.dsk` / `.do` (DOS 3.3 sector order), `.po` (ProDOS),
+  `.nib` (raw nibbles, 35×6656 or the rarer CNib2 35×6384), `.2mg` /
+  `.2img` (envelope around any of the above), `.woz` (WOZ1 + WOZ2
+  with full quarter-track decode + CRC32 validation — unlocks
+  Spiradisc / RWTS18 / Locksmith Fast Copy). MacBinary 128-byte
+  wrappers are stripped transparently. Format detection is
+  content-driven: a `.po` that's actually DOS-skewed or a `.dsk`
+  containing ProDOS data is recognised via vol-directory sniff;
+  unrecognised files surface a clear error message under the slot
+  rather than silently failing. LSS-level bit-cell read path
   (verbatim port of MAME `wozfdc.cpp` + P6 PROM) plus a legacy
-  32-cycle gate. Write-back to `.dsk`/`.do`/`.po`/`.nib` AND `.woz`
-  (WOZ1 + WOZ2, MSB-first cell-by-cell splice, CRC32 zeroed as
-  Applesauce "not computed" sentinel) — opt-in, default off. Source
-  files are never touched unless you enable the toggle.
+  32-cycle gate. Write-back to `.dsk`/`.do`/`.po`/`.nib`/`.2mg` AND
+  `.woz` — opt-in (default off). 2IMG envelopes (header + comment /
+  creator chunks) are preserved byte-for-byte across round-trips.
 - **ProDOS Clock card** (slot 4) — ThunderClock+-compatible RTC,
   bit-bang uPD1990AC at `$C0C0`. TIME_READ and TIME_SET both wired:
   ProDOS file timestamps + software clock-set utilities both work.
@@ -204,18 +209,30 @@ left at `$F800`.
 
 ## Disk images
 
-Drop images into `disks/`:
-- `.dsk` / `.do` — 143 360 B, DOS 3.3 logical sector order
+Drop images into `disks/`. Supported formats:
+- `.dsk` / `.do` — 143 360 B, DOS 3.3 sector order
 - `.po` — 143 360 B, ProDOS sector order (boots ProDOS, A2DeskTop, …)
-- `.nib` — 232 960 B, raw nibble image
-- `.woz` — WOZ1 or WOZ2 (Applesauce), with full quarter-track
-  decoding; CRC32-validated on load.
+- `.nib` — 232 960 B (35×6656) or 223 440 B (35×6384, "CNib2") raw
+  nibble stream
+- `.2mg` / `.2img` — 2IMG envelope around any DOS / ProDOS / NIB
+  payload (the dominant interchange format on Asimov and similar
+  archives). Volume number and write-protect flag from the header
+  are honoured; comment / creator chunks are preserved on save.
+- `.woz` — WOZ1 or WOZ2 (Applesauce), full quarter-track decoding +
+  CRC32 validation on load.
 
-Use **Hardware → Insert disk image** to mount, then boot with `PR#6`,
+Format detection is content-driven, so a `.po` that's actually
+DOS-skewed (older cc65 `acmd --d33` output, for example) is still
+recognised correctly; if it really can't be identified the Disk II
+panel shows a red error line under the slot.
+
+Use **Hardware → Insert disk image** to mount, then boot with `PR#6`
 or click the "boot disk" button in the Disk II panel. The image file
 is read-only by default; toggle write-back in the panel to persist
-writes back to `.dsk`/`.do`/`.po`/`.nib` AND `.woz`. WOZ
-`INFO.write_protected` (the physical-disk WP byte) is always honoured.
+writes (`.dsk` / `.do` / `.po` / `.nib` / `.2mg` / `.woz`). WOZ
+`INFO.write_protected` and the 2IMG WP flag are always honoured.
+MacBinary 128-byte wrappers (legacy Mac downloads) are stripped
+transparently.
 
 For ProDOS hard-disk volumes drop `.hdv` / `.2mg` images into `hdv/`
 and mount via **Hardware → ProDOS HardDisk (slot 5)**. The Library
