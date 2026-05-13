@@ -143,6 +143,16 @@ private:
     // Cached so we only call `cpu_->setIRQ()` on transitions.
     bool irqAsserted_ = false;
 
+    // Cycle the VIA timers were last advanced to. Both `slotRomRead/Write`
+    // and the externally driven `advanceCycles()` catch up to "now"
+    // (`cpu_->getCycleCountNow()`) before touching state, so a detection
+    // routine that writes T1 and reads IFR a few cycles later sees the
+    // up-to-date IFR instead of the stale batch-slice value. See the
+    // CLAUDE.md "Mockingboard" section for the Nox Archaist / Skyfox /
+    // Broadside detection-failure class this fixes.
+    uint64_t lastSyncCycle_ = 0;
+    void syncToCpuCycle();
+
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot
     // the AY register banks. `mutable` so the test peek accessors can

@@ -393,11 +393,25 @@ alternate/hold. Both chips → mono (Mockingboard is stereo on real HW;
 Each VIA `irqOut() = (ifr & ier & 0x7F) != 0`; OR'd onto slot IRQ. Card
 caches combined state so transitions only call asserter once.
 
+**Lazy timer sync** (`syncToCpuCycle()`): VIA T1/T2 counters tick at Φ2
+on real hardware, but POM2 advances slot peripherals in batched slices
+at the end of each CPU run (~17 045 cycles). A guest sequence like
+`STA T1CH ; ... ; LDA IFR` within one slice would otherwise see a stale
+IFR because no batch advance happened. Every `slotRomRead/Write` now
+catches the VIAs up to `cpu_->getCycleCountNow()` (= `Memory::cycleCounter
++ M6502::getCurrentInstructionCycles()`) before reading/writing
+registers. Without this, **Mockingboard detection routines that probe
+T1 (Nox Archaist, Skyfox, Broadside per AppleWin issue #1175) always
+fail** — they conclude "no card" because IFR.T1 hasn't flipped yet.
+Music drivers with longer periods worked anyway (the IRQ landed at the
+slice boundary), which is why Ultima IV had been fine. Pinned:
+`mockingboard_sync_smoke_test.cpp`.
+
 **Tear-down order**: remove `AudioSource` from `AudioDevice` BEFORE
 destroying card (source lives inside card). Persisted:
 `mockingboard_volume`, `mockingboard_muted`.
 
-Pinned: `mockingboard_smoke_test.cpp`.
+Pinned: `mockingboard_smoke_test.cpp`, `mockingboard_sync_smoke_test.cpp`.
 
 ## Mouse Card (slot 4 by convention)
 

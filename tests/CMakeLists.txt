@@ -1124,6 +1124,42 @@ add_test(NAME mockingboard_smoke COMMAND test_mockingboard)
 set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Mockingboard lazy timer-sync smoke test ───────────────────────────
+# Pins the cycle-accurate VIA timer catch-up on every MMIO access. Without
+# it, tight detection routines (Nox Archaist, Skyfox, Broadside) that
+# write T1 then read IFR a handful of cycles later would always see
+# IFR.T1=0 because POM2 advances slot peripherals in batched slices.
+# Also exercises the `cpu_ == nullptr` fallback path so the legacy
+# `mockingboard_smoke` semantics still hold for harnesses that drive
+# the card without a CPU back-pointer.
+add_executable(test_mockingboard_sync
+    mockingboard_sync_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+)
+target_include_directories(test_mockingboard_sync PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_sync PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_sync PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_sync PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_sync_smoke COMMAND test_mockingboard_sync)
+set_tests_properties(mockingboard_sync_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Super Serial Card ACIA smoke test ───────────────────────────────────
 # Pins the 6551-shaped register behaviour against MAME `mos6551.cpp` as
 # source of truth: echo mode (REM), read_rdr clearing OVERRUN/FRAMING/
@@ -1152,6 +1188,40 @@ endif()
 
 add_test(NAME ssc_acia_smoke COMMAND test_ssc_acia)
 set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── AI Control HTTP server smoke test ────────────────────────────────────
+# Pins the HTTP/1.1 contract the AiControlServer offers to external AI
+# agents: GET /status returns a well-formed JSON envelope, auth gating
+# via X-POM2-Token returns 401 vs 200, /mem round-trips a byte through
+# Memory::memWrite, /reset accepts hard/soft/cold, /speed adjusts
+# cycles/frame, and unknown paths return 404 / wrong methods return 405.
+# Stands up a real EmulationController + the server on 127.0.0.1:36502
+# so the test exercises the full path including the worker thread.
+add_executable(test_ai_control_server
+    ai_control_server_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/AiControlServer.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/EmulationController.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_ai_control_server PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ai_control_server PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_ai_control_server PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_ai_control_server PRIVATE winmm)
+endif()
+
+add_test(NAME ai_control_server_smoke COMMAND test_ai_control_server)
+set_tests_properties(ai_control_server_smoke PROPERTIES TIMEOUT 15)
 
 
 # ─── WOZ write-back smoke test ────────────────────────────────────────────

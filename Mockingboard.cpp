@@ -672,6 +672,9 @@ void MockingboardCard::onReset()
     ay_[1]->reset();
     if (irqAsserted_ && cpu_) cpu_->setIrqLine(slot_, false);
     irqAsserted_ = false;
+    // Re-anchor the lazy-sync clock to "now" so a freshly reset card
+    // doesn't run a giant catch-up on its first MMIO access.
+    lastSyncCycle_ = cpu_ ? cpu_->getCycleCountNow() : 0;
 }
 
 AudioSource* MockingboardCard::audioSource()
@@ -704,12 +707,41 @@ bool MockingboardCard::isMuted() const
     return audio_->muted.load(std::memory_order_relaxed);
 }
 
+// Lazy timer catch-up. The Mockingboard's 6522 VIA T1/T2 counters tick
+// once per CPU cycle on real hardware. POM2's host loop advances slot
+// peripherals in batches at the end of each CPU run-slice (~17 045
+// cycles in default mode), which is fine for steady-state music but
+// breaks the tight write-T1-then-read-IFR sequences detection routines
+// rely on (Nox Archaist, Skyfox, Broadside — see CLAUDE.md). Sync the
+// VIAs to "now" before every MMIO access so the IFR the routine reads
+// reflects the cycles that have actually elapsed since its T1 write.
+// Caller must hold `mtx`.
+void MockingboardCard::syncToCpuCycle()
+{
+    if (!cpu_) return;
+    const uint64_t now = cpu_->getCycleCountNow();
+    if (now <= lastSyncCycle_) {
+        lastSyncCycle_ = now;
+        return;
+    }
+    const uint64_t delta = now - lastSyncCycle_;
+    // The VIAs' `advance()` takes an int; clamp to a sane upper bound
+    // (a single CPU run-slice is ~17 045 cycles, so anything beyond a
+    // few million here means our sync clock got desynchronised).
+    const int step = (delta > 0x7FFFFFFFu) ? 0x7FFFFFFF
+                                           : static_cast<int>(delta);
+    via_[0]->advance(step);
+    via_[1]->advance(step);
+    lastSyncCycle_ = now;
+}
+
 uint8_t MockingboardCard::slotRomRead(uint8_t low8)
 {
     // Address decode: bit 7 selects which VIA, bits 0..3 select the
     // register inside the VIA. Bits 4..6 are mirrors (real hardware
     // partial-decodes the same way — the chip has only A0..A3 wired).
     std::lock_guard<std::mutex> lk(mtx);
+    syncToCpuCycle();     // make T1/T2/IFR cycle-accurate at "now"
     const int chip = (low8 & 0x80) ? 1 : 0;
     const uint8_t out = via_[chip]->read(low8 & 0x0F);
     updateIrq();          // T1CL clears IFR.T1, may drop IRQ
@@ -719,6 +751,7 @@ uint8_t MockingboardCard::slotRomRead(uint8_t low8)
 void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
 {
     std::lock_guard<std::mutex> lk(mtx);
+    syncToCpuCycle();     // T1 counters reflect "now" before T1CH reload
     const int chip = (low8 & 0x80) ? 1 : 0;
     const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
     if (events) onViaPortBChange(chip);
@@ -741,8 +774,19 @@ void MockingboardCard::advanceCycles(int cycles)
 {
     if (cycles <= 0) return;
     std::lock_guard<std::mutex> lk(mtx);
-    via_[0]->advance(cycles);
-    via_[1]->advance(cycles);
+    if (cpu_) {
+        // Lazy-sync path: any cycles already accounted for via MMIO
+        // accesses during this slice are skipped — `syncToCpuCycle()`
+        // advanced the VIAs to that point already. Just catch up the
+        // remainder so end-of-slice IRQ state is published.
+        syncToCpuCycle();
+    } else {
+        // No CPU back-pointer (unit-test harness — see
+        // mockingboard_smoke_test.cpp). Fall back to the legacy
+        // batched advance so existing tests keep their semantics.
+        via_[0]->advance(cycles);
+        via_[1]->advance(cycles);
+    }
     updateIrq();
 }
 

@@ -133,6 +133,16 @@ public:
     /// audio sample at 44 kHz.
     int getCurrentInstructionCycles() const { return cycles; }
 
+    /// Absolute CPU cycle count right now, including in-flight sub-
+    /// instruction cycles. Equivalent to `memory->getCycleCounter() +
+    /// getCurrentInstructionCycles()` — exposed here so slot peripherals
+    /// can lazy-sync their timers on each MMIO access without taking a
+    /// Memory back-pointer. Used by Mockingboard's 6522 VIA to advance
+    /// T1/T2 up to "now" before a detection routine reads IFR. Implemented
+    /// out-of-line in M6502.cpp because the inline body would need a full
+    /// Memory definition (forward-declared here).
+    uint64_t getCycleCountNow() const;
+
 private:
 
 

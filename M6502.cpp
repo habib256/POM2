@@ -1601,6 +1601,13 @@ void M6502::hardReset(void)
 
     programCounter = memReadAbsolute(0xFFFC);
 }
+
+uint64_t M6502::getCycleCountNow() const
+{
+    if (!memory) return static_cast<uint64_t>(cycles);
+    return memory->getCycleCounter() + static_cast<uint64_t>(cycles);
+}
+
 void M6502::softReset(void)
 {
     statusRegister |= M6502::Status::I;
