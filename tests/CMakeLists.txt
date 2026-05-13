@@ -1160,6 +1160,41 @@ add_test(NAME mockingboard_sync_smoke COMMAND test_mockingboard_sync)
 set_tests_properties(mockingboard_sync_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Mockingboard 4am-style detection smoke test ───────────────────────
+# Stages the EXACT 6502 instruction sequence used by Total Replay / 4am /
+# French Touch / Nox Archaist to detect a Mockingboard: two LDA ($10),Y
+# reads of T1CL with a STA in between, then SBC. After the lazy sync
+# patch the accumulator must hold $F8 (= -8) — the difference between
+# two T1CL reads exactly 8 CPU cycles apart. Pre-fix this would be $00.
+add_executable(test_mockingboard_4am_detect
+    mockingboard_4am_detect_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+)
+target_include_directories(test_mockingboard_4am_detect PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_4am_detect PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_4am_detect PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_4am_detect PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_4am_detect_smoke
+         COMMAND test_mockingboard_4am_detect)
+set_tests_properties(mockingboard_4am_detect_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Super Serial Card ACIA smoke test ───────────────────────────────────
 # Pins the 6551-shaped register behaviour against MAME `mos6551.cpp` as
 # source of truth: echo mode (REM), read_rdr clearing OVERRUN/FRAMING/
