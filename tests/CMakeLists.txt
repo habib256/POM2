@@ -1195,6 +1195,41 @@ add_test(NAME mockingboard_4am_detect_smoke
 set_tests_properties(mockingboard_4am_detect_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Mockingboard IRQ delivery end-to-end smoke test ───────────────────
+# Stages a tight IRQ handler driven by T1 underflow and asserts the
+# handler is actually invoked through the CPU IRQ path while user code
+# spins. Gate for any change that affects IRQ aggregation, Mockingboard
+# sync, or M6502::step's IRQ check. Failure here = silent IRQ-driven
+# music (Ultima IV, Nox Archaist, PT3 players, every modern player).
+add_executable(test_mockingboard_irq_delivery
+    mockingboard_irq_delivery_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+)
+target_include_directories(test_mockingboard_irq_delivery PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_irq_delivery PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_irq_delivery PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_irq_delivery PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_irq_delivery_smoke
+         COMMAND test_mockingboard_irq_delivery)
+set_tests_properties(mockingboard_irq_delivery_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Super Serial Card ACIA smoke test ───────────────────────────────────
 # Pins the 6551-shaped register behaviour against MAME `mos6551.cpp` as
 # source of truth: echo mode (REM), read_rdr clearing OVERRUN/FRAMING/
