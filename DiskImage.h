@@ -73,6 +73,9 @@ public:
         ProDos143k,    // 143 360-byte image, ProDOS sector order
         Nib232k,       // 232 960-byte raw nibble stream (35 × 6656)
         CNib2,         // 223 440-byte raw nibble stream (35 × 6384)
+        TwoImgDos,     // .2mg / 2IMG header wrapping DOS-skew payload
+        TwoImgProDos,  // .2mg / 2IMG header wrapping ProDOS-skew payload
+        TwoImgNib,     // .2mg / 2IMG header wrapping raw nibbles
     };
 
     DiskImage();
@@ -239,6 +242,15 @@ private:
     /// LSS pipeline stays oblivious. `saveDirty()` truncates back to
     /// 6384/track on write, so a round-trip preserves the source layout.
     bool cnib2Format = false;
+    /// True iff the source carried a 2IMG / .2mg wrapper. The 64-byte
+    /// (or longer, if comment/creator chunks follow) header is captured
+    /// verbatim into `twoImgHeaderRaw` at load time; anything past the
+    /// payload goes into `twoImgTrailerRaw`. Write-back re-emits both
+    /// envelopes around the freshly composed payload so the file remains
+    /// a valid 2IMG after the round-trip.
+    bool twoImgFormat = false;
+    std::vector<uint8_t> twoImgHeaderRaw;
+    std::vector<uint8_t> twoImgTrailerRaw;
     /// Set when loadFile parses a .woz successfully. WOZ stores bit cells
     /// directly so loadWoz populates `bitStream[track]` instead of the
     /// nibble buffer; the existing `expandTrackFlux` derives flux events
@@ -336,11 +348,25 @@ private:
     /// the payload is the whole file. `order` and `volume` carry the
     /// decoded sector skew + volume number when applicable.
     struct DetectResult {
-        ImageKind   kind         = ImageKind::Unknown;
-        std::size_t payloadOff   = 0;
-        std::size_t payloadLen   = 0;
-        SectorOrder order        = SectorOrder::Dos33;
-        uint8_t     volumeNumber = 254;
+        ImageKind   kind          = ImageKind::Unknown;
+        std::size_t payloadOff    = 0;
+        std::size_t payloadLen    = 0;
+        SectorOrder order         = SectorOrder::Dos33;
+        uint8_t     volumeNumber  = 254;
+        bool        writeProtect  = false;  // 2IMG flags bit 0
+        // Set when the source is wrapped in a 2IMG / .2mg envelope.
+        // `twoImgHeaderEnd` is the offset of the first payload byte —
+        // every byte before it is part of the header (which includes
+        // the 64-byte fixed prefix plus any inline comment/creator
+        // chunks); `twoImgTrailerStart` is the offset just past the
+        // payload, where trailing comment/creator chunks (if any) live.
+        // The loader copies [0, twoImgHeaderEnd) and
+        // [twoImgTrailerStart, file end) into `twoImgHeaderRaw` and
+        // `twoImgTrailerRaw` so a future write-back can re-emit them
+        // byte-for-byte around the modified payload.
+        bool        twoImgWrap         = false;
+        std::size_t twoImgHeaderEnd    = 0;
+        std::size_t twoImgTrailerStart = 0;
         std::string diag;   // human-readable trace, logged on success
         std::string error;  // populated when kind == Unknown
     };

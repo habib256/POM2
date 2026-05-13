@@ -482,6 +482,20 @@ target_include_directories(test_disk_cnib2 PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_cnib2_smoke COMMAND test_disk_cnib2)
 set_tests_properties(disk_cnib2_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk image 2IMG / .2mg envelope smoke test ─────────────────────────
+# Pins the 2IMG header parser in DiskImage::detectFormat. Wraps a known
+# DOS image, a known ProDOS image, and a synthetic NIB payload in 2IMG
+# envelopes and verifies each loads with the expected sector order and
+# write-protect flag. Also pins refusal of an unsupported format byte.
+add_executable(test_disk_2mg
+    disk_2mg_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_2mg PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_2mg_smoke COMMAND test_disk_2mg)
+set_tests_properties(disk_2mg_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
 # Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
 # apple2js WozDiskDriver) against a synthetic single-prologue track and

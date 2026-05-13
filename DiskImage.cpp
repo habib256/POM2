@@ -150,6 +150,124 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         }
     };
 
+    // ── 2IMG / .2mg — 64-byte (or longer) envelope around the payload ──
+    // Spec: https://apple2.org.za/gswv/a2zine/Docs/DiskImage_2MG_Info.txt
+    //   bytes  0..3   magic "2IMG"
+    //   bytes  4..7   creator code (4 ASCII, free-form)
+    //   bytes  8..9   header length (u16 LE — usually 64)
+    //   bytes 10..11  version
+    //   bytes 12..15  image format (u32 LE — 0=DOS, 1=ProDOS, 2=NIB)
+    //   bytes 16..19  flags (u32 LE — bit 0 = write-protect,
+    //                  bit 8 high-bit then low 8 bits = vol# if bit31 set)
+    //   bytes 20..23  num blocks (ProDOS only — ignored here)
+    //   bytes 24..27  data offset (u32 LE — usually 64)
+    //   bytes 28..31  data length (u32 LE)
+    //   bytes 32..47  comment / creator chunk pointers (preserved verbatim)
+    if (n >= 64 &&
+        base[0] == '2' && base[1] == 'I' && base[2] == 'M' && base[3] == 'G') {
+        auto rd16 = [&](std::size_t o) -> uint16_t {
+            return static_cast<uint16_t>(base[o]) |
+                   (static_cast<uint16_t>(base[o + 1]) << 8);
+        };
+        auto rd32 = [&](std::size_t o) -> uint32_t {
+            return static_cast<uint32_t>(base[o]) |
+                   (static_cast<uint32_t>(base[o + 1]) << 8) |
+                   (static_cast<uint32_t>(base[o + 2]) << 16) |
+                   (static_cast<uint32_t>(base[o + 3]) << 24);
+        };
+        const uint16_t headerLen = rd16(8);
+        const uint32_t format    = rd32(12);
+        const uint32_t flags     = rd32(16);
+        const uint32_t dataOff   = rd32(24);
+        const uint32_t dataLen   = rd32(28);
+
+        if (headerLen < 52) {
+            r.error = "Refused " + path + ": 2IMG header length " +
+                      std::to_string(headerLen) + " is too small (need ≥ 52)";
+            return r;
+        }
+        if (dataOff < headerLen || dataOff > n ||
+            dataLen == 0 ||
+            static_cast<std::size_t>(dataOff) + dataLen > n) {
+            r.error = "Refused " + path +
+                      ": 2IMG header points outside the file (dataOff=" +
+                      std::to_string(dataOff) + ", dataLen=" +
+                      std::to_string(dataLen) + ", file=" +
+                      std::to_string(n) + ")";
+            return r;
+        }
+
+        // Volume number: spec is "if bit 8 of flags is set, the low 8 bits
+        // of flags hold the DOS 3.3 volume number". Real-world 2IMG files
+        // also encode bit 31 in the same role for ProDOS-bound dumps; we
+        // accept either to maximise compatibility.
+        const uint8_t vol =
+            (flags & (1u << 8)) || (flags & (1u << 31))
+                ? static_cast<uint8_t>(flags & 0xFF)
+                : 254;
+        const bool wp = (flags & 1u) != 0;
+
+        ImageKind kind = ImageKind::Unknown;
+        SectorOrder order = SectorOrder::Dos33;
+        switch (format) {
+            case 0:
+                if (dataLen != static_cast<uint32_t>(kBytesPerImage)) {
+                    r.error = "Refused " + path +
+                              ": 2IMG DOS payload must be 143360 bytes, got " +
+                              std::to_string(dataLen);
+                    return r;
+                }
+                kind = ImageKind::TwoImgDos;
+                order = SectorOrder::Dos33;
+                break;
+            case 1:
+                if (dataLen != static_cast<uint32_t>(kBytesPerImage)) {
+                    r.error = "Refused " + path +
+                              ": 2IMG ProDOS floppy payload must be 143360 "
+                              "bytes, got " + std::to_string(dataLen) +
+                              " (larger volumes belong on the HDV card)";
+                    return r;
+                }
+                kind = ImageKind::TwoImgProDos;
+                order = SectorOrder::ProDOS;
+                break;
+            case 2:
+                if (dataLen != static_cast<uint32_t>(kTracks * kNibblesPerTrack) &&
+                    dataLen != static_cast<uint32_t>(kTracks * 6384)) {
+                    r.error = "Refused " + path +
+                              ": 2IMG NIB payload must be 232960 or 223440 "
+                              "bytes, got " + std::to_string(dataLen);
+                    return r;
+                }
+                kind = ImageKind::TwoImgNib;
+                break;
+            default:
+                r.error = "Refused " + path +
+                          ": 2IMG header has unsupported format byte " +
+                          std::to_string(format);
+                return r;
+        }
+
+        r.kind               = kind;
+        r.order              = order;
+        r.payloadOff         = baseOff + dataOff;
+        r.payloadLen         = dataLen;
+        r.volumeNumber       = vol;
+        r.writeProtect       = wp;
+        r.twoImgWrap         = true;
+        r.twoImgHeaderEnd    = baseOff + dataOff;
+        r.twoImgTrailerStart = baseOff + dataOff + dataLen;
+        const char* fmtName = (format == 0) ? "DOS 3.3"
+                            : (format == 1) ? "ProDOS"
+                                            : "NIB";
+        r.diag = std::string("2IMG/.2mg wrapper, ") + fmtName +
+                 " payload (" + std::to_string(dataLen) + " bytes)" +
+                 (wp ? ", write-protected" : "") +
+                 ", volume " + std::to_string(static_cast<int>(vol));
+        addMacBinaryNote(r);
+        return r;
+    }
+
     // ── WOZ — magic bytes (case-sensitive ASCII + sentinel) ────────────
     // Per Applesauce WOZ 2.1 spec: first 8 bytes are 'WOZ1' or 'WOZ2'
     // followed by 0xFF 0x0A 0x0D 0x0A. The extension is a hint but the
@@ -301,6 +419,9 @@ bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
     nibFormat   = true;
     cnib2Format = (nibblesPerTrack == 6384);
     wozFormat   = false;
+    twoImgFormat = false;
+    twoImgHeaderRaw.clear();
+    twoImgTrailerRaw.clear();
     fileWriteProtected = false;
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .nib
     dirty.fill(false);
@@ -334,6 +455,9 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
     nibFormat   = false;
     cnib2Format = false;
     wozFormat   = false;
+    twoImgFormat = false;
+    twoImgHeaderRaw.clear();
+    twoImgTrailerRaw.clear();
     fileWriteProtected = false;
     sectorOrder = order;
     dirty.fill(false);
@@ -405,6 +529,8 @@ bool DiskImage::loadFile(const std::string& imgPath)
             break;
         case ImageKind::Dsk143k:
         case ImageKind::ProDos143k:
+        case ImageKind::TwoImgDos:
+        case ImageKind::TwoImgProDos:
             ok = loadSectorImageFromBuffer(payload, payloadLen,
                                            det.order, det.volumeNumber,
                                            imgPath);
@@ -413,9 +539,43 @@ bool DiskImage::loadFile(const std::string& imgPath)
                     "Loaded " + imgPath + " — " + det.diag);
             }
             break;
+        case ImageKind::TwoImgNib: {
+            const int npt = (payloadLen ==
+                static_cast<std::size_t>(kTracks * kNibblesPerTrack))
+                ? kNibblesPerTrack : 6384;
+            ok = loadNibFromBuffer(payload, payloadLen, npt, imgPath);
+            if (ok) {
+                pom2::log().info("Disk II",
+                    "Loaded " + imgPath + " — " + det.diag);
+            }
+            break;
+        }
         case ImageKind::Unknown:
             break;  // already handled above; keeps the switch exhaustive
     }
+
+    // Capture the 2IMG envelope bytes for the eventual write-back path.
+    // Done after the per-format loader so failed loads don't leave stale
+    // wrapper state behind — twoImgFormat stays false when ok == false.
+    if (ok && det.twoImgWrap) {
+        twoImgFormat = true;
+        twoImgHeaderRaw.assign(bytes.begin(),
+                               bytes.begin() +
+                                   static_cast<std::ptrdiff_t>(det.twoImgHeaderEnd));
+        twoImgTrailerRaw.assign(bytes.begin() +
+                                    static_cast<std::ptrdiff_t>(det.twoImgTrailerStart),
+                                bytes.end());
+        // 2IMG flag bit 0 marks the file as write-protected at the
+        // container level; honour it on top of any in-payload protection.
+        if (det.writeProtect) fileWriteProtected = true;
+    } else {
+        // Non-2IMG load (or failure): make sure stale wrapper state from a
+        // previous 2IMG mount doesn't survive a re-insert.
+        twoImgFormat = false;
+        twoImgHeaderRaw.clear();
+        twoImgTrailerRaw.clear();
+    }
+
     return ok;
 }
 
@@ -849,6 +1009,9 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     nibFormat   = false;
     cnib2Format = false;
     wozFormat   = true;
+    twoImgFormat = false;
+    twoImgHeaderRaw.clear();
+    twoImgTrailerRaw.clear();
     sectorOrder = SectorOrder::Dos33;     // not meaningful for .woz
     lastError.clear();
     // Move the entire WOZ file bytes into wozRaw — saveDirty() will
@@ -882,6 +1045,9 @@ void DiskImage::eject()
     nibFormat = false;
     cnib2Format = false;
     wozFormat = false;
+    twoImgFormat = false;
+    twoImgHeaderRaw.clear();
+    twoImgTrailerRaw.clear();
     fileWriteProtected = false;
     path.clear();
     for (auto& t : tracks) t.fill(0xFF);
