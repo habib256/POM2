@@ -134,6 +134,15 @@ void EmulationController::bootFromSlot(int slot)
     mem.resetSoftSwitches();
     mem.slotBus().reset();
     if (spk) spk->reset();
+    // Prime text page 1 with $A0 (space + high bit set) — what the Monitor
+    // ROM's HOME routine would write. We force PC into the slot ROM here
+    // instead of going through the Monitor cold-boot (which would scan
+    // slots and pick slot 6 if a floppy is mounted there), so the user
+    // would otherwise see freshly-zeroed RAM render as a screen full of
+    // `@`-tile garbage for several seconds while the booting card loads.
+    for (uint16_t a = 0x0400; a <= 0x07FF; ++a) {
+        mem.memWrite(a, 0xA0);
+    }
     processor.hardReset();
     processor.setProgramCounter(static_cast<uint16_t>(0xC000 + slot * 0x100));
     mode.store(Mode::Running);
