@@ -64,6 +64,7 @@ set(SOURCES
     SnapshotIO.cpp
     SpeakerDevice.cpp
     SuperSerialCard.cpp
+    SystemProfile.cpp
     main.cpp
 )
 
@@ -185,6 +186,7 @@ add_executable(pom2_headless
     SnapshotIO.cpp
     SpeakerDevice.cpp
     SuperSerialCard.cpp
+    SystemProfile.cpp
 )
 target_include_directories(pom2_headless PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

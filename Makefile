@@ -166,6 +166,19 @@ test_klaus_6502/fast:
 .PHONY : test_klaus_6502/fast
 
 #=============================================================================
+# Target rules for targets named test_klaus_65c02
+
+# Build rule for target.
+test_klaus_65c02: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_klaus_65c02
+.PHONY : test_klaus_65c02
+
+# fast build rule for target.
+test_klaus_65c02/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/build
+.PHONY : test_klaus_65c02/fast
+
+#=============================================================================
 # Target rules for targets named test_snapshot_io
 
 # Build rule for target.
@@ -1753,6 +1766,7 @@ help:
 	@echo "... test_iie_lc_paging"
 	@echo "... test_iie_memory"
 	@echo "... test_klaus_6502"
+	@echo "... test_klaus_65c02"
 	@echo "... test_language_card"
 	@echo "... test_le_chat_mauve"
 	@echo "... test_m68705_decode"

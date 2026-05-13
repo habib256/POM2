@@ -210,6 +210,25 @@ uint8_t DiskIICard::slotRomRead(uint8_t low8)
     return bootRom[low8];
 }
 
+void DiskIICard::dumpRecentReads(size_t maxEntries) const
+{
+    const size_t n = std::min(readLog_.size(), maxEntries);
+    if (n == 0) {
+        std::fprintf(stderr, "DiskII read log: empty (set POM2_DEBUG_DISK_READS=1)\n");
+        return;
+    }
+    std::fprintf(stderr, "DiskII recent $C0EC reads (last %zu of %zu):\n",
+                 n, readLog_.size());
+    const size_t start = (readLog_.size() > n) ? (readLog_.size() - n) : 0;
+    for (size_t i = start; i < readLog_.size(); ++i) {
+        const auto& e = readLog_[i];
+        std::fprintf(stderr, "  [%4zu] cycle=%llu qt=%2u data=$%02X\n",
+                     i,
+                     static_cast<unsigned long long>(e.cycle),
+                     unsigned(e.qt), unsigned(e.data));
+    }
+}
+
 void DiskIICard::onReset()
 {
     motorOn   = false;
@@ -843,6 +862,18 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         handleSwitchAccess(low4);
         if (!(low4 & 1)) {
             lssSync(1);
+            // Debug log: capture (cycle, byte, qt) for hero_probe to dump.
+            static const bool kLogReads = std::getenv("POM2_DEBUG_DISK_READS") != nullptr;
+            if (kLogReads && low4 == 0xC) {
+                if (readLog_.size() < kReadLogCap) {
+                    readLog_.push_back({cpuCycleTotal, lssData,
+                        static_cast<uint8_t>(headQuarterTrack[activeDrive])});
+                } else {
+                    readLog_[readLogCursor_++ % kReadLogCap] =
+                        {cpuCycleTotal, lssData,
+                         static_cast<uint8_t>(headQuarterTrack[activeDrive])};
+                }
+            }
             return lssData;
         }
         // For odd offsets MAME returns 0xFF (open bus), but POM2 still

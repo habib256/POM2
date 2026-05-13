@@ -63,6 +63,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 class M6502;
 
@@ -315,6 +316,23 @@ private:
     void lssStart();
     void lssSync(uint64_t extraCycles = 0);
     void control(int offset);
+
+public:
+    /// Debug-only: dump the last N $C0EC reads with their cycle stamp +
+    /// byte value to stderr. Intended for `hero_probe` / boot-dump
+    /// diagnostics — set `POM2_DEBUG_DISK_READS=1` to enable capture.
+    void dumpRecentReads(size_t maxEntries = 256) const;
+private:
+    // Ring of (cpuCycleTotal, lssData, qt) at each $C0EC read.
+    // Populated only when `POM2_DEBUG_DISK_READS=1`.
+    struct ReadLog {
+        uint64_t cycle;
+        uint8_t  data;
+        uint8_t  qt;
+    };
+    mutable std::vector<ReadLog> readLog_;
+    mutable size_t               readLogCursor_ = 0;
+    static constexpr size_t      kReadLogCap    = 4096;
 
     /// MAME `wozfdc_device::control()` cases 0xa/0xb — drive_select
     /// switch. When the motor is on (`active != MODE_IDLE`), MAME calls

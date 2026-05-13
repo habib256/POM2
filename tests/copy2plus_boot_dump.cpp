@@ -330,6 +330,39 @@ int main(int argc, char** argv)
     }
 
     cpu.dumpPcTrace("trace");
+
+    // Dump recent $C0EC reads (set POM2_DEBUG_DISK_READS=1).
+    diskRaw->dumpRecentReads(128);
+
+    // Disasm-friendly hex dump of the loop neighbourhood. Useful when the
+    // CPU is stuck inside the disk read loop in DOS 3.3 / RWTS.
+    const uint16_t base = (cpu.getProgramCounter() & 0xFF00);
+    std::printf("\n=== ROM/RAM dump $%04X..$%04X ===\n",
+                base, static_cast<uint16_t>(base + 0x200 - 1));
+    for (int row = 0; row < 32; ++row) {
+        const uint16_t addr = static_cast<uint16_t>(base + row * 16);
+        std::printf("  $%04X:", addr);
+        for (int c = 0; c < 16; ++c) {
+            std::printf(" %02X", mem.memRead(static_cast<uint16_t>(addr + c)));
+        }
+        std::printf("\n");
+    }
+
+    // Optional: also dump an additional region (e.g. the BRK site).
+    if (const char* a = std::getenv("POM2_DUMP_AT")) {
+        const uint16_t a0 = static_cast<uint16_t>(std::strtoul(a, nullptr, 16) & 0xFF00);
+        std::printf("\n=== RAM dump $%04X..$%04X ===\n",
+                    a0, static_cast<uint16_t>(a0 + 0x200 - 1));
+        for (int row = 0; row < 32; ++row) {
+            const uint16_t addr = static_cast<uint16_t>(a0 + row * 16);
+            std::printf("  $%04X:", addr);
+            for (int c = 0; c < 16; ++c) {
+                std::printf(" %02X", mem.memRead(static_cast<uint16_t>(addr + c)));
+            }
+            std::printf("\n");
+        }
+    }
+
     (void)diskRaw;
     return 0;
 }

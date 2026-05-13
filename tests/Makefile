@@ -141,6 +141,20 @@ test_klaus_6502/fast:
 .PHONY : test_klaus_6502/fast
 
 # Convenience name for target.
+tests/CMakeFiles/test_klaus_65c02.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_klaus_65c02.dir/rule
+.PHONY : tests/CMakeFiles/test_klaus_65c02.dir/rule
+
+# Convenience name for target.
+test_klaus_65c02: tests/CMakeFiles/test_klaus_65c02.dir/rule
+.PHONY : test_klaus_65c02
+
+# fast build rule for target.
+test_klaus_65c02/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/build
+.PHONY : test_klaus_65c02/fast
+
+# Convenience name for target.
 tests/CMakeFiles/test_snapshot_io.dir/rule:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_snapshot_io.dir/rule
 .PHONY : tests/CMakeFiles/test_snapshot_io.dir/rule
@@ -694,6 +708,7 @@ __/AudioDevice.o: __/AudioDevice.cpp.o
 # target to build an object file
 __/AudioDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.o
@@ -725,6 +740,7 @@ __/AudioDevice.i: __/AudioDevice.cpp.i
 # target to preprocess a source file
 __/AudioDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.i
@@ -756,6 +772,7 @@ __/AudioDevice.s: __/AudioDevice.cpp.s
 # target to generate assembly for a file
 __/AudioDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/AudioDevice.cpp.s
@@ -787,6 +804,7 @@ __/CassetteDevice.o: __/CassetteDevice.cpp.o
 # target to build an object file
 __/CassetteDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.o
@@ -818,6 +836,7 @@ __/CassetteDevice.i: __/CassetteDevice.cpp.i
 # target to preprocess a source file
 __/CassetteDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.i
@@ -849,6 +868,7 @@ __/CassetteDevice.s: __/CassetteDevice.cpp.s
 # target to generate assembly for a file
 __/CassetteDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/CassetteDevice.cpp.s
@@ -1087,6 +1107,7 @@ __/M6502.o: __/M6502.cpp.o
 # target to build an object file
 __/M6502.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.o
@@ -1118,6 +1139,7 @@ __/M6502.i: __/M6502.cpp.i
 # target to preprocess a source file
 __/M6502.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.i
@@ -1149,6 +1171,7 @@ __/M6502.s: __/M6502.cpp.s
 # target to generate assembly for a file
 __/M6502.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/M6502.cpp.s
@@ -1240,6 +1263,7 @@ __/Memory.o: __/Memory.cpp.o
 # target to build an object file
 __/Memory.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.o
@@ -1271,6 +1295,7 @@ __/Memory.i: __/Memory.cpp.i
 # target to preprocess a source file
 __/Memory.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.i
@@ -1302,6 +1327,7 @@ __/Memory.s: __/Memory.cpp.s
 # target to generate assembly for a file
 __/Memory.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/Memory.cpp.s
@@ -1453,6 +1479,7 @@ __/RomLoader.o: __/RomLoader.cpp.o
 # target to build an object file
 __/RomLoader.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.o
@@ -1484,6 +1511,7 @@ __/RomLoader.i: __/RomLoader.cpp.i
 # target to preprocess a source file
 __/RomLoader.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.i
@@ -1515,6 +1543,7 @@ __/RomLoader.s: __/RomLoader.cpp.s
 # target to generate assembly for a file
 __/RomLoader.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/RomLoader.cpp.s
@@ -1546,6 +1575,7 @@ __/SlotBus.o: __/SlotBus.cpp.o
 # target to build an object file
 __/SlotBus.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_bus.dir/build.make tests/CMakeFiles/test_slot_bus.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SlotBus.cpp.o
@@ -1583,6 +1613,7 @@ __/SlotBus.i: __/SlotBus.cpp.i
 # target to preprocess a source file
 __/SlotBus.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_bus.dir/build.make tests/CMakeFiles/test_slot_bus.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SlotBus.cpp.i
@@ -1620,6 +1651,7 @@ __/SlotBus.s: __/SlotBus.cpp.s
 # target to generate assembly for a file
 __/SlotBus.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_bus.dir/build.make tests/CMakeFiles/test_slot_bus.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SlotBus.cpp.s
@@ -1657,6 +1689,7 @@ __/SnapshotIO.o: __/SnapshotIO.cpp.o
 # target to build an object file
 __/SnapshotIO.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SnapshotIO.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_snapshot_io.dir/build.make tests/CMakeFiles/test_snapshot_io.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SnapshotIO.cpp.o
@@ -1687,6 +1720,7 @@ __/SnapshotIO.i: __/SnapshotIO.cpp.i
 # target to preprocess a source file
 __/SnapshotIO.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SnapshotIO.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_snapshot_io.dir/build.make tests/CMakeFiles/test_snapshot_io.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SnapshotIO.cpp.i
@@ -1717,6 +1751,7 @@ __/SnapshotIO.s: __/SnapshotIO.cpp.s
 # target to generate assembly for a file
 __/SnapshotIO.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SnapshotIO.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_snapshot_io.dir/build.make tests/CMakeFiles/test_snapshot_io.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SnapshotIO.cpp.s
@@ -1747,6 +1782,7 @@ __/SpeakerDevice.o: __/SpeakerDevice.cpp.o
 # target to build an object file
 __/SpeakerDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.o
@@ -1779,6 +1815,7 @@ __/SpeakerDevice.i: __/SpeakerDevice.cpp.i
 # target to preprocess a source file
 __/SpeakerDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.i
@@ -1811,6 +1848,7 @@ __/SpeakerDevice.s: __/SpeakerDevice.cpp.s
 # target to generate assembly for a file
 __/SpeakerDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_paste.dir/build.make tests/CMakeFiles/test_paste.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_language_card.dir/build.make tests/CMakeFiles/test_language_card.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hdv_card.dir/build.make tests/CMakeFiles/test_hdv_card.dir/__/SpeakerDevice.cpp.s
@@ -2320,6 +2358,30 @@ klaus_6502_functional_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_6502.dir/build.make tests/CMakeFiles/test_klaus_6502.dir/klaus_6502_functional_test.cpp.s
 .PHONY : klaus_6502_functional_test.cpp.s
 
+klaus_65c02_extended_test.o: klaus_65c02_extended_test.cpp.o
+.PHONY : klaus_65c02_extended_test.o
+
+# target to build an object file
+klaus_65c02_extended_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/klaus_65c02_extended_test.cpp.o
+.PHONY : klaus_65c02_extended_test.cpp.o
+
+klaus_65c02_extended_test.i: klaus_65c02_extended_test.cpp.i
+.PHONY : klaus_65c02_extended_test.i
+
+# target to preprocess a source file
+klaus_65c02_extended_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/klaus_65c02_extended_test.cpp.i
+.PHONY : klaus_65c02_extended_test.cpp.i
+
+klaus_65c02_extended_test.s: klaus_65c02_extended_test.cpp.s
+.PHONY : klaus_65c02_extended_test.s
+
+# target to generate assembly for a file
+klaus_65c02_extended_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_klaus_65c02.dir/build.make tests/CMakeFiles/test_klaus_65c02.dir/klaus_65c02_extended_test.cpp.s
+.PHONY : klaus_65c02_extended_test.cpp.s
+
 language_card_smoke_test.o: language_card_smoke_test.cpp.o
 .PHONY : language_card_smoke_test.o
 
@@ -2804,6 +2866,7 @@ help:
 	@echo "... test_iie_lc_paging"
 	@echo "... test_iie_memory"
 	@echo "... test_klaus_6502"
+	@echo "... test_klaus_65c02"
 	@echo "... test_language_card"
 	@echo "... test_le_chat_mauve"
 	@echo "... test_m68705_decode"
@@ -2943,6 +3006,9 @@ help:
 	@echo "... klaus_6502_functional_test.o"
 	@echo "... klaus_6502_functional_test.i"
 	@echo "... klaus_6502_functional_test.s"
+	@echo "... klaus_65c02_extended_test.o"
+	@echo "... klaus_65c02_extended_test.i"
+	@echo "... klaus_65c02_extended_test.s"
 	@echo "... language_card_smoke_test.o"
 	@echo "... language_card_smoke_test.i"
 	@echo "... language_card_smoke_test.s"

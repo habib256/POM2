@@ -4,6 +4,7 @@
 /home/gistarcade/src/POM2/CMakeFiles/edit_cache.dir
 /home/gistarcade/src/POM2/CMakeFiles/rebuild_cache.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_klaus_6502.dir
+/home/gistarcade/src/POM2/tests/CMakeFiles/test_klaus_65c02.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_snapshot_io.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_slot_bus.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_paste.dir

@@ -152,9 +152,31 @@ bool DiskImage::loadFile(const std::string& imgPath)
         return true;
     }
 
-    const SectorOrder order = endsWithCi(imgPath, ".po")
-                              ? SectorOrder::ProDOS
-                              : SectorOrder::Dos33;
+    // Extension sniff first: .po → ProDOS, else default DOS 3.3.
+    SectorOrder order = endsWithCi(imgPath, ".po")
+                        ? SectorOrder::ProDOS
+                        : SectorOrder::Dos33;
+    // Content sniff: if the user mis-named a ProDOS image as `.dsk`
+    // (common with archives bundling cc65 / ADTPro outputs), the
+    // canonical ProDOS boot block at file offset 0 starts with the
+    // sequence `01 38 B0 03 4C` (block count + SEC + BCS +3 + JMP).
+    // Force ProDOS skew when we see it so the user doesn't need to
+    // rename the file. DOS 3.3 boot1 starts with `01 A5 27 C9` instead
+    // — the second-byte mismatch keeps the sniff specific.
+    if (order == SectorOrder::Dos33) {
+        std::ifstream peek(imgPath, std::ios::binary);
+        uint8_t head[5] = {};
+        if (peek && peek.read(reinterpret_cast<char*>(head), 5)
+                && peek.gcount() == 5) {
+            if (head[0] == 0x01 && head[1] == 0x38 && head[2] == 0xB0
+                && head[3] == 0x03 && head[4] == 0x4C) {
+                order = SectorOrder::ProDOS;
+                pom2::log().info("Disk II",
+                    "ProDOS boot block detected in " + imgPath +
+                    " — overriding to ProDOS sector order");
+            }
+        }
+    }
     return loadFile(imgPath, order);
 }
 

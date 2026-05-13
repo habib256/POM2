@@ -75,6 +75,62 @@ add_test(NAME klaus_6502_functional
 set_tests_properties(klaus_6502_functional PROPERTIES TIMEOUT 30)
 
 
+# ─── Klaus Dormann 65C02 extended opcodes test ────────────────────────────
+# Same harness as the 6502 functional test, but driving the 65C02 (CMOS)
+# extension binary. Covers every 65C02-only opcode: STZ, BRA, INA/DEA,
+# PHX/PHY/PLX/PLY, BIT in additional modes, TSB/TRB, JMP (abs,X), the
+# (zp)-indirect mode for ORA/AND/EOR/ADC/STA/LDA/CMP/SBC, the Rockwell
+# RMB0..7/SMB0..7/BBR0..7/BBS0..7 set, and the WDC WAI/STP halts. Also
+# pins the 65C02 decimal-mode N/V/Z behaviour (computed AFTER the BCD
+# correction — see `om65c02.lst:11-14`).
+#
+# Gate for any change to M6502.cpp opcodes or the CMOS dispatch table.
+
+set(KLAUS65_BIN "${CMAKE_CURRENT_BINARY_DIR}/65C02_extended_opcodes_test.bin")
+set(KLAUS65_URL "https://raw.githubusercontent.com/Klaus2m5/6502_65C02_functional_tests/master/bin_files/65C02_extended_opcodes_test.bin")
+set(KLAUS65_SHA256 "10a2a07fa240666fa610c46accebe8d42b1000feef3aae619da15a8d152869b2")
+
+if(NOT EXISTS "${KLAUS65_BIN}")
+    message(STATUS "Downloading Klaus 65C02 extended-opcodes test binary (~64 KB)...")
+    file(DOWNLOAD "${KLAUS65_URL}" "${KLAUS65_BIN}"
+         EXPECTED_HASH SHA256=${KLAUS65_SHA256}
+         TIMEOUT 30
+         STATUS DOWNLOAD65_STATUS)
+    list(GET DOWNLOAD65_STATUS 0 DOWNLOAD65_CODE)
+    if(NOT DOWNLOAD65_CODE EQUAL 0)
+        list(GET DOWNLOAD65_STATUS 1 DOWNLOAD65_MSG)
+        message(WARNING "Klaus 65C02 test binary download failed: ${DOWNLOAD65_MSG} — "
+                        "test_klaus_65c02 will be built but will fail at run time "
+                        "until the file is available at ${KLAUS65_BIN}")
+        file(REMOVE "${KLAUS65_BIN}")
+    endif()
+endif()
+
+add_executable(test_klaus_65c02
+    klaus_65c02_extended_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_klaus_65c02 PRIVATE ${CMAKE_SOURCE_DIR})
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_klaus_65c02 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_klaus_65c02 PRIVATE
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_klaus_65c02 PRIVATE winmm)
+endif()
+
+add_test(NAME klaus_65c02_extended
+         COMMAND test_klaus_65c02 "${KLAUS65_BIN}")
+set_tests_properties(klaus_65c02_extended PROPERTIES TIMEOUT 60)
+
+
 # ─── Snapshot round-trip smoke test ───────────────────────────────────────
 # Validates SnapshotIO end-to-end: writes a synthetic header + 2 sections,
 # reads them back, asserts payloads match. Pure unit test — no Memory or
