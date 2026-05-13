@@ -21,6 +21,7 @@
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
 #include "SuperSerialCard.h"
+#include "SystemProfile.h"
 
 #include "imgui.h"
 
@@ -40,6 +41,17 @@ public:
     /// (e.g. Copy II Plus 8.3) that boots cleanly under the legacy ROM.
     explicit MainWindow(bool forceIIPlus = false);
     ~MainWindow();
+
+    /// Apply a system profile via full cold-reset. Stops the CPU worker,
+    /// wipes RAM + soft switches, reloads the profile's ROM + char ROM,
+    /// re-plugs the slot cards (preserving currently-mounted disk/HDV
+    /// paths so the user can boot the same media under a different
+    /// Apple II model), flips the CPU type to the profile default
+    /// (overridable via the `cpu_mode_override` setting), and lets the
+    /// CPU restart from the new reset vector. Persists the chosen
+    /// profile to settings so subsequent launches default to it.
+    void applyProfile(pom2::SystemProfile p);
+    pom2::SystemProfile currentProfile() const { return activeProfile; }
 
     EmulationController& emul() { return controller; }
 
@@ -155,6 +167,13 @@ private:
     std::string charRomPath = "roms/apple2_char.rom";
     std::string romStatus = "no ROM loaded";
 
+    // Active system profile. Tracked separately so the Presets menu can
+    // mark the live entry with a checkmark and the title bar reflects
+    // it. Initialised by the constructor based on the legacy IIe-probe
+    // path; user-driven Presets menu clicks + CLI --preset go through
+    // `applyProfile()` which keeps this in sync.
+    pom2::SystemProfile activeProfile = pom2::SystemProfile::AppleIIPlus;
+
     bool showAbout = false;
 
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
@@ -211,6 +230,15 @@ private:
     /// emulation worker around the rebuild so card destructors / new
     /// constructors don't race against a running CPU thread.
     void restartEmulationFromSettings();
+
+    /// Pick the first existing file path in `candidates`. Empty string
+    /// when none exists. Used by applyProfile to probe ROM candidates.
+    static std::string firstExistingPath(const std::vector<std::string>& candidates);
+
+    /// Resolve the CPU mode to use given the profile default + the
+    /// `cpu_mode_override` setting. `auto` (default) → profile.defaultCpu;
+    /// `nmos` → NMOS; `65c02` → CMOS. Logged to console on each apply.
+    M6502::CpuMode resolveCpuMode(M6502::CpuMode profileDefault) const;
 
     // Paste helpers — feed text into the keyboard buffer.
     void pasteFromClipboard();

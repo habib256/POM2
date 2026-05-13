@@ -91,6 +91,10 @@ bool parsePresetName(const std::string& raw, CliPreset& out)
     if (s == "ii"  || s == "apple2"  || s == "appleii")  { out = CliPreset::AppleII;     return true; }
     if (s == "ii+" || s == "iiplus" || s == "apple2plus" ||
         s == "appleiiplus" || s == "ii-plus") { out = CliPreset::AppleIIPlus; return true; }
+    if (s == "iie" || s == "apple2e" || s == "appleiie" ||
+        s == "//e" || s == "iie-enhanced")  { out = CliPreset::AppleIIe;    return true; }
+    if (s == "iic" || s == "apple2c" || s == "appleiic" ||
+        s == "//c")                         { out = CliPreset::AppleIIc;    return true; }
     return false;
 }
 
@@ -100,7 +104,7 @@ void printUsage()
         "Usage: POM2 [options]\n"
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
-        "  -p, --preset <ii|ii+>      Apple II original or Apple II Plus\n"
+        "  -p, --preset <ii|ii+|iie|iic>  System profile to boot into\n"
         "  --ii-plus                  Force II+ mode (ignore roms/apple2e.rom)\n"
         "  --speed <cycles/frame>     Override CPU pacing (1x = 17045)\n"
         "  --cpu-max                  Run flat-out (~58 MHz emulated)\n"

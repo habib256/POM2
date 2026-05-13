@@ -186,6 +186,160 @@ void MainWindow::renderSlotConfigPanel()
 
 // ─── Emulation restart ──────────────────────────────────────────────────
 
+std::string MainWindow::firstExistingPath(const std::vector<std::string>& candidates)
+{
+    namespace fs = std::filesystem;
+    for (const auto& p : candidates) {
+        std::error_code ec;
+        if (!p.empty() && fs::exists(p, ec)) return p;
+    }
+    // Also probe build-time relative paths (`../`, `../../`) so the
+    // emulator works whether launched from the repo root or `build/`.
+    for (const auto& p : candidates) {
+        std::error_code ec;
+        const std::string up1 = "../" + p;
+        if (fs::exists(up1, ec)) return up1;
+        const std::string up2 = "../../" + p;
+        if (fs::exists(up2, ec)) return up2;
+    }
+    return {};
+}
+
+M6502::CpuMode MainWindow::resolveCpuMode(M6502::CpuMode profileDefault) const
+{
+    const std::string override = settings.getString("cpu_mode_override", "auto");
+    if (override == "nmos")  return M6502::CpuMode::NMOS;
+    if (override == "65c02") return M6502::CpuMode::CMOS;
+    return profileDefault;     // "auto" (default) — follow the profile
+}
+
+void MainWindow::applyProfile(pom2::SystemProfile p)
+{
+    const auto& cfg = pom2::profileConfig(p);
+    pom2::log().info("Profile",
+        std::string("Switching to ") + std::string(cfg.displayName));
+
+    // 1. Stop the worker thread (cards' destructors must not race a
+    //    running CPU step or worker idle-loop probe).
+    controller.stop();
+
+    // 2. Snapshot the currently-mounted media so we can re-mount after
+    //    the cold reset. The user wants to test the same disk under
+    //    different machine models; everything else (CPU state, RAM,
+    //    soft switches) is wiped intentionally.
+    std::string savedDiskPath, savedHdvPath;
+    if (diskCard) {
+        // DiskIICard has insertDisk(path) operating on the active drive
+        // (default 0); we approximate by reading the slot 6 settings.
+        // The legitimate disk-path setting is the source of truth.
+        savedDiskPath = settings.getString("disk_path", "");
+    }
+    if (hdvCard) {
+        savedHdvPath = settings.getString("hdv_path", "");
+    }
+
+    // 3. Tear down all slot cards under the state mutex. Mockingboard's
+    //    AudioSource must be detached BEFORE the slot bus destroys the
+    //    card (the audio thread's next callback would dereference a
+    //    freed source otherwise — same gotcha as restartEmulationFromSettings).
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        if (mockingboardCard && controller.audio().isAvailable()) {
+            controller.audio().removeSource(mockingboardCard->audioSource());
+        }
+        diskCard         = nullptr;
+        hdvCard          = nullptr;
+        chatMauveCard    = nullptr;
+        sscCard          = nullptr;
+        clockCard        = nullptr;
+        mouseCard        = nullptr;
+        mockingboardCard = nullptr;
+        controller.memory().slotBus().clear();
+        display.setChatMauveCard(nullptr);
+
+        // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
+        //    soft switches. The internal IIe IO ROM is re-loaded together
+        //    with the main ROM below (loadAppleIIRom slots the 4 KB IO ROM
+        //    into Memory::internalIORom).
+        controller.memory().clearRam();
+        controller.memory().resetSoftSwitches();
+        // Flip IIe paging FIRST — loadAppleIIRom's path depends on this:
+        // when `iieMode == true` and the dump is 16/32 KB, the loader
+        // also populates `internalIORom`. Calling setIIEMode after the
+        // load would leave the internal IO ROM in whatever state the
+        // previous profile left it.
+        controller.memory().setIIEMode(cfg.iieMode);
+    }
+
+    // 5. Resolve and load the new main ROM.
+    const std::string newRomPath = firstExistingPath(cfg.romProbeOrder);
+    if (!newRomPath.empty()
+        && controller.memory().loadAppleIIRom(newRomPath.c_str())) {
+        romPath  = newRomPath;
+        romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
+    } else {
+        romStatus = std::string("NO ROM (") + cfg.romProbeOrder.front() +
+                    " not found) — $D000-$FFFF stub only";
+        pom2::log().warn("Profile", romStatus);
+    }
+
+    // 6. Char ROM. Always try at least one candidate; loadCharRom returns
+    //    a falsey value when the file is missing but Apple2Display falls
+    //    back to its built-in 5×7 ASCII font in that case.
+    const std::string newCharPath = firstExistingPath(cfg.charRomProbeOrder);
+    charRomPath = newCharPath;
+    if (!newCharPath.empty()) {
+        controller.memory().loadCharRom(newCharPath.c_str());
+    }
+    if (cfg.iieMode) display.setAuxMemory(controller.memory().auxData());
+    else             display.setAuxMemory(nullptr);
+
+    // 7. Re-plug slot cards. plugSlotsFromSettings honours user's
+    //    persisted slot config; the profile choice doesn't override that
+    //    (e.g. a user who put SSC in slot 4 keeps it across profile
+    //    switches).
+    plugSlotsFromSettings();
+
+    // 8. Re-mount preserved media.
+    if (diskCard && !savedDiskPath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(savedDiskPath, ec)) {
+            (void)diskCard->insertDisk(savedDiskPath);
+        }
+    }
+    if (hdvCard && !savedHdvPath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(savedHdvPath, ec)) {
+            (void)hdvCard->loadImage(savedHdvPath);
+        }
+    }
+
+    // 9. CPU mode (profile default with optional user override).
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        controller.cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
+    }
+
+    // 10. Default CPU pacing.
+    controller.setCyclesPerFrame(cfg.defaultCyclesPerFrame);
+
+    // 11. Final hard reset — CPU re-fetches PC from the new ROM's reset
+    //     vector at $FFFC/$FFFD.
+    controller.hardReset();
+    controller.start();
+
+    // 12. Persist the profile choice for the next launch.
+    activeProfile = p;
+    settings.setString("system_profile", std::string(cfg.key));
+    settings.save();
+
+    pom2::log().info("Profile",
+        std::string("Active = ") + std::string(cfg.displayName) +
+        ", ROM = " + (newRomPath.empty() ? "<missing>" : newRomPath) +
+        ", CPU = " +
+        (controller.cpu().getCpuMode() == M6502::CpuMode::CMOS ? "65C02" : "NMOS"));
+}
+
 void MainWindow::restartEmulationFromSettings()
 {
     // 1. Stop the worker thread so card destructors don't race against a

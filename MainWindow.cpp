@@ -153,6 +153,32 @@ MainWindow::MainWindow(bool forceIIPlus)
     controller.cpu().hardReset();
     controller.setMode(EmulationController::Mode::Running);
     controller.start();
+
+    // Determine the active profile from what the legacy boot path
+    // resolved. If a `system_profile` setting was persisted from a
+    // previous launch AND it disagrees with the auto-detected one, the
+    // user explicitly picked that profile last time — honour it via a
+    // full cold reset via applyProfile() (which the menu also calls).
+    activeProfile = iiePresent ? pom2::SystemProfile::AppleIIe
+                               : pom2::SystemProfile::AppleIIPlus;
+    const std::string savedProfile = settings.getString("system_profile", "");
+    if (!savedProfile.empty()) {
+        const pom2::SystemProfile saved = pom2::profileFromKey(savedProfile);
+        if (saved != activeProfile) {
+            // Saved choice differs from auto-probe — re-run the full
+            // profile machinery (slots will replug, ROMs reload, etc.).
+            applyProfile(saved);
+        } else {
+            // Same profile but the user might have selected a non-default
+            // CPU mode override. Apply it.
+            const auto& cfg = pom2::profileConfig(activeProfile);
+            const M6502::CpuMode resolved = resolveCpuMode(cfg.defaultCpu);
+            if (resolved != controller.cpu().getCpuMode()) {
+                std::lock_guard<std::mutex> lk(controller.stateMutex());
+                controller.cpu().setCpuMode(resolved);
+            }
+        }
+    }
 }
 
 MainWindow::~MainWindow()
@@ -789,16 +815,27 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Presets")) {
-        if (ImGui::MenuItem("Apple II Original (1977)")) {
-            controller.setCyclesPerFrame(17045);   // 1.023 MHz native
-            pixelScale   = 2.0f;
-            controller.hardReset();                // also resets soft switches → TEXT, page 1
+        // 4 canonical Apple II profiles. Selecting one triggers a
+        // full cold-reset via `applyProfile()`: new ROM, new char ROM,
+        // RAM wiped, slot cards re-plugged, CPU type reset to the
+        // profile default (overridable in Debug → CPU). Disk and HDV
+        // mounts persist across the switch so the user can test the
+        // same software stack under different models.
+        for (pom2::SystemProfile p : pom2::allProfiles()) {
+            const auto& cfg = pom2::profileConfig(p);
+            const bool selected = (activeProfile == p);
+            // Append " (current)" to the label when active so the
+            // checkmark is reinforced by text — useful in colourblind
+            // / monochrome ImGui themes.
+            std::string label = std::string(cfg.displayName);
+            if (selected) label += "  ✓";
+            if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
+                applyProfile(p);
+            }
         }
-        if (ImGui::MenuItem("Apple II Plus (1979)")) {
-            controller.setCyclesPerFrame(17045);
-            pixelScale   = 2.0f;
-            controller.hardReset();
-        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Profile = full cold reset.");
+        ImGui::TextDisabled("Mounted disks survive the switch.");
         ImGui::EndMenu();
     }
 

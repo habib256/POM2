@@ -43,10 +43,18 @@ enum class CliDisplayMode {
     MonoAmber,
 };
 
-/// Apple II preset. POM2 ships two: II (Integer BASIC) and II+ (Applesoft
-/// + Autostart Monitor). Future presets (II Plus 64K with language card,
-/// //e, etc.) get appended without breaking the existing CLI.
-enum class CliPreset { Default, AppleII, AppleIIPlus };
+/// Apple II preset. Maps 1:1 to `pom2::SystemProfile` plus a `Default`
+/// sentinel meaning "use the persisted/profile-default selection from
+/// Settings". When non-Default, the CliDispatcher commands the MainWindow
+/// to apply that profile via `MainWindow::applyProfile(...)` during
+/// Phase A boot.
+enum class CliPreset {
+    Default,
+    AppleII,        // → pom2::SystemProfile::AppleII
+    AppleIIPlus,    // → pom2::SystemProfile::AppleIIPlus
+    AppleIIe,       // → pom2::SystemProfile::AppleIIe
+    AppleIIc,       // → pom2::SystemProfile::AppleIIc
+};
 
 /// One deferred action consumed in Phase C, in CLI order.
 struct CliAction {
