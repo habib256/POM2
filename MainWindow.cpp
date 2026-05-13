@@ -978,12 +978,13 @@ void MainWindow::renderMenuBar()
 
 void MainWindow::renderScreenWindow()
 {
-    // Curated startup layout: Apple II Screen anchors the left ~75 % of
-    // the GLFW canvas, leaving the right margin for the Disk II + Emulation
-    // stack. FirstUseEver lets the user drag/resize freely after the first
-    // frame.
+    // Default startup layout (POM2 disables imgui.ini so every launch
+    // re-applies these). Apple II Screen anchors the top-left ~60 %,
+    // HDV stacks below it, Disk II owns the full-height right column.
+    // FirstUseEver lets the user drag/resize freely after the first
+    // frame — but the chosen positions don't persist across launches.
     ImGui::SetNextWindowPos (ImVec2(5,    30),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1080, 960), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1040, 565), ImGuiCond_FirstUseEver);
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
     if (ImGui::Begin("Apple II Screen")) {
@@ -1378,9 +1379,10 @@ void MainWindow::renderDiskPanelWindow()
         diskTurboActive = false;
     }
 
-    // Disk II = bottom-right panel in the curated layout.
-    ImGui::SetNextWindowPos (ImVec2(1095, 525), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(665,  465), ImGuiCond_FirstUseEver);
+    // Disk II = full-height right column in the curated layout. Tall
+    // enough to show the controls AND the library list without scrolling.
+    ImGui::SetNextWindowPos (ImVec2(1055, 30),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(705,  960), ImGuiCond_FirstUseEver);
     auto result = diskPanel.render("Disk II (slot 6)", showDiskPanel, snap);
     if (result.turboToggleChanged) {
         diskTurboWhileMotor = result.turboNewValue;
@@ -1505,9 +1507,9 @@ void MainWindow::renderHdvPanelWindow()
         }
     }
 
-    // HDV = top-right panel in the curated layout.
-    ImGui::SetNextWindowPos (ImVec2(1095, 30),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(665,  485), ImGuiCond_FirstUseEver);
+    // HDV = bottom-left panel in the curated layout (under the Screen).
+    ImGui::SetNextWindowPos (ImVec2(5,    600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1040, 390), ImGuiCond_FirstUseEver);
     auto result = hdvPanel.render("HDV (slot 5)", showHdvPanel, snap);
 
     if (result.requestMountDialog) {

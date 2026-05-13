@@ -108,7 +108,31 @@ int main(int argc, char* argv[])
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.IniFilename = nullptr;
+    // Persist ImGui window positions / sizes / docking state to
+    // ~/.config/POM2/imgui.ini (mirrors Settings::resolveStorePath).
+    // First launch sees no file → `FirstUseEver` defaults from
+    // `renderScreenWindow`/`renderDiskPanelWindow`/`renderHdvPanelWindow`
+    // pick the curated layout (Screen top-left, HDV bottom-left, Disk II
+    // right column). Subsequent launches restore whatever the user
+    // dragged into place. Falls back to the cwd `imgui.ini` if $HOME
+    // isn't set (matches Settings's fallback path).
+    {
+        static std::string iniPath;
+        namespace fs = std::filesystem;
+        if (const char* home = std::getenv("HOME"); home && *home) {
+            fs::path xdg = fs::path(home) / ".config" / "POM2";
+            std::error_code ec;
+            fs::create_directories(xdg, ec);
+            if (!ec && fs::is_directory(xdg, ec)) {
+                iniPath = (xdg / "imgui.ini").string();
+            } else {
+                iniPath = (fs::path(home) / ".pom2_imgui.ini").string();
+            }
+        } else {
+            iniPath = "imgui.ini";
+        }
+        io.IniFilename = iniPath.c_str();
+    }
     ImGui::StyleColorsDark();
 
     // Default ImGui font — we still want it as the base, then merge Font
