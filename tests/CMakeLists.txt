@@ -496,6 +496,21 @@ target_include_directories(test_disk_2mg PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_2mg_smoke COMMAND test_disk_2mg)
 set_tests_properties(disk_2mg_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk image refuse-strict error-path smoke test ─────────────────────
+# Pins the "loadFile refuses with a specific lastError" behaviour for the
+# main classes of malformed inputs (wrong size, 2IMG with bad offset,
+# 2IMG with wrong payload size, empty file, truncated WOZ). Pre-refactor
+# these were silent failures that fell through to the DOS 3.3 path; the
+# UI now has a single string to surface to the user via getLastError().
+add_executable(test_disk_refuse
+    disk_refuse_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_refuse PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_refuse_smoke COMMAND test_disk_refuse)
+set_tests_properties(disk_refuse_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
 # Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
 # apple2js WozDiskDriver) against a synthetic single-prologue track and
