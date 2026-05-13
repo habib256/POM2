@@ -443,6 +443,19 @@ target_include_directories(test_disk_image PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_image_smoke COMMAND test_disk_image)
 set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk image skew-sniff smoke test ───────────────────────────────────
+# Pins the content-driven DOS/ProDOS detection in DiskImage::loadFile.
+# Verifies the cc65-Chess.po skew-override case (commit 50a8bf9) and that
+# the strengthened name-char validation kills random $Fx false positives.
+add_executable(test_disk_skew_sniff
+    disk_skew_sniff_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_skew_sniff PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_skew_sniff_smoke COMMAND test_disk_skew_sniff)
+set_tests_properties(disk_skew_sniff_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
 # Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
 # apple2js WozDiskDriver) against a synthetic single-prologue track and

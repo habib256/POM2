@@ -181,7 +181,11 @@ bool DiskImage::loadFile(const std::string& imgPath)
         auto looksLikeVolHeader = [](const uint8_t* p) -> bool {
             // Vol dir KEY block: prev_block = 0, next_block in [1..280],
             // first entry's storage_type = $F (volume directory header)
-            // with name_length in [1..15].
+            // with name_length in [1..15] AND the name bytes themselves
+            // matching the ProDOS character set (uppercase A-Z, 0-9, dot).
+            // The name-character check rules out the failure mode where a
+            // random `$Fx` byte in a DOS catalog at the alternate-skew
+            // position would otherwise spoof a vol header.
             if (p[0] != 0x00 || p[1] != 0x00) return false;
             const uint16_t next =
                 static_cast<uint16_t>(p[2]) |
@@ -190,7 +194,16 @@ bool DiskImage::loadFile(const std::string& imgPath)
             const uint8_t st_nl = p[4];
             if ((st_nl & 0xF0) != 0xF0) return false;
             const uint8_t nlen = st_nl & 0x0F;
-            return nlen >= 1 && nlen <= 15;
+            if (nlen < 1 || nlen > 15) return false;
+            for (uint8_t i = 0; i < nlen; ++i) {
+                const uint8_t c = p[5 + i];
+                const bool ok =
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '.';
+                if (!ok) return false;
+            }
+            return true;
         };
         const bool prodosVolHere = looksLikeVolHeader(head.data() + 0x400);
         const bool dosVolHere    = looksLikeVolHeader(head.data() + 0xB00);
