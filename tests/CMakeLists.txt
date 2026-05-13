@@ -456,6 +456,19 @@ target_include_directories(test_disk_skew_sniff PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_skew_sniff_smoke COMMAND test_disk_skew_sniff)
 set_tests_properties(disk_skew_sniff_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Disk image MacBinary 128-byte wrapper smoke test ───────────────────
+# Pins the MacBinary header stripping in DiskImage::detectFormat — legacy
+# Mac downloads sometimes carried a 128-byte prefix that, if not removed,
+# would offset every nibble lookup and silently corrupt the boot.
+add_executable(test_disk_macbinary
+    disk_macbinary_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_macbinary PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME disk_macbinary_smoke COMMAND test_disk_macbinary)
+set_tests_properties(disk_macbinary_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk II LSS bit-level state-machine smoke test ───────────────────────
 # Drives the bit-level Logic State Sequencer (port of MAME wozfdc.cpp /
 # apple2js WozDiskDriver) against a synthetic single-prologue track and

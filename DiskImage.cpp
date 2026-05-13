@@ -114,31 +114,67 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
                                                 const std::vector<uint8_t>& bytes)
 {
     DetectResult r;
-    const std::size_t n = bytes.size();
+    const std::size_t totalLen = bytes.size();
+    std::size_t baseOff = 0;
+    bool macBinaryStripped = false;
+
+    // ── MacBinary wrapper — 128-byte prefix from legacy Mac downloads ──
+    // Predicate per AppleWin's DiskImageHelper.cpp:
+    //   byte[0]    == 0     (always-zero "old version" marker)
+    //   byte[1]    in [1..63] (Pascal-string filename length)
+    //   byte[1+1+len] == 0  (terminator after the filename)
+    //   byte[122,123] == 0  (reserved field — zeroes in real MacBinary)
+    // Hitting all four is exceedingly unlikely on a random disk image,
+    // so this is safe to apply unconditionally before format detection.
+    auto looksLikeMacBinary = [](const uint8_t* p, std::size_t n) -> bool {
+        if (n < 128)             return false;
+        if (p[0] != 0x00)        return false;
+        const uint8_t nameLen = p[1];
+        if (nameLen == 0 || nameLen >= 64) return false;
+        if (p[1 + nameLen + 1] != 0x00) return false;
+        if (p[122] != 0x00 || p[123] != 0x00) return false;
+        return true;
+    };
+    if (looksLikeMacBinary(bytes.data(), totalLen)) {
+        baseOff = 128;
+        macBinaryStripped = true;
+    }
+
+    const uint8_t* base = bytes.data() + baseOff;
+    const std::size_t n = totalLen - baseOff;
+
+    auto addMacBinaryNote = [&](DetectResult& res) {
+        if (macBinaryStripped) {
+            if (!res.diag.empty()) res.diag += "; ";
+            res.diag += "MacBinary 128-byte header stripped";
+        }
+    };
 
     // ── WOZ — magic bytes (case-sensitive ASCII + sentinel) ────────────
     // Per Applesauce WOZ 2.1 spec: first 8 bytes are 'WOZ1' or 'WOZ2'
     // followed by 0xFF 0x0A 0x0D 0x0A. The extension is a hint but the
     // magic is authoritative.
     if (n >= 8 &&
-        bytes[0] == 'W' && bytes[1] == 'O' && bytes[2] == 'Z' &&
-        (bytes[3] == '1' || bytes[3] == '2') &&
-        bytes[4] == 0xFF && bytes[5] == 0x0A &&
-        bytes[6] == 0x0D && bytes[7] == 0x0A) {
+        base[0] == 'W' && base[1] == 'O' && base[2] == 'Z' &&
+        (base[3] == '1' || base[3] == '2') &&
+        base[4] == 0xFF && base[5] == 0x0A &&
+        base[6] == 0x0D && base[7] == 0x0A) {
         r.kind       = ImageKind::Woz;
-        r.payloadOff = 0;
+        r.payloadOff = baseOff;
         r.payloadLen = n;
-        r.diag       = "WOZ" + std::string(1, static_cast<char>(bytes[3])) +
+        r.diag       = "WOZ" + std::string(1, static_cast<char>(base[3])) +
                        " bit-cell image (" + std::to_string(n) + " bytes)";
+        addMacBinaryNote(r);
         return r;
     }
 
     // ── Raw .nib — exactly 232 960 bytes (35 × 6656) ──────────────────
     if (n == static_cast<std::size_t>(kTracks) * kNibblesPerTrack) {
         r.kind       = ImageKind::Nib232k;
-        r.payloadOff = 0;
+        r.payloadOff = baseOff;
         r.payloadLen = n;
         r.diag       = ".nib raw nibble stream (35 × 6656 bytes)";
+        addMacBinaryNote(r);
         return r;
     }
 
@@ -155,9 +191,9 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         // DOS-skewed image (which holds the same ProDOS data via DOS
         // sector order) lands at 0xB00. Inspect both; if one matches and
         // the other doesn't, that's the truth — regardless of extension.
-        auto looksLikeVolHeader = [&bytes, n](std::size_t off) -> bool {
+        auto looksLikeVolHeader = [base, n](std::size_t off) -> bool {
             if (off + 20 > n) return false;
-            const uint8_t* p = bytes.data() + off;
+            const uint8_t* p = base + off;
             if (p[0] != 0x00 || p[1] != 0x00) return false;
             const uint16_t next =
                 static_cast<uint16_t>(p[2]) |
@@ -189,7 +225,7 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
 
         r.kind = (order == SectorOrder::ProDOS) ? ImageKind::ProDos143k
                                                 : ImageKind::Dsk143k;
-        r.payloadOff   = 0;
+        r.payloadOff   = baseOff;
         r.payloadLen   = n;
         r.order        = order;
         r.volumeNumber = 254;  // DOS 3.3 default; 2MG header may override later
@@ -197,11 +233,16 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
                  (order == SectorOrder::ProDOS ? "ProDOS" : "DOS 3.3") +
                  " sector order" +
                  (overridden ? " (overridden by vol-dir content sniff)" : "");
+        addMacBinaryNote(r);
         return r;
     }
 
     // ── No match → Unknown with a diagnostic error ─────────────────────
-    r.error = "Refused " + path + ": file size " + std::to_string(n) +
+    r.error = "Refused " + path + ": " +
+              (macBinaryStripped
+                ? "after stripping the MacBinary 128-byte header, payload "
+                : "file ") +
+              "size " + std::to_string(n) +
               " bytes doesn't match any supported format "
               "(143360=.dsk/.po, 232960=.nib, WOZ magic missing)";
     return r;
