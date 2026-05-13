@@ -156,25 +156,54 @@ bool DiskImage::loadFile(const std::string& imgPath)
     SectorOrder order = endsWithCi(imgPath, ".po")
                         ? SectorOrder::ProDOS
                         : SectorOrder::Dos33;
-    // Content sniff: if the user mis-named a ProDOS image as `.dsk`
-    // (common with archives bundling cc65 / ADTPro outputs), the
-    // canonical ProDOS boot block at file offset 0 starts with the
-    // sequence `01 38 B0 03 4C` (block count + SEC + BCS +3 + JMP).
-    // Force ProDOS skew when we see it so the user doesn't need to
-    // rename the file. DOS 3.3 boot1 starts with `01 A5 27 C9` instead
-    // — the second-byte mismatch keeps the sniff specific.
-    if (order == SectorOrder::Dos33) {
-        std::ifstream peek(imgPath, std::ios::binary);
-        uint8_t head[5] = {};
-        if (peek && peek.read(reinterpret_cast<char*>(head), 5)
-                && peek.gcount() == 5) {
-            if (head[0] == 0x01 && head[1] == 0x38 && head[2] == 0xB0
-                && head[3] == 0x03 && head[4] == 0x4C) {
-                order = SectorOrder::ProDOS;
-                pom2::log().info("Disk II",
-                    "ProDOS boot block detected in " + imgPath +
-                    " — overriding to ProDOS sector order");
-            }
+    // Content sniff: inspect the ProDOS volume directory key block
+    // (block 2) at the position implied by each skew, and override the
+    // extension-based guess if the other skew clearly fits better.
+    //
+    // In a `.po` (ProDOS-ordered) file, block 2 lives at file offset
+    // 0x400 contiguously; its storage_type/name_length byte sits at
+    // 0x404. In a `.dsk` (DOS-ordered) file the same data is split
+    // across DOS-logical sectors 11 and 3 of track 0 (since ProDOS
+    // physical sectors 8 and 9 hold ProDOS-logical sectors 4 and 5);
+    // the equivalent storage_type byte lands at file offset 0xB04.
+    //
+    // The canonical ProDOS boot block (`01 38 B0 03 4C`) is identical
+    // at file offset 0 in both skews because logical/physical sector 0
+    // coincide, so it alone cannot disambiguate. The vol dir position
+    // can. Real-world miss-orderings we've seen:
+    //   - `.dsk` containing a ProDOS image (cc65 / ADTPro / AppleCommander)
+    //   - `.po`  containing a DOS-3.3-skewed ProDOS image (older cc65
+    //     `ac --d33` then renamed; the cc65-Chess.po build was one)
+    std::ifstream peek(imgPath, std::ios::binary);
+    std::vector<uint8_t> head(0xB10);
+    if (peek && peek.read(reinterpret_cast<char*>(head.data()),
+                          static_cast<std::streamsize>(head.size()))) {
+        auto looksLikeVolHeader = [](const uint8_t* p) -> bool {
+            // Vol dir KEY block: prev_block = 0, next_block in [1..280],
+            // first entry's storage_type = $F (volume directory header)
+            // with name_length in [1..15].
+            if (p[0] != 0x00 || p[1] != 0x00) return false;
+            const uint16_t next =
+                static_cast<uint16_t>(p[2]) |
+                (static_cast<uint16_t>(p[3]) << 8);
+            if (next == 0 || next > 280) return false;
+            const uint8_t st_nl = p[4];
+            if ((st_nl & 0xF0) != 0xF0) return false;
+            const uint8_t nlen = st_nl & 0x0F;
+            return nlen >= 1 && nlen <= 15;
+        };
+        const bool prodosVolHere = looksLikeVolHeader(head.data() + 0x400);
+        const bool dosVolHere    = looksLikeVolHeader(head.data() + 0xB00);
+        if (order == SectorOrder::Dos33 && prodosVolHere && !dosVolHere) {
+            order = SectorOrder::ProDOS;
+            pom2::log().info("Disk II",
+                "ProDOS vol dir found at .po position in " + imgPath +
+                " — overriding to ProDOS sector order");
+        } else if (order == SectorOrder::ProDOS && !prodosVolHere && dosVolHere) {
+            order = SectorOrder::Dos33;
+            pom2::log().info("Disk II",
+                "ProDOS vol dir found at .dsk position in " + imgPath +
+                " — overriding to DOS 3.3 sector order");
         }
     }
     return loadFile(imgPath, order);
