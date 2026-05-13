@@ -4,6 +4,7 @@
 #ifndef POM2_MAIN_WINDOW_H
 #define POM2_MAIN_WINDOW_H
 
+#include "AiControlServer.h"
 #include "Apple2Display.h"
 #include "CassetteDeck_ImGui.h"
 #include "ClockCard.h"
@@ -126,9 +127,23 @@ private:
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
+    // Mockingboard live state panel — shows VIA T1 / IFR / IER and the
+    // two AY-3-8910 register banks. Primary use: diagnose silent
+    // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
+    // whether the music handler is actually writing AY registers.
+    bool         showMockingboardPanel = false;
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
+    bool         showAiControlPanel  = false;
     int          sscPortInput       = SuperSerialCard::kDefaultPort;
+
+    // ── AI Control server (HTTP/1.1 on 127.0.0.1) ────────────────────────
+    // Lifetime owned here; attach()'d after EmulationController is wired,
+    // start()'d if the persisted setting was on at last shutdown. Exposed
+    // via the Hardware menu's AI Control panel.
+    pom2::AiControlServer aiServer;
+    int          aiPortInput   = pom2::AiControlServer::kDefaultPort;
+    std::string  aiTokenInput;
 
     // Disk II insert dialog state.
     bool        showDiskInsertDialog = false;
@@ -219,8 +234,10 @@ private:
     void renderHdvPanelWindow();
     void renderHdvFileDialog();
     void renderChatMauvePanelWindow();
+    void renderMockingboardPanelWindow();
     void renderSscPanelWindow();
     void renderJoystickPanelWindow();
+    void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
     /// Slot Configuration panel. Implemented in MainWindow_Slots.cpp.

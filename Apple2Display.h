@@ -105,8 +105,12 @@ private:
     LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
     // History buffer for monochrome phosphor decay. One byte per pixel
     // (0..255 luminance). Color mode leaves this untouched; switching modes
-    // clears it.
+    // clears it. We carry two parallel buffers so HGR (280×192) and DHGR
+    // (560×192) can each accumulate afterglow without their dimensions
+    // fighting — without `persistenceL80`, DHGR mono had no decay because
+    // the path wrote a 560-wide frame against a 280-wide history.
     std::vector<uint8_t> persistenceL;
+    std::vector<uint8_t> persistenceL80;
     // Frame counter — drives the FLASH attribute animation for screen
     // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
     // and inverse-blinking spaces). Wraps freely; only the parity of
@@ -120,6 +124,15 @@ private:
     void renderText  (Memory& mem, int firstRow, int lastRow);
     void renderLoRes (Memory& mem, int firstRow, int lastRow);
     void renderHiRes (Memory& mem, int firstScanline, int lastScanline);
+    // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
+    // resolution. Same decode algorithm as the Chat Mauve branch of
+    // `renderHiRes`, but writes into `frame80` so screen captures and
+    // future MSB half-dot-delay work see the full pixel density.
+    // Each 4-dot color pair → 4 identical output dots; each BW560 input
+    // dot → 2 identical output dots. (The on-screen output of GL
+    // upscaling is identical to the 280-wide path in the current model;
+    // the gain is in the framebuffer fidelity itself.)
+    void renderHiResChatMauve80(Memory& mem, int firstScanline, int lastScanline);
     // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
     // 560×192. Reads aux RAM for even columns and main RAM for odd
     // columns (per AppleWin's scanner). `altCharSet` toggles flashing

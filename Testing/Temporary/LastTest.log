@@ -1,366 +1,148 @@
-Start testing: May 13 16:49 +04
+Start testing: May 14 01:41 +04
 ----------------------------------------------------------
-13/37 Testing: hgr_render_smoke
-13/37 Test: hgr_render_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_hgr_render"
+1/48 Testing: klaus_6502_functional
+1/48 Test: klaus_6502_functional
+Command: "/home/gistarcade/src/POM2/tests/test_klaus_6502" "/home/gistarcade/src/POM2/tests/klaus_6502_functional_test.bin"
 Directory: /home/gistarcade/src/POM2/tests
-"hgr_render_smoke" start time: May 13 16:49 +04
+"klaus_6502_functional" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-HGR render smoke: OK (sliding window NTSC, mono phosphors, persistence)
+Klaus 6502 functional test: ended at $3469 after 30646178 steps (0.50 s)
+OK
 <end of output>
-Test time =   0.01 sec
+Test time =   0.50 sec
 ----------------------------------------------------------
 Test Passed.
-"hgr_render_smoke" end time: May 13 16:49 +04
-"hgr_render_smoke" time elapsed: 00:00:00
+"klaus_6502_functional" end time: May 14 01:41 +04
+"klaus_6502_functional" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-15/37 Testing: disk_image_smoke
-15/37 Test: disk_image_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_disk_image"
+2/48 Testing: klaus_65c02_extended
+2/48 Test: klaus_65c02_extended
+Command: "/home/gistarcade/src/POM2/tests/test_klaus_65c02" "/home/gistarcade/src/POM2/tests/65C02_extended_opcodes_test.bin"
 Directory: /home/gistarcade/src/POM2/tests
-"disk_image_smoke" start time: May 13 16:49 +04
+"klaus_65c02_extended" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-[INFO] Disk II: Loaded disk_image_smoke.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-[INFO] Disk II: Loaded disk_image_smoke.po (35 tracks, 16 sectors, GCR-encoded, ProDOS order)
-[INFO] Disk II: Loaded disk_image_smoke.bin (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-disk_image_smoke OK: DOS 3.3 + ProDOS skews round-trip
+Klaus 65C02 extended-opcodes test: ended at $24F1 after 21986987 steps (0.40 s)
+OK
 <end of output>
-Test time =   0.01 sec
+Test time =   0.40 sec
 ----------------------------------------------------------
 Test Passed.
-"disk_image_smoke" end time: May 13 16:49 +04
-"disk_image_smoke" time elapsed: 00:00:00
+"klaus_65c02_extended" end time: May 14 01:41 +04
+"klaus_65c02_extended" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-28/37 Testing: cmos_6502_smoke
-28/37 Test: cmos_6502_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_cmos_6502"
+3/48 Testing: system_profile_smoke
+3/48 Test: system_profile_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_system_profile"
 Directory: /home/gistarcade/src/POM2/tests
-"cmos_6502_smoke" start time: May 13 16:49 +04
+"system_profile_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-cmos_6502_smoke OK
+  ok: all 5 profiles enumerated
+  ok: profile CPU/iieMode defaults match expectations
+  ok: profileKey ⇄ profileFromKey round-trip
+  ok: tolerant key aliases (apple2 / //e / iic+ / etc.)
+  ok: 6-step profile cycle (II+ → IIe → IIc → IIc+ → II → II+)
+OK system_profile_smoke
 <end of output>
-Test time =   0.01 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"cmos_6502_smoke" end time: May 13 16:49 +04
-"cmos_6502_smoke" time elapsed: 00:00:00
+"system_profile_smoke" end time: May 14 01:41 +04
+"system_profile_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-18/37 Testing: disk_writeback_smoke
-18/37 Test: disk_writeback_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_disk_writeback"
-Directory: /home/gistarcade/src/POM2/tests
-"disk_writeback_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-[INFO] Disk II: Saved 1 modified track(s) to /tmp/pom2_disk_writeback_roundtrip.dsk
-[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_raw.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Saved (.nib): /tmp/pom2_disk_writeback_raw.nib
-[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_raw.nib (.nib raw nibble stream, 35 tracks)
-disk_writeback: .dsk round-trip OK
-disk_writeback: .nib raw verbatim OK
-disk_writeback_smoke OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"disk_writeback_smoke" end time: May 13 16:49 +04
-"disk_writeback_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-10/37 Testing: prodos_volume_smoke
-10/37 Test: prodos_volume_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_prodos_volume"
-Directory: /home/gistarcade/src/POM2/tests
-"prodos_volume_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-prodos_volume_smoke: empty + populated OK
-prodos_volume_smoke: name sanitisation + collisions OK
-prodos_volume_smoke: folder→volume→folder round-trip OK
-prodos_volume_smoke: subdirs build+decode OK
-prodos_volume_smoke: PASS
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"prodos_volume_smoke" end time: May 13 16:49 +04
-"prodos_volume_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-14/37 Testing: le_chat_mauve_smoke
-14/37 Test: le_chat_mauve_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_le_chat_mauve"
-Directory: /home/gistarcade/src/POM2/tests
-"le_chat_mauve_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-Le Chat Mauve smoke: OK (FIFO clocking, COL140 + BW560 HGR, lo-res grays, NTSC fallback)
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"le_chat_mauve_smoke" end time: May 13 16:49 +04
-"le_chat_mauve_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-12/37 Testing: speaker_smoke
-12/37 Test: speaker_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_speaker"
-Directory: /home/gistarcade/src/POM2/tests
-"speaker_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-Speaker smoke: OK (silence, square synth, reset, mute)
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"speaker_smoke" end time: May 13 16:49 +04
-"speaker_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-37/37 Testing: woz_writeback_smoke
-37/37 Test: woz_writeback_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_woz_writeback"
-Directory: /home/gistarcade/src/POM2/tests
-"woz_writeback_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wb.woz (.woz v1, info_v1, 1 tracks)
-[INFO] Disk II: Saved 1 modified quarter-track(s) to /tmp/pom2_wozwb_v1_wb.woz (.woz, CRC zeroed)
-[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wb.woz (.woz v1, info_v1, 1 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_wozwb_v2_wb.woz (.woz v2, info_v2, 1 tracks)
-[INFO] Disk II: Saved 1 modified quarter-track(s) to /tmp/pom2_wozwb_v2_wb.woz (.woz, CRC zeroed)
-[INFO] Disk II: Loaded /tmp/pom2_wozwb_v2_wb.woz (.woz v2, info_v2, 1 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wp.woz (.woz v1, info_v1, 1 tracks, file-WP)
-[ OK ] WOZ1 writeFlux → saveDirty → re-load round-trip
-[ OK ] WOZ2 writeFlux → saveDirty → re-load round-trip
-[ OK ] WOZ1 INFO.write_protected respects user toggle
-OK woz_writeback_smoke
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"woz_writeback_smoke" end time: May 13 16:49 +04
-"woz_writeback_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-19/37 Testing: disk_write_controller_smoke
-19/37 Test: disk_write_controller_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_disk_write_controller"
-Directory: /home/gistarcade/src/POM2/tests
-"disk_write_controller_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Disk II: Loaded /tmp/pom2_disk_write_ctrl_latch.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-[INFO] Disk II: Loaded /tmp/pom2_disk_write_ctrl_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-disk_write_controller: case 1 setup OK (full check in case 2)
-disk_write_controller: read back 16 nibbles, 16 distinct values
-  sent: 96 97 98 99 9A 9B 9C 9D 9E 9F A0 A1 A2 A3 A4 A5
-  seen: 96 97 98 99 9A 9B 9C 9D 9E 9F A0 A1 A2 A3 A4 A5
-disk_write_controller: round-trip OK
-disk_write_controller_smoke OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"disk_write_controller_smoke" end time: May 13 16:49 +04
-"disk_write_controller_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-25/37 Testing: iie_memory_smoke
-25/37 Test: iie_memory_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_iie_memory"
-Directory: /home/gistarcade/src/POM2/tests
-"iie_memory_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-IIe memory smoke: OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"iie_memory_smoke" end time: May 13 16:49 +04
-"iie_memory_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-11/37 Testing: vbl_smoke
-11/37 Test: vbl_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_vbl"
-Directory: /home/gistarcade/src/POM2/tests
-"vbl_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-vbl_smoke OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"vbl_smoke" end time: May 13 16:49 +04
-"vbl_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-31/37 Testing: mouse_card_smoke
-31/37 Test: mouse_card_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_mouse_card"
-Directory: /home/gistarcade/src/POM2/tests
-"mouse_card_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[WARN] Mouse: Cannot open slot ROM: /tmp/pom2_does_not_exist_slot.bin
-[WARN] Mouse: Slot ROM size mismatch (1024 bytes, expected 2048): /tmp/pom2_mouse_test_half_slot.bin
-[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_test_bank_slot.bin (2048 bytes)
-[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_test_halt_mcu.bin (2048 bytes)
-[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_test_sig_slot.bin (2048 bytes)
-[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_test_sig_mcu.bin (2048 bytes)
-OK mouse_card_smoke
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"mouse_card_smoke" end time: May 13 16:49 +04
-"mouse_card_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-26/37 Testing: iie_lc_paging_smoke
-26/37 Test: iie_lc_paging_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_iie_lc_paging"
-Directory: /home/gistarcade/src/POM2/tests
-"iie_lc_paging_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-LC bank 2 round-trip: OK
-LC bank 1 round-trip + bank isolation: OK
-ALTZP swaps LC banks: OK
-Write-enable survives ALTZP toggle: OK
-Inductive spin loop (ProDOS $D36F/$D370 pattern): OK
-iie_lc_paging_smoke OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"iie_lc_paging_smoke" end time: May 13 16:49 +04
-"iie_lc_paging_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-32/37 Testing: mouse_card_quadrature_smoke
-32/37 Test: mouse_card_quadrature_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_mouse_card_quadrature"
-Directory: /home/gistarcade/src/POM2/tests
-"mouse_card_quadrature_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_q_any_slot.bin (2048 bytes)
-[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_q_any_mcu.bin (2048 bytes)
-OK mouse_card_quadrature_smoke
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"mouse_card_quadrature_smoke" end time: May 13 16:49 +04
-"mouse_card_quadrature_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-27/37 Testing: dhgr_render_smoke
-27/37 Test: dhgr_render_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_dhgr_render"
-Directory: /home/gistarcade/src/POM2/tests
-"dhgr_render_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-dhgr_render_smoke OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"dhgr_render_smoke" end time: May 13 16:49 +04
-"dhgr_render_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-33/37 Testing: slot_config_smoke
-33/37 Test: slot_config_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_slot_config"
-Directory: /home/gistarcade/src/POM2/tests
-"slot_config_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-OK slot_config_smoke
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"slot_config_smoke" end time: May 13 16:49 +04
-"slot_config_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-35/37 Testing: mockingboard_smoke
-35/37 Test: mockingboard_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_mockingboard"
-Directory: /home/gistarcade/src/POM2/tests
-"mockingboard_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-address decode ........ OK
-AY register write ..... OK
-T1 IRQ continuous ..... OK
-T1 IRQ one-shot ....... OK
-  AY ch-A tone @ period $0100: rms=0.1158 vmin=0.0000 vmax=0.1667
-AY audio synthesis .... OK
-reset ................. OK
-Mockingboard smoke test passed.
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"mockingboard_smoke" end time: May 13 16:49 +04
-"mockingboard_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-4/37 Testing: snapshot_io_smoke
-4/37 Test: snapshot_io_smoke
+4/48 Testing: snapshot_io_smoke
+4/48 Test: snapshot_io_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_snapshot_io"
 Directory: /home/gistarcade/src/POM2/tests
-"snapshot_io_smoke" start time: May 13 16:49 +04
+"snapshot_io_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 SnapshotIO smoke: OK
 <end of output>
-Test time =   0.01 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"snapshot_io_smoke" end time: May 13 16:49 +04
+"snapshot_io_smoke" end time: May 14 01:41 +04
 "snapshot_io_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-6/37 Testing: paste_smoke
-6/37 Test: paste_smoke
+5/48 Testing: slot_bus_smoke
+5/48 Test: slot_bus_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_slot_bus"
+Directory: /home/gistarcade/src/POM2/tests
+"slot_bus_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+SlotBus smoke: OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"slot_bus_smoke" end time: May 14 01:41 +04
+"slot_bus_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/48 Testing: paste_smoke
+6/48 Test: paste_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_paste"
 Directory: /home/gistarcade/src/POM2/tests
-"paste_smoke" start time: May 13 16:49 +04
+"paste_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 Paste smoke: OK (line endings, controls, 7-bit, cap, cancel)
 <end of output>
-Test time =   0.01 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"paste_smoke" end time: May 13 16:49 +04
+"paste_smoke" end time: May 14 01:41 +04
 "paste_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-9/37 Testing: hdv_writeback_smoke
-9/37 Test: hdv_writeback_smoke
+7/48 Testing: language_card_smoke
+7/48 Test: language_card_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_language_card"
+Directory: /home/gistarcade/src/POM2/tests
+"language_card_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+Language Card smoke: OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"language_card_smoke" end time: May 14 01:41 +04
+"language_card_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/48 Testing: hdv_card_smoke
+8/48 Test: hdv_card_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_hdv_card"
+Directory: /home/gistarcade/src/POM2/tests
+"hdv_card_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] HDV: Loaded /tmp/pom2_hdv_smoke.hdv (2 blocks)
+[INFO] HDV: Loaded /tmp/pom2_hdv_smoke.2mg (2 blocks)
+[WARN] HDV: 2IMG image is not in ProDOS block order (format=0)
+HDV card smoke: OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"hdv_card_smoke" end time: May 14 01:41 +04
+"hdv_card_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/48 Testing: hdv_writeback_smoke
+9/48 Test: hdv_writeback_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_hdv_writeback"
 Directory: /home/gistarcade/src/POM2/tests
-"hdv_writeback_smoke" start time: May 13 16:49 +04
+"hdv_writeback_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 [INFO] HDV: Loaded /tmp/pom2_hdv_wb_a.hdv (4 blocks)
@@ -375,268 +157,233 @@ hdv_writeback: 2MG WP flag honoured OK
 hdv_writeback: opt-in default OFF OK
 hdv_writeback_smoke OK
 <end of output>
-Test time =   0.01 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"hdv_writeback_smoke" end time: May 13 16:49 +04
+"hdv_writeback_smoke" end time: May 14 01:41 +04
 "hdv_writeback_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-8/37 Testing: hdv_card_smoke
-8/37 Test: hdv_card_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_hdv_card"
+10/48 Testing: prodos_volume_smoke
+10/48 Test: prodos_volume_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_prodos_volume"
 Directory: /home/gistarcade/src/POM2/tests
-"hdv_card_smoke" start time: May 13 16:49 +04
+"prodos_volume_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-[INFO] HDV: Loaded /tmp/pom2_hdv_smoke.hdv (2 blocks)
-[INFO] HDV: Loaded /tmp/pom2_hdv_smoke.2mg (2 blocks)
-[WARN] HDV: 2IMG image is not in ProDOS block order (format=0)
-HDV card smoke: OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"hdv_card_smoke" end time: May 13 16:49 +04
-"hdv_card_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-29/37 Testing: m68705_decode_smoke
-29/37 Test: m68705_decode_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_m68705_decode"
-Directory: /home/gistarcade/src/POM2/tests
-"m68705_decode_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-OK m68705_decode_smoke
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"m68705_decode_smoke" end time: May 13 16:49 +04
-"m68705_decode_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-7/37 Testing: language_card_smoke
-7/37 Test: language_card_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_language_card"
-Directory: /home/gistarcade/src/POM2/tests
-"language_card_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-Language Card smoke: OK
-<end of output>
-Test time =   0.01 sec
-----------------------------------------------------------
-Test Passed.
-"language_card_smoke" end time: May 13 16:49 +04
-"language_card_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-34/37 Testing: clock_card_smoke
-34/37 Test: clock_card_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_clock_card"
-Directory: /home/gistarcade/src/POM2/tests
-"clock_card_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-ProDOS detection signature: OK
-uPD1990AC time-read protocol round-trip: OK
-Shift register drains to zero: OK
-STB rising-edge relatches time: OK
-DATA_OUT mirrored across $C0n0-$C0nF: OK
-MODE_TIME_SET round-trip (DATA_IN → shift → STB+SET → read): OK
-MODE_SHIFT lax: CLK shifts in any mode (ProDOS compat): OK
-clock_card_smoke OK
+prodos_volume_smoke: empty + populated OK
+prodos_volume_smoke: name sanitisation + collisions OK
+prodos_volume_smoke: folder→volume→folder round-trip OK
+prodos_volume_smoke: subdirs build+decode OK
+prodos_volume_smoke: PASS
 <end of output>
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"clock_card_smoke" end time: May 13 16:49 +04
-"clock_card_smoke" time elapsed: 00:00:00
+"prodos_volume_smoke" end time: May 14 01:41 +04
+"prodos_volume_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-5/37 Testing: slot_bus_smoke
-5/37 Test: slot_bus_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_slot_bus"
+11/48 Testing: vbl_smoke
+11/48 Test: vbl_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_vbl"
 Directory: /home/gistarcade/src/POM2/tests
-"slot_bus_smoke" start time: May 13 16:49 +04
+"vbl_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-SlotBus smoke: OK
+vbl_smoke OK
 <end of output>
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"slot_bus_smoke" end time: May 13 16:49 +04
-"slot_bus_smoke" time elapsed: 00:00:00
+"vbl_smoke" end time: May 14 01:41 +04
+"vbl_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-30/37 Testing: mc6821_smoke
-30/37 Test: mc6821_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_mc6821"
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_irq_aggregator
+12/48 Testing: irq_aggregator_smoke
+12/48 Test: irq_aggregator_smoke
+Command: ""
 Directory: /home/gistarcade/src/POM2/tests
-"mc6821_smoke" start time: May 13 16:49 +04
+"irq_aggregator_smoke" start time: 
 Output:
 ----------------------------------------------------------
-OK mc6821_smoke
 <end of output>
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"mc6821_smoke" end time: May 13 16:49 +04
-"mc6821_smoke" time elapsed: 00:00:00
+"irq_aggregator_smoke" end time: May 14 01:41 +04
+"irq_aggregator_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-36/37 Testing: ssc_acia_smoke
-36/37 Test: ssc_acia_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_ssc_acia"
+13/48 Testing: speaker_smoke
+13/48 Test: speaker_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_speaker"
 Directory: /home/gistarcade/src/POM2/tests
-"ssc_acia_smoke" start time: May 13 16:49 +04
+"speaker_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-  ok: command decode (DTR / RX IRQ / echo)
-  ok: DTR side-effects on TDR
-  ok: echo mode loopback
-  ok: overrun set on overflow, cleared on RDR read
-  ok: programmed reset preserves parity bits
-  ok: control reg baud-rate decode
-  ok: RX IRQ gated by cmd bit 1 + DTR
-  ok: cmd write clears pending IRQ when enable goes off
-  ok: status DCD/DSR mirror connection state
-OK ssc_acia_smoke
+Speaker smoke: OK (silence, square synth, reset, mute)
 <end of output>
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"ssc_acia_smoke" end time: May 13 16:49 +04
-"ssc_acia_smoke" time elapsed: 00:00:00
+"speaker_smoke" end time: May 14 01:41 +04
+"speaker_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/37 Testing: system_profile_smoke
-3/37 Test: system_profile_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_system_profile"
+14/48 Testing: hgr_render_smoke
+14/48 Test: hgr_render_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_hgr_render"
 Directory: /home/gistarcade/src/POM2/tests
-"system_profile_smoke" start time: May 13 16:49 +04
+"hgr_render_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-  ok: all 5 profiles enumerated
-  ok: profile CPU/iieMode defaults match expectations
-  ok: profileKey ⇄ profileFromKey round-trip
-  ok: tolerant key aliases (apple2 / //e / iic+ / etc.)
-  ok: 6-step profile cycle (II+ → IIe → IIc → IIc+ → II → II+)
-OK system_profile_smoke
+HGR render smoke: OK (sliding window NTSC, mono phosphors, persistence)
 <end of output>
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"system_profile_smoke" end time: May 13 16:49 +04
-"system_profile_smoke" time elapsed: 00:00:00
+"hgr_render_smoke" end time: May 14 01:41 +04
+"hgr_render_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-20/37 Testing: woz_load_smoke
-20/37 Test: woz_load_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_woz_load"
-Directory: /home/gistarcade/src/POM2
-"woz_load_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Disk II: Loaded /tmp/pom2_woz_v1.woz (.woz v1, info_v1, 1 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_woz_v2.woz (.woz v2, info_v2, 1 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_woz_lss.woz (.woz v1, info_v1, 1 tracks)
-[ OK ] WOZ1 parse + bit unpack + writeBack gate
-[ OK ] WOZ2 parse + bit unpack
-[ OK ] WOZ → LSS recovered D5 AA 96 at offset 5 of 25 collected
-[ OK ] malformed WOZ rejected: WOZ header sentinel bytes wrong
-woz_load_smoke OK
-<end of output>
-Test time =   0.05 sec
-----------------------------------------------------------
-Test Passed.
-"woz_load_smoke" end time: May 13 16:49 +04
-"woz_load_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-17/37 Testing: mame_lss_parity_smoke
-17/37 Test: mame_lss_parity_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_mame_lss_parity"
-Directory: /home/gistarcade/src/POM2
-"mame_lss_parity_smoke" start time: May 13 16:49 +04
-Output:
-----------------------------------------------------------
-[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: P6 LSS PROM loaded: roms/diskii_p6.rom
-[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
-[ OK ] flux cache: 53235 events in [0,425984), $D5 prologue intact
-[ OK ] getNextTransition: monotonic walk + wrap + exact-match
-[ OK ] LSS read via flux model recovers D5 AA 96
-[ OK ] writeFlux splice → nibble buffer round-trip ($96)
-mame_lss_parity_smoke OK
-<end of output>
-Test time =   0.05 sec
-----------------------------------------------------------
-Test Passed.
-"mame_lss_parity_smoke" end time: May 13 16:49 +04
-"mame_lss_parity_smoke" time elapsed: 00:00:00
-----------------------------------------------------------
-
-22/37 Testing: disk_boot_smoke
-22/37 Test: disk_boot_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_disk_boot"
+15/48 Testing: le_chat_mauve_smoke
+15/48 Test: le_chat_mauve_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_le_chat_mauve"
 Directory: /home/gistarcade/src/POM2/tests
-"disk_boot_smoke" start time: May 13 16:49 +04
+"le_chat_mauve_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-[INFO] ROM: Loaded ../roms/apple2.rom at $D000
-[INFO] Disk II: Boot PROM loaded: ../roms/disk2.rom
-[INFO] Disk II: Loaded ../disks/dos33_master.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
-[INFO] ROM: Loaded ../roms/apple2.rom at $D000
-[INFO] Disk II: Boot PROM loaded: ../roms/disk2.rom
-[INFO] Disk II: Loaded ../disks/ProDOS_2_4_3.po (35 tracks, 16 sectors, GCR-encoded, ProDOS order)
-disk_boot_smoke[DOS 3.3]: ran 5000240 cycles, PC=$3DA0, half-track 4
-disk_boot_smoke[ProDOS .po]: ran 1756655 cycles, PC=$0839, half-track 0
-disk_boot_smoke OK
+Le Chat Mauve smoke: OK (FIFO clocking, COL140 + BW560 HGR, lo-res grays, NTSC fallback)
 <end of output>
-Test time =   0.06 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"disk_boot_smoke" end time: May 13 16:49 +04
-"disk_boot_smoke" time elapsed: 00:00:00
+"le_chat_mauve_smoke" end time: May 14 01:41 +04
+"le_chat_mauve_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-21/37 Testing: disk_drive2_smoke
-21/37 Test: disk_drive2_smoke
-Command: "/home/gistarcade/src/POM2/tests/test_disk_drive2"
-Directory: /home/gistarcade/src/POM2
-"disk_drive2_smoke" start time: May 13 16:49 +04
+16/48 Testing: disk_image_smoke
+16/48 Test: disk_image_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_disk_image"
+Directory: /home/gistarcade/src/POM2/tests
+"disk_image_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-[INFO] Disk II: P6 LSS PROM loaded: roms/diskii_p6.rom
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d1.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d2.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d1head.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d2head.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d1leg.nib (.nib raw nibble stream, 35 tracks)
-[INFO] Disk II: Loaded /tmp/pom2_drive2_d2leg.nib (.nib raw nibble stream, 35 tracks)
-[ OK ] LSS path routes drive_select through to images[]
-[ OK ] heads are independent (d1 qt=4, d2 qt=2)
-[ OK ] legacy gate path routes drive_select correctly
-disk_drive2_smoke OK
+[INFO] Disk II: Loaded disk_image_smoke.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+[INFO] Disk II: Loaded disk_image_smoke.po (35 tracks, 16 sectors, GCR-encoded, ProDOS order)
+[INFO] Disk II: Loaded disk_image_smoke.bin (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+disk_image_smoke OK: DOS 3.3 + ProDOS skews round-trip
 <end of output>
-Test time =   0.11 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"disk_drive2_smoke" end time: May 13 16:49 +04
-"disk_drive2_smoke" time elapsed: 00:00:00
+"disk_image_smoke" end time: May 14 01:41 +04
+"disk_image_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-16/37 Testing: diskii_lss_smoke
-16/37 Test: diskii_lss_smoke
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_skew_sniff
+17/48 Testing: disk_skew_sniff_smoke
+17/48 Test: disk_skew_sniff_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_skew_sniff_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_skew_sniff_smoke" end time: May 14 01:41 +04
+"disk_skew_sniff_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_macbinary
+18/48 Testing: disk_macbinary_smoke
+18/48 Test: disk_macbinary_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_macbinary_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_macbinary_smoke" end time: May 14 01:41 +04
+"disk_macbinary_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_cnib2
+19/48 Testing: disk_cnib2_smoke
+19/48 Test: disk_cnib2_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_cnib2_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_cnib2_smoke" end time: May 14 01:41 +04
+"disk_cnib2_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_2mg
+20/48 Testing: disk_2mg_smoke
+20/48 Test: disk_2mg_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_2mg_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_2mg_smoke" end time: May 14 01:41 +04
+"disk_2mg_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_2mg_writeback
+21/48 Testing: disk_2mg_writeback_smoke
+21/48 Test: disk_2mg_writeback_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_2mg_writeback_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_2mg_writeback_smoke" end time: May 14 01:41 +04
+"disk_2mg_writeback_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_disk_refuse
+22/48 Testing: disk_refuse_smoke
+22/48 Test: disk_refuse_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"disk_refuse_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_refuse_smoke" end time: May 14 01:41 +04
+"disk_refuse_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/48 Testing: diskii_lss_smoke
+23/48 Test: diskii_lss_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_diskii_lss"
 Directory: /home/gistarcade/src/POM2
-"diskii_lss_smoke" start time: May 13 16:49 +04
+"diskii_lss_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 [INFO] Disk II: P6 LSS PROM loaded: roms/diskii_p6.rom
@@ -664,49 +411,160 @@ diskii_lss_smoke OK
 Test time =   0.14 sec
 ----------------------------------------------------------
 Test Passed.
-"diskii_lss_smoke" end time: May 13 16:49 +04
+"diskii_lss_smoke" end time: May 14 01:41 +04
 "diskii_lss_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/37 Testing: klaus_65c02_extended
-2/37 Test: klaus_65c02_extended
-Command: "/home/gistarcade/src/POM2/tests/test_klaus_65c02" "/home/gistarcade/src/POM2/tests/65C02_extended_opcodes_test.bin"
-Directory: /home/gistarcade/src/POM2/tests
-"klaus_65c02_extended" start time: May 13 16:49 +04
+24/48 Testing: mame_lss_parity_smoke
+24/48 Test: mame_lss_parity_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mame_lss_parity"
+Directory: /home/gistarcade/src/POM2
+"mame_lss_parity_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-Klaus 65C02 extended-opcodes test: ended at $24F1 after 21986987 steps (0.42 s)
-OK
+[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: P6 LSS PROM loaded: roms/diskii_p6.rom
+[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_mame_parity.nib (.nib raw nibble stream, 35 tracks)
+[ OK ] flux cache: 53235 events in [0,425984), $D5 prologue intact
+[ OK ] getNextTransition: monotonic walk + wrap + exact-match
+[ OK ] LSS read via flux model recovers D5 AA 96
+[ OK ] writeFlux splice → nibble buffer round-trip ($96)
+mame_lss_parity_smoke OK
 <end of output>
-Test time =   0.42 sec
+Test time =   0.04 sec
 ----------------------------------------------------------
 Test Passed.
-"klaus_65c02_extended" end time: May 13 16:49 +04
-"klaus_65c02_extended" time elapsed: 00:00:00
+"mame_lss_parity_smoke" end time: May 14 01:41 +04
+"mame_lss_parity_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-1/37 Testing: klaus_6502_functional
-1/37 Test: klaus_6502_functional
-Command: "/home/gistarcade/src/POM2/tests/test_klaus_6502" "/home/gistarcade/src/POM2/tests/klaus_6502_functional_test.bin"
+25/48 Testing: disk_writeback_smoke
+25/48 Test: disk_writeback_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_disk_writeback"
 Directory: /home/gistarcade/src/POM2/tests
-"klaus_6502_functional" start time: May 13 16:49 +04
+"disk_writeback_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
-Klaus 6502 functional test: ended at $3469 after 30646178 steps (0.51 s)
-OK
+[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+[INFO] Disk II: Saved 1 modified track(s) to /tmp/pom2_disk_writeback_roundtrip.dsk
+[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_raw.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Saved (.nib): /tmp/pom2_disk_writeback_raw.nib
+[INFO] Disk II: Loaded /tmp/pom2_disk_writeback_raw.nib (.nib raw nibble stream, 35 tracks)
+disk_writeback: .dsk round-trip OK
+disk_writeback: .nib raw verbatim OK
+disk_writeback_smoke OK
 <end of output>
-Test time =   0.51 sec
+Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"klaus_6502_functional" end time: May 13 16:49 +04
-"klaus_6502_functional" time elapsed: 00:00:00
+"disk_writeback_smoke" end time: May 14 01:41 +04
+"disk_writeback_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-23/37 Testing: dos33_save_smoke
-23/37 Test: dos33_save_smoke
+26/48 Testing: disk_write_controller_smoke
+26/48 Test: disk_write_controller_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_disk_write_controller"
+Directory: /home/gistarcade/src/POM2/tests
+"disk_write_controller_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] Disk II: Loaded /tmp/pom2_disk_write_ctrl_latch.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+[INFO] Disk II: Loaded /tmp/pom2_disk_write_ctrl_roundtrip.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+disk_write_controller: case 1 setup OK (full check in case 2)
+disk_write_controller: read back 16 nibbles, 16 distinct values
+  sent: 96 97 98 99 9A 9B 9C 9D 9E 9F A0 A1 A2 A3 A4 A5
+  seen: 96 97 98 99 9A 9B 9C 9D 9E 9F A0 A1 A2 A3 A4 A5
+disk_write_controller: round-trip OK
+disk_write_controller_smoke OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"disk_write_controller_smoke" end time: May 14 01:41 +04
+"disk_write_controller_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+27/48 Testing: woz_load_smoke
+27/48 Test: woz_load_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_woz_load"
+Directory: /home/gistarcade/src/POM2
+"woz_load_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] Disk II: Loaded /tmp/pom2_woz_v1.woz (.woz v1, info_v1, 1 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_woz_v2.woz (.woz v2, info_v2, 1 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_woz_lss.woz (.woz v1, info_v1, 1 tracks)
+[ OK ] WOZ1 parse + bit unpack + writeBack gate
+[ OK ] WOZ2 parse + bit unpack
+[ OK ] WOZ → LSS recovered D5 AA 96 at offset 5 of 25 collected
+[ OK ] malformed WOZ rejected: WOZ header sentinel bytes wrong
+woz_load_smoke OK
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"woz_load_smoke" end time: May 14 01:41 +04
+"woz_load_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+28/48 Testing: disk_drive2_smoke
+28/48 Test: disk_drive2_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_disk_drive2"
+Directory: /home/gistarcade/src/POM2
+"disk_drive2_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] Disk II: P6 LSS PROM loaded: roms/diskii_p6.rom
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d1.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d2.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d1head.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d2head.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d1leg.nib (.nib raw nibble stream, 35 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_drive2_d2leg.nib (.nib raw nibble stream, 35 tracks)
+[ OK ] LSS path routes drive_select through to images[]
+[ OK ] heads are independent (d1 qt=4, d2 qt=2)
+[ OK ] legacy gate path routes drive_select correctly
+disk_drive2_smoke OK
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"disk_drive2_smoke" end time: May 14 01:41 +04
+"disk_drive2_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+29/48 Testing: disk_boot_smoke
+29/48 Test: disk_boot_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_disk_boot"
+Directory: /home/gistarcade/src/POM2/tests
+"disk_boot_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] ROM: Loaded ../roms/apple2.rom at $D000
+[INFO] Disk II: Boot PROM loaded: ../roms/disk2.rom
+[INFO] Disk II: Loaded ../disks/dos33_master.dsk (35 tracks, 16 sectors, GCR-encoded, DOS 3.3 order)
+[INFO] ROM: Loaded ../roms/apple2.rom at $D000
+[INFO] Disk II: Boot PROM loaded: ../roms/disk2.rom
+[INFO] Disk II: Loaded ../disks/ProDOS_2_4_3.po (35 tracks, 16 sectors, GCR-encoded, ProDOS order)
+disk_boot_smoke[DOS 3.3]: ran 5000240 cycles, PC=$3DA0, half-track 4
+disk_boot_smoke[ProDOS .po]: ran 1756655 cycles, PC=$0839, half-track 0
+disk_boot_smoke OK
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"disk_boot_smoke" end time: May 14 01:41 +04
+"disk_boot_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/48 Testing: dos33_save_smoke
+30/48 Test: dos33_save_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_dos33_save"
 Directory: /home/gistarcade/src/POM2/tests
-"dos33_save_smoke" start time: May 13 16:49 +04
+"dos33_save_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 [INFO] ROM: Loaded ../roms/apple2.rom at $D000
@@ -716,18 +574,18 @@ SAVE OK: 2129 nibble flushes, head at half-track 34
 LOAD OK: program lines round-tripped through disk
 dos33_save_smoke OK
 <end of output>
-Test time =   1.00 sec
+Test time =   0.98 sec
 ----------------------------------------------------------
 Test Passed.
-"dos33_save_smoke" end time: May 13 16:49 +04
+"dos33_save_smoke" end time: May 14 01:41 +04
 "dos33_save_smoke" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-24/37 Testing: prodos_save_smoke
-24/37 Test: prodos_save_smoke
+31/48 Testing: prodos_save_smoke
+31/48 Test: prodos_save_smoke
 Command: "/home/gistarcade/src/POM2/tests/test_prodos_save"
 Directory: /home/gistarcade/src/POM2/tests
-"prodos_save_smoke" start time: May 13 16:49 +04
+"prodos_save_smoke" start time: May 14 01:41 +04
 Output:
 ----------------------------------------------------------
 [INFO] ROM: Loaded ../roms/apple2.rom at $D000
@@ -737,11 +595,329 @@ SAVE OK: 8496 nibble flushes, head at half-track 0
 LOAD OK: program lines round-tripped through ProDOS
 prodos_save_smoke OK
 <end of output>
-Test time =   1.88 sec
+Test time =   1.89 sec
 ----------------------------------------------------------
 Test Passed.
-"prodos_save_smoke" end time: May 13 16:49 +04
+"prodos_save_smoke" end time: May 14 01:41 +04
 "prodos_save_smoke" time elapsed: 00:00:01
 ----------------------------------------------------------
 
-End testing: May 13 16:49 +04
+32/48 Testing: iie_memory_smoke
+32/48 Test: iie_memory_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_iie_memory"
+Directory: /home/gistarcade/src/POM2/tests
+"iie_memory_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+IIe memory smoke: OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"iie_memory_smoke" end time: May 14 01:41 +04
+"iie_memory_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/48 Testing: iie_lc_paging_smoke
+33/48 Test: iie_lc_paging_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_iie_lc_paging"
+Directory: /home/gistarcade/src/POM2/tests
+"iie_lc_paging_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+LC bank 2 round-trip: OK
+LC bank 1 round-trip + bank isolation: OK
+ALTZP swaps LC banks: OK
+Write-enable survives ALTZP toggle: OK
+Inductive spin loop (ProDOS $D36F/$D370 pattern): OK
+iie_lc_paging_smoke OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"iie_lc_paging_smoke" end time: May 14 01:41 +04
+"iie_lc_paging_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+34/48 Testing: dhgr_render_smoke
+34/48 Test: dhgr_render_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_dhgr_render"
+Directory: /home/gistarcade/src/POM2/tests
+"dhgr_render_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+dhgr_render_smoke OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"dhgr_render_smoke" end time: May 14 01:41 +04
+"dhgr_render_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+35/48 Testing: cmos_6502_smoke
+35/48 Test: cmos_6502_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_cmos_6502"
+Directory: /home/gistarcade/src/POM2/tests
+"cmos_6502_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+cmos_6502_smoke OK
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"cmos_6502_smoke" end time: May 14 01:41 +04
+"cmos_6502_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+36/48 Testing: m68705_decode_smoke
+36/48 Test: m68705_decode_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_m68705_decode"
+Directory: /home/gistarcade/src/POM2/tests
+"m68705_decode_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+OK m68705_decode_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"m68705_decode_smoke" end time: May 14 01:41 +04
+"m68705_decode_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+37/48 Testing: mc6821_smoke
+37/48 Test: mc6821_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mc6821"
+Directory: /home/gistarcade/src/POM2/tests
+"mc6821_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+OK mc6821_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mc6821_smoke" end time: May 14 01:41 +04
+"mc6821_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+38/48 Testing: mouse_card_smoke
+38/48 Test: mouse_card_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mouse_card"
+Directory: /home/gistarcade/src/POM2/tests
+"mouse_card_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[WARN] Mouse: Cannot open slot ROM: /tmp/pom2_does_not_exist_slot.bin
+[WARN] Mouse: Slot ROM size mismatch (1024 bytes, expected 2048): /tmp/pom2_mouse_test_half_slot.bin
+[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_test_bank_slot.bin (2048 bytes)
+[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_test_halt_mcu.bin (2048 bytes)
+[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_test_sig_slot.bin (2048 bytes)
+[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_test_sig_mcu.bin (2048 bytes)
+OK mouse_card_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mouse_card_smoke" end time: May 14 01:41 +04
+"mouse_card_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+39/48 Testing: mouse_card_quadrature_smoke
+39/48 Test: mouse_card_quadrature_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mouse_card_quadrature"
+Directory: /home/gistarcade/src/POM2/tests
+"mouse_card_quadrature_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] Mouse: Loaded slot ROM /tmp/pom2_mouse_q_any_slot.bin (2048 bytes)
+[INFO] M68705: Loaded EPROM /tmp/pom2_mouse_q_any_mcu.bin (2048 bytes)
+OK mouse_card_quadrature_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mouse_card_quadrature_smoke" end time: May 14 01:41 +04
+"mouse_card_quadrature_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+40/48 Testing: slot_config_smoke
+40/48 Test: slot_config_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_slot_config"
+Directory: /home/gistarcade/src/POM2/tests
+"slot_config_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+OK slot_config_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"slot_config_smoke" end time: May 14 01:41 +04
+"slot_config_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+41/48 Testing: clock_card_smoke
+41/48 Test: clock_card_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_clock_card"
+Directory: /home/gistarcade/src/POM2/tests
+"clock_card_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+ProDOS detection signature: OK
+uPD1990AC time-read protocol round-trip: OK
+Shift register drains to zero: OK
+STB rising-edge relatches time: OK
+DATA_OUT mirrored across $C0n0-$C0nF: OK
+MODE_TIME_SET round-trip (DATA_IN → shift → STB+SET → read): OK
+MODE_SHIFT lax: CLK shifts in any mode (ProDOS compat): OK
+clock_card_smoke OK
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"clock_card_smoke" end time: May 14 01:41 +04
+"clock_card_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+42/48 Testing: mockingboard_smoke
+42/48 Test: mockingboard_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mockingboard"
+Directory: /home/gistarcade/src/POM2/tests
+"mockingboard_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+address decode ........ OK
+AY register write ..... OK
+T1 IRQ continuous ..... OK
+T1 IRQ one-shot ....... OK
+  AY ch-A tone @ period $0100: rms=0.1158 vmin=0.0000 vmax=0.1667
+AY audio synthesis .... OK
+reset ................. OK
+Mockingboard smoke test passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mockingboard_smoke" end time: May 14 01:41 +04
+"mockingboard_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_mockingboard_sync
+43/48 Testing: mockingboard_sync_smoke
+43/48 Test: mockingboard_sync_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"mockingboard_sync_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mockingboard_sync_smoke" end time: May 14 01:41 +04
+"mockingboard_sync_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_mockingboard_4am_detect
+44/48 Testing: mockingboard_4am_detect_smoke
+44/48 Test: mockingboard_4am_detect_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"mockingboard_4am_detect_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mockingboard_4am_detect_smoke" end time: May 14 01:41 +04
+"mockingboard_4am_detect_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+45/48 Testing: mockingboard_irq_delivery_smoke
+45/48 Test: mockingboard_irq_delivery_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_mockingboard_irq_delivery"
+Directory: /home/gistarcade/src/POM2/tests
+"mockingboard_irq_delivery_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+mockingboard_irq_delivery_smoke OK: 69 IRQ handler invocations in 1000 CPU steps
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"mockingboard_irq_delivery_smoke" end time: May 14 01:41 +04
+"mockingboard_irq_delivery_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+46/48 Testing: ssc_acia_smoke
+46/48 Test: ssc_acia_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_ssc_acia"
+Directory: /home/gistarcade/src/POM2/tests
+"ssc_acia_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+  ok: command decode (DTR / RX IRQ / echo)
+  ok: DTR side-effects on TDR
+  ok: echo mode loopback
+  ok: overrun set on overflow, cleared on RDR read
+  ok: programmed reset preserves parity bits
+  ok: control reg baud-rate decode
+  ok: RX IRQ gated by cmd bit 1 + DTR
+  ok: cmd write clears pending IRQ when enable goes off
+  ok: status DCD/DSR mirror connection state
+OK ssc_acia_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"ssc_acia_smoke" end time: May 14 01:41 +04
+"ssc_acia_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+Unable to find executable: /home/gistarcade/src/POM2/tests/test_ai_control_server
+47/48 Testing: ai_control_server_smoke
+47/48 Test: ai_control_server_smoke
+Command: ""
+Directory: /home/gistarcade/src/POM2/tests
+"ai_control_server_smoke" start time: 
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"ai_control_server_smoke" end time: May 14 01:41 +04
+"ai_control_server_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+48/48 Testing: woz_writeback_smoke
+48/48 Test: woz_writeback_smoke
+Command: "/home/gistarcade/src/POM2/tests/test_woz_writeback"
+Directory: /home/gistarcade/src/POM2/tests
+"woz_writeback_smoke" start time: May 14 01:41 +04
+Output:
+----------------------------------------------------------
+[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wb.woz (.woz v1, info_v1, 1 tracks)
+[INFO] Disk II: Saved 1 modified quarter-track(s) to /tmp/pom2_wozwb_v1_wb.woz (.woz, CRC zeroed)
+[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wb.woz (.woz v1, info_v1, 1 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_wozwb_v2_wb.woz (.woz v2, info_v2, 1 tracks)
+[INFO] Disk II: Saved 1 modified quarter-track(s) to /tmp/pom2_wozwb_v2_wb.woz (.woz, CRC zeroed)
+[INFO] Disk II: Loaded /tmp/pom2_wozwb_v2_wb.woz (.woz v2, info_v2, 1 tracks)
+[INFO] Disk II: Loaded /tmp/pom2_wozwb_v1_wp.woz (.woz v1, info_v1, 1 tracks, file-WP)
+[ OK ] WOZ1 writeFlux → saveDirty → re-load round-trip
+[ OK ] WOZ2 writeFlux → saveDirty → re-load round-trip
+[ OK ] WOZ1 INFO.write_protected respects user toggle
+OK woz_writeback_smoke
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"woz_writeback_smoke" end time: May 14 01:41 +04
+"woz_writeback_smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 14 01:41 +04

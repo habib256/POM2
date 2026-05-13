@@ -32,6 +32,7 @@ file(GLOB IMGUI_SOURCES
 set(SOURCES
     M6502.cpp
     Memory.cpp
+    AiControlServer.cpp
     Apple2Display.cpp
     AudioDevice.cpp
     CassetteDevice.cpp
@@ -71,6 +72,7 @@ set(SOURCES
 set(HEADERS
     M6502.h
     Memory.h
+    AiControlServer.h
     Apple2Display.h
     AudioDevice.h
     CassetteDevice.h

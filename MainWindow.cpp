@@ -159,6 +159,20 @@ MainWindow::MainWindow(bool forceIIPlus)
     controller.setMode(EmulationController::Mode::Running);
     controller.start();
 
+    // ── AI control server (loopback HTTP) ────────────────────────────────
+    // Wire the bridge once the emulator core is alive so the server's
+    // first request hits a fully-formed controller. Auto-start only if
+    // the last session left it on — fresh users opt in via the panel.
+    aiPortInput   = settings.getInt   ("ai_control_port",   aiPortInput);
+    aiTokenInput  = settings.getString("ai_control_token",  "");
+    aiServer.attach(&controller, &display, diskCard, hdvCard);
+    aiServer.setAuthToken(aiTokenInput);
+    aiServer.setProfileLabel(std::string(pom2::profileConfig(activeProfile).displayName));
+    showAiControlPanel = settings.getBool("show_ai_control", showAiControlPanel);
+    if (settings.getBool("ai_control_enable", false)) {
+        aiServer.start(static_cast<uint16_t>(aiPortInput));
+    }
+
     // Determine the active profile from what the legacy boot path
     // resolved. If a `system_profile` setting was persisted from a
     // previous launch AND it disagrees with the auto-detected one, the
@@ -188,6 +202,12 @@ MainWindow::MainWindow(bool forceIIPlus)
 
 MainWindow::~MainWindow()
 {
+    // Stop the AI control server BEFORE the CPU worker — pending requests
+    // hold `controller.stateMutex()` and call into `controller.memory()` /
+    // `controller.cpu()`; we want them quiesced before we tear anything
+    // else down. The server's destructor would do the same on member
+    // destruction order, but doing it here keeps the dependency obvious.
+    aiServer.stop();
     controller.stop();
 
     // Persist the current state so the next launch restores the same
@@ -219,6 +239,13 @@ MainWindow::~MainWindow()
         settings.setBool("ssc_listening", sscCard->isListening());
         settings.setInt ("ssc_port",      sscCard->getPort());
     }
+
+    // AI control listener — persist enable, port, token, and the panel
+    // visibility flag. Re-armed on next launch by the constructor.
+    settings.setBool  ("ai_control_enable", aiServer.isRunning());
+    settings.setInt   ("ai_control_port",   aiServer.getPort());
+    settings.setString("ai_control_token",  aiTokenInput);
+    settings.setBool  ("show_ai_control",   showAiControlPanel);
 
     // Persist the per-slot card mapping so changes via the Slot
     // Configuration panel survive a restart.
@@ -908,8 +935,11 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Disk II (slot 6)", nullptr, &showDiskPanel);
         ImGui::MenuItem("HDV (slot 5)", nullptr, &showHdvPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
+        ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr,
+                        &showMockingboardPanel);
         ImGui::MenuItem("Super Serial (slot 2)", nullptr, &showSscPanel);
         ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
+        ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
         ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
         ImGui::Separator();
         ImGui::BeginDisabled(hdvCard == nullptr);
@@ -1251,6 +1281,82 @@ void MainWindow::renderSscPanelWindow()
     ImGui::End();
 }
 
+void MainWindow::renderAiControlPanelWindow()
+{
+    if (!showAiControlPanel) return;
+
+    ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("AI Control (HTTP)", &showAiControlPanel)) {
+        ImGui::End();
+        return;
+    }
+
+    const bool running = aiServer.isRunning();
+    ImGui::Text("Status: %s", running ? "listening" : "stopped");
+    if (running) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("on 127.0.0.1:%u", aiServer.getPort());
+    }
+    ImGui::Text("Requests served: %llu",
+                static_cast<unsigned long long>(aiServer.requestsServed()));
+    {
+        const std::string addr = aiServer.lastClientAddr();
+        if (!addr.empty()) ImGui::Text("Last client: %s", addr.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(120);
+    ImGui::InputInt("TCP port", &aiPortInput, 0, 0);
+    if (aiPortInput < 1)     aiPortInput = 1;
+    if (aiPortInput > 65535) aiPortInput = 65535;
+
+    char tokenBuf[128];
+    std::snprintf(tokenBuf, sizeof(tokenBuf), "%s", aiTokenInput.c_str());
+    ImGui::SetNextItemWidth(240);
+    if (ImGui::InputText("Auth token (empty = open)", tokenBuf, sizeof(tokenBuf))) {
+        aiTokenInput = tokenBuf;
+        aiServer.setAuthToken(aiTokenInput);
+    }
+
+    ImGui::SameLine();
+    if (!running) {
+        if (ImGui::Button("Start")) {
+            // Re-attach in case slot cards were rebuilt by the slot config
+            // panel since the last start — pointers may have moved.
+            aiServer.attach(&controller, &display, diskCard, hdvCard);
+            aiServer.setAuthToken(aiTokenInput);
+            if (!aiServer.start(static_cast<uint16_t>(aiPortInput))) {
+                tapeStatusMessage = "AI Control: bind failed (port busy?)";
+                tapeStatusUntil   = lastFrameTime + 4.0;
+            }
+        }
+    } else {
+        if (ImGui::Button("Stop")) aiServer.stop();
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped(
+        "Drive POM2 from an AI agent (or curl/Postman) via HTTP/1.1.");
+    ImGui::Spacing();
+    ImGui::TextDisabled("Example:");
+    ImGui::TextWrapped("  curl http://127.0.0.1:%d/status", aiPortInput);
+    ImGui::TextWrapped(
+        "  curl -d '{\"text\":\"PRINT 1+1\\r\"}' http://127.0.0.1:%d/keyboard",
+        aiPortInput);
+    ImGui::TextWrapped(
+        "  curl http://127.0.0.1:%d/screen.ppm -o screen.ppm",
+        aiPortInput);
+    if (!aiTokenInput.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Send 'X-POM2-Token: <token>' header on each request.");
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("Endpoints: /status /reset /cpu /mem /keyboard /disk "
+                        "/eject /snapshot/save /snapshot/load /speed /screen.ppm");
+
+    ImGui::End();
+}
+
 void MainWindow::renderJoystickPanelWindow()
 {
     if (!showJoystickPanel) return;
@@ -1314,6 +1420,136 @@ void MainWindow::renderChatMauvePanelWindow()
     }
 }
 
+// ─── Mockingboard live state panel ───────────────────────────────────────
+//
+// Diagnostic window for the Mockingboard A/C. Shows both 6522 VIAs' T1
+// counter / IFR / IER + slot IRQ state, and both AY-3-8910 register
+// banks (R0..R15). Primary use case: figuring out why an IRQ-driven
+// music driver is silent. Three observable cases:
+//
+//   1. AY registers all stay 0 — the music handler isn't running at
+//      all. Check IFR/IER + irqAsserted on the VIA. If T1 ticks but
+//      IRQ never asserts, the IER is wrong or the driver hasn't
+//      enabled T1 yet.
+//   2. AY registers move every few frames — the driver is running and
+//      the AY synth is producing samples; if you hear nothing, look at
+//      AudioDevice (volume/mute) or the channel mixer R7.
+//   3. AY registers load once and freeze — the install ran but only
+//      one IRQ landed. Likely the handler isn't re-arming T1 or the
+//      ack path is broken.
+//
+// The panel takes the controller state mutex for each snapshot and
+// reads via the card's existing test/debug accessors
+// (`peekViaRegister`, `getAyRegister`, `isIrqAsserted`).
+void MainWindow::renderMockingboardPanelWindow()
+{
+    if (!showMockingboardPanel) return;
+
+    ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(380, 540), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Mockingboard (VIA + AY state)",
+                      &showMockingboardPanel,
+                      ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!mockingboardCard) {
+        ImGui::TextDisabled("No Mockingboard plugged. Use Hardware → Slot "
+                            "Configuration to assign it to a slot.");
+        ImGui::End();
+        return;
+    }
+
+    // Snapshot all the per-chip state under one lock so the two VIAs and
+    // two AYs are coherent against each other. The card's accessors are
+    // const-ish reads — no side effects on the running emulator.
+    struct ChipSnap {
+        uint8_t t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
+        uint8_t ay[16];
+    } via[2]{};
+    bool slotIrq = false;
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        slotIrq = mockingboardCard->isIrqAsserted();
+        for (int c = 0; c < 2; ++c) {
+            via[c].t1cl = mockingboardCard->peekViaRegister(c, 0x04);
+            via[c].t1ch = mockingboardCard->peekViaRegister(c, 0x05);
+            via[c].t1ll = mockingboardCard->peekViaRegister(c, 0x06);
+            via[c].t1lh = mockingboardCard->peekViaRegister(c, 0x07);
+            via[c].sr   = mockingboardCard->peekViaRegister(c, 0x0A);
+            via[c].acr  = mockingboardCard->peekViaRegister(c, 0x0B);
+            via[c].pcr  = mockingboardCard->peekViaRegister(c, 0x0C);
+            via[c].ifr  = mockingboardCard->peekViaRegister(c, 0x0D);
+            via[c].ier  = mockingboardCard->peekViaRegister(c, 0x0E);
+            for (int r = 0; r < 16; ++r) {
+                via[c].ay[r] = mockingboardCard->getAyRegister(c, r);
+            }
+        }
+    }
+
+    // Slot IRQ indicator and volume readout.
+    ImGui::Text("Slot IRQ line: %s", slotIrq ? "ASSERTED (low)" : "released");
+    ImGui::SameLine();
+    ImGui::TextDisabled(" | Volume: %.2f %s",
+                        mockingboardCard->getVolume(),
+                        mockingboardCard->isMuted() ? "(MUTED)" : "");
+    ImGui::Separator();
+
+    // Two-column display, one per 6522+AY pair.
+    if (ImGui::BeginTable("##mb_chips", 2,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("VIA #1 + AY #0 ($Cn00-$Cn0F)");
+        ImGui::TableSetupColumn("VIA #2 + AY #1 ($Cn80-$Cn8F)");
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        for (int c = 0; c < 2; ++c) {
+            ImGui::TableSetColumnIndex(c);
+            const auto& v = via[c];
+            ImGui::Text("T1 ctr  $%02X%02X   latch $%02X%02X",
+                        v.t1ch, v.t1cl, v.t1lh, v.t1ll);
+            ImGui::Text("ACR=$%02X  PCR=$%02X  SR=$%02X",
+                        v.acr, v.pcr, v.sr);
+            ImGui::Text("IFR=$%02X  IER=$%02X  T1en=%s",
+                        v.ifr, v.ier, (v.ier & 0x40) ? "yes" : "no");
+            const bool t1Fired = (v.ifr & 0x40) != 0;
+            ImGui::TextColored(t1Fired
+                                 ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
+                                 : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                               "IFR.T1: %s", t1Fired ? "PENDING" : "clear");
+            ImGui::Separator();
+            ImGui::TextDisabled("AY-3-8910 registers:");
+            // Two columns inside the cell: 8 regs each.
+            for (int row = 0; row < 8; ++row) {
+                const int r0 = row;
+                const int r1 = row + 8;
+                ImGui::Text("R%-2d %3u $%02X    R%-2d %3u $%02X",
+                            r0, v.ay[r0], v.ay[r0],
+                            r1, v.ay[r1], v.ay[r1]);
+            }
+            // Friendly labels for the regs that decide audibility.
+            ImGui::Separator();
+            const uint16_t periodA = v.ay[0] | ((v.ay[1] & 0x0F) << 8);
+            const uint16_t periodB = v.ay[2] | ((v.ay[3] & 0x0F) << 8);
+            const uint16_t periodC = v.ay[4] | ((v.ay[5] & 0x0F) << 8);
+            ImGui::Text("Ch A period $%03X  vol $%X", periodA, v.ay[8] & 0x1F);
+            ImGui::Text("Ch B period $%03X  vol $%X", periodB, v.ay[9] & 0x1F);
+            ImGui::Text("Ch C period $%03X  vol $%X", periodC, v.ay[10] & 0x1F);
+            ImGui::Text("Mixer $%02X (tone %c%c%c noise %c%c%c)",
+                        v.ay[7],
+                        (v.ay[7] & 0x01) ? '.' : 'A',
+                        (v.ay[7] & 0x02) ? '.' : 'B',
+                        (v.ay[7] & 0x04) ? '.' : 'C',
+                        (v.ay[7] & 0x08) ? '.' : 'A',
+                        (v.ay[7] & 0x10) ? '.' : 'B',
+                        (v.ay[7] & 0x20) ? '.' : 'C');
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::End();
+}
+
 // ─── Disk II ─────────────────────────────────────────────────────────────
 
 void MainWindow::renderDiskPanelWindow()
@@ -1337,22 +1573,42 @@ void MainWindow::renderDiskPanelWindow()
     snap.turboWhileMotor = diskTurboWhileMotor;
     snap.turboActive     = diskTurboActive;
 
-    // Disk library — scan disks/ for .dsk, .do and .po files. Cheap (a
-    // few dirent reads per frame), but sorted alphabetically so the list
-    // doesn't reshuffle each time the OS hands us a different order.
+    // Disk library — scan disks/ recursively for .dsk/.do/.po/.nib/.woz.
+    // Sub-folders are honoured so users can shelve their library by
+    // format (`disks/dsk/`, `disks/woz/`, …) or by collection
+    // (`disks/games/`, `disks/dev/`, …) without losing the one-click
+    // boot. Cheap (a few dirent reads per frame); sorted alphabetically
+    // so the list doesn't reshuffle as the OS hands us a different
+    // dirent order. `displayName` carries the path relative to the
+    // scanned root so two files of the same name in different sub-
+    // folders don't collide visually.
     {
         namespace fs = std::filesystem;
         std::error_code ec;
         const char* dirCandidates[] = { "disks", "../disks", "../../disks" };
         for (const char* dir : dirCandidates) {
             if (!fs::is_directory(dir, ec)) continue;
-            for (const auto& entry : fs::directory_iterator(dir, ec)) {
-                if (!entry.is_regular_file()) continue;
+            const fs::path root(dir);
+            for (auto it = fs::recursive_directory_iterator(root,
+                     fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                const auto& entry = *it;
+                // Skip dotfiles AND dotdirs (.git, .DS_Store, …). On a
+                // dotdir we disable_recursion_pending so we don't walk
+                // into it on the next ++.
+                const std::string name = entry.path().filename().string();
+                if (!name.empty() && name.front() == '.') {
+                    if (entry.is_directory(ec)) it.disable_recursion_pending();
+                    continue;
+                }
+                if (!entry.is_regular_file(ec)) continue;
                 const std::string ext = entry.path().extension().string();
                 if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
                     ext != ".nib" && ext != ".woz") continue;
                 pom2::DiskController_ImGui::LibraryEntry e;
-                e.displayName = entry.path().filename().string();
+                e.displayName = fs::relative(entry.path(), root, ec).string();
+                if (e.displayName.empty()) e.displayName = name;
                 e.fullPath    = entry.path().string();
                 snap.library.push_back(std::move(e));
             }
@@ -1481,12 +1737,27 @@ void MainWindow::renderHdvPanelWindow()
         const char* dirCandidates[] = { "hdv", "../hdv", "../../hdv" };
         for (const char* dir : dirCandidates) {
             if (!fs::is_directory(dir, ec)) continue;
-            for (const auto& entry : fs::directory_iterator(dir, ec)) {
-                if (!entry.is_regular_file()) continue;
+            const fs::path root(dir);
+            // Recursive walk so users can shelve images by collection /
+            // OS / target machine (`hdv/prodos/`, `hdv/iigs/`, …) and
+            // still get one-click mount. See the Disk II library
+            // comment above for the rationale and ignore rules.
+            for (auto it = fs::recursive_directory_iterator(root,
+                     fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                const auto& entry = *it;
+                const std::string name = entry.path().filename().string();
+                if (!name.empty() && name.front() == '.') {
+                    if (entry.is_directory(ec)) it.disable_recursion_pending();
+                    continue;
+                }
+                if (!entry.is_regular_file(ec)) continue;
                 const std::string ext = entry.path().extension().string();
                 if (ext != ".hdv" && ext != ".2mg") continue;
                 pom2::HdvController_ImGui::LibraryEntry e;
-                e.displayName = entry.path().filename().string();
+                e.displayName = fs::relative(entry.path(), root, ec).string();
+                if (e.displayName.empty()) e.displayName = name;
                 e.fullPath    = entry.path().string();
                 snap.library.push_back(std::move(e));
             }
@@ -1971,8 +2242,10 @@ void MainWindow::render()
     renderDiskFileDialog();
     renderHdvPanelWindow();
     renderChatMauvePanelWindow();
+    renderMockingboardPanelWindow();
     renderSscPanelWindow();
     renderJoystickPanelWindow();
+    renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderAboutDialog();
 }

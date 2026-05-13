@@ -60,11 +60,13 @@ Sections triées par poids des items 🟠 (le plus urgent d'abord).
 
 ## 4. Display
 
-- [ ] 🟡 **Path HGR Chat Mauve écrit dans buffer 280-wide au lieu de
-      560** (`Apple2Display.cpp:778-787`). Perd la netteté qui est la
-      raison d'être de la carte.
-- [ ] 🟡 **Persistence buffer afterglow mono dimensionné 280×192** →
-      DHGR mono 560 sans afterglow (`Apple2Display.cpp:107, 1087-1097`).
+- [x] 🟡 **Path HGR Chat Mauve écrit dans buffer 280-wide au lieu de
+      560** — fixé 2026-05-14 : nouveau `renderHiResChatMauve80` route
+      le rendu HGR Chat Mauve directement dans `frame80` (560-wide).
+      Pinned : `display_persistence_smoke_test.cpp`.
+- [x] 🟡 **Persistence buffer afterglow mono dimensionné 280×192** —
+      fixé 2026-05-14 : `persistenceL80` (560×192) parallèle pour
+      DHGR mono. Pinned : `display_persistence_smoke_test.cpp`.
 - [ ] 🟢 **`monochrome_dhr_shift()` 1-px alignment manquant** en DHGR
       mono (MAME `apple2video.cpp:460-471`). Cosmétique.
 - [ ] 🟢 **Floating-TTL** `empty_words[40]={0x3fff,…}` pour rows

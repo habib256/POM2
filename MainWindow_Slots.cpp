@@ -338,6 +338,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         ", ROM = " + (newRomPath.empty() ? "<missing>" : newRomPath) +
         ", CPU = " +
         (controller.cpu().getCpuMode() == M6502::CpuMode::CMOS ? "65C02" : "NMOS"));
+
+    // Re-bind the AI control server to the freshly rebuilt slot pointers.
+    // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
+    // the previous profile are stale.)
+    aiServer.attach(&controller, &display, diskCard, hdvCard);
+    aiServer.setProfileLabel(std::string(cfg.displayName));
 }
 
 void MainWindow::restartEmulationFromSettings()
@@ -390,6 +396,11 @@ void MainWindow::restartEmulationFromSettings()
     controller.cpu().hardReset();
     controller.memory().slotBus().reset();
     controller.start();
+
+    // 6. Re-attach the AI control server with the freshly rebuilt card
+    //    pointers — the slot-bus tear-down above invalidated whatever
+    //    diskCard/hdvCard the server was holding.
+    aiServer.attach(&controller, &display, diskCard, hdvCard);
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
 }

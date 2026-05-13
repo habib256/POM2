@@ -126,19 +126,25 @@ int main()
         // Card state at construction = COL140 (FIFO=11) — no need to clock.
         assert(raw->currentMode() == LeChatMauveCard::RenderMode::COL140);
 
+        // Chat Mauve HGR now renders into frame80 natively (560-wide),
+        // so each HGR pair (2 HGR pixels → 1 palette entry) lands as 4
+        // contiguous output dots. The decoded colours are unchanged —
+        // only the dot-grid stride is doubled. (`width()` only flips to
+        // 560 after the first render, so we check it post-render below.)
+
         // $01 at col 0: pair (bit0=1, bit1=0) at MSB=0 → violet on both
         // pixels (the Chat Mauve renderer paints both pixels of the pair
         // with the same colour, no half-dot delay).
         clearHgrLine(mem, 0);
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
+        assert(display.width() == 560);
         // Pair (0,1): bits = 01 → kChatMauveHGR[0][1] = Feline MAGENTA
-        // rgb(0xaa, 0x1a, 0xd1).
+        // rgb(0xaa, 0x1a, 0xd1) — 4 output dots wide.
         const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
-        assert(*pixelAt(display, 0, 0) == magenta);
-        assert(*pixelAt(display, 1, 0) == magenta);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == magenta);
         // The rest of the row: pairs 00 → black.
-        for (int x = 2; x < 280; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        for (int x = 4; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
 
         // $02 at col 0: pair (bit0=0, bit1=1) → green (bank 0, code 10).
         clearHgrLine(mem, 1);
@@ -146,28 +152,26 @@ int main()
         display.render(mem);
         // kChatMauveHGR[0][2] = Feline GREEN rgb(0x6f, 0xe6, 0x2c).
         const uint32_t green = pack(0x6F, 0xE6, 0x2C);
-        assert(*pixelAt(display, 0, 1) == green);
-        assert(*pixelAt(display, 1, 1) == green);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 1) == green);
 
         // $81 at col 0: bit0=1 only, MSB=1 → bank 1 → blue. No half-dot
-        // delay (that's NTSC-only) — pixel 0,1 should both be the bank-1
-        // 01 colour (blue), NOT shifted.
+        // delay (that's NTSC-only) — pair 0 should be the bank-1 01
+        // colour (blue) across all 4 output dots, NOT shifted.
         clearHgrLine(mem, 2);
         writeHgrByte(mem, 2, 0, 0x81);
         display.render(mem);
         // kChatMauveHGR[1][1] = Feline BLUE rgb(0x00, 0x8a, 0xb5).
         const uint32_t blue = pack(0x00, 0x8A, 0xB5);
-        assert(*pixelAt(display, 0, 2) == blue);
-        assert(*pixelAt(display, 1, 2) == blue);
-        // Critically, x=2 should be BLACK (no fringing — NTSC would smear
-        // here because of the half-dot phase shift).
-        assert(*pixelAt(display, 2, 2) == kBlack);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 2) == blue);
+        // Critically, dots 4+ should be BLACK (no fringing — NTSC would
+        // smear here because of the half-dot phase shift).
+        assert(*pixelAt(display, 4, 2) == kBlack);
 
         // $7F full row: every pair = 11 → white.
         clearHgrLine(mem, 3);
         for (int col = 0; col < 40; ++col) writeHgrByte(mem, 3, col, 0x7F);
         display.render(mem);
-        for (int x = 0; x < 280; ++x) assert(*pixelAt(display, x, 3) == kWhite);
+        for (int x = 0; x < 560; ++x) assert(*pixelAt(display, x, 3) == kWhite);
     }
 
     // ─── 3. ChatMauveRGB BW560 forces strict B/W ─────────────────────────
@@ -185,12 +189,17 @@ int main()
         display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
         raw->overrideMode(LeChatMauveCard::RenderMode::BW560);
 
-        // $01 at col 0: bit 0 = white, bits 1..6 = black, no chroma.
+        // BW560 mode: each HGR pixel → 2 identical output dots in
+        // frame80 (literally a 560-pixel monochrome stream — the card's
+        // namesake mode). $01 at col 0: bit 0 = white at dots 0..1,
+        // rest black, no chroma anywhere.
         clearHgrLine(mem, 0);
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
+        assert(display.width() == 560);
         assert(*pixelAt(display, 0, 0) == kWhite);
-        for (int x = 1; x < 280; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        assert(*pixelAt(display, 1, 0) == kWhite);
+        for (int x = 2; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
     }
 
     // ─── 4. Lo-res Chat Mauve palette: distinct grays at 5 / A ───────────

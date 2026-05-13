@@ -361,6 +361,84 @@ test_disk_image/fast:
 .PHONY : test_disk_image/fast
 
 #=============================================================================
+# Target rules for targets named test_disk_skew_sniff
+
+# Build rule for target.
+test_disk_skew_sniff: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_skew_sniff
+.PHONY : test_disk_skew_sniff
+
+# fast build rule for target.
+test_disk_skew_sniff/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/build
+.PHONY : test_disk_skew_sniff/fast
+
+#=============================================================================
+# Target rules for targets named test_disk_macbinary
+
+# Build rule for target.
+test_disk_macbinary: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_macbinary
+.PHONY : test_disk_macbinary
+
+# fast build rule for target.
+test_disk_macbinary/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/build
+.PHONY : test_disk_macbinary/fast
+
+#=============================================================================
+# Target rules for targets named test_disk_cnib2
+
+# Build rule for target.
+test_disk_cnib2: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_cnib2
+.PHONY : test_disk_cnib2
+
+# fast build rule for target.
+test_disk_cnib2/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/build
+.PHONY : test_disk_cnib2/fast
+
+#=============================================================================
+# Target rules for targets named test_disk_2mg
+
+# Build rule for target.
+test_disk_2mg: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_2mg
+.PHONY : test_disk_2mg
+
+# fast build rule for target.
+test_disk_2mg/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/build
+.PHONY : test_disk_2mg/fast
+
+#=============================================================================
+# Target rules for targets named test_disk_2mg_writeback
+
+# Build rule for target.
+test_disk_2mg_writeback: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_2mg_writeback
+.PHONY : test_disk_2mg_writeback
+
+# fast build rule for target.
+test_disk_2mg_writeback/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/build
+.PHONY : test_disk_2mg_writeback/fast
+
+#=============================================================================
+# Target rules for targets named test_disk_refuse
+
+# Build rule for target.
+test_disk_refuse: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_disk_refuse
+.PHONY : test_disk_refuse
+
+# fast build rule for target.
+test_disk_refuse/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/build
+.PHONY : test_disk_refuse/fast
+
+#=============================================================================
 # Target rules for targets named test_diskii_lss
 
 # Build rule for target.
@@ -543,6 +621,19 @@ test_dhgr_render/fast:
 .PHONY : test_dhgr_render/fast
 
 #=============================================================================
+# Target rules for targets named test_display_persistence
+
+# Build rule for target.
+test_display_persistence: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_display_persistence
+.PHONY : test_display_persistence
+
+# fast build rule for target.
+test_display_persistence/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/build
+.PHONY : test_display_persistence/fast
+
+#=============================================================================
 # Target rules for targets named test_cmos_6502
 
 # Build rule for target.
@@ -647,6 +738,45 @@ test_mockingboard/fast:
 .PHONY : test_mockingboard/fast
 
 #=============================================================================
+# Target rules for targets named test_mockingboard_sync
+
+# Build rule for target.
+test_mockingboard_sync: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mockingboard_sync
+.PHONY : test_mockingboard_sync
+
+# fast build rule for target.
+test_mockingboard_sync/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/build
+.PHONY : test_mockingboard_sync/fast
+
+#=============================================================================
+# Target rules for targets named test_mockingboard_4am_detect
+
+# Build rule for target.
+test_mockingboard_4am_detect: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mockingboard_4am_detect
+.PHONY : test_mockingboard_4am_detect
+
+# fast build rule for target.
+test_mockingboard_4am_detect/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/build
+.PHONY : test_mockingboard_4am_detect/fast
+
+#=============================================================================
+# Target rules for targets named test_mockingboard_irq_delivery
+
+# Build rule for target.
+test_mockingboard_irq_delivery: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mockingboard_irq_delivery
+.PHONY : test_mockingboard_irq_delivery
+
+# fast build rule for target.
+test_mockingboard_irq_delivery/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build
+.PHONY : test_mockingboard_irq_delivery/fast
+
+#=============================================================================
 # Target rules for targets named test_ssc_acia
 
 # Build rule for target.
@@ -658,6 +788,19 @@ test_ssc_acia: cmake_check_build_system
 test_ssc_acia/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/build
 .PHONY : test_ssc_acia/fast
+
+#=============================================================================
+# Target rules for targets named test_ai_control_server
+
+# Build rule for target.
+test_ai_control_server: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_ai_control_server
+.PHONY : test_ai_control_server
+
+# fast build rule for target.
+test_ai_control_server/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/build
+.PHONY : test_ai_control_server/fast
 
 #=============================================================================
 # Target rules for targets named test_woz_writeback
@@ -684,6 +827,30 @@ hero_probe: cmake_check_build_system
 hero_probe/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/build
 .PHONY : hero_probe/fast
+
+AiControlServer.o: AiControlServer.cpp.o
+.PHONY : AiControlServer.o
+
+# target to build an object file
+AiControlServer.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o
+.PHONY : AiControlServer.cpp.o
+
+AiControlServer.i: AiControlServer.cpp.i
+.PHONY : AiControlServer.i
+
+# target to preprocess a source file
+AiControlServer.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.i
+.PHONY : AiControlServer.cpp.i
+
+AiControlServer.s: AiControlServer.cpp.s
+.PHONY : AiControlServer.s
+
+# target to generate assembly for a file
+AiControlServer.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pom2_imgui.dir/build.make CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.s
+.PHONY : AiControlServer.cpp.s
 
 Apple2Display.o: Apple2Display.cpp.o
 .PHONY : Apple2Display.o
@@ -1803,15 +1970,23 @@ help:
 	@echo "... hero_probe"
 	@echo "... pom2_headless"
 	@echo "... pom2_imgui"
+	@echo "... test_ai_control_server"
 	@echo "... test_clock_card"
 	@echo "... test_cmos_6502"
 	@echo "... test_dhgr_render"
+	@echo "... test_disk_2mg"
+	@echo "... test_disk_2mg_writeback"
 	@echo "... test_disk_boot"
+	@echo "... test_disk_cnib2"
 	@echo "... test_disk_drive2"
 	@echo "... test_disk_image"
+	@echo "... test_disk_macbinary"
+	@echo "... test_disk_refuse"
+	@echo "... test_disk_skew_sniff"
 	@echo "... test_disk_write_controller"
 	@echo "... test_disk_writeback"
 	@echo "... test_diskii_lss"
+	@echo "... test_display_persistence"
 	@echo "... test_dos33_save"
 	@echo "... test_hdv_card"
 	@echo "... test_hdv_writeback"
@@ -1827,6 +2002,9 @@ help:
 	@echo "... test_mame_lss_parity"
 	@echo "... test_mc6821"
 	@echo "... test_mockingboard"
+	@echo "... test_mockingboard_4am_detect"
+	@echo "... test_mockingboard_irq_delivery"
+	@echo "... test_mockingboard_sync"
 	@echo "... test_mouse_card"
 	@echo "... test_mouse_card_quadrature"
 	@echo "... test_paste"
@@ -1841,6 +2019,9 @@ help:
 	@echo "... test_vbl"
 	@echo "... test_woz_load"
 	@echo "... test_woz_writeback"
+	@echo "... AiControlServer.o"
+	@echo "... AiControlServer.i"
+	@echo "... AiControlServer.s"
 	@echo "... Apple2Display.o"
 	@echo "... Apple2Display.i"
 	@echo "... Apple2Display.s"

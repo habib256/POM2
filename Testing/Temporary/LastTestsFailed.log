@@ -1,1 +1,10 @@
-14:diskii_lss_smoke
+12:irq_aggregator_smoke
+17:disk_skew_sniff_smoke
+18:disk_macbinary_smoke
+19:disk_cnib2_smoke
+20:disk_2mg_smoke
+21:disk_2mg_writeback_smoke
+22:disk_refuse_smoke
+43:mockingboard_sync_smoke
+44:mockingboard_4am_detect_smoke
+47:ai_control_server_smoke

@@ -97,10 +97,24 @@ CMakeFiles/pom2_imgui.dir/Memory.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/pom2_imgui.dir/Memory.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/gistarcade/src/POM2/Memory.cpp -o CMakeFiles/pom2_imgui.dir/Memory.cpp.s
 
+CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
+CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o: AiControlServer.cpp
+CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o -MF CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o.d -o CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o -c /home/gistarcade/src/POM2/AiControlServer.cpp
+
+CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/gistarcade/src/POM2/AiControlServer.cpp > CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.i
+
+CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/gistarcade/src/POM2/AiControlServer.cpp -o CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.s
+
 CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o: Apple2Display.cpp
 CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o -MF CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o.d -o CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o -c /home/gistarcade/src/POM2/Apple2Display.cpp
 
 CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.i: cmake_force
@@ -114,7 +128,7 @@ CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o: AudioDevice.cpp
 CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o -MF CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o.d -o CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o -c /home/gistarcade/src/POM2/AudioDevice.cpp
 
 CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.i: cmake_force
@@ -128,7 +142,7 @@ CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o: CassetteDevice.cpp
 CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o -MF CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o.d -o CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o -c /home/gistarcade/src/POM2/CassetteDevice.cpp
 
 CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.i: cmake_force
@@ -142,7 +156,7 @@ CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o: CassetteDeck_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o -c /home/gistarcade/src/POM2/CassetteDeck_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.i: cmake_force
@@ -156,7 +170,7 @@ CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o: CliDispatcher.cpp
 CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o -MF CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o.d -o CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.o -c /home/gistarcade/src/POM2/CliDispatcher.cpp
 
 CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.i: cmake_force
@@ -170,7 +184,7 @@ CMakeFiles/pom2_imgui.dir/CliDispatcher.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o: ClockCard.cpp
 CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o -MF CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/ClockCard.cpp.o -c /home/gistarcade/src/POM2/ClockCard.cpp
 
 CMakeFiles/pom2_imgui.dir/ClockCard.cpp.i: cmake_force
@@ -184,7 +198,7 @@ CMakeFiles/pom2_imgui.dir/ClockCard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o: Disassembler6502.cpp
 CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o -MF CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o.d -o CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.o -c /home/gistarcade/src/POM2/Disassembler6502.cpp
 
 CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.i: cmake_force
@@ -198,7 +212,7 @@ CMakeFiles/pom2_imgui.dir/Disassembler6502.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o: DiskController_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.o -c /home/gistarcade/src/POM2/DiskController_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.i: cmake_force
@@ -212,7 +226,7 @@ CMakeFiles/pom2_imgui.dir/DiskController_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o: DiskIICard.cpp
 CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o -MF CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.o -c /home/gistarcade/src/POM2/DiskIICard.cpp
 
 CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.i: cmake_force
@@ -226,7 +240,7 @@ CMakeFiles/pom2_imgui.dir/DiskIICard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o: DiskImage.cpp
 CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o -MF CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o.d -o CMakeFiles/pom2_imgui.dir/DiskImage.cpp.o -c /home/gistarcade/src/POM2/DiskImage.cpp
 
 CMakeFiles/pom2_imgui.dir/DiskImage.cpp.i: cmake_force
@@ -240,7 +254,7 @@ CMakeFiles/pom2_imgui.dir/DiskImage.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o: EmulationController.cpp
 CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o -MF CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o.d -o CMakeFiles/pom2_imgui.dir/EmulationController.cpp.o -c /home/gistarcade/src/POM2/EmulationController.cpp
 
 CMakeFiles/pom2_imgui.dir/EmulationController.cpp.i: cmake_force
@@ -254,7 +268,7 @@ CMakeFiles/pom2_imgui.dir/EmulationController.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o: HdvController_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.o -c /home/gistarcade/src/POM2/HdvController_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.i: cmake_force
@@ -268,7 +282,7 @@ CMakeFiles/pom2_imgui.dir/HdvController_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o: JoystickInput.cpp
 CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o -MF CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o.d -o CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.o -c /home/gistarcade/src/POM2/JoystickInput.cpp
 
 CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.i: cmake_force
@@ -282,7 +296,7 @@ CMakeFiles/pom2_imgui.dir/JoystickInput.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o: JoystickPanel_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.o -c /home/gistarcade/src/POM2/JoystickPanel_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.i: cmake_force
@@ -296,7 +310,7 @@ CMakeFiles/pom2_imgui.dir/JoystickPanel_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o: LeChatMauveCard.cpp
 CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o -MF CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.o -c /home/gistarcade/src/POM2/LeChatMauveCard.cpp
 
 CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.i: cmake_force
@@ -310,7 +324,7 @@ CMakeFiles/pom2_imgui.dir/LeChatMauveCard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o: LeChatMauve_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.o -c /home/gistarcade/src/POM2/LeChatMauve_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.i: cmake_force
@@ -324,7 +338,7 @@ CMakeFiles/pom2_imgui.dir/LeChatMauve_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o: M68705P3.cpp
 CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o -MF CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o.d -o CMakeFiles/pom2_imgui.dir/M68705P3.cpp.o -c /home/gistarcade/src/POM2/M68705P3.cpp
 
 CMakeFiles/pom2_imgui.dir/M68705P3.cpp.i: cmake_force
@@ -338,7 +352,7 @@ CMakeFiles/pom2_imgui.dir/M68705P3.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o: MainWindow.cpp
 CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o -MF CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MainWindow.cpp.o -c /home/gistarcade/src/POM2/MainWindow.cpp
 
 CMakeFiles/pom2_imgui.dir/MainWindow.cpp.i: cmake_force
@@ -352,7 +366,7 @@ CMakeFiles/pom2_imgui.dir/MainWindow.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o: MainWindow_MemoryMaps.cpp
 CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o -MF CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.o -c /home/gistarcade/src/POM2/MainWindow_MemoryMaps.cpp
 
 CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.i: cmake_force
@@ -366,7 +380,7 @@ CMakeFiles/pom2_imgui.dir/MainWindow_MemoryMaps.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o: MainWindow_Slots.cpp
 CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o -MF CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.o -c /home/gistarcade/src/POM2/MainWindow_Slots.cpp
 
 CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.i: cmake_force
@@ -380,7 +394,7 @@ CMakeFiles/pom2_imgui.dir/MainWindow_Slots.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MC6821.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MC6821.cpp.o: MC6821.cpp
 CMakeFiles/pom2_imgui.dir/MC6821.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/pom2_imgui.dir/MC6821.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/pom2_imgui.dir/MC6821.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MC6821.cpp.o -MF CMakeFiles/pom2_imgui.dir/MC6821.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MC6821.cpp.o -c /home/gistarcade/src/POM2/MC6821.cpp
 
 CMakeFiles/pom2_imgui.dir/MC6821.cpp.i: cmake_force
@@ -394,7 +408,7 @@ CMakeFiles/pom2_imgui.dir/MC6821.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o: MemoryViewer_ImGui.cpp
 CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o -MF CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.o -c /home/gistarcade/src/POM2/MemoryViewer_ImGui.cpp
 
 CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.i: cmake_force
@@ -408,7 +422,7 @@ CMakeFiles/pom2_imgui.dir/MemoryViewer_ImGui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o: Mockingboard.cpp
 CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o -MF CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.o -c /home/gistarcade/src/POM2/Mockingboard.cpp
 
 CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.i: cmake_force
@@ -422,7 +436,7 @@ CMakeFiles/pom2_imgui.dir/Mockingboard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o: MouseCard.cpp
 CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building CXX object CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o -MF CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/MouseCard.cpp.o -c /home/gistarcade/src/POM2/MouseCard.cpp
 
 CMakeFiles/pom2_imgui.dir/MouseCard.cpp.i: cmake_force
@@ -436,7 +450,7 @@ CMakeFiles/pom2_imgui.dir/MouseCard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o: ProDOSHardDiskCard.cpp
 CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building CXX object CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building CXX object CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o -MF CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.o -c /home/gistarcade/src/POM2/ProDOSHardDiskCard.cpp
 
 CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.i: cmake_force
@@ -450,7 +464,7 @@ CMakeFiles/pom2_imgui.dir/ProDOSHardDiskCard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o: ProDOSVolume.cpp
 CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building CXX object CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building CXX object CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o -MF CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o.d -o CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.o -c /home/gistarcade/src/POM2/ProDOSVolume.cpp
 
 CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.i: cmake_force
@@ -464,7 +478,7 @@ CMakeFiles/pom2_imgui.dir/ProDOSVolume.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o: RomLoader.cpp
 CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building CXX object CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o -MF CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o.d -o CMakeFiles/pom2_imgui.dir/RomLoader.cpp.o -c /home/gistarcade/src/POM2/RomLoader.cpp
 
 CMakeFiles/pom2_imgui.dir/RomLoader.cpp.i: cmake_force
@@ -478,7 +492,7 @@ CMakeFiles/pom2_imgui.dir/RomLoader.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/Settings.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/Settings.cpp.o: Settings.cpp
 CMakeFiles/pom2_imgui.dir/Settings.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/pom2_imgui.dir/Settings.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/pom2_imgui.dir/Settings.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/Settings.cpp.o -MF CMakeFiles/pom2_imgui.dir/Settings.cpp.o.d -o CMakeFiles/pom2_imgui.dir/Settings.cpp.o -c /home/gistarcade/src/POM2/Settings.cpp
 
 CMakeFiles/pom2_imgui.dir/Settings.cpp.i: cmake_force
@@ -492,7 +506,7 @@ CMakeFiles/pom2_imgui.dir/Settings.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o: SlotBus.cpp
 CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o -MF CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o.d -o CMakeFiles/pom2_imgui.dir/SlotBus.cpp.o -c /home/gistarcade/src/POM2/SlotBus.cpp
 
 CMakeFiles/pom2_imgui.dir/SlotBus.cpp.i: cmake_force
@@ -506,7 +520,7 @@ CMakeFiles/pom2_imgui.dir/SlotBus.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o: SnapshotIO.cpp
 CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o -MF CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o.d -o CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.o -c /home/gistarcade/src/POM2/SnapshotIO.cpp
 
 CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.i: cmake_force
@@ -520,7 +534,7 @@ CMakeFiles/pom2_imgui.dir/SnapshotIO.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o: SpeakerDevice.cpp
 CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o -MF CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o.d -o CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.o -c /home/gistarcade/src/POM2/SpeakerDevice.cpp
 
 CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.i: cmake_force
@@ -534,7 +548,7 @@ CMakeFiles/pom2_imgui.dir/SpeakerDevice.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o: SuperSerialCard.cpp
 CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o -MF CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o.d -o CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.o -c /home/gistarcade/src/POM2/SuperSerialCard.cpp
 
 CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.i: cmake_force
@@ -548,7 +562,7 @@ CMakeFiles/pom2_imgui.dir/SuperSerialCard.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o: SystemProfile.cpp
 CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o -MF CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o.d -o CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.o -c /home/gistarcade/src/POM2/SystemProfile.cpp
 
 CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.i: cmake_force
@@ -562,7 +576,7 @@ CMakeFiles/pom2_imgui.dir/SystemProfile.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/main.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/main.cpp.o: main.cpp
 CMakeFiles/pom2_imgui.dir/main.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/pom2_imgui.dir/main.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/pom2_imgui.dir/main.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/main.cpp.o -MF CMakeFiles/pom2_imgui.dir/main.cpp.o.d -o CMakeFiles/pom2_imgui.dir/main.cpp.o -c /home/gistarcade/src/POM2/main.cpp
 
 CMakeFiles/pom2_imgui.dir/main.cpp.i: cmake_force
@@ -576,7 +590,7 @@ CMakeFiles/pom2_imgui.dir/main.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o: imgui/backends/imgui_impl_glfw.cpp
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.o -c /home/gistarcade/src/POM2/imgui/backends/imgui_impl_glfw.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.i: cmake_force
@@ -590,7 +604,7 @@ CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_glfw.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o: imgui/backends/imgui_impl_opengl3.cpp
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.o -c /home/gistarcade/src/POM2/imgui/backends/imgui_impl_opengl3.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.i: cmake_force
@@ -604,7 +618,7 @@ CMakeFiles/pom2_imgui.dir/imgui/backends/imgui_impl_opengl3.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o: imgui/imgui.cpp
 CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.o -c /home/gistarcade/src/POM2/imgui/imgui.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.i: cmake_force
@@ -618,7 +632,7 @@ CMakeFiles/pom2_imgui.dir/imgui/imgui.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o: imgui/imgui_demo.cpp
 CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.o -c /home/gistarcade/src/POM2/imgui/imgui_demo.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.i: cmake_force
@@ -632,7 +646,7 @@ CMakeFiles/pom2_imgui.dir/imgui/imgui_demo.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o: imgui/imgui_draw.cpp
 CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.o -c /home/gistarcade/src/POM2/imgui/imgui_draw.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.i: cmake_force
@@ -646,7 +660,7 @@ CMakeFiles/pom2_imgui.dir/imgui/imgui_draw.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o: imgui/imgui_tables.cpp
 CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.o -c /home/gistarcade/src/POM2/imgui/imgui_tables.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.i: cmake_force
@@ -660,7 +674,7 @@ CMakeFiles/pom2_imgui.dir/imgui/imgui_tables.cpp.s: cmake_force
 CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o: CMakeFiles/pom2_imgui.dir/flags.make
 CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o: imgui/imgui_widgets.cpp
 CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o: CMakeFiles/pom2_imgui.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building CXX object CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o -MF CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o.d -o CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.o -c /home/gistarcade/src/POM2/imgui/imgui_widgets.cpp
 
 CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.i: cmake_force
@@ -675,6 +689,7 @@ CMakeFiles/pom2_imgui.dir/imgui/imgui_widgets.cpp.s: cmake_force
 pom2_imgui_OBJECTS = \
 "CMakeFiles/pom2_imgui.dir/M6502.cpp.o" \
 "CMakeFiles/pom2_imgui.dir/Memory.cpp.o" \
+"CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o" \
 "CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o" \
 "CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o" \
 "CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o" \
@@ -722,6 +737,7 @@ pom2_imgui_EXTERNAL_OBJECTS =
 
 POM2: CMakeFiles/pom2_imgui.dir/M6502.cpp.o
 POM2: CMakeFiles/pom2_imgui.dir/Memory.cpp.o
+POM2: CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o
 POM2: CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o
 POM2: CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o
 POM2: CMakeFiles/pom2_imgui.dir/CassetteDevice.cpp.o
@@ -769,7 +785,7 @@ POM2: /usr/lib/x86_64-linux-gnu/libOpenGL.so
 POM2: /usr/lib/x86_64-linux-gnu/libGLX.so
 POM2: /usr/lib/x86_64-linux-gnu/libGLU.so
 POM2: CMakeFiles/pom2_imgui.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Linking CXX executable POM2"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/gistarcade/src/POM2/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Linking CXX executable POM2"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/pom2_imgui.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

@@ -802,3 +802,313 @@ events:
         
       exitCode: 0
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:138 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:266 (_ipo_run_language_check)"
+      - "CMakeLists.txt:227 (check_ipo_supported)"
+    directories:
+      source: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile
+        /usr/bin/cmake -S/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src -B/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /usr/bin/gmake  -f CMakeFiles/Makefile2 all
+        gmake[1] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Scanning dependencies of target foo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/foo.dir/foo.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /usr/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/gcc-ar-13" cr libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/gcc-ranlib-13" libfoo.a
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 50%] Built target foo
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Scanning dependencies of target boo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/boo.dir/main.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=auto -fno-fat-lto-objects CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a 
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [100%] Built target boo
+        gmake[1] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:138 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:266 (_ipo_run_language_check)"
+      - "CMakeLists.txt:229 (check_ipo_supported)"
+    directories:
+      source: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile
+        /usr/bin/cmake -S/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src -B/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /usr/bin/gmake  -f CMakeFiles/Makefile2 all
+        gmake[1] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Scanning dependencies of target foo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/foo.dir/foo.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /usr/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/gcc-ar-13" cr libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/gcc-ranlib-13" libfoo.a
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 50%] Built target foo
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Scanning dependencies of target boo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/boo.dir/main.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=auto -fno-fat-lto-objects CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a 
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [100%] Built target boo
+        gmake[1] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:138 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:266 (_ipo_run_language_check)"
+      - "CMakeLists.txt:229 (check_ipo_supported)"
+    directories:
+      source: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile
+        /usr/bin/cmake -S/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src -B/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /usr/bin/gmake  -f CMakeFiles/Makefile2 all
+        gmake[1] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Scanning dependencies of target foo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/foo.dir/foo.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /usr/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/gcc-ar-13" cr libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/gcc-ranlib-13" libfoo.a
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 50%] Built target foo
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Scanning dependencies of target boo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/boo.dir/main.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=auto -fno-fat-lto-objects CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a 
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [100%] Built target boo
+        gmake[1] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:138 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:266 (_ipo_run_language_check)"
+      - "CMakeLists.txt:229 (check_ipo_supported)"
+    directories:
+      source: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile
+        /usr/bin/cmake -S/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src -B/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /usr/bin/gmake  -f CMakeFiles/Makefile2 all
+        gmake[1] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Scanning dependencies of target foo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/foo.dir/foo.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /usr/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/gcc-ar-13" cr libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/gcc-ranlib-13" libfoo.a
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 50%] Built target foo
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Scanning dependencies of target boo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/boo.dir/main.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=auto -fno-fat-lto-objects CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a 
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [100%] Built target boo
+        gmake[1] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:138 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckIPOSupported.cmake:266 (_ipo_run_language_check)"
+      - "CMakeLists.txt:229 (check_ipo_supported)"
+    directories:
+      source: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src"
+      binary: "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin"
+    buildResult:
+      variable: "_IPO_LANGUAGE_CHECK_RESULT"
+      cached: true
+      stdout: |
+        Change Dir: '/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile
+        /usr/bin/cmake -S/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src -B/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin --check-build-system CMakeFiles/Makefile.cmake 0
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin//CMakeFiles/progress.marks
+        /usr/bin/gmake  -f CMakeFiles/Makefile2 all
+        gmake[1] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/foo.dir/depend.internal".
+        Scanning dependencies of target foo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/foo.dir/build.make CMakeFiles/foo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 25%] Building CXX object CMakeFiles/foo.dir/foo.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/foo.dir/foo.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/foo.cpp
+        [ 50%] Linking CXX static library libfoo.a
+        /usr/bin/cmake -P CMakeFiles/foo.dir/cmake_clean_target.cmake
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/foo.dir/link.txt --verbose=1
+        "/usr/bin/gcc-ar-13" cr libfoo.a CMakeFiles/foo.dir/foo.cpp.o
+        "/usr/bin/gcc-ranlib-13" libfoo.a
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 50%] Built target foo
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/depend
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        cd /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin && /usr/bin/cmake -E cmake_depends "Unix Makefiles" /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/DependInfo.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Dependee "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/CMakeDirectoryInformation.cmake" is newer than depender "/home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles/boo.dir/depend.internal".
+        Scanning dependencies of target boo
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/gmake  -f CMakeFiles/boo.dir/build.make CMakeFiles/boo.dir/build
+        gmake[2] : on entre dans le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [ 75%] Building CXX object CMakeFiles/boo.dir/main.cpp.o
+        /usr/bin/c++   -flto=auto -fno-fat-lto-objects -o CMakeFiles/boo.dir/main.cpp.o -c /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/src/main.cpp
+        [100%] Linking CXX executable boo
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/boo.dir/link.txt --verbose=1
+        /usr/bin/c++ -flto=auto -fno-fat-lto-objects CMakeFiles/boo.dir/main.cpp.o -o boo  libfoo.a 
+        gmake[2] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        [100%] Built target boo
+        gmake[1] : on quitte le répertoire « /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin »
+        /usr/bin/cmake -E cmake_progress_start /home/gistarcade/src/POM2/CMakeFiles/_CMakeLTOTest-CXX/bin/CMakeFiles 0
+        
+      exitCode: 0
+...

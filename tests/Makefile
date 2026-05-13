@@ -351,6 +351,90 @@ test_disk_image/fast:
 .PHONY : test_disk_image/fast
 
 # Convenience name for target.
+tests/CMakeFiles/test_disk_skew_sniff.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_skew_sniff.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_skew_sniff.dir/rule
+
+# Convenience name for target.
+test_disk_skew_sniff: tests/CMakeFiles/test_disk_skew_sniff.dir/rule
+.PHONY : test_disk_skew_sniff
+
+# fast build rule for target.
+test_disk_skew_sniff/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/build
+.PHONY : test_disk_skew_sniff/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_disk_macbinary.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_macbinary.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_macbinary.dir/rule
+
+# Convenience name for target.
+test_disk_macbinary: tests/CMakeFiles/test_disk_macbinary.dir/rule
+.PHONY : test_disk_macbinary
+
+# fast build rule for target.
+test_disk_macbinary/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/build
+.PHONY : test_disk_macbinary/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_disk_cnib2.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_cnib2.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_cnib2.dir/rule
+
+# Convenience name for target.
+test_disk_cnib2: tests/CMakeFiles/test_disk_cnib2.dir/rule
+.PHONY : test_disk_cnib2
+
+# fast build rule for target.
+test_disk_cnib2/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/build
+.PHONY : test_disk_cnib2/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_disk_2mg.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_2mg.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_2mg.dir/rule
+
+# Convenience name for target.
+test_disk_2mg: tests/CMakeFiles/test_disk_2mg.dir/rule
+.PHONY : test_disk_2mg
+
+# fast build rule for target.
+test_disk_2mg/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/build
+.PHONY : test_disk_2mg/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_disk_2mg_writeback.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_2mg_writeback.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_2mg_writeback.dir/rule
+
+# Convenience name for target.
+test_disk_2mg_writeback: tests/CMakeFiles/test_disk_2mg_writeback.dir/rule
+.PHONY : test_disk_2mg_writeback
+
+# fast build rule for target.
+test_disk_2mg_writeback/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/build
+.PHONY : test_disk_2mg_writeback/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_disk_refuse.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_disk_refuse.dir/rule
+.PHONY : tests/CMakeFiles/test_disk_refuse.dir/rule
+
+# Convenience name for target.
+test_disk_refuse: tests/CMakeFiles/test_disk_refuse.dir/rule
+.PHONY : test_disk_refuse
+
+# fast build rule for target.
+test_disk_refuse/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/build
+.PHONY : test_disk_refuse/fast
+
+# Convenience name for target.
 tests/CMakeFiles/test_diskii_lss.dir/rule:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_diskii_lss.dir/rule
 .PHONY : tests/CMakeFiles/test_diskii_lss.dir/rule
@@ -547,6 +631,20 @@ test_dhgr_render/fast:
 .PHONY : test_dhgr_render/fast
 
 # Convenience name for target.
+tests/CMakeFiles/test_display_persistence.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_display_persistence.dir/rule
+.PHONY : tests/CMakeFiles/test_display_persistence.dir/rule
+
+# Convenience name for target.
+test_display_persistence: tests/CMakeFiles/test_display_persistence.dir/rule
+.PHONY : test_display_persistence
+
+# fast build rule for target.
+test_display_persistence/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/build
+.PHONY : test_display_persistence/fast
+
+# Convenience name for target.
 tests/CMakeFiles/test_cmos_6502.dir/rule:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_cmos_6502.dir/rule
 .PHONY : tests/CMakeFiles/test_cmos_6502.dir/rule
@@ -659,6 +757,48 @@ test_mockingboard/fast:
 .PHONY : test_mockingboard/fast
 
 # Convenience name for target.
+tests/CMakeFiles/test_mockingboard_sync.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_mockingboard_sync.dir/rule
+.PHONY : tests/CMakeFiles/test_mockingboard_sync.dir/rule
+
+# Convenience name for target.
+test_mockingboard_sync: tests/CMakeFiles/test_mockingboard_sync.dir/rule
+.PHONY : test_mockingboard_sync
+
+# fast build rule for target.
+test_mockingboard_sync/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/build
+.PHONY : test_mockingboard_sync/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_mockingboard_4am_detect.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_mockingboard_4am_detect.dir/rule
+.PHONY : tests/CMakeFiles/test_mockingboard_4am_detect.dir/rule
+
+# Convenience name for target.
+test_mockingboard_4am_detect: tests/CMakeFiles/test_mockingboard_4am_detect.dir/rule
+.PHONY : test_mockingboard_4am_detect
+
+# fast build rule for target.
+test_mockingboard_4am_detect/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/build
+.PHONY : test_mockingboard_4am_detect/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_mockingboard_irq_delivery.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_mockingboard_irq_delivery.dir/rule
+.PHONY : tests/CMakeFiles/test_mockingboard_irq_delivery.dir/rule
+
+# Convenience name for target.
+test_mockingboard_irq_delivery: tests/CMakeFiles/test_mockingboard_irq_delivery.dir/rule
+.PHONY : test_mockingboard_irq_delivery
+
+# fast build rule for target.
+test_mockingboard_irq_delivery/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build
+.PHONY : test_mockingboard_irq_delivery/fast
+
+# Convenience name for target.
 tests/CMakeFiles/test_ssc_acia.dir/rule:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_ssc_acia.dir/rule
 .PHONY : tests/CMakeFiles/test_ssc_acia.dir/rule
@@ -671,6 +811,20 @@ test_ssc_acia: tests/CMakeFiles/test_ssc_acia.dir/rule
 test_ssc_acia/fast:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/build
 .PHONY : test_ssc_acia/fast
+
+# Convenience name for target.
+tests/CMakeFiles/test_ai_control_server.dir/rule:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tests/CMakeFiles/test_ai_control_server.dir/rule
+.PHONY : tests/CMakeFiles/test_ai_control_server.dir/rule
+
+# Convenience name for target.
+test_ai_control_server: tests/CMakeFiles/test_ai_control_server.dir/rule
+.PHONY : test_ai_control_server
+
+# fast build rule for target.
+test_ai_control_server/fast:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/build
+.PHONY : test_ai_control_server/fast
 
 # Convenience name for target.
 tests/CMakeFiles/test_woz_writeback.dir/rule:
@@ -700,6 +854,30 @@ hero_probe/fast:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/build
 .PHONY : hero_probe/fast
 
+__/AiControlServer.o: __/AiControlServer.cpp.o
+.PHONY : __/AiControlServer.o
+
+# target to build an object file
+__/AiControlServer.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AiControlServer.cpp.o
+.PHONY : __/AiControlServer.cpp.o
+
+__/AiControlServer.i: __/AiControlServer.cpp.i
+.PHONY : __/AiControlServer.i
+
+# target to preprocess a source file
+__/AiControlServer.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AiControlServer.cpp.i
+.PHONY : __/AiControlServer.cpp.i
+
+__/AiControlServer.s: __/AiControlServer.cpp.s
+.PHONY : __/AiControlServer.s
+
+# target to generate assembly for a file
+__/AiControlServer.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AiControlServer.cpp.s
+.PHONY : __/AiControlServer.cpp.s
+
 __/Apple2Display.o: __/Apple2Display.cpp.o
 .PHONY : __/Apple2Display.o
 
@@ -708,6 +886,8 @@ __/Apple2Display.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Apple2Display.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Apple2Display.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Apple2Display.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Apple2Display.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Apple2Display.cpp.o
 .PHONY : __/Apple2Display.cpp.o
 
 __/Apple2Display.i: __/Apple2Display.cpp.i
@@ -718,6 +898,8 @@ __/Apple2Display.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Apple2Display.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Apple2Display.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Apple2Display.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Apple2Display.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Apple2Display.cpp.i
 .PHONY : __/Apple2Display.cpp.i
 
 __/Apple2Display.s: __/Apple2Display.cpp.s
@@ -728,6 +910,8 @@ __/Apple2Display.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_hgr_render.dir/build.make tests/CMakeFiles/test_hgr_render.dir/__/Apple2Display.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/Apple2Display.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Apple2Display.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Apple2Display.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Apple2Display.cpp.s
 .PHONY : __/Apple2Display.cpp.s
 
 __/AudioDevice.o: __/AudioDevice.cpp.o
@@ -755,13 +939,18 @@ __/AudioDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/AudioDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/AudioDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AudioDevice.cpp.o
 .PHONY : __/AudioDevice.cpp.o
 
 __/AudioDevice.i: __/AudioDevice.cpp.i
@@ -789,13 +978,18 @@ __/AudioDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/AudioDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/AudioDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AudioDevice.cpp.i
 .PHONY : __/AudioDevice.cpp.i
 
 __/AudioDevice.s: __/AudioDevice.cpp.s
@@ -823,13 +1017,18 @@ __/AudioDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/AudioDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/AudioDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/AudioDevice.cpp.s
 .PHONY : __/AudioDevice.cpp.s
 
 __/CassetteDevice.o: __/CassetteDevice.cpp.o
@@ -857,13 +1056,18 @@ __/CassetteDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/CassetteDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/CassetteDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/CassetteDevice.cpp.o
 .PHONY : __/CassetteDevice.cpp.o
 
 __/CassetteDevice.i: __/CassetteDevice.cpp.i
@@ -891,13 +1095,18 @@ __/CassetteDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/CassetteDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/CassetteDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/CassetteDevice.cpp.i
 .PHONY : __/CassetteDevice.cpp.i
 
 __/CassetteDevice.s: __/CassetteDevice.cpp.s
@@ -925,13 +1134,18 @@ __/CassetteDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/CassetteDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/CassetteDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/CassetteDevice.cpp.s
 .PHONY : __/CassetteDevice.cpp.s
 
 __/ClockCard.o: __/ClockCard.cpp.o
@@ -1004,6 +1218,7 @@ __/DiskIICard.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskIICard.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskIICard.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskIICard.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskIICard.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskIICard.cpp.o
 .PHONY : __/DiskIICard.cpp.o
 
@@ -1023,6 +1238,7 @@ __/DiskIICard.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskIICard.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskIICard.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskIICard.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskIICard.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskIICard.cpp.i
 .PHONY : __/DiskIICard.cpp.i
 
@@ -1042,6 +1258,7 @@ __/DiskIICard.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskIICard.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskIICard.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskIICard.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskIICard.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskIICard.cpp.s
 .PHONY : __/DiskIICard.cpp.s
 
@@ -1051,6 +1268,12 @@ __/DiskImage.o: __/DiskImage.cpp.o
 # target to build an object file
 __/DiskImage.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mame_lss_parity.dir/build.make tests/CMakeFiles/test_mame_lss_parity.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_writeback.dir/build.make tests/CMakeFiles/test_disk_writeback.dir/__/DiskImage.cpp.o
@@ -1063,6 +1286,7 @@ __/DiskImage.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskImage.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_woz_writeback.dir/build.make tests/CMakeFiles/test_woz_writeback.dir/__/DiskImage.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskImage.cpp.o
 .PHONY : __/DiskImage.cpp.o
@@ -1073,6 +1297,12 @@ __/DiskImage.i: __/DiskImage.cpp.i
 # target to preprocess a source file
 __/DiskImage.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mame_lss_parity.dir/build.make tests/CMakeFiles/test_mame_lss_parity.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_writeback.dir/build.make tests/CMakeFiles/test_disk_writeback.dir/__/DiskImage.cpp.i
@@ -1085,6 +1315,7 @@ __/DiskImage.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskImage.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_woz_writeback.dir/build.make tests/CMakeFiles/test_woz_writeback.dir/__/DiskImage.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskImage.cpp.i
 .PHONY : __/DiskImage.cpp.i
@@ -1095,6 +1326,12 @@ __/DiskImage.s: __/DiskImage.cpp.s
 # target to generate assembly for a file
 __/DiskImage.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mame_lss_parity.dir/build.make tests/CMakeFiles/test_mame_lss_parity.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_writeback.dir/build.make tests/CMakeFiles/test_disk_writeback.dir/__/DiskImage.cpp.s
@@ -1107,9 +1344,34 @@ __/DiskImage.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/c2plus_boot_probe.dir/build.make tests/CMakeFiles/c2plus_boot_probe.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/copy2plus_boot_dump.dir/build.make tests/CMakeFiles/copy2plus_boot_dump.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/DiskImage.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_woz_writeback.dir/build.make tests/CMakeFiles/test_woz_writeback.dir/__/DiskImage.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/DiskImage.cpp.s
 .PHONY : __/DiskImage.cpp.s
+
+__/EmulationController.o: __/EmulationController.cpp.o
+.PHONY : __/EmulationController.o
+
+# target to build an object file
+__/EmulationController.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/EmulationController.cpp.o
+.PHONY : __/EmulationController.cpp.o
+
+__/EmulationController.i: __/EmulationController.cpp.i
+.PHONY : __/EmulationController.i
+
+# target to preprocess a source file
+__/EmulationController.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/EmulationController.cpp.i
+.PHONY : __/EmulationController.cpp.i
+
+__/EmulationController.s: __/EmulationController.cpp.s
+.PHONY : __/EmulationController.s
+
+# target to generate assembly for a file
+__/EmulationController.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/EmulationController.cpp.s
+.PHONY : __/EmulationController.cpp.s
 
 __/LeChatMauveCard.o: __/LeChatMauveCard.cpp.o
 .PHONY : __/LeChatMauveCard.o
@@ -1118,6 +1380,7 @@ __/LeChatMauveCard.o: __/LeChatMauveCard.cpp.o
 __/LeChatMauveCard.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/LeChatMauveCard.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/LeChatMauveCard.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/LeChatMauveCard.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/LeChatMauveCard.cpp.o
 .PHONY : __/LeChatMauveCard.cpp.o
 
@@ -1128,6 +1391,7 @@ __/LeChatMauveCard.i: __/LeChatMauveCard.cpp.i
 __/LeChatMauveCard.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/LeChatMauveCard.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/LeChatMauveCard.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/LeChatMauveCard.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/LeChatMauveCard.cpp.i
 .PHONY : __/LeChatMauveCard.cpp.i
 
@@ -1138,6 +1402,7 @@ __/LeChatMauveCard.s: __/LeChatMauveCard.cpp.s
 __/LeChatMauveCard.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_le_chat_mauve.dir/build.make tests/CMakeFiles/test_le_chat_mauve.dir/__/LeChatMauveCard.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/LeChatMauveCard.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/LeChatMauveCard.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/LeChatMauveCard.cpp.s
 .PHONY : __/LeChatMauveCard.cpp.s
 
@@ -1166,13 +1431,18 @@ __/M6502.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/M6502.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/M6502.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/M6502.cpp.o
 .PHONY : __/M6502.cpp.o
 
 __/M6502.i: __/M6502.cpp.i
@@ -1200,13 +1470,18 @@ __/M6502.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/M6502.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/M6502.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/M6502.cpp.i
 .PHONY : __/M6502.cpp.i
 
 __/M6502.s: __/M6502.cpp.s
@@ -1234,13 +1509,18 @@ __/M6502.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/M6502.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/M6502.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/M6502.cpp.s
 .PHONY : __/M6502.cpp.s
 
 __/M68705P3.o: __/M68705P3.cpp.o
@@ -1328,13 +1608,18 @@ __/Memory.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Memory.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/Memory.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Memory.cpp.o
 .PHONY : __/Memory.cpp.o
 
 __/Memory.i: __/Memory.cpp.i
@@ -1362,13 +1647,18 @@ __/Memory.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Memory.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/Memory.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Memory.cpp.i
 .PHONY : __/Memory.cpp.i
 
 __/Memory.s: __/Memory.cpp.s
@@ -1396,13 +1686,18 @@ __/Memory.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Memory.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/Memory.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/Memory.cpp.s
 .PHONY : __/Memory.cpp.s
 
 __/Mockingboard.o: __/Mockingboard.cpp.o
@@ -1411,6 +1706,9 @@ __/Mockingboard.o: __/Mockingboard.cpp.o
 # target to build an object file
 __/Mockingboard.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Mockingboard.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Mockingboard.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Mockingboard.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Mockingboard.cpp.o
 .PHONY : __/Mockingboard.cpp.o
 
 __/Mockingboard.i: __/Mockingboard.cpp.i
@@ -1419,6 +1717,9 @@ __/Mockingboard.i: __/Mockingboard.cpp.i
 # target to preprocess a source file
 __/Mockingboard.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Mockingboard.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Mockingboard.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Mockingboard.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Mockingboard.cpp.i
 .PHONY : __/Mockingboard.cpp.i
 
 __/Mockingboard.s: __/Mockingboard.cpp.s
@@ -1427,6 +1728,9 @@ __/Mockingboard.s: __/Mockingboard.cpp.s
 # target to generate assembly for a file
 __/Mockingboard.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/Mockingboard.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/Mockingboard.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/Mockingboard.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/Mockingboard.cpp.s
 .PHONY : __/Mockingboard.cpp.s
 
 __/MouseCard.o: __/MouseCard.cpp.o
@@ -1550,13 +1854,18 @@ __/RomLoader.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/RomLoader.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/RomLoader.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/RomLoader.cpp.o
 .PHONY : __/RomLoader.cpp.o
 
 __/RomLoader.i: __/RomLoader.cpp.i
@@ -1584,13 +1893,18 @@ __/RomLoader.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/RomLoader.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/RomLoader.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/RomLoader.cpp.i
 .PHONY : __/RomLoader.cpp.i
 
 __/RomLoader.s: __/RomLoader.cpp.s
@@ -1618,13 +1932,18 @@ __/RomLoader.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/RomLoader.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/RomLoader.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/RomLoader.cpp.s
 .PHONY : __/RomLoader.cpp.s
 
 __/SlotBus.o: __/SlotBus.cpp.o
@@ -1657,13 +1976,18 @@ __/SlotBus.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SlotBus.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SlotBus.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/SlotBus.cpp.o
 .PHONY : __/SlotBus.cpp.o
 
@@ -1697,13 +2021,18 @@ __/SlotBus.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SlotBus.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SlotBus.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/SlotBus.cpp.i
 .PHONY : __/SlotBus.cpp.i
 
@@ -1737,13 +2066,18 @@ __/SlotBus.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SlotBus.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SlotBus.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/hero_probe.dir/build.make tests/CMakeFiles/hero_probe.dir/__/SlotBus.cpp.s
 .PHONY : __/SlotBus.cpp.s
 
@@ -1772,12 +2106,14 @@ __/SnapshotIO.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SnapshotIO.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SnapshotIO.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SnapshotIO.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SnapshotIO.cpp.o
 .PHONY : __/SnapshotIO.cpp.o
 
 __/SnapshotIO.i: __/SnapshotIO.cpp.i
@@ -1805,12 +2141,14 @@ __/SnapshotIO.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SnapshotIO.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SnapshotIO.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SnapshotIO.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SnapshotIO.cpp.i
 .PHONY : __/SnapshotIO.cpp.i
 
 __/SnapshotIO.s: __/SnapshotIO.cpp.s
@@ -1838,12 +2176,14 @@ __/SnapshotIO.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SnapshotIO.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SnapshotIO.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SnapshotIO.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SnapshotIO.cpp.s
 .PHONY : __/SnapshotIO.cpp.s
 
 __/SpeakerDevice.o: __/SpeakerDevice.cpp.o
@@ -1872,13 +2212,18 @@ __/SpeakerDevice.cpp.o:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SpeakerDevice.cpp.o
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SpeakerDevice.cpp.o
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SpeakerDevice.cpp.o
 .PHONY : __/SpeakerDevice.cpp.o
 
 __/SpeakerDevice.i: __/SpeakerDevice.cpp.i
@@ -1907,13 +2252,18 @@ __/SpeakerDevice.cpp.i:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SpeakerDevice.cpp.i
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SpeakerDevice.cpp.i
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SpeakerDevice.cpp.i
 .PHONY : __/SpeakerDevice.cpp.i
 
 __/SpeakerDevice.s: __/SpeakerDevice.cpp.s
@@ -1942,13 +2292,18 @@ __/SpeakerDevice.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_memory.dir/build.make tests/CMakeFiles/test_iie_memory.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_iie_lc_paging.dir/build.make tests/CMakeFiles/test_iie_lc_paging.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_cmos_6502.dir/build.make tests/CMakeFiles/test_cmos_6502.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card.dir/build.make tests/CMakeFiles/test_mouse_card.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_card_quadrature.dir/build.make tests/CMakeFiles/test_mouse_card_quadrature.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_config.dir/build.make tests/CMakeFiles/test_slot_config.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_clock_card.dir/build.make tests/CMakeFiles/test_clock_card.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/__/SpeakerDevice.cpp.s
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ssc_acia.dir/build.make tests/CMakeFiles/test_ssc_acia.dir/__/SpeakerDevice.cpp.s
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/__/SpeakerDevice.cpp.s
 .PHONY : __/SpeakerDevice.cpp.s
 
 __/SuperSerialCard.o: __/SuperSerialCard.cpp.o
@@ -2001,6 +2356,30 @@ __/SystemProfile.s: __/SystemProfile.cpp.s
 __/SystemProfile.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_system_profile.dir/build.make tests/CMakeFiles/test_system_profile.dir/__/SystemProfile.cpp.s
 .PHONY : __/SystemProfile.cpp.s
+
+ai_control_server_smoke_test.o: ai_control_server_smoke_test.cpp.o
+.PHONY : ai_control_server_smoke_test.o
+
+# target to build an object file
+ai_control_server_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/ai_control_server_smoke_test.cpp.o
+.PHONY : ai_control_server_smoke_test.cpp.o
+
+ai_control_server_smoke_test.i: ai_control_server_smoke_test.cpp.i
+.PHONY : ai_control_server_smoke_test.i
+
+# target to preprocess a source file
+ai_control_server_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/ai_control_server_smoke_test.cpp.i
+.PHONY : ai_control_server_smoke_test.cpp.i
+
+ai_control_server_smoke_test.s: ai_control_server_smoke_test.cpp.s
+.PHONY : ai_control_server_smoke_test.s
+
+# target to generate assembly for a file
+ai_control_server_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_ai_control_server.dir/build.make tests/CMakeFiles/test_ai_control_server.dir/ai_control_server_smoke_test.cpp.s
+.PHONY : ai_control_server_smoke_test.cpp.s
 
 c2plus_boot_probe.o: c2plus_boot_probe.cpp.o
 .PHONY : c2plus_boot_probe.o
@@ -2122,6 +2501,54 @@ dhgr_render_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_dhgr_render.dir/build.make tests/CMakeFiles/test_dhgr_render.dir/dhgr_render_smoke_test.cpp.s
 .PHONY : dhgr_render_smoke_test.cpp.s
 
+disk_2mg_smoke_test.o: disk_2mg_smoke_test.cpp.o
+.PHONY : disk_2mg_smoke_test.o
+
+# target to build an object file
+disk_2mg_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/disk_2mg_smoke_test.cpp.o
+.PHONY : disk_2mg_smoke_test.cpp.o
+
+disk_2mg_smoke_test.i: disk_2mg_smoke_test.cpp.i
+.PHONY : disk_2mg_smoke_test.i
+
+# target to preprocess a source file
+disk_2mg_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/disk_2mg_smoke_test.cpp.i
+.PHONY : disk_2mg_smoke_test.cpp.i
+
+disk_2mg_smoke_test.s: disk_2mg_smoke_test.cpp.s
+.PHONY : disk_2mg_smoke_test.s
+
+# target to generate assembly for a file
+disk_2mg_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg.dir/build.make tests/CMakeFiles/test_disk_2mg.dir/disk_2mg_smoke_test.cpp.s
+.PHONY : disk_2mg_smoke_test.cpp.s
+
+disk_2mg_writeback_smoke_test.o: disk_2mg_writeback_smoke_test.cpp.o
+.PHONY : disk_2mg_writeback_smoke_test.o
+
+# target to build an object file
+disk_2mg_writeback_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/disk_2mg_writeback_smoke_test.cpp.o
+.PHONY : disk_2mg_writeback_smoke_test.cpp.o
+
+disk_2mg_writeback_smoke_test.i: disk_2mg_writeback_smoke_test.cpp.i
+.PHONY : disk_2mg_writeback_smoke_test.i
+
+# target to preprocess a source file
+disk_2mg_writeback_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/disk_2mg_writeback_smoke_test.cpp.i
+.PHONY : disk_2mg_writeback_smoke_test.cpp.i
+
+disk_2mg_writeback_smoke_test.s: disk_2mg_writeback_smoke_test.cpp.s
+.PHONY : disk_2mg_writeback_smoke_test.s
+
+# target to generate assembly for a file
+disk_2mg_writeback_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_2mg_writeback.dir/build.make tests/CMakeFiles/test_disk_2mg_writeback.dir/disk_2mg_writeback_smoke_test.cpp.s
+.PHONY : disk_2mg_writeback_smoke_test.cpp.s
+
 disk_boot_smoke_test.o: disk_boot_smoke_test.cpp.o
 .PHONY : disk_boot_smoke_test.o
 
@@ -2145,6 +2572,30 @@ disk_boot_smoke_test.s: disk_boot_smoke_test.cpp.s
 disk_boot_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_boot.dir/build.make tests/CMakeFiles/test_disk_boot.dir/disk_boot_smoke_test.cpp.s
 .PHONY : disk_boot_smoke_test.cpp.s
+
+disk_cnib2_smoke_test.o: disk_cnib2_smoke_test.cpp.o
+.PHONY : disk_cnib2_smoke_test.o
+
+# target to build an object file
+disk_cnib2_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/disk_cnib2_smoke_test.cpp.o
+.PHONY : disk_cnib2_smoke_test.cpp.o
+
+disk_cnib2_smoke_test.i: disk_cnib2_smoke_test.cpp.i
+.PHONY : disk_cnib2_smoke_test.i
+
+# target to preprocess a source file
+disk_cnib2_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/disk_cnib2_smoke_test.cpp.i
+.PHONY : disk_cnib2_smoke_test.cpp.i
+
+disk_cnib2_smoke_test.s: disk_cnib2_smoke_test.cpp.s
+.PHONY : disk_cnib2_smoke_test.s
+
+# target to generate assembly for a file
+disk_cnib2_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_cnib2.dir/build.make tests/CMakeFiles/test_disk_cnib2.dir/disk_cnib2_smoke_test.cpp.s
+.PHONY : disk_cnib2_smoke_test.cpp.s
 
 disk_drive2_smoke_test.o: disk_drive2_smoke_test.cpp.o
 .PHONY : disk_drive2_smoke_test.o
@@ -2193,6 +2644,78 @@ disk_image_smoke_test.s: disk_image_smoke_test.cpp.s
 disk_image_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_image.dir/build.make tests/CMakeFiles/test_disk_image.dir/disk_image_smoke_test.cpp.s
 .PHONY : disk_image_smoke_test.cpp.s
+
+disk_macbinary_smoke_test.o: disk_macbinary_smoke_test.cpp.o
+.PHONY : disk_macbinary_smoke_test.o
+
+# target to build an object file
+disk_macbinary_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/disk_macbinary_smoke_test.cpp.o
+.PHONY : disk_macbinary_smoke_test.cpp.o
+
+disk_macbinary_smoke_test.i: disk_macbinary_smoke_test.cpp.i
+.PHONY : disk_macbinary_smoke_test.i
+
+# target to preprocess a source file
+disk_macbinary_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/disk_macbinary_smoke_test.cpp.i
+.PHONY : disk_macbinary_smoke_test.cpp.i
+
+disk_macbinary_smoke_test.s: disk_macbinary_smoke_test.cpp.s
+.PHONY : disk_macbinary_smoke_test.s
+
+# target to generate assembly for a file
+disk_macbinary_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_macbinary.dir/build.make tests/CMakeFiles/test_disk_macbinary.dir/disk_macbinary_smoke_test.cpp.s
+.PHONY : disk_macbinary_smoke_test.cpp.s
+
+disk_refuse_smoke_test.o: disk_refuse_smoke_test.cpp.o
+.PHONY : disk_refuse_smoke_test.o
+
+# target to build an object file
+disk_refuse_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/disk_refuse_smoke_test.cpp.o
+.PHONY : disk_refuse_smoke_test.cpp.o
+
+disk_refuse_smoke_test.i: disk_refuse_smoke_test.cpp.i
+.PHONY : disk_refuse_smoke_test.i
+
+# target to preprocess a source file
+disk_refuse_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/disk_refuse_smoke_test.cpp.i
+.PHONY : disk_refuse_smoke_test.cpp.i
+
+disk_refuse_smoke_test.s: disk_refuse_smoke_test.cpp.s
+.PHONY : disk_refuse_smoke_test.s
+
+# target to generate assembly for a file
+disk_refuse_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_refuse.dir/build.make tests/CMakeFiles/test_disk_refuse.dir/disk_refuse_smoke_test.cpp.s
+.PHONY : disk_refuse_smoke_test.cpp.s
+
+disk_skew_sniff_smoke_test.o: disk_skew_sniff_smoke_test.cpp.o
+.PHONY : disk_skew_sniff_smoke_test.o
+
+# target to build an object file
+disk_skew_sniff_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/disk_skew_sniff_smoke_test.cpp.o
+.PHONY : disk_skew_sniff_smoke_test.cpp.o
+
+disk_skew_sniff_smoke_test.i: disk_skew_sniff_smoke_test.cpp.i
+.PHONY : disk_skew_sniff_smoke_test.i
+
+# target to preprocess a source file
+disk_skew_sniff_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/disk_skew_sniff_smoke_test.cpp.i
+.PHONY : disk_skew_sniff_smoke_test.cpp.i
+
+disk_skew_sniff_smoke_test.s: disk_skew_sniff_smoke_test.cpp.s
+.PHONY : disk_skew_sniff_smoke_test.s
+
+# target to generate assembly for a file
+disk_skew_sniff_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_disk_skew_sniff.dir/build.make tests/CMakeFiles/test_disk_skew_sniff.dir/disk_skew_sniff_smoke_test.cpp.s
+.PHONY : disk_skew_sniff_smoke_test.cpp.s
 
 disk_write_controller_smoke_test.o: disk_write_controller_smoke_test.cpp.o
 .PHONY : disk_write_controller_smoke_test.o
@@ -2265,6 +2788,30 @@ diskii_lss_smoke_test.s: diskii_lss_smoke_test.cpp.s
 diskii_lss_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_diskii_lss.dir/build.make tests/CMakeFiles/test_diskii_lss.dir/diskii_lss_smoke_test.cpp.s
 .PHONY : diskii_lss_smoke_test.cpp.s
+
+display_persistence_smoke_test.o: display_persistence_smoke_test.cpp.o
+.PHONY : display_persistence_smoke_test.o
+
+# target to build an object file
+display_persistence_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/display_persistence_smoke_test.cpp.o
+.PHONY : display_persistence_smoke_test.cpp.o
+
+display_persistence_smoke_test.i: display_persistence_smoke_test.cpp.i
+.PHONY : display_persistence_smoke_test.i
+
+# target to preprocess a source file
+display_persistence_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/display_persistence_smoke_test.cpp.i
+.PHONY : display_persistence_smoke_test.cpp.i
+
+display_persistence_smoke_test.s: display_persistence_smoke_test.cpp.s
+.PHONY : display_persistence_smoke_test.s
+
+# target to generate assembly for a file
+display_persistence_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_display_persistence.dir/build.make tests/CMakeFiles/test_display_persistence.dir/display_persistence_smoke_test.cpp.s
+.PHONY : display_persistence_smoke_test.cpp.s
 
 dos33_save_smoke_test.o: dos33_save_smoke_test.cpp.o
 .PHONY : dos33_save_smoke_test.o
@@ -2626,6 +3173,54 @@ mc6821_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mc6821.dir/build.make tests/CMakeFiles/test_mc6821.dir/mc6821_smoke_test.cpp.s
 .PHONY : mc6821_smoke_test.cpp.s
 
+mockingboard_4am_detect_smoke_test.o: mockingboard_4am_detect_smoke_test.cpp.o
+.PHONY : mockingboard_4am_detect_smoke_test.o
+
+# target to build an object file
+mockingboard_4am_detect_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/mockingboard_4am_detect_smoke_test.cpp.o
+.PHONY : mockingboard_4am_detect_smoke_test.cpp.o
+
+mockingboard_4am_detect_smoke_test.i: mockingboard_4am_detect_smoke_test.cpp.i
+.PHONY : mockingboard_4am_detect_smoke_test.i
+
+# target to preprocess a source file
+mockingboard_4am_detect_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/mockingboard_4am_detect_smoke_test.cpp.i
+.PHONY : mockingboard_4am_detect_smoke_test.cpp.i
+
+mockingboard_4am_detect_smoke_test.s: mockingboard_4am_detect_smoke_test.cpp.s
+.PHONY : mockingboard_4am_detect_smoke_test.s
+
+# target to generate assembly for a file
+mockingboard_4am_detect_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_4am_detect.dir/build.make tests/CMakeFiles/test_mockingboard_4am_detect.dir/mockingboard_4am_detect_smoke_test.cpp.s
+.PHONY : mockingboard_4am_detect_smoke_test.cpp.s
+
+mockingboard_irq_delivery_smoke_test.o: mockingboard_irq_delivery_smoke_test.cpp.o
+.PHONY : mockingboard_irq_delivery_smoke_test.o
+
+# target to build an object file
+mockingboard_irq_delivery_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/mockingboard_irq_delivery_smoke_test.cpp.o
+.PHONY : mockingboard_irq_delivery_smoke_test.cpp.o
+
+mockingboard_irq_delivery_smoke_test.i: mockingboard_irq_delivery_smoke_test.cpp.i
+.PHONY : mockingboard_irq_delivery_smoke_test.i
+
+# target to preprocess a source file
+mockingboard_irq_delivery_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/mockingboard_irq_delivery_smoke_test.cpp.i
+.PHONY : mockingboard_irq_delivery_smoke_test.cpp.i
+
+mockingboard_irq_delivery_smoke_test.s: mockingboard_irq_delivery_smoke_test.cpp.s
+.PHONY : mockingboard_irq_delivery_smoke_test.s
+
+# target to generate assembly for a file
+mockingboard_irq_delivery_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/mockingboard_irq_delivery_smoke_test.cpp.s
+.PHONY : mockingboard_irq_delivery_smoke_test.cpp.s
+
 mockingboard_smoke_test.o: mockingboard_smoke_test.cpp.o
 .PHONY : mockingboard_smoke_test.o
 
@@ -2649,6 +3244,30 @@ mockingboard_smoke_test.s: mockingboard_smoke_test.cpp.s
 mockingboard_smoke_test.cpp.s:
 	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard.dir/build.make tests/CMakeFiles/test_mockingboard.dir/mockingboard_smoke_test.cpp.s
 .PHONY : mockingboard_smoke_test.cpp.s
+
+mockingboard_sync_smoke_test.o: mockingboard_sync_smoke_test.cpp.o
+.PHONY : mockingboard_sync_smoke_test.o
+
+# target to build an object file
+mockingboard_sync_smoke_test.cpp.o:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/mockingboard_sync_smoke_test.cpp.o
+.PHONY : mockingboard_sync_smoke_test.cpp.o
+
+mockingboard_sync_smoke_test.i: mockingboard_sync_smoke_test.cpp.i
+.PHONY : mockingboard_sync_smoke_test.i
+
+# target to preprocess a source file
+mockingboard_sync_smoke_test.cpp.i:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/mockingboard_sync_smoke_test.cpp.i
+.PHONY : mockingboard_sync_smoke_test.cpp.i
+
+mockingboard_sync_smoke_test.s: mockingboard_sync_smoke_test.cpp.s
+.PHONY : mockingboard_sync_smoke_test.s
+
+# target to generate assembly for a file
+mockingboard_sync_smoke_test.cpp.s:
+	cd /home/gistarcade/src/POM2 && $(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_sync.dir/build.make tests/CMakeFiles/test_mockingboard_sync.dir/mockingboard_sync_smoke_test.cpp.s
+.PHONY : mockingboard_sync_smoke_test.cpp.s
 
 mouse_card_quadrature_smoke_test.o: mouse_card_quadrature_smoke_test.cpp.o
 .PHONY : mouse_card_quadrature_smoke_test.o
@@ -2998,15 +3617,23 @@ help:
 	@echo "... c2plus_boot_probe"
 	@echo "... copy2plus_boot_dump"
 	@echo "... hero_probe"
+	@echo "... test_ai_control_server"
 	@echo "... test_clock_card"
 	@echo "... test_cmos_6502"
 	@echo "... test_dhgr_render"
+	@echo "... test_disk_2mg"
+	@echo "... test_disk_2mg_writeback"
 	@echo "... test_disk_boot"
+	@echo "... test_disk_cnib2"
 	@echo "... test_disk_drive2"
 	@echo "... test_disk_image"
+	@echo "... test_disk_macbinary"
+	@echo "... test_disk_refuse"
+	@echo "... test_disk_skew_sniff"
 	@echo "... test_disk_write_controller"
 	@echo "... test_disk_writeback"
 	@echo "... test_diskii_lss"
+	@echo "... test_display_persistence"
 	@echo "... test_dos33_save"
 	@echo "... test_hdv_card"
 	@echo "... test_hdv_writeback"
@@ -3022,6 +3649,9 @@ help:
 	@echo "... test_mame_lss_parity"
 	@echo "... test_mc6821"
 	@echo "... test_mockingboard"
+	@echo "... test_mockingboard_4am_detect"
+	@echo "... test_mockingboard_irq_delivery"
+	@echo "... test_mockingboard_sync"
 	@echo "... test_mouse_card"
 	@echo "... test_mouse_card_quadrature"
 	@echo "... test_paste"
@@ -3036,6 +3666,9 @@ help:
 	@echo "... test_vbl"
 	@echo "... test_woz_load"
 	@echo "... test_woz_writeback"
+	@echo "... __/AiControlServer.o"
+	@echo "... __/AiControlServer.i"
+	@echo "... __/AiControlServer.s"
 	@echo "... __/Apple2Display.o"
 	@echo "... __/Apple2Display.i"
 	@echo "... __/Apple2Display.s"
@@ -3057,6 +3690,9 @@ help:
 	@echo "... __/DiskImage.o"
 	@echo "... __/DiskImage.i"
 	@echo "... __/DiskImage.s"
+	@echo "... __/EmulationController.o"
+	@echo "... __/EmulationController.i"
+	@echo "... __/EmulationController.s"
 	@echo "... __/LeChatMauveCard.o"
 	@echo "... __/LeChatMauveCard.i"
 	@echo "... __/LeChatMauveCard.s"
@@ -3102,6 +3738,9 @@ help:
 	@echo "... __/SystemProfile.o"
 	@echo "... __/SystemProfile.i"
 	@echo "... __/SystemProfile.s"
+	@echo "... ai_control_server_smoke_test.o"
+	@echo "... ai_control_server_smoke_test.i"
+	@echo "... ai_control_server_smoke_test.s"
 	@echo "... c2plus_boot_probe.o"
 	@echo "... c2plus_boot_probe.i"
 	@echo "... c2plus_boot_probe.s"
@@ -3117,15 +3756,33 @@ help:
 	@echo "... dhgr_render_smoke_test.o"
 	@echo "... dhgr_render_smoke_test.i"
 	@echo "... dhgr_render_smoke_test.s"
+	@echo "... disk_2mg_smoke_test.o"
+	@echo "... disk_2mg_smoke_test.i"
+	@echo "... disk_2mg_smoke_test.s"
+	@echo "... disk_2mg_writeback_smoke_test.o"
+	@echo "... disk_2mg_writeback_smoke_test.i"
+	@echo "... disk_2mg_writeback_smoke_test.s"
 	@echo "... disk_boot_smoke_test.o"
 	@echo "... disk_boot_smoke_test.i"
 	@echo "... disk_boot_smoke_test.s"
+	@echo "... disk_cnib2_smoke_test.o"
+	@echo "... disk_cnib2_smoke_test.i"
+	@echo "... disk_cnib2_smoke_test.s"
 	@echo "... disk_drive2_smoke_test.o"
 	@echo "... disk_drive2_smoke_test.i"
 	@echo "... disk_drive2_smoke_test.s"
 	@echo "... disk_image_smoke_test.o"
 	@echo "... disk_image_smoke_test.i"
 	@echo "... disk_image_smoke_test.s"
+	@echo "... disk_macbinary_smoke_test.o"
+	@echo "... disk_macbinary_smoke_test.i"
+	@echo "... disk_macbinary_smoke_test.s"
+	@echo "... disk_refuse_smoke_test.o"
+	@echo "... disk_refuse_smoke_test.i"
+	@echo "... disk_refuse_smoke_test.s"
+	@echo "... disk_skew_sniff_smoke_test.o"
+	@echo "... disk_skew_sniff_smoke_test.i"
+	@echo "... disk_skew_sniff_smoke_test.s"
 	@echo "... disk_write_controller_smoke_test.o"
 	@echo "... disk_write_controller_smoke_test.i"
 	@echo "... disk_write_controller_smoke_test.s"
@@ -3135,6 +3792,9 @@ help:
 	@echo "... diskii_lss_smoke_test.o"
 	@echo "... diskii_lss_smoke_test.i"
 	@echo "... diskii_lss_smoke_test.s"
+	@echo "... display_persistence_smoke_test.o"
+	@echo "... display_persistence_smoke_test.i"
+	@echo "... display_persistence_smoke_test.s"
 	@echo "... dos33_save_smoke_test.o"
 	@echo "... dos33_save_smoke_test.i"
 	@echo "... dos33_save_smoke_test.s"
@@ -3180,9 +3840,18 @@ help:
 	@echo "... mc6821_smoke_test.o"
 	@echo "... mc6821_smoke_test.i"
 	@echo "... mc6821_smoke_test.s"
+	@echo "... mockingboard_4am_detect_smoke_test.o"
+	@echo "... mockingboard_4am_detect_smoke_test.i"
+	@echo "... mockingboard_4am_detect_smoke_test.s"
+	@echo "... mockingboard_irq_delivery_smoke_test.o"
+	@echo "... mockingboard_irq_delivery_smoke_test.i"
+	@echo "... mockingboard_irq_delivery_smoke_test.s"
 	@echo "... mockingboard_smoke_test.o"
 	@echo "... mockingboard_smoke_test.i"
 	@echo "... mockingboard_smoke_test.s"
+	@echo "... mockingboard_sync_smoke_test.o"
+	@echo "... mockingboard_sync_smoke_test.i"
+	@echo "... mockingboard_sync_smoke_test.s"
 	@echo "... mouse_card_quadrature_smoke_test.o"
 	@echo "... mouse_card_quadrature_smoke_test.i"
 	@echo "... mouse_card_quadrature_smoke_test.s"

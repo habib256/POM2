@@ -1,4 +1,6 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o"
+  "CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o.d"
   "CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o"
   "CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o.d"
   "CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o"

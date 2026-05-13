@@ -12,7 +12,8 @@
 Apple2Display::Apple2Display()
     : frame(kWidth * kHeight, 0xFF000000)
     , frame80(kWidth80 * kHeight, 0xFF000000)
-    , persistenceL(kWidth * kHeight, 0)
+    , persistenceL  (kWidth   * kHeight, 0)
+    , persistenceL80(kWidth80 * kHeight, 0)
 {
 }
 
@@ -20,9 +21,10 @@ void Apple2Display::setHiResMode(HiResMode m)
 {
     if (m == hiResMode) return;
     hiResMode = m;
-    // Clear the phosphor history so a residual amber afterglow doesn't
+    // Clear both phosphor histories so a residual amber afterglow doesn't
     // tint a freshly-selected green or colour mode for a few frames.
-    std::fill(persistenceL.begin(), persistenceL.end(), 0);
+    std::fill(persistenceL.begin(),   persistenceL.end(),   0);
+    std::fill(persistenceL80.begin(), persistenceL80.end(), 0);
 }
 
 uint16_t Apple2Display::textRowAddress(int y, bool page2)
@@ -50,6 +52,36 @@ void Apple2Display::render(Memory& mem)
 {
     ++frameCounter;     // drives the FLASH-attribute animation in renderText
     const auto state = mem.getDisplayState();
+
+    // Le Chat Mauve in HGR (non-DHGR) — render natively at the card's
+    // 560-dot output resolution rather than going through the 280-wide
+    // `frame` buffer + upscale. The card's whole point is sharp byte-
+    // boundary edges and TTL-clean color decoding at the 14 MHz dot
+    // clock; the 280-wide buffer was throwing that fidelity away before
+    // it ever reached the screenshot path. Intercepts the IIe-80col
+    // mixed-mode upscale path too, so HGR Chat Mauve + 80-col text mixes
+    // cleanly at 560 throughout.
+    const bool wantChatMauveHGR =
+        state.hiRes && !state.textMode && !state.dhgr &&
+        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+    if (wantChatMauveHGR) {
+        const int hiResEnd = state.mixedMode ? 160 : 192;
+        renderHiResChatMauve80(mem, 0, hiResEnd);
+        if (state.mixedMode) {
+            if (mem.isIIE() && state.eightyCol) {
+                renderText80(mem, 20, 24, state.altChar);
+            } else {
+                // II+ (or IIe with 80COL off) — render 40-col text into
+                // `frame` at 280 and pixel-double the bottom rows into
+                // `frame80`. Text is the part of the frame the Chat
+                // Mauve card never touches anyway.
+                renderText(mem, 20, 24);
+                upscaleFrameToFrame80(160, 192);
+            }
+        }
+        useFrame80 = true;
+        return;
+    }
 
     // IIe + 80COL active. Sub-cases:
     //   (a) Full-screen 80-col text          → frame80 only.
@@ -1033,6 +1065,76 @@ void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
     }
 }
 
+// 560-dot native rendering for HGR + Le Chat Mauve. Same algorithm as the
+// Chat Mauve branch of `renderHiRes` (see the long comment block there
+// for the per-pair decode rationale and the AppleWin `Feline` palette
+// citation), but the output goes into `frame80` so the framebuffer
+// itself carries the card's full 14 MHz dot density.
+//
+// Each Apple II HGR byte still drives 7 pixel positions (bits 0..6);
+// each position becomes 2 adjacent output dots in frame80. For colour
+// modes, the existing logic computes one palette entry per even-aligned
+// PAIR of HGR pixels — that single entry is painted across 4 contiguous
+// output dots (2 pixels × 2 dot-doubling). For BW560, each HGR pixel
+// becomes 2 identical dots.
+void Apple2Display::renderHiResChatMauve80(Memory& mem,
+                                           int firstScanline,
+                                           int lastScanline)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* ram = mem.data();
+    // 80STORE+PAGE2 routes HGR page 1 to aux RAM (same rule renderHiRes
+    // applies — `state.hiRes` is necessarily true here so we don't need
+    // to re-gate on it). Matters for IIe software that double-buffers
+    // into aux while keeping PAGE2 selected.
+    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
+
+    using Mode = LeChatMauveCard::RenderMode;
+    const Mode mode = chatMauve->currentMode();
+    const bool monochrome = (mode == Mode::BW560);
+
+    uint8_t  pixels[kWidth];     // 280 raw HGR bits
+    uint8_t  msbHigh[40];        // per-byte palette-bank flag
+
+    for (int y = firstScanline; y < lastScanline; ++y) {
+        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+
+        for (int col = 0; col < 40; ++col) {
+            const uint8_t b = ram[rowAddr + col];
+            msbHigh[col] = static_cast<uint8_t>((b >> 7) & 1u);
+            pixels[col * 7 + 0] = static_cast<uint8_t>((b >> 0) & 1u);
+            pixels[col * 7 + 1] = static_cast<uint8_t>((b >> 1) & 1u);
+            pixels[col * 7 + 2] = static_cast<uint8_t>((b >> 2) & 1u);
+            pixels[col * 7 + 3] = static_cast<uint8_t>((b >> 3) & 1u);
+            pixels[col * 7 + 4] = static_cast<uint8_t>((b >> 4) & 1u);
+            pixels[col * 7 + 5] = static_cast<uint8_t>((b >> 5) & 1u);
+            pixels[col * 7 + 6] = static_cast<uint8_t>((b >> 6) & 1u);
+        }
+
+        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
+        if (monochrome) {
+            for (int x = 0; x < kWidth; ++x) {
+                const uint32_t c = pixels[x] ? 0xFFFFFFFFu : 0xFF000000u;
+                outRow[x * 2 + 0] = c;
+                outRow[x * 2 + 1] = c;
+            }
+        } else {
+            for (int p = 0; p < kWidth; p += 2) {
+                const unsigned code = pixels[p] | (pixels[p + 1] << 1);
+                const int      byteIdx = p / 7;
+                const uint32_t rgb = kChatMauveHGR[msbHigh[byteIdx]][code];
+                // One palette entry across 4 output dots (2 HGR pixels ×
+                // 2 dot-doubling). Mirrors what the card emits on its
+                // 14 MHz dot clock when fed an aligned pair.
+                outRow[p * 2 + 0] = rgb;
+                outRow[p * 2 + 1] = rgb;
+                outRow[p * 2 + 2] = rgb;
+                outRow[p * 2 + 3] = rgb;
+            }
+        }
+    }
+}
+
 void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
 {
     // Pixel-double frame[] horizontally into frame80[] for the requested
@@ -1086,8 +1188,9 @@ void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
 //                  "two distinct grays" Le Chat Mauve trademark).
 //
 //   Mono*       — each dot = luminance bit × phosphor tint. No artifact
-//                 decoding. The persistence buffer is sized for 280
-//                 (HGR), so DHGR mono renders without afterglow.
+//                 decoding. Uses the dedicated `persistenceL80` history
+//                 buffer (560×192) so amber afterglow persists in DHGR
+//                 just like it does in HGR via `persistenceL`.
 
 void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
 {
@@ -1106,16 +1209,12 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
     const uint32_t* rgbCardPalette = useChatMauve
         ? kChatMauveLoResPalette : kLoResPalette;
 
-    static const struct { uint8_t r, g, b; } kMonoTint[] = {
-        { 0xFF, 0xFF, 0xFF }, // ColorNTSC        placeholder
-        { 0xFF, 0xFF, 0xFF }, // ColorCompMedium  placeholder
-        { 0xFF, 0xFF, 0xFF }, // ColorComp4Bit    placeholder
-        { 0xFF, 0xFF, 0xFF }, // ChatMauveRGB     placeholder
-        { 0xFF, 0xFF, 0xFF }, // MonoWhite
-        { 0x33, 0xFF, 0x33 }, // MonoGreen
-        { 0xFF, 0xB0, 0x00 }, // MonoAmber
-    };
-    const auto& tint = kMonoTint[static_cast<int>(m)];
+    // Phosphor tint + decay. Mirrors the HGR mono path so DHGR mono now
+    // shares the same amber afterglow / green persistence characteristics
+    // — only the buffer geometry differs (560×192 vs 280×192).
+    const Phosphor& phos = monochrome ? kPhosphors[static_cast<int>(m)]
+                                      : kPhosphors[static_cast<int>(HiResMode::MonoWhite)];
+    const struct { uint8_t r, g, b; } tint = { phos.r, phos.g, phos.b };
 
     constexpr int kContextBits = 3;
 
@@ -1189,15 +1288,24 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
         }
 
         if (monochrome) {
+            // Same `max(target, prev × decay)` rule as the HGR mono path
+            // (renderHiRes monochrome branch). MonoWhite/MonoGreen have
+            // decay=0 — the multiplication collapses to plain target
+            // every frame — so they look identical to the no-history
+            // version. MonoAmber's decay=0.96 is what makes the bytes
+            // glow for ~25 frames after being cleared on a real CRT.
+            uint8_t* histRow = persistenceL80.data()
+                             + static_cast<size_t>(y) * kWidth80;
             for (int x = 0; x < kWidth80; ++x) {
-                if (dots[x]) {
-                    outRow[x] = (uint32_t(0xFF) << 24)
-                              | (uint32_t(tint.b) << 16)
-                              | (uint32_t(tint.g) << 8)
-                              |  uint32_t(tint.r);
-                } else {
-                    outRow[x] = 0xFF000000u;
-                }
+                const int target = dots[x] ? 255 : 0;
+                const int prev   = static_cast<int>(
+                    static_cast<float>(histRow[x]) * phos.decay);
+                const int merged = std::max(target, prev);
+                histRow[x] = static_cast<uint8_t>(merged);
+                const uint32_t r = (static_cast<uint32_t>(tint.r) * merged + 127) / 255;
+                const uint32_t g = (static_cast<uint32_t>(tint.g) * merged + 127) / 255;
+                const uint32_t b = (static_cast<uint32_t>(tint.b) * merged + 127) / 255;
+                outRow[x] = (uint32_t(0xFF) << 24) | (b << 16) | (g << 8) | r;
             }
         } else {
             // RGB-card 4-dot block decode (ChatMauveRGB). Rotated left by

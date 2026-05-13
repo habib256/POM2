@@ -8,6 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/gistarcade/src/POM2/AiControlServer.cpp" "CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/AiControlServer.cpp.o.d"
   "/home/gistarcade/src/POM2/Apple2Display.cpp" "CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/Apple2Display.cpp.o.d"
   "/home/gistarcade/src/POM2/AudioDevice.cpp" "CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/AudioDevice.cpp.o.d"
   "/home/gistarcade/src/POM2/CassetteDeck_ImGui.cpp" "CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o" "gcc" "CMakeFiles/pom2_imgui.dir/CassetteDeck_ImGui.cpp.o.d"
