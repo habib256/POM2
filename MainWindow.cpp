@@ -120,6 +120,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         showCassetteDeck   = settings.getBool ("show_cassette",   showCassetteDeck);
         showJoystickPanel  = settings.getBool ("show_joystick",   showJoystickPanel);
         showChatMauvePanel = settings.getBool ("show_chatmauve",  showChatMauvePanel);
+        showMockingboardPanel = settings.getBool ("show_mockingboard",
+                                                  showMockingboardPanel);
         showSscPanel       = settings.getBool ("show_ssc",        showSscPanel);
         sscPortInput       = settings.getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings.getBool("disk_turbo",      diskTurboWhileMotor);
@@ -270,6 +272,7 @@ MainWindow::~MainWindow()
     settings.setBool  ("show_cassette",   showCassetteDeck);
     settings.setBool  ("show_joystick",   showJoystickPanel);
     settings.setBool  ("show_chatmauve",  showChatMauvePanel);
+    settings.setBool  ("show_mockingboard", showMockingboardPanel);
     settings.setBool  ("show_ssc",        showSscPanel);
     settings.setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings.setFloat ("speaker_volume",  controller.speaker().getVolume());
