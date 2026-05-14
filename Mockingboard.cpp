@@ -675,6 +675,8 @@ void MockingboardCard::onReset()
     // Re-anchor the lazy-sync clock to "now" so a freshly reset card
     // doesn't run a giant catch-up on its first MMIO access.
     lastSyncCycle_ = cpu_ ? cpu_->getCycleCountNow() : 0;
+    viaWriteCount_[0] = viaWriteCount_[1] = 0;
+    ayWriteCount_[0]  = ayWriteCount_[1]  = 0;
 }
 
 AudioSource* MockingboardCard::audioSource()
@@ -753,6 +755,7 @@ void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // T1 counters reflect "now" before T1CH reload
     const int chip = (low8 & 0x80) ? 1 : 0;
+    ++viaWriteCount_[chip];
     const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
     if (events) onViaPortBChange(chip);
     updateIrq();
@@ -767,7 +770,9 @@ void MockingboardCard::onViaPortBChange(int chip)
     // BDIR/BC1. We reapply on either edge so the order doesn't matter.
     const uint8_t pa = via_[chip]->portAOut & via_[chip]->ddrA;
     const uint8_t pb = via_[chip]->portBOut & via_[chip]->ddrB;
-    ay_[chip]->applyControl(pa, pb);
+    if (ay_[chip]->applyControl(pa, pb)) {
+        ++ayWriteCount_[chip];
+    }
 }
 
 void MockingboardCard::advanceCycles(int cycles)

@@ -1470,6 +1470,7 @@ void MainWindow::renderMockingboardPanelWindow()
     struct ChipSnap {
         uint8_t t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
         uint8_t ay[16];
+        uint32_t viaWrites, ayWrites;
     } via[2]{};
     bool slotIrq = false;
     {
@@ -1488,6 +1489,8 @@ void MainWindow::renderMockingboardPanelWindow()
             for (int r = 0; r < 16; ++r) {
                 via[c].ay[r] = mockingboardCard->getAyRegister(c, r);
             }
+            via[c].viaWrites = mockingboardCard->getViaWriteCount(c);
+            via[c].ayWrites  = mockingboardCard->getAyWriteCount(c);
         }
     }
 
@@ -1509,6 +1512,17 @@ void MainWindow::renderMockingboardPanelWindow()
         for (int c = 0; c < 2; ++c) {
             ImGui::TableSetColumnIndex(c);
             const auto& v = via[c];
+            // Telemetry first — these counters tell you instantly
+            // whether the music driver is even talking to this VIA.
+            // viaWrites grows on every guest STA $CnXX (Mockingboard
+            // slot-ROM window); ayWrites grows only when LATCH→WRITE
+            // strobes successfully complete and a register lands in
+            // the AY. Both staying near zero mid-game = the driver
+            // isn't running or its IRQ handler is short-circuiting
+            // before the AY phase.
+            ImGui::Text("VIA writes:  %u", v.viaWrites);
+            ImGui::Text("AY writes :  %u", v.ayWrites);
+            ImGui::Separator();
             ImGui::Text("T1 ctr  $%02X%02X   latch $%02X%02X",
                         v.t1ch, v.t1cl, v.t1lh, v.t1ll);
             ImGui::Text("ACR=$%02X  PCR=$%02X  SR=$%02X",

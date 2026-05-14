@@ -123,6 +123,19 @@ public:
     /// both VIAs). Test-only.
     bool isIrqAsserted() const { return irqAsserted_; }
 
+    /// Telemetry for the Mockingboard UI panel: how many MMIO writes the
+    /// card has accepted on each chip's VIA, and how many of those
+    /// progressed to an AY-3-8910 register write (the second number
+    /// stays 0 if the music driver is running but never completes a
+    /// LATCH→WRITE strobe, which would point at a bus-protocol bug).
+    /// Cleared on `onReset()`.
+    uint32_t getViaWriteCount(int chip) const {
+        return (chip == 0 || chip == 1) ? viaWriteCount_[chip] : 0;
+    }
+    uint32_t getAyWriteCount(int chip) const {
+        return (chip == 0 || chip == 1) ? ayWriteCount_[chip] : 0;
+    }
+
 private:
     // Forward declarations of internal subdevices. Definitions live in
     // Mockingboard.cpp so the header stays light.
@@ -152,6 +165,12 @@ private:
     // Broadside detection-failure class this fixes.
     uint64_t lastSyncCycle_ = 0;
     void syncToCpuCycle();
+
+    // Telemetry counters, bumped by slotRomWrite / onViaPortBChange.
+    // Read by the Mockingboard ImGui panel; never affect emulation
+    // semantics. Reset by onReset().
+    uint32_t viaWriteCount_[2] = {0, 0};
+    uint32_t ayWriteCount_[2]  = {0, 0};
 
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot
