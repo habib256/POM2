@@ -311,6 +311,7 @@ void Memory::resetSoftSwitches()
     lcBank2Active = true;
     lcPrewrite    = false;
     iieMemMode    = 0;
+    intC8Rom      = false;   // //e expansion-window auto-INTCXROM flip-flop
     iicRomBank    = false;   // //c boots with bank 0 (the cold-start bank)
     // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`). The
     // softswitch is software-toggleable but internal ROM stays mapped
@@ -1203,14 +1204,6 @@ uint8_t Memory::memRead(uint16_t addr)
     // is owned by the internal ROM unless SLOTC3ROM=on (so PR#3 reads
     // the IIe 80-col firmware out of the box).
     //
-    // $CFFF: regardless of INTCXROM, an access at this address must
-    // clear the active expansion-ROM owner — real //e wires the
-    // address decode directly to the slot latch reset, bypassing the
-    // INTCXROM mux (MAME `apple2e.cpp:2636-2645` `c800_r` always runs
-    // the deactivate, even when the read returns internal ROM).
-    if (iieMode && addr == 0xCFFF) {
-        slots.deactivateExpansion();
-    }
     if (iieMode) {
         // //c hardware (iicHasAltBank): no physical slots — internal
         // ROM is always mapped at $C100-$CFFF regardless of INTCXROM.
@@ -1222,19 +1215,45 @@ uint8_t Memory::memRead(uint16_t addr)
         // override those addresses would fall through to slot bus
         // (empty → $FF), and the //c never boots.
         if ((iieMemMode & MF_INTCXROM) || iicHasAltBank) {
+            if (addr == 0xCFFF) {
+                intC8Rom = false;
+                slots.deactivateExpansion();
+            }
             if (iicHasAltBank && iicRomBank)
                 return iicAltFirmware[addr - 0xC000];
             return internalIORom[addr - 0xC000];
         }
+        // $C300-$C3FF with SLOTC3ROM=off: return internal 80-col
+        // firmware AND auto-enable `intC8Rom` so the firmware's
+        // continuation in $C800-$CFFF (JMP $C803/$C87C/$C9B4/...) reads
+        // internal ROM instead of slot bus. MAME
+        // `apple2e.cpp:c300_int_r`: `m_intc8rom = true; update_slotrom_banks()`.
         if (addr >= 0xC300 && addr <= 0xC3FF &&
             !(iieMemMode & MF_SLOTC3ROM)) {
-            // IIe-only path (//c handled above by the iicHasAltBank
-            // override). The bank check is kept in case a future //e
-            // dump ever sets iicHasAltBank without taking the INTCXROM
-            // shortcut.
+            intC8Rom = true;
             if (iicHasAltBank && iicRomBank)
                 return iicAltFirmware[addr - 0xC000];
             return internalIORom[addr - 0xC000];
+        }
+        // $C800-$CFFF with `intC8Rom` set: shared expansion window
+        // mapped to internal ROM. Reading $CFFF additionally clears
+        // `intC8Rom` and releases the slot expansion-ROM owner —
+        // MAME `apple2e.cpp:c800_int_r`: `if (offset == 0x7ff) {
+        // m_cnxx_slot = CNXX_UNCLAIMED; m_intc8rom = false; ... }`.
+        if (intC8Rom && addr >= 0xC800 && addr <= 0xCFFF) {
+            const uint8_t v = internalIORom[addr - 0xC000];
+            if (addr == 0xCFFF) {
+                intC8Rom = false;
+                slots.deactivateExpansion();
+            }
+            return v;
+        }
+        // $CFFF without intC8Rom set: still release the slot expansion
+        // owner — real //e wires the address decode directly to the
+        // slot latch reset, bypassing the INTCXROM mux (MAME
+        // `apple2e.cpp:2636-2645` `c800_r` always runs the deactivate).
+        if (addr == 0xCFFF) {
+            slots.deactivateExpansion();
         }
     }
     if (addr <= 0xC7FF) return slots.slotRomRead(addr);

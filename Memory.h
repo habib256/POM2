@@ -362,6 +362,22 @@ private:
     bool     iieMode      = false;
     uint16_t iieMemMode   = 0;       // OR of MF_* flags
 
+    // //e auto-INTCXROM for the $C800-$CFFF shared expansion window.
+    // Separate from the MF_INTCXROM softswitch ($C006/$C007/$C015): real
+    // //e hardware sets this flip-flop when a read hits $C300-$C3FF with
+    // SLOTC3ROM=off (handing the //e 80-col firmware control over the
+    // 2 KB expansion ROM page so its $C800+ continuation routines run),
+    // and clears it when a read hits $CFFF (same mechanism that releases
+    // the slot expansion-ROM owner). Without this, JSR $C300 lands in the
+    // 80-col firmware OK, but the firmware's JMP $C803 / $C87C / $C9B4 /
+    // JSR $CD5B reach the slot bus (= $FF empty) and the CPU walks
+    // forward through $FF (= BBS7 zp,rel, 3-byte) until it hits ROM data
+    // it decodes as JMP indirect through a stale user-RAM vector — BRK
+    // in zero RAM, monitor `*` prompt. Verbatim port of MAME
+    // `apple2e.cpp:apple2e_state::c300_int_r` / `c800_int_r`. Pinned by
+    // `iie_c8xx_smoke_test.cpp`.
+    bool intC8Rom = false;
+
     // Apple //c ROMBANK ($C028 soft switch). When a 32 KB //c-style dump
     // is loaded, the second 16 KB firmware bank is stashed in
     // `iicAltFirmware`. Reads of $C028 toggle `iicRomBank`; when bank 1

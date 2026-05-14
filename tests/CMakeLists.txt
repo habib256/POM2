@@ -863,6 +863,26 @@ if(WIN32)
 endif()
 
 
+# ─── //e $C800-$CFFF auto-INTCXROM smoke test ─────────────────────────
+add_executable(test_iie_c8xx
+    iie_c8xx_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iie_c8xx PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iie_c8xx PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iie_c8xx PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iie_c8xx PRIVATE winmm)
+endif()
+add_test(NAME iie_c8xx_smoke COMMAND test_iie_c8xx)
+
+
 # ─── HDV boot dump (diagnostic, not a CTest target) ─────────────────────
 add_executable(hdv_boot_dump
     hdv_boot_dump.cpp
