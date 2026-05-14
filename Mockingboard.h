@@ -81,9 +81,14 @@ public:
 
     int getSlot() const { return slot_; }
 
-    /// Inject the host CPU so VIA T1 IRQs can drive the 6502 IRQ line.
-    /// Safe to leave null (the card still runs, just doesn't fire IRQs).
-    void setCpuIrqLine(M6502* cpu) { cpu_ = cpu; }
+    /// Inject the host CPU. Used for the lazy-sync timer back-channel
+    /// (`getCycleCountNow()` — VIA T1/T2 counters need sub-instruction
+    /// catch-up between MMIO touches; see `syncToCpuCycle()`). IRQ
+    /// routing does NOT go through this pointer — `SlotPeripheral::
+    /// assertIrq()` fans out via SlotBus's installed router. Safe to
+    /// leave null in headless tests (the card falls back to legacy
+    /// batched timer advance).
+    void setCpu(M6502* cpu) { cpu_ = cpu; }
 
     /// Pointer to the inner AudioSource. The caller (MainWindow) is
     /// responsible for registering / deregistering it with AudioDevice
@@ -120,8 +125,9 @@ public:
     /// clear, no shift). Test-only.
     uint8_t peekViaRegister(int chip, int reg) const;
     /// Whether the slot IRQ line is currently asserted (cumulative across
-    /// both VIAs). Test-only.
-    bool isIrqAsserted() const { return irqAsserted_; }
+    /// both VIAs). Test-only — forwards to the base-class state cached by
+    /// `SlotPeripheral::assertIrq`.
+    bool isIrqAsserted() const { return slotIrqAsserted(); }
 
     /// Telemetry for the Mockingboard UI panel: how many MMIO writes the
     /// card has accepted on each chip's VIA, and how many of those
@@ -161,8 +167,8 @@ private:
     std::unique_ptr<AudioSrc> audio_;
 
     // Combined slot IRQ state — `via_[0].irqOut() || via_[1].irqOut()`.
-    // Cached so we only call `cpu_->setIRQ()` on transitions.
-    bool irqAsserted_ = false;
+    // Edge debouncing lives in SlotPeripheral::assertIrq, so no local
+    // cache here.
 
     // Cycle the VIA timers were last advanced to. Both `slotRomRead/Write`
     // and the externally driven `advanceCycles()` catch up to "now"

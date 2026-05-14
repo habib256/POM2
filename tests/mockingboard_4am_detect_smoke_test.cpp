@@ -49,10 +49,11 @@ int main_impl()
 {
     Memory mem;
     M6502  cpu(&mem);
+    mem.setCpu(&cpu);   // installs SlotBus IRQ router
     cpu.hardReset();
 
     auto card = std::make_unique<MockingboardCard>(kMockSlot);
-    card->setCpuIrqLine(&cpu);
+    card->setCpu(&cpu); // lazy-sync back-channel for VIA timers
     MockingboardCard* cardPtr = card.get();
     mem.slotBus().plug(kMockSlot, std::move(card));
 

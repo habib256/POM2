@@ -8,6 +8,7 @@
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_system_profile.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_snapshot_io.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_slot_bus.dir
+/home/gistarcade/src/POM2/tests/CMakeFiles/test_slot_peripheral_irq.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_paste.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_language_card.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_hdv_card.dir
@@ -51,6 +52,7 @@
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_mockingboard_sync.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_mockingboard_4am_detect.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_mockingboard_irq_delivery.dir
+/home/gistarcade/src/POM2/tests/CMakeFiles/test_mockingboard_iie_irq.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_ssc_acia.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_ai_control_server.dir
 /home/gistarcade/src/POM2/tests/CMakeFiles/test_woz_writeback.dir

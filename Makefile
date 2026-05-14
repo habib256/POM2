@@ -218,6 +218,19 @@ test_slot_bus/fast:
 .PHONY : test_slot_bus/fast
 
 #=============================================================================
+# Target rules for targets named test_slot_peripheral_irq
+
+# Build rule for target.
+test_slot_peripheral_irq: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_slot_peripheral_irq
+.PHONY : test_slot_peripheral_irq
+
+# fast build rule for target.
+test_slot_peripheral_irq/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_slot_peripheral_irq.dir/build.make tests/CMakeFiles/test_slot_peripheral_irq.dir/build
+.PHONY : test_slot_peripheral_irq/fast
+
+#=============================================================================
 # Target rules for targets named test_paste
 
 # Build rule for target.
@@ -775,6 +788,19 @@ test_mockingboard_irq_delivery: cmake_check_build_system
 test_mockingboard_irq_delivery/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build.make tests/CMakeFiles/test_mockingboard_irq_delivery.dir/build
 .PHONY : test_mockingboard_irq_delivery/fast
+
+#=============================================================================
+# Target rules for targets named test_mockingboard_iie_irq
+
+# Build rule for target.
+test_mockingboard_iie_irq: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mockingboard_iie_irq
+.PHONY : test_mockingboard_iie_irq
+
+# fast build rule for target.
+test_mockingboard_iie_irq/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mockingboard_iie_irq.dir/build.make tests/CMakeFiles/test_mockingboard_iie_irq.dir/build
+.PHONY : test_mockingboard_iie_irq/fast
 
 #=============================================================================
 # Target rules for targets named test_ssc_acia
@@ -2003,6 +2029,7 @@ help:
 	@echo "... test_mc6821"
 	@echo "... test_mockingboard"
 	@echo "... test_mockingboard_4am_detect"
+	@echo "... test_mockingboard_iie_irq"
 	@echo "... test_mockingboard_irq_delivery"
 	@echo "... test_mockingboard_sync"
 	@echo "... test_mouse_card"
@@ -2012,6 +2039,7 @@ help:
 	@echo "... test_prodos_volume"
 	@echo "... test_slot_bus"
 	@echo "... test_slot_config"
+	@echo "... test_slot_peripheral_irq"
 	@echo "... test_snapshot_io"
 	@echo "... test_speaker"
 	@echo "... test_ssc_acia"

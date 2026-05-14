@@ -37,6 +37,23 @@ Memory::Memory()
     mem[0xFFFB] = 0xF8;
 }
 
+void Memory::setCpu(M6502* c)
+{
+    cpu = c;
+    // Re-install the SlotBus IRQ router whenever the CPU is rewired. The
+    // closure captures the CPU pointer by value so a later swap doesn't
+    // dangle — re-issuing setCpu() re-installs against the new pointer.
+    // An empty function on `c == nullptr` disconnects stray assertIrq()
+    // calls from cards that haven't been unplugged yet.
+    if (c) {
+        slots.setIrqRouter([c](int slot, bool asserted) {
+            c->setIrqLine(slot, asserted);
+        });
+    } else {
+        slots.setIrqRouter({});
+    }
+}
+
 std::string Memory::busStateSummary() const
 {
     if (!lcReadRam && !lcWriteEnable) return " (LC: ROM)";

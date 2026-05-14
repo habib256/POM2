@@ -63,7 +63,7 @@ bool testLazySyncOnReadIfr()
     Memory mem;
     M6502  cpu(&mem);
     MockingboardCard card(4);
-    card.setCpuIrqLine(&cpu);
+    card.setCpu(&cpu);     // for lazy-sync getCycleCountNow back-channel
     card.onReset();   // re-anchors lastSyncCycle_ to current cycle
 
     // Tight T1 + small latch — the exact pattern detection routines use.
@@ -130,7 +130,7 @@ bool testSyncAcrossMultipleAccesses()
     Memory mem;
     M6502  cpu(&mem);
     MockingboardCard card(4);
-    card.setCpuIrqLine(&cpu);
+    card.setCpu(&cpu);
     card.onReset();
 
     armT1(card, 100);

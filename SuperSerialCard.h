@@ -49,8 +49,6 @@
 #include <string_view>
 #include <thread>
 
-class M6502;
-
 class SuperSerialCard : public SlotPeripheral
 {
 public:
@@ -88,14 +86,6 @@ public:
         std::lock_guard<std::mutex> lk(bufferMtx);
         keyboardSink = std::move(sink);
     }
-
-    /// Wire the slot IRQ line to the CPU. Safe to leave null (the card
-    /// still runs polled). Once set, RDRF transitions (gated by
-    /// `cmdReg.bit1 == 0` — RX IRQ enable per the 6551 spec) and DCD/DSR
-    /// transitions raise the line; status read or programmed reset
-    /// lowers it (matches MAME `mos6551.cpp::read_status` /
-    /// `write_reset`). Pattern mirrors `MockingboardCard::setCpuIrqLine`.
-    void setCpuIrqLine(M6502* cpu) { cpu_ = cpu; }
 
     bool isListening()      const { return listening; }
     bool clientConnected()  const { return connected;  }
@@ -191,12 +181,10 @@ private:
     // read of RDR per MAME `mos6551.cpp:234`).
     uint8_t statusErrors_ = 0;
 
-    // IRQ state (MAME-style mask). The pin level pushed to the CPU is
-    // simply `irqState_ != 0`; we cache the last asserted level in
-    // `irqAsserted_` so we only call setIRQ on transitions.
-    M6502*  cpu_         = nullptr;
+    // IRQ state (MAME-style mask). The pin level pushed to the bus is
+    // simply `irqState_ != 0`; edge debouncing is handled by the base
+    // class's `assertIrq()` so we don't cache an extra bool here.
     uint8_t irqState_    = 0;
-    bool    irqAsserted_ = false;
 
     // Connection-edge tracking for DCD/DSR IRQ generation. Both bits move
     // together in this model (SSC + telnet has no separate carrier-vs-DTR

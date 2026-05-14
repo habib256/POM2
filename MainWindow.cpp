@@ -449,9 +449,8 @@ void MainWindow::plugSlotsFromSettings()
                 const char buf[1] = { static_cast<char>(b) };
                 mem.pasteText(buf, 1);
             });
-        // Wire the slot IRQ line so any RDRF transition with RX-IRQ-enable
-        // on raises the CPU's IRQ. Same pattern as Mockingboard above.
-        sscCard->setCpuIrqLine(&controller.cpu());
+        // IRQ routing is auto-wired by SlotBus's installed router (see
+        // Memory::setCpu) — no per-card setup needed.
         controller.memory().slotBus().plug(s, std::move(card));
         if (settings.getBool("ssc_listening", false)) {
             const int p = settings.getInt("ssc_port",
@@ -476,7 +475,9 @@ void MainWindow::plugSlotsFromSettings()
         // driver's tick.
         auto card = std::make_unique<MockingboardCard>(s);
         card->setSampleRate(controller.audio().getActualSampleRate());
-        card->setCpuIrqLine(&controller.cpu());
+        // CPU pointer feeds the lazy-sync timer back-channel
+        // (getCycleCountNow); IRQ routing is auto-wired via SlotBus.
+        card->setCpu(&controller.cpu());
         // Default volume is conservative — the card's three-channel mix
         // can dwarf the speaker at peak; the user can crank via the
         // Mockingboard panel (TODO).
@@ -521,11 +522,9 @@ void MainWindow::plugSlotsFromSettings()
             mouseRomStatus = "ROM load failed (size mismatch?)";
             return;
         }
-        // Wire the slot IRQ line. The card asserts via
-        // `M6502::setIrqLine(slot, asserted)` — a wire-OR aggregator
-        // keyed by slot, so other cards' IRQs stay live even if this
-        // card releases. See M6502::setIrqLine() doc.
-        card->setCpuIrqLine(&controller.cpu());
+        // IRQ routing is auto-wired by SlotBus (see Memory::setCpu).
+        // Mouse Card's MCU PB6 reaches the CPU via SlotPeripheral::
+        // assertIrq, which fans out through M6502::setIrqLine(slot, …).
         mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
         mouseCard = card.get();
         controller.memory().slotBus().plug(s, std::move(card));

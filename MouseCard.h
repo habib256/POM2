@@ -64,7 +64,6 @@
 
 #include "M68705P3.h"
 #include "MC6821.h"
-#include "M6502.h"
 #include "SlotPeripheral.h"
 
 #include <array>
@@ -78,9 +77,9 @@ class MouseCard : public SlotPeripheral
 public:
     static constexpr int kDefaultSlot = 4;
 
-    /// Construct in `slot` (default 4). Call `loadRoms()` and pass the
-    /// CPU IRQ-line setter via `setCpuIrqLine()` before plugging the
-    /// card into the slot bus.
+    /// Construct in `slot` (default 4). Call `loadRoms()` before plugging
+    /// the card into the slot bus. IRQ routing is auto-wired by SlotBus
+    /// via `SlotPeripheral::assertIrq()` — no manual CPU wiring required.
     explicit MouseCard(int slot = kDefaultSlot);
 
     int getSlot() const { return slot_; }
@@ -94,10 +93,6 @@ public:
     bool loadRoms(const std::string& slotRomPath, const std::string& mcuRomPath);
 
     bool isReady() const { return slotRomLoaded && mcu.isRomLoaded(); }
-
-    /// Inject the host CPU's IRQ asserter so the MCU's PB6 can pulse
-    /// the bus IRQ line. Must be set before the firmware runs.
-    void setCpuIrqLine(M6502* cpu) { cpu_ = cpu; }
 
     /// Host-mouse position update. `rawX` and `rawY` are running
     /// counters in Apple II screen-coordinate units (0..0xFF wrap is
@@ -130,10 +125,9 @@ private:
     uint8_t portAtoMcu = 0xFF;
     uint8_t portCtoMcu = 0x0F;
 
-    // MCU PB6 → slot IRQ. Cached so the bus IRQ asserter is only
-    // re-fired on transitions, matching MAME's set/clear semantics.
-    bool slotIrqAsserted = false;
-    M6502* cpu_ = nullptr;
+    // Slot IRQ contribution is tracked by SlotPeripheral (edge-only
+    // delivery via assertIrq); MAME-faithful set/clear semantics emerge
+    // automatically from the base class's irqAsserted_ cache.
 
     // Host mouse state. Updated from setHostMouse (UI thread); read
     // from mcuPortBRead (CPU thread). std::atomic keeps the writes
@@ -160,7 +154,6 @@ private:
     uint8_t onMcuPortRead(int port);
     uint8_t mcuPortBRead();
     void    updateAxis(int axis, uint8_t dirBit, uint8_t clkBit);
-    void    raiseIrq(bool assert);
 };
 
 #endif // POM2_MOUSE_CARD_H

@@ -3,17 +3,58 @@
 
 #include "SlotBus.h"
 
+// ─── SlotPeripheral ↔ SlotBus wiring ────────────────────────────────────
+// Definitions for SlotPeripheral live here so they have full visibility
+// of SlotBus (forward-declared in SlotPeripheral.h to avoid a circular
+// include). `attachToBus` and `detachFromBus` are private and called
+// only by SlotBus::plug / unplug / clear.
+
+void SlotPeripheral::attachToBus(SlotBus* bus, int slot)
+{
+    bus_ = bus;
+    busSlot_ = slot;
+    // Cards start with no IRQ contribution; if a constructor pre-set
+    // `irqAsserted_` we don't honour it here — the bus is responsible
+    // for re-asserting after attach if the card immediately requests
+    // it via assertIrq().
+    irqAsserted_ = false;
+}
+
+void SlotPeripheral::detachFromBus()
+{
+    // Auto-release any pending IRQ this card was contributing, so the
+    // wire-OR aggregator doesn't keep the bit set after the card is
+    // gone. Without this each card would have to remember to clear in
+    // its own onUnplug() — easy to forget, and the cause of the legacy
+    // "stuck IRQ across profile switch" bug.
+    if (irqAsserted_ && bus_) bus_->forwardSlotIrq(busSlot_, false);
+    irqAsserted_ = false;
+    bus_ = nullptr;
+    busSlot_ = -1;
+}
+
+void SlotPeripheral::assertIrq(bool asserted)
+{
+    if (asserted == irqAsserted_) return;
+    irqAsserted_ = asserted;
+    if (bus_) bus_->forwardSlotIrq(busSlot_, asserted);
+}
+
+// ─── SlotBus ────────────────────────────────────────────────────────────
+
 void SlotBus::plug(int slot, std::unique_ptr<SlotPeripheral> card)
 {
     if (slot < 0 || slot >= kSlotCount) return;
 
     if (slots[slot]) {
         slots[slot]->onUnplug();
+        slots[slot]->detachFromBus();
         if (activeExpansionSlot == slot) activeExpansionSlot = -1;
         slots[slot].reset();
     }
     if (card) {
         slots[slot] = std::move(card);
+        slots[slot]->attachToBus(this, slot);
         slots[slot]->onPlug();
     }
 }
@@ -23,6 +64,7 @@ std::unique_ptr<SlotPeripheral> SlotBus::unplug(int slot)
     if (slot < 0 || slot >= kSlotCount) return nullptr;
     if (!slots[slot]) return nullptr;
     slots[slot]->onUnplug();
+    slots[slot]->detachFromBus();
     if (activeExpansionSlot == slot) activeExpansionSlot = -1;
     return std::move(slots[slot]);
 }
@@ -130,6 +172,7 @@ void SlotBus::clear()
     for (auto& s : slots) {
         if (s) {
             s->onUnplug();
+            s->detachFromBus();
             s.reset();
         }
     }

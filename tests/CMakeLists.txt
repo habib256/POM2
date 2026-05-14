@@ -188,6 +188,20 @@ add_test(NAME slot_bus_smoke COMMAND test_slot_bus)
 set_tests_properties(slot_bus_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── SlotPeripheral IRQ-line smoke test ───────────────────────────────────
+# Pins the assertIrq() contract: plug-time slot wiring, idempotent edges,
+# auto-release on unplug / re-plug / clear. Standalone (SlotBus only).
+
+add_executable(test_slot_peripheral_irq
+    slot_peripheral_irq_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_slot_peripheral_irq PRIVATE ${CMAKE_SOURCE_DIR})
+
+add_test(NAME slot_peripheral_irq_smoke COMMAND test_slot_peripheral_irq)
+set_tests_properties(slot_peripheral_irq_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Paste pipeline smoke test ────────────────────────────────────────────
 # Pins line-ending normalisation, control-byte filtering, 7-bit strip,
 # the strobe-driven queue drain, and the kPasteMaxChars cap.

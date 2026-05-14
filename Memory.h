@@ -57,7 +57,12 @@ public:
     /// by the $C030 handler to timestamp toggles with sub-instruction
     /// precision (`cycleCounter + cpu->getCurrentInstructionCycles()`).
     void setSpeakerDevice(SpeakerDevice* s) { speaker = s; }
-    void setCpu(M6502* c)                   { cpu = c; }
+    /// Wire the host CPU. Also installs a SlotBus IRQ router so cards
+    /// can raise IRQ via `SlotPeripheral::assertIrq()` without each
+    /// holding their own M6502*. Pass nullptr to disconnect (the router
+    /// is replaced with an empty function so stray assertIrq() calls
+    /// from teardown don't dereference a dangling pointer).
+    void setCpu(M6502* c);
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
     /// SlotBus. Memory routes $C080-$CFFF accesses through it.

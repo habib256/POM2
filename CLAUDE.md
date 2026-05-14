@@ -173,12 +173,34 @@ Awesome (`fonts/fa-solid-900.ttf`); falls back to '?' glyphs if missing.
 `M6502::setIrqLine(sourceId, asserted)` — **wire-OR**. The 6502 IRQ pin
 is active-low pulled by *any* device; releases only when *all* stop
 pulling. 32-bit OR'd contributor mask: slot N (1..7) = bit N, motherboard
-VBL = bit 8, legacy `setIRQ(int)` = bit 31. Cards assert via their
-`slot_`. **Previously** each card called `cpu->setIRQ(0|1)` directly →
-last-writer-won bug → mixing IRQ-driven cards (Mockingboard + SSC + Mouse)
-was unreliable. Cards release their bit in `onUnplug()` so profile
-switches don't leave stuck bits. NMI is still a single latch (no NMI
-sources today). Pinned: `irq_aggregator_smoke_test.cpp`.
+VBL = bit 8, legacy `setIRQ(int)` = bit 31. **Previously** each card
+called `cpu->setIRQ(0|1)` directly → last-writer-won bug → mixing
+IRQ-driven cards (Mockingboard + SSC + Mouse) was unreliable. NMI is
+still a single latch (no NMI sources today). Pinned:
+`irq_aggregator_smoke_test.cpp`.
+
+### `SlotPeripheral::assertIrq(bool)` — card-side API
+
+Cards never poke `cpu->setIrqLine` directly. The base class exposes a
+protected `assertIrq(bool)` that:
+- debounces against an internal `irqAsserted_` cache (idempotent — only
+  edges propagate);
+- fans out via `SlotBus::forwardSlotIrq(slot, asserted)` to whatever
+  `IrqRouter` Memory installed (`Memory::setCpu(cpu)` plants a closure
+  that calls `cpu->setIrqLine(slot, asserted)`);
+- gets its slot number from `SlotBus::plug()` at attach-time — cards
+  don't need to remember which slot they live in or hold a `M6502*`
+  just for IRQs.
+
+`SlotBus::plug()` / `unplug()` / `clear()` auto-release any pending IRQ
+contribution before letting the card go — the legacy
+`onUnplug()`-must-clear-the-bit dance is gone, which is what made
+profile switches leak stuck bits in the first place.
+
+Mockingboard still holds `cpu_` (for `getCycleCountNow()` lazy-sync of
+VIA timers, **not** IRQ); Disk II still holds `cpu_` (for sub-
+instruction LSS cycle accuracy on Q6L reads). MouseCard and SSC dropped
+their `cpu_` entirely. Pinned: `slot_peripheral_irq_smoke_test.cpp`.
 
 ## Disk II (slot 6)
 

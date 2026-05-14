@@ -458,11 +458,9 @@ void SuperSerialCard::clearIrqSource(uint8_t mask)
 
 void SuperSerialCard::pushIrqLine()
 {
-    const bool want = irqState_ != 0;
-    if (want == irqAsserted_) return;
-    irqAsserted_ = want;
-    // Per-source IRQ keyed by slot — see M6502::setIrqLine() doc.
-    if (cpu_) cpu_->setIrqLine(slot, irqAsserted_);
+    // Edge debounce + slot routing live in SlotPeripheral::assertIrq;
+    // this method just maps the mask down to a boolean line level.
+    assertIrq(irqState_ != 0);
 }
 
 uint8_t SuperSerialCard::slotRomRead(uint8_t low8)

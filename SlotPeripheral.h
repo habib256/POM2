@@ -28,6 +28,8 @@
 #include <cstdint>
 #include <string_view>
 
+class SlotBus;
+
 class SlotPeripheral
 {
 public:
@@ -79,6 +81,42 @@ public:
     /// AN3 to clock their 2-bit FIFO mode register). Forwarded by
     /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
     virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
+
+    /// Slot number assigned by the bus at plug-time (1..7), or -1 before
+    /// `SlotBus::plug()` adopts the card. Concrete cards may still carry
+    /// their own constructor-time slot field for ROM addressing reasons
+    /// (the SSC bakes slot into its PR# trampolines), but `busSlot()` is
+    /// the authoritative source once attached.
+    int busSlot() const { return busSlot_; }
+
+    /// Whether this slot's contribution to the wire-OR'd CPU IRQ line is
+    /// currently asserted. Mirrors what `assertIrq()` last published to
+    /// the bus — useful for debug panels and tests.
+    bool slotIrqAsserted() const { return irqAsserted_; }
+
+protected:
+    /// Assert (true) or release (false) this slot's contribution to the
+    /// CPU's wire-OR'd IRQ line. Idempotent — repeated true→true or
+    /// false→false calls are no-ops, so cards don't need their own edge
+    /// tracking. Safe to call before plug (becomes a no-op until SlotBus
+    /// attaches the card). `SlotBus::plug()` and `SlotBus::unplug()`
+    /// auto-release any still-asserted bit before letting the card go,
+    /// so cards rarely need to clear in `onUnplug()` themselves.
+    void assertIrq(bool asserted);
+
+private:
+    friend class SlotBus;
+    /// Called by SlotBus::plug() right after onPlug(). Wires the card to
+    /// its bus + slot number so `assertIrq()` can fan out.
+    void attachToBus(SlotBus* bus, int slot);
+    /// Called by SlotBus::plug()/unplug() right before onUnplug(). Drops
+    /// any pending IRQ contribution and clears the bus pointer so a
+    /// post-unplug stray assertIrq() is a no-op.
+    void detachFromBus();
+
+    SlotBus* bus_       = nullptr;
+    int      busSlot_   = -1;
+    bool     irqAsserted_ = false;
 };
 
 #endif // POM2_SLOT_PERIPHERAL_H
