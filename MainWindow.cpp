@@ -766,6 +766,43 @@ void MainWindow::renderMenuBar()
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
+        // Disk II (slot 6) — frequent action, lifted out of the old
+        // Hardware kitchen-sink. Panel still exposes its own insert/eject
+        // buttons; this is the keyboard-friendly path.
+        ImGui::BeginDisabled(diskCard == nullptr);
+        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
+            showDiskInsertDialog = true;
+            if (diskDialogPath.empty()) diskDialogPath = "disks/";
+        }
+        if (ImGui::MenuItem("Eject disk", nullptr, false,
+                            diskCard && diskCard->isDiskLoaded())) {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            diskCard->ejectDisk();
+            tapeStatusMessage = "Disk ejected";
+            tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+        ImGui::EndDisabled();
+        ImGui::Separator();
+        ImGui::BeginDisabled(hdvCard == nullptr);
+        if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
+            showHdvMountDialog = true;
+            if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
+        }
+        if (ImGui::MenuItem("Eject HDV", nullptr, false,
+                            hdvCard && hdvCard->isImageLoaded())) {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            hdvCard->ejectImage();
+            hdvStatus = "no image mounted";
+            tapeStatusMessage = "HDV ejected";
+            tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
+        if (ImGui::MenuItem("Boot HDV (slot 5)")) {
+            bootHdvImage();
+        }
+        ImGui::EndDisabled();
+        ImGui::Separator();
         if (ImGui::MenuItem("Reload ROM")) {
             bool ok = false;
             std::string err;
@@ -827,6 +864,30 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Hard reset",             "F12")) controller.hardReset();
         if (ImGui::MenuItem("Cold boot (wipe RAM)"))          controller.coldBoot();
         ImGui::Separator();
+        if (ImGui::BeginMenu("Profile")) {
+            // 5 canonical Apple II profiles. Selecting one triggers a
+            // full cold-reset via `applyProfile()`: new ROM, new char ROM,
+            // RAM wiped, slot cards re-plugged, CPU type reset to the
+            // profile default (overridable in Machine → CPU). Disk and HDV
+            // mounts persist across the switch so the user can test the
+            // same software stack under different models.
+            for (pom2::SystemProfile p : pom2::allProfiles()) {
+                const auto& cfg = pom2::profileConfig(p);
+                const bool selected = (activeProfile == p);
+                // Append "  ✓" to the active label so the checkmark is
+                // reinforced by text — useful in colourblind / monochrome
+                // ImGui themes.
+                std::string label = std::string(cfg.displayName);
+                if (selected) label += "  ✓";
+                if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
+                    applyProfile(p);
+                }
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Profile = full cold reset.");
+            ImGui::TextDisabled("Mounted disks survive the switch.");
+            ImGui::EndMenu();
+        }
         // CPU type selector. Three settings:
         //   * Auto (profile default) — NMOS for II/II+, CMOS for IIe/IIc/IIc+
         //   * NMOS 6502 — force NMOS regardless of profile (e.g. test
@@ -875,118 +936,63 @@ void MainWindow::renderMenuBar()
             ImGui::TextDisabled("switches.");
             ImGui::EndMenu();
         }
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Presets")) {
-        // 4 canonical Apple II profiles. Selecting one triggers a
-        // full cold-reset via `applyProfile()`: new ROM, new char ROM,
-        // RAM wiped, slot cards re-plugged, CPU type reset to the
-        // profile default (overridable in Debug → CPU). Disk and HDV
-        // mounts persist across the switch so the user can test the
-        // same software stack under different models.
-        for (pom2::SystemProfile p : pom2::allProfiles()) {
-            const auto& cfg = pom2::profileConfig(p);
-            const bool selected = (activeProfile == p);
-            // Append " (current)" to the label when active so the
-            // checkmark is reinforced by text — useful in colourblind
-            // / monochrome ImGui themes.
-            std::string label = std::string(cfg.displayName);
-            if (selected) label += "  ✓";
-            if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
-                applyProfile(p);
-            }
-        }
         ImGui::Separator();
-        ImGui::TextDisabled("Profile = full cold reset.");
-        ImGui::TextDisabled("Mounted disks survive the switch.");
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Display")) {
-        ImGui::SliderFloat("Pixel scale", &pixelScale, 1.0f, 4.0f, "%.1fx");
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Hi-res mode");
-        const Apple2Display::HiResMode cur = display.getHiResMode();
-        if (ImGui::MenuItem("Color NTSC", nullptr,
-                            cur == Apple2Display::HiResMode::ColorNTSC))
-            display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
-        // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
-        // no inter-byte fringing. Greyed out if the slot-7 card isn't
-        // plugged (the Apple II would just see composite video).
-        ImGui::BeginDisabled(chatMauveCard == nullptr);
-        if (ImGui::MenuItem("Le Chat Mauve (RGB)", nullptr,
-                            cur == Apple2Display::HiResMode::ChatMauveRGB))
-            display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-        ImGui::EndDisabled();
-        if (ImGui::MenuItem("Mono White",  nullptr,
-                            cur == Apple2Display::HiResMode::MonoWhite))
-            display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
-        if (ImGui::MenuItem("Mono Green (P31)", nullptr,
-                            cur == Apple2Display::HiResMode::MonoGreen))
-            display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
-        if (ImGui::MenuItem("Mono Amber",  nullptr,
-                            cur == Apple2Display::HiResMode::MonoAmber))
-            display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Hardware")) {
-        ImGui::MenuItem("Cassette deck", nullptr, &showCassetteDeck);
-        ImGui::MenuItem("Disk II (slot 6)", nullptr, &showDiskPanel);
-        ImGui::MenuItem("HDV (slot 5)", nullptr, &showHdvPanel);
-        ImGui::MenuItem("Le Chat Mauve (slot 7)", nullptr, &showChatMauvePanel);
-        ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr,
-                        &showMockingboardPanel);
-        ImGui::MenuItem("Super Serial (slot 2)", nullptr, &showSscPanel);
-        ImGui::MenuItem("Joystick", nullptr, &showJoystickPanel);
-        ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
         ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
-        ImGui::Separator();
-        ImGui::BeginDisabled(hdvCard == nullptr);
-        if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
-            showHdvMountDialog = true;
-            if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
-        }
-        if (ImGui::MenuItem("Eject HDV", nullptr, false,
-                            hdvCard && hdvCard->isImageLoaded())) {
-            std::lock_guard<std::mutex> lk(controller.stateMutex());
-            hdvCard->ejectImage();
-            hdvStatus = "no image mounted";
-            tapeStatusMessage = "HDV ejected";
-            tapeStatusUntil   = lastFrameTime + 3.0;
-        }
-        ImGui::EndDisabled();
-        ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
-        if (ImGui::MenuItem("Boot HDV (slot 5)")) {
-            bootHdvImage();
-        }
-        ImGui::EndDisabled();
-        ImGui::Separator();
-        ImGui::BeginDisabled(diskCard == nullptr);
-        if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
-            showDiskInsertDialog = true;
-            if (diskDialogPath.empty()) diskDialogPath = "disks/";
-        }
-        if (ImGui::MenuItem("Eject disk", nullptr, false,
-                            diskCard && diskCard->isDiskLoaded())) {
-            std::lock_guard<std::mutex> lk(controller.stateMutex());
-            diskCard->ejectDisk();
-            tapeStatusMessage = "Disk ejected";
-            tapeStatusUntil   = lastFrameTime + 3.0;
-        }
-        ImGui::EndDisabled();
         ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Debug")) {
-        ImGui::MenuItem("Emulation panel", nullptr, &showEmulationPanel);
-        ImGui::MenuItem("Memory viewer",   nullptr, &showMemViewer);
+    if (ImGui::BeginMenu("Devices")) {
+        ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
+        ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
+        ImGui::MenuItem("HDV (slot 5)",                  nullptr, &showHdvPanel);
+        ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
+        ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
+        ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
+        ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("View")) {
+        if (ImGui::BeginMenu("Display")) {
+            ImGui::SliderFloat("Pixel scale", &pixelScale, 1.0f, 4.0f, "%.1fx");
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Hi-res mode");
+            const Apple2Display::HiResMode cur = display.getHiResMode();
+            if (ImGui::MenuItem("Color NTSC", nullptr,
+                                cur == Apple2Display::HiResMode::ColorNTSC))
+                display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+            // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
+            // no inter-byte fringing. Greyed out if the slot-7 card isn't
+            // plugged (the Apple II would just see composite video).
+            ImGui::BeginDisabled(chatMauveCard == nullptr);
+            if (ImGui::MenuItem("Le Chat Mauve (RGB)", nullptr,
+                                cur == Apple2Display::HiResMode::ChatMauveRGB))
+                display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+            ImGui::EndDisabled();
+            if (ImGui::MenuItem("Mono White",  nullptr,
+                                cur == Apple2Display::HiResMode::MonoWhite))
+                display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
+            if (ImGui::MenuItem("Mono Green (P31)", nullptr,
+                                cur == Apple2Display::HiResMode::MonoGreen))
+                display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
+            if (ImGui::MenuItem("Mono Amber",  nullptr,
+                                cur == Apple2Display::HiResMode::MonoAmber))
+                display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
+        ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
         ImGui::Separator();
         ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
         ImGui::MenuItem("Memory Map Bar (Horizontal)", nullptr, &showMemoryBarH);
         ImGui::MenuItem("Memory Map Grid",             nullptr, &showMemoryGrid);
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Tools")) {
+        ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
         ImGui::EndMenu();
     }
 
