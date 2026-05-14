@@ -2182,8 +2182,8 @@ void MainWindow::renderAboutDialog()
     ImGui::OpenPopup("About POM2");
     if (ImGui::BeginPopupModal("About POM2", &showAbout,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("POM2 v0.1");
-        ImGui::Text("Apple II / II+ emulator (Dear ImGui, MOS 6502)");
+        ImGui::Text("POM2 v0.5");
+        ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator (Dear ImGui, MOS 6502 / 65C02)");
         ImGui::Spacing();
         ImGui::TextWrapped(
             "Apple II / II+ emulator. MOS 6502, 48 KB RAM,"

@@ -725,9 +725,10 @@ Strobe stays high until $C010 read/write.
 
 ## Version string locations
 
+Current release: **v0.5**.
+
 Bump in:
 - `main.cpp` (window title + console banner)
 - `MainWindow.cpp` (About dialog)
+- `CMakeLists.txt` (`project(... VERSION x.y ...)`)
 - `README.md` (status section, if a version pill is reintroduced)
-- `CMakeLists.txt` — currently `project(pom2_imgui CXX)` with no
-  `VERSION`; add one if a release tag is cut.

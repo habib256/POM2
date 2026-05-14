@@ -77,7 +77,7 @@ static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, in
 
 int main(int argc, char* argv[])
 {
-    pom2::log().info("POM2", "v0.1 - Apple II Emulator (Dear ImGui)");
+    pom2::log().info("POM2", "v0.5 - Apple II Emulator (Dear ImGui)");
 
     bool helpRequested = false;
     auto plan = pom2::parseCli(argc, argv, helpRequested);
@@ -100,7 +100,7 @@ int main(int argc, char* argv[])
     // stacked below Disk II). The FirstUseEver pos/size calls in
     // MainWindow rely on roughly this canvas — height is sized for the
     // 2×-tall Disk II / HDV library lists.
-    GLFWwindow* window = glfwCreateWindow(1770, 1000, "POM2 v0.1 - Apple II Emulator", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1770, 1000, "POM2 v0.5 - Apple II Emulator", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
