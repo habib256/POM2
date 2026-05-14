@@ -368,13 +368,24 @@ No ROM dependency. **VIAs decoded in slot ROM window** ($Cn00-$Cn0F = VIA
 #1, $Cn80-$Cn8F = VIA #2) — NOT in per-slot device-select range, which
 is why the card needed the `slotRomWrite` callback.
 
-VIA → AY wiring:
+VIA → AY wiring (Sweet Microsystems schematic, verified against AppleWin
+`Mockingboard.cpp:193`):
 ```
-Port A      → AY data bus (D0..D7)
-Port B b0   → AY !RESET
-Port B b1/2 → BDIR / BC1     ({BDIR,BC1}: 00=inactive, 10=write, 11=latch addr)
+Port A       → AY data bus (D0..D7)
+Port B bit 0 → AY BC1
+Port B bit 1 → AY BDIR
+Port B bit 2 → AY /RESET (active low; 1 = chip running)
 ```
-Drivers: LATCH then WRITE (with INACTIVE between) per AY register.
+The 2-bit {BDIR,BC1} command: 00=INACTIVE, 01=READ, 10=WRITE, 11=LATCH-ADDR.
+Standard drivers emit PB = `$07` (LATCH) → `$04` (INACTIVE) → `$06`
+(WRITE) → `$04` (INACTIVE) per AY register update. PB2 stays high
+throughout — `/RESET` is asserted only on init pulses (PB = `$00`).
+**Gotcha**: earlier versions of `Mockingboard.cpp` had PB0=/RESET and
+PB2=BC1 inverted; Nox Archaist / Ultima IV / Total Replay music drivers
+sounded silent because every INACTIVE pulse looked like /RESET to POM2
+and wiped the AY register bank before the next WRITE strobe landed.
+Fixed 2026-05-14 (`9177cb0`). Pinned by `mockingboard_smoke_test.cpp`'s
+`testAyRegisterWrite` — the test fails noisily if the bits drift back.
 
 **6522 subset modelled**: A/B + DDR, T1 (latch + counter, one-shot +
 continuous), IFR/IER (T1 bits 6/7; bit 7 dynamic from `ifr & ier &
