@@ -135,6 +135,9 @@ public:
     uint32_t getAyWriteCount(int chip) const {
         return (chip == 0 || chip == 1) ? ayWriteCount_[chip] : 0;
     }
+    uint32_t getAyResetCount(int chip) const {
+        return (chip == 0 || chip == 1) ? ayResetCount_[chip] : 0;
+    }
 
 private:
     // Forward declarations of internal subdevices. Definitions live in
@@ -171,6 +174,7 @@ private:
     // semantics. Reset by onReset().
     uint32_t viaWriteCount_[2] = {0, 0};
     uint32_t ayWriteCount_[2]  = {0, 0};
+    uint32_t ayResetCount_[2]  = {0, 0};
 
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot

@@ -1470,7 +1470,7 @@ void MainWindow::renderMockingboardPanelWindow()
     struct ChipSnap {
         uint8_t t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
         uint8_t ay[16];
-        uint32_t viaWrites, ayWrites;
+        uint32_t viaWrites, ayWrites, ayResets;
     } via[2]{};
     bool slotIrq = false;
     {
@@ -1491,6 +1491,7 @@ void MainWindow::renderMockingboardPanelWindow()
             }
             via[c].viaWrites = mockingboardCard->getViaWriteCount(c);
             via[c].ayWrites  = mockingboardCard->getAyWriteCount(c);
+            via[c].ayResets  = mockingboardCard->getAyResetCount(c);
         }
     }
 
@@ -1520,8 +1521,11 @@ void MainWindow::renderMockingboardPanelWindow()
             // the AY. Both staying near zero mid-game = the driver
             // isn't running or its IRQ handler is short-circuiting
             // before the AY phase.
-            ImGui::Text("VIA writes:  %u", v.viaWrites);
-            ImGui::Text("AY writes :  %u", v.ayWrites);
+            ImGui::Text("VIA writes : %u", v.viaWrites);
+            ImGui::Text("AY writes  : %u  (register-store WRITE strobes)",
+                        v.ayWrites);
+            ImGui::Text("AY resets  : %u  (!RESET pulses, wipes all regs)",
+                        v.ayResets);
             ImGui::Separator();
             ImGui::Text("T1 ctr  $%02X%02X   latch $%02X%02X",
                         v.t1ch, v.t1cl, v.t1lh, v.t1ll);

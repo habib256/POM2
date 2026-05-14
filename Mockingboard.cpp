@@ -370,15 +370,17 @@ struct MockingboardCard::Ay3_8910
     /// by DDRA), `pb` is the VIA Port B output (after DDRB masking).
     /// Returns true if a register was written (so the audio thread
     /// might want to recompute envelope shape, etc.).
-    bool applyControl(uint8_t pa, uint8_t pb)
+    // !RESET (PB0) is active-low: while held low the AY stays in reset
+    // and every register reads zero. We mirror that behaviour here, but
+    // report it as a distinct `ResetOnly` event so the diagnostic panel
+    // can separate "the music driver is clearing the chip" from "the
+    // music driver successfully delivered a register-store strobe".
+    enum ApplyResult { NoChange, ResetOnly, Wrote };
+    ApplyResult applyControl(uint8_t pa, uint8_t pb)
     {
-        // !RESET (PB0): when held low, reset all AY registers. Drivers
-        // briefly pulse this on init; we honour it but don't touch
-        // synthesis state (audio thread re-reads regs on next frame
-        // anyway).
         if ((pb & kPbBitReset) == 0) {
             reset();
-            return true;
+            return ApplyResult::ResetOnly;
         }
         const uint8_t cmd = static_cast<uint8_t>(
             ((pb & kPbBitBdir) ? 0x02 : 0) |
@@ -386,7 +388,7 @@ struct MockingboardCard::Ay3_8910
         // Only act on rising edges of {WRITE, LATCH} — BDIR pulses
         // active on transitions, and we don't want the AY to write the
         // same register twice while SW holds the bus.
-        bool wrote = false;
+        ApplyResult result = ApplyResult::NoChange;
         if (cmd != prevCommand) {
             switch (cmd) {
             case 0b11:    // LATCH ADDR
@@ -394,12 +396,9 @@ struct MockingboardCard::Ay3_8910
                 break;
             case 0b10:    // WRITE
                 regs[latchedAddr & 0x0F] = pa;
-                wrote = true;
+                result = ApplyResult::Wrote;
                 break;
-            case 0b01:    // READ — Mockingboard drivers don't usually
-                          // read; we'd have to drive PA back to the
-                          // VIA. Stub out (PA stays at whatever the
-                          // VIA wrote last).
+            case 0b01:    // READ — Mockingboard drivers don't read.
                 break;
             case 0b00:
             default:
@@ -407,7 +406,7 @@ struct MockingboardCard::Ay3_8910
             }
             prevCommand = cmd;
         }
-        return wrote;
+        return result;
     }
 };
 
@@ -677,6 +676,7 @@ void MockingboardCard::onReset()
     lastSyncCycle_ = cpu_ ? cpu_->getCycleCountNow() : 0;
     viaWriteCount_[0] = viaWriteCount_[1] = 0;
     ayWriteCount_[0]  = ayWriteCount_[1]  = 0;
+    ayResetCount_[0]  = ayResetCount_[1]  = 0;
 }
 
 AudioSource* MockingboardCard::audioSource()
@@ -770,8 +770,11 @@ void MockingboardCard::onViaPortBChange(int chip)
     // BDIR/BC1. We reapply on either edge so the order doesn't matter.
     const uint8_t pa = via_[chip]->portAOut & via_[chip]->ddrA;
     const uint8_t pb = via_[chip]->portBOut & via_[chip]->ddrB;
-    if (ay_[chip]->applyControl(pa, pb)) {
+    const auto res = ay_[chip]->applyControl(pa, pb);
+    if (res == Ay3_8910::ApplyResult::Wrote) {
         ++ayWriteCount_[chip];
+    } else if (res == Ay3_8910::ApplyResult::ResetOnly) {
+        ++ayResetCount_[chip];
     }
 }
 
