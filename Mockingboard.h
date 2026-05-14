@@ -138,6 +138,11 @@ public:
     uint32_t getAyResetCount(int chip) const {
         return (chip == 0 || chip == 1) ? ayResetCount_[chip] : 0;
     }
+    /// Per-AY-command transition counters. `cmd` is the 2-bit
+    /// {BDIR,BC1} encoding: 0=INACTIVE, 1=READ, 2=WRITE, 3=LATCH.
+    /// Returning 0 for an out-of-range `chip` or `cmd` keeps the
+    /// diagnostic panel safe.
+    uint32_t getAyCommandCount(int chip, int cmd) const;
 
 private:
     // Forward declarations of internal subdevices. Definitions live in

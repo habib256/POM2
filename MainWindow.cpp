@@ -1471,6 +1471,7 @@ void MainWindow::renderMockingboardPanelWindow()
         uint8_t t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
         uint8_t ay[16];
         uint32_t viaWrites, ayWrites, ayResets;
+        uint32_t cmdInactive, cmdRead, cmdWrite, cmdLatch;
     } via[2]{};
     bool slotIrq = false;
     {
@@ -1492,6 +1493,10 @@ void MainWindow::renderMockingboardPanelWindow()
             via[c].viaWrites = mockingboardCard->getViaWriteCount(c);
             via[c].ayWrites  = mockingboardCard->getAyWriteCount(c);
             via[c].ayResets  = mockingboardCard->getAyResetCount(c);
+            via[c].cmdInactive = mockingboardCard->getAyCommandCount(c, 0);
+            via[c].cmdRead     = mockingboardCard->getAyCommandCount(c, 1);
+            via[c].cmdWrite    = mockingboardCard->getAyCommandCount(c, 2);
+            via[c].cmdLatch    = mockingboardCard->getAyCommandCount(c, 3);
         }
     }
 
@@ -1526,6 +1531,9 @@ void MainWindow::renderMockingboardPanelWindow()
                         v.ayWrites);
             ImGui::Text("AY resets  : %u  (!RESET pulses, wipes all regs)",
                         v.ayResets);
+            ImGui::TextDisabled("AY cmd:  LATCH=%u WRITE=%u INACT=%u READ=%u",
+                                v.cmdLatch, v.cmdWrite, v.cmdInactive,
+                                v.cmdRead);
             ImGui::Separator();
             ImGui::Text("T1 ctr  $%02X%02X   latch $%02X%02X",
                         v.t1ch, v.t1cl, v.t1lh, v.t1ll);

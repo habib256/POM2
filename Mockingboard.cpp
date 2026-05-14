@@ -392,22 +392,35 @@ struct MockingboardCard::Ay3_8910
         if (cmd != prevCommand) {
             switch (cmd) {
             case 0b11:    // LATCH ADDR
+                ++latchCount;
                 latchedAddr = static_cast<uint8_t>(pa & 0x0F);
                 break;
             case 0b10:    // WRITE
+                ++writeStrobeCount;
                 regs[latchedAddr & 0x0F] = pa;
                 result = ApplyResult::Wrote;
                 break;
             case 0b01:    // READ — Mockingboard drivers don't read.
+                ++readStrobeCount;
                 break;
             case 0b00:
             default:
+                ++inactiveCount;
                 break;    // INACTIVE
             }
             prevCommand = cmd;
         }
         return result;
     }
+
+    // Per-command counters surfaced via MockingboardCard::getAyCommandCount.
+    // Tells us exactly which strobes the music driver is emitting — if
+    // `writeStrobeCount` stays 0 while `latchCount` is non-zero we know
+    // the driver issues addresses but never the data write that follows.
+    uint32_t latchCount       = 0;
+    uint32_t writeStrobeCount = 0;
+    uint32_t readStrobeCount  = 0;
+    uint32_t inactiveCount    = 0;
 };
 
 // ─── AudioSrc ─────────────────────────────────────────────────────────────
@@ -759,6 +772,19 @@ void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
     const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
     if (events) onViaPortBChange(chip);
     updateIrq();
+}
+
+uint32_t MockingboardCard::getAyCommandCount(int chip, int cmd) const
+{
+    if (chip < 0 || chip > 1 || cmd < 0 || cmd > 3) return 0;
+    const auto& ay = *ay_[chip];
+    switch (cmd) {
+        case 0: return ay.inactiveCount;
+        case 1: return ay.readStrobeCount;
+        case 2: return ay.writeStrobeCount;
+        case 3: return ay.latchCount;
+    }
+    return 0;
 }
 
 void MockingboardCard::onViaPortBChange(int chip)
