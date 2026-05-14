@@ -509,7 +509,9 @@ struct MockingboardCard::AudioSrc : public AudioSource
         // loop.
         const float toneStepPerSample  = kAyToneStepHz  / static_cast<float>(sr);
         const float noiseStepPerSample = kAyNoiseStepHz / static_cast<float>(sr);
-        const float envStepPerSample   = kAyEnvStepHz   / static_cast<float>(sr);
+        // Envelope step-per-sample (kAyEnvStepHz / sr) is computed inline
+        // when the AY envelope branch fires — leaving the pre-computed
+        // local here would just warn unused under -Wall.
 
         if (isMuted) {
             std::fill_n(output, frameCount, 0.0f);

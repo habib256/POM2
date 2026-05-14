@@ -38,8 +38,6 @@ public:
 
     struct FrameResult {
         std::string statusMessage;
-        bool        requestLoadDialog = false;
-        bool        requestSaveDialog = false;
     };
 
     /// Lock-free snapshot of CassetteDevice state, populated each frame
@@ -76,6 +74,12 @@ public:
 
     /// Reset visual state (STOP, counter → 000). Called on hard reset.
     void reset();
+
+    // Tape load/save dialog state (same pattern as DiskController_ImGui).
+    // Menu-bar "Load tape…" / "Save tape…" shortcuts flip these directly.
+    bool        loadDialogOpen = false;
+    bool        saveDialogOpen = false;
+    std::string dialogPath;
 
 private:
     Transport transport_   = Transport::Stopped;

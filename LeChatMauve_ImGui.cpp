@@ -48,7 +48,6 @@ constexpr uint32_t kHGRBank0[4] = {
 constexpr uint32_t kHGRBank1[4] = {
     0xFF000000, 0xFFFF2222, 0xFF1188FF, 0xFFFFFFFF,
 };
-const char* kHGRPairLabels[4] = { "00", "01", "10", "11" };
 const char* kHGRBank0Names[4] = { "blk", "vlt", "grn", "wht" };
 const char* kHGRBank1Names[4] = { "blk", "blu", "org", "wht" };
 

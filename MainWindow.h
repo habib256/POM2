@@ -145,9 +145,8 @@ private:
     int          aiPortInput   = pom2::AiControlServer::kDefaultPort;
     std::string  aiTokenInput;
 
-    // Disk II insert dialog state.
-    bool        showDiskInsertDialog = false;
-    std::string diskDialogPath;
+    // Disk II insert dialog state moved to DiskController_ImGui (it
+    // owns its own UX surface). MainWindow keeps only the ROM probe.
     std::string diskRomPath  = "roms/disk2.rom";
     std::string diskRomStatus;
     // Auto-turbo while the Disk II motor is spinning. Real Apple II boot
@@ -159,15 +158,11 @@ private:
 
     // ProDOS hard disk / HDV state. The default mounted image is whatever
     // the constructor finds first under hdv/ (alphabetical) — no auto-boot.
+    // Mount-dialog state lives in `hdvPanel`.
     std::string hdvPath;
     std::string hdvStatus;
-    bool        showHdvMountDialog = false;
-    std::string hdvDialogPath;
 
-    // Cassette load/save dialog state.
-    bool        showTapeLoadDialog = false;
-    bool        showTapeSaveDialog = false;
-    std::string tapeDialogPath;
+    // Cassette load/save dialog state moved to CassetteDeck_ImGui.
     std::string tapeStatusMessage;
     double      tapeStatusUntil = 0.0;
     double      lastFrameTime   = 0.0;

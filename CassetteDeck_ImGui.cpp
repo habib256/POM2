@@ -185,8 +185,10 @@ CassetteDeck_ImGui::render(const char* title,
     const ImVec2 actionSize(kActionBtnSize, kActionBtnSize);
 
     ImGui::SetWindowFontScale(kActionIconScale);
-    if (ImGui::Button(ICON_FA_FOLDER_OPEN "##DeckLoad", actionSize))
-        out.requestLoadDialog = true;
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN "##DeckLoad", actionSize)) {
+        loadDialogOpen = true;
+        if (dialogPath.empty()) dialogPath = "cassettes/";
+    }
     ImGui::SetWindowFontScale(1.0f);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load tape (ACI / WAV / MP3 / OGG / FLAC)");
 
@@ -210,8 +212,10 @@ CassetteDeck_ImGui::render(const char* title,
 
     ImGui::SameLine();
     ImGui::SetWindowFontScale(kActionIconScale);
-    if (ImGui::Button(ICON_FA_FLOPPY_DISK "##DeckSave", actionSize))
-        out.requestSaveDialog = true;
+    if (ImGui::Button(ICON_FA_FLOPPY_DISK "##DeckSave", actionSize)) {
+        saveDialogOpen = true;
+        if (dialogPath.empty()) dialogPath = "cassettes/recording.aci";
+    }
     ImGui::SetWindowFontScale(1.0f);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save captured tape (ACI / WAV)");
 

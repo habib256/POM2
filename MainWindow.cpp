@@ -128,11 +128,13 @@ MainWindow::MainWindow(bool forceIIPlus)
     // ── Restore display + UI prefs from previous session ─────────────
     {
         const std::string mode = settings.getString("hi_res_mode", "");
-        if      (mode == "ColorNTSC")    display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
-        else if (mode == "ChatMauveRGB") display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-        else if (mode == "MonoWhite")    display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
-        else if (mode == "MonoGreen")    display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
-        else if (mode == "MonoAmber")    display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
+        if      (mode == "ColorNTSC")       display.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        else if (mode == "ColorCompMedium") display.setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+        else if (mode == "ColorComp4Bit")   display.setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
+        else if (mode == "ChatMauveRGB")    display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        else if (mode == "MonoWhite")       display.setHiResMode(Apple2Display::HiResMode::MonoWhite);
+        else if (mode == "MonoGreen")       display.setHiResMode(Apple2Display::HiResMode::MonoGreen);
+        else if (mode == "MonoAmber")       display.setHiResMode(Apple2Display::HiResMode::MonoAmber);
 
         pixelScale         = settings.getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings.getBool ("show_disk_panel", showDiskPanel);
@@ -282,11 +284,13 @@ MainWindow::~MainWindow()
 
     auto modeName = [](Apple2Display::HiResMode m) -> const char* {
         switch (m) {
-            case Apple2Display::HiResMode::ColorNTSC:    return "ColorNTSC";
-            case Apple2Display::HiResMode::ChatMauveRGB: return "ChatMauveRGB";
-            case Apple2Display::HiResMode::MonoWhite:    return "MonoWhite";
-            case Apple2Display::HiResMode::MonoGreen:    return "MonoGreen";
-            case Apple2Display::HiResMode::MonoAmber:    return "MonoAmber";
+            case Apple2Display::HiResMode::ColorNTSC:        return "ColorNTSC";
+            case Apple2Display::HiResMode::ColorCompMedium:  return "ColorCompMedium";
+            case Apple2Display::HiResMode::ColorComp4Bit:    return "ColorComp4Bit";
+            case Apple2Display::HiResMode::ChatMauveRGB:     return "ChatMauveRGB";
+            case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
+            case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
+            case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
         }
         return "ColorNTSC";
     };
@@ -799,8 +803,8 @@ void MainWindow::renderMenuBar()
         // buttons; this is the keyboard-friendly path.
         ImGui::BeginDisabled(diskCard == nullptr);
         if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
-            showDiskInsertDialog = true;
-            if (diskDialogPath.empty()) diskDialogPath = "disks/";
+            diskPanel.insertDialogOpen = true;
+            if (diskPanel.dialogPath.empty()) diskPanel.dialogPath = "disks/";
         }
         if (ImGui::MenuItem("Eject disk", nullptr, false,
                             diskCard && diskCard->isDiskLoaded())) {
@@ -813,8 +817,8 @@ void MainWindow::renderMenuBar()
         ImGui::Separator();
         ImGui::BeginDisabled(hdvCard == nullptr);
         if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
-            showHdvMountDialog = true;
-            if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
+            hdvPanel.mountDialogOpen = true;
+            if (hdvPanel.dialogPath.empty()) hdvPanel.dialogPath = "hdv/";
         }
         if (ImGui::MenuItem("Eject HDV", nullptr, false,
                             hdvCard && hdvCard->isImageLoaded())) {
@@ -1733,10 +1737,6 @@ void MainWindow::renderDiskPanelWindow()
             : "Disk II: write-back disabled";
         tapeStatusUntil = lastFrameTime + 4.0;
     }
-    if (result.requestInsertDialog) {
-        showDiskInsertDialog = true;
-        if (diskDialogPath.empty()) diskDialogPath = "disks/";
-    }
     if (result.requestEject && diskCard) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
         diskCard->ejectDisk();
@@ -1890,10 +1890,6 @@ void MainWindow::renderHdvPanelWindow()
     ImGui::SetNextWindowSize(ImVec2(1040, 390), ImGuiCond_FirstUseEver);
     auto result = hdvPanel.render("HDV (slot 5)", showHdvPanel, snap);
 
-    if (result.requestMountDialog) {
-        showHdvMountDialog = true;
-        if (hdvDialogPath.empty()) hdvDialogPath = "hdv/";
-    }
     if (result.writeBackToggleChanged && hdvCard) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
         hdvCard->setWriteBackEnabled(result.writeBackNewValue);
@@ -2042,9 +2038,9 @@ void MainWindow::renderHdvPanelWindow()
 
 void MainWindow::renderDiskFileDialog()
 {
-    if (showDiskInsertDialog) {
+    if (diskPanel.insertDialogOpen) {
         ImGui::OpenPopup("Insert disk image");
-        showDiskInsertDialog = false;
+        diskPanel.insertDialogOpen = false;
     }
     if (!ImGui::BeginPopupModal("Insert disk image", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
@@ -2056,12 +2052,12 @@ void MainWindow::renderDiskFileDialog()
                            " (bit-cell, copy-protected disks; read-only)."
                            " Write-back is opt-in via the panel checkbox.");
     char buf[512] = {0};
-    std::snprintf(buf, sizeof(buf), "%s", diskDialogPath.c_str());
+    std::snprintf(buf, sizeof(buf), "%s", diskPanel.dialogPath.c_str());
     if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
                          ImGuiInputTextFlags_EnterReturnsTrue))
-        diskDialogPath = buf;
+        diskPanel.dialogPath = buf;
     else
-        diskDialogPath = buf;
+        diskPanel.dialogPath = buf;
 
     // Quick list of disk images in disks/ (mirrors the cassette dialog).
     namespace fs = std::filesystem;
@@ -2077,17 +2073,17 @@ void MainWindow::renderDiskFileDialog()
                 ext != ".nib" && ext != ".woz") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
-                diskDialogPath = entry.path().string();
+                diskPanel.dialogPath = entry.path().string();
         }
         break;
     }
 
     ImGui::Separator();
     if (ImGui::Button("Insert", ImVec2(120, 0))) {
-        if (diskCard && !diskDialogPath.empty()) {
+        if (diskCard && !diskPanel.dialogPath.empty()) {
             std::lock_guard<std::mutex> lk(controller.stateMutex());
-            if (diskCard->insertDisk(diskDialogPath)) {
-                tapeStatusMessage = "Disk inserted: " + diskDialogPath;
+            if (diskCard->insertDisk(diskPanel.dialogPath)) {
+                tapeStatusMessage = "Disk inserted: " + diskPanel.dialogPath;
             } else {
                 tapeStatusMessage = "Insert failed: " + diskCard->getLastError();
             }
@@ -2102,9 +2098,9 @@ void MainWindow::renderDiskFileDialog()
 
 void MainWindow::renderHdvFileDialog()
 {
-    if (showHdvMountDialog) {
+    if (hdvPanel.mountDialogOpen) {
         ImGui::OpenPopup("Mount HDV image");
-        showHdvMountDialog = false;
+        hdvPanel.mountDialogOpen = false;
     }
     if (!ImGui::BeginPopupModal("Mount HDV image", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
@@ -2112,12 +2108,12 @@ void MainWindow::renderHdvFileDialog()
     ImGui::TextUnformatted("ProDOS block-device image — .hdv (raw blocks)"
                            " or .2mg (with 2IMG header, ProDOS order)");
     char buf[512] = {0};
-    std::snprintf(buf, sizeof(buf), "%s", hdvDialogPath.c_str());
+    std::snprintf(buf, sizeof(buf), "%s", hdvPanel.dialogPath.c_str());
     if (ImGui::InputText("##HdvPath", buf, sizeof(buf),
                          ImGuiInputTextFlags_EnterReturnsTrue))
-        hdvDialogPath = buf;
+        hdvPanel.dialogPath = buf;
     else
-        hdvDialogPath = buf;
+        hdvPanel.dialogPath = buf;
 
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2131,20 +2127,20 @@ void MainWindow::renderHdvFileDialog()
             if (ext != ".hdv" && ext != ".2mg") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
-                hdvDialogPath = entry.path().string();
+                hdvPanel.dialogPath = entry.path().string();
         }
         break;
     }
 
     ImGui::Separator();
-    const bool canMount = hdvCard && !hdvDialogPath.empty();
+    const bool canMount = hdvCard && !hdvPanel.dialogPath.empty();
     ImGui::BeginDisabled(!canMount);
     if (ImGui::Button("Mount", ImVec2(120, 0))) {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
-        if (hdvCard->loadImage(hdvDialogPath)) {
-            hdvPath   = hdvDialogPath;
-            hdvStatus = std::string("loaded: ") + hdvDialogPath;
-            tapeStatusMessage = "HDV mounted: " + hdvDialogPath;
+        if (hdvCard->loadImage(hdvPanel.dialogPath)) {
+            hdvPath   = hdvPanel.dialogPath;
+            hdvStatus = std::string("loaded: ") + hdvPanel.dialogPath;
+            tapeStatusMessage = "HDV mounted: " + hdvPanel.dialogPath;
         } else {
             hdvStatus = "no image mounted";
             tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
@@ -2157,10 +2153,10 @@ void MainWindow::renderHdvFileDialog()
         bool ok = false;
         {
             std::lock_guard<std::mutex> lk(controller.stateMutex());
-            ok = hdvCard->loadImage(hdvDialogPath);
+            ok = hdvCard->loadImage(hdvPanel.dialogPath);
             if (ok) {
-                hdvPath   = hdvDialogPath;
-                hdvStatus = std::string("loaded: ") + hdvDialogPath;
+                hdvPath   = hdvPanel.dialogPath;
+                hdvStatus = std::string("loaded: ") + hdvPanel.dialogPath;
             } else {
                 hdvStatus = "no image mounted";
                 tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
@@ -2247,14 +2243,6 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
                                       snap,
                                       deltaSeconds);
 
-    if (result.requestLoadDialog) {
-        showTapeLoadDialog = true;
-        if (tapeDialogPath.empty()) tapeDialogPath = "cassettes/";
-    }
-    if (result.requestSaveDialog) {
-        showTapeSaveDialog = true;
-        if (tapeDialogPath.empty()) tapeDialogPath = "cassettes/recording.aci";
-    }
     if (!result.statusMessage.empty()) {
         tapeStatusMessage = std::move(result.statusMessage);
         tapeStatusUntil   = lastFrameTime + 4.0;  // show for 4 seconds
@@ -2269,19 +2257,19 @@ void MainWindow::renderTapeFileDialogs()
         ImGui::TextUnformatted(label);
     };
 
-    if (showTapeLoadDialog) {
+    if (cassetteDeck.loadDialogOpen) {
         ImGui::OpenPopup("Load Tape");
-        showTapeLoadDialog = false;
+        cassetteDeck.loadDialogOpen = false;
     }
     if (ImGui::BeginPopupModal("Load Tape", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         pathInput("Tape file path (.aci / .wav / .mp3 / .ogg / .flac)");
         char buf[512] = {0};
-        std::snprintf(buf, sizeof(buf), "%s", tapeDialogPath.c_str());
+        std::snprintf(buf, sizeof(buf), "%s", cassetteDeck.dialogPath.c_str());
         if (ImGui::InputText("##LoadPath", buf, sizeof(buf),
                              ImGuiInputTextFlags_EnterReturnsTrue))
-            tapeDialogPath = buf;
+            cassetteDeck.dialogPath = buf;
         else
-            tapeDialogPath = buf;
+            cassetteDeck.dialogPath = buf;
 
         // Quick list of cassettes/ directory contents (one click → fill).
         namespace fs = std::filesystem;
@@ -2297,15 +2285,15 @@ void MainWindow::renderTapeFileDialogs()
                     ext != ".ogg" && ext != ".flac") continue;
                 const std::string name = entry.path().filename().string();
                 if (ImGui::Selectable(name.c_str()))
-                    tapeDialogPath = entry.path().string();
+                    cassetteDeck.dialogPath = entry.path().string();
             }
             break;  // first existing candidate dir wins
         }
 
         ImGui::Separator();
         if (ImGui::Button("Load", ImVec2(120, 0))) {
-            if (controller.loadTape(tapeDialogPath)) {
-                tapeStatusMessage = "Tape loaded: " + tapeDialogPath;
+            if (controller.loadTape(cassetteDeck.dialogPath)) {
+                tapeStatusMessage = "Tape loaded: " + cassetteDeck.dialogPath;
             } else {
                 tapeStatusMessage = "Load failed: " + controller.cassette().getLastError();
             }
@@ -2317,24 +2305,24 @@ void MainWindow::renderTapeFileDialogs()
         ImGui::EndPopup();
     }
 
-    if (showTapeSaveDialog) {
+    if (cassetteDeck.saveDialogOpen) {
         ImGui::OpenPopup("Save Tape");
-        showTapeSaveDialog = false;
+        cassetteDeck.saveDialogOpen = false;
     }
     if (ImGui::BeginPopupModal("Save Tape", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         pathInput("Output file path (.aci or .wav)");
         char buf[512] = {0};
-        std::snprintf(buf, sizeof(buf), "%s", tapeDialogPath.c_str());
+        std::snprintf(buf, sizeof(buf), "%s", cassetteDeck.dialogPath.c_str());
         if (ImGui::InputText("##SavePath", buf, sizeof(buf),
                              ImGuiInputTextFlags_EnterReturnsTrue))
-            tapeDialogPath = buf;
+            cassetteDeck.dialogPath = buf;
         else
-            tapeDialogPath = buf;
+            cassetteDeck.dialogPath = buf;
 
         ImGui::Separator();
         if (ImGui::Button("Save", ImVec2(120, 0))) {
-            if (controller.saveTape(tapeDialogPath)) {
-                tapeStatusMessage = "Tape saved: " + tapeDialogPath;
+            if (controller.saveTape(cassetteDeck.dialogPath)) {
+                tapeStatusMessage = "Tape saved: " + cassetteDeck.dialogPath;
             } else {
                 tapeStatusMessage = "Save failed: " + controller.cassette().getLastError();
             }

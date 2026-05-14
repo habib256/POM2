@@ -42,14 +42,14 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float  r = 6.0f;
-        const ImU32  c = snap.motorOn
+        const float  radius = 6.0f;
+        const ImU32  color  = snap.motorOn
             ? IM_COL32(220, 60, 60, 255)
             : IM_COL32(60, 60, 60, 255);
-        dl->AddCircleFilled(ImVec2(p.x + r + 4, p.y + r + 2), r, c);
-        dl->AddCircle      (ImVec2(p.x + r + 4, p.y + r + 2), r,
+        dl->AddCircleFilled(ImVec2(p.x + radius + 4, p.y + radius + 2), radius, color);
+        dl->AddCircle      (ImVec2(p.x + radius + 4, p.y + radius + 2), radius,
                             IM_COL32(0, 0, 0, 255), 0, 1.5f);
-        ImGui::Dummy(ImVec2(r * 2 + 12, r * 2 + 4));
+        ImGui::Dummy(ImVec2(radius * 2 + 12, radius * 2 + 4));
     }
     ImGui::SameLine();
     ImGui::TextDisabled(snap.motorOn ? "MOTOR" : "idle");
@@ -78,7 +78,8 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
 
     // ─── Buttons ─────────────────────────────────────────────────────────
     if (ImGui::Button("Insert .dsk...")) {
-        r.requestInsertDialog = true;
+        insertDialogOpen = true;
+        if (dialogPath.empty()) dialogPath = "disks/";
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!snap.diskLoaded);

@@ -16,8 +16,10 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <optional>
 #include <sstream>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -30,6 +32,45 @@ namespace {
 constexpr size_t kMaxBodyBytes    = 1 << 20;   // 1 MiB hard cap on body
 constexpr size_t kMaxHeaderBytes  = 64 * 1024; // 64 KiB on the request preamble
 constexpr int    kRecvTimeoutMs   = 4000;      // per-client read deadline
+
+// ─── Path safety ─────────────────────────────────────────────────────────
+// Canonicalise the caller-supplied path and require it to resolve under
+// the emulator's current working directory. The AI control server is
+// localhost-only and token-gated, but a compromised agent (or a browser
+// hijacked via DNS-rebinding) could otherwise hand `/etc/passwd` or
+// `~/.ssh/id_rsa` to /disk, or have /snapshot/save overwrite arbitrary
+// files. `weakly_canonical` is the right tool: it resolves symlinks and
+// `..` for the existing prefix, and treats the rest lexically — so it
+// works for both load paths (file must exist) and save paths (file
+// doesn't exist yet). Caller decides which mode it needs via the
+// `mustExist` flag.
+std::optional<std::string> safeCwdRelativePath(const std::string& in,
+                                               bool mustExist)
+{
+    namespace fs = std::filesystem;
+    if (in.empty()) return std::nullopt;
+    std::error_code ec;
+    const fs::path cwd = fs::weakly_canonical(fs::current_path(ec), ec);
+    if (ec) return std::nullopt;
+    // `weakly_canonical` only resolves the existing prefix of its argument;
+    // a relative path to a non-existent file (e.g. for /snapshot/save)
+    // would otherwise stay relative and fail the absolute-cwd prefix check
+    // even when the file lives right inside cwd. fs::absolute promotes
+    // relative inputs to <cwd>/<in> first so weakly_canonical then has a
+    // stable root to lexically normalise against.
+    const fs::path full = fs::weakly_canonical(fs::absolute(fs::path(in), ec), ec);
+    if (ec) return std::nullopt;
+    if (mustExist && !fs::is_regular_file(full, ec)) return std::nullopt;
+    // Component-wise prefix check on canonical paths. We can't use a
+    // string-level `starts_with` because `/foo/barbaz` would falsely
+    // match `/foo/bar`. fs::path iteration handles separator quirks.
+    auto cwdIt = cwd.begin(), cwdEnd = cwd.end();
+    auto fullIt = full.begin(), fullEnd = full.end();
+    for (; cwdIt != cwdEnd; ++cwdIt, ++fullIt) {
+        if (fullIt == fullEnd || *cwdIt != *fullIt) return std::nullopt;
+    }
+    return full.string();
+}
 
 // ─── String / parsing helpers ────────────────────────────────────────────
 
@@ -735,17 +776,24 @@ void AiControlServer::handleDiskInsert(int fd, const Request& req)
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }
     if (path.empty()) { sendJsonError(fd, 400, "missing \"path\""); return; }
+    const auto safe = safeCwdRelativePath(path, /*mustExist=*/true);
+    if (!safe) {
+        sendJsonError(fd, 403,
+            "path rejected: must resolve to a file under the emulator "
+            "working directory (received \"" + path + "\")");
+        return;
+    }
     bool ok;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        ok = disk6_->insertDisk(static_cast<int>(drive), path);
+        ok = disk6_->insertDisk(static_cast<int>(drive), *safe);
     }
     if (!ok) {
         sendJsonError(fd, 400, "insert failed: " + disk6_->getLastError(static_cast<int>(drive)));
         return;
     }
     sendJsonOk(fd, "{\"slot\":6,\"drive\":" + std::to_string(drive) +
-                   ",\"path\":\"" + jsonEscape(path) + "\"}");
+                   ",\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
 void AiControlServer::handleDiskEject(int fd, const Request& req)
@@ -769,9 +817,16 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string path = jsonGetString(req.body, "path");
     if (path.empty()) { sendJsonError(fd, 400, "missing \"path\""); return; }
+    const auto safe = safeCwdRelativePath(path, /*mustExist=*/false);
+    if (!safe) {
+        sendJsonError(fd, 403,
+            "path rejected: must resolve under the emulator working "
+            "directory (received \"" + path + "\")");
+        return;
+    }
 
-    SnapshotWriter w(path);
-    if (!w.good()) { sendJsonError(fd, 400, "cannot open " + path); return; }
+    SnapshotWriter w(*safe);
+    if (!w.good()) { sendJsonError(fd, 400, "cannot open " + *safe); return; }
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
     // Minimal payload: CPU regs (compact) + 64 KiB main RAM. Matches the
     // existing SnapshotIO section roster from the header docstring — disk
@@ -790,7 +845,7 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
         w.endSection(h);
     }
     w.writeSection("MEM", ctrl_->memory().data(), 0x10000);
-    sendJsonOk(fd, "{\"path\":\"" + jsonEscape(path) + "\"}");
+    sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
 void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
@@ -798,9 +853,16 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string path = jsonGetString(req.body, "path");
     if (path.empty()) { sendJsonError(fd, 400, "missing \"path\""); return; }
+    const auto safe = safeCwdRelativePath(path, /*mustExist=*/true);
+    if (!safe) {
+        sendJsonError(fd, 403,
+            "path rejected: must resolve to a file under the emulator "
+            "working directory (received \"" + path + "\")");
+        return;
+    }
 
-    SnapshotReader r(path);
-    if (!r.good()) { sendJsonError(fd, 400, "cannot read " + path + ": " + r.error()); return; }
+    SnapshotReader r(*safe);
+    if (!r.good()) { sendJsonError(fd, 400, "cannot read " + *safe + ": " + r.error()); return; }
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
     M6502& cpu = ctrl_->cpu();
     Memory& mem = ctrl_->memory();
@@ -833,7 +895,7 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
             r.skipCurrentSection();
         }
     }
-    sendJsonOk(fd, "{\"path\":\"" + jsonEscape(path) + "\"}");
+    sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
 void AiControlServer::handleSpeed(int fd, const Request& req)

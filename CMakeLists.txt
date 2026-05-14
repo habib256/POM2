@@ -11,6 +11,28 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
                  Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
+# ─── Optional sanitizer build ─────────────────────────────────────────────
+# Use with: cmake -DPOM2_SANITIZE=address|thread|undefined ..
+# Applied globally (compile + link) so the GLFW / OpenGL / miniaudio C ABI
+# call-throughs are instrumented too — `thread` in particular needs every
+# TU built with the flag or it deadlocks/false-positives. Empty string =
+# disabled. Sanitizers conflict pairwise (asan ≠ tsan), so only one at a
+# time; the option's STRINGS hint surfaces the typical choices in
+# cmake-gui / ccmake.
+set(POM2_SANITIZE "" CACHE STRING
+    "Build with -fsanitize=<value>. Empty = off. address/thread/undefined.")
+set_property(CACHE POM2_SANITIZE PROPERTY STRINGS
+             "" "address" "thread" "undefined" "address,undefined")
+if(POM2_SANITIZE)
+    if(MSVC)
+        message(WARNING "POM2_SANITIZE is gcc/clang-only; ignoring under MSVC.")
+    else()
+        message(STATUS "POM2 sanitizer build: -fsanitize=${POM2_SANITIZE}")
+        add_compile_options(-fsanitize=${POM2_SANITIZE} -fno-omit-frame-pointer -g)
+        add_link_options   (-fsanitize=${POM2_SANITIZE})
+    endif()
+endif()
+
 # ─── Dear ImGui (vendored) ────────────────────────────────────────────────
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
 if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
@@ -111,6 +133,21 @@ set(HEADERS
     SpeakerDevice.h
     SuperSerialCard.h
 )
+
+# Strict warnings on POM2 first-party sources only. Vendored Dear ImGui
+# keeps its upstream baseline so this CMakeLists doesn't churn every time
+# we resync `imgui/`. Applied per source-file rather than per target so
+# the same flags propagate naturally to pom2_headless (which compiles a
+# subset of ${SOURCES}) without listing them twice.
+if(MSVC)
+    set(POM2_WARN_FLAGS "/W4")
+else()
+    set(POM2_WARN_FLAGS "-Wall -Wextra -Wshadow")
+endif()
+foreach(_pom2_src ${SOURCES})
+    set_source_files_properties(${_pom2_src} PROPERTIES
+        COMPILE_FLAGS "${POM2_WARN_FLAGS}")
+endforeach()
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")

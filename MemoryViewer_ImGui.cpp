@@ -183,15 +183,15 @@ void MemoryViewer_ImGui::renderControls()
     ImGui::SameLine(); ImGui::Checkbox("Disasm",   &showDisasm);
 
     // Quick jumps to the Apple II's notable addresses.
-    if (ImGui::SmallButton("$0000")) jumpToAddress(0x0000); ImGui::SameLine();
-    if (ImGui::SmallButton("ZP"))    jumpToAddress(0x0000); ImGui::SameLine();
-    if (ImGui::SmallButton("Stack")) jumpToAddress(0x0100); ImGui::SameLine();
-    if (ImGui::SmallButton("Text1")) jumpToAddress(0x0400); ImGui::SameLine();
-    if (ImGui::SmallButton("HGR1"))  jumpToAddress(0x2000); ImGui::SameLine();
-    if (ImGui::SmallButton("I/O"))   jumpToAddress(0xC000); ImGui::SameLine();
-    if (ImGui::SmallButton("BASIC")) jumpToAddress(0xD000); ImGui::SameLine();
-    if (ImGui::SmallButton("MON"))   jumpToAddress(0xF800); ImGui::SameLine();
-    if (ImGui::SmallButton("Vec"))   jumpToAddress(0xFFFA);
+    if (ImGui::SmallButton("$0000")) { jumpToAddress(0x0000); } ImGui::SameLine();
+    if (ImGui::SmallButton("ZP"))    { jumpToAddress(0x0000); } ImGui::SameLine();
+    if (ImGui::SmallButton("Stack")) { jumpToAddress(0x0100); } ImGui::SameLine();
+    if (ImGui::SmallButton("Text1")) { jumpToAddress(0x0400); } ImGui::SameLine();
+    if (ImGui::SmallButton("HGR1"))  { jumpToAddress(0x2000); } ImGui::SameLine();
+    if (ImGui::SmallButton("I/O"))   { jumpToAddress(0xC000); } ImGui::SameLine();
+    if (ImGui::SmallButton("BASIC")) { jumpToAddress(0xD000); } ImGui::SameLine();
+    if (ImGui::SmallButton("MON"))   { jumpToAddress(0xF800); } ImGui::SameLine();
+    if (ImGui::SmallButton("Vec"))   { jumpToAddress(0xFFFA); }
 
     // Bookmarks.
     ImGui::SameLine();

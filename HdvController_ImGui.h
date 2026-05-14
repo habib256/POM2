@@ -36,7 +36,6 @@ public:
     };
 
     struct FrameResult {
-        bool        requestMountDialog = false;
         bool        requestEject       = false;
         bool        requestBoot        = false;     // jump PC to $C500
         // Single-click library entry: host mounts the image AND triggers
@@ -55,6 +54,12 @@ public:
     FrameResult render(const char*          title,
                        bool&                open,
                        const DriveSnapshot& snap);
+
+    // Mount-dialog state lives in the panel (same rationale as
+    // DiskController_ImGui's insert dialog). Menu-bar "Mount HDV…"
+    // shortcut flips `mountDialogOpen` directly.
+    bool        mountDialogOpen = false;
+    std::string dialogPath;
 };
 
 } // namespace pom2

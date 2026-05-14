@@ -58,7 +58,8 @@ HdvController_ImGui::FrameResult HdvController_ImGui::render(
 
     // ─── Buttons ─────────────────────────────────────────────────────────
     if (ImGui::Button("Mount .hdv / .2mg...")) {
-        r.requestMountDialog = true;
+        mountDialogOpen = true;
+        if (dialogPath.empty()) dialogPath = "hdv/";
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!snap.imageLoaded);

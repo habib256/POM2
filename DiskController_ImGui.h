@@ -53,7 +53,6 @@ public:
     };
 
     struct FrameResult {
-        bool        requestInsertDialog = false;
         bool        requestEject        = false;
         bool        requestBoot         = false;     // jump PC to $C600 directly
         // Single-click library entry: host inserts the disk AND triggers
@@ -75,6 +74,14 @@ public:
     FrameResult render(const char*        title,
                        bool&              open,
                        const DriveSnapshot& snap);
+
+    // Insert-dialog state lives in the panel rather than in MainWindow so
+    // the panel owns its own UX surface. MainWindow reads/writes these
+    // when rendering the modal popup (the popup itself stays in
+    // MainWindow because it needs the DiskIICard pointer + state mutex).
+    // Menu-bar "Insert disk…" shortcut flips `insertDialogOpen` directly.
+    bool        insertDialogOpen = false;
+    std::string dialogPath;
 };
 
 } // namespace pom2

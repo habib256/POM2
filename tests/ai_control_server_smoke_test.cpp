@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -206,6 +207,63 @@ void testReset(EmulationController& /*ctrl*/, pom2::AiControlServer& /*srv*/)
     std::puts("  reset: OK");
 }
 
+// ─── /snapshot path-safety regression gate ───────────────────────────────
+// AiControlServer canonicalises caller-supplied paths and requires them
+// to stay under the emulator's working directory before opening / writing
+// the file. This pins the rejection branch: a compromised agent (or a
+// browser hijacked via DNS rebinding into the localhost listener) must
+// not be able to read or overwrite arbitrary host files via /snapshot.
+// The /disk path uses the same helper but requires a plugged DiskIICard,
+// which the test fixture intentionally leaves out — exercising the
+// snapshot path covers the shared code.
+void testSnapshotPathSafety(EmulationController& /*ctrl*/, pom2::AiControlServer& /*srv*/)
+{
+    auto post = [](const std::string& target, const std::string& body) {
+        char req[1024];
+        std::snprintf(req, sizeof(req),
+            "POST %s HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %zu\r\n\r\n%s",
+            target.c_str(), body.size(), body.c_str());
+        return oneShot(kTestPort, req);
+    };
+
+    // /snapshot/save with an absolute path outside cwd → 403 rejected.
+    // /etc/passwd exists on every Linux host so weakly_canonical resolves
+    // cleanly; the prefix check is what must fire.
+    HttpResponse r = post("/snapshot/save",
+        "{\"path\":\"/etc/pom2_should_never_write_here.snap\"}");
+    assert(r.status == 403);
+    assert(contains(r.body, "path rejected"));
+
+    // /snapshot/load on the same kind of path → 403.
+    r = post("/snapshot/load", "{\"path\":\"/etc/passwd\"}");
+    assert(r.status == 403);
+
+    // /snapshot/load on a non-existent file under cwd → 403 (mustExist
+    // branch — weakly_canonical succeeds but is_regular_file fails).
+    r = post("/snapshot/load",
+        "{\"path\":\"this_file_does_not_exist_pom2.snap\"}");
+    assert(r.status == 403);
+
+    // Happy path: a relative path under cwd is accepted. Save, observe
+    // the file landed, clean up. Verifies the path-safety guard isn't
+    // over-rejecting and that the canonical path is what the response
+    // reports.
+    namespace fs = std::filesystem;
+    const std::string relName = "test_path_safety_snapshot.snap";
+    const fs::path expected = fs::weakly_canonical(fs::current_path() / relName);
+    fs::remove(expected);   // best-effort cleanup from a prior aborted run
+    r = post("/snapshot/save", "{\"path\":\"" + relName + "\"}");
+    assert(r.status == 200);
+    assert(fs::exists(expected));
+    assert(contains(r.body, expected.string()));
+    fs::remove(expected);
+
+    std::puts("  snapshot path-safety: OK");
+}
+
 void testNotFoundAndMethod(EmulationController& /*ctrl*/, pom2::AiControlServer& /*srv*/)
 {
     HttpResponse r = oneShot(kTestPort,
@@ -247,11 +305,12 @@ int main()
     const bool started = srv.start(kTestPort);
     assert(started && "AiControlServer failed to bind test port — is something else on 36502?");
 
-    testStatusEndpoint  (ctrl, srv);
-    testAuth            (ctrl, srv);
-    testMemoryRoundtrip (ctrl, srv);
-    testReset           (ctrl, srv);
-    testSpeed           (ctrl, srv);
+    testStatusEndpoint   (ctrl, srv);
+    testAuth             (ctrl, srv);
+    testMemoryRoundtrip  (ctrl, srv);
+    testReset            (ctrl, srv);
+    testSpeed            (ctrl, srv);
+    testSnapshotPathSafety(ctrl, srv);
     testNotFoundAndMethod(ctrl, srv);
 
     srv.stop();

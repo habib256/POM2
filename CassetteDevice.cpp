@@ -132,7 +132,7 @@ void CassetteDevice::fillAudioBuffer(float* output, int frameCount)
         }
         // Mix the mode-transition clunk on top.
         {
-            std::lock_guard<std::mutex> lock(audioMutex);
+            std::lock_guard<std::mutex> clickLock(audioMutex);
             if (clickCursor < clickBuffer.size()) {
                 const int mix = std::min<int>(frameCount,
                     static_cast<int>(clickBuffer.size() - clickCursor));
