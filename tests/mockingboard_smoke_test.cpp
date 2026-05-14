@@ -45,13 +45,15 @@ uint8_t readVia(MockingboardCard& card, int chip, uint8_t reg)
     return card.slotRomRead(static_cast<uint8_t>(base | (reg & 0x0F)));
 }
 
-// AY command codes carried on VIA Port B bits 0..2:
-//   bit 0 = !RESET (active low)        — 0x01 means "not reset"
+// AY command codes carried on VIA Port B bits 0..2, per the Sweet
+// Microsystems Mockingboard A/C schematic (and AppleWin
+// `Mockingboard.cpp:193`):
+//   bit 0 = BC1
 //   bit 1 = BDIR
-//   bit 2 = BC1
-constexpr uint8_t kPbInactive = 0x01;        // {BC1=0, BDIR=0, !RESET=1}
-constexpr uint8_t kPbWrite    = 0x03;        // {BC1=0, BDIR=1, !RESET=1}
-constexpr uint8_t kPbLatch    = 0x07;        // {BC1=1, BDIR=1, !RESET=1}
+//   bit 2 = /RESET (active low) — 1 = chip running
+constexpr uint8_t kPbInactive = 0x04;        // {BC1=0, BDIR=0, /RESET=1}
+constexpr uint8_t kPbWrite    = 0x06;        // {BC1=0, BDIR=1, /RESET=1}
+constexpr uint8_t kPbLatch    = 0x07;        // {BC1=1, BDIR=1, /RESET=1}
 
 // Drive the canonical 6522→AY bus sequence to set AY register `reg` to
 // `value` on chip 0 or 1. Mirrors the AppleWin / WozTracker idiom.
@@ -111,8 +113,10 @@ void testAyRegisterWrite()
     ayWrite(card, 1, /*reg=*/8, /*v=*/0x0F);     // chan A amplitude max
     assert(card.getAyRegister(1, 8) == 0x0F);
 
-    // Verify the !RESET line zeros the AY: drop PB0, then check.
-    writeVia(card, 0, 0x00, 0x00);    // ORB = 0 → !RESET asserted
+    // Verify the /RESET line zeros the AY: write ORB with PB2=0
+    // (/RESET asserted) — a real driver typically pulses PB=$00
+    // during init.
+    writeVia(card, 0, 0x00, 0x00);    // ORB = 0 → PB2=0 → /RESET asserted
     assert(card.getAyRegister(0, 0) == 0);
     assert(card.getAyRegister(0, 7) == 0);
 }

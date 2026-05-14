@@ -36,9 +36,24 @@ constexpr float kAyEnvStepHz     = kAyClockHz / 256.0f;  // ~3.99 kHz
 
 // Mockingboard PB → AY control pin map. Reading PB0..2 gives the AY
 // command nibble; bit 0 doubles as !RESET (active low).
-constexpr uint8_t kPbBitReset = 0x01;   // PB0 — active low
-constexpr uint8_t kPbBitBdir  = 0x02;   // PB1
-constexpr uint8_t kPbBitBc1   = 0x04;   // PB2
+// 6522 Port B → AY-3-8910/8913 control bus, matching the schematic of
+// the real Sweet Microsystems Mockingboard A/C and Phasor cards. Verified
+// against AppleWin `Mockingboard.cpp:193` and the AY-3-8913 datasheet:
+//   PB0 → BC1
+//   PB1 → BDIR
+//   PB2 → /RESET (active LOW; 1 = chip running, 0 = chip held in reset)
+//   PB3..7 unused on Mockingboard A/C (chip-select bits on Phasor)
+//
+// Earlier versions of this file had PB0=/RESET and PB2=BC1 which inverted
+// the AY's view of the bus: every "INACTIVE" pulse a music driver
+// emitted between LATCH and WRITE (typically PB=$04 on real HW)
+// was misinterpreted as /RESET-asserted by POM2 and wiped the AY
+// register bank. Nox Archaist, Ultima IV and every other IRQ-driven
+// music driver therefore sounded silent — the AY regs got cleared
+// before the next WRITE strobe could land. Fixed 2026-05-14.
+constexpr uint8_t kPbBitBc1   = 0x01;   // PB0 → AY BC1
+constexpr uint8_t kPbBitBdir  = 0x02;   // PB1 → AY BDIR
+constexpr uint8_t kPbBitReset = 0x04;   // PB2 → AY /RESET (active low)
 
 // AY-3-8910 register count.
 constexpr int kAyNumRegs = 16;
