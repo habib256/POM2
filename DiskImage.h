@@ -191,8 +191,18 @@ public:
     /// revolution (so result ≥ fromLssCycle always). Returns
     /// `kFluxNever` only if the track has zero events (= unformatted
     /// quarter-track, which MAME reports as `attotime::never`).
+    ///
+    /// `revolutionStart` anchors the disk's angular position. The cell
+    /// looked up is `(fromLssCycle - revolutionStart) mod track_period`
+    /// — matching MAME `floppy_image_device::find_position`, which
+    /// computes `(when - m_revolution_start_time)` modulo `m_rev_time`.
+    /// Pass `< 0` to fall back to the pre-MAME-anchor behaviour
+    /// (`fromLssCycle mod track_period`); this is used during boot
+    /// before any motor-on transition has happened, and by the
+    /// stand-alone bit-stream decoder smoke tests.
     static constexpr int64_t kFluxNever = INT64_MAX;
-    int64_t getNextTransition(int qt, int64_t fromLssCycle) const;
+    int64_t getNextTransition(int qt, int64_t fromLssCycle,
+                              int64_t revolutionStart = -1) const;
 
     /// MAME `floppy_image_device::write_flux(start, end, count, transitions)`
     /// — splice a window of flux events into quarter-track `qt`. For

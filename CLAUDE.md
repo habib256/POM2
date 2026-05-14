@@ -511,16 +511,32 @@ Q7L/Q7H.
 **Drive switching** via `selectDrive(int)` mirrors MAME
 `wozfdc.cpp:264-291` (file moved from `bus/a2bus/` to `machine/` in
 MAME tree; line numbers are current as of 2026-05-14 audit). When
-motor active, flush old drive's in-flight write, reset `lssCycle` to
-`cpuCycleTotal*2`. **Divergence from MAME**: MAME keeps `cycles`
-monotonic and resets `revolution_start_time` on the floppy device
-via `mon_w(false)`; POM2 has no per-drive revolution_start tracking
-so the swap puts the new drive at an arbitrary modulo-wrapped position
-in its track, not "position 0". Adequate for stock DOS/ProDOS;
-multi-drive flux protections (Locksmith, Copy II Plus) may diverge
-from real silicon. Each drive owns its own `DiskImage` + head
-qtr-track + nibble cursor; phase magnets + motor shared (matches real
-silicon). Pinned: `disk_drive2_smoke_test.cpp`.
+motor active: flush old drive's in-flight write (= MAME
+`mon_w(true)`), clear the OLD drive's `revolutionStartLssCycle` to
+`kNeverRev`, anchor the NEW drive's `revolutionStartLssCycle` to the
+current `lssCycle` (= MAME `mon_w(false)` setting
+`revolution_start_time = machine().time()`). Each drive owns its own
+`DiskImage` + head qtr-track + nibble cursor; phase magnets + motor
+shared (matches real silicon). Pinned: `disk_drive2_smoke_test.cpp`.
+
+**Per-drive `revolutionStartLssCycle[2]`**: matches MAME
+`floppy_image_device::m_revolution_start_time`. Set on
+`lssStart()` (the controller's MODE_IDLE → MODE_ACTIVE transition,
+= MAME `mon_w(false)`) and on the new drive in `selectDrive()` when
+the controller is already spinning. Cleared to `kNeverRev` on the
+old drive in `selectDrive()`, on motor-off-delay expiry
+(MODE_DELAY → MODE_IDLE, = MAME `mon_w(true)`), and at controller
+reset. The disk's angular position is
+`(lssCycle - revolutionStartLssCycle[drive]) mod track_period`,
+computed inside `DiskImage::getNextTransition`. This replaced the
+old "reset `lssCycle` on every drive swap" hack, which made the
+new drive land at an arbitrary modulo-wrapped slot of its track
+instead of starting from position 0 of that disk's current
+revolution. The hack also surfaced as cc65-Chess.po / Shamus
+boot failures on `mario.dsk` where the angular position drift
+across consecutive sectors threw the LSS shift register out of
+phase by a single cell partway through a data field. Pinned:
+`disk_drive2_smoke_test.cpp`, `mame_lss_parity_smoke_test.cpp`.
 
 ### Two read paths share the data register
 
@@ -546,10 +562,34 @@ silicon). Pinned: `disk_drive2_smoke_test.cpp`.
 ### Bit-stream expansion
 
 `DiskImage::bitAt(track, idx)` lazily walks nibble buffer, emits 8 cells
-per non-FF byte + 2 trailing zero cells per `$FF` in runs of 2+
-consecutive `$FF`s. Sync-FF padding lets LSS lose alignment in sync gaps
-and resync on next prologue. `.nib` path skips padding (every byte = 8
-cells, total 53248). Cache invalidates on `writeNibbleAt`.
+per non-FF byte + 2 trailing zero cells per `$FF` that lives inside a
+run of ≥5 consecutive `$FF`s. Sync-FF padding lets the LSS lose
+alignment in sync gaps and resync on the next prologue. `.nib` path
+skips padding (every byte = 8 cells, total 53248). Cache invalidates on
+`writeNibbleAt`.
+
+**Why the ≥5 threshold** (`kSyncMinRun = 5`): `nibblizeTrack` lays
+down 5-byte `$FF` runs between an address field and its data field,
+14-byte runs between sectors, and a long `$FF` tail that wraps into
+the next-revolution leader. So any "real" sync gap is ≥5 bytes. The
+earlier ≥2 threshold treated naturally occurring 2-byte in-field
+`$FF` pairs as sync, dropping +2 zero cells per byte and shifting the
+bit stream out from under the LSS. Two ways this surfaced:
+
+- 4-and-4 address-field checksum encodes as `$FF $FF` whenever
+  `vol ^ track ^ sector == $FF` (e.g. on a default vol-$FE disk
+  with `T^S == $01`: T11 S$0A, T10 S$0B, etc.). With the old
+  threshold every such address field corrupted the bit stream for
+  the rest of the track.
+- 6-and-2 data-field running XOR occasionally produces 2-byte
+  disk `$FF` pairs from source `$FF $00 $FF` patterns. Shamus on
+  `mario.dsk` and H.E.R.O. (similar source layout) failed to boot
+  because of this — the corruption hit the very first data field
+  partway through the prologue chain.
+
+Pinned indirectly: `disk_image_smoke` round-trips encoded sectors,
+and `mame_lss_parity_smoke` walks the resulting bit stream through
+the LSS flux model.
 
 ### Flux-event view
 

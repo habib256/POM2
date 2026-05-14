@@ -1109,15 +1109,40 @@ void DiskImage::expandTrackBits(int qt) const
     const auto& buf = tracks[wholeTrack];
     const bool noSyncPad = nibFormat;   // .nib has no sync semantics
 
-    // Detect whether nibble[i] is part of a 2+-byte $FF run by checking
-    // its neighbours (with wrap-around so the tail stretches into the
-    // next-revolution leading bytes correctly).
+    // Detect whether nibble[i] is part of a SYNC GAP $FF run vs an
+    // in-field $FF that happens to be encoded as the on-disk byte $FF.
+    //
+    // The previous "any run of ≥2" rule was unsafe: the 4-and-4 address
+    // field encodes its checksum as two consecutive disk $FF bytes
+    // whenever `vol ^ track ^ sector == $FF`, and `mario.dsk` SHAMUS
+    // (boot path) hits the same kind of in-field $FF-pair in its data
+    // field via running-XOR coincidence. Inserting +2 zero cells per
+    // byte for those pairs shifted the LSS bit stream out of phase
+    // partway through a data field — visible as Shamus failing to boot
+    // and as the cc65-Chess.po partial truncation pattern.
+    //
+    // `nibblizeTrack` always lays down ≥5-byte $FF gaps (5 between
+    // address/data fields, 14 between sectors, and a long $FF tail
+    // that wraps into the next-revolution leader). Pick a threshold
+    // tight against the encoder so naturally occurring 2-3 byte in-
+    // field $FF runs don't get treated as sync.
+    constexpr int kSyncMinRun = 5;
     auto isInFFRun = [&](int i) {
         if (noSyncPad) return false;
         if (buf[i] != 0xFF) return false;
-        const int prev = (i - 1 + kNibblesPerTrack) % kNibblesPerTrack;
-        const int next = (i + 1) % kNibblesPerTrack;
-        return buf[prev] == 0xFF || buf[next] == 0xFF;
+        int countLeft = 0;
+        for (int j = 1; j < kSyncMinRun; ++j) {
+            const int idx = (i - j + kNibblesPerTrack) % kNibblesPerTrack;
+            if (buf[idx] != 0xFF) break;
+            ++countLeft;
+        }
+        int countRight = 0;
+        for (int j = 1; j < kSyncMinRun; ++j) {
+            const int idx = (i + j) % kNibblesPerTrack;
+            if (buf[idx] != 0xFF) break;
+            ++countRight;
+        }
+        return (1 + countLeft + countRight) >= kSyncMinRun;
     };
 
     for (int i = 0; i < kNibblesPerTrack; ++i) {
@@ -1202,7 +1227,26 @@ const std::vector<int>& DiskImage::fluxEvents(int qt) const
 // (offset by one period, so the result remains ≥ fromLssCycle). Only
 // returns kFluxNever when the track has no flux events at all (blank
 // disk), matching MAME's `attotime::never` for the empty-track case.
-int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle) const
+//
+// `revolutionStart` anchors the disk's angular position. MAME
+// `floppy_image_device::find_position(base, when)`:
+//
+//     base = m_revolution_start_time;
+//     delta = when - base;
+//     while (delta >= m_rev_time) { delta -= m_rev_time; base += m_rev_time; }
+//     cell_idx = delta * m_angular_speed
+//
+// The POM2 equivalent expressed in LSS cycles is:
+//
+//     cell_offset = (fromLssCycle - revolutionStart) mod track_period
+//     result      = revolutionStart + (#full_revolutions * track_period)
+//                                   + cell_offset_of_next_event
+//
+// When `revolutionStart < 0` we fall back to the pre-anchor behaviour
+// (`fromLssCycle mod track_period`) — used during boot before any
+// motor-on (`mon_w(false)`) transition anchors the drive.
+int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle,
+                                     int64_t revolutionStart) const
 {
     if (qt < 0 || qt >= kQuarterTracks) return kFluxNever;
     const auto& flux = fluxEvents(qt);
@@ -1210,19 +1254,36 @@ int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle) const
     const int period = trackPeriod(qt);
     if (period <= 0) return kFluxNever;
 
-    // Reduce fromLssCycle into [0, period) for the lookup; remember the
-    // base so we can re-add it to the returned timestamp.
-    int64_t base = (fromLssCycle / period) * period;
-    int     pos  = static_cast<int>(fromLssCycle - base);
-    // upper_bound — first element > pos. We then back up by one to find
-    // the largest ≤ pos, but for "next AT OR AFTER" we want the first ≥
-    // pos. lower_bound suits us better.
+    // If the caller anchored the drive's revolution, shift fromLssCycle
+    // into "angular-offset" space before the modulo. This matches
+    // MAME's `find_position` walk: events that lie at angular position
+    // P always sit at `revolutionStart + N*period + P`, regardless of
+    // what `cycles` was when the controller last spun this drive up.
+    //
+    // Why this matters: the previous "lssCycle mod period" branch made
+    // the disk's angular position depend on the *absolute* controller
+    // clock at motor-on time. Two drives spinning at different start
+    // times (or the same drive after a track step into a buffer with a
+    // slightly different period) would land at unrelated angular slots
+    // even though the head's physical position hadn't changed enough
+    // to justify the jump.
+    const bool anchored = (revolutionStart >= 0);
+    const int64_t origin = anchored ? revolutionStart : int64_t{0};
+    const int64_t delta  = fromLssCycle - origin;
+    // Truncate toward minus infinity so the cell offset is always in
+    // [0, period). Mirrors MAME's `while (delta < attotime::zero)` /
+    // `while (delta >= m_rev_time)` walk. For typical operation
+    // `delta >= 0` so this collapses to a single division.
+    int64_t fullRevs = delta / period;
+    int64_t cellOff  = delta - fullRevs * period;
+    if (cellOff < 0) { cellOff += period; --fullRevs; }
+    const int pos = static_cast<int>(cellOff);
     auto it = std::lower_bound(flux.begin(), flux.end(), pos);
     if (it == flux.end()) {
         // Wrap to next revolution.
-        return base + period + flux.front();
+        return origin + (fullRevs + 1) * period + flux.front();
     }
-    return base + *it;
+    return origin + fullRevs * period + *it;
 }
 
 // MAME `floppy_image_device::write_flux` — splice `count` flux events

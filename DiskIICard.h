@@ -291,6 +291,28 @@ private:
     uint64_t lssCycle       = 0;
     uint64_t cpuCycleTotal  = 0;
 
+    // MAME `floppy_image_device::m_revolution_start_time`, one per drive.
+    // Set to the current `lssCycle` on a motor-on transition (MAME's
+    // `mon_w(false)` — fires from `control() case 0x9 MODE_IDLE→ACTIVE`
+    // and on the *new* drive in `selectDrive()` when the controller is
+    // already spinning). Kept `kNeverRev` while the drive's motor is off
+    // (MAME stores `attotime::never`). The disk angular position is
+    // `(lssCycle - revolutionStartLssCycle[d]) mod track_period_lsscycles`,
+    // computed inside `DiskImage::getNextTransition`.
+    //
+    // Why per-drive: MAME's `revolution_start_time` lives on the
+    // `floppy_image_device`, not on the `wozfdc_device`. When the user
+    // does `$C0EA / $C0EB` to switch drives mid-spin, each drive's disk
+    // remembers its own angular position; the previously-selected drive's
+    // disk does NOT freeze when the controller looks away. POM2 used to
+    // collapse this into the single global `lssCycle`, which fell apart
+    // when a head step on the active drive made the new track's period
+    // differ from the old one (the modulo wrap suddenly snapped angular
+    // position to a stale slot). See `DiskImage::getNextTransition` for
+    // the angular-position computation.
+    static constexpr int64_t kNeverRev = -1;
+    int64_t revolutionStartLssCycle[kDriveCount] = { kNeverRev, kNeverRev };
+
     // MAME `write_buffer[32]` — flux event timestamps (LSS cycles)
     // captured from WRITE_DATA edge transitions during the active write
     // session. Flushed via `image.writeFlux(...)` either on Q7 falling

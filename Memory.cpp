@@ -1044,58 +1044,94 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr, bool isWrite)
 
 uint8_t Memory::floatingBus() const
 {
-    // Apple II video timing: master 14.31818 MHz / 14 = 1.02273 MHz CPU.
-    // 65 cycles per scanline, 262 scanlines per frame. HBL = first 25
-    // cycles of each line; visible video = cycles 25..64 (40 columns).
-    // Lines 0..191 are active video; 192..261 are VBL.
+    // Verbatim port of MAME `apple2video.cpp:124-201 scanner_address`.
+    // Input: h_clock [0..64] (active video from 25), v_clock [0..261]
+    // (active video from 0). Output: 16-bit DRAM address the video
+    // scanner is currently fetching. Used by reads of unimplemented
+    // soft switches ($C040, $C050-$C05F mirrors during VBL, $C019 in
+    // II/II+, etc.) which let the floating bus byte through. Software
+    // using this as an RNG seed (Beagle Bros copy protection, some
+    // demos) needs bit-exact replication of the scanner counter.
+    //
+    // The earlier POM2 implementation built the address from a
+    // text/HGR row-interleave formula; that gave the same byte during
+    // active video but diverged during HBL (where MAME's `addend0=0x0D
+    // + h-carries` produces the "$1000 phantom row" effect) and on
+    // page-2 HGR (m_hgr2 base differs).
     constexpr uint64_t kCyclesPerLine  = 65;
     constexpr uint64_t kLinesPerFrame  = 262;
     constexpr uint64_t kCyclesPerFrame = kCyclesPerLine * kLinesPerFrame;
-    constexpr int      kHblCycles      = 25;
 
-    const uint64_t cyc  = cycleCounter % kCyclesPerFrame;
-    const int      line = static_cast<int>(cyc / kCyclesPerLine);
-    const int      col  = static_cast<int>(cyc % kCyclesPerLine);
-    // Visible column offset 0..39. During HBL the video circuit fetches
-    // junk from earlier addresses; treat as column 0.
-    const int      hOff = (col >= kHblCycles) ? (col - kHblCycles) : 0;
-
-    // V counter wraps at frame end; during VBL the row counter rolls
-    // through earlier text rows. Approximate by mapping back to active.
-    const int v = (line < 192) ? line : (line - 192);
+    const uint64_t cyc     = cycleCounter % kCyclesPerFrame;
+    const int      v_clock = static_cast<int>(cyc / kCyclesPerLine);  // 0..261
+    const int      h_clock = static_cast<int>(cyc % kCyclesPerLine);  // 0..64
 
     DisplayState ds;
     {
         std::lock_guard<std::mutex> lk(stateMutex);
         ds = display;
     }
+    int Hires = (ds.hiRes && !ds.textMode) ? 1 : 0;
+    const int Mixed = ds.mixedMode ? 1 : 0;
+    const int Page2 = ds.page2    ? 1 : 0;
 
-    // Pick text vs HGR exactly like MAME's `scanner_address`: HGR only
-    // when graphics is on AND HIRES is set; if MIXED is on, the bottom 4
-    // rows (v >= 160) revert to text. Otherwise we'd fetch HGR pixels
-    // from underneath the visible text and software using floating-bus
-    // for IIe text-mode artifact detection would see the wrong byte.
-    const bool useHgr = !ds.textMode && ds.hiRes && !(ds.mixedMode && v >= 160);
+    // MAME `apple2video.cpp:140`: two 0-states ([0, 0..63]).
+    const int h_state = h_clock - (h_clock > 0);
+    const int h_0 = (h_state >> 0) & 1;
+    const int h_1 = (h_state >> 1) & 1;
+    const int h_2 = (h_state >> 2) & 1;
+    const int h_3 = (h_state >> 3) & 1;
+    const int h_4 = (h_state >> 4) & 1;
+    const int h_5 = (h_state >> 5) & 1;
 
-    uint16_t addr;
-    if (useHgr) {
-        // HGR row interleave: addr = $2000 + 0x400*(row%8)
-        //                            + 0x80*((row/8)%8) + 0x28*(row/64)
-        addr = static_cast<uint16_t>(0x2000
-            + ((v & 7) << 10)
-            + (((v >> 3) & 7) << 7)
-            + (v >> 6) * 0x28
-            + hOff);
-        if (ds.page2) addr = static_cast<uint16_t>(addr + 0x2000);
+    // MAME `apple2video.cpp:149`: V[543210CBA] = 100000000 = 256+v.
+    // The overflow compensation uses screen().height() in MAME; POM2's
+    // frame is 262 lines so we subtract the screen height when v wraps.
+    int v_state = 256 + v_clock;
+    if (v_clock >= 256) v_state -= static_cast<int>(kLinesPerFrame);
+    const int v_A = (v_state >> 0) & 1;
+    const int v_B = (v_state >> 1) & 1;
+    const int v_C = (v_state >> 2) & 1;
+    const int v_0 = (v_state >> 3) & 1;
+    const int v_1 = (v_state >> 4) & 1;
+    const int v_2 = (v_state >> 5) & 1;
+    const int v_3 = (v_state >> 6) & 1;
+    const int v_4 = (v_state >> 7) & 1;
+
+    // Mixed-mode bottom 4 text rows: HGR off when Mixed && v_4 && v_2.
+    if (Hires && Mixed && v_4 && v_2) Hires = 0;
+
+    const int addend0 = 0x0D;
+    const int addend1 = (h_5 << 2) | (h_4 << 1) | (h_3 << 0);
+    const int addend2 = (v_4 << 3) | (v_3 << 2) | (v_4 << 1) | (v_3 << 0);
+    const int sum     = (addend0 + addend1 + addend2) & 0x0F;
+
+    uint16_t address = 0;
+    address |= static_cast<uint16_t>(h_0 << 0);
+    address |= static_cast<uint16_t>(h_1 << 1);
+    address |= static_cast<uint16_t>(h_2 << 2);
+    address |= static_cast<uint16_t>(sum << 3);
+    address |= static_cast<uint16_t>(v_0 << 7);
+    address |= static_cast<uint16_t>(v_1 << 8);
+    address |= static_cast<uint16_t>(v_2 << 9);
+    if (Hires) {
+        address |= static_cast<uint16_t>(v_A << 10);
+        address |= static_cast<uint16_t>(v_B << 11);
+        address |= static_cast<uint16_t>(v_C << 12);
+        // HGR page base: $2000 (page 1) or $4000 (page 2). MAME's
+        // `m_hgr2` is the page-2 base for IIe; on II/II+ it's the
+        // same $4000.
+        address |= static_cast<uint16_t>(Page2 ? 0x4000 : 0x2000);
     } else {
-        // Text/lores row interleave: addr = $0400 + 0x80*(row%8) + 0x28*(row/8)
-        addr = static_cast<uint16_t>(0x0400
-            + (((v >> 3) & 7) << 7)
-            + (v >> 6) * 0x28
-            + hOff);
-        if (ds.page2) addr = static_cast<uint16_t>(addr + 0x0400);
+        // Text base. MAME also adds 0x1000 during HBL on II/II+ ("Apple
+        // II HBL phantom row"); on IIe that bit is suppressed. POM2 is
+        // a II/II+/IIe emulator — gate on !iieMode to match the model.
+        address |= static_cast<uint16_t>(Page2 ? 0x0800 : 0x0400);
+        if (!iieMode && h_clock < 25) {
+            address |= 0x1000;
+        }
     }
-    return mem[addr];
+    return mem[address];
 }
 
 uint8_t Memory::languageCardRead(uint16_t addr) const

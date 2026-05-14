@@ -258,6 +258,12 @@ void DiskIICard::onReset()
     lssData          = 0;
     writePosition    = 0;
     writeLineActive  = false;
+    // Active is now MODE_IDLE on both drives — the equivalent of MAME
+    // `floppy_image_device::mon_w(true)`, which sets
+    // `m_revolution_start_time = attotime::never`. The next lssStart
+    // re-anchors the active drive's `revolutionStartLssCycle` to "now".
+    revolutionStartLssCycle[0] = kNeverRev;
+    revolutionStartLssCycle[1] = kNeverRev;
     trace = {};
     // Head position and trackPos are intentionally NOT reset — a real
     // Disk II loses neither when the host CPU is reset; the boot PROM
@@ -349,7 +355,15 @@ void DiskIICard::advanceCycles(int cycles)
         if (motorOffDelay <= 0) {
             motorOffDelay = 0;
             motorOn       = false;
-            if (active == MODE_DELAY) active = MODE_IDLE;
+            if (active == MODE_DELAY) {
+                active = MODE_IDLE;
+                // MAME `floppy_image_device::mon_w(true)`: when the
+                // controller actually stops driving the spindle, the
+                // drive's revolution timestamp becomes `attotime::never`.
+                // POM2's equivalent: clear the anchor so a subsequent
+                // motor-on event re-zeros it from the new spin-up.
+                revolutionStartLssCycle[activeDrive] = kNeverRev;
+            }
             if (sound_) sound_->motor(false, images[activeDrive].isLoaded());
         }
     }
@@ -394,6 +408,13 @@ void DiskIICard::legacyAdvance(int cycles)
 // carry stale state from the last spin-up. Note we explicitly do NOT
 // re-pin the data register on a MODE_DELAY → MODE_ACTIVE transition
 // (real hardware preserves it across the spin-down window).
+//
+// This also models MAME's `floppy_image_device::mon_w(false)` for the
+// currently-selected drive: anchor its `revolution_start_time` to "now"
+// so the disk's angular position reads as zero immediately after spin-up.
+// The other drive (if any) keeps whatever `revolutionStartLssCycle` it
+// had — MAME never touches an idle drive's revolution state from the
+// controller side.
 void DiskIICard::lssStart()
 {
     DiskImage& img = images[activeDrive];
@@ -403,6 +424,7 @@ void DiskIICard::lssStart()
     writePosition   = 0;
     writeStartTime  = writeMode ? static_cast<int64_t>(lssCycle) : 0;
     writeLineActive = false;
+    revolutionStartLssCycle[activeDrive] = static_cast<int64_t>(lssCycle);
     if (writeMode && img.isLoaded()) {
         img.setWriteSplice(headQuarterTrack[activeDrive], writeStartTime);
     }
@@ -461,8 +483,9 @@ void DiskIICard::lssSync(uint64_t extraCycles)
     //
     // Pinned by `tests/diskii_lss_smoke_test.cpp::testFullSectorReadback`
     // (added with this fix).
+    const int64_t revStart = revolutionStartLssCycle[activeDrive];
     int64_t nextFlux = img.getNextTransition(qt,
-                          static_cast<int64_t>(lssCycle));
+                          static_cast<int64_t>(lssCycle), revStart);
     int64_t nextFluxDown = (nextFlux != DiskImage::kFluxNever)
                               ? nextFlux + 1
                               : DiskImage::kFluxNever;
@@ -564,7 +587,7 @@ void DiskIICard::lssSync(uint64_t extraCycles)
         } else if (static_cast<int64_t>(lssCycle) == nextFluxDown) {
             address = static_cast<uint8_t>(address | 0x10);
             nextFlux = img.getNextTransition(qt,
-                          static_cast<int64_t>(lssCycle));
+                          static_cast<int64_t>(lssCycle), revStart);
             nextFluxDown = (nextFlux != DiskImage::kFluxNever)
                                ? nextFlux + 1
                                : DiskImage::kFluxNever;
@@ -583,25 +606,33 @@ void DiskIICard::lssSync(uint64_t extraCycles)
 
 // MAME `wozfdc_device::control()` cases 0xa/0xb — drive_select switch.
 // When motor is active, mon_w(true) is sent to the old drive (commits
-// in-flight writes, freezes the flux cursor) and mon_w(false) to the
+// in-flight writes, freezes the flux cursor; sets
+// `revolution_start_time = attotime::never`) and mon_w(false) to the
 // new drive (revolution_start_time = now, restart spin). The equivalent
 // in POM2's model:
 //   1. If `writeMode` and there are pending events in the write buffer,
 //      flush them to the OLD drive's track at the current LSS cycle.
 //      (Real silicon: the write head stops driving the surface; any
 //      flux events captured since the last splice land in the track.)
-//   2. Reset the LSS-cycle base to `cpuCycleTotal*2` so the NEW drive's
-//      flux reads start at position 0 of its current quarter-track.
-//      Mirrors MAME `floppy_image_device::mon_w(false)` setting
-//      `revolution_start_time = machine().time()` — the new spin-up
-//      conceptually starts now.
-//   3. Re-init the write-state cursor for the new drive so a write that
+//   2. Mark the OLD drive's `revolutionStartLssCycle` as `kNeverRev`
+//      (MAME's `attotime::never`) — its disk stops contributing to flux
+//      reads. Leave the controller's `lssCycle` alone; MAME keeps
+//      `cycles` running across drive swaps.
+//   3. Anchor the NEW drive's `revolutionStartLssCycle` to the current
+//      `lssCycle`. MAME `floppy_image_device::mon_w(false)` sets
+//      `m_revolution_start_time = machine().time()`; the new spin-up
+//      conceptually starts now. (For a single-drive system this is
+//      academic — the only motor-on transition came from `lssStart`
+//      itself, which already set the anchor — but the multi-drive
+//      $C0EA / $C0EB swap path must do it explicitly.)
+//   4. Re-init the write-state cursor for the new drive so a write that
 //      survives the drive swap (rare but legal: WRITE mode + drive swap
 //      mid-burst) splices into the right track at the right LSS cycle.
-//   4. Clear PULSE in the LSS address — the new drive's flux stream is
+//   5. Clear PULSE in the LSS address — the new drive's flux stream is
 //      fresh, the previous-drive's pending pulse no longer applies.
 //
-// Reference: MAME `wozfdc.cpp:219-241`.
+// Reference: MAME `wozfdc.cpp:219-241`,
+// `floppy.cpp:809-839` (mon_w).
 void DiskIICard::selectDrive(int newDrive)
 {
     if (newDrive == activeDrive) return;
@@ -620,9 +651,17 @@ void DiskIICard::selectDrive(int newDrive)
         writePosition   = 0;
         writeLineActive = false;
 
-        // Switch drives, then reset LSS for NEW drive.
+        // OLD drive: mon_w(true). Disk angular position is now undefined
+        // — flux reads against it would return nothing. MAME uses
+        // `attotime::never` for the same effect.
+        revolutionStartLssCycle[oldDrive] = kNeverRev;
+
+        // Switch drives. Do NOT reset `lssCycle` — MAME's `cycles` keeps
+        // running continuously across the swap (`a3_update_drive_sel`
+        // calls `lss_sync()` but never touches the controller's clock).
         activeDrive = newDrive;
-        lssCycle = cpuCycleTotal * 2;
+        // NEW drive: mon_w(false). Anchor angular position to "now".
+        revolutionStartLssCycle[newDrive] = static_cast<int64_t>(lssCycle);
         address  = static_cast<uint8_t>(address | 0x10);   // PULSE = no pulse
         writeStartTime = writeMode ? static_cast<int64_t>(lssCycle) : 0;
         if (writeMode && images[newDrive].isLoaded()) {
@@ -892,6 +931,25 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
                         {cpuCycleTotal, lssData,
                          static_cast<uint8_t>(headQuarterTrack[activeDrive])};
                 }
+            }
+            // Optional CSV stream log for post-mortem LSS analysis. Open
+            // once on first hit when `POM2_DEBUG_DISK_STREAM=path` is set;
+            // each $C0EC read appends `cycle,qt,data` so a Python pass can
+            // reconstruct exactly what the controller delivered to the
+            // CPU. Lifetime tied to process exit (FILE leaked
+            // intentionally — flush-on-exit via stdio shutdown handler).
+            static FILE* g_streamLog = []() -> FILE* {
+                const char* path = std::getenv("POM2_DEBUG_DISK_STREAM");
+                if (!path) return nullptr;
+                FILE* f = std::fopen(path, "w");
+                if (f) std::fprintf(f, "cycle,qt,data\n");
+                return f;
+            }();
+            if (g_streamLog && low4 == 0xC) {
+                std::fprintf(g_streamLog, "%llu,%d,%02x\n",
+                    static_cast<unsigned long long>(cpuCycleTotal),
+                    headQuarterTrack[activeDrive],
+                    lssData);
             }
             return lssData;
         }
