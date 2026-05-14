@@ -213,6 +213,17 @@ M6502::CpuMode MainWindow::resolveCpuMode(M6502::CpuMode profileDefault) const
     return profileDefault;     // "auto" (default) — follow the profile
 }
 
+float MainWindow::floppyMotorPitchForProfile(pom2::SystemProfile p)
+{
+    switch (p) {
+        case pom2::SystemProfile::AppleIIc:
+        case pom2::SystemProfile::AppleIIcPlus:
+            return 1.4f;       // Sony internal drive ≈ 40% faster spin-up
+        default:
+            return 1.0f;       // original Disk II Shugart — native rate
+    }
+}
+
 void MainWindow::applyProfile(pom2::SystemProfile p)
 {
     const auto& cfg = pom2::profileConfig(p);
@@ -330,6 +341,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // 12. Persist the profile choice for the next launch.
     activeProfile = p;
+    controller.floppySound().setMotorPitch(floppyMotorPitchForProfile(p));
     settings.setString("system_profile", std::string(cfg.key));
     settings.save();
 

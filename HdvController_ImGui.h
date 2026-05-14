@@ -42,6 +42,9 @@ public:
         // Single-click library entry: host mounts the image AND triggers
         // a cold boot through the slot-5 ROM.
         std::string requestMountAndBoot;
+        // Right-click library entry: mount the image WITHOUT booting —
+        // hot-swap on a running system.
+        std::string requestMountOnly;
         bool        writeBackToggleChanged = false;
         bool        writeBackNewValue      = false;
     };

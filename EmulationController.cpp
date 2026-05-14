@@ -29,6 +29,15 @@ EmulationController::EmulationController()
     spk->setSampleRate(audioDev->getActualSampleRate());
     if (audioDev->isAvailable()) audioDev->addSource(spk.get());
 
+    // Disk II mechanical sounds. Samples are loaded later by MainWindow
+    // once the roms/floppy_samples/ directory has been probed; the source
+    // is silent until then. Loading at audio-construction time would
+    // require EmulationController to know about a roms/ filesystem
+    // convention that is otherwise MainWindow's concern.
+    floppy = std::make_unique<FloppySoundDevice>();
+    floppy->setSampleRate(audioDev->getActualSampleRate());
+    if (audioDev->isAvailable()) audioDev->addSource(floppy.get());
+
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
     mem.setCassetteDevice(tape.get());
@@ -44,14 +53,16 @@ EmulationController::~EmulationController()
 
     // Tear down audio first so the callback thread is drained before the
     // sources it's pulling from go away.
-    if (audioDev && tape) audioDev->removeSource(tape.get());
-    if (audioDev && spk)  audioDev->removeSource(spk.get());
+    if (audioDev && tape)   audioDev->removeSource(tape.get());
+    if (audioDev && spk)    audioDev->removeSource(spk.get());
+    if (audioDev && floppy) audioDev->removeSource(floppy.get());
     audioDev.reset();
     mem.setCassetteDevice(nullptr);
     mem.setSpeakerDevice(nullptr);
     mem.setCpu(nullptr);
     tape.reset();
     spk.reset();
+    floppy.reset();
 }
 
 // ─── Cassette transport ───────────────────────────────────────────────────

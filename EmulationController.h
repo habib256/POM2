@@ -10,6 +10,7 @@
 
 #include "AudioDevice.h"
 #include "CassetteDevice.h"
+#include "FloppySoundDevice.h"
 #include "M6502.h"
 #include "Memory.h"
 #include "SpeakerDevice.h"
@@ -31,9 +32,10 @@ public:
 
     Memory&         memory()   { return mem; }
     M6502&          cpu()      { return processor; }
-    CassetteDevice& cassette() { return *tape; }
-    SpeakerDevice&  speaker()  { return *spk; }
-    AudioDevice&    audio()    { return *audioDev; }
+    CassetteDevice&    cassette()    { return *tape; }
+    SpeakerDevice&     speaker()     { return *spk; }
+    FloppySoundDevice& floppySound() { return *floppy; }
+    AudioDevice&       audio()       { return *audioDev; }
 
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
     bool loadTape (const std::string& path);
@@ -76,9 +78,10 @@ public:
 private:
     Memory                          mem;
     M6502                           processor;
-    std::unique_ptr<CassetteDevice> tape;
-    std::unique_ptr<SpeakerDevice>  spk;
-    std::unique_ptr<AudioDevice>    audioDev;
+    std::unique_ptr<CassetteDevice>    tape;
+    std::unique_ptr<SpeakerDevice>     spk;
+    std::unique_ptr<FloppySoundDevice> floppy;
+    std::unique_ptr<AudioDevice>       audioDev;
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};

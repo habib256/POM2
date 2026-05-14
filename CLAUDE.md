@@ -446,6 +446,107 @@ destroying card (source lives inside card). Persisted:
 
 Pinned: `mockingboard_smoke_test.cpp`, `mockingboard_sync_smoke_test.cpp`.
 
+## Floppy mechanical sounds (`FloppySoundDevice`)
+
+Port of MAME's `src/devices/imagedev/floppy.cpp::floppy_sound_device` —
+sample-based playback of the head-step "click", motor spin-up/down, and
+disk insert/eject click. The 20 source WAVs (10 × 5.25" + 10 × 3.5",
+~150 + 210 KB) are vendored in `roms/floppy_samples/` straight from the
+`mamedev/mame` master tree; license attribution lives in
+`roms/floppy_samples/README.txt` (BSD-3-Clause — same as MAME's per-file
+default; samples are committed in-tree without a separate notice).
+
+### Decoupling: `FloppySoundSink` interface
+
+`DiskIICard` calls `sound_->motor(...)` / `step()` / `click()` through a
+header-only abstract `FloppySoundSink` (zero deps). The concrete
+`FloppySoundDevice` inherits from both `AudioSource` and `FloppySoundSink`.
+**Why**: without the indirection, every smoke test that links
+`DiskIICard.cpp` (13 of them) would also need to link `FloppySoundDevice.cpp`
++ the miniaudio implementation TU. With the interface, only the audio-side
+TUs (MainWindow + EmulationController + ai_control_server test) drag in
+the WAV decoder.
+
+### Step / seek decision (MAME parity)
+
+`FloppySoundDevice::step(newTrack)` measures the gap since the previous
+step in audio output frames (counter advanced by `fillAudioBuffer`). Gap
+classification:
+
+  * `gap > 100 ms` (= `kSeekJoinMs`) → single-step click (`525_step_1_1`).
+  * `gap ≤ 100 ms` → seek mode. Pick the seek sample whose nominal
+    cadence is closest to the observed gap (2 / 6 / 12 / 20 ms),
+    pitch-scale it so per-click intervals land on the actual cadence
+    (`pitch = nominal_ms / gap_ms`), and loop it.
+  * If no further step arrives for `kSeekTimeoutMs` → exit seek and fire
+    one final `step_1_1` one-shot to "land" the head.
+
+DOS 3.3 / ProDOS issue 4 phase pulses per track during seeks; each pulse
+moves the head one quarter-track in `seekPhaseW`, which fires one
+`step()` event. A 0→34 seek therefore generates ~140 events over ~150 ms
+— well into seek-mode territory.
+
+### Wall-clock motor-off hold-off (turbo decoupling)
+
+POM2's `diskTurboWhileMotor` bumps the emulated CPU to ~60 MHz during
+disk I/O — so the controller's 1-sec emulated spin-down delay (the
+`motorOffDelay = 1'022'727` cycles in `DiskIICard::control()` $C0E8)
+becomes ~17 ms wall-clock. Without compensation the audio thread
+receives `motor(false)` before the spin-up sample has even finished,
+silencing the loop before the user hears it — symptom is "start click,
+end click, silence" instead of recognisable motor whirr.
+
+`FloppySoundDevice` defers the audible transition by `kMotorOffHoldMs`
+(default 800 ms) in **audio output frames** (wall-clock), not CPU cycles.
+A fresh `motor(true)` cancels the pending transition. The controller
+stays the source of truth for "motor is mechanically on" (so disk reads
+remain timing-accurate); the audio source applies its own UI-friendly
+hold-off on top. Pinned: `floppy_sound_smoke_test.cpp::testRapidMotorTogglePreservesLoop`.
+
+### CPU ↔ audio thread coupling
+
+A mutex-guarded `std::vector<Cmd>` queue. CPU thread (DiskIICard event
+handlers) pushes `MotorOn/MotorOff/Step/Click`; audio thread drains the
+queue at the top of every `fillAudioBuffer` and applies state. Events
+are sparse (≤ ~100/s during full seeks), so a lock-free SPSC ring would
+be over-engineering. The audio frame counter (`audioFrameCounter_`) is
+atomic — read by the CPU thread for diagnostics only.
+
+### Hook points in `DiskIICard`
+
+- `seekPhaseW` end → `sound_->step(head/4)` when `head` actually moved.
+  Quarter-track granularity feeds naturally into the seek-mode classifier.
+- `control()` case `$C0E9` (`MODE_IDLE → MODE_ACTIVE`) → `motor(true, ...)`.
+  `MODE_DELAY → MODE_ACTIVE` (spin-down cancelled) does **not** fire,
+  because the motor was already audibly spinning.
+- `advanceCycles()` when `motorOffDelay` expires → `motor(false, ...)`.
+  Real spin-down delay (~1 s of CPU cycles) means the spin-down sample
+  plays at the right moment, not at the `$C0E8` write.
+- `handleSwitchAccess()` (legacy 32-cycle gate) cases `$C0E8` / `$C0E9` →
+  `motor(false/true, ...)`. The legacy gate has no DELAY state, so the
+  transition is immediate.
+- `insertDisk` / `ejectDisk` → `click()`. Uses the `525_step_1_1` sample
+  at slightly elevated gain as a clean mechanical click.
+
+### Form-factor opt-in
+
+`loadSamples(dir, FormFactor::FF35)` switches to the 3.5" set. No
+consumer today — POM2 doesn't emulate a SmartPort / UniDisk 3.5 / Liron
+— but the path is wired so a future card can opt in by constructing its
+own `FloppySoundDevice` instance (or by extending `EmulationController`
+to host a second sink).
+
+### Tear-down note
+
+`FloppySoundDevice` is owned by `EmulationController` (alongside Speaker
+and Cassette) so the AudioDevice shutdown drains the audio thread
+before the source is destroyed — same pattern as Speaker/Cassette,
+distinct from Mockingboard (which owns its audio source via the card).
+
+Persisted: `floppy_sound_volume`, `floppy_sound_muted`.
+
+Pinned: `floppy_sound_smoke_test.cpp`.
+
 ## Mouse Card (slot 4 by convention)
 
 Verbatim port of MAME `src/devices/bus/a2bus/mouse.cpp`. Pieces:

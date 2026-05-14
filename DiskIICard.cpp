@@ -2,6 +2,7 @@
 // Copyright (C) 2026
 
 #include "DiskIICard.h"
+#include "FloppySoundSink.h"
 #include "Logger.h"
 #include "M6502.h"
 
@@ -180,6 +181,10 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     for (int d = 0; d < kDriveCount; ++d) {
         if (images[d].isWoz()) { useBitLss = true; break; }
     }
+    // No click here — fires at user-initiated insert via UI / CLI only.
+    // Auto-restore of the previous-session disk path calls insertDisk
+    // during MainWindow construction; firing the click there would
+    // surprise the user with a mechanical thunk on every startup.
     return true;
 }
 
@@ -196,6 +201,8 @@ void DiskIICard::ejectDisk(int drive)
     img.eject();
     trackPos[drive] = 0;
     writeLatch      = 0xFF;
+    // No click here — symmetric with insertDisk; UI / CLI sites fire
+    // their own click when the user triggers the eject.
 }
 
 uint8_t DiskIICard::slotRomRead(uint8_t low8)
@@ -305,7 +312,14 @@ void DiskIICard::seekPhaseW(int phases)
     int next = (cur & ~7) | req;
     if (next < cur - 4) next += 8;
     else if (next > cur + 4) next -= 8;
-    head = std::clamp(next, 0, kQuarterTrackMax);
+    next = std::clamp(next, 0, kQuarterTrackMax);
+    const bool moved = (next != cur);
+    head = next;
+    // One mechanical "click" per quarter-track of head travel. DOS 3.3
+    // does a 4-phase sweep (~4 step pulses per track); fast-seeking
+    // utilities issue these back-to-back, which trips the audio source's
+    // gap-< 100 ms classifier into seek mode automatically.
+    if (moved && sound_) sound_->step(head / 4);
 }
 
 void DiskIICard::advanceCycles(int cycles)
@@ -336,6 +350,7 @@ void DiskIICard::advanceCycles(int cycles)
             motorOffDelay = 0;
             motorOn       = false;
             if (active == MODE_DELAY) active = MODE_IDLE;
+            if (sound_) sound_->motor(false, images[activeDrive].isLoaded());
         }
     }
 }
@@ -650,6 +665,7 @@ void DiskIICard::control(int offset)
                     motorOn = true;
                     active  = MODE_ACTIVE;
                     if (images[activeDrive].isLoaded()) lssStart();
+                    if (sound_) sound_->motor(true, images[activeDrive].isLoaded());
                     if (debugEnabled() && !trace.sawMotorOn) {
                         trace.sawMotorOn = true;
                         char buf[96];
@@ -763,12 +779,15 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
         }
         switch (low4) {
             case 0x8:
+                if (motorOn && sound_)
+                    sound_->motor(false, images[activeDrive].isLoaded());
                 motorOn = false;
                 motorOffDelay = 0;
                 break;
             case 0x9:
                 if (!motorOn) {
                     cycleAccum = 0;
+                    if (sound_) sound_->motor(true, images[activeDrive].isLoaded());
                     if (debugEnabled() && !trace.sawMotorOn) {
                         trace.sawMotorOn = true;
                         char buf[96];

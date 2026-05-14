@@ -66,6 +66,20 @@ void AudioDevice::mixSources(float* output, int frameCount)
         tmpBuf.resize(static_cast<size_t>(frameCount));
 
     for (AudioSource* src : sources) {
+        // Zero the temp buffer before each source. The AudioSource
+        // contract is *either* assign (Speaker, Cassette, Mockingboard
+        // all do `output[i] = ...`) *or* mix additively starting from
+        // silence (FloppySoundDevice). Without this memset, when the
+        // sources iterate in order [A, B] and A writes its signal into
+        // tmpBuf, an additive source B would see A's samples and add on
+        // top — A then gets counted twice in output (A's pass already
+        // added them once), producing audible doubling whenever two
+        // sources are simultaneously active. Symptom seen during cold
+        // boot: speaker bell beep + Disk II spin-up overlapped, giving
+        // a "horrible" composite. The cost is one extra memset per
+        // source per ~5 ms buffer — negligible.
+        std::memset(tmpBuf.data(), 0,
+                    static_cast<size_t>(frameCount) * sizeof(float));
         src->fillAudioBuffer(tmpBuf.data(), frameCount);
         for (int i = 0; i < frameCount; ++i)
             output[i] += tmpBuf[i];

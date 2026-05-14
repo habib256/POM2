@@ -84,7 +84,7 @@ HdvController_ImGui::FrameResult HdvController_ImGui::render(
     ImGui::Separator();
     ImGui::TextUnformatted("Library:");
     ImGui::SameLine();
-    ImGui::TextDisabled("(click an image to mount + boot)");
+    ImGui::TextDisabled("(left-click: mount + boot — right-click: mount only)");
 
     if (snap.library.empty()) {
         ImGui::TextDisabled("  (drop .hdv / .2mg files into hdv/ to populate)");
@@ -96,6 +96,10 @@ HdvController_ImGui::FrameResult HdvController_ImGui::render(
             const std::string label = (current ? "* " : "  ") + entry.displayName;
             if (ImGui::Selectable(label.c_str(), current)) {
                 r.requestMountAndBoot = entry.fullPath;
+            }
+            if (ImGui::IsItemHovered() &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                r.requestMountOnly = entry.fullPath;
             }
         }
         ImGui::EndChild();

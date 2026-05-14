@@ -99,6 +99,26 @@ MainWindow::MainWindow(bool forceIIPlus)
     }
     controller.memory().loadCharRom(charRomPath.c_str());
 
+    // Load the MAME 5.25" floppy sound samples (head step, motor spin,
+    // insert click). Probe paths mirror the ROM probe order; missing
+    // samples leave the FloppySoundDevice silent without otherwise
+    // affecting the Disk II data path.
+    static const char* floppySampleDirs[] = {
+        "roms/floppy_samples",
+        "../roms/floppy_samples",
+        "../../roms/floppy_samples",
+    };
+    for (const char* d : floppySampleDirs) {
+        if (fs::is_directory(d) && controller.floppySound().loadSamples(d))
+            break;
+    }
+    {
+        // Restore persisted volume/mute for the floppy sound source.
+        const float vol = settings.getFloat("floppy_sound_volume", 0.6f);
+        controller.floppySound().setVolume(vol);
+        controller.floppySound().setMuted(settings.getBool("floppy_sound_muted", false));
+    }
+
     // Plug all expansion cards in their user-configured slots. The
     // mapping is read from `slot_1_card`..`slot_7_card` settings; absent
     // keys fall back to the legacy defaults (DiskII=6, HDV=5, SSC=2,
@@ -200,6 +220,11 @@ MainWindow::MainWindow(bool forceIIPlus)
             }
         }
     }
+    // Profile-specific floppy motor pitch (//c / //c+ → faster Sony drive).
+    // applyProfile() already calls setMotorPitch internally; do it here for
+    // the paths that don't go through applyProfile (auto-probe matching the
+    // saved profile, or no saved profile at all).
+    controller.floppySound().setMotorPitch(floppyMotorPitchForProfile(activeProfile));
 }
 
 MainWindow::~MainWindow()
@@ -278,6 +303,8 @@ MainWindow::~MainWindow()
     settings.setFloat ("speaker_volume",  controller.speaker().getVolume());
     settings.setBool  ("speaker_muted",   controller.speaker().isMuted());
     settings.setFloat ("cassette_volume", controller.cassette().getVolume());
+    settings.setFloat ("floppy_sound_volume", controller.floppySound().getVolume());
+    settings.setBool  ("floppy_sound_muted",  controller.floppySound().isMuted());
     if (mockingboardCard) {
         settings.setFloat("mockingboard_volume", mockingboardCard->getVolume());
         settings.setBool ("mockingboard_muted",  mockingboardCard->isMuted());
@@ -393,6 +420,7 @@ void MainWindow::plugSlotsFromSettings()
         // LSS state at the exact sub-cycle of the data fetch, not at
         // instruction-start). See DiskIICard::setCpu doc for context.
         card->setCpu(&controller.cpu());
+        card->setFloppySound(&controller.floppySound());
         diskCard = card.get();
         controller.memory().slotBus().plug(s, std::move(card));
     };
@@ -1151,6 +1179,19 @@ void MainWindow::renderControlsWindow()
         ImGui::SameLine();
         if (ImGui::Checkbox("Mute##spk", &spkMute)) spk.setMuted(spkMute);
 
+        // Disk II mechanical sounds (head step / motor spin / insert
+        // click) — only meaningful when the floppy samples loaded
+        // successfully at startup.
+        FloppySoundDevice& fs = controller.floppySound();
+        if (fs.isLoaded()) {
+            float fsVol = fs.getVolume();
+            if (ImGui::SliderFloat("Disk vol", &fsVol, 0.0f, 2.0f, "%.2f"))
+                fs.setVolume(fsVol);
+            bool fsMute = fs.isMuted();
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Mute##floppy", &fsMute)) fs.setMuted(fsMute);
+        }
+
         ImGui::Separator();
         const size_t pendingPaste = controller.memory().pendingPasteSize();
         if (pendingPaste > 0) {
@@ -1740,6 +1781,27 @@ void MainWindow::renderDiskPanelWindow()
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
+    if (!result.requestInsertOnly.empty() && diskCard) {
+        // Right-click "insert only": swap the image in without resetting
+        // the emulator. Useful for multi-disk titles that prompt the
+        // user to flip disks mid-run.
+        const std::string path = result.requestInsertOnly;
+        bool ok = false;
+        std::string err;
+        {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            ok = diskCard->insertDisk(path);
+            if (!ok) err = diskCard->getLastError();
+        }
+        if (ok) {
+            pom2::log().info("Disk II",
+                std::string("Library right-click → insert only: ") + path);
+            tapeStatusMessage = "Inserted (no boot): " + path;
+        } else {
+            tapeStatusMessage = "Insert failed: " + err;
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
 }
 
 // ─── HDV (slot 5) ────────────────────────────────────────────────────────
@@ -1920,9 +1982,59 @@ void MainWindow::renderHdvPanelWindow()
             controller.bootFromSlot(5);
             pom2::log().info("HDV",
                 std::string("Library click → mount + boot: ") + path);
-            tapeStatusMessage = "Booting HDV: " + path;
+            tapeStatusMessage = "Mounting + booting HDV: " + path;
         } else {
             tapeStatusMessage = "Boot failed: " + err;
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    if (!result.requestMountOnly.empty() && hdvCard) {
+        // Right-click "mount only": swap the image without booting.
+        // Host-folder sentinel is handled the same as mount-and-boot
+        // above (it never auto-boots anyway), so funnel both branches
+        // here when no Apple II reset is wanted.
+        const std::string path = result.requestMountOnly;
+        const std::string sentinel(kProDOSHostSentinel);
+
+        bool ok = false;
+        std::string err;
+        if (path.rfind(sentinel, 0) == 0) {
+            const std::string hostDir = path.substr(sentinel.size());
+            std::vector<std::uint8_t> bytes;
+            auto br = pom2::buildVolumeFromFolder(hostDir, "HOST", bytes);
+            if (!br.ok) {
+                tapeStatusMessage = "ProDOS synth failed: " + br.error;
+                tapeStatusUntil   = lastFrameTime + 5.0;
+                return;
+            }
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            ok = hdvCard->loadImageFromBytes(std::move(bytes),
+                                             std::string("[host folder] ") + hostDir,
+                                             hostDir);
+            if (ok) {
+                hdvPath   = path;
+                hdvStatus = std::string("synth from ") + hostDir;
+            } else {
+                err = "synth load failed";
+                hdvStatus = err;
+            }
+        } else {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            ok = hdvCard->loadImage(path);
+            if (ok) {
+                hdvPath   = path;
+                hdvStatus = std::string("loaded: ") + path;
+            } else {
+                err = hdvCard->getLastError();
+                hdvStatus = "no image mounted";
+            }
+        }
+        if (ok) {
+            pom2::log().info("HDV",
+                std::string("Library right-click → mount only: ") + path);
+            tapeStatusMessage = "Mounted (no boot): " + path;
+        } else {
+            tapeStatusMessage = "Mount failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }

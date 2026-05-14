@@ -257,6 +257,14 @@ private:
     /// `nmos` → NMOS; `65c02` → CMOS. Logged to console on each apply.
     M6502::CpuMode resolveCpuMode(M6502::CpuMode profileDefault) const;
 
+    /// Pick the motor-sound pitch multiplier for a profile. //c / //c+
+    /// use a Sony internal 5.25" drive that spins up faster and at a
+    /// higher pitch than the original Shugart-based Disk II — bumping
+    /// the motor pitch on those profiles approximates that without
+    /// dragging in a second sample set. All other profiles → 1.0
+    /// (native MAME Disk II samples).
+    static float floppyMotorPitchForProfile(pom2::SystemProfile p);
+
     // Paste helpers — feed text into the keyboard buffer.
     void pasteFromClipboard();
     void pasteFromFile(const std::string& path);

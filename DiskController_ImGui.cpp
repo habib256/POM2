@@ -132,7 +132,7 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     ImGui::Separator();
     ImGui::TextUnformatted("Library:");
     ImGui::SameLine();
-    ImGui::TextDisabled("(click a disk to insert + boot)");
+    ImGui::TextDisabled("(left-click: insert + boot — right-click: insert only)");
 
     if (snap.library.empty()) {
         ImGui::TextDisabled("  (drop .dsk / .do files into disks/ to populate)");
@@ -150,6 +150,10 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
             const std::string label = (current ? "* " : "  ") + entry.displayName;
             if (ImGui::Selectable(label.c_str(), current)) {
                 r.requestInsertAndBoot = entry.fullPath;
+            }
+            if (ImGui::IsItemHovered() &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                r.requestInsertOnly = entry.fullPath;
             }
         }
         ImGui::EndChild();

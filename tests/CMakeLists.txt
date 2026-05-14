@@ -384,6 +384,37 @@ add_test(NAME speaker_smoke COMMAND test_speaker)
 set_tests_properties(speaker_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── FloppySoundDevice (MAME-port head-step/motor sounds) ─────────────────
+# Self-contained — links FloppySoundDevice + AudioDevice (for the
+# MINIAUDIO_IMPLEMENTATION translation unit, since FloppySoundDevice's
+# WAV decoder reuses miniaudio's ma_decoder). Runs from build/ so the
+# probed sample dir (roms/floppy_samples) resolves to ../roms/...
+add_executable(test_floppy_sound
+    floppy_sound_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+)
+target_include_directories(test_floppy_sound PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${IMGUI_DIR}     # miniaudio.h sits next to stb_vorbis.c in third_party/
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_floppy_sound PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_floppy_sound PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_floppy_sound PRIVATE winmm)
+endif()
+add_test(NAME floppy_sound_smoke
+    COMMAND test_floppy_sound
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(floppy_sound_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── HGR NTSC artifact rendering smoke test ───────────────────────────────
 # Pins the LUT corners (black byte, all-on byte, isolated bit per palette
 # pair × parity), the inter-byte white-bleed seam fix-up, and the glow
@@ -1352,9 +1383,13 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
-target_include_directories(test_ai_control_server PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(test_ai_control_server PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${IMGUI_DIR}     # miniaudio.h location for FloppySoundDevice
+)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_ai_control_server PRIVATE
         ${CMAKE_DL_LIBS} Threads::Threads m)

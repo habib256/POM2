@@ -66,6 +66,7 @@
 #include <vector>
 
 class M6502;
+class FloppySoundSink;
 
 class DiskIICard : public SlotPeripheral
 {
@@ -92,6 +93,13 @@ public:
     /// doesn't notice the difference. Safe to leave unset (nullptr) —
     /// behaviour falls back to instruction-aligned access timing.
     void setCpu(M6502* cpu) { cpu_ = cpu; }
+
+    /// Inject the mechanical-sound source (head step, motor spin-up/down,
+    /// disk insert/eject click). Optional — when nullptr the card is
+    /// silent on the floppy-sound side (the data path is unchanged).
+    /// Sound calls are sparse (mutex-guarded command queue inside the
+    /// source) so this stays cheap even on read-heavy workloads.
+    void setFloppySound(FloppySoundSink* fs) { sound_ = fs; }
 
     /// Force every drive's head back to track 0 and reset the LSS state.
     /// Used by the "Boot disk" UI shortcut so the boot PROM finds
@@ -177,6 +185,7 @@ private:
     /// Optional CPU pointer for sub-instruction cycle resolution at MMIO
     /// access points. See `setCpu()` doc above.
     M6502* cpu_ = nullptr;
+    FloppySoundSink* sound_ = nullptr;
     std::array<DiskImage, kDriveCount> images{};
     /// Drive currently routed to the LSS / legacy gate. Set by control()
     /// in response to $C0nA ($activeDrive=0) or $C0nB ($activeDrive=1).

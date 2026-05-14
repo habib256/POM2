@@ -59,6 +59,9 @@ public:
         // Single-click library entry: host inserts the disk AND triggers
         // a cold boot so the Autostart's slot-6 probe runs the new image.
         std::string requestInsertAndBoot;
+        // Right-click library entry: insert the disk WITHOUT booting —
+        // hot-swap on a running system, e.g. multi-disk games.
+        std::string requestInsertOnly;
         bool        turboToggleChanged  = false;
         bool        turboNewValue       = true;
         bool        writeBackToggleChanged = false;
