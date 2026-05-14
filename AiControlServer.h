@@ -79,10 +79,24 @@ public:
     /// All pointers are non-owning; the server holds them across requests but
     /// never deletes them. Disk/HDV pointers may be null — the corresponding
     /// endpoints then return 503.
+    ///
+    /// Threading: when `ctrl_` is already bound (i.e., this is a re-attach
+    /// after a profile switch), the caller MUST hold `ctrl->stateMutex()`
+    /// for the duration of the call. Handlers read disk6_/hdv5_ under the
+    /// same mutex, so this serialises the pointer swap against in-flight
+    /// requests. On the very first call (no worker thread alive yet) the
+    /// lock is optional.
     void attach(EmulationController* ctrl,
                 Apple2Display*       display,
                 DiskIICard*          disk6,
                 ProDOSHardDiskCard*  hdv5);
+
+    /// Null the slot-card pointers. Caller MUST hold the controller's
+    /// stateMutex. Use this BEFORE the slot bus tears down its plugged
+    /// cards during a profile switch — between detach() and the next
+    /// attach(), card-touching endpoints return 503 instead of
+    /// dereferencing freed memory. Pairs with attach().
+    void detach();
 
     /// Update the cached display-side metadata that `/status` reports.
     /// Called by MainWindow whenever the profile or token changes.

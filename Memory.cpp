@@ -77,7 +77,7 @@ bool Memory::loadRomBytes(const uint8_t* src, size_t length, uint16_t addr)
     return true;
 }
 
-int Memory::loadAppleIIRom(const char* filename)
+int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
 {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
@@ -95,25 +95,38 @@ int Memory::loadAppleIIRom(const char* filename)
     //     ($C100-$CFFF, motherboard firmware) and the main ROM ($D000-$FFFF)
     //     when iieMode is on. On II+, the same 16 KB image just loads at
     //     $C000 and skips the I/O page (legacy behaviour).
-    //   32 KB = Apple //e "system + video" combined dump. The standard
-    //     16 KB //e firmware lives at file offsets 0x4000-0x7FFF (so its
-    //     reset vector at file offset 0x7FFC maps to $FFFC); the lower
-    //     16 KB carries the video / character data we don't load through
-    //     this path. We extract the upper 16 KB and treat it like a
-    //     plain 16 KB //e ROM.
+    //   32 KB = TWO common layouts, indistinguishable by size alone:
+    //     * Apple //e "system + video" combined dump. The 16 KB firmware
+    //       lives at file offsets 0x4000-0x7FFF (reset vector at 0x7FFC
+    //       maps to $FFFC); lower 16 KB carries video / char data we
+    //       don't load through this path. → pickLower16KFor32K = false.
+    //     * Apple //c / //c+ two-bank firmware dump. Bank 0 (cold-reset
+    //       entry) at file offsets 0x0000-0x3FFF; bank 1 (alt firmware,
+    //       AppleTalk / MouseText / SmartPort drivers) at 0x4000-0x7FFF.
+    //       The two banks are swapped at runtime via the $C028 ROMBANK
+    //       soft switch; bank 0 must be the one mapped at reset.
+    //       → pickLower16KFor32K = true.
     uint16_t loadAddr = 0;
     bool iieFromUpper16K = false;
+    size_t  skipBytes = 0;  // leading bytes to drop from the file
     if (size == 12 * 1024) {
         loadAddr = 0xD000;
     } else if (size == 16 * 1024) {
         loadAddr = 0xC000;
+    } else if (size == 20 * 1024) {
+        // Some Apple II+ dumps (notably the MAME "apple2_plus" combined
+        // pack) prepend 4 KB of filler — typically zeros or an unused
+        // alternate Integer BASIC bank — to the real 16 KB
+        // $C000-$FFFF firmware. The high 16 KB is what every Apple II+
+        // expects at $C000 onwards. Skip the first 4 KB so the loader
+        // doesn't poke ROM bytes into user RAM at $B000-$BFFF (the old
+        // "best effort" branch landed loadAddr there, which clobbered
+        // the user-RAM region with whatever pad bytes the file carried).
+        loadAddr  = 0xC000;
+        skipBytes = 0x1000;
     } else if (size == 32 * 1024) {
-        // Treat as a //e dump whose firmware sits in the upper 16 KB.
-        // We don't sniff iieMode here — even in II+ mode we still want
-        // the firmware (Applesoft + Monitor) at $D000-$FFFF, and the
-        // reset vector at $FFFC, both of which live in the upper half.
         loadAddr = 0xC000;
-        iieFromUpper16K = true;
+        iieFromUpper16K = !pickLower16KFor32K;
     } else if (size >= 0x800 && size <= 0x10000) {
         // Best effort: fit at the high end so vectors land at $FFFA-$FFFF.
         loadAddr = static_cast<uint16_t>(0x10000 - size);
@@ -131,13 +144,35 @@ int Memory::loadAppleIIRom(const char* filename)
     }
 
     // Slice out the firmware payload — for 32 KB dumps this drops the
-    // unused lower half. After this, `payload` is a 16 KB block that
-    // covers $C000-$FFFF (or 12 KB for II+, or whatever the user gave
-    // us in the best-effort branch).
-    const uint8_t* payload      = buf.data();
-    size_t         payloadSize  = size;
-    if (iieFromUpper16K) {
-        payload     = buf.data() + 0x4000;
+    // unused half (upper for //c-style, lower for //e-style). After
+    // this, `payload` is a 16 KB block that covers $C000-$FFFF (or
+    // 12 KB for II+, or whatever the user gave us in the best-effort
+    // branch).
+    const uint8_t* payload      = buf.data() + skipBytes;
+    size_t         payloadSize  = size - skipBytes;
+    iicHasAltBank = false;       // reset; only //c-style 32 KB sets it
+    iicRomBank    = false;
+    if (size == 32 * 1024) {
+        if (iieFromUpper16K) {
+            payload     = buf.data() + 0x4000;   // //e layout
+        } else {
+            payload     = buf.data();            // //c bank 0 (active at reset)
+            // Stash bank 1 (upper 16 KB) for the $C028 ROMBANK toggle.
+            // Bytes 0x000-0x0FF (the $C000-$C0FF soft-switch shadow) are
+            // never returned — reads of that range always route through
+            // softSwitchAccess regardless of the active bank. Bytes
+            // 0x100-0xFFF mirror $C100-$CFFF (alt internal I/O ROM);
+            // bytes 0x1000-0x3FFF mirror $D000-$FFFF (alt firmware).
+            std::copy(buf.data() + 0x4000,
+                      buf.data() + 0x8000,
+                      iicAltFirmware.begin());
+            iicHasAltBank = true;
+            // //c boots with INTCXROM forced on (MAME apple2e.cpp:1273).
+            // applyProfile calls resetSoftSwitches BEFORE loadAppleIIRom,
+            // so the resetSoftSwitches MF_INTCXROM hook doesn't catch
+            // the freshly-flipped iicHasAltBank — set it here too.
+            iieMemMode |= MF_INTCXROM;
+        }
         payloadSize = 0x4000;
     }
 
@@ -276,6 +311,21 @@ void Memory::resetSoftSwitches()
     lcBank2Active = true;
     lcPrewrite    = false;
     iieMemMode    = 0;
+    iicRomBank    = false;   // //c boots with bank 0 (the cold-start bank)
+    // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`). The
+    // softswitch is software-toggleable but internal ROM stays mapped
+    // either way (see the iicHasAltBank gate in memRead). Setting it
+    // here keeps $C015 (RDCXROM) consistent with what real //c
+    // firmware sees when probing the switch.
+    if (iicHasAltBank) iieMemMode |= MF_INTCXROM;
+    // RamWorks III — MAME `a2eramworks3.cpp:65-68 device_reset` snaps
+    // `m_bank = 0` on every reset. Match that: swap the visible aux
+    // back to bank 0 so Ctrl-Reset / F12 don't leave the user looking
+    // at whatever bank software last selected. Data in all banks is
+    // preserved (reset clears the bank selector, not the DRAM).
+    if (iieMode && ramWorksBanks_ > 1) {
+        ramWorksSwapToBank(0);
+    }
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
 }
@@ -293,6 +343,14 @@ void Memory::clearRam()
         auxLcBank1.fill(0);
         auxLcBank2.fill(0);
         auxLcHigh.fill(0);
+        // RamWorks III backing — wipe every bank slot, snap back to
+        // bank 0 (MAME `device_reset`-equivalent, plus a cold RAM
+        // wipe which `device_reset` itself doesn't do).
+        if (ramWorksBanks_ > 1) {
+            std::fill(ramWorksBacking_.begin(),
+                      ramWorksBacking_.end(), 0u);
+            ramWorksBank_ = 0;
+        }
     }
 }
 
@@ -307,6 +365,67 @@ void Memory::setIIEMode(bool on)
         display.eightyCol   = false;
         display.dhgr        = false;
     }
+    // Drop any RamWorks backing when leaving IIe (the card is aux-slot
+    // only). Re-enabling IIe leaves the user setting to MainWindow.
+    if (!on) {
+        ramWorksBanks_ = 1;
+        ramWorksBank_  = 0;
+        ramWorksBacking_.clear();
+        ramWorksBacking_.shrink_to_fit();
+    }
+}
+
+void Memory::setRamWorksBanks(uint32_t banks)
+{
+    if (banks < 1) banks = 1;
+    if (banks > kRamWorksMaxBanks) banks = kRamWorksMaxBanks;
+    ramWorksBanks_ = banks;
+    ramWorksBank_  = 0;
+    // Backing holds ONE slot per bank (including bank 0 — we snapshot
+    // the visible buffers into it whenever leaving bank 0). When
+    // banks == 1 the backing is empty — stock IIe path, no swap.
+    if (banks > 1) {
+        ramWorksBacking_.assign(
+            static_cast<size_t>(banks) * kRamWorksBankStride, 0u);
+    } else {
+        ramWorksBacking_.clear();
+        ramWorksBacking_.shrink_to_fit();
+    }
+}
+
+// MAME `a2eramworks3.cpp:108-115 write_c07x`: bank index = data & 0x7F.
+// One backing slot per bank (including bank 0). Swap is symmetric:
+// snapshot visible → backing[prev], advance ramWorksBank_, load
+// backing[curr] → visible. The visible buffers (`aux`, `auxLcBank1/2`,
+// `auxLcHigh`) always reflect the active bank so the rest of Memory.cpp
+// reads them directly without bank-aware indexing.
+void Memory::ramWorksSwapToBank(uint8_t newBank)
+{
+    if (ramWorksBanks_ <= 1) return;
+    // Clamp to populated banks via modulo. MAME does not clamp (it
+    // allocates a fixed 8 MB array and reads garbage for unpopulated
+    // slots — UB-adjacent in C++); we wrap. On a real RamWorks III with
+    // fewer than 128 banks installed, the chip-select decoder aliases
+    // higher-bank writes to populated banks anyway.
+    newBank = static_cast<uint8_t>(newBank % ramWorksBanks_);
+    if (newBank == ramWorksBank_) return;
+
+    const size_t stride = kRamWorksBankStride;
+    uint8_t* prev = ramWorksBacking_.data()
+                  + static_cast<size_t>(ramWorksBank_) * stride;
+    std::memcpy(prev,             aux.data(),         0x10000);
+    std::memcpy(prev + 0x10000,   auxLcBank1.data(),  0x1000);
+    std::memcpy(prev + 0x11000,   auxLcBank2.data(),  0x1000);
+    std::memcpy(prev + 0x12000,   auxLcHigh.data(),   0x2000);
+
+    ramWorksBank_ = newBank;
+
+    const uint8_t* curr = ramWorksBacking_.data()
+                        + static_cast<size_t>(newBank) * stride;
+    std::memcpy(aux.data(),        curr,             0x10000);
+    std::memcpy(auxLcBank1.data(), curr + 0x10000,   0x1000);
+    std::memcpy(auxLcBank2.data(), curr + 0x11000,   0x1000);
+    std::memcpy(auxLcHigh.data(),  curr + 0x12000,   0x2000);
 }
 
 void Memory::queueKey(uint8_t apple2Key)
@@ -417,7 +536,7 @@ void Memory::setPaddleButton(int idx, bool down)
     if (idx >= 0 && idx < 3) paddleButton[idx] = down;
 }
 
-uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal*/)
+uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
 {
     // Soft-switch byte is in $C000-$C07F. Many switches respond to either
     // a read OR a write (both edges work as toggles). We snapshot the
@@ -502,26 +621,28 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
     // VBL (vertical blank) strobe — IIe-only register. Scanline-accurate
     // Apple II frame: 262 scanlines × 65 cycles. Visible video =
     // 0..191, VBL = 192..261. Bit 7 of $C019 reflects the active-video
-    // state per MAME `apple2e.cpp:1859` convention: HIGH during active,
-    // LOW during VBL. Reading $C019 also acknowledges any pending VBL
-    // IRQ (clears it). II/II+ doesn't decode $C019 at all — the address
+    // state per MAME `apple2e.cpp:2107` convention: HIGH during active,
+    // LOW during VBL. II/II+ doesn't decode $C019 at all — the address
     // falls through to the floating bus per MAME `apple2.cpp` (no
     // $C019 case in `do_io`). Without the iieMode gate, software
     // running on II+ that probes $C019 (e.g. some ProDOS detection
     // routines) would see a deterministic scanline-derived value
     // instead of the random-ish video DMA byte real hardware returns.
+    //
+    // **$C019 read does NOT clear the VBL IRQ** — per Apple IIc
+    // Technical Note #9 (and MAME `apple2e.cpp:2244` comment "does not
+    // reset"). The clear path is the $C05A AN1 write (IIc/IIc+; POM2
+    // overlays the same on IIe as documented in the $C058-$C05D block
+    // below). Earlier POM2 versions cleared the IRQ on every $C019
+    // read, contradicting Tech Note #9.
     if (iieMode && low == 0x19) {
         constexpr uint64_t kCyclesPerScanline = 65;
         constexpr uint64_t kScanlinesPerFrame = 262;
         constexpr uint64_t kVisibleScanlines  = 192;
         const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
         const bool nowActive = scanline < kVisibleScanlines;
-        if (vblIrqPending) {
-            vblIrqPending = false;
-            if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
-        }
         // IIe: OR m_transchar into the low 7 bits (MAME
-        // `apple2e.cpp:1859`). II+ has no $C019; leave low 7 = 0.
+        // `apple2e.cpp:2107`). II+ has no $C019; leave low 7 = 0.
         uint8_t low7 = 0;
         if (iieMode) {
             std::lock_guard<std::mutex> lk(kbMutex);
@@ -644,11 +765,25 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
         return 0;
     }
 
-    // Cassette OUTPUT toggle ($C020-$C02F): any access flips the
-    // cassette write line. The Monitor's WRITE routine ($FECD) loops on
-    // BIT $C020 to drive the magnetic head with 770 Hz / 1 kHz / 2 kHz
-    // square waves encoding sync, ones and zeroes.
+    // Apple //c ROMBANK ($C020-$C02F): when a two-bank //c firmware
+    // dump is loaded, any access in the **entire $C020-$C02F range**
+    // toggles which 16 KB bank is mapped into the motherboard ROM
+    // window ($C100-$CFFF under INTCXROM, $D000-$FFFF under LC ROM).
+    // MAME `apple2e.cpp:1894-1922` flips `m_romswitch` on
+    // `(offset & 0xf0) == 0x20` when `m_isiic`; the Apple IIc Tech Ref
+    // 2e edition lists the softswitch at "$c02x" range, not just $C028.
+    // Both reads and writes trigger the toggle. The //c has no cassette
+    // either, so MAME suppresses cassette_toggle on //c — POM2 does the
+    // same below (gated on !iicHasAltBank).
     if (low >= 0x20 && low <= 0x2F) {
+        if (iicHasAltBank) {
+            iicRomBank = !iicRomBank;
+            return 0;
+        }
+        // Cassette OUTPUT toggle (II/II+/IIe path): the Monitor's WRITE
+        // routine ($FECD) loops on BIT $C020 to drive the magnetic head
+        // with 770 Hz / 1 kHz / 2 kHz square waves encoding sync, ones
+        // and zeroes.
         if (cassette) cassette->toggleOutput();
         return 0;
     }
@@ -702,8 +837,20 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t /*writeVal
     // monostable one-shot semantic (re-strobing during the count
     // doesn't restart the timer); POM2 reloads unconditionally — the
     // simpler model passes every game we've tested.
+    //
+    // RamWorks III (IIe aux-slot card) sniffs writes to $C071/3/5/7
+    // on the same address window. MAME `a2eramworks3.cpp:108-115`
+    // predicate `(offset & 0x9) == 1` over the low nibble selects
+    // those four addresses; the data byte's low 7 bits (`data & 0x7F`,
+    // line 113) is the new bank index. Bank switch and paddle reset
+    // both fire on the same access — they share the bus, neither
+    // shadows the other.
     if (low >= 0x70 && low <= 0x7F) {
         paddleLatchCycle = cycleCounter;
+        if (isWrite && iieMode && ramWorksBanks_ > 1
+            && (low & 0x09) == 0x01) {
+            ramWorksSwapToBank(static_cast<uint8_t>(writeVal & 0x7F));
+        }
         return isWrite ? 0 : floatingBus();
     }
 
@@ -953,7 +1100,13 @@ uint8_t Memory::floatingBus() const
 
 uint8_t Memory::languageCardRead(uint16_t addr) const
 {
-    if (!lcReadRam) return mem[addr];
+    if (!lcReadRam) {
+        // //c ROMBANK alt firmware overrides motherboard ROM at $D000-$FFFF.
+        // LC RAM path below is unaffected — banking only swaps the ROM side.
+        if (iicHasAltBank && iicRomBank)
+            return iicAltFirmware[addr - 0xC000];
+        return mem[addr];
+    }
     const bool useAux = iieMode && (iieMemMode & MF_ALTZP);
     if (addr < 0xE000) {
         const uint16_t off = static_cast<uint16_t>(addr - 0xD000);
@@ -1023,11 +1176,28 @@ uint8_t Memory::memRead(uint16_t addr)
         slots.deactivateExpansion();
     }
     if (iieMode) {
-        if (iieMemMode & MF_INTCXROM) {
+        // //c hardware (iicHasAltBank): no physical slots — internal
+        // ROM is always mapped at $C100-$CFFF regardless of INTCXROM.
+        // MAME `apple2e.cpp:1617-1635` (`update_slotrom_banks`) ORs
+        // `m_isiic` into every internal-ROM gate; the softswitch is
+        // still writable/readable via $C006/$C007/$C015 but has no
+        // effect on what actually executes from $CnXX. The //c reset
+        // routine at $FA62 immediately `JSR $CE4D` etc. — without this
+        // override those addresses would fall through to slot bus
+        // (empty → $FF), and the //c never boots.
+        if ((iieMemMode & MF_INTCXROM) || iicHasAltBank) {
+            if (iicHasAltBank && iicRomBank)
+                return iicAltFirmware[addr - 0xC000];
             return internalIORom[addr - 0xC000];
         }
         if (addr >= 0xC300 && addr <= 0xC3FF &&
             !(iieMemMode & MF_SLOTC3ROM)) {
+            // IIe-only path (//c handled above by the iicHasAltBank
+            // override). The bank check is kept in case a future //e
+            // dump ever sets iicHasAltBank without taking the INTCXROM
+            // shortcut.
+            if (iicHasAltBank && iicRomBank)
+                return iicAltFirmware[addr - 0xC000];
             return internalIORom[addr - 0xC000];
         }
     }
@@ -1070,6 +1240,14 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // window (rare on a IIe) still see it.
     if (iieMode && addr == 0xCFFF) {
         slots.deactivateExpansion();
+    }
+    // Mirror the memRead INTCXROM override for //c: when internal ROM
+    // is mapped at $C100-$CFFF, writes are absorbed (real silicon: ROM
+    // is read-only, slot bus is not reached). Without this, a //c
+    // firmware write into $CnXX would forward to a (non-existent) slot
+    // card and possibly latch activeExpansionSlot to a stale value.
+    if (iieMode && ((iieMemMode & MF_INTCXROM) || iicHasAltBank)) {
+        return;
     }
     if (addr <= 0xC7FF) {
         // Slot ROM is read-only on most cards, but a handful (Mockingboard

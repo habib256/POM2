@@ -26,13 +26,19 @@ constexpr float kAyVolumeTable[16] = {
 
 // AY-3-8910 input clock on the Mockingboard — pin 22 (CLOCK) is wired to
 // the slot's phase 0 clock, i.e. the Apple II 1.0227 MHz CPU clock.
-// Internal dividers: tone = clock / 16, noise = clock / 16, envelope =
-// clock / 256. (Datasheet figures; MAME divides by 8 because it pre-
-// halves the pin-22 input — same final period.)
+//
+// MAME `ay8910.cpp:1077` runs its synthesis stream at `clock/8` and
+// increments tone/noise counters by 1 per sample. Datasheet output
+// freq is `clock/(16*TP)` — produced by a divide-by-2 T-flop on the
+// counter output (one toggle per `TP` counter ticks → output cycle =
+// `2*TP/(clock/8) = TP/(clock/16)` sec). POM2 matches MAME by stepping
+// counters at clock/8 and toggling on `counter >= TP`; the implicit
+// /2 lives in the toggle. Earlier POM2 versions used clock/16 which
+// produced **one octave too low** on every Mockingboard note. Fixed
+// 2026-05-14.
 constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
-constexpr float kAyToneStepHz    = kAyClockHz / 16.0f;   // ~63.9 kHz
-constexpr float kAyNoiseStepHz   = kAyClockHz / 16.0f;   // ~63.9 kHz
-constexpr float kAyEnvStepHz     = kAyClockHz / 256.0f;  // ~3.99 kHz
+constexpr float kAyToneStepHz    = kAyClockHz / 8.0f;    // ~127.8 kHz
+constexpr float kAyNoiseStepHz   = kAyClockHz / 8.0f;    // ~127.8 kHz
 
 // Mockingboard PB → AY control pin map. Reading PB0..2 gives the AY
 // command nibble; bit 0 doubles as !RESET (active low).
@@ -324,11 +330,13 @@ struct MockingboardCard::Via6522
             // counting down through 0xFFFF to give SW visibility into
             // the post-fire counter (matches real 6522 behaviour).
             if (t1Continuous()) {
-                t1Counter += static_cast<int32_t>(t1Latch) + 2;
-                // +2 because the 6522 reload incurs a 1-cycle pulse on
-                // PB7 (we don't model PB7) and the latch-to-counter copy
-                // happens on the cycle after underflow. Empirically gives
-                // the right music tick rate to within 0.01%.
+                t1Counter += static_cast<int32_t>(t1Latch) + 3;
+                // +3 matches MAME `6522via.cpp:534,104` reload constant
+                // `TIMER1_VALUE + IFR_DELAY` where `IFR_DELAY = 3`. The
+                // 3 cycles account for the latch-to-counter copy plus
+                // the PB7 pulse pair (the +2 previously used here was
+                // off by one — within 0.5 % on typical music T1 periods
+                // but deviates from MAME timing on cycle-counting tests).
             } else {
                 t1Counter += 0x10000;       // wrap 16-bit
             }
@@ -375,7 +383,12 @@ struct MockingboardCard::Ay3_8910
 
     void reset()
     {
-        std::memset(regs, 0, sizeof(regs));
+        // MAME `ay8910.cpp ay8910_reset_ym` clears regs 0..AY_PORTA-1
+        // (= 0..13) and leaves R14/R15 (I/O ports A/B) untouched. The
+        // Mockingboard wires R14/R15 unused so this is academic on
+        // music drivers, but a peek via getAyRegister(chip, 14|15)
+        // would diverge from MAME if we wiped all 16.
+        std::memset(regs, 0, 14);
         latchedAddr = 0;
         prevCommand = 0;
     }
@@ -400,31 +413,34 @@ struct MockingboardCard::Ay3_8910
         const uint8_t cmd = static_cast<uint8_t>(
             ((pb & kPbBitBdir) ? 0x02 : 0) |
             ((pb & kPbBitBc1)  ? 0x01 : 0));
-        // Only act on rising edges of {WRITE, LATCH} — BDIR pulses
-        // active on transitions, and we don't want the AY to write the
-        // same register twice while SW holds the bus.
+        // MAME `mockingboard.cpp:391-410 via_psg_ctrl` fires on every
+        // PB write — no edge debounce. A music driver that holds BDIR
+        // through multiple PA changes legitimately re-strobes the same
+        // AY register with each new data byte; the previous edge-only
+        // path silently dropped those re-strobes. Diagnostic counters
+        // (latchCount/writeStrobeCount/etc.) only tick on real
+        // {BDIR,BC1} edges so a held strobe still reports as one.
         ApplyResult result = ApplyResult::NoChange;
-        if (cmd != prevCommand) {
-            switch (cmd) {
-            case 0b11:    // LATCH ADDR
-                ++latchCount;
-                latchedAddr = static_cast<uint8_t>(pa & 0x0F);
-                break;
-            case 0b10:    // WRITE
-                ++writeStrobeCount;
-                regs[latchedAddr & 0x0F] = pa;
-                result = ApplyResult::Wrote;
-                break;
-            case 0b01:    // READ — Mockingboard drivers don't read.
-                ++readStrobeCount;
-                break;
-            case 0b00:
-            default:
-                ++inactiveCount;
-                break;    // INACTIVE
-            }
-            prevCommand = cmd;
+        const bool edge = (cmd != prevCommand);
+        switch (cmd) {
+        case 0b11:    // LATCH ADDR
+            if (edge) ++latchCount;
+            latchedAddr = static_cast<uint8_t>(pa & 0x0F);
+            break;
+        case 0b10:    // WRITE
+            if (edge) ++writeStrobeCount;
+            regs[latchedAddr & 0x0F] = pa;
+            result = ApplyResult::Wrote;
+            break;
+        case 0b01:    // READ — Mockingboard drivers don't read.
+            if (edge) ++readStrobeCount;
+            break;
+        case 0b00:
+        default:
+            if (edge) ++inactiveCount;
+            break;    // INACTIVE
         }
+        prevCommand = cmd;
         return result;
     }
 
@@ -463,9 +479,24 @@ struct MockingboardCard::AudioSrc : public AudioSource
         float    toneCounter[3] = { 0, 0, 0 };
         uint8_t  toneOut[3]     = { 0, 0, 0 };
         // Noise: 17-bit LFSR.
-        float    noiseCounter   = 0;
-        uint32_t noiseLfsr      = 0x1FFFF;
-        uint8_t  noiseOut       = 0;
+        // `noisePrescale` halves the LFSR update rate vs the noise
+        // counter — MAME `ay8910.cpp:1086-1104` toggles `m_prescale_noise`
+        // on every counter expiry and only calls `noise_rng_tick()` on
+        // alternate cycles. Without this, after the tone-rate fix
+        // (counter at clock/8 instead of clock/16) the LFSR would tick
+        // 2× too fast, making noise hiss too coarse.
+        //
+        // `lastSeenResetCount` tracks `ayResetCount_[chip]` so we can
+        // re-seed the LFSR to MAME's reset value (`m_rng = 1`, MAME
+        // `ay8910.cpp:1309`) when the CPU side strobes PB2=0. Without
+        // this re-seed, noise sequences are not deterministic across
+        // resets (POM2's CPU-thread `Ay3_8910::reset()` clears regs but
+        // can't reach this audio-thread state).
+        float    noiseCounter        = 0;
+        uint32_t noiseLfsr           = 1;       // MAME ay8910.cpp:1309
+        uint8_t  noiseOut            = 0;
+        uint8_t  noisePrescale       = 0;
+        uint32_t lastSeenResetCount  = 0;
         // Envelope state machine. Verbatim port of MAME `ay8910.h:182-219`
         // + `ay8910.cpp:989-1020`. The 4 flags (attack, hold, alternate,
         // holding) are derived from R13 via `setShape`, called whenever
@@ -495,12 +526,26 @@ struct MockingboardCard::AudioSrc : public AudioSource
 
         // Snapshot both chips' register banks under the parent mutex.
         // Brief: 32 bytes of memcpy. The CPU thread holds this same
-        // mutex on every VIA write, so contention is bounded.
-        uint8_t regSnap[2][kAyNumRegs];
+        // mutex on every VIA write, so contention is bounded. Also
+        // snapshot `ayResetCount_[]` so the audio thread can detect a
+        // PB2=0 reset that fired in the inter-block window and re-seed
+        // the noise LFSR per MAME (deterministic noise after reset).
+        uint8_t  regSnap[2][kAyNumRegs];
+        uint32_t resetCountSnap[2];
         {
             std::lock_guard<std::mutex> lk(parent->mtx);
             std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
             std::memcpy(regSnap[1], parent->ay_[1]->regs, kAyNumRegs);
+            resetCountSnap[0] = parent->ayResetCount_[0];
+            resetCountSnap[1] = parent->ayResetCount_[1];
+        }
+        for (int ci = 0; ci < 2; ++ci) {
+            if (chip[ci].lastSeenResetCount != resetCountSnap[ci]) {
+                chip[ci].lastSeenResetCount = resetCountSnap[ci];
+                chip[ci].noiseLfsr     = 1;   // MAME ay8910.cpp:1309
+                chip[ci].noisePrescale = 0;
+                chip[ci].noiseOut      = 0;
+            }
         }
 
         // Pre-compute per-sample increments. AY internal step rates are
@@ -547,11 +592,16 @@ struct MockingboardCard::AudioSrc : public AudioSource
                 }
 
                 // ── Noise ────────────────────────────────────────
-                // 5-bit period in R6.
+                // 5-bit period in R6. MAME `ay8910.cpp:1086-1104`
+                // toggles `m_prescale_noise ^= 1` on every counter
+                // expiry and only ticks the LFSR when prescale lands
+                // on 0 → effective LFSR rate = clock/(16*NP).
                 const int noisePer = (r[6] & 0x1F) ? (r[6] & 0x1F) : 1;
                 cs.noiseCounter += noiseStepPerSample;
                 while (cs.noiseCounter >= static_cast<float>(noisePer)) {
                     cs.noiseCounter -= static_cast<float>(noisePer);
+                    cs.noisePrescale ^= 1;
+                    if (cs.noisePrescale) continue;
                     // 17-bit LFSR, polynomial x^17 + x^14 + 1. (MAME's
                     // canonical AY noise tap pair.)
                     const uint32_t bit =
@@ -564,10 +614,14 @@ struct MockingboardCard::AudioSrc : public AudioSource
                 // R13 = shape register, 4 bits.  On every R13 write
                 // MAME's `set_shape` reinitialises the machine; we
                 // detect the write by comparing against the cached
-                // `lastShape`. Period = R11 + (R12 << 8). The base
-                // counter rate matches MAME's `clock/16` (= same as
-                // tone counters); MAME's `m_step = 2` for AY-3-8910
-                // means each step takes `period * 2` base ticks.
+                // `lastShape`. Period = R11 + (R12 << 8). Counter ticks
+                // at clock/8 (same as tone); MAME `ay8910.cpp:994`:
+                // `period = envelope->period * m_step` with `m_step=2`
+                // for AY-3-8910, so each step takes `2*envPer` ticks
+                // at clock/8 → individual step rate = clock/(16*envPer).
+                // A full 16-step ramp therefore completes in
+                // 32*envPer/(clock/8) = 256*envPer/clock seconds — full
+                // cycle freq = clock/(256*envPer), matches datasheet.
                 {
                     const int shape = r[13] & 0x0F;
                     if (shape != cs.lastShape) {

@@ -25,6 +25,7 @@
 #include "Logger.h"
 
 #include "imgui.h"
+#include <GLFW/glfw3.h>
 
 #include <array>
 #include <filesystem>
@@ -224,6 +225,21 @@ float MainWindow::floppyMotorPitchForProfile(pom2::SystemProfile p)
     }
 }
 
+void MainWindow::setGlfwWindow(GLFWwindow* w)
+{
+    window = w;
+    // Catch up the title once the handle is available — the constructor
+    // may have resolved a non-default profile before main.cpp could hand
+    // us the window, so the initial title from glfwCreateWindow wouldn't
+    // reflect the active machine otherwise.
+    if (window) {
+        const auto& cfg = pom2::profileConfig(activeProfile);
+        std::string title = "POM2 v0.5 — ";
+        title.append(cfg.displayName);
+        glfwSetWindowTitle(window, title.c_str());
+    }
+}
+
 void MainWindow::applyProfile(pom2::SystemProfile p)
 {
     const auto& cfg = pom2::profileConfig(p);
@@ -238,15 +254,23 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    the cold reset. The user wants to test the same disk under
     //    different machine models; everything else (CPU state, RAM,
     //    soft switches) is wiped intentionally.
+    //
+    //    Read the LIVE card state (not `settings.getString("disk_path")`
+    //    which is only written to disk in the MainWindow dtor) — so a
+    //    disk inserted mid-session via the Disk II / HDV panel survives
+    //    a profile switch. Skip the synthesised host-folder HDV volume
+    //    (its "path" is a `[host folder] <dir>` sentinel, not a real
+    //    file) since `loadImage` would fail on the sentinel; the user
+    //    can re-synthesise from the Library after the switch.
     std::string savedDiskPath, savedHdvPath;
-    if (diskCard) {
-        // DiskIICard has insertDisk(path) operating on the active drive
-        // (default 0); we approximate by reading the slot 6 settings.
-        // The legitimate disk-path setting is the source of truth.
-        savedDiskPath = settings.getString("disk_path", "");
+    if (diskCard && diskCard->isDiskLoaded()) {
+        savedDiskPath = diskCard->getDiskPath();
     }
-    if (hdvCard) {
-        savedHdvPath = settings.getString("hdv_path", "");
+    if (hdvCard && hdvCard->isImageLoaded()) {
+        const std::string& p = hdvCard->getImagePath();
+        if (p.rfind("[host folder] ", 0) == std::string::npos) {
+            savedHdvPath = p;
+        }
     }
 
     // 3. Tear down all slot cards under the state mutex. Mockingboard's
@@ -255,6 +279,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    freed source otherwise — same gotcha as restartEmulationFromSettings).
     {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
+        // First: null the AI control server's card pointers under the
+        // same lock that handlers grab. A request that already passed
+        // its lock acquisition is using the still-alive card; later
+        // requests will see null and return 503. We re-attach at the
+        // end after the new cards are in place.
+        aiServer.detach();
         if (mockingboardCard && controller.audio().isAvailable()) {
             controller.audio().removeSource(mockingboardCard->audioSource());
         }
@@ -280,12 +310,38 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // load would leave the internal IO ROM in whatever state the
         // previous profile left it.
         controller.memory().setIIEMode(cfg.iieMode);
+
+        // RamWorks III — Applied Engineering aux-slot RAM expansion.
+        // Plugs into the IIe aux slot, which //c and //c+ don't have
+        // (their aux RAM is on the motherboard, no expansion bus). Gate
+        // strictly on AppleIIe so $C073 writes on //c stay in the
+        // paddle-reset-only path. Tiers: 1 (stock 64K), 4 (256K),
+        // 8 (512K), 16 (1M), 48 (3M), 128 (8M). Default 1 = no RamWorks
+        // (legacy behaviour for users without the setting). The
+        // setIIEMode(false) branch already cleared backing storage.
+        if (p == pom2::SystemProfile::AppleIIe) {
+            const int banks = settings.getInt("ramworks_banks", 1);
+            controller.memory().setRamWorksBanks(
+                static_cast<uint32_t>(banks > 0 ? banks : 1));
+        } else if (cfg.iieMode) {
+            // //c / //c+ — force RamWorks off (might be left over from a
+            // prior IIe-profile session). setRamWorksBanks(1) releases
+            // the backing.
+            controller.memory().setRamWorksBanks(1);
+        }
     }
 
     // 5. Resolve and load the new main ROM.
+    //    //c / //c+ 32 KB dumps are two firmware banks (bank 0 lower,
+    //    bank 1 upper) where the //e 32 KB layout uses "char ROM lower,
+    //    firmware upper" — same file size, opposite slicing. Tell the
+    //    loader which way to slice based on the active profile.
+    const bool pickLowerHalf =
+        (p == pom2::SystemProfile::AppleIIc ||
+         p == pom2::SystemProfile::AppleIIcPlus);
     const std::string newRomPath = firstExistingPath(cfg.romProbeOrder);
     if (!newRomPath.empty()
-        && controller.memory().loadAppleIIRom(newRomPath.c_str())) {
+        && controller.memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
         romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
     } else {
@@ -345,6 +401,16 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     settings.setString("system_profile", std::string(cfg.key));
     settings.save();
 
+    // 13. Reflect the profile in the window title so the user sees which
+    //     machine is active without opening the Machine → Profile menu.
+    //     Skipped when called from the constructor (window not yet set
+    //     by main.cpp's setGlfwWindow).
+    if (window) {
+        std::string title = "POM2 v0.5 — ";
+        title.append(cfg.displayName);
+        glfwSetWindowTitle(window, title.c_str());
+    }
+
     pom2::log().info("Profile",
         std::string("Active = ") + std::string(cfg.displayName) +
         ", ROM = " + (newRomPath.empty() ? "<missing>" : newRomPath) +
@@ -353,8 +419,13 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // Re-bind the AI control server to the freshly rebuilt slot pointers.
     // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
-    // the previous profile are stale.)
-    aiServer.attach(&controller, &display, diskCard, hdvCard);
+    // the previous profile are stale.) Held under stateMutex so a
+    // handler observing the pointers between detach() and now sees the
+    // null (→ 503) rather than a torn intermediate state.
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        aiServer.attach(&controller, &display, diskCard, hdvCard);
+    }
     aiServer.setProfileLabel(std::string(cfg.displayName));
 }
 
@@ -367,9 +438,14 @@ void MainWindow::restartEmulationFromSettings()
     // 2. Tear down all cards and clear our raw pointers. Holding the
     //    state mutex isn't strictly necessary now that the worker is
     //    stopped, but it's cheap insurance against any UI thread that
-    //    might be peeking.
+    //    might be peeking — AND it serialises with the AI control
+    //    server's handlers (which take the same mutex around card
+    //    pointer reads). aiServer.detach() must happen under this
+    //    lock to safely null disk6_/hdv5_ before slotBus.clear()
+    //    destroys their pointees.
     {
         std::lock_guard<std::mutex> lk(controller.stateMutex());
+        aiServer.detach();
         // Mockingboard's AudioSource lives inside the card. We must
         // unregister it from the audio device BEFORE the slot bus
         // destroys the card, otherwise the audio thread's next callback
@@ -411,8 +487,13 @@ void MainWindow::restartEmulationFromSettings()
 
     // 6. Re-attach the AI control server with the freshly rebuilt card
     //    pointers — the slot-bus tear-down above invalidated whatever
-    //    diskCard/hdvCard the server was holding.
-    aiServer.attach(&controller, &display, diskCard, hdvCard);
+    //    diskCard/hdvCard the server was holding. Held under stateMutex
+    //    so any handler that observed the detached null sees the new
+    //    pointers atomically with respect to its own lock acquisition.
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        aiServer.attach(&controller, &display, diskCard, hdvCard);
+    }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
 }

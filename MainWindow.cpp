@@ -88,6 +88,9 @@ MainWindow::MainWindow(bool forceIIPlus)
 
     if (iiePresent) {
         controller.memory().setIIEMode(true);
+        const int banks = settings.getInt("ramworks_banks", 1);
+        controller.memory().setRamWorksBanks(
+            static_cast<uint32_t>(banks > 0 ? banks : 1));
         display.setAuxMemory(controller.memory().auxData());
     }
 
@@ -1045,8 +1048,11 @@ void MainWindow::renderMenuBar()
         const char* gfx = state.textMode ? "TEXT"
                         : state.hiRes    ? (state.mixedMode ? "HGR+TXT" : "HGR")
                                          : (state.mixedMode ? "LGR+TXT" : "LGR");
-        char buf[128];
-        std::snprintf(buf, sizeof(buf), "  %s | %s | %s", modeStr, gfx, romStatus.c_str());
+        const auto& cfg = pom2::profileConfig(activeProfile);
+        char buf[192];
+        std::snprintf(buf, sizeof(buf), "  %.*s | %s | %s | %s",
+                      static_cast<int>(cfg.displayName.size()), cfg.displayName.data(),
+                      modeStr, gfx, romStatus.c_str());
         ImGui::TextDisabled("%s", buf);
     }
     ImGui::EndMainMenuBar();

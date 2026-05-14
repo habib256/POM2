@@ -60,7 +60,7 @@ public:
     /// the `--display <mode>` CLI flag during Phase B.
     Apple2Display& displayRef() { return display; }
 
-    void setGlfwWindow(GLFWwindow* w) { window = w; }
+    void setGlfwWindow(GLFWwindow* w);
     void render();
 
     // Hooks installed by main.cpp into GLFW callbacks.

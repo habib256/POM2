@@ -891,6 +891,33 @@ add_test(NAME iie_memory_smoke COMMAND test_iie_memory)
 set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── RamWorks III smoke test ─────────────────────────────────────────────
+# Pins the Applied Engineering aux-slot RAM expansion port — verbatim
+# against MAME src/devices/bus/a2bus/a2eramworks3.cpp. Covers the
+# $C071/3/5/7 bank-select predicate, the `data & 0x7F` mask, bank
+# isolation across the 80-KB stride memcpy swap, the IIe-only gating,
+# and the cold-reset bank-0 snap.
+add_executable(test_ramworks
+    ramworks_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_ramworks PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ramworks PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_ramworks PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_ramworks PRIVATE winmm)
+endif()
+
+add_test(NAME ramworks_smoke COMMAND test_ramworks)
+set_tests_properties(ramworks_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── IIe Language Card + ALTZP + RAMRD/WRT smoke test ────────────────────
 # Pins the ProDOS-style LC paging sequences that the existing iie_memory
 # test only partially covers: the prewrite latch under all four mode bits,

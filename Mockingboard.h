@@ -16,12 +16,18 @@
 //   $Cn80..$Cn8F   VIA #2  (16 registers, partial decode — mirrors across
 //                           $Cn90..$CnFF)
 //
-// 6522 → AY wiring (per Mockingboard schematic):
+// 6522 → AY wiring (Sweet Microsystems Mockingboard A/C schematic;
+// AppleWin `Mockingboard.cpp:193` matches MAME `mockingboard.cpp`):
 //
 //   VIA Port A (8 bits)  → AY data bus  D0..D7
-//   VIA Port B bit 0     → AY !RESET (active low: PB0=0 zeroes AY regs)
+//   VIA Port B bit 0     → AY BC1
 //   VIA Port B bit 1     → AY BDIR
-//   VIA Port B bit 2     → AY BC1
+//   VIA Port B bit 2     → AY !RESET (active low: PB2=0 zeroes AY regs)
+//
+// (Earlier POM2 had PB0=/RESET and PB2=BC1 — every INACTIVE strobe a
+// music driver emitted between LATCH and WRITE looked like /RESET-
+// asserted and wiped the AY bank, silencing Nox Archaist, Ultima IV
+// and Total Replay. Fixed 2026-05-14.)
 //
 // Control sequence (BDIR, BC1):
 //

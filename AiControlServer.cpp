@@ -301,6 +301,22 @@ void AiControlServer::attach(EmulationController* ctrl,
     hdv5_    = hdv5;
 }
 
+void AiControlServer::detach()
+{
+    // Pointer-only clear under caller-held stateMutex. Concurrent
+    // handlers either (a) blocked waiting on the lock and will see the
+    // nulls when they unblock and re-check, or (b) already past their
+    // null-check and inside the lock — in which case the caller is
+    // blocked behind them and applyProfile's actual card teardown
+    // hasn't happened yet, so the still-alive cards are safe to use.
+    // ctrl_ and display_ live across profile switches (members of
+    // MainWindow / EmulationController, not re-created) — only the
+    // slot cards get torn down and rebuilt, so only their pointers
+    // need clearing.
+    disk6_   = nullptr;
+    hdv5_    = nullptr;
+}
+
 bool AiControlServer::start(uint16_t port)
 {
     stop();
@@ -608,23 +624,27 @@ void AiControlServer::handleStatus(int fd, const Request& /*req*/)
         cpuMode = cpuModeName(cpu.getCpuMode());
     }
 
-    // Disk status. Locks the same mutex briefly — DiskIICard introspection
-    // is read-only but still touches the shared head-position fields.
+    // Disk status. Lock-then-check so a profile switch nulling disk6_
+    // (see `detach()`) is serialised against this read. Without the
+    // lock-first ordering, disk6_ could be non-null at the if() but
+    // freed by the time we dereference inside the lock.
     std::string disks = "[]";
-    if (disk6_) {
+    {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        std::ostringstream oss;
-        oss << "[";
-        for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
-            if (d) oss << ",";
-            oss << "{\"slot\":6,\"drive\":" << d
-                << ",\"path\":\"" << jsonEscape(disk6_->getDiskPath(d)) << "\""
-                << ",\"loaded\":" << (disk6_->isDiskLoaded(d) ? "true" : "false")
-                << ",\"track\":" << disk6_->getCurrentTrack(d)
-                << "}";
+        if (disk6_) {
+            std::ostringstream oss;
+            oss << "[";
+            for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
+                if (d) oss << ",";
+                oss << "{\"slot\":6,\"drive\":" << d
+                    << ",\"path\":\"" << jsonEscape(disk6_->getDiskPath(d)) << "\""
+                    << ",\"loaded\":" << (disk6_->isDiskLoaded(d) ? "true" : "false")
+                    << ",\"track\":" << disk6_->getCurrentTrack(d)
+                    << "}";
+            }
+            oss << "]";
+            disks = oss.str();
         }
-        oss << "]";
-        disks = oss.str();
     }
 
     std::ostringstream oss;
@@ -765,7 +785,10 @@ void AiControlServer::handleKeyboard(int fd, const Request& req)
 void AiControlServer::handleDiskInsert(int fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
-    if (!disk6_) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
+    // Parse the body BEFORE locking — these are pure JSON ops, no card
+    // access. Defer the disk6_ null-check to inside the lock so a
+    // concurrent profile switch (which detaches() before tearing down
+    // the card) can't slip a null past us.
     long slot  = 6;
     long drive = 0;
     jsonGetInt(req.body, "slot",  slot);
@@ -783,15 +806,20 @@ void AiControlServer::handleDiskInsert(int fd, const Request& req)
             "working directory (received \"" + path + "\")");
         return;
     }
-    bool ok;
+    bool noCard = false;
+    bool ok     = false;
+    std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        ok = disk6_->insertDisk(static_cast<int>(drive), *safe);
+        if (!disk6_) {
+            noCard = true;
+        } else {
+            ok = disk6_->insertDisk(static_cast<int>(drive), *safe);
+            if (!ok) errMsg = disk6_->getLastError(static_cast<int>(drive));
+        }
     }
-    if (!ok) {
-        sendJsonError(fd, 400, "insert failed: " + disk6_->getLastError(static_cast<int>(drive)));
-        return;
-    }
+    if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
+    if (!ok)    { sendJsonError(fd, 400, "insert failed: " + errMsg); return; }
     sendJsonOk(fd, "{\"slot\":6,\"drive\":" + std::to_string(drive) +
                    ",\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
@@ -799,16 +827,18 @@ void AiControlServer::handleDiskInsert(int fd, const Request& req)
 void AiControlServer::handleDiskEject(int fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
-    if (!disk6_) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
     long drive = 0;
     jsonGetInt(req.body, "drive", drive);
     if (drive < 0 || drive >= DiskIICard::kDriveCount) {
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }
+    bool noCard = false;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        disk6_->ejectDisk(static_cast<int>(drive));
+        if (!disk6_) noCard = true;
+        else         disk6_->ejectDisk(static_cast<int>(drive));
     }
+    if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
     sendJsonOk(fd, "{\"drive\":" + std::to_string(drive) + "}");
 }
 

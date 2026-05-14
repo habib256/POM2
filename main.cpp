@@ -12,6 +12,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -176,6 +177,10 @@ int main(int argc, char* argv[])
     if (plan->forceIIPlus) {
         pom2::log().info("CLI", "--ii-plus: ignoring apple2e.rom, booting as II+");
     }
+    // Hand the GLFW window to MainWindow BEFORE any applyProfile() call so
+    // the profile-driven title update (step 13 in applyProfile) sees a
+    // valid handle even when --preset triggers the switch.
+    mainWindow.setGlfwWindow(window);
     // CLI --preset selection (must come AFTER MainWindow's legacy boot so
     // it overrides via the full cold-reset path applyProfile uses).
     if (plan->preset != pom2::CliPreset::Default) {
@@ -190,7 +195,6 @@ int main(int argc, char* argv[])
         }
         mainWindow.applyProfile(sp);
     }
-    mainWindow.setGlfwWindow(window);
     glfwSetWindowUserPointer(window, &mainWindow);
     glfwSetCharCallback(window, glfw_char_callback);
     glfwSetKeyCallback (window, glfw_key_callback);
@@ -236,12 +240,26 @@ int main(int argc, char* argv[])
 
     // ─── Phase C deferred actions: kick off in a background thread that
     // sleeps briefly (let the worker thread + first render frame land)
-    // then runs every action in order. Detached — main() doesn't wait.
+    // then runs every action in order. The thread is TRACKED (not
+    // detached) so we can join before MainWindow goes out of scope —
+    // otherwise a fast-quit user could close the window in <250 ms and
+    // the lambda would dereference a destroyed EmulationController. The
+    // `deferredCancelled` flag lets fast-quit skip the actions entirely
+    // (sleep loop polls it every 10 ms) so shutdown stays snappy.
+    std::thread        deferredThread;
+    std::atomic<bool>  deferredCancelled{false};
     if (!plan->deferredActions.empty()) {
-        std::thread([actions = plan->deferredActions, emu = &mainWindow.emul()] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            pom2::runDeferredActions(actions, *emu);
-        }).detach();
+        deferredThread = std::thread(
+            [actions = plan->deferredActions,
+             emu     = &mainWindow.emul(),
+             cancel  = &deferredCancelled] {
+                for (int i = 0; i < 25; ++i) {
+                    if (cancel->load(std::memory_order_acquire)) return;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                if (cancel->load(std::memory_order_acquire)) return;
+                pom2::runDeferredActions(actions, *emu);
+            });
     }
 
     while (!glfwWindowShouldClose(window)) {
@@ -262,6 +280,13 @@ int main(int argc, char* argv[])
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
     }
+
+    // Stop the deferred-actions worker before any destructors run.
+    // Signal cancellation so a thread still in its 250 ms wakeup window
+    // exits promptly instead of running actions on the about-to-be-
+    // destroyed emulator.
+    deferredCancelled.store(true, std::memory_order_release);
+    if (deferredThread.joinable()) deferredThread.join();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

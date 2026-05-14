@@ -78,6 +78,43 @@ IIe-vs-II+ split depends on the flag. Adds aux 64 KB, 4 KB
 and `$2000-$3FFF` when HIRES). All IIe paths gated behind `iieMode` —
 II+ untouched. Pinned: `iie_memory_smoke_test.cpp`.
 
+### RamWorks III (`setRamWorksBanks(N)`)
+
+Applied Engineering aux-slot RAM expansion. Verbatim port of MAME
+`src/devices/bus/a2bus/a2eramworks3.cpp`. Tiers: 1 (stock 64K), 4 (256K),
+8 (512K), 16 (1M), 48 (3M), 128 (8M, MAME cap line 99-107). Bank index
+held in `ramWorksBank_`; bank 0 = standard IIe aux (regression-safe).
+
+**Bus protocol** (MAME line 108-115): writes to `$C0n1/3/5/7`
+(predicate `(low & 0x09) == 0x01` over `$C070-$C07F`) latch
+`bank = data & 0x7F`. The same accesses still pulse the paddle one-shot
+mirror — they share the bus. Reads of those addresses do nothing
+RamWorks-side (paddle latch + floating bus only). Reset → bank 0
+(MAME `device_reset` line 67).
+
+**Storage** is `ramWorksBacking_`, one 80 KB slot per bank
+(`kRamWorksBankStride = 0x10000 + 0x1000 + 0x1000 + 0x2000` = main aux
++ LC bank1 + LC bank2 + LC high). The four visible aux* arrays always
+hold the active bank — kept at fixed addresses so `Apple2Display`
+caches `auxData()` once and never invalidates. `ramWorksSwapToBank`
+memcpys visible→backing[prev] then backing[curr]→visible. ~80 KB per
+switch; ProDOS /RAM driver does ~100s/sec → negligible cost.
+
+**Bank clamp**: `(data & 0x7F) % ramWorksBanks_`. MAME deliberately
+does NOT clamp (it always allocates 8 MB and reads garbage from
+unpopulated slots — UB-adjacent in C++); we wrap to bound backing
+access. A real RamWorks III with fewer than 128 banks installed has
+chip-select aliasing that produces the same visible behaviour.
+
+**IIe-only**: `setIIEMode(false)` releases the backing
+(`ramWorksBacking_.clear() + shrink_to_fit()`). The dispatch in
+`softSwitchAccess` is gated on `iieMode && ramWorksBanks_ > 1`, so
+plain II/II+ falls through to the paddle-reset mirror unchanged.
+
+**Setting**: `ramworks_banks` int in settings (default 1 = stock).
+Wired in `MainWindow::applyProfile` between `setIIEMode(true)` and
+`loadAppleIIRom`. Pinned: `ramworks_smoke_test.cpp`.
+
 ### Soft switches
 
 Toggled by *either* read or write. `$C030` toggles speaker on **every**
@@ -111,12 +148,15 @@ $C000-$C00F  IIe paging (80STORE/RAMRD/RAMWRT/INTCXROM/ALTZP/SLOTC3ROM/
 $C010        Clear keyboard strobe
 $C013-$C018  IIe paging status reads (bit 7 = on)
 $C01E/$C01F  IIe RDALTCHAR / RD80COL
+$C028        //c ROMBANK toggle (only when 32 KB //c firmware loaded;
+             falls through to cassette on II/II+/IIe)
 $C030-$C03F  Speaker toggle (any access)
 $C050-$C057  Display mode pairs (text/gfx, mixed, page 1/2, lo/hi-res)
 $C05E/$C05F  IIe DHGR enable / disable (AN3 pulses for Le Chat Mauve FIFO)
 $C061-$C063  Push-buttons (negative when pressed)
 $C064-$C067  Paddle inputs (negative while RC discharging)
-$C070        Paddle reset latch
+$C070        Paddle reset latch (mirrored $C070-$C07F)
+$C071/3/5/7  RamWorks III aux-bank select (write `data & 0x7F`)
 $C0A8-$C0AB  SSC ACIA (slot 2)
 $C0C0        ThunderClock+ uPD1990AC bit-bang (slot 4)
 $C0E0-$C0EF  Disk II soft switches (slot 6 — $C0EC=Q6L data, $C0ED=Q6H)
@@ -419,7 +459,10 @@ AppleWin `DiskImageHelper.cpp`.
   extension when only the other position fits. Predicate: `prev=0`,
   plausible `next`, storage_type `$F`, name chars in `A-Z 0-9 .` (kills
   `$Fx`-byte spoofs in a DOS catalog). Catches cc65-Chess.po case
-  (`.po` ext, DOS skew).
+  (`.po` ext, DOS skew). The smoke test fixture probe historically
+  missed the `dsk/` subdirectory and silently skipped — fixed in
+  `disk_skew_sniff_smoke_test.cpp` to fail-loud on missing fixture and
+  probe all of `disks/`, `disks/dsk/`, `disks/woz/`, `disks2/`.
 - **2IMG**: 64 B header → format byte (0=DOS, 1=ProDOS, 2=NIB), flags
   (bit 0 = WP, bit 8 or 31 = vol# present), dataOffset, dataLength.
   Raw header + trailer captured into `twoImgHeaderRaw` /
@@ -466,19 +509,25 @@ Soft switches `$C0E0-$C0EF`: phases, motor, drive_select, Q6L/Q6H,
 Q7L/Q7H.
 
 **Drive switching** via `selectDrive(int)` mirrors MAME
-`wozfdc.cpp:219-241`: when motor active, flush old drive's in-flight
-write, reset `lssCycle` to `cpuCycleTotal*2` so new drive's reads start
-at position 0 of its track (MAME `revolution_start_time = now`).
-Critical for multi-drive protections (Locksmith, Copy II Plus). Each
-drive owns its own `DiskImage` + head qtr-track + nibble cursor; phase
-magnets + motor shared (matches real silicon). Pinned:
-`disk_drive2_smoke_test.cpp`.
+`wozfdc.cpp:264-291` (file moved from `bus/a2bus/` to `machine/` in
+MAME tree; line numbers are current as of 2026-05-14 audit). When
+motor active, flush old drive's in-flight write, reset `lssCycle` to
+`cpuCycleTotal*2`. **Divergence from MAME**: MAME keeps `cycles`
+monotonic and resets `revolution_start_time` on the floppy device
+via `mon_w(false)`; POM2 has no per-drive revolution_start tracking
+so the swap puts the new drive at an arbitrary modulo-wrapped position
+in its track, not "position 0". Adequate for stock DOS/ProDOS;
+multi-drive flux protections (Locksmith, Copy II Plus) may diverge
+from real silicon. Each drive owns its own `DiskImage` + head
+qtr-track + nibble cursor; phase magnets + motor shared (matches real
+silicon). Pinned: `disk_drive2_smoke_test.cpp`.
 
 ### Two read paths share the data register
 
 - **Bit-level LSS** (default when `roms/diskii_p6.rom` present) —
-  verbatim port of MAME `wozfdc.cpp` + flux-event subset of `floppy.cpp`
-  (fetched 2026-05-09 from `mamedev/mame` master). MAME `cycles` = 2×
+  verbatim port of MAME `machine/wozfdc.cpp` + flux-event subset of
+  `imagedev/floppy.cpp` (originally `bus/a2bus/wozfdc.cpp`; MAME
+  refactored the location post-fetch). MAME `cycles` = 2×
   CPU clock. `lssSync(extra)` catches up from persistent `lssCycle` to
   `cyclesLimit = cpuCycleTotal*2 + extra`. PULSE from
   `DiskImage::getNextTransition(track, lssCycle)` (event at LSS cycle
@@ -685,6 +734,52 @@ we enable IRQs unconditionally), motion clamping (MCU does it). Pinned:
 Default cycles/frame = 17045 across all profiles (//c+ real silicon is
 4× but unmodelled).
 
+**32 KB ROM disambiguation**: //e and //c dumps share the 32 KB size
+but encode firmware in OPPOSITE halves. `loadAppleIIRom` takes a
+`pickLower16KFor32K` flag set by `applyProfile` based on profile:
+
+- //e (`apple2e.rom`): firmware in UPPER 16 KB (file 0x4000-0x7FFF),
+  lower half is character ROM data. `pickLower=false`.
+- //c / //c+ (`apple2c-32Kv0.rom`, `apple2cp.rom`): TWO 16 KB firmware
+  banks. Bank 0 in LOWER half (the one mapped at reset, contains cold-
+  start at $FA62), bank 1 in upper half (alt firmware: AppleTalk,
+  MouseText, SmartPort drivers). `pickLower=true`; the upper 16 KB is
+  stashed into `iicAltFirmware` for the $C028 toggle.
+
+Both halves can carry valid-looking reset vectors so we cannot reliably
+auto-detect from bytes alone — the profile is the source of truth.
+
+**$C028 ROMBANK** (//c only): when `iicHasAltBank` is set (32 KB dump
+loaded via `pickLower=true`), any access to `$C028` toggles
+`iicRomBank`. Reads of `$C100-$CFFF` (under `INTCXROM`) and `$D000-$FFFF`
+(under LC ROM) consult the flag and dispatch to `iicAltFirmware` instead
+of `internalIORom` / `mem` when bank 1 is active. `resetSoftSwitches`
+clears the flag so cold-boot always starts in bank 0. On II/II+/IIe (no
+alt bank), the `$C028` access falls through to the cassette-output
+toggle just like the rest of `$C020-$C02F`. Pinned:
+`system_profile_smoke_test.cpp::testIicRomBankSwitch`.
+
+**//c INTCXROM override** (//c-only): the //c has no physical slots, so
+internal motherboard ROM is mapped at `$C100-$CFFF` at all times. POM2
+gates `internalIORom` dispatch on `(MF_INTCXROM || iicHasAltBank)` in
+`memRead` and `memWrite` — matches MAME `apple2e.cpp:1617-1635
+update_slotrom_banks`, which ORs `m_isiic` into every internal-ROM
+gate. **Without this**, the //c reset routine at `$FA62` would `JSR
+$CE4D` into an empty slot bus on the very first instructions and crash
+before booting. `loadAppleIIRom` and `resetSoftSwitches` both set
+`iieMemMode |= MF_INTCXROM` when `iicHasAltBank` is true so `$C015`
+(RDCXROM) reads back consistently (MAME `apple2e.cpp:1273` does the
+same in `machine_reset`). Pinned:
+`system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`.
+
+**20 KB Apple II+ ROM dumps**: some "system pack" dumps prepend 4 KB
+of filler — unused Integer BASIC bank or zeros — to the 16 KB
+`$C000-$FFFF` firmware. `loadAppleIIRom` recognises `size == 20*1024`
+and skips the leading 4 KB; the high 16 KB loads as a standard II+
+image. The old "best effort" fallback landed `loadAddr` at `$B000`,
+clobbering user RAM with filler. Pinned:
+`system_profile_smoke_test.cpp::test20kIIPlusRomLoad`.
+
 **Profile switching = full cold reset** via
 `MainWindow::applyProfile(SystemProfile)`. Order matters:
 
@@ -694,7 +789,7 @@ Default cycles/frame = 17045 across all profiles (//c+ real silicon is
    memory).
 3. Wipe RAM/aux/LC + reset soft switches.
 4. **`setIIEMode(...)` BEFORE `loadAppleIIRom`**.
-5. Load ROMs.
+5. Load ROMs (with `pickLower16KFor32K` derived from the profile).
 6. Re-plug slots from settings.
 7. Re-mount previously inserted disks/HDVs (cross-profile media
    persistence).
@@ -703,6 +798,9 @@ Default cycles/frame = 17045 across all profiles (//c+ real silicon is
 10. `hardReset()`.
 11. Restart worker.
 12. Persist `system_profile`.
+13. Refresh GLFW window title with `cfg.displayName` so the user sees
+    "Apple //c" / "Apple //e" without opening the Profile menu. Status
+    pill in the menu bar also shows the active profile name.
 
 CLI `--preset` triggers the same path after the legacy auto-probe — wins.
 Aliases: `apple2`, `apple2plus`, `apple2e`, `apple2c`, `apple2cplus`,

@@ -87,7 +87,16 @@ public:
     // ROM loading. Apple II distributions ship as a single 12 KB image
     // covering $D000-$FFFF. Returns 1 on success, 0 on failure (last
     // error in `lastError`).
-    int loadAppleIIRom(const char* filename);
+    //
+    // 32 KB dump disambiguation: //e "system + video combined" dumps
+    // carry the firmware in the UPPER 16 KB (file offsets 0x4000-0x7FFF)
+    // with charset data in the lower half. //c / //c+ dumps instead
+    // carry TWO 16 KB firmware banks side-by-side — bank 0 in the LOWER
+    // half (the cold-reset entry), bank 1 in the upper half (alt
+    // firmware reached via $C028 ROMBANK). The two layouts are
+    // indistinguishable from file size alone — the caller passes
+    // `pickLower16KFor32K=true` when loading a //c-style dump.
+    int loadAppleIIRom(const char* filename, bool pickLower16KFor32K = false);
     int loadCharRom(const char* filename);  // 2 KB, 256 glyphs × 8 rows
 
     const std::string& getLastError() const { return lastError; }
@@ -220,6 +229,18 @@ public:
     uint8_t*       auxDataMutable()          { return aux.data(); }
     const uint8_t* internalIORomData() const { return internalIORom.data(); }
 
+    /// Applied Engineering RamWorks III — IIe aux-slot RAM expansion up
+    /// to 8 MB (128 × 64 KB banks). Verbatim port of MAME
+    /// src/devices/bus/a2bus/a2eramworks3.cpp. `banks == 1` = stock IIe
+    /// 64 KB aux (no RamWorks). Standard tiers: 1 (stock), 4 (256K),
+    /// 8 (512K), 16 (1M), 48 (3M), 128 (8M). Clamped to [1, 128].
+    /// Only meaningful in IIe mode — call after setIIEMode(true) and
+    /// BEFORE loadAppleIIRom. Wipes aux contents and resets current
+    /// bank to 0 (MAME `device_reset` line 67).
+    void setRamWorksBanks(uint32_t banks);
+    uint32_t ramWorksBanks() const { return ramWorksBanks_; }
+    uint8_t  ramWorksBank()  const { return ramWorksBank_; }
+
     // IIe memory mode flags. Bit positions are arbitrary (we don't need to
     // match AppleWin's MF_* layout); they only have to be stable for the
     // life of the process. Tests pin the routing behaviour, not the flag
@@ -251,11 +272,27 @@ private:
     std::array<uint8_t, 0x2000> lcHigh{};
     // IIe extension. Allocated unconditionally (small) but only consulted
     // by the dispatcher when iieMode is true.
-    std::array<uint8_t, 0x10000> aux{};       // auxiliary 64 KB
+    std::array<uint8_t, 0x10000> aux{};       // auxiliary 64 KB (= RamWorks bank 0)
     std::array<uint8_t, 0x1000>  internalIORom{}; // motherboard $C000-$CFFF
     std::array<uint8_t, 0x1000>  auxLcBank1{};
     std::array<uint8_t, 0x1000>  auxLcBank2{};
     std::array<uint8_t, 0x2000>  auxLcHigh{};
+
+    // RamWorks III backing store. The four `aux*` arrays above are the
+    // "currently visible" bank — kept at fixed addresses so Apple2Display
+    // can cache the auxData() pointer once. Switching banks memcpys the
+    // visible buffers into `ramWorksBacking_[prev]` and the new bank out
+    // of `ramWorksBacking_[curr]`. Stride per bank = 64K + 4K + 4K + 8K =
+    // 80K. `ramWorksBanks_ == 1` disables the swap path entirely (stock
+    // IIe). Layout per slot in backing: [0..0xFFFF]=aux,
+    // [0x10000..0x10FFF]=auxLcBank1, [0x11000..0x11FFF]=auxLcBank2,
+    // [0x12000..0x13FFF]=auxLcHigh. Total: ramWorksBanks_ × 0x14000.
+    static constexpr uint32_t kRamWorksMaxBanks  = 128;        // MAME 8 MB cap
+    static constexpr size_t   kRamWorksBankStride = 0x14000;   // 80 KB per bank
+    std::vector<uint8_t> ramWorksBacking_;
+    uint32_t ramWorksBanks_ = 1;   // 1 = stock 64 KB aux (no RamWorks)
+    uint8_t  ramWorksBank_  = 0;   // current bank (MAME m_bank / 0x10000)
+    void ramWorksSwapToBank(uint8_t newBank);  // memcpy in/out
     std::vector<uint8_t> characterRom;        // 2048 bytes once loaded
     std::string lastError;
 
@@ -324,6 +361,18 @@ private:
 
     bool     iieMode      = false;
     uint16_t iieMemMode   = 0;       // OR of MF_* flags
+
+    // Apple //c ROMBANK ($C028 soft switch). When a 32 KB //c-style dump
+    // is loaded, the second 16 KB firmware bank is stashed in
+    // `iicAltFirmware`. Reads of $C028 toggle `iicRomBank`; when bank 1
+    // is selected, $C100-$CFFF (under INTCXROM) and $D000-$FFFF (ROM
+    // mode) dispatch to the alt firmware bytes instead of the regular
+    // `internalIORom`/`mem` paths. `iicHasAltBank` gates the whole
+    // mechanism — on II/II+/IIe profiles the $C028 access stays in the
+    // cassette-toggle path (which is what those machines actually do).
+    std::array<uint8_t, 0x4000> iicAltFirmware{};
+    bool iicHasAltBank = false;
+    bool iicRomBank    = false;   // false = bank 0 (cold-start), true = bank 1
 
     // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
     // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not

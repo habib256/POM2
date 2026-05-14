@@ -10,6 +10,18 @@
 //   3. dos33_master.dsk — `.dsk` extension with DOS skew. Must stay
 //      Dos33 with no spurious override.
 //
+// Canonical fixture paths (build/tests/ cwd):
+//   ../../disks/dsk/cc65-Chess.po
+//   ../../disks/dsk/dos33_master.dsk
+//   ../../disks/ProDOS_2_4_3.po       (kept at disks/ root historically)
+//
+// Earlier versions of this test treated a missing fixture as "not a
+// failure" — combined with a probe list that didn't cover the dsk/
+// subdirectory, that silently green-passed against cc65-Chess.po for
+// the entire skew-sniff series of commits. Missing-fixture is now a
+// hard failure for the three named real cases; the synthetic spoof
+// negative below stays unconditional.
+//
 // Also pins the name-character validation in `looksLikeVolHeader`: a
 // synthetic image whose alternate-skew offset has the right header byte
 // but bogus name characters must NOT trigger an override.
@@ -18,6 +30,8 @@
 //   - Sniff regression that misclassifies cc65-Chess.po (hangs the boot)
 //   - Over-eager override on a real DOS disk that happens to have a $Fx
 //     byte at offset 0x404 in its catalog (random false positive)
+//   - Probe list rot when the fixture pack is reorganised into subdirs
+//     (caught now by the hard failure on missing fixtures)
 
 #include "DiskImage.h"
 
@@ -36,11 +50,15 @@ bool runRealDiskCase(const char* fixtureName,
                      DiskImage::SectorOrder expected,
                      const char* label)
 {
-    // The user keeps WOZ images under disks/ and the legacy DSK/PO pack
-    // under disks2/; ctest cwd is build/tests/. Probe both so the test
-    // remains useful regardless of which folder holds the fixture.
+    // ctest cwd is build/tests/. The fixture pack is split: WOZ images
+    // under disks/woz/, sector images under disks/dsk/, with some legacy
+    // disks/ and disks2/ roots still in use. Probe all variants so the
+    // test locates fixtures regardless of layout changes.
     static const char* prefixes[] = {
-        "../../disks/", "../../disks2/", "disks/", "disks2/"
+        "../../disks/",      "../../disks/dsk/",  "../../disks/woz/",
+        "../../disks2/",
+        "disks/",            "disks/dsk/",        "disks/woz/",
+        "disks2/",
     };
     std::string path;
     for (const char* pfx : prefixes) {
@@ -49,10 +67,12 @@ bool runRealDiskCase(const char* fixtureName,
         if (f) { path = candidate; break; }
     }
     if (path.empty()) {
-        std::fprintf(stderr, "%s: cannot find %s under disks/ or disks2/ "
-                             "(skipping — not a test failure)\n",
-                     label, fixtureName);
-        return true;  // missing fixture is not a failure
+        std::fprintf(stderr,
+            "%s: required fixture %s not found under disks/, disks/dsk/, "
+            "disks/woz/, or disks2/ — failing loud rather than silently "
+            "green-passing (fix the fixture or extend the probe list)\n",
+            label, fixtureName);
+        return false;
     }
 
     DiskImage img;
