@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_slot_peripheral_irq.dir/slot_peripheral_irq_smoke_test.cpp.o CMakeFiles/test_slot_peripheral_irq.dir/__/SlotBus.cpp.o -o test_slot_peripheral_irq 

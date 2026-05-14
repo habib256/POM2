@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_disk_2mg_writeback.dir/disk_2mg_writeback_smoke_test.cpp.o CMakeFiles/test_disk_2mg_writeback.dir/__/DiskImage.cpp.o -o test_disk_2mg_writeback 

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_slot_bus.dir/slot_bus_smoke_test.cpp.o CMakeFiles/test_slot_bus.dir/__/SlotBus.cpp.o -o test_slot_bus 

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_disk_refuse.dir/disk_refuse_smoke_test.cpp.o CMakeFiles/test_disk_refuse.dir/__/DiskImage.cpp.o -o test_disk_refuse 

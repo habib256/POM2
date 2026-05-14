@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_mc6821.dir/mc6821_smoke_test.cpp.o CMakeFiles/test_mc6821.dir/__/MC6821.cpp.o -o test_mc6821 

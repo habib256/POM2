@@ -9,3 +9,16 @@ compile_commands.json
 .idea/
 *.swp
 .DS_Store
+
+# CMake droppings if someone runs `cmake .` instead of `cmake -B build`
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/Makefile
+/Testing/
+tests/CMakeFiles/
+tests/CMakeCache.txt
+tests/cmake_install.cmake
+tests/CTestTestfile.cmake
+tests/Makefile
