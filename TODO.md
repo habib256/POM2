@@ -1,7 +1,7 @@
 # POM2 — TODO
 
-État au 2026-05-15. Backlog ouvert. Architecture → `CLAUDE.md` ;
-historique → `git log`.
+État au 2026-05-15. Backlog ouvert. Orientation → `CLAUDE.md` ;
+notes d'implémentation profondes → `DEV.md` ; historique → `git log`.
 
 Légende sévérité : 🟠 High · 🟡 Medium · 🟢 Low. Sections regroupées
 par sous-système, triées par poids des items 🟠.

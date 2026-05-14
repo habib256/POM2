@@ -863,6 +863,30 @@ if(WIN32)
 endif()
 
 
+# ─── HDV boot dump (diagnostic, not a CTest target) ─────────────────────
+add_executable(hdv_boot_dump
+    hdv_boot_dump.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(hdv_boot_dump PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(hdv_boot_dump PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(hdv_boot_dump PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(hdv_boot_dump PRIVATE winmm)
+endif()
+
+
 # ─── Apple IIe memory smoke test ──────────────────────────────────────────
 # Pins the auxiliary 64 KB bank, the IIe paging soft switches (80STORE,
 # RAMRD, RAMWRT, INTCXROM, ALTZP, SLOTC3ROM, 80COL, ALTCHAR), the status
