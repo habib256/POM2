@@ -11,9 +11,12 @@ Sections triées par poids des items 🟠 (le plus urgent d'abord).
 ## 1. ClockCard / ThunderClock+
 
 - [ ] 🟠 **TP tick rates (64/256/2048/4096 Hz + interval timers)** non
-      implémentés. MAME `upd1990a.cpp:248-267`. Nécessitent une ligne
-      IRQ slot-bus (pas encore exposée par `SlotPeripheral`).
-      Utilitaires interval-timing (Clockworks) ne tickent jamais.
+      implémentés. MAME `upd1990a.cpp:248-267`. La ligne IRQ slot-bus
+      est maintenant exposée via `SlotPeripheral::assertIrq(bool)`
+      (cf. CLAUDE.md « IRQ aggregation ») ; reste à câbler les 4
+      diviseurs dans `ClockCard` et à pulser `assertIrq` au rythme TP.
+      Utilitaires interval-timing (Clockworks) ne tickent jamais
+      jusqu'à ce que ce soit fait.
 - [ ] 🟡 **DATA_OUT live** (`ClockCard.cpp:88-94`) vs MAME latch sur
       CLK edge en MODE_SHIFT. Diverge hors ProDOS.
 - [ ] 🟢 **Slot ROM essentiellement vide** (256 B signature + NOPs).
