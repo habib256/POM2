@@ -70,6 +70,16 @@ EmulationController::EmulationController()
     hub        = std::make_unique<pom2::SmartPortHub>();
     drive35Int->setImage(image35Int.get());
     drive35Ext->setImage(image35Ext.get());
+    // Mechanical-sound source: same `FloppySoundDevice` as the Disk II
+    // path. Step cadence + motor on/off are driven from
+    // `Sony35Drive::strobeWriteRegister` cases 0x1 / 0x2 / 0x3, stamped
+    // with the IWM's last-tick CPU cycle so the audio thread can
+    // measure cadence in emulated time (matches the comment block on
+    // FloppySoundSink::step). Samples are loaded later by MainWindow
+    // from roms/floppy_samples/ — until then both 5.25" and 3.5" stay
+    // silent, no per-drive gating needed.
+    drive35Int->setFloppySound(floppy.get());
+    drive35Ext->setFloppySound(floppy.get());
     hub->attach(iwmDev.get());
     hub->setSony35(drive35Int.get(), drive35Ext.get());
 
@@ -156,6 +166,10 @@ bool EmulationController::mount35(int idx, const std::string& path)
         return false;
     }
     drive->notifyMediaChange();
+    // User-initiated mount → one-shot insert click. Same pattern as
+    // `DiskIICard::insertDisk` (5.25"). Silent when no FloppySoundDevice
+    // sink is wired (headless / tests).
+    drive->emitInsertClick();
     return true;
 }
 
@@ -174,7 +188,12 @@ void EmulationController::eject35(int idx)
             image->saveDirty();
         }
         image->eject();
-        if (drive) drive->notifyMediaChange();
+        if (drive) {
+            drive->notifyMediaChange();
+            // Mechanical click on user-initiated eject — pairs with
+            // the click emitted by `mount35` above.
+            drive->emitInsertClick();
+        }
     }
 }
 

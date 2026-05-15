@@ -119,6 +119,13 @@ public:
     bool isActive() const { return active_ == MODE_ACTIVE; }
     bool isIdle()   const { return active_ == MODE_IDLE; }
 
+    /// Current cycle counter snapshot — last `tick()` value. Exposed so
+    /// the SmartPort hub can stamp Sony 3.5" mechanical-sound events
+    /// (head step, motor on/off) with an emulated-CPU timestamp the
+    /// FloppySoundDevice can measure cadence against. Same role as
+    /// `DiskIICard::cpuCycleTotal` on the 5.25" side.
+    uint64_t emuCycles() const { return now_; }
+
     /// Wire the MAME-style callbacks. `EmulationController` installs
     /// these once at construction; tests may install their own.
     void setPhasesCallback(PhasesCb cb) { phasesCb_ = std::move(cb); }

@@ -56,6 +56,8 @@
 #include <cstdint>
 #include <vector>
 
+class FloppySoundSink;
+
 namespace pom2 {
 
 class Disk35Image;
@@ -99,8 +101,23 @@ public:
     /// IWM phase bus (m_floppy->seek_phase_w). Bits 0..3 = CA0, CA1,
     /// CA2 (or PH2 / HD), LSTRB. SEL is a separate IWM control bit
     /// `m_control & 0x20` → device select 1 vs 2; we don't have it
-    /// here so we feed it through `setSel`.
-    void seekPhaseW(uint8_t phases);
+    /// here so we feed it through `setSel`. `emuCycles` is the host's
+    /// emulated CPU cycle counter at the moment the IWM strobed —
+    /// forwarded to the FloppySoundSink for head-step / motor-on
+    /// cadence (mirrors `DiskIICard::seekPhaseW` on the 5.25" side).
+    void seekPhaseW(uint8_t phases, uint64_t emuCycles = 0);
+
+    /// Inject the mechanical-sound source (head step, motor spin-up /
+    /// down, disk insert / eject click). Optional — when nullptr the
+    /// drive is silent. Same plumbing as `DiskIICard::setFloppySound`
+    /// but per-drive so internal vs external can route to different
+    /// pitch / volume profiles if needed later.
+    void setFloppySound(FloppySoundSink* fs) { sound_ = fs; }
+
+    /// User-facing one-shot — host calls this after a successful mount /
+    /// eject so the drive emits a click via the sound sink without going
+    /// through the IWM strobe path. Idempotent: nullptr sink → no-op.
+    void emitInsertClick();
 
     /// IWM SEL wire — bit 5 of IWM control register. Distinguishes
     /// "external" vs "internal" drive on the //c+ but also doubles as
@@ -173,6 +190,15 @@ private:
     int          track_         = 0;
     uint8_t      phases_        = 0;
     uint8_t      prevPhases_    = 0;
+
+    /// Optional mechanical-sound sink. Non-owning. Set by
+    /// EmulationController at construction time.
+    FloppySoundSink* sound_     = nullptr;
+    /// Emulated CPU cycle of the last IWM strobe — used to stamp
+    /// sound_->step() and sound_->motor() calls so cadence is measured
+    /// in emulated time (matches the FloppySoundDevice's `emuCycles`
+    /// expectation; see FloppySoundSink::step).
+    uint64_t     lastStrobeCycle_ = 0;
 
     /// 4-bit register address: { SEL, CA2, CA1, CA0 } as documented in
     /// *Inside the Apple //gs* Sec. 6 "Sony Drive". Read addresses are

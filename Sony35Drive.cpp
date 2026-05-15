@@ -39,6 +39,7 @@
 #include "Sony35Drive.h"
 #include "CpuClock.h"
 #include "Disk35Image.h"
+#include "FloppySoundSink.h"
 #include "Logger.h"
 
 #include <algorithm>
@@ -744,7 +745,7 @@ uint8_t Sony35Drive::regSelect() const
     return r;
 }
 
-void Sony35Drive::seekPhaseW(uint8_t phases)
+void Sony35Drive::seekPhaseW(uint8_t phases, uint64_t emuCycles)
 {
     // MAME `mac_floppy.cpp::seek_phase_w`: latch the new phase bits,
     // then if LSTRB transitioned 0→1 fire `strobeWriteRegister` with
@@ -753,11 +754,17 @@ void Sony35Drive::seekPhaseW(uint8_t phases)
     // the rising edge.
     prevPhases_ = phases_;
     phases_     = static_cast<uint8_t>(phases & 0x0F);
+    lastStrobeCycle_ = emuCycles;
     const bool lstrbWasLow = !(prevPhases_ & kBitLSTRB);
     const bool lstrbNowHi  =  (phases_     & kBitLSTRB);
     if (lstrbWasLow && lstrbNowHi) {
         strobeWriteRegister(regSelect());
     }
+}
+
+void Sony35Drive::emitInsertClick()
+{
+    if (sound_) sound_->click();
 }
 
 void Sony35Drive::strobeWriteRegister(uint8_t reg)
@@ -768,16 +775,39 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
     // animation, RPM ramp-up) is deferred.
     switch (reg) {
         case 0x0: directionIn_ = true;  break;       // direction inward
-        case 0x1:                                     // step
-            if (directionIn_ && track_ > 0)  { --track_; invalidateCache(); }
-            if (!directionIn_ && track_ < 79) { ++track_; invalidateCache(); }
+        case 0x1: {                                   // step
+            bool moved = false;
+            if (directionIn_ && track_ > 0)  {
+                --track_; invalidateCache(); moved = true;
+            }
+            if (!directionIn_ && track_ < 79) {
+                ++track_; invalidateCache(); moved = true;
+            }
+            // Fire one mechanical-step sound per *actual* track motion
+            // — head bumps at track 0 or 79 don't click on real
+            // hardware. Stamp with the IWM strobe cycle so the
+            // FloppySoundDevice can measure step cadence in emulated
+            // time (parity with DiskIICard::seekPhaseW).
+            if (moved && sound_) sound_->step(track_, lastStrobeCycle_);
             break;
-        case 0x2: motorOn_ = true;  break;            // motor on
-        case 0x3: motorOn_ = false; break;            // motor off
+        }
+        case 0x2:                                     // motor on
+            if (!motorOn_ && sound_) {
+                sound_->motor(true, image_ && image_->isLoaded());
+            }
+            motorOn_ = true;
+            break;
+        case 0x3:                                     // motor off
+            if (motorOn_ && sound_) {
+                sound_->motor(false, image_ && image_->isLoaded());
+            }
+            motorOn_ = false;
+            break;
         case 0x4:                                     // eject
             if (image_ && image_->isLoaded()) {
                 image_->eject();
                 diskSwitched_ = true;
+                if (sound_) sound_->click();
                 pom2::log().info("Sony35", "eject requested by host");
             }
             break;

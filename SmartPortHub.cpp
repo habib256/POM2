@@ -139,7 +139,10 @@ void SmartPortHub::onIwmPhases(uint8_t phases)
     // Sony35Drive.
     if (active35_) {
         active35_->setSel(iwm_ && iwm_->sel());
-        active35_->seekPhaseW(phases);
+        // Stamp the strobe with the IWM's last-tick cycle so the Sony
+        // drive can timestamp mechanical-sound events (step / motor)
+        // in emulated time — same pattern as DiskIICard::seekPhaseW.
+        active35_->seekPhaseW(phases, iwm_ ? iwm_->emuCycles() : 0);
     }
 }
 
