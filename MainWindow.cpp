@@ -14,6 +14,7 @@
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
+#include "DiskLibrary_ImGui.h"
 #include "EmulationController.h"
 #include "HdvController_ImGui.h"
 #include "JoystickInput.h"
@@ -31,6 +32,7 @@
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
+#include "Toolbar_ImGui.h"
 
 #include "imgui.h"
 #include <GLFW/glfw3.h>
@@ -63,9 +65,11 @@ MainWindow::MainWindow(bool forceIIPlus)
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
+      diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
+      toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
       joystick       (std::make_unique<JoystickInput>()),
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
@@ -186,8 +190,10 @@ MainWindow::MainWindow(bool forceIIPlus)
         pixelScale         = settings->getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
         showDisk35Panel    = settings->getBool ("show_disk35_panel", showDisk35Panel);
+        showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
+        showToolbar        = settings->getBool ("show_toolbar",    showToolbar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
@@ -410,8 +416,10 @@ MainWindow::~MainWindow()
     settings->setFloat ("pixel_scale", pixelScale);
     settings->setBool  ("show_disk_panel", showDiskPanel);
     settings->setBool  ("show_disk35_panel", showDisk35Panel);
+    settings->setBool  ("show_disk_library", showDiskLibrary);
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
     settings->setBool  ("show_cassette",   showCassetteDeck);
+    settings->setBool  ("show_toolbar",    showToolbar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
@@ -1123,6 +1131,8 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Devices")) {
+        ImGui::MenuItem("Disk Library (all formats)",    nullptr, &showDiskLibrary);
+        ImGui::Separator();
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
         {
@@ -1179,6 +1189,7 @@ void MainWindow::renderMenuBar()
             ImGui::EndMenu();
         }
         ImGui::Separator();
+        ImGui::MenuItem("Toolbar",                     nullptr, &showToolbar);
         ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
         ImGui::Separator();
@@ -1231,7 +1242,46 @@ void MainWindow::renderScreenWindow()
     ImGui::SetNextWindowSize(ImVec2(1040, 565), ImGuiCond_FirstUseEver);
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
-    if (ImGui::Begin("Apple II Screen")) {
+    // `NoMove` so ImGui's default "drag-from-anywhere" doesn't eat
+    // click-and-drag gestures inside the screen (Mouse Card games like
+    // A2Desktop need them to reach the guest). `NoCollapse` so a
+    // double-click on the title bar doesn't accidentally collapse the
+    // window — a single concern at a time. We restore the title-bar
+    // drag manually below.
+    const ImGuiWindowFlags screenFlags =
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("Apple II Screen", nullptr, screenFlags)) {
+        // ── Manual title-bar drag ─────────────────────────────────────
+        // Compute the title bar rect from the public Begin geometry
+        // (window pos + size + frame height). When the user clicks
+        // inside that strip we latch `screenDraggingByTitleBar`; on
+        // every subsequent frame we apply `io.MouseDelta` until the
+        // button is released. `IsAnyItemActive()` guards against
+        // claiming a click that another widget already consumed (e.g.
+        // any future title-bar button).
+        {
+            const ImVec2 wp = ImGui::GetWindowPos();
+            const ImVec2 ws = ImGui::GetWindowSize();
+            const float  th = ImGui::GetFrameHeight();
+            const ImVec2 m  = ImGui::GetIO().MousePos;
+            const bool overTitleBar =
+                (m.x >= wp.x && m.x <= wp.x + ws.x &&
+                 m.y >= wp.y && m.y <= wp.y + th);
+            if (overTitleBar && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                             && !ImGui::IsAnyItemActive()) {
+                screenDraggingByTitleBar = true;
+            }
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                screenDraggingByTitleBar = false;
+            }
+            if (screenDraggingByTitleBar) {
+                const ImVec2 d = ImGui::GetIO().MouseDelta;
+                if (d.x != 0.0f || d.y != 0.0f) {
+                    ImGui::SetWindowPos(ImVec2(wp.x + d.x, wp.y + d.y));
+                }
+            }
+        }
+
         uploadScreenTexture();
 
         ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -2034,6 +2084,135 @@ void MainWindow::renderDiskPanelWindow()
             }
             tapeStatusUntil = lastFrameTime + 4.0;
         }
+    }
+}
+
+// ─── Disk Library (unified browser: 5.25 / 3.5 / HDV) ───────────────────
+
+void MainWindow::renderDiskLibraryWindow()
+{
+    if (!showDiskLibrary) return;
+
+    pom2::DiskLibrary_ImGui::CurrentlyMounted mounted;
+    // Currently-inserted Disk II images (per plugged card). The library
+    // tags rows with `* ` when their path matches any of these — gives
+    // the user a visual cue across all plugged cards at once.
+    for (auto* c : diskCards) {
+        if (c && c->isDiskLoaded()) mounted.diskII.push_back(c->getDiskPath());
+    }
+    mounted.disk35Internal = controller->disk35Internal().isLoaded()
+        ? controller->disk35Internal().path() : std::string();
+    mounted.disk35External = controller->disk35External().isLoaded()
+        ? controller->disk35External().path() : std::string();
+    if (hdvCard && hdvCard->isImageLoaded()) mounted.hdv = hdvCard->getImagePath();
+
+    const auto r = diskLibrary->render("Disk Library", showDiskLibrary, mounted);
+
+    // ── 5.25" actions → primary DiskII card ───────────────────────────
+    if (!r.request525InsertAndBoot.empty() && diskCard) {
+        const std::string path = r.request525InsertAndBoot;
+        bool ok = false;
+        std::string err;
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            ok = diskCard->insertDisk(path);
+            if (ok) diskCard->seekTrack0();
+            else    err = diskCard->getLastError();
+        }
+        if (ok) {
+            controller->coldBoot();
+            controller->setMode(EmulationController::Mode::Running);
+            tapeStatusMessage = "Library: inserted + booted: " + path;
+        } else {
+            tapeStatusMessage = "Library: boot failed: " + err;
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    if (!r.request525InsertOnly.empty() && diskCard) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        if (diskCard->insertDisk(r.request525InsertOnly)) {
+            tapeStatusMessage = "Library: inserted (no boot): " +
+                                r.request525InsertOnly;
+        } else {
+            tapeStatusMessage = "Library: insert failed: " +
+                                diskCard->getLastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+
+    // ── 3.5" actions ─────────────────────────────────────────────────
+    if (!r.request35MountAndBoot.empty()) {
+        if (controller->mount35(r.request35BootDrive, r.request35MountAndBoot)) {
+            // Slot-aware boot: explicit `bootFromSlot(N)` when a
+            // SmartPort card is plugged on a non-//c+ profile, else
+            // `coldBoot()` so the //c+ ROM autostart kicks in.
+            if (smartPortCard &&
+                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+                controller->bootFromSlot(smartPortCard->getSlot());
+            } else {
+                controller->coldBoot();
+            }
+            tapeStatusMessage = "Library: 3.5\" drive "
+                + std::string(r.request35BootDrive == 0 ? "1" : "2")
+                + " booted: " + r.request35MountAndBoot;
+        } else {
+            const auto& img = (r.request35BootDrive == 0)
+                ? controller->disk35Internal()
+                : controller->disk35External();
+            tapeStatusMessage = "Library: 3.5\" boot failed: " + img.lastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    if (!r.request35MountOnly.empty()) {
+        if (controller->mount35(r.request35MountDrive, r.request35MountOnly)) {
+            tapeStatusMessage = "Library: 3.5\" drive "
+                + std::string(r.request35MountDrive == 0 ? "1" : "2")
+                + " mounted: " + r.request35MountOnly;
+        } else {
+            const auto& img = (r.request35MountDrive == 0)
+                ? controller->disk35Internal()
+                : controller->disk35External();
+            tapeStatusMessage = "Library: 3.5\" mount failed: " + img.lastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+
+    // ── HDV actions ──────────────────────────────────────────────────
+    if (!r.requestHdvMountAndBoot.empty() && hdvCard) {
+        const std::string path = r.requestHdvMountAndBoot;
+        bool ok = false;
+        std::string err;
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            ok = hdvCard->loadImage(path);
+            if (ok) {
+                hdvPath   = path;
+                hdvStatus = "loaded: " + path;
+            } else {
+                err = hdvCard->getLastError();
+                hdvStatus = "no image mounted";
+            }
+        }
+        if (ok) {
+            controller->bootFromSlot(hdvCard->getSlot());
+            tapeStatusMessage = "Library: HDV (slot " +
+                std::to_string(hdvCard->getSlot()) + ") booted: " + path;
+        } else {
+            tapeStatusMessage = "Library: HDV mount failed: " + err;
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    if (!r.requestHdvMountOnly.empty() && hdvCard) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        if (hdvCard->loadImage(r.requestHdvMountOnly)) {
+            hdvPath   = r.requestHdvMountOnly;
+            hdvStatus = "loaded: " + r.requestHdvMountOnly;
+            tapeStatusMessage = "Library: HDV mounted: " + r.requestHdvMountOnly;
+        } else {
+            tapeStatusMessage = "Library: HDV mount failed: " +
+                                hdvCard->getLastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
     }
 }
 
@@ -2882,6 +3061,66 @@ void MainWindow::render()
     pollJoystickAndPushToMemory();
 
     renderMenuBar();
+    // Toolbar must render after the menu bar so we know its height
+    // (`ImGui::GetFrameHeight()` reflects the menu bar font size +
+    // padding). It's positioned just below — pinned, can't be moved
+    // or resized.
+    if (showToolbar) {
+        pom2::Toolbar_ImGui::Snapshot tb;
+        const auto mode = controller->getMode();
+        tb.isRunning          = (mode == EmulationController::Mode::Running);
+        tb.isStopped          = (mode == EmulationController::Mode::Stopped);
+        tb.cyclesPerFrame     = controller->getCyclesPerFrame();
+        tb.memViewerVisible   = showMemViewer;
+        tb.activeProfile      = activeProfile;
+        tb.hasPrimaryDiskCard = (diskCard != nullptr);
+        // Eject-all is offered when ANY disk is currently mounted —
+        // across every Disk II card, the HDV card, and the two
+        // SmartPort 3.5" image slots.
+        bool anyLoaded = false;
+        for (auto* c : diskCards) {
+            if (c && c->isDiskLoaded()) { anyLoaded = true; break; }
+        }
+        if (!anyLoaded && hdvCard && hdvCard->isImageLoaded()) anyLoaded = true;
+        if (!anyLoaded &&
+            (controller->disk35Internal().isLoaded() ||
+             controller->disk35External().isLoaded()))           anyLoaded = true;
+        tb.hasAnyDiskLoaded   = anyLoaded;
+
+        const auto tr = toolbar->render(showToolbar,
+                                        ImGui::GetFrameHeight(), tb);
+        if (tr.requestColdBoot)        controller->coldBoot();
+        if (tr.requestSoftReset)       controller->softReset();
+        if (tr.requestHardReset)       controller->hardReset();
+        if (tr.requestPauseToggle) {
+            controller->setMode(tb.isRunning
+                ? EmulationController::Mode::Stopped
+                : EmulationController::Mode::Running);
+        }
+        if (tr.requestStep)            controller->requestStep();
+        if (tr.requestScreenshot)      saveScreenshot();
+        if (tr.setCyclesPerFrame > 0)
+            controller->setCyclesPerFrame(tr.setCyclesPerFrame);
+        if (tr.setProfileRequested)    applyProfile(tr.setProfile);
+        if (tr.requestMemViewerToggle) showMemViewer = !showMemViewer;
+        if (tr.requestInsertDisk && diskPanel) {
+            // Reuse the existing per-panel popup machinery: setting the
+            // primary panel's `insertDialogOpen` flag is exactly what
+            // its own "Insert .dsk…" button does. `renderDiskFileDialog`
+            // picks it up next frame and routes to `diskCard`.
+            diskPanel->insertDialogOpen = true;
+            if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks/";
+        }
+        if (tr.requestEjectAllDisks) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            for (auto* c : diskCards) if (c) c->ejectDisk();
+            if (hdvCard) hdvCard->ejectImage();
+            controller->eject35(0);
+            controller->eject35(1);
+            tapeStatusMessage = "Ejected all disks";
+            tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+    }
     renderScreenWindow();
     renderControlsWindow();
     renderMemoryViewerWindow();
@@ -2894,6 +3133,7 @@ void MainWindow::render()
     renderHdvFileDialog();
     renderDiskPanelWindow();
     renderDiskFileDialog();
+    renderDiskLibraryWindow();
     renderDisk35PanelWindow();
     renderDisk35FileDialog();
     renderHdvPanelWindow();

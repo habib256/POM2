@@ -43,11 +43,13 @@ namespace pom2 {
     class CassetteDeck_ImGui;
     class Disk35Controller_ImGui;
     class DiskController_ImGui;
+    class DiskLibrary_ImGui;
     class HdvController_ImGui;
     class JoystickPanel_ImGui;
     class LeChatMauve_ImGui;
     class Settings;
     class SmartPortCard;
+    class Toolbar_ImGui;
     enum class SystemProfile;
 }
 class MemoryViewer_ImGui;
@@ -122,9 +124,11 @@ private:
     std::vector<std::unique_ptr<pom2::DiskController_ImGui>> diskPanels;
     pom2::DiskController_ImGui*                              diskPanel = nullptr;
     std::unique_ptr<pom2::Disk35Controller_ImGui> disk35Panel;
+    std::unique_ptr<pom2::DiskLibrary_ImGui>      diskLibrary;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
+    std::unique_ptr<pom2::Toolbar_ImGui>          toolbar;
     // All plugged Disk II cards, sorted by slot ascending. `diskCard`
     // (below) is the primary alias = `diskCards.empty() ? nullptr :
     // diskCards.front()`. Most legacy code paths use `diskCard` directly
@@ -181,6 +185,12 @@ private:
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
     bool         showAiControlPanel  = false;
+    // Toolbar pinned just below the menu bar. On by default — toggled
+    // via Window → Toolbar; persisted as `show_toolbar`.
+    bool         showToolbar         = true;
+    // Unified disk browser (3-tab panel: 5.25/3.5/HDV). Toggled from
+    // Hardware → Disk Library. Persisted as `show_disk_library`.
+    bool         showDiskLibrary     = false;
     // Initialised in the constructor body from SuperSerialCard::kDefaultPort
     // so we don't have to drag SuperSerialCard.h into this header.
     int          sscPortInput       = 0;
@@ -259,6 +269,13 @@ private:
     double  lastMouseHostY = 0;
     bool    mouseInited    = false;
     bool    mouseButtonHeld = false;
+    // Title-bar-only drag state for the Apple II Screen window. The
+    // window is opened with `ImGuiWindowFlags_NoMove` so ImGui never
+    // starts a window-move from the content area (clicks pass through
+    // to the Mouse Card). When the user mouses-down on the title bar
+    // we latch this flag and apply `io.MouseDelta` to the window pos
+    // ourselves until the button is released.
+    bool    screenDraggingByTitleBar = false;
     // Sub-tick accumulator: dx host pixels × (display.width()/widget_w)
     // = Apple-coord delta. We'd lose fractional motion if we truncated
     // each event, so carry the remainder across calls. Per-event delta
@@ -290,6 +307,7 @@ private:
     void renderPasteFileDialog();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
+    void renderDiskLibraryWindow();
     void renderDisk35PanelWindow();
     void renderDisk35FileDialog();
     void renderHdvPanelWindow();

@@ -6,6 +6,74 @@ notes d'implémentation profondes → `DEV.md` ; historique → `git log`.
 Légende sévérité : 🟠 High · 🟡 Medium · 🟢 Low. Sections regroupées
 par sous-système, triées par poids des items 🟠.
 
+## UI / UX (retours utilisateur 2026-05-15)
+
+L'émulateur fonctionne dans le fond — le user a explicitement remonté
+que le polish UI est ce qui reste à faire (le reste est cosmétique).
+
+- [x] ~~🟠 **Toolbar de raccourcis sous la barre de menus**.~~ Fait
+      2026-05-15. `Toolbar_ImGui.{h,cpp}` ~200 L. Boutons compacts
+      Font Awesome : Power-cycle, Soft reset, Hard reset, Pause/Run
+      (icône change), Step (grisé quand running), combo Speed (1×
+      / 2× / 4× / MAX), combo Profile (II / II+ / //e / //c / //c+),
+      Insert disk (primary), Eject-all (gris si rien chargé),
+      Screenshot, Memory viewer (tinted-active toggle). Pin via
+      `SetNextWindowPos(0, ImGui::GetFrameHeight())`. Toggle
+      `Window → Toolbar` persisté `show_toolbar` (on par défaut).
+- [x] ~~🟠 **Panneau « Disk Library » unifié**.~~ Fait 2026-05-15.
+      `DiskLibrary_ImGui.{h,cpp}` ~360 L. 3 onglets (5.25 / 3.5 /
+      HDV) avec compte d'entrées dans le titre, recherche
+      `InputTextWithHint`, tri Name/Size/Date, `BeginTable` 3 colonnes
+      (name + size + date), `* ` marker pour les images actuellement
+      montées (croise toutes les cartes DiskII plugged + les 2 Disk35
+      + HDV). Left-click = insert/mount + boot ; right-click =
+      context menu (drive 1/2 pour 3.5", boot/no-boot pour les autres).
+      Scan filesystem ré-utilisable via bouton Refresh.
+      `Hardware → Devices → Disk Library` toggle persisté
+      `show_disk_library`. Câblage des actions dans
+      `MainWindow::renderDiskLibraryWindow()` — chaque action passe
+      par le path déjà rodé (controller->mount35 + bootFromSlot ou
+      coldBoot selon profile/card, diskCard->insertDisk + coldBoot,
+      hdvCard->loadImage + bootFromSlot(getSlot())).
+- [ ] 🟡 **Mouse Card — sync curseur pixel-près host/guest non
+      résolue** (héritée 2026-05-15, déplacée ici pour proximité avec
+      le reste UX). Le tracking actuel est delta-based : 1 px hôte →
+      1 px Apple en vitesse (ratio `display.width() / widgetW` dans
+      `MainWindow::onMouseMove`), avec accumulation sub-pixel et
+      clamp résidu à ±127 ticks par event. Fonctionne mais les deux
+      curseurs dérivent en position absolue. Reprendre depuis
+      l'investigation détaillée dans la section [Mouse Card](#mouse-card)
+      ci-dessous (l'enquête sur le data segment MGTK reste valable).
+- [ ] 🟡 **Statut de carte plus visible**. Quand un disque manque dans
+      un slot, le panel affiche "No disk inserted" ; pas évident à
+      repérer en un coup d'œil. Une LED de status colorée (vert =
+      OK, jaune = WP/aucun disque, rouge = erreur) en tête de chaque
+      panneau de slot rendrait la situation lisible sans lire.
+- [ ] 🟢 **Layout par défaut plus aéré**. Avec 2+ Disk II + Disk 3.5"
+      + HDV, les fenêtres se superposent au lancement. Soit ImGui
+      Docking par défaut, soit `SetNextWindowPos` plus malin
+      (cascade adaptative selon le nombre de cartes plugged).
+
+## DHGR / Display
+
+- [ ] 🟠 **Artefacts DHGR sur Shamus en .woz original** (remonté
+      2026-05-15). Visible sur `mario.dsk` Shamus WOZ : les sprites
+      tracent des résidus visuels que AppleWin ne montre pas. La
+      version 4am-crack tourne propre. Suspects : (a) ColorNTSC
+      sliding-window 7-bit qui interprète mal le bit pattern Shamus
+      ; (b) timing AN3+80COL FIFO qui rate un edge ; (c) seam fix-ups
+      à la 39ᵉ position qui consomment un cell de plus que MAME.
+      Bisect avec la version 4am pour isoler (les deux ont le même
+      contenu logique, seule la couche disque diffère). Cf. DEV.md
+      § DHGR pour les 3 chemins couleur en place.
+- [ ] 🟢 **`monochrome_dhr_shift()` 1-px alignment manquant** en DHGR
+      mono (MAME `apple2video.cpp:460-471`). Cosmétique.
+- [ ] 🟢 **Floating-TTL** `empty_words[40]={0x3fff,…}` pour rows
+      hors-bounds non modélisé (MAME `:751-758`). Jamais atteint en
+      48K+.
+- [ ] 🟢 **DHGR per-scanline mode switching** — bottom-of-mixed utilise
+      une région 4-line statique.
+
 ## ClockCard / ThunderClock+
 
 - [ ] 🟠 **TP tick rates (64/256/2048/4096 Hz + interval timers)** non
@@ -153,16 +221,6 @@ par sous-système, triées par poids des items 🟠.
 - [ ] 🟢 **Strapping RAM 4K → 48K** — modéliser la machine de 1977
       d'origine (POM2 colle 64 K en dur aujourd'hui).
 
-## Display
-
-- [ ] 🟢 **`monochrome_dhr_shift()` 1-px alignment manquant** en DHGR
-      mono (MAME `apple2video.cpp:460-471`). Cosmétique.
-- [ ] 🟢 **Floating-TTL** `empty_words[40]={0x3fff,…}` pour rows
-      hors-bounds non modélisé (MAME `:751-758`). Jamais atteint en
-      48K+.
-- [ ] 🟢 **DHGR per-scanline mode switching** — bottom-of-mixed utilise
-      une région 4-line statique.
-
 ## MAME parity drifts (audit 2026-05-15)
 
 Items relevés par l'audit ligne-à-ligne MAME ↔ POM2 mais skippés
@@ -195,6 +253,14 @@ MODE_SHIFT lax, etc.) — celles-ci ne sont **pas** des bugs, leur
       les ~6 mois pour suivre les renommages MAME upstream.
 
 ## Changelog (résolu cette session, 2026-05-14/15)
+
+**UI Toolbar + Disk Library unifiée** : nouveau `Toolbar_ImGui` pinné
+sous la menu bar (10 boutons d'accès rapide + 2 combos), nouveau
+`DiskLibrary_ImGui` (panneau 3-onglets avec recherche + tri + table
++ markers d'images montées + click→insert/mount + boot). Câblage
+dans `MainWindow` ; le Toolbar accepte le toggle Window → Toolbar et
+la Disk Library Hardware → Devices → Disk Library. Persisté.
+
 
 **SmartPortCard 3.5" pluggable slot //e** : nouveau
 `SmartPortCard.{h,cpp}` (~280 L, slot 5 par défaut) qui expose les 2

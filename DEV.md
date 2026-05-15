@@ -33,10 +33,14 @@ walkthrough → `README.md`.
   - [DiskImage](#diskimage)
   - [Format detection](#format-detection)
   - [`.woz`](#woz)
+  - [WOZ2 `optimal_bit_timing`](#woz2-optimal_bit_timing)
   - [DiskIICard (slot 6)](#diskiicard-slot-6)
+  - [DiskII multi-instances (option C)](#diskii-multi-instances-option-c)
   - [Two read paths](#two-read-paths)
   - [Bit-stream expansion](#bit-stream-expansion)
   - [Flux-event view](#flux-event-view)
+  - [SmartPortCard (//e Liron-class)](#smartportcard-e-liron-class)
+  - [3.5" mechanical sounds](#35-mechanical-sounds)
   - [ProDOS host folder](#prodos-host-folder)
   - [Snapshot](#snapshot)
 - [Peripherals](#peripherals)
@@ -45,6 +49,7 @@ walkthrough → `README.md`.
   - [Mouse Card](#mouse-card)
   - [Joystick / paddles](#joystick--paddles)
 - [UI (ImGui)](#ui-imgui)
+  - [MainWindow Pimpl-light](#mainwindow-pimpl-light)
 - [Profile switching internals](#profile-switching-internals)
 - [CLI (`CliDispatcher`)](#cli-clidispatcher)
 
@@ -503,6 +508,24 @@ forces `useBitLss=true` when any drive holds WOZ — legacy 32-cycle gate
 cannot decode bit cells. Pinned: `woz_load_smoke_test.cpp`,
 `woz_writeback_smoke_test.cpp`.
 
+### WOZ2 `optimal_bit_timing`
+
+INFO+39 (units of 125 ns) — bit-cell duration the imager recommends.
+Default 32 = 4 µs = standard 5.25" cell at the 2 MHz LSS clock = 8 LSS
+cycles per cell. `loadWoz` reads the byte when `info_version >= 2`,
+clamps to [8, 64], stores in `DiskImage::optimalBitTiming` (defaults to
+32 for WOZ1 and non-WOZ).
+
+`DiskImage::lssCyclesPerCell() = optimalBitTiming / 4`. `expandTrackFlux`
+emits each "1" cell at LSS cycle `i*cyc + cyc/2` (centre); `trackPeriod`
+returns `bitCellCount * cyc`. A disk mastered at e.g. 40 (5 µs) gets
+10 LSS-cycle cells throughout, so the LSS state machine clocks out
+nibbles at the captured rate instead of POM2's 4 µs default. The
+flux-event count per revolution stays the same — only spacing changes.
+
+Pinned: `woz_bit_timing_smoke_test.cpp` (obt 32 / 40 / 28 + WOZ1
+fallback round trip).
+
 ### DiskIICard (slot 6)
 
 256-byte P5A boot PROM (`roms/disk2.rom`); PROM autodetects slot via
@@ -539,6 +562,59 @@ boot failures on `mario.dsk` where the angular position drift
 across consecutive sectors threw the LSS shift register out of
 phase by a single cell partway through a data field. Pinned:
 `disk_drive2_smoke_test.cpp`, `mame_lss_parity_smoke_test.cpp`.
+
+### DiskII multi-instances (option C)
+
+Since 2026-05-15 `"diskii"` is the only slot-card type allowed in more
+than one slot. Lets `//e` users wire `Disk II slot 6 + Disk II slot 4`
+for the historical 4-drives-5.25" config without any per-instance ROM
+plumbing — both cards load the same `disk2.rom` + optional
+`diskii_p6.rom` from `roms/`. Storage is per-card (each `DiskIICard`
+owns its 2 drives + LSS state), so the drives don't see each other's
+flux.
+
+**Skipping the uniqueness check**: `MainWindow_Slots.cpp::isDuplicate`
+returns false unconditionally when the type is `"diskii"`;
+`MainWindow.cpp::plugSlotsFromSettings::firstOccurrence` walk also
+short-circuits the same way. Every other card stays single-instance
+(driver, ROM signature, or settings keys assume exclusivity).
+
+**Primary vs secondary**: `MainWindow` keeps a flat
+`std::vector<DiskIICard*> diskCards` populated in slot order ascending
+(via `plugDiskII`). `diskCard` (the legacy single pointer) is an
+**alias** for `diskCards.empty() ? nullptr : diskCards.front()` — the
+lowest-numbered slot wins because `plugSlotsFromSettings` iterates
+1..7. Legacy menu paths (AI control attach, top-bar Eject, auto-turbo
+governor) still take `diskCard`; the panel render loop iterates
+`diskCards`. Same shape for `diskPanels` (a `vector<unique_ptr<...>>`)
++ `diskPanel` alias.
+
+**Per-slot persistence**: `disk_path_slotN` / `disk_writeback_slotN`
+keys, one set per plugged card. The **primary** card additionally
+writes to the legacy unsuffixed `disk_path` / `disk_writeback` so a
+POM2 build older than 2026-05-15 reading the new settings.ini still
+sees the disk where it expects. Profile-switch path captures
+`savedDiskPaths[slot]` from the live cards before tear-down, then
+re-inserts after `plugSlotsFromSettings` rebuilds.
+
+**Per-panel render**: one ImGui window per plugged card, titled
+`"Disk II (slot N)"` (snprintf'd from `card->getSlot()`). Cascade
+offset of 30 px down-left per index on `FirstUseEver` so secondary
+panels don't perfectly overlap the primary. Auto-turbo is global
+(`anyMotorOn` across all cards) since the //e bus has one CPU. Boot
+button computes `PC := $C000 + (slot << 8)` per card.
+
+**Insert-disk popup routing**: each panel's `Insert .dsk…` button
+sets its own `insertDialogOpen` flag. `MainWindow::renderDiskFileDialog`
+scans the panels every frame, finds whichever has the flag set, and
+latches `diskDialogTargetSlot` so the popup routes the eventual
+`insertDisk` to the right card even if the panel pointer churns (rare
+profile-switch race).
+
+**IWM wiring**: only the slot-6 `DiskIICard` calls
+`card->setIWM(&controller->iwm())`. A second Disk II in slot 4 stays
+off the //c+ IWM path — the IWM is the //c+ on-board controller and
+only sees slot-6 traffic in real silicon.
 
 ### Two read paths
 
@@ -604,6 +680,105 @@ LSS-cycle `cellIdx*8 + 4`. `getNextTransition` verbatim from MAME
 back into nibble buffer (cell-windowed, 8-bit packed) — used by LSS
 write side on Q7 falling edge and 30-event pre-emptive flush.
 Invalidated with `bitStream` on `writeNibbleAt` / `eject` / `loadFile`.
+
+### SmartPortCard (//e Liron-class)
+
+`SmartPortCard.{h,cpp}`. Lets a //e / II+ / II / //c profile mount
+Sony 800 K disks through a slot-plugged Apple "Disk 3.5 Controller
+Card" (the Liron / 670-0186). Default slot 5 (same convention as
+HDV — user picks one or the other in Slot Configuration). Reuses the
+same `Disk35Image` pair that `EmulationController` owns, so the
+Disk 3.5" panel shows the same images whether they're driven by the
+//c+ on-board hub or by this slot card.
+
+**Architecture choice — block-level, no IWM**. The real Liron carries
+an IWM + a tiny 6502 ROM with the SmartPort dispatcher; ProDOS calls
+the dispatcher and the dispatcher talks GCR to the Sony drive. POM2's
+//c+ profile already emulates that full stack (`IWMDevice`,
+`SmartPortHub`, `Sony35Drive` with the zoned GCR encoder). For a
+slot-plugged card on //e we **skip the bit-level path entirely** —
+no game flips the Liron at flux level — and expose blocks directly
+through a streaming protocol identical to `ProDOSHardDiskCard`'s.
+Image storage stays `Disk35Image::readBlock` / `writeBlock`.
+
+**Device-select protocol** (`$C0nX`):
+
+```
+$C0n0 write  drive select (0 / 1)
+$C0n1 write  block LO byte of the selected drive
+$C0n2 write  block HI byte of the selected drive
+$C0n3 read   next byte of the selected drive's current block (auto-incr)
+$C0n3 write  next byte INTO the selected drive's current block (WB-gated)
+$C0n4 read   status: bit7 = no disk, bit6 = write-protected
+```
+
+Per-drive `streamOffset_[2]` wraps every 512 B; drive-select latches
+`activeDrive_` and resets the active drive's stream offset to 0.
+Block cache: `static thread_local cache[2][512]` for reads + `buf[2][512]`
+for writes — committed via `writeBlock` on stream-offset wrap. (Single
+CPU thread so thread-local is fine; if multi-instance SmartPortCard
+ever ships, lift caches to members.)
+
+**Slot ROM** (`buildRom`, 256 B with slot baked in):
+
+```
+$Cn00     JMP $Cn20            (boot vector)
+$Cn01     $20                  ProDOS signature byte
+$Cn03     $00
+$Cn05     $03
+$Cn07     $3C                  SmartPort signature (non-zero ≠ $01)
+$CnFE     $13                  features/units mask (read+status, 2 units)
+$CnFF     $50                  driver entry offset
+$Cn20-..  boot routine          (load block 0 of drive 1 → $0800, JMP $0801)
+$Cn50-..  ProDOS driver         (cmd switch + read/write loops)
+$CnE0-..  error halt loop
+```
+
+The driver examines ProDOS's `$43` unit byte. Bit 7 = drive: 0 →
+write `0` to `$C0n0` (drive 1), 1 → write `1` to `$C0n0` (drive 2).
+Then standard 2-page stream into the ProDOS buffer at `$44/$45`.
+Write path probes `$C0n4` bit 6 first and returns `$2B`
+(write-protected) without touching memory when the WP bit is set.
+
+**Boot wiring**: when the user clicks a library entry in the Disk 3.5"
+panel on a non-//c+ profile, `MainWindow::renderDisk35PanelWindow`
+calls `controller->bootFromSlot(smartPortCard->getSlot())` after
+`mount35`. On //c+ on-board it falls back to `coldBoot()` so the
+ROM autostart picks up the built-in SmartPort firmware.
+
+Pinned: `smartport_card_smoke_test.cpp` (ROM signature, drive-select
++ streaming reads, status byte, write-back round trip).
+
+### 3.5" mechanical sounds
+
+`Sony35Drive` carries a `FloppySoundSink* sound_` member set by
+`EmulationController` to the same `FloppySoundDevice` the Disk II
+uses — so the //c+ on-board Sony drives + any slot-plugged Liron-
+class card all share the 5.25"/3.5" sample sets in
+`roms/floppy_samples/` and the same volume/mute persistence keys.
+
+**Cycle stamping**: `seekPhaseW(uint8_t phases, uint64_t emuCycles)`
+takes a CPU-cycle counter at the strobe edge. `SmartPortHub::onIwmPhases`
+forwards `IWMDevice::emuCycles()` (= the last `tick()` value).
+`strobeWriteRegister` cases 0x1 / 0x2 / 0x3 / 0x4 emit:
+
+```
+0x1  step       moved && sound_->step(track_, lastStrobeCycle_)
+0x2  motor on   if (!motorOn_) sound_->motor(true,  hasDisk)
+0x3  motor off  if ( motorOn_) sound_->motor(false, hasDisk)
+0x4  eject      image->eject() ; sound_->click()
+```
+
+`moved` gates so head bumps at track 0 or 79 don't click on real
+hardware. Motor transitions are edge-only (idempotent re-strobes
+from the //c+ firmware don't replay the sample).
+
+**User-initiated click**: `EmulationController::mount35` and
+`eject35` call `drive->emitInsertClick()` after `notifyMediaChange()`
+— mirrors the Disk II `insertDisk` / `ejectDisk` path.
+
+Pinned indirectly through `smartport_35_smoke_test.cpp` (sink stays
+nullptr in tests; production wiring asserts via runtime audio).
 
 ### ProDOS host folder
 
@@ -751,6 +926,28 @@ we enable IRQs unconditionally), motion clamping (MCU does it). Pinned:
   panels. Owns the screen GL texture. Auto-plugs Disk II in slot 6 if
   `roms/disk2.rom` exists. F9 (screenshot), F11 (soft reset), F12 (hard
   reset) routed unconditionally even when ImGui has keyboard focus.
+
+### MainWindow Pimpl-light
+
+Since 2026-05-15 `MainWindow.h` is **forward-decl-only** for every
+plugin / panel / controller type — it includes `M6502.h` (for the
+nested `CpuMode` in a signature) and `imgui.h` (for `ImU32` /
+`ImVec2`), nothing else. The 18 owning member types live behind
+`std::unique_ptr<T>`; constructor + destructor + accessor
+(`emul()`, `displayRef()`) bodies are out-of-line in
+`MainWindow.cpp` so the unique_ptr destruction sees a complete type.
+
+**Compile-time benefit measured**: `touch CassetteDeck_ImGui.h` →
+**2 TUs** rebuild (was previously dragging in MainWindow.cpp +
+MainWindow_MemoryMaps.cpp + MainWindow_Slots.cpp + every test
+linking against the panel cone). `touch MainWindow.h` → **4 TUs**
+(MainWindow*.cpp + main.cpp — irreducible).
+
+Side-effect: the non-owning `*Card` pointers (`diskCard`,
+`hdvCard`, …) are still raw, because `SlotBus` owns the cards
+themselves. Forward-declared their types in the same block as the
+panels (each card class is in the root namespace bar
+`pom2::SmartPortCard` which is namespaced).
 - **MemoryViewer_ImGui** — hex + ASCII over full 64 KB. Reads via
   `Memory::data()` directly under `stateMutex` (held by MainWindow
   during `render()`) so viewer never triggers soft-switch side effects.

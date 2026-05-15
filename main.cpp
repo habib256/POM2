@@ -117,6 +117,12 @@ int main(int argc, char* argv[])
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+    // Note: ImGui's global `ConfigWindowsMoveFromTitleBarOnly` would be
+    // the obvious knob to make the Apple II Screen content-area click-
+    // through, but the user wants only THAT window restricted (others
+    // keep the comfort of drag-from-anywhere). We instead apply
+    // `ImGuiWindowFlags_NoMove` to the Apple II Screen and roll our
+    // own title-bar drag inside `MainWindow::renderScreenWindow`.
     // Persist ImGui window positions / sizes / docking state to
     // ~/.config/POM2/imgui.ini (mirrors Settings::resolveStorePath).
     // First launch sees no file → `FirstUseEver` defaults from

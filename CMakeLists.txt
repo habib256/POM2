@@ -67,6 +67,7 @@ set(SOURCES
     DiskController_ImGui.cpp
     DiskIICard.cpp
     DiskImage.cpp
+    DiskLibrary_ImGui.cpp
     EmulationController.cpp
     FloppySoundDevice.cpp
     HdvController_ImGui.cpp
@@ -95,6 +96,7 @@ set(SOURCES
     SpeakerDevice.cpp
     SuperSerialCard.cpp
     SystemProfile.cpp
+    Toolbar_ImGui.cpp
     main.cpp
 )
 
