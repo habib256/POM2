@@ -75,7 +75,24 @@ int main()
     const std::string diskRom = firstExisting({"roms/disk2.rom"});
     auto card = std::make_unique<DiskIICard>(6);
     if (!diskRom.empty()) card->loadBootRom(diskRom);
+    const std::string lssRom = firstExisting({"roms/diskii_p6.rom"});
+    if (!lssRom.empty()) card->loadLssRom(lssRom);
+    // Insert a real .dsk so the //c+ ROM's slot-6 boot scan sees a
+    // mounted volume and (we hope) auto-boots into DOS / ProDOS
+    // instead of dropping into the Monitor.
+    const std::string disk = firstExisting({
+        "disks/dsk/dos33_master.dsk",
+        "dos33_master.dsk",
+    });
+    if (!disk.empty()) {
+        card->insertDisk(disk);
+        std::printf("Inserted: %s\n", disk.c_str());
+    } else {
+        std::printf("(no disk inserted)\n");
+    }
+    DiskIICard* cardRaw = card.get();
     mem.slotBus().plug(6, std::move(card));
+    (void)cardRaw;
 
     cpu.setCpuMode(M6502::CpuMode::CMOS);
     cpu.hardReset();
@@ -111,19 +128,25 @@ int main()
         const uint8_t b = mem.memRead(a);
         if (b != 0x00) ++nonZero;
     }
-    // Top row of the screen (interleaved Apple II addressing — row 0 = $400-$427).
-    for (int col = 0; col < 40; ++col) {
-        firstChars[col] = mem.memRead(static_cast<uint16_t>(0x0400 + col));
-    }
     std::printf("Text page 1: %d/1024 non-zero bytes\n", nonZero);
-    std::printf("Row 0 raw bytes: ");
-    for (int i = 0; i < 40; ++i) std::printf("%02X ", firstChars[i]);
-    std::printf("\nRow 0 as ASCII: '");
-    for (int i = 0; i < 40; ++i) {
-        const char c = static_cast<char>(firstChars[i] & 0x7F);
-        std::putchar(c >= 0x20 && c < 0x7F ? c : '.');
+    // Apple II text page row addressing: 24 rows × 40 cols, interleaved
+    // in groups of 8 (row 0 base = $400, row 1 = $480, row 2 = $500,
+    // row 8 = $428, row 9 = $4A8, etc.). Reconstruct linearly here so
+    // we can read the boot screen.
+    static const uint16_t kRowBase[24] = {
+        0x400,0x480,0x500,0x580,0x600,0x680,0x700,0x780,
+        0x428,0x4A8,0x528,0x5A8,0x628,0x6A8,0x728,0x7A8,
+        0x450,0x4D0,0x550,0x5D0,0x650,0x6D0,0x750,0x7D0,
+    };
+    for (int r = 0; r < 24; ++r) {
+        std::printf("R%02d: '", r);
+        for (int c = 0; c < 40; ++c) {
+            const uint8_t b = mem.memRead(static_cast<uint16_t>(kRowBase[r] + c));
+            const char ch = static_cast<char>(b & 0x7F);
+            std::putchar(ch >= 0x20 && ch < 0x7F ? ch : '.');
+        }
+        std::printf("'\n");
     }
-    std::printf("'\n");
 
     std::printf("Done.\n");
     return 0;

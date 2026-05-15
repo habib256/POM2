@@ -91,10 +91,13 @@ const ProfileConfig& cfgAppleIIcPlus()
         SystemProfile::AppleIIcPlus,
         "iic+",
         "Apple //c Plus (1988)",
-        // //c Plus shipped with a 32 KB ROM (ROM X4). The "ROM 5" dump
-        // some users have isn't the IIc Plus, that's a IIc revision —
-        // double-check via the displayed boot screen. Falls back to
-        // the IIc 32K dump if no IIc Plus-specific ROM is present.
+        // //c+ shipped with a 32 KB ROM X4 (`apple2cp.rom`). The boot
+        // path needs the MIG (Multidrive Interface Glue, MAME
+        // `apple2e.cpp:532-624 mig_r/mig_w`) and a proper IWM at
+        // $C0E0-$C0EF — see Memory's $CC00/$CE00 MIG window in
+        // romswitch=on mode and the IWM hooks on DiskIICard. Falls
+        // back to the older //c 32 KB dump if no //c+-specific ROM
+        // exists (the //c probe order's last entry).
         { "roms/apple2cp.rom", "roms/apple2c-plus.rom",
           "roms/apple2c-32Kv0.rom" },
         { "roms/apple2e_char.rom", "roms/apple2_char.rom" },

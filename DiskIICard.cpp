@@ -776,6 +776,9 @@ void DiskIICard::control(int offset)
                     ++writeFlushCount;
                 }
                 writePosition = 0;
+                // MAME `iwm.cpp:199` — Q7 falling edge while active
+                // clears whd bit 6 ("in write mode" indicator).
+                iwmWhd &= ~0x40;
             }
             break;
         case 0xf:
@@ -791,6 +794,9 @@ void DiskIICard::control(int offset)
                     }
                 }
                 writeMode = true;
+                // MAME `iwm.cpp:183` — Q7 rising edge while active sets
+                // whd bit 6 to flag "controller now in write mode".
+                iwmWhd |= 0x40;
             }
             break;
         default: break;
@@ -921,7 +927,28 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         SubInstructionScope sub(cpuCycleTotal,
             cpu_ ? static_cast<uint64_t>(cpu_->getCurrentInstructionCycles()) : 0);
         lssSync(0);
+        const bool wasQ6 = loadMode;
         handleSwitchAccess(low4);
+        // IWM status read hook (MAME `iwm.cpp:107-109`, case 0x40):
+        //   read $C0nE with Q6 high + Q7 low (this access clears Q7 but
+        //   Q6 was already on) → return (status & 0x7F) | (wpt ? 0x80 : 0).
+        //   status low 5 = mode low 5 (MAME `iwm.cpp:259`). The Apple //c+
+        //   alt firmware probes this; without it the boot loop at $E51B
+        //   (BEQ on `Y EOR status & $1F`) never falls through and the
+        //   Monitor hangs before clearing the text page.
+        if (low4 == 0xE && wasQ6) {
+            DiskImage& img = images[activeDrive];
+            const uint8_t wpt = (!img.isLoaded() || img.isWriteProtected()) ? 0x80 : 0x00;
+            return static_cast<uint8_t>(wpt | (iwmMode & 0x1F));
+        }
+        // IWM write-handshake read hook (MAME `iwm.cpp:107-110`, case
+        // 0x80): read $C0nC with Q7 high + Q6 low → return m_whd. The
+        // //c+ alt firmware's write loop at `$C8A6: BIT $C0EC / BPL`
+        // waits for whd bit 7 ("ready") to be set; without this it
+        // sees the raw LSS data byte (often bit-7-clear) and spins.
+        if (low4 == 0xC && writeMode) {
+            return iwmWhd;
+        }
         if (!(low4 & 1)) {
             lssSync(1);
             // Debug log: capture (cycle, byte, qt) for hero_probe to dump.
@@ -968,7 +995,21 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
     }
 
     // Legacy gate path.
+    const bool wasQ6Legacy = loadMode;
     handleSwitchAccess(low4);
+    // IWM status read hook (same as the bit-LSS path above). Mirrored
+    // here because POM2's test-rig and pre-disk-insert state both pin
+    // `useBitLss = false` until a WOZ image or P6 PROM is in flight —
+    // and the //c+ alt firmware probes $C0EE *before* the user clicks
+    // a disk in the library.
+    if (low4 == 0xE && wasQ6Legacy) {
+        DiskImage& img = images[activeDrive];
+        const uint8_t wpt = (!img.isLoaded() || img.isWriteProtected()) ? 0x80 : 0x00;
+        return static_cast<uint8_t>(wpt | (iwmMode & 0x1F));
+    }
+    if (low4 == 0xC && writeMode) {
+        return iwmWhd;
+    }
     DiskImage& img = images[activeDrive];
     if (low4 == 0xC && !writeMode && !loadMode) {
         if (!img.isLoaded() || !motorOn) return 0xFF;
@@ -1003,7 +1044,15 @@ void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
         SubInstructionScope sub(cpuCycleTotal,
             cpu_ ? static_cast<uint64_t>(cpu_->getCurrentInstructionCycles()) : 0);
         lssSync(0);
+        const bool wasQ6 = loadMode;
         handleSwitchAccess(low4);
+        // IWM mode_w hook (MAME `iwm.cpp:248-253`): writes to $C0nF when
+        // Q6 was already high latch the mode register. Real wozfdc has
+        // no such register so the //c+ alt-firmware probe at $E512-$E522
+        // (in bank 1) spins forever without this.
+        if (low4 == 0xF && wasQ6) {
+            iwmMode = v;
+        }
         writeLatch = v;
         return;
     }
@@ -1014,7 +1063,13 @@ void DiskIICard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // the byte the next nibble flush will emit. The legacy advance
     // still consumes `writeLatch` only when `writeMode` is on, so
     // unconditional latching is harmless in read mode.
+    const bool wasQ6LegacyW = loadMode;
     handleSwitchAccess(low4);
+    // IWM mode_w shadow (matches the bit-LSS branch above). Required
+    // for the //c+ alt-firmware probe before any disk is mounted.
+    if (low4 == 0xF && wasQ6LegacyW) {
+        iwmMode = v;
+    }
     writeLatch = v;
     if (writeMode && low4 == 0xD) {
         cycleAccum = 0;

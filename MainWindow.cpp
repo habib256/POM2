@@ -1135,15 +1135,16 @@ void MainWindow::onMouseMove(double x, double y)
     mouseSubAppleY += rawDy * syRatio;
     int dxApple = static_cast<int>(mouseSubAppleX);
     int dyApple = static_cast<int>(mouseSubAppleY);
-    mouseSubAppleX -= dxApple;
-    mouseSubAppleY -= dyApple;
-
-    // Clamp the per-event delta to the MCU's 8-bit signed range so big
-    // jumps don't wrap negative.
+    // Clamp BEFORE consuming the sub-pixel accumulator so big jumps
+    // (>127 ticks in one event, e.g. cursor teleported across widget)
+    // carry the residual forward to the next event instead of being
+    // silently dropped. ±127 = MCU's 8-bit signed wrap-correction range.
     if (dxApple >  127) dxApple =  127;
     if (dxApple < -127) dxApple = -127;
     if (dyApple >  127) dyApple =  127;
     if (dyApple < -127) dyApple = -127;
+    mouseSubAppleX -= dxApple;
+    mouseSubAppleY -= dyApple;
 
     mouseAppleX = static_cast<uint8_t>(mouseAppleX + dxApple);
     mouseAppleY = static_cast<uint8_t>(mouseAppleY + dyApple);

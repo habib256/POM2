@@ -206,6 +206,30 @@ private:
     int  motorOffDelay = 0;
     bool writeMode = false;     // Q7 latch: false=read, true=write
     bool loadMode  = false;     // Q6 latch: false=shift, true=load
+
+    // IWM (Apple Integrated Wozniak Machine) register shadows. The
+    // Apple //c / //c+ internal firmware drives slot 6 as an IWM, not
+    // as a Disk II / wozfdc. The four "real" registers MAME tracks
+    // (iwm.cpp:36-46) plus the data path are unified into the LSS
+    // state above; the bits that diverge from a plain Disk II are:
+    //
+    //   * mode   — written by `STA $C0EF` when Q6 is already high
+    //              (MAME `iwm.cpp:248-253 mode_w`). Low 5 bits are
+    //              echoed in the status register at $C0EE+Q6 (line 259).
+    //   * whd    — write-handshake register. Returned by reads of
+    //              $C0EC when Q7 is high + Q6 is low (control = 0x80;
+    //              MAME `iwm.cpp:110`). Bit 7 = "ready" (1 = idle/OK),
+    //              bit 6 = "in write mode" (set on Q7 rising edge,
+    //              cleared on idle — `iwm.cpp:183 / 199 / 82`). Cold
+    //              value 0xBF (`iwm.cpp:57`); we mirror that so the
+    //              //c+ alt firmware's `BIT $C0EC / BPL` ready loop
+    //              at `$C8A6-$C8A9` falls through on the first read.
+    //
+    // Existing Disk II smoke tests don't read $C0EC under Q7=1 (write
+    // mode reads are atypical for the standard Disk II boot), so
+    // returning whd there is a no-op for them.
+    uint8_t iwmMode = 0;
+    uint8_t iwmWhd  = 0xBF;
     bool writeBackEnabled = false;     // forwarded to DiskImage on toggle
     uint8_t writeLatch = 0xFF;         // latched data nibble for next bit-cell flush
 

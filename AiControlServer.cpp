@@ -719,6 +719,9 @@ void AiControlServer::handleMemGet(int fd, const Request& req)
     long addr = -1, len = -1;
     try { addr = std::stol(queryParam(req.query, "addr"), nullptr, 0); } catch (...) {}
     try { len  = std::stol(queryParam(req.query, "len"),  nullptr, 0); } catch (...) {}
+    // Optional `bank` query param: "main" (default) or "aux" — //e aux 64KB.
+    const std::string bank = queryParam(req.query, "bank");
+    const bool useAux = (bank == "aux");
     if (addr < 0 || addr >= 0x10000) { sendJsonError(fd, 400, "addr out of range"); return; }
     if (len  < 0 || len  > 4096)     { sendJsonError(fd, 400, "len must be 0..4096"); return; }
     if (addr + len > 0x10000) len = 0x10000 - addr;
@@ -726,12 +729,14 @@ void AiControlServer::handleMemGet(int fd, const Request& req)
     std::vector<uint8_t> buf(static_cast<size_t>(len));
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        const uint8_t* mem = ctrl_->memory().data();
+        const uint8_t* mem = useAux ? ctrl_->memory().auxData()
+                                    : ctrl_->memory().data();
         std::memcpy(buf.data(), mem + addr, static_cast<size_t>(len));
     }
     std::ostringstream oss;
     oss << "{\"addr\":" << addr
         << ",\"len\":" << len
+        << ",\"bank\":\"" << (useAux ? "aux" : "main") << "\""
         << ",\"data\":\"" << bytesToHex(buf.data(), buf.size()) << "\"}";
     sendJsonOk(fd, oss.str());
 }
