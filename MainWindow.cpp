@@ -197,16 +197,28 @@ MainWindow::MainWindow(bool forceIIPlus)
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
     }
 
-    // ── Restore Disk II state ─────────────────────────────────────────
-    if (diskCard) {
-        const bool wb = settings->getBool("disk_writeback", false);
-        diskCard->setWriteBackEnabled(wb);
-
-        const std::string diskPath = settings->getString("disk_path", "");
+    // ── Restore Disk II state per-slot ────────────────────────────────
+    // Each plugged DiskII gets its own `disk_path_slotN` /
+    // `disk_writeback_slotN` keys. The primary (lowest-slot) card also
+    // honours the legacy unsuffixed `disk_path` / `disk_writeback` keys
+    // so settings written before multi-instance support keep loading.
+    for (auto* c : diskCards) {
+        if (!c) continue;
+        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
+        const bool isPrimary = (c == diskCard);
+        const bool wb = settings->getBool(
+            "disk_writeback" + slotKey,
+            isPrimary ? settings->getBool("disk_writeback", false) : false);
+        c->setWriteBackEnabled(wb);
+        const std::string diskPath = settings->getString(
+            "disk_path" + slotKey,
+            isPrimary ? settings->getString("disk_path", "") : std::string());
         std::error_code ec;
         if (!diskPath.empty() && fs::is_regular_file(diskPath, ec)) {
-            if (diskCard->insertDisk(diskPath)) {
-                pom2::log().info("Disk II", "Re-inserted from settings: " + diskPath);
+            if (c->insertDisk(diskPath)) {
+                pom2::log().info("Disk II",
+                    "slot " + std::to_string(c->getSlot()) +
+                    " re-inserted from settings: " + diskPath);
             }
         }
     }
@@ -327,10 +339,19 @@ MainWindow::~MainWindow()
         settings->setString("hdv_path", "");
     }
 
-    if (diskCard) {
-        settings->setString("disk_path",
-            diskCard->isDiskLoaded() ? diskCard->getDiskPath() : std::string());
-        settings->setBool("disk_writeback", diskCard->isWriteBackEnabled());
+    // Persist per-slot DiskII state. The primary (lowest-slot) card ALSO
+    // writes to the legacy unsuffixed `disk_path` / `disk_writeback` so
+    // an older POM2 build reading this settings.ini still sees the disk.
+    for (auto* c : diskCards) {
+        if (!c) continue;
+        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
+        const std::string p = c->isDiskLoaded() ? c->getDiskPath() : std::string();
+        settings->setString("disk_path"      + slotKey, p);
+        settings->setBool  ("disk_writeback" + slotKey, c->isWriteBackEnabled());
+        if (c == diskCard) {
+            settings->setString("disk_path",      p);
+            settings->setBool  ("disk_writeback", c->isWriteBackEnabled());
+        }
     }
 
     // Persist mounted 3.5" disks across restarts AND flush any firmware-
@@ -468,12 +489,17 @@ void MainWindow::plugSlotsFromSettings()
     }
 
     // Validate uniqueness — each card type plugs into at most one slot.
+    // Exception: "diskii" is allowed in multiple slots (option C 2026-05-15:
+    // historical //e configurations could carry DiskII slot 6 + DiskII slot 4
+    // for 4 drives 5.25" total). Every other card type stays single-instance
+    // because its driver, ROM signature, or settings keys assume exclusivity.
     auto firstOccurrence = [&](const std::string& type) -> int {
         for (int s = 1; s <= 7; ++s) if (slotCards[s] == type) return s;
         return -1;
     };
     for (int s = 1; s <= 7; ++s) {
-        if (slotCards[s].empty()) continue;
+        if (slotCards[s].empty())  continue;
+        if (slotCards[s] == "diskii") continue;       // multi-instance OK
         const int first = firstOccurrence(slotCards[s]);
         if (first != s) {
             pom2::log().warn("Slots",
@@ -517,13 +543,21 @@ void MainWindow::plugSlotsFromSettings()
         // instruction-start). See DiskIICard::setCpu doc for context.
         card->setCpu(&controller->cpu());
         card->setFloppySound(&controller->floppySound());
-        // //c+ on-board IWM — the card pushes its active drive +
-        // quarter-track here on every insert / eject / seek / drive
-        // select so the standalone IWMDevice state machine can walk
-        // the same flux stream. Harmless on II/II+/IIe profiles (the
-        // mirror in Memory is gated on iicHasAltBank).
-        card->setIWM(&controller->iwm());
-        diskCard = card.get();
+        // //c+ on-board IWM — only the slot-6 card pushes its drive
+        // pointer to the IWM, mirroring the //c+ wiring. Multi-instance
+        // Disk II (option C) lets the user plug a second Disk II in
+        // slot 4 etc.; that secondary card stays off the IWM path to
+        // avoid clobbering the //c+ flux mirror.
+        if (s == 6) card->setIWM(&controller->iwm());
+        DiskIICard* raw = card.get();
+        // First plugged DiskII is the "primary" — its panel & state
+        // power the legacy menu paths (auto-turbo, AI control, top-
+        // bar Eject). plugSlotsFromSettings iterates slots ascending,
+        // so the lowest-numbered slot wins naturally.
+        diskCards.push_back(raw);
+        if (!diskCard) diskCard = raw;
+        diskPanels.push_back(std::make_unique<pom2::DiskController_ImGui>());
+        if (!diskPanel) diskPanel = diskPanels.front().get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -628,6 +662,7 @@ void MainWindow::plugSlotsFromSettings()
             s,
             &controller->disk35Internal(),
             &controller->disk35External());
+        smartPortCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -940,7 +975,10 @@ void MainWindow::renderMenuBar()
         }
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
-        if (ImGui::MenuItem("Boot HDV (slot 5)")) {
+        // Label reflects where the user actually has the card plugged.
+        const std::string bootHdvLabel = "Boot HDV (slot " +
+            std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
+        if (ImGui::MenuItem(bootHdvLabel.c_str())) {
             bootHdvImage();
         }
         ImGui::EndDisabled();
@@ -1016,11 +1054,12 @@ void MainWindow::renderMenuBar()
             for (pom2::SystemProfile p : pom2::allProfiles()) {
                 const auto& cfg = pom2::profileConfig(p);
                 const bool selected = (activeProfile == p);
-                // Append "  ✓" to the active label so the checkmark is
-                // reinforced by text — useful in colourblind / monochrome
-                // ImGui themes.
-                std::string label = std::string(cfg.displayName);
-                if (selected) label += "  ✓";
+                // ImGui's MenuItem 3rd-arg `selected` draws the native
+                // checkmark on the right of the row — that's enough; no
+                // need to append an extra "✓" to the label (the double
+                // mark looked wrong, 2026-05-15). string_view → string
+                // for guaranteed null-termination.
+                const std::string label(cfg.displayName);
                 if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
                     applyProfile(p);
                 }
@@ -1086,8 +1125,23 @@ void MainWindow::renderMenuBar()
     if (ImGui::BeginMenu("Devices")) {
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
-        ImGui::MenuItem("Sony 3.5\" (//c+ SmartPort)",   nullptr, &showDisk35Panel);
-        ImGui::MenuItem("HDV (slot 5)",                  nullptr, &showHdvPanel);
+        {
+            // Mirror the panel's dynamic title — slot N on //e with a
+            // Liron-class card, "//c+ on-board" on //c+.
+            std::string lbl;
+            if (smartPortCard) {
+                lbl = "Disk 3.5\" (slot " +
+                    std::to_string(smartPortCard->getSlot()) + ")";
+            } else {
+                lbl = "Disk 3.5\" (//c+ on-board)";
+            }
+            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showDisk35Panel);
+        }
+        {
+            const std::string label = "HDV (slot " +
+                std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
+            ImGui::MenuItem(label.c_str(),               nullptr, &showHdvPanel);
+        }
         ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
@@ -1370,8 +1424,14 @@ void MainWindow::bootHdvImage()
         return;
     }
     const std::string p = hdvCard->getImagePath();
-    controller->bootFromSlot(5);
-    tapeStatusMessage = "Booting HDV: " + p;
+    // Boot from the slot the HDV card is actually plugged in — the user
+    // can move it to slot 2 / 7 / etc. via Slot Configuration and the
+    // boot path follows. The card's slot ROM bakes its slot number into
+    // the ProDOS dispatcher trampolines, so `bootFromSlot(N)` lands on
+    // the right $C(N)00 entry point automatically.
+    controller->bootFromSlot(hdvCard->getSlot());
+    tapeStatusMessage = "Booting HDV (slot " +
+        std::to_string(hdvCard->getSlot()) + "): " + p;
     tapeStatusUntil   = lastFrameTime + 4.0;
 }
 
@@ -1785,23 +1845,9 @@ void MainWindow::renderDiskPanelWindow()
 {
     if (!showDiskPanel) return;
 
-    pom2::DiskController_ImGui::DriveSnapshot snap;
-    if (diskCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.bootRomLoaded     = diskCard->hasBootRom();
-        snap.diskLoaded        = diskCard->isDiskLoaded();
-        snap.motorOn           = diskCard->isMotorOn();
-        snap.track             = diskCard->getCurrentTrack();
-        snap.halfTrack         = diskCard->getHalfTrack();
-        snap.trackPos          = diskCard->getTrackPosition();
-        snap.diskPath          = diskCard->getDiskPath();
-        snap.lastError         = diskCard->getLastError();
-        snap.writeBackEnabled  = diskCard->isWriteBackEnabled();
-        snap.hasUnsavedChanges = diskCard->hasUnsavedChanges();
-    }
-    snap.turboWhileMotor = diskTurboWhileMotor;
-    snap.turboActive     = diskTurboActive;
-
+    // Disk library is the same for every plugged DiskII (it's the
+    // contents of disks/ on disk). Build it once and share via copy.
+    std::vector<pom2::DiskController_ImGui::LibraryEntry> sharedLibrary;
     // Disk library — scan disks/ recursively for .dsk/.do/.po/.nib/.woz.
     // Sub-folders are honoured so users can shelve their library by
     // format (`disks/dsk/`, `disks/woz/`, …) or by collection
@@ -1839,118 +1885,155 @@ void MainWindow::renderDiskPanelWindow()
                 e.displayName = fs::relative(entry.path(), root, ec).string();
                 if (e.displayName.empty()) e.displayName = name;
                 e.fullPath    = entry.path().string();
-                snap.library.push_back(std::move(e));
+                sharedLibrary.push_back(std::move(e));
             }
             break;     // first existing candidate dir wins
         }
-        std::sort(snap.library.begin(), snap.library.end(),
+        std::sort(sharedLibrary.begin(), sharedLibrary.end(),
                   [](const auto& a, const auto& b) {
                       return a.displayName < b.displayName;
                   });
     }
 
-    // Auto-turbo: while the motor is spinning, replace the user's chosen
-    // cyclesPerFrame with a "MAX" value (~60 MHz emulated) so the LSS's
-    // nibble pacing is multiplied by the same factor — the disk reads
-    // proceed at ~1 second of wall time for a full DOS 3.3 boot. When the
-    // motor stops (DOS finished loading) we restore the prior setting so
-    // typed-in BASIC programs run at the natural Apple II clock.
-    if (diskCard && diskTurboWhileMotor) {
-        const bool wantTurbo = snap.motorOn;
-        if (wantTurbo && !diskTurboActive) {
+    // Auto-turbo: while ANY plugged DiskII's motor is spinning, crank the
+    // CPU to ~60 MHz emulated. Multi-instance friendly — one card spinning
+    // up is enough to enter turbo, all cards must be idle to leave it.
+    // (Real //e setups don't run two drives concurrently anyway, but
+    // logging the OR of motor states is the safest semantics.)
+    bool anyMotorOn = false;
+    for (auto* c : diskCards) {
+        if (c && c->isMotorOn()) { anyMotorOn = true; break; }
+    }
+    if (!diskCards.empty() && diskTurboWhileMotor) {
+        if (anyMotorOn && !diskTurboActive) {
             diskSavedCyclesPerFrame = controller->getCyclesPerFrame();
             controller->setCyclesPerFrame(1'000'000);
             diskTurboActive = true;
-        } else if (!wantTurbo && diskTurboActive) {
+        } else if (!anyMotorOn && diskTurboActive) {
             controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
             diskTurboActive = false;
         }
     } else if (diskTurboActive) {
-        // Toggle was switched off mid-spin — drop back to saved speed.
         controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
         diskTurboActive = false;
     }
 
-    // Disk II = full-height right column in the curated layout. Tall
-    // enough to show the controls AND the library list without scrolling.
-    ImGui::SetNextWindowPos (ImVec2(1055, 30),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(705,  960), ImGuiCond_FirstUseEver);
-    auto result = diskPanel->render("Disk II (slot 6)", showDiskPanel, snap);
-    if (result.turboToggleChanged) {
-        diskTurboWhileMotor = result.turboNewValue;
-    }
-    if (result.writeBackToggleChanged && diskCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        diskCard->setWriteBackEnabled(result.writeBackNewValue);
-        tapeStatusMessage = result.writeBackNewValue
-            ? "Disk II: write-back ENABLED (saves on eject)"
-            : "Disk II: write-back disabled";
-        tapeStatusUntil = lastFrameTime + 4.0;
-    }
-    if (result.requestEject && diskCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        diskCard->ejectDisk();
-        tapeStatusMessage = "Disk ejected";
-        tapeStatusUntil   = lastFrameTime + 3.0;
-    }
-    if (result.requestBoot && diskCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        diskCard->seekTrack0();
-        controller->cpu().setProgramCounter(0xC600);
-        controller->setMode(EmulationController::Mode::Running);
-        tapeStatusMessage = "Boot: PC → $C600";
-        tapeStatusUntil   = lastFrameTime + 3.0;
-    }
-    if (!result.requestInsertAndBoot.empty() && diskCard) {
-        // Library-click "insert + boot": insert under the lock so the
-        // image is in the drive, then cold-boot from the reset vector
-        // so the Apple II Monitor ROM runs its normal cold-start
-        // sequence (HOME clears the text page, banner is displayed,
-        // autostart scans slots and JSRs $C600). Going straight to
-        // PC=$C600 (the old bootFromSlot path) skipped the ROM banner
-        // and left the freshly-wiped text page showing as an `@`-tile
-        // garbage frame until cc65/ProDOS switched to HGR — visible
-        // for several real-time seconds on slow-loading binaries.
-        const std::string path = result.requestInsertAndBoot;
-        bool ok = false;
-        std::string err;
+    // ── Render one window per plugged DiskII ──────────────────────────
+    // Title carries the slot number so ImGui assigns each card its own
+    // window state (position, size, dock). The primary (lowest-slot) card
+    // gets the curated default position; subsequent cards cascade slightly
+    // down/right so they don't perfectly overlap on first show.
+    for (size_t idx = 0; idx < diskCards.size() && idx < diskPanels.size(); ++idx) {
+        DiskIICard*                       card  = diskCards[idx];
+        pom2::DiskController_ImGui*       panel = diskPanels[idx].get();
+        if (!card || !panel) continue;
+
+        pom2::DiskController_ImGui::DriveSnapshot snap;
         {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = diskCard->insertDisk(path);
-            if (ok) diskCard->seekTrack0();
-            else    err = diskCard->getLastError();
+            snap.bootRomLoaded     = card->hasBootRom();
+            snap.diskLoaded        = card->isDiskLoaded();
+            snap.motorOn           = card->isMotorOn();
+            snap.track             = card->getCurrentTrack();
+            snap.halfTrack         = card->getHalfTrack();
+            snap.trackPos          = card->getTrackPosition();
+            snap.diskPath          = card->getDiskPath();
+            snap.lastError         = card->getLastError();
+            snap.writeBackEnabled  = card->isWriteBackEnabled();
+            snap.hasUnsavedChanges = card->hasUnsavedChanges();
         }
-        if (ok) {
-            controller->coldBoot();
+        snap.turboWhileMotor = diskTurboWhileMotor;
+        snap.turboActive     = diskTurboActive;
+        snap.library         = sharedLibrary;     // shared copy
+
+        const float baseX = 1055.0f, baseY = 30.0f;
+        ImGui::SetNextWindowPos (
+            ImVec2(baseX - static_cast<float>(idx) * 30.0f,
+                   baseY + static_cast<float>(idx) * 30.0f),
+            ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(705, 960), ImGuiCond_FirstUseEver);
+
+        char title[64];
+        std::snprintf(title, sizeof(title),
+                      "Disk II (slot %d)", card->getSlot());
+        // Only the primary card honours `showDiskPanel` (the menu toggle).
+        // Secondary cards share the same toggle for simplicity — the user
+        // sees them appear/disappear together. We feed the same flag to
+        // each render() call.
+        auto result = panel->render(title, showDiskPanel, snap);
+
+        if (result.turboToggleChanged) {
+            diskTurboWhileMotor = result.turboNewValue;
+        }
+        if (result.writeBackToggleChanged) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            card->setWriteBackEnabled(result.writeBackNewValue);
+            tapeStatusMessage = "slot " + std::to_string(card->getSlot()) +
+                (result.writeBackNewValue
+                    ? ": write-back ENABLED (saves on eject)"
+                    : ": write-back disabled");
+            tapeStatusUntil = lastFrameTime + 4.0;
+        }
+        if (result.requestEject) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            card->ejectDisk();
+            tapeStatusMessage = "Disk ejected (slot " +
+                std::to_string(card->getSlot()) + ")";
+            tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+        if (result.requestBoot) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            card->seekTrack0();
+            const uint16_t pc = static_cast<uint16_t>(
+                0xC000 + (card->getSlot() << 8));
+            controller->cpu().setProgramCounter(pc);
             controller->setMode(EmulationController::Mode::Running);
-            pom2::log().info("Disk II",
-                std::string("Library click → insert + boot: ") + path);
-            tapeStatusMessage = "Booting: " + path;
-        } else {
-            tapeStatusMessage = "Boot failed: " + err;
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "Boot: PC → $%04X", pc);
+            tapeStatusMessage = msg;
+            tapeStatusUntil   = lastFrameTime + 3.0;
         }
-        tapeStatusUntil = lastFrameTime + 4.0;
-    }
-    if (!result.requestInsertOnly.empty() && diskCard) {
-        // Right-click "insert only": swap the image in without resetting
-        // the emulator. Useful for multi-disk titles that prompt the
-        // user to flip disks mid-run.
-        const std::string path = result.requestInsertOnly;
-        bool ok = false;
-        std::string err;
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = diskCard->insertDisk(path);
-            if (!ok) err = diskCard->getLastError();
+        if (!result.requestInsertAndBoot.empty()) {
+            const std::string path = result.requestInsertAndBoot;
+            bool ok = false;
+            std::string err;
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                ok = card->insertDisk(path);
+                if (ok) card->seekTrack0();
+                else    err = card->getLastError();
+            }
+            if (ok) {
+                controller->coldBoot();
+                controller->setMode(EmulationController::Mode::Running);
+                pom2::log().info("Disk II",
+                    "slot " + std::to_string(card->getSlot()) +
+                    " Library click → insert + boot: " + path);
+                tapeStatusMessage = "Booting: " + path;
+            } else {
+                tapeStatusMessage = "Boot failed: " + err;
+            }
+            tapeStatusUntil = lastFrameTime + 4.0;
         }
-        if (ok) {
-            pom2::log().info("Disk II",
-                std::string("Library right-click → insert only: ") + path);
-            tapeStatusMessage = "Inserted (no boot): " + path;
-        } else {
-            tapeStatusMessage = "Insert failed: " + err;
+        if (!result.requestInsertOnly.empty()) {
+            const std::string path = result.requestInsertOnly;
+            bool ok = false;
+            std::string err;
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                ok = card->insertDisk(path);
+                if (!ok) err = card->getLastError();
+            }
+            if (ok) {
+                pom2::log().info("Disk II",
+                    "slot " + std::to_string(card->getSlot()) +
+                    " Library right-click → insert only: " + path);
+                tapeStatusMessage = "Inserted (no boot): " + path;
+            } else {
+                tapeStatusMessage = "Insert failed: " + err;
+            }
+            tapeStatusUntil = lastFrameTime + 4.0;
         }
-        tapeStatusUntil = lastFrameTime + 4.0;
     }
 }
 
@@ -2038,7 +2121,11 @@ void MainWindow::renderHdvPanelWindow()
     // HDV = bottom-left panel in the curated layout (under the Screen).
     ImGui::SetNextWindowPos (ImVec2(5,    600), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1040, 390), ImGuiCond_FirstUseEver);
-    auto result = hdvPanel->render("HDV (slot 5)", showHdvPanel, snap);
+    // Title reflects the actual slot the HDV card is plugged in.
+    char hdvTitle[48];
+    std::snprintf(hdvTitle, sizeof(hdvTitle), "HDV (slot %d)",
+                  hdvCard ? hdvCard->getSlot() : 5);
+    auto result = hdvPanel->render(hdvTitle, showHdvPanel, snap);
 
     if (result.writeBackToggleChanged && hdvCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -2108,9 +2195,10 @@ void MainWindow::renderHdvPanelWindow()
         }
 
         // Real .hdv / .2mg / .po file: load under the lock so the card
-        // has the right blocks before bootFromSlot(5) wipes RAM and
-        // jumps PC = $C500. Two-step lock is safe — the CPU worker only
-        // resumes when bootFromSlot flips mode to Running.
+        // has the right blocks before bootFromSlot wipes RAM and jumps
+        // PC = $C(N)00 (where N is the slot the card actually lives in).
+        // Two-step lock is safe — the CPU worker only resumes when
+        // bootFromSlot flips mode to Running.
         bool ok = false;
         std::string err;
         {
@@ -2125,10 +2213,12 @@ void MainWindow::renderHdvPanelWindow()
             }
         }
         if (ok) {
-            controller->bootFromSlot(5);
+            controller->bootFromSlot(hdvCard->getSlot());
             pom2::log().info("HDV",
-                std::string("Library click → mount + boot: ") + path);
-            tapeStatusMessage = "Mounting + booting HDV: " + path;
+                "slot " + std::to_string(hdvCard->getSlot()) +
+                " library click → mount + boot: " + path);
+            tapeStatusMessage = "Mounting + booting HDV (slot " +
+                std::to_string(hdvCard->getSlot()) + "): " + path;
         } else {
             tapeStatusMessage = "Boot failed: " + err;
         }
@@ -2188,26 +2278,70 @@ void MainWindow::renderHdvPanelWindow()
 
 void MainWindow::renderDiskFileDialog()
 {
-    if (diskPanel->insertDialogOpen) {
+    // Find the panel that currently has its insertDialogOpen flag set.
+    // With option C (multi-instance DiskII), any of the per-card panels
+    // could have triggered the popup via its "Insert .dsk..." button —
+    // we route the eventual insertDisk() to the corresponding card.
+    pom2::DiskController_ImGui* triggeredPanel = nullptr;
+    DiskIICard*                 triggeredCard  = nullptr;
+    for (size_t i = 0; i < diskPanels.size() && i < diskCards.size(); ++i) {
+        if (diskPanels[i] && diskPanels[i]->insertDialogOpen) {
+            triggeredPanel = diskPanels[i].get();
+            triggeredCard  = diskCards[i];
+            break;
+        }
+    }
+    // Top-level "Insert disk image..." menu (no per-panel context) routes
+    // to the primary card by convention.
+    if (!triggeredPanel && diskPanel && diskPanel->insertDialogOpen) {
+        triggeredPanel = diskPanel;
+        triggeredCard  = diskCard;
+    }
+
+    if (triggeredPanel) {
         ImGui::OpenPopup("Insert disk image");
-        diskPanel->insertDialogOpen = false;
+        triggeredPanel->insertDialogOpen = false;
+        // Remember which card the popup routes to until the user clicks
+        // Insert / Cancel. ImGui modal state survives between frames so
+        // the pointer needs to survive too.
+        diskDialogTargetSlot = triggeredCard ? triggeredCard->getSlot() : -1;
     }
     if (!ImGui::BeginPopupModal("Insert disk image", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) return;
 
+    // Resolve the target card via the saved slot — the panel pointer may
+    // have moved (rare profile-switch races), but the slot number is
+    // stable until plugSlotsFromSettings rebuilds.
+    DiskIICard*                 popupCard  = nullptr;
+    pom2::DiskController_ImGui* popupPanel = nullptr;
+    for (size_t i = 0; i < diskCards.size(); ++i) {
+        if (diskCards[i] && diskCards[i]->getSlot() == diskDialogTargetSlot) {
+            popupCard  = diskCards[i];
+            popupPanel = (i < diskPanels.size()) ? diskPanels[i].get() : nullptr;
+            break;
+        }
+    }
+    if (!popupPanel) popupPanel = diskPanel;
+    if (!popupCard)  popupCard  = diskCard;
+
+    if (popupCard) {
+        ImGui::Text("Target: Disk II slot %d", popupCard->getSlot());
+    }
     ImGui::TextUnformatted("Path to a 5.25\" image —"
                            " .dsk / .do (DOS 3.3, 143 360 B) or"
                            " .po (ProDOS, 143 360 B) or .nib (raw"
                            " nibble stream, 232 960 B) or .woz"
                            " (bit-cell, copy-protected disks; read-only)."
                            " Write-back is opt-in via the panel checkbox.");
-    char buf[512] = {0};
-    std::snprintf(buf, sizeof(buf), "%s", diskPanel->dialogPath.c_str());
-    if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
-                         ImGuiInputTextFlags_EnterReturnsTrue))
-        diskPanel->dialogPath = buf;
-    else
-        diskPanel->dialogPath = buf;
+    if (popupPanel) {
+        char buf[512] = {0};
+        std::snprintf(buf, sizeof(buf), "%s", popupPanel->dialogPath.c_str());
+        if (ImGui::InputText("##DiskPath", buf, sizeof(buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue))
+            popupPanel->dialogPath = buf;
+        else
+            popupPanel->dialogPath = buf;
+    }
 
     // Quick list of disk images in disks/ (mirrors the cassette dialog).
     namespace fs = std::filesystem;
@@ -2222,20 +2356,22 @@ void MainWindow::renderDiskFileDialog()
             if (ext != ".dsk" && ext != ".do" && ext != ".po" &&
                 ext != ".nib" && ext != ".woz") continue;
             const std::string name = entry.path().filename().string();
-            if (ImGui::Selectable(name.c_str()))
-                diskPanel->dialogPath = entry.path().string();
+            if (ImGui::Selectable(name.c_str()) && popupPanel)
+                popupPanel->dialogPath = entry.path().string();
         }
         break;
     }
 
     ImGui::Separator();
     if (ImGui::Button("Insert", ImVec2(120, 0))) {
-        if (diskCard && !diskPanel->dialogPath.empty()) {
+        if (popupCard && popupPanel && !popupPanel->dialogPath.empty()) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (diskCard->insertDisk(diskPanel->dialogPath)) {
-                tapeStatusMessage = "Disk inserted: " + diskPanel->dialogPath;
+            if (popupCard->insertDisk(popupPanel->dialogPath)) {
+                tapeStatusMessage = "Disk inserted (slot " +
+                    std::to_string(popupCard->getSlot()) + "): " +
+                    popupPanel->dialogPath;
             } else {
-                tapeStatusMessage = "Insert failed: " + diskCard->getLastError();
+                tapeStatusMessage = "Insert failed: " + popupCard->getLastError();
             }
             tapeStatusUntil = lastFrameTime + 5.0;
         }
@@ -2329,8 +2465,14 @@ void MainWindow::renderDisk35PanelWindow()
     if (!showDisk35Panel) return;
 
     pom2::Disk35Controller_ImGui::PanelSnapshot snap;
+    // 3.5" is "supported" by the //c+ profile (on-board SmartPort + MIG)
+    // OR by ANY profile where the user plugged a SmartPort 3.5" card
+    // (option C 2026-05-15: //e + Liron-class card). Both paths share
+    // the same Disk35Image objects so the panel doesn't have to care
+    // which mux is talking.
     snap.supportedByProfile =
-        activeProfile == pom2::SystemProfile::AppleIIcPlus;
+        (activeProfile == pom2::SystemProfile::AppleIIcPlus) ||
+        (smartPortCard != nullptr);
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         const pom2::Sony35Drive* drives[2] = {
@@ -2396,8 +2538,20 @@ void MainWindow::renderDisk35PanelWindow()
 
     ImGui::SetNextWindowPos (ImVec2(1055, 30),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(705,  600), ImGuiCond_FirstUseEver);
+    // Title reflects where the SmartPort path lives: on-board on //c+,
+    // or the explicit slot of the plugged Liron-class card on other
+    // profiles. Stable ImGui window-id per slot so the user's position/
+    // size choices are remembered per-configuration.
+    char disk35Title[64];
+    if (smartPortCard) {
+        std::snprintf(disk35Title, sizeof(disk35Title),
+                      "Disk 3.5\" (slot %d)", smartPortCard->getSlot());
+    } else {
+        std::snprintf(disk35Title, sizeof(disk35Title),
+                      "Disk 3.5\" (//c+ on-board)");
+    }
     auto result = disk35Panel->render(
-        "Sony 3.5\" (//c+ SmartPort)", showDisk35Panel, snap);
+        disk35Title, showDisk35Panel, snap);
 
     for (int d = 0; d < 2; ++d) {
         if (result.requestEject[d]) {
@@ -2448,10 +2602,25 @@ void MainWindow::renderDisk35PanelWindow()
     if (!result.requestInsertAndBoot.empty()) {
         const int d = result.insertAndBootDrive;
         if (controller->mount35(d, result.requestInsertAndBoot)) {
-            controller->coldBoot();
-            tapeStatusMessage = "3.5\" drive "
-                + std::string(d == 0 ? "1" : "2")
-                + " booted: " + result.requestInsertAndBoot;
+            // Prefer an explicit `bootFromSlot(N)` when the SmartPort
+            // path is provided by a slot card on a non-//c+ profile —
+            // the user picked the slot in Slot Configuration and the
+            // PR#N landing should follow that. On //c+ on-board, fall
+            // back to `coldBoot()` so the ROM autostart picks up the
+            // built-in SmartPort firmware.
+            if (smartPortCard &&
+                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+                controller->bootFromSlot(smartPortCard->getSlot());
+                tapeStatusMessage = "3.5\" drive "
+                    + std::string(d == 0 ? "1" : "2")
+                    + " booted (slot " + std::to_string(smartPortCard->getSlot())
+                    + "): " + result.requestInsertAndBoot;
+            } else {
+                controller->coldBoot();
+                tapeStatusMessage = "3.5\" drive "
+                    + std::string(d == 0 ? "1" : "2")
+                    + " booted: " + result.requestInsertAndBoot;
+            }
         } else {
             const auto& img = (d == 0)
                 ? controller->disk35Internal()

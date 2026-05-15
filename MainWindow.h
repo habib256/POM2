@@ -47,6 +47,7 @@ namespace pom2 {
     class JoystickPanel_ImGui;
     class LeChatMauve_ImGui;
     class Settings;
+    class SmartPortCard;
     enum class SystemProfile;
 }
 class MemoryViewer_ImGui;
@@ -137,6 +138,7 @@ private:
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
+    pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -219,6 +221,12 @@ private:
     bool        showPasteFileDialog = false;
     std::string pasteDialogPath;
     bool        pasteAutoUppercase  = false;
+
+    // Slot number of the DiskII the Insert-disk popup currently routes to.
+    // Latched when any panel sets `insertDialogOpen` true; cleared when
+    // the popup closes. Lets the popup survive panel pointer churn (rare
+    // profile-switch races).
+    int         diskDialogTargetSlot = -1;
 
     // Boot-time ROM probing.
     std::string romPath = "roms/apple2.rom";

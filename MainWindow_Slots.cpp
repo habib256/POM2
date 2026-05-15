@@ -28,6 +28,7 @@
 #include "AiControlServer.h"
 #include "Apple2Display.h"
 #include "ClockCard.h"
+#include "DiskController_ImGui.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
 #include "LeChatMauveCard.h"
@@ -117,8 +118,12 @@ void MainWindow::renderSlotConfigPanel()
     const bool mouseAvailable = mouseRomsPresent();
 
     // ── Per-slot dropdowns ────────────────────────────────────────────
+    // "diskii" is multi-instance (option C 2026-05-15) — never flagged
+    // as a duplicate. Every other card type is single-instance because
+    // its driver/ROM/settings assume exclusivity.
     auto isDuplicate = [&](int slot) -> bool {
-        if (draft[slot].empty()) return false;
+        if (draft[slot].empty())       return false;
+        if (draft[slot] == "diskii")   return false;
         for (int s = 1; s <= 7; ++s) {
             if (s != slot && draft[s] == draft[slot]) return true;
         }
@@ -283,9 +288,17 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    (its "path" is a `[host folder] <dir>` sentinel, not a real
     //    file) since `loadImage` would fail on the sentinel; the user
     //    can re-synthesise from the Library after the switch.
-    std::string savedDiskPath, savedHdvPath;
-    if (diskCard && diskCard->isDiskLoaded()) {
-        savedDiskPath = diskCard->getDiskPath();
+    std::string savedHdvPath;
+    // Capture every plugged Disk II's path so multi-instance setups
+    // (DiskII slot 6 + DiskII slot 4) survive the profile switch. Indexed
+    // by slot number, not by diskCards[] order, so re-plugging in the
+    // same slot picks the right path even if SettingsBackedSlots returns
+    // them in a different order.
+    std::array<std::string, 8> savedDiskPaths{};
+    for (auto* c : diskCards) {
+        if (c && c->isDiskLoaded()) {
+            savedDiskPaths[static_cast<size_t>(c->getSlot())] = c->getDiskPath();
+        }
     }
     if (hdvCard && hdvCard->isImageLoaded()) {
         const std::string& p = hdvCard->getImagePath();
@@ -310,12 +323,16 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             controller->audio().removeSource(mockingboardCard->audioSource());
         }
         diskCard         = nullptr;
+        diskCards.clear();
+        diskPanels.clear();
+        diskPanel        = nullptr;
         hdvCard          = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mockingboardCard = nullptr;
+        smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
 
@@ -388,11 +405,16 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    switches).
     plugSlotsFromSettings();
 
-    // 8. Re-mount preserved media.
-    if (diskCard && !savedDiskPath.empty()) {
+    // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
+    //    and look up its slot in the snapshot — empty entries mean no
+    //    disk was mounted there at the profile-switch time.
+    for (auto* c : diskCards) {
+        if (!c) continue;
+        const std::string& p = savedDiskPaths[static_cast<size_t>(c->getSlot())];
+        if (p.empty()) continue;
         std::error_code ec;
-        if (std::filesystem::is_regular_file(savedDiskPath, ec)) {
-            (void)diskCard->insertDisk(savedDiskPath);
+        if (std::filesystem::is_regular_file(p, ec)) {
+            (void)c->insertDisk(p);
         }
     }
     if (hdvCard && !savedHdvPath.empty()) {
@@ -475,12 +497,16 @@ void MainWindow::restartEmulationFromSettings()
             controller->audio().removeSource(mockingboardCard->audioSource());
         }
         diskCard         = nullptr;
+        diskCards.clear();
+        diskPanels.clear();
+        diskPanel        = nullptr;
         hdvCard          = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mockingboardCard = nullptr;
+        smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the
         // next plug call will set it again.
@@ -490,14 +516,26 @@ void MainWindow::restartEmulationFromSettings()
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
     plugSlotsFromSettings();
 
-    // 4. Restore Disk II disk_path (matches MainWindow ctor's behaviour).
-    if (diskCard) {
-        diskCard->setWriteBackEnabled(settings->getBool("disk_writeback", false));
-        const std::string diskPath = settings->getString("disk_path", "");
+    // 4. Restore each DiskII's persisted state (matches MainWindow ctor).
+    //    Per-slot keys for multi-instance configs. Legacy `disk_path` /
+    //    `disk_writeback` (no slot suffix) is still read as the fallback
+    //    for the primary (lowest-slot) card so settings.ini files written
+    //    before option C 2026-05-15 keep working.
+    for (auto* c : diskCards) {
+        if (!c) continue;
+        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
+        const bool isPrimary = (c == diskCard);
+        const bool wb = settings->getBool(
+            "disk_writeback" + slotKey,
+            isPrimary ? settings->getBool("disk_writeback", false) : false);
+        c->setWriteBackEnabled(wb);
+        const std::string diskPath = settings->getString(
+            "disk_path" + slotKey,
+            isPrimary ? settings->getString("disk_path", "") : std::string());
         std::error_code ec;
         if (!diskPath.empty() &&
             std::filesystem::is_regular_file(diskPath, ec)) {
-            (void)diskCard->insertDisk(diskPath);
+            (void)c->insertDisk(diskPath);
         }
     }
 
