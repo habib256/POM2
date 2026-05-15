@@ -31,6 +31,62 @@ par sous-système, triées par poids des items 🟠.
 - [ ] 🟢 **IRQ gate sur DIP** : MAME `a2ssc.cpp:373` n'arme l'IRQ que
       si SW2:6 (Interrupts) est on. POM2 expose toujours.
 
+## Mouse Card
+
+- [ ] 🟡 **Sync curseur pixel-près host/guest non résolue** (2026-05-15).
+      Le tracking actuel est delta-based : 1 px hôte → 1 px Apple en
+      vitesse (ratio `display.width() / widgetW` dans
+      `MainWindow::onMouseMove`), avec accumulation sub-pixel et clamp
+      résidu à ±127 ticks par event. Fonctionne mais les deux curseurs
+      dérivent en position absolue parce qu'on n'a pas accès à la
+      position vraie du curseur dans A2Desktop pour corriger.
+      Investigation menée :
+      - **Screen-holes standard** (`$0478+slot/$04F8+slot/$0578+slot/
+        $05F8+slot`) : la firmware MCU les utilise via `LDA $0438,Y`
+        avec Y=slot*16, MAIS A2Desktop's MGTK ne les lit pas — elle
+        appelle `ReadMouse` du slot ROM et copie les valeurs dans son
+        propre data segment.
+      - **MGTK data segment** : `mouse_state:` (mouse_x word, mouse_y
+        word, status byte) + `cursor_pos:` (xcoord word, ycoord word).
+        Chargé à `MGTKAuxEntry := $4000` en **AUX RAM** d'après
+        `src/desktop/desktop.inc` du repo `a2stuff/a2d` (disasm
+        Apple II Desktop). Offset exact de `mouse_state` dépend du
+        link layout — n'a pas pu être identifié.
+      - **Pearson scan complet** (main + aux RAM $0000-$BFFF) avec
+        host cursor déplacé sur 44 waypoints couvrant les 4 coins +
+        diagonales + croix : **0 candidat à `|r| > 0.7`**. Probablement
+        parce que le curseur X côté Apple ne se déplace presque pas
+        (~5 px Apple pour 600 px hôte) — voir TODO suivant.
+      - **Slot ROM 6502 et MCU sources** récupérés dans `roms/` ;
+        firmware Apple-copyright (341-0269.bin, 341-0270-c.bin) gérée
+        comme port MAME fidèle (cf. `MouseCard.cpp`).
+      Reprendre l'investigation soit en disassemblant l'offset de
+      `mouse_state` depuis le binaire A2DeskTop release v1.5, soit en
+      ajoutant un memory-write hook qui détecte le premier byte
+      pair-corrélé avec target X/Y après que la firmware MCU a posté
+      sa première ReadMouse.
+
+- [ ] 🟠 **Curseur X bloqué à ~8 px Apple pour de grandes motions
+      hôte** alors que Y fonctionne sur toute la plage. Symptôme
+      visible via screenshot-diff (`/tmp/m_*.ppm` after host moves
+      full-width) : bbox cursor x = [0..5..8] même quand l'hôte
+      traverse les 600 px du widget. Pas de régression dans
+      `MouseCard.cpp` côté MCU — les deux axes utilisent
+      `updateAxis()` symétrique. Hypothèses :
+      - A2Desktop a posé un clamp X étroit (rectangle window-local)
+        via `SetMouse` après initialisation ;
+      - La firmware MCU est dans son idle loop ($0403/$0405/$0409/
+        $0469/$03F3) qui ignore la motion tant que `RAM $58 bit 0`
+        n'est pas set par la commande `ReadMouse`, et A2Desktop ne
+        pulse `ReadMouse` pas assez souvent ;
+      - Bug subtil dans `MouseCard::updateAxis` pour X (PB0/PB1) vs
+        Y (PB2/PB3) — pourtant `mouse_card_quadrature_smoke_test.cpp`
+        passe.
+      Outils utiles laissés en place : `POM2_MOUSE_TRACE=1` (logs
+      MCU PC + transitions PIA), `POM2_AUTO_BOOT_HDV=N` (auto-boot
+      slot 5), `POM2_AUTO_QUIT=N`. Extension AI Control HTTP
+      `/mem?addr=...&len=...&bank=aux` pour lire aux RAM.
+
 ## Disques
 
 - [ ] 🟡 **cc65-Chess.po hang après `LOADING CHESS`** — symptôme :

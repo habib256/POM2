@@ -29,11 +29,23 @@
 //   * The Q3 fast clock (1.86 MHz) used on Mac/IIgs but not //c+.
 
 #include "IWMDevice.h"
+#include "CpuClock.h"
 #include "Logger.h"
 
 #include <algorithm>
 #include <climits>
 #include <cstdio>
+
+namespace {
+
+// MAME `iwm.cpp:204-206`: 1 << 23 = 8388608 ticks of the IWM's clock
+// (which is the CPU clock for //c / //c+ — no separate Q3 clock), so
+// "≈ 1 emulated second" is the design intent. POM2 ticks IWM time at
+// the CPU clock too, so 1 second = POM2_CPU_CLOCK_HZ cycles.
+constexpr uint64_t kDriveDisableDelayCycles =
+    static_cast<uint64_t>(POM2_CPU_CLOCK_HZ);
+
+}
 
 namespace pom2 {
 
@@ -211,12 +223,16 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
                 whd_     &= ~0x40;
                 // m_floppy->mon_w(true) — handled by DiskIICard.
             } else {
-                // Normal mode: 1 s drive-disable delay (MAME uses an
-                // emu_timer at 8388608 cycles ≈ 1 s @ 1MHz). POM2
-                // defers the final transition until `sync()` notices
-                // enough cycles have elapsed.
-                // TODO timer: an explicit deadline + check on sync.
-                active_ = MODE_DELAY;
+                // Normal mode: 1 emulated-second drive-disable delay.
+                // MAME `iwm.cpp:202-206` schedules an emu_timer for
+                // `cycles_to_time(8388608)` then runs `update_timer_tick`
+                // when it fires. POM2 records a deadline; `sync()`
+                // checks it on entry and runs the same drain when
+                // reached. EmulationController also pulses `tick()`
+                // each frame so the deadline still fires when no
+                // $C0Ex traffic arrives between operations.
+                active_         = MODE_DELAY;
+                delayDeadline_  = now_ + kDriveDisableDelayCycles;
             }
         }
     }
@@ -264,40 +280,49 @@ void IWMDevice::dataW(uint8_t data)
     }
 }
 
+// MAME's IWM window sizes are in IWM-clock ticks (the //c / //c+ runs
+// the IWM off A2BUS_7M ≈ 7.16 MHz — see `apple2e.cpp` machine config).
+// POM2 ticks the IWM with the CPU clock (POM2_CPU_CLOCK_HZ ≈ 1.023
+// MHz) to keep one cycle counter for the whole machine. Scale the
+// MAME constants by the clock ratio (≈ 7) so a "bit cell" window
+// still spans ≈ 4 µs of emulated time, which is what GCR-encoded
+// 5.25" flux transitions assume. The constants below preserve MAME's
+// relative ratios across the four mode-bit-4-3 combinations.
+
 uint64_t IWMDevice::halfWindowSize() const
 {
-    // MAME `iwm.cpp:290-301 half_window_size`.
+    // MAME `iwm.cpp:290-301 half_window_size`, scaled CPU-clock units.
     if (q3ClockActive_) {
         return (mode_ & 0x08) ? 2 : 4;
     }
     switch (mode_ & 0x18) {
-        case 0x00: return 14;
-        case 0x08: return 7;
-        case 0x10: return 16;
-        case 0x18: return 8;
+        case 0x00: return 2;     // MAME 14  / 7
+        case 0x08: return 1;     // MAME 7   / 7
+        case 0x10: return 2;     // MAME 16  / 7 (rounded down)
+        case 0x18: return 1;     // MAME 8   / 7 (rounded down)
     }
-    return 14;  // unreachable
+    return 2;
 }
 
 uint64_t IWMDevice::windowSize() const
 {
-    // MAME `iwm.cpp:302-313 window_size`.
+    // MAME `iwm.cpp:302-313 window_size`, scaled CPU-clock units.
     if (q3ClockActive_) {
         return (mode_ & 0x08) ? 4 : 8;
     }
     switch (mode_ & 0x18) {
-        case 0x00: return 28;
-        case 0x08: return 14;
-        case 0x10: return 36;
-        case 0x18: return 16;
+        case 0x00: return 4;     // MAME 28  / 7
+        case 0x08: return 2;     // MAME 14  / 7
+        case 0x10: return 5;     // MAME 36  / 7 (rounded)
+        case 0x18: return 2;     // MAME 16  / 7 (rounded down)
     }
-    return 28;  // unreachable
+    return 4;
 }
 
 uint64_t IWMDevice::readRegisterUpdateDelay() const
 {
-    // MAME `iwm.cpp:314-317`.
-    return (mode_ & 0x08) ? 4 : 8;
+    // MAME `iwm.cpp:314-317`, scaled CPU-clock units.
+    return (mode_ & 0x08) ? 1 : 1;
 }
 
 void IWMDevice::writeClockStart()
@@ -324,9 +349,17 @@ void IWMDevice::writeClockStop()
 
 int64_t IWMDevice::nextTransition(int64_t from) const
 {
+    // DiskImage's flux events live in LSS-cycle space (= 2× CPU cycles)
+    // — see DiskIICard `lssCycle = cpuCycleTotal * 2`. The IWM state
+    // machine in this port runs at CPU cycle resolution to stay
+    // single-clock with the rest of POM2, so we transit the boundary
+    // here: scale `from` up before the lookup, and the returned
+    // transition stamp back down to CPU cycles.
     if (!disk_) return INT64_MAX;
-    const int64_t t = disk_->getNextTransition(qt_, from);
-    return (t == DiskImage::kFluxNever) ? INT64_MAX : t;
+    const int64_t fromLss = from * 2;
+    const int64_t t = disk_->getNextTransition(qt_, fromLss);
+    if (t == DiskImage::kFluxNever) return INT64_MAX;
+    return t / 2;
 }
 
 void IWMDevice::sync(uint64_t nowCycles)
@@ -336,6 +369,31 @@ void IWMDevice::sync(uint64_t nowCycles)
     // by sliding a window over flux transitions from the disk image;
     // the write side drains the CPU's loaded data byte into the IWM
     // shift register, scheduling flux events into `fluxWrite_`.
+
+    // Drive-disable delay drain (MAME `iwm.cpp:70-84 update_timer_tick`).
+    // The MAME implementation runs this from an emu_timer at the
+    // scheduled deadline; POM2 has no timer system so we check the
+    // deadline at every sync() entry instead. Idempotent: zeroing
+    // `delayDeadline_` after the transition stops it from re-firing.
+    if (active_ == MODE_DELAY &&
+        delayDeadline_ != 0 &&
+        nowCycles >= delayDeadline_) {
+        flushWrite();
+        active_     = MODE_IDLE;
+        rw_         = MODE_IDLE;
+        rwState_    = S_IDLE;
+        devsel_     = 0;
+        status_    &= ~0x20;
+        whd_       &= ~0x40;
+        delayDeadline_ = 0;
+        // MAME also calls `m_floppy->mon_w(true)` and notifies the
+        // devsel callback here. POM2's audio + writeback hook lives
+        // on DiskIICard; the same $C0E8 (motor-off) access that put
+        // us in MODE_DELAY already started DiskIICard's spin-down
+        // delay, which fires its own `sound_->motor(false, ...)` from
+        // `advance()`. The two timers run in lock-step (both bound
+        // to `POM2_CPU_CLOCK_HZ`), so no cross-callback is needed.
+    }
     if (!active_) return;
     const uint64_t nextSync = nowCycles;
     switch (rw_) {

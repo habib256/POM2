@@ -140,7 +140,6 @@ private:
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
     bool         showAiControlPanel  = false;
-    bool         showMouseSyncProbe  = true;   // default on while debugging
     int          sscPortInput       = SuperSerialCard::kDefaultPort;
 
     // ── AI Control server (HTTP/1.1 on 127.0.0.1) ────────────────────────
@@ -247,7 +246,6 @@ private:
     void renderSscPanelWindow();
     void renderJoystickPanelWindow();
     void renderAiControlPanelWindow();
-    void renderMouseSyncProbeWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
     /// Slot Configuration panel. Implemented in MainWindow_Slots.cpp.

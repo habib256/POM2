@@ -859,31 +859,49 @@ mux — DiskIICard's current IWM-mode / IWM-WHD shadows are the
 keep-it-booting interim, IWMDevice is the SmartPort-grade real
 thing.
 
-**Shadow-mode wiring** (live as of this build): the IWMDevice is
-constructed in `EmulationController` next to the audio / cassette /
-speaker / floppy-sound devices and handed to `Memory::setIWM`. Memory
-mirrors every $C0E0-$C0EF read/write to the IWM when `iicHasAltBank`
-is true (so II/II+/IIe accesses skip the mirror entirely, matching
-MAME `apple2e.cpp:2430-2432 c080_r` which gates on `m_isiicplus &&
-slot == 6`). DiskIICard pushes `setFloppy(image, qt)` updates from
-`insertDisk`, `ejectDisk`, `selectDrive`, and the head-step path in
-`seekPhaseW` so the IWM walks the same flux source as the LSS card.
+**Live wiring** (current build):
 
-The mirror is **shadow** today: the value returned to the CPU still
-comes from the slot bus (DiskIICard's lightweight IWM-mode + IWM-WHD
-shadow), so all the existing 5.25" smoke tests keep their pinned
-behaviour. The standalone IWMDevice state machine evolves in
-parallel — its control / mode / status / WHD registers track the
-//c+ alt firmware's accesses exactly. Verified by
-`tests/iwm_device_smoke_test.cpp::testMemoryMirror` which loads a
-synthetic 32 KB //c+ image, drives the alt-firmware mode-probe
-sequence via `Memory::memWrite` / `memRead`, and asserts the IWM
-mode register echoes via `iwm.mode()` / `iwm.status()`.
+  1. `EmulationController` constructs the IWMDevice next to the
+     audio / cassette / speaker / floppy-sound devices and hands it
+     to `Memory::setIWM`. Reset paths (`hardReset`, `coldBoot`,
+     `bootFromSlot`) call `iwm.reset()`.
+  2. Memory routes $C0E0-$C0EF on `iicHasAltBank` profiles through
+     `iwmDevice->read` / `write` — matches MAME `apple2e.cpp:2430-
+     2432 c080_r` which gates on `m_isiicplus && slot == 6`. The
+     slot-6 DiskIICard still observes the access so motor sound,
+     disk-turbo gating, and head-position tracking stay current,
+     but the **byte returned to the CPU is the IWM's** when
+     `iwmAuthoritative` is true (the default).
+  3. DiskIICard pushes `setFloppy(image, qt)` updates to the IWM
+     from `insertDisk`, `ejectDisk`, `selectDrive`, and the
+     head-step path in `seekPhaseW`. The IWM's `nextTransition`
+     helper queries `DiskImage::getNextTransition(qt, from*2) / 2`
+     — POM2's flux events live in LSS-cycle space (`lssCycle =
+     cpuCycleTotal * 2`, see `DiskIICard::lssSync`), so the IWM
+     transits the boundary at the lookup edge to stay single-clock
+     with the rest of the machine.
+  4. EmulationController pulses `iwm.tick(cpuCycleTotal)` once per
+     video frame so the 1-emulated-second drive-disable timer
+     (MAME `iwm.cpp:70-84 update_timer_tick`) still drains when the
+     //c+ alt firmware stops poking $C0Ex between disk operations.
 
-Flipping the data path to authoritative IWM (i.e. routing CPU reads
-through `IWMDevice::read` instead of the slot bus) is the natural
-next step once the timer drain (1 s drive-disable delay) and the
-DiskIICard ↔ IWM motor/active state sync are in place.
+`iwmAuthoritative` is a runtime toggle (`Memory::setIWMAuthoritative`,
+or `POM2_IWM_AUTHORITATIVE=0` env var) that drops the data path back
+to DiskIICard's LSS for A/B comparison during regression bisect; the
+IWM state machine still advances on every access in that mode, so
+mode / status / WHD register reads stay coherent regardless. Pinned:
+`tests/iicplus_boot_trace.cpp` boots both modes; both reach the
+disk-loaded boot stage with the //c+ banner displayed and the
+disk loader running in user RAM (PC = $39xx after 6M cycles).
+
+**Window-size scaling**: MAME's `iwm.cpp:290-301 half_window_size`
+and `:302-313 window_size` are in IWM-clock ticks (the //c / //c+
+runs the IWM off A2BUS_7M ≈ 7.16 MHz). POM2 ticks the IWM at
+POM2_CPU_CLOCK_HZ (≈ 1.023 MHz) to keep a single cycle counter,
+so the constants are divided by ~7 to keep a "bit cell" window at
+≈ 4 µs of emulated time. Tracked verbatim in
+`IWMDevice::windowSize` / `halfWindowSize` with the MAME-side
+values in the comment block for quick cross-reference.
 
 NOT yet ported (groundwork for the next pass):
   * The 1 s drive-disable delay (MAME `iwm.cpp:70-84

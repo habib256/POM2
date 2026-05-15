@@ -10,7 +10,26 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
+
+namespace {
+// `POM2_TRACE_IIE_REBOOT=1` enables verbose tracing of IIe paging soft-
+// switch writes ($C001-$C00F), the auto-INTCXROM flip-flop, and (in
+// M6502.cpp) the PC-landing-on-$FA62 reset-entry hook. The three sites
+// share the same env var so a single export captures the entire reboot
+// path. Resolved once at startup via static init.
+bool iieRebootTraceEnabled()
+{
+    static const bool e = []() {
+        const char* env = std::getenv("POM2_TRACE_IIE_REBOOT");
+        return env && env[0] != '\0' && env[0] != '0';
+    }();
+    return e;
+}
+}
 
 Memory::Memory()
 {
@@ -713,6 +732,22 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             case 0x56: display.hiRes     = false; break;
             case 0x57: display.hiRes     = true;  break;
         }
+        if (iieRebootTraceEnabled()) {
+            static const char* dnames[8] = {
+                "TEXT=off(gfx)", "TEXT=on", "MIXED=off", "MIXED=on",
+                "PAGE2=off",     "PAGE2=on","HIRES=off(lo)","HIRES=on"
+            };
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0');
+            oss << "display $" << std::setw(4) << static_cast<int>(addr)
+                << " " << dnames[low - 0x50]
+                << " text=" << display.textMode
+                << " mixed=" << display.mixedMode
+                << " page2=" << display.page2
+                << " hires=" << display.hiRes
+                << " cyc=" << std::dec << cycleCounter;
+            pom2::log().warn("IIE", oss.str());
+        }
         return 0;
     }
 
@@ -891,6 +926,20 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
     }
     if (on) iieMemMode |= flag;
     else    iieMemMode &= static_cast<uint16_t>(~flag);
+
+    if (iieRebootTraceEnabled()) {
+        static const char* names[8] = {
+            "80STORE", "RAMRD", "RAMWRT", "INTCXROM",
+            "ALTZP",   "SLOTC3ROM", "80COL",  "ALTCHAR"
+        };
+        std::ostringstream oss;
+        oss << std::hex << std::uppercase << std::setfill('0');
+        oss << "IIe paging $" << std::setw(4) << static_cast<int>(addr)
+            << " " << names[low >> 1] << "=" << (on ? "ON" : "OFF")
+            << " mode=" << std::setw(4) << static_cast<int>(iieMemMode)
+            << " cyc=" << std::dec << cycleCounter;
+        pom2::log().warn("IIE", oss.str());
+    }
 
     // Mirror display-relevant bits into DisplayState so Apple2Display can
     // pick them up via its single getDisplayState() snapshot per frame.
@@ -1265,15 +1314,25 @@ uint8_t Memory::memRead(uint16_t addr)
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
     if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
-    // //c / //c+ on-board IWM mirror: $C0E0-$C0EF on iicHasAltBank
-    // profiles ALSO advances the standalone IWMDevice state machine
-    // (MAME `apple2e.cpp:2430-2432 c080_r` routes `m_isiicplus &&
-    // slot == 6` to `m_iwm`; for now POM2 keeps the DiskIICard data
-    // path live and runs the IWM in shadow, so the read value still
-    // comes from the slot bus).
+    // //c / //c+ on-board IWM: $C0E0-$C0EF on iicHasAltBank profiles
+    // dispatches to the standalone IWMDevice (MAME `apple2e.cpp:
+    // 2430-2432 c080_r` routes `m_isiicplus && slot == 6` to
+    // `m_iwm`). The slot-6 DiskIICard still observes the access so
+    // its motor sound / disk-turbo / head-position tracking stay
+    // current — but the **value returned to the CPU is the IWM's**.
+    // The IWM's sync() walks DiskImage flux via DiskIICard's
+    // pushed-in setFloppy(qt) so both controllers see the same
+    // flux stream; only the bit-cell window walker differs (LSS in
+    // DiskIICard vs MAME-faithful IWM state machine here).
     if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
         iwmDevice->tick(cycleCounter);
-        (void)iwmDevice->read(static_cast<uint8_t>(addr & 0xF));
+        const uint8_t v = iwmDevice->read(static_cast<uint8_t>(addr & 0xF));
+        if (iwmAuthoritative) {
+            (void)slots.deviceSelectRead(addr);    // side effects only
+            return v;
+        }
+        // Shadow mode: IWM state advanced, but the byte returned to
+        // the CPU still comes from the slot-6 DiskIICard's LSS path.
     }
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
@@ -1326,6 +1385,16 @@ uint8_t Memory::memRead(uint16_t addr)
         // `apple2e.cpp:c300_int_r`: `m_intc8rom = true; update_slotrom_banks()`.
         if (addr >= 0xC300 && addr <= 0xC3FF &&
             !(iieMemMode & MF_SLOTC3ROM)) {
+            if (iieRebootTraceEnabled() && !intC8Rom) {
+                const uint16_t rpc = cpu ? cpu->getProgramCounter() : 0;
+                std::ostringstream oss;
+                oss << std::hex << std::uppercase << std::setfill('0');
+                oss << "auto-INTCXROM flip via read $" << std::setw(4)
+                    << static_cast<int>(addr) << " intC8Rom=true pc=$"
+                    << std::setw(4) << static_cast<int>(rpc)
+                    << " cyc=" << std::dec << cycleCounter;
+                pom2::log().warn("IIE", oss.str());
+            }
             intC8Rom = true;
             if (iicHasAltBank && iicRomBank)
                 return iicAltFirmware[addr - 0xC000];
@@ -1364,6 +1433,42 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // Fast path: writable RAM and Language Card overlay for $D000-$FFFF.
     if (addr < 0xC000) {
         if (!writable[addr]) return;
+        // Diagnostic: log every write to $0400 (top-left text-screen cell)
+        // while the IIe reboot trace is armed. The user reports an 'M'
+        // landing there after Choplifter's title screen; we want to see
+        // from which PC and at which cycle.
+        if (addr == 0x0400 && value == 0xCD && iieRebootTraceEnabled()) {
+            // The 'M' write to $0400 is the smoking gun. Dump 16 bytes
+            // around the writing PC plus the M6502 PC trace ring buffer
+            // so we can see how control got here.
+            const uint16_t pc = cpu ? cpu->getProgramCounter() : 0;
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0');
+            oss << "write $0400 = $CD ('M') pc=$" << std::setw(4)
+                << static_cast<int>(pc) << " cyc=" << std::dec << cycleCounter
+                << std::hex << " ctx-16..+16:";
+            for (int off = -16; off <= 16; ++off) {
+                const uint16_t a = static_cast<uint16_t>(pc + off);
+                oss << " " << std::setw(2) << static_cast<int>(mem[a]);
+                if (off == 0) oss << "<";
+            }
+            pom2::log().warn("IIE", oss.str());
+            if (cpu) cpu->dumpPcTrace("M-write pc-trace");
+        }
+        else if (addr >= 0x0400 && addr <= 0x0427 && iieRebootTraceEnabled()) {
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0');
+            oss << "write $" << std::setw(4) << static_cast<int>(addr)
+                << " = $" << std::setw(2)
+                << static_cast<int>(value) << " ('"
+                << ((value & 0x7F) >= 0x20 && (value & 0x7F) < 0x7F
+                    ? static_cast<char>(value & 0x7F) : '.')
+                << "') pc=$"
+                << (cpu ? std::setw(4) : std::setw(0))
+                << (cpu ? static_cast<int>(cpu->getProgramCounter()) : 0)
+                << " cyc=" << std::dec << cycleCounter;
+            pom2::log().warn("IIE", oss.str());
+        }
         if (iieMode) iieMemWrite(addr, value);
         else         mem[addr] = value;
         return;
@@ -1382,7 +1487,10 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
             languageCardSwitchAccess(addr, /*isWrite=*/true);
             return;
         }
-        // //c / //c+ IWM mirror (see memRead for the read side).
+        // //c / //c+ IWM (see memRead for the read side). Writes are
+        // dispatched to IWMDevice (mode register, data write, etc.)
+        // AND forwarded to DiskIICard so its slot-6 state stays in
+        // sync (phases, motor on/off, sound + writeback gating).
         if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
             iwmDevice->tick(cycleCounter);
             iwmDevice->write(static_cast<uint8_t>(addr & 0xF), value);

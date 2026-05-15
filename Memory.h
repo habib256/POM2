@@ -68,14 +68,24 @@ public:
 
     /// Apple //c / //c+ on-board IWM controller. Non-owning pointer
     /// set by EmulationController. When iicHasAltBank is on, $C0E0-
-    /// $C0EF accesses are mirrored to this device so its state machine
-    /// (MAME `iwm.cpp` port — see `IWMDevice.{h,cpp}`) evolves in
-    /// parallel with the slot-6 DiskIICard's lightweight IWM-mode
-    /// shadow. Today the IWM runs in "shadow mode" — DiskIICard still
-    /// owns the value returned to the CPU — but the state-machine
-    /// hooks are live so a follow-up pass can flip the data path once
-    /// the SmartPort drive backend is wired. nullptr → no mirror.
+    /// $C0EF accesses always mirror to this device so its state
+    /// machine (MAME `iwm.cpp` port — see `IWMDevice.{h,cpp}`)
+    /// evolves in lock-step with the slot-6 DiskIICard's lightweight
+    /// IWM-mode shadow.
     void setIWM(pom2::IWMDevice* iwm) { iwmDevice = iwm; }
+
+    /// When true (default), `$C0E0-$C0EF` reads on iicHasAltBank
+    /// profiles return the IWMDevice's value rather than the slot-6
+    /// DiskIICard's. Writes are dispatched to both either way.
+    /// Setting false reverts to "shadow mode" — IWMDevice still
+    /// advances on every access (timer drain, mode/status registers
+    /// stay coherent with what the //c+ alt firmware expects), but
+    /// the byte the CPU sees comes from DiskIICard's LSS path. Used
+    /// during the SmartPort port to A/B-compare the two paths; the
+    /// env var `POM2_IWM_LEGACY_DATA_PATH` lets the user flip this
+    /// without rebuilding.
+    void setIWMAuthoritative(bool on) { iwmAuthoritative = on; }
+    bool isIWMAuthoritative() const   { return iwmAuthoritative; }
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
     /// SlotBus. Memory routes $C080-$CFFF accesses through it.
@@ -361,6 +371,16 @@ private:
     // $C0EF accesses for the state machine; see `setIWM`. Lives in
     // EmulationController, attached/detached around profile switches.
     pom2::IWMDevice* iwmDevice = nullptr;
+    // Default true: the IWM is authoritative on iicHasAltBank
+    // profiles — `$C0EC/ED/EE/EF` reads return what the MAME-faithful
+    // state machine produced from POM2's DiskImage flux stream (scaled
+    // from LSS-cycle space at `DiskIICard::lssCycle = cpuCycleTotal*2`,
+    // see `IWMDevice::nextTransition`). DiskIICard's LSS still
+    // observes every access so motor sound / disk-turbo / head-step
+    // tracking stay correct. Flip off via `setIWMAuthoritative(false)`
+    // or `POM2_IWM_AUTHORITATIVE=0` env var to A/B compare against
+    // the slot-bus path during regression bisect.
+    bool             iwmAuthoritative = true;
 
     // Expansion bus — owns plugged cards.
     SlotBus slots;

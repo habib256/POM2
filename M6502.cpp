@@ -19,9 +19,24 @@
 #include "M6502.h"
 #include "Logger.h"
 #include "Memory.h"
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+
+namespace {
+// Shared switch with Memory.cpp: `POM2_TRACE_IIE_REBOOT=1` arms the
+// $FA62 reset-entry trap below (mirrors the IIe paging + auto-INTCXROM
+// traces emitted from Memory).
+bool iieRebootTraceEnabled()
+{
+    static const bool e = []() {
+        const char* env = std::getenv("POM2_TRACE_IIE_REBOOT");
+        return env && env[0] != '\0' && env[0] != '0';
+    }();
+    return e;
+}
+}
 
 
 M6502::M6502()
@@ -1560,6 +1575,34 @@ void M6502::executeOpcode(void)
     }
     g_prevPc = programCounter;
     g_prevValid = true;
+
+    // Trap any landing on the IIe Enhanced ROM reset entry ($FA62).
+    // Triggered by hard/soft reset (PC fetched from $FFFC) *and* by any
+    // JMP/JSR that targets $FA62 directly (e.g. games that exit via the
+    // ROM cold-start path). Dumps the PC trace, the soft-reset magic
+    // bytes ($03F2-$03F4), and the top of the stack so we can tell who
+    // bounced us into the ROM.
+    if (programCounter == 0xFA62 && iieRebootTraceEnabled()) {
+        std::ostringstream oss;
+        oss << std::hex << std::uppercase << std::setfill('0');
+        oss << "IIe reset entry $FA62 hit"
+            << " prevPC=$" << std::setw(4) << static_cast<int>(g_prevPc)
+            << " A=" << std::setw(2) << static_cast<int>(accumulator)
+            << " X=" << std::setw(2) << static_cast<int>(xRegister)
+            << " Y=" << std::setw(2) << static_cast<int>(yRegister)
+            << " SP=" << std::setw(2) << static_cast<int>(stackPointer)
+            << " $03F2=" << std::setw(2) << static_cast<int>(memory->memRead(0x03F2))
+            << " $03F3=" << std::setw(2) << static_cast<int>(memory->memRead(0x03F3))
+            << " $03F4=" << std::setw(2) << static_cast<int>(memory->memRead(0x03F4))
+            << " stack(next 6):";
+        for (int i = 1; i <= 6; ++i) {
+            uint8_t sp = static_cast<uint8_t>(stackPointer + i);
+            oss << " " << std::setw(2)
+                << static_cast<int>(memory->memRead(0x100 + sp));
+        }
+        pom2::log().warn("CPU", oss.str());
+        dumpPcTrace("IIe reset $FA62");
+    }
 
     unsigned char opcode = memory->memRead(programCounter++);
 

@@ -82,9 +82,20 @@ public:
     /// `update_timer_tick` interval = 8 388 608 ticks at 1.023 MHz).
     void sync(uint64_t nowCycles);
 
-    /// Refresh the "now" cycle so that the next read/write knows what
-    /// timestamp to sync up to. Cheap; doesn't run the state machine.
-    void tick(uint64_t nowCycles) { now_ = nowCycles; }
+    /// Refresh the "now" cycle and also run the state machine to that
+    /// timestamp. Cheap when the IWM is fully idle (the `!active_`
+    /// early-out in `sync` covers it). EmulationController calls this
+    /// once per video frame so the 1-emulated-second drive-disable
+    /// timer drain fires even when the //c+ alt firmware stops
+    /// poking $C0Ex between disk operations.
+    void tick(uint64_t nowCycles) { now_ = nowCycles; sync(nowCycles); }
+
+    /// True iff the IWM is currently in MODE_ACTIVE (motor enabled +
+    /// drive engaged). DiskIICard mirrors this when the //c+ profile
+    /// is active so its motor-off spin-down stays in lock-step with
+    /// the IWM's MODE_DELAY drain.
+    bool isActive() const { return active_ == MODE_ACTIVE; }
+    bool isIdle()   const { return active_ == MODE_IDLE; }
 
     // Register accessors for inspectors / save state (`m_data`,
     // `m_mode`, etc. in MAME).
@@ -140,6 +151,21 @@ private:
     // throughout.
     uint32_t q3Clock_       = 0;
     bool     q3ClockActive_ = false;
+
+    // Drive-disable delay deadline (CPU cycle). MAME schedules an
+    // `emu_timer` for `cycles_to_time(8388608)` when the motor enable
+    // bit drops in non-timer mode (`iwm.cpp:202-206`); the timer's
+    // expiry runs `update_timer_tick` (line 70-84) which:
+    //   * flushes any pending write events
+    //   * drops m_active = MODE_IDLE
+    //   * clears m_status bit 5 and m_whd bit 6
+    //   * deasserts m_floppy->mon_w
+    // POM2 doesn't run a real timer; instead `sync(now)` checks this
+    // deadline on every entry and runs the same drain when reached.
+    // EmulationController also calls `tick(now)` once per video frame
+    // so the drain fires even if no further $C0Ex accesses arrive.
+    // Zero means "no delay pending" (active is ACTIVE or IDLE).
+    uint64_t delayDeadline_ = 0;
 
     // Mode / read-or-write / state-machine state.
     int active_  = MODE_IDLE;

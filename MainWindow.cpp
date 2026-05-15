@@ -11,7 +11,6 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
-#include <cmath>
 #include <vector>
 #include <chrono>
 #include <cstring>
@@ -1544,174 +1543,6 @@ void MainWindow::renderChatMauvePanelWindow()
 // The panel takes the controller state mutex for each snapshot and
 // reads via the card's existing test/debug accessors
 // (`peekViaRegister`, `getAyRegister`, `isIrqAsserted`).
-void MainWindow::renderMouseSyncProbeWindow()
-{
-    if (!showMouseSyncProbe) return;
-
-    ImGui::SetNextWindowPos (ImVec2(720, 600), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(560, 460), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Mouse Sync Probe", &showMouseSyncProbe)) {
-        ImGui::End();
-        return;
-    }
-
-    // ── Pearson correlation accumulator ────────────────────────────────
-    // For each byte address in [0..0xC000) of MAIN and AUX RAM, we
-    // accumulate the sums needed to compute Pearson correlation r between
-    // (byte value over time) and (target X over time), and same for Y.
-    // r ≈ ±1 means the byte tracks the target linearly (even if scaled,
-    // offset, or 16-bit-split). r ≈ 0 means uncorrelated.
-    //
-    // Cumulants: Σb, Σb², Σbx, Σbtx, Σbty, plus global Σtx, Σtx², Σty, Σty², N.
-    static constexpr int  kScanLen = 0xC000;
-    struct ByteStats { double sb, sbb, sbx, sby; };  // per-byte cumulants
-    static std::vector<ByteStats> statsMain, statsAux;
-    static double sumX = 0, sumXX = 0, sumY = 0, sumYY = 0;
-    static uint32_t samples = 0;
-    static int observedXmin = 999, observedXmax = -1;
-    static int observedYmin = 999, observedYmax = -1;
-    static int lastSampleTargetX = -999, lastSampleTargetY = -999;
-    if (statsMain.empty()) {
-        statsMain.assign(kScanLen, ByteStats{});
-        statsAux .assign(kScanLen, ByteStats{});
-    }
-
-    // Compute current target Apple coords.
-    const float widgetW = screenRectMax.x - screenRectMin.x;
-    const float widgetH = screenRectMax.y - screenRectMin.y;
-    int targetX = 0, targetY = 0;
-    bool inside = false;
-    if (widgetW > 0.0f && widgetH > 0.0f) {
-        const double dx = lastMouseHostX - screenRectMin.x;
-        const double dy = lastMouseHostY - screenRectMin.y;
-        if (dx >= 0 && dx <= widgetW && dy >= 0 && dy <= widgetH) {
-            inside = true;
-            targetX = int(dx * display.width()  / widgetW);
-            targetY = int(dy * display.height() / widgetH);
-        }
-    }
-
-    if (ImGui::Button("Reset scores")) {
-        std::fill(statsMain.begin(), statsMain.end(), ByteStats{});
-        std::fill(statsAux .begin(), statsAux .end(), ByteStats{});
-        sumX = sumXX = sumY = sumYY = 0;
-        samples = 0;
-        observedXmin = 999; observedXmax = -1;
-        observedYmin = 999; observedYmax = -1;
-        lastSampleTargetX = lastSampleTargetY = -999;
-    }
-    ImGui::SameLine();
-    ImGui::Text("samples=%u  target=(%d,%d) %s  X-span=%d  Y-span=%d",
-                samples, targetX, targetY, inside ? "INSIDE" : "outside",
-                std::max(0, observedXmax - observedXmin),
-                std::max(0, observedYmax - observedYmin));
-    ImGui::TextDisabled(
-        "Move slowly through corners + diagonals. r = Pearson "
-        "correlation between (byte over time) and (target X or Y). "
-        "|r| close to 1.00 = the byte tracks the cursor linearly "
-        "(even if scaled / offset / split into low+high). Reset and "
-        "redo if you change A2Desktop modes.");
-    ImGui::Separator();
-
-    // Sample only when target has actually moved.
-    if (inside) {
-        const bool xMoved = std::abs(targetX - lastSampleTargetX) >= 3;
-        const bool yMoved = std::abs(targetY - lastSampleTargetY) >= 2;
-        if (xMoved || yMoved) {
-            std::lock_guard<std::mutex> lk(controller.stateMutex());
-            const uint8_t* m = controller.memory().data();
-            const uint8_t* a = controller.memory().auxData();
-            const double tx = double(targetX);
-            const double ty = double(targetY);
-            for (int i = 0; i < kScanLen; ++i) {
-                const double bm = double(m[i]);
-                const double ba = double(a[i]);
-                statsMain[i].sb  += bm;
-                statsMain[i].sbb += bm * bm;
-                statsMain[i].sbx += bm * tx;
-                statsMain[i].sby += bm * ty;
-                statsAux [i].sb  += ba;
-                statsAux [i].sbb += ba * ba;
-                statsAux [i].sbx += ba * tx;
-                statsAux [i].sby += ba * ty;
-            }
-            sumX  += tx;
-            sumXX += tx * tx;
-            sumY  += ty;
-            sumYY += ty * ty;
-            ++samples;
-            if (targetX < observedXmin) observedXmin = targetX;
-            if (targetX > observedXmax) observedXmax = targetX;
-            if (targetY < observedYmin) observedYmin = targetY;
-            if (targetY > observedYmax) observedYmax = targetY;
-            lastSampleTargetX = targetX;
-            lastSampleTargetY = targetY;
-        }
-    }
-
-    auto isFramebuffer = [](int addr) {
-        return (addr >= 0x0400 && addr <  0x0800) ||
-               (addr >= 0x2000 && addr <  0x6000);
-    };
-
-    auto pearson = [&](double sb, double sbb, double sbt,
-                       double st, double stt, double n) -> double {
-        const double num = n*sbt - sb*st;
-        const double db  = n*sbb - sb*sb;
-        const double dt  = n*stt - st*st;
-        if (db <= 1e-9 || dt <= 1e-9) return 0.0;
-        return num / std::sqrt(db * dt);
-    };
-
-    struct Entry { int addr; int bank; double r; };
-    std::vector<Entry> topX, topY;
-    if (samples >= 30) {
-        const double n = double(samples);
-        for (int i = 0; i < kScanLen; ++i) {
-            if (isFramebuffer(i)) continue;
-            const ByteStats& sm = statsMain[i];
-            const ByteStats& sa = statsAux [i];
-            double rxm = pearson(sm.sb, sm.sbb, sm.sbx, sumX, sumXX, n);
-            double rym = pearson(sm.sb, sm.sbb, sm.sby, sumY, sumYY, n);
-            double rxa = pearson(sa.sb, sa.sbb, sa.sbx, sumX, sumXX, n);
-            double rya = pearson(sa.sb, sa.sbb, sa.sby, sumY, sumYY, n);
-            if (std::abs(rxm) > 0.7) topX.push_back({i, 0, rxm});
-            if (std::abs(rxa) > 0.7) topX.push_back({i, 1, rxa});
-            if (std::abs(rym) > 0.7) topY.push_back({i, 0, rym});
-            if (std::abs(rya) > 0.7) topY.push_back({i, 1, rya});
-        }
-        auto cmpAbs = [](const Entry& a, const Entry& b){
-            return std::abs(a.r) > std::abs(b.r);
-        };
-        std::sort(topX.begin(), topX.end(), cmpAbs);
-        std::sort(topY.begin(), topY.end(), cmpAbs);
-        if (topX.size() > 20) topX.resize(20);
-        if (topY.size() > 20) topY.resize(20);
-    }
-
-    ImGui::Columns(2);
-    ImGui::Text("X candidates  (need samples>=30, %u so far)", samples);
-    for (const Entry& e : topX) {
-        ImVec4 col = (std::abs(e.r) > 0.95)
-            ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
-            : ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
-        ImGui::TextColored(col, "%s $%04X  r=%+.3f",
-                           e.bank ? "AUX " : "MAIN", e.addr, e.r);
-    }
-    ImGui::NextColumn();
-    ImGui::Text("Y candidates");
-    for (const Entry& e : topY) {
-        ImVec4 col = (std::abs(e.r) > 0.95)
-            ? ImVec4(0.4f, 0.7f, 1.0f, 1.0f)
-            : ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
-        ImGui::TextColored(col, "%s $%04X  r=%+.3f",
-                           e.bank ? "AUX " : "MAIN", e.addr, e.r);
-    }
-    ImGui::Columns(1);
-
-    ImGui::End();
-}
-
 void MainWindow::renderMockingboardPanelWindow()
 {
     if (!showMockingboardPanel) return;
@@ -2598,7 +2429,6 @@ void MainWindow::render()
     renderSscPanelWindow();
     renderJoystickPanelWindow();
     renderAiControlPanelWindow();
-    renderMouseSyncProbeWindow();
     renderSlotConfigPanel();
     renderAboutDialog();
 }

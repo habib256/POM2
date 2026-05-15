@@ -17,10 +17,12 @@
 #include "SystemProfile.h"
 #include "SlotBus.h"
 #include "DiskIICard.h"
+#include "IWMDevice.h"
 #include "Logger.h"
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -48,6 +50,16 @@ int main()
 {
     Memory mem;
     M6502  cpu(&mem);
+    // Wire the IWM (mirrors EmulationController's setup) so Memory's
+    // $C0E0-$C0EF dispatch routes the //c+ data path through the
+    // MAME-faithful state machine.
+    pom2::IWMDevice iwm;
+    mem.setIWM(&iwm);
+    // Mirror EmulationController's runtime opt-in so this diagnostic
+    // can A/B compare the two data paths without recompiling.
+    if (const char* env = std::getenv("POM2_IWM_AUTHORITATIVE")) {
+        mem.setIWMAuthoritative(env[0] != '0');
+    }
 
     const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIcPlus);
 
@@ -90,6 +102,9 @@ int main()
     } else {
         std::printf("(no disk inserted)\n");
     }
+    // Bind the IWM ↔ DiskIICard duo so the IWM's flux source mirrors
+    // the card's active drive + head position.
+    card->setIWM(&iwm);
     DiskIICard* cardRaw = card.get();
     mem.slotBus().plug(6, std::move(card));
     (void)cardRaw;

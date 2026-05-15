@@ -201,6 +201,28 @@ if(WIN32)
     target_link_libraries(test_iicplus_boot_trace PRIVATE winmm)
 endif()
 
+add_executable(test_choplifter_iie_trace
+    choplifter_iie_trace.cpp
+    ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_choplifter_iie_trace PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_choplifter_iie_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_choplifter_iie_trace PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_choplifter_iie_trace PRIVATE winmm)
+endif()
+
 
 # ─── Snapshot round-trip smoke test ───────────────────────────────────────
 # Validates SnapshotIO end-to-end: writes a synthetic header + 2 sections,

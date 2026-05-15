@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 
 EmulationController::EmulationController()
     : processor(&mem)
@@ -45,6 +46,15 @@ EmulationController::EmulationController()
     // /16K-//c profiles the pointer is set but never consulted (the
     // iicHasAltBank guard in Memory keeps the mirror off).
     iwmDev = std::make_unique<pom2::IWMDevice>();
+    // Optional opt-in: route $C0EC/ED/EE/EF *reads* through the IWM
+    // on iicHasAltBank profiles. Off by default (shadow mode) so the
+    // //c+ boot path keeps working via DiskIICard's LSS reads while
+    // the IWM bit-cell window walker is still being tuned against
+    // POM2's flux-cell timing. Set `POM2_IWM_AUTHORITATIVE=1` to
+    // exercise the MAME-faithful IWM data path end-to-end.
+    if (const char* env = std::getenv("POM2_IWM_AUTHORITATIVE")) {
+        mem.setIWMAuthoritative(env[0] != '0');
+    }
 
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
@@ -252,6 +262,15 @@ void EmulationController::workerLoop()
             const int actually = processor.run(chunk);
             done += (actually > 0 ? actually : chunk);
             // No mem.advanceCycles here — see Step branch above.
+        }
+        // Pulse the IWM once per frame so its 1-emulated-second
+        // drive-disable timer (MAME `iwm.cpp:70-84 update_timer_tick`)
+        // still drains when the //c+ alt firmware stops poking
+        // $C0Ex between disk operations. Cheap when idle — the
+        // `!active_` early-out in `sync` short-circuits.
+        if (iwmDev) {
+            std::lock_guard<std::mutex> lk(stateMtx);
+            iwmDev->tick(mem.getCycleCounter());
         }
         nextTick += std::chrono::microseconds(1'000'000 / 60);
         const auto now = clock::now();

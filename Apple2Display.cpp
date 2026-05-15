@@ -48,6 +48,23 @@ uint16_t Apple2Display::hgrRowAddress(int y, bool page2)
         + 0x28  * (y >> 6));
 }
 
+// Sather "Understanding the Apple IIe" §5-25 table 5.10: PAGE2 only steers
+// the video scanner to page 2 when 80STORE is off (text/lo-res) or when
+// 80STORE+HIRES are not both on (HGR). Otherwise PAGE2 is repurposed as a
+// MAIN/AUX memory bank switch — the scanner stays locked to page 1. Sierra
+// AGI/SCI titles in DHGR (Space Quest II, King's Quest, …) toggle PAGE2
+// every byte to interleave aux+main nibbles into HGR page 1; treating that
+// as a video-page flip displays the uninitialised $4000 area as garbage.
+static bool videoTextPage2(const Memory::DisplayState& s)
+{
+    return s.page2 && !s.eightyStore;
+}
+
+static bool videoHgrPage2(const Memory::DisplayState& s)
+{
+    return s.page2 && !(s.eightyStore && s.hiRes);
+}
+
 void Apple2Display::render(Memory& mem)
 {
     ++frameCounter;     // drives the FLASH-attribute animation in renderText
@@ -436,7 +453,7 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
     const bool altCharSet  = state.altChar;
 
     for (int row = firstRow; row < lastRow; ++row) {
-        const uint16_t rowAddr = textRowAddress(row, state.page2);
+        const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
         for (int col = 0; col < 40; ++col) {
             const uint8_t src = ram[rowAddr + col];
             const int cellX = col * 7;
@@ -567,7 +584,7 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
     for (int blockRow = firstRow; blockRow < lastRow; ++blockRow) {
         const int textRow = blockRow / 2;
         const bool upperHalf = (blockRow % 2 == 0);
-        const uint16_t rowAddr = textRowAddress(textRow, state.page2);
+        const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
         for (int col = 0; col < 40; ++col) {
             const uint8_t b = ram[rowAddr + col];
             const uint8_t nibble = upperHalf ? (b & 0x0F) : (b >> 4);
@@ -850,7 +867,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         const bool monochrome = (mode == Mode::BW560);
 
         for (int y = firstScanline; y < lastScanline; ++y) {
-            const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+            const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
 
             // Lay out the 280 raw pixels (low 7 bits per byte, no doubling).
             uint8_t  pixels[kWidth];
@@ -909,7 +926,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         std::array<uint32_t, kStreamLen> subPixels;
 
         for (int y = firstScanline; y < lastScanline; ++y) {
-            const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+            const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
             buildHgrWordRow(ram, rowAddr, words, bit7Mask);
 
             // Scanline's 560 sub-pixels via incremental window. `w`
@@ -965,7 +982,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     uint8_t stream[kStreamLen];
     const Phosphor& phos = kPhosphors[static_cast<int>(effMode)];
     for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
         buildBitStream(ram, rowAddr, stream, bit7Mask);
 
         uint8_t* histRow = persistenceL.data() + static_cast<size_t>(y) * kWidth;
@@ -1020,7 +1037,7 @@ void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
     for (int row = firstRow; row < lastRow; ++row) {
         // 80STORE + PAGE2 already routes writes to aux at the memory
         // layer, so reading from page 1 is the right thing for both halves.
-        const uint16_t rowAddr = textRowAddress(row, state.page2 && !state.eightyStore);
+        const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
         for (int col = 0; col < 40; ++col) {
             // For each 40-byte text row, AUX byte renders the EVEN
             // 80-col cell (chars 0,2,4,…) at xCell0, MAIN byte the
@@ -1097,7 +1114,7 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
     uint8_t  msbHigh[40];        // per-byte palette-bank flag
 
     for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
 
         for (int col = 0; col < 40; ++col) {
             const uint8_t b = ram[rowAddr + col];
@@ -1222,7 +1239,7 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
     uint16_t pairs[40];         // aux+main packed words (composite path)
 
     for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, state.page2);
+        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
         uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
 
         if (useComposite) {
