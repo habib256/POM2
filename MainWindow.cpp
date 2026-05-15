@@ -2329,13 +2329,15 @@ void MainWindow::renderDisk35PanelWindow()
         };
         for (int i = 0; i < 2; ++i) {
             auto& s = snap.drives[i];
-            s.diskLoaded     = drives[i]->isInserted();
-            s.motorOn        = drives[i]->isMotorOn();
-            s.track          = drives[i]->track();
-            s.side1          = drives[i]->side1();
-            s.writeProtected = drives[i]->isWriteProtected();
-            s.diskPath       = images[i]->path();
-            s.lastError      = images[i]->lastError();
+            s.diskLoaded        = drives[i]->isInserted();
+            s.motorOn           = drives[i]->isMotorOn();
+            s.track             = drives[i]->track();
+            s.side1             = drives[i]->side1();
+            s.writeProtected    = drives[i]->isWriteProtected();
+            s.diskPath          = images[i]->path();
+            s.lastError         = images[i]->lastError();
+            s.hasUnsavedChanges = images[i]->hasUnsavedChanges();
+            s.writeBackEnabled  = images[i]->isWriteBackEnabled();
         }
     }
 
@@ -2392,6 +2394,21 @@ void MainWindow::renderDisk35PanelWindow()
                 (d == 0 ? "1 (internal)" : "2 (external)") + " ejected";
             tapeStatusUntil = lastFrameTime + 4.0;
         }
+        // Per-drive write-back toggle. Apply under stateMutex so a save-
+        // on-eject race against the worker can't half-flip the flag.
+        if (result.requestWriteBackToggle[d]) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            pom2::Disk35Image& img = (d == 0)
+                ? controller->disk35Internal()
+                : controller->disk35External();
+            img.setWriteBackEnabled(result.newWriteBack[d]);
+            tapeStatusMessage = std::string("3.5\" drive ")
+                + (d == 0 ? "1" : "2")
+                + (result.newWriteBack[d]
+                    ? ": write-back ENABLED (saves on eject)"
+                    : ": write-back disabled");
+            tapeStatusUntil = lastFrameTime + 4.0;
+        }
     }
     if (result.openMountDialog) {
         disk35Panel->mountDialogOpen     = true;
@@ -2406,6 +2423,28 @@ void MainWindow::renderDisk35PanelWindow()
                 ? controller->disk35Internal()
                 : controller->disk35External();
             tapeStatusMessage = "3.5\" mount failed: " + img.lastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    // Library left-click default = mount + cold boot. The //c+ ROM's
+    // power-on probe scans SmartPort devices in order and boots the
+    // first ready volume, so `coldBoot()` is enough — no need to
+    // pre-set PC. On non-//c+ profiles `mount35` succeeds (the image
+    // sits idle in Sony35Drive) but no device walker exists to read
+    // it, so we still cold-boot but the user sees the Applesoft
+    // prompt instead of the new image's loader.
+    if (!result.requestInsertAndBoot.empty()) {
+        const int d = result.insertAndBootDrive;
+        if (controller->mount35(d, result.requestInsertAndBoot)) {
+            controller->coldBoot();
+            tapeStatusMessage = "3.5\" drive "
+                + std::string(d == 0 ? "1" : "2")
+                + " booted: " + result.requestInsertAndBoot;
+        } else {
+            const auto& img = (d == 0)
+                ? controller->disk35Internal()
+                : controller->disk35External();
+            tapeStatusMessage = "3.5\" boot failed: " + img.lastError();
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }

@@ -97,6 +97,7 @@ public:
         return fileWriteProtected_ || !writeBackEnabled_;
     }
     void setWriteBackEnabled(bool on) { writeBackEnabled_ = on; }
+    bool isWriteBackEnabled() const   { return writeBackEnabled_; }
 
 private:
     bool         loaded_              = false;

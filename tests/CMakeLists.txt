@@ -817,6 +817,25 @@ add_test(NAME woz_load_smoke COMMAND test_woz_load
 set_tests_properties(woz_load_smoke PROPERTIES TIMEOUT 10)
 
 
+# ─── WOZ2 optimal_bit_timing smoke test ──────────────────────────────────
+# Pins INFO+39 (optimal_bit_timing in 125ns units) → flux event spacing
+# (LSS cycles per cell). DiskImage-only; no DiskIICard / IWMDevice
+# linkage needed because we only inspect trackPeriod() / fluxEvents().
+add_executable(test_woz_bit_timing
+    woz_bit_timing_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_woz_bit_timing PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_woz_bit_timing PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+
+add_test(NAME woz_bit_timing_smoke COMMAND test_woz_bit_timing
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(woz_bit_timing_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── Disk II two-drive routing smoke test ────────────────────────────────
 # Pins drive_select ($C0EA / $C0EB) routing the LSS and the legacy 32-cycle
 # gate to the correct image, plus per-drive head-position independence.

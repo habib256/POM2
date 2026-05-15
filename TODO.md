@@ -89,9 +89,14 @@ par sous-système, triées par poids des items 🟠.
 
 ## Disques
 
-- [ ] 🟡 **WOZ2 `optimal_bit_timing` (INFO+39) ignoré**. Hard-codé à
-      32 ticks = 4 µs/cell. MAME ne le lit pas non plus au load mais
-      utilise `track_size*2` ; vrai gap = placement `cellIdx*8+4` fixe.
+- [x] ~~🟡 **WOZ2 `optimal_bit_timing` (INFO+39) ignoré**.~~ Fait
+      2026-05-15. Lu dans `loadWoz` quand `info_version >= 2`
+      (clamp [8, 64] sur la valeur), stocké dans
+      `DiskImage::optimalBitTiming`, exposé via
+      `lssCyclesPerCell()` qui pilote `expandTrackFlux` et
+      `trackPeriod`. WOZ1 et non-WOZ gardent le défaut 32 (= 8 LSS
+      cycles/cell). Pinné par `woz_bit_timing_smoke_test.cpp`
+      (obt 32/40/28 + WOZ1 fallback).
 - [ ] 🟡 **WOZ1 splice point (TRK +6650)** ignoré
       (`DiskImage.cpp:381-398`). MAME passe via `set_write_splice`.
       Maintenant que WOZ write-back est en place ce hint compte vraiment
@@ -289,14 +294,15 @@ chaque changement de header.
       `EmulationController`, le dispatcher générique reste ignorant
       du modèle. À traiter conjointement avec l'extraction
       `IIcPlusBank` ci-dessus.
-- [ ] 🟠 **`MainWindow.h` inclut 20+ headers (chaque carte + chaque
-      panneau ImGui + ImGui lui-même)**. Toute modification d'un
-      header de carte recompile `MainWindow.cpp` (2 637 L) et tout
-      ce qui dépend de `MainWindow.h`. Convertir en Pimpl
-      (`struct Impl;` + `std::unique_ptr<Impl> impl;`) ou au minimum
-      remplacer les includes par des forward declarations là où
-      possible (cartes non-owning : `DiskIICard*`,
-      `ProDOSHardDiskCard*`, etc. peuvent passer en forward decl).
+- [x] ~~🟠 **`MainWindow.h` inclut 20+ headers (chaque carte + chaque
+      panneau ImGui + ImGui lui-même)**.~~ Fait 2026-05-15.
+      MainWindow.h ne dépend plus que de `M6502.h` + `imgui.h` ;
+      cartes/panels/controller forward-declared, membres value-type
+      passés en `unique_ptr` (constructeur/destructeur out-of-line).
+      Mesures : touch `CassetteDeck_ImGui.h` → 2 TUs recompilés ;
+      touch `MainWindow.h` → 4 TUs (irréductible : les 3 .cpp
+      MainWindow + main.cpp). main.cpp + MainWindow_Slots.cpp
+      adaptés en conséquence ; build + 57 tests verts.
 - [ ] 🟡 **Encapsulation `Memory` trouée par `dataMutable()` /
       `auxDataMutable()`** (`Memory.h:135,258`). N'importe quel
       appelant peut écrire en ROM en contournant le bitmap

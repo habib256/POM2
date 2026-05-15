@@ -1,15 +1,21 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// Disk35Controller_ImGui — //c+ Sony 3.5" drives status panel. Shows
-// both internal + external 3.5" slots side-by-side, the currently
-// inserted 800K image (if any), the head track and side, and exposes
-// Mount / Eject buttons.
+// Disk35Controller_ImGui — //c+ Sony 3.5" drives status panel. Same UX as
+// `DiskController_ImGui` for the 5.25" Disk II, scaled up to two drives
+// (internal + external) stacked vertically:
 //
-// Mirrors `DiskController_ImGui` for 5.25" and `HdvController_ImGui`
-// for ProDOS HDV — same read-only-snapshot + FrameResult-of-user-
-// actions pattern. The host (MainWindow) builds the snapshot under
-// `stateMutex` so the panel never touches live emulator state.
+//   • Drive header with motor LED (red when spinning).
+//   • Inserted image path, track, head, write-protect / write-back state.
+//   • Mount / Eject buttons + per-drive Write-back checkbox.
+//   • Shared library list at the bottom — left-click mounts + cold-boots
+//     into drive 1 (internal), right-click opens a context menu offering
+//     mount-only and explicit drive selection. Currently-inserted images
+//     are prefixed with `* ` so the user can spot a re-click.
+//
+// Read-only snapshot pattern: MainWindow builds the snapshot under
+// `stateMutex` and the panel only sees a frozen view, returning user
+// actions through `FrameResult` for the host to apply.
 
 #ifndef POM2_DISK35_CONTROLLER_IMGUI_H
 #define POM2_DISK35_CONTROLLER_IMGUI_H
@@ -34,6 +40,8 @@ public:
         int         track              = 0;       // 0..79
         bool        side1              = false;   // false = head 0
         bool        writeProtected     = true;
+        bool        writeBackEnabled   = false;   // user opt-in for save-on-eject
+        bool        hasUnsavedChanges  = false;   // a sector has been written
         std::string diskPath;
         std::string lastError;        // last failed mount, if any
     };
@@ -47,14 +55,25 @@ public:
     };
 
     struct FrameResult {
-        // Per-drive eject request — `requestEject[i]` true = eject drive i.
+        // Per-drive eject request.
         std::array<bool, 2> requestEject{};
-        // Path the user picked from the library + drive index. When
-        // empty, no library action this frame.
+        // Per-drive write-back toggle (host wires through Disk35Image::
+        // setWriteBackEnabled). When `requestWriteBackToggle[i]` is true,
+        // apply `newWriteBack[i]`.
+        std::array<bool, 2> requestWriteBackToggle{};
+        std::array<bool, 2> newWriteBack{};
+        // Library actions. `requestMountPath` non-empty → mount only into
+        // `requestMountDrive`. `requestInsertAndBoot` non-empty → mount
+        // into `insertAndBootDrive` AND trigger a host-side cold boot so
+        // the //c+ ROM probes the SmartPort and boots the new image.
         std::string         requestMountPath;
-        int                 requestMountDrive = 0;
-        bool                openMountDialog   = false;
-        int                 openMountDialogForDrive = 0;
+        int                 requestMountDrive    = 0;
+        std::string         requestInsertAndBoot;
+        int                 insertAndBootDrive   = 0;
+        // Mount-dialog open request. Host listens for this and pops the
+        // modal at the end of the frame.
+        bool                openMountDialog          = false;
+        int                 openMountDialogForDrive  = 0;
     };
 
     FrameResult render(const char*          title,
