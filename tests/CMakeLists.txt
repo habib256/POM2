@@ -44,6 +44,8 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
@@ -164,10 +166,24 @@ set_tests_properties(system_profile_smoke PROPERTIES TIMEOUT 5)
 # memory state, runs ~6M cycles and prints PC + text page fingerprint.
 # Run manually to investigate why a 5.25" library-click fails to boot.
 
+add_executable(test_iwm_device
+    iwm_device_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iwm_device PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iwm_device PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME iwm_device_smoke COMMAND test_iwm_device)
+set_tests_properties(iwm_device_smoke PROPERTIES TIMEOUT 5)
+
+
 add_executable(test_iicplus_boot_trace
     iicplus_boot_trace.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -609,6 +625,7 @@ add_executable(test_diskii_lss
     diskii_lss_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -646,6 +663,7 @@ add_executable(test_mame_lss_parity
     mame_lss_parity_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_mame_lss_parity PRIVATE ${CMAKE_SOURCE_DIR})
@@ -690,6 +708,7 @@ add_executable(test_disk_write_controller
     disk_write_controller_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_disk_write_controller PRIVATE ${CMAKE_SOURCE_DIR})
@@ -708,6 +727,7 @@ add_executable(test_woz_load
     woz_load_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_woz_load PRIVATE ${CMAKE_SOURCE_DIR})
@@ -736,6 +756,7 @@ add_executable(test_disk_drive2
     disk_drive2_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_disk_drive2 PRIVATE ${CMAKE_SOURCE_DIR})
@@ -767,6 +788,7 @@ add_executable(test_disk_boot
     disk_boot_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_disk_boot PRIVATE ${CMAKE_SOURCE_DIR})
@@ -796,6 +818,7 @@ add_executable(test_dos33_save
     dos33_save_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dos33_save PRIVATE ${CMAKE_SOURCE_DIR})
@@ -824,6 +847,7 @@ add_executable(test_prodos_save
     prodos_save_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_prodos_save PRIVATE ${CMAKE_SOURCE_DIR})
@@ -848,6 +872,7 @@ add_executable(c2plus_boot_probe
     c2plus_boot_probe.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -871,6 +896,7 @@ add_executable(copy2plus_boot_dump
     ${CMAKE_SOURCE_DIR}/ClockCard.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -915,6 +941,7 @@ add_executable(hdv_boot_dump
     hdv_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -1210,6 +1237,7 @@ add_executable(test_slot_config
     slot_config_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -1272,6 +1300,8 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -1308,6 +1338,8 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -1342,6 +1374,8 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -1377,6 +1411,8 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -1412,6 +1448,8 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -1479,6 +1517,7 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/AiControlServer.cpp
     ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/EmulationController.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
@@ -1530,6 +1569,7 @@ add_executable(hero_probe
     hero_probe.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(hero_probe PRIVATE ${CMAKE_SOURCE_DIR})

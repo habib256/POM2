@@ -53,6 +53,7 @@ probe order — see [System profiles](#system-profiles). Legacy auto-detect
 | Floppy mechanical sounds | `FloppySoundDevice.h/.cpp` | [DEV.md § Floppy mechanical sounds](DEV.md#floppy-mechanical-sounds) |
 | Slot bus, wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [DEV.md § Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | Disk image, Disk II, ProDOS HDV, Snapshot | `DiskImage.*`, `DiskIICard.*`, `ProDOSVolume.*`, `SnapshotIO.*` | [DEV.md § Storage](DEV.md#storage) |
+| IWM (Apple FDC for //c / //c+ / Mac / IIgs) | `IWMDevice.*` | [DEV.md § Storage](DEV.md#storage) (live in shadow on //c+; Memory mirrors $C0E0-$C0EF when `iicHasAltBank`) |
 | Super Serial Card + telnet (slot 2) | `SuperSerialCard.h/.cpp` | [DEV.md § SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | ProDOS clock card (slot 4) | `ClockCard.h/.cpp` | [DEV.md § Clock card](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (slot 4 by conv.) | `MouseCard.h/.cpp` | [DEV.md § Mouse Card](DEV.md#mouse-card) |
@@ -123,7 +124,17 @@ Default cycles/frame = 17045 for II/II+/IIe/IIc; //c+ defaults to
 drops back to 1 MHz for disk I/O via $C036 — POM2 doesn't model that
 softswitch, but its event-driven disk LSS is purely cycle-driven so
 the 4× CPU still produces correctly-paced nibbles. `cpu_mode_override`
-= `auto|nmos|65c02` (Machine → CPU menu). Profile switching is a full cold reset with strict ordering
+= `auto|nmos|65c02` (Machine → CPU menu).
+
+**//c+ MIG + IWM**: the //c+ alt firmware (bank 1) drives an Apple
+MIG gate-array at the `$CC00-$CCFF` / `$CE00-$CEFF` windows in the
+expansion ROM area (drive enable, 2 KB MIG RAM, 3.5" head select)
+and an IWM at `$C0E0-$C0EF` with mode + status + WHD registers on
+top of the normal Q6/Q7 control. POM2 implements both in the
+minimum form needed for cold boot (banner display + 5.25" auto-
+boot); the full IWM bit-shift state machine is **not** modelled.
+See [DEV.md § //c+ MIG + IWM handshake](DEV.md#storage) for the
+exact register decode and the pinned smoke test. Profile switching is a full cold reset with strict ordering
 — see [DEV.md § Profile switching internals](DEV.md#profile-switching-internals)
 for 32 KB ROM disambiguation, `$C028` ROMBANK toggle, //c INTCXROM
 override, 20 KB II+ dumps, and the 13-step `applyProfile` sequence.

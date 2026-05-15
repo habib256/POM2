@@ -289,7 +289,11 @@ void testIicInternalRomAlwaysMapped()
     rom[0x3FFC] = 0x62; rom[0x3FFD] = 0xFA;
     rom[0x7FFC] = 0x88; rom[0x7FFD] = 0xC7;
     // Upper bank: distinct sentinels so we can tell ROMBANK works too.
-    rom[0x4E4D] = 0xAA;
+    // NB: $CC00-$CCFF and $CE00-$CEFF in bank 1 are overlaid by the
+    // //c+ MIG gate-array (MAME `apple2e.cpp:2725-2730 c800_b2_int_r`),
+    // so we can't plant detectable markers there. Use $CD4D / $C8AB
+    // which are plain ROM in both banks instead.
+    rom[0x4D4D] = 0xAA;
     rom[0x48AB] = 0xBB;
 
     const fs::path tmp = fs::temp_directory_path() /
@@ -328,11 +332,16 @@ void testIicInternalRomAlwaysMapped()
     assert((mem.memRead(0xC015) & 0x80) != 0);
     assert(mem.memRead(0xCE4D) == 0x4D);
 
-    // ROMBANK toggle still works: flip $C028, $CE4D now reads from
-    // the upper bank's marker (0xAA).
+    // ROMBANK toggle still works: flip $C028, the bank-1 markers
+    // become visible at $CD4D / $C8AB (both outside MIG windows).
     (void)mem.memRead(0xC028);
-    assert(mem.memRead(0xCE4D) == 0xAA);
+    assert(mem.memRead(0xCD4D) == 0xAA);
     assert(mem.memRead(0xC8AB) == 0xBB);
+    // MIG overlay: in bank 1 $CE4D no longer dispatches to ROM (real
+    // //c+ would talk to the MIG gate-array here). With no MIG state
+    // set, the read returns the floating bus instead of any ROM byte
+    // — and in particular NOT the bank-0 marker $4D.
+    assert(mem.memRead(0xCE4D) != 0x4D);
 
     // For comparison: //e layout (pickLower=false). iicHasAltBank
     // stays false; INTCXROM remains 0 at reset; reads of $CE4D fall

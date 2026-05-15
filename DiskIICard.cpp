@@ -3,6 +3,7 @@
 
 #include "DiskIICard.h"
 #include "FloppySoundSink.h"
+#include "IWMDevice.h"
 #include "Logger.h"
 #include "M6502.h"
 
@@ -185,6 +186,7 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     // Auto-restore of the previous-session disk path calls insertDisk
     // during MainWindow construction; firing the click there would
     // surprise the user with a mechanical thunk on every startup.
+    pushIwmFloppy();
     return true;
 }
 
@@ -203,6 +205,7 @@ void DiskIICard::ejectDisk(int drive)
     writeLatch      = 0xFF;
     // No click here — symmetric with insertDisk; UI / CLI sites fire
     // their own click when the user triggers the eject.
+    pushIwmFloppy();
 }
 
 uint8_t DiskIICard::slotRomRead(uint8_t low8)
@@ -330,6 +333,22 @@ void DiskIICard::seekPhaseW(int phases)
     // under disk turbo (all 80 phase-sweep steps land in one audio
     // buffer when the CPU runs ~60× real-time).
     if (moved && sound_) sound_->step(head / 4, cpuCycleTotal);
+    if (moved) pushIwmFloppy();
+}
+
+void DiskIICard::pushIwmFloppy()
+{
+    // Mirror the active drive's image + quarter-track into the //c+
+    // on-board IWM (when wired). MAME `apple2e.cpp:1180-1185` calls
+    // `m_iwm->set_floppy(...)` whenever the controller's notion of
+    // "currently spinning drive" changes; on POM2's slot-6 card that
+    // surface is `insertDisk` / `ejectDisk` / `selectDrive` /
+    // `seekPhaseW`. Keeping the IWM in sync via a single helper means
+    // we route every entry point through the same MAME-faithful hook.
+    if (!iwm_) return;
+    DiskImage* img = images[activeDrive].isLoaded()
+        ? &images[activeDrive] : nullptr;
+    iwm_->setFloppy(img, headQuarterTrack[activeDrive]);
 }
 
 void DiskIICard::advanceCycles(int cycles)
@@ -677,6 +696,7 @@ void DiskIICard::selectDrive(int newDrive)
         // selection for the next motor-on event.
         activeDrive = newDrive;
     }
+    pushIwmFloppy();
 }
 
 // MAME `wozfdc_device::control(offset)` — verbatim port. Only POM2-
@@ -776,9 +796,6 @@ void DiskIICard::control(int offset)
                     ++writeFlushCount;
                 }
                 writePosition = 0;
-                // MAME `iwm.cpp:199` — Q7 falling edge while active
-                // clears whd bit 6 ("in write mode" indicator).
-                iwmWhd &= ~0x40;
             }
             break;
         case 0xf:
@@ -794,9 +811,6 @@ void DiskIICard::control(int offset)
                     }
                 }
                 writeMode = true;
-                // MAME `iwm.cpp:183` — Q7 rising edge while active sets
-                // whd bit 6 to flag "controller now in write mode".
-                iwmWhd |= 0x40;
             }
             break;
         default: break;
@@ -942,10 +956,15 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
             return static_cast<uint8_t>(wpt | (iwmMode & 0x1F));
         }
         // IWM write-handshake read hook (MAME `iwm.cpp:107-110`, case
-        // 0x80): read $C0nC with Q7 high + Q6 low → return m_whd. The
-        // //c+ alt firmware's write loop at `$C8A6: BIT $C0EC / BPL`
-        // waits for whd bit 7 ("ready") to be set; without this it
-        // sees the raw LSS data byte (often bit-7-clear) and spins.
+        // 0x80): read $C0nC with Q7 high + Q6 low → return m_whd.
+        // POM2 doesn't run an IWM bit-shift timer in parallel with
+        // the CPU, so we model whd at its idle resting value (0xBF):
+        // bit 7 ("not-underrun" — 1 = ready) high, bit 6 ("write
+        // request pending") low. The transient bit-6-set state that
+        // a real IWM enters on entering MODE_WRITE only matters for
+        // software with bit-cell-accurate timing requirements; the
+        // //c+ alt firmware's `$C8A6: BIT $C0EC / BPL` ready loop and
+        // its `$C960` companion both pass with bit-6-clear.
         if (low4 == 0xC && writeMode) {
             return iwmWhd;
         }

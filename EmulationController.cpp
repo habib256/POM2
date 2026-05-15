@@ -38,11 +38,20 @@ EmulationController::EmulationController()
     floppy->setSampleRate(audioDev->getActualSampleRate());
     if (audioDev->isAvailable()) audioDev->addSource(floppy.get());
 
+    // //c / //c+ on-board IWM. Memory mirrors $C0E0-$C0EF accesses to
+    // this device on iicHasAltBank profiles so its state machine
+    // (MAME-faithful, see `IWMDevice.{h,cpp}`) evolves in lock-step
+    // with the slot-6 DiskIICard's lightweight shadow. On II/II+/IIe/
+    // /16K-//c profiles the pointer is set but never consulted (the
+    // iicHasAltBank guard in Memory keeps the mirror off).
+    iwmDev = std::make_unique<pom2::IWMDevice>();
+
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
     mem.setCassetteDevice(tape.get());
     mem.setSpeakerDevice(spk.get());
     mem.setCpu(&processor);
+    mem.setIWM(iwmDev.get());
 }
 
 EmulationController::~EmulationController()
@@ -60,9 +69,11 @@ EmulationController::~EmulationController()
     mem.setCassetteDevice(nullptr);
     mem.setSpeakerDevice(nullptr);
     mem.setCpu(nullptr);
+    mem.setIWM(nullptr);
     tape.reset();
     spk.reset();
     floppy.reset();
+    iwmDev.reset();
 }
 
 // ─── Cassette transport ───────────────────────────────────────────────────
@@ -106,7 +117,8 @@ void EmulationController::hardReset()
     std::lock_guard<std::mutex> lk(stateMtx);
     mem.resetSoftSwitches();
     mem.slotBus().reset();
-    if (spk) spk->reset();
+    if (spk)    spk->reset();
+    if (iwmDev) iwmDev->reset();
     processor.hardReset();
     pom2::log().info("Emul", "Hard reset");
 }
@@ -133,6 +145,7 @@ void EmulationController::coldBoot()
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();
+    if (iwmDev) iwmDev->reset();
     processor.hardReset();
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
@@ -144,7 +157,8 @@ void EmulationController::bootFromSlot(int slot)
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();
-    if (spk) spk->reset();
+    if (spk)    spk->reset();
+    if (iwmDev) iwmDev->reset();
     // Prime text page 1 with $A0 (space + high bit set) — what the Monitor
     // ROM's HOME routine would write. We force PC into the slot ROM here
     // instead of going through the Monitor cold-boot (which would scan

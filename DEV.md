@@ -806,6 +806,107 @@ before booting. `loadAppleIIRom` and `resetSoftSwitches` both set
 same in `machine_reset`). Pinned:
 `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`.
 
+**//c+ MIG + IWM handshake** (//c+-only): the //c+'s alt firmware
+(bank 1, mapped via `$C028` ROMBANK) is built around two pieces of
+hardware POM2 only models in the minimum form needed for cold boot:
+
+- **MIG** (Multi-drive Interface Glue, MAME `apple2e.cpp:451-624
+  mig_r / mig_w`). Apple gate-array that bridges the IWM to the //c+'s
+  on-board 5.25" + 3.5" SmartPort drives. POM2's Memory module hosts
+  the MIG state (`migRam[0x800]`, `migPage`, `migIntDrive`, `migHdSel`)
+  and routes the two MIG windows in the bank-1 expansion ROM area:
+  - `$CC00-$CCFF` → `migOffset 0x000-0x0FF` (drive enable/disable,
+    IWM reset)
+  - `$CE00-$CEFF` → `migOffset 0x200-0x2FF` (MIG RAM + auto-increment,
+    3.5" head select, MIG page reset)
+  The 3.5"-side decodes (`hdsel` toggles via `$240-$27F`) are stored
+  but a no-op functionally — POM2 has no 3.5" SmartPort drive. The
+  2 KB MIG RAM is fully implemented; the //c+ firmware uses it to
+  cache disk geometry / accelerator state across resets. MAME
+  `apple2e.cpp:1700-1703` resets `migPage` when ROMSWITCH transitions
+  back to bank 0; POM2 mirrors that in `softSwitchAccess` $C028
+  handling.
+
+- **IWM mode register + WHD handshake** on `DiskIICard` (MAME
+  `iwm.cpp:103-114 read / 256-269 mode_w`). A real Disk II / wozfdc
+  only decodes Q6/Q7 for read vs write data; the IWM additionally
+  exposes a *mode register* (via `$C0nF` writes when Q6 is already
+  high — control byte = 0xC0) and returns a *status register* (via
+  `$C0nE` reads when Q6 is high — control byte = 0x40, low 5 bits =
+  mode low 5) plus a *write-handshake register* (`$C0nC` reads with
+  Q7 high — control byte = 0x80). POM2's `DiskIICard` tracks
+  `iwmMode` + a resting `iwmWhd = 0xBF` (bit 7 = ready, bit 6 clear
+  per MAME `iwm.cpp:57`) and intercepts those three combinations in
+  both the bit-LSS path and the legacy 32-cycle gate. Plain Disk II
+  software never drives Q6+Q7 to the mode-set state, so existing
+  smoke tests are unaffected; the //c+ alt firmware's IWM probe at
+  `$E512-$E522` (mode-echo handshake) and the write-ready loop at
+  `$C8A6-$C8A9` / `$C960-$C965` both clear with these hooks in
+  place. **Without them**, the //c+ Monitor cold-reset path
+  `$FA62 → JSR $C740 → STA $C028 → JMP $C711 in bank 1` hangs
+  before any banner reaches the screen.
+
+**Standalone IWMDevice** (`IWMDevice.{h,cpp}`): a separate file with a
+verbatim port of MAME `src/devices/machine/iwm.{h,cpp}` — the full
+state machine (`MODE_IDLE / ACTIVE / DELAY / READ / WRITE` for the
+top-level controller; `S_IDLE / SR_WINDOW_EDGE_0 / SR_WINDOW_EDGE_1`
+for the read bit-window walker; `SW_WINDOW_LOAD / MIDDLE / END /
+UNDERRUN` for write). Drives flux transitions via
+`DiskImage::getNextTransition` (POM2's MAME-compatible
+`floppy_image_device::get_next_transition` analogue). Designed as
+the eventual replacement for the //c+ profile's $C0E0-$C0EF slot-6
+mux — DiskIICard's current IWM-mode / IWM-WHD shadows are the
+keep-it-booting interim, IWMDevice is the SmartPort-grade real
+thing.
+
+**Shadow-mode wiring** (live as of this build): the IWMDevice is
+constructed in `EmulationController` next to the audio / cassette /
+speaker / floppy-sound devices and handed to `Memory::setIWM`. Memory
+mirrors every $C0E0-$C0EF read/write to the IWM when `iicHasAltBank`
+is true (so II/II+/IIe accesses skip the mirror entirely, matching
+MAME `apple2e.cpp:2430-2432 c080_r` which gates on `m_isiicplus &&
+slot == 6`). DiskIICard pushes `setFloppy(image, qt)` updates from
+`insertDisk`, `ejectDisk`, `selectDrive`, and the head-step path in
+`seekPhaseW` so the IWM walks the same flux source as the LSS card.
+
+The mirror is **shadow** today: the value returned to the CPU still
+comes from the slot bus (DiskIICard's lightweight IWM-mode + IWM-WHD
+shadow), so all the existing 5.25" smoke tests keep their pinned
+behaviour. The standalone IWMDevice state machine evolves in
+parallel — its control / mode / status / WHD registers track the
+//c+ alt firmware's accesses exactly. Verified by
+`tests/iwm_device_smoke_test.cpp::testMemoryMirror` which loads a
+synthetic 32 KB //c+ image, drives the alt-firmware mode-probe
+sequence via `Memory::memWrite` / `memRead`, and asserts the IWM
+mode register echoes via `iwm.mode()` / `iwm.status()`.
+
+Flipping the data path to authoritative IWM (i.e. routing CPU reads
+through `IWMDevice::read` instead of the slot bus) is the natural
+next step once the timer drain (1 s drive-disable delay) and the
+DiskIICard ↔ IWM motor/active state sync are in place.
+
+NOT yet ported (groundwork for the next pass):
+  * The 1 s drive-disable delay (MAME `iwm.cpp:70-84
+    update_timer_tick`). MAME schedules an `emu_timer` to drain
+    `m_active = MODE_DELAY` back to `MODE_IDLE` and clear WHD
+    bit 6. POM2 should run the equivalent from `sync()` once it
+    detects the deadline has elapsed.
+  * The Q3 fast clock (1.86 MHz) used on Mac/IIgs but not //c+; the
+    field is present but `q3ClockActive_` stays `false`.
+  * `set_floppy` mon_w / set_write_splice plumbing (still owned by
+    DiskIICard).
+  * MAME devsel callback (`m_devsel_cb`) — POM2's slot-6 multiplex is
+    currently DiskIICard-internal.
+
+Pinned:
+  * `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`
+    (MIG window assertion at `$CE4D` in bank 1).
+  * `tests/iwm_device_smoke_test.cpp` (IWMDevice reset state, control
+    bit decode, mode/status echo, WHD cold read, sync no-crash).
+  * `tests/iicplus_boot_trace.cpp` (boots `apple2cp.rom` headlessly,
+    prints PC + text page fingerprint after 6M cycles — used to debug
+    where the //c+ ROM gets stuck during a port pass).
+
 **20 KB Apple II+ ROM dumps**: some "system pack" dumps prepend 4 KB
 of filler — unused Integer BASIC bank or zeros — to the 16 KB
 `$C000-$FFFF` firmware. `loadAppleIIRom` recognises `size == 20*1024`

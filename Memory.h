@@ -42,6 +42,8 @@ class CassetteDevice;
 class M6502;
 class SpeakerDevice;
 
+namespace pom2 { class IWMDevice; }
+
 class Memory
 {
 public:
@@ -63,6 +65,17 @@ public:
     /// is replaced with an empty function so stray assertIrq() calls
     /// from teardown don't dereference a dangling pointer).
     void setCpu(M6502* c);
+
+    /// Apple //c / //c+ on-board IWM controller. Non-owning pointer
+    /// set by EmulationController. When iicHasAltBank is on, $C0E0-
+    /// $C0EF accesses are mirrored to this device so its state machine
+    /// (MAME `iwm.cpp` port — see `IWMDevice.{h,cpp}`) evolves in
+    /// parallel with the slot-6 DiskIICard's lightweight IWM-mode
+    /// shadow. Today the IWM runs in "shadow mode" — DiskIICard still
+    /// owns the value returned to the CPU — but the state-machine
+    /// hooks are live so a follow-up pass can flip the data path once
+    /// the SmartPort drive backend is wired. nullptr → no mirror.
+    void setIWM(pom2::IWMDevice* iwm) { iwmDevice = iwm; }
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
     /// SlotBus. Memory routes $C080-$CFFF accesses through it.
@@ -343,6 +356,11 @@ private:
     // Speaker + CPU back-pointers for $C030 sub-instruction timestamping.
     SpeakerDevice* speaker = nullptr;
     M6502*         cpu     = nullptr;
+
+    // //c / //c+ on-board IWM controller (non-owning). Mirrors $C0E0-
+    // $C0EF accesses for the state machine; see `setIWM`. Lives in
+    // EmulationController, attached/detached around profile switches.
+    pom2::IWMDevice* iwmDevice = nullptr;
 
     // Expansion bus — owns plugged cards.
     SlotBus slots;

@@ -68,6 +68,8 @@
 class M6502;
 class FloppySoundSink;
 
+namespace pom2 { class IWMDevice; }
+
 class DiskIICard : public SlotPeripheral
 {
 public:
@@ -161,6 +163,17 @@ public:
     /// Used by the dos33_save smoke test to confirm SAVE actually
     /// exercised the write pipeline (vs. erroring out before any write).
     uint64_t getWriteFlushCount() const { return writeFlushCount; }
+
+    /// Bind the //c / //c+ on-board IWM. When set, DiskIICard pushes
+    /// `setFloppy(image, qt)` updates to the IWM on every disk insert /
+    /// eject / drive-select / seek, so the standalone IWMDevice state
+    /// machine (MAME `iwm.cpp` port, see `IWMDevice.{h,cpp}`) can walk
+    /// the same flux stream as DiskIICard. Non-owning pointer set by
+    /// EmulationController.
+    void setIWM(pom2::IWMDevice* iwm) {
+        iwm_ = iwm;
+        pushIwmFloppy();
+    }
 
     /// User opt-in for write-back. When true, eject (and explicit save)
     /// rewrites the source file with any modified sectors. Default off
@@ -360,6 +373,14 @@ private:
     // Legacy 32-cycle gate body, retained as a fallback when no P6 PROM
     // is loaded.
     void legacyAdvance(int cycles);
+
+    // //c / //c+ on-board IWM. Non-owning. When set, DiskIICard
+    // forwards floppy + head-position changes via `iwm_->setFloppy`
+    // so the IWM state machine stays in lock-step with the active
+    // drive (matches MAME `apple2e.cpp:1180-1185 phases_w` chain,
+    // which calls `m_iwm->set_floppy(...)` on every reseat).
+    pom2::IWMDevice* iwm_ = nullptr;
+    void pushIwmFloppy();
 
     // ── MAME wozfdc API ─────────────────────────────────────────────────
     //

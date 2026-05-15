@@ -140,6 +140,7 @@ private:
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
     bool         showAiControlPanel  = false;
+    bool         showMouseSyncProbe  = true;   // default on while debugging
     int          sscPortInput       = SuperSerialCard::kDefaultPort;
 
     // ── AI Control server (HTTP/1.1 on 127.0.0.1) ────────────────────────
@@ -208,23 +209,14 @@ private:
     double  lastMouseHostY = 0;
     bool    mouseInited    = false;
     bool    mouseButtonHeld = false;
-    // Sub-tick accumulator: dx host pixels × ratio = Apple-coord delta.
-    // We'd lose fractional motion if we truncated each event, so carry
-    // the remainder across calls.
+    // Sub-tick accumulator: dx host pixels × (display.width()/widget_w)
+    // = Apple-coord delta. We'd lose fractional motion if we truncated
+    // each event, so carry the remainder across calls. Per-event delta
+    // is clamped to ±127 (MCU's 8-bit signed wrap range) BEFORE we
+    // subtract from the accumulator, so >127-tick events keep their
+    // residual for the next event.
     double  mouseSubAppleX = 0.0;
     double  mouseSubAppleY = 0.0;
-    // Absolute-position tracking. The Apple Mouse Card's quadrature
-    // protocol is delta-based, but A2Desktop's driver applies its own
-    // acceleration on top of OS acceleration — pure delta-forwarding
-    // makes the two cursors drift apart non-linearly. Instead we compute
-    // an Apple-coord *target* from the host cursor's position inside the
-    // screen widget rect, track our *estimated* Apple cursor position
-    // (mirroring A2Desktop's clamp), and emit the corrective delta each
-    // event. `kAppleClampX/Y` matches A2Desktop's standard SetMouse
-    // clamp for DHGR / HGR.
-    int     estAppleX = 0;
-    int     estAppleY = 0;
-    bool    hostInsideWidget = false;
 
     /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
     /// instantiating each card with its slot number. Falls back to legacy
@@ -255,6 +247,7 @@ private:
     void renderSscPanelWindow();
     void renderJoystickPanelWindow();
     void renderAiControlPanelWindow();
+    void renderMouseSyncProbeWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
     /// Slot Configuration panel. Implemented in MainWindow_Slots.cpp.

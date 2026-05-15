@@ -68,6 +68,7 @@ set(SOURCES
     EmulationController.cpp
     FloppySoundDevice.cpp
     HdvController_ImGui.cpp
+    IWMDevice.cpp
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
     LeChatMauveCard.cpp
@@ -220,6 +221,7 @@ add_executable(pom2_headless
     DiskIICard.cpp
     EmulationController.cpp
     FloppySoundDevice.cpp
+    IWMDevice.cpp
     LeChatMauveCard.cpp
     M6502.cpp
     Memory.cpp

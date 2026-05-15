@@ -11,6 +11,7 @@
 #include "AudioDevice.h"
 #include "CassetteDevice.h"
 #include "FloppySoundDevice.h"
+#include "IWMDevice.h"
 #include "M6502.h"
 #include "Memory.h"
 #include "SpeakerDevice.h"
@@ -36,6 +37,7 @@ public:
     SpeakerDevice&     speaker()     { return *spk; }
     FloppySoundDevice& floppySound() { return *floppy; }
     AudioDevice&       audio()       { return *audioDev; }
+    pom2::IWMDevice&   iwm()         { return *iwmDev; }
 
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
     bool loadTape (const std::string& path);
@@ -82,6 +84,7 @@ private:
     std::unique_ptr<SpeakerDevice>     spk;
     std::unique_ptr<FloppySoundDevice> floppy;
     std::unique_ptr<AudioDevice>       audioDev;
+    std::unique_ptr<pom2::IWMDevice>   iwmDev;
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};

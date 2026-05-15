@@ -3,6 +3,7 @@
 
 #include "Memory.h"
 #include "CassetteDevice.h"
+#include "IWMDevice.h"
 #include "Logger.h"
 #include "M6502.h"
 #include "SpeakerDevice.h"
@@ -1264,6 +1265,16 @@ uint8_t Memory::memRead(uint16_t addr)
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
     if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
+    // //c / //c+ on-board IWM mirror: $C0E0-$C0EF on iicHasAltBank
+    // profiles ALSO advances the standalone IWMDevice state machine
+    // (MAME `apple2e.cpp:2430-2432 c080_r` routes `m_isiicplus &&
+    // slot == 6` to `m_iwm`; for now POM2 keeps the DiskIICard data
+    // path live and runs the IWM in shadow, so the read value still
+    // comes from the slot bus).
+    if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
+        iwmDevice->tick(cycleCounter);
+        (void)iwmDevice->read(static_cast<uint8_t>(addr & 0xF));
+    }
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
     // $C100-$CFFF — slot ROM dispatch.
@@ -1370,6 +1381,11 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         if (addr <= 0xC08F) {
             languageCardSwitchAccess(addr, /*isWrite=*/true);
             return;
+        }
+        // //c / //c+ IWM mirror (see memRead for the read side).
+        if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
+            iwmDevice->tick(cycleCounter);
+            iwmDevice->write(static_cast<uint8_t>(addr & 0xF), value);
         }
         slots.deviceSelectWrite(addr, value);
         return;
