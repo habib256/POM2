@@ -118,9 +118,12 @@ aux 64 KB under paging switches — see table at top of `Memory.h`.
 | Apple //c (1984) | 65C02 | on | `apple2c-32Kv0.rom`, `apple2c-16K.rom` |
 | Apple //c Plus (1988) | 65C02 | on | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` |
 
-Default cycles/frame = 17045 across all profiles (//c+ real silicon is
-4× but unmodelled). `cpu_mode_override` = `auto|nmos|65c02` (Machine →
-CPU menu). Profile switching is a full cold reset with strict ordering
+Default cycles/frame = 17045 for II/II+/IIe/IIc; //c+ defaults to
+**68180 (4×)** to match the on-board Zip-style accelerator. Real //c+
+drops back to 1 MHz for disk I/O via $C036 — POM2 doesn't model that
+softswitch, but its event-driven disk LSS is purely cycle-driven so
+the 4× CPU still produces correctly-paced nibbles. `cpu_mode_override`
+= `auto|nmos|65c02` (Machine → CPU menu). Profile switching is a full cold reset with strict ordering
 — see [DEV.md § Profile switching internals](DEV.md#profile-switching-internals)
 for 32 KB ROM disambiguation, `$C028` ROMBANK toggle, //c INTCXROM
 override, 20 KB II+ dumps, and the 13-step `applyProfile` sequence.

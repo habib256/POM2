@@ -7,8 +7,8 @@
 //   * a ROM probe order (first existing file wins)
 //   * a charset ROM probe order
 //   * a Memory IIe paging flag (off for II/II+, on for IIe/IIc)
-//   * a default cycles-per-frame (always 1.023 MHz; IIc Plus would be
-//     4 MHz but POM2 doesn't model that variant)
+//   * a default cycles-per-frame (1.023 MHz for II/II+/IIe/IIc; the
+//     IIc Plus defaults to 4× = ~4 MHz to match real silicon)
 //
 // Profile switching happens via `MainWindow::applyProfile()` which does
 // a full cold-reset: stops the CPU worker, wipes RAM + soft switches,

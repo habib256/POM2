@@ -208,11 +208,23 @@ private:
     double  lastMouseHostY = 0;
     bool    mouseInited    = false;
     bool    mouseButtonHeld = false;
-    // Sub-tick accumulator: dx host pixels / pixelScale = quadrature
-    // ticks. We'd lose fractional motion if we truncated each event
-    // (pixelScale=2 would drop every dx=1), so carry the remainder.
+    // Sub-tick accumulator: dx host pixels × ratio = Apple-coord delta.
+    // We'd lose fractional motion if we truncated each event, so carry
+    // the remainder across calls.
     double  mouseSubAppleX = 0.0;
     double  mouseSubAppleY = 0.0;
+    // Absolute-position tracking. The Apple Mouse Card's quadrature
+    // protocol is delta-based, but A2Desktop's driver applies its own
+    // acceleration on top of OS acceleration — pure delta-forwarding
+    // makes the two cursors drift apart non-linearly. Instead we compute
+    // an Apple-coord *target* from the host cursor's position inside the
+    // screen widget rect, track our *estimated* Apple cursor position
+    // (mirroring A2Desktop's clamp), and emit the corrective delta each
+    // event. `kAppleClampX/Y` matches A2Desktop's standard SetMouse
+    // clamp for DHGR / HGR.
+    int     estAppleX = 0;
+    int     estAppleY = 0;
+    bool    hostInsideWidget = false;
 
     /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
     /// instantiating each card with its slot number. Falls back to legacy

@@ -1106,37 +1106,91 @@ void MainWindow::onMouseMove(double x, double y)
         mouseInited = true;
         return;
     }
-    const double dx = x - lastMouseHostX;
-    const double dy = y - lastMouseHostY;
+    const double rawDx = x - lastMouseHostX;
+    const double rawDy = y - lastMouseHostY;
     lastMouseHostX = x;
     lastMouseHostY = y;
 
     if (!mouseCard) return;
 
-    // Only route to the Apple II Mouse Card when the cursor is INSIDE
-    // the screen widget rect. Outside, leave the host mouse free for
-    // ImGui interaction.
+    // Gate on cursor inside the Apple II Screen widget. Outside, leave
+    // the host mouse free for ImGui interaction.
+    const float widgetW = screenRectMax.x - screenRectMin.x;
+    const float widgetH = screenRectMax.y - screenRectMin.y;
+    if (widgetW <= 0.0f || widgetH <= 0.0f) return;
     if (x < screenRectMin.x || x > screenRectMax.x ||
         y < screenRectMin.y || y > screenRectMax.y) {
         return;
     }
 
-    // Scale host-pixel deltas to quadrature ticks. The Apple II widget
-    // is rendered at integer `pixelScale`, so 1 quadrature tick =
-    // `pixelScale` host pixels visually. Dividing keeps the Apple
-    // cursor in lockstep with the host cursor on screen. Accumulate
-    // the fractional remainder so slow motion isn't lost to integer
-    // truncation. Final 8-bit wrap is what the MCU's diff-subtraction
-    // in `MouseCard::updateAxis` expects.
-    const double sx = (pixelScale > 0) ? static_cast<double>(pixelScale) : 1.0;
-    mouseSubAppleX += dx / sx;
-    mouseSubAppleY += dy / sx;
-    const int ticksX = static_cast<int>(mouseSubAppleX);
-    const int ticksY = static_cast<int>(mouseSubAppleY);
-    mouseSubAppleX -= ticksX;
-    mouseSubAppleY -= ticksY;
-    mouseAppleX = static_cast<uint8_t>(mouseAppleX + ticksX);
-    mouseAppleY = static_cast<uint8_t>(mouseAppleY + ticksY);
+    // ── Speed mapping ────────────────────────────────────────────────
+    // Convert host-pixel deltas to Apple-cursor units so 1 host pixel of
+    // motion = 1 host pixel of cursor motion visually in the widget.
+    //   apple_per_host_px = display.width() / widget_host_width
+    // Widget rect is live (handles window resize) and `display.width()`
+    // returns 560 in DHGR / 280 in HGR. Sub-pixel motion accumulates.
+    const double sxRatio = double(display.width())  / double(widgetW);
+    const double syRatio = double(display.height()) / double(widgetH);
+    mouseSubAppleX += rawDx * sxRatio;
+    mouseSubAppleY += rawDy * syRatio;
+    int dxApple = static_cast<int>(mouseSubAppleX);
+    int dyApple = static_cast<int>(mouseSubAppleY);
+    mouseSubAppleX -= dxApple;
+    mouseSubAppleY -= dyApple;
+
+    // ── Position correction via RAM peek ────────────────────────────
+    // The Apple Mouse Card driver stores the live cursor position at
+    // screen-hole bytes $0478+slot (X low) / $04F8+slot (X high) and
+    // $0578+slot / $05F8+slot (Y low/high) — standard convention since
+    // the original ProDOS Mouse Manager. Reading them lets us correct
+    // any drift between the host cursor's position-in-widget and the
+    // actual Apple cursor, on top of the delta we just computed. The
+    // correction is clamped per-event so big jumps don't invert the
+    // MCU's 8-bit signed diff (range [-127, +127]).
+    const int slot = mouseCard->getSlot();
+    if (slot >= 1 && slot <= 7) {
+        Memory& mem = controller.memory();
+        const int appleX = int(mem.memRead(uint16_t(0x0478 + slot))) |
+                          (int(mem.memRead(uint16_t(0x04F8 + slot))) << 8);
+        const int appleY = int(mem.memRead(uint16_t(0x0578 + slot))) |
+                          (int(mem.memRead(uint16_t(0x05F8 + slot))) << 8);
+        const int targetX = int((x - screenRectMin.x) * display.width()  / widgetW);
+        const int targetY = int((y - screenRectMin.y) * display.height() / widgetH);
+        // Debug log so we can verify the screen-hole addresses match
+        // A2Desktop's actual cursor storage. Gated on POM2_MOUSE_TRACE.
+        static const bool dbg = std::getenv("POM2_MOUSE_TRACE") != nullptr;
+        if (dbg) {
+            static int t = 0;
+            if ((t++ & 0x1F) == 0) {
+                pom2::log().info("MouseSync",
+                    "host(" + std::to_string(targetX) + "," + std::to_string(targetY) +
+                    ") apple($478+s=" + std::to_string(appleX) + ",$578+s=" + std::to_string(appleY) +
+                    ")  corr(" + std::to_string(targetX - appleX) + "," +
+                    std::to_string(targetY - appleY) + ")");
+            }
+        }
+        // Correction = where we should be MINUS where we are. Add this
+        // to the speed-matched delta so steady-state error decays each
+        // event instead of accumulating. Only apply if the RAM values
+        // look like valid cursor coords (in clamp range); otherwise the
+        // address may be wrong for this app and the correction would
+        // jerk the cursor randomly.
+        if (appleX >= 0 && appleX < display.width() &&
+            appleY >= 0 && appleY < display.height()) {
+            dxApple += targetX - appleX;
+            dyApple += targetY - appleY;
+        }
+    }
+
+    // Clamp the per-event delta to the MCU's 8-bit signed range so big
+    // jumps (cursor entering from a far corner) don't wrap negative.
+    if (dxApple >  127) dxApple =  127;
+    if (dxApple < -127) dxApple = -127;
+    if (dyApple >  127) dyApple =  127;
+    if (dyApple < -127) dyApple = -127;
+
+    mouseAppleX = static_cast<uint8_t>(mouseAppleX + dxApple);
+    mouseAppleY = static_cast<uint8_t>(mouseAppleY + dyApple);
     mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
 }
 

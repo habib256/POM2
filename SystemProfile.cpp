@@ -100,10 +100,13 @@ const ProfileConfig& cfgAppleIIcPlus()
         { "roms/apple2e_char.rom", "roms/apple2_char.rom" },
         /*iieMode=*/true,        // same paging as IIe/IIc
         M6502::CpuMode::CMOS,    // 65C02 at 4 MHz on real silicon
-        // Real //c Plus runs at 4 MHz; default to 1× here so disk
-        // timing-sensitive software doesn't fail. The user can flip to
-        // 4× via the speed menu — typical //c Plus workflow.
-        17045,
+        // Real //c Plus boots with its on-board Zip-style accelerator
+        // running the 65C02 at ~4 MHz (the slower 1 MHz mode is only
+        // entered for disk I/O via $C036 on real silicon — POM2 doesn't
+        // model that softswitch, but its event-driven disk LSS is purely
+        // cycle-driven so a 4× CPU still produces correctly-paced
+        // nibbles). 4 × 17045 = 68180 cycles per 60 Hz frame.
+        68180,
     };
     return cfg;
 }
