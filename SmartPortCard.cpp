@@ -4,6 +4,7 @@
 #include "SmartPortCard.h"
 
 #include "Disk35Image.h"
+#include "FloppySoundSink.h"
 #include "Logger.h"
 
 #include <cstring>
@@ -34,6 +35,41 @@ void SmartPortCard::onReset()
     activeDrive_     = 0;
     selectedBlock_[0] = selectedBlock_[1] = 0;
     streamOffset_ [0] = streamOffset_ [1] = 0;
+    if (audibleMotorOn_ && sound_) sound_->motor(false, true);
+    audibleMotorOn_ = false;
+    lastAccessCycle_ = 0;
+}
+
+void SmartPortCard::advanceCycles(int cycles)
+{
+    cpuCycleTotal_ += static_cast<uint64_t>(cycles);
+    // Synthetic spin-down: when no block access has happened for
+    // kSpinDownCycles emulated cycles, hush the motor. Cheap when the
+    // motor is already off — single comparison.
+    if (audibleMotorOn_ &&
+        cpuCycleTotal_ - lastAccessCycle_ > kSpinDownCycles) {
+        if (sound_) sound_->motor(false, true);
+        audibleMotorOn_ = false;
+    }
+}
+
+void SmartPortCard::noteAccess()
+{
+    if (!sound_) return;
+    if (!audibleMotorOn_) {
+        sound_->motor(true, true);
+        audibleMotorOn_ = true;
+    }
+    // One step event per accessed block. The sound device classifies
+    // gap in emulated CPU cycles, so back-to-back ProDOS block reads
+    // (~tens of ms apart at native speed) land in the seek-rate band
+    // and the user hears a continuous seek; isolated accesses sound
+    // like a single click. `selectedBlock_[activeDrive_]` is passed as
+    // the informational "newTrack" — the sound device only uses the
+    // cycle stamp for cadence.
+    sound_->step(static_cast<int>(selectedBlock_[activeDrive_]),
+                 cpuCycleTotal_);
+    lastAccessCycle_ = cpuCycleTotal_;
 }
 
 uint8_t SmartPortCard::slotRomRead(uint8_t low8)
@@ -107,6 +143,10 @@ uint8_t SmartPortCard::readDataByte()
             return 0xFF;
         }
         cachedBlock[drv] = selectedBlock_[drv];
+        // Real block fetch happened — emit a mechanical step + ensure the
+        // motor whirr is audible. Doesn't fire on the 511 byte-reads
+        // that follow because they hit the cache above.
+        noteAccess();
     }
     const uint8_t out = cache[drv][streamOffset_[drv]];
     streamOffset_[drv] = (streamOffset_[drv] + 1) % kBlockBytes;
@@ -140,6 +180,8 @@ void SmartPortCard::writeDataByte(uint8_t v)
         // Block boundary — commit. saveDirty on eject persists to file.
         (void)img->writeBlock(selectedBlock_[drv], buf[drv]);
         primed[drv] = false;
+        // Mechanical step + motor on the actual write (one per block).
+        noteAccess();
     }
 }
 

@@ -457,7 +457,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // 12. Persist the profile choice for the next launch.
     activeProfile = p;
-    controller->floppySound().setMotorPitch(floppyMotorPitchForProfile(p));
+    controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(p));
     settings->setString("system_profile", std::string(cfg.key));
     settings->save();
 

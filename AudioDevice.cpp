@@ -87,13 +87,34 @@ void AudioDevice::mixSources(float* output, int frameCount)
             output[i] += tmpBuf[i];
     }
 
+    // Master gain + mute, then clamp. Snapshot atomics once per buffer
+    // (tens of ns vs frameCount loads) — they don't change mid-buffer in
+    // any user-perceptible way.
+    const float masterGain =
+        masterMuted_.load(std::memory_order_relaxed)
+            ? 0.0f
+            : masterVolume_.load(std::memory_order_relaxed);
     for (int i = 0; i < frameCount; ++i)
-        output[i] = std::max(-1.0f, std::min(1.0f, output[i]));
+        output[i] = std::max(-1.0f, std::min(1.0f, output[i] * masterGain));
+}
+
+void AudioDevice::setMasterVolume(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 2.0f) v = 2.0f;
+    masterVolume_.store(v, std::memory_order_relaxed);
 }
 
 void AudioDevice::addSource(AudioSource* source)
 {
     if (!source) return;
+    // Defensive auto-config: any source that exposes RateAware gets the
+    // currently negotiated rate before its first fillAudioBuffer. The
+    // existing call sites in EmulationController / MainWindow already
+    // call setSampleRate manually, so this is normally redundant — it
+    // exists to avoid silent drift if a future hot-plug path forgets.
+    if (auto* ra = dynamic_cast<RateAware*>(source))
+        ra->setSampleRate(actualSampleRate);
     std::lock_guard<std::mutex> lock(sourcesMutex);
     sources.push_back(source);
 }
@@ -160,9 +181,36 @@ bool AudioDevice::initAudio()
         std::string("miniaudio ready: requested ") + std::to_string(kSampleRate) +
         " Hz, got " + std::to_string(actualSampleRate) + " Hz");
 
+    // Forward miniaudio's internal log (warnings, underruns, device drops…)
+    // into pom2::log so they show up next to our own audio diagnostics.
+    // Helps explain user-reported "pertes de son" when the cause is a
+    // device-side underrun rather than a source bug.
+    if (ma_log* pLog = ma_device_get_log(raw)) {
+        ma_log_register_callback(pLog,
+            ma_log_callback_init(&AudioDevice::miniaudioLogCallback, this));
+    }
+
     device.reset(raw);
     audioAvailable = true;
     return true;
+}
+
+void AudioDevice::miniaudioLogCallback(void* /*pUserData*/, uint32_t level,
+                                       const char* pMessage)
+{
+    if (!pMessage) return;
+    // Strip the trailing newline miniaudio appends — pom2::log adds its
+    // own framing.
+    std::string msg(pMessage);
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+        msg.pop_back();
+    if (msg.empty()) return;
+    if (level <= MA_LOG_LEVEL_WARNING) {
+        pom2::log().warn("Audio/ma", msg);
+    } else if (level == MA_LOG_LEVEL_INFO) {
+        pom2::log().info("Audio/ma", msg);
+    }
+    // Drop MA_LOG_LEVEL_DEBUG — too chatty (per-buffer messages).
 }
 
 void AudioDevice::shutdownAudio()

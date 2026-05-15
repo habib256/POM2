@@ -56,7 +56,7 @@
 #include <string>
 #include <vector>
 
-class FloppySoundDevice : public AudioSource, public FloppySoundSink
+class FloppySoundDevice : public AudioSource, public RateAware, public FloppySoundSink
 {
 public:
     /// 5.25" Disk II is the only form factor POM2 currently emulates; the
@@ -84,7 +84,7 @@ public:
     /// Configure output sample rate. Resamples are computed on the fly
     /// (linear interpolation) so the 44.1 kHz source samples play
     /// natural-pitch regardless of the negotiated device rate.
-    void setSampleRate(uint32_t hz);
+    void setSampleRate(uint32_t hz) override;
 
     // ─── CPU-thread API ─────────────────────────────────────────────────
     /// Motor state changed. `withDisk` chooses the loaded vs empty

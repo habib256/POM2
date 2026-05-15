@@ -56,6 +56,8 @@
 #include <string>
 #include <string_view>
 
+class FloppySoundSink;
+
 namespace pom2 {
 
 class Disk35Image;
@@ -81,12 +83,22 @@ public:
         return (drive == 0) ? image0_ : image1_;
     }
 
+    /// Mechanical sound sink (head step / motor whirr / click). Optional;
+    /// when null the card stays silent. The sound layer is necessarily
+    /// synthetic on this card — the Liron does block-level transfers
+    /// only, so we emit `step()` once per block and gate `motor()` with
+    /// a wall-clock-ish spin-down derived from the running CPU cycle
+    /// count (advanceCycles). MainWindow::plugSmartPort35 wires this to
+    /// EmulationController::floppySound35().
+    void setFloppySound(FloppySoundSink* fs) { sound_ = fs; }
+
     // ── SlotPeripheral interface ────────────────────────────────────────
     std::string_view name() const override { return "SmartPort 3.5\""; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
     void    onReset() override;
+    void    advanceCycles(int cycles) override;
 
 private:
     int           slot_;
@@ -103,10 +115,26 @@ private:
     uint16_t selectedBlock_[2]  = {0, 0};
     size_t   streamOffset_[2]   = {0, 0};
 
+    // ── Sound state ─────────────────────────────────────────────────────
+    // We emit one `step()` per actual block read or write, stamped with
+    // `cpuCycleTotal_` (driven by advanceCycles, same source DiskIICard
+    // uses). `motor(true)` fires on the first access after idle; the
+    // spin-down `motor(false)` comes from advanceCycles when no fresh
+    // access has happened in `kSpinDownCycles`. ~0.5 s of emulated CPU
+    // time at 1 MHz feels right for a Liron — long enough not to clatter
+    // on/off between blocks of one ProDOS read, short enough to hush
+    // when the user navigates away.
+    FloppySoundSink* sound_           = nullptr;
+    uint64_t         cpuCycleTotal_   = 0;
+    uint64_t         lastAccessCycle_ = 0;
+    bool             audibleMotorOn_  = false;
+    static constexpr uint64_t kSpinDownCycles = 500'000;  // ~0.5 s @ 1 MHz
+
     void    buildRom();
     uint8_t readDataByte();
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;
+    void    noteAccess();   // emits step + motor-on (idempotent), updates timer
     Disk35Image* active() const { return (activeDrive_ == 0) ? image0_ : image1_; }
 };
 

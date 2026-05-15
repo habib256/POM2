@@ -38,7 +38,16 @@ public:
     M6502&          cpu()      { return processor; }
     CassetteDevice&    cassette()    { return *tape; }
     SpeakerDevice&     speaker()     { return *spk; }
-    FloppySoundDevice& floppySound() { return *floppy; }
+    /// 5.25" Disk II mechanical sounds (head step / motor / click).
+    /// DiskIICard plug routes here.
+    FloppySoundDevice& floppySound525() { return *floppy525; }
+    /// 3.5" Sony / SmartPort mechanical sounds. Sony35Drive (//c+ on-
+    /// board) and SmartPortCard (Liron-class slot card) route here.
+    FloppySoundDevice& floppySound35()  { return *floppy35; }
+    /// Legacy single-instance accessor — alias for the 5.25" device, kept
+    /// only for any out-of-tree caller. Internal call sites should pick
+    /// floppySound525()/floppySound35() explicitly.
+    FloppySoundDevice& floppySound() { return *floppy525; }
     AudioDevice&       audio()       { return *audioDev; }
     pom2::IWMDevice&   iwm()         { return *iwmDev; }
     pom2::SmartPortHub& smartPortHub() { return *hub; }
@@ -101,7 +110,8 @@ private:
     M6502                           processor;
     std::unique_ptr<CassetteDevice>    tape;
     std::unique_ptr<SpeakerDevice>     spk;
-    std::unique_ptr<FloppySoundDevice> floppy;
+    std::unique_ptr<FloppySoundDevice> floppy525;
+    std::unique_ptr<FloppySoundDevice> floppy35;
     std::unique_ptr<AudioDevice>       audioDev;
     std::unique_ptr<pom2::IWMDevice>    iwmDev;
     std::unique_ptr<pom2::Disk35Image>  image35Int;

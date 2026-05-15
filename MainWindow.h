@@ -188,6 +188,10 @@ private:
     // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
     // whether the music handler is actually writing AY registers.
     bool         showMockingboardPanel = false;
+    // Audio mixer — master + per-channel sliders/mute (Speaker, Cassette,
+    // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
+    // that used to live in the Status panel. Persisted as `show_mixer`.
+    bool         showAudioMixer     = false;
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
     bool         showAiControlPanel  = false;
@@ -324,6 +328,7 @@ private:
     void renderMockingboardPanelWindow();
     void renderSscPanelWindow();
     void renderJoystickPanelWindow();
+    void renderAudioMixerWindow();
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();

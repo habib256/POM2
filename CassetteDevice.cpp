@@ -115,7 +115,9 @@ void CassetteDevice::fillAudioBuffer(float* output, int frameCount)
         audioStreamCursor += framesRead;
 
         constexpr float kStreamGain = 0.71f;
-        const float vol = volume.load(std::memory_order_relaxed);
+        const float vol = muted.load(std::memory_order_relaxed)
+            ? 0.0f
+            : volume.load(std::memory_order_relaxed);
         const int consumed = static_cast<int>(framesRead);
         for (int i = 0; i < consumed; ++i) {
             output[i] *= kStreamGain * vol;
@@ -152,7 +154,9 @@ void CassetteDevice::fillAudioBuffer(float* output, int frameCount)
         audioPlaybackSample = 0.0f;
         return;
     }
-    const float vol = volume.load(std::memory_order_relaxed);
+    const float vol = muted.load(std::memory_order_relaxed)
+        ? 0.0f
+        : volume.load(std::memory_order_relaxed);
     for (int i = 0; i < frameCount; ++i) {
         float targetSample = 0.0f;
         if (!audioQueue.empty()) {

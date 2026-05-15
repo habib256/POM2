@@ -461,7 +461,7 @@ struct MockingboardCard::Ay3_8910
 // callback). Per call, locks the parent mutex briefly to snapshot both
 // AYs' register banks, then synthesises mono samples summed from both
 // chips.
-struct MockingboardCard::AudioSrc : public AudioSource
+struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
 {
     explicit AudioSrc(MockingboardCard* p) : parent(p) {}
 
@@ -470,6 +470,14 @@ struct MockingboardCard::AudioSrc : public AudioSource
     std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
     std::atomic<float>    volume     { 0.5f };       // pre-mix gain
     std::atomic<bool>     muted      { false };
+
+    /// RateAware override — auto-config when AudioDevice::addSource picks
+    /// this AudioSrc up (see MainWindow plugMockingboard).
+    void setSampleRate(uint32_t hz) override
+    {
+        if (hz == 0) hz = AudioDevice::kSampleRate;
+        sampleRate.store(hz, std::memory_order_relaxed);
+    }
 
     // Per-chip synthesis state. Tone counters are floats so we can
     // step them by sub-tick increments at the host sample rate

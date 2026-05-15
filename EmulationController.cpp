@@ -30,14 +30,20 @@ EmulationController::EmulationController()
     spk->setSampleRate(audioDev->getActualSampleRate());
     if (audioDev->isAvailable()) audioDev->addSource(spk.get());
 
-    // Disk II mechanical sounds. Samples are loaded later by MainWindow
-    // once the roms/floppy_samples/ directory has been probed; the source
-    // is silent until then. Loading at audio-construction time would
-    // require EmulationController to know about a roms/ filesystem
+    // Floppy mechanical sounds — two independent instances so the 5.25"
+    // and 3.5" sample sets coexist (FloppySoundDevice stores a single
+    // sample bank per instance). Samples are loaded later by MainWindow
+    // once the roms/floppy_samples/ directory has been probed; both
+    // sources are silent until then. Loading at audio-construction time
+    // would require EmulationController to know about a roms/ filesystem
     // convention that is otherwise MainWindow's concern.
-    floppy = std::make_unique<FloppySoundDevice>();
-    floppy->setSampleRate(audioDev->getActualSampleRate());
-    if (audioDev->isAvailable()) audioDev->addSource(floppy.get());
+    floppy525 = std::make_unique<FloppySoundDevice>();
+    floppy525->setSampleRate(audioDev->getActualSampleRate());
+    if (audioDev->isAvailable()) audioDev->addSource(floppy525.get());
+
+    floppy35 = std::make_unique<FloppySoundDevice>();
+    floppy35->setSampleRate(audioDev->getActualSampleRate());
+    if (audioDev->isAvailable()) audioDev->addSource(floppy35.get());
 
     // //c / //c+ on-board IWM. Memory mirrors $C0E0-$C0EF accesses to
     // this device on iicHasAltBank profiles so its state machine
@@ -70,16 +76,16 @@ EmulationController::EmulationController()
     hub        = std::make_unique<pom2::SmartPortHub>();
     drive35Int->setImage(image35Int.get());
     drive35Ext->setImage(image35Ext.get());
-    // Mechanical-sound source: same `FloppySoundDevice` as the Disk II
-    // path. Step cadence + motor on/off are driven from
-    // `Sony35Drive::strobeWriteRegister` cases 0x1 / 0x2 / 0x3, stamped
-    // with the IWM's last-tick CPU cycle so the audio thread can
-    // measure cadence in emulated time (matches the comment block on
-    // FloppySoundSink::step). Samples are loaded later by MainWindow
-    // from roms/floppy_samples/ — until then both 5.25" and 3.5" stay
-    // silent, no per-drive gating needed.
-    drive35Int->setFloppySound(floppy.get());
-    drive35Ext->setFloppySound(floppy.get());
+    // Mechanical-sound source: dedicated 3.5" `FloppySoundDevice`
+    // instance, loaded with the `35_*.wav` Sony sample set. Step cadence
+    // + motor on/off are driven from `Sony35Drive::strobeWriteRegister`
+    // cases 0x1 / 0x2 / 0x3, stamped with the IWM's last-tick CPU cycle
+    // so the audio thread can measure cadence in emulated time (matches
+    // the comment block on FloppySoundSink::step). Samples are loaded
+    // later by MainWindow from roms/floppy_samples/ — until then the
+    // 3.5" channel stays silent.
+    drive35Int->setFloppySound(floppy35.get());
+    drive35Ext->setFloppySound(floppy35.get());
     hub->attach(iwmDev.get());
     hub->setSony35(drive35Int.get(), drive35Ext.get());
 
@@ -100,9 +106,10 @@ EmulationController::~EmulationController()
 
     // Tear down audio first so the callback thread is drained before the
     // sources it's pulling from go away.
-    if (audioDev && tape)   audioDev->removeSource(tape.get());
-    if (audioDev && spk)    audioDev->removeSource(spk.get());
-    if (audioDev && floppy) audioDev->removeSource(floppy.get());
+    if (audioDev && tape)      audioDev->removeSource(tape.get());
+    if (audioDev && spk)       audioDev->removeSource(spk.get());
+    if (audioDev && floppy525) audioDev->removeSource(floppy525.get());
+    if (audioDev && floppy35)  audioDev->removeSource(floppy35.get());
     audioDev.reset();
     mem.setCassetteDevice(nullptr);
     mem.setSpeakerDevice(nullptr);
@@ -111,7 +118,8 @@ EmulationController::~EmulationController()
     mem.setSmartPortHub(nullptr);
     tape.reset();
     spk.reset();
-    floppy.reset();
+    floppy525.reset();
+    floppy35.reset();
     iwmDev.reset();
     // Order matters: hub holds raw pointers to the drives, drives hold
     // raw pointers to the images. Tear down in reverse-attach order so

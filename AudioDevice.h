@@ -9,6 +9,7 @@
 #ifndef POM2_AUDIO_DEVICE_H
 #define POM2_AUDIO_DEVICE_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,19 @@ public:
     /// Fill `output` with `frameCount` mono float32 samples. Called from
     /// the audio callback thread — must be fast and thread-safe.
     virtual void fillAudioBuffer(float* output, int frameCount) = 0;
+};
+
+/// Optional mixin for sources whose synthesis depends on the host audio
+/// rate. AudioDevice::addSource auto-calls setSampleRate(actualSampleRate)
+/// on any source that also inherits this — defensive against forgetting
+/// the explicit call after a hot-plug. Existing call sites keep their
+/// manual setSampleRate; the auto path just guarantees the source is
+/// configured before the first fillAudioBuffer.
+class RateAware
+{
+public:
+    virtual ~RateAware() = default;
+    virtual void setSampleRate(uint32_t hz) = 0;
 };
 
 class AudioDevice
@@ -44,6 +58,13 @@ public:
     /// or their playback drifts by the rate ratio.
     uint32_t getActualSampleRate() const { return actualSampleRate; }
 
+    /// Master gain applied after per-source mix, before clamp. Range
+    /// [0, 2]. UI mixer panel binds directly to these atomics.
+    void  setMasterVolume(float v);
+    float getMasterVolume() const { return masterVolume_.load(std::memory_order_relaxed); }
+    void  setMasterMuted(bool m) { masterMuted_.store(m, std::memory_order_relaxed); }
+    bool  isMasterMuted() const  { return masterMuted_.load(std::memory_order_relaxed); }
+
     /// Mix all registered sources into `output` (clamped to [-1, +1]).
     /// Called from miniaudio's data callback.
     void mixSources(float* output, int frameCount);
@@ -58,10 +79,15 @@ private:
     bool audioAvailable = false;
     uint32_t actualSampleRate = kSampleRate;
 
+    std::atomic<float> masterVolume_{1.0f};
+    std::atomic<bool>  masterMuted_{false};
+
     struct MaDeviceDeleter { void operator()(ma_device* d) const noexcept; };
     std::unique_ptr<ma_device, MaDeviceDeleter> device;
     static void audioDataCallback(ma_device* pDevice, void* pOutput,
                                   const void* pInput, uint32_t frameCount);
+    static void miniaudioLogCallback(void* pUserData, uint32_t level,
+                                     const char* pMessage);
 };
 
 #endif // POM2_AUDIO_DEVICE_H

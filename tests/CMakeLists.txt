@@ -515,6 +515,37 @@ add_test(NAME floppy_sound_smoke
 set_tests_properties(floppy_sound_smoke PROPERTIES TIMEOUT 10)
 
 
+# ─── AudioDevice + dual FloppySoundDevice mixer smoke test ───────────────
+# Pins (a) two FloppySoundDevice instances coexisting with different
+# form factors (regression for the single-bank limitation that left the
+# 3.5" SmartPort silent before the split), and (b) the AudioDevice
+# master volume / master mute applying post-mix.
+add_executable(test_audio_mixer
+    audio_mixer_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
+)
+target_include_directories(test_audio_mixer PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${IMGUI_DIR}
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_audio_mixer PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_audio_mixer PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_audio_mixer PRIVATE winmm)
+endif()
+add_test(NAME audio_mixer_smoke
+    COMMAND test_audio_mixer
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(audio_mixer_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── HGR NTSC artifact rendering smoke test ───────────────────────────────
 # Pins the LUT corners (black byte, all-on byte, isolated bit per palette
 # pair × parity), the inter-byte white-bleed seam fix-up, and the glow

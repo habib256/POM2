@@ -36,7 +36,7 @@
 #include <deque>
 #include <mutex>
 
-class SpeakerDevice : public AudioSource
+class SpeakerDevice : public AudioSource, public RateAware
 {
 public:
     SpeakerDevice();
@@ -51,7 +51,7 @@ public:
     void fillAudioBuffer(float* output, int frameCount) override;
 
     /// Set the audio output sample rate (negotiated by AudioDevice).
-    void setSampleRate(uint32_t hz);
+    void setSampleRate(uint32_t hz) override;
     uint32_t getSampleRate() const { return outputSampleRate.load(std::memory_order_relaxed); }
 
     /// Volume in [0, 2]. UI thread sets, audio thread reads.

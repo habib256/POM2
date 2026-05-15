@@ -150,24 +150,44 @@ MainWindow::MainWindow(bool forceIIPlus)
     }
     controller->memory().loadCharRom(charRomPath.c_str());
 
-    // Load the MAME 5.25" floppy sound samples (head step, motor spin,
-    // insert click). Probe paths mirror the ROM probe order; missing
-    // samples leave the FloppySoundDevice silent without otherwise
-    // affecting the Disk II data path.
+    // Load the MAME floppy sound samples (head step, motor spin, insert
+    // click) for both 5.25" and 3.5" form factors. Each FloppySoundDevice
+    // instance stores a single sample bank; we have two — one per form
+    // factor — wired to DiskIICard / Sony35Drive / SmartPortCard. Probe
+    // paths mirror the ROM probe order; the first directory containing
+    // either set wins, the other set degrades to silent if absent.
     static const char* floppySampleDirs[] = {
         "roms/floppy_samples",
         "../roms/floppy_samples",
         "../../roms/floppy_samples",
     };
     for (const char* d : floppySampleDirs) {
-        if (fs::is_directory(d) && controller->floppySound().loadSamples(d))
-            break;
+        if (!fs::is_directory(d)) continue;
+        const bool ok525 = controller->floppySound525().loadSamples(
+            d, FloppySoundDevice::FormFactor::FF525);
+        const bool ok35  = controller->floppySound35().loadSamples(
+            d, FloppySoundDevice::FormFactor::FF35);
+        if (ok525 || ok35) break;
     }
     {
-        // Restore persisted volume/mute for the floppy sound source.
-        const float vol = settings->getFloat("floppy_sound_volume", 0.6f);
-        controller->floppySound().setVolume(vol);
-        controller->floppySound().setMuted(settings->getBool("floppy_sound_muted", false));
+        // Restore persisted volume/mute per channel. The 3.5" channel
+        // inherits the 5.25" defaults on first run so users who had
+        // already tuned floppy_sound_volume don't get a louder/quieter
+        // 3.5" surprise.
+        const float vol525 = settings->getFloat("floppy_sound_volume", 0.6f);
+        const bool  mute525 = settings->getBool ("floppy_sound_muted",  false);
+        controller->floppySound525().setVolume(vol525);
+        controller->floppySound525().setMuted (mute525);
+        controller->floppySound35().setVolume(
+            settings->getFloat("floppy_sound_volume_35", vol525));
+        controller->floppySound35().setMuted(
+            settings->getBool ("floppy_sound_muted_35",  mute525));
+        // Audio master (mixer panel). Default 1.0 / unmuted to preserve
+        // pre-mixer behaviour.
+        controller->audio().setMasterVolume(
+            settings->getFloat("master_volume", 1.0f));
+        controller->audio().setMasterMuted(
+            settings->getBool ("master_muted",  false));
     }
 
     // Plug all expansion cards in their user-configured slots. The
@@ -198,6 +218,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
+        showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
         sscPortInput       = settings->getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
@@ -306,11 +327,14 @@ MainWindow::MainWindow(bool forceIIPlus)
             }
         }
     }
-    // Profile-specific floppy motor pitch (//c / //c+ → faster Sony drive).
-    // applyProfile() already calls setMotorPitch internally; do it here for
-    // the paths that don't go through applyProfile (auto-probe matching the
-    // saved profile, or no saved profile at all).
-    controller->floppySound().setMotorPitch(floppyMotorPitchForProfile(activeProfile));
+    // Profile-specific floppy motor pitch — applies only to the 5.25"
+    // bank. The 3.5" instance keeps motorPitch=1.0 because the 35_*.wav
+    // samples are already recorded at the Sony 800K cadence, so a pitch
+    // bump would over-shift them. applyProfile() already calls
+    // setMotorPitch internally; do it here for the paths that don't go
+    // through applyProfile (auto-probe matching the saved profile, or
+    // no saved profile at all).
+    controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(activeProfile));
 }
 
 // Out-of-line accessor bodies — these need EmulationController and
@@ -423,13 +447,18 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
+    settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
     settings->setFloat ("cassette_volume", controller->cassette().getVolume());
-    settings->setFloat ("floppy_sound_volume", controller->floppySound().getVolume());
-    settings->setBool  ("floppy_sound_muted",  controller->floppySound().isMuted());
+    settings->setFloat ("floppy_sound_volume",    controller->floppySound525().getVolume());
+    settings->setBool  ("floppy_sound_muted",     controller->floppySound525().isMuted());
+    settings->setFloat ("floppy_sound_volume_35", controller->floppySound35().getVolume());
+    settings->setBool  ("floppy_sound_muted_35",  controller->floppySound35().isMuted());
+    settings->setFloat ("master_volume",          controller->audio().getMasterVolume());
+    settings->setBool  ("master_muted",           controller->audio().isMasterMuted());
     if (mockingboardCard) {
         settings->setFloat("mockingboard_volume", mockingboardCard->getVolume());
         settings->setBool ("mockingboard_muted",  mockingboardCard->isMuted());
@@ -550,7 +579,7 @@ void MainWindow::plugSlotsFromSettings()
         // LSS state at the exact sub-cycle of the data fetch, not at
         // instruction-start). See DiskIICard::setCpu doc for context.
         card->setCpu(&controller->cpu());
-        card->setFloppySound(&controller->floppySound());
+        card->setFloppySound(&controller->floppySound525());
         // //c+ on-board IWM — only the slot-6 card pushes its drive
         // pointer to the IWM, mirroring the //c+ wiring. Multi-instance
         // Disk II (option C) lets the user plug a second Disk II in
@@ -670,6 +699,11 @@ void MainWindow::plugSlotsFromSettings()
             s,
             &controller->disk35Internal(),
             &controller->disk35External());
+        // Mechanical sound: route to the dedicated 3.5" sound bank.
+        // The card is block-level (no Sony35Drive in the slot path), so
+        // it synthesises step/motor/click events from READBLOCK /
+        // WRITEBLOCK / eject directly.
+        card->setFloppySound(&controller->floppySound35());
         smartPortCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -826,7 +860,8 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
     }
 
     switch (key) {
-        case GLFW_KEY_ENTER:        injectAscii(0x0D); break;
+        case GLFW_KEY_ENTER:        // fallthrough — main + numpad Enter both
+        case GLFW_KEY_KP_ENTER:     injectAscii(0x0D); break;
         case GLFW_KEY_BACKSPACE:    injectAscii(0x08); break;
         case GLFW_KEY_LEFT:         injectAscii(0x08); break;
         case GLFW_KEY_RIGHT:        injectAscii(0x15); break;
@@ -1156,6 +1191,8 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
+        ImGui::Separator();
+        ImGui::MenuItem("Audio Mixer",                   nullptr, &showAudioMixer);
         ImGui::EndMenu();
     }
 
@@ -1430,27 +1467,10 @@ void MainWindow::renderControlsWindow()
         ImGui::Text("Speaker toggles: %llu",
             (unsigned long long)controller->memory().getSpeakerToggleCount());
 
-        // Speaker mix controls — directly bound to SpeakerDevice atomics.
-        SpeakerDevice& spk = controller->speaker();
-        float spkVol = spk.getVolume();
-        if (ImGui::SliderFloat("Speaker vol", &spkVol, 0.0f, 2.0f, "%.2f"))
-            spk.setVolume(spkVol);
-        bool spkMute = spk.isMuted();
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Mute##spk", &spkMute)) spk.setMuted(spkMute);
-
-        // Disk II mechanical sounds (head step / motor spin / insert
-        // click) — only meaningful when the floppy samples loaded
-        // successfully at startup.
-        FloppySoundDevice& fs = controller->floppySound();
-        if (fs.isLoaded()) {
-            float fsVol = fs.getVolume();
-            if (ImGui::SliderFloat("Disk vol", &fsVol, 0.0f, 2.0f, "%.2f"))
-                fs.setVolume(fsVol);
-            bool fsMute = fs.isMuted();
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Mute##floppy", &fsMute)) fs.setMuted(fsMute);
-        }
+        // Audio mixing controls moved to the dedicated Audio Mixer panel
+        // (View → Audio Mixer). Keep a one-liner so users notice the
+        // shortcut.
+        ImGui::TextDisabled("Audio: see View → Audio Mixer");
 
         ImGui::Separator();
         const size_t pendingPaste = controller->memory().pendingPasteSize();
@@ -1701,6 +1721,115 @@ void MainWindow::renderJoystickPanelWindow()
         bind.deadzone = result.deadzone;
         bind.invert   = result.invert;
     }
+}
+
+// ─── Audio Mixer ─────────────────────────────────────────────────────────
+//
+// Consolidated mixer panel: one row per source (Master, Speaker, Cassette,
+// Mockingboard if plugged, Disk 5.25", Disk 3.5" if its sample bank
+// loaded). Sliders + mute checkboxes write directly into the underlying
+// atomics on each source / on AudioDevice — no UI-side cache, so cross-
+// thread read-back stays consistent. Replaces the two sliders that used
+// to live in the Status panel.
+
+void MainWindow::renderAudioMixerWindow()
+{
+    if (!showAudioMixer) return;
+
+    ImGui::SetNextWindowPos (ImVec2(80, 80),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(380, 260), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Audio Mixer", &showAudioMixer)) {
+        ImGui::End();
+        return;
+    }
+
+    auto channelRow = [](const char* label, float& vol, bool& mute,
+                         const char* idSuffix, bool dim) {
+        if (dim) ImGui::BeginDisabled();
+        ImGui::PushID(idSuffix);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(110.0f);
+        ImGui::SetNextItemWidth(180.0f);
+        const std::string slid = std::string("##v") + idSuffix;
+        ImGui::SliderFloat(slid.c_str(), &vol, 0.0f, 2.0f, "%.2f");
+        ImGui::SameLine();
+        const std::string muteId = std::string("Mute##") + idSuffix;
+        ImGui::Checkbox(muteId.c_str(), &mute);
+        ImGui::PopID();
+        if (dim) ImGui::EndDisabled();
+    };
+
+    // ── Master ─────────────────────────────────────────────────────────
+    AudioDevice& dev = controller->audio();
+    float masterVol = dev.getMasterVolume();
+    bool  masterMute = dev.isMasterMuted();
+    channelRow("Master", masterVol, masterMute, "master", false);
+    if (masterVol != dev.getMasterVolume()) dev.setMasterVolume(masterVol);
+    if (masterMute != dev.isMasterMuted()) dev.setMasterMuted(masterMute);
+    ImGui::Separator();
+
+    // ── Speaker ────────────────────────────────────────────────────────
+    SpeakerDevice& spk = controller->speaker();
+    float spkVol = spk.getVolume();
+    bool  spkMute = spk.isMuted();
+    channelRow("Speaker", spkVol, spkMute, "spk", false);
+    if (spkVol != spk.getVolume()) spk.setVolume(spkVol);
+    if (spkMute != spk.isMuted()) spk.setMuted(spkMute);
+
+    // ── Cassette ───────────────────────────────────────────────────────
+    CassetteDevice& tape = controller->cassette();
+    float tapeVol = tape.getVolume();
+    bool  tapeMute = tape.isMuted();
+    channelRow("Cassette", tapeVol, tapeMute, "tape", false);
+    if (tapeVol != tape.getVolume()) tape.setVolume(tapeVol);
+    if (tapeMute != tape.isMuted()) tape.setMuted(tapeMute);
+
+    // ── Mockingboard ───────────────────────────────────────────────────
+    if (mockingboardCard) {
+        float mbVol = mockingboardCard->getVolume();
+        bool  mbMute = mockingboardCard->isMuted();
+        const std::string lbl = "Mockingbd (S" +
+            std::to_string(mockingboardCard->getSlot()) + ")";
+        channelRow(lbl.c_str(), mbVol, mbMute, "mb", false);
+        if (mbVol != mockingboardCard->getVolume()) mockingboardCard->setVolume(mbVol);
+        if (mbMute != mockingboardCard->isMuted()) mockingboardCard->setMuted(mbMute);
+    } else {
+        float dummyVol = 0; bool dummyMute = false;
+        channelRow("Mockingbd (no card)", dummyVol, dummyMute, "mb", true);
+    }
+
+    // ── Disk 5.25" ─────────────────────────────────────────────────────
+    {
+        FloppySoundDevice& fs525 = controller->floppySound525();
+        const bool dim = !fs525.isLoaded();
+        float vol = fs525.getVolume();
+        bool  mute = fs525.isMuted();
+        channelRow(dim ? "Disk 5.25\" (samples missing)" : "Disk 5.25\"",
+                   vol, mute, "fs525", dim);
+        if (!dim) {
+            if (vol != fs525.getVolume()) fs525.setVolume(vol);
+            if (mute != fs525.isMuted()) fs525.setMuted(mute);
+        }
+    }
+
+    // ── Disk 3.5" ──────────────────────────────────────────────────────
+    {
+        FloppySoundDevice& fs35 = controller->floppySound35();
+        const bool dim = !fs35.isLoaded();
+        float vol = fs35.getVolume();
+        bool  mute = fs35.isMuted();
+        channelRow(dim ? "Disk 3.5\" (samples missing)" : "Disk 3.5\"",
+                   vol, mute, "fs35", dim);
+        if (!dim) {
+            if (vol != fs35.getVolume()) fs35.setVolume(vol);
+            if (mute != fs35.isMuted()) fs35.setMuted(mute);
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("Master is post-mix; per-channel knobs are pre-mix.");
+    ImGui::End();
 }
 
 // ─── Le Chat Mauve (slot 7) ──────────────────────────────────────────────
@@ -3150,6 +3279,7 @@ void MainWindow::render()
     renderMockingboardPanelWindow();
     renderSscPanelWindow();
     renderJoystickPanelWindow();
+    renderAudioMixerWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderAboutDialog();

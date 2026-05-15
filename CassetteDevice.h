@@ -47,7 +47,7 @@
 #include <string_view>
 #include <vector>
 
-class CassetteDevice : public AudioSource
+class CassetteDevice : public AudioSource, public RateAware
 {
 public:
     enum class DeckMode { NoTape, ProgramTape, AudioStream };
@@ -116,9 +116,14 @@ public:
 
     void setAudioAvailable(bool available) { audioAvailable = available; }
     void setAudioOutputSampleRate(uint32_t hz) { audioOutputSampleRate = std::max<uint32_t>(1, hz); }
+    /// RateAware override — forwards to setAudioOutputSampleRate so
+    /// AudioDevice::addSource auto-config Just Works.
+    void setSampleRate(uint32_t hz) override { setAudioOutputSampleRate(hz); }
 
     void  setVolume(float v);
     float getVolume() const { return volume.load(std::memory_order_relaxed); }
+    void  setMuted(bool m) { muted.store(m, std::memory_order_relaxed); }
+    bool  isMuted() const  { return muted.load(std::memory_order_relaxed); }
 
     /// Arm recording without requiring a CPU $C020 toggle. The deck's REC
     /// button uses this so a scripted run can capture output that the
@@ -212,6 +217,7 @@ private:
     std::string loadInfo;
 
     std::atomic<float> volume{1.0f};
+    std::atomic<bool>  muted{false};
     std::atomic<bool>  playbackPaused{false};
 
     // Stream mode: miniaudio decodes the file on demand at the device
