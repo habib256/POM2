@@ -237,6 +237,20 @@ int main(int argc, char* argv[])
                 mainWindow.emul().cassette().getLastError());
         }
     }
+    auto mount35Cli = [&](int idx, const std::string& path, const char* flag) {
+        if (path.empty()) return;
+        if (mainWindow.emul().mount35(idx, path)) {
+            pom2::log().info("CLI", std::string(flag) + " mounted: " + path);
+        } else {
+            const auto& img = (idx == 0)
+                ? mainWindow.emul().disk35Internal()
+                : mainWindow.emul().disk35External();
+            pom2::log().warn("CLI",
+                std::string(flag) + " failed: " + img.lastError());
+        }
+    };
+    mount35Cli(0, plan->disk35Internal, "--35-disk1");
+    mount35Cli(1, plan->disk35External, "--35-disk2");
 
     // ─── Phase C deferred actions: kick off in a background thread that
     // sleeps briefly (let the worker thread + first render frame land)

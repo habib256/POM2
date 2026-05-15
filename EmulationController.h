@@ -47,6 +47,17 @@ public:
     pom2::Disk35Image&  disk35Internal()  { return *image35Int; }
     pom2::Disk35Image&  disk35External()  { return *image35Ext; }
 
+    /// Mount an 800K Sony 3.5" image into drive `idx` (0 = internal,
+    /// 1 = external). Takes the state mutex while swapping the
+    /// `Disk35Image` payload and notifying the Sony35Drive's disk-
+    /// change flip-flop. Returns true on success; on failure the
+    /// drive is left empty and the image's `lastError()` carries the
+    /// reason.
+    bool mount35(int idx, const std::string& path);
+
+    /// Unmount whatever is in 3.5" drive `idx` (0/1). No-op when empty.
+    void eject35(int idx);
+
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
     bool loadTape (const std::string& path);
     bool saveTape (const std::string& path);

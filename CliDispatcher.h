@@ -94,6 +94,13 @@ struct CliPlan {
     CliSaveTapeFormat               saveTapeFormat = CliSaveTapeFormat::NoHint;
     CliDisplayMode                  displayMode = CliDisplayMode::NoHint;
 
+    /// `--35-disk1 <path>` / `--35-disk2 <path>` — mount an 800K Sony
+    /// 3.5" image into the on-board (drive 1) or external (drive 2)
+    /// SmartPort 3.5" slot. Only takes effect on the //c+ profile;
+    /// other profiles log a warning and ignore. Empty = no mount.
+    std::string                     disk35Internal;
+    std::string                     disk35External;
+
     // Phase C.
     std::vector<CliAction>          deferredActions;
 };

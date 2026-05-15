@@ -8,6 +8,7 @@
 #include "Apple2Display.h"
 #include "CassetteDeck_ImGui.h"
 #include "ClockCard.h"
+#include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
@@ -89,6 +90,7 @@ private:
     pom2::Settings               settings;
     pom2::CassetteDeck_ImGui     cassetteDeck;
     pom2::DiskController_ImGui   diskPanel;
+    pom2::Disk35Controller_ImGui disk35Panel;
     pom2::HdvController_ImGui    hdvPanel;
     pom2::JoystickPanel_ImGui    joystickPanel;
     pom2::LeChatMauve_ImGui      chatMauvePanel;
@@ -128,6 +130,7 @@ private:
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
     bool         showDiskPanel = true;
+    bool         showDisk35Panel = false;     // off by default; //c+ users flip on
     bool         showHdvPanel  = true;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
@@ -239,6 +242,8 @@ private:
     void renderPasteFileDialog();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
+    void renderDisk35PanelWindow();
+    void renderDisk35FileDialog();
     void renderHdvPanelWindow();
     void renderHdvFileDialog();
     void renderChatMauvePanelWindow();

@@ -112,6 +112,8 @@ void printUsage()
         "  --speed <cycles/frame>     Override CPU pacing (1x = 17045)\n"
         "  --cpu-max                  Run flat-out (~58 MHz emulated)\n"
         "  --tape <path>              Preload + auto-play tape\n"
+        "  --35-disk1 <path>          Mount 800K 3.5\" image in //c+ internal drive\n"
+        "  --35-disk2 <path>          Mount 800K 3.5\" image in //c+ external drive\n"
         "  --save-tape <path>         Dump captured tape on shutdown\n"
         "  --save-tape-format <aci|wav>   Force save extension\n"
         "  --snapshot-load <path>     Restore state at boot (Phase C)\n"
@@ -202,6 +204,14 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
                 return std::nullopt;
             }
             plan.executionSpeed = n;
+        }
+        else if (a == "--35-disk1") {
+            const char* v = needArg(i, "--35-disk1"); if (!v) return std::nullopt;
+            plan.disk35Internal = v;
+        }
+        else if (a == "--35-disk2") {
+            const char* v = needArg(i, "--35-disk2"); if (!v) return std::nullopt;
+            plan.disk35External = v;
         }
         else if (a == "--tape") {
             const char* v = needArg(i, "--tape"); if (!v) return std::nullopt;

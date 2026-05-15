@@ -31,6 +31,7 @@
 #include "IWMDevice.h"
 #include "CpuClock.h"
 #include "Logger.h"
+#include "Sony35Drive.h"
 
 #include <algorithm>
 #include <climits>
@@ -83,11 +84,29 @@ void IWMDevice::setFloppy(DiskImage* disk, int qt)
 {
     // MAME `iwm.cpp:85-98 set_floppy`. We don't bind a `mon_w` callback
     // here yet (the LSS card still owns motor sound + writeback gating).
-    if (disk_ == disk && qt_ == qt) return;
+    if (disk_ == disk && qt_ == qt && !sony_) return;
     sync(now_);
     flushWrite();
     disk_ = disk;
     qt_   = qt;
+    sony_ = nullptr;            // routing back to 5.25" path
+}
+
+void IWMDevice::setSony35(Sony35Drive* drive)
+{
+    if (sony_ == drive && !disk_) return;
+    sync(now_);
+    flushWrite();
+    sony_ = drive;
+    disk_ = nullptr;
+    if (sony_) {
+        // Anchor the revolution: the freshly-attached drive's cell 0
+        // is under the head at "now". MAME re-anchors on `mon_w(false)`
+        // (motor spin-up); POM2 collapses both events to the moment
+        // the SmartPort hub points the IWM at this drive.
+        revStart35_ = now_;
+        sony_->invalidateCache();
+    }
 }
 
 uint8_t IWMDevice::read(uint8_t offset)
@@ -99,8 +118,15 @@ uint8_t IWMDevice::read(uint8_t offset)
     switch (control_ & 0xC0) {
         case 0x00: return active_ ? data_ : 0xFF;
         case 0x40: {
-            // (status & 0x7F) | wpt
-            const bool wpt = (!disk_) || disk_->isWriteProtected();
+            // (status & 0x7F) | wpt. MAME `iwm.cpp:107` reads
+            // `m_floppy->wpt_r()`. For 3.5" Sony drives this is the
+            // SENSE line on the currently-selected register (see
+            // Sony35Drive::senseR comment block) — the //c+ firmware
+            // probes /WPT, /TRACK0, /INSERTED, etc. via this same bit.
+            bool wpt;
+            if (sony_)      wpt = sony_->senseR();
+            else if (disk_) wpt = disk_->isWriteProtected();
+            else            wpt = true;
             return static_cast<uint8_t>((status_ & 0x7F) | (wpt ? 0x80 : 0x00));
         }
         case 0x80: return whd_;
@@ -140,6 +166,25 @@ void IWMDevice::flushWrite(uint64_t when)
                              static_cast<int64_t>(when),
                              static_cast<int>(fluxes.size()),
                              fluxes.empty() ? nullptr : fluxes.data());
+        }
+        if (sony_) {
+            // 3.5" Sony write-back. Sony35Drive's writeFlux splices
+            // the new transitions into its cached cell stream, then
+            // runs MAME's `extract_sectors_from_track_mac_gcr6`
+            // decoder over the result and pushes any complete
+            // sector's 512-byte payload back into the attached
+            // Disk35Image. Write protection is enforced inside
+            // writeFlux (early-return on `isWriteProtected()`).
+            std::vector<int64_t> fluxes;
+            fluxes.reserve(fluxWriteCount_);
+            for (uint32_t i = 0; i < fluxWriteCount_; ++i) {
+                fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]));
+            }
+            sony_->writeFlux(static_cast<int64_t>(fluxWriteStart_),
+                             static_cast<int64_t>(when),
+                             fluxes.empty() ? nullptr : fluxes.data(),
+                             static_cast<int>(fluxes.size()),
+                             static_cast<int64_t>(revStart35_));
         }
         fluxWriteCount_ = 0;
         if (lastOnEdge) {
@@ -372,12 +417,17 @@ void IWMDevice::writeClockStop()
 
 int64_t IWMDevice::nextTransition(int64_t from) const
 {
-    // DiskImage's flux events live in LSS-cycle space (= 2× CPU cycles)
-    // — see DiskIICard `lssCycle = cpuCycleTotal * 2`. The IWM state
-    // machine in this port runs at CPU cycle resolution to stay
-    // single-clock with the rest of POM2, so we transit the boundary
-    // here: scale `from` up before the lookup, and the returned
-    // transition stamp back down to CPU cycles.
+    // Dispatch by floppy form factor:
+    //  * 3.5" Sony: query Sony35Drive directly. Its flux events are
+    //    already expressed in CPU cycles (the Sony zoned-recording
+    //    keeps the bit-cell rate constant at ~505 kHz so no LSS
+    //    half-cycle scaling is needed).
+    //  * 5.25" Disk II: DiskImage's flux events live in LSS-cycle
+    //    space (= 2× CPU cycles) — see DiskIICard `lssCycle =
+    //    cpuCycleTotal * 2`. We transit the boundary here.
+    if (sony_) {
+        return sony_->nextTransition(from, static_cast<int64_t>(revStart35_));
+    }
     if (!disk_) return INT64_MAX;
     const int64_t fromLss = from * 2;
     const int64_t t = disk_->getNextTransition(qt_, fromLss);

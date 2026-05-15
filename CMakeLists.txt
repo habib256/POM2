@@ -63,6 +63,7 @@ set(SOURCES
     ClockCard.cpp
     Disassembler6502.cpp
     Disk35Image.cpp
+    Disk35Controller_ImGui.cpp
     DiskController_ImGui.cpp
     DiskIICard.cpp
     DiskImage.cpp
@@ -108,6 +109,7 @@ set(HEADERS
     ClockCard.h
     Disassembler6502.h
     Disk35Image.h
+    Disk35Controller_ImGui.h
     DiskController_ImGui.h
     DiskIICard.h
     DiskImage.h

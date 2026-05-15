@@ -142,6 +142,7 @@ MainWindow::MainWindow(bool forceIIPlus)
 
         pixelScale         = settings.getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings.getBool ("show_disk_panel", showDiskPanel);
+        showDisk35Panel    = settings.getBool ("show_disk35_panel", showDisk35Panel);
         showHdvPanel       = settings.getBool ("show_hdv_panel",  showHdvPanel);
         showCassetteDeck   = settings.getBool ("show_cassette",   showCassetteDeck);
         showJoystickPanel  = settings.getBool ("show_joystick",   showJoystickPanel);
@@ -164,6 +165,24 @@ MainWindow::MainWindow(bool forceIIPlus)
             if (diskCard->insertDisk(diskPath)) {
                 pom2::log().info("Disk II", "Re-inserted from settings: " + diskPath);
             }
+        }
+    }
+
+    // ── Restore previously-mounted 3.5" disks ─────────────────────────
+    // Same pattern as the 5.25" / HDV restore above. Only honour the
+    // paths when the file still exists; silently skip otherwise so a
+    // moved / deleted image doesn't block startup.
+    {
+        std::error_code ec;
+        const std::string p1 = settings.getString("disk35_path_1", "");
+        if (!p1.empty() && fs::is_regular_file(p1, ec) &&
+            controller.mount35(0, p1)) {
+            pom2::log().info("Sony35", "Internal re-mounted from settings: " + p1);
+        }
+        const std::string p2 = settings.getString("disk35_path_2", "");
+        if (!p2.empty() && fs::is_regular_file(p2, ec) &&
+            controller.mount35(1, p2)) {
+            pom2::log().info("Sony35", "External re-mounted from settings: " + p2);
         }
     }
 
@@ -264,6 +283,24 @@ MainWindow::~MainWindow()
         settings.setBool("disk_writeback", diskCard->isWriteBackEnabled());
     }
 
+    // Persist mounted 3.5" disks across restarts AND flush any firmware-
+    // driven write-backs (format / save / etc.) that arrived after the
+    // user opted in to write-back. Mirrors the Disk II save-on-shutdown
+    // hook so changes survive a hard quit.
+    for (pom2::Disk35Image* img :
+            { &controller.disk35Internal(), &controller.disk35External() }) {
+        if (img->isLoaded() && img->hasUnsavedChanges() &&
+            !img->isWriteProtected()) {
+            img->saveDirty();
+        }
+    }
+    settings.setString("disk35_path_1",
+        controller.disk35Internal().isLoaded()
+            ? controller.disk35Internal().path() : std::string());
+    settings.setString("disk35_path_2",
+        controller.disk35External().isLoaded()
+            ? controller.disk35External().path() : std::string());
+
     if (hdvCard) {
         settings.setBool("hdv_writeback", hdvCard->isWriteBackEnabled());
     }
@@ -301,6 +338,7 @@ MainWindow::~MainWindow()
     settings.setString("hi_res_mode", modeName(display.getHiResMode()));
     settings.setFloat ("pixel_scale", pixelScale);
     settings.setBool  ("show_disk_panel", showDiskPanel);
+    settings.setBool  ("show_disk35_panel", showDisk35Panel);
     settings.setBool  ("show_hdv_panel",  showHdvPanel);
     settings.setBool  ("show_cassette",   showCassetteDeck);
     settings.setBool  ("show_joystick",   showJoystickPanel);
@@ -986,6 +1024,7 @@ void MainWindow::renderMenuBar()
     if (ImGui::BeginMenu("Devices")) {
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
+        ImGui::MenuItem("Sony 3.5\" (//c+ SmartPort)",   nullptr, &showDisk35Panel);
         ImGui::MenuItem("HDV (slot 5)",                  nullptr, &showHdvPanel);
         ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
@@ -2221,6 +2260,168 @@ void MainWindow::renderHdvFileDialog()
     ImGui::EndPopup();
 }
 
+// ─── //c+ SmartPort 3.5" ─────────────────────────────────────────────────
+
+void MainWindow::renderDisk35PanelWindow()
+{
+    if (!showDisk35Panel) return;
+
+    pom2::Disk35Controller_ImGui::PanelSnapshot snap;
+    snap.supportedByProfile =
+        activeProfile == pom2::SystemProfile::AppleIIcPlus;
+    {
+        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        const pom2::Sony35Drive* drives[2] = {
+            &controller.sony35Internal(), &controller.sony35External(),
+        };
+        const pom2::Disk35Image* images[2] = {
+            &controller.disk35Internal(),  &controller.disk35External(),
+        };
+        for (int i = 0; i < 2; ++i) {
+            auto& s = snap.drives[i];
+            s.diskLoaded     = drives[i]->isInserted();
+            s.motorOn        = drives[i]->isMotorOn();
+            s.track          = drives[i]->track();
+            s.side1          = drives[i]->side1();
+            s.writeProtected = drives[i]->isWriteProtected();
+            s.diskPath       = images[i]->path();
+            s.lastError      = images[i]->lastError();
+        }
+    }
+
+    // Library scan — mirrors the Disk II library scan but only picks
+    // up files large enough to be 800K (size sniff via filesystem).
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (const char* dir : { "disks35", "../disks35", "../../disks35",
+                                 "disks",   "../disks",   "../../disks" }) {
+            if (!fs::is_directory(dir, ec)) continue;
+            const fs::path root(dir);
+            for (auto it = fs::recursive_directory_iterator(root,
+                     fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec))
+            {
+                const auto& entry = *it;
+                const std::string name = entry.path().filename().string();
+                if (!name.empty() && name.front() == '.') {
+                    if (entry.is_directory(ec)) it.disable_recursion_pending();
+                    continue;
+                }
+                if (!entry.is_regular_file(ec)) continue;
+                const std::string ext = entry.path().extension().string();
+                if (ext != ".po" && ext != ".2mg") continue;
+                const auto sz = entry.file_size(ec);
+                if (ec) continue;
+                // 800K raw or 2IMG-wrapped (header + 819 200).
+                if (sz != 819200 && sz != 819200 + 64 &&
+                    !(sz > 819200 && sz < 819200 + 4096)) continue;
+                pom2::Disk35Controller_ImGui::LibraryEntry e;
+                e.displayName = fs::relative(entry.path(), root, ec).string();
+                if (e.displayName.empty()) e.displayName = name;
+                e.fullPath = entry.path().string();
+                snap.library.push_back(std::move(e));
+            }
+            if (!snap.library.empty()) break;
+        }
+        std::sort(snap.library.begin(), snap.library.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.displayName < b.displayName;
+                  });
+    }
+
+    ImGui::SetNextWindowPos (ImVec2(1055, 30),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(705,  600), ImGuiCond_FirstUseEver);
+    auto result = disk35Panel.render(
+        "Sony 3.5\" (//c+ SmartPort)", showDisk35Panel, snap);
+
+    for (int d = 0; d < 2; ++d) {
+        if (result.requestEject[d]) {
+            controller.eject35(d);
+            tapeStatusMessage = std::string("3.5\" drive ") +
+                (d == 0 ? "1 (internal)" : "2 (external)") + " ejected";
+            tapeStatusUntil = lastFrameTime + 4.0;
+        }
+    }
+    if (result.openMountDialog) {
+        disk35Panel.mountDialogOpen     = true;
+        disk35Panel.mountDialogForDrive = result.openMountDialogForDrive;
+        if (disk35Panel.dialogPath.empty()) disk35Panel.dialogPath = "disks35/";
+    }
+    if (!result.requestMountPath.empty()) {
+        if (controller.mount35(result.requestMountDrive, result.requestMountPath)) {
+            tapeStatusMessage = "3.5\" mounted: " + result.requestMountPath;
+        } else {
+            const auto& img = result.requestMountDrive == 0
+                ? controller.disk35Internal()
+                : controller.disk35External();
+            tapeStatusMessage = "3.5\" mount failed: " + img.lastError();
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+}
+
+void MainWindow::renderDisk35FileDialog()
+{
+    if (disk35Panel.mountDialogOpen) {
+        ImGui::OpenPopup("Mount 3.5\" image");
+        disk35Panel.mountDialogOpen = false;
+    }
+    if (!ImGui::BeginPopupModal("Mount 3.5\" image", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::Text("Target drive: %s",
+                disk35Panel.mountDialogForDrive == 0
+                    ? "1 (internal, //c+ on-board)"
+                    : "2 (external, SmartPort daisy-chain)");
+    ImGui::TextUnformatted("800K Sony 3.5\" image — .po (raw ProDOS blocks,"
+                           " 819 200 B) or .2mg (with 2IMG header).");
+    char buf[512] = {0};
+    std::snprintf(buf, sizeof(buf), "%s", disk35Panel.dialogPath.c_str());
+    if (ImGui::InputText("##Disk35Path", buf, sizeof(buf),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+        disk35Panel.dialogPath = buf;
+    else
+        disk35Panel.dialogPath = buf;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* dir : { "disks35", "../disks35", "../../disks35" }) {
+        if (!fs::is_directory(dir, ec)) continue;
+        ImGui::Separator();
+        ImGui::TextDisabled("%s/", dir);
+        for (const auto& entry : fs::directory_iterator(dir, ec)) {
+            if (!entry.is_regular_file()) continue;
+            const std::string ext = entry.path().extension().string();
+            if (ext != ".po" && ext != ".2mg") continue;
+            const std::string name = entry.path().filename().string();
+            if (ImGui::Selectable(name.c_str()))
+                disk35Panel.dialogPath = entry.path().string();
+        }
+        break;
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Mount", ImVec2(120, 0))) {
+        if (!disk35Panel.dialogPath.empty()) {
+            if (controller.mount35(disk35Panel.mountDialogForDrive,
+                                   disk35Panel.dialogPath)) {
+                tapeStatusMessage = "3.5\" mounted: " + disk35Panel.dialogPath;
+            } else {
+                const auto& img = disk35Panel.mountDialogForDrive == 0
+                    ? controller.disk35Internal()
+                    : controller.disk35External();
+                tapeStatusMessage = "3.5\" mount failed: " + img.lastError();
+            }
+            tapeStatusUntil = lastFrameTime + 5.0;
+        }
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void MainWindow::renderAboutDialog()
 {
     if (!showAbout) return;
@@ -2423,6 +2624,8 @@ void MainWindow::render()
     renderHdvFileDialog();
     renderDiskPanelWindow();
     renderDiskFileDialog();
+    renderDisk35PanelWindow();
+    renderDisk35FileDialog();
     renderHdvPanelWindow();
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();

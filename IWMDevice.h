@@ -52,6 +52,8 @@
 
 namespace pom2 {
 
+class Sony35Drive;
+
 class IWMDevice
 {
 public:
@@ -78,13 +80,22 @@ public:
     uint8_t read (uint8_t offset);
     void    write(uint8_t offset, uint8_t data);
 
-    /// Associate the IWM with a backing disk image and its currently-
-    /// selected quarter-track. Mirrors MAME `iwm_device::set_floppy`
-    /// (iwm.cpp:85) and `floppy_image_device::ss_w` for 3.5" head sel.
-    /// `disk` is non-owning; the IWM does not free it on reset.
+    /// Associate the IWM with a backing 5.25" disk image and its
+    /// currently-selected quarter-track. Mirrors MAME
+    /// `iwm_device::set_floppy` (iwm.cpp:85) — POM2 splits the two
+    /// floppy form factors into separate overloads because the flux-
+    /// source backends speak different APIs (`DiskImage` for 5.25",
+    /// `Sony35Drive` for 3.5"). Setting one clears the other.
     void setFloppy(DiskImage* disk, int qt);
     DiskImage* getFloppy() const { return disk_; }
     void       setQuarterTrack(int qt) { qt_ = qt; }
+
+    /// 3.5" Sony drive variant. Called by `SmartPortHub::recalcActiveDevice`
+    /// after MAME `apple2e.cpp:638-679 recalc_active_device` resolves
+    /// the active floppy to one of the two Sony 3.5" drives. Passing
+    /// nullptr returns the IWM to the 5.25" path.
+    void setSony35(class Sony35Drive* drive);
+    Sony35Drive* getSony35() const { return sony_; }
 
     /// Advance the internal state machine up to the current CPU cycle
     /// timestamp. Mirrors MAME `iwm_device::sync` (iwm.cpp:335). The
@@ -153,9 +164,17 @@ private:
         SW_UNDERRUN,
     };
 
-    DiskImage* disk_ = nullptr;
-    int        qt_   = 0;            // active quarter-track
-    uint64_t   now_  = 0;            // last `tick()` timestamp
+    DiskImage*    disk_  = nullptr;
+    Sony35Drive*  sony_  = nullptr;
+    int           qt_    = 0;        // active quarter-track (5.25")
+    uint64_t      now_   = 0;        // last `tick()` timestamp
+
+    /// Revolution anchor cycle for 3.5" Sony bit-cell time → CPU cycle
+    /// mapping. Set to the moment motor spin-up completed (= the cycle
+    /// at which cell 0 was nominally under the head). MAME tracks this
+    /// in `floppy_image_device::m_revolution_start_time`. POM2 latches
+    /// it on the `MODE_IDLE → MODE_ACTIVE` transition.
+    uint64_t      revStart35_ = 0;
 
     // Time-tracking state (all in CPU cycles). Mirrors MAME's
     // `m_last_sync`, `m_next_state_change`, `m_sync_update`,

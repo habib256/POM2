@@ -54,6 +54,7 @@
 #define POM2_SONY35_DRIVE_H
 
 #include <cstdint>
+#include <vector>
 
 namespace pom2 {
 
@@ -119,6 +120,48 @@ public:
     int  track()            const { return track_; }
     bool side1()            const { return side1_; }
 
+    // ── Phase 2: flux-source side of the drive ─────────────────────────
+    //
+    // The IWM consults `nextTransition(fromCycle, revStart)` to find
+    // the next flux event under the head. Mirrors MAME's
+    // `floppy_image_device::get_next_transition` for the 3.5" Sony
+    // drive, but the bit-cell stream is generated on demand from the
+    // attached `Disk35Image` blocks (no on-disk WOZ analogue today).
+    //
+    // The first call for a given (track, side) lazily builds the bit-
+    // cell cache via the Sony 4:4 GCR encoder (port of MAME
+    // `flopimg.cpp::build_mac_track_gcr`). Cache lifetime: cleared on
+    // `setImage`, `eject`, `notifyMediaChange`, or motor turn-on with
+    // a freshly-loaded image.
+
+    /// Cells per revolution for the current track's speed zone. MAME
+    /// `flopimg.cpp:2019 cells_per_speed_zone[]`.
+    int cellsPerRev() const;
+
+    /// CPU cycles per revolution at the current zone's RPM (394 / 429 /
+    /// 472 / 525 / 590 RPM for outermost to innermost). Derived from
+    /// `60 × POM2_CPU_CLOCK_HZ / RPM`.
+    int64_t cyclesPerRev() const;
+
+    /// CPU cycle of the next flux transition strictly after
+    /// `fromCpuCycle`. `revStart` anchors the head position (zero =
+    /// cell 0 was under the head at cycle 0). Returns `INT64_MAX` if
+    /// no disk is inserted or the track is unformatted (no transitions).
+    int64_t nextTransition(int64_t fromCpuCycle, int64_t revStart) const;
+
+    /// Drop the cached bit-cell stream. Called on media swap / head
+    /// step so the next access rebuilds.
+    void invalidateCache() const;
+
+    /// **TEST-ONLY** dump of the raw bit-cell stream for the current
+    /// (track, side) — one byte per cell, value 0 or 1. Returns an
+    /// empty vector when no disk is inserted. Used by
+    /// `smartport_35_smoke_test.cpp` to validate the Sony GCR encoder
+    /// output against MAME's reference layout. The production code
+    /// path never touches this; the IWM walker queries
+    /// `nextTransition()` instead.
+    std::vector<uint8_t> debugCellStream() const;
+
 private:
     Disk35Image* image_         = nullptr;
     bool         motorOn_       = false;
@@ -138,6 +181,54 @@ private:
 
     /// Strobe a write-register address (called on LSTRB rising edge).
     void strobeWriteRegister(uint8_t reg);
+
+    // Phase 2 bit-cell cache. Populated lazily by `ensureCache()` for
+    // the current (track_, side1_) tuple; `invalidateCache()` clears
+    // it on media swap / head step.
+    //
+    // `cells_` is the source of truth — one byte per cell, value 0/1.
+    // `transitionCells_` is a sorted index list derived from cells_,
+    // kept in sync for the IWM walker's O(log n) `nextTransition`
+    // binary search. Phase 4 write-back mutates `cells_` then
+    // rebuilds the list.
+    mutable int cachedTrack_ = -1;
+    mutable int cachedHead_  = -1;
+    mutable std::vector<uint8_t> cells_;          // 1 byte per cell
+    mutable std::vector<int>     transitionCells_;
+    mutable int cachedCellsPerRev_ = 0;
+    mutable int64_t cachedCyclesPerRev_ = 0;
+
+    void ensureCache() const;
+    void rebuildTransitionsFromCells() const;
+
+public:
+    // ── Phase 4: flux write-back ───────────────────────────────────────
+    //
+    // The IWM hands us a window of flux events recorded while it was
+    // in MODE_WRITE on this drive (MAME `iwm_device::flush_write`,
+    // POM2 `IWMDevice::flushWrite`). We splice the new transitions
+    // into the cached cell stream — overwriting whatever the encoder
+    // produced from the image — then run a GCR decoder over the
+    // current cells to recover any complete sectors and push their
+    // payload back into the attached `Disk35Image`. Port of MAME
+    // `flopimg.cpp::extract_sectors_from_track_mac_gcr6` (line 2107).
+    //
+    // `startCpu` / `endCpu` bracket the host-CPU-cycle window the IWM
+    // was writing for; `fluxes` is the sorted list of flux-transition
+    // timestamps (in CPU cycles) inside that window. `revStart` is
+    // the same anchor the IWM uses for `nextTransition` reads.
+    void writeFlux(int64_t startCpu,
+                   int64_t endCpu,
+                   const int64_t* fluxes,
+                   int            count,
+                   int64_t        revStart);
+
+private:
+    /// Decode the current `cells_` stream for any complete sectors
+    /// and write changed blocks to the attached image. Called after
+    /// each writeFlux splice. Returns the number of sectors that
+    /// actually got written back.
+    int decodeAndCommit() const;
 };
 
 }  // namespace pom2

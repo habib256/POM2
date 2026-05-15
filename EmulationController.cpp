@@ -138,6 +138,46 @@ void EmulationController::seekTapeRelative(double dt)
 }
 void EmulationController::setCassetteVolume(float v) { tape->setVolume(v); }
 
+// ─── 3.5" Sony SmartPort ──────────────────────────────────────────────────
+// MAME `apple2e.cpp:4521-4524` instantiates `m_floppy[2..3]` as `add_35()`
+// drives. POM2 collapses the "drive" + "image" into a single mount call
+// per slot index.
+
+bool EmulationController::mount35(int idx, const std::string& path)
+{
+    if (idx < 0 || idx > 1) return false;
+    std::lock_guard<std::mutex> lk(stateMtx);
+    pom2::Disk35Image*  image = idx == 0 ? image35Int.get() : image35Ext.get();
+    pom2::Sony35Drive*  drive = idx == 0 ? drive35Int.get() : drive35Ext.get();
+    if (!image || !drive) return false;
+    image->eject();
+    if (!image->loadFile(path)) {
+        drive->notifyMediaChange();
+        return false;
+    }
+    drive->notifyMediaChange();
+    return true;
+}
+
+void EmulationController::eject35(int idx)
+{
+    if (idx < 0 || idx > 1) return;
+    std::lock_guard<std::mutex> lk(stateMtx);
+    pom2::Disk35Image* image = idx == 0 ? image35Int.get() : image35Ext.get();
+    pom2::Sony35Drive* drive = idx == 0 ? drive35Int.get() : drive35Ext.get();
+    if (image && image->isLoaded()) {
+        // Persist firmware-driven write-backs before the slot drops the
+        // payload. Mirrors `DiskIICard::ejectDisk` for 5.25". Silent
+        // on `saveDirty` failure — the panel surfaces the error on the
+        // next mount attempt via `Disk35Image::lastError`.
+        if (image->hasUnsavedChanges() && !image->isWriteProtected()) {
+            image->saveDirty();
+        }
+        image->eject();
+        if (drive) drive->notifyMediaChange();
+    }
+}
+
 void EmulationController::start()
 {
     if (worker.joinable()) return;

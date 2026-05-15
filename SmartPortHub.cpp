@@ -108,14 +108,22 @@ void SmartPortHub::recalcActiveDevice()
         }
     }
 
-    // When the active floppy changes, MAME flushes the IWM and pushes
-    // the new pointer to `m_iwm->set_floppy`. POM2's IWM set_floppy
-    // takes a DiskImage* today and is only used for the 5.25" data
-    // path, so we deliberately don't repoint it for 3.5" — Phase 2
-    // will extend IWMDevice with a polymorphic floppy target. For now
-    // we just route phase strobes + head select.
+    // MAME `recalc_active_device` ends with `m_iwm->set_floppy(...)`.
+    // POM2 splits the IWM target between 5.25" (DiskIICard's DiskImage)
+    // and 3.5" (Sony35Drive); when a 3.5" drive is selected we point
+    // the IWM at it via `setSony35`. When the active drive is 5.25"
+    // the IWM stays on whatever DiskIICard's seekPhaseW path last
+    // configured (i.e. we do NOT call setFloppy(nullptr) here — that
+    // would knock the 5.25" path out from under DiskIICard).
     active35Selected_ = is35;
     active35_         = is35 ? drive : nullptr;
+
+    if (iwm_) {
+        if (active35_) iwm_->setSony35(active35_);
+        // No `setSony35(nullptr)` on the 5.25" branch — DiskIICard
+        // owns IWM.setFloppy(DiskImage*) and will overwrite sony_ on
+        // its next seekPhaseW.
+    }
 
     if (active35_) {
         active35_->setSel(iwm_ && iwm_->sel());
