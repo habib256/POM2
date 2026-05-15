@@ -159,6 +159,21 @@ MODE_SHIFT lax, etc.) — celles-ci ne sont **pas** des bugs, leur
 
 ## Changelog (résolu cette session, 2026-05-14/15)
 
+**Floppy sound step cadence** mesurée en cycles CPU émulés (MAME
+`floppy_sound_device::step` via `machine().time()`,
+`floppy.cpp:1532-1620`), pas en frames audio. En turbo 60× toutes
+les ~80 pulses du PROM de boot tombaient dans le même buffer audio
+de 5 ms → `audioFrameCounter_` constant → fallback `STEP_1_1` avec
+`stepPos_=0` réinitialisé par event → l'attaque de `step_1_1` (5 ms)
+rejouée buffer après buffer = buzz / son haché qui ressemblait
+vaguement à un sample du `roms/floppy_samples/`. `FloppySoundSink::
+step()` prend maintenant `emuCycles`, `DiskIICard::seekPhaseW` passe
+son `cpuCycleTotal`. Pinné par
+`floppy_sound_smoke_test.cpp::testRapidStepsNoHang` (140 events
+`~10 ms` émulés, no buffer between → `audioInSeek()=true`) +
+`testSameCycleStepsClampGracefully` (50 events au même cycle → floor
+1 ms → SEEK_2MS @ pitch 2.0).
+
 Fix MAME-parity round 1 (Mockingboard / IIe / //c) — pinned par tests
 correspondants :
 

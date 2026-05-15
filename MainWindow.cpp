@@ -1145,7 +1145,21 @@ void MainWindow::onMouseButton(int button, int action)
     // Only the primary button is wired to the Apple Mouse Card (PB7 of
     // the MCU). GLFW button 0 = left.
     if (button != 0) return;
-    mouseButtonHeld = (action != 0);     // GLFW_RELEASE = 0, others = press/repeat
+    // Gate on cursor-in-screen-rect: clicks outside the Apple II Screen
+    // widget belong to ImGui (menus, panels, etc.). Inside the screen
+    // widget, we route to the Mouse Card. PRESS uses the current cursor
+    // position; RELEASE always passes through so a button pressed inside
+    // the screen but released outside still gets cleared on the card.
+    const bool press = (action != 0);
+    if (press) {
+        const double x = lastMouseHostX;
+        const double y = lastMouseHostY;
+        if (x < screenRectMin.x || x > screenRectMax.x ||
+            y < screenRectMin.y || y > screenRectMax.y) {
+            return;
+        }
+    }
+    mouseButtonHeld = press;             // GLFW_RELEASE = 0, others = press/repeat
     if (mouseCard) {
         mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
     }

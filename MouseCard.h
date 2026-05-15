@@ -122,8 +122,8 @@ private:
 
     // PIA → MCU bridge state. The PIA's writepa / writepb callbacks
     // marshal here, then push to the MCU via setPortInput.
-    uint8_t portAtoMcu = 0xFF;
-    uint8_t portCtoMcu = 0x0F;
+    uint8_t portAtoMcu = 0xFF;     // Port A: pulled up
+    uint8_t portCtoMcu = 0x00;     // PB4-7 / PC0-3: NOT pulled up (MAME tspb=0)
 
     // Slot IRQ contribution is tracked by SlotPeripheral (edge-only
     // delivery via assertIrq); MAME-faithful set/clear semantics emerge

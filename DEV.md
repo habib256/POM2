@@ -315,14 +315,29 @@ source WAVs (10 × 5.25" + 10 × 3.5", ~150+210 KB) vendored in
 calls `sound_->motor()` / `step()` / `click()` through it so the 13
 smoke tests linking `DiskIICard.cpp` don't also drag the miniaudio TU.
 
-**Step / seek decision** (MAME parity): `step(newTrack)` measures the
-gap since previous step in audio output frames.
+**Step / seek decision** (MAME parity): `step(newTrack, emuCycles)`
+measures the gap since previous step in **emulated CPU cycles** —
+mirrors MAME `floppy_sound_device::step` (`floppy.cpp` ~lines
+1532-1620) which uses `machine().time()`. Wall-clock audio frames
+would be wrong: under POM2's disk turbo (~60× emulated speed) the
+boot PROM's full phase sweep lands in one audio buffer, so all
+events share the same `audioFrameCounter_` → gap=0 for every step
+after the first → fallback to single-click with `stepPos_=0` reset
+per event → user hears `step_1_1`'s 5 ms attack repeated buffer
+after buffer (buzz / "haché"). Caller (DiskIICard `seekPhaseW`)
+passes `cpuCycleTotal`.
 - `gap > 100 ms` (`kSeekJoinMs`) → single-step click (`525_step_1_1`).
 - `gap ≤ 100 ms` → seek mode: pick the seek sample whose nominal
   cadence is closest to the gap (2 / 6 / 12 / 20 ms), pitch-scale
   (`pitch = nominal_ms / gap_ms`), loop.
 - No step for `kSeekTimeoutMs` → exit seek, fire final `step_1_1` to
   "land" the head.
+
+Floor at 1 ms gap defends `mixLoop` against `INF` rate (`pos += INF`
+spins forever, `INF - len == INF` in IEEE 754) and keeps pitch in
+[1, 2] for `SEEK_2MS`. Same-cycle events (multiple steps queued at
+the same `cpuCycleTotal`, edge case) and the defensive backwards
+case both route through the floor.
 
 DOS 3.3 / ProDOS issue 4 phase pulses per track; each fires one
 `step()` via `seekPhaseW`. 0→34 seek = ~140 events / ~150 ms — well
@@ -364,7 +379,9 @@ Owned by `EmulationController` (alongside Speaker / Cassette) so the
 `AudioDevice` shutdown drains audio thread before destruction —
 different from Mockingboard which owns its source via the card.
 Persisted: `floppy_sound_volume`, `floppy_sound_muted`. Pinned:
-`floppy_sound_smoke_test.cpp`.
+`floppy_sound_smoke_test.cpp` (10 cases, incl. `testRapidStepsNoHang`
+and `testSameCycleStepsClampGracefully` for the turbo-batch / same-
+cycle pathological inputs).
 
 ## Slot bus & IRQ aggregation
 

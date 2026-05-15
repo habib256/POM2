@@ -92,9 +92,11 @@ public:
     /// truly turns on / off (after MODE_DELAY expires for spin-down).
     void motor(bool on, bool withDisk) override;
     /// Head moved. `newTrack` is the destination track (0..34) — we
-    /// derive the step rate from inter-call cadence, not the value
-    /// itself, so passing a constant works too.
-    void step(int newTrack) override;
+    /// derive the step rate from inter-call cadence (in **emulated**
+    /// CPU cycles, via `emuCycles`), not from the track value, so the
+    /// destination is informational only. See FloppySoundSink.h for the
+    /// rationale on emulated vs wall-clock timing.
+    void step(int newTrack, uint64_t emuCycles) override;
     /// Single-shot "click" for disk insertion / ejection. Uses the
     /// step_1_1 sample at moderate gain.
     void click() override;
@@ -153,8 +155,9 @@ private:
     // ─── Command queue (CPU → audio) ────────────────────────────────────
     enum class CmdKind : uint8_t { MotorOn, MotorOff, Step, Click };
     struct Cmd {
-        CmdKind kind;
-        bool    withDisk;   // valid for MotorOn / MotorOff
+        CmdKind  kind;
+        bool     withDisk;    // valid for MotorOn / MotorOff
+        uint64_t emuCycles;   // valid for Step — emulated CPU cycle stamp
     };
     mutable std::mutex cmdMtx_;
     std::vector<Cmd>   cmdQueue_;
@@ -188,12 +191,17 @@ private:
     int    endIdx_ = -1;
     double endPos_ = 0.0;
 
-    // Step / seek state.
+    // Step / seek state. `lastStepCycle_` is the emulated CPU cycle at
+    // the previous step event — used to measure inter-step cadence in
+    // MAME-compatible emulated time. `seekTimeoutFrame_` stays in
+    // wall-clock audio frames because the seek loop's timeout marks
+    // when the audio thread should stop the seek sample, which is a
+    // real-time event.
     int      stepSampleIdx_ = -1;
     double   stepPos_  = 0.0;
     double   stepPitch_ = 1.0;
     bool     audioInSeek_ = false;
-    uint64_t lastStepFrame_ = 0;
+    uint64_t lastStepCycle_ = 0;
     uint64_t seekTimeoutFrame_ = 0;
     bool     anyStepSeen_ = false;
 

@@ -67,12 +67,12 @@ static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, in
 {
     ImGui_ImplGlfw_MouseButtonCallback(w, button, action, mods);
     if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
-        // Don't route to the Mouse Card if ImGui is capturing the click
-        // (e.g. the user clicked an ImGui menu button). MainWindow's
-        // own rect check still gates the cursor-in-screen case.
-        if (!ImGui::GetIO().WantCaptureMouse) {
-            mw->onMouseButton(button, action);
-        }
+        // Always forward to MainWindow — it does its own
+        // cursor-in-screen-rect check (same gate as the cursor-position
+        // callback). The `WantCaptureMouse` gate is too coarse: the
+        // Apple II Screen is itself an ImGui window, so clicks inside
+        // the screen widget would otherwise be swallowed by ImGui.
+        mw->onMouseButton(button, action);
     }
 }
 

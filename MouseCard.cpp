@@ -37,7 +37,7 @@ bool traceEnabled()
     }();
     return e;
 }
-constexpr int kTraceMax = 4000;
+constexpr int kTraceMax = 20000;
 std::atomic<int> g_traceCount { 0 };
 
 void mtrace(const char* fmt, ...)
@@ -73,10 +73,19 @@ MouseCard::MouseCard(int slot)
     // MCU-side read.
     mcu.setPortReadCallback([this](int port) { return onMcuPortRead(port); });
 
-    // Initial pin states. Real chip starts with all input pins high
-    // (open-drain pull-ups on Port A; Port B drivers idle high).
+    // Initial pin states. MAME mouse.cpp lines 43-44:
+    //   "PIA port A connects to 68705 port A in its entirety (bi-directional
+    //    with internal pullups)"
+    //   "PIA PB4-PB7 connects to 68705 PC0-3 (bi-directional but SHOULD NOT
+    //    BE PULLED UP)"
+    // Therefore Port A defaults high (pull-ups), Port C defaults LOW. This
+    // matches MAME's `tspb_handler().set_constant(0x00)` which makes PIA's
+    // Port B input bits 4-7 read as 0 when nothing is driving. Critical for
+    // the firmware's BRCLR1 $02,+$0D test at chip $03F3 — with PC1 high the
+    // MCU dispatches on uninitialized Port A garbage instead of waiting for
+    // the host slot ROM to send a command.
     mcu.setPortInput(0, 0xFF);     // PIA → MCU Port A: pulled up
-    mcu.setPortInput(2, 0x0F);     // PIA PB[7..4] → MCU PC[3..0]: pulled up
+    mcu.setPortInput(2, 0x00);     // PIA PB[7..4] → MCU PC[3..0]: NOT pulled up
 
     // CB1 tied high to a 10 kΩ pull-up (MAME mouse.cpp line 250).
     pia.setCB1(true);
@@ -176,7 +185,6 @@ void MouseCard::advanceCycles(int cycles)
     const int mcuCycles = mcuCycleAccum / MCU_CLOCK_DENOMINATOR;
     mcuCycleAccum -= mcuCycles * MCU_CLOCK_DENOMINATOR;
     if (mcuCycles > 0) {
-        const uint16_t pcBefore = mcu.getPC();
         (void)mcu.run(mcuCycles);
         if (traceEnabled()) {
             // Log only on PC change so we can see *where* the MCU is, not
@@ -194,12 +202,15 @@ void MouseCard::advanceCycles(int cycles)
 
 void MouseCard::onReset()
 {
+    if (traceEnabled()) {
+        mtrace("=== MouseCard::onReset called ===");
+    }
     mcu.reset();
     pia.reset();
     pia.setCB1(true);
     romBank = 0;
-    portAtoMcu = 0xFF;
-    portCtoMcu = 0x0F;
+    portAtoMcu = 0xFF;     // PIA Port A pulled up (MAME pull-ups present)
+    portCtoMcu = 0x00;     // PIA PB4-7 / MCU PC0-3 NOT pulled up (MAME tspb=0)
     lastAxis[0] = lastAxis[1] = 0;
     countAxis[0] = countAxis[1] = 0;
     portBState = 0xFF;

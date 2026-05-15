@@ -107,8 +107,10 @@ The status pill in the menu bar shows the resolved profile + ROM.
   LFSR.
 - **Floppy mechanical sounds** — head-step click, motor spin-up / down,
   insert / eject click. WAV samples vendored in `roms/floppy_samples/`
-  (ported from MAME `floppy_sound_device`). 800 ms wall-clock hold-off
-  on motor-off so disk-turbo doesn't silence the spin-up sample.
+  (ported from MAME `floppy_sound_device`). Step cadence measured in
+  emulated CPU cycles so the seek "brrrt" stays coherent at any disk-
+  turbo multiplier; 800 ms wall-clock hold-off on motor-off so disk-
+  turbo doesn't silence the spin-up sample.
 
 ### Storage
 

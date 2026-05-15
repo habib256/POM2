@@ -11,14 +11,24 @@
 //   6. reset() drains the queue and silences the next buffer.
 
 #include "FloppySoundDevice.h"
+#include "CpuClock.h"
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace {
+// Cycle-count helper: `n` ms expressed in emulated 6502 cycles.
+inline uint64_t cyclesForMs(double ms)
+{
+    return static_cast<uint64_t>(ms * POM2_CPU_CLOCK_HZ / 1000.0);
+}
+}  // namespace
 
 namespace fs = std::filesystem;
 
@@ -52,7 +62,7 @@ void testSilenceWithoutSamples()
     assert(!fs.isLoaded());
     fs.setSampleRate(44100);
     fs.motor(true, true);     // queued, but no samples → silent anyway
-    fs.step(5);
+    fs.step(5, cyclesForMs(0));
     std::vector<float> buf(512, 1.23f);
     fs.fillAudioBuffer(buf.data(), 512);
     // The source mixes additively; since no samples are loaded it must
@@ -120,19 +130,22 @@ void testStepAndSeek(const std::string& dir)
     // Slow single step → not seek mode. (Even the first step should
     // count as a single-step click since gap > kSeekJoinMs from the
     // never-seen state.)
-    fs.step(0);
+    fs.step(0, cyclesForMs(10));
     buf.assign(256, 0.0f);
     fs.fillAudioBuffer(buf.data(), 256);
     assert(!fs.audioInSeek());
     std::puts("OK single_step_not_seek");
 
-    // Now fire 8 rapid steps in succession, draining a small buffer
-    // between each so the audio thread sees them at ~5.8 ms cadence
-    // (256 / 44100 = 5.8 ms — perfect for SEEK_6MS classification).
+    // Now fire 8 rapid steps at ~6 ms cadence — perfect for SEEK_6MS
+    // classification. Cycle stamps advance independently of the audio
+    // buffer drain (which simulates POM2's CPU thread/audio thread
+    // decoupling: CPU keeps queuing events while audio drains them).
+    double tMs = 16.0;   // first rapid step lands 6 ms after the slow one
     for (int i = 0; i < 8; ++i) {
-        fs.step(i + 1);
+        fs.step(i + 1, cyclesForMs(tMs));
         buf.assign(256, 0.0f);
         fs.fillAudioBuffer(buf.data(), 256);
+        tMs += 6.0;
     }
     assert(fs.audioInSeek());
     std::puts("OK rapid_steps_enter_seek");
@@ -158,18 +171,26 @@ void testMuteSilencesOutput(const std::string& dir)
     std::puts("OK mute_silences");
 }
 
-// Regression: at 60× turbo, an entire 35-track seek finishes inside one
-// audio buffer (~5 ms). All step() calls land between two
-// fillAudioBuffers — they share the same audioFrameCounter_ value, so
-// consecutive queued steps see `now - lastStepFrame_ == 0`. The first
-// implementation computed `pitch = nominalMs / gapMs` → INF → mixLoop
-// hung on `while (pos >= len) pos -= len` because INF - len == INF in
-// IEEE 754. Symptom: audio thread frozen after the first burst,
-// no further sound output.
+// Regression: at 60× turbo the boot PROM's full phase sweep (~80 step
+// events at ~10 emulated ms cadence) lands inside ONE audio buffer.
+// Pre-fix, two things went wrong in sequence:
 //
-// Fixed by clamping gapMs to >= 1 ms in drainCommands + advancing
-// lastStepFrame_ artificially between steps in the same batch, plus a
-// defensive (!finite || > 1e6) early-bail in mixLoop / mixOneShot.
+//   1. The original code computed inter-step rate from
+//      `audioFrameCounter_` (wall-clock). All same-buffer events shared
+//      the same `now`, so `pitch = nominalMs / 0` → INF → mixLoop spun
+//      forever on `pos += INF` (INF - len == INF in IEEE 754).
+//   2. A first band-aid forced `lastStepFrame_ = now + framesPerMs` to
+//      coerce a 1 ms synthetic gap on the next event. Wrong sign:
+//      `(now - lastStepFrame_)` underflowed as uint64 → ~1e17 ms gap,
+//      classified as out-of-seek → single STEP_1_1 click per event
+//      with stepPos_=0 reset each time → user heard step_1_1's attack
+//      repeated buffer-after-buffer ("haché" / buzzy).
+//
+// Real fix: measure step cadence in emulated CPU cycles (MAME-parity
+// with floppy_sound_device::step using `machine().time()`), passed
+// explicitly by DiskIICard. Same-buffer events still have monotonic
+// cycle stamps, so SEEK classification is honest regardless of how
+// many wall-clock buffers the audio thread sees.
 void testRapidStepsNoHang(const std::string& dir)
 {
     FloppySoundDevice fs;
@@ -181,16 +202,53 @@ void testRapidStepsNoHang(const std::string& dir)
     std::vector<float> drain(256, 0.0f);
     fs.fillAudioBuffer(drain.data(), 256);
 
-    // Fire 140 step events with NO buffer in between (simulates a full
-    // 35-track 4-phase seek at 60× turbo). Pre-fix this would hang.
-    for (int i = 0; i < 140; ++i) fs.step(i);
+    // Fire 140 step events spaced ~10 emulated ms apart but queued with
+    // NO fillAudioBuffer in between (the turbo case: CPU advances its
+    // emulated time fast in wall-clock). Pre-fix this would hang or
+    // degenerate to a buzz. After the fix the events classify based on
+    // their cycle stamps → SEEK_12MS at near-native pitch.
+    uint64_t cyc = cyclesForMs(100);
+    for (int i = 0; i < 140; ++i) {
+        fs.step(i, cyc);
+        cyc += cyclesForMs(10);
+    }
 
     // First buffer after the burst: must return promptly and produce
     // non-silent output (seek sample looping).
     std::vector<float> buf(2048, 0.0f);
     fs.fillAudioBuffer(buf.data(), 2048);
     assert(bufferEnergy(buf) > 0.01f);
+    // audioInSeek_ must be true — pre-fix it ended up false (single-
+    // click fall-through).
+    assert(fs.audioInSeek());
     std::puts("OK rapid_steps_no_hang");
+}
+
+// Regression: at 60× turbo with same-cycle step events (worst case —
+// CPU queued multiple steps within a single emulated cycle, e.g. a
+// peripheral firing back-to-back). Gap is genuinely 0, must floor to
+// 1 ms to keep pitch finite. mixLoop must not spin on INF.
+void testSameCycleStepsClampGracefully(const std::string& dir)
+{
+    FloppySoundDevice fs;
+    assert(fs.loadSamples(dir));
+    fs.setSampleRate(44100);
+    fs.setVolume(1.0f);
+
+    std::vector<float> drain(256, 0.0f);
+    fs.fillAudioBuffer(drain.data(), 256);
+
+    // 50 steps at the *same* emulated cycle — the pathological case the
+    // original code hit with audio-frame deltas. Gap floors to 1 ms,
+    // classifies as SEEK_2MS at pitch 2.0.
+    const uint64_t cyc = cyclesForMs(100);
+    for (int i = 0; i < 50; ++i) fs.step(i, cyc);
+
+    std::vector<float> buf(2048, 0.0f);
+    fs.fillAudioBuffer(buf.data(), 2048);
+    assert(bufferEnergy(buf) > 0.01f);
+    assert(fs.audioInSeek());
+    std::puts("OK same_cycle_steps_clamp");
 }
 
 // Regression: at turbo speed, motor(false) follows motor(true) within
@@ -280,6 +338,7 @@ int main()
     testMuteSilencesOutput(dir);
     testRapidMotorTogglePreservesLoop(dir);
     testRapidStepsNoHang(dir);
+    testSameCycleStepsClampGracefully(dir);
     testReset         (dir);
 
     std::puts("OK floppy_sound_smoke");

@@ -324,8 +324,12 @@ void DiskIICard::seekPhaseW(int phases)
     // One mechanical "click" per quarter-track of head travel. DOS 3.3
     // does a 4-phase sweep (~4 step pulses per track); fast-seeking
     // utilities issue these back-to-back, which trips the audio source's
-    // gap-< 100 ms classifier into seek mode automatically.
-    if (moved && sound_) sound_->step(head / 4);
+    // gap-< 100 ms classifier into seek mode automatically. We pass
+    // `cpuCycleTotal` (emulated cycles) so the audio thread can measure
+    // step cadence in emulated time — wall-clock measurement breaks
+    // under disk turbo (all 80 phase-sweep steps land in one audio
+    // buffer when the CPU runs ~60× real-time).
+    if (moved && sound_) sound_->step(head / 4, cpuCycleTotal);
 }
 
 void DiskIICard::advanceCycles(int cycles)

@@ -10,6 +10,15 @@ internals, format gotchas, pinned smoke tests) → `DEV.md`.
 - **MAME source of truth** — when porting hardware behaviour, cite the
   MAME file + line range in a comment and pin the behaviour with a
   smoke test under `tests/`.
+- **CPU → audio/UI events carry an `emuCycles` stamp**. Consumers
+  measure cadence in emulated CPU cycles, not wall-clock frames.
+  POM2's disk-turbo bumps the CPU to ~60× real-time, which compresses
+  an entire audio-buffer's worth of CPU activity into one
+  `audioFrameCounter_` tick — wall-clock gap measurement degenerates
+  to zero. Canonical example: `FloppySoundDevice::drainCommands`
+  using the cycle stamp passed by `DiskIICard::seekPhaseW`. Same
+  rule applies to any future cycle-rate-sensitive sink (sound /
+  scope / trace recorder).
 
 ## Table of contents
 

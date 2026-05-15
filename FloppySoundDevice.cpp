@@ -2,6 +2,7 @@
 // Copyright (C) 2026
 
 #include "FloppySoundDevice.h"
+#include "CpuClock.h"
 #include "Logger.h"
 
 #include "third_party/miniaudio.h"  // IMPLEMENTATION lives in AudioDevice.cpp
@@ -139,7 +140,7 @@ void FloppySoundDevice::reset()
     // Note: we don't touch audio-thread state here — that would race the
     // audio thread. Sending MotorOff via the queue is enough to bring
     // the next fillAudioBuffer to silence within ~one buffer.
-    cmdQueue_.push_back({CmdKind::MotorOff, false});
+    cmdQueue_.push_back({CmdKind::MotorOff, false, 0});
 }
 
 int FloppySoundDevice::queuedCommandCount() const
@@ -154,21 +155,21 @@ void FloppySoundDevice::motor(bool on, bool withDisk)
 {
     if (!samplesLoaded_) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
-    cmdQueue_.push_back({on ? CmdKind::MotorOn : CmdKind::MotorOff, withDisk});
+    cmdQueue_.push_back({on ? CmdKind::MotorOn : CmdKind::MotorOff, withDisk, 0});
 }
 
-void FloppySoundDevice::step(int /*newTrack*/)
+void FloppySoundDevice::step(int /*newTrack*/, uint64_t emuCycles)
 {
     if (!samplesLoaded_) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
-    cmdQueue_.push_back({CmdKind::Step, false});
+    cmdQueue_.push_back({CmdKind::Step, false, emuCycles});
 }
 
 void FloppySoundDevice::click()
 {
     if (!samplesLoaded_) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
-    cmdQueue_.push_back({CmdKind::Click, false});
+    cmdQueue_.push_back({CmdKind::Click, false, 0});
 }
 
 // ─── Audio-thread internals ─────────────────────────────────────────────
@@ -228,23 +229,36 @@ void FloppySoundDevice::drainCommands()
         case CmdKind::Step: {
             const uint64_t now = audioFrameCounter_.load(std::memory_order_relaxed);
             const double   sr  = static_cast<double>(outputSampleRate_);
-            const double frameMs = (sr > 0) ? (1000.0 / sr) : 0.0;
+            // Inter-step gap in **emulated** CPU time — mirrors MAME's
+            // `(now - m_last_step_time).as_double() * 1000` in
+            // floppy_sound_device::step (floppy.cpp ~lines 1532-1540).
+            // Audio-frame deltas would be wrong: under POM2's disk turbo
+            // (~60× emulated speed) all 80 phase-sweep steps land in one
+            // audio buffer, so audioFrameCounter_ shows gap=0 for every
+            // step after the first, which classified them all as single
+            // STEP_1_1 clicks (stepPos_=0 reset per event → user heard
+            // step_1_1's attack repeated buffer after buffer, "haché").
             double gapMs = 1e9;
-            if (anyStepSeen_) gapMs = (now - lastStepFrame_) * frameMs;
+            if (anyStepSeen_) {
+                if (c.emuCycles > lastStepCycle_) {
+                    const uint64_t dc = c.emuCycles - lastStepCycle_;
+                    gapMs = static_cast<double>(dc) * 1000.0 /
+                            static_cast<double>(POM2_CPU_CLOCK_HZ);
+                } else {
+                    // c.emuCycles == lastStepCycle_ (multiple events
+                    // queued at the same emulated cycle — edge case) or
+                    // backwards (defensive). Treat as a 0-cycle burst;
+                    // the floor below clamps to 1 ms → SEEK_2MS @ pitch
+                    // 2.0, the fastest seek class.
+                    gapMs = 0.0;
+                }
+            }
             anyStepSeen_   = true;
-            // Clamp gap to a sensible minimum. At 60× turbo, multiple
-            // step()s arrive inside one audio buffer; since
-            // audioFrameCounter_ only advances between buffers, consecutive
-            // queued steps see `now == lastStepFrame_` → gap = 0 → division
-            // by zero in pitch = nominalMs / gapMs → mixLoop infinite-loop
-            // on pos += INF. Floor at 1 ms (= the lowest meaningful Apple
-            // 5.25" step interval) so pitch stays in [1, ~2] for SEEK_2MS.
+            // Floor at 1 ms — defends mixLoop against INF rate (`pos +=
+            // INF` would spin forever, INF - len == INF in IEEE 754) and
+            // keeps pitch in [1, ~2] for SEEK_2MS.
             if (gapMs < 1.0) gapMs = 1.0;
-            // Advance lastStepFrame_ artificially within a batch so the
-            // next queued step sees a non-zero gap matching the floor.
-            const uint64_t framesPerMs =
-                (frameMs > 0.0) ? static_cast<uint64_t>(1.0 / frameMs) : 0;
-            lastStepFrame_ = now + framesPerMs;
+            lastStepCycle_ = c.emuCycles;
             // Decision: rapid steps → seek mode; otherwise single click.
             if (gapMs <= kSeekJoinMs) {
                 const int seekIdx = pickSeekSample(gapMs);
