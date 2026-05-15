@@ -4,35 +4,52 @@
 #ifndef POM2_MAIN_WINDOW_H
 #define POM2_MAIN_WINDOW_H
 
-#include "AiControlServer.h"
-#include "Apple2Display.h"
-#include "CassetteDeck_ImGui.h"
-#include "ClockCard.h"
-#include "Disk35Controller_ImGui.h"
-#include "DiskController_ImGui.h"
-#include "DiskIICard.h"
-#include "EmulationController.h"
-#include "HdvController_ImGui.h"
-#include "JoystickInput.h"
-#include "JoystickPanel_ImGui.h"
-#include "LeChatMauveCard.h"
-#include "LeChatMauve_ImGui.h"
-#include "MemoryViewer_ImGui.h"
-#include "Mockingboard.h"
-#include "MouseCard.h"
-#include "ProDOSHardDiskCard.h"
-#include "Settings.h"
-#include "SuperSerialCard.h"
-#include "SystemProfile.h"
+// MainWindow.h kept lean: only the headers strictly required by the
+// public/private member types declared here. Card / panel / controller
+// implementations are pulled in by MainWindow.cpp via include of their
+// own headers. Changing a card or panel header recompiles its own TU
+// (and MainWindow.cpp), not every TU that touches MainWindow.h.
+//
+// `M6502.h` stays because `M6502::CpuMode` appears in the
+// `resolveCpuMode` signature below — nested enums can't be forward-
+// declared. `SystemProfile` is reachable via an opaque enum-class
+// forward decl, no SystemProfile.h needed here.
 
-#include "imgui.h"
+#include "M6502.h"
+
+#include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 struct GLFWwindow;
+
+class Apple2Display;
+class ClockCard;
+class DiskIICard;
+class EmulationController;
+class JoystickInput;
+class LeChatMauveCard;
+class MockingboardCard;
+class MouseCard;
+class ProDOSHardDiskCard;
+class SuperSerialCard;
+
+namespace pom2 {
+    class AiControlServer;
+    class CassetteDeck_ImGui;
+    class Disk35Controller_ImGui;
+    class DiskController_ImGui;
+    class HdvController_ImGui;
+    class JoystickPanel_ImGui;
+    class LeChatMauve_ImGui;
+    class Settings;
+    enum class SystemProfile;
+}
+class MemoryViewer_ImGui;
 
 class MainWindow
 {
@@ -55,11 +72,13 @@ public:
     void applyProfile(pom2::SystemProfile p);
     pom2::SystemProfile currentProfile() const { return activeProfile; }
 
-    EmulationController& emul() { return controller; }
-
-    /// Live access to the framebuffer renderer. Used by main() to honour
-    /// the `--display <mode>` CLI flag during Phase B.
-    Apple2Display& displayRef() { return display; }
+    /// Defined out-of-line in MainWindow.cpp — `controller` is a
+    /// `unique_ptr<EmulationController>` here, so dereferencing it
+    /// inline would require EmulationController.h. Keeping the body in
+    /// the .cpp lets every translation unit that includes MainWindow.h
+    /// stay clear of the EmulationController include cone.
+    EmulationController& emul();
+    Apple2Display&       displayRef();
 
     void setGlfwWindow(GLFWwindow* w);
     void render();
@@ -84,16 +103,20 @@ public:
     struct MemRegion { uint16_t start, end; ImU32 color; const char* label; };
 
 private:
-    EmulationController          controller;
-    Apple2Display                display;
-    MemoryViewer_ImGui           memViewer;
-    pom2::Settings               settings;
-    pom2::CassetteDeck_ImGui     cassetteDeck;
-    pom2::DiskController_ImGui   diskPanel;
-    pom2::Disk35Controller_ImGui disk35Panel;
-    pom2::HdvController_ImGui    hdvPanel;
-    pom2::JoystickPanel_ImGui    joystickPanel;
-    pom2::LeChatMauve_ImGui      chatMauvePanel;
+    // Owning members held by unique_ptr so the include of each subsystem
+    // header stays in MainWindow.cpp. Constructor / destructor defined
+    // out-of-line for the same reason (unique_ptr<T> destruction needs
+    // T to be a complete type).
+    std::unique_ptr<EmulationController>          controller;
+    std::unique_ptr<Apple2Display>                display;
+    std::unique_ptr<MemoryViewer_ImGui>           memViewer;
+    std::unique_ptr<pom2::Settings>               settings;
+    std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
+    std::unique_ptr<pom2::DiskController_ImGui>   diskPanel;
+    std::unique_ptr<pom2::Disk35Controller_ImGui> disk35Panel;
+    std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
+    std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
+    std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
@@ -113,8 +136,8 @@ private:
     /// Values: "", "diskii", "hdv", "ssc", "clock", "chatmauve", "mouse".
     std::array<std::string, 8> slotCards{};
 
-    JoystickInput                joystick;
-    GLFWwindow*                  window = nullptr;
+    std::unique_ptr<JoystickInput> joystick;
+    GLFWwindow*                    window = nullptr;
 
     unsigned int screenTexture = 0;     // GL texture name (lazy)
     int          screenTextureWidth  = 0;
@@ -143,14 +166,18 @@ private:
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
     bool         showAiControlPanel  = false;
-    int          sscPortInput       = SuperSerialCard::kDefaultPort;
+    // Initialised in the constructor body from SuperSerialCard::kDefaultPort
+    // so we don't have to drag SuperSerialCard.h into this header.
+    int          sscPortInput       = 0;
 
     // ── AI Control server (HTTP/1.1 on 127.0.0.1) ────────────────────────
     // Lifetime owned here; attach()'d after EmulationController is wired,
     // start()'d if the persisted setting was on at last shutdown. Exposed
     // via the Hardware menu's AI Control panel.
-    pom2::AiControlServer aiServer;
-    int          aiPortInput   = pom2::AiControlServer::kDefaultPort;
+    std::unique_ptr<pom2::AiControlServer> aiServer;
+    // Initialised in the constructor body from AiControlServer::kDefaultPort
+    // for the same reason as sscPortInput above.
+    int          aiPortInput   = 0;
     std::string  aiTokenInput;
 
     // Disk II insert dialog state moved to DiskController_ImGui (it
@@ -187,10 +214,10 @@ private:
 
     // Active system profile. Tracked separately so the Presets menu can
     // mark the live entry with a checkmark and the title bar reflects
-    // it. Initialised by the constructor based on the legacy IIe-probe
-    // path; user-driven Presets menu clicks + CLI --preset go through
-    // `applyProfile()` which keeps this in sync.
-    pom2::SystemProfile activeProfile = pom2::SystemProfile::AppleIIPlus;
+    // it. Initialised in the constructor body to AppleIIPlus (default
+    // for II+ probe); user-driven Presets menu clicks + CLI --preset go
+    // through `applyProfile()` which keeps this in sync.
+    pom2::SystemProfile activeProfile;
 
     bool showAbout = false;
 

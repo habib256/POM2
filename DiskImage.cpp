@@ -782,6 +782,18 @@ bool DiskImage::loadWoz(const std::string& imgPath)
                 diskType           = buf[dataOff + 1];
                 fileWriteProtected = buf[dataOff + 2] != 0;
             }
+            // INFO version 2+ (WOZ2) adds optimal_bit_timing at offset +39
+            // (units of 125 ns; 32 = 4 µs default for 5.25"). WOZ1 images
+            // and any v2 INFO that's truncated keep the 32 default we
+            // initialised the field with. Reject obviously-bogus values
+            // (0, or anything > 64 = 8 µs which no real Apple II drive
+            // would tolerate) and log so abnormal images are visible.
+            if (infoVersion >= 2 && len >= 40) {
+                const uint8_t obt = buf[dataOff + 39];
+                if (obt >= 8 && obt <= 64) {
+                    optimalBitTiming = obt;
+                }
+            }
             // INFO version 3 (WOZ2 v2.1+) adds flux_block / largest_flux_track
             // at offsets +46 / +48. Older versions report 0. MAME
             // `as_dsk.cpp:287-290`.
@@ -1183,15 +1195,33 @@ uint8_t DiskImage::bitAt(int qt, int bitIdx) const
 //
 // Verbatim port of `floppy_image_device::cache_fill` data layout, adapted
 // to LSS cycles. For each "1" bit cell at index k in the bit-cell stream,
-// we emit one flux event at LSS cycle `k * 8 + 4` (cell center). For "0"
-// cells we emit nothing — the LSS sees those as the gap between events,
-// which is exactly MAME's continuous-flux model: flux changes are point
-// events; absence of an event over an 8-LSS-cycle window means a "0".
+// we emit one flux event at LSS cycle `k * cyc + cyc/2` (cell center).
+// For "0" cells we emit nothing — the LSS sees those as the gap between
+// events, which is exactly MAME's continuous-flux model: flux changes
+// are point events; absence of an event over a `cyc`-LSS-cycle window
+// means a "0".
+//
+// `cyc` = LSS cycles per bit cell. Default 8 (= 4 µs at 2 MHz LSS clock,
+// matching the standard 5.25" cell). WOZ2's optimal_bit_timing INFO
+// field overrides this on a per-image basis: `cyc = optimalBitTiming /
+// 4` (since optimal_bit_timing is in 125 ns units and 1 LSS cycle =
+// 500 ns). Non-WOZ formats and WOZ1 keep the 32→8 default.
 //
 // Cells per byte mirrors `expandTrackBits` (8 cells/byte; sync $FF runs
 // pad +2 zero cells per byte). So the total period in LSS cycles equals
-// `bitStream.size() * 8`, and PULSE timing under the flux model matches
-// PULSE timing the bit-cell view would produce — by construction.
+// `bitStream.size() * cyc`, and PULSE timing under the flux model
+// matches PULSE timing the bit-cell view would produce — by construction.
+int DiskImage::lssCyclesPerCell() const
+{
+    // Integer division is exact when optimal_bit_timing is a multiple of 4
+    // — universally the case in real-world WOZ images (Applesauce always
+    // emits multiples of 4). Truncation on rare odd values still yields
+    // a sane cell window; clamp to >= 1 so a degenerate INFO can't divide-
+    // by-zero downstream.
+    const int cyc = optimalBitTiming / 4;
+    return cyc >= 1 ? cyc : 8;
+}
+
 void DiskImage::expandTrackFlux(int qt) const
 {
     if (qt < 0 || qt >= kQuarterTracks) return;
@@ -1201,15 +1231,17 @@ void DiskImage::expandTrackFlux(int qt) const
     if (!bitStreamValid[slot]) expandTrackBits(qt);
     const auto& bits = bitStream[slot];
     flux.reserve(bits.size() / 2);            // ~half the cells are 1
+    const int cyc    = lssCyclesPerCell();
+    const int centre = cyc / 2;
     for (int i = 0; i < static_cast<int>(bits.size()); ++i) {
-        if (bits[i]) flux.push_back(i * 8 + 4);
+        if (bits[i]) flux.push_back(i * cyc + centre);
     }
     fluxStreamValid[slot] = true;
 }
 
 int DiskImage::trackPeriod(int qt) const
 {
-    return trackBitLength(qt) * 8;
+    return trackBitLength(qt) * lssCyclesPerCell();
 }
 
 const std::vector<int>& DiskImage::fluxEvents(int qt) const

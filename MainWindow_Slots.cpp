@@ -10,7 +10,7 @@
 // keys; clicking Apply triggers a controlled restart of the emulation
 // thread, which:
 //
-//   1. Stops the worker (controller.stop()).
+//   1. Stops the worker (controller->stop()).
 //   2. Tears down the SlotBus via `clear()` (each card's onUnplug runs).
 //   3. Re-runs `plugSlotsFromSettings()` so the new mapping takes effect.
 //   4. Hard-resets the CPU (so PC lands on the new ROM's reset vector).
@@ -22,7 +22,22 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+
+// Same heavy-includes-here pattern as MainWindow.cpp — MainWindow.h
+// forward-declares the controller / cards / panels.
+#include "AiControlServer.h"
+#include "Apple2Display.h"
+#include "ClockCard.h"
+#include "DiskIICard.h"
+#include "EmulationController.h"
+#include "LeChatMauveCard.h"
 #include "Logger.h"
+#include "Mockingboard.h"
+#include "MouseCard.h"
+#include "ProDOSHardDiskCard.h"
+#include "Settings.h"
+#include "SuperSerialCard.h"
+#include "SystemProfile.h"
 
 #include "imgui.h"
 #include <GLFW/glfw3.h>
@@ -166,11 +181,11 @@ void MainWindow::renderSlotConfigPanel()
 
     ImGui::BeginDisabled(anyDuplicate);
     if (ImGui::Button("Apply (restarts emulator)")) {
-        // Persist the draft to settings.
+        // Persist the draft to settings->
         for (int s = 1; s <= 7; ++s) {
-            settings.setString("slot_" + std::to_string(s) + "_card", draft[s]);
+            settings->setString("slot_" + std::to_string(s) + "_card", draft[s]);
         }
-        settings.save();
+        settings->save();
         restartEmulationFromSettings();
         // Re-seed the draft from the live state (it should match what we
         // just wrote, but roundtripping confirms).
@@ -208,7 +223,7 @@ std::string MainWindow::firstExistingPath(const std::vector<std::string>& candid
 
 M6502::CpuMode MainWindow::resolveCpuMode(M6502::CpuMode profileDefault) const
 {
-    const std::string override = settings.getString("cpu_mode_override", "auto");
+    const std::string override = settings->getString("cpu_mode_override", "auto");
     if (override == "nmos")  return M6502::CpuMode::NMOS;
     if (override == "65c02") return M6502::CpuMode::CMOS;
     return profileDefault;     // "auto" (default) — follow the profile
@@ -248,14 +263,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // 1. Stop the worker thread (cards' destructors must not race a
     //    running CPU step or worker idle-loop probe).
-    controller.stop();
+    controller->stop();
 
     // 2. Snapshot the currently-mounted media so we can re-mount after
     //    the cold reset. The user wants to test the same disk under
     //    different machine models; everything else (CPU state, RAM,
     //    soft switches) is wiped intentionally.
     //
-    //    Read the LIVE card state (not `settings.getString("disk_path")`
+    //    Read the LIVE card state (not `settings->getString("disk_path")`
     //    which is only written to disk in the MainWindow dtor) — so a
     //    disk inserted mid-session via the Disk II / HDV panel survives
     //    a profile switch. Skip the synthesised host-folder HDV volume
@@ -278,15 +293,15 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    card (the audio thread's next callback would dereference a
     //    freed source otherwise — same gotcha as restartEmulationFromSettings).
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
         // First: null the AI control server's card pointers under the
         // same lock that handlers grab. A request that already passed
         // its lock acquisition is using the still-alive card; later
         // requests will see null and return 503. We re-attach at the
         // end after the new cards are in place.
-        aiServer.detach();
-        if (mockingboardCard && controller.audio().isAvailable()) {
-            controller.audio().removeSource(mockingboardCard->audioSource());
+        aiServer->detach();
+        if (mockingboardCard && controller->audio().isAvailable()) {
+            controller->audio().removeSource(mockingboardCard->audioSource());
         }
         diskCard         = nullptr;
         hdvCard          = nullptr;
@@ -295,21 +310,21 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mockingboardCard = nullptr;
-        controller.memory().slotBus().clear();
-        display.setChatMauveCard(nullptr);
+        controller->memory().slotBus().clear();
+        display->setChatMauveCard(nullptr);
 
         // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
         //    soft switches. The internal IIe IO ROM is re-loaded together
         //    with the main ROM below (loadAppleIIRom slots the 4 KB IO ROM
         //    into Memory::internalIORom).
-        controller.memory().clearRam();
-        controller.memory().resetSoftSwitches();
+        controller->memory().clearRam();
+        controller->memory().resetSoftSwitches();
         // Flip IIe paging FIRST — loadAppleIIRom's path depends on this:
         // when `iieMode == true` and the dump is 16/32 KB, the loader
         // also populates `internalIORom`. Calling setIIEMode after the
         // load would leave the internal IO ROM in whatever state the
         // previous profile left it.
-        controller.memory().setIIEMode(cfg.iieMode);
+        controller->memory().setIIEMode(cfg.iieMode);
 
         // RamWorks III — Applied Engineering aux-slot RAM expansion.
         // Plugs into the IIe aux slot, which //c and //c+ don't have
@@ -320,14 +335,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // (legacy behaviour for users without the setting). The
         // setIIEMode(false) branch already cleared backing storage.
         if (p == pom2::SystemProfile::AppleIIe) {
-            const int banks = settings.getInt("ramworks_banks", 1);
-            controller.memory().setRamWorksBanks(
+            const int banks = settings->getInt("ramworks_banks", 1);
+            controller->memory().setRamWorksBanks(
                 static_cast<uint32_t>(banks > 0 ? banks : 1));
         } else if (cfg.iieMode) {
             // //c / //c+ — force RamWorks off (might be left over from a
             // prior IIe-profile session). setRamWorksBanks(1) releases
             // the backing.
-            controller.memory().setRamWorksBanks(1);
+            controller->memory().setRamWorksBanks(1);
         }
     }
 
@@ -341,7 +356,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
          p == pom2::SystemProfile::AppleIIcPlus);
     const std::string newRomPath = firstExistingPath(cfg.romProbeOrder);
     if (!newRomPath.empty()
-        && controller.memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
+        && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
         romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
     } else {
@@ -356,10 +371,10 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     const std::string newCharPath = firstExistingPath(cfg.charRomProbeOrder);
     charRomPath = newCharPath;
     if (!newCharPath.empty()) {
-        controller.memory().loadCharRom(newCharPath.c_str());
+        controller->memory().loadCharRom(newCharPath.c_str());
     }
-    if (cfg.iieMode) display.setAuxMemory(controller.memory().auxData());
-    else             display.setAuxMemory(nullptr);
+    if (cfg.iieMode) display->setAuxMemory(controller->memory().auxData());
+    else             display->setAuxMemory(nullptr);
 
     // 7. Re-plug slot cards. plugSlotsFromSettings honours user's
     //    persisted slot config; the profile choice doesn't override that
@@ -383,23 +398,23 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // 9. CPU mode (profile default with optional user override).
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        controller.cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        controller->cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
     }
 
     // 10. Default CPU pacing.
-    controller.setCyclesPerFrame(cfg.defaultCyclesPerFrame);
+    controller->setCyclesPerFrame(cfg.defaultCyclesPerFrame);
 
     // 11. Final hard reset — CPU re-fetches PC from the new ROM's reset
     //     vector at $FFFC/$FFFD.
-    controller.hardReset();
-    controller.start();
+    controller->hardReset();
+    controller->start();
 
     // 12. Persist the profile choice for the next launch.
     activeProfile = p;
-    controller.floppySound().setMotorPitch(floppyMotorPitchForProfile(p));
-    settings.setString("system_profile", std::string(cfg.key));
-    settings.save();
+    controller->floppySound().setMotorPitch(floppyMotorPitchForProfile(p));
+    settings->setString("system_profile", std::string(cfg.key));
+    settings->save();
 
     // 13. Reflect the profile in the window title so the user sees which
     //     machine is active without opening the Machine → Profile menu.
@@ -415,7 +430,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         std::string("Active = ") + std::string(cfg.displayName) +
         ", ROM = " + (newRomPath.empty() ? "<missing>" : newRomPath) +
         ", CPU = " +
-        (controller.cpu().getCpuMode() == M6502::CpuMode::CMOS ? "65C02" : "NMOS"));
+        (controller->cpu().getCpuMode() == M6502::CpuMode::CMOS ? "65C02" : "NMOS"));
 
     // Re-bind the AI control server to the freshly rebuilt slot pointers.
     // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
@@ -423,35 +438,35 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // handler observing the pointers between detach() and now sees the
     // null (→ 503) rather than a torn intermediate state.
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        aiServer.attach(&controller, &display, diskCard, hdvCard);
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
     }
-    aiServer.setProfileLabel(std::string(cfg.displayName));
+    aiServer->setProfileLabel(std::string(cfg.displayName));
 }
 
 void MainWindow::restartEmulationFromSettings()
 {
     // 1. Stop the worker thread so card destructors don't race against a
     //    running CPU step.
-    controller.stop();
+    controller->stop();
 
     // 2. Tear down all cards and clear our raw pointers. Holding the
     //    state mutex isn't strictly necessary now that the worker is
     //    stopped, but it's cheap insurance against any UI thread that
     //    might be peeking — AND it serialises with the AI control
     //    server's handlers (which take the same mutex around card
-    //    pointer reads). aiServer.detach() must happen under this
+    //    pointer reads). aiServer->detach() must happen under this
     //    lock to safely null disk6_/hdv5_ before slotBus.clear()
     //    destroys their pointees.
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        aiServer.detach();
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        aiServer->detach();
         // Mockingboard's AudioSource lives inside the card. We must
         // unregister it from the audio device BEFORE the slot bus
         // destroys the card, otherwise the audio thread's next callback
         // would dereference a freed source.
-        if (mockingboardCard && controller.audio().isAvailable()) {
-            controller.audio().removeSource(mockingboardCard->audioSource());
+        if (mockingboardCard && controller->audio().isAvailable()) {
+            controller->audio().removeSource(mockingboardCard->audioSource());
         }
         diskCard         = nullptr;
         hdvCard          = nullptr;
@@ -460,10 +475,10 @@ void MainWindow::restartEmulationFromSettings()
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mockingboardCard = nullptr;
-        controller.memory().slotBus().clear();
-        // Also drop any cached display.setChatMauveCard pointer — the
+        controller->memory().slotBus().clear();
+        // Also drop any cached display->setChatMauveCard pointer — the
         // next plug call will set it again.
-        display.setChatMauveCard(nullptr);
+        display->setChatMauveCard(nullptr);
     }
 
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
@@ -471,8 +486,8 @@ void MainWindow::restartEmulationFromSettings()
 
     // 4. Restore Disk II disk_path (matches MainWindow ctor's behaviour).
     if (diskCard) {
-        diskCard->setWriteBackEnabled(settings.getBool("disk_writeback", false));
-        const std::string diskPath = settings.getString("disk_path", "");
+        diskCard->setWriteBackEnabled(settings->getBool("disk_writeback", false));
+        const std::string diskPath = settings->getString("disk_path", "");
         std::error_code ec;
         if (!diskPath.empty() &&
             std::filesystem::is_regular_file(diskPath, ec)) {
@@ -481,9 +496,9 @@ void MainWindow::restartEmulationFromSettings()
     }
 
     // 5. Hard reset + restart worker.
-    controller.cpu().hardReset();
-    controller.memory().slotBus().reset();
-    controller.start();
+    controller->cpu().hardReset();
+    controller->memory().slotBus().reset();
+    controller->start();
 
     // 6. Re-attach the AI control server with the freshly rebuilt card
     //    pointers — the slot-bus tear-down above invalidated whatever
@@ -491,8 +506,8 @@ void MainWindow::restartEmulationFromSettings()
     //    so any handler that observed the detached null sees the new
     //    pointers atomically with respect to its own lock acquisition.
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        aiServer.attach(&controller, &display, diskCard, hdvCard);
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
     }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");

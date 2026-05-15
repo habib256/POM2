@@ -89,30 +89,6 @@ par sous-système, triées par poids des items 🟠.
 
 ## Disques
 
-- [ ] 🟡 **cc65-Chess.po hang après `LOADING CHESS`** — symptôme :
-      MLI READ retourne `trans_count = $646D` (EOF complet) mais les
-      151 derniers octets de CHESS manquent (`$A3F7-$A4FF` à `$00`),
-      chess.system `JSR $A403` tape sur `$00` = BRK → Monitor.
-      Investigation 2026-05-15 : le bit stream est byte-perfect ET
-      la LSS state machine *livre* les bons nibbles. Instrumenté
-      `POM2_DEBUG_DISK_STREAM=/tmp/foo.csv` qui capture chaque
-      `$C0EC` ; comparaison nibble-pour-nibble entre les 343 octets
-      delivered par la LSS sur sec $0A/$0B/$0C/$0E de T11 et le
-      buffer nibblisé interne : 0/343 diffs pour chaque secteur.
-      → la corruption se produit DOWNSTREAM de la LSS. Suspects
-      restants : (a) ProDOS RWTS 6-and-2 decoder côté CPU qui rate
-      la première paire data-field-prologue+nibble pour sec $0C
-      (timing 32-cycle boucle déroulée vs sub-instruction
-      inflation RAII de POM2 — cf. l'item « Inflation
-      sub-instruction RAII » plus bas ; les deux symptômes
-      pointent dans la même direction) ; (b) cc65-chess.system
-      loader qui pourrait demander 25600 B au lieu de 25709 B,
-      cas où ProDOS s'arrêterait pile à `$A3F7` (à creuser via
-      trap du MLI READ). Les deux fixes 2026-05-15 (kSyncMinRun=5
-      + revolutionStartLssCycle per-drive) sont *nécessaires* mais
-      *pas suffisants* pour cc65-Chess — ils ont par contre
-      débloqué Shamus et H.E.R.O. sur `mario.dsk`. Workaround :
-      copie HDV slot 5 ; cc65-Chess existe aussi en `.2mg`.
 - [ ] 🟡 **WOZ2 `optimal_bit_timing` (INFO+39) ignoré**. Hard-codé à
       32 ticks = 4 µs/cell. MAME ne le lit pas non plus au load mais
       utilise `track_size*2` ; vrai gap = placement `cellIdx*8+4` fixe.
@@ -215,6 +191,14 @@ MODE_SHIFT lax, etc.) — celles-ci ne sont **pas** des bugs, leur
 
 ## Changelog (résolu cette session, 2026-05-14/15)
 
+**cc65-Chess.po hang après `LOADING CHESS`** : résolu 2026-05-15. Les
+fixes round 1 (`kSyncMinRun=5` + `revolutionStartLssCycle` per-drive)
+combinés aux corrections de chemin de boot (B1-B5) suffisent
+finalement — le jeu démarre proprement, le `JSR $A403` ne tape plus
+sur `$00`. Le pinning est implicite (boot `cc65-Chess.po` jusqu'à
+prompt d'ouverture du moteur d'échecs).
+
+
 **Floppy sound step cadence** mesurée en cycles CPU émulés (MAME
 `floppy_sound_device::step` via `machine().time()`,
 `floppy.cpp:1532-1620`), pas en frames audio. En turbo 60× toutes
@@ -278,6 +262,104 @@ Coordination des chemins de boot solidifiée :
 - **B4** Reset RamWorks bank → 0 (MAME `device_reset` parity).
 - **B5** RamWorks gate strict sur profil `AppleIIe` (pas //c/c+ qui
   n'ont pas d'aux slot).
+
+## Architecture & qualité du code (audit 2026-05-15)
+
+Items transversaux relevés lors de la revue d'architecture
+2026-05-15. Pas de bug fonctionnel à la clé — c'est de la dette qui
+freine l'ajout de nouveaux profils Apple II et augmente le coût de
+chaque changement de header.
+
+- [ ] 🟠 **`Memory` god-object (`Memory.h` 521 L, `Memory.cpp` 1 555 L)**.
+      Responsabilités empilées : RAM/ROM + bitmap `writable[]`,
+      pagination IIe, RamWorks III, Language Card, soft-switches,
+      RC paddle, FIFO clavier + paste queue, callback speaker,
+      dispatch slot bus, IWM, fenêtre MIG //c+, firmware alternatif
+      //c+. Extraire au minimum `Keyboard` (FIFO + strobe + paste),
+      `PaddleInputs` (RC + buttons + IIe modifier keys), et
+      `IIcPlusBank` (alt firmware + MIG + iicRomBank). Réduit la
+      surface publique de `Memory.h` et limite les recompilations
+      en cascade.
+- [ ] 🟠 **Spécificités //c+ qui fuient dans `Memory::memRead`/
+      `memWrite`**. `iicHasAltBank`, `iicRomBank`, `iicAltFirmware`,
+      `migRead/migWrite` sont testés en plein dispatcher générique
+      (`Memory.cpp:1338,1370-1391`). À chaque nouveau profil (IIgs,
+      future variante) cette cascade va s'épaissir. Pattern cible :
+      stratégie de profil (`IProfileMemoryStrategy`) injectée par
+      `EmulationController`, le dispatcher générique reste ignorant
+      du modèle. À traiter conjointement avec l'extraction
+      `IIcPlusBank` ci-dessus.
+- [ ] 🟠 **`MainWindow.h` inclut 20+ headers (chaque carte + chaque
+      panneau ImGui + ImGui lui-même)**. Toute modification d'un
+      header de carte recompile `MainWindow.cpp` (2 637 L) et tout
+      ce qui dépend de `MainWindow.h`. Convertir en Pimpl
+      (`struct Impl;` + `std::unique_ptr<Impl> impl;`) ou au minimum
+      remplacer les includes par des forward declarations là où
+      possible (cartes non-owning : `DiskIICard*`,
+      `ProDOSHardDiskCard*`, etc. peuvent passer en forward decl).
+- [ ] 🟡 **Encapsulation `Memory` trouée par `dataMutable()` /
+      `auxDataMutable()`** (`Memory.h:135,258`). N'importe quel
+      appelant peut écrire en ROM en contournant le bitmap
+      `writable[]`. Utile pour le debugger et `SnapshotIO`, mais
+      sans contrôle d'accès c'est une porte ouverte aux régressions
+      silencieuses. Remplacer par un handle scopé
+      (`Memory::DebugWriteScope`) ou par des accesseurs nommés
+      (`writeRamUnchecked(addr, v)` qui asserte `addr < 0xC000`).
+- [ ] 🟡 **Configuration éclatée sur 3 canaux indépendants** : env
+      vars (`POM2_TRACE_IIE_REBOOT`, `POM2_IWM_AUTHORITATIVE`,
+      `POM2_IWM_LEGACY_DATA_PATH`, `POM2_DEBUG_DISK_STREAM`,
+      `POM2_MOUSE_TRACE`, `POM2_AUTO_BOOT_HDV`, `POM2_AUTO_QUIT`,
+      `POM2_CPU_CLOCK_HZ` — `grep -n getenv *.cpp` = 11
+      occurrences), flags CLI (`CliDispatcher`), fichier
+      `Settings`. Aucun registre central, l'utilisateur doit
+      grepper pour découvrir les env vars. Ajouter un `Config`
+      unique avec l'ordre de précédence env → CLI → Settings →
+      defaults, et lister les env vars dans `--help`.
+- [ ] 🟡 **Granularité du `stateMutex`** (`EmulationController.h:118`).
+      Un seul lock partagé entre CPU et UI suffit aujourd'hui parce
+      que l'UI ne lock que pour des snapshots courts. Mais
+      `MainWindow_Slots.cpp:281,386,426,447,494` prend ce même lock
+      pendant des opérations de re-câblage de cartes (plug/unplug,
+      restartEmulationFromSettings), pendant lesquelles le CPU est
+      gelé — risque de jitter audio si un panneau ImGui devient
+      lourd. Cible long terme : partitionner en (a) lock CPU/Memory,
+      (b) ring audio lock-free, (c) état UI cohérent par snapshot.
+      Préalable : auditer chaque `stateMutex` lock pour mesurer la
+      durée typique de tenue.
+- [ ] 🟡 **Cohérence namespace `pom2::`** : ~20 / 89 fichiers
+      seulement l'utilisent. Les classes historiques (`M6502`,
+      `Memory`, `MainWindow`, `Apple2Display`, `DiskIICard`,
+      `MockingboardCard`, `CassetteDevice`, `SuperSerialCard`,
+      `ClockCard`, `MouseCard`, `LeChatMauveCard`,
+      `ProDOSHardDiskCard`) sont en namespace racine. Mélange
+      visible dans `EmulationController.h` (`Memory mem;` à côté de
+      `std::unique_ptr<pom2::IWMDevice>`). Migrer en une passe
+      mécanique vers `pom2::` partout — ne pas faire moitié-moitié.
+- [ ] 🟡 **`Memory::memRead` hot path complexe** (`Memory.cpp:1309-1437`).
+      Profondeur d'imbrication jusqu'à 7, dispatch en cascade de
+      `if`. Appelé ~1 M fois/seconde × 60× en mode turbo. Une table
+      de dispatch indexée par page haute (256 entrées de
+      `MemoryHandler*`) serait plus lisible **et** probablement plus
+      rapide. Préalable : extraire les responsabilités //c+ (item
+      🟠 ci-dessus) sinon la table de 256 entrées devient une
+      table de 256 entrées × 5 profils.
+- [ ] 🟢 **Style hérité dans `M6502`** : commentaires bilingues
+      FR/EN (`M6502.cpp:48-49,71,79,98`), casts C-style
+      `(unsigned short)` (`M6502.cpp:88-94`), signatures `void(void)`
+      (`M6502.h:42-45`), aggregate init manuelle dans les
+      constructeurs au lieu de `= default` + initialiseurs
+      in-class. Cosmétique mais détonne du reste du projet.
+      Passe `clang-format` + `clang-tidy modernize-*` ciblée sur
+      `M6502.{h,cpp}`.
+- [ ] 🟢 **Pointeurs nus `*Card` dans `MainWindow`**
+      (`MainWindow.h:97-103`). 7 pointeurs `// non-owning, owned by
+      SlotBus`. Pas de notification quand SlotBus libère / replug.
+      `restartEmulationFromSettings()` doit penser à les remettre à
+      jour manuellement — fragile en cas d'évolution. Soit
+      observers pattern via `SlotBus::setReplugListener`, soit
+      passer par `controller.slotBus().peripheral(N)` à chaque
+      utilisation (un peu plus de typing mais zéro risque de
+      dangling).
 
 ## Hors scope
 

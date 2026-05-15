@@ -198,9 +198,9 @@ void MainWindow::renderMemoryBarWindow()
     std::array<uint8_t, 0x10000> ramSnap;
     uint16_t pc;
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        std::memcpy(ramSnap.data(), controller.memory().data(), 0x10000);
-        pc = controller.cpu().getProgramCounter();
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
+        pc = controller->cpu().getProgramCounter();
     }
 
     PageInfo pageMap[256];
@@ -420,7 +420,7 @@ void MainWindow::renderMemoryBarWindow()
 
     // --- Memory viewer viewport overlay ---
     if (showMemViewer) {
-        const auto vp = memViewer.getViewportRange();
+        const auto vp = memViewer->getViewportRange();
         float vpY0 = addrToY(vp.startAddress);
         float vpY1 = addrToY(vp.endAddress);
         if (vpY1 - vpY0 < 4.0f) vpY1 = vpY0 + 4.0f;
@@ -475,7 +475,7 @@ void MainWindow::renderMemoryBarWindow()
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 showMemViewer = true;
-                memViewer.navigateToAddress(static_cast<int>(hoverAddr));
+                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
     }
@@ -502,9 +502,9 @@ void MainWindow::renderMemoryBarHorizontalWindow()
     std::array<uint8_t, 0x10000> ramSnap;
     uint16_t pc;
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        std::memcpy(ramSnap.data(), controller.memory().data(), 0x10000);
-        pc = controller.cpu().getProgramCounter();
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
+        pc = controller->cpu().getProgramCounter();
     }
 
     PageInfo pageMap[256];
@@ -669,7 +669,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 
     // --- Memory viewer viewport overlay ---
     if (showMemViewer) {
-        const auto vp = memViewer.getViewportRange();
+        const auto vp = memViewer->getViewportRange();
         float vpX0 = addrToX(vp.startAddress);
         float vpX1 = addrToX(vp.endAddress);
         if (vpX1 - vpX0 < 4.0f) vpX1 = vpX0 + 4.0f;
@@ -724,7 +724,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 showMemViewer = true;
-                memViewer.navigateToAddress(static_cast<int>(hoverAddr));
+                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
     }
@@ -751,10 +751,10 @@ void MainWindow::renderMemoryGridWindow()
     uint16_t pc;
     uint8_t  sp;
     {
-        std::lock_guard<std::mutex> lk(controller.stateMutex());
-        std::memcpy(ramSnap.data(), controller.memory().data(), 0x10000);
-        pc = controller.cpu().getProgramCounter();
-        sp = controller.cpu().getStackPointer();
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
+        pc = controller->cpu().getProgramCounter();
+        sp = controller->cpu().getStackPointer();
     }
     const int pcPage = pc >> 8;
     const int spPage = 1;  // stack always lives in page 1
@@ -827,7 +827,7 @@ void MainWindow::renderMemoryGridWindow()
                         mousePos.y >= p0.y && mousePos.y < p1.y) {
                         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                             showMemViewer = true;
-                            memViewer.navigateToAddress(addr);
+                            memViewer->navigateToAddress(addr);
                         }
                         ImGui::BeginTooltip();
                         ImGui::Text("Page $%02X : $%04X-$%04X", page, addr, addr + 0xFF);

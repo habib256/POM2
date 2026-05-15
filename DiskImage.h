@@ -272,6 +272,18 @@ private:
     /// `isWriteProtected()` so the per-file flag survives once the WOZ
     /// blanket gate is lifted. Stays false for non-WOZ formats.
     bool fileWriteProtected = false;
+    /// WOZ INFO byte +39 — `optimal_bit_timing`. Measured in 125 ns units.
+    /// 32 = 4 µs (the standard 5.25" Apple II cell duration; default for
+    /// any WOZ1 image, since INFO version 1 didn't carry the field, and
+    /// WOZ2 too unless the imager set otherwise). The flux-event view
+    /// scales `i * lssCyclesPerCell + lssCyclesPerCell/2` by this so a
+    /// disk mastered at e.g. 28 (3.5 µs) or 40 (5 µs) plays back at the
+    /// rate Applesauce captured. LSS clock is 2 MHz → 1 LSS cycle =
+    /// 500 ns → `lssCyclesPerCell = optimalBitTiming / 4` (integer when
+    /// the imager picked a multiple of 4, which is the universal case
+    /// in practice). 0 means "field not present, assume default 32".
+    /// MAME `as_dsk.cpp:283` reads the same byte.
+    uint8_t optimalBitTiming = 32;
     std::string path;
     std::string lastError;
     bool writeBackEnabled = false;
@@ -317,6 +329,11 @@ private:
     mutable std::array<std::vector<int>, kQuarterTracks> fluxStream;
     mutable std::array<bool, kQuarterTracks>             fluxStreamValid{};
     void expandTrackFlux(int qt) const;
+    /// LSS cycles per bit cell, derived from `optimalBitTiming`. Default
+    /// 8 (= 4 µs / 0.5 µs per LSS cycle). WOZ2 honours INFO+39; WOZ1 and
+    /// non-WOZ formats keep the default. Used by `expandTrackFlux` and
+    /// `trackPeriod`.
+    int lssCyclesPerCell() const;
 
     /// Aliasing function: maps an externally-supplied quarter-track index
     /// to the actual storage slot. Non-WOZ formats only carry whole-track

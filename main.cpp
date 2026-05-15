@@ -5,6 +5,14 @@
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
 #include "MainWindow.h"
+// MainWindow.h now forward-declares EmulationController and Apple2Display
+// to keep its include cone lean. main.cpp dereferences both via
+// MainWindow::emul() / displayRef() so it needs the full types.
+#include "Apple2Display.h"
+#include "EmulationController.h"
+#include "CassetteDevice.h"
+#include "Disk35Image.h"
+#include "SystemProfile.h"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
