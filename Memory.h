@@ -390,6 +390,41 @@ private:
     bool iicHasAltBank = false;
     bool iicRomBank    = false;   // false = bank 0 (cold-start), true = bank 1
 
+    // Apple //c+ MIG (Multi-drive Interface Glue, MAME `apple2e.cpp:451`
+    // + `apple2e.cpp:532-624 mig_r/mig_w`). Custom Apple gate-array that
+    // bridges the on-board IWM to the //c+'s integrated 5.25" + 3.5"
+    // drives. The //c+ alt firmware (bank 1) hits two MIG windows in the
+    // expansion ROM area when ROMSWITCH is on:
+    //   $CC00-$CCFF  →  mig offset 0x000-0x0FF  (drive control)
+    //   $CE00-$CEFF  →  mig offset 0x200-0x2FF  (MIG RAM + head select)
+    // Sub-decode (MAME lines 532-624):
+    //   off  $40       write  → IWM reset
+    //   off $80-$9F    write  → enable internal drive
+    //   off $C0-$DF    write  → disable internal drive
+    //   off $200-$21F  R/W    → migRam[migPage + (off & 0x1F)]
+    //   off $220-$23F  R/W    → same, then migPage += 0x20 (mod 0x800)
+    //   off $240-$25F  R/W    → clear 3.5" head select
+    //   off $260-$27F  R/W    → set 3.5" head select
+    //   off $2A0        R/W   → reset migPage = 0
+    //   anything else  read   → floating bus
+    //
+    // The 2 KB migRam holds //c+ accelerator/disk-geometry state the
+    // firmware caches across resets. MAME `apple2e.cpp:1700-1703` resets
+    // it when ROMSWITCH transitions off; POM2 does the equivalent in
+    // resetSoftSwitches() when iicRomBank flips back to 0. The 3.5"
+    // side (hdsel + intdrive routing) is captured here even though POM2
+    // doesn't model a 3.5" SmartPort drive — keeping the state lets the
+    // //c+ alt firmware's probes complete without spinning.
+    std::array<uint8_t, 0x800> migRam{};
+    uint16_t                   migPage    = 0;
+    bool                       migIntDrive = false;
+    bool                       migHdSel    = false;
+
+    /// MIG read at offset 0x000-0x2FF. CPU $CC00 = migOffset 0; CPU $CE00
+    /// = migOffset 0x200 (the $CD00 gap is plain ROM).
+    uint8_t migRead (uint16_t migOffset);
+    void    migWrite(uint16_t migOffset, uint8_t value);
+
     // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
     // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not
     // modelled here; nominal 17046 cycles/frame is close enough).

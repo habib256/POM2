@@ -779,6 +779,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     if (low >= 0x20 && low <= 0x2F) {
         if (iicHasAltBank) {
             iicRomBank = !iicRomBank;
+            // MAME `apple2e.cpp:1700-1703`: when ROMSWITCH transitions
+            // back to bank 0 the MIG state machine resets (page cursor
+            // back to 0; RAM contents survive). Mirror that here so a
+            // re-entry into bank 1 starts the MIG firmware at a clean
+            // page boundary.
+            if (!iicRomBank) {
+                migPage = 0;
+            }
             return 0;
         }
         // Cassette OUTPUT toggle (II/II+/IIe path): the Monitor's WRITE
@@ -1135,6 +1143,70 @@ uint8_t Memory::floatingBus() const
     return mem[address];
 }
 
+uint8_t Memory::migRead(uint16_t migOffset)
+{
+    // Verbatim port of MAME `apple2e.cpp:532-569 apple2e_state::mig_r`.
+    // Side-effects on read are part of the MIG contract — the firmware
+    // uses them to walk the MIG RAM page cursor and to flip 3.5" head
+    // select on a read of the right offset.
+    if (migOffset >= 0x200 && migOffset < 0x220) {
+        return migRam[migPage + (migOffset & 0x1F)];
+    }
+    if (migOffset >= 0x220 && migOffset < 0x240) {
+        const uint8_t rv = migRam[migPage + (migOffset & 0x1F)];
+        migPage = static_cast<uint16_t>((migPage + 0x20) & 0x7FF);
+        return rv;
+    }
+    if (migOffset >= 0x240 && migOffset < 0x260) {
+        migHdSel = false;       // 3.5" head 0
+    }
+    if (migOffset >= 0x260 && migOffset < 0x280) {
+        migHdSel = true;        // 3.5" head 1
+    }
+    if (migOffset == 0x2A0) {
+        migPage = 0;
+    }
+    return floatingBus();
+}
+
+void Memory::migWrite(uint16_t migOffset, uint8_t value)
+{
+    // Verbatim port of MAME `apple2e.cpp:571-624 apple2e_state::mig_w`.
+    // Drive enable/disable and IWM reset are side-effects keyed off
+    // the offset alone — `value` is stored only when writing through
+    // the MIG RAM windows.
+    if (migOffset == 0x40) {
+        // IWM reset (MAME: `m_iwm->reset()`). POM2's DiskIICard sits
+        // outside this code path; the //c+ writes here on every boot
+        // but doesn't depend on us actively resetting the LSS yet.
+        return;
+    }
+    if (migOffset >= 0x80 && migOffset < 0xA0) {
+        migIntDrive = true;
+        return;
+    }
+    if (migOffset >= 0xC0 && migOffset < 0xE0) {
+        migIntDrive = false;
+        return;
+    }
+    if (migOffset >= 0x200 && migOffset < 0x220) {
+        migRam[migPage + (migOffset & 0x1F)] = value;
+        return;
+    }
+    if (migOffset >= 0x220 && migOffset < 0x240) {
+        migRam[migPage + (migOffset & 0x1F)] = value;
+        migPage = static_cast<uint16_t>((migPage + 0x20) & 0x7FF);
+        return;
+    }
+    if (migOffset >= 0x240 && migOffset < 0x260) return;   // 3.5" m_35sel=false
+    if (migOffset >= 0x260 && migOffset < 0x280) return;   // 3.5" m_35sel=true
+    if (migOffset == 0x2A0) {
+        migPage = 0;
+        return;
+    }
+    // Other offsets: NOP.
+}
+
 uint8_t Memory::languageCardRead(uint16_t addr) const
 {
     if (!lcReadRam) {
@@ -1219,8 +1291,21 @@ uint8_t Memory::memRead(uint16_t addr)
                 intC8Rom = false;
                 slots.deactivateExpansion();
             }
-            if (iicHasAltBank && iicRomBank)
+            // //c+ MIG window: when bank 1 (ROMSWITCH) is active, the
+            // $CC00-$CCFF and $CE00-$CEFF ranges within the expansion
+            // ROM window dispatch to the on-board MIG gate-array
+            // instead of returning ROM bytes. MAME `apple2e.cpp:2725-
+            // 2730 c800_b2_int_r`. We translate the CPU address to a
+            // MIG offset: $CC00 → 0x000, $CE00 → 0x200.
+            if (iicHasAltBank && iicRomBank) {
+                if (addr >= 0xCC00 && addr <= 0xCCFF) {
+                    return migRead(static_cast<uint16_t>(addr - 0xCC00));
+                }
+                if (addr >= 0xCE00 && addr <= 0xCEFF) {
+                    return migRead(static_cast<uint16_t>(addr - 0xCC00));
+                }
                 return iicAltFirmware[addr - 0xC000];
+            }
             return internalIORom[addr - 0xC000];
         }
         // $C300-$C3FF with SLOTC3ROM=off: return internal 80-col
@@ -1302,6 +1387,20 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // firmware write into $CnXX would forward to a (non-existent) slot
     // card and possibly latch activeExpansionSlot to a stale value.
     if (iieMode && ((iieMemMode & MF_INTCXROM) || iicHasAltBank)) {
+        // //c+ MIG window writes: $CC00-$CCFF and $CE00-$CEFF in bank 1
+        // hit the MIG gate-array (MAME `apple2e.cpp:2759-2762`). Drive
+        // enable / disable, IWM reset, MIG RAM cache — all keyed off the
+        // sub-decode in `migWrite`.
+        if (iicHasAltBank && iicRomBank) {
+            if (addr >= 0xCC00 && addr <= 0xCCFF) {
+                migWrite(static_cast<uint16_t>(addr - 0xCC00), value);
+                return;
+            }
+            if (addr >= 0xCE00 && addr <= 0xCEFF) {
+                migWrite(static_cast<uint16_t>(addr - 0xCC00), value);
+                return;
+            }
+        }
         return;
     }
     if (addr <= 0xC7FF) {
