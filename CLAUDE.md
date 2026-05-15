@@ -54,6 +54,7 @@ probe order — see [System profiles](#system-profiles). Legacy auto-detect
 | Slot bus, wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [DEV.md § Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | Disk image, Disk II, ProDOS HDV, Snapshot | `DiskImage.*`, `DiskIICard.*`, `ProDOSVolume.*`, `SnapshotIO.*` | [DEV.md § Storage](DEV.md#storage) |
 | IWM (Apple FDC for //c / //c+ / Mac / IIgs) | `IWMDevice.*` | [DEV.md § Storage](DEV.md#storage) (live + authoritative on //c+; Memory routes $C0E0-$C0EF through IWM on `iicHasAltBank`. Toggle off via `POM2_IWM_AUTHORITATIVE=0`.) |
+| SmartPort 3.5" (//c+ Sony drives) | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*` | [DEV.md § Storage](DEV.md#storage) — Phase 1: image loader + Sony register protocol + MIG `recalc_active_device`. Phase 2 (deferred): Sony zoned GCR encoder. |
 | Super Serial Card + telnet (slot 2) | `SuperSerialCard.h/.cpp` | [DEV.md § SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | ProDOS clock card (slot 4) | `ClockCard.h/.cpp` | [DEV.md § Clock card](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (slot 4 by conv.) | `MouseCard.h/.cpp` | [DEV.md § Mouse Card](DEV.md#mouse-card) |

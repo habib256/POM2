@@ -45,10 +45,10 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
@@ -182,11 +182,40 @@ add_test(NAME iwm_device_smoke COMMAND test_iwm_device)
 set_tests_properties(iwm_device_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── SmartPort 3.5" Phase 1 smoke ─────────────────────────────────────────
+# Exercises Disk35Image (load + size guard), Sony35Drive (sense / motor),
+# and SmartPortHub (recalc_active_device port from MAME
+# `apple2e.cpp:638-679`). Bit-cell / GCR decoding is Phase 2 — this is
+# the protocol-level wiring gate.
+
+add_executable(test_smartport_35
+    smartport_35_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_smartport_35 PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_35 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_35 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_35 PRIVATE winmm)
+endif()
+add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
+set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
+
+
 add_executable(test_iicplus_boot_trace
     iicplus_boot_trace.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -209,6 +238,9 @@ add_executable(test_choplifter_iie_trace
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -651,6 +683,9 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -689,6 +724,9 @@ add_executable(test_mame_lss_parity
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_mame_lss_parity PRIVATE ${CMAKE_SOURCE_DIR})
@@ -734,6 +772,9 @@ add_executable(test_disk_write_controller
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_disk_write_controller PRIVATE ${CMAKE_SOURCE_DIR})
@@ -753,6 +794,9 @@ add_executable(test_woz_load
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_woz_load PRIVATE ${CMAKE_SOURCE_DIR})
@@ -782,6 +826,9 @@ add_executable(test_disk_drive2
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_disk_drive2 PRIVATE ${CMAKE_SOURCE_DIR})
@@ -814,6 +861,9 @@ add_executable(test_disk_boot
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_disk_boot PRIVATE ${CMAKE_SOURCE_DIR})
@@ -844,6 +894,9 @@ add_executable(test_dos33_save
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dos33_save PRIVATE ${CMAKE_SOURCE_DIR})
@@ -873,6 +926,9 @@ add_executable(test_prodos_save
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_prodos_save PRIVATE ${CMAKE_SOURCE_DIR})
@@ -898,6 +954,9 @@ add_executable(c2plus_boot_probe
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -922,6 +981,9 @@ add_executable(copy2plus_boot_dump
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -967,6 +1029,9 @@ add_executable(hdv_boot_dump
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -1263,6 +1328,9 @@ add_executable(test_slot_config
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
@@ -1326,6 +1394,9 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -1364,6 +1435,9 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -1400,6 +1474,9 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -1437,6 +1514,9 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -1474,6 +1554,9 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
@@ -1543,6 +1626,9 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/EmulationController.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
@@ -1595,6 +1681,9 @@ add_executable(hero_probe
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(hero_probe PRIVATE ${CMAKE_SOURCE_DIR})

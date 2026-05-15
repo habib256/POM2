@@ -913,14 +913,43 @@ NOT yet ported (groundwork for the next pass):
     field is present but `q3ClockActive_` stays `false`.
   * `set_floppy` mon_w / set_write_splice plumbing (still owned by
     DiskIICard).
-  * MAME devsel callback (`m_devsel_cb`) — POM2's slot-6 multiplex is
-    currently DiskIICard-internal.
+
+**SmartPort 3.5" Phase 1** (`Disk35Image`, `Sony35Drive`,
+`SmartPortHub`): scaffolding for //c+ Sony 3.5" disks. Loads 800K
+`.po` / `.2mg` images, exposes a Sony 3.5" drive that responds to the
+IWM's phase-as-command bus (port of MAME `mac_floppy.cpp::seek_phase_w`
++ Apple //gs hardware ref register table) and to MIG-driven
+`m_35sel`/`m_intdrive`/`m_hdsel` toggles (port of `apple2e.cpp:638-679
+recalc_active_device`). The IWM gains `phasesCb_`/`devselCb_`/`sel35Cb_`
+callbacks (MAME `iwm_device::phases_cb/devsel_cb/sel35_cb`) that
+EmulationController wires through `SmartPortHub::attach`. The active
+3.5" drive sees phase strobes (CA0/CA1/CA2/LSTRB) and SEL changes; its
+`senseR()` returns the active-low register file (`/INSERTED`,
+`/TRACK0`, `/READY`, `/MOTOR ON`, `/SWITCHED`, …) that the //c+ alt
+firmware probes during cold-boot SmartPort discovery. Pinned:
+`tests/smartport_35_smoke_test.cpp` (image load + size guard, empty-
+slot SENSE, in-slot SENSE, motor strobe, hub recalc for both
+devsel=1+35sel=true and devsel=2+intdrive=true paths, IWM-to-drive
+phase forwarding).
+
+**SmartPort 3.5" Phase 2** (next session) — the actual Sony GCR
+encoder. Disk35Image must expand its block payload into a flux stream
+with the zoned schedule (12/11/10/9/8 sectors across 5 × 16 tracks);
+Sony35Drive must expose `nextTransition(qt, fromCycle)` to the
+IWMDevice walker, and IWMDevice must accept a polymorphic floppy
+target via an updated `setFloppy()` so the bit-cell walker can drive
+either a 5.25" `DiskImage*` or a 3.5" `Sony35Drive*`. Reference:
+MAME `src/lib/formats/ap_dsk35.cpp` (block → GCR sectors) +
+`src/devices/imagedev/floppy.cpp` for the variable-rate flux
+generation.
 
 Pinned:
   * `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`
     (MIG window assertion at `$CE4D` in bank 1).
   * `tests/iwm_device_smoke_test.cpp` (IWMDevice reset state, control
     bit decode, mode/status echo, WHD cold read, sync no-crash).
+  * `tests/smartport_35_smoke_test.cpp` (SmartPort 3.5" wiring +
+    Sony register protocol).
   * `tests/iicplus_boot_trace.cpp` (boots `apple2cp.rom` headlessly,
     prints PC + text page fingerprint after 6M cycles — used to debug
     where the //c+ ROM gets stuck during a port pass).

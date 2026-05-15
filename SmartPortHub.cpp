@@ -87,21 +87,24 @@ void SmartPortHub::recalcActiveDevice()
 
     if (devsel_ == 1) {
         if (!sel35_) {
-            // 5.25" internal — DiskIICard handles. No 3.5" drive engaged.
+            // 5.25" internal (MAME `m_floppy[0]`) — DiskIICard handles.
         } else {
-            // 3.5" external #2 — MAME `m_floppy[3]`. POM2 doesn't
-            // model a second external 3.5" yet; leave drive=nullptr.
+            // 3.5" external (MAME `m_floppy[3]`, line 650).
+            is35  = true;
+            drive = drive35External_;
         }
     } else if (devsel_ == 2) {
         if (intDrive_) {
+            // On-board 3.5" (MAME `m_floppy[2]`, line 659). This is
+            // the //c+'s integrated drive — by far the common case.
             is35  = true;
-            drive = drive35Internal_;        // //c+ on-board 3.5"
+            drive = drive35Internal_;
         } else if (!sel35_) {
-            // 5.25" external — DiskIICard handles.
+            // 5.25" external (MAME `m_floppy[1]`, line 663) —
+            // DiskIICard handles.
         } else {
-            // 3.5" external #1 — also `m_floppy[1]`? MAME line 665
-            // labels it "should be external 3.5 #2, for a 3rd drive"
-            // and sets nullptr. Mirror that — POM2 has no 3rd drive.
+            // MAME line 665: "should be external 3.5 #2, for a 3rd
+            // drive" — set to nullptr. POM2 mirrors.
         }
     }
 
