@@ -1138,52 +1138,8 @@ void MainWindow::onMouseMove(double x, double y)
     mouseSubAppleX -= dxApple;
     mouseSubAppleY -= dyApple;
 
-    // ── Position correction via RAM peek ────────────────────────────
-    // The Apple Mouse Card driver stores the live cursor position at
-    // screen-hole bytes $0478+slot (X low) / $04F8+slot (X high) and
-    // $0578+slot / $05F8+slot (Y low/high) — standard convention since
-    // the original ProDOS Mouse Manager. Reading them lets us correct
-    // any drift between the host cursor's position-in-widget and the
-    // actual Apple cursor, on top of the delta we just computed. The
-    // correction is clamped per-event so big jumps don't invert the
-    // MCU's 8-bit signed diff (range [-127, +127]).
-    const int slot = mouseCard->getSlot();
-    if (slot >= 1 && slot <= 7) {
-        Memory& mem = controller.memory();
-        const int appleX = int(mem.memRead(uint16_t(0x0478 + slot))) |
-                          (int(mem.memRead(uint16_t(0x04F8 + slot))) << 8);
-        const int appleY = int(mem.memRead(uint16_t(0x0578 + slot))) |
-                          (int(mem.memRead(uint16_t(0x05F8 + slot))) << 8);
-        const int targetX = int((x - screenRectMin.x) * display.width()  / widgetW);
-        const int targetY = int((y - screenRectMin.y) * display.height() / widgetH);
-        // Debug log so we can verify the screen-hole addresses match
-        // A2Desktop's actual cursor storage. Gated on POM2_MOUSE_TRACE.
-        static const bool dbg = std::getenv("POM2_MOUSE_TRACE") != nullptr;
-        if (dbg) {
-            static int t = 0;
-            if ((t++ & 0x1F) == 0) {
-                pom2::log().info("MouseSync",
-                    "host(" + std::to_string(targetX) + "," + std::to_string(targetY) +
-                    ") apple($478+s=" + std::to_string(appleX) + ",$578+s=" + std::to_string(appleY) +
-                    ")  corr(" + std::to_string(targetX - appleX) + "," +
-                    std::to_string(targetY - appleY) + ")");
-            }
-        }
-        // Correction = where we should be MINUS where we are. Add this
-        // to the speed-matched delta so steady-state error decays each
-        // event instead of accumulating. Only apply if the RAM values
-        // look like valid cursor coords (in clamp range); otherwise the
-        // address may be wrong for this app and the correction would
-        // jerk the cursor randomly.
-        if (appleX >= 0 && appleX < display.width() &&
-            appleY >= 0 && appleY < display.height()) {
-            dxApple += targetX - appleX;
-            dyApple += targetY - appleY;
-        }
-    }
-
     // Clamp the per-event delta to the MCU's 8-bit signed range so big
-    // jumps (cursor entering from a far corner) don't wrap negative.
+    // jumps don't wrap negative.
     if (dxApple >  127) dxApple =  127;
     if (dxApple < -127) dxApple = -127;
     if (dyApple >  127) dyApple =  127;

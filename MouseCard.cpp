@@ -187,14 +187,22 @@ void MouseCard::advanceCycles(int cycles)
     if (mcuCycles > 0) {
         (void)mcu.run(mcuCycles);
         if (traceEnabled()) {
-            // Log only on PC change so we can see *where* the MCU is, not
-            // every spin iteration.
+            // Log only on PC change. Suppress the firmware's main idle
+            // loop ($03F3 / $0403 / $0405 / $0409 / $0469) which spins
+            // waiting for a command strobe — otherwise it floods the
+            // trace and we lose the *interesting* transitions.
             static uint16_t lastPc = 0xFFFF;
             const uint16_t pcAfter = mcu.getPC();
-            if (pcAfter != lastPc) {
+            auto inIdle = [](uint16_t pc) {
+                return pc == 0x03F3 || pc == 0x0403 || pc == 0x0405 ||
+                       pc == 0x0409 || pc == 0x0469;
+            };
+            if (pcAfter != lastPc && !(inIdle(pcAfter) && inIdle(lastPc))) {
                 mtrace("MCU PC -> $%04X  (was $%04X, mcuCyc=%d)",
                        pcAfter, lastPc, mcuCycles);
                 lastPc = pcAfter;
+            } else if (pcAfter != lastPc) {
+                lastPc = pcAfter;     // silent update so we re-log on exit
             }
         }
     }
