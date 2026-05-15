@@ -301,9 +301,9 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         }
     }
     if (hdvCard && hdvCard->isImageLoaded()) {
-        const std::string& p = hdvCard->getImagePath();
-        if (p.rfind("[host folder] ", 0) == std::string::npos) {
-            savedHdvPath = p;
+        const std::string& path = hdvCard->getImagePath();
+        if (path.rfind("[host folder] ", 0) == std::string::npos) {
+            savedHdvPath = path;
         }
     }
 
@@ -410,11 +410,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    disk was mounted there at the profile-switch time.
     for (auto* c : diskCards) {
         if (!c) continue;
-        const std::string& p = savedDiskPaths[static_cast<size_t>(c->getSlot())];
-        if (p.empty()) continue;
+        const std::string& path = savedDiskPaths[static_cast<size_t>(c->getSlot())];
+        if (path.empty()) continue;
         std::error_code ec;
-        if (std::filesystem::is_regular_file(p, ec)) {
-            (void)c->insertDisk(p);
+        if (std::filesystem::is_regular_file(path, ec)) {
+            (void)c->insertDisk(path);
         }
     }
     if (hdvCard && !savedHdvPath.empty()) {

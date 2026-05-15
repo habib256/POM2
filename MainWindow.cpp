@@ -1233,13 +1233,15 @@ void MainWindow::renderMenuBar()
 
 void MainWindow::renderScreenWindow()
 {
-    // Default startup layout (POM2 disables imgui.ini so every launch
-    // re-applies these). Apple II Screen anchors the top-left ~60 %,
-    // HDV stacks below it, Disk II owns the full-height right column.
-    // FirstUseEver lets the user drag/resize freely after the first
-    // frame — but the chosen positions don't persist across launches.
-    ImGui::SetNextWindowPos (ImVec2(5,    30),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1040, 565), ImGuiCond_FirstUseEver);
+    // Default startup layout (2026-05-15 canonical): Apple II Screen
+    // anchors the left column, unified Disk Library on the right. Y
+    // starts at 90 to clear the menu bar (~28) + toolbar (~32) + a
+    // small breathing margin. Window is ~1568×850 (see main.cpp),
+    // leaving room for the 435 px Disk Library on the right.
+    // `FirstUseEver` only applies on a fresh install — once the user
+    // moves / resizes the window their imgui.ini takes over.
+    ImGui::SetNextWindowPos (ImVec2(5,    90),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1115, 745), ImGuiCond_FirstUseEver);
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
     // `NoMove` so ImGui's default "drag-from-anywhere" doesn't eat
@@ -2092,6 +2094,13 @@ void MainWindow::renderDiskPanelWindow()
 void MainWindow::renderDiskLibraryWindow()
 {
     if (!showDiskLibrary) return;
+
+    // Default position: right column of the curated 1568×850 layout,
+    // flush against the screen window. 435 px wide × 745 px tall =
+    // enough for the 3-tab table + the search/sort header without
+    // scroll overflow on a typical 800+ disk library.
+    ImGui::SetNextWindowPos (ImVec2(1125, 90),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(435,  745), ImGuiCond_FirstUseEver);
 
     pom2::DiskLibrary_ImGui::CurrentlyMounted mounted;
     // Currently-inserted Disk II images (per plugged card). The library

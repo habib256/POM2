@@ -104,12 +104,14 @@ int main(int argc, char* argv[])
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    // 1770×1000 matches the curated default layout (Apple II Screen on
-    // the left ~1080 px, Disk II at x=1095, HDV at x=1430, Emulation
-    // stacked below Disk II). The FirstUseEver pos/size calls in
-    // MainWindow rely on roughly this canvas — height is sized for the
-    // 2×-tall Disk II / HDV library lists.
-    GLFWwindow* window = glfwCreateWindow(1770, 1000, "POM2 v0.5 - Apple II Emulator", nullptr, nullptr);
+    // 1568×850 matches the curated default layout (2026-05-15):
+    // Apple II Screen on the left ~1115 px, unified Disk Library
+    // (5.25 / 3.5 / HDV tabs) on the right ~435 px. Per-card panels
+    // (Disk II / HDV / Disk 3.5") stay hidden by default — the user
+    // opens them on demand via Devices menu / Slot Configuration.
+    // The `FirstUseEver` pos/size calls in MainWindow rely on roughly
+    // this canvas.
+    GLFWwindow* window = glfwCreateWindow(1568, 850, "POM2 v0.5 - Apple II Emulator", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);

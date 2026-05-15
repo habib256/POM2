@@ -39,18 +39,20 @@ const char* profileShortLabel(SystemProfile p) {
 } // anon namespace
 
 Toolbar_ImGui::Result Toolbar_ImGui::render(
-    bool& open, float menuBarHeight, const Snapshot& snap)
+    bool& open, float /*unused*/, const Snapshot& snap)
 {
     Result r;
     if (!open) return r;
 
-    // Pin to the top-left, just below the menu bar. The user toggles the
-    // toolbar via Window → Toolbar; we never let it become a floating
-    // panel (no resize, no move). AlwaysAutoResize fits the row contents
-    // exactly so the toolbar steals the minimum vertical space.
+    // Pin to the top-left, flush against the menu bar. `WorkPos`
+    // already excludes the main menu bar (it's the top-left of the
+    // viewport's work area), so we use it as-is — adding a
+    // `menuBarHeight` offset on top pushed the toolbar one row too
+    // low (fixed 2026-05-15). The `menuBarHeight` parameter is kept
+    // for ABI stability in case the caller can't always feed
+    // `WorkPos`; ignored here.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x,
-                                   vp->WorkPos.y + menuBarHeight));
+    ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, 0));
     const ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoTitleBar     |

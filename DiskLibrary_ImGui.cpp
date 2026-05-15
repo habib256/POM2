@@ -310,7 +310,8 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     Result r;
     if (!open) return r;
 
-    ImGui::SetNextWindowSize(ImVec2(720, 560), ImGuiCond_FirstUseEver);
+    // No SetNextWindowSize here — the host pre-applies a curated default
+    // via SetNextWindowPos/Size (see MainWindow::renderDiskLibraryWindow).
     if (!ImGui::Begin(title, &open)) {
         ImGui::End();
         return r;

@@ -171,9 +171,15 @@ private:
     // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
-    bool         showDiskPanel = true;
-    bool         showDisk35Panel = false;     // off by default; //c+ users flip on
-    bool         showHdvPanel  = true;
+    // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
+    // default since 2026-05-15 — the unified `Disk Library` panel
+    // covers the 1-click insert+boot path for all three formats with
+    // a single window. Users open the per-card panels on demand from
+    // Devices menu when they need the deep state (track number, motor
+    // LED, write-back checkbox, etc.).
+    bool         showDiskPanel   = false;
+    bool         showDisk35Panel = false;
+    bool         showHdvPanel    = false;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
@@ -188,9 +194,11 @@ private:
     // Toolbar pinned just below the menu bar. On by default — toggled
     // via Window → Toolbar; persisted as `show_toolbar`.
     bool         showToolbar         = true;
-    // Unified disk browser (3-tab panel: 5.25/3.5/HDV). Toggled from
-    // Hardware → Disk Library. Persisted as `show_disk_library`.
-    bool         showDiskLibrary     = false;
+    // Unified disk browser (3-tab panel: 5.25/3.5/HDV). On by default
+    // since 2026-05-15 — replaces the per-card library lists as the
+    // primary way to browse + mount images. Toggled from Devices menu.
+    // Persisted as `show_disk_library`.
+    bool         showDiskLibrary     = true;
     // Initialised in the constructor body from SuperSerialCard::kDefaultPort
     // so we don't have to drag SuperSerialCard.h into this header.
     int          sscPortInput       = 0;
