@@ -262,8 +262,43 @@ int main(int argc, char* argv[])
             });
     }
 
+    // Optional auto-boot path for capturing traces / repro headless-ish.
+    // POM2_AUTO_BOOT_HDV=<N>  → after N seconds (default 1), call
+    //                          bootHdvImage() on the main UI thread.
+    // POM2_AUTO_QUIT=<N>      → after N seconds, glfwSetWindowShouldClose
+    //                          so the binary exits cleanly without state.cfg
+    //                          stomping (state IS saved on clean exit).
+    std::thread       autoBootThread;
+    std::atomic<bool> autoBootRequested{false};
+    std::atomic<bool> autoQuitRequested{false};
+    {
+        const char* abEnv = std::getenv("POM2_AUTO_BOOT_HDV");
+        const char* aqEnv = std::getenv("POM2_AUTO_QUIT");
+        if (abEnv || aqEnv) {
+            const int abDelay = abEnv ? std::max(0, std::atoi(abEnv)) : -1;
+            const int aqDelay = aqEnv ? std::max(0, std::atoi(aqEnv)) : -1;
+            autoBootThread = std::thread([&, abDelay, aqDelay]() {
+                if (abDelay >= 0) {
+                    std::this_thread::sleep_for(std::chrono::seconds(abDelay > 0 ? abDelay : 1));
+                    autoBootRequested.store(true);
+                }
+                if (aqDelay >= 0) {
+                    std::this_thread::sleep_for(std::chrono::seconds(aqDelay));
+                    autoQuitRequested.store(true);
+                }
+            });
+        }
+    }
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        if (autoBootRequested.exchange(false)) {
+            mainWindow.bootHdvImage();
+        }
+        if (autoQuitRequested.load()) {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -287,6 +322,7 @@ int main(int argc, char* argv[])
     // destroyed emulator.
     deferredCancelled.store(true, std::memory_order_release);
     if (deferredThread.joinable()) deferredThread.join();
+    if (autoBootThread.joinable()) autoBootThread.join();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

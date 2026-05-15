@@ -1121,11 +1121,22 @@ void MainWindow::onMouseMove(double x, double y)
         return;
     }
 
-    // Accumulate host-pixel deltas into the 8-bit running counter the
-    // MCU firmware reads as IPT_MOUSE_X/Y. Wraps freely — the MCU's
-    // 8-bit subtraction handles deltas across the wrap boundary.
-    mouseAppleX = static_cast<uint8_t>(mouseAppleX + static_cast<int>(dx));
-    mouseAppleY = static_cast<uint8_t>(mouseAppleY + static_cast<int>(dy));
+    // Scale host-pixel deltas to quadrature ticks. The Apple II widget
+    // is rendered at integer `pixelScale`, so 1 quadrature tick =
+    // `pixelScale` host pixels visually. Dividing keeps the Apple
+    // cursor in lockstep with the host cursor on screen. Accumulate
+    // the fractional remainder so slow motion isn't lost to integer
+    // truncation. Final 8-bit wrap is what the MCU's diff-subtraction
+    // in `MouseCard::updateAxis` expects.
+    const double sx = (pixelScale > 0) ? static_cast<double>(pixelScale) : 1.0;
+    mouseSubAppleX += dx / sx;
+    mouseSubAppleY += dy / sx;
+    const int ticksX = static_cast<int>(mouseSubAppleX);
+    const int ticksY = static_cast<int>(mouseSubAppleY);
+    mouseSubAppleX -= ticksX;
+    mouseSubAppleY -= ticksY;
+    mouseAppleX = static_cast<uint8_t>(mouseAppleX + ticksX);
+    mouseAppleY = static_cast<uint8_t>(mouseAppleY + ticksY);
     mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
 }
 

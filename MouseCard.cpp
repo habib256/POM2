@@ -10,6 +10,10 @@
 #include "MouseCard.h"
 #include "Logger.h"
 
+#include <atomic>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 
@@ -21,6 +25,32 @@ constexpr uint8_t MCU_PB_X0     = 0x01;     // X direction (0=left, 1=right)
 constexpr uint8_t MCU_PB_Y0     = 0x04;     // Y direction (0=up,   1=down)
 constexpr uint8_t MCU_PB_Y1     = 0x08;     // Y gate
 constexpr uint8_t MCU_PB_BUTTON = 0x80;     // active LOW (0 = pressed)
+
+// Diagnostic trace — enabled by `POM2_MOUSE_TRACE=1`. Logs every PIA
+// register access (from the 6502) and every slot-IRQ transition with
+// the MCU's PC. Capped at kTraceMax events to avoid log flooding.
+bool traceEnabled()
+{
+    static const bool e = []() {
+        const char* env = std::getenv("POM2_MOUSE_TRACE");
+        return env && env[0] != '\0' && env[0] != '0';
+    }();
+    return e;
+}
+constexpr int kTraceMax = 4000;
+std::atomic<int> g_traceCount { 0 };
+
+void mtrace(const char* fmt, ...)
+{
+    if (!traceEnabled()) return;
+    if (g_traceCount.fetch_add(1, std::memory_order_relaxed) >= kTraceMax) return;
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    pom2::log().info("MouseTrace", buf);
+}
 
 // Sub-cycle ratio: MCU clock = 2× Apple II clock.
 constexpr int MCU_CLOCK_NUMERATOR   = 2;
@@ -105,12 +135,28 @@ uint8_t MouseCard::deviceSelectRead(uint8_t low4)
     // MAME `read_c0nx`: forward straight to the PIA, masking to the 2
     // register-select bits. The other 14 bits of the device-select
     // window mirror the PIA registers.
-    return pia.read(static_cast<uint8_t>(low4 & 0x03));
+    const uint8_t reg = static_cast<uint8_t>(low4 & 0x03);
+    const uint8_t v = pia.read(reg);
+    if (traceEnabled()) {
+        static const char* kReg[4] = { "PA/DDRA", "CRA", "PB/DDRB", "CRB" };
+        mtrace("R  %s = $%02X  [DDRA=%02X DDRB=%02X CRA=%02X CRB=%02X bank=%X]",
+               kReg[reg], v,
+               pia.getDdrA(), pia.getDdrB(), pia.getCRA(), pia.getCRB(),
+               static_cast<unsigned>(romBank >> 8));
+    }
+    return v;
 }
 
 void MouseCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
-    pia.write(static_cast<uint8_t>(low4 & 0x03), v);
+    const uint8_t reg = static_cast<uint8_t>(low4 & 0x03);
+    if (traceEnabled()) {
+        static const char* kReg[4] = { "PA/DDRA", "CRA", "PB/DDRB", "CRB" };
+        mtrace("W  %s = $%02X  [DDRA=%02X DDRB=%02X CRA=%02X CRB=%02X]",
+               kReg[reg], v,
+               pia.getDdrA(), pia.getDdrB(), pia.getCRA(), pia.getCRB());
+    }
+    pia.write(reg, v);
 }
 
 uint8_t MouseCard::slotRomRead(uint8_t low8)
@@ -129,7 +175,21 @@ void MouseCard::advanceCycles(int cycles)
     mcuCycleAccum += cycles * MCU_CLOCK_NUMERATOR;
     const int mcuCycles = mcuCycleAccum / MCU_CLOCK_DENOMINATOR;
     mcuCycleAccum -= mcuCycles * MCU_CLOCK_DENOMINATOR;
-    if (mcuCycles > 0) (void)mcu.run(mcuCycles);
+    if (mcuCycles > 0) {
+        const uint16_t pcBefore = mcu.getPC();
+        (void)mcu.run(mcuCycles);
+        if (traceEnabled()) {
+            // Log only on PC change so we can see *where* the MCU is, not
+            // every spin iteration.
+            static uint16_t lastPc = 0xFFFF;
+            const uint16_t pcAfter = mcu.getPC();
+            if (pcAfter != lastPc) {
+                mtrace("MCU PC -> $%04X  (was $%04X, mcuCyc=%d)",
+                       pcAfter, lastPc, mcuCycles);
+                lastPc = pcAfter;
+            }
+        }
+    }
 }
 
 void MouseCard::onReset()
@@ -172,7 +232,12 @@ void MouseCard::onPiaPortBOut(uint8_t v)
     //   PB0       → "sync latch" (not modelled)
     romBank = static_cast<uint16_t>(v & 0x0E) << 7;
 
-    portCtoMcu = static_cast<uint8_t>((v >> 4) & 0x0F);
+    const uint8_t newPc = static_cast<uint8_t>((v >> 4) & 0x0F);
+    if (traceEnabled() && newPc != portCtoMcu) {
+        mtrace("onPiaPortBOut: v=$%02X -> portCtoMcu $%02X -> $%02X  (PIA out_b=$%02X ddr_b=$%02X)",
+               v, portCtoMcu, newPc, pia.getOutB(), pia.getDdrB());
+    }
+    portCtoMcu = newPc;
     mcu.setPortInput(2, portCtoMcu);
 }
 
@@ -191,6 +256,12 @@ void MouseCard::onMcuPortWrite(int port)
         // MCU Port B output: bit 6 = slot IRQ (active low).
         const uint8_t pins = mcu.getPortPins(1);
         const bool assert = !(pins & 0x40);
+        if (traceEnabled() && assert != slotIrqAsserted()) {
+            mtrace("IRQ %s  pins=$%02X  MCU PC=$%04X  PIA-PA=$%02X PIA-PB=$%02X",
+                   assert ? "ASSERT" : "CLEAR ",
+                   pins, mcu.getPC(),
+                   pia.getPortAOutput(), pia.getPortBOutput());
+        }
         assertIrq(assert);
         return;
     }
@@ -209,7 +280,18 @@ uint8_t MouseCard::onMcuPortRead(int port)
 {
     if (port == 1) return mcuPortBRead();
     if (port == 0) return portAtoMcu;
-    if (port == 2) return portCtoMcu;
+    if (port == 2) {
+        if (traceEnabled()) {
+            static uint8_t lastSeen = 0xAA;
+            if (lastSeen != portCtoMcu) {
+                lastSeen = portCtoMcu;
+                mtrace("MCU PortC <- portCtoMcu=$%02X  (PIA out_b=$%02X ddr_b=$%02X composite=$%02X)",
+                       portCtoMcu, pia.getOutB(), pia.getDdrB(),
+                       pia.getPortBOutput());
+            }
+        }
+        return portCtoMcu;
+    }
     return 0xFF;
 }
 

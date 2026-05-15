@@ -72,6 +72,11 @@ public:
     void onMouseMove  (double x, double y);
     void onMouseButton(int button, int action);
 
+    // HDV helper — cold-boot through the slot-5 ProDOS block-device ROM.
+    // Public so main() can drive it from `POM2_AUTO_BOOT_HDV` for headless
+    // trace capture without going through the File menu.
+    void bootHdvImage();
+
     // Apple II memory map region — used by the bar / grid widgets in
     // MainWindow_MemoryMaps.cpp. Public so file-local helpers in that TU
     // can take a `const std::vector<MemRegion>&`.
@@ -203,6 +208,11 @@ private:
     double  lastMouseHostY = 0;
     bool    mouseInited    = false;
     bool    mouseButtonHeld = false;
+    // Sub-tick accumulator: dx host pixels / pixelScale = quadrature
+    // ticks. We'd lose fractional motion if we truncated each event
+    // (pixelScale=2 would drop every dx=1), so carry the remainder.
+    double  mouseSubAppleX = 0.0;
+    double  mouseSubAppleY = 0.0;
 
     /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
     /// instantiating each card with its slot number. Falls back to legacy
@@ -263,9 +273,6 @@ private:
     // Paste helpers — feed text into the keyboard buffer.
     void pasteFromClipboard();
     void pasteFromFile(const std::string& path);
-
-    // HDV helper — cold-boot through the slot-5 ProDOS block-device ROM.
-    void bootHdvImage();
 
     // Write the current display framebuffer to ./screenshot_NNN.ppm. The
     // sequence number auto-increments to avoid overwriting prior captures
