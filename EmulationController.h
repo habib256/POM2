@@ -10,10 +10,13 @@
 
 #include "AudioDevice.h"
 #include "CassetteDevice.h"
+#include "Disk35Image.h"
 #include "FloppySoundDevice.h"
 #include "IWMDevice.h"
 #include "M6502.h"
 #include "Memory.h"
+#include "SmartPortHub.h"
+#include "Sony35Drive.h"
 #include "SpeakerDevice.h"
 
 #include <atomic>
@@ -38,6 +41,11 @@ public:
     FloppySoundDevice& floppySound() { return *floppy; }
     AudioDevice&       audio()       { return *audioDev; }
     pom2::IWMDevice&   iwm()         { return *iwmDev; }
+    pom2::SmartPortHub& smartPortHub() { return *hub; }
+    pom2::Sony35Drive&  sony35Internal() { return *drive35Int; }
+    pom2::Sony35Drive&  sony35External() { return *drive35Ext; }
+    pom2::Disk35Image&  disk35Internal()  { return *image35Int; }
+    pom2::Disk35Image&  disk35External()  { return *image35Ext; }
 
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
     bool loadTape (const std::string& path);
@@ -84,7 +92,12 @@ private:
     std::unique_ptr<SpeakerDevice>     spk;
     std::unique_ptr<FloppySoundDevice> floppy;
     std::unique_ptr<AudioDevice>       audioDev;
-    std::unique_ptr<pom2::IWMDevice>   iwmDev;
+    std::unique_ptr<pom2::IWMDevice>    iwmDev;
+    std::unique_ptr<pom2::Disk35Image>  image35Int;
+    std::unique_ptr<pom2::Disk35Image>  image35Ext;
+    std::unique_ptr<pom2::Sony35Drive>  drive35Int;
+    std::unique_ptr<pom2::Sony35Drive>  drive35Ext;
+    std::unique_ptr<pom2::SmartPortHub> hub;
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};

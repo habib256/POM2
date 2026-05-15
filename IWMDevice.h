@@ -48,12 +48,23 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 
 namespace pom2 {
 
 class IWMDevice
 {
 public:
+    /// Host callback shapes — mirror MAME `iwm.cpp::phases_cb` /
+    /// `devsel_cb` / `sel35_cb`. Wired by EmulationController (via the
+    /// SmartPort hub) so the active 3.5" Sony drive receives phase
+    /// strobes and the active drive can be reselected when SEL bit
+    /// flips. Each may be left nullptr; the IWM behaves as if the host
+    /// didn't connect that pin.
+    using PhasesCb = std::function<void(uint8_t phases)>;
+    using DevselCb = std::function<void(uint8_t devsel)>;
+    using Sel35Cb  = std::function<void(bool sel35)>;
+
     IWMDevice();
 
     /// Power-on reset. Mirrors MAME `iwm_device::device_reset` (iwm.cpp:48).
@@ -96,6 +107,22 @@ public:
     /// the IWM's MODE_DELAY drain.
     bool isActive() const { return active_ == MODE_ACTIVE; }
     bool isIdle()   const { return active_ == MODE_IDLE; }
+
+    /// Wire the MAME-style callbacks. `EmulationController` installs
+    /// these once at construction; tests may install their own.
+    void setPhasesCallback(PhasesCb cb) { phasesCb_ = std::move(cb); }
+    void setDevselCallback(DevselCb cb) { devselCb_ = std::move(cb); }
+    void setSel35Callback (Sel35Cb  cb) { sel35Cb_  = std::move(cb); }
+
+    /// SEL bit (m_control bit 5) exposed to the host so 3.5" drives
+    /// can fold it into their register-select bus. Mirrors MAME
+    /// `iwm_device::sel_w` query (it lives inside `control` there;
+    /// here we expose the snapshot for `Sony35Drive::setSel`).
+    bool sel() const { return (control_ & 0x20) != 0; }
+
+    /// 4-bit phase register snapshot (m_phases in MAME). Bits 0..3 =
+    /// CA0/CA1/CA2/LSTRB on a 3.5" Sony drive.
+    uint8_t phases() const { return phases_; }
 
     // Register accessors for inspectors / save state (`m_data`,
     // `m_mode`, etc. in MAME).
@@ -182,6 +209,14 @@ private:
     uint8_t rsh_       = 0x00;
     uint8_t wsh_       = 0x00;
     uint8_t devsel_    = 0;
+    uint8_t phases_    = 0;
+
+    /// Host callbacks — set by the SmartPort hub. Lazy nullptr-check
+    /// at fire site keeps the hot path branch-free when unwired (the
+    /// SmartPort hub is only attached on //c+ profiles).
+    PhasesCb phasesCb_;
+    DevselCb devselCb_;
+    Sel35Cb  sel35Cb_;
 
     // ── Internal helpers (MAME line refs in the .cpp port) ──────────
 

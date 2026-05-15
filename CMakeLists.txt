@@ -62,6 +62,7 @@ set(SOURCES
     CliDispatcher.cpp
     ClockCard.cpp
     Disassembler6502.cpp
+    Disk35Image.cpp
     DiskController_ImGui.cpp
     DiskIICard.cpp
     DiskImage.cpp
@@ -69,6 +70,8 @@ set(SOURCES
     FloppySoundDevice.cpp
     HdvController_ImGui.cpp
     IWMDevice.cpp
+    SmartPortHub.cpp
+    Sony35Drive.cpp
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
     LeChatMauveCard.cpp
@@ -104,9 +107,12 @@ set(HEADERS
     CliDispatcher.h
     ClockCard.h
     Disassembler6502.h
+    Disk35Image.h
     DiskController_ImGui.h
     DiskIICard.h
     DiskImage.h
+    SmartPortHub.h
+    Sony35Drive.h
     EmulationController.h
     FloppySoundDevice.h
     FloppySoundSink.h
@@ -217,11 +223,14 @@ add_executable(pom2_headless
     AudioDevice.cpp
     CassetteDevice.cpp
     ClockCard.cpp
+    Disk35Image.cpp
     DiskImage.cpp
     DiskIICard.cpp
     EmulationController.cpp
     FloppySoundDevice.cpp
     IWMDevice.cpp
+    SmartPortHub.cpp
+    Sony35Drive.cpp
     LeChatMauveCard.cpp
     M6502.cpp
     Memory.cpp

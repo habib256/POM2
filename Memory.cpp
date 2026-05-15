@@ -4,6 +4,7 @@
 #include "Memory.h"
 #include "CassetteDevice.h"
 #include "IWMDevice.h"
+#include "SmartPortHub.h"
 #include "Logger.h"
 #include "M6502.h"
 #include "SpeakerDevice.h"
@@ -1209,9 +1210,11 @@ uint8_t Memory::migRead(uint16_t migOffset)
     }
     if (migOffset >= 0x240 && migOffset < 0x260) {
         migHdSel = false;       // 3.5" head 0
+        if (smartPortHub) smartPortHub->setMigHdSel(false);
     }
     if (migOffset >= 0x260 && migOffset < 0x280) {
         migHdSel = true;        // 3.5" head 1
+        if (smartPortHub) smartPortHub->setMigHdSel(true);
     }
     if (migOffset == 0x2A0) {
         migPage = 0;
@@ -1233,10 +1236,12 @@ void Memory::migWrite(uint16_t migOffset, uint8_t value)
     }
     if (migOffset >= 0x80 && migOffset < 0xA0) {
         migIntDrive = true;
+        if (smartPortHub) smartPortHub->setMigIntDrive(true);
         return;
     }
     if (migOffset >= 0xC0 && migOffset < 0xE0) {
         migIntDrive = false;
+        if (smartPortHub) smartPortHub->setMigIntDrive(false);
         return;
     }
     if (migOffset >= 0x200 && migOffset < 0x220) {
@@ -1248,8 +1253,14 @@ void Memory::migWrite(uint16_t migOffset, uint8_t value)
         migPage = static_cast<uint16_t>((migPage + 0x20) & 0x7FF);
         return;
     }
-    if (migOffset >= 0x240 && migOffset < 0x260) return;   // 3.5" m_35sel=false
-    if (migOffset >= 0x260 && migOffset < 0x280) return;   // 3.5" m_35sel=true
+    if (migOffset >= 0x240 && migOffset < 0x260) {         // 3.5" m_35sel=false
+        if (smartPortHub) smartPortHub->setMig35Sel(false);
+        return;
+    }
+    if (migOffset >= 0x260 && migOffset < 0x280) {         // 3.5" m_35sel=true
+        if (smartPortHub) smartPortHub->setMig35Sel(true);
+        return;
+    }
     if (migOffset == 0x2A0) {
         migPage = 0;
         return;

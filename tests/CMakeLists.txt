@@ -46,6 +46,9 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp

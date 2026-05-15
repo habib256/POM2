@@ -42,7 +42,7 @@ class CassetteDevice;
 class M6502;
 class SpeakerDevice;
 
-namespace pom2 { class IWMDevice; }
+namespace pom2 { class IWMDevice; class SmartPortHub; }
 
 class Memory
 {
@@ -86,6 +86,12 @@ public:
     /// without rebuilding.
     void setIWMAuthoritative(bool on) { iwmAuthoritative = on; }
     bool isIWMAuthoritative() const   { return iwmAuthoritative; }
+
+    /// //c+ SmartPort hub — owned by EmulationController, wired here so
+    /// MIG state changes ($C0CC/$C0CE windows) can call
+    /// `recalc_active_device` per MAME `apple2e.cpp:638-679`. Non-owning.
+    void setSmartPortHub(pom2::SmartPortHub* hub) { smartPortHub = hub; }
+    pom2::SmartPortHub* getSmartPortHub() const   { return smartPortHub; }
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
     /// SlotBus. Memory routes $C080-$CFFF accesses through it.
@@ -370,7 +376,8 @@ private:
     // //c / //c+ on-board IWM controller (non-owning). Mirrors $C0E0-
     // $C0EF accesses for the state machine; see `setIWM`. Lives in
     // EmulationController, attached/detached around profile switches.
-    pom2::IWMDevice* iwmDevice = nullptr;
+    pom2::IWMDevice*    iwmDevice     = nullptr;
+    pom2::SmartPortHub* smartPortHub  = nullptr;
     // Default true: the IWM is authoritative on iicHasAltBank
     // profiles — `$C0EC/ED/EE/EF` reads return what the MAME-faithful
     // state machine produced from POM2's DiskImage flux stream (scaled

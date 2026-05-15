@@ -56,12 +56,30 @@ EmulationController::EmulationController()
         mem.setIWMAuthoritative(env[0] != '0');
     }
 
+    // //c+ SmartPort 3.5" hub. Holds the two Sony 3.5" drive objects
+    // plus the drive-selection state machine. MIG state changes
+    // (Memory $C0CC / $C0CE windows on bank-1 alt firmware) route
+    // through it; the IWM's phases/devsel callbacks are wired here so
+    // 3.5" drives receive command strobes. Off-path on II/II+/IIe/
+    // 16K-//c profiles — the hub is constructed but Memory never
+    // routes traffic into it unless `iicHasAltBank` is set.
+    image35Int = std::make_unique<pom2::Disk35Image>();
+    image35Ext = std::make_unique<pom2::Disk35Image>();
+    drive35Int = std::make_unique<pom2::Sony35Drive>();
+    drive35Ext = std::make_unique<pom2::Sony35Drive>();
+    hub        = std::make_unique<pom2::SmartPortHub>();
+    drive35Int->setImage(image35Int.get());
+    drive35Ext->setImage(image35Ext.get());
+    hub->attach(iwmDev.get());
+    hub->setSony35(drive35Int.get(), drive35Ext.get());
+
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
     mem.setCassetteDevice(tape.get());
     mem.setSpeakerDevice(spk.get());
     mem.setCpu(&processor);
     mem.setIWM(iwmDev.get());
+    mem.setSmartPortHub(hub.get());
 }
 
 EmulationController::~EmulationController()
@@ -80,10 +98,19 @@ EmulationController::~EmulationController()
     mem.setSpeakerDevice(nullptr);
     mem.setCpu(nullptr);
     mem.setIWM(nullptr);
+    mem.setSmartPortHub(nullptr);
     tape.reset();
     spk.reset();
     floppy.reset();
     iwmDev.reset();
+    // Order matters: hub holds raw pointers to the drives, drives hold
+    // raw pointers to the images. Tear down in reverse-attach order so
+    // no dangling pointers escape into the audio/UI thread.
+    hub.reset();
+    drive35Int.reset();
+    drive35Ext.reset();
+    image35Int.reset();
+    image35Ext.reset();
 }
 
 // ─── Cassette transport ───────────────────────────────────────────────────
@@ -129,6 +156,7 @@ void EmulationController::hardReset()
     mem.slotBus().reset();
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
+    if (hub)    hub->reset();
     processor.hardReset();
     pom2::log().info("Emul", "Hard reset");
 }
@@ -156,6 +184,7 @@ void EmulationController::coldBoot()
     mem.resetSoftSwitches();
     mem.slotBus().reset();
     if (iwmDev) iwmDev->reset();
+    if (hub)    hub->reset();
     processor.hardReset();
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
@@ -169,6 +198,7 @@ void EmulationController::bootFromSlot(int slot)
     mem.slotBus().reset();
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
+    if (hub)    hub->reset();
     // Prime text page 1 with $A0 (space + high bit set) — what the Monitor
     // ROM's HOME routine would write. We force PC into the slot ROM here
     // instead of going through the Monitor cold-boot (which would scan

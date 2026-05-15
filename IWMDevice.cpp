@@ -73,6 +73,7 @@ void IWMDevice::reset()
     fluxWriteCount_   = 0;
     rwBitCount_       = 0;
     devsel_           = 0;
+    phases_           = 0;
     q3ClockActive_    = false;
     syncUpdate_       = 0;
     asyncUpdate_      = 0;
@@ -167,12 +168,32 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
     sync(now_);
     if (offset < 8) {
         // Phases (offset 0..7 → phase bits 0..3, even=clear odd=set).
-        // POM2's DiskIICard handles the head-stepper effect of these;
-        // here we just mirror the bit so MAME-style debug dumps line up.
+        // POM2's DiskIICard handles the 5.25" head-stepper effect of
+        // these; in addition, we forward the 4-bit pattern to the
+        // host-installed `phasesCb_` so a Sony 3.5" drive (the //c+
+        // SmartPort target) can interpret them as a CA0/CA1/CA2/LSTRB
+        // command bus. MAME `iwm.cpp:147-152` updates `m_phases` then
+        // calls `update_phases()` which in turn fires `phases_cb`.
+        const uint8_t bit = static_cast<uint8_t>(1u << ((offset >> 1) & 3));
+        const uint8_t prev = phases_;
+        if (offset & 1) phases_ |=  bit;
+        else            phases_ &= ~bit;
+        if (phases_ != prev && phasesCb_) phasesCb_(phases_);
         (void)data;
     } else {
+        const uint8_t prevControl = control_;
         if (offset & 1) control_ |=  (1u << ((offset >> 1) & 7));
         else            control_ &= ~(1u << ((offset >> 1) & 7));
+        // SEL (bit 5) is exposed to the host so 3.5" drives can fold
+        // it into their register-select bus on the next phase strobe.
+        // MAME `iwm.cpp` doesn't expose SEL via a dedicated callback —
+        // it's read by `m_floppy` on every `seek_phase_w` from the
+        // host's `update_phases()`. POM2 mirrors the same effect by
+        // notifying `phasesCb_` whenever SEL transitions, so the
+        // active 3.5" drive can re-evaluate its sense address.
+        if (((prevControl ^ control_) & 0x20) && phasesCb_) {
+            phasesCb_(phases_);
+        }
     }
 
     // Activate / deactivate based on m_control bit 4 (motor enable).
@@ -237,13 +258,15 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
         }
     }
 
-    // Devsel update (MAME line 209-213).
+    // Devsel update (MAME line 209-213). POM2 now fires the optional
+    // host callback so the SmartPort hub can call
+    // `recalc_active_device` (MAME `apple2e.cpp:638-679`).
     const uint8_t newDevsel = (active_ != MODE_IDLE)
         ? ((control_ & 0x20) ? 2 : 1)
         : 0;
     if (newDevsel != devsel_) {
         devsel_ = newDevsel;
-        // m_devsel_cb(devsel_) — POM2 binding deferred.
+        if (devselCb_) devselCb_(devsel_);
     }
 
     // Read-side state reset (MAME line 214-215).
