@@ -117,6 +117,23 @@ void MainWindow::renderSlotConfigPanel()
 
     const bool mouseAvailable = mouseRomsPresent();
 
+    // ── AUX slot (IIe-class only) ─────────────────────────────────────
+    // On real //e/c/c+ the 80-column text card lives in the dedicated
+    // AUX slot, not one of the 7 expansion slots — its firmware lives
+    // in the IIe ROM at $C300 (mapped when SLOTC3ROM=0) and its 1 KB
+    // of aux text RAM is exposed via the 80STORE/RAMRD/RAMWRT paging
+    // switches. We render it here as a non-editable row so it's
+    // visible in the slot panel even though the user can't swap it.
+    if (pom2::profileConfig(activeProfile).iieMode) {
+        ImGui::BeginDisabled(true);
+        char auxBuf[64];
+        std::snprintf(auxBuf, sizeof(auxBuf),
+                      "Extended 80-Column Card (built-in, $C300 firmware)");
+        ImGui::LabelText("AUX slot", "%s", auxBuf);
+        ImGui::EndDisabled();
+        ImGui::Spacing();
+    }
+
     // ── Per-slot dropdowns ────────────────────────────────────────────
     // "diskii" is multi-instance (option C 2026-05-15) — never flagged
     // as a duplicate. Every other card type is single-instance because
