@@ -27,6 +27,7 @@
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
 #include "Settings.h"
+#include "SmartPortCard.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
@@ -61,7 +62,6 @@ MainWindow::MainWindow(bool forceIIPlus)
       memViewer      (std::make_unique<MemoryViewer_ImGui>(&controller->memory())),
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
-      diskPanel      (std::make_unique<pom2::DiskController_ImGui>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
@@ -620,6 +620,17 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugSmartPort35 = [&](int s) {
+        // Liron-class card: borrow the EmulationController's existing
+        // Disk35Image pair so the Disk 3.5" panel (and the //c+ on-board
+        // hub on dual-config setups) see exactly the same images.
+        auto card = std::make_unique<pom2::SmartPortCard>(
+            s,
+            &controller->disk35Internal(),
+            &controller->disk35External());
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMouse = [&](int s) {
         // Mouse Card (MAME-faithful 68705P3 + 6821 PIA + Apple ROMs).
         // Both Apple ROMs are required — without them the card has no
@@ -672,6 +683,7 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
         else if (kind == "mockingboard") plugMockingboard(s);
+        else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",
                 "Slot " + std::to_string(s) + " has unknown card type '" +

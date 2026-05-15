@@ -112,11 +112,24 @@ private:
     std::unique_ptr<MemoryViewer_ImGui>           memViewer;
     std::unique_ptr<pom2::Settings>               settings;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
-    std::unique_ptr<pom2::DiskController_ImGui>   diskPanel;
+    // One Disk II controller-panel per plugged DiskIICard (option C
+    // 2026-05-15: DiskII can now appear in multiple slots, so the user
+    // can wire DiskII slot 6 + DiskII slot 4 = 4 drives 5.25"). The
+    // vector is rebuilt by `plugSlotsFromSettings`; index N corresponds
+    // to `diskCards[N]`. `diskPanel` keeps a reference to the *primary*
+    // (lowest-slot) panel so legacy menu wiring stays unchanged.
+    std::vector<std::unique_ptr<pom2::DiskController_ImGui>> diskPanels;
+    pom2::DiskController_ImGui*                              diskPanel = nullptr;
     std::unique_ptr<pom2::Disk35Controller_ImGui> disk35Panel;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
+    // All plugged Disk II cards, sorted by slot ascending. `diskCard`
+    // (below) is the primary alias = `diskCards.empty() ? nullptr :
+    // diskCards.front()`. Most legacy code paths use `diskCard` directly
+    // (auto-turbo, AI control attach, menu Eject); the panel render loop
+    // iterates `diskCards`.
+    std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus

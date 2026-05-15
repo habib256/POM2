@@ -836,6 +836,27 @@ add_test(NAME woz_bit_timing_smoke COMMAND test_woz_bit_timing
 set_tests_properties(woz_bit_timing_smoke PROPERTIES TIMEOUT 10)
 
 
+# ─── SmartPort card (//e Liron-class) protocol smoke test ────────────────
+# Pins drive-select, streaming reads, status byte, and write-back round-
+# trip on the new SmartPortCard. Disk35Image only — no DiskIICard / IWM
+# dependency since this card path bypasses the bit-level IWM.
+add_executable(test_smartport_card
+    smartport_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_smartport_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+
+add_test(NAME smartport_card_smoke COMMAND test_smartport_card
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(smartport_card_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── Disk II two-drive routing smoke test ────────────────────────────────
 # Pins drive_select ($C0EA / $C0EB) routing the LSS and the legacy 32-cycle
 # gate to the correct image, plus per-drive head-position independence.

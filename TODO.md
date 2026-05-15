@@ -196,6 +196,30 @@ MODE_SHIFT lax, etc.) — celles-ci ne sont **pas** des bugs, leur
 
 ## Changelog (résolu cette session, 2026-05-14/15)
 
+**SmartPortCard 3.5" pluggable slot //e** : nouveau
+`SmartPortCard.{h,cpp}` (~280 L, slot 5 par défaut) qui expose les 2
+`Disk35Image` d'`EmulationController` en block-device ProDOS via slot
+ROM signée + dispatcher $Cn50 + soft-switches $C0nX. Driver
+$Cn50 examine `$43` bit-7 pour router drive 1 / drive 2. PR#N boote
+drive 1. Dropdown slot config "SmartPort 3.5\"". Pinné par
+`smartport_card_smoke_test.cpp` (ROM signature, drive-select,
+streaming I/O, write-back roundtrip).
+
+**Sons mécaniques 3.5"** : `Sony35Drive` reçoit un
+`FloppySoundSink*` (réutilise le `FloppySoundDevice` du Disk II) ;
+`seekPhaseW(uint8_t, uint64_t emuCycles)` propagé via
+`SmartPortHub` depuis `IWMDevice::emuCycles()`. `strobeWriteRegister`
+émet step / motor on / motor off / click avec stamping cycle CPU
+émulé (parité MAME). `mount35` / `eject35` côté
+`EmulationController` émettent un click via `emitInsertClick()`.
+
+**Disk35 panel UX** : LED moteur rouge par drive, marqueur `* ` sur
+les images chargées, librairie 540 px, write-back checkbox per-drive
++ indicateur "(unsaved)", left-click = mount + cold boot, right-click
+= menu contextuel drive 1/2 × boot/no-boot. `Disk35Image::isWriteBackEnabled()`
+ajouté pour parité accessor avec Disk II.
+
+
 **cc65-Chess.po hang après `LOADING CHESS`** : résolu 2026-05-15. Les
 fixes round 1 (`kSyncMinRun=5` + `revolutionStartLssCycle` per-drive)
 combinés aux corrections de chemin de boot (B1-B5) suffisent
@@ -267,6 +291,55 @@ Coordination des chemins de boot solidifiée :
 - **B4** Reset RamWorks bank → 0 (MAME `device_reset` parity).
 - **B5** RamWorks gate strict sur profil `AppleIIe` (pas //c/c+ qui
   n'ont pas d'aux slot).
+
+## SmartPort — extensions possibles
+
+La carte SmartPort 3.5" branchable en slot //e est en place
+(`SmartPortCard`, 2 unités block-device, smoke test pinné). Pistes
+restantes pour étendre la couverture matérielle :
+
+- [ ] 🟡 **DiskII multi-instances dans plusieurs slots**. Aujourd'hui
+      `MainWindow_Slots.cpp` interdit le doublon de type ; lever cette
+      contrainte uniquement pour `"diskii"` permet la config historique
+      `Disk II slot 6 + Disk II slot 4` (= 4 drives 5.25" sur le même
+      //e). Demande un refactor mineur de `diskCard` en
+      `std::vector<DiskIICard*>` et per-slot settings (`disk_path_slotN`).
+      C'est l'**option C** discutée 2026-05-15 — la plus accessible,
+      ROI immédiat pour les utilisateurs DOS 3.3 multi-volumes.
+- [ ] 🟢 **UDC (Universal Disk Controller, Apple 1991)** — carte
+      « SmartPort 4 baies hétérogènes » : chaque baie peut être
+      `Disk35Image` (3.5"), `DiskImage` (5.25") ou
+      `ProDOSHardDiskCard`-backed (block device générique). Refactor
+      du protocole `SmartPortCard` pour typer chaque unité ; ProDOS
+      voit jusqu'à 4 devices sur le slot. ROM UDC pas dans le domaine
+      public — partir de la spec SmartPort + reverse depuis Apple
+      Tech Note #SmartPort. Faible demande en pratique : 99% des
+      configs réelles utilisaient Liron + Disk II en 2 slots séparés.
+- [ ] 🟢 **Slinky / RamFAST RAM disk SmartPort**. Une carte avec
+      512 KB-32 MB de RAM exposés en device-bloc SmartPort. Trivial
+      sur le papier (juste un buffer en `std::vector<uint8_t>` +
+      protocole bloc identique à `SmartPortCard`) mais utilité
+      limitée vs RamWorks III déjà supporté.
+- [ ] 🟢 **Apple II SCSI Card** (Apple Part 670-0144). Branche un
+      vrai `Apple Hard Disk 20SC` ou n'importe quel SCSI ID. ROM
+      Apple-copyright disponible mais le protocole SCSI complet est
+      lourd ; pour ProDOS l'équivalent fonctionnel est déjà
+      `ProDOSHardDiskCard` (.hdv block device sans le SCSI réel
+      par dessus).
+- [ ] 🟢 **Apple II Disk 3.5" Controller — passage IWM-level**.
+      `SmartPortCard` actuel est block-device (passe par
+      `Disk35Image::readBlock/writeBlock`). Le vrai Liron embarque
+      un IWM ; passer le slot card par le `IWMDevice` +
+      `Sony35Drive` existants permettrait de jouer des images flux
+      copy-protected sur //e (rare mais existe — ex: « Mr. Robot »
+      en .woz Sony). Demande de refactoriser `IWMDevice` pour qu'il
+      puisse vivre attaché à un slot card et pas seulement au //c+
+      on-board.
+- [ ] 🟢 **Caches read/write per-block dans `SmartPortCard`** —
+      le code actuel utilise `static thread_local` pour les buffers
+      de bloc lu/écrit ; OK pour un seul thread CPU mais à
+      remplacer par des membres de classe si on multi-instance la
+      carte. Latent jusqu'à ce qu'on plug 2 SmartPort différentes.
 
 ## Architecture & qualité du code (audit 2026-05-15)
 

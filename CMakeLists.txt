@@ -90,6 +90,7 @@ set(SOURCES
     RomLoader.cpp
     Settings.cpp
     SlotBus.cpp
+    SmartPortCard.cpp
     SnapshotIO.cpp
     SpeakerDevice.cpp
     SuperSerialCard.cpp
@@ -138,6 +139,7 @@ set(HEADERS
     RomLoader.h
     SlotBus.h
     SlotPeripheral.h
+    SmartPortCard.h
     SnapshotIO.h
     SpeakerDevice.h
     SuperSerialCard.h

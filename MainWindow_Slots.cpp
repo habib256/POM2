@@ -57,6 +57,12 @@ constexpr CardType kCardTypes[] = {
     { "",             "(empty)"           },
     { "diskii",       "Disk II"           },
     { "hdv",          "ProDOS HDV"        },
+    // SmartPort 3.5" — Apple Disk 3.5 Controller card (the "Liron" /
+    // 670-0186). Brings 2× Sony 800K drives to a //e or II+ via the
+    // standard ProDOS block-device protocol, no IWM. The Disk 3.5"
+    // panel reads the same Disk35Image objects whether they're driven
+    // by this card (any non-//c+ profile) or by the //c+ on-board hub.
+    { "smartport35",  "SmartPort 3.5\""   },
     { "ssc",          "Super Serial"      },
     { "clock",        "Clock (ProDOS)"    },
     { "chatmauve",    "Le Chat Mauve"     },
