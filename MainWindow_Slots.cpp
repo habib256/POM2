@@ -147,8 +147,35 @@ void MainWindow::renderSlotConfigPanel()
         return false;
     };
 
+    const auto& profileCfg = pom2::profileConfig(activeProfile);
+
     bool anyDuplicate = false;
     for (int s = 1; s <= 7; ++s) {
+        char label[32];
+        std::snprintf(label, sizeof(label), "Slot %d", s);
+
+        // Profile-defined built-in slot — render read-only with a badge.
+        // The card key is forced regardless of user edits (plugSlotsFromSettings
+        // applies the same override); we sync the draft entry so an Apply
+        // cycle persists the locked value if the user had something stale
+        // saved in settings from a previous profile.
+        if (profileCfg.builtInSlots[s].has_value()) {
+            const auto& bis = *profileCfg.builtInSlots[s];
+            draft[s] = bis.cardKey;
+            // Resolve human-readable card name for the preview text.
+            const char* cardName = bis.cardKey.c_str();
+            for (const auto& ct : kCardTypes) {
+                if (ct.key == bis.cardKey) { cardName = ct.label; break; }
+            }
+            char preview[96];
+            std::snprintf(preview, sizeof(preview),
+                          "%s — %s", cardName, bis.label.c_str());
+            ImGui::BeginDisabled(true);
+            ImGui::LabelText(label, "%s", preview);
+            ImGui::EndDisabled();
+            continue;
+        }
+
         const bool dup = isDuplicate(s);
         if (dup) anyDuplicate = true;
 
@@ -159,8 +186,6 @@ void MainWindow::renderSlotConfigPanel()
         }
 
         if (dup) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
-        char label[32];
-        std::snprintf(label, sizeof(label), "Slot %d", s);
         if (ImGui::BeginCombo(label, preview)) {
             for (const auto& ct : kCardTypes) {
                 const bool selected = (ct.key == draft[s]);
@@ -399,6 +424,20 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
         romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
+        // ROM identity check (Theme 9, gaps B-4-1 / B-4-2): the generic
+        // "apple2.rom" fallback was originally added for legacy POM2
+        // installs but it silently misroutes — a user running the II
+        // Original profile against an apple2p Applesoft dump gets the
+        // wrong BASIC dialect. Warn so they at least see the mismatch
+        // in the log.
+        if (newRomPath.find("apple2.rom") != std::string::npos &&
+            cfg.romProbeOrder.front() != newRomPath) {
+            pom2::log().warn("Profile",
+                std::string("Loaded generic fallback ") + newRomPath +
+                " for " + std::string(cfg.displayName) +
+                " — profile-specific ROM (" + cfg.romProbeOrder.front() +
+                ") not found; ROM identity may not match the selected machine");
+        }
     } else {
         romStatus = std::string("NO ROM (") + cfg.romProbeOrder.front() +
                     " not found) — $D000-$FFFF stub only";

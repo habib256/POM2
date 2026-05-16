@@ -231,15 +231,23 @@ void EmulationController::hardReset()
 void EmulationController::softReset()
 {
     // Real Apple II Ctrl-Reset: the reset line is asserted briefly. The
-    // 6502 latches PC from $FFFC, sets the I flag, and rewinds SP to $FF.
+    // 6502 latches PC from $FFFC, sets the I flag, and decrements SP by 3
+    // (the reset sequence simulates a BRK push of PC + P without storing).
     // RAM, A/X/Y, and the zero page survive. Slot cards see their reset
     // line too — Disk II spins down, Le Chat Mauve FIFO returns to its
-    // power-on default, etc. Soft-switch state is reset by the Apple II
-    // ROM's autostart code (SETVID/SETKBD called from the reset handler),
-    // which we mirror here so behaviour matches with or without ROM loaded.
+    // power-on default, etc. Soft-switch policy depends on the profile:
+    // II/II+ machine_reset preserves LC + display (MAME `apple2.cpp:325-
+    // 331`); IIe/IIc/IIc+ reset_w wipes the MMU/IOU/LC list (MAME
+    // `apple2e.cpp:1453-1508`). resetSoftSwitchesWarm() applies the
+    // right one based on iieMode.
     std::lock_guard<std::mutex> lk(stateMtx);
-    mem.resetSoftSwitches();
+    mem.resetSoftSwitchesWarm();
     mem.slotBus().reset();
+    // SmartPort hub state — MAME re-asserts m_35sel=false and
+    // m_intdrive=false on every reset (`apple2e.cpp:1266`). Without
+    // this (E-3-1), Ctrl-Reset would keep the //c+ alt firmware's
+    // last drive selection across the warm-reset boundary.
+    if (hub) hub->reset();
     processor.softReset();
     pom2::log().info("Emul", "Soft reset (Ctrl-Reset)");
 }
@@ -250,6 +258,7 @@ void EmulationController::coldBoot()
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();
+    if (spk)    spk->reset();   // F-1-3: parity with hardReset
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
     processor.hardReset();
@@ -266,6 +275,34 @@ void EmulationController::bootFromSlot(int slot)
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
+    // Apple II autostart signature (Apple II Ref Manual Appx C): a
+    // bootable card's $Cn00 PROM begins with `$20 ?? $00 $03 $3C` at
+    // offsets 1/3/5/7. The Autostart F8 firmware refuses to JSR a
+    // slot that doesn't carry this signature. We replicate the check
+    // here so bootFromSlot doesn't silently land in garbage when the
+    // user clicks "Boot" on a slot whose card has no boot PROM
+    // (B-2-2). MAME doesn't model the scan in C++ but the firmware
+    // does the same validation natively.
+    const uint16_t cnxx = static_cast<uint16_t>(0xC000 + slot * 0x100);
+    const uint8_t b1 = mem.memRead(static_cast<uint16_t>(cnxx + 1));
+    const uint8_t b3 = mem.memRead(static_cast<uint16_t>(cnxx + 3));
+    const uint8_t b5 = mem.memRead(static_cast<uint16_t>(cnxx + 5));
+    const uint8_t b7 = mem.memRead(static_cast<uint16_t>(cnxx + 7));
+    const bool hasBootSignature =
+        (b1 == 0x20) && (b3 == 0x00) && (b5 == 0x03) && (b7 == 0x3C);
+    if (!hasBootSignature) {
+        pom2::log().warn("Emul",
+            "Slot " + std::to_string(slot) +
+            " has no Apple-II boot signature at $Cn00 — autostart firmware "
+            "would skip it. Falling back to cold boot so the F8 ROM can "
+            "scan for a bootable slot.");
+        // Re-do RAM wipe via coldBoot's path (we already wiped above, so
+        // just trigger the reset + autostart path).
+        processor.hardReset();
+        mode.store(Mode::Running);
+        wakeCv.notify_all();
+        return;
+    }
     // Prime text page 1 with $A0 (space + high bit set) — what the Monitor
     // ROM's HOME routine would write. We force PC into the slot ROM here
     // instead of going through the Monitor cold-boot (which would scan
@@ -276,7 +313,7 @@ void EmulationController::bootFromSlot(int slot)
         mem.memWrite(a, 0xA0);
     }
     processor.hardReset();
-    processor.setProgramCounter(static_cast<uint16_t>(0xC000 + slot * 0x100));
+    processor.setProgramCounter(cnxx);
     mode.store(Mode::Running);
     wakeCv.notify_all();
     pom2::log().info("Emul",

@@ -173,6 +173,8 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
     size_t         payloadSize  = size - skipBytes;
     iicHasAltBank = false;       // reset; only //c-style 32 KB sets it
     iicRomBank    = false;
+    isIIcClass    = false;
+    isIIcPlus     = false;
     if (size == 32 * 1024) {
         if (iieFromUpper16K) {
             payload     = buf.data() + 0x4000;   // //e layout
@@ -188,13 +190,26 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
                       buf.data() + 0x8000,
                       iicAltFirmware.begin());
             iicHasAltBank = true;
-            // //c boots with INTCXROM forced on (MAME apple2e.cpp:1273).
-            // applyProfile calls resetSoftSwitches BEFORE loadAppleIIRom,
-            // so the resetSoftSwitches MF_INTCXROM hook doesn't catch
-            // the freshly-flipped iicHasAltBank — set it here too.
-            iieMemMode |= MF_INTCXROM;
         }
         payloadSize = 0x4000;
+    }
+
+    // Unified //c-class detection — runs for BOTH 16 KB and 32 KB iieMode
+    // dumps (matches MAME `apple2e.cpp:1275-1299` which probes the ROM
+    // regardless of size). 16 KB //c rev-255 needs this too — without it,
+    // INTCXROM isn't forced and $C100-$C7FF reads return slot-bus $FF
+    // (D-1-1). `iicHasAltBank` stays narrower above: it's only set when
+    // the 32 KB dump provides the alt bank for the $C028 toggle to flip.
+    if (iieMode && payloadSize >= 0x3c00 && payload[0x3bc0] == 0x00) {
+        isIIcClass = true;
+        if (payload[0x3bbf] == 0x05) {
+            isIIcPlus = true;
+        }
+        // //c boots with INTCXROM forced on. applyProfile calls
+        // resetSoftSwitches BEFORE loadAppleIIRom, so the
+        // resetSoftSwitches MF_INTCXROM hook (gated on isIIcClass)
+        // doesn't catch the just-detected class — set it here too.
+        iieMemMode |= MF_INTCXROM;
     }
 
     if (iieMode && payloadSize == 16 * 1024) {
@@ -323,23 +338,53 @@ void Memory::advanceCycles(int cycles)
     vblWasActive = nowActive;
 }
 
+void Memory::resetSoftSwitchesWarm()
+{
+    // II/II+ machine_reset (apple2.cpp:325-331) only clears the cnxx
+    // tracker + kbd strobe — LC bank-select, display switches and the
+    // expansion-ROM latch SURVIVE. IIe/IIc/IIc+ reset_w (apple2e.cpp:
+    // 1453-1508) runs the full MMU/IOU/LC list — same as our cold reset.
+    if (iieMode) {
+        resetSoftSwitches();
+        return;
+    }
+    std::lock_guard<std::mutex> kb(kbMutex);
+    keyReady = false;
+    // NB: cnxx-slot tracker analogue lives in SlotBus, which the caller
+    // (EmulationController::softReset) drives via slotBus().reset();
+    // nothing else needs touching here on II/II+.
+}
+
 void Memory::resetSoftSwitches()
 {
     std::lock_guard<std::mutex> lk(stateMutex);
     display = DisplayState{};
     lcReadRam     = false;
-    lcWriteEnable = false;
+    // Sather "Understanding the Apple //e" Fig 5.13: post-reset LC state is
+    // read ROM / write RAM enabled / bank 2 selected / no pre-write. MAME
+    // `apple2e.cpp:1227-1232` + `:1492-1497` sets `m_lcwriteenable=true` on
+    // both machine_reset and reset_w. The Language Card on II/II+ powers up
+    // in the same state, so the rule applies universally.
+    lcWriteEnable = true;
     lcBank2Active = true;
     lcPrewrite    = false;
     iieMemMode    = 0;
     intC8Rom      = false;   // //e expansion-window auto-INTCXROM flip-flop
     iicRomBank    = false;   // //c boots with bank 0 (the cold-start bank)
-    // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`). The
-    // softswitch is software-toggleable but internal ROM stays mapped
-    // either way (see the iicHasAltBank gate in memRead). Setting it
-    // here keeps $C015 (RDCXROM) consistent with what real //c
+    // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`,
+    // `apple2e.cpp:1467-1475`). Gate on `isIIcClass` so BOTH 16 KB
+    // rev-255 //c dumps and 32 KB rev-0/3/4 + //c+ dumps re-force the
+    // bit on every reset. (Pre-Theme-6 this was gated on iicHasAltBank
+    // and missed the 16 KB case — D-1-1/D-3-1.) The internal ROM stays
+    // mapped either way (see the isIIcClass gate in memRead). Setting
+    // it here keeps $C015 (RDCXROM) consistent with what real //c
     // firmware sees when probing the switch.
-    if (iicHasAltBank) iieMemMode |= MF_INTCXROM;
+    if (isIIcClass) iieMemMode |= MF_INTCXROM;
+    // IOUDIS resets to true on every reset (MAME `apple2e.cpp:1224`),
+    // gating the IOU/mouse softswitches off until the firmware clears
+    // it via $C07F. Shared by IIe, IIc, IIc+ even though IIe ignores
+    // SET/CLR — the read at $C07E still returns the bit.
+    ioudis = true;
     // RamWorks III — MAME `a2eramworks3.cpp:65-68 device_reset` snaps
     // `m_bank = 0` on every reset. Match that: swap the visible aux
     // back to bank 0 so Ctrl-Reset / F12 don't leave the user looking
@@ -354,23 +399,33 @@ void Memory::resetSoftSwitches()
 
 void Memory::clearRam()
 {
-    // Wipe user RAM only. The Language Card is RAM too, so a power-cycle
-    // clears it even though its address window overlaps motherboard ROM.
-    std::fill(mem.begin(), mem.begin() + 0xC000, 0);
-    lcBank1.fill(0);
-    lcBank2.fill(0);
-    lcHigh.fill(0);
+    // MAME-faithful power-on RAM pattern: alternating `00 FF 00 FF…`
+    // (apple2.cpp:294-298 + apple2e.cpp:1014-1035). Real silicon DRAM
+    // settles into this pattern from the way the cell columns refresh;
+    // some software (RAM diagnostics, demo RNG seeds) probes it
+    // deliberately. The Language Card is RAM too, so a power-cycle
+    // clears it even though its address window overlaps motherboard
+    // ROM. Pre-Theme-11 POM2 zero-filled (F-1-2/B-1-1/C-1-1/D-1-3/E-1-1).
+    auto fill00FF = [](auto& span, size_t bytes) {
+        for (size_t i = 0; i < bytes; i += 2) {
+            span[i]     = 0x00;
+            if (i + 1 < bytes) span[i + 1] = 0xFF;
+        }
+    };
+    fill00FF(mem,    0xC000);
+    fill00FF(lcBank1, lcBank1.size());
+    fill00FF(lcBank2, lcBank2.size());
+    fill00FF(lcHigh,  lcHigh.size());
     if (iieMode) {
-        aux.fill(0);
-        auxLcBank1.fill(0);
-        auxLcBank2.fill(0);
-        auxLcHigh.fill(0);
+        fill00FF(aux,        aux.size());
+        fill00FF(auxLcBank1, auxLcBank1.size());
+        fill00FF(auxLcBank2, auxLcBank2.size());
+        fill00FF(auxLcHigh,  auxLcHigh.size());
         // RamWorks III backing — wipe every bank slot, snap back to
         // bank 0 (MAME `device_reset`-equivalent, plus a cold RAM
         // wipe which `device_reset` itself doesn't do).
         if (ramWorksBanks_ > 1) {
-            std::fill(ramWorksBacking_.begin(),
-                      ramWorksBacking_.end(), 0u);
+            fill00FF(ramWorksBacking_, ramWorksBacking_.size());
             ramWorksBank_ = 0;
         }
     }
@@ -803,26 +858,31 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         return 0;
     }
 
-    // Apple //c ROMBANK ($C020-$C02F): when a two-bank //c firmware
-    // dump is loaded, any access in the **entire $C020-$C02F range**
-    // toggles which 16 KB bank is mapped into the motherboard ROM
-    // window ($C100-$CFFF under INTCXROM, $D000-$FFFF under LC ROM).
-    // MAME `apple2e.cpp:1894-1922` flips `m_romswitch` on
-    // `(offset & 0xf0) == 0x20` when `m_isiic`; the Apple IIc Tech Ref
-    // 2e edition lists the softswitch at "$c02x" range, not just $C028.
-    // Both reads and writes trigger the toggle. The //c has no cassette
-    // either, so MAME suppresses cassette_toggle on //c — POM2 does the
-    // same below (gated on !iicHasAltBank).
+    // Apple //c ROMBANK ($C020-$C02F): on every //c-class machine the
+    // $C02x range toggles `iicRomBank` (matches MAME `apple2e.cpp:
+    // 1907-1923` `if (m_isiic) m_romswitch = !m_romswitch`). Gating on
+    // `isIIcClass` (not `iicHasAltBank`) keeps 16 KB rev-255 //c users
+    // out of the cassette-toggle path — the //c has no cassette port.
+    // On 16 KB dumps the alt-firmware read paths stay inert because
+    // `iicHasAltBank` remains false, so the toggle is cosmetic but
+    // MAME-faithful. The Apple IIc Tech Ref 2e lists the softswitch
+    // at "$c02x" range, not just $C028. Both reads and writes trigger.
     if (low >= 0x20 && low <= 0x2F) {
-        if (iicHasAltBank) {
+        if (isIIcClass) {
             iicRomBank = !iicRomBank;
-            // MAME `apple2e.cpp:1700-1703`: when ROMSWITCH transitions
-            // back to bank 0 the MIG state machine resets (page cursor
-            // back to 0; RAM contents survive). Mirror that here so a
-            // re-entry into bank 1 starts the MIG firmware at a clean
-            // page boundary.
+            // MAME `apple2e.cpp:1917-1922`: when ROMSWITCH transitions
+            // back to bank 0 the MIG state machine resets — page cursor
+            // back to 0, internal-drive selection cleared, 3.5"-select
+            // cleared (the hub recomputes the active floppy on its
+            // next access). RAM contents survive. Without the hub flush
+            // (E-4-1), a subsequent $C0Ex access on bank 0 would hit
+            // whatever floppy the //c+ alt firmware last picked.
             if (!iicRomBank) {
                 migPage = 0;
+                if (smartPortHub) {
+                    smartPortHub->setMigIntDrive(false);
+                    smartPortHub->setMig35Sel(false);
+                }
             }
             return 0;
         }
@@ -896,6 +956,22 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         if (isWrite && iieMode && ramWorksBanks_ > 1
             && (low & 0x09) == 0x01) {
             ramWorksSwapToBank(static_cast<uint8_t>(writeVal & 0x7F));
+        }
+        // IOUDIS SET/CLR — MAME `apple2e.cpp:2569-2587`. Only IIc-class
+        // honours the write; IIe falls through (the softswitch exists
+        // but is read-only). $C07E = SET (ioudis=true), $C07F = CLR
+        // (ioudis=false). $C078/$C079 are //c mouse firmware mirrors
+        // of the same SET/CLR pair. The paddle-latch side-effect above
+        // still fires; the IOUDIS toggle is a parallel decode.
+        if (isWrite && isIIcClass) {
+            if (low == 0x7E || low == 0x78) ioudis = true;
+            if (low == 0x7F || low == 0x79) ioudis = false;
+        }
+        // $C07E read returns bit 7 = ioudis state (MAME `:2276-2278`).
+        // Shared by IIe/IIc/IIc+. Other $C07x reads keep returning
+        // floating bus.
+        if (!isWrite && iieMode && low == 0x7E) {
+            return ioudis ? 0x80 : 0x00;
         }
         return isWrite ? 0 : floatingBus();
     }
@@ -1229,9 +1305,13 @@ void Memory::migWrite(uint16_t migOffset, uint8_t value)
     // the offset alone — `value` is stored only when writing through
     // the MIG RAM windows.
     if (migOffset == 0x40) {
-        // IWM reset (MAME: `m_iwm->reset()`). POM2's DiskIICard sits
-        // outside this code path; the //c+ writes here on every boot
-        // but doesn't depend on us actively resetting the LSS yet.
+        // IWM reset (MAME `apple2e.cpp:647-650`: `m_iwm->reset()`). The
+        // //c+ alt firmware writes here on every boot; without the reset
+        // (E-5-4), stale mode_/control_/whd_ state from a prior boot
+        // leaks into the fresh IWM probe sequence. DiskIICard's LSS
+        // mirror is separate and is reset by EmulationController::reset
+        // paths.
+        if (iwmDevice) iwmDevice->reset();
         return;
     }
     if (migOffset >= 0x80 && migOffset < 0xA0) {
@@ -1325,17 +1405,17 @@ uint8_t Memory::memRead(uint16_t addr)
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
     if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
-    // //c / //c+ on-board IWM: $C0E0-$C0EF on iicHasAltBank profiles
-    // dispatches to the standalone IWMDevice (MAME `apple2e.cpp:
-    // 2430-2432 c080_r` routes `m_isiicplus && slot == 6` to
-    // `m_iwm`). The slot-6 DiskIICard still observes the access so
-    // its motor sound / disk-turbo / head-position tracking stay
-    // current — but the **value returned to the CPU is the IWM's**.
-    // The IWM's sync() walks DiskImage flux via DiskIICard's
-    // pushed-in setFloppy(qt) so both controllers see the same
-    // flux stream; only the bit-cell window walker differs (LSS in
-    // DiskIICard vs MAME-faithful IWM state machine here).
-    if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
+    // //c+ on-board IWM: $C0E0-$C0EF on the //c+ ONLY (MAME
+    // `apple2e.cpp:2798-2801 c080_r` routes `m_isiicplus && slot == 6`
+    // to `m_iwm`; plain //c uses A2BUS_DISKIING at sl6, NOT the IWM —
+    // see `apple2e.cpp:5168-5188`). The slot-6 DiskIICard still
+    // observes the access so its motor sound / disk-turbo / head-
+    // position tracking stay current — but the **value returned to
+    // the CPU is the IWM's**. The IWM's sync() walks DiskImage flux
+    // via DiskIICard's pushed-in setFloppy() so both controllers see
+    // the same flux stream; only the bit-cell window walker differs
+    // (LSS in DiskIICard vs MAME-faithful IWM state machine here).
+    if (addr >= 0xC0E0 && addr <= 0xC0EF && isIIcPlus && iwmDevice) {
         iwmDevice->tick(cycleCounter);
         const uint8_t v = iwmDevice->read(static_cast<uint8_t>(addr & 0xF));
         if (iwmAuthoritative) {
@@ -1358,16 +1438,17 @@ uint8_t Memory::memRead(uint16_t addr)
     // the IIe 80-col firmware out of the box).
     //
     if (iieMode) {
-        // //c hardware (iicHasAltBank): no physical slots — internal
-        // ROM is always mapped at $C100-$CFFF regardless of INTCXROM.
-        // MAME `apple2e.cpp:1617-1635` (`update_slotrom_banks`) ORs
-        // `m_isiic` into every internal-ROM gate; the softswitch is
-        // still writable/readable via $C006/$C007/$C015 but has no
-        // effect on what actually executes from $CnXX. The //c reset
-        // routine at $FA62 immediately `JSR $CE4D` etc. — without this
-        // override those addresses would fall through to slot bus
-        // (empty → $FF), and the //c never boots.
-        if ((iieMemMode & MF_INTCXROM) || iicHasAltBank) {
+        // //c-class (isIIcClass): no physical slots — internal ROM is
+        // always mapped at $C100-$CFFF regardless of INTCXROM. MAME
+        // `apple2e.cpp:1619-1631` (`update_slotrom_banks`) ORs `m_isiic`
+        // into every internal-ROM gate; the softswitch is still
+        // writable/readable via $C006/$C007/$C015 but has no effect on
+        // what actually executes from $CnXX. The //c reset routine at
+        // $FA62 immediately `JSR $CE4D` etc. — without this override
+        // those addresses would fall through to slot bus (empty → $FF),
+        // and the //c never boots. Pre-Theme-6 this was gated on
+        // `iicHasAltBank`, missing the 16 KB rev-255 //c case (D-1-1).
+        if ((iieMemMode & MF_INTCXROM) || isIIcClass) {
             if (addr == 0xCFFF) {
                 intC8Rom = false;
                 slots.deactivateExpansion();
@@ -1375,16 +1456,25 @@ uint8_t Memory::memRead(uint16_t addr)
             // //c+ MIG window: when bank 1 (ROMSWITCH) is active, the
             // $CC00-$CCFF and $CE00-$CEFF ranges within the expansion
             // ROM window dispatch to the on-board MIG gate-array
-            // instead of returning ROM bytes. MAME `apple2e.cpp:2725-
-            // 2730 c800_b2_int_r`. We translate the CPU address to a
-            // MIG offset: $CC00 → 0x000, $CE00 → 0x200.
-            if (iicHasAltBank && iicRomBank) {
+            // instead of returning ROM bytes. MAME `apple2e.cpp:3148-
+            // 3151 c800_b2_int_r` — gated `m_isiicplus && m_romswitch`.
+            // We translate the CPU address to a MIG offset: $CC00 →
+            // 0x000, $CE00 → 0x200. Plain //c rev-0/3/4 also has a
+            // bank 1 (the alt firmware with the mini-assembler etc.)
+            // but NO MIG — its bank-1 reads must return ROM bytes,
+            // not MIG garbage (D-2-2).
+            if (isIIcPlus && iicRomBank) {
                 if (addr >= 0xCC00 && addr <= 0xCCFF) {
                     return migRead(static_cast<uint16_t>(addr - 0xCC00));
                 }
                 if (addr >= 0xCE00 && addr <= 0xCEFF) {
                     return migRead(static_cast<uint16_t>(addr - 0xCC00));
                 }
+            }
+            // Bank-1 alt firmware bytes (plain //c rev-0/3/4 AND //c+
+            // outside the MIG windows). Bank 0 always returns
+            // internalIORom.
+            if (iicHasAltBank && iicRomBank) {
                 return iicAltFirmware[addr - 0xC000];
             }
             return internalIORom[addr - 0xC000];
@@ -1502,7 +1592,7 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         // dispatched to IWMDevice (mode register, data write, etc.)
         // AND forwarded to DiskIICard so its slot-6 state stays in
         // sync (phases, motor on/off, sound + writeback gating).
-        if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
+        if (addr >= 0xC0E0 && addr <= 0xC0EF && isIIcPlus && iwmDevice) {
             iwmDevice->tick(cycleCounter);
             iwmDevice->write(static_cast<uint8_t>(addr & 0xF), value);
         }
@@ -1521,12 +1611,14 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // is read-only, slot bus is not reached). Without this, a //c
     // firmware write into $CnXX would forward to a (non-existent) slot
     // card and possibly latch activeExpansionSlot to a stale value.
-    if (iieMode && ((iieMemMode & MF_INTCXROM) || iicHasAltBank)) {
+    if (iieMode && ((iieMemMode & MF_INTCXROM) || isIIcClass)) {
         // //c+ MIG window writes: $CC00-$CCFF and $CE00-$CEFF in bank 1
-        // hit the MIG gate-array (MAME `apple2e.cpp:2759-2762`). Drive
-        // enable / disable, IWM reset, MIG RAM cache — all keyed off the
-        // sub-decode in `migWrite`.
-        if (iicHasAltBank && iicRomBank) {
+        // hit the MIG gate-array (MAME `apple2e.cpp:3186-3190`, gated
+        // on `m_isiicplus && m_romswitch`). Drive enable / disable,
+        // IWM reset, MIG RAM cache — all keyed off the sub-decode in
+        // `migWrite`. Plain //c bank 1 writes here are absorbed (ROM
+        // is read-only on real silicon).
+        if (isIIcPlus && iicRomBank) {
             if (addr >= 0xCC00 && addr <= 0xCCFF) {
                 migWrite(static_cast<uint16_t>(addr - 0xCC00), value);
                 return;

@@ -1636,11 +1636,11 @@ void M6502::hardReset(void)
     yRegister = 0;
     halted = false;
 
-    if (memory != nullptr) {
-        for (int i = 0x100; i <= 0x1FF; i++) {
-            memory->memWrite(i, 0x00);
-        }
-    }
+    // Don't wipe the stack page on F12. Real 6502 reset only decrements
+    // SP (the BRK-emulating reset sequence pushes PC/P without storing),
+    // matching MAME `apple2.cpp:325-331` which leaves RAM untouched.
+    // `EmulationController::coldBoot()` zero-fills $0000-$01FF via
+    // `Memory::clearRam()` when the user explicitly asks for a power-cycle.
 
     programCounter = memReadAbsolute(0xFFFC);
 }
@@ -1661,7 +1661,11 @@ void M6502::softReset(void)
         statusRegister &= ~M6502::Status::D;
     }
     halted = false;
-    stackPointer = 0xFF;
+    // Real 6502 reset sequence is a faked BRK that pushes PC + P
+    // WITHOUT writing to the stack page (the read/write line stays
+    // high), but decrements SP by 3. POM2 used to snap SP=$FF which
+    // matched a power-on but diverged from Ctrl-Reset (B-1-3).
+    stackPointer = static_cast<uint8_t>(stackPointer - 3);
     programCounter = memReadAbsolute(0xFFFC);
 }
 

@@ -26,6 +26,7 @@ const ProfileConfig& cfgAppleII()
         /*iieMode=*/false,
         M6502::CpuMode::NMOS,
         17045,
+        {},   // builtInSlots: all 7 slots free (real Apple ][ exposed 8 physical slots)
     };
     return cfg;
 }
@@ -41,6 +42,36 @@ const ProfileConfig& cfgAppleIIPlus()
         /*iieMode=*/false,
         M6502::CpuMode::NMOS,
         17045,
+        {},   // all slots free
+    };
+    return cfg;
+}
+
+const ProfileConfig& cfgAppleIIeUnenhanced()
+{
+    static const ProfileConfig cfg{
+        SystemProfile::AppleIIeUnenhanced,
+        "iie-u",
+        "Apple //e (1983, Unenhanced)",
+        // Apple part 342-0135-B (D000/D8) + 342-0134-A (E000/E8/F0/F8) =
+        // 16 KB original //e firmware. MAME loads them via
+        // `apple2e.cpp:5520-5544 ROM_START(apple2e)`. Fall back to the
+        // generic apple2e.rom only if the dedicated dump is absent — but
+        // beware: that fallback is most likely the Enhanced firmware, so
+        // a CRC mismatch will be logged (Theme 9, ROM identity check).
+        { "roms/apple2e_unenh.rom", "roms/342-0135-b.64.rom",
+          "roms/apple2e.rom" },
+        // 1983 //e shipped the 2 KB char ROM (no mousetext). 4 KB
+        // Enhanced char ROM is rejected for fidelity — the mousetext
+        // glyphs at $40-$5F when ALTCHAR=on would be wrong on Unenhanced.
+        { "roms/apple2e_char_2k.rom", "roms/341-0265-a.chr.rom",
+          "roms/apple2_char.rom" },
+        /*iieMode=*/true,
+        // Unenhanced //e = NMOS 6502 (no STZ/BRA/PHX/PLX, no decimal-mode
+        // fix). Software that uses CMOS opcodes will trap to NOP/KIL.
+        M6502::CpuMode::NMOS,
+        17045,
+        {},   // all 7 slots free (//e has real expansion slots)
     };
     return cfg;
 }
@@ -57,17 +88,24 @@ const ProfileConfig& cfgAppleIIe()
         // dump (POM2's `loadCharRom` normalises both to AppleWin csbits).
         { "roms/apple2e_char.rom", "roms/apple2_char.rom" },
         /*iieMode=*/true,
-        // Enhanced //e ships a 65C02. The non-enhanced //e (1983) used
-        // a 6502 NMOS — most software targets Enhanced, so we default
-        // to CMOS here. Manual override is available via Debug → CPU.
+        // Enhanced //e ships a 65C02. The non-enhanced //e (1983) uses
+        // the AppleIIeUnenhanced profile (NMOS 6502, 2 KB char ROM).
         M6502::CpuMode::CMOS,
         17045,
+        {},   // all 7 slots free
     };
     return cfg;
 }
 
 const ProfileConfig& cfgAppleIIc()
 {
+    // Real //c has NO physical expansion slots — MAME's apple2c()
+    // (`apple2e.cpp:5168-5188`) explicitly `device_remove("sl1")` through
+    // sl7, then re-adds onboard MOCKINGBOARD at sl4 and DISKIING at sl6.
+    // The slot IDs are virtual (firmware $C100/$C200 = SSC printer/modem
+    // ports, $C400 = Mouse, $C600 = Disk II), and the user must NOT be
+    // able to unplug them via the Slot Configuration UI — doing so would
+    // wedge the //c boot path.
     static const ProfileConfig cfg{
         SystemProfile::AppleIIc,
         "iic",
@@ -81,12 +119,33 @@ const ProfileConfig& cfgAppleIIc()
         /*iieMode=*/true,        // same paging as IIe
         M6502::CpuMode::CMOS,    // //c always shipped 65C02
         17045,
+        // builtInSlots: [_, _, ssc, _, mouse, _, diskii, _]
+        // sl1/sl5/sl7 left free (per-//c rev variations and historical
+        // patches sometimes parked third-party adapters there — kept
+        // editable so power users can experiment without lying to them
+        // about hardware availability). sl3 is the internal 80-col
+        // firmware area covered by the AUX label.
+        {
+            std::nullopt,                                // sl0 reserved
+            std::nullopt,                                // sl1
+            BuiltInSlot{"ssc",    "built-in serial"},    // sl2
+            std::nullopt,                                // sl3 (AUX 80-col label)
+            BuiltInSlot{"mouse",  "built-in mouse"},     // sl4
+            std::nullopt,                                // sl5
+            BuiltInSlot{"diskii", "built-in Disk II"},   // sl6
+            std::nullopt,                                // sl7
+        },
     };
     return cfg;
 }
 
 const ProfileConfig& cfgAppleIIcPlus()
 {
+    // Like the //c, the //c+ has no physical expansion slots. MAME's
+    // apple2cp() (`apple2e.cpp:5229-5249`) starts from apple2c() and
+    // additionally removes sl4 + sl6 to instantiate the IWM directly.
+    // The //c+ adds an on-board SmartPort 3.5" path at slot 5 (firmware
+    // bank 1 at $C500) on top of the //c's serial + mouse + Disk II.
     static const ProfileConfig cfg{
         SystemProfile::AppleIIcPlus,
         "iic+",
@@ -110,6 +169,17 @@ const ProfileConfig& cfgAppleIIcPlus()
         // cycle-driven so a 4× CPU still produces correctly-paced
         // nibbles). 4 × 17045 = 68180 cycles per 60 Hz frame.
         68180,
+        // builtInSlots: [_, _, ssc, _, mouse, smartport35, diskii, _]
+        {
+            std::nullopt,
+            std::nullopt,                                          // sl1
+            BuiltInSlot{"ssc",         "built-in serial"},         // sl2
+            std::nullopt,                                          // sl3 (AUX)
+            BuiltInSlot{"mouse",       "built-in mouse"},          // sl4
+            BuiltInSlot{"smartport35", "built-in SmartPort 3.5\""}, // sl5
+            BuiltInSlot{"diskii",      "built-in Disk II (IWM)"},  // sl6
+            std::nullopt,                                          // sl7
+        },
     };
     return cfg;
 }
@@ -119,11 +189,12 @@ const ProfileConfig& cfgAppleIIcPlus()
 const ProfileConfig& profileConfig(SystemProfile p)
 {
     switch (p) {
-        case SystemProfile::AppleII:      return cfgAppleII();
-        case SystemProfile::AppleIIPlus:  return cfgAppleIIPlus();
-        case SystemProfile::AppleIIe:     return cfgAppleIIe();
-        case SystemProfile::AppleIIc:     return cfgAppleIIc();
-        case SystemProfile::AppleIIcPlus: return cfgAppleIIcPlus();
+        case SystemProfile::AppleII:            return cfgAppleII();
+        case SystemProfile::AppleIIPlus:        return cfgAppleIIPlus();
+        case SystemProfile::AppleIIeUnenhanced: return cfgAppleIIeUnenhanced();
+        case SystemProfile::AppleIIe:           return cfgAppleIIe();
+        case SystemProfile::AppleIIc:           return cfgAppleIIc();
+        case SystemProfile::AppleIIcPlus:       return cfgAppleIIcPlus();
     }
     return cfgAppleIIPlus();   // unreachable, silences compiler
 }
@@ -133,6 +204,9 @@ SystemProfile profileFromKey(std::string_view key)
     if (key == "ii"   || key == "apple2"   || key == "appleii")     return SystemProfile::AppleII;
     if (key == "ii+"  || key == "iiplus"   || key == "apple2plus"
         || key == "appleiiplus" || key == "ii-plus")                return SystemProfile::AppleIIPlus;
+    if (key == "iie-u" || key == "iie-unenh" || key == "iie-unenhanced"
+        || key == "iieunenhanced" || key == "apple2e-1983"
+        || key == "//e-u")                                          return SystemProfile::AppleIIeUnenhanced;
     if (key == "iie"  || key == "apple2e"  || key == "appleiie"
         || key == "//e")                                            return SystemProfile::AppleIIe;
     if (key == "iic"  || key == "apple2c"  || key == "appleiic"
@@ -148,11 +222,12 @@ std::string_view profileKey(SystemProfile p)
     return profileConfig(p).key;
 }
 
-const std::array<SystemProfile, 5>& allProfiles()
+const std::array<SystemProfile, 6>& allProfiles()
 {
-    static const std::array<SystemProfile, 5> all = {
+    static const std::array<SystemProfile, 6> all = {
         SystemProfile::AppleII,
         SystemProfile::AppleIIPlus,
+        SystemProfile::AppleIIeUnenhanced,
         SystemProfile::AppleIIe,
         SystemProfile::AppleIIc,
         SystemProfile::AppleIIcPlus,

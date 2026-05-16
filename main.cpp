@@ -51,8 +51,13 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
         // so the user can recover even when an ImGui widget has captured
         // the keyboard focus. F9 (screenshot) is routed the same way so
         // a screenshot can be triggered from a focused control widget.
+        // Left/Right Alt = Open-Apple/Solid-Apple — routed unconditionally
+        // so the IIe/IIc/IIc+ firmware can observe consistent press/release
+        // edges via $C061/$C062 regardless of ImGui focus state.
         const bool isGlobalKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12 ||
-                                  key == GLFW_KEY_F9);
+                                  key == GLFW_KEY_F9 ||
+                                  key == GLFW_KEY_LEFT_ALT ||
+                                  key == GLFW_KEY_RIGHT_ALT);
         if (!ImGui::GetIO().WantCaptureKeyboard || isGlobalKey) {
             mw->onKey(key, sc, action, mods);
         }

@@ -238,8 +238,22 @@ public:
 
     // Reset — clears the keyboard strobe, returns to text/page 1 mode.
     // Does NOT touch RAM (matches Apple II reset behaviour: RESET only
-    // jumps through ($FFFC) without zeroing memory).
+    // jumps through ($FFFC) without zeroing memory). Used by power-on
+    // (`coldBoot`) and F12 (`hardReset`) to flush the entire MMU/IOU/LC
+    // state on all profiles — matches MAME `apple2.cpp:325-331` for
+    // II/II+ plus the full IIe-style init for IIe/IIc/IIc+.
     void resetSoftSwitches();
+
+    // Warm reset (Ctrl-Reset / F11). Mirrors MAME's split between
+    // `apple2_state::machine_reset` (minimal — only kbd strobe + cnxx
+    // tracker; LC/display/MMU SURVIVE) and `apple2e_state::reset_w`
+    // (full MMU/IOU/LC reset list). On IIe/IIc/IIc+ this is identical
+    // to `resetSoftSwitches()` above; on II/II+ it deliberately leaves
+    // the Language Card mode and display switches intact so software
+    // that depends on Ctrl-Reset NOT wiping LC RAM-mode (B-3-1) keeps
+    // working. (Pre-Theme-7 POM2 ran the full reset on every soft
+    // reset, breaking some hot-loaded ProDOS setups on II/II+.)
+    void resetSoftSwitchesWarm();
 
     // Power-cycle helper: wipe user RAM ($0000-$BFFF). Leaves the I/O page,
     // slot ROM area, and main ROM ($D000-$FFFF) intact. In IIe mode also
@@ -435,6 +449,21 @@ private:
     bool iicHasAltBank = false;
     bool iicRomBank    = false;   // false = bank 0 (cold-start), true = bank 1
 
+    // ROM-content probes (MAME `apple2e.cpp:1275-1299`):
+    //   `payload[0x3bc0] == 0x00`           → //c-class (forces INTCXROM on)
+    //   `payload[0x3bbf] == 0x05` (and above) → //c+
+    // `isIIcClass` covers BOTH the 16 KB rev-255 //c ROM and the 32 KB rev-0/3/4
+    // dumps, so INTCXROM forcing and on-board slot ROM dispatch work the same
+    // way for both. `iicHasAltBank` stays narrower: it means "we loaded an
+    // alt-bank dump capable of $C028 ROMBANK toggling" (32 KB only). On a 16 KB
+    // //c rev-255 dump, `isIIcClass=true` but `iicHasAltBank=false`.
+    // `isIIcPlus` gates the on-board IWM ($C0E0-$C0EF) and the MIG window
+    // ($CC00/$CE00) — strictly //c+, never plain //c (MAME removes the IWM
+    // device on plain //c per `apple2e.cpp:5168-5188`, which uses A2BUS_DISKIING
+    // instead).
+    bool isIIcClass = false;
+    bool isIIcPlus  = false;
+
     // Apple //c+ MIG (Multi-drive Interface Glue, MAME `apple2e.cpp:451`
     // + `apple2e.cpp:532-624 mig_r/mig_w`). Custom Apple gate-array that
     // bridges the on-board IWM to the //c+'s integrated 5.25" + 3.5"
@@ -480,6 +509,15 @@ private:
     bool vblIrqMask    = false;
     bool vblIrqPending = false;
     bool vblWasActive  = true;       // tracks transition into VBL window
+
+    // IOUDIS — MAME `apple2e.cpp:1224` initialises to `true`. Only IIc
+    // and IIc+ honour SET/CLR writes ($C07E/$C07F per MAME `:2569-2587`,
+    // plus //c mouse firmware mirrors at $C078/$C079). Read of $C07E
+    // returns bit 7 = `ioudis ? 0x80 : 0` (MAME `:2276-2278`). On IIe
+    // the writes are no-ops (MAME falls through), but the reset state
+    // is shared so $C07E reads are consistent. POM2 used to leave this
+    // unmodelled (C-1-3/D-1-2/D-3-2/D-4-1/E-4-3).
+    bool ioudis = true;
 
     // Annunciator output state. AN0..AN3 are toggled by paired soft
     // switches ($C058/9 = AN0, $C05A/B = AN1, $C05C/D = AN2,

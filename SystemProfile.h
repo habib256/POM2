@@ -24,18 +24,31 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace pom2 {
 
+/// A slot occupied by construction on this machine (e.g. on-board Disk II
+/// at slot 6 on a //c, or the IWM SmartPort at slot 5 on a //c+). When a
+/// profile's `builtInSlots[N]` carries a `BuiltInSlot`, the slot card is
+/// force-plugged with `cardKey` regardless of user settings, and the
+/// Slot Configuration UI renders the row read-only with `label` as a
+/// badge so the user knows what's there but can't edit it.
+struct BuiltInSlot {
+    std::string cardKey;   // matches a kCardTypes[] key in MainWindow_Slots
+    std::string label;     // user-visible suffix in the panel
+};
+
 enum class SystemProfile {
-    AppleII,       // Apple II original (1977), Integer BASIC, 6502 NMOS
-    AppleIIPlus,   // Apple II+ (1979), Applesoft + Autostart, 6502 NMOS
-    AppleIIe,      // Apple //e (1983, Enhanced revision targets 65C02)
-    AppleIIc,      // Apple //c (1984), 65C02, IIe-class soft switches
-    AppleIIcPlus,  // Apple //c Plus (1988), 65C02 @ 4 MHz, built-in SmartPort
+    AppleII,             // Apple II original (1977), Integer BASIC, 6502 NMOS
+    AppleIIPlus,         // Apple II+ (1979), Applesoft + Autostart, 6502 NMOS
+    AppleIIeUnenhanced,  // Apple //e (1983), 6502 NMOS, no-mousetext char ROM
+    AppleIIe,            // Apple //e Enhanced (1985), 65C02, mousetext char ROM
+    AppleIIc,            // Apple //c (1984), 65C02, IIe-class soft switches
+    AppleIIcPlus,        // Apple //c Plus (1988), 65C02 @ 4 MHz, built-in SmartPort
 };
 
 struct ProfileConfig {
@@ -47,6 +60,11 @@ struct ProfileConfig {
     bool                   iieMode;          // Memory::setIIEMode(...)
     M6502::CpuMode         defaultCpu;
     int                    defaultCyclesPerFrame;
+    // Indexed by slot $C1-$C7 (entries 1..7 used; entry 0 reserved for the
+    // language card sl0 if ever modelled as a SlotPeripheral). A populated
+    // entry means "the on-board hardware lives here and the user cannot
+    // swap it". An empty entry (nullopt) means the slot is free.
+    std::array<std::optional<BuiltInSlot>, 8> builtInSlots;
 };
 
 /// Resolve a profile enum to its full configuration. The probe orders
@@ -67,7 +85,7 @@ SystemProfile profileFromKey(std::string_view key);
 std::string_view profileKey(SystemProfile p);
 
 /// All profiles in display order. Used by the Presets menu loop.
-const std::array<SystemProfile, 5>& allProfiles();
+const std::array<SystemProfile, 6>& allProfiles();
 
 }  // namespace pom2
 

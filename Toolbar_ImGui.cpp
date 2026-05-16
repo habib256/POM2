@@ -27,11 +27,12 @@ bool iconButton(const Btn& b, bool enabled = true) {
 
 const char* profileShortLabel(SystemProfile p) {
     switch (p) {
-        case SystemProfile::AppleII:       return "][";
-        case SystemProfile::AppleIIPlus:   return "][+";
-        case SystemProfile::AppleIIe:      return "//e";
-        case SystemProfile::AppleIIc:      return "//c";
-        case SystemProfile::AppleIIcPlus:  return "//c+";
+        case SystemProfile::AppleII:             return "][";
+        case SystemProfile::AppleIIPlus:         return "][+";
+        case SystemProfile::AppleIIeUnenhanced:  return "//e-U";
+        case SystemProfile::AppleIIe:            return "//e";
+        case SystemProfile::AppleIIc:            return "//c";
+        case SystemProfile::AppleIIcPlus:        return "//c+";
     }
     return "??";
 }

@@ -81,13 +81,39 @@ public:
 
     void start();
     void stop();
-    void hardReset();          // power-cycle: zeros A/X/Y, wipes stack page, re-fetches reset vector, clears soft switches
-    void softReset();          // Ctrl-Reset behaviour: re-fetches reset vector, clears soft switches; A/X/Y/zp/RAM survive
-    void coldBoot();           // wipes user RAM ($0000-$BFFF) then hardReset()
-    /// Cold-boot through the boot ROM of slot N. Atomically wipes RAM,
-    /// resets soft switches + slot bus + speaker, hard-resets the CPU,
-    /// sets PC = $C000 + slot*256, and switches to Running. `slot` must be
-    /// in [1..7]; out-of-range is a no-op.
+
+    // Reset API — POM2 exposes 4 verbs. The MAME equivalents are only 2
+    // (per Agent F audit, gap F-1-4): `machine_start` runs once at
+    // power-on (RAM init pattern, region select) and `machine_reset`
+    // (II/II+) / `reset_w` (IIe/IIc/IIc+) handle every subsequent reset.
+    // POM2's split is:
+    //
+    //   softReset()    → MAME `reset_w(true)→reset_w(false)` sequence.
+    //                    On IIe-class wipes the MMU/IOU/LC list; on
+    //                    II/II+ only clears kbd strobe + cnxx tracker
+    //                    (per `resetSoftSwitchesWarm`). A/X/Y/RAM/zp
+    //                    all survive. SP decremented by 3 (Theme 7).
+    //
+    //   hardReset()    → Same MAME path as softReset but the CPU also
+    //                    zeros A/X/Y. POM2-only convention to give the
+    //                    user a "deterministic CPU state" without a
+    //                    full RAM wipe. RAM contents preserved.
+    //
+    //   coldBoot()     → MAME `machine_start` + `machine_reset` combo:
+    //                    wipes user RAM ($0000-$BFFF + LC + aux) with
+    //                    the 00/FF pattern, then runs the full soft-
+    //                    switch reset. The only path that wipes RAM.
+    //
+    //   bootFromSlot() → Synthetic shortcut: coldBoot + force PC=$Cn00
+    //                    after validating the slot has the autostart
+    //                    signature ($Cn01=$20, $Cn03=$00, $Cn05=$03,
+    //                    $Cn07=$3C — Apple II Ref Manual Appx C). On
+    //                    signature mismatch, falls back to coldBoot
+    //                    so the F8 autostart firmware can scan slots
+    //                    naturally (Theme 8).
+    void hardReset();
+    void softReset();
+    void coldBoot();
     void bootFromSlot(int slot);
     void requestStep();        // single-instruction step
 

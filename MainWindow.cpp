@@ -525,6 +525,29 @@ void MainWindow::plugSlotsFromSettings()
         }
     }
 
+    // Profile-defined built-in slots override anything the user persisted.
+    // Real //c / //c+ have no physical expansion bus; their on-board cards
+    // (serial, mouse, Disk II, SmartPort) live at fixed virtual slot IDs
+    // and CANNOT be unplugged (D-6-1, E-6-1). Keep the settings file's
+    // value out of harm's way so toggling profiles back and forth doesn't
+    // produce a wedged machine.
+    {
+        const auto& cfg = pom2::profileConfig(activeProfile);
+        for (int s = 1; s <= 7; ++s) {
+            if (cfg.builtInSlots[s].has_value()) {
+                const std::string& forced = cfg.builtInSlots[s]->cardKey;
+                if (slotCards[s] != forced) {
+                    pom2::log().info("Slots",
+                        "Slot " + std::to_string(s) + " forced to '" +
+                        forced + "' (built-in on " +
+                        std::string(cfg.displayName) +
+                        "); user setting '" + slotCards[s] + "' ignored");
+                    slotCards[s] = forced;
+                }
+            }
+        }
+    }
+
     // Validate uniqueness — each card type plugs into at most one slot.
     // Exception: "diskii" is allowed in multiple slots (option C 2026-05-15:
     // historical //e configurations could carry DiskII slot 6 + DiskII slot 4
@@ -559,11 +582,14 @@ void MainWindow::plugSlotsFromSettings()
             if (fs::exists(p)) { diskRomPath = p; break; }
         }
         auto card = std::make_unique<DiskIICard>(s);
-        if (!card->loadBootRom(diskRomPath)) {
-            diskRomStatus = std::string("NO Disk II PROM (") + diskRomPath + ")";
-            return;     // no boot PROM → card stays unplugged
+        // DiskIICard ctor pre-loads the embedded Apple 341-0027-A boot PROM,
+        // so the card is bootable out of the box. A user-supplied dump at
+        // `roms/disk2.rom` overrides only if it loads cleanly (256 bytes).
+        if (fs::exists(diskRomPath) && card->loadBootRom(diskRomPath)) {
+            diskRomStatus = std::string("loaded: ") + diskRomPath;
+        } else {
+            diskRomStatus = "embedded 341-0027-A PROM (no user disk2.rom)";
         }
-        diskRomStatus = std::string("loaded: ") + diskRomPath;
         // Optional: load the P6 LSS sequencer PROM (Apple part 341-0028-A)
         // for the cycle-accurate bit-level controller path. Bundled at
         // `roms/diskii_p6.rom`; falls back to the embedded default.
@@ -847,6 +873,20 @@ void MainWindow::onChar(unsigned int codepoint)
 
 void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
 {
+    // Open-Apple / Solid-Apple are read by the IIe/IIc/IIc+ firmware via
+    // $C061/$C062 bit 7 (MAME `apple2e.cpp:2157-2169`) — the firmware itself
+    // decides cold-reboot vs self-test on Ctrl+Reset. We just source the
+    // bits; observe both press and release so the firmware sees the key
+    // released after Reset like on real hardware.
+    if (key == GLFW_KEY_LEFT_ALT) {
+        controller->memory().setOpenAppleKey(action != GLFW_RELEASE);
+        return;
+    }
+    if (key == GLFW_KEY_RIGHT_ALT) {
+        controller->memory().setSolidAppleKey(action != GLFW_RELEASE);
+        return;
+    }
+
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
     const bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
 

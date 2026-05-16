@@ -118,9 +118,14 @@ void testMemoryMirror()
     mem.setIWM(&iwm);
     mem.setIIEMode(true);
 
-    // Minimal 32K //c-style image: reset vector at $FFFC = $FA62.
+    // Minimal 32K //c+-style image: reset vector at $FFFC = $FA62, plus
+    // the MAME `apple2e.cpp:1275-1299` probe bytes — byte at offset
+    // 0x3bc0 must be 0x00 (= //c-class) AND byte at 0x3bbf must be 0x05
+    // (= //c+). Without the //c+ probe Memory keeps `isIIcPlus=false`
+    // and never dispatches $C0E0-$C0EF to the IWM (Theme 6 D-2-1 fix).
     namespace fs = std::filesystem;
     std::vector<uint8_t> rom(32 * 1024, 0);
+    rom[0x3BBF] = 0x05;  // //c+ marker (//c-class probe at 0x3BC0 is implicit 0)
     rom[0x3FFC] = 0x62; rom[0x3FFD] = 0xFA;
     rom[0x7FFC] = 0x88; rom[0x7FFD] = 0xC7;
     const fs::path tmp = fs::temp_directory_path() /
