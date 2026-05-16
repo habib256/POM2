@@ -24,6 +24,16 @@ public:
     /// Fill `output` with `frameCount` mono float32 samples. Called from
     /// the audio callback thread — must be fast and thread-safe.
     virtual void fillAudioBuffer(float* output, int frameCount) = 0;
+
+    /// Post-fill peak abs amplitude of the last buffer this source
+    /// produced, with a short release envelope (decays ~85% per 5 ms
+    /// buffer → invisible after ~100 ms of silence). Updated by
+    /// AudioDevice::mixSources right after calling fillAudioBuffer; the
+    /// UI mixer panel reads it to draw a small level meter so users can
+    /// immediately confirm a channel is alive. Stored on AudioSource
+    /// (not AudioDevice) so it survives source list reshuffles and
+    /// avoids a parallel-vector lookup on the audio thread.
+    std::atomic<float> lastBufferPeak{0.0f};
 };
 
 /// Optional mixin for sources whose synthesis depends on the host audio
@@ -65,6 +75,12 @@ public:
     void  setMasterMuted(bool m) { masterMuted_.store(m, std::memory_order_relaxed); }
     bool  isMasterMuted() const  { return masterMuted_.load(std::memory_order_relaxed); }
 
+    /// Post-clamp peak abs amplitude of the last mixed buffer, same
+    /// release envelope as AudioSource::lastBufferPeak. Mirrors what
+    /// the OS actually heard, so the master meter reflects clipping
+    /// (saturates at 1.0). Read by the mixer panel.
+    float getMasterPeak() const { return masterPeak_.load(std::memory_order_relaxed); }
+
     /// Mix all registered sources into `output` (clamped to [-1, +1]).
     /// Called from miniaudio's data callback.
     void mixSources(float* output, int frameCount);
@@ -81,6 +97,7 @@ private:
 
     std::atomic<float> masterVolume_{1.0f};
     std::atomic<bool>  masterMuted_{false};
+    std::atomic<float> masterPeak_{0.0f};
 
     struct MaDeviceDeleter { void operator()(ma_device* d) const noexcept; };
     std::unique_ptr<ma_device, MaDeviceDeleter> device;

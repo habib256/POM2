@@ -83,8 +83,23 @@ void AudioDevice::mixSources(float* output, int frameCount)
         std::memset(tmpBuf.data(), 0,
                     static_cast<size_t>(frameCount) * sizeof(float));
         src->fillAudioBuffer(tmpBuf.data(), frameCount);
-        for (int i = 0; i < frameCount; ++i)
+        // Per-source peak with a short release envelope. 0.85 per
+        // ~5 ms buffer settles to <5 % after ~100 ms of silence,
+        // matches a typical VU meter release. The peak is sampled
+        // BEFORE master gain so the mixer panel reflects the
+        // channel's contribution at the slider position; the master
+        // peak below reflects what the OS actually plays.
+        float srcPeak = 0.0f;
+        for (int i = 0; i < frameCount; ++i) {
+            const float a = std::fabs(tmpBuf[i]);
+            if (a > srcPeak) srcPeak = a;
             output[i] += tmpBuf[i];
+        }
+        const float prevSrc =
+            src->lastBufferPeak.load(std::memory_order_relaxed);
+        const float decayedSrc =
+            srcPeak > prevSrc * 0.85f ? srcPeak : prevSrc * 0.85f;
+        src->lastBufferPeak.store(decayedSrc, std::memory_order_relaxed);
     }
 
     // Master gain + mute, then clamp. Snapshot atomics once per buffer
@@ -94,8 +109,18 @@ void AudioDevice::mixSources(float* output, int frameCount)
         masterMuted_.load(std::memory_order_relaxed)
             ? 0.0f
             : masterVolume_.load(std::memory_order_relaxed);
-    for (int i = 0; i < frameCount; ++i)
-        output[i] = std::max(-1.0f, std::min(1.0f, output[i] * masterGain));
+    float masterPk = 0.0f;
+    for (int i = 0; i < frameCount; ++i) {
+        const float clamped =
+            std::max(-1.0f, std::min(1.0f, output[i] * masterGain));
+        output[i] = clamped;
+        const float a = std::fabs(clamped);
+        if (a > masterPk) masterPk = a;
+    }
+    const float prevMaster = masterPeak_.load(std::memory_order_relaxed);
+    const float decayedMaster =
+        masterPk > prevMaster * 0.85f ? masterPk : prevMaster * 0.85f;
+    masterPeak_.store(decayedMaster, std::memory_order_relaxed);
 }
 
 void AudioDevice::setMasterVolume(float v)

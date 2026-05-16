@@ -143,6 +143,56 @@ void testMasterVolumeAndMute()
     std::puts("OK master_volume_and_mute");
 }
 
+void testPerSourcePeakTracking()
+{
+    // Pins the mixer-panel level meters: AudioDevice::mixSources updates
+    // each source's lastBufferPeak with the absolute peak it produced,
+    // and AudioDevice::getMasterPeak() reflects the post-clamp output.
+    // Without this the UI can't show "channel is alive" feedback and
+    // users wonder if the slider is wired at all.
+    AudioDevice dev;
+    ConstSource quiet(0.25f);
+    ConstSource loud (0.80f);
+    dev.addSource(&quiet);
+    dev.addSource(&loud);
+
+    constexpr int kFrames = 256;
+    std::vector<float> out(kFrames, 0.0f);
+
+    dev.setMasterVolume(1.0f);
+    dev.setMasterMuted(false);
+    dev.mixSources(out.data(), kFrames);
+
+    // Each source's peak should reflect its own contribution, not the
+    // sum — quiet sees 0.25, loud sees 0.80. (envelope release doesn't
+    // matter on the first buffer because previous peak was 0.)
+    const float qPeak = quiet.lastBufferPeak.load();
+    const float lPeak = loud .lastBufferPeak.load();
+    assert(std::fabs(qPeak - 0.25f) < 1e-6f);
+    assert(std::fabs(lPeak - 0.80f) < 1e-6f);
+    // Master peak is post-clamp: 0.25 + 0.80 = 1.05 → clamps to 1.0.
+    assert(std::fabs(dev.getMasterPeak() - 1.0f) < 1e-6f);
+
+    // Silence a buffer: peaks decay (0.85 per buffer) — they should be
+    // strictly less than the previous peak but not yet zero.
+    ConstSource silent(0.0f);
+    dev.removeSource(&quiet);
+    dev.removeSource(&loud);
+    dev.addSource(&silent);
+    // Need a source already producing the silent value so the mix
+    // contributes 0 but the loud/quiet entries keep their old peaks
+    // (they're no longer in the source list; peaks just hang at the
+    // last seen value).
+    dev.mixSources(out.data(), kFrames);
+    const float silentPeak = silent.lastBufferPeak.load();
+    assert(silentPeak == 0.0f);
+    // Master peak should also decay now that no source contributes.
+    assert(dev.getMasterPeak() < 1.0f);
+
+    dev.removeSource(&silent);
+    std::puts("OK per_source_peak_tracking");
+}
+
 void testRateAwareAutoConfig()
 {
     // FloppySoundDevice inherits RateAware. AudioDevice::addSource
@@ -177,6 +227,7 @@ int main()
     std::printf("Using sample dir: %s\n", dir.c_str());
     testDualInstanceCoexistence(dir);
     testMasterVolumeAndMute();
+    testPerSourcePeakTracking();
     testRateAwareAutoConfig();
     std::puts("All audio mixer smoke tests passed.");
     return 0;

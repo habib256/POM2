@@ -1744,15 +1744,27 @@ void MainWindow::renderAudioMixerWindow()
     }
 
     auto channelRow = [](const char* label, float& vol, bool& mute,
-                         const char* idSuffix, bool dim) {
+                         float peak, const char* idSuffix, bool dim) {
         if (dim) ImGui::BeginDisabled();
         ImGui::PushID(idSuffix);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label);
         ImGui::SameLine(110.0f);
-        ImGui::SetNextItemWidth(180.0f);
+        ImGui::SetNextItemWidth(160.0f);
         const std::string slid = std::string("##v") + idSuffix;
         ImGui::SliderFloat(slid.c_str(), &vol, 0.0f, 2.0f, "%.2f");
+        // Tiny activity meter: lets the user confirm at a glance that
+        // the channel is actually producing samples (addresses the
+        // "doesn't seem connected to the mixer" feedback). Green for
+        // safe levels, yellow approaching clip, red at clip.
+        ImGui::SameLine();
+        const float clamped = std::min(1.0f, std::max(0.0f, peak));
+        ImVec4 col(0.20f, 0.80f, 0.20f, 1.0f);
+        if      (clamped >= 0.95f) col = ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
+        else if (clamped >= 0.70f) col = ImVec4(0.90f, 0.75f, 0.20f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
+        ImGui::ProgressBar(clamped, ImVec2(40.0f, 0.0f), "");
+        ImGui::PopStyleColor();
         ImGui::SameLine();
         const std::string muteId = std::string("Mute##") + idSuffix;
         ImGui::Checkbox(muteId.c_str(), &mute);
@@ -1764,7 +1776,8 @@ void MainWindow::renderAudioMixerWindow()
     AudioDevice& dev = controller->audio();
     float masterVol = dev.getMasterVolume();
     bool  masterMute = dev.isMasterMuted();
-    channelRow("Master", masterVol, masterMute, "master", false);
+    channelRow("Master", masterVol, masterMute, dev.getMasterPeak(),
+               "master", false);
     if (masterVol != dev.getMasterVolume()) dev.setMasterVolume(masterVol);
     if (masterMute != dev.isMasterMuted()) dev.setMasterMuted(masterMute);
     ImGui::Separator();
@@ -1773,7 +1786,9 @@ void MainWindow::renderAudioMixerWindow()
     SpeakerDevice& spk = controller->speaker();
     float spkVol = spk.getVolume();
     bool  spkMute = spk.isMuted();
-    channelRow("Speaker", spkVol, spkMute, "spk", false);
+    channelRow("Speaker", spkVol, spkMute,
+               spk.lastBufferPeak.load(std::memory_order_relaxed),
+               "spk", false);
     if (spkVol != spk.getVolume()) spk.setVolume(spkVol);
     if (spkMute != spk.isMuted()) spk.setMuted(spkMute);
 
@@ -1781,7 +1796,9 @@ void MainWindow::renderAudioMixerWindow()
     CassetteDevice& tape = controller->cassette();
     float tapeVol = tape.getVolume();
     bool  tapeMute = tape.isMuted();
-    channelRow("Cassette", tapeVol, tapeMute, "tape", false);
+    channelRow("Cassette", tapeVol, tapeMute,
+               tape.lastBufferPeak.load(std::memory_order_relaxed),
+               "tape", false);
     if (tapeVol != tape.getVolume()) tape.setVolume(tapeVol);
     if (tapeMute != tape.isMuted()) tape.setMuted(tapeMute);
 
@@ -1791,12 +1808,16 @@ void MainWindow::renderAudioMixerWindow()
         bool  mbMute = mockingboardCard->isMuted();
         const std::string lbl = "Mockingbd (S" +
             std::to_string(mockingboardCard->getSlot()) + ")";
-        channelRow(lbl.c_str(), mbVol, mbMute, "mb", false);
+        AudioSource* mbSrc = mockingboardCard->audioSource();
+        const float mbPeak = mbSrc
+            ? mbSrc->lastBufferPeak.load(std::memory_order_relaxed)
+            : 0.0f;
+        channelRow(lbl.c_str(), mbVol, mbMute, mbPeak, "mb", false);
         if (mbVol != mockingboardCard->getVolume()) mockingboardCard->setVolume(mbVol);
         if (mbMute != mockingboardCard->isMuted()) mockingboardCard->setMuted(mbMute);
     } else {
         float dummyVol = 0; bool dummyMute = false;
-        channelRow("Mockingbd (no card)", dummyVol, dummyMute, "mb", true);
+        channelRow("Mockingbd (no card)", dummyVol, dummyMute, 0.0f, "mb", true);
     }
 
     // ── Disk 5.25" ─────────────────────────────────────────────────────
@@ -1806,7 +1827,9 @@ void MainWindow::renderAudioMixerWindow()
         float vol = fs525.getVolume();
         bool  mute = fs525.isMuted();
         channelRow(dim ? "Disk 5.25\" (samples missing)" : "Disk 5.25\"",
-                   vol, mute, "fs525", dim);
+                   vol, mute,
+                   fs525.lastBufferPeak.load(std::memory_order_relaxed),
+                   "fs525", dim);
         if (!dim) {
             if (vol != fs525.getVolume()) fs525.setVolume(vol);
             if (mute != fs525.isMuted()) fs525.setMuted(mute);
@@ -1820,7 +1843,9 @@ void MainWindow::renderAudioMixerWindow()
         float vol = fs35.getVolume();
         bool  mute = fs35.isMuted();
         channelRow(dim ? "Disk 3.5\" (samples missing)" : "Disk 3.5\"",
-                   vol, mute, "fs35", dim);
+                   vol, mute,
+                   fs35.lastBufferPeak.load(std::memory_order_relaxed),
+                   "fs35", dim);
         if (!dim) {
             if (vol != fs35.getVolume()) fs35.setVolume(vol);
             if (mute != fs35.isMuted()) fs35.setMuted(mute);
@@ -1829,6 +1854,7 @@ void MainWindow::renderAudioMixerWindow()
 
     ImGui::Spacing();
     ImGui::TextDisabled("Master is post-mix; per-channel knobs are pre-mix.");
+    ImGui::TextDisabled("Bars show last-buffer peak with ~100 ms release.");
     ImGui::End();
 }
 
