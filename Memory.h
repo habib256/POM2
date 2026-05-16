@@ -454,13 +454,15 @@ private:
     //   `payload[0x3bbf] == 0x05` (and above) → //c+
     // `isIIcClass` covers BOTH the 16 KB rev-255 //c ROM and the 32 KB rev-0/3/4
     // dumps, so INTCXROM forcing and on-board slot ROM dispatch work the same
-    // way for both. `iicHasAltBank` stays narrower: it means "we loaded an
-    // alt-bank dump capable of $C028 ROMBANK toggling" (32 KB only). On a 16 KB
-    // //c rev-255 dump, `isIIcClass=true` but `iicHasAltBank=false`.
-    // `isIIcPlus` gates the on-board IWM ($C0E0-$C0EF) and the MIG window
-    // ($CC00/$CE00) — strictly //c+, never plain //c (MAME removes the IWM
-    // device on plain //c per `apple2e.cpp:5168-5188`, which uses A2BUS_DISKIING
-    // instead).
+    // way for both. `iicHasAltBank` is also the IWM gate: it means "we loaded a
+    // 32 KB //c-class dump capable of $C028 ROMBANK toggling" — equivalently
+    // "this //c is from the IWM era (rev 0/3/4) or it's a //c+". MAME's ROM-to-
+    // machine-config mapping at `apple2e.cpp:6281-6302` wires `apple2c0`,
+    // `apple2c3`, `apple2c4`, `apple2cp` all through `A2BUS_IWM`; only the
+    // original 16 KB `apple2c` (rev 255) keeps `A2BUS_DISKIING`. On a 16 KB
+    // //c rev-255 dump, `isIIcClass=true` but `iicHasAltBank=false` (LSS path).
+    // `isIIcPlus` strictly gates the //c+-only MIG window ($CC00/$CE00) and
+    // anything else //c+-specific — IWM dispatch itself is broader.
     bool isIIcClass = false;
     bool isIIcPlus  = false;
 

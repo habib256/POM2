@@ -233,6 +233,33 @@ if(WIN32)
     target_link_libraries(test_iicplus_boot_trace PRIVATE winmm)
 endif()
 
+add_executable(test_iic_boot_trace
+    iic_boot_trace.cpp
+    ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_boot_trace PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_boot_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iic_boot_trace PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iic_boot_trace PRIVATE winmm)
+endif()
+add_test(NAME iic_boot_trace_smoke COMMAND test_iic_boot_trace)
+set_tests_properties(iic_boot_trace_smoke PROPERTIES TIMEOUT 30)
+
 add_executable(test_choplifter_iie_trace
     choplifter_iie_trace.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp

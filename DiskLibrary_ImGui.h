@@ -49,14 +49,20 @@ public:
         // 5.25" floppy — empty string = no action.
         std::string request525InsertAndBoot;
         std::string request525InsertOnly;
+        // Path to eject (only the card(s) currently holding this path
+        // are ejected). Empty = no eject.
+        std::string request525EjectPath;
         // 3.5" Sony disk.
         std::string request35MountAndBoot;
         int         request35BootDrive   = 0;
         std::string request35MountOnly;
         int         request35MountDrive  = 0;
+        // -1 = no eject; 0 = drive 1; 1 = drive 2.
+        int         request35EjectDrive  = -1;
         // ProDOS HDV / 2IMG.
         std::string requestHdvMountAndBoot;
         std::string requestHdvMountOnly;
+        bool        requestHdvEject      = false;
     };
 
     Result render(const char*               title,
@@ -93,22 +99,26 @@ private:
 
     // Build the selectable list for one tab and route clicks back to
     // `r`. Caller picks the action functor so the same renderer powers
-    // every tab.
+    // every tab. `markPaths` is indexed: for 5.25" / HDV one slot, for
+    // 3.5" two slots (drive 1, drive 2). A path mounted in slot i sets
+    // bit i in the mask passed to the context-menu callback so eject
+    // items can target the right drive.
     void renderTab(const std::vector<Entry>&               entries,
                    const std::vector<std::string>&         markPaths,
                    const char*                             emptyHint,
                    void (DiskLibrary_ImGui::*onLeftClick)(const std::string&,
                                                           Result&),
                    void (DiskLibrary_ImGui::*onContextMenu)(const std::string&,
+                                                            int mountedMask,
                                                             Result&),
                    Result&                                 r);
 
     void on525Left   (const std::string& path, Result& r);
-    void on525Ctx    (const std::string& path, Result& r);
+    void on525Ctx    (const std::string& path, int mountedMask, Result& r);
     void on35Left    (const std::string& path, Result& r);
-    void on35Ctx     (const std::string& path, Result& r);
+    void on35Ctx     (const std::string& path, int mountedMask, Result& r);
     void onHdvLeft   (const std::string& path, Result& r);
-    void onHdvCtx    (const std::string& path, Result& r);
+    void onHdvCtx    (const std::string& path, int mountedMask, Result& r);
 };
 
 } // namespace pom2

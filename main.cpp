@@ -157,10 +157,81 @@ int main(int argc, char* argv[])
     }
     ImGui::StyleColorsDark();
 
-    // Default ImGui font — we still want it as the base, then merge Font
-    // Awesome 6 Solid icons on top so the cassette deck's toolbar buttons
-    // (folder, save, eraser, volume, mute) render as glyphs instead of '?'.
-    io.Fonts->AddFontDefault();
+    // Base UI font — Proggy Clean (ImGui's default) is a bitmap that
+    // only covers ASCII, so anything past U+007F (em-dash "—", en-dash
+    // "–", curly quotes, accented letters used in POM2's localised
+    // strings, ellipsis "…") renders as '?'. Try to load a real TTF
+    // with Latin-1 Supplement + a handful of General Punctuation
+    // glyphs so the menus / status text / tooltips read properly.
+    //
+    // Probe order: bundled font (none today), then a few common
+    // distribution paths for DejaVu Sans (Debian/Ubuntu, Fedora,
+    // Arch). Last resort = AddFontDefault → users see '?' for the
+    // missing glyphs but the rest of the UI still works.
+    //
+    // The explicit SizePixels matters: since ImGui added the
+    // ImFontFlags_ImplicitRefSize check, merging FontAwesome (which
+    // requests 14.0f below) into a destination that uses implicit
+    // ref size hard-asserts at AddFont. Both branches here pick an
+    // explicit size for that reason.
+    {
+        namespace fs = std::filesystem;
+        const char* baseCandidates[] = {
+            // POM2-bundled (drop a TTF into fonts/ to override).
+            "fonts/DejaVuSans.ttf",
+            "../fonts/DejaVuSans.ttf",
+            "../../fonts/DejaVuSans.ttf",
+            // System locations seen in the wild.
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+        };
+        std::string basePath;
+        for (const char* c : baseCandidates) {
+            std::error_code ec;
+            if (fs::is_regular_file(c, ec)) { basePath = c; break; }
+        }
+        // Latin-1 Supplement + selected General Punctuation. Listed
+        // pair-by-pair (ImGui ranges are inclusive [from, to] pairs
+        // terminated with 0). Covers: ASCII printables + accented
+        // letters (é, à, ç, ü, ö, …), en/em dash, curly single + double
+        // quotes, ellipsis, non-breaking space.
+        static const ImWchar baseRanges[] = {
+            0x0020, 0x00FF,   // Basic Latin + Latin-1 Supplement
+            0x2013, 0x2014,   // – (en dash) — (em dash)
+            0x2018, 0x201D,   // ' ' " "  (curly quotes)
+            0x2022, 0x2022,   // • (bullet)
+            0x2026, 0x2026,   // … (ellipsis)
+            0x20AC, 0x20AC,   // € (euro sign — used in localised strings)
+            0,
+        };
+        if (!basePath.empty()) {
+            ImFontConfig baseCfg;
+            baseCfg.SizePixels    = 14.0f;
+            baseCfg.OversampleH   = 2;
+            baseCfg.OversampleV   = 2;
+            baseCfg.PixelSnapH    = false;
+            if (!io.Fonts->AddFontFromFileTTF(basePath.c_str(), 14.0f,
+                                              &baseCfg, baseRanges)) {
+                // TTF load failure → fall back to default so the UI
+                // still comes up.
+                ImFontConfig defCfg;
+                defCfg.SizePixels = 13.0f;
+                io.Fonts->AddFontDefault(&defCfg);
+            }
+        } else {
+            std::fprintf(stderr,
+                "POM2: no Unicode TTF found (tried DejaVu Sans + system "
+                "paths) — em-dashes, curly quotes and accented chars "
+                "will render as '?'. Drop DejaVuSans.ttf into fonts/ to "
+                "fix.\n");
+            ImFontConfig defCfg;
+            defCfg.SizePixels = 13.0f;
+            io.Fonts->AddFontDefault(&defCfg);
+        }
+    }
     {
         namespace fs = std::filesystem;
         const char* candidates[] = {

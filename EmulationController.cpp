@@ -275,29 +275,31 @@ void EmulationController::bootFromSlot(int slot)
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
-    // Apple II autostart signature (Apple II Ref Manual Appx C): a
-    // bootable card's $Cn00 PROM begins with `$20 ?? $00 $03 $3C` at
-    // offsets 1/3/5/7. The Autostart F8 firmware refuses to JSR a
-    // slot that doesn't carry this signature. We replicate the check
-    // here so bootFromSlot doesn't silently land in garbage when the
-    // user clicks "Boot" on a slot whose card has no boot PROM
-    // (B-2-2). MAME doesn't model the scan in C++ but the firmware
-    // does the same validation natively.
+    // Card-has-boot-entry sanity check. Apple II Ref Manual Appx C
+    // describes 4 signature bytes ($Cn01=$20, $Cn03=$00, $Cn05=$03,
+    // $Cn07=$3C); the F8 Autostart Monitor (Apple part 341-0020-00)
+    // checks ALL four and only auto-scans Disk II / SmartPort
+    // ($Cn07=$3C). HDV uses $Cn07=$01 (ProDOS non-removable) and
+    // SmartPort uses $Cn07=$3C; both carry the JSR-dispatch trio at
+    // $Cn01/03/05. The user-initiated "Boot" GUI button bypasses the
+    // F8 scan deliberately — it's the WHOLE POINT of bootFromSlot
+    // (the F8 firmware refuses to scan HDV cards, so the user clicking
+    // "Boot HDV" needs this shortcut). We therefore validate only the
+    // JSR trio, NOT the $Cn07=$3C marker. Theme 8 audit (gap B-2-2)
+    // originally required $Cn07=$3C too, but that broke HDV boot —
+    // see DEV.md § Storage § DiskIICard for the bootFromSlot rationale.
     const uint16_t cnxx = static_cast<uint16_t>(0xC000 + slot * 0x100);
     const uint8_t b1 = mem.memRead(static_cast<uint16_t>(cnxx + 1));
     const uint8_t b3 = mem.memRead(static_cast<uint16_t>(cnxx + 3));
     const uint8_t b5 = mem.memRead(static_cast<uint16_t>(cnxx + 5));
-    const uint8_t b7 = mem.memRead(static_cast<uint16_t>(cnxx + 7));
-    const bool hasBootSignature =
-        (b1 == 0x20) && (b3 == 0x00) && (b5 == 0x03) && (b7 == 0x3C);
-    if (!hasBootSignature) {
+    const bool hasBootDispatch =
+        (b1 == 0x20) && (b3 == 0x00) && (b5 == 0x03);
+    if (!hasBootDispatch) {
         pom2::log().warn("Emul",
             "Slot " + std::to_string(slot) +
-            " has no Apple-II boot signature at $Cn00 — autostart firmware "
-            "would skip it. Falling back to cold boot so the F8 ROM can "
-            "scan for a bootable slot.");
-        // Re-do RAM wipe via coldBoot's path (we already wiped above, so
-        // just trigger the reset + autostart path).
+            " has no Apple-II JSR-dispatch signature at $Cn01/03/05 — "
+            "the card isn't bootable. Falling back to cold boot so the "
+            "F8 ROM can scan for a different bootable slot.");
         processor.hardReset();
         mode.store(Mode::Running);
         wakeCv.notify_all();

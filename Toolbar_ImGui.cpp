@@ -37,6 +37,26 @@ const char* profileShortLabel(SystemProfile p) {
     return "??";
 }
 
+// Compact label shown inside the toolbar combo when collapsed. Full
+// names live in the dropdown rows (e.g. "//e/c — Français (342-0274-A)")
+// but those wouldn't fit in the toolbar's ~110 px width.
+const char* shortLocaleLabel(CharRomLocale l) {
+    switch (l) {
+        case CharRomLocale::ProfileDefault:                   return "Default";
+        case CharRomLocale::AppleIIClassic:                   return "Classic";
+        case CharRomLocale::AppleIIeUS_Enhanced:              return "US";
+        case CharRomLocale::AppleIIeUS_Unenhanced:            return "US-U";
+        case CharRomLocale::AppleIIeFrench:                   return "FR";
+        case CharRomLocale::AppleIIeFrenchCanadian:           return "FR-CA";
+        case CharRomLocale::AppleIIeFrenchCanadianUnenhanced: return "FR-CA-U";
+        case CharRomLocale::AppleIIeUK_Enhanced:              return "UK";
+        case CharRomLocale::AppleIIeUK_Unenhanced:            return "UK-U";
+        case CharRomLocale::AppleIIeGerman:                   return "DE";
+        case CharRomLocale::AppleIIeGermanImproved:           return "DE+";
+    }
+    return "?";
+}
+
 } // anon namespace
 
 Toolbar_ImGui::Result Toolbar_ImGui::render(
@@ -169,6 +189,44 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("System profile (cold-reset switch)");
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted("|");
+    ImGui::SameLine();
+
+    // ── Char ROM (locale) selector ───────────────────────────────────
+    // Hot swap: changing the locale calls Memory::loadCharRom(path)
+    // immediately — no profile-switch / cold-reset. Apple2Display
+    // re-reads `mem.charRom()` on every frame so the new glyph table
+    // shows up at the next refresh. The dropdown filters entries by
+    // active profile so a II+ user doesn't see a German //e font
+    // (which would render as garbage on a 2 KB-expecting profile).
+    {
+        const CharRomEntry& active = charRomEntry(snap.charRomLocale);
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), ICON_FA_FONT " %s",
+                      snap.charRomLocale == CharRomLocale::ProfileDefault
+                          ? "Default"
+                          : shortLocaleLabel(snap.charRomLocale));
+        ImGui::SetNextItemWidth(110.0f);
+        if (ImGui::BeginCombo("##POM2ToolbarCharRom", buf)) {
+            for (const auto& e : charRomCatalog()) {
+                if (!charRomFitsProfile(e, snap.activeProfile)) continue;
+                if (ImGui::Selectable(e.displayName,
+                                      snap.charRomLocale == e.locale)) {
+                    r.setCharRomRequested = true;
+                    r.setCharRomLocale    = e.locale;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) {
+            const char* path = active.path[0] ? active.path
+                                              : "(profile probe order)";
+            ImGui::SetTooltip("Character-generator ROM\n%s\n→ %s",
+                              active.displayName, path);
+        }
+    }
 
     ImGui::SameLine();
     ImGui::TextUnformatted("|");

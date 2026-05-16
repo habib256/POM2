@@ -20,6 +20,7 @@
 #ifndef POM2_TOOLBAR_IMGUI_H
 #define POM2_TOOLBAR_IMGUI_H
 
+#include "CharRomCatalog.h"
 #include "SystemProfile.h"
 
 #include <cstdint>
@@ -38,6 +39,11 @@ public:
         // Enable / disable hints for the disk buttons.
         bool          hasPrimaryDiskCard = false;
         bool          hasAnyDiskLoaded   = false;
+        // Active character-generator ROM locale. The dropdown only
+        // surfaces entries that fit the active profile (see
+        // charRomFitsProfile) — switching is hot, no cold reset needed
+        // because Apple2Display re-reads `mem.charRom()` every frame.
+        CharRomLocale charRomLocale      = CharRomLocale::ProfileDefault;
     };
 
     struct Result {
@@ -55,6 +61,10 @@ public:
         int           setCyclesPerFrame   = -1;
         bool          setProfileRequested = false;
         SystemProfile setProfile          {};
+        // Char ROM dropdown — host swaps via Memory::loadCharRom(path)
+        // (or re-runs the profile's probe order for ProfileDefault).
+        bool          setCharRomRequested = false;
+        CharRomLocale setCharRomLocale    {};
     };
 
     /// Render the toolbar. `menuBarHeight` positions the window just

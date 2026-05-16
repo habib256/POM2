@@ -188,7 +188,7 @@ void DiskLibrary_ImGui::on525Left(const std::string& path, Result& r)
 {
     r.request525InsertAndBoot = path;
 }
-void DiskLibrary_ImGui::on525Ctx(const std::string& path, Result& r)
+void DiskLibrary_ImGui::on525Ctx(const std::string& path, int mountedMask, Result& r)
 {
     if (ImGui::MenuItem("Insert + boot (slot 6 / primary)")) {
         r.request525InsertAndBoot = path;
@@ -196,13 +196,19 @@ void DiskLibrary_ImGui::on525Ctx(const std::string& path, Result& r)
     if (ImGui::MenuItem("Insert only (no boot — hot-swap)")) {
         r.request525InsertOnly = path;
     }
+    if (mountedMask & 0x1) {
+        ImGui::Separator();
+        if (ImGui::MenuItem("Eject")) {
+            r.request525EjectPath = path;
+        }
+    }
 }
 void DiskLibrary_ImGui::on35Left(const std::string& path, Result& r)
 {
     r.request35MountAndBoot = path;
     r.request35BootDrive    = 0;
 }
-void DiskLibrary_ImGui::on35Ctx(const std::string& path, Result& r)
+void DiskLibrary_ImGui::on35Ctx(const std::string& path, int mountedMask, Result& r)
 {
     if (ImGui::MenuItem("Mount on drive 1 + boot")) {
         r.request35MountAndBoot = path;
@@ -221,18 +227,33 @@ void DiskLibrary_ImGui::on35Ctx(const std::string& path, Result& r)
         r.request35MountOnly    = path;
         r.request35MountDrive   = 1;
     }
+    if (mountedMask & 0x3) {
+        ImGui::Separator();
+        if ((mountedMask & 0x1) && ImGui::MenuItem("Eject from drive 1")) {
+            r.request35EjectDrive = 0;
+        }
+        if ((mountedMask & 0x2) && ImGui::MenuItem("Eject from drive 2")) {
+            r.request35EjectDrive = 1;
+        }
+    }
 }
 void DiskLibrary_ImGui::onHdvLeft(const std::string& path, Result& r)
 {
     r.requestHdvMountAndBoot = path;
 }
-void DiskLibrary_ImGui::onHdvCtx(const std::string& path, Result& r)
+void DiskLibrary_ImGui::onHdvCtx(const std::string& path, int mountedMask, Result& r)
 {
     if (ImGui::MenuItem("Mount + boot")) {
         r.requestHdvMountAndBoot = path;
     }
     if (ImGui::MenuItem("Mount only (no boot)")) {
         r.requestHdvMountOnly = path;
+    }
+    if (mountedMask & 0x1) {
+        ImGui::Separator();
+        if (ImGui::MenuItem("Eject")) {
+            r.requestHdvEject = true;
+        }
     }
 }
 
@@ -241,7 +262,7 @@ void DiskLibrary_ImGui::renderTab(
     const std::vector<std::string>&  markPaths,
     const char*                      emptyHint,
     void (DiskLibrary_ImGui::*onLeftClick)(const std::string&, Result&),
-    void (DiskLibrary_ImGui::*onContextMenu)(const std::string&, Result&),
+    void (DiskLibrary_ImGui::*onContextMenu)(const std::string&, int, Result&),
     Result&                          r)
 {
     // Filter + sort happen on a local copy so toggling sort doesn't
@@ -274,8 +295,12 @@ void DiskLibrary_ImGui::renderTab(
 
         for (const auto& e : filtered) {
             ImGui::TableNextRow();
-            const bool mounted = std::any_of(markPaths.begin(), markPaths.end(),
-                [&](const std::string& m) { return m == e.fullPath; });
+            int mountedMask = 0;
+            for (size_t i = 0; i < markPaths.size() && i < 8; ++i) {
+                if (!markPaths[i].empty() && markPaths[i] == e.fullPath)
+                    mountedMask |= (1 << i);
+            }
+            const bool mounted = mountedMask != 0;
             ImGui::PushID(e.fullPath.c_str());
 
             ImGui::TableSetColumnIndex(0);
@@ -286,7 +311,7 @@ void DiskLibrary_ImGui::renderTab(
                 (this->*onLeftClick)(e.fullPath, r);
             }
             if (ImGui::BeginPopupContextItem("ctx")) {
-                (this->*onContextMenu)(e.fullPath, r);
+                (this->*onContextMenu)(e.fullPath, mountedMask, r);
                 ImGui::EndPopup();
             }
 

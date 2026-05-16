@@ -14,9 +14,11 @@ walkthrough → `README.md`.
   - [IIe paging](#iie-paging)
   - [RamWorks III](#ramworks-iii)
   - [Soft switches](#soft-switches)
+  - [Power-on RAM pattern](#power-on-ram-pattern)
   - [Text/HGR row interleave](#textgr-row-interleave)
   - [Clock & threading](#clock--threading)
   - [Keyboard](#keyboard)
+  - [Reset architecture (Theme 7 split)](#reset-architecture-theme-7-split)
 - [Display](#display)
   - [DHGR](#dhgr)
   - [80-col text](#80-col-text)
@@ -88,6 +90,31 @@ Accepts two //e dump shapes:
   branch loads linearly at `$8000` and leaves `$C100-$CFFF` empty when
   `INTCXROM=on` → //e firmware crashes before slot 6 boot PROM.
 
+**//c-class detection** (MAME `apple2e.cpp:1275-1299` ROM-content probe):
+after `payload` is sliced, the loader inspects two specific bytes and
+sets per-machine flags consumed by the memory dispatcher:
+
+- `payload[0x3bc0] == 0x00` → `isIIcClass = true`. Forces INTCXROM on
+  every reset (the //c has no physical slots, so `$C100-$CFFF` must
+  always read motherboard internal ROM). Fires for **both** 16 KB
+  rev-255 //c dumps AND 32 KB rev-0/3/4/X //c+/c-plus dumps.
+- `payload[0x3bbf] == 0x05` (after the //c probe also matched) →
+  `isIIcPlus = true`. Gates the on-board IWM ($C0E0-$C0EF dispatch)
+  and the MIG window ($CC00 / $CE00). Plain //c uses
+  `A2BUS_DISKIING` at slot 6 (MAME `apple2c()` `apple2e.cpp:5168-
+  5188`); only //c+ instantiates the IWM directly.
+- `iicHasAltBank` is narrower than `isIIcClass` — it means "the 32 KB
+  dump provided an alt-firmware bank capable of $C028 ROMBANK
+  toggling". A 16 KB //c rev-255 dump has `isIIcClass=true` but
+  `iicHasAltBank=false` (no bank to flip).
+
+Pre-Theme-6 (2026-05-16 audit), POM2 conflated all three behind
+`iicHasAltBank`, which broke 16 KB //c rev-255 boot (D-1-1) and
+mis-routed plain //c $C0E0-$C0EF through the IWM (D-2-1) + $CC00/$CE00
+through the MIG (D-2-2). The split mirrors MAME's `m_isiic` /
+`m_isiicplus` distinction (with `iicHasAltBank` being a POM2-side
+addition for the alt-bank storage path).
+
 ### Memory dispatch
 
 `memRead`/`memWrite` route every `$C000-$C07F` access through
@@ -149,6 +176,40 @@ Toggled by *either* read or write. `$C030` toggles speaker on **every**
 access in `$C030-$C03F` (alias decoded). `$C061-$C067` are paddles +
 buttons on II/II+ — **NOT** cassette aliases (only `$C020`/`$C060` are).
 
+**Open-Apple / Solid-Apple** are OR'd into $C061 / $C062 bit 7 alongside
+the joystick buttons (MAME `apple2e.cpp:2157-2169`). The IIe/c/c+ self-
+test firmware reads $C061/$C062 inside its reset handler to decide
+warm-vs-cold-vs-self-test. Wired post-Theme-1 to the host's Left Alt
+(`Memory::setOpenAppleKey`) and Right Alt (`setSolidAppleKey`); the
+GLFW key callback routes those even when ImGui has keyboard focus so
+press/release edges always reach the emulated $C061/$C062 latches.
+
+**IOUDIS** (`$C07E` SET / `$C07F` CLR, plus //c mouse-firmware mirrors
+at `$C078` / `$C079`). Initialised `true` on every reset (MAME
+`apple2e.cpp:1224`). Writes are effective only on `isIIcClass`
+(IIc/IIc+) — IIe falls through (MAME `apple2e.cpp:2569-2587` gates on
+`m_isiic||m_isace500`). Read of `$C07E` on any IIe-class returns
+bit-7 = ioudis state (MAME `:2276-2278`). Added post-Theme-12 audit
+(C-1-3/D-1-2/D-3-2/D-4-1/E-4-3).
+
+**LC reset state**: `lcWriteEnable=true`, `lcReadRam=false`,
+`lcBank2Active=true`, `lcPrewrite=false` per Sather *Understanding the
+Apple //e* Fig 5.13 (MAME `apple2e.cpp:1227-1232` + `:1492-1497`).
+Applied universally — the Language Card on II/II+ powers up in the same
+state. Pre-Theme-2 POM2 booted with `lcWriteEnable=false`; first write
+to $D000-$FFFF after boot silently dropped (C-1-2).
+
+### Power-on RAM pattern
+
+MAME-faithful `00 FF 00 FF ...` alternating fill, applied by
+`Memory::clearRam()` to user RAM ($0000-$BFFF) + LC banks + aux RAM +
+RamWorks backing. Matches `apple2.cpp:294-298` (II/II+) and
+`apple2e.cpp:1014-1035` (IIe-class). Done once at `clearRam()` time
+(power-on / profile switch / explicit cold boot); soft and hard resets
+preserve RAM. Pre-Theme-11 POM2 zero-filled, which made
+uninitialised-RAM RNG seeds and RAM diagnostic patterns diverge from
+real hardware (F-1-2 / B-1-1 / C-1-1 / D-1-3 / E-1-1).
+
 ### Text/HGR row interleave
 
 Woz DRAM-refresh trick. Formulae in `Apple2Display.cpp`:
@@ -173,6 +234,32 @@ Single `stateMutex` guards CPU+Memory; UI takes it briefly each frame.
 Latch + strobe under `kbMutex`. UI thread `queueKey()` sets strobe high.
 CPU reads `$C000` via `softSwitchAccess()` (snapshots under same mutex).
 Strobe stays high until `$C010` read/write.
+
+### Reset architecture (Theme 7 split)
+
+POM2 exposes 4 reset verbs on `EmulationController` mapped to ~2 MAME
+paths (CLAUDE.md § Reset architecture has the user-facing table). The
+Memory-side split lives in two methods:
+
+- **`resetSoftSwitches()`** — full reset: display state, LC bank flags,
+  `iieMemMode`, `intC8Rom`, `iicRomBank`, IOUDIS=true, RamWorks bank 0.
+  Re-forces `MF_INTCXROM` when `isIIcClass` (Theme 6). Called by
+  `coldBoot()`, `hardReset()`, `applyProfile` step 4, AND
+  `resetSoftSwitchesWarm()` when `iieMode` is on.
+- **`resetSoftSwitchesWarm()`** — Ctrl-Reset-only path. On `iieMode`
+  delegates to the full reset (MAME `apple2e.cpp:1453-1508 reset_w`
+  wipes the MMU/IOU/LC list every time). On II/II+ does only the
+  keyboard-strobe clear (MAME `apple2.cpp:325-331` is the entire
+  machine_reset body — LC + display + cnxx_slot all SURVIVE). Called
+  by `EmulationController::softReset()` only. Pre-Theme-7 POM2 ran the
+  full reset on every Ctrl-Reset, breaking II/II+ software that pinned
+  the LC into RAM-mode and tapped Ctrl-Reset (B-3-1).
+
+CPU-side, `M6502::hardReset()` no longer wipes the stack page
+$0100-$01FF (POM2-invention pre-Theme-7; MAME `reset_w` doesn't touch
+RAM). `M6502::softReset()` decrements SP by 3 (faked-BRK reset
+sequence semantic, MAME-faithful) instead of snapping to `$FF` (which
+was correct for cold-boot but wrong for Ctrl-Reset — B-1-3).
 
 ## Display
 
@@ -528,10 +615,34 @@ fallback round trip).
 
 ### DiskIICard (slot 6)
 
-256-byte P5A boot PROM (`roms/disk2.rom`); PROM autodetects slot via
-`JSR $FF58 / TSX / LDA $0100,X` → Apple II main ROM required for boot.
-Soft switches `$C0E0-$C0EF`: phases, motor, drive_select, Q6L/Q6H,
-Q7L/Q7H.
+256-byte P5A boot PROM. Apple part 341-0027-A (CRC32 `ce7144f6`)
+**embedded** in `DiskIICard.cpp` as `kBootPromDefault[256]` (Theme 3);
+`loadBootRom("roms/disk2.rom")` still overrides if a user-supplied
+dump is present, but the embedded copy keeps the card bootable
+out-of-the-box. The PROM autodetects slot via `JSR $FF58 / TSX /
+LDA $0100,X` → Apple II main ROM required for boot. Soft switches
+`$C0E0-$C0EF`: phases, motor, drive_select, Q6L/Q6H, Q7L/Q7H.
+
+**Boot signature** (Apple II Ref Manual Appx C): a bootable card's
+`$Cn00` PROM starts with `$20 ?? $00 $03` at offsets 1/3/5
+(`JSR $Cn00 → JMP $C…20`-style dispatch). Apple's "device type" byte
+at `$Cn07` distinguishes Disk II / SmartPort (`$3C`, scanned by the
+F8 Autostart `341-0020-00`) from ProDOS block devices (`$01` for
+non-removable HDV, other values for ROM cards etc.). The F8 firmware
+ONLY auto-scans `$Cn07=$3C` slots; ProDOS HDV cards are NEVER picked
+up by the cold-boot scan — they require `PR#N` or an equivalent
+shortcut.
+
+`EmulationController::bootFromSlot()` exists precisely as that
+shortcut: GUI "Boot HDV" / "Boot SmartPort" / "Boot Disk Library"
+buttons all route through it so the user can boot any bootable card
+regardless of whether the F8 autostart would find it natively.
+Theme 8 (audit gap B-2-2) added a sanity check on $Cn01/$Cn03/$Cn05
+(the JSR-dispatch trio) so clicking "Boot" on a non-bootable card
+(e.g. a clock card without boot ROM) logs a warning and falls back
+to `coldBoot` instead of jumping into garbage. The `$Cn07=$3C` byte
+is deliberately **not** validated — that would reject HDV
+(`$Cn07=$01`) and force the user back through `PR#N` typed by hand.
 
 **Drive switching** via `selectDrive(int)` mirrors MAME
 `wozfdc.cpp:264-291` (file moved from `bus/a2bus/` to `machine/` in
@@ -980,49 +1091,95 @@ but encode firmware in OPPOSITE halves. `loadAppleIIRom` takes a
 Both halves can carry valid-looking reset vectors so we cannot reliably
 auto-detect from bytes alone — the profile is the source of truth.
 
-**$C028 ROMBANK** (//c only): when `iicHasAltBank` is set (32 KB dump
-loaded via `pickLower=true`), any access to `$C028` toggles
-`iicRomBank`. Reads of `$C100-$CFFF` (under `INTCXROM`) and `$D000-$FFFF`
-(under LC ROM) consult the flag and dispatch to `iicAltFirmware` instead
-of `internalIORom` / `mem` when bank 1 is active. `resetSoftSwitches`
-clears the flag so cold-boot always starts in bank 0. On II/II+/IIe (no
-alt bank), the `$C028` access falls through to the cassette-output
-toggle just like the rest of `$C020-$C02F`. Pinned:
+**$C028 ROMBANK** (//c-class): MAME `apple2e.cpp:1907-1923` flips
+`m_romswitch` on any `$C02x` access when `m_isiic` is true. POM2
+mirrors with `isIIcClass` (Theme 6) — fires on both 16 KB rev-255 and
+32 KB //c+/c-plus dumps. The alt-firmware read paths additionally
+require `iicHasAltBank` (32 KB only), so on the 16 KB rev-255 //c the
+toggle is cosmetic — there's no second bank to dispatch to.
+`resetSoftSwitches` clears `iicRomBank` so cold-boot always starts in
+bank 0. On II/II+/IIe (`!isIIcClass`), the `$C02x` range falls through
+to the cassette-output toggle. Pinned:
 `system_profile_smoke_test.cpp::testIicRomBankSwitch`.
 
-**//c INTCXROM override** (//c-only): the //c has no physical slots, so
-internal motherboard ROM is mapped at `$C100-$CFFF` at all times. POM2
-gates `internalIORom` dispatch on `(MF_INTCXROM || iicHasAltBank)` in
-`memRead` and `memWrite` — matches MAME `apple2e.cpp:1617-1635
+**//c-class INTCXROM override**: the //c / //c+ have no physical slots,
+so internal motherboard ROM is mapped at `$C100-$CFFF` at all times.
+POM2 gates `internalIORom` dispatch on `(MF_INTCXROM || isIIcClass)` in
+`memRead` and `memWrite` — matches MAME `apple2e.cpp:1619-1631
 update_slotrom_banks`, which ORs `m_isiic` into every internal-ROM
 gate. **Without this**, the //c reset routine at `$FA62` would `JSR
 $CE4D` into an empty slot bus on the very first instructions and crash
 before booting. `loadAppleIIRom` and `resetSoftSwitches` both set
-`iieMemMode |= MF_INTCXROM` when `iicHasAltBank` is true so `$C015`
-(RDCXROM) reads back consistently (MAME `apple2e.cpp:1273` does the
-same in `machine_reset`). Pinned:
+`iieMemMode |= MF_INTCXROM` when `isIIcClass` is true so `$C015`
+(RDCXROM) reads back consistently (MAME `apple2e.cpp:1273` /
+`apple2e.cpp:1467-1475` does the same in `machine_reset` / `reset_w`).
+Pre-Theme-6 the gate was on `iicHasAltBank` and the 16 KB rev-255 //c
+ROM never set the bit — booting that dump wedged on the first $CE4D
+slot-bus read (D-1-1/D-3-1). Pinned:
 `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`.
+
+**Built-in slot locks** (`ProfileConfig::builtInSlots`, Theme 4): each
+profile carries an `std::array<std::optional<BuiltInSlot>, 8>` mapping
+expansion-slot indices to "card forced here by the on-board hardware".
+//c locks sl2 (SSC modem), sl4 (Mouse), sl6 (Disk II). //c+ adds sl5
+(SmartPort 3.5" via IWM). II / II+ / IIe-U / IIe leave all slots free
+(real machines exposed physical expansion buses there).
+
+Two paths consume the table:
+
+1. `MainWindow::plugSlotsFromSettings` (called from `applyProfile`)
+   overrides `slotCards[s]` with the forced `cardKey` regardless of
+   the user's persisted `slot_N_card` setting. The deduplication pass
+   below still runs; if the user had the same card type plugged
+   elsewhere it gets cleared from the secondary slot. Forcing happens
+   silently with a one-line info log.
+2. `MainWindow::renderSlotConfigPanel` looks up `builtInSlots[s]` per
+   row and renders the locked slots as `ImGui::BeginDisabled(true)`
+   `LabelText` with a "card — built-in serial/mouse/Disk II/..." badge
+   instead of the editable combo. The `draft[s]` snapshot is re-synced
+   to the forced cardKey on every render so an Apply cycle persists
+   the locked value if the user had something stale saved in settings
+   from a previous profile.
+
+The IIc/IIc+ on-board peripherals address virtual slot IDs from the
+firmware's perspective ($C100/$C200 = SSC printer/modem ports,
+$C400 = Mouse, $C500 = SmartPort 3.5", $C600 = Disk II) — POM2 plugs
+real `*Card` instances at those slot IDs, but the user cannot unplug
+them. Pre-Theme-4 the panel rendered all 7 slots editable for every
+profile, so a //c user could "unplug Disk II from sl6" and wedge the
+boot path (D-6-1). Pinned:
+`system_profile_smoke_test.cpp::testBuiltInSlots`.
 
 **//c+ MIG + IWM handshake** (//c+-only): the //c+'s alt firmware
 (bank 1, mapped via `$C028` ROMBANK) is built around two pieces of
 hardware POM2 only models in the minimum form needed for cold boot:
 
-- **MIG** (Multi-drive Interface Glue, MAME `apple2e.cpp:451-624
+- **MIG** (Multi-drive Interface Glue, MAME `apple2e.cpp:598-704
   mig_r / mig_w`). Apple gate-array that bridges the IWM to the //c+'s
   on-board 5.25" + 3.5" SmartPort drives. POM2's Memory module hosts
   the MIG state (`migRam[0x800]`, `migPage`, `migIntDrive`, `migHdSel`)
-  and routes the two MIG windows in the bank-1 expansion ROM area:
+  and routes the two MIG windows in the bank-1 expansion ROM area
+  **only when `isIIcPlus && iicRomBank`** (Theme 6 split — plain //c
+  rev-0/3/4 also has a bank 1 with the mini-assembler etc. but NO
+  MIG, so reads there must return ROM bytes, not MIG garbage / D-2-2):
   - `$CC00-$CCFF` → `migOffset 0x000-0x0FF` (drive enable/disable,
     IWM reset)
   - `$CE00-$CEFF` → `migOffset 0x200-0x2FF` (MIG RAM + auto-increment,
     3.5" head select, MIG page reset)
-  The 3.5"-side decodes (`hdsel` toggles via `$240-$27F`) are stored
-  but a no-op functionally — POM2 has no 3.5" SmartPort drive. The
-  2 KB MIG RAM is fully implemented; the //c+ firmware uses it to
-  cache disk geometry / accelerator state across resets. MAME
-  `apple2e.cpp:1700-1703` resets `migPage` when ROMSWITCH transitions
-  back to bank 0; POM2 mirrors that in `softSwitchAccess` $C028
-  handling.
+  The 3.5"-side decodes drive `SmartPortHub::setMig35Sel` /
+  `setMigIntDrive`; the hub's `recalc_active_device` (verbatim port of
+  MAME `apple2e.cpp:724-770`) picks the active floppy across the four
+  IWM units. The 2 KB MIG RAM is fully implemented; the //c+ firmware
+  uses it to cache disk geometry / accelerator state across resets.
+  MAME `apple2e.cpp:1917-1922` resets `migPage` + `m_intdrive` +
+  `m_35sel` when ROMSWITCH transitions back to bank 0; POM2 mirrors
+  all three in `softSwitchAccess` $C028 handling (Theme 10 fixed
+  E-4-1 — previously POM2 only cleared `migPage` and left the hub
+  thinking 3.5"/internal-drive selection was still active across the
+  bank flip). `migWrite(0x40)` now calls `iwmDevice->reset()` so the
+  //c+ alt firmware's per-boot IWM reset clears stale mode_/control_/
+  whd_ state (Theme 10 fix for E-5-4 — `apple2e.cpp:647-650`
+  `m_iwm->reset()`).
 
 - **IWM mode register + WHD handshake** on `DiskIICard` (MAME
   `iwm.cpp:103-114 read / 256-269 mode_w`). A real Disk II / wozfdc
@@ -1062,13 +1219,17 @@ thing.
      audio / cassette / speaker / floppy-sound devices and hands it
      to `Memory::setIWM`. Reset paths (`hardReset`, `coldBoot`,
      `bootFromSlot`) call `iwm.reset()`.
-  2. Memory routes $C0E0-$C0EF on `iicHasAltBank` profiles through
-     `iwmDevice->read` / `write` — matches MAME `apple2e.cpp:2430-
-     2432 c080_r` which gates on `m_isiicplus && slot == 6`. The
-     slot-6 DiskIICard still observes the access so motor sound,
-     disk-turbo gating, and head-position tracking stay current,
-     but the **byte returned to the CPU is the IWM's** when
-     `iwmAuthoritative` is true (the default).
+  2. Memory routes $C0E0-$C0EF on `isIIcPlus` profiles (Theme 6) through
+     `iwmDevice->read` / `write` — matches MAME `apple2e.cpp:2798-2801
+     c080_r` which gates on `m_isiicplus && slot == 6`. Plain //c uses
+     `A2BUS_DISKIING` at sl6 instead (MAME `apple2e.cpp:5168-5188`),
+     so its $C0E0-$C0EF dispatch goes through the slot bus to
+     DiskIICard's LSS path — pre-Theme-6 POM2 routed plain //c through
+     the IWM too, producing IWM-vs-Disk-II bit-cadence drift on copy-
+     protected //c titles (D-2-1). On //c+ the slot-6 DiskIICard still
+     observes the access so motor sound, disk-turbo gating, and head-
+     position tracking stay current, but the **byte returned to the
+     CPU is the IWM's** when `iwmAuthoritative` is true (the default).
   3. DiskIICard pushes `setFloppy(image, qt)` updates to the IWM
      from `insertDisk`, `ejectDisk`, `selectDrive`, and the
      head-step path in `seekPhaseW`. The IWM's `nextTransition`

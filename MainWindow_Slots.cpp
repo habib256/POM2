@@ -27,6 +27,7 @@
 // forward-declares the controller / cards / panels.
 #include "AiControlServer.h"
 #include "Apple2Display.h"
+#include "CharRomCatalog.h"
 #include "ClockCard.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
@@ -444,10 +445,23 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         pom2::log().warn("Profile", romStatus);
     }
 
-    // 6. Char ROM. Always try at least one candidate; loadCharRom returns
-    //    a falsey value when the file is missing but Apple2Display falls
-    //    back to its built-in 5×7 ASCII font in that case.
-    const std::string newCharPath = firstExistingPath(cfg.charRomProbeOrder);
+    // 6. Char ROM. The user's toolbar choice (`charRomLocale`) wins over
+    //    the profile probe — switching IIe ↔ IIc shouldn't lose a
+    //    "Français" selection. Drop to the profile probe only when the
+    //    chosen file vanished (deleted between sessions) or the locale
+    //    explicitly says ProfileDefault, AND fall back further to the
+    //    profile probe order so we never leave Apple2Display with a
+    //    stale csbits table from the previous profile.
+    std::string newCharPath;
+    if (charRomLocale != pom2::CharRomLocale::ProfileDefault) {
+        // resolveCharRomPath probes roms/X, ../roms/X, ../../roms/X so
+        // the override works whether POM2 is launched from the repo
+        // root or from build/.
+        newCharPath = pom2::resolveCharRomPath(charRomLocale);
+    }
+    if (newCharPath.empty()) {
+        newCharPath = firstExistingPath(cfg.charRomProbeOrder);
+    }
     charRomPath = newCharPath;
     if (!newCharPath.empty()) {
         controller->memory().loadCharRom(newCharPath.c_str());

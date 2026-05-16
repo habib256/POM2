@@ -74,6 +74,7 @@ set(SOURCES
     IWMDevice.cpp
     SmartPortHub.cpp
     Sony35Drive.cpp
+    CharRomCatalog.cpp
     JoystickInput.cpp
     JoystickPanel_ImGui.cpp
     LeChatMauveCard.cpp
@@ -108,6 +109,7 @@ set(HEADERS
     AudioDevice.h
     CassetteDevice.h
     CassetteDeck_ImGui.h
+    CharRomCatalog.h
     CliDispatcher.h
     ClockCard.h
     Disassembler6502.h

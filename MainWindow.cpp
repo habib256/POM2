@@ -10,6 +10,7 @@
 #include "Apple2Display.h"
 #include "CassetteDeck_ImGui.h"
 #include "CassetteDevice.h"
+#include "CharRomCatalog.h"
 #include "ClockCard.h"
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
@@ -74,7 +75,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
       aiPortInput    (pom2::AiControlServer::kDefaultPort),
-      activeProfile  (pom2::SystemProfile::AppleIIPlus)
+      activeProfile  (pom2::SystemProfile::AppleIIPlus),
+      charRomLocale  (pom2::CharRomLocale::ProfileDefault)
 {
     // Memory viewer writes go through Memory::memWrite under stateMutex,
     // so a byte poked from the UI passes through ROM-write protection and
@@ -123,7 +125,31 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
     }
     charRomPath.clear();
-    if (iiePresent) {
+    // Restore user-selected character ROM locale (toolbar dropdown).
+    // ProfileDefault keeps the legacy auto-probe; anything else maps
+    // to a specific file in roms/. The override is applied here BEFORE
+    // the probe so the very first frame already shows the chosen font
+    // — otherwise applyProfile() catches up a few hundred ms later
+    // and the user briefly sees the wrong glyphs.
+    charRomLocale = pom2::charRomLocaleFromKey(
+        settings->getString("char_rom_locale", "default"));
+    if (charRomLocale != pom2::CharRomLocale::ProfileDefault) {
+        // resolveCharRomPath probes roms/X, ../roms/X, ../../roms/X —
+        // same prefix sweep as the legacy IIe probe, so the override
+        // works whether POM2 is launched from the repo root or from
+        // build/.
+        const std::string overridePath =
+            pom2::resolveCharRomPath(charRomLocale);
+        if (!overridePath.empty()) {
+            charRomPath = overridePath;
+        } else {
+            // File missing — fall through to the legacy probe so we
+            // don't end up with a blank screen, and reset the saved
+            // locale so the dropdown reflects what actually loaded.
+            charRomLocale = pom2::CharRomLocale::ProfileDefault;
+        }
+    }
+    if (charRomPath.empty() && iiePresent) {
         for (const char* p : charRomIIeCandidates) {
             if (fs::exists(p)) { charRomPath = p; break; }
         }
@@ -459,6 +485,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("floppy_sound_muted_35",  controller->floppySound35().isMuted());
     settings->setFloat ("master_volume",          controller->audio().getMasterVolume());
     settings->setBool  ("master_muted",           controller->audio().isMasterMuted());
+    settings->setString("char_rom_locale",        pom2::charRomLocaleKey(charRomLocale));
     if (mockingboardCard) {
         settings->setFloat("mockingboard_volume", mockingboardCard->getVolume());
         settings->setBool ("mockingboard_muted",  mockingboardCard->isMuted());
@@ -2418,6 +2445,36 @@ void MainWindow::renderDiskLibraryWindow()
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
+
+    // ── Eject actions ─────────────────────────────────────────────────
+    // 5.25": eject from whichever plugged DiskII holds the clicked
+    // image. Match by path so multi-instance DiskII setups (the same
+    // image plugged into two slots) all clear together.
+    if (!r.request525EjectPath.empty()) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        for (auto* c : diskCards) {
+            if (c && c->isDiskLoaded() &&
+                c->getDiskPath() == r.request525EjectPath) {
+                c->ejectDisk();
+            }
+        }
+        tapeStatusMessage = "Library: 5.25\" disk ejected";
+        tapeStatusUntil   = lastFrameTime + 3.0;
+    }
+    if (r.request35EjectDrive >= 0) {
+        controller->eject35(r.request35EjectDrive);
+        tapeStatusMessage = "Library: 3.5\" drive "
+            + std::string(r.request35EjectDrive == 0 ? "1" : "2") + " ejected";
+        tapeStatusUntil   = lastFrameTime + 3.0;
+    }
+    if (r.requestHdvEject && hdvCard) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        hdvCard->ejectImage();
+        hdvPath.clear();
+        hdvStatus = "no image mounted";
+        tapeStatusMessage = "Library: HDV ejected";
+        tapeStatusUntil   = lastFrameTime + 3.0;
+    }
 }
 
 // ─── HDV (slot 5) ────────────────────────────────────────────────────────
@@ -3290,6 +3347,7 @@ void MainWindow::render()
             (controller->disk35Internal().isLoaded() ||
              controller->disk35External().isLoaded()))           anyLoaded = true;
         tb.hasAnyDiskLoaded   = anyLoaded;
+        tb.charRomLocale      = charRomLocale;
 
         const auto tr = toolbar->render(showToolbar,
                                         ImGui::GetFrameHeight(), tb);
@@ -3323,6 +3381,45 @@ void MainWindow::render()
             controller->eject35(1);
             tapeStatusMessage = "Ejected all disks";
             tapeStatusUntil   = lastFrameTime + 3.0;
+        }
+        if (tr.setCharRomRequested) {
+            // Hot swap: Memory::loadCharRom rewrites the csbits table
+            // in place; Apple2Display re-reads `mem.charRom()` on every
+            // frame so the new glyphs show up at the next render. No
+            // cold reset needed.
+            charRomLocale = tr.setCharRomLocale;
+            std::string newPath;
+            if (charRomLocale == pom2::CharRomLocale::ProfileDefault) {
+                // Replay the active profile's probe order (which
+                // already lists path candidates resolvable from both
+                // repo root and build/, via the SystemProfile config).
+                const auto& cfg = pom2::profileConfig(activeProfile);
+                for (const auto& p : cfg.charRomProbeOrder) {
+                    const std::string r = pom2::resolveCharRomPath(p);
+                    if (!r.empty()) { newPath = r; break; }
+                }
+            } else {
+                newPath = pom2::resolveCharRomPath(charRomLocale);
+            }
+            namespace fs = std::filesystem;
+            if (!newPath.empty() && fs::exists(newPath)) {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                if (controller->memory().loadCharRom(newPath.c_str())) {
+                    charRomPath = newPath;
+                    settings->setString("char_rom_locale",
+                        pom2::charRomLocaleKey(charRomLocale));
+                    settings->save();
+                    pom2::log().info("CharRom",
+                        std::string("Switched to ") + newPath);
+                } else {
+                    pom2::log().warn("CharRom",
+                        std::string("loadCharRom failed for ") + newPath);
+                }
+            } else {
+                pom2::log().warn("CharRom",
+                    std::string("Selected ROM missing: ") +
+                    (newPath.empty() ? "(no path)" : newPath));
+            }
         }
     }
     renderScreenWindow();

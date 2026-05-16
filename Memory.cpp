@@ -1405,17 +1405,26 @@ uint8_t Memory::memRead(uint16_t addr)
     // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
     // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
     if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
-    // //c+ on-board IWM: $C0E0-$C0EF on the //c+ ONLY (MAME
-    // `apple2e.cpp:2798-2801 c080_r` routes `m_isiicplus && slot == 6`
-    // to `m_iwm`; plain //c uses A2BUS_DISKIING at sl6, NOT the IWM —
-    // see `apple2e.cpp:5168-5188`). The slot-6 DiskIICard still
-    // observes the access so its motor sound / disk-turbo / head-
-    // position tracking stay current — but the **value returned to
-    // the CPU is the IWM's**. The IWM's sync() walks DiskImage flux
-    // via DiskIICard's pushed-in setFloppy() so both controllers see
-    // the same flux stream; only the bit-cell window walker differs
-    // (LSS in DiskIICard vs MAME-faithful IWM state machine here).
-    if (addr >= 0xC0E0 && addr <= 0xC0EF && isIIcPlus && iwmDevice) {
+    // //c (32 KB ROM rev 0/3/4) and //c+ on-board IWM: $C0E0-$C0EF.
+    // MAME wires `A2BUS_IWM` at sl6 for both `apple2c_iwm` (apple2c0,
+    // UniDisk 3.5) and `apple2c_mem` (apple2c3/c4, Memory Expansion)
+    // — see `apple2e.cpp:5249-5254` + `5263-5272`. The original 16 KB
+    // //c (rev 255) is the **only** //c-class that uses A2BUS_DISKIING
+    // (`apple2e.cpp:5212`); ROM 0/3/4 ditched the LSS for the IWM
+    // when Apple unified the //c motherboard around the IWM chip in
+    // 1985-86. The slot-6 DiskIICard still observes the access so its
+    // motor sound / disk-turbo / head-position tracking stay current
+    // — but the **value returned to the CPU is the IWM's**. The IWM's
+    // sync() walks DiskImage flux via DiskIICard's pushed-in
+    // setFloppy() so both controllers see the same flux stream; only
+    // the bit-cell window walker differs (LSS in DiskIICard vs
+    // MAME-faithful IWM state machine here).
+    //
+    // `iicHasAltBank` is the right gate because POM2 sets it precisely
+    // for 32 KB //c-class dumps (apple2c0/c3/c4 AND apple2cp) —
+    // matching MAME's rom-→-machine-config mapping at
+    // `apple2e.cpp:6281-6302`.
+    if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
         iwmDevice->tick(cycleCounter);
         const uint8_t v = iwmDevice->read(static_cast<uint8_t>(addr & 0xF));
         if (iwmAuthoritative) {
@@ -1588,11 +1597,12 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
             languageCardSwitchAccess(addr, /*isWrite=*/true);
             return;
         }
-        // //c / //c+ IWM (see memRead for the read side). Writes are
-        // dispatched to IWMDevice (mode register, data write, etc.)
-        // AND forwarded to DiskIICard so its slot-6 state stays in
-        // sync (phases, motor on/off, sound + writeback gating).
-        if (addr >= 0xC0E0 && addr <= 0xC0EF && isIIcPlus && iwmDevice) {
+        // //c (32 KB ROM) / //c+ IWM (see memRead for the read side
+        // and MAME refs). Writes are dispatched to IWMDevice (mode
+        // register, data write, etc.) AND forwarded to DiskIICard
+        // so its slot-6 state stays in sync (phases, motor on/off,
+        // sound + writeback gating).
+        if (addr >= 0xC0E0 && addr <= 0xC0EF && iicHasAltBank && iwmDevice) {
             iwmDevice->tick(cycleCounter);
             iwmDevice->write(static_cast<uint8_t>(addr & 0xF), value);
         }

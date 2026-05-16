@@ -51,6 +51,7 @@ namespace pom2 {
     class SmartPortCard;
     class Toolbar_ImGui;
     enum class SystemProfile;
+    enum class CharRomLocale : uint8_t;
 }
 class MemoryViewer_ImGui;
 
@@ -254,6 +255,15 @@ private:
     std::string romPath = "roms/apple2.rom";
     std::string charRomPath = "roms/apple2_char.rom";
     std::string romStatus = "no ROM loaded";
+
+    // User-selected character-generator ROM locale. ProfileDefault means
+    // "use the active profile's charRomProbeOrder"; anything else
+    // overrides and bypasses the probe. Persisted as `char_rom_locale`
+    // so the user's choice survives restarts and applies even before
+    // the toolbar shows up. Default-initialised in the constructor
+    // (header stays light — forward-declared enum can't be initialised
+    // inline).
+    pom2::CharRomLocale charRomLocale;
 
     // Active system profile. Tracked separately so the Presets menu can
     // mark the live entry with a checkmark and the title bar reflects
