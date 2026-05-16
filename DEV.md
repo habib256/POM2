@@ -1,393 +1,299 @@
 # DEV.md
 
-Deep emulator implementation notes for POM2: MAME-parity ports, port
-internals, format gotchas, pinned smoke tests. Quick orientation,
-build instructions, memory map, and profile table → `CLAUDE.md`. User
-walkthrough → `README.md`.
+Notes d'implémentation pour POM2 — refs MAME, gotchas non-obvious,
+smoke tests pinning. Orientation + memory map + profile table →
+`CLAUDE.md`. Walkthrough utilisateur → `README.md`. Historique des
+fixes résolus → `CHANGELOG.md`.
 
 ## Table of contents
 
 - [CPU](#cpu)
 - [Memory](#memory)
-  - [`Memory::loadAppleIIRom` dump shapes](#memoryloadappleiirom-dump-shapes)
-  - [Memory dispatch](#memory-dispatch)
-  - [IIe paging](#iie-paging)
-  - [RamWorks III](#ramworks-iii)
-  - [Soft switches](#soft-switches)
-  - [Power-on RAM pattern](#power-on-ram-pattern)
-  - [Text/HGR row interleave](#textgr-row-interleave)
-  - [Clock & threading](#clock--threading)
-  - [Keyboard](#keyboard)
-  - [Reset architecture (Theme 7 split)](#reset-architecture-theme-7-split)
 - [Display](#display)
-  - [DHGR](#dhgr)
-  - [80-col text](#80-col-text)
-  - [Test framework gotcha](#test-framework-gotcha)
 - [Audio](#audio)
-  - [Speaker](#speaker)
-  - [Cassette](#cassette)
-  - [Mockingboard](#mockingboard)
-  - [Floppy mechanical sounds](#floppy-mechanical-sounds)
 - [Slot bus & IRQ aggregation](#slot-bus--irq-aggregation)
-  - [IRQ wire-OR](#irq-wire-or)
-  - [`SlotPeripheral::assertIrq` API](#slotperipheralassertirq-api)
 - [Storage](#storage)
-  - [DiskImage](#diskimage)
-  - [Format detection](#format-detection)
-  - [`.woz`](#woz)
-  - [WOZ2 `optimal_bit_timing`](#woz2-optimal_bit_timing)
-  - [DiskIICard (slot 6)](#diskiicard-slot-6)
-  - [DiskII multi-instances (option C)](#diskii-multi-instances-option-c)
-  - [Two read paths](#two-read-paths)
-  - [Bit-stream expansion](#bit-stream-expansion)
-  - [Flux-event view](#flux-event-view)
-  - [SmartPortCard (//e Liron-class)](#smartportcard-e-liron-class)
-  - [3.5" mechanical sounds](#35-mechanical-sounds)
-  - [ProDOS host folder](#prodos-host-folder)
-  - [Snapshot](#snapshot)
+- [IWM (//c+ on-board)](#iwm-c-on-board)
+- [SmartPort 3.5" stack](#smartport-35-stack)
 - [Peripherals](#peripherals)
-  - [Super Serial Card (slot 2) + telnet bridge](#super-serial-card-slot-2--telnet-bridge)
-  - [ProDOS clock card (slot 4)](#prodos-clock-card-slot-4)
-  - [Mouse Card](#mouse-card)
-  - [Joystick / paddles](#joystick--paddles)
 - [UI (ImGui)](#ui-imgui)
-  - [MainWindow Pimpl-light](#mainwindow-pimpl-light)
-- [Profile switching internals](#profile-switching-internals)
-- [CLI (`CliDispatcher`)](#cli-clidispatcher)
+- [Profile switching](#profile-switching)
+- [CLI](#cli)
 
 ## CPU
 
-### `M6502`
+Full NMOS 6502 + 65C02 (STZ / BRA / INA / DEA / PHX-PLY / BIT-imm /
+TSB / TRB / JMP (abs,X), zp-indirect for ORA/AND/EOR/ADC/STA/LDA/CMP/
+SBC) + Rockwell RMB / SMB / BBR / BBS + WDC WAI / STP (PC parks, IRQ
+wakes). Klaus Dormann clean. `setCpuMode(NMOS)` re-overrides four
+formerly-KIL column-2 entries ($02/$22/$42/$62) back to halt. `$0B
+$2B $EB` are 1-byte NOPs on 65C02. NMOS undocumented ANC/SBC-imm
+left as NOPs.
 
-Full NMOS 6502 + common 65C02 (STZ/BRA/INA/DEA/PHX-PLY/BIT-imm/TSB/TRB/
-JMP (abs,X), zp-indirect for ORA/AND/EOR/ADC/STA/LDA/CMP/SBC) + Rockwell
-RMB/SMB/BBR/BBS + WDC WAI/STP (PC parks, IRQ wakes). Klaus Dormann clean.
 Pinned: `cmos_6502_smoke_test.cpp`, `klaus_65c02_extended_test.cpp`
-(PASSES @ `$24F1`). `setProgramCounter()` is the Klaus harness back-door.
-
-**Why all this**: 65C02-targeted ProDOS / `.2mg` software hits `$9C`
-(STZ abs) or `$B2` (LDA (zp)) on first instruction. Rockwell `$FF` (BBS7)
-matters because `$FF` is canonical empty-slot ROM fill; mis-decoding as
-1-byte NOP drifts PC through slot 2/3/4 and traps unpredictably.
-
-**65C02 reserved NOPs**: column-2 `$02 $22 $42 $62 $82 $C2 $E2` are
-2-byte NOPs (`Unoff2`) on 65C02 but KIL halts on NMOS. CMOS table is
-default; `setCpuMode(NMOS)` re-overrides the four formerly-KIL entries
-($02/$22/$42/$62) back to halt. `$0B $2B $EB` are 1-byte NOPs on 65C02.
-NMOS undocumented ANC/SBC-imm not modelled (left as NOPs).
+(PASSES @ `$24F1`). `setProgramCounter()` is the Klaus harness back-
+door.
 
 ## Memory
 
-### `Memory::loadAppleIIRom` dump shapes
-
-Accepts two //e dump shapes:
+### `loadAppleIIRom` dump shapes
 
 - **16 KB**: `$C000-$FFFF` directly (MAME/AppleWin layout).
-- **32 KB**: "system + video" combined. 16 KB firmware at file offsets
+- **32 KB**: "system + video" combined. Firmware at file offsets
   `0x4000-0x7FFF`; lower 16 KB is video/charset (loaded via
-  `loadCharRom`). Must slice and feed the upper half through the 16 KB
-  IIe split path so `internalIORom` gets populated. Generic best-effort
-  branch loads linearly at `$8000` and leaves `$C100-$CFFF` empty when
-  `INTCXROM=on` → //e firmware crashes before slot 6 boot PROM.
+  `loadCharRom`). Generic fallback would load linearly at `$8000`
+  and leave `$C100-$CFFF` empty when `INTCXROM=on` → //e firmware
+  crashes before slot 6 boot PROM.
+- **20 KB** II+ "system pack" — 4 KB filler prepended to 16 KB
+  firmware. Loader skips the first 4 KB. Pinned:
+  `system_profile_smoke_test.cpp::test20kIIPlusRomLoad`.
 
-**//c-class detection** (MAME `apple2e.cpp:1275-1299` ROM-content probe):
-after `payload` is sliced, the loader inspects two specific bytes and
-sets per-machine flags consumed by the memory dispatcher:
+**//c-class detection** (MAME `apple2e.cpp:1275-1299` content probe):
 
-- `payload[0x3bc0] == 0x00` → `isIIcClass = true`. Forces INTCXROM on
-  every reset (the //c has no physical slots, so `$C100-$CFFF` must
-  always read motherboard internal ROM). Fires for **both** 16 KB
-  rev-255 //c dumps AND 32 KB rev-0/3/4/X //c+/c-plus dumps.
-- `payload[0x3bbf] == 0x05` (after the //c probe also matched) →
-  `isIIcPlus = true`. Gates the on-board IWM ($C0E0-$C0EF dispatch)
-  and the MIG window ($CC00 / $CE00). Plain //c uses
-  `A2BUS_DISKIING` at slot 6 (MAME `apple2c()` `apple2e.cpp:5168-
-  5188`); only //c+ instantiates the IWM directly.
-- `iicHasAltBank` is narrower than `isIIcClass` — it means "the 32 KB
-  dump provided an alt-firmware bank capable of $C028 ROMBANK
-  toggling". A 16 KB //c rev-255 dump has `isIIcClass=true` but
+- `payload[0x3BC0] == 0x00` → `isIIcClass = true`. Forces INTCXROM
+  on every reset (//c has no physical slots, `$C100-$CFFF` must
+  always read motherboard ROM). Fires for **both** 16 KB rev-255 //c
+  AND 32 KB rev-0/3/4/X //c+ dumps.
+- `payload[0x3BBF] == 0x05` (after //c match) → `isIIcPlus = true`.
+  Gates on-board IWM ($C0E0-$C0EF) and MIG ($CC00 / $CE00) windows.
+  Plain //c uses `A2BUS_DISKIING` at slot 6 (MAME `apple2c()`
+  `apple2e.cpp:5168-5188`); only //c+ instantiates the IWM directly.
+- `iicHasAltBank` is narrower than `isIIcClass` — only true on the
+  32 KB dumps that provide an alt-firmware bank for `$C028` ROMBANK
+  toggling. 16 KB rev-255 //c has `isIIcClass=true` but
   `iicHasAltBank=false` (no bank to flip).
-
-Pre-Theme-6 (2026-05-16 audit), POM2 conflated all three behind
-`iicHasAltBank`, which broke 16 KB //c rev-255 boot (D-1-1) and
-mis-routed plain //c $C0E0-$C0EF through the IWM (D-2-1) + $CC00/$CE00
-through the MIG (D-2-2). The split mirrors MAME's `m_isiic` /
-`m_isiicplus` distinction (with `iicHasAltBank` being a POM2-side
-addition for the alt-bank storage path).
 
 ### Memory dispatch
 
-`memRead`/`memWrite` route every `$C000-$C07F` access through
+`memRead`/`memWrite` route every `$C000-$C07F` through
 `softSwitchAccess()`; RAM bypasses (cheap). Reset vector defaults to
-`$F800`. ROM regions (`$C100-$C7FF`, `$D000-$FFFF` when LC RAM not
-write-enabled) reject writes silently.
+`$F800`. ROM regions reject writes silently.
 
 ### IIe paging
 
-`isIIE()`. `setIIEMode(true)` MUST be called BEFORE `loadAppleIIRom` —
-loader's IIe-vs-II+ split depends on the flag. Adds aux 64 KB, 4 KB
+`isIIE()`. `setIIEMode(true)` MUST be called BEFORE `loadAppleIIRom`
+— loader split depends on the flag. Adds aux 64 KB, 4 KB
 `internalIORom` for `$C100-$CFFF`, aux LC bank trio. Switches at
-`$C000-$C00F` update an `iieMemMode` bitmask; routing per-range (ALTZP
-`$0000-$01FF`, RAMRD/WRT `$0200-$BFFF`, 80STORE+PAGE2 swap `$0400-$07FF`
-and `$2000-$3FFF` when HIRES). All IIe paths gated behind `iieMode` —
-II+ untouched. Pinned: `iie_memory_smoke_test.cpp`.
+`$C000-$C00F` update `iieMemMode` bitmask; routing per-range (ALTZP
+`$0000-$01FF`, RAMRD/WRT `$0200-$BFFF`, 80STORE+PAGE2 swap on
+`$0400-$07FF` + `$2000-$3FFF` when HIRES). All IIe paths gated
+behind `iieMode`; II+ untouched. Pinned: `iie_memory_smoke_test.cpp`.
 
 ### RamWorks III
 
-`setRamWorksBanks(N)`. Applied Engineering aux-slot RAM expansion.
-Verbatim port of MAME `src/devices/bus/a2bus/a2eramworks3.cpp`. Tiers:
-1 (stock 64K), 4 (256K), 8 (512K), 16 (1M), 48 (3M), 128 (8M, MAME
-cap line 99-107). Bank index held in `ramWorksBank_`; bank 0 = standard
-IIe aux (regression-safe).
-
-**Bus protocol** (MAME line 108-115): writes to `$C0n1/3/5/7`
+Verbatim port of MAME `bus/a2bus/a2eramworks3.cpp`. Tiers: 1 (stock
+64K), 4 (256K), 8 (512K), 16 (1M), 48 (3M), 128 (8M cap MAME line
+99-107). Bus protocol (MAME line 108-115): writes to `$C0n1/3/5/7`
 (predicate `(low & 0x09) == 0x01` over `$C070-$C07F`) latch
-`bank = data & 0x7F`. The same accesses still pulse the paddle one-shot
-mirror — they share the bus. Reads of those addresses do nothing
-RamWorks-side (paddle latch + floating bus only). Reset → bank 0
-(MAME `device_reset` line 67).
+`bank = data & 0x7F`. Same accesses still pulse paddle one-shot
+mirror — they share the bus.
 
-**Storage** is `ramWorksBacking_`, one 80 KB slot per bank
-(`kRamWorksBankStride = 0x10000 + 0x1000 + 0x1000 + 0x2000` = main aux
-+ LC bank1 + LC bank2 + LC high). The four visible aux* arrays always
+Storage = `ramWorksBacking_`, one 80 KB slot per bank
+(`kRamWorksBankStride = 0x10000 + 0x1000 + 0x1000 + 0x2000` = main
+aux + LC bank1 + LC bank2 + LC high). Visible aux* arrays always
 hold the active bank — kept at fixed addresses so `Apple2Display`
-caches `auxData()` once and never invalidates. `ramWorksSwapToBank`
-memcpys visible→backing[prev] then backing[curr]→visible. ~80 KB per
-switch; ProDOS /RAM driver does ~100s/sec → negligible cost.
+caches `auxData()` once. `ramWorksSwapToBank` memcpys
+visible→backing[prev] then backing[curr]→visible. ProDOS /RAM driver
+does ~100s/sec → negligible cost.
 
-**Bank clamp**: `(data & 0x7F) % ramWorksBanks_`. MAME deliberately
-does NOT clamp (it always allocates 8 MB and reads garbage from
-unpopulated slots — UB-adjacent in C++); we wrap to bound backing
-access. A real RamWorks III with fewer than 128 banks installed has
-chip-select aliasing that produces the same visible behaviour.
+Bank clamp via `(data & 0x7F) % ramWorksBanks_`. MAME does not clamp
+(allocates 8 MB always, reads UB from unpopulated slots); POM2 wraps
+to bound backing access — real RamWorks III with fewer banks aliases
+via chip-select.
 
-**IIe-only**: `setIIEMode(false)` releases the backing
-(`ramWorksBacking_.clear() + shrink_to_fit()`). The dispatch in
-`softSwitchAccess` is gated on `iieMode && ramWorksBanks_ > 1`, so
-plain II/II+ falls through to the paddle-reset mirror unchanged.
-
-**Setting**: `ramworks_banks` int in settings (default 1 = stock).
-Wired in `MainWindow::applyProfile` between `setIIEMode(true)` and
+IIe-only: `setIIEMode(false)` releases backing
+(`clear() + shrink_to_fit()`). Setting `ramworks_banks` (default 1).
+Wired in `applyProfile` between `setIIEMode(true)` and
 `loadAppleIIRom`. Pinned: `ramworks_smoke_test.cpp`.
 
 ### Soft switches
 
-Toggled by *either* read or write. `$C030` toggles speaker on **every**
+Toggled by either read or write. `$C030` toggles speaker on **every**
 access in `$C030-$C03F` (alias decoded). `$C061-$C067` are paddles +
 buttons on II/II+ — **NOT** cassette aliases (only `$C020`/`$C060` are).
 
-**Open-Apple / Solid-Apple** are OR'd into $C061 / $C062 bit 7 alongside
-the joystick buttons (MAME `apple2e.cpp:2157-2169`). The IIe/c/c+ self-
-test firmware reads $C061/$C062 inside its reset handler to decide
-warm-vs-cold-vs-self-test. Wired post-Theme-1 to the host's Left Alt
-(`Memory::setOpenAppleKey`) and Right Alt (`setSolidAppleKey`); the
-GLFW key callback routes those even when ImGui has keyboard focus so
-press/release edges always reach the emulated $C061/$C062 latches.
+**Open-Apple / Solid-Apple** OR'd into $C061 / $C062 bit 7 alongside
+joystick buttons (MAME `apple2e.cpp:2157-2169`). Self-test firmware
+reads $C061/$C062 inside reset handler to decide warm-vs-cold-vs-
+self-test. Wired to host Left Alt (`Memory::setOpenAppleKey`) and
+Right Alt (`setSolidAppleKey`); GLFW key callback routes those even
+when ImGui has focus.
 
-**IOUDIS** (`$C07E` SET / `$C07F` CLR, plus //c mouse-firmware mirrors
-at `$C078` / `$C079`). Initialised `true` on every reset (MAME
-`apple2e.cpp:1224`). Writes are effective only on `isIIcClass`
-(IIc/IIc+) — IIe falls through (MAME `apple2e.cpp:2569-2587` gates on
-`m_isiic||m_isace500`). Read of `$C07E` on any IIe-class returns
-bit-7 = ioudis state (MAME `:2276-2278`). Added post-Theme-12 audit
-(C-1-3/D-1-2/D-3-2/D-4-1/E-4-3).
+**IOUDIS** (`$C07E` SET / `$C07F` CLR + //c mirrors `$C078`/`$C079`).
+Initialised `true` on every reset (MAME `apple2e.cpp:1224`). Writes
+effective only on `isIIcClass`; IIe falls through (MAME
+`apple2e.cpp:2569-2587` gates on `m_isiic||m_isace500`). Read of
+`$C07E` on any IIe-class returns bit-7 = ioudis state (MAME
+`:2276-2278`).
 
 **LC reset state**: `lcWriteEnable=true`, `lcReadRam=false`,
-`lcBank2Active=true`, `lcPrewrite=false` per Sather *Understanding the
-Apple //e* Fig 5.13 (MAME `apple2e.cpp:1227-1232` + `:1492-1497`).
-Applied universally — the Language Card on II/II+ powers up in the same
-state. Pre-Theme-2 POM2 booted with `lcWriteEnable=false`; first write
-to $D000-$FFFF after boot silently dropped (C-1-2).
+`lcBank2Active=true`, `lcPrewrite=false` per Sather *Understanding
+the Apple //e* Fig 5.13 (MAME `apple2e.cpp:1227-1232 + :1492-1497`).
+Applied universally — II/II+ powers up in the same state.
 
 ### Power-on RAM pattern
 
-MAME-faithful `00 FF 00 FF ...` alternating fill, applied by
-`Memory::clearRam()` to user RAM ($0000-$BFFF) + LC banks + aux RAM +
-RamWorks backing. Matches `apple2.cpp:294-298` (II/II+) and
-`apple2e.cpp:1014-1035` (IIe-class). Done once at `clearRam()` time
-(power-on / profile switch / explicit cold boot); soft and hard resets
-preserve RAM. Pre-Theme-11 POM2 zero-filled, which made
-uninitialised-RAM RNG seeds and RAM diagnostic patterns diverge from
-real hardware (F-1-2 / B-1-1 / C-1-1 / D-1-3 / E-1-1).
+MAME-faithful `00 FF 00 FF …` alternating fill (`Memory::clearRam()`
+on user RAM + LC + aux + RamWorks). MAME refs: `apple2.cpp:294-298`
+(II/II+), `apple2e.cpp:1014-1035` (IIe). Done once at `clearRam()`
+time (power-on / profile switch / cold boot); soft + hard resets
+preserve RAM.
 
 ### Text/HGR row interleave
 
-Woz DRAM-refresh trick. Formulae in `Apple2Display.cpp`:
-
+Woz DRAM-refresh trick. `Apple2Display.cpp`:
 - text: `addr = base + 0x80*(y%8) + 0x28*(y/8)`
 - HGR:  `addr = base + 0x400*(y%8) + 0x80*((y/8)%8) + 0x28*(y/64)`
-
-This is why sequential writes to `$0400` don't render line-by-line.
 
 ### Clock & threading
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). 65-cycle "long
-cycle" TV alignment **not** modelled. Three modes in
+cycle" TV alignment NOT modelled. Three modes in
 `EmulationController`: **Stopped** (50 ms idle), **Running**
-(`cyclesPerFrame` per 60 Hz tick), **Step** (one instruction then
-Stopped). `M6502::run(maxCycles)` returns *actual* cycles — worker
-passes that to `Memory::advanceCycles()` so paddle RC stays synced.
-Single `stateMutex` guards CPU+Memory; UI takes it briefly each frame.
+(`cyclesPerFrame` per 60 Hz tick), **Step** (one instruction).
+`M6502::run(maxCycles)` returns *actual* cycles → passed to
+`Memory::advanceCycles()` so paddle RC stays synced. Single
+`stateMutex` guards CPU+Memory.
 
 ### Keyboard
 
-Latch + strobe under `kbMutex`. UI thread `queueKey()` sets strobe high.
-CPU reads `$C000` via `softSwitchAccess()` (snapshots under same mutex).
-Strobe stays high until `$C010` read/write.
+Latch + strobe under `kbMutex`. UI `queueKey()` sets strobe high.
+CPU reads `$C000` via `softSwitchAccess()` (same mutex). Strobe
+stays high until `$C010` read/write.
 
-### Reset architecture (Theme 7 split)
+### Reset architecture
 
-POM2 exposes 4 reset verbs on `EmulationController` mapped to ~2 MAME
-paths (CLAUDE.md § Reset architecture has the user-facing table). The
-Memory-side split lives in two methods:
+Two Memory-side reset paths:
 
-- **`resetSoftSwitches()`** — full reset: display state, LC bank flags,
-  `iieMemMode`, `intC8Rom`, `iicRomBank`, IOUDIS=true, RamWorks bank 0.
-  Re-forces `MF_INTCXROM` when `isIIcClass` (Theme 6). Called by
+- **`resetSoftSwitches()`** — full reset: display state, LC bank
+  flags, `iieMemMode`, `intC8Rom`, `iicRomBank`, IOUDIS=true,
+  RamWorks bank 0. Forces `MF_INTCXROM` when `isIIcClass`. Called by
   `coldBoot()`, `hardReset()`, `applyProfile` step 4, AND
   `resetSoftSwitchesWarm()` when `iieMode` is on.
-- **`resetSoftSwitchesWarm()`** — Ctrl-Reset-only path. On `iieMode`
-  delegates to the full reset (MAME `apple2e.cpp:1453-1508 reset_w`
-  wipes the MMU/IOU/LC list every time). On II/II+ does only the
-  keyboard-strobe clear (MAME `apple2.cpp:325-331` is the entire
-  machine_reset body — LC + display + cnxx_slot all SURVIVE). Called
-  by `EmulationController::softReset()` only. Pre-Theme-7 POM2 ran the
-  full reset on every Ctrl-Reset, breaking II/II+ software that pinned
-  the LC into RAM-mode and tapped Ctrl-Reset (B-3-1).
+- **`resetSoftSwitchesWarm()`** — Ctrl-Reset only. On `iieMode`
+  delegates to full reset (MAME `apple2e.cpp:1453-1508 reset_w` wipes
+  the MMU/IOU/LC list every time). On II/II+ does only keyboard-strobe
+  clear (MAME `apple2.cpp:325-331` is the entire `machine_reset` —
+  LC + display + cnxx_slot all SURVIVE).
 
-CPU-side, `M6502::hardReset()` no longer wipes the stack page
-$0100-$01FF (POM2-invention pre-Theme-7; MAME `reset_w` doesn't touch
-RAM). `M6502::softReset()` decrements SP by 3 (faked-BRK reset
-sequence semantic, MAME-faithful) instead of snapping to `$FF` (which
-was correct for cold-boot but wrong for Ctrl-Reset — B-1-3).
+CPU side: `M6502::hardReset()` doesn't wipe stack `$0100-$01FF`
+(MAME `reset_w` doesn't touch RAM). `M6502::softReset()` decrements
+SP by 3 (faked-BRK reset semantic) instead of snapping to `$FF`.
 
 ## Display
 
 Pure software renderer into 280×192 (or 560×192 in IIe 80-col) RGBA.
-Reads `Memory::getDisplayState()` (mutex copy) + flat RAM. Owns no GL —
-UI uploads via `glTex(Sub)Image2D`. Built-in 5×7 ASCII font when no
-charset ROM. Text flash via `frame_number() & 0x10` (MAME parity).
+Reads `Memory::getDisplayState()` (mutex copy) + flat RAM. UI uploads
+via `glTex(Sub)Image2D`. Built-in 5×7 ASCII font when no charset ROM.
+Text flash via `frame_number() & 0x10` (MAME parity).
 
 Seven `HiResMode`:
-
 - `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups, glow
   (MAME `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
-- `ChatMauveRGB` — RGB-card decode; only with `LeChatMauveCard` plugged.
+- `ChatMauveRGB` — RGB-card decode; only with `LeChatMauveCard`.
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer lerp).
 
 ### DHGR
 
 (IIe, `eightyCol && hiRes && dhgr && !textMode`)
 
-`renderDhgr` interleaves aux (dots `c*14..+6`) with main (`+7..+13`) per
-byte → 560-dot stream. Three color paths, all matching MAME
-`apple/apple2video.cpp`:
+`renderDhgr` interleaves aux (dots `c*14..+6`) with main (`+7..+13`)
+per byte → 560-dot stream. Three color paths, matching MAME
+`apple2video.cpp`:
 
-- **`ColorNTSC`** — composite artifact: 7-bit sliding window over 560
-  dots → `kArtifactColorLut[128]` (shared with HGR) →
-  `rotl4b(value, absX+1)` → 4-bit lo-res palette index. `+1` matches
-  MAME's `is_80_column=1` in `render_line_artifact_color`. Per-pixel
-  decode (560 lookups/scanline).
-- **`ChatMauveRGB`** — 4-dot block → raw nibble (bit 0 = leftmost) →
-  `rotl4(n, 1)` (MAME Video-7 `dhgr_update`) → `kChatMauveLoResPalette`.
-  Palette verbatim from AppleWin `RGBMonitor.cpp::PaletteRGB_Feline`
-  (empirical capture; idx 5 = olive-gray, idx 10 = mauve-gray). MAME's
-  Video-7 collapses 5≡10 — we follow AppleWin so the "two distinct
-  grays" trademark survives.
-- **`Mono*`** — luminance × tint; persistence sized for 280-wide HGR so
-  DHGR mono renders without afterglow.
+- **`ColorNTSC`** — composite artifact: 7-bit sliding window over
+  560 dots → `kArtifactColorLut[128]` → `rotl4b(value, absX+1)` →
+  4-bit lo-res palette index. `+1` matches MAME's `is_80_column=1`
+  in `render_line_artifact_color`. Per-pixel decode.
+- **`ChatMauveRGB`** — 4-dot block → raw nibble (bit 0 leftmost) →
+  `rotl4(n, 1)` (MAME Video-7 `dhgr_update`) →
+  `kChatMauveLoResPalette`. Palette verbatim from AppleWin
+  `PaletteRGB_Feline`; MAME's Video-7 collapses idx 5≡10, POM2
+  follows AppleWin so the "two distinct grays" trademark survives
+  (intentional divergence).
+- **`Mono*`** — luminance × tint; persistence sized for 280-wide
+  HGR so DHGR mono renders without afterglow.
 
 Mixed = DHGR top 160 + 80-col text bottom 4 rows. Pinned:
 `dhgr_render_smoke_test.cpp`.
 
 ### 80-col text
 
-(IIe) Aux RAM (cells 0,2,…,78) interleaved with main (1,3,…,79) into
+Aux RAM (cells 0,2,…,78) interleaved with main (1,3,…,79) into
 560-wide frame. Mixed (HIRES+80COL+MIXED) renders HGR top 20 rows
-doubled into 560-wide, overlays 80-col rows 20..23. ALTCHAR plumbed but
-no-op against built-in fallback (real charset ROM would consult second
-2 KB bank).
+doubled to 560-wide, overlays 80-col rows 20..23. ALTCHAR plumbed
+but no-op against built-in fallback (real charset ROM would consult
+second 2 KB bank).
 
 ### Test framework gotcha
 
 Tests inherit parent's `-O3 -DNDEBUG` → would silently strip every
-`assert()`. `tests/CMakeLists.txt` adds `-UNDEBUG` so asserts actually
-run. Without that, every smoke test prints "OK" regardless.
+`assert()`. `tests/CMakeLists.txt` adds `-UNDEBUG` so asserts run.
 
 ## Audio
 
 `AudioDevice`: miniaudio mono float32. **OS-negotiated sample rate**
-(often 48 kHz on Apple Silicon even when 44.1 requested) — cycle-driven
-sources MUST query `getActualSampleRate()` or playback drifts by the
-rate ratio.
+(often 48 kHz on Apple Silicon) — cycle-driven sources MUST query
+`getActualSampleRate()` or playback drifts.
 
 ### Speaker
 
-`SpeakerDevice` (`AudioSource`). Verbatim port of MAME
+`SpeakerDevice` (`AudioSource`). Verbatim port MAME
 `spkrdev.cpp:74-327`. CPU records each `$C030-$C03F` toggle with
-**sub-instruction timestamp**
-(`cycleCounter + cpu->getCurrentInstructionCycles()`) into 16 K ring.
-Audio thread: rectangle-area integration → 4× oversample → 64-tap
-windowed sinc (cutoff sr/4) → 0.995-pole DC blocker
-(`y[n] = x[n] - x[n-1] + 0.995*y[n-1]`). Auto catch-up if drain > 100 ms.
+**sub-instruction timestamp** (`cycleCounter +
+cpu->getCurrentInstructionCycles()`) into 16 K ring. Audio thread:
+rectangle-area integration → 4× oversample → 64-tap windowed sinc
+(cutoff sr/4) → 0.995-pole DC blocker. Auto catch-up if drain
+> 100 ms.
 
 ### Cassette
 
-`CassetteDevice`. `$C020` output toggle / `$C060` input comparator sign.
-Separate `AudioSource` so tape loads click through speakers.
-`CassetteDeck_ImGui` uses Font Awesome (`fonts/fa-solid-900.ttf`);
-falls back to `?` glyphs if missing.
+`$C020` output toggle / `$C060` input comparator sign. Separate
+`AudioSource`. `CassetteDeck_ImGui` uses Font Awesome
+(`fonts/fa-solid-900.ttf`), falls back to `?` glyphs if missing.
 
 ### Mockingboard
 
 (slot 4 by convention) Sweet Microsystems shape: two 6522 VIAs each
 driving an AY-3-8910 PSG. No ROM. **VIAs decoded in slot ROM window**
-(`$Cn00-$Cn0F` = VIA #1, `$Cn80-$Cn8F` = VIA #2) — NOT device-select
-range, hence the `slotRomWrite` callback.
+(`$Cn00-$Cn0F` VIA #1, `$Cn80-$Cn8F` VIA #2), hence the
+`slotRomWrite` callback.
 
-VIA → AY wiring (Sweet Microsystems, AppleWin `Mockingboard.cpp:193`):
-
+VIA → AY wiring (Sweet Microsystems, AppleWin
+`Mockingboard.cpp:193`):
 ```
 Port A       → AY data bus (D0..D7)
 Port B bit 0 → AY BC1
 Port B bit 1 → AY BDIR
-Port B bit 2 → AY /RESET (active low; 1 = chip running)
+Port B bit 2 → AY /RESET (active low; 1 = running)
 ```
+{BDIR,BC1}: 00=INACTIVE, 01=READ, 10=WRITE, 11=LATCH-ADDR. Drivers
+emit PB = `$07` (LATCH) → `$04` (INACTIVE) → `$06` (WRITE) → `$04`.
+PB2 stays high — `/RESET` only on init pulses (PB = `$00`).
 
-{BDIR,BC1}: 00=INACTIVE, 01=READ, 10=WRITE, 11=LATCH-ADDR. Drivers emit
-PB = `$07` (LATCH) → `$04` (INACTIVE) → `$06` (WRITE) → `$04`. PB2
-stays high — `/RESET` only on init pulses (PB = `$00`). **Gotcha**:
-earlier versions had PB0=/RESET and PB2=BC1 inverted; every INACTIVE
-looked like /RESET, wiping the AY bank → silent Nox Archaist / Ultima
-IV / Total Replay. Fixed 2026-05-14 (`9177cb0`). Pinned by
-`mockingboard_smoke_test.cpp::testAyRegisterWrite`.
+**6522 subset**: A/B + DDR, T1 (latch + counter, one-shot +
+continuous), IFR/IER (T1 bits 6/7; bit 7 dynamic from
+`ifr & ier & 0x7F`). T1CL read clears `IFR.T1`. IER bit 7 set-vs-
+clear (`$C0` enables, `$40` disables). T2/SR/PCR/CA1/CB1 not
+modelled (music drivers use T1 only).
 
-**6522 subset**: A/B + DDR, T1 (latch + counter, one-shot + continuous),
-IFR/IER (T1 bits 6/7; bit 7 dynamic from `ifr & ier & 0x7F`). T1CL read
-clears `IFR.T1`. IER bit 7 set-vs-clear (`$C0` enables, `$40` disables).
-T2/SR/PCR/CA1/CB1 not modelled (music drivers use T1 only).
+**AY-3-8910 synthesis** runs on audio thread inside inner
+`AudioSrc`. CPU updates regs under `mtx`; callback snapshots both
+banks (32 B), releases, synthesises lock-free. Tone counters = float
+phase accumulators at `clockHz/8/sampleRate`; 17-bit LFSR
+`x^17 + x^14 + 1`; envelope 32 steps with R13 shape continue /
+attack / alternate / hold. Both chips → mono.
 
-**AY-3-8910 synthesis** runs on audio thread inside inner `AudioSrc`.
-CPU updates regs under `mtx`; callback snapshots both banks (32 B),
-releases, synthesises lock-free. Tone counters = float phase
-accumulators at `clockHz/16/sampleRate`; 17-bit LFSR `x^17 + x^14 + 1`;
-envelope 32 steps with R13 shape continue/attack/alternate/hold. Both
-chips → mono (real HW is stereo; `AudioDevice` is mono-only).
+Each VIA `irqOut() = (ifr & ier & 0x7F) != 0`; OR'd onto slot IRQ.
 
-Each VIA `irqOut() = (ifr & ier & 0x7F) != 0`; OR'd onto slot IRQ. Card
-caches combined state so transitions call asserter once.
-
-**Lazy timer sync** (`syncToCpuCycle()`): VIA T1/T2 tick at Φ2 on real
-HW; POM2 advances slot peripherals in ~17 045-cycle slices at end of
-each CPU run. A `STA T1CH ; ... ; LDA IFR` within one slice would see
-stale IFR. Every `slotRomRead/Write` catches the VIAs up to
-`cpu_->getCycleCountNow()` first. Without this, **Mockingboard
-detection routines that probe T1 (Nox Archaist, Skyfox, Broadside per
-AppleWin issue #1175) always fail** — they conclude "no card" because
-IFR.T1 hasn't flipped. Music drivers with longer periods worked anyway
-(IRQ lands at slice boundary), which is why Ultima IV had been fine.
-Pinned: `mockingboard_sync_smoke_test.cpp`.
+**Lazy timer sync** (`syncToCpuCycle()`): VIAs tick at Φ2 on real
+HW; POM2 advances slot peripherals in ~17 045-cycle slices. Every
+`slotRomRead/Write` catches the VIAs up to
+`cpu_->getCycleCountNow()` first — without this, Mockingboard
+detection routines that probe T1 (Nox Archaist, Skyfox, Broadside
+per AppleWin issue #1175) always fail. Pinned:
+`mockingboard_sync_smoke_test.cpp`.
 
 **Tear-down**: remove `AudioSource` from `AudioDevice` BEFORE
 destroying the card (source lives inside it). Persisted:
@@ -396,179 +302,131 @@ destroying the card (source lives inside it). Persisted:
 
 ### Floppy mechanical sounds
 
-`FloppySoundDevice`. Port of MAME
-`src/devices/imagedev/floppy.cpp::floppy_sound_device` — sample-based
-playback of head-step click, motor spin-up/down, insert/eject. 20
-source WAVs (10 × 5.25" + 10 × 3.5", ~150+210 KB) vendored in
-`roms/floppy_samples/` from `mamedev/mame` master; BSD-3-Clause
-(`README.txt`).
+`FloppySoundDevice`. Port of MAME `imagedev/floppy.cpp::floppy_
+sound_device`. 20 source WAVs (10 × 5.25" + 10 × 3.5") in
+`roms/floppy_samples/`, BSD-3-Clause.
 
-**`FloppySoundSink` interface** (header-only, zero deps): `DiskIICard`
-calls `sound_->motor()` / `step()` / `click()` through it so the 13
-smoke tests linking `DiskIICard.cpp` don't also drag the miniaudio TU.
+**`FloppySoundSink` interface** (header-only): `DiskIICard` calls
+`sound_->motor()` / `step()` / `click()` through it so the smoke
+tests linking `DiskIICard.cpp` don't drag miniaudio.
 
-**Step / seek decision** (MAME parity): `step(newTrack, emuCycles)`
-measures the gap since previous step in **emulated CPU cycles** —
-mirrors MAME `floppy_sound_device::step` (`floppy.cpp` ~lines
-1532-1620) which uses `machine().time()`. Wall-clock audio frames
-would be wrong: under POM2's disk turbo (~60× emulated speed) the
-boot PROM's full phase sweep lands in one audio buffer, so all
-events share the same `audioFrameCounter_` → gap=0 for every step
-after the first → fallback to single-click with `stepPos_=0` reset
-per event → user hears `step_1_1`'s 5 ms attack repeated buffer
-after buffer (buzz / "haché"). Caller (DiskIICard `seekPhaseW`)
-passes `cpuCycleTotal`.
+**Step/seek decision** (MAME parity): `step(newTrack, emuCycles)`
+measures gap in emulated CPU cycles — mirrors MAME
+`floppy.cpp:1532-1620 floppy_sound_device::step` via
+`machine().time()`. Wall-clock audio frames would be wrong under
+POM2's disk turbo (~60×): boot PROM's full phase sweep lands in one
+audio buffer → all events share `audioFrameCounter_` → gap=0 → buzz.
+
 - `gap > 100 ms` (`kSeekJoinMs`) → single-step click (`525_step_1_1`).
-- `gap ≤ 100 ms` → seek mode: pick the seek sample whose nominal
-  cadence is closest to the gap (2 / 6 / 12 / 20 ms), pitch-scale
-  (`pitch = nominal_ms / gap_ms`), loop.
-- No step for `kSeekTimeoutMs` → exit seek, fire final `step_1_1` to
-  "land" the head.
+- `gap ≤ 100 ms` → seek mode: pick seek sample whose nominal cadence
+  is closest (2 / 6 / 12 / 20 ms), pitch-scale (`pitch = nominal_ms
+  / gap_ms`), loop.
+- No step for `kSeekTimeoutMs` → exit seek, fire final `step_1_1`.
 
-Floor at 1 ms gap defends `mixLoop` against `INF` rate (`pos += INF`
-spins forever, `INF - len == INF` in IEEE 754) and keeps pitch in
-[1, 2] for `SEEK_2MS`. Same-cycle events (multiple steps queued at
-the same `cpuCycleTotal`, edge case) and the defensive backwards
-case both route through the floor.
-
-DOS 3.3 / ProDOS issue 4 phase pulses per track; each fires one
-`step()` via `seekPhaseW`. 0→34 seek = ~140 events / ~150 ms — well
-into seek-mode territory.
+Floor at 1 ms gap defends `mixLoop` against `INF` rate and keeps
+pitch in [1, 2] for `SEEK_2MS`.
 
 **Wall-clock motor-off hold-off** (turbo decoupling):
-`diskTurboWhileMotor` bumps CPU to ~60 MHz during I/O, so the
-controller's 1-sec spin-down delay (`motorOffDelay = 1'022'727` cycles
-in `DiskIICard::control()` `$C0E8`) becomes ~17 ms wall-clock. Without
-compensation, audio thread gets `motor(false)` before spin-up sample
-finishes ("click, end click, silence"). `FloppySoundDevice` defers the
-audible transition by `kMotorOffHoldMs` (default 800 ms) in **audio
-output frames**, not cycles; fresh `motor(true)` cancels the pending
-transition. Controller stays source of truth for "motor mechanically
-on" (disk reads remain timing-accurate). Pinned:
-`floppy_sound_smoke_test.cpp::testRapidMotorTogglePreservesLoop`.
+`diskTurboWhileMotor` bumps CPU ~60× during I/O → controller's 1-sec
+spin-down (`motorOffDelay = 1'022'727` cycles) becomes ~17 ms
+wall-clock. `FloppySoundDevice` defers the audible transition by
+`kMotorOffHoldMs` (default 800 ms) in **audio output frames**, not
+cycles; fresh `motor(true)` cancels the pending transition.
 
 **CPU ↔ audio thread**: mutex-guarded `std::vector<Cmd>` queue. CPU
 pushes `MotorOn/MotorOff/Step/Click`; audio thread drains at top of
-`fillAudioBuffer`. Events sparse (≤ ~100/s during seeks), so SPSC ring
-would be over-engineering. `audioFrameCounter_` atomic, CPU-side reads
-for diagnostics only.
+`fillAudioBuffer`. Events sparse (≤ ~100/s during seeks).
 
-**Hook points in `DiskIICard`**:
-- `seekPhaseW` end → `step(head/4)` when `head` moved.
-- `control()` `$C0E9` (`MODE_IDLE → MODE_ACTIVE`) → `motor(true)`.
-  `MODE_DELAY → MODE_ACTIVE` does **not** fire (motor already audibly
-  spinning).
-- `advanceCycles()` when `motorOffDelay` expires → `motor(false)`. ~1 s
-  real delay places the sample at the right moment, not at `$C0E8`.
-- `handleSwitchAccess()` (legacy 32-cycle gate) `$C0E8`/`$C0E9` →
-  immediate `motor(false/true)` (no DELAY state).
-- `insertDisk` / `ejectDisk` → `click()` (`525_step_1_1` at elevated
-  gain).
+**Hook points in `DiskIICard`**: `seekPhaseW` end → `step(head/4)` ;
+`control()` `$C0E9` MODE_IDLE → MODE_ACTIVE → `motor(true)` (DELAY →
+ACTIVE doesn't fire) ; `advanceCycles()` when `motorOffDelay`
+expires → `motor(false)` ; `handleSwitchAccess()` legacy 32-cycle
+gate immediate `motor(false/true)` (no DELAY) ; `insertDisk` /
+`ejectDisk` → `click()`.
 
-`loadSamples(dir, FormFactor::FF35)` switches to the 3.5" set; no
-consumer today (no SmartPort / UniDisk / Liron) but path is wired.
-Owned by `EmulationController` (alongside Speaker / Cassette) so the
-`AudioDevice` shutdown drains audio thread before destruction —
-different from Mockingboard which owns its source via the card.
-Persisted: `floppy_sound_volume`, `floppy_sound_muted`. Pinned:
-`floppy_sound_smoke_test.cpp` (10 cases, incl. `testRapidStepsNoHang`
-and `testSameCycleStepsClampGracefully` for the turbo-batch / same-
-cycle pathological inputs).
+Owned by `EmulationController` so `AudioDevice` shutdown drains
+audio thread before destruction. Persisted: `floppy_sound_volume`,
+`floppy_sound_muted`. Pinned: `floppy_sound_smoke_test.cpp`.
 
 ## Slot bus & IRQ aggregation
 
 `SlotBus` + `SlotPeripheral`, 8 slots. `Memory` routes four windows:
 
-- `$C080-$C0FF` device-select (16 bytes/slot N at `$C080+N*16`; slot 0 =
-  LC hook, 1-7 = expansion).
+- `$C080-$C0FF` device-select (16 bytes/slot N at `$C080+N*16` ;
+  slot 0 = LC hook, 1-7 = expansion).
 - `$C100-$C7FF` slot ROM (256 bytes/slot 1-7).
 - `$C800-$CFFF` shared expansion ROM, owned by whichever slot most
-  recently touched `$CnXX`. `$CFFF` deactivates active slot; auto-latch
-  on slot-ROM access.
+  recently touched `$CnXX`. `$CFFF` deactivates active slot;
+  auto-latch on slot-ROM access.
 
-`advanceCycles()` forwards to every plugged card. Ctrl-Reset propagates
-`onReset()` to all cards.
+`advanceCycles()` forwards to every plugged card. Ctrl-Reset
+propagates `onReset()` to all cards.
 
 ### IRQ wire-OR
 
-`M6502::setIrqLine(sourceId, asserted)` — **wire-OR**. The 6502 IRQ pin
-is active-low pulled by *any* device; releases only when *all* stop
-pulling. 32-bit OR'd contributor mask: slot N (1..7) = bit N, motherboard
-VBL = bit 8, legacy `setIRQ(int)` = bit 31. **Previously** each card
-called `cpu->setIRQ(0|1)` directly → last-writer-won bug → mixing
-IRQ-driven cards (Mockingboard + SSC + Mouse) was unreliable. NMI is
-still a single latch (no NMI sources today). Pinned:
-`irq_aggregator_smoke_test.cpp`.
+`M6502::setIrqLine(sourceId, asserted)` — **wire-OR**. 32-bit OR'd
+contributor mask: slot N (1..7) = bit N, motherboard VBL = bit 8,
+legacy `setIRQ(int)` = bit 31. NMI is still a single latch (no NMI
+sources today). Pinned: `irq_aggregator_smoke_test.cpp`.
 
 ### `SlotPeripheral::assertIrq` API
 
-Cards never poke `cpu->setIrqLine` directly. The base class exposes a
-protected `assertIrq(bool)` that:
+Cards never poke `cpu->setIrqLine` directly. The base class exposes
+protected `assertIrq(bool)` that debounces against internal
+`irqAsserted_` cache (idempotent — only edges propagate), fans out
+via `SlotBus::forwardSlotIrq(slot, asserted)` to whatever
+`IrqRouter` Memory installed (`Memory::setCpu(cpu)` plants a closure
+that calls `cpu->setIrqLine(slot, asserted)`).
 
-- debounces against an internal `irqAsserted_` cache (idempotent — only
-  edges propagate);
-- fans out via `SlotBus::forwardSlotIrq(slot, asserted)` to whatever
-  `IrqRouter` Memory installed (`Memory::setCpu(cpu)` plants a closure
-  that calls `cpu->setIrqLine(slot, asserted)`);
-- gets its slot number from `SlotBus::plug()` at attach-time — cards
-  don't remember which slot they live in or hold an `M6502*` just for
-  IRQs.
+`SlotBus::plug()` / `unplug()` / `clear()` auto-release any pending
+IRQ contribution before letting the card go.
 
-`SlotBus::plug()` / `unplug()` / `clear()` auto-release any pending IRQ
-contribution before letting the card go — the legacy
-`onUnplug()`-must-clear-the-bit dance is gone, which is what made
-profile switches leak stuck bits in the first place.
-
-Mockingboard still holds `cpu_` (for `getCycleCountNow()` lazy-sync of
-VIA timers, **not** IRQ); Disk II still holds `cpu_` (for sub-
-instruction LSS cycle accuracy on Q6L reads). MouseCard and SSC dropped
-their `cpu_` entirely. Pinned: `slot_peripheral_irq_smoke_test.cpp`.
+Mockingboard still holds `cpu_` (for `getCycleCountNow()` lazy-sync,
+**not** IRQ); Disk II still holds `cpu_` (for sub-instruction LSS
+cycle accuracy on Q6L reads). MouseCard and SSC dropped `cpu_`.
+Pinned: `slot_peripheral_irq_smoke_test.cpp`.
 
 ## Storage
 
 ### DiskImage
 
-143 360-byte 5.25" floppy: `.dsk`/`.do` (DOS 3.3 skew) or `.po` (ProDOS
-skew). Pre-nibblized into 35 × 6656-byte tracks. GCR per "Beneath Apple
+143 360-byte 5.25": `.dsk`/`.do` (DOS 3.3 skew) or `.po` (ProDOS).
+Pre-nibblized into 35 × 6656-byte tracks. GCR per "Beneath Apple
 DOS". Skew tables (physical → logical):
 
 - DOS 3.3: `{0,7,14,6,13,5,12,4,11,3,10,2,9,1,8,15}`
 - ProDOS:  `{0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15}`
 
 Both produce same on-disk layout; only file-offset → physical-sector
-mapping differs. Write-back via `saveDirty()` (`.dsk`/`.do`/`.po`/`.nib`
-+ `.2mg` envelopes + `.woz`) opt-in via `setWriteBackEnabled(true)`;
-default off.
+mapping differs. Write-back via `saveDirty()` (`.dsk`/`.do`/`.po`/
+`.nib` + `.2mg` envelopes + `.woz`) opt-in via
+`setWriteBackEnabled(true)`; default off.
 
 ### Format detection
 
 `detectFormat()` + `enum ImageKind`. `loadFile(path)` slurps once,
 dispatches by content. Order: MacBinary strip → 2IMG envelope → WOZ
-magic → 35×6656 NIB → 35×6384 CNib2 → 143 360-byte sector. Unknown →
-false + specific `lastError` (mirrored into the Disk II panel as red
-text); no silent fallback. Inspired by AppleWin `DiskImageHelper.cpp`.
+magic → 35×6656 NIB → 35×6384 CNib2 → 143 360-byte sector. Unknown
+→ false + specific `lastError`. Inspired by AppleWin
+`DiskImageHelper.cpp`.
 
-- **Skew sniff** (143 360-byte branch): validates a ProDOS vol-dir key
-  block at `file[0x404]` (`.po`) vs `file[0xB04]` (`.dsk`), overrides
-  extension when only the other position fits. Predicate: `prev=0`,
-  plausible `next`, storage_type `$F`, name chars in `A-Z 0-9 .` (kills
-  `$Fx`-byte spoofs in a DOS catalog). Catches cc65-Chess.po case
-  (`.po` ext, DOS skew). The smoke test fixture probe historically
-  missed the `dsk/` subdirectory and silently skipped — fixed in
-  `disk_skew_sniff_smoke_test.cpp` to fail-loud on missing fixture and
-  probe all of `disks/`, `disks/dsk/`, `disks/woz/`, `disks2/`.
-- **2IMG**: 64 B header → format byte (0=DOS, 1=ProDOS, 2=NIB), flags
-  (bit 0 = WP, bit 8 or 31 = vol# present), dataOffset, dataLength.
-  Raw header + trailer captured into `twoImgHeaderRaw` /
-  `twoImgTrailerRaw`; `saveDirty()` re-emits both so the envelope stays
-  byte-identical across round-trip.
-- **MacBinary**: 128 B prefix from old Mac downloads. AppleWin predicate
-  (`b[0]==0`, name length [1..63], terminator + reserved zeros).
-  Stripped before any other detection.
+- **Skew sniff** (143 360-byte branch): validates ProDOS vol-dir key
+  block at `file[0x404]` (`.po`) vs `file[0xB04]` (`.dsk`),
+  overrides extension when only the other position fits. Predicate:
+  `prev=0`, plausible `next`, storage_type `$F`, name chars in
+  `A-Z 0-9 .` (kills `$Fx`-byte spoofs in a DOS catalog).
+- **2IMG**: 64 B header → format byte (0=DOS, 1=ProDOS, 2=NIB),
+  flags (bit 0 = WP, bit 8 or 31 = vol# present), dataOffset,
+  dataLength. Raw header + trailer captured into `twoImgHeaderRaw` /
+  `twoImgTrailerRaw`; `saveDirty()` re-emits both so the envelope
+  stays byte-identical across round-trip.
+- **MacBinary**: 128 B prefix from old Mac downloads. AppleWin
+  predicate (`b[0]==0`, name length [1..63], terminator + reserved
+  zeros).
 - **CNib2** (35×6384): pad to 6656/track on load with `$FF` (sync),
-  truncate to 6384 on save. `cnib2Format` gates the truncation.
-- **Volume number**: per-image now (2IMG flags or default), threaded
-  through `nibblizeTrack(track, sectors, vol, skew)`. Was hardcoded 254.
+  truncate to 6384 on save.
+- **Volume number**: per-image now (2IMG flags or default $FE),
+  threaded through `nibblizeTrack(track, sectors, vol, skew)`.
 
 Pinned: `disk_image_smoke_test.cpp`, `disk_skew_sniff_smoke_test.cpp`,
 `disk_2mg_smoke_test.cpp`, `disk_2mg_writeback_smoke_test.cpp`,
@@ -577,302 +435,221 @@ Pinned: `disk_image_smoke_test.cpp`, `disk_skew_sniff_smoke_test.cpp`,
 
 ### `.woz`
 
-`isWoz()`. Verbatim port of MAME `src/lib/formats/woz_dsk.cpp`. WOZ
-stores raw bit cells — **why .woz disks survive copy protections** that
-tweak inter-byte timing (re-encoded `.dsk` synthesises idealised GCR and
-loses the signature). WOZ1 (160 × 6656-byte slots, `bit_count` @+6648
-u16) and WOZ2 (160 × 8-byte TRK headers, data at `starting_block × 512`,
-`bit_count` u32). Bits MSB-first. Each track 0..34 sources bits from
-`TMAP[track*4]` (centre quarter-track); sub-quarter-track positions
-(Locksmith, David-DOS) not yet preserved.
+`isWoz()`. Verbatim port of MAME `lib/formats/woz_dsk.cpp`. WOZ
+stores raw bit cells — survives copy protections that tweak
+inter-byte timing (re-encoded `.dsk` synthesises idealised GCR and
+loses the signature). WOZ1 (160 × 6656-byte slots, `bit_count`
+@+6648 u16) and WOZ2 (160 × 8-byte TRK headers, data at
+`starting_block × 512`, `bit_count` u32). Bits MSB-first. Each
+track 0..34 sources bits from `TMAP[track*4]` (centre quarter-
+track); sub-quarter-track positions (Locksmith, David-DOS) not yet
+preserved.
 
 **Write-back**: `loadWoz()` snapshots file to `wozRaw` + per-quarter-
 track `(byteOff, byteLen, bitCount)`; `writeFlux()` splices into
-`bitStream[qt]`; `saveDirty()` repacks + zeroes CRC32 (Applesauce "not
-computed" sentinel) + rewrites in place. `isWriteProtected()` honours
-both user toggle and `INFO.write_protected`. `DiskIICard::insertDisk`
-forces `useBitLss=true` when any drive holds WOZ — legacy 32-cycle gate
-cannot decode bit cells. Pinned: `woz_load_smoke_test.cpp`,
-`woz_writeback_smoke_test.cpp`.
+`bitStream[qt]`; `saveDirty()` repacks + zeroes CRC32 (Applesauce
+"not computed" sentinel) + rewrites in place. `isWriteProtected()`
+honours both user toggle and `INFO.write_protected`.
+`DiskIICard::insertDisk` forces `useBitLss=true` when any drive
+holds WOZ — legacy 32-cycle gate cannot decode bit cells. Pinned:
+`woz_load_smoke_test.cpp`, `woz_writeback_smoke_test.cpp`.
 
 ### WOZ2 `optimal_bit_timing`
 
 INFO+39 (units of 125 ns) — bit-cell duration the imager recommends.
-Default 32 = 4 µs = standard 5.25" cell at the 2 MHz LSS clock = 8 LSS
-cycles per cell. `loadWoz` reads the byte when `info_version >= 2`,
-clamps to [8, 64], stores in `DiskImage::optimalBitTiming` (defaults to
-32 for WOZ1 and non-WOZ).
+Default 32 = 4 µs = standard 5.25" cell at the 2 MHz LSS clock = 8
+LSS cycles per cell. `loadWoz` reads the byte when
+`info_version >= 2`, clamps to [8, 64], stores in
+`DiskImage::optimalBitTiming`.
 
-`DiskImage::lssCyclesPerCell() = optimalBitTiming / 4`. `expandTrackFlux`
-emits each "1" cell at LSS cycle `i*cyc + cyc/2` (centre); `trackPeriod`
-returns `bitCellCount * cyc`. A disk mastered at e.g. 40 (5 µs) gets
-10 LSS-cycle cells throughout, so the LSS state machine clocks out
-nibbles at the captured rate instead of POM2's 4 µs default. The
-flux-event count per revolution stays the same — only spacing changes.
-
+`DiskImage::lssCyclesPerCell() = optimalBitTiming / 4`.
+`expandTrackFlux` emits each "1" cell at LSS cycle `i*cyc + cyc/2`
+(centre); `trackPeriod` returns `bitCellCount * cyc`. A disk
+mastered at e.g. 40 (5 µs) gets 10 LSS-cycle cells throughout.
 Pinned: `woz_bit_timing_smoke_test.cpp` (obt 32 / 40 / 28 + WOZ1
-fallback round trip).
+fallback).
 
-### DiskIICard (slot 6)
+### DiskIICard
 
 256-byte P5A boot PROM. Apple part 341-0027-A (CRC32 `ce7144f6`)
-**embedded** in `DiskIICard.cpp` as `kBootPromDefault[256]` (Theme 3);
-`loadBootRom("roms/disk2.rom")` still overrides if a user-supplied
-dump is present, but the embedded copy keeps the card bootable
-out-of-the-box. The PROM autodetects slot via `JSR $FF58 / TSX /
-LDA $0100,X` → Apple II main ROM required for boot. Soft switches
-`$C0E0-$C0EF`: phases, motor, drive_select, Q6L/Q6H, Q7L/Q7H.
+**embedded** in `DiskIICard.cpp` as `kBootPromDefault[256]`;
+`loadBootRom("roms/disk2.rom")` overrides if a user dump is present.
+PROM autodetects slot via `JSR $FF58 / TSX / LDA $0100,X`. Soft
+switches `$C0E0-$C0EF`: phases, motor, drive_select, Q6L/Q6H,
+Q7L/Q7H.
 
-**Boot signature** (Apple II Ref Manual Appx C): a bootable card's
-`$Cn00` PROM starts with `$20 ?? $00 $03` at offsets 1/3/5
-(`JSR $Cn00 → JMP $C…20`-style dispatch). Apple's "device type" byte
-at `$Cn07` distinguishes Disk II / SmartPort (`$3C`, scanned by the
-F8 Autostart `341-0020-00`) from ProDOS block devices (`$01` for
-non-removable HDV, other values for ROM cards etc.). The F8 firmware
-ONLY auto-scans `$Cn07=$3C` slots; ProDOS HDV cards are NEVER picked
-up by the cold-boot scan — they require `PR#N` or an equivalent
-shortcut.
+**Boot signature** (Apple II Ref Manual Appx C): `$Cn00` PROM starts
+with `$20 ?? $00 $03` at offsets 1/3/5 (`JSR $Cn00 → JMP $C…20`
+dispatch). `$Cn07` distinguishes Disk II / SmartPort (`$3C`, scanned
+by F8 Autostart `341-0020-00`) from ProDOS block devices (`$01` for
+non-removable HDV). F8 firmware ONLY auto-scans `$Cn07=$3C`; HDV
+needs `PR#N` or `bootFromSlot`.
 
-`EmulationController::bootFromSlot()` exists precisely as that
-shortcut: GUI "Boot HDV" / "Boot SmartPort" / "Boot Disk Library"
-buttons all route through it so the user can boot any bootable card
-regardless of whether the F8 autostart would find it natively.
-Theme 8 (audit gap B-2-2) added a sanity check on $Cn01/$Cn03/$Cn05
-(the JSR-dispatch trio) so clicking "Boot" on a non-bootable card
-(e.g. a clock card without boot ROM) logs a warning and falls back
-to `coldBoot` instead of jumping into garbage. The `$Cn07=$3C` byte
-is deliberately **not** validated — that would reject HDV
-(`$Cn07=$01`) and force the user back through `PR#N` typed by hand.
+`bootFromSlot()` validates $Cn01/$Cn03/$Cn05 (JSR-dispatch trio) so
+clicking "Boot" on a non-bootable card logs a warning and falls back
+to `coldBoot`. `$Cn07=$3C` deliberately NOT validated — would reject
+HDV (`$Cn07=$01`).
 
 **Drive switching** via `selectDrive(int)` mirrors MAME
-`machine/wozfdc.cpp:264-291` (line numbers current as of the
-2026-05-14 audit; MAME moved the file from `bus/a2bus/` to
-`machine/` upstream). When
-motor active: flush old drive's in-flight write (= MAME
-`mon_w(true)`), clear the OLD drive's `revolutionStartLssCycle` to
-`kNeverRev`, anchor the NEW drive's `revolutionStartLssCycle` to the
+`machine/wozfdc.cpp:264-291` (MAME moved file `bus/a2bus → machine`
+upstream). When motor active: flush old drive's in-flight write
+(= MAME `mon_w(true)`), clear OLD drive's `revolutionStartLssCycle`
+to `kNeverRev`, anchor NEW drive's `revolutionStartLssCycle` to
 current `lssCycle` (= MAME `mon_w(false)` setting
-`revolution_start_time = machine().time()`). Each drive owns its own
-`DiskImage` + head qtr-track + nibble cursor; phase magnets + motor
-shared (matches real silicon). Pinned: `disk_drive2_smoke_test.cpp`.
+`revolution_start_time`). Each drive owns its own `DiskImage` +
+head qtr-track + nibble cursor; phase magnets + motor shared.
 
-**Per-drive `revolutionStartLssCycle[2]`**: matches MAME
-`floppy_image_device::m_revolution_start_time`. Set on
-`lssStart()` (the controller's MODE_IDLE → MODE_ACTIVE transition,
-= MAME `mon_w(false)`) and on the new drive in `selectDrive()` when
-the controller is already spinning. Cleared to `kNeverRev` on the
-old drive in `selectDrive()`, on motor-off-delay expiry
-(MODE_DELAY → MODE_IDLE, = MAME `mon_w(true)`), and at controller
-reset. The disk's angular position is
-`(lssCycle - revolutionStartLssCycle[drive]) mod track_period`,
-computed inside `DiskImage::getNextTransition`. This replaced the
-old "reset `lssCycle` on every drive swap" hack, which made the
-new drive land at an arbitrary modulo-wrapped slot of its track
-instead of starting from position 0 of that disk's current
-revolution. The hack also surfaced as cc65-Chess.po / Shamus
-boot failures on `mario.dsk` where the angular position drift
-across consecutive sectors threw the LSS shift register out of
-phase by a single cell partway through a data field. Pinned:
-`disk_drive2_smoke_test.cpp`, `mame_lss_parity_smoke_test.cpp`.
+**Per-drive `revolutionStartLssCycle[2]`** matches MAME
+`floppy_image_device::m_revolution_start_time`. Cleared to
+`kNeverRev` on old drive in `selectDrive()`, on motor-off-delay
+expiry (MODE_DELAY → MODE_IDLE, = MAME `mon_w(true)`), and at
+controller reset. Disk angular position is
+`(lssCycle - revolutionStartLssCycle[drive]) mod track_period`.
+Pinned: `disk_drive2_smoke_test.cpp`,
+`mame_lss_parity_smoke_test.cpp`.
 
-### DiskII multi-instances (option C)
+### DiskII multi-instances
 
-Since 2026-05-15 `"diskii"` is the only slot-card type allowed in more
-than one slot. Lets `//e` users wire `Disk II slot 6 + Disk II slot 4`
-for the historical 4-drives-5.25" config without any per-instance ROM
-plumbing — both cards load the same `disk2.rom` + optional
-`diskii_p6.rom` from `roms/`. Storage is per-card (each `DiskIICard`
-owns its 2 drives + LSS state), so the drives don't see each other's
-flux.
+`"diskii"` is the only slot-card type allowed in more than one slot.
+Lets //e users wire `Disk II slot 6 + Disk II slot 4` (4 drives
+5.25"). Both cards load the same `disk2.rom` + `diskii_p6.rom`.
+Storage per-card (each `DiskIICard` owns its 2 drives + LSS state).
 
-**Skipping the uniqueness check**: `MainWindow_Slots.cpp::isDuplicate`
-returns false unconditionally when the type is `"diskii"`;
-`MainWindow.cpp::plugSlotsFromSettings::firstOccurrence` walk also
-short-circuits the same way. Every other card stays single-instance
-(driver, ROM signature, or settings keys assume exclusivity).
+`MainWindow_Slots.cpp::isDuplicate` returns false unconditionally
+when type is `"diskii"`; `plugSlotsFromSettings::firstOccurrence`
+walk short-circuits the same way.
 
 **Primary vs secondary**: `MainWindow` keeps a flat
-`std::vector<DiskIICard*> diskCards` populated in slot order ascending
-(via `plugDiskII`). `diskCard` (the legacy single pointer) is an
-**alias** for `diskCards.empty() ? nullptr : diskCards.front()` — the
-lowest-numbered slot wins because `plugSlotsFromSettings` iterates
-1..7. Legacy menu paths (AI control attach, top-bar Eject, auto-turbo
-governor) still take `diskCard`; the panel render loop iterates
-`diskCards`. Same shape for `diskPanels` (a `vector<unique_ptr<...>>`)
-+ `diskPanel` alias.
+`std::vector<DiskIICard*> diskCards` in slot order ascending.
+`diskCard` (legacy single pointer) is an alias for
+`diskCards.empty() ? nullptr : diskCards.front()` — lowest-numbered
+slot wins. Legacy menu paths take `diskCard`; panel render loop
+iterates `diskCards`. Same shape for `diskPanels` +
+`diskPanel` alias.
 
-**Per-slot persistence**: `disk_path_slotN` / `disk_writeback_slotN`
-keys, one set per plugged card. The **primary** card additionally
-writes to the legacy unsuffixed `disk_path` / `disk_writeback` so a
-POM2 build older than 2026-05-15 reading the new settings.ini still
-sees the disk where it expects. Profile-switch path captures
-`savedDiskPaths[slot]` from the live cards before tear-down, then
-re-inserts after `plugSlotsFromSettings` rebuilds.
+**Per-slot persistence**: `disk_path_slotN` / `disk_writeback_slotN`.
+Primary also writes legacy unsuffixed keys so older POM2 builds
+reading the new settings.ini still see the disk. Profile-switch
+captures `savedDiskPaths[slot]` from live cards before tear-down.
 
 **Per-panel render**: one ImGui window per plugged card, titled
-`"Disk II (slot N)"` (snprintf'd from `card->getSlot()`). Cascade
-offset of 30 px down-left per index on `FirstUseEver` so secondary
-panels don't perfectly overlap the primary. Auto-turbo is global
-(`anyMotorOn` across all cards) since the //e bus has one CPU. Boot
-button computes `PC := $C000 + (slot << 8)` per card.
+`"Disk II (slot N)"`. Cascade offset 30 px down-left per index on
+`FirstUseEver`. Auto-turbo is global (`anyMotorOn` across all cards).
 
-**Insert-disk popup routing**: each panel's `Insert .dsk…` button
-sets its own `insertDialogOpen` flag. `MainWindow::renderDiskFileDialog`
-scans the panels every frame, finds whichever has the flag set, and
-latches `diskDialogTargetSlot` so the popup routes the eventual
-`insertDisk` to the right card even if the panel pointer churns (rare
-profile-switch race).
+**Insert-disk popup routing**: each panel's flag, latched into
+`diskDialogTargetSlot` so popup routes to the right card even if
+panel pointer churns (profile-switch race).
 
 **IWM wiring**: only the slot-6 `DiskIICard` calls
-`card->setIWM(&controller->iwm())`. A second Disk II in slot 4 stays
-off the //c+ IWM path — the IWM is the //c+ on-board controller and
-only sees slot-6 traffic in real silicon.
+`card->setIWM(&controller->iwm())`.
 
 ### Two read paths
 
-Two read paths share the data register:
-
 - **Bit-level LSS** (default when `roms/diskii_p6.rom` present) —
   verbatim port of MAME `machine/wozfdc.cpp` + flux-event subset of
-  `imagedev/floppy.cpp`. MAME `cycles` = 2×
-  CPU clock. `lssSync(extra)` catches up from persistent `lssCycle` to
+  `imagedev/floppy.cpp`. MAME `cycles` = 2× CPU clock. `lssSync(extra)`
+  catches up from persistent `lssCycle` to
   `cyclesLimit = cpuCycleTotal*2 + extra`. PULSE from
   `DiskImage::getNextTransition(track, lssCycle)` (event at LSS cycle
-  `cellIdx*8 + 4`, cell centre). Reads of `$C0EC` pass `extra=1` after
-  `control()` for read-pipe latency. P6 PROM (Apple 341-0028-A) indexed
-  by `(state<<4) | (Q7<<3) | (Q6<<2) | (QA<<1) | (!PULSE)`. ALU
-  dispatch: `0x0..0x7` CLR, `0x8/0xC` NOP, `0x9` SL0, `0xA/0xE`
-  SR-with-WP, `0xB/0xF` LD from `last_6502_write`, `0xD` SL1. Pinned:
-  `diskii_lss_smoke_test.cpp`, `mame_lss_parity_smoke_test.cpp`.
-- **Legacy 32-cycle gate** (fallback) — `kCyclesPerNibble = 32`; nibble
-  every 32 cycles, `byteReady` toggles for BPL spins. Good for stock
-  DOS 3.3 / ProDOS RWTS. 2-3× faster than LSS in real boots — kept as
-  the path the disk_boot / disk_write_controller / dos33_save /
-  prodos_save smoke tests exercise (no P6 ROM loaded).
+  `cellIdx*8 + 4`, cell centre). Reads of `$C0EC` pass `extra=1`
+  after `control()` for read-pipe latency. P6 PROM (Apple
+  341-0028-A) indexed by `(state<<4) | (Q7<<3) | (Q6<<2) | (QA<<1) |
+  (!PULSE)`. ALU dispatch: `0x0..0x7` CLR, `0x8/0xC` NOP, `0x9` SL0,
+  `0xA/0xE` SR-with-WP, `0xB/0xF` LD from `last_6502_write`, `0xD`
+  SL1. Pinned: `diskii_lss_smoke_test.cpp`,
+  `mame_lss_parity_smoke_test.cpp`.
+- **Legacy 32-cycle gate** (fallback) — `kCyclesPerNibble = 32`;
+  nibble every 32 cycles, `byteReady` toggles for BPL spins. Good
+  for stock DOS 3.3 / ProDOS RWTS. 2-3× faster than LSS in real
+  boots.
 
 ### Bit-stream expansion
 
-`DiskImage::bitAt(track, idx)` lazily walks nibble buffer, emits 8 cells
-per non-FF byte + 2 trailing zero cells per `$FF` that lives inside a
-run of ≥5 consecutive `$FF`s. Sync-FF padding lets the LSS lose
-alignment in sync gaps and resync on the next prologue. `.nib` path
-skips padding (every byte = 8 cells, total 53248). Cache invalidates on
-`writeNibbleAt`.
+`DiskImage::bitAt(track, idx)` lazily walks nibble buffer, emits 8
+cells per non-FF byte + 2 trailing zero cells per `$FF` that lives
+inside a run of ≥5 consecutive `$FF`s. Sync-FF padding lets the LSS
+lose alignment in sync gaps and resync on the next prologue. `.nib`
+path skips padding (every byte = 8 cells, total 53248). Cache
+invalidates on `writeNibbleAt`.
 
-**Why the ≥5 threshold** (`kSyncMinRun = 5`): `nibblizeTrack` lays
-down 5-byte `$FF` runs between an address field and its data field,
-14-byte runs between sectors, and a long `$FF` tail that wraps into
-the next-revolution leader. So any "real" sync gap is ≥5 bytes. The
-earlier ≥2 threshold treated naturally occurring 2-byte in-field
-`$FF` pairs as sync, dropping +2 zero cells per byte and shifting the
-bit stream out from under the LSS. Two ways this surfaced:
-
-- 4-and-4 address-field checksum encodes as `$FF $FF` whenever
-  `vol ^ track ^ sector == $FF` (e.g. on a default vol-$FE disk
-  with `T^S == $01`: T11 S$0A, T10 S$0B, etc.). With the old
-  threshold every such address field corrupted the bit stream for
-  the rest of the track.
-- 6-and-2 data-field running XOR occasionally produces 2-byte
-  disk `$FF` pairs from source `$FF $00 $FF` patterns. Shamus on
-  `mario.dsk` and H.E.R.O. (similar source layout) failed to boot
-  because of this — the corruption hit the very first data field
-  partway through the prologue chain.
-
-Pinned indirectly: `disk_image_smoke` round-trips encoded sectors,
-and `mame_lss_parity_smoke` walks the resulting bit stream through
-the LSS flux model.
+**Why ≥5 threshold** (`kSyncMinRun = 5`): `nibblizeTrack` lays down
+5-byte `$FF` runs between an address field and its data field,
+14-byte runs between sectors, long `$FF` tail wrapping into the
+next-revolution leader. Any real sync gap is ≥5 bytes. Earlier ≥2
+threshold treated naturally occurring 2-byte in-field `$FF` pairs
+as sync (4-and-4 address checksum when `vol ^ track ^ sector == $FF`
++ 6-and-2 data running XOR producing 2-byte disk `$FF` from source
+`$FF $00 $FF`).
 
 ### Flux-event view
 
-`fluxEvents(track)` + `trackPeriod(track)` — one event per "1" cell at
-LSS-cycle `cellIdx*8 + 4`. `getNextTransition` verbatim from MAME
-`floppy_image_device::get_next_transition`, wraps across revolutions.
-`writeFlux(track, start, end, count, transitions)` splices flux window
-back into nibble buffer (cell-windowed, 8-bit packed) — used by LSS
-write side on Q7 falling edge and 30-event pre-emptive flush.
-Invalidated with `bitStream` on `writeNibbleAt` / `eject` / `loadFile`.
+`fluxEvents(track)` + `trackPeriod(track)` — one event per "1" cell
+at LSS-cycle `cellIdx*8 + 4`. `getNextTransition` verbatim from
+MAME `floppy_image_device::get_next_transition`, wraps across
+revolutions. `writeFlux(track, start, end, count, transitions)`
+splices flux window back into nibble buffer.
 
 ### SmartPortCard (//e Liron-class)
 
-`SmartPortCard.{h,cpp}`. Lets a //e / II+ / II / //c profile mount
-Sony 800 K disks through a slot-plugged Apple "Disk 3.5 Controller
-Card" (the Liron / 670-0186). Default slot 5 (same convention as
-HDV — user picks one or the other in Slot Configuration). Reuses the
-same `Disk35Image` pair that `EmulationController` owns, so the
-Disk 3.5" panel shows the same images whether they're driven by the
-//c+ on-board hub or by this slot card.
+`SmartPortCard.{h,cpp}`. Lets //e / II+ / II / //c mount Sony 800 K
+disks through a slot-plugged Apple "Disk 3.5 Controller Card"
+(Liron / 670-0186). Default slot 5. Reuses the same `Disk35Image`
+pair that `EmulationController` owns.
 
-**Architecture choice — block-level, no IWM**. The real Liron carries
-an IWM + a tiny 6502 ROM with the SmartPort dispatcher; ProDOS calls
-the dispatcher and the dispatcher talks GCR to the Sony drive. POM2's
-//c+ profile already emulates that full stack (`IWMDevice`,
-`SmartPortHub`, `Sony35Drive` with the zoned GCR encoder). For a
-slot-plugged card on //e we **skip the bit-level path entirely** —
-no game flips the Liron at flux level — and expose blocks directly
-through a streaming protocol identical to `ProDOSHardDiskCard`'s.
-Image storage stays `Disk35Image::readBlock` / `writeBlock`.
+**Architecture choice — block-level, no IWM**. Real Liron carries
+IWM + tiny 6502 ROM with SmartPort dispatcher. POM2's //c+ profile
+already emulates the full stack; for slot-plugged on //e we **skip
+the bit-level path entirely** and expose blocks directly through a
+streaming protocol identical to `ProDOSHardDiskCard`'s.
 
 **Device-select protocol** (`$C0nX`):
-
 ```
 $C0n0 write  drive select (0 / 1)
-$C0n1 write  block LO byte of the selected drive
-$C0n2 write  block HI byte of the selected drive
-$C0n3 read   next byte of the selected drive's current block (auto-incr)
-$C0n3 write  next byte INTO the selected drive's current block (WB-gated)
-$C0n4 read   status: bit7 = no disk, bit6 = write-protected
+$C0n1 write  block LO byte
+$C0n2 write  block HI byte
+$C0n3 read   next byte (auto-incr 512 B)
+$C0n3 write  next byte INTO current block (WB-gated)
+$C0n4 read   status: bit7 = no disk, bit6 = WP
 ```
 
 Per-drive `streamOffset_[2]` wraps every 512 B; drive-select latches
-`activeDrive_` and resets the active drive's stream offset to 0.
-Block cache: `static thread_local cache[2][512]` for reads + `buf[2][512]`
-for writes — committed via `writeBlock` on stream-offset wrap. (Single
-CPU thread so thread-local is fine; if multi-instance SmartPortCard
-ever ships, lift caches to members.)
+`activeDrive_` and resets stream offset to 0.
 
 **Slot ROM** (`buildRom`, 256 B with slot baked in):
-
 ```
 $Cn00     JMP $Cn20            (boot vector)
 $Cn01     $20                  ProDOS signature byte
 $Cn03     $00
 $Cn05     $03
-$Cn07     $3C                  SmartPort signature (non-zero ≠ $01)
-$CnFE     $13                  features/units mask (read+status, 2 units)
+$Cn07     $3C                  SmartPort signature
+$CnFE     $13                  features/units mask (2 units)
 $CnFF     $50                  driver entry offset
-$Cn20-..  boot routine          (load block 0 of drive 1 → $0800, JMP $0801)
+$Cn20-..  boot routine          (load block 0 of drive 1 → $0800)
 $Cn50-..  ProDOS driver         (cmd switch + read/write loops)
 $CnE0-..  error halt loop
 ```
 
-The driver examines ProDOS's `$43` unit byte. Bit 7 = drive: 0 →
-write `0` to `$C0n0` (drive 1), 1 → write `1` to `$C0n0` (drive 2).
-Then standard 2-page stream into the ProDOS buffer at `$44/$45`.
-Write path probes `$C0n4` bit 6 first and returns `$2B`
-(write-protected) without touching memory when the WP bit is set.
+Driver examines ProDOS `$43` unit byte. Bit 7 = drive: 0 → write `0`
+to `$C0n0` (drive 1), 1 → write `1` (drive 2). Then standard 2-page
+stream into ProDOS buffer at `$44/$45`. Write probes `$C0n4` bit 6
+first; returns `$2B` (write-protected) without touching memory if WP.
 
-**Boot wiring**: when the user clicks a library entry in the Disk 3.5"
-panel on a non-//c+ profile, `MainWindow::renderDisk35PanelWindow`
-calls `controller->bootFromSlot(smartPortCard->getSlot())` after
-`mount35`. On //c+ on-board it falls back to `coldBoot()` so the
-ROM autostart picks up the built-in SmartPort firmware.
+**Boot wiring**: library click on non-//c+ →
+`controller->bootFromSlot(smartPortCard->getSlot())`; on //c+ on-board
+falls back to `coldBoot()`.
 
-Pinned: `smartport_card_smoke_test.cpp` (ROM signature, drive-select
-+ streaming reads, status byte, write-back round trip).
+Pinned: `smartport_card_smoke_test.cpp`,
+`smartport_mixed_units_smoke_test.cpp`.
 
 ### 3.5" mechanical sounds
 
-`Sony35Drive` carries a `FloppySoundSink* sound_` member set by
-`EmulationController` to the same `FloppySoundDevice` the Disk II
-uses — so the //c+ on-board Sony drives + any slot-plugged Liron-
-class card all share the 5.25"/3.5" sample sets in
-`roms/floppy_samples/` and the same volume/mute persistence keys.
+`Sony35Drive` carries a `FloppySoundSink* sound_` set by
+`EmulationController` to the same `FloppySoundDevice` Disk II uses
+— shares 5.25"/3.5" sample sets and volume/mute persistence.
 
 **Cycle stamping**: `seekPhaseW(uint8_t phases, uint64_t emuCycles)`
-takes a CPU-cycle counter at the strobe edge. `SmartPortHub::onIwmPhases`
-forwards `IWMDevice::emuCycles()` (= the last `tick()` value).
-`strobeWriteRegister` cases 0x1 / 0x2 / 0x3 / 0x4 emit:
-
+takes a CPU-cycle counter at strobe edge. `SmartPortHub::onIwmPhases`
+forwards `IWMDevice::emuCycles()`. `strobeWriteRegister` cases:
 ```
 0x1  step       moved && sound_->step(track_, lastStrobeCycle_)
 0x2  motor on   if (!motorOn_) sound_->motor(true,  hasDisk)
@@ -880,124 +657,245 @@ forwards `IWMDevice::emuCycles()` (= the last `tick()` value).
 0x4  eject      image->eject() ; sound_->click()
 ```
 
-`moved` gates so head bumps at track 0 or 79 don't click on real
-hardware. Motor transitions are edge-only (idempotent re-strobes
-from the //c+ firmware don't replay the sample).
+`moved` gates so head bumps at track 0 or 79 don't click. Motor
+transitions edge-only (idempotent re-strobes don't replay sample).
 
-**User-initiated click**: `EmulationController::mount35` and
-`eject35` call `drive->emitInsertClick()` after `notifyMediaChange()`
-— mirrors the Disk II `insertDisk` / `ejectDisk` path.
-
-Pinned indirectly through `smartport_35_smoke_test.cpp` (sink stays
-nullptr in tests; production wiring asserts via runtime audio).
+`EmulationController::mount35` / `eject35` call
+`drive->emitInsertClick()` after `notifyMediaChange()`.
 
 ### ProDOS host folder
 
-(`prodos_disk/`) `ProDOSVolume` synthesises a read-only ProDOS volume
-from a host folder. Layout: blocks 0-1 boot (zeroed, not bootable), 2-5
-volume dir key + 3 ext blocks (51 entries max), block 6 bitmap (4096
-blocks = 2 MB cap), 7+ data + sapling indexes.
+(`prodos_disk/`) `ProDOSVolume` synthesises a read-only ProDOS
+volume from a host folder. Blocks 0-1 boot (zeroed), 2-5 volume dir
+key + 3 ext blocks (51 entries max), block 6 bitmap (4096 blocks =
+2 MB cap), 7+ data + sapling indexes.
 
-Scope: flat dir only; ≤ 51 files; ≤ 128 KB per file (seedling + sapling,
-tree skipped with warning); type from extension; filenames sanitised to
-`A-Z/0-9/.` with collision suffixes `.1/.2`.
+Scope: flat dir only; ≤ 51 files; ≤ 128 KB per file (seedling +
+sapling, tree skipped with warning); type from extension; filenames
+sanitised to `A-Z/0-9/.` with collision suffixes `.1/.2`.
 
 Wiring: HDV slot 5 panel's Library shows synthetic `[host folder]
 prodos_disk/` entry. Click → `buildVolumeFromFolder` →
-`ProDOSHardDiskCard::loadImageFromBytes`. **No auto-boot** — user must
-boot ProDOS from slot 6 or another HDV first; then `/HOST/` appears as
-slot 5 drive (`CAT,S5,D1`). Read-only: driver returns `$2B` on writes.
-Refresh by clicking entry again. Pinned: `prodos_volume_smoke_test.cpp`.
+`ProDOSHardDiskCard::loadImageFromBytes`. **No auto-boot** — user
+boots ProDOS from another slot, then `/HOST/` appears as slot 5
+drive (`CAT,S5,D1`). Read-only: driver returns `$2B` on writes.
+Pinned: `prodos_volume_smoke_test.cpp`.
 
 ### Snapshot
 
 `SnapshotIO`. `POM2SNAP` magic, named 8-byte sections, format shared
-with POM1 (round-trip: `tests/snapshot_io_smoke`). Captures CPU + RAM +
-soft-switch display state. **Disk II deliberately excluded** — would
-need mounted-image identity + head position + dirty bits per track; v1
-keeps snapshots focused on CPU + RAM + soft switches.
+with POM1. Captures CPU + RAM + soft-switch display state. **Disk II
+deliberately excluded** — would need mounted-image identity + head
+position + dirty bits per track.
+
+## IWM (//c+ on-board)
+
+`IWMDevice.{h,cpp}` — verbatim port of MAME
+`src/devices/machine/iwm.{h,cpp}`. Full state machine
+(`MODE_IDLE/ACTIVE/DELAY` for `m_active`, `MODE_READ/WRITE` for
+`m_rw`; `S_IDLE/SR_WINDOW_EDGE_0/SR_WINDOW_EDGE_1` for read bit-
+window walker; `SW_WINDOW_LOAD/MIDDLE/END/UNDERRUN` for write).
+Drives flux transitions via `DiskImage::getNextTransition` for 5.25"
+or `Sony35Drive::nextTransition` for 3.5".
+
+**Live wiring**:
+
+1. `EmulationController` constructs the IWM, hands it to
+   `Memory::setIWM`. Reset paths (`hardReset`, `coldBoot`,
+   `bootFromSlot`) call `iwm.reset()`.
+2. Memory routes `$C0E0-$C0EF` on `isIIcPlus` profiles through
+   `iwmDevice->read/write` — matches MAME `apple2e.cpp:2798-2801`
+   gating on `m_isiicplus && slot == 6`. Plain //c uses
+   `A2BUS_DISKIING` at sl6 instead. On //c+ slot-6 DiskIICard
+   still observes the access for motor sound / turbo / head tracking,
+   but the byte returned to CPU is the IWM's when `iwmAuthoritative`
+   is true (default).
+3. DiskIICard pushes `setFloppy(image, qt)` updates to the IWM from
+   `insertDisk` / `ejectDisk` / `selectDrive` / `seekPhaseW`. IWM's
+   `nextTransition` queries
+   `DiskImage::getNextTransition(qt, from*2) / 2` — POM2's flux
+   events live in LSS-cycle space, IWM in CPU-cycle space.
+4. `EmulationController::tick(cpuCycleTotal)` pulses the IWM once
+   per video frame so the 1-emulated-second drive-disable timer
+   drains when the //c+ alt firmware stops poking $C0Ex.
+
+`iwmAuthoritative` runtime toggle (`Memory::setIWMAuthoritative` or
+`POM2_IWM_AUTHORITATIVE=0`) drops data path back to DiskIICard's LSS
+for A/B comparison. IWM state machine still advances either way, so
+mode / status / WHD reads stay coherent. Pinned:
+`tests/iicplus_boot_trace.cpp`.
+
+**Window-size scaling**: MAME's `iwm.cpp:290-301 half_window_size` /
+`:302-313 window_size` are IWM-clock ticks (//c+ runs IWM off
+A2BUS_7M ≈ 7.16 MHz). POM2 ticks the IWM at `POM2_CPU_CLOCK_HZ`
+(~1.02 MHz) for a single cycle counter — constants divided by ~7
+to keep a "bit cell" window ≈ 4 µs.
+
+**MAME parity audit 2026-05-16** — second line-by-line pass against
+upstream. Fixed:
+
+- **`data_w` handshake gate** (MAME `iwm.cpp:311-318`). POM2 cleared
+  WHD bit 7 on every sync+write `data_w`; MAME does it only when
+  mode bit 0 (latched handshake) is set. `wsh_` mirrored from
+  `data` immediately in sync+write. Pinned by
+  `iwm_device_smoke_test.cpp::testDataWLatchedMode`.
+- **`mon_w` propagation** (MAME `iwm.cpp:194-195 / 234 / 91`).
+  `set_floppy` / `set_sony35` drop mon_w on old drive and raise on
+  new one when motor enabled. MODE_ACTIVE entry fires
+  `mon_w(false)`, timer-mode motor-off and 1-sec drive-disable
+  drain fire `mon_w(true)`. Wired only for `Sony35Drive`
+  (DiskIICard owns 5.25" motor + audio intentionally).
+- **`devsel_cb`** (MAME `iwm.cpp:79 / 236 / 92`). Fires at three
+  extra moments: `device_reset` (`cb(0)`), MODE_DELAY entry in
+  non-timer mode (`cb(1 or 2)` before timer), `update_timer_tick`
+  exit (`cb(0)`). Pinned by `testDevselFiresOnReset`.
+- **`set_write_splice`** call site (MAME `iwm.cpp:218-221`). Fires
+  through `DiskImage::setWriteSplice` (still a stub — TODO.md «WOZ1
+  splice point»). Wiring in place for when the stub gets a body.
+- **`read_register_update_delay`** (MAME `iwm.cpp:363-366`). Returned
+  1 in both branches (bug); now 1 vs 2 so mode bit 3 changes the
+  delay.
+
+Not yet ported:
+- Q3 fast clock (1.86 MHz) used on Mac/IIgs but not //c+.
+- Full `DiskImage::setWriteSplice` body — IWM propagates splice
+  cycle, DiskImage stores it but doesn't honour during WOZ re-master.
+
+## SmartPort 3.5" stack
+
+`Disk35Image` + `Sony35Drive` + `SmartPortHub` — full Sony GCR
+read+write for //c+. Build chronology lives in `CHANGELOG.md`.
+
+*Image + drive*. `Disk35Image` loads 800 K `.po` / `.2mg`.
+`Sony35Drive` responds to IWM phase-as-command bus (MAME
+`mac_floppy.cpp::seek_phase_w` + Apple //gs hardware ref register
+table) and to MIG-driven `m_35sel`/`m_intdrive`/`m_hdsel` toggles
+(`apple2e.cpp:638-679 recalc_active_device`). `senseR()` returns the
+active-low register file (`/INSERTED`, `/TRACK0`, `/READY`,
+`/MOTOR ON`, `/SWITCHED`, …) the //c+ firmware probes.
+
+*IWM wiring*. `IWMDevice` exposes `phasesCb_` / `devselCb_` /
+`sel35Cb_` (MAME `iwm_device::phases_cb / devsel_cb / sel35_cb`);
+`EmulationController` wires them through `SmartPortHub::attach`.
+`nextTransition()` dispatches between `DiskImage*` and
+`Sony35Drive*` via `setFloppy` / `setSony35` overloads.
+$C0EE-status WPT bit consults `Sony35Drive::senseR()`.
+
+*GCR encoder* (`Sony35Drive.cpp`, verbatim MAME
+`flopimg.cpp::build_mac_track_gcr 2017-2106`). Five concentric speed
+zones (`kCellsPerRev[5] = {76950, 70695, 64234, 57749, 51388}`,
+MAME `:2019-2027`), per-zone CPU-cycles-per-rev =
+`60 × POM2_CPU_CLOCK_HZ / RPM`, 64-entry `kGcr6fw[]` write table
+(MAME line 967), `gcr6Encode(va,vb,vc)` 3-in-4-out packer (MAME line
+512). Per-sector: 8× self-sync (384 cells) + D5AA96 address prologue
++ 5 GCR header bytes + DEAAFF address epilogue + 2× self-sync gap +
+D5AAAD data prologue + 174 groups of 3-in-4-out + 4-byte data
+checksum + DEAAFFFF data epilogue = 6208 cells. Block-to-physical
+2:1 interleave (`si = (si+2) % ns; if(si==0) si++`,
+`apple_gcr_format::load 372-382`).
+
+*Flux write-back*. `Sony35Drive::writeFlux` splices IWM-emitted
+flux into cached cell buffer, runs GCR→blocks decoder (MAME
+`flopimg.cpp:2107 extract_sectors_from_track_mac_gcr6`). Recovered
+sectors that differ push back via `writeBlock`; image flushes to
+`.po` via `saveDirty()` on `eject35` or shutdown. Write-protect
+honoured: `setWriteBackEnabled(true)` short-circuits `writeFlux`.
+Nibbliser port of `flopimg.cpp:1530 generate_nibbles_from_bitstream`
+handles MSB-first byte alignment + zero-cell skip. **Gotcha**:
+cycle↔cell rounding uses round-to-nearest on decode side; encoder
+uses floor on `cycleForCell = i × period / n`. Without symmetric
+rounding, integer-truncated `2.024 → 2` pushed every transition one
+cell early and lost the first sector's address-field marker.
+
+*UI / CLI / persistence*. `Disk35Controller_ImGui` panel renders two
+Sony slots (internal = on-board //c+, external = SmartPort daisy-
+chain). Mount/Eject, last-error, library scanner picking up `.po` /
+`.2mg` of right size under `disks35/` (falls back to `disks/`).
+Toggle persisted `show_disk35_panel`. `mount35(idx, path)` /
+`eject35(idx)` under `stateMutex`. CLI: `--35-disk1` / `--35-disk2`;
+settings: `disk35_path_1` / `disk35_path_2` (re-mounted on launch).
+
+Pinned: `tests/smartport_35_smoke_test.cpp` — image load + size
+guard, empty-slot SENSE, in-slot SENSE, motor strobe, hub recalc
+(devsel=1+35sel=true AND devsel=2+intdrive=true), IWM-to-drive phase
+forwarding, address+data marker placement on track 0 (12 of each),
+IWM bit-cell walk to first `$AA`, full
+encode→flux→splice→decode→block-readback round trip,
+write-protect short-circuit.
 
 ## Peripherals
 
 ### Super Serial Card (slot 2) + telnet bridge
 
-Minimal 6551-ACIA shape at `$C0A8-$C0AB` (data/status/cmd/ctrl). Status
-bit 4 = TDRE (always 1), bit 3 = RDRF (RX queue), bits 5/6 = DCD/DSR
-(TCP state). Unconnected `$C0A8` returns 0.
+Minimal 6551-ACIA shape at `$C0A8-$C0AB` (data/status/cmd/ctrl).
+Status bit 4 = TDRE (always 1), bit 3 = RDRF (RX queue), bits 5/6 =
+DCD/DSR (TCP state). Unconnected `$C0A8` returns 0.
 
-Slot ROM `$C200-$C2FF`: SSC autodetect bytes (`$Cn05=$38`, `$Cn07=$18`,
-`$Cn0B=$01`, `$Cn0C=$31`) at spec'd offsets; `JMP $Cn20` skips over them.
+Slot ROM `$C200-$C2FF`: SSC autodetect bytes (`$Cn05=$38`,
+`$Cn07=$18`, `$Cn0B=$01`, `$Cn0C=$31`); `JMP $Cn20` skips them.
 PR#2 hooks CSWL/CSWH (`$36`/`$37`) → `$C2B0`; IN#2 hooks KSWL/KSWH
-(`$38`/`$39`) → `$C2E0` (load + ORA #$80 for Apple high-bit convention).
-Reset clears ring buffers.
+(`$38`/`$39`) → `$C2E0` (load + ORA #$80 for Apple high-bit
+convention). Reset clears ring buffers.
 
-TCP listener on `127.0.0.1:port` (default 6502); one client. 4 KB rings;
-telnet IAC (WILL/WONT/DO/DONT + 2-byte cmds + `$FF $FF` literal)
-swallowed by `swallowTelnetIac` so stock `telnet` connects cleanly.
+TCP listener on `127.0.0.1:port` (default 6502); one client. 4 KB
+rings; telnet IAC (WILL/WONT/DO/DONT + 2-byte cmds + `$FF $FF`
+literal) swallowed by `swallowTelnetIac` so stock `telnet` connects.
 `TCP_NODELAY` on. Auto-plugged at startup; listener starts only when
 `ssc_listening=true`. Port + state persisted.
 
 ### ProDOS clock card (slot 4)
 
-ThunderClock+ compatible. **ProDOS does NOT route through slot ROM** for
-clock reads — at boot it copies its hardcoded ThunderClock driver into
-RAM (~$D742), patches `$BF06-$BF08` to JMP it, then driver speaks via
-device-select. Our slot ROM only needs the detection signature.
+ThunderClock+ compatible. **ProDOS does NOT route through slot ROM**
+for clock reads — at boot it copies its hardcoded ThunderClock
+driver into RAM (~$D742), patches `$BF06-$BF08` to JMP it, then
+driver speaks via device-select. Slot ROM only needs the detection
+signature.
 
-Slot ROM `$C400-$C4FF`: signature bytes `$08, $28, $58, $70` at offsets
-`0, 2, 4, 6`. Odd-offset fillers (CLD/CLD/SEI) + `BVS +0` form benign
-fall-through; `$Cs08 = RTS` so stray `JMP $Cs00` returns.
+Slot ROM `$C400-$C4FF`: signature bytes `$08, $28, $58, $70` at
+offsets `0, 2, 4, 6`. Odd-offset fillers (CLD/CLD/SEI) + `BVS +0`
+form benign fall-through; `$Cs08 = RTS`.
 
 **uPD1990AC bit-bang at `$C0C0`**:
-
 ```
 write bit 0 = DATA_IN; bit 1 = CLK; bit 2 = STB; bits 3..5 = C0/C1/C2
 read  bit 7 = DATA_OUT (LSB of shift register)
 ```
 
-Mode `0b011` = `MODE_TIME_READ`: arm via `$C0C0=$18`, pulse STB (`$1C`)
-to latch host time into 48-bit shift register, drop STB, then read bit 7
-+ pulse CLK (`$1A`/`$18`) 48 times → 6 BCD bytes (sec, min, hour, day,
-(month<<4)|dow, year). Mode `0b010` = `MODE_TIME_SET`: load 48 bits via
-DATA_IN + 48 CLK, then STB-in-TIME_SET commits.
-`commitTimeSetFromShiftReg()` decodes BCD via `std::mktime`, captures
-delta vs `timeFn()` as `userOffsetSeconds`; `effectiveTime()` composes
-`timeFn() + offset`. (No background thread — advancement derived from
-host clock on demand.)
+Mode `0b011` = `MODE_TIME_READ`: arm via `$C0C0=$18`, pulse STB
+(`$1C`) to latch host time into 48-bit shift register, drop STB,
+read bit 7 + pulse CLK (`$1A`/`$18`) 48 times → 6 BCD bytes
+(sec, min, hour, day, (month<<4)|dow, year). Mode `0b010` =
+`MODE_TIME_SET`: load 48 bits via DATA_IN + 48 CLK, then STB-in-
+TIME_SET commits. `commitTimeSetFromShiftReg()` decodes BCD via
+`std::mktime`, captures delta as `userOffsetSeconds`;
+`effectiveTime()` composes `timeFn() + offset`.
 
 TP tick-pulse modes (64/256/2048/4096 Hz, MAME `upd1990a.cpp:248-267`)
-**not hooked up**. The slot-bus IRQ line is now exposed via
-`SlotPeripheral::assertIrq` (see [IRQ wire-OR](#irq-wire-or)) —
-remaining work is wiring the four dividers and pulsing `assertIrq` at
-the TP rate.
+**not hooked up**. Slot-bus IRQ line exposed via
+`SlotPeripheral::assertIrq` — remaining work is wiring the four
+dividers.
 
-**MODE_SHIFT lax-gating divergence**: POM2 **deliberately diverges**
+**MODE_SHIFT lax-gating divergence**: POM2 deliberately diverges
 from MAME `upd1990a.cpp:312-327` which gates CLK-shift on
-`m_c == MODE_SHIFT`. POM2 shifts on every CLK rising edge regardless of
-mode bits — because ProDOS's hardcoded ThunderClock driver pulses CLK
-while still in MODE_TIME_READ (no re-switch between STB and serial-out).
-Strict gating breaks stock ProDOS; observed ThunderClock+ hardware
-permits the shortcut. DATA_IN still latched into MSB on every CLK rise
-so MODE_TIME_SET works the normal way. Pinned:
+`m_c == MODE_SHIFT`. POM2 shifts on every CLK rising edge regardless
+— because ProDOS's hardcoded ThunderClock driver pulses CLK while
+still in MODE_TIME_READ. Strict gating breaks stock ProDOS;
+observed hardware permits the shortcut. DATA_IN still latched into
+MSB on every CLK rise. Pinned:
 `clock_card_smoke_test.cpp::testShiftLaxAcrossModes`.
-
-Auto-plugged when `clock_card_enable=true` (default). DOS 3.3 ignores
-the card. `pom2_headless` plugs unconditionally.
 
 ### Mouse Card
 
 (slot 4 by convention) Verbatim port of MAME
-`src/devices/bus/a2bus/mouse.cpp`. Pieces:
-
+`bus/a2bus/mouse.cpp`. Pieces:
 - **M68705P3** MCU (Apple 341-0269, 2 KB mask ROM). Paced at 2× CPU
   clock from `advanceCycles()` via fractional accumulator.
 - **MC6821** PIA — bus side at `$C0n0-$C0n3`.
 - **8516 EPROM** — 2 KB Apple-side slot ROM (Apple 341-0270-c),
-  bank-switched into `$Cn00-$CnFF` via PIA PortB bits 1-3 (8 banks of
-  256; `bank = (PortB & 0x0E) << 7`).
+  bank-switched into `$Cn00-$CnFF` via PIA PortB bits 1-3 (8 banks
+  of 256; `bank = (PortB & 0x0E) << 7`).
 
 PIA ↔ MCU bridge:
-
 ```
 PIA PortA  ↔ MCU PortA            (bidir, pull-ups)
 PIA PB4-7  ↔ MCU PC0-3
@@ -1009,394 +907,171 @@ MCU PB0/1, PB2/3 ← X/Y quadrature (CLK + DIR per axis)
 
 Host routing: `MainWindow::onMouseMove` / `onMouseButton` →
 `setHostMouse(rawX, rawY, button)` (clipped to screen rect). MCU
-computes deltas via 8-bit subtraction with wrap; POM2 emits **at most
-one quadrature edge per axis per MCU PortB read** (matches MAME
+computes deltas via 8-bit subtraction with wrap; POM2 emits **at
+most one quadrature edge per axis per MCU PortB read** (matches MAME
 `m_last` / `m_count`).
 
-**ROM gating**: BOTH ROMs required to plug. Slot-config UI greys entry
-when missing; `plugSlotsFromSettings` refuses with a `Mouse` log warn.
-Defaults: `roms/mouse_341-0270-c.bin` + `roms/mouse_341-0269.bin`.
+**ROM gating**: BOTH ROMs required to plug. Slot-config UI greys
+entry when missing; `plugSlotsFromSettings` refuses with a `Mouse`
+log warn. Defaults: `roms/mouse_341-0270-c.bin` +
+`roms/mouse_341-0269.bin`.
 
-**Not modelled** (firmware-invisible): PAL16R4 chip-select sequencer at
-U2A, PIA PortB bit 0 sync latch (firmware paces against video timing —
-we enable IRQs unconditionally), motion clamping (MCU does it). Pinned:
-`mouse_card_smoke_test.cpp`, `mouse_card_quadrature_smoke_test.cpp`.
+**Not modelled** (firmware-invisible): PAL16R4 chip-select sequencer
+at U2A, PIA PortB bit 0 sync latch, motion clamping (MCU does it).
+Pinned: `mouse_card_smoke_test.cpp`,
+`mouse_card_quadrature_smoke_test.cpp`.
 
 ### Joystick / paddles
 
-- `JoystickInput` polls all 16 GLFW slots each UI frame (hot-plug). One
-  binding drives PADL(0/1) + PB0/1/2. PADL(2/3) read centered (127).
-- **Paddle RC** in `Memory::softSwitchAccess`: `$C064-$C067` returns
-  `0x80` while `(cycleCounter - paddleLatchCycle) < paddleValue × 11`.
-  `$C070` arms the latch. 11-cycle constant is rough Apple II RC step —
-  good enough for paddle games, not a PASCAL clone.
+`JoystickInput` polls all 16 GLFW slots each UI frame (hot-plug).
+One binding drives PADL(0/1) + PB0/1/2. PADL(2/3) read centered
+(127). **Paddle RC** in `Memory::softSwitchAccess`: `$C064-$C067`
+returns `0x80` while `(cycleCounter - paddleLatchCycle) <
+paddleValue × 11`. `$C070` arms the latch. 11-cycle constant is
+rough Apple II RC step.
 
 ## UI (ImGui)
 
-- **MainWindow** — menu bar + screen + emulation panel + on-demand
-  panels. Owns the screen GL texture. Auto-plugs Disk II in slot 6 if
-  `roms/disk2.rom` exists. F9 (screenshot), F11 (soft reset), F12 (hard
-  reset) routed unconditionally even when ImGui has keyboard focus.
+`MainWindow` — menu bar + screen + emulation panel + on-demand
+panels. Owns the screen GL texture. Auto-plugs Disk II in slot 6 if
+`roms/disk2.rom` exists. F9 (screenshot), F11 (soft reset), F12
+(hard reset) routed unconditionally even when ImGui has focus.
 
 ### MainWindow Pimpl-light
 
-Since 2026-05-15 `MainWindow.h` is **forward-decl-only** for every
-plugin / panel / controller type — it includes `M6502.h` (for the
-nested `CpuMode` in a signature) and `imgui.h` (for `ImU32` /
-`ImVec2`), nothing else. The 18 owning member types live behind
-`std::unique_ptr<T>`; constructor + destructor + accessor
-(`emul()`, `displayRef()`) bodies are out-of-line in
-`MainWindow.cpp` so the unique_ptr destruction sees a complete type.
+`MainWindow.h` is **forward-decl-only** for every plugin / panel /
+controller type — includes only `M6502.h` and `imgui.h`. 18 owning
+member types live behind `std::unique_ptr<T>`; constructor +
+destructor + accessor bodies out-of-line in `MainWindow.cpp` so
+unique_ptr destruction sees a complete type.
 
-**Compile-time benefit measured**: `touch CassetteDeck_ImGui.h` →
-**2 TUs** rebuild (was previously dragging in MainWindow.cpp +
-MainWindow_MemoryMaps.cpp + MainWindow_Slots.cpp + every test
-linking against the panel cone). `touch MainWindow.h` → **4 TUs**
-(MainWindow*.cpp + main.cpp — irreducible).
+Compile-time benefit: `touch CassetteDeck_ImGui.h` → 2 TUs rebuild ;
+`touch MainWindow.h` → 4 TUs (MainWindow*.cpp + main.cpp,
+irreducible).
 
-Side-effect: the non-owning `*Card` pointers (`diskCard`,
-`hdvCard`, …) are still raw, because `SlotBus` owns the cards
-themselves. Forward-declared their types in the same block as the
-panels (each card class is in the root namespace bar
-`pom2::SmartPortCard` which is namespaced).
+Non-owning `*Card` pointers (`diskCard`, `hdvCard`, …) stay raw —
+`SlotBus` owns the cards. Forward-declared in the same block as the
+panels.
+
 - **MemoryViewer_ImGui** — hex + ASCII over full 64 KB. Reads via
   `Memory::data()` directly under `stateMutex` (held by MainWindow
-  during `render()`) so viewer never triggers soft-switch side effects.
-  Edits go through `Memory::memWrite` (ROM protection still applies).
-  Per-byte change-flash uses frame-counter delta vs `prevMemory`. Search
-  handles hex sequences (`A9 FF 48`) and ASCII (matches both raw and
-  high-bit-set so on-screen text is findable).
+  during `render()`) so viewer never triggers soft-switch side
+  effects. Edits go through `Memory::memWrite` (ROM protection
+  applies). Per-byte change-flash via frame-counter delta. Search
+  handles hex sequences (`A9 FF 48`) and ASCII (both raw and
+  high-bit-set).
 - **Disassembler6502** — stateless `(mem*, pc) → mnemonic + length`.
-- **main.cpp** — GLFW char/key callbacks gated by ImGui keyboard capture
-  so editing widgets don't leak into Apple II.
-- **Screenshot (F9)** — `screenshot_NNN.ppm` (P6 binary RGB) in cwd;
-  sequence auto-advances.
+- **main.cpp** — GLFW char/key callbacks gated by ImGui keyboard
+  capture so editing widgets don't leak into Apple II.
+- **Screenshot (F9)** — `screenshot_NNN.ppm` (P6 binary RGB) in cwd.
 
-## Profile switching internals
+## Profile switching
 
 `SystemProfile.h/.cpp`. Pinned: `system_profile_smoke_test.cpp`.
 
 **32 KB ROM disambiguation**: //e and //c dumps share the 32 KB size
 but encode firmware in OPPOSITE halves. `loadAppleIIRom` takes a
-`pickLower16KFor32K` flag set by `applyProfile` based on profile:
+`pickLower16KFor32K` flag set by `applyProfile`:
 
-- //e (`apple2e.rom`): firmware in UPPER 16 KB (file 0x4000-0x7FFF),
-  lower half is character ROM data. `pickLower=false`.
-- //c / //c+ (`apple2c-32Kv0.rom`, `apple2cp.rom`): TWO 16 KB firmware
-  banks. Bank 0 in LOWER half (the one mapped at reset, contains cold-
-  start at $FA62), bank 1 in upper half (alt firmware: AppleTalk,
-  MouseText, SmartPort drivers). `pickLower=true`; the upper 16 KB is
-  stashed into `iicAltFirmware` for the $C028 toggle.
+- //e (`apple2e.rom`): firmware in UPPER 16 KB (file `0x4000-0x7FFF`),
+  lower half is character ROM. `pickLower=false`.
+- //c / //c+ (`apple2c-32Kv0.rom`, `apple2cp.rom`): TWO 16 KB
+  firmware banks. Bank 0 in LOWER half (mapped at reset, cold-start
+  at $FA62), bank 1 in upper half (alt firmware: AppleTalk,
+  MouseText, SmartPort). `pickLower=true`; upper 16 KB stashed into
+  `iicAltFirmware` for the `$C028` toggle.
 
-Both halves can carry valid-looking reset vectors so we cannot reliably
-auto-detect from bytes alone — the profile is the source of truth.
+Both halves can carry valid-looking reset vectors so cannot
+auto-detect from bytes — profile is source of truth.
 
 **$C028 ROMBANK** (//c-class): MAME `apple2e.cpp:1907-1923` flips
-`m_romswitch` on any `$C02x` access when `m_isiic` is true. POM2
-mirrors with `isIIcClass` (Theme 6) — fires on both 16 KB rev-255 and
-32 KB //c+/c-plus dumps. The alt-firmware read paths additionally
-require `iicHasAltBank` (32 KB only), so on the 16 KB rev-255 //c the
-toggle is cosmetic — there's no second bank to dispatch to.
-`resetSoftSwitches` clears `iicRomBank` so cold-boot always starts in
-bank 0. On II/II+/IIe (`!isIIcClass`), the `$C02x` range falls through
-to the cassette-output toggle. Pinned:
-`system_profile_smoke_test.cpp::testIicRomBankSwitch`.
+`m_romswitch` on any `$C02x` access when `m_isiic`. POM2 mirrors
+with `isIIcClass`. Alt-firmware read paths additionally require
+`iicHasAltBank` (32 KB only). `resetSoftSwitches` clears
+`iicRomBank` so cold-boot always starts in bank 0. On II/II+/IIe
+(`!isIIcClass`), `$C02x` falls through to cassette toggle.
+Pinned: `system_profile_smoke_test.cpp::testIicRomBankSwitch`.
 
-**//c-class INTCXROM override**: the //c / //c+ have no physical slots,
-so internal motherboard ROM is mapped at `$C100-$CFFF` at all times.
-POM2 gates `internalIORom` dispatch on `(MF_INTCXROM || isIIcClass)` in
-`memRead` and `memWrite` — matches MAME `apple2e.cpp:1619-1631
-update_slotrom_banks`, which ORs `m_isiic` into every internal-ROM
-gate. **Without this**, the //c reset routine at `$FA62` would `JSR
-$CE4D` into an empty slot bus on the very first instructions and crash
-before booting. `loadAppleIIRom` and `resetSoftSwitches` both set
-`iieMemMode |= MF_INTCXROM` when `isIIcClass` is true so `$C015`
-(RDCXROM) reads back consistently (MAME `apple2e.cpp:1273` /
-`apple2e.cpp:1467-1475` does the same in `machine_reset` / `reset_w`).
-Pre-Theme-6 the gate was on `iicHasAltBank` and the 16 KB rev-255 //c
-ROM never set the bit — booting that dump wedged on the first $CE4D
-slot-bus read (D-1-1/D-3-1). Pinned:
+**//c-class INTCXROM override**: //c / //c+ have no physical slots,
+so internal motherboard ROM mapped at `$C100-$CFFF` always. POM2
+gates `internalIORom` dispatch on `(MF_INTCXROM || isIIcClass)` in
+`memRead`/`memWrite` — matches MAME `apple2e.cpp:1619-1631
+update_slotrom_banks`. Without this the //c reset routine at $FA62
+would `JSR $CE4D` into an empty slot bus on first instructions.
+`loadAppleIIRom` and `resetSoftSwitches` set `iieMemMode |=
+MF_INTCXROM` when `isIIcClass`. Pinned:
 `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`.
 
-**Built-in slot locks** (`ProfileConfig::builtInSlots`, Theme 4): each
-profile carries an `std::array<std::optional<BuiltInSlot>, 8>` mapping
-expansion-slot indices to "card forced here by the on-board hardware".
-//c locks sl2 (SSC modem), sl4 (Mouse), sl6 (Disk II). //c+ adds sl5
-(SmartPort 3.5" via IWM). II / II+ / IIe-U / IIe leave all slots free
-(real machines exposed physical expansion buses there).
+**Built-in slot locks** (`ProfileConfig::builtInSlots`): each
+profile carries an `std::array<std::optional<BuiltInSlot>, 8>`. //c
+locks sl2 (SSC modem), sl4 (Mouse), sl6 (Disk II). //c+ adds sl5
+(SmartPort 3.5" via IWM). II / II+ / IIe-U / IIe leave all slots
+free. `plugSlotsFromSettings` overrides `slotCards[s]` with the
+forced cardKey regardless of persisted `slot_N_card`.
+`renderSlotConfigPanel` renders locked slots as
+`BeginDisabled(true)` `LabelText` with a "built-in" badge. Pinned:
+`testBuiltInSlots`.
 
-Two paths consume the table:
+**//c+ MIG + IWM handshake** (//c+-only): //c+ alt firmware (bank 1)
+drives a MIG gate-array + IWM. POM2 models the minimum needed for
+cold boot:
 
-1. `MainWindow::plugSlotsFromSettings` (called from `applyProfile`)
-   overrides `slotCards[s]` with the forced `cardKey` regardless of
-   the user's persisted `slot_N_card` setting. The deduplication pass
-   below still runs; if the user had the same card type plugged
-   elsewhere it gets cleared from the secondary slot. Forcing happens
-   silently with a one-line info log.
-2. `MainWindow::renderSlotConfigPanel` looks up `builtInSlots[s]` per
-   row and renders the locked slots as `ImGui::BeginDisabled(true)`
-   `LabelText` with a "card — built-in serial/mouse/Disk II/..." badge
-   instead of the editable combo. The `draft[s]` snapshot is re-synced
-   to the forced cardKey on every render so an Apply cycle persists
-   the locked value if the user had something stale saved in settings
-   from a previous profile.
-
-The IIc/IIc+ on-board peripherals address virtual slot IDs from the
-firmware's perspective ($C100/$C200 = SSC printer/modem ports,
-$C400 = Mouse, $C500 = SmartPort 3.5", $C600 = Disk II) — POM2 plugs
-real `*Card` instances at those slot IDs, but the user cannot unplug
-them. Pre-Theme-4 the panel rendered all 7 slots editable for every
-profile, so a //c user could "unplug Disk II from sl6" and wedge the
-boot path (D-6-1). Pinned:
-`system_profile_smoke_test.cpp::testBuiltInSlots`.
-
-**//c+ MIG + IWM handshake** (//c+-only): the //c+'s alt firmware
-(bank 1, mapped via `$C028` ROMBANK) is built around two pieces of
-hardware POM2 only models in the minimum form needed for cold boot:
-
-- **MIG** (Multi-drive Interface Glue, MAME `apple2e.cpp:598-704
-  mig_r / mig_w`). Apple gate-array that bridges the IWM to the //c+'s
-  on-board 5.25" + 3.5" SmartPort drives. POM2's Memory module hosts
-  the MIG state (`migRam[0x800]`, `migPage`, `migIntDrive`, `migHdSel`)
-  and routes the two MIG windows in the bank-1 expansion ROM area
-  **only when `isIIcPlus && iicRomBank`** (Theme 6 split — plain //c
-  rev-0/3/4 also has a bank 1 with the mini-assembler etc. but NO
-  MIG, so reads there must return ROM bytes, not MIG garbage / D-2-2):
+- **MIG** (MAME `apple2e.cpp:598-704 mig_r / mig_w`). Memory hosts
+  `migRam[0x800]`, `migPage`, `migIntDrive`, `migHdSel`; routes two
+  MIG windows in bank-1 expansion ROM **only when `isIIcPlus &&
+  iicRomBank`**:
   - `$CC00-$CCFF` → `migOffset 0x000-0x0FF` (drive enable/disable,
     IWM reset)
-  - `$CE00-$CEFF` → `migOffset 0x200-0x2FF` (MIG RAM + auto-increment,
+  - `$CE00-$CEFF` → `migOffset 0x200-0x2FF` (MIG RAM + auto-incr,
     3.5" head select, MIG page reset)
-  The 3.5"-side decodes drive `SmartPortHub::setMig35Sel` /
-  `setMigIntDrive`; the hub's `recalc_active_device` (verbatim port of
-  MAME `apple2e.cpp:724-770`) picks the active floppy across the four
-  IWM units. The 2 KB MIG RAM is fully implemented; the //c+ firmware
-  uses it to cache disk geometry / accelerator state across resets.
-  MAME `apple2e.cpp:1917-1922` resets `migPage` + `m_intdrive` +
-  `m_35sel` when ROMSWITCH transitions back to bank 0; POM2 mirrors
-  all three in `softSwitchAccess` $C028 handling (Theme 10 fixed
-  E-4-1 — previously POM2 only cleared `migPage` and left the hub
-  thinking 3.5"/internal-drive selection was still active across the
-  bank flip). `migWrite(0x40)` now calls `iwmDevice->reset()` so the
-  //c+ alt firmware's per-boot IWM reset clears stale mode_/control_/
-  whd_ state (Theme 10 fix for E-5-4 — `apple2e.cpp:647-650`
-  `m_iwm->reset()`).
+
+  3.5"-side decodes drive `SmartPortHub::setMig35Sel` /
+  `setMigIntDrive`; hub's `recalc_active_device` (verbatim port of
+  MAME `apple2e.cpp:724-770`). MAME `apple2e.cpp:1917-1922` resets
+  `migPage` + `m_intdrive` + `m_35sel` when ROMSWITCH transitions
+  back to bank 0; POM2 mirrors. `migWrite(0x40)` calls
+  `iwmDevice->reset()` so //c+ alt firmware's per-boot IWM reset
+  clears stale state.
 
 - **IWM mode register + WHD handshake** on `DiskIICard` (MAME
-  `iwm.cpp:103-114 read / 256-269 mode_w`). A real Disk II / wozfdc
-  only decodes Q6/Q7 for read vs write data; the IWM additionally
-  exposes a *mode register* (via `$C0nF` writes when Q6 is already
-  high — control byte = 0xC0) and returns a *status register* (via
-  `$C0nE` reads when Q6 is high — control byte = 0x40, low 5 bits =
-  mode low 5) plus a *write-handshake register* (`$C0nC` reads with
-  Q7 high — control byte = 0x80). POM2's `DiskIICard` tracks
-  `iwmMode` + a resting `iwmWhd = 0xBF` (bit 7 = ready, bit 6 clear
-  per MAME `iwm.cpp:57`) and intercepts those three combinations in
-  both the bit-LSS path and the legacy 32-cycle gate. Plain Disk II
-  software never drives Q6+Q7 to the mode-set state, so existing
-  smoke tests are unaffected; the //c+ alt firmware's IWM probe at
-  `$E512-$E522` (mode-echo handshake) and the write-ready loop at
-  `$C8A6-$C8A9` / `$C960-$C965` both clear with these hooks in
-  place. **Without them**, the //c+ Monitor cold-reset path
-  `$FA62 → JSR $C740 → STA $C028 → JMP $C711 in bank 1` hangs
-  before any banner reaches the screen.
-
-**Standalone IWMDevice** (`IWMDevice.{h,cpp}`): a separate file with a
-verbatim port of MAME `src/devices/machine/iwm.{h,cpp}` — the full
-state machine (`MODE_IDLE / ACTIVE / DELAY / READ / WRITE` for the
-top-level controller; `S_IDLE / SR_WINDOW_EDGE_0 / SR_WINDOW_EDGE_1`
-for the read bit-window walker; `SW_WINDOW_LOAD / MIDDLE / END /
-UNDERRUN` for write). Drives flux transitions via
-`DiskImage::getNextTransition` (POM2's MAME-compatible
-`floppy_image_device::get_next_transition` analogue). Designed as
-the eventual replacement for the //c+ profile's $C0E0-$C0EF slot-6
-mux — DiskIICard's current IWM-mode / IWM-WHD shadows are the
-keep-it-booting interim, IWMDevice is the SmartPort-grade real
-thing.
-
-**Live wiring** (current build):
-
-  1. `EmulationController` constructs the IWMDevice next to the
-     audio / cassette / speaker / floppy-sound devices and hands it
-     to `Memory::setIWM`. Reset paths (`hardReset`, `coldBoot`,
-     `bootFromSlot`) call `iwm.reset()`.
-  2. Memory routes $C0E0-$C0EF on `isIIcPlus` profiles (Theme 6) through
-     `iwmDevice->read` / `write` — matches MAME `apple2e.cpp:2798-2801
-     c080_r` which gates on `m_isiicplus && slot == 6`. Plain //c uses
-     `A2BUS_DISKIING` at sl6 instead (MAME `apple2e.cpp:5168-5188`),
-     so its $C0E0-$C0EF dispatch goes through the slot bus to
-     DiskIICard's LSS path — pre-Theme-6 POM2 routed plain //c through
-     the IWM too, producing IWM-vs-Disk-II bit-cadence drift on copy-
-     protected //c titles (D-2-1). On //c+ the slot-6 DiskIICard still
-     observes the access so motor sound, disk-turbo gating, and head-
-     position tracking stay current, but the **byte returned to the
-     CPU is the IWM's** when `iwmAuthoritative` is true (the default).
-  3. DiskIICard pushes `setFloppy(image, qt)` updates to the IWM
-     from `insertDisk`, `ejectDisk`, `selectDrive`, and the
-     head-step path in `seekPhaseW`. The IWM's `nextTransition`
-     helper queries `DiskImage::getNextTransition(qt, from*2) / 2`
-     — POM2's flux events live in LSS-cycle space (`lssCycle =
-     cpuCycleTotal * 2`, see `DiskIICard::lssSync`), so the IWM
-     transits the boundary at the lookup edge to stay single-clock
-     with the rest of the machine.
-  4. EmulationController pulses `iwm.tick(cpuCycleTotal)` once per
-     video frame so the 1-emulated-second drive-disable timer
-     (MAME `iwm.cpp:70-84 update_timer_tick`) still drains when the
-     //c+ alt firmware stops poking $C0Ex between disk operations.
-
-`iwmAuthoritative` is a runtime toggle (`Memory::setIWMAuthoritative`,
-or `POM2_IWM_AUTHORITATIVE=0` env var) that drops the data path back
-to DiskIICard's LSS for A/B comparison during regression bisect; the
-IWM state machine still advances on every access in that mode, so
-mode / status / WHD register reads stay coherent regardless. Pinned:
-`tests/iicplus_boot_trace.cpp` boots both modes; both reach the
-disk-loaded boot stage with the //c+ banner displayed and the
-disk loader running in user RAM (PC = $39xx after 6M cycles).
-
-**Window-size scaling**: MAME's `iwm.cpp:290-301 half_window_size`
-and `:302-313 window_size` are in IWM-clock ticks (the //c / //c+
-runs the IWM off A2BUS_7M ≈ 7.16 MHz). POM2 ticks the IWM at
-POM2_CPU_CLOCK_HZ (≈ 1.023 MHz) to keep a single cycle counter,
-so the constants are divided by ~7 to keep a "bit cell" window at
-≈ 4 µs of emulated time. Tracked verbatim in
-`IWMDevice::windowSize` / `halfWindowSize` with the MAME-side
-values in the comment block for quick cross-reference.
-
-NOT yet ported (groundwork for the next pass):
-  * The 1 s drive-disable delay (MAME `iwm.cpp:70-84
-    update_timer_tick`). MAME schedules an `emu_timer` to drain
-    `m_active = MODE_DELAY` back to `MODE_IDLE` and clear WHD
-    bit 6. POM2 should run the equivalent from `sync()` once it
-    detects the deadline has elapsed.
-  * The Q3 fast clock (1.86 MHz) used on Mac/IIgs but not //c+; the
-    field is present but `q3ClockActive_` stays `false`.
-  * `set_floppy` mon_w / set_write_splice plumbing (still owned by
-    DiskIICard).
-
-**SmartPort 3.5" //c+ on-board stack**
-(`Disk35Image`, `Sony35Drive`, `SmartPortHub`) — full Sony GCR
-read+write path for the //c+ profile. Chronological build-out lives
-in `CHANGELOG.md`; this is the steady-state architecture.
-
-*Image + drive*. `Disk35Image` loads 800 K `.po` / `.2mg`.
-`Sony35Drive` responds to the IWM's phase-as-command bus (MAME
-`mac_floppy.cpp::seek_phase_w` + Apple //gs hardware ref register
-table) and to MIG-driven `m_35sel`/`m_intdrive`/`m_hdsel` toggles
-(`apple2e.cpp:638-679 recalc_active_device`). `senseR()` returns
-the active-low register file (`/INSERTED`, `/TRACK0`, `/READY`,
-`/MOTOR ON`, `/SWITCHED`, …) the //c+ alt firmware probes during
-cold-boot SmartPort discovery.
-
-*IWM wiring*. `IWMDevice` exposes `phasesCb_` / `devselCb_` /
-`sel35Cb_` (MAME `iwm_device::phases_cb / devsel_cb / sel35_cb`);
-`EmulationController` wires them through `SmartPortHub::attach`.
-`nextTransition()` dispatches between the 5.25" `DiskImage*` and
-the 3.5" `Sony35Drive*` via `setFloppy(DiskImage*, qt)` /
-`setSony35(Sony35Drive*)` overloads (MAME `iwm_device::set_floppy`
-line 85). $C0EE-status read consults `Sony35Drive::senseR()` for
-the WPT bit so 3.5" software sees the full Sony register file via
-the same status-bit mechanism.
-
-*GCR encoder* (`Sony35Drive.cpp`, verbatim port of MAME
-`flopimg.cpp::build_mac_track_gcr` lines 2017-2106). Five
-concentric speed zones (`kCellsPerRev[5] = {76950, 70695, 64234,
-57749, 51388}`, MAME `flopimg.cpp:2019-2027`), per-zone CPU-cycles-
-per-rev = `60 × POM2_CPU_CLOCK_HZ / RPM`, 64-entry `kGcr6fw[]`
-write table (MAME line 967), `gcr6Encode(va,vb,vc)` 3-in-4-out
-packer (MAME line 512). Per-sector layout: 8× self-sync (384
-cells) + D5AA96 address prologue + 5 GCR header bytes
-(track/sec/side/format/checksum) + DEAAFF address epilogue + 2×
-self-sync gap + D5AAAD data prologue + 174 groups of 3-in-4-out
-checksummed data + 4-byte data checksum + DEAAFFFF data epilogue =
-6208 cells per sector. Block-to-physical mapping uses MAME's 2:1
-interleave (`si = (si+2) % ns; if(si==0) si++`,
-`apple_gcr_format::load` lines 372-382).
-
-*Flux write-back*. `Sony35Drive::writeFlux` splices IWM-emitted
-flux transitions into the cached cell buffer, then runs the
-GCR→blocks decoder (MAME `flopimg.cpp:2107
-extract_sectors_from_track_mac_gcr6`). Recovered sectors that
-differ from the loaded `Disk35Image` push back via `writeBlock`;
-the image marks itself dirty and flushes to `.po` via `saveDirty()`
-on `EmulationController::eject35` or MainWindow shutdown (mirrors
-5.25" save-on-eject). Write-protect honoured: an image without
-`setWriteBackEnabled(true)` short-circuits `writeFlux` before
-touching cells. Nibbliser port of `flopimg.cpp:1530
-generate_nibbles_from_bitstream` handles the IWM's MSB-first byte
-alignment + zero-cell skip. **Gotcha**: cycle↔cell rounding uses
-round-to-nearest on the decode side; the encoder uses floor on
-`cycleForCell = i × period / n`. Without symmetric rounding,
-integer-truncated `2.024 → 2` pushed every transition one cell
-early and lost the first sector's address-field marker.
-
-*UI / CLI / persistence*. `Disk35Controller_ImGui` panel renders
-the two Sony slots side-by-side (internal = on-board //c+,
-external = SmartPort daisy-chain) with Mount/Eject, last-error,
-and a library scanner picking up `.po` / `.2mg` of the right size
-under `disks35/` (falls back to `disks/`). Toggle persisted as
-`show_disk35_panel`. `EmulationController::mount35(idx, path)` /
-`eject35(idx)` under `stateMutex`. CLI: `--35-disk1` /
-`--35-disk2`; settings: `disk35_path_1` / `disk35_path_2`
-(re-mounted on launch if file still exists).
-
-Pinned: `tests/smartport_35_smoke_test.cpp` — image load + size
-guard, empty-slot SENSE, in-slot SENSE, motor strobe, hub recalc
-(both devsel=1+35sel=true and devsel=2+intdrive=true), IWM-to-
-drive phase forwarding, address+data marker placement on track 0
-(12 of each, 12-sector zone schedule), IWM bit-cell walk to the
-first `$AA` sync byte, full encode→flux→splice→decode→block-
-readback round trip on sector 0, write-protect short-circuit.
-
-Pinned:
-  * `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`
-    (MIG window assertion at `$CE4D` in bank 1).
-  * `tests/iwm_device_smoke_test.cpp` (IWMDevice reset state, control
-    bit decode, mode/status echo, WHD cold read, sync no-crash).
-  * `tests/smartport_35_smoke_test.cpp` (SmartPort 3.5" wiring +
-    Sony register protocol).
-  * `tests/iicplus_boot_trace.cpp` (boots `apple2cp.rom` headlessly,
-    prints PC + text page fingerprint after 6M cycles — used to debug
-    where the //c+ ROM gets stuck during a port pass).
-
-**20 KB Apple II+ ROM dumps**: some "system pack" dumps prepend 4 KB
-of filler — unused Integer BASIC bank or zeros — to the 16 KB
-`$C000-$FFFF` firmware. `loadAppleIIRom` recognises `size == 20*1024`
-and skips the leading 4 KB; the high 16 KB loads as a standard II+
-image. The old "best effort" fallback landed `loadAddr` at `$B000`,
-clobbering user RAM with filler. Pinned:
-`system_profile_smoke_test.cpp::test20kIIPlusRomLoad`.
+  `iwm.cpp:103-114 read / 256-269 mode_w`). `DiskIICard` tracks
+  `iwmMode` + resting `iwmWhd = 0xBF` and intercepts `$C0nE` /
+  `$C0nC` / `$C0nF` combinations in both bit-LSS path and legacy
+  32-cycle gate. Plain Disk II software never drives Q6+Q7 to
+  mode-set state, so existing tests unaffected; //c+ alt firmware's
+  IWM probe at `$E512-$E522` and write-ready loop at `$C8A6-$C8A9`
+  / `$C960-$C965` both clear with these hooks. Without them the
+  //c+ Monitor cold-reset path hangs before any banner.
 
 **Profile switching = full cold reset** via
 `MainWindow::applyProfile(SystemProfile)`. Order matters:
 
 1. Stop worker.
-2. Tear down slot cards under state mutex (Mockingboard's `AudioSource`
-   detached from `AudioDevice` FIRST or audio thread dereferences freed
-   memory).
+2. Tear down slot cards under state mutex (Mockingboard's
+   `AudioSource` detached from `AudioDevice` FIRST).
 3. Wipe RAM/aux/LC + reset soft switches.
 4. **`setIIEMode(...)` BEFORE `loadAppleIIRom`**.
-5. Load ROMs (with `pickLower16KFor32K` derived from the profile).
+5. Load ROMs (with `pickLower16KFor32K`).
 6. Re-plug slots from settings.
-7. Re-mount previously inserted disks/HDVs (cross-profile media
-   persistence).
+7. Re-mount previously inserted disks/HDVs.
 8. `resolveCpuMode()` (honours `cpu_mode_override`).
 9. Reset cycles/frame.
 10. `hardReset()`.
 11. Restart worker.
 12. Persist `system_profile`.
-13. Refresh GLFW window title with `cfg.displayName` so the user sees
-    "Apple //c" / "Apple //e" without opening the Profile menu. Status
-    pill in the menu bar also shows the active profile name.
+13. Refresh GLFW window title.
 
-CLI `--preset` triggers the same path after the legacy auto-probe — wins.
-Aliases: `apple2`, `apple2plus`, `apple2e`, `apple2c`, `apple2cplus`,
-`//e`, `//c`, `//c+`. `cpu_mode_override` = `auto|nmos|65c02`
-(Machine → CPU menu).
+CLI `--preset` triggers the same path. Aliases: `apple2`,
+`apple2plus`, `apple2e`, `apple2c`, `apple2cplus`, `//e`, `//c`,
+`//c+`. `cpu_mode_override` = `auto|nmos|65c02`.
 
-## CLI (`CliDispatcher`)
+## CLI
 
-Three phases: **A** parse, **B** pre-boot (preset/ROM/snapshot-load/
---load addr:file), **C** post-boot (tape ops/paste/run/step).
+`CliDispatcher`. Three phases: **A** parse, **B** pre-boot
+(preset/ROM/snapshot-load/`--load addr:file`), **C** post-boot
+(tape ops/paste/run/step).
 
-Flags: `--preset ii|ii+|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`,
-`--load addr:file`, `--run`, `--paste`, `--step`,
-`--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
+Flags: `--preset ii|ii+|iie|iic|iic+`, `--speed`, `--cpu-max`,
+`--tape`, `--35-disk1` / `--35-disk2`, `--load addr:file`, `--run`,
+`--paste`, `--step`, `--play`/`--rec`/`--rewind`,
+`--snapshot-save`/`--snapshot-load`.

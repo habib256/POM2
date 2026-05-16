@@ -262,6 +262,24 @@ private:
     void writeClockStart();
     void writeClockStop();
 
+    /// Propagate the IWM motor-enable line to the active floppy
+    /// (`m_floppy->mon_w(motorOff)` in MAME). For 5.25" `DiskImage*`
+    /// this is currently a no-op — DiskIICard owns the 5.25" motor +
+    /// audio + spin-down delay. For 3.5" `Sony35Drive*` it fires
+    /// `Sony35Drive::monW`, which is the only authoritative motor
+    /// state for the Sony stack (the strobe-register motor commands
+    /// the //c+ alt firmware also issues run on top of this).
+    /// `motorOff` follows MAME's polarity: true = motor stopped,
+    /// false = motor running.
+    void notifyMonW(bool motorOff);
+
+    /// Fire the host devsel callback with `value`. Cached so we only
+    /// fire the callback when devsel transitions. MAME-faithful
+    /// timing requires firing at three extra moments POM2 originally
+    /// missed: device_reset (cb(0)), MODE_DELAY entry in non-timer
+    /// mode (cb(1 or 2)), and update_timer_tick exit (cb(0)).
+    void fireDevsel(uint8_t value);
+
     bool     isSync() const { return !(mode_ & 0x02); }     // MAME line 286
     uint64_t windowSize()              const;               // MAME line 302
     uint64_t halfWindowSize()          const;               // MAME line 290

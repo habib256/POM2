@@ -9,24 +9,43 @@
 // Adaptations from MAME:
 //   * `attotime` / `machine().time()` → POM2's CPU cycle counter
 //     (`uint64_t`, advanced by the caller via `tick(nowCycles)`).
-//   * `emu_timer` → no equivalent today. The MAME timer drains the
-//     drive-disable delay (MAME `iwm.cpp:70-84`). POM2 currently runs
-//     that drain inline from `sync()` once enough time has elapsed —
-//     adequate for nibble-rate boot but would miss the long-tail
-//     0xBF transition on a real drive spin-down. The corresponding
-//     comment is tagged "TODO timer" so the next pass knows.
+//   * `emu_timer` → POM2 has no timer subsystem, so the 1-emu-second
+//     drive-disable delay (MAME `iwm.cpp:83-97 update_timer_tick`)
+//     runs inline from `sync()` when the recorded `delayDeadline_`
+//     is reached. EmulationController pulses `tick()` every video
+//     frame so the deadline still fires when no $C0Ex traffic
+//     arrives between operations.
 //   * `floppy_image_device::get_next_transition(attotime)` →
-//     `DiskImage::getNextTransition(qt, fromLssCycle)`.
+//     `DiskImage::getNextTransition(qt, fromLssCycle)` for 5.25",
+//     `Sony35Drive::nextTransition` for 3.5".
 //   * `floppy_image_device::write_flux(start, end, count, transitions)` →
-//     `DiskImage::writeFlux(qt, start, end, count, &transitions[0])`.
-//   * `m_devsel_cb` (host notifies drive select) → callback omitted;
-//     POM2's slot-6 multiplex is currently DiskIICard-internal.
+//     `DiskImage::writeFlux` / `Sony35Drive::writeFlux`.
+//   * `m_devsel_cb` (host notifies drive select) → `devselCb_` fired
+//     by `fireDevsel()` at MAME-faithful times: reset(0), MODE_DELAY
+//     entry (1 or 2 before the timer), MODE_DELAY drain (0), and on
+//     steady-state SEL transitions while active.
+//   * `m_floppy->mon_w(motorOff)` → `notifyMonW(motorOff)`. For 5.25"
+//     this is a no-op (DiskIICard owns motor + spin-down + audio for
+//     the Disk II path). For 3.5" it fires `Sony35Drive::monW` so
+//     the Sony stack's motorOn_ tracks the IWM as the master.
+//
+// Intentionally divergent (POM2-only):
+//   * `read()` doesn't gate `control()` on `machine().side_effects_
+//     disabled()` because POM2's debug surface (Memory viewer) reads
+//     RAM directly and never goes through soft switches → no caller
+//     needs a side-effect-free $C0Ex read today.
+//   * Window sizes are scaled from MAME's IWM-clock ticks to POM2's
+//     CPU-clock ticks (÷7 since //c+ runs the IWM off A2BUS_7M while
+//     POM2 keeps a single cycle counter). See `windowSize` /
+//     `halfWindowSize` / `readRegisterUpdateDelay` for the rounding
+//     choices.
 //
 // Not yet ported (groundwork for a follow-up pass):
 //   * `applefdintf_device::device_start/reset` base members.
-//   * `set_floppy` mon_w / set_write_splice plumbing (POM2 currently
-//     drives those from DiskIICard; the IWM would take ownership).
 //   * The Q3 fast clock (1.86 MHz) used on Mac/IIgs but not //c+.
+//   * Full `set_write_splice` handling — the call site fires but
+//     `DiskImage::setWriteSplice` is still a stub (TODO.md «WOZ1
+//     splice point (TRK +6650) ignoré»).
 
 #include "IWMDevice.h"
 #include "CpuClock.h"
@@ -57,7 +76,7 @@ IWMDevice::IWMDevice()
 
 void IWMDevice::reset()
 {
-    // MAME `iwm.cpp:48-69` device_reset.
+    // MAME `iwm.cpp:59-81` device_reset.
     lastSync_         = now_;
     nextStateChange_  = 0;
     active_           = MODE_IDLE;
@@ -73,24 +92,55 @@ void IWMDevice::reset()
     fluxWriteStart_   = 0;
     fluxWriteCount_   = 0;
     rwBitCount_       = 0;
-    devsel_           = 0;
     phases_           = 0;
     writeDataLoaded_  = false;
     q3ClockActive_    = false;
     syncUpdate_       = 0;
     asyncUpdate_      = 0;
+    // MAME `iwm.cpp:78-79` fires `m_devsel_cb(0)` once during reset
+    // so the host hub can drop any latched device-select state. POM2
+    // mirrors via `fireDevsel(0)` (idempotent if already 0).
+    fireDevsel(0);
+}
+
+void IWMDevice::fireDevsel(uint8_t value)
+{
+    if (devsel_ != value) {
+        devsel_ = value;
+        if (devselCb_) devselCb_(devsel_);
+    }
+}
+
+void IWMDevice::notifyMonW(bool motorOff)
+{
+    if (sony_) {
+        sony_->monW(motorOff);
+    }
+    // 5.25" DiskImage path: DiskIICard's motor + spin-down + audio
+    // wiring is the source of truth (Theme 6 audit). The IWM here is
+    // a shadow on //c+ (read path authoritative when iwmAuthoritative
+    // is set), so we intentionally don't propagate mon_w to the disk
+    // image — DiskIICard fires its own FloppySoundSink::motor on the
+    // same $C0E8/$C0E9 access that drove this controlAccess() call.
 }
 
 void IWMDevice::setFloppy(DiskImage* disk, int qt)
 {
-    // MAME `iwm.cpp:85-98 set_floppy`. We don't bind a `mon_w` callback
-    // here yet (the LSS card still owns motor sound + writeback gating).
+    // MAME `iwm.cpp:99-115 set_floppy`. When the active floppy changes
+    // while the motor is enabled, MAME drops mon_w on the OLD drive
+    // then raises mon_w on the NEW drive — i.e. the new drive sees the
+    // motor come on as part of the rebind. POM2 mirrors this for the
+    // 3.5" Sony path (DiskIICard owns 5.25" motor sound).
     if (disk_ == disk && qt_ == qt && !sony_) return;
     sync(now_);
     flushWrite();
+    const bool motorOn = (control_ & 0x10) != 0;
+    if (motorOn) notifyMonW(true);     // stop old (if any 3.5" was active)
     disk_ = disk;
     qt_   = qt;
-    sony_ = nullptr;            // routing back to 5.25" path
+    sony_ = nullptr;                   // routing back to 5.25" path
+    // No mon_w(false) here — the 5.25" Disk II path uses DiskIICard's
+    // motor wiring exclusively.
 }
 
 void IWMDevice::setSony35(Sony35Drive* drive)
@@ -98,6 +148,8 @@ void IWMDevice::setSony35(Sony35Drive* drive)
     if (sony_ == drive && !disk_) return;
     sync(now_);
     flushWrite();
+    const bool motorOn = (control_ & 0x10) != 0;
+    if (motorOn) notifyMonW(true);     // stop old drive's motor (Sony if any)
     sony_ = drive;
     disk_ = nullptr;
     if (sony_) {
@@ -107,6 +159,7 @@ void IWMDevice::setSony35(Sony35Drive* drive)
         // the SmartPort hub points the IWM at this drive.
         revStart35_ = now_;
         sony_->invalidateCache();
+        if (motorOn) notifyMonW(false); // raise mon_w on new drive
     }
 }
 
@@ -243,13 +296,17 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
     }
 
     // Activate / deactivate based on m_control bit 4 (motor enable).
-    // MAME line 159-208.
+    // MAME line 190-241.
     if (control_ & 0x10) {
         if (active_ != MODE_ACTIVE) {
             active_      = MODE_ACTIVE;
             status_     |= 0x20;
-            // m_floppy->mon_w(false) — POM2 wires the motor sound via
-            // DiskIICard; nothing to do here.
+            // MAME `iwm.cpp:194-195`: `m_floppy->mon_w(false)`. For 5.25"
+            // DiskIICard fires the motor sample on its own $C0E9 path
+            // and stays source of truth; the 3.5" Sony drive needs the
+            // signal forwarded so its motorOn_ tracks the IWM rather
+            // than depending on strobe-register motor commands alone.
+            notifyMonW(false);
         }
         if ((control_ & 0x80) == 0x00) {
             // Q7 = 0 → read mode
@@ -274,47 +331,64 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
                 nextStateChange_ = 0;
                 writeDataLoaded_ = false;
                 writeClockStart();
-                // set_write_splice — DiskImage already pins splice from
-                // setWriteSplice; left as a no-op match for parity.
+                // MAME `iwm.cpp:218-221`:
+                //   m_floppy->set_write_splice(
+                //       cycles_to_time(m_flux_write_start));
+                // The splice position pins the bit cell where a WOZ
+                // re-master should start writing — Applesauce uses it
+                // to keep round-trip parity. POM2's DiskImage exposes
+                // a stub `setWriteSplice` (DiskImage.h:219); see
+                // TODO.md «WOZ1 splice point (TRK +6650) ignoré» for
+                // the full plumbing. Call site is here so the day the
+                // stub gets a body, the splice arrives at the right
+                // moment automatically. No-op on Sony35Drive — 3.5"
+                // images don't carry a splice position.
+                if (disk_) {
+                    disk_->setWriteSplice(qt_,
+                        static_cast<int64_t>(fluxWriteStart_));
+                }
             }
         }
     } else {
         if (active_ == MODE_ACTIVE) {
             flushWrite();
             if (mode_ & 0x04) {
-                // Timer mode: drop immediately to idle.
+                // Timer mode: drop immediately to idle (MAME line
+                // 226-234). `m_floppy->mon_w(true)` is fired here.
                 writeClockStop();
                 active_   = MODE_IDLE;
                 rw_       = MODE_IDLE;
                 rwState_  = S_IDLE;
                 status_  &= ~0x20;
                 whd_     &= ~0x40;
-                // m_floppy->mon_w(true) — handled by DiskIICard.
+                notifyMonW(true);
             } else {
                 // Normal mode: 1 emulated-second drive-disable delay.
-                // MAME `iwm.cpp:202-206` schedules an emu_timer for
-                // `cycles_to_time(8388608)` then runs `update_timer_tick`
-                // when it fires. POM2 records a deadline; `sync()`
-                // checks it on entry and runs the same drain when
-                // reached. EmulationController also pulses `tick()`
-                // each frame so the deadline still fires when no
-                // $C0Ex traffic arrives between operations.
+                // MAME `iwm.cpp:235-239` schedules an emu_timer for
+                // `cycles_to_time(8388608)` and fires `m_devsel_cb`
+                // with the current drive number BEFORE the timer
+                // fires (so the host hub can pre-emptively recalc the
+                // active device while the motor coasts to a stop).
+                // POM2 records a deadline; `sync()` checks it on
+                // entry and runs the drain when reached. The drive-
+                // disable fire of `m_floppy->mon_w(true)` happens
+                // when the timer expires (see sync()), NOT here.
+                fireDevsel(static_cast<uint8_t>(
+                    (control_ & 0x20) ? 2 : 1));
                 active_         = MODE_DELAY;
                 delayDeadline_  = now_ + kDriveDisableDelayCycles;
             }
         }
     }
 
-    // Devsel update (MAME line 209-213). POM2 now fires the optional
-    // host callback so the SmartPort hub can call
-    // `recalc_active_device` (MAME `apple2e.cpp:638-679`).
+    // Steady-state devsel update (MAME line 243-247). Captures motor-
+    // active drive-select transitions that aren't covered by the
+    // MODE_DELAY-entry fire above (e.g. SEL bit flip while still
+    // spinning).
     const uint8_t newDevsel = (active_ != MODE_IDLE)
         ? ((control_ & 0x20) ? 2 : 1)
         : 0;
-    if (newDevsel != devsel_) {
-        devsel_ = newDevsel;
-        if (devselCb_) devselCb_(devsel_);
-    }
+    fireDevsel(newDevsel);
 
     // Read-side state reset (MAME line 214-215).
     if ((control_ & 0xC0) == 0x40 &&
@@ -343,10 +417,27 @@ void IWMDevice::modeW(uint8_t data)
 
 void IWMDevice::dataW(uint8_t data)
 {
-    // MAME `iwm.cpp:270-275 data_w`.
+    // MAME `iwm.cpp:311-318 data_w`. Three side effects in order:
+    //   1. Always latch the data byte (visible via $C0nF read once the
+    //      controller is back in MODE_IDLE).
+    //   2. In sync write mode, mirror the byte into the write shift
+    //      register IMMEDIATELY (the FSM also copies data_ into wsh_ at
+    //      SW_WINDOW_LOAD, but a CPU write that lands between two cells
+    //      should be seen by the next bit-out without an extra round
+    //      trip — MAME parity).
+    //   3. If "latched handshake" mode is selected (mode bit 0 = 1),
+    //      clear WHD bit 7 to signal "data loaded". When that mode bit
+    //      is 0, the IWM does NOT auto-clear the handshake — the CPU is
+    //      expected to use a different write-pacing protocol. (This is
+    //      the gate POM2 originally got wrong: it cleared whd bit 7 on
+    //      every sync+write data_w regardless of mode bit 0, which
+    //      ignored the mode register entirely.)
     data_ = data;
     if (isSync() && rw_ == MODE_WRITE) {
-        whd_ &= ~0x80;
+        wsh_ = data;
+    }
+    if (mode_ & 0x01) {
+        whd_ &= 0x7F;
         writeDataLoaded_ = true;
     }
 }
@@ -392,8 +483,18 @@ uint64_t IWMDevice::windowSize() const
 
 uint64_t IWMDevice::readRegisterUpdateDelay() const
 {
-    // MAME `iwm.cpp:314-317`, scaled CPU-clock units.
-    return (mode_ & 0x08) ? 1 : 1;
+    // MAME `iwm.cpp:363-366`: 4 IWM ticks when mode bit 3 is set,
+    // 8 otherwise. The IWM ticks at ~7.16 MHz on a //c+ while POM2
+    // runs everything off `POM2_CPU_CLOCK_HZ` (~1.02 MHz), so the
+    // raw ratio is 1/7. Round-up (ceil) the two values:
+    //   4/7 = 0.57 → 1 CPU cycle
+    //   8/7 = 1.14 → 2 CPU cycles
+    // Round-down would collapse both branches to 1 and erase the
+    // mode-bit distinction, which while sub-CPU-cycle in absolute
+    // terms is still meaningful for relative ordering of register
+    // updates (sync mode polls the data register against this
+    // delay). Round-up at least preserves the mode-bit signal.
+    return (mode_ & 0x08) ? 1 : 2;
 }
 
 void IWMDevice::writeClockStart()
@@ -446,11 +547,20 @@ void IWMDevice::sync(uint64_t nowCycles)
     // the write side drains the CPU's loaded data byte into the IWM
     // shift register, scheduling flux events into `fluxWrite_`.
 
-    // Drive-disable delay drain (MAME `iwm.cpp:70-84 update_timer_tick`).
+    // Drive-disable delay drain (MAME `iwm.cpp:83-97 update_timer_tick`).
     // The MAME implementation runs this from an emu_timer at the
     // scheduled deadline; POM2 has no timer system so we check the
     // deadline at every sync() entry instead. Idempotent: zeroing
     // `delayDeadline_` after the transition stops it from re-firing.
+    //
+    // Side effects (in MAME order, line 86-95):
+    //   * flush_write — drain any pending flux events
+    //   * m_active = MODE_IDLE; m_rw = MODE_IDLE; m_rw_state = S_IDLE
+    //   * m_floppy->mon_w(true)  — motor off, real on the 3.5" Sony
+    //                              path; 5.25" Disk II spin-down is
+    //                              owned by DiskIICard (see notifyMonW)
+    //   * m_devsel_cb(0); m_devsel = 0
+    //   * m_status &= ~0x20; m_whd &= ~0x40
     if (active_ == MODE_DELAY &&
         delayDeadline_ != 0 &&
         nowCycles >= delayDeadline_) {
@@ -458,17 +568,11 @@ void IWMDevice::sync(uint64_t nowCycles)
         active_     = MODE_IDLE;
         rw_         = MODE_IDLE;
         rwState_    = S_IDLE;
-        devsel_     = 0;
+        notifyMonW(true);
+        fireDevsel(0);
         status_    &= ~0x20;
         whd_       &= ~0x40;
         delayDeadline_ = 0;
-        // MAME also calls `m_floppy->mon_w(true)` and notifies the
-        // devsel callback here. POM2's audio + writeback hook lives
-        // on DiskIICard; the same $C0E8 (motor-off) access that put
-        // us in MODE_DELAY already started DiskIICard's spin-down
-        // delay, which fires its own `sound_->motor(false, ...)` from
-        // `advance()`. The two timers run in lock-step (both bound
-        // to `POM2_CPU_CLOCK_HZ`), so no cross-callback is needed.
     }
     if (!active_) return;
     const uint64_t nextSync = nowCycles;

@@ -104,6 +104,87 @@ void testSyncNoCrashWhenInactive()
     std::printf("  ok: sync() inactive path is safe\n");
 }
 
+void testDataWLatchedMode()
+{
+    // MAME `iwm.cpp:311-318 data_w`. The IWM clears WHD bit 7 ("no data
+    // loaded") on a CPU data write ONLY when mode bit 0 is set (the
+    // latched-handshake mode). Without mode bit 0, the bit stays set
+    // and the FSM eventually fires an underrun if it tries to write.
+    //
+    // Pre-port POM2 cleared bit 7 on every sync+write data_w regardless
+    // of mode bit 0, which silently bypassed the handshake gate. Two
+    // fresh IWMs so the whd cold value (0xBF, bit 7 = 1) is the same
+    // starting point on each branch.
+
+    // --- Non-latched path (mode bit 0 = 0): whd bit 7 must survive. ---
+    {
+        IWMDevice iwm;
+        // Mode_w fires when control 0xC0 + odd offset write while !active.
+        iwm.write(0xD, 0);      // Q6 set
+        iwm.write(0xF, 0x00);   // mode_w(0x00) — non-latched + sync
+        // Engage write mode: motor on (active) then Q7 (write).
+        iwm.write(0x9, 0);      // motor on → MODE_ACTIVE
+        // whd cold value 0xBF has bit 7 set. Entering MODE_WRITE sets
+        // bit 6 on top → whd = 0xFF. Verify bit 7 is still up before
+        // the data write so the assertion below is meaningful.
+        iwm.write(0xF, 0);      // Q7 set → MODE_WRITE (this is also a
+                                // mode_w call site if !active — but we
+                                // are active, so it falls to data_w
+                                // path. Even offset → no dispatch.)
+        // Actually offset 0xF is odd. With (control & 0xC0) == 0xC0
+        // (Q7+Q6 both set) and we're active, this fires data_w(0).
+        // That's fine — non-latched, so whd bit 7 survives.
+        assert((iwm.whd() & 0x80) != 0);
+        // Explicit data_w(0xBB) via $C0EF write.
+        iwm.write(0xF, 0xBB);
+        assert((iwm.whd() & 0x80) != 0);   // non-latched: bit 7 sticks
+        assert(iwm.data() == 0xBB);
+    }
+
+    // --- Latched path (mode bit 0 = 1): whd bit 7 must clear. ---
+    {
+        IWMDevice iwm;
+        iwm.write(0xD, 0);      // Q6 set
+        iwm.write(0xF, 0x01);   // mode_w(0x01) — latched + sync
+        iwm.write(0x9, 0);      // motor on → MODE_ACTIVE
+        iwm.write(0xF, 0);      // Q7 set → MODE_WRITE (also fires
+                                // data_w(0) because we're active +
+                                // control 0xC0 + odd offset). In
+                                // latched mode this clears whd bit 7
+                                // immediately.
+        assert((iwm.whd() & 0x80) == 0);
+        iwm.write(0xF, 0xAA);   // data_w(0xAA) — sanity
+        assert((iwm.whd() & 0x80) == 0);
+        assert(iwm.data() == 0xAA);
+    }
+
+    std::printf("  ok: data_w handshake gated on mode bit 0 (MAME iwm.cpp:311-318)\n");
+}
+
+void testDevselFiresOnReset()
+{
+    // MAME `iwm.cpp:79` fires `m_devsel_cb(0)` once during device_reset.
+    // POM2 mirrors via `fireDevsel(0)` — but only if devsel_ was
+    // non-zero (else idempotent). Test that the callback fires when
+    // we install it before reset and the IWM had a non-zero devsel
+    // from a prior session.
+    IWMDevice iwm;
+    int fires = 0;
+    uint8_t lastValue = 0xFF;
+    iwm.setDevselCallback([&](uint8_t v) { ++fires; lastValue = v; });
+    // Set up an active drive selection: motor on with SEL=1 → devsel=2.
+    iwm.write(0xB, 0);      // SEL set
+    iwm.write(0x9, 0);      // motor on → devsel = 2
+    assert(fires >= 1);
+    assert(lastValue == 2);
+    const int firesBeforeReset = fires;
+    iwm.reset();
+    // The reset must have notified the host that devsel went back to 0.
+    assert(fires > firesBeforeReset);
+    assert(lastValue == 0);
+    std::printf("  ok: devsel callback fires on reset (MAME iwm.cpp:79)\n");
+}
+
 #include "Memory.h"
 
 void testMemoryMirror()
@@ -163,6 +244,8 @@ int main()
     testModeStatusEcho();
     testWhdReadIdle();
     testSyncNoCrashWhenInactive();
+    testDataWLatchedMode();
+    testDevselFiresOnReset();
     testMemoryMirror();
     std::printf("OK iwm_device_smoke\n");
     return 0;
