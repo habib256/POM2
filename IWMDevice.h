@@ -237,6 +237,15 @@ private:
     uint8_t devsel_    = 0;
     uint8_t phases_    = 0;
 
+    // Set by dataW() when the CPU loads a fresh byte while we are in
+    // MODE_WRITE. Cleared on every MODE_WRITE entry. Lets the FSM tell
+    // a real mid-write underrun (CPU was loading bytes then ran out)
+    // apart from the spurious-on-entry case where the firmware probes
+    // the IWM in write mode without intending to write — the latter
+    // would otherwise fire warn() on every boot/media-change because
+    // whd_'s cold value (0xBF) has bit 7 set.
+    bool    writeDataLoaded_ = false;
+
     /// Host callbacks — set by the SmartPort hub. Lazy nullptr-check
     /// at fire site keeps the hot path branch-free when unwired (the
     /// SmartPort hub is only attached on //c+ profiles).

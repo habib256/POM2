@@ -75,6 +75,7 @@ void IWMDevice::reset()
     rwBitCount_       = 0;
     devsel_           = 0;
     phases_           = 0;
+    writeDataLoaded_  = false;
     q3ClockActive_    = false;
     syncUpdate_       = 0;
     asyncUpdate_      = 0;
@@ -271,6 +272,7 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
                 rwState_         = S_IDLE;
                 whd_            |= 0x40;
                 nextStateChange_ = 0;
+                writeDataLoaded_ = false;
                 writeClockStart();
                 // set_write_splice — DiskImage already pins splice from
                 // setWriteSplice; left as a no-op match for parity.
@@ -345,6 +347,7 @@ void IWMDevice::dataW(uint8_t data)
     data_ = data;
     if (isSync() && rw_ == MODE_WRITE) {
         whd_ &= ~0x80;
+        writeDataLoaded_ = true;
     }
 }
 
@@ -572,8 +575,17 @@ void IWMDevice::sync(uint64_t nowCycles)
                         break;
                     case SW_WINDOW_LOAD:
                         if (whd_ & 0x80) {
-                            // Underrun — CPU didn't load next byte in time.
-                            pom2::log().warn("IWM", "write underrun");
+                            // Underrun — CPU didn't load next byte in
+                            // time. Only warn if the CPU had actually
+                            // started a write sequence (≥1 dataW since
+                            // entering MODE_WRITE); the spurious case
+                            // where firmware probes Q7=1 with no
+                            // intent to write would otherwise fire
+                            // this every boot/media-change because
+                            // whd_'s cold value (0xBF) has bit 7 set.
+                            if (writeDataLoaded_) {
+                                pom2::log().warn("IWM", "write underrun");
+                            }
                             flushWrite(nextSync);
                             writeClockStop();
                             whd_      &= ~0x40;

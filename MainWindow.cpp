@@ -3427,22 +3427,49 @@ void MainWindow::renderDisk35FileDialog()
 void MainWindow::renderAboutDialog()
 {
     if (!showAbout) return;
-    ImGui::OpenPopup("About POM2");
-    if (ImGui::BeginPopupModal("About POM2", &showAbout,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("About POM2", &showAbout, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("POM2 v0.5");
-        ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator (Dear ImGui, MOS 6502 / 65C02)");
+        ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator");
+        ImGui::Text("MOS 6502 / 65C02 / Rockwell / WDC, Dear ImGui frontend");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextWrapped(
+            "Hardware accuracy comes from verbatim ports of MAME's "
+            "device models. Wherever POM2 emulates a chip or a "
+            "peripheral, the implementation cites the MAME source "
+            "file and line range it follows, and each behaviour is "
+            "pinned by a smoke test under tests/.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Subsystems ported from MAME include:");
+        ImGui::BulletText("M6502 / 65C02 dispatch table and timing");
+        ImGui::BulletText("IWM (Apple Integrated Woz Machine) for //c+ and 3.5\" SmartPort");
+        ImGui::BulletText("AY-3-8910 PSG + 6522 VIA (Mockingboard)");
+        ImGui::BulletText("uPD1990AC RTC (ThunderClock+)");
+        ImGui::BulletText("M68705P3 + MC6821 PIA (Mouse Card)");
+        ImGui::BulletText("WozFDC / Disk II LSS + flux event model");
+        ImGui::BulletText("Sony 3.5\" zoned GCR encoder / decoder");
+        ImGui::BulletText("RamWorks III aux-slot expander");
+        ImGui::BulletText("Floppy mechanical sound samples + cadence");
+
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Spacing();
         ImGui::TextWrapped(
-            "Apple II / II+ emulator. MOS 6502, 48 KB RAM,"
-            " text / lo-res / hi-res display, soft-switch I/O.");
+            "Thanks to the MAME team for the meticulous reverse "
+            "engineering work that makes POM2's parity possible. "
+            "MAME is GPL-2.0 / BSD-3-Clause; POM2 is GPL-3.0.");
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Spacing();
         ImGui::Text("F11 = Reset (Ctrl-Reset)   F12 = Hard reset");
         ImGui::Text("ESC, arrows, Ctrl-A..Z map straight to the keyboard");
         ImGui::Spacing();
         if (ImGui::Button("Close")) showAbout = false;
-        ImGui::EndPopup();
     }
+    ImGui::End();
 }
 
 void MainWindow::renderMemoryViewerWindow()
