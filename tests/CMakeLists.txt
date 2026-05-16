@@ -208,7 +208,7 @@ add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
 set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 
 
-add_executable(test_iicplus_boot_trace
+add_executable(test_iicplus_boot_trace EXCLUDE_FROM_ALL
     iicplus_boot_trace.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
@@ -260,7 +260,7 @@ endif()
 add_test(NAME iic_boot_trace_smoke COMMAND test_iic_boot_trace)
 set_tests_properties(iic_boot_trace_smoke PROPERTIES TIMEOUT 30)
 
-add_executable(test_choplifter_iie_trace
+add_executable(test_choplifter_iie_trace EXCLUDE_FROM_ALL
     choplifter_iie_trace.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
@@ -943,7 +943,7 @@ set_tests_properties(smartport_mixed_units_smoke PROPERTIES TIMEOUT 10)
 # Diagnostic, not a CI test: depends on a user-provided HDV image in
 # hdv/. Useful for confirming the SmartPort + HDV unit path on //e
 # actually reaches ProDOS code after a hard reset.
-add_executable(test_total_replay_boot_trace
+add_executable(test_total_replay_boot_trace EXCLUDE_FROM_ALL
     total_replay_boot_trace.cpp
     ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
@@ -1092,7 +1092,7 @@ set_tests_properties(prodos_save_smoke PROPERTIES TIMEOUT 90)
 
 
 # ─── Copy II Plus boot probe (diagnostic, not a CTest target) ────────────
-add_executable(c2plus_boot_probe
+add_executable(c2plus_boot_probe EXCLUDE_FROM_ALL
     c2plus_boot_probe.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
@@ -1118,7 +1118,7 @@ endif()
 
 
 # ─── Copy II Plus boot dump (diagnostic, not a CTest target) ─────────────
-add_executable(copy2plus_boot_dump
+add_executable(copy2plus_boot_dump EXCLUDE_FROM_ALL
     copy2plus_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/ClockCard.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
@@ -1167,7 +1167,7 @@ add_test(NAME iie_c8xx_smoke COMMAND test_iie_c8xx)
 
 
 # ─── HDV boot dump (diagnostic, not a CTest target) ─────────────────────
-add_executable(hdv_boot_dump
+add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     hdv_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
@@ -1819,7 +1819,7 @@ set_tests_properties(woz_writeback_smoke PROPERTIES TIMEOUT 5)
 # the actual LSS read path to spot where the prologue D5 AA 96 disappears.
 # Used to investigate the long-standing "$96 repeated, no D5/AA seen"
 # stall during the H.E.R.O. title screen load.
-add_executable(hero_probe
+add_executable(hero_probe EXCLUDE_FROM_ALL
     hero_probe.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/DiskIICard.cpp

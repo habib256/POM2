@@ -91,19 +91,18 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     }
 
     // ── Power group ───────────────────────────────────────────────────
+    // Power-cycle (cold boot, wipes RAM) + soft reset (Ctrl-Reset).
+    // Hard reset is keyboard-only (F12) — was redundant in the toolbar
+    // (effectively the same UX as soft reset for most users, the
+    // distinction matters for the few users who reach for it).
     if (iconButton({ ICON_FA_POWER_OFF,    "ColdBoot",
                      "Power-cycle (wipe RAM + cold boot)" })) {
         r.requestColdBoot = true;
     }
     ImGui::SameLine();
     if (iconButton({ ICON_FA_ROTATE_LEFT,  "SoftReset",
-                     "Soft reset (Ctrl-Reset / F11)" })) {
+                     "Reset (Ctrl-Reset / F11)" })) {
         r.requestSoftReset = true;
-    }
-    ImGui::SameLine();
-    if (iconButton({ ICON_FA_ROTATE,       "HardReset",
-                     "Hard reset (F12 — re-fetch reset vector)" })) {
-        r.requestHardReset = true;
     }
 
     ImGui::SameLine();
@@ -233,12 +232,9 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     ImGui::SameLine();
 
     // ── Disk shortcuts ───────────────────────────────────────────────
-    if (iconButton({ ICON_FA_FLOPPY_DISK,  "InsertDisk",
-                     "Insert disk into the primary Disk II (lowest-slot card)" },
-                   snap.hasPrimaryDiskCard)) {
-        r.requestInsertDisk = true;
-    }
-    ImGui::SameLine();
+    // Insert is covered by the Disk Library panel (multi-source picker
+    // with boot-on-click) — removed from the toolbar to avoid having
+    // two ways to do the same thing.
     if (iconButton({ ICON_FA_EJECT,        "EjectAll",
                      "Eject every loaded Disk II / HDV / SmartPort image" },
                    snap.hasAnyDiskLoaded)) {
