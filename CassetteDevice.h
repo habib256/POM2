@@ -88,6 +88,17 @@ public:
     void setPlaybackPaused(bool paused);
     bool isPlaybackPaused() const { return playbackPaused.load(std::memory_order_relaxed); }
 
+    /// "Leader auto-rewind" — POM2-only convenience that re-arms the
+    /// tape at the start when the Monitor's READ routine hasn't polled
+    /// `$C060` for ≥ 500 ms (assumes user was typing in BASIC and
+    /// wants the next READ to see the leader fresh). MAME never
+    /// rewinds — turn this OFF for custom loaders that poll the
+    /// cassette input sporadically (Penguin Software fast loaders,
+    /// some BASIC games with "loading…" prompts). Default OFF as of
+    /// 2026-05-16. Persisted as `cassette_auto_rewind`.
+    void setAutoRewind(bool enable) { autoRewindEnabled = enable; }
+    bool isAutoRewindEnabled() const { return autoRewindEnabled; }
+
     /// Stream-mode only seek (no-op in pulse mode).
     void seekRelativeSeconds(double deltaSeconds);
 
@@ -173,6 +184,7 @@ private:
 
 private:
     bool audioAvailable = false;
+    bool autoRewindEnabled = false;     // see setAutoRewind
     uint32_t audioOutputSampleRate = kWavFileSampleRate;
 
     struct AudioSegment {

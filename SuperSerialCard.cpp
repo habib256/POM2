@@ -76,6 +76,33 @@ size_t swallowTelnetIac(uint8_t* data, size_t n)
     return w;
 }
 
+// Line-ending normalisation for telnet-sourced RX: a stock telnet
+// client sends CR LF on ENTER and bare LF on some line-mode tools,
+// but Apple II expects CR alone. POM2 used to apply this only at the
+// keyboard-sink forwarding step (PR#2 path) and leave rxBuf raw — so
+// terminal apps reading via $C0A8 saw CRLF pairs and stranded LFs.
+// Applying once here on RX symmetrises the two consumers.
+// Transformations in order:
+//   * drop NUL ($00) — telnet's standalone LF line terminator on some
+//     clients pads with NULs the Apple II shouldn't see.
+//   * collapse CR LF → CR (strip the LF after a CR).
+//   * map bare LF → CR.
+// Buffer mutated in place, returns new length.
+size_t normalizeLineEndings(uint8_t* data, size_t n)
+{
+    size_t w = 0;
+    bool prevCR = false;
+    for (size_t r = 0; r < n; ++r) {
+        uint8_t c = data[r];
+        if (c == '\n' && prevCR) { prevCR = false; continue; }
+        prevCR = (c == '\r');
+        if (c == '\n') c = '\r';
+        if (c == 0)    continue;
+        data[w++] = c;
+    }
+    return w;
+}
+
 }  // namespace
 
 SuperSerialCard::SuperSerialCard(int slotNum)
@@ -192,7 +219,13 @@ void SuperSerialCard::runWorker()
         while (!stopRequested && clientFd >= 0) {
             const ssize_t got = ::recv(clientFd, scratch, sizeof(scratch), 0);
             if (got > 0) {
-                size_t n = swallowTelnetIac(scratch, static_cast<size_t>(got));
+                size_t n = static_cast<size_t>(got);
+                // Raw mode: skip both filters so XMODEM/Kermit/ADTPro
+                // see every byte (including $FF and bare LFs).
+                if (!rawMode_.load(std::memory_order_relaxed)) {
+                    n = swallowTelnetIac(scratch, n);
+                    n = normalizeLineEndings(scratch, n);
+                }
                 if (n > 0) {
                     deliverRxBytes(scratch, n);
                     // Snapshot the keyboard sink under the same lock the
@@ -205,21 +238,10 @@ void SuperSerialCard::runWorker()
                         sink = keyboardSink;
                     }
                     if (sink) {
-                        // Forward each byte to the Apple II keyboard latch.
-                        // Telnet line-endings: a stock telnet client sends
-                        // CR LF for ENTER, but Apple II only knows CR. We
-                        // strip the LF when it follows a CR.
-                        bool prevCR = false;
+                        // Line endings already normalised above — just
+                        // forward each byte to the Apple II keyboard latch.
                         for (size_t i = 0; i < n; ++i) {
-                            uint8_t c = scratch[i];
-                            if (c == '\n' && prevCR) { prevCR = false; continue; }
-                            prevCR = (c == '\r');
-                            // Map LF → CR for line-mode clients that don't
-                            // send CR. Strip nulls outright (telnet's
-                            // standalone LF terminator on some clients).
-                            if (c == '\n') c = '\r';
-                            if (c == 0)    continue;
-                            sink(c);
+                            sink(scratch[i]);
                         }
                     }
                 }

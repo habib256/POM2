@@ -306,6 +306,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         controller->speaker().setVolume(spkVol);
         controller->speaker().setMuted(settings->getBool("speaker_muted", false));
         controller->setCassetteVolume(settings->getFloat("cassette_volume", 0.6f));
+        controller->cassette().setAutoRewind(
+            settings->getBool("cassette_auto_rewind", false));
     }
 
     // Always wake up at the Applesoft prompt. A default HDV / disk may be
@@ -441,6 +443,7 @@ MainWindow::~MainWindow()
     if (sscCard) {
         settings->setBool("ssc_listening", sscCard->isListening());
         settings->setInt ("ssc_port",      sscCard->getPort());
+        settings->setBool("ssc_raw_mode",  sscCard->rawMode());
     }
 
     // AI control listener — persist enable, port, token, and the panel
@@ -486,6 +489,8 @@ MainWindow::~MainWindow()
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
     settings->setFloat ("cassette_volume", controller->cassette().getVolume());
+    settings->setBool  ("cassette_auto_rewind",
+                        controller->cassette().isAutoRewindEnabled());
     settings->setFloat ("floppy_sound_volume",    controller->floppySound525().getVolume());
     settings->setBool  ("floppy_sound_muted",     controller->floppySound525().isMuted());
     settings->setFloat ("floppy_sound_volume_35", controller->floppySound35().getVolume());
@@ -713,6 +718,7 @@ void MainWindow::plugSlotsFromSettings()
         // IRQ routing is auto-wired by SlotBus's installed router (see
         // Memory::setCpu) — no per-card setup needed.
         controller->memory().slotBus().plug(s, std::move(card));
+        sscCard->setRawMode(settings->getBool("ssc_raw_mode", false));
         if (settings->getBool("ssc_listening", false)) {
             const int p = settings->getInt("ssc_port",
                                           SuperSerialCard::kDefaultPort);
@@ -1728,6 +1734,20 @@ void MainWindow::renderSscPanelWindow()
     } else {
         ImGui::TextDisabled("Click Start, then telnet to the port to bridge "
                             "I/O between your host shell and the Apple II.");
+    }
+
+    ImGui::Separator();
+    bool raw = sscCard->rawMode();
+    if (ImGui::Checkbox("Raw mode (8-bit binary)", &raw)) {
+        sscCard->setRawMode(raw);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Off: stock telnet — IAC ($FF) negotiation\n"
+                          "swallowed + CR/LF normalised to CR.\n"
+                          "On: every byte forwarded verbatim. Use for\n"
+                          "XMODEM / Kermit / ADTPro / any binary protocol.");
     }
 
     ImGui::Separator();

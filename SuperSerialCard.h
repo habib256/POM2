@@ -93,6 +93,16 @@ public:
     uint64_t bytesRx()      const { return rxCount;    }
     uint64_t bytesTx()      const { return txCount;    }
 
+    /// Raw-mode toggle: when true, skip telnet IAC ($FF) stripping AND
+    /// line-ending normalisation on RX, so 8-bit binary protocols
+    /// (XMODEM / Kermit / ADTPro) see every byte verbatim. Default
+    /// false (telnet text mode, expected for keyboard / terminal use).
+    /// The TCP listener is always raw at the socket level — this flag
+    /// only gates POM2's RX-side filtering. Persisted as
+    /// `ssc_raw_mode`.
+    void setRawMode(bool raw) { rawMode_ = raw; }
+    bool rawMode()   const    { return rawMode_; }
+
     /// Inject bytes as if they had just arrived on the TCP socket. The
     /// path matches the worker thread's: SR_OVERRUN on ring overflow,
     /// RX IRQ raise gated by `rxIrqEnable_`, echo-mode loopback into the
@@ -168,6 +178,11 @@ private:
     bool dtrAsserted_ = false;
     bool rxIrqEnable_ = false;
     bool echoMode_    = false;
+    // Raw mode: bypass telnet IAC strip + LF/CR normalisation on RX.
+    // For 8-bit binary protocols (XMODEM / Kermit / ADTPro). Persisted
+    // as `ssc_raw_mode`. Atomic so the TCP worker thread can read it
+    // without holding bufferMtx.
+    std::atomic<bool> rawMode_{false};
 
     // Decoded control-register state. Stored for completeness; only the
     // baud-rate index actually drives behaviour (TX drain pacing).

@@ -457,13 +457,17 @@ uint8_t CassetteDevice::readTapeInput()
     // playbackIndex backward, the read sees that frozen state.
     if (rewinding) return inputLevel ? 0x80 : 0x00;
 
-    // Leader-preservation: if the Monitor's READ routine ($FEFD) hasn't
-    // polled $C060 for a long while, we assume the user was typing in
-    // BASIC / Monitor (which doesn't touch the cassette input). Rewind +
-    // reactivate so the next READ sequence sees the leader from the start
-    // and can synchronise to the 770 Hz sync tone.
+    // Leader-preservation (POM2-only, opt-in): if the Monitor's READ
+    // routine ($FEFD) hasn't polled $C060 for a long while, assume the
+    // user was typing in BASIC / Monitor (which doesn't touch the
+    // cassette input). Rewind + reactivate so the next READ sees the
+    // leader from the start and can synchronise to the 770 Hz sync
+    // tone. MAME never rewinds; some custom loaders (Penguin Software
+    // fast loaders, etc.) poll $C060 sporadically and are broken by
+    // this re-arm. Gated behind `autoRewindEnabled`, default off.
     constexpr uint64_t kLeaderRewindGapCycles = POM2_CPU_CLOCK_HZ / 2;  // 500 ms
     const bool leaderRewind =
+        autoRewindEnabled &&
         loadedTapeReady && !loadedDurations.empty() && playbackIndex > 0 &&
         (currentCycle - lastTapeInputCycle) > kLeaderRewindGapCycles;
     if (leaderRewind || playbackArmed) armPlaybackAtStart();

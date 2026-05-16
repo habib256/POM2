@@ -479,13 +479,22 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
-    // Per-chip synthesis state. Tone counters are floats so we can
-    // step them by sub-tick increments at the host sample rate
-    // (kAyToneStepHz / outputRate ≈ 1.45 ticks/sample @ 44.1 kHz).
+    // Per-chip synthesis state. Counters are INTEGERS (MAME parity —
+    // `ay8910.cpp:998-1015` uses uint counters). The fractional
+    // accumulator captures the sub-tick remainder that builds up
+    // between audio samples at the typical kAyToneStepHz/sampleRate
+    // ratio (≈ 22.7 ticks/sample at 44.1 kHz). Pre-2026-05-16 POM2
+    // used pure float counters which aliased noticeably at periods
+    // 1-3 (PWM tricks like Cosmic Bouncer sounded sour) because
+    // float arithmetic accumulated rounding error across the
+    // `while (counter >= period)` resolve loop. Integer counters
+    // remove that drift entirely.
     struct ChipState {
-        // 3 tone channels: phase counter + current output bit.
-        float    toneCounter[3] = { 0, 0, 0 };
-        uint8_t  toneOut[3]     = { 0, 0, 0 };
+        // 3 tone channels: integer phase counter + fractional sub-tick
+        // accumulator + current output bit.
+        uint16_t toneCounter[3] = { 0, 0, 0 };
+        float    toneAccum  [3] = { 0, 0, 0 };
+        uint8_t  toneOut    [3] = { 0, 0, 0 };
         // Noise: 17-bit LFSR.
         // `noisePrescale` halves the LFSR update rate vs the noise
         // counter — MAME `ay8910.cpp:1086-1104` toggles `m_prescale_noise`
@@ -500,7 +509,8 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // this re-seed, noise sequences are not deterministic across
         // resets (POM2's CPU-thread `Ay3_8910::reset()` clears regs but
         // can't reach this audio-thread state).
-        float    noiseCounter        = 0;
+        uint16_t noiseCounter        = 0;
+        float    noiseAccum          = 0;
         uint32_t noiseLfsr           = 1;       // MAME ay8910.cpp:1309
         uint8_t  noiseOut            = 0;
         uint8_t  noisePrescale       = 0;
@@ -514,7 +524,8 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // earlier branchy `envStep` 0..31 model which mis-handled
         // shapes 10 (/\/\), 12 (\\\\), and 14 (\/\/) — vibrato patterns
         // used by Mockingboard music drivers.
-        float    envCounter     = 0;
+        uint32_t envCounter     = 0;
+        float    envAccum       = 0;
         int      envStep        = 15;    // walks 15 → 0
         uint8_t  envAttack      = 0;     // 0 or 15
         uint8_t  envHold        = 0;
@@ -580,22 +591,28 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 // ── Per-channel tone period (R0/R1 pair, etc.). ────
                 // 12-bit period; period 0 is treated as 1 by real
                 // hardware (channel always-on at audio rate).
-                const auto tonePeriod = [&](int ch) -> float {
+                const auto tonePeriod = [&](int ch) -> uint16_t {
                     const int lo = r[ch * 2];
                     const int hi = r[ch * 2 + 1] & 0x0F;
                     const int p  = (hi << 8) | lo;
-                    return p == 0 ? 1.0f : static_cast<float>(p);
+                    return static_cast<uint16_t>(p == 0 ? 1 : p);
                 };
 
-                // Step tone counters; toggle the output bit when each
-                // accumulated phase exceeds the period (full cycle =
-                // 2 × period because the AY divides by 2 via T-flop).
+                // Step tone counters in integer ticks (MAME parity —
+                // `ay8910.cpp:998-1015` uses uint counters). The float
+                // accumulator handles the fractional sub-tick rate at
+                // the audio output rate; each integer tick increments
+                // the counter and toggles output when ≥ period. Full
+                // cycle = 2 × period (AY T-flop divides by 2).
                 for (int ch = 0; ch < 3; ++ch) {
-                    cs.toneCounter[ch] += toneStepPerSample;
-                    const float p = tonePeriod(ch);
-                    while (cs.toneCounter[ch] >= p) {
-                        cs.toneCounter[ch] -= p;
-                        cs.toneOut[ch] ^= 1;
+                    cs.toneAccum[ch] += toneStepPerSample;
+                    const uint16_t p = tonePeriod(ch);
+                    while (cs.toneAccum[ch] >= 1.0f) {
+                        cs.toneAccum[ch] -= 1.0f;
+                        if (++cs.toneCounter[ch] >= p) {
+                            cs.toneCounter[ch] = 0;
+                            cs.toneOut[ch] ^= 1;
+                        }
                     }
                 }
 
@@ -603,11 +620,15 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 // 5-bit period in R6. MAME `ay8910.cpp:1086-1104`
                 // toggles `m_prescale_noise ^= 1` on every counter
                 // expiry and only ticks the LFSR when prescale lands
-                // on 0 → effective LFSR rate = clock/(16*NP).
-                const int noisePer = (r[6] & 0x1F) ? (r[6] & 0x1F) : 1;
-                cs.noiseCounter += noiseStepPerSample;
-                while (cs.noiseCounter >= static_cast<float>(noisePer)) {
-                    cs.noiseCounter -= static_cast<float>(noisePer);
+                // on 0 → effective LFSR rate = clock/(16*NP). Integer
+                // counter (MAME parity).
+                const uint16_t noisePer = static_cast<uint16_t>(
+                    (r[6] & 0x1F) ? (r[6] & 0x1F) : 1);
+                cs.noiseAccum += noiseStepPerSample;
+                while (cs.noiseAccum >= 1.0f) {
+                    cs.noiseAccum -= 1.0f;
+                    if (++cs.noiseCounter < noisePer) continue;
+                    cs.noiseCounter = 0;
                     cs.noisePrescale ^= 1;
                     if (cs.noisePrescale) continue;
                     // 17-bit LFSR, polynomial x^17 + x^14 + 1. (MAME's
@@ -653,20 +674,23 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                         cs.envStep      = kMask;
                         cs.envHolding   = 0;
                         cs.envCounter   = 0;
+                        cs.envAccum     = 0;
                         cs.lastShape    = shape;
                     }
                     const int envPer = (r[11] | (r[12] << 8))
                                        ? (r[11] | (r[12] << 8)) : 1;
                     // MAME `ay8910.cpp:994`: `period = envelope->period * m_step`
                     // where `m_step = 2` for AY-3-8910. Each envelope
-                    // tick is one base counter tick (clock/16), same
-                    // rate as tone — so we use `toneStepPerSample`
-                    // here, not the legacy `clock/256` rate, which
-                    // was 8× too slow.
-                    const float threshold = static_cast<float>(envPer * 2);
-                    cs.envCounter += toneStepPerSample;
-                    while (cs.envCounter >= threshold) {
-                        cs.envCounter -= threshold;
+                    // step takes `envPer * 2` base ticks; the base
+                    // rate is the same clock/8 we step the tone with.
+                    // Integer counter (MAME parity).
+                    const uint32_t threshold =
+                        static_cast<uint32_t>(envPer) * 2u;
+                    cs.envAccum += toneStepPerSample;
+                    while (cs.envAccum >= 1.0f) {
+                        cs.envAccum -= 1.0f;
+                        if (++cs.envCounter < threshold) continue;
+                        cs.envCounter = 0;
                         if (cs.envHolding) continue;
                         cs.envStep--;
                         if (cs.envStep < 0) {
