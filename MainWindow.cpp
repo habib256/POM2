@@ -30,6 +30,10 @@
 #include "ProDOSVolume.h"
 #include "Settings.h"
 #include "SmartPortCard.h"
+#include "SmartPort35Unit.h"
+#include "SmartPortHdvUnit.h"
+#include "SmartPortUnit.h"
+#include "SmartPort_ImGui.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
@@ -68,6 +72,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
+      smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
@@ -238,6 +243,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showDisk35Panel    = settings->getBool ("show_disk35_panel", showDisk35Panel);
         showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
+        showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
         showToolbar        = settings->getBool ("show_toolbar",    showToolbar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
@@ -468,6 +474,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_disk35_panel", showDisk35Panel);
     settings->setBool  ("show_disk_library", showDiskLibrary);
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
+    settings->setBool  ("show_smartport_panel", showSmartPortPanel);
     settings->setBool  ("show_cassette",   showCassetteDeck);
     settings->setBool  ("show_toolbar",    showToolbar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
@@ -745,18 +752,66 @@ void MainWindow::plugSlotsFromSettings()
     };
 
     auto plugSmartPort35 = [&](int s) {
-        // Liron-class card: borrow the EmulationController's existing
-        // Disk35Image pair so the Disk 3.5" panel (and the //c+ on-board
-        // hub on dual-config setups) see exactly the same images.
-        auto card = std::make_unique<pom2::SmartPortCard>(
-            s,
-            &controller->disk35Internal(),
-            &controller->disk35External());
+        // Liron-class card. Each unit's type + image is restored from
+        // settings (smartport_slotN_unitK_*) so per-card mixes (e.g.
+        // unit 0 = 3.5", unit 1 = HDV) survive across launches. When
+        // no setting exists, both units start empty — the user picks
+        // a type via the SmartPort Configuration panel.
+        auto card = std::make_unique<pom2::SmartPortCard>(s);
         // Mechanical sound: route to the dedicated 3.5" sound bank.
-        // The card is block-level (no Sony35Drive in the slot path), so
-        // it synthesises step/motor/click events from READBLOCK /
-        // WRITEBLOCK / eject directly.
+        // Block-level transfers only — the card synthesises step / motor
+        // / click events from READBLOCK / WRITEBLOCK directly.
         card->setFloppySound(&controller->floppySound35());
+
+        // Restore per-unit configuration from settings. Each unit row
+        // remembers its kind ("35" / "hdv" / ""=empty), its mounted image
+        // path, and the write-back toggle. Persistence keyspace:
+        //   smartport_slotN_unitK_type     ("" / "35" / "hdv")
+        //   smartport_slotN_unitK_path     (image path, optional)
+        //   smartport_slotN_unitK_writeback (bool)
+        const std::string slotKey = "smartport_slot" + std::to_string(s);
+        for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
+            const std::string base = slotKey + "_unit" + std::to_string(k);
+            const std::string kind = settings->getString(base + "_type", "");
+            if (kind.empty()) continue;
+            auto unit = pom2::makeSmartPortUnit(kind);
+            if (!unit) {
+                pom2::log().warn("SmartPort",
+                    "Unknown unit kind '" + kind + "' for " + base +
+                    " — leaving empty");
+                continue;
+            }
+            unit->setWriteBackEnabled(
+                settings->getBool(base + "_writeback", false));
+            // Resolve the persisted path against multiple cwd anchors —
+            // settings.ini may have been written when POM2 ran from
+            // repo root (`hdv/X`) but a later launch from build/ would
+            // fail `is_regular_file` on the bare relative path. Same
+            // fallback the ROM probe uses.
+            const std::string p = settings->getString(base + "_path", "");
+            std::string resolved;
+            if (!p.empty()) {
+                std::error_code ec;
+                for (const std::string& cand :
+                     { p, std::string("../") + p, std::string("../../") + p }) {
+                    if (std::filesystem::is_regular_file(cand, ec)) {
+                        resolved = cand;
+                        break;
+                    }
+                }
+            }
+            if (!resolved.empty()) {
+                if (!unit->loadImage(resolved)) {
+                    pom2::log().warn("SmartPort",
+                        "Failed to remount " + resolved + " on " + base +
+                        ": " + unit->lastError());
+                }
+            } else if (!p.empty()) {
+                pom2::log().warn("SmartPort",
+                    "Persisted path not found: " + p + " (on " + base + ")");
+            }
+            card->setUnit(k, std::move(unit));
+        }
         smartPortCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -1253,6 +1308,16 @@ void MainWindow::renderMenuBar()
             const std::string label = "HDV (slot " +
                 std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
             ImGui::MenuItem(label.c_str(),               nullptr, &showHdvPanel);
+        }
+        if (smartPortCard) {
+            const std::string label = "SmartPort Configuration (slot " +
+                std::to_string(smartPortCard->getSlot()) + ")";
+            ImGui::MenuItem(label.c_str(),               nullptr, &showSmartPortPanel);
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::MenuItem("SmartPort Configuration (no card plugged)",
+                            nullptr, &showSmartPortPanel);
+            ImGui::EndDisabled();
         }
         ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
@@ -2331,11 +2396,39 @@ void MainWindow::renderDiskLibraryWindow()
     for (auto* c : diskCards) {
         if (c && c->isDiskLoaded()) mounted.diskII.push_back(c->getDiskPath());
     }
+    // 3.5" mount sources: the //c+ on-board hub OR a slot-plugged
+    // SmartPort card's unit 0/1 (one or the other, never both on the
+    // same profile). The library marks rows mounted on either, so the
+    // user sees the `* ` cue regardless of which path is active.
     mounted.disk35Internal = controller->disk35Internal().isLoaded()
         ? controller->disk35Internal().path() : std::string();
     mounted.disk35External = controller->disk35External().isLoaded()
         ? controller->disk35External().path() : std::string();
-    if (hdvCard && hdvCard->isImageLoaded()) mounted.hdv = hdvCard->getImagePath();
+    if (smartPortCard) {
+        const pom2::SmartPortUnit* u0 = smartPortCard->unit(0);
+        const pom2::SmartPortUnit* u1 = smartPortCard->unit(1);
+        if (u0 && u0->isLoaded() &&
+            u0->kindKey() == pom2::SmartPort35Unit::kKindKey &&
+            mounted.disk35Internal.empty()) {
+            mounted.disk35Internal = u0->path();
+        }
+        if (u1 && u1->isLoaded() &&
+            u1->kindKey() == pom2::SmartPort35Unit::kKindKey &&
+            mounted.disk35External.empty()) {
+            mounted.disk35External = u1->path();
+        }
+    }
+    if (hdvCard && hdvCard->isImageLoaded()) {
+        mounted.hdv = hdvCard->getImagePath();
+    } else if (smartPortCard) {
+        // SmartPort-routed HDV — show as mounted in the Library so the
+        // `* ` marker matches reality regardless of which path holds it.
+        const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+        if (u && u->isLoaded() &&
+            u->kindKey() == pom2::SmartPortHdvUnit::kKindKey) {
+            mounted.hdv = u->path();
+        }
+    }
 
     const auto r = diskLibrary->render("Disk Library", showDiskLibrary, mounted);
 
@@ -2372,8 +2465,53 @@ void MainWindow::renderDiskLibraryWindow()
     }
 
     // ── 3.5" actions ─────────────────────────────────────────────────
+    // Routing: on //c+ profile the on-board hub owns 3.5" media; on any
+    // other profile with a SmartPort card plugged, the card's units do.
+    // The Library click is explicit user intent to mount 3.5" here, so
+    // we auto-create a SmartPort35Unit on the target index if the slot
+    // is empty or holds a different kind (HDV) — the user can re-pick
+    // the type later from the SmartPort Configuration panel.
+    auto routeMount35 = [&](int driveIdx, const std::string& path,
+                            std::string& errOut) -> bool {
+        if (smartPortCard &&
+            activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            pom2::SmartPortUnit* u =
+                smartPortCard->unit(static_cast<size_t>(driveIdx));
+            if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
+                smartPortCard->setUnit(
+                    static_cast<size_t>(driveIdx),
+                    std::make_unique<pom2::SmartPort35Unit>());
+                u = smartPortCard->unit(static_cast<size_t>(driveIdx));
+            }
+            if (!u->loadImage(path)) {
+                errOut = u->lastError();
+                return false;
+            }
+            const std::string base =
+                "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+                "_unit" + std::to_string(driveIdx);
+            settings->setString(base + "_type",
+                std::string(pom2::SmartPort35Unit::kKindKey));
+            settings->setString(base + "_path", path);
+            settings->save();
+            return true;
+        }
+        // //c+ on-board path.
+        if (!controller->mount35(driveIdx, path)) {
+            const auto& img = (driveIdx == 0)
+                ? controller->disk35Internal()
+                : controller->disk35External();
+            errOut = img.lastError();
+            return false;
+        }
+        return true;
+    };
+
     if (!r.request35MountAndBoot.empty()) {
-        if (controller->mount35(r.request35BootDrive, r.request35MountAndBoot)) {
+        std::string err;
+        if (routeMount35(r.request35BootDrive,
+                         r.request35MountAndBoot, err)) {
             // Slot-aware boot: explicit `bootFromSlot(N)` when a
             // SmartPort card is plugged on a non-//c+ profile, else
             // `coldBoot()` so the //c+ ROM autostart kicks in.
@@ -2387,61 +2525,90 @@ void MainWindow::renderDiskLibraryWindow()
                 + std::string(r.request35BootDrive == 0 ? "1" : "2")
                 + " booted: " + r.request35MountAndBoot;
         } else {
-            const auto& img = (r.request35BootDrive == 0)
-                ? controller->disk35Internal()
-                : controller->disk35External();
-            tapeStatusMessage = "Library: 3.5\" boot failed: " + img.lastError();
+            tapeStatusMessage = "Library: 3.5\" boot failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
     if (!r.request35MountOnly.empty()) {
-        if (controller->mount35(r.request35MountDrive, r.request35MountOnly)) {
+        std::string err;
+        if (routeMount35(r.request35MountDrive,
+                         r.request35MountOnly, err)) {
             tapeStatusMessage = "Library: 3.5\" drive "
                 + std::string(r.request35MountDrive == 0 ? "1" : "2")
                 + " mounted: " + r.request35MountOnly;
         } else {
-            const auto& img = (r.request35MountDrive == 0)
-                ? controller->disk35Internal()
-                : controller->disk35External();
-            tapeStatusMessage = "Library: 3.5\" mount failed: " + img.lastError();
+            tapeStatusMessage = "Library: 3.5\" mount failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
 
     // ── HDV actions ──────────────────────────────────────────────────
-    if (!r.requestHdvMountAndBoot.empty() && hdvCard) {
-        const std::string path = r.requestHdvMountAndBoot;
-        bool ok = false;
-        std::string err;
-        {
+    // Two routing targets: the legacy `ProDOSHardDiskCard` slot (if
+    // plugged) OR a SmartPort card's unit 0 (if a SmartPort is plugged
+    // but no HDV card is). The Library click is explicit intent to
+    // mount HDV; on a SmartPort-only config, auto-create / replace
+    // unit 0 with a SmartPortHdvUnit so users don't have to detour
+    // through the SmartPort Configuration panel.
+    auto routeMountHdv = [&](const std::string& path, int& bootSlotOut,
+                             std::string& errOut) -> bool {
+        if (hdvCard) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = hdvCard->loadImage(path);
-            if (ok) {
-                hdvPath   = path;
-                hdvStatus = "loaded: " + path;
-            } else {
-                err = hdvCard->getLastError();
+            if (!hdvCard->loadImage(path)) {
+                errOut = hdvCard->getLastError();
                 hdvStatus = "no image mounted";
+                return false;
             }
+            hdvPath = path;
+            hdvStatus = "loaded: " + path;
+            bootSlotOut = hdvCard->getSlot();
+            return true;
         }
-        if (ok) {
-            controller->bootFromSlot(hdvCard->getSlot());
+        if (smartPortCard) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            pom2::SmartPortUnit* u = smartPortCard->unit(0);
+            if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
+                smartPortCard->setUnit(
+                    0, std::make_unique<pom2::SmartPortHdvUnit>());
+                u = smartPortCard->unit(0);
+            }
+            if (!u->loadImage(path)) {
+                errOut = u->lastError();
+                return false;
+            }
+            const std::string base =
+                "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+                "_unit0";
+            settings->setString(base + "_type",
+                std::string(pom2::SmartPortHdvUnit::kKindKey));
+            settings->setString(base + "_path", path);
+            settings->save();
+            bootSlotOut = smartPortCard->getSlot();
+            return true;
+        }
+        errOut = "no HDV or SmartPort card plugged";
+        return false;
+    };
+
+    if (!r.requestHdvMountAndBoot.empty()) {
+        const std::string path = r.requestHdvMountAndBoot;
+        int bootSlot = 0;
+        std::string err;
+        if (routeMountHdv(path, bootSlot, err)) {
+            controller->bootFromSlot(bootSlot);
             tapeStatusMessage = "Library: HDV (slot " +
-                std::to_string(hdvCard->getSlot()) + ") booted: " + path;
+                std::to_string(bootSlot) + ") booted: " + path;
         } else {
             tapeStatusMessage = "Library: HDV mount failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
-    if (!r.requestHdvMountOnly.empty() && hdvCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (hdvCard->loadImage(r.requestHdvMountOnly)) {
-            hdvPath   = r.requestHdvMountOnly;
-            hdvStatus = "loaded: " + r.requestHdvMountOnly;
+    if (!r.requestHdvMountOnly.empty()) {
+        int bootSlot = 0;
+        std::string err;
+        if (routeMountHdv(r.requestHdvMountOnly, bootSlot, err)) {
             tapeStatusMessage = "Library: HDV mounted: " + r.requestHdvMountOnly;
         } else {
-            tapeStatusMessage = "Library: HDV mount failed: " +
-                                hdvCard->getLastError();
+            tapeStatusMessage = "Library: HDV mount failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
@@ -2478,6 +2645,131 @@ void MainWindow::renderDiskLibraryWindow()
 }
 
 // ─── HDV (slot 5) ────────────────────────────────────────────────────────
+
+void MainWindow::renderSmartPortPanelWindow()
+{
+    if (!showSmartPortPanel) return;
+
+    // Build snapshot from the currently-plugged SmartPort card. When no
+    // card is plugged the panel renders a "no card" hint.
+    pom2::SmartPort_ImGui::CardSnapshot snap;
+    snap.plugged = (smartPortCard != nullptr);
+    if (snap.plugged) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        snap.slot = smartPortCard->getSlot();
+        for (size_t k = 0; k < snap.units.size(); ++k) {
+            const pom2::SmartPortUnit* u = smartPortCard->unit(k);
+            auto& us = snap.units[k];
+            if (!u) {
+                us.kind.clear();
+                us.kindLabel.clear();
+                continue;
+            }
+            us.kind             = std::string(u->kindKey());
+            us.kindLabel        = std::string(u->kindLabel());
+            us.path             = u->path();
+            us.lastError        = u->lastError();
+            us.blockCount       = u->blockCount();
+            us.loaded           = u->isLoaded();
+            us.writeProtected   = u->isWriteProtected();
+            us.writeBackEnabled = u->isWriteBackEnabled();
+        }
+    }
+
+    char title[64];
+    if (snap.plugged) {
+        std::snprintf(title, sizeof(title),
+                      "SmartPort Configuration (slot %d)", snap.slot);
+    } else {
+        std::snprintf(title, sizeof(title),
+                      "SmartPort Configuration");
+    }
+
+    const auto r = smartPortPanel->render(title, showSmartPortPanel, snap);
+
+    if (!snap.plugged) return;
+
+    // Apply per-unit actions under the state mutex. Settings updates
+    // (kind / path / writeback) happen here so a restart restores the
+    // same layout. Eject + writeback writes pass through the unit's
+    // own API; setUnit replaces the entire unit (e.g. type swap).
+    const std::string slotKey =
+        "smartport_slot" + std::to_string(snap.slot);
+    bool dirtySettings = false;
+    for (size_t k = 0; k < snap.units.size(); ++k) {
+        const auto& a    = r.units[k];
+        const std::string base = slotKey + "_unit" + std::to_string(k);
+
+        if (a.clearType || !a.setType.empty()) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            if (a.clearType) {
+                smartPortCard->setUnit(k, nullptr);
+                settings->setString(base + "_type", "");
+                settings->setString(base + "_path", "");
+                settings->setBool  (base + "_writeback", false);
+                tapeStatusMessage = "SmartPort unit " +
+                    std::to_string(k) + ": cleared";
+            } else {
+                auto unit = pom2::makeSmartPortUnit(a.setType);
+                if (unit) {
+                    settings->setString(base + "_type", a.setType);
+                    settings->setString(base + "_path", "");
+                    settings->setBool  (base + "_writeback", false);
+                    smartPortCard->setUnit(k, std::move(unit));
+                    tapeStatusMessage = "SmartPort unit " +
+                        std::to_string(k) + ": type = " + a.setType;
+                } else {
+                    tapeStatusMessage = "SmartPort unit " +
+                        std::to_string(k) + ": unknown type '" +
+                        a.setType + "'";
+                }
+            }
+            dirtySettings = true;
+            tapeStatusUntil = lastFrameTime + 3.0;
+            // Type change drops any previously-loaded media in this
+            // unit — skip the rest of the actions for this row.
+            continue;
+        }
+
+        pom2::SmartPortUnit* u = smartPortCard->unit(k);
+        if (!u) continue;
+
+        if (a.writeBackChanged) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            u->setWriteBackEnabled(a.writeBackOn);
+            settings->setBool(base + "_writeback", a.writeBackOn);
+            dirtySettings = true;
+            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
+                ": write-back " + (a.writeBackOn ? "ON" : "OFF");
+            tapeStatusUntil = lastFrameTime + 3.0;
+        }
+
+        if (!a.mountPath.empty()) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            if (u->loadImage(a.mountPath)) {
+                settings->setString(base + "_path", a.mountPath);
+                dirtySettings = true;
+                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
+                    ": mounted " + a.mountPath;
+            } else {
+                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
+                    ": mount failed: " + u->lastError();
+            }
+            tapeStatusUntil = lastFrameTime + 4.0;
+        }
+
+        if (a.eject) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            u->eject();
+            settings->setString(base + "_path", "");
+            dirtySettings = true;
+            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
+                ": ejected";
+            tapeStatusUntil = lastFrameTime + 3.0;
+        }
+    }
+    if (dirtySettings) settings->save();
+}
 
 void MainWindow::renderHdvPanelWindow()
 {
@@ -3374,9 +3666,30 @@ void MainWindow::render()
             if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks/";
         }
         if (tr.requestEjectAllDisks) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            for (auto* c : diskCards) if (c) c->ejectDisk();
-            if (hdvCard) hdvCard->ejectImage();
+            // Eject under stateMutex for the things we own directly
+            // (DiskII, HDV, SmartPort units). `eject35` re-locks
+            // stateMutex itself — call it OUTSIDE the lock to avoid
+            // recursive locking on the non-recursive std::mutex (was
+            // crashing POM2 when Eject-All was clicked).
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                for (auto* c : diskCards) if (c) c->ejectDisk();
+                if (hdvCard) hdvCard->ejectImage();
+                if (smartPortCard) {
+                    for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
+                        pom2::SmartPortUnit* u = smartPortCard->unit(k);
+                        if (u && u->isLoaded()) {
+                            u->eject();
+                            const std::string base =
+                                "smartport_slot" +
+                                std::to_string(smartPortCard->getSlot()) +
+                                "_unit" + std::to_string(k);
+                            settings->setString(base + "_path", "");
+                        }
+                    }
+                    settings->save();
+                }
+            }
             controller->eject35(0);
             controller->eject35(1);
             tapeStatusMessage = "Ejected all disks";
@@ -3438,6 +3751,7 @@ void MainWindow::render()
     renderDisk35PanelWindow();
     renderDisk35FileDialog();
     renderHdvPanelWindow();
+    renderSmartPortPanelWindow();
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();
     renderSscPanelWindow();

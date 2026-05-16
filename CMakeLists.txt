@@ -92,7 +92,11 @@ set(SOURCES
     RomLoader.cpp
     Settings.cpp
     SlotBus.cpp
+    SmartPort35Unit.cpp
     SmartPortCard.cpp
+    SmartPortHdvUnit.cpp
+    SmartPortUnit.cpp
+    SmartPort_ImGui.cpp
     SnapshotIO.cpp
     SpeakerDevice.cpp
     SuperSerialCard.cpp
@@ -143,7 +147,10 @@ set(HEADERS
     RomLoader.h
     SlotBus.h
     SlotPeripheral.h
+    SmartPort35Unit.h
     SmartPortCard.h
+    SmartPortHdvUnit.h
+    SmartPortUnit.h
     SnapshotIO.h
     SpeakerDevice.h
     SuperSerialCard.h

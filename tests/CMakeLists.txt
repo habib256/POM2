@@ -900,7 +900,10 @@ set_tests_properties(woz_bit_timing_smoke PROPERTIES TIMEOUT 10)
 # dependency since this card path bypasses the bit-level IWM.
 add_executable(test_smartport_card
     smartport_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
@@ -913,6 +916,48 @@ endif()
 add_test(NAME smartport_card_smoke COMMAND test_smartport_card
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(smartport_card_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── SmartPort mixed-unit smoke (3.5" + HDV in one card) ────────────────
+# Pins the new SmartPortUnit abstraction: unit 0 = 3.5" Sony, unit 1 =
+# ProDOS HDV, drive-select routes each to its own backing store.
+add_executable(test_smartport_mixed_units
+    smartport_mixed_units_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_smartport_mixed_units PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_mixed_units PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME smartport_mixed_units_smoke COMMAND test_smartport_mixed_units)
+set_tests_properties(smartport_mixed_units_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── Total Replay boot diagnostic (//e + SmartPort + HDV) ──────────────
+# Diagnostic, not a CI test: depends on a user-provided HDV image in
+# hdv/. Useful for confirming the SmartPort + HDV unit path on //e
+# actually reaches ProDOS code after a hard reset.
+add_executable(test_total_replay_boot_trace
+    total_replay_boot_trace.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_total_replay_boot_trace PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_total_replay_boot_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
 
 
 # ─── Disk II two-drive routing smoke test ────────────────────────────────

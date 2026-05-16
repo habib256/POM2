@@ -2,27 +2,36 @@
 // Copyright (C) 2026
 //
 // SmartPortCard — Apple II expansion card that gives a //e (or II+) access
-// to Sony 3.5" 800 K disks the same way the //c+ on-board SmartPort does.
-// Modelled after the real "Apple II 3.5 Disk Controller Card" (a.k.a. the
-// "Liron" card, Apple part 670-0186), slot 5 by convention.
+// to ProDOS block-level disks the same way the //c+ on-board SmartPort
+// does. Modelled after the real "Apple II 3.5 Disk Controller Card" (a.k.a.
+// the "Liron" card, Apple part 670-0186), slot 5 by convention.
 //
 // Architecture choice — block-level vs IWM-level:
 //
 // The real card carries a full IWM plus a tiny 6502 ROM with the SmartPort
 // dispatcher; ProDOS calls the dispatcher and the dispatcher talks GCR to
-// whichever Sony drive the user clicked. POM2's //c+ profile already
-// emulates that full stack (`IWMDevice`, `SmartPortHub`, `Sony35Drive`).
-// For a slot-plugged card on //e we don't need the bit-level emulation —
-// no game does flux-level tricks through the Liron — so this class skips
-// the IWM and exposes the underlying `Disk35Image` blocks directly through
-// a streaming protocol identical to `ProDOSHardDiskCard`'s. Same shape:
+// whichever drive the user clicked. POM2's //c+ profile already emulates
+// that full stack (`IWMDevice`, `SmartPortHub`, `Sony35Drive`). For a slot-
+// plugged card on //e we don't need the bit-level emulation — no game does
+// flux-level tricks through the Liron — so this class skips the IWM and
+// exposes the underlying volume blocks directly through a streaming
+// protocol identical to `ProDOSHardDiskCard`'s.
 //
-//   $C0n0 write = drive select (0 = drive 1, 1 = drive 2)
-//   $C0n1 write = block LO byte (selected drive)
-//   $C0n2 write = block HI byte (selected drive)
+// Per-unit polymorphism:
+//
+// The original v0.5 incarnation hardcoded two `Disk35Image*` slots. This
+// design replaces them with a `std::array<unique_ptr<SmartPortUnit>, kMaxUnits>`
+// where each slot can hold any concrete `SmartPortUnit` (3.5", HDV, future
+// types). ProDOS sees the first two units as drive 1 / drive 2 of slot N;
+// units 3+ are reserved for a future extended-SmartPort hookup and are
+// inert today (kMaxUnits = 2 for v1).
+//
+//   $C0n0 write = drive select (bits 0-1 = unit index, 0..kMaxUnits-1)
+//   $C0n1 write = block LO byte (selected unit)
+//   $C0n2 write = block HI byte (selected unit)
 //   $C0n3 read  = next byte of selected block (auto-incrementing)
 //   $C0n3 write = next byte INTO selected block (write-back gated)
-//   $C0n4 read  = status: bit 7 = no disk, bit 6 = write-protected
+//   $C0n4 read  = status: bit 7 = no media, bit 6 = write-protected
 //
 // Slot ROM ($Cn00-$CnFF) holds a ProDOS block driver that ProDOS scans
 // for at boot. Signature:
@@ -36,23 +45,18 @@
 //
 // The driver examines ProDOS's $43 unit byte (bit 7 = drive 2) and routes
 // to the corresponding pair of soft switches. Boot routine at $Cn20
-// reads block 0 of drive 1 to $0800 and JMPs $0801 — identical pattern
-// to the HDV card so existing ProDOS bootstraps work unchanged.
-//
-// Image ownership: borrowed pointers. The host (MainWindow / EmulationController)
-// owns the two `Disk35Image` slots; the card just exposes them on the bus.
-// That way the //c+ on-board SmartPort and a //e-plugged Liron card share
-// the same image storage when a user happens to run both configs in the
-// same session — and the Disk 3.5" panel doesn't need to know which path
-// is active.
+// reads block 0 of unit 0 to $0800 and JMPs $0801 — identical pattern to
+// the HDV card so existing ProDOS bootstraps work unchanged.
 
 #ifndef POM2_SMARTPORT_CARD_H
 #define POM2_SMARTPORT_CARD_H
 
 #include "SlotPeripheral.h"
+#include "SmartPortUnit.h"
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -60,40 +64,50 @@ class FloppySoundSink;
 
 namespace pom2 {
 
-class Disk35Image;
-
 class SmartPortCard : public SlotPeripheral
 {
 public:
     static constexpr int    kDefaultSlot   = 5;
-    static constexpr size_t kBlockBytes    = 512;
-    static constexpr size_t kBlocksPer800k = 1600;     // 819 200 / 512
+    static constexpr size_t kBlockBytes    = SmartPortUnit::kBlockBytes;
+    /// Maximum units chained on this card. Capped at 2 in v1 to match
+    /// ProDOS-8's direct slot driver (drive 1 + drive 2). Real Liron =
+    /// 2 as well; raising this to 4 needs the SmartPort extended-call
+    /// protocol in the ROM driver (not wired today).
+    static constexpr size_t kMaxUnits      = 2;
 
-    /// `slot` is baked into the slot ROM (signature byte, driver address,
-    /// soft-switch trampolines). `image0` / `image1` are non-owning —
-    /// MainWindow / EmulationController owns the storage; the card just
-    /// dispatches block I/O onto whichever image is currently loaded.
-    /// Pass `nullptr` for an unused slot (drive 2 is optional).
-    SmartPortCard(int slot, Disk35Image* image0, Disk35Image* image1);
+    /// `slot` is baked into the slot ROM (signature byte, driver
+    /// address, soft-switch trampolines). All units start empty;
+    /// the host plugs / replaces units via `setUnit`.
+    explicit SmartPortCard(int slot);
 
     int getSlot() const { return slot_; }
 
-    /// Direct image access for the Disk 3.5" panel + tests. Non-owning.
-    Disk35Image* image(int drive) const {
-        return (drive == 0) ? image0_ : image1_;
-    }
+    /// Replace the unit at `idx` (0..kMaxUnits-1). Pass nullptr to
+    /// clear the slot. Returns the old unit so the caller can
+    /// inspect / destroy it (typical use: just let unique_ptr drop).
+    /// Idempotent on an already-empty slot.
+    std::unique_ptr<SmartPortUnit> setUnit(size_t idx,
+                                           std::unique_ptr<SmartPortUnit> u);
+
+    /// Borrowed access for the panel UI. Nullable.
+    SmartPortUnit*       unit(size_t idx)
+    { return idx < kMaxUnits ? units_[idx].get() : nullptr; }
+    const SmartPortUnit* unit(size_t idx) const
+    { return idx < kMaxUnits ? units_[idx].get() : nullptr; }
+
+    /// Currently selected unit (set by $C0n0 writes; resets to 0 on
+    /// reset). The ProDOS driver re-latches it on every dispatch.
+    size_t activeUnit() const { return activeUnit_; }
 
     /// Mechanical sound sink (head step / motor whirr / click). Optional;
-    /// when null the card stays silent. The sound layer is necessarily
-    /// synthetic on this card — the Liron does block-level transfers
-    /// only, so we emit `step()` once per block and gate `motor()` with
-    /// a wall-clock-ish spin-down derived from the running CPU cycle
-    /// count (advanceCycles). MainWindow::plugSmartPort35 wires this to
-    /// EmulationController::floppySound35().
+    /// null = silent. Block-level transfers only, so we emit `step()`
+    /// once per actual block read/write and gate `motor()` with a
+    /// wall-clock-ish spin-down derived from `advanceCycles`.
+    /// MainWindow wires this to EmulationController::floppySound35().
     void setFloppySound(FloppySoundSink* fs) { sound_ = fs; }
 
     // ── SlotPeripheral interface ────────────────────────────────────────
-    std::string_view name() const override { return "SmartPort 3.5\""; }
+    std::string_view name() const override { return "SmartPort"; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
@@ -101,29 +115,24 @@ public:
     void    advanceCycles(int cycles) override;
 
 private:
-    int           slot_;
-    Disk35Image*  image0_;
-    Disk35Image*  image1_;
+    int  slot_;
+    std::array<std::unique_ptr<SmartPortUnit>, kMaxUnits> units_{};
     std::array<uint8_t, 256> rom_{};
 
-    // Per-drive transfer state. The byte-stream protocol auto-increments
-    // `streamOffset_[drv]` per access, wrapping every 512 B. Drive select
-    // ($C0n0) latches the active drive for $C0n3 (data) / $C0n4 (status)
-    // — block setup ($C0n1/2) writes to the active drive's own register
-    // pair.
-    int      activeDrive_       = 0;          // 0 or 1
-    uint16_t selectedBlock_[2]  = {0, 0};
-    size_t   streamOffset_[2]   = {0, 0};
+    // Per-unit transfer state. The byte-stream protocol auto-increments
+    // `streamOffset_[u]` per access, wrapping every 512 B. Drive select
+    // ($C0n0) latches `activeUnit_` for $C0n3 (data) / $C0n4 (status)
+    // — block setup ($C0n1/2) writes to the active unit's register pair.
+    size_t   activeUnit_                 = 0;
+    std::array<uint16_t, kMaxUnits> selectedBlock_{};
+    std::array<size_t,   kMaxUnits> streamOffset_{};
+    std::array<std::array<uint8_t, kBlockBytes>, kMaxUnits> readCache_{};
+    std::array<bool,     kMaxUnits> readCacheValid_{};
+    std::array<uint16_t, kMaxUnits> readCacheBlock_{};
+    std::array<std::array<uint8_t, kBlockBytes>, kMaxUnits> writeBuf_{};
+    std::array<bool,     kMaxUnits> writeBufPrimed_{};
 
     // ── Sound state ─────────────────────────────────────────────────────
-    // We emit one `step()` per actual block read or write, stamped with
-    // `cpuCycleTotal_` (driven by advanceCycles, same source DiskIICard
-    // uses). `motor(true)` fires on the first access after idle; the
-    // spin-down `motor(false)` comes from advanceCycles when no fresh
-    // access has happened in `kSpinDownCycles`. ~0.5 s of emulated CPU
-    // time at 1 MHz feels right for a Liron — long enough not to clatter
-    // on/off between blocks of one ProDOS read, short enough to hush
-    // when the user navigates away.
     FloppySoundSink* sound_           = nullptr;
     uint64_t         cpuCycleTotal_   = 0;
     uint64_t         lastAccessCycle_ = 0;
@@ -134,8 +143,7 @@ private:
     uint8_t readDataByte();
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;
-    void    noteAccess();   // emits step + motor-on (idempotent), updates timer
-    Disk35Image* active() const { return (activeDrive_ == 0) ? image0_ : image1_; }
+    void    noteAccess();
 };
 
 } // namespace pom2

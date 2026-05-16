@@ -49,6 +49,7 @@ namespace pom2 {
     class LeChatMauve_ImGui;
     class Settings;
     class SmartPortCard;
+    class SmartPort_ImGui;
     class Toolbar_ImGui;
     enum class SystemProfile;
     enum class CharRomLocale : uint8_t;
@@ -127,6 +128,7 @@ private:
     std::unique_ptr<pom2::Disk35Controller_ImGui> disk35Panel;
     std::unique_ptr<pom2::DiskLibrary_ImGui>      diskLibrary;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
+    std::unique_ptr<pom2::SmartPort_ImGui>        smartPortPanel;
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
     std::unique_ptr<pom2::Toolbar_ImGui>          toolbar;
@@ -181,6 +183,7 @@ private:
     bool         showDiskPanel   = false;
     bool         showDisk35Panel = false;
     bool         showHdvPanel    = false;
+    bool         showSmartPortPanel = false;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
@@ -334,6 +337,7 @@ private:
     void renderDisk35FileDialog();
     void renderHdvPanelWindow();
     void renderHdvFileDialog();
+    void renderSmartPortPanelWindow();
     void renderChatMauvePanelWindow();
     void renderMockingboardPanelWindow();
     void renderSscPanelWindow();

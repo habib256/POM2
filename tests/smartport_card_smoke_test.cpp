@@ -20,6 +20,7 @@
 //      tracking, write commit on block-boundary).
 
 #include "Disk35Image.h"
+#include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
 
 #include <cassert>
@@ -96,14 +97,17 @@ bool testDriveSelectAndRead()
     const std::string path0 = writeSyntheticPo("d1", 0x10);
     const std::string path1 = writeSyntheticPo("d2", 0xA0);
 
-    pom2::Disk35Image img0, img1;
-    if (!img0.loadFile(path0)) {
-        std::printf("FAIL: load d1: %s\n", img0.lastError().c_str()); return false;
+    auto u0 = std::make_unique<pom2::SmartPort35Unit>();
+    auto u1 = std::make_unique<pom2::SmartPort35Unit>();
+    if (!u0->loadImage(path0)) {
+        std::printf("FAIL: load d1: %s\n", u0->lastError().c_str()); return false;
     }
-    if (!img1.loadFile(path1)) {
-        std::printf("FAIL: load d2: %s\n", img1.lastError().c_str()); return false;
+    if (!u1->loadImage(path1)) {
+        std::printf("FAIL: load d2: %s\n", u1->lastError().c_str()); return false;
     }
-    pom2::SmartPortCard card(5, &img0, &img1);
+    pom2::SmartPortCard card(5);
+    card.setUnit(0, std::move(u0));
+    card.setUnit(1, std::move(u1));
 
     // Drive 1, block 5 — fill byte = 0x10 + 5 = 0x15.
     uint8_t buf[kBlockBytes];
@@ -136,8 +140,12 @@ bool testDriveSelectAndRead()
 
 bool testStatusByte()
 {
-    pom2::Disk35Image img0, img1;
-    pom2::SmartPortCard card(5, &img0, &img1);
+    pom2::SmartPortCard card(5);
+    auto u0 = std::make_unique<pom2::SmartPort35Unit>();
+    auto u1 = std::make_unique<pom2::SmartPort35Unit>();
+    pom2::SmartPort35Unit* u0raw = u0.get();
+    card.setUnit(0, std::move(u0));
+    card.setUnit(1, std::move(u1));
 
     // Both empty → status bit7 = 1 on both drives.
     writeReg(card, 0x0, 0);
@@ -151,8 +159,8 @@ bool testStatusByte()
 
     // Mount d1 → bit7 clears.
     const std::string p = writeSyntheticPo("st", 0x33);
-    if (!img0.loadFile(p)) {
-        std::printf("FAIL: load: %s\n", img0.lastError().c_str()); return false;
+    if (!u0raw->loadImage(p)) {
+        std::printf("FAIL: load: %s\n", u0raw->lastError().c_str()); return false;
     }
     writeReg(card, 0x0, 0);
     if ((readReg(card, 0x4) & 0x80) != 0) {
@@ -163,7 +171,7 @@ bool testStatusByte()
         std::printf("FAIL: WP bit not set on default-mounted d1\n"); return false;
     }
     // Enable write-back → bit6 clears.
-    img0.setWriteBackEnabled(true);
+    u0raw->setWriteBackEnabled(true);
     if ((readReg(card, 0x4) & 0x40) != 0) {
         std::printf("FAIL: WP bit still set after enabling write-back\n");
         return false;
@@ -175,12 +183,15 @@ bool testStatusByte()
 bool testWriteBackRoundtrip()
 {
     const std::string p = writeSyntheticPo("wb", 0x00);
-    pom2::Disk35Image img0, img1;
-    if (!img0.loadFile(p)) {
-        std::printf("FAIL: load: %s\n", img0.lastError().c_str()); return false;
+    pom2::SmartPortCard card(5);
+    auto u0 = std::make_unique<pom2::SmartPort35Unit>();
+    pom2::SmartPort35Unit* u0raw = u0.get();
+    if (!u0->loadImage(p)) {
+        std::printf("FAIL: load: %s\n", u0->lastError().c_str()); return false;
     }
-    img0.setWriteBackEnabled(true);
-    pom2::SmartPortCard card(5, &img0, &img1);
+    u0->setWriteBackEnabled(true);
+    card.setUnit(0, std::move(u0));
+    card.setUnit(1, std::make_unique<pom2::SmartPort35Unit>());
 
     // Write a recognisable pattern into block 10.
     uint8_t pattern[kBlockBytes];
@@ -201,12 +212,12 @@ bool testWriteBackRoundtrip()
         }
     }
 
-    // Image-level read should agree too — verifies the card's write
-    // actually reached `Disk35Image::writeBlock`, not just an internal
-    // cache invisible to the rest of the emulator.
+    // Unit-level read should agree too — verifies the card's write
+    // actually reached the underlying Disk35Image (via the unit), not
+    // just an internal cache invisible to the rest of the emulator.
     uint8_t direct[kBlockBytes];
-    if (!img0.readBlock(10, direct)) {
-        std::printf("FAIL: img0.readBlock(10)\n"); return false;
+    if (!u0raw->readBlock(10, direct)) {
+        std::printf("FAIL: unit readBlock(10)\n"); return false;
     }
     if (std::memcmp(pattern, direct, kBlockBytes) != 0) {
         std::printf("FAIL: pattern didn't reach Disk35Image\n"); return false;
@@ -217,8 +228,7 @@ bool testWriteBackRoundtrip()
 
 bool testRomSignature()
 {
-    pom2::Disk35Image img0, img1;
-    pom2::SmartPortCard card(5, &img0, &img1);
+    pom2::SmartPortCard card(5);
     // ProDOS / SmartPort signature bytes — see SmartPortCard.cpp::buildRom.
     if (card.slotRomRead(0x01) != 0x20) { std::printf("FAIL: $Cn01\n"); return false; }
     if (card.slotRomRead(0x03) != 0x00) { std::printf("FAIL: $Cn03\n"); return false; }
