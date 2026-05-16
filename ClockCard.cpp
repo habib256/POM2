@@ -13,7 +13,7 @@ namespace {
 // and interval timers) require an IRQ output line; their plumbing is
 // tracked in TODO §3 and not yet hooked up.
 constexpr uint8_t kModeRegisterHold = 0x00;
-constexpr uint8_t kModeShift        = 0x01;
+[[maybe_unused]] constexpr uint8_t kModeShift = 0x01;
 constexpr uint8_t kModeTimeSet      = 0x02;
 constexpr uint8_t kModeTimeRead     = 0x03;
 

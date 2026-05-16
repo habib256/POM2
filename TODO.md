@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-État au 2026-05-15. Backlog ouvert. Orientation → `CLAUDE.md` ;
+État au 2026-05-16. Backlog ouvert. Orientation → `CLAUDE.md` ;
 notes d'implémentation profondes → `DEV.md` ; historique → `git log`.
 
 Légende sévérité : 🟠 High · 🟡 Medium · 🟢 Low. Sections regroupées
@@ -56,16 +56,6 @@ que le polish UI est ce qui reste à faire (le reste est cosmétique).
 
 ## DHGR / Display
 
-- [ ] 🟠 **Artefacts DHGR sur Shamus en .woz original** (remonté
-      2026-05-15). Visible sur `mario.dsk` Shamus WOZ : les sprites
-      tracent des résidus visuels que AppleWin ne montre pas. La
-      version 4am-crack tourne propre. Suspects : (a) ColorNTSC
-      sliding-window 7-bit qui interprète mal le bit pattern Shamus
-      ; (b) timing AN3+80COL FIFO qui rate un edge ; (c) seam fix-ups
-      à la 39ᵉ position qui consomment un cell de plus que MAME.
-      Bisect avec la version 4am pour isoler (les deux ont le même
-      contenu logique, seule la couche disque diffère). Cf. DEV.md
-      § DHGR pour les 3 chemins couleur en place.
 - [ ] 🟢 **`monochrome_dhr_shift()` 1-px alignment manquant** en DHGR
       mono (MAME `apple2video.cpp:460-471`). Cosmétique.
 - [ ] 🟢 **Floating-TTL** `empty_words[40]={0x3fff,…}` pour rows
@@ -252,6 +242,30 @@ MODE_SHIFT lax, etc.) — celles-ci ne sont **pas** des bugs, leur
       + comments DiskIICard.h/cpp) mais audit refresher utile tous
       les ~6 mois pour suivre les renommages MAME upstream.
 
+## Changelog (résolu 2026-05-16)
+
+**SmartPortCard — refactor multi-unités** (`7db6861`) : chaque carte
+SmartPort possède maintenant ses propres `SmartPortUnit` polymorphes
+(3.5" Sony 800K ou ProDOS HDV au choix par unité), avec buffers de
+bloc par unité (plus de `thread_local`). Per-unit settings
+`smartport_slotN_unitK_{type,path,writeback}`. Pinné par
+`smartport_card_smoke_test.cpp` + `smartport_mixed_units_smoke_test.cpp`.
+
+**Disk Library — locale char ROM + eject** (`71cec5d`) : sélection de
+locale pour le character ROM dans la Disk Library + bouton d'éjection.
+
+**Audio peak monitoring** (`af4fad5`, `fad8e13`) : `AudioDevice` suit
+les peaks par source (chaque carte) en plus du master peak. Diagnostic
+des saturations / cards qui dominent le mix.
+
+**DiskII multi-instances option C** (`5f7f209`) : voir entrée
+correspondante § SmartPort.
+
+**Shamus DHGR — entrée erronée retirée** 2026-05-16. Shamus est un
+jeu HGR (Synapse 1982) qui tourne correctement ; l'item « artefacts
+DHGR sur Shamus » du TODO précédent était soit basé sur une confusion
+HGR/DHGR, soit déjà résolu silencieusement.
+
 ## Changelog (résolu cette session, 2026-05-14/15)
 
 **UI Toolbar + Disk Library unifiée** : nouveau `Toolbar_ImGui` pinné
@@ -364,14 +378,34 @@ La carte SmartPort 3.5" branchable en slot //e est en place
 (`SmartPortCard`, 2 unités block-device, smoke test pinné). Pistes
 restantes pour étendre la couverture matérielle :
 
-- [ ] 🟡 **DiskII multi-instances dans plusieurs slots**. Aujourd'hui
-      `MainWindow_Slots.cpp` interdit le doublon de type ; lever cette
-      contrainte uniquement pour `"diskii"` permet la config historique
-      `Disk II slot 6 + Disk II slot 4` (= 4 drives 5.25" sur le même
-      //e). Demande un refactor mineur de `diskCard` en
-      `std::vector<DiskIICard*>` et per-slot settings (`disk_path_slotN`).
-      C'est l'**option C** discutée 2026-05-15 — la plus accessible,
-      ROI immédiat pour les utilisateurs DOS 3.3 multi-volumes.
+- [ ] 🟡 **Mass storage SmartPort 32 MB ProDOS** — vérification de
+      couverture. Beaucoup de softs modernes (ex: Total Replay II)
+      exigent « un device mass storage qui supporte les appels
+      SmartPort et peut monter une image ProDOS de 32 MB ». Sur du
+      vrai hardware c'est ce que fournissent **CFFA3000 / Floppy Emu /
+      MicroDrive / Xdrive / SP\[\]SD** ; côté POM2 c'est rempli par
+      `SmartPortCard` + `SmartPortHdvUnit` (slot 5 par défaut, jusqu'à
+      2 units, 65535 blocks × 512 B = 32 MB).
+      À pinner explicitement :
+      (a) boot d'une HDV 32 MB via `SmartPortCard` sur //e
+          (`tests/smartport_card_smoke_test.cpp` couvre ProDOS HDV
+          générique mais pas le cas 32 MB exact) ;
+      (b) compat .2mg ProDOS-order avec header DC42 / Universal /
+          variantes CFFA (header 64 B vs 0 B selon outil) — passer
+          par `DiskImage::loadFile` qui sniff déjà mais ajouter un
+          test pinné sur les 3 variantes de header ;
+      (c) ProDOS partitions multiples (CFFA3000 expose plusieurs
+          volumes ProDOS sur une seule carte) — non supporté
+          aujourd'hui (1 image = 1 unit = 1 volume).
+
+- [x] ~~🟡 **DiskII multi-instances dans plusieurs slots**.~~ Fait
+      2026-05-15 (option C, commit `5f7f209`). `MainWindow.h` héberge
+      `std::vector<DiskIICard*> diskCards` ; `MainWindow_Slots.cpp`
+      itère le vecteur (lignes 337-594). `diskCard` reste comme alias
+      du primary (= `diskCards.front()` ou nullptr). Per-slot settings
+      `disk_path_slotN`. Permet `Disk II slot 6 + Disk II slot 4` (4
+      drives 5.25" sur un //e). Pinné implicitement par les smoke
+      tests existants `disk_*` + le runtime UI.
 - [ ] 🟢 **UDC (Universal Disk Controller, Apple 1991)** — carte
       « SmartPort 4 baies hétérogènes » : chaque baie peut être
       `Disk35Image` (3.5"), `DiskImage` (5.25") ou
@@ -401,11 +435,10 @@ restantes pour étendre la couverture matérielle :
       en .woz Sony). Demande de refactoriser `IWMDevice` pour qu'il
       puisse vivre attaché à un slot card et pas seulement au //c+
       on-board.
-- [ ] 🟢 **Caches read/write per-block dans `SmartPortCard`** —
-      le code actuel utilise `static thread_local` pour les buffers
-      de bloc lu/écrit ; OK pour un seul thread CPU mais à
-      remplacer par des membres de classe si on multi-instance la
-      carte. Latent jusqu'à ce qu'on plug 2 SmartPort différentes.
+- [x] ~~🟢 **Caches read/write per-block dans `SmartPortCard`**.~~ Fait
+      2026-05-16 dans le refactor `7db6861` ("enhanced unit management").
+      Plus de `thread_local` dans `SmartPortCard.{h,cpp}` ; chaque
+      unité possède ses propres buffers de bloc. Multi-instance OK.
 
 ## Architecture & qualité du code (audit 2026-05-15)
 

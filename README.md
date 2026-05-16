@@ -314,9 +314,6 @@ load/`--load addr:file`) → post-boot (tape ops/paste/run/step).
   is delta-based (no programmatic re-centring against the guest's
   internal `mouse_state` data segment, whose offset isn't known yet).
   Buttons and relative motion work fine.
-- **DHGR composite artifact on some titles** — Shamus on `mario.dsk`
-  in original WOZ form shows visual artefacts that don't appear on
-  AppleWin; investigation ongoing.
 - **Anti-//e games** — twelve Brøderbund + Gebelli 1982 titles refuse
   to boot on //e/IIc/IIc+ in their original WOZ form (faithful
   hardware behaviour — the games detect the upgraded ROM). Use a 4am
