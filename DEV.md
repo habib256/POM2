@@ -645,8 +645,9 @@ is deliberately **not** validated — that would reject HDV
 (`$Cn07=$01`) and force the user back through `PR#N` typed by hand.
 
 **Drive switching** via `selectDrive(int)` mirrors MAME
-`wozfdc.cpp:264-291` (file moved from `bus/a2bus/` to `machine/` in
-MAME tree; line numbers are current as of 2026-05-14 audit). When
+`machine/wozfdc.cpp:264-291` (line numbers current as of the
+2026-05-14 audit; MAME moved the file from `bus/a2bus/` to
+`machine/` upstream). When
 motor active: flush old drive's in-flight write (= MAME
 `mon_w(true)`), clear the OLD drive's `revolutionStartLssCycle` to
 `kNeverRev`, anchor the NEW drive's `revolutionStartLssCycle` to the
@@ -733,8 +734,7 @@ Two read paths share the data register:
 
 - **Bit-level LSS** (default when `roms/diskii_p6.rom` present) —
   verbatim port of MAME `machine/wozfdc.cpp` + flux-event subset of
-  `imagedev/floppy.cpp` (originally `bus/a2bus/wozfdc.cpp`; MAME
-  refactored the location post-fetch). MAME `cycles` = 2×
+  `imagedev/floppy.cpp`. MAME `cycles` = 2×
   CPU clock. `lssSync(extra)` catches up from persistent `lssCycle` to
   `cyclesLimit = cpuCycleTotal*2 + extra`. PULSE from
   `DiskImage::getNextTransition(track, lssCycle)` (event at LSS cycle
@@ -1272,87 +1272,79 @@ NOT yet ported (groundwork for the next pass):
   * `set_floppy` mon_w / set_write_splice plumbing (still owned by
     DiskIICard).
 
-**SmartPort 3.5" Phase 1** (`Disk35Image`, `Sony35Drive`,
-`SmartPortHub`): scaffolding for //c+ Sony 3.5" disks. Loads 800K
-`.po` / `.2mg` images, exposes a Sony 3.5" drive that responds to the
-IWM's phase-as-command bus (port of MAME `mac_floppy.cpp::seek_phase_w`
-+ Apple //gs hardware ref register table) and to MIG-driven
-`m_35sel`/`m_intdrive`/`m_hdsel` toggles (port of `apple2e.cpp:638-679
-recalc_active_device`). The IWM gains `phasesCb_`/`devselCb_`/`sel35Cb_`
-callbacks (MAME `iwm_device::phases_cb/devsel_cb/sel35_cb`) that
-EmulationController wires through `SmartPortHub::attach`. The active
-3.5" drive sees phase strobes (CA0/CA1/CA2/LSTRB) and SEL changes; its
-`senseR()` returns the active-low register file (`/INSERTED`,
-`/TRACK0`, `/READY`, `/MOTOR ON`, `/SWITCHED`, …) that the //c+ alt
-firmware probes during cold-boot SmartPort discovery. Pinned:
-`tests/smartport_35_smoke_test.cpp` (image load + size guard, empty-
-slot SENSE, in-slot SENSE, motor strobe, hub recalc for both
-devsel=1+35sel=true and devsel=2+intdrive=true paths, IWM-to-drive
-phase forwarding).
+**SmartPort 3.5" //c+ on-board stack**
+(`Disk35Image`, `Sony35Drive`, `SmartPortHub`) — full Sony GCR
+read+write path for the //c+ profile. Chronological build-out lives
+in `CHANGELOG.md`; this is the steady-state architecture.
 
-**SmartPort 3.5" Phase 2** — Sony zoned GCR encoder + IWM dispatch.
-The on-demand encoder in `Sony35Drive.cpp` is a verbatim port of MAME
-`flopimg.cpp::build_mac_track_gcr` (lines 2017-2106): five concentric
-speed zones (`kCellsPerRev[5] = {76950, 70695, 64234, 57749, 51388}`,
-matching MAME `flopimg.cpp:2019-2027`), per-zone CPU-cycles-per-rev
-computed from `60 × POM2_CPU_CLOCK_HZ / RPM`, the 64-entry
-`kGcr6fw[]` write table (MAME line 967), and the
-`gcr6Encode(va,vb,vc)` 3-in-4-out packer (MAME line 512). Per-sector
-layout: 8× self-sync (384 cells) + D5AA96 address prologue + 5 GCR
-header bytes (track/sec/side/format/checksum) + DEAAFF address
-epilogue + 2× self-sync gap + D5AAAD data prologue + 174 groups of
-3-in-4-out checksummed data + 4-byte data checksum + DEAAFFFF data
-epilogue = 6208 cells per sector. Block-to-physical mapping uses
-MAME's 2:1 interleave schedule (`si = (si+2) % ns; if(si==0) si++`)
-from `apple_gcr_format::load` lines 372-382.
+*Image + drive*. `Disk35Image` loads 800 K `.po` / `.2mg`.
+`Sony35Drive` responds to the IWM's phase-as-command bus (MAME
+`mac_floppy.cpp::seek_phase_w` + Apple //gs hardware ref register
+table) and to MIG-driven `m_35sel`/`m_intdrive`/`m_hdsel` toggles
+(`apple2e.cpp:638-679 recalc_active_device`). `senseR()` returns
+the active-low register file (`/INSERTED`, `/TRACK0`, `/READY`,
+`/MOTOR ON`, `/SWITCHED`, …) the //c+ alt firmware probes during
+cold-boot SmartPort discovery.
 
-IWMDevice now dispatches `nextTransition()` between the existing
-5.25" `DiskImage*` path and the new 3.5" `Sony35Drive*` path via
-`setFloppy(DiskImage*, qt)` / `setSony35(Sony35Drive*)` overloads
-(MAME `iwm_device::set_floppy` line 85). The WPT bit on
-$C0EE-status reads consults `Sony35Drive::senseR()` for 3.5" so
-the //c+ firmware sees the full Sony register file via the same
-status-bit mechanism. Pinned: `tests/smartport_35_smoke_test.cpp`
-now validates address+data marker placement on track 0 (12 of each,
-matching the 12-sector zone schedule) AND clocks the IWM bit-cell
-walker through the Sony flux stream until it recovers the `$AA`
-sync byte from a `D5 AA 96` prologue.
+*IWM wiring*. `IWMDevice` exposes `phasesCb_` / `devselCb_` /
+`sel35Cb_` (MAME `iwm_device::phases_cb / devsel_cb / sel35_cb`);
+`EmulationController` wires them through `SmartPortHub::attach`.
+`nextTransition()` dispatches between the 5.25" `DiskImage*` and
+the 3.5" `Sony35Drive*` via `setFloppy(DiskImage*, qt)` /
+`setSony35(Sony35Drive*)` overloads (MAME `iwm_device::set_floppy`
+line 85). $C0EE-status read consults `Sony35Drive::senseR()` for
+the WPT bit so 3.5" software sees the full Sony register file via
+the same status-bit mechanism.
 
-**SmartPort 3.5" Phase 3** — UI + CLI + persistence. New
-`Disk35Controller_ImGui` panel renders the two Sony slots side-by-
-side (internal = on-board //c+, external = SmartPort daisy-chain),
-with Mount/Eject buttons, last-error display, and a library scanner
-that picks up `.po`/`.2mg` images of the right size under
-`disks35/` (falls back to `disks/`). Hardware → Devices menu hides
-or shows it; visibility persisted as `show_disk35_panel`.
-EmulationController gains `mount35(idx, path)` / `eject35(idx)`
-under `stateMutex`. CLI flags `--35-disk1` / `--35-disk2` route
-into `CliPlan` and `main.cpp` calls the new mount API after Phase A
-ROM/preset selection. Settings persists the two paths
-(`disk35_path_1`, `disk35_path_2`); the constructor re-mounts on
-launch if the file still exists.
+*GCR encoder* (`Sony35Drive.cpp`, verbatim port of MAME
+`flopimg.cpp::build_mac_track_gcr` lines 2017-2106). Five
+concentric speed zones (`kCellsPerRev[5] = {76950, 70695, 64234,
+57749, 51388}`, MAME `flopimg.cpp:2019-2027`), per-zone CPU-cycles-
+per-rev = `60 × POM2_CPU_CLOCK_HZ / RPM`, 64-entry `kGcr6fw[]`
+write table (MAME line 967), `gcr6Encode(va,vb,vc)` 3-in-4-out
+packer (MAME line 512). Per-sector layout: 8× self-sync (384
+cells) + D5AA96 address prologue + 5 GCR header bytes
+(track/sec/side/format/checksum) + DEAAFF address epilogue + 2×
+self-sync gap + D5AAAD data prologue + 174 groups of 3-in-4-out
+checksummed data + 4-byte data checksum + DEAAFFFF data epilogue =
+6208 cells per sector. Block-to-physical mapping uses MAME's 2:1
+interleave (`si = (si+2) % ns; if(si==0) si++`,
+`apple_gcr_format::load` lines 372-382).
 
-**SmartPort 3.5" Phase 4** — flux write-back. `Sony35Drive::writeFlux`
-splices IWM-emitted flux transitions into the cached cell buffer,
-then runs the GCR→blocks decoder (port of MAME `flopimg.cpp:2107
-extract_sectors_from_track_mac_gcr6`) over the result. Recovered
-sectors that differ from the loaded `Disk35Image` get pushed back
-via `writeBlock`; the image marks itself dirty and gets flushed to
-`.po` via `saveDirty()` on `EmulationController::eject35` or on
-MainWindow shutdown (mirrors the 5.25" save-on-eject path). Write-
-protect is honoured: an image without `setWriteBackEnabled(true)`
-short-circuits `writeFlux` before touching cells, so the //c+
-firmware can freely write but the host file stays untouched until
-the user opts in. The nibbliser (port of `flopimg.cpp:1530
-generate_nibbles_from_bitstream`) handles the IWM's MSB-first
-byte-alignment + zero-cell skip semantics. Cycle ↔ cell rounding
-uses round-to-nearest on the decode side (the encoder uses floor
-on `cycleForCell = i × period / n`; without symmetric rounding the
-integer-truncated 2.024 → 2 mapping pushed every transition one
-cell early and lost the first sector's address-field marker).
-Pinned: `tests/smartport_35_smoke_test.cpp` now covers a full
-encode → flux → splice → decode → block-readback round trip on
-sector 0 + verifies write-protect short-circuits.
+*Flux write-back*. `Sony35Drive::writeFlux` splices IWM-emitted
+flux transitions into the cached cell buffer, then runs the
+GCR→blocks decoder (MAME `flopimg.cpp:2107
+extract_sectors_from_track_mac_gcr6`). Recovered sectors that
+differ from the loaded `Disk35Image` push back via `writeBlock`;
+the image marks itself dirty and flushes to `.po` via `saveDirty()`
+on `EmulationController::eject35` or MainWindow shutdown (mirrors
+5.25" save-on-eject). Write-protect honoured: an image without
+`setWriteBackEnabled(true)` short-circuits `writeFlux` before
+touching cells. Nibbliser port of `flopimg.cpp:1530
+generate_nibbles_from_bitstream` handles the IWM's MSB-first byte
+alignment + zero-cell skip. **Gotcha**: cycle↔cell rounding uses
+round-to-nearest on the decode side; the encoder uses floor on
+`cycleForCell = i × period / n`. Without symmetric rounding,
+integer-truncated `2.024 → 2` pushed every transition one cell
+early and lost the first sector's address-field marker.
+
+*UI / CLI / persistence*. `Disk35Controller_ImGui` panel renders
+the two Sony slots side-by-side (internal = on-board //c+,
+external = SmartPort daisy-chain) with Mount/Eject, last-error,
+and a library scanner picking up `.po` / `.2mg` of the right size
+under `disks35/` (falls back to `disks/`). Toggle persisted as
+`show_disk35_panel`. `EmulationController::mount35(idx, path)` /
+`eject35(idx)` under `stateMutex`. CLI: `--35-disk1` /
+`--35-disk2`; settings: `disk35_path_1` / `disk35_path_2`
+(re-mounted on launch if file still exists).
+
+Pinned: `tests/smartport_35_smoke_test.cpp` — image load + size
+guard, empty-slot SENSE, in-slot SENSE, motor strobe, hub recalc
+(both devsel=1+35sel=true and devsel=2+intdrive=true), IWM-to-
+drive phase forwarding, address+data marker placement on track 0
+(12 of each, 12-sector zone schedule), IWM bit-cell walk to the
+first `$AA` sync byte, full encode→flux→splice→decode→block-
+readback round trip on sector 0, write-protect short-circuit.
 
 Pinned:
   * `system_profile_smoke_test.cpp::testIicInternalRomAlwaysMapped`
