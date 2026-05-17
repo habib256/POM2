@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-État 2026-05-16. Backlog ouvert. Sévérité 🟠 high · 🟡 medium · 🟢 low.
+État 2026-05-17. Backlog ouvert. Sévérité 🟠 high · 🟡 medium · 🟢 low.
 Historique des items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 
 ## Audit MAME ↔ POM2 (2026-05-16)
@@ -153,6 +153,56 @@ fixés en une session.
       profil (`IProfileMemoryStrategy`) injectée. À traiter avec
       `IIcPlusBank`.
 
+  **Design acté 2026-05-17** (effort ≈ 1.5 j ; SnapshotIO non
+  concerné — aucun état //c+ sérialisé).
+
+  *Interface* `MemoryProfile.h` :
+  - `forcesIntCxRom() const` — prédicat OR'd dans la gate $C1xx
+  - `romBankToggle() → bool` — $C028 ; false ⇒ fallback cassette
+  - `ioudisWrite(bool set)` + `ioudisOwned() const` — $C07E/F
+    write (`ioudis` reste dans Memory, partagé avec les reads //e)
+  - `ioRead/ioWrite(addr, cyc, out/val) → bool` — $C0E0-$C0EF
+  - `internalRomRead/Write(addr, out/val) → bool` — $C1xx-$CFFF
+    sous INTCXROM (MIG $CC00/$CE00 + alt firmware bank 1)
+  - `languageCardRomRead(addr, out) → bool` — alt firmware bank 1
+    sur $D000-$FFFF quand `lcReadRam=false`
+  - `onResetSoftSwitches() / onResetSoftSwitchesWarm()`
+  - `onRomLoaded(payload, pickLowerHalf)` — stash alt firmware +
+    set internal `hasAltBank_` / `isPlus_` par probes MAME
+    (`apple2e.cpp:1275-1299`)
+
+  *Implémentation* : **pas de `BaseProfile` matérialisée**.
+  `Memory::iicProfile_ = nullptr` sur II/II+/IIe → un seul branch
+  `if (iicProfile_)`, **zéro virtual call** sur ces profils (coût
+  identique à la gate `iicHasAltBank && iwmDevice` actuelle).
+  `IIcClassProfile` (`MemoryProfile_IIcClass.{h,cpp}`) couvre
+  16K //c rev-255 + 32K //c rev-0/3/4 + //c+ ; détient
+  `iicAltFirmware[16K]`, `hasAltBank_`, `iicRomBank_`, `isPlus_`,
+  `migRam[2K]`, `migPage`, `migIntDrive`, `migHdSel`, et les
+  pointeurs `IWMDevice*` + `SmartPortHub*` + `iwmAuthoritative_`.
+  `migRead/migWrite` déplacés verbatim.
+
+  *Wiring* : `EmulationController` continue d'allouer IWM+Hub
+  inconditionnellement (ctor) ; dans `applyProfile` post-ROM-load,
+  construit `IIcClassProfile(iwm, hub, iwmAuthoritative)` si
+  `profile ∈ {AppleIIc, AppleIIcPlus}`, sinon `nullptr`. Installe
+  via `mem.setMemoryProfile(...)`.
+
+  *Tests à porter* : `iic_boot_trace`, `iicplus_boot_trace`,
+  `iwm_device_smoke_test`, `system_profile_smoke_test`
+  (`test_rombank` + `test_ioudis`). **Décision en suspens** :
+  garder façades `mem.setIWM/setSmartPortHub` (rétro-compat tests)
+  ou faire construire `IIcClassProfile` par les tests (~4 fichiers
+  touchés, plus propre).
+
+  *Ce qui RESTE dans Memory* : `ioudis` (read partagé //e/c),
+  `intC8Rom` (mécanisme //e dont //c hérite), LC, paging, soft
+  switches génériques.
+
+  *Reste à câbler hors-design* : le hook `$C300 auto-INTCXROM`
+  garde `intC8Rom = true` dans Memory ; seule la sortie (alt
+  firmware vs `internalIORom`) passe par `internalRomRead`.
+
 ## UI / UX
 
 - [ ] 🟡 **MouseCard sync curseur pixel-près** non résolue. Tracking
@@ -173,8 +223,10 @@ fixés en une session.
       (`DiskImage.cpp:381-398`). MAME passe via `set_write_splice`.
       IWM call site câblé (2026-05-16) mais `DiskImage::setWriteSplice`
       reste un stub. Re-master parité Applesauce.
-- [ ] 🟡 **UI « Force DOS / Force ProDOS »**. `loadFile(path,
-      SectorOrder)` existe (`DiskImage.cpp:212`), pas de bouton UI.
+- [ ] 🟡 **UI « Force DOS / Force ProDOS »** — backend prêt
+      (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
+      reste à ajouter le bouton dans `DiskLibrary_ImGui` ou
+      `DiskController_ImGui`. **Effort : ~30 min.**
 - [ ] 🟡 **Mass storage SmartPort 32 MB ProDOS** — pinning explicite
       manquant : (a) boot HDV 32 MB sur //e, (b) compat headers .2mg
       DC42/Universal/CFFA, (c) ProDOS partitions multiples (1 image =
@@ -185,12 +237,6 @@ fixés en une session.
 
 ## Audio
 
-- [ ] 🟡 **AY float tone counter alias périodes 1-3**
-      (`Mockingboard.cpp:449-456`). MAME utilise compteur entier
-      (`ay8910.cpp:998-1015`). Manifeste sur tricks PWM.
-- [ ] 🟡 **Cassette auto-rewind 500 ms** si pas de poll `$C060`
-      (`CassetteDevice.cpp:461-465`). MAME ne rewind jamais. Casse
-      loaders custom polling sporadique.
 - [ ] 🟢 **AY Port A read mask par DDR** (`Mockingboard.cpp:126-130`).
       Sans impact concret.
 
@@ -198,16 +244,10 @@ fixés en une session.
 
 - [ ] 🟡 **Pascal 1.1 ID block manquant** `$CnFB-$CnFF` (slot ROM
       signature).
-- [ ] 🟡 **Telnet IAC strip mange `$FF` en RX 8-bit binaire**.
-      Toggle « raw mode » dans le panel SSC.
-- [ ] 🟡 **LF→CR appliqué keyboard-only**, pas `rxBuf`
-      (`SuperSerialCard.cpp:187-198`).
 - [ ] 🟢 **IRQ gate SW2:6 DIP** non implémenté (MAME `a2ssc.cpp:373`).
 
 ## ClockCard / ThunderClock+
 
-- [ ] 🟡 **DATA_OUT live** (`ClockCard.cpp:88-94`) vs MAME latch sur
-      CLK edge en MODE_SHIFT. Diverge hors ProDOS.
 - [ ] 🟢 **Slot ROM vide** (256 B signature + NOPs). Vrai
       ThunderClock+ = 2 KB driver RTS-able pour DOS 3.3 / Applesoft.
 
@@ -243,8 +283,9 @@ fixés en une session.
 - [ ] 🟡 **stateMutex partagé CPU+UI** (`EmulationController.h:118`).
       MainWindow_Slots prend ce lock pendant plug/unplug — risque
       jitter audio. Partitionner long terme.
-- [ ] 🟡 **Namespace `pom2::` incohérent** (~20/89 fichiers). Migrer
-      mécaniquement en une passe.
+- [ ] 🟡 **Namespace `pom2::` incohérent** (54/105 fichiers top-level
+      ≈ 51 % au sweep du 2026-05-17 ; tests/ ne l'utilisent pas).
+      Migrer mécaniquement en une passe.
 - [ ] 🟡 **`Memory::memRead` hot path** (cascade `if` 7 niveaux
       profondeur, `Memory.cpp:1309-1437`). Table dispatch 256 entrées
       par page haute. Prérequis : extraction `IIcPlusBank`.
@@ -270,6 +311,9 @@ fixés en une session.
 
 - [ ] 🟢 **`$C040` STRB pas gated `!//c`** (MAME `apple2e.cpp:1927`).
       Aucun sink wired → 0 effet observable.
+- [ ] 🟢 **ClockCard DATA_OUT live** vs MAME latch sur CLK edge en
+      MODE_SHIFT (`ClockCard.cpp:193-200`). Gating strict casserait
+      les reads ProDOS stock — hack délibéré, documenté inline.
 - [ ] 🟢 **MouseCard PIA out_a/b sans `scheduler.synchronize`**
       (MAME `mouse.cpp:280-294`). Pas de race firmware-visible observée.
 - [ ] 🟢 **ClockCard offset model vs MAME `set_time`**. Équivalent

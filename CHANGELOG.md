@@ -8,6 +8,22 @@ courante → `DEV.md`.
 
 ## 2026-05-16
 
+- **Cassette auto-rewind opt-in** (`3f42efc`). L'auto-rewind 500 ms
+  (POM2-only, MAME ne rewind jamais) cassait les loaders custom à
+  polling sporadique de `$C060` (Penguin Software fast loaders, etc.).
+  Désormais gaté derrière `autoRewindEnabled`, **default off**
+  (`CassetteDevice.cpp:470`). Setter `setAutoRewindEnabled(bool)`,
+  toggle UI dans le panel Cassette.
+- **SSC — LF→CR symétrique sur RX** (`3f42efc`). La normalisation
+  CR LF → CR + bare LF → CR + drop NUL est appliquée **une fois**
+  sur `scratch[]` brut avant que les bytes ne soient livrés à `rxBuf`
+  ET au `keyboardSink` (`SuperSerialCard.cpp:91-104, 225-246`).
+  Avant : les terminal apps lisant via `$C0A8` voyaient des paires
+  CRLF et des LF orphelins.
+- **SSC — raw mode toggle** (`3f42efc`). Nouveau toggle `rawMode_`
+  qui bypasse `swallowTelnetIac` ET `normalizeLineEndings` côté RX
+  pour les protocoles binaires 8-bit (XMODEM/Kermit/ADTPro). UI
+  toggle dans le panel SSC, persisté via `ssc_raw_mode`.
 - **SmartPortCard — refactor multi-unités** (`7db6861`). Chaque
   carte SmartPort possède maintenant ses propres `SmartPortUnit`
   polymorphes (3.5" Sony 800K ou ProDOS HDV au choix par unité), avec
