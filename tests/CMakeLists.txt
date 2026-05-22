@@ -1516,6 +1516,37 @@ add_test(NAME mouse_card_quadrature_smoke COMMAND test_mouse_card_quadrature)
 set_tests_properties(mouse_card_quadrature_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── MouseCard X/Y axis-parity integration test ─────────────────────────
+# Boots the REAL mouse firmware (MCU 341-0269 + slot ROM 341-0270-c) on a
+# full M6502+Memory+SlotBus, drives ProDOS InitMouse/SetMouse/ReadMouse,
+# feeds an identical host ramp (>256 px, exercises the 8-bit wrap) into X
+# and Y, and asserts X tracks the host to the same extent as Y. Pins the
+# "[MouseCard] X stuck at ~8 px while Y covers full range" symptom against
+# regression. Skips if the user-provided ROMs are absent.
+add_executable(test_mouse_card_axis_parity
+    mouse_card_axis_parity_test.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_mouse_card_axis_parity PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mouse_card_axis_parity PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mouse_card_axis_parity PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mouse_card_axis_parity PRIVATE winmm)
+endif()
+
+add_test(NAME mouse_card_axis_parity COMMAND test_mouse_card_axis_parity)
+set_tests_properties(mouse_card_axis_parity PROPERTIES TIMEOUT 30)
+
+
 # ─── Slot configuration smoke test ───────────────────────────────────────
 # Pins the slot constructor refactor (Phase 1 of the Mouse Card / Slot
 # Configuration UI work): SuperSerialCard / ProDOSHardDiskCard rebuild

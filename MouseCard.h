@@ -21,8 +21,9 @@
 //                                      for read/write pacing)
 //   PIA CB1         tied high (10 kΩ pull-up)
 //
-//   MCU PB0/PB1     ←  mouse X1/X0    (gate / direction)
-//   MCU PB2/PB3     ←  mouse Y0/Y1    (direction / gate)
+//   MCU PB0/PB1     ←  mouse X direction / X gate   (POM2 labels X0/X1 ;
+//                                                    MAME labels these X1/X0)
+//   MCU PB2/PB3     ←  mouse Y direction / Y gate   (Y0/Y1, matches MAME)
 //   MCU PB4/PB5     ←  N/C
 //   MCU PB6         →  slot IRQ       (active low — firmware writes
 //                                      0 to PB6 to assert)

@@ -19,12 +19,20 @@
 
 namespace {
 
-// MCU PB pin assignments (per MAME mouse.cpp lines 320-323).
-constexpr uint8_t MCU_PB_X1     = 0x02;     // X gate
-constexpr uint8_t MCU_PB_X0     = 0x01;     // X direction (0=left, 1=right)
-constexpr uint8_t MCU_PB_Y0     = 0x04;     // Y direction (0=up,   1=down)
-constexpr uint8_t MCU_PB_Y1     = 0x08;     // Y gate
-constexpr uint8_t MCU_PB_BUTTON = 0x80;     // active LOW (0 = pressed)
+// MCU Port-B pin assignments. The bit->function mapping is verbatim from
+// MAME src/devices/bus/a2bus/mouse.cpp `mcu_port_b_r()`: PB0/PB2 carry the
+// X/Y *direction*, PB1/PB3 the X/Y *gate* (toggles once per pixel moved),
+// PB7 the button. NOTE the X labels: POM2 names them lower-bit-first
+// (X0=PB0=direction, X1=PB1=gate); MAME uses the opposite digits there
+// (its X1=0x01=direction, X0=0x02=gate). Same bits, same behaviour — only
+// the label differs. The Y labels (Y0=direction, Y1=gate) match MAME
+// directly. Pinned by tests/mouse_card_axis_parity_test.cpp (real firmware,
+// X==Y for an identical ramp).
+constexpr uint8_t MCU_PB_X0     = 0x01;     // PB0  X direction (0=left, 1=right)
+constexpr uint8_t MCU_PB_X1     = 0x02;     // PB1  X gate (toggles per pixel)
+constexpr uint8_t MCU_PB_Y0     = 0x04;     // PB2  Y direction (0=up,   1=down)
+constexpr uint8_t MCU_PB_Y1     = 0x08;     // PB3  Y gate (toggles per pixel)
+constexpr uint8_t MCU_PB_BUTTON = 0x80;     // PB7  button (active LOW, 0=pressed)
 
 // Diagnostic trace — enabled by `POM2_MOUSE_TRACE=1`. Logs every PIA
 // register access (from the 6502) and every slot-IRQ transition with

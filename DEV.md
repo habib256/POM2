@@ -1007,8 +1007,12 @@ PIA PB4-7  ↔ MCU PC0-3
 PIA PB1-3  → EPROM A8-10          (bank select)
 MCU PB6    → slot IRQ (active low; cached, transitions only)
 MCU PB7    ← mouse button (active low)
-MCU PB0/1, PB2/3 ← X/Y quadrature (CLK + DIR per axis)
+MCU PB0=X dir, PB1=X gate, PB2=Y dir, PB3=Y gate (quadrature)
 ```
+POM2 labels the X pair `X0`/`X1` lower-bit-first (X0=PB0=dir,
+X1=PB1=gate); MAME's `mouse.cpp` uses the opposite digits (X1=0x01=dir,
+X0=0x02=gate). Same bits, same behaviour — only the label differs; Y
+labels match MAME. `updateAxis` is line-for-line MAME `update_axis<>`.
 
 Host routing: `MainWindow::onMouseMove` / `onMouseButton` →
 `setHostMouse(rawX, rawY, button)` (clipped to screen rect). MCU
@@ -1024,7 +1028,21 @@ log warn. Defaults: `roms/mouse_341-0270-c.bin` +
 **Not modelled** (firmware-invisible): PAL16R4 chip-select sequencer
 at U2A, PIA PortB bit 0 sync latch, motion clamping (MCU does it).
 Pinned: `mouse_card_smoke_test.cpp`,
-`mouse_card_quadrature_smoke_test.cpp`.
+`mouse_card_quadrature_smoke_test.cpp`, and
+`mouse_card_axis_parity_test.cpp` — the latter boots the **real
+firmware** (both ROMs) on a full M6502+Memory, drives ProDOS
+`InitMouse`/`SetMouse`/`ReadMouse` from a poked 6502 stub, and asserts
+an identical host ramp moves X and Y equally (caught X==Y==800 for a
++800 px ramp).
+
+**Historical "X stuck at ~8 px" symptom** (resolved): the card was
+never at fault — `updateAxis` is symmetric and MAME-faithful. The cause
+was a since-removed (`f8280bb`) `MainWindow` position-correction feedback
+loop that read the ProDOS screen holes with a **scrambled layout**
+(`appleX = $0478+s | ($04F8+s << 8)` mixes X-low with **Y-low**;
+correct interleave is Xlo=$0478+s, Ylo=$04F8+s, Xhi=$0578+s,
+Yhi=$05F8+s). The bad feedback pinned X. No screen-hole reads remain in
+production; `mouse_card_axis_parity_test.cpp` guards against recurrence.
 
 ### Joystick / paddles
 
