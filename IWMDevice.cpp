@@ -530,13 +530,41 @@ int64_t IWMDevice::nextTransition(int64_t from) const
     //    space (= 2× CPU cycles) — see DiskIICard `lssCycle =
     //    cpuCycleTotal * 2`. We transit the boundary here.
     if (sony_) {
-        return sony_->nextTransition(from, static_cast<int64_t>(revStart35_));
+        const int64_t t = sony_->nextTransition(from, static_cast<int64_t>(revStart35_));
+        if (t != INT64_MAX) return t;
+        return noiseTransition(from);
     }
-    if (!disk_) return INT64_MAX;
-    const int64_t fromLss = from * 2;
-    const int64_t t = disk_->getNextTransition(qt_, fromLss);
-    if (t == DiskImage::kFluxNever) return INT64_MAX;
-    return t / 2;
+    if (disk_) {
+        const int64_t fromLss = from * 2;
+        const int64_t t = disk_->getNextTransition(qt_, fromLss);
+        if (t != DiskImage::kFluxNever) return t / 2;
+    }
+    return noiseTransition(from);
+}
+
+int64_t IWMDevice::noiseTransition(int64_t from) const
+{
+    // No media (or an unformatted track) — but the head is parked over a
+    // spinning, empty drive. A real Apple drive feeds the IWM a stream of
+    // noise flux in this state, so the read shift register keeps assembling
+    // garbage bytes with bit-7 ("byte ready") set. The boot firmware relies
+    // on that: its wait-for-byte loop ($C0EC bit 7) must keep advancing so
+    // the per-read retry counter can drain and the machine can fall through
+    // to its "no disk" path (//c "Check Disk Drive", //c+ "UNABLE TO FIND A
+    // BOOTABLE DISK ONLINE."). If we instead returned INT64_MAX the FSM only
+    // ever shifts in 0-bits, bit-7 never asserts, and the firmware spins
+    // forever on the un-cleared power-up screen. MAME models this implicitly:
+    // the floppy reports no transition but the IWM's window timer still
+    // cycles the SR; POM2 collapsed that timer into nextTransition(), so the
+    // garbage has to be injected here.
+    const uint64_t w = windowSize() ? windowSize() : 1;
+    // Deterministic LCG keyed on the window index: reproducible for tests,
+    // yet straddles window boundaries so the SR accumulates a mix of 1s and
+    // 0s (rsh_ reaches 0x80 within a few windows -> byte ready).
+    uint64_t s = static_cast<uint64_t>(from) / w;
+    s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+    const int64_t span = static_cast<int64_t>(w + 1 + ((s >> 33) % (2 * w + 1)));
+    return from + span;
 }
 
 void IWMDevice::sync(uint64_t nowCycles)

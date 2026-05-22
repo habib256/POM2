@@ -287,9 +287,15 @@ private:
 
     // POM2-specific: fetch the next flux transition cycle from the
     // backing disk image. `from` is exclusive (we want a transition
-    // strictly after `from`). Returns INT64_MAX if no transition is
-    // pending (no disk / never-spinning).
+    // strictly after `from`). Falls back to noiseTransition() when no
+    // real media transition is pending so an empty spinning drive still
+    // feeds the read SR (see noiseTransition).
     int64_t nextTransition(int64_t from) const;
+
+    // Synthesize a noise-flux transition for an empty/unformatted track so
+    // the firmware boot read-loop keeps assembling garbage bytes (byte-ready
+    // asserts) instead of spinning forever. Deterministic in `from`.
+    int64_t noiseTransition(int64_t from) const;
 };
 
 }  // namespace pom2
