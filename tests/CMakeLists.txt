@@ -431,6 +431,34 @@ add_test(NAME hdv_card_smoke COMMAND test_hdv_card)
 set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── HDV mass-storage smoke test ──────────────────────────────────────────
+# Pins the 32 MB ProDOS gaps: capacity boundary (65536 ok / 65537 reject /
+# ragged reject), 16-bit block addressing (high block selector $C0D1), and
+# .2mg with a data offset != 64. (Header/trailer/WP write-back coverage
+# lives in test_hdv_writeback.)
+add_executable(test_hdv_mass_storage
+    hdv_mass_storage_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_hdv_mass_storage PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_hdv_mass_storage PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_hdv_mass_storage PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_hdv_mass_storage PRIVATE winmm)
+endif()
+
+add_test(NAME hdv_mass_storage_smoke COMMAND test_hdv_mass_storage)
+set_tests_properties(hdv_mass_storage_smoke PROPERTIES TIMEOUT 10)
+
+
 # ─── HDV write-back smoke test ────────────────────────────────────────────
 # Pins .hdv plain round-trip, .2mg header preservation (incl. trailing
 # comment chunk), 2MG WP flag honoured even with user opt-in, and opt-in

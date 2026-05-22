@@ -667,7 +667,11 @@ The ONE storage path POM2 *does* port faithfully is the //c+ 3.5" Sony
 stack (real IWM + GCR — § IWM, § SmartPort 3.5" stack); `SmartPortCard`
 (below) is this same synthetic-block model with a SmartPort signature.
 Pinned: `hdv_card_smoke_test.cpp` (`hdv_card_smoke`),
-`hdv_writeback_smoke_test.cpp`.
+`hdv_writeback_smoke_test.cpp` (header/trailer/WP/opt-in round-trip),
+`hdv_mass_storage_smoke_test.cpp` (32 MB capacity boundary, 16-bit
+block addressing, .2mg data-offset ≠ 64). Multi-partition images
+(1 image = N ProDOS volumes, CFFA3000-style) are **not** supported —
+one image = one unit = one volume.
 
 ### SmartPortCard (//e Liron-class)
 

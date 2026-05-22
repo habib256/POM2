@@ -25,7 +25,7 @@ ci-dessous.
 | 9 | DiskImage (.dsk/.po/.nib/.2mg/.woz) | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106` | 🟡 WOZ1 splice TRK+6650 ignoré, 🟢 .nib2/.app non supportés, 🟢 half-tracked NIB (88) absent |
 | 10 | DiskIICard (wozfdc + diskiing) | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction inflation RAII vs MAME per-cycle (rare impact protections), Disk II hors snapshot délibérément |
 | 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` (audit 2026-05-16) | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate ; window-size round-down vs round-up choices |
-| 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 🟡 32 MB ProDOS HDV pas pinné test explicite, 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
+| 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 32 MB HDV + .2mg variantes pinnés ✅ ; 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
 | 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |
 | 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | 🟠 TP tick rates 64/256/2048/4096 Hz pas câblés ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
 | 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; 🟡 Pascal 1.1 ID block `$CnFB-$CnFF` manquant ; 🟢 IRQ gate SW2:6 DIP non gated |
@@ -67,10 +67,13 @@ ci-dessous.
       (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
       reste le bouton dans `DiskLibrary_ImGui` / `DiskController_ImGui`.
       **Effort : ~30 min.**
-- [ ] **[SmartPort] Mass storage 32 MB ProDOS — pinning** manquant :
-      (a) boot HDV 32 MB sur //e, (b) compat headers .2mg
-      DC42/Universal/CFFA, (c) ProDOS partitions multiples (1 image =
-      1 unit = 1 volume aujourd'hui).
+- [ ] **[SmartPort] ProDOS multi-partition** (feature, pas un test) —
+      1 image = 1 unit = 1 volume aujourd'hui. Les images CFFA3000-style
+      multi-volume (partition map → plusieurs units ProDOS) ne sont pas
+      supportées. La capacité 32 Mo (65536 blocs), l'adressage bloc
+      16-bit ($C0D1) et les variantes d'en-tête .2mg (data-offset ≠ 64,
+      WP, trailer préservé au write-back) sont désormais **pinnés**
+      (`hdv_mass_storage_smoke_test` + `hdv_writeback_smoke_test`).
 - [ ] **[UI] MouseCard sync curseur pixel-près** non résolue. Tracking
       delta-based dérive en absolu. Investigation : MGTK `mouse_state:`
       en aux RAM (offset non identifié) ; Pearson scan main+aux 44

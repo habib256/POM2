@@ -8,6 +8,16 @@ courante → `DEV.md`.
 
 ## 2026-05-23
 
+- **HDV mass-storage — pinning 32 MB** (`hdv_mass_storage_smoke_test`).
+  Nouveau smoke test couvrant les trous restants du stockage de masse
+  ProDOS : borne de capacité (65536 blocs = 32 MiB acceptés, 65537
+  rejetés, fichier non-multiple de 512 rejeté), adressage bloc **16-bit**
+  (l'octet haut du sélecteur `$C0D1` — un volume 32 Mo a besoin de blocs
+  jusqu'à 65535, les autres tests ne touchaient que les blocs 0-1), et
+  les `.2mg` avec data-offset ≠ 64. La préservation en-tête/trailer/WP
+  au write-back était déjà pinnée par `hdv_writeback_smoke_test`. Reste
+  hors scope : les images **multi-partition** (CFFA3000-style, 1 image =
+  N volumes ProDOS) — feature, pas un test. Voir `DEV.md § HDV`.
 - **Memory — stratégie de profil //c-class extraite** (`MemoryProfile`).
   Toutes les spécificités //c / //c+ qui fuyaient dans le dispatcher
   générique `Memory::memRead/memWrite` (alt-firmware `$C028` ROMBANK,
