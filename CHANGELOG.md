@@ -24,6 +24,15 @@ courante → `DEV.md`.
   qui bypasse `swallowTelnetIac` ET `normalizeLineEndings` côté RX
   pour les protocoles binaires 8-bit (XMODEM/Kermit/ADTPro). UI
   toggle dans le panel SSC, persisté via `ssc_raw_mode`.
+- **Mockingboard — compteur de tons AY entier** (`3f42efc`). Les
+  compteurs de phase des 3 canaux de tons (et du bruit) passent de
+  `float` à `uint16_t` + accumulateur fractionnaire séparé (MAME
+  `ay8910.cpp:998-1015` utilise des compteurs uint). Le float pur
+  accumulait une erreur d'arrondi dans la boucle de résolve
+  `while (counter >= period)`, ce qui faisait dériver/aliaser les
+  périodes 1-3 — les tricks PWM (style Cosmic Bouncer) sonnaient faux.
+  Compteur entier ⇒ plus de dérive (`Mockingboard.cpp:495, 607-617`).
+  NB : pas encore pinné par un test (synthèse sur le thread audio).
 - **SmartPortCard — refactor multi-unités** (`7db6861`). Chaque
   carte SmartPort possède maintenant ses propres `SmartPortUnit`
   polymorphes (3.5" Sony 800K ou ProDOS HDV au choix par unité), avec

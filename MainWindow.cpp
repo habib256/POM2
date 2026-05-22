@@ -2398,6 +2398,37 @@ void MainWindow::renderDiskPanelWindow()
 
 // ─── Disk Library (unified browser: 5.25 / 3.5 / HDV) ───────────────────
 
+void MainWindow::ejectAllDisks()
+{
+    // Eject under stateMutex for the things we own directly (DiskII, HDV,
+    // SmartPort units). `eject35` re-locks stateMutex itself — call it
+    // OUTSIDE the lock to avoid recursive locking on the non-recursive
+    // std::mutex (was crashing POM2 when Eject-All was clicked).
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        for (auto* c : diskCards) if (c) c->ejectDisk();
+        if (hdvCard) hdvCard->ejectImage();
+        if (smartPortCard) {
+            for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
+                pom2::SmartPortUnit* u = smartPortCard->unit(k);
+                if (u && u->isLoaded()) {
+                    u->eject();
+                    const std::string base =
+                        "smartport_slot" +
+                        std::to_string(smartPortCard->getSlot()) +
+                        "_unit" + std::to_string(k);
+                    settings->setString(base + "_path", "");
+                }
+            }
+            settings->save();
+        }
+    }
+    controller->eject35(0);
+    controller->eject35(1);
+    tapeStatusMessage = "Ejected all disks";
+    tapeStatusUntil   = lastFrameTime + 3.0;
+}
+
 void MainWindow::renderDiskLibraryWindow()
 {
     if (!showDiskLibrary) return;
@@ -2451,6 +2482,9 @@ void MainWindow::renderDiskLibraryWindow()
     }
 
     const auto r = diskLibrary->render("Disk Library", showDiskLibrary, mounted);
+
+    // ── Eject-all (header-row button, moved here from the toolbar) ─────
+    if (r.requestEjectAllDisks) ejectAllDisks();
 
     // ── 5.25" actions → primary DiskII card ───────────────────────────
     if (!r.request525InsertAndBoot.empty() && diskCard) {
@@ -3674,18 +3708,6 @@ void MainWindow::render()
         tb.memViewerVisible   = showMemViewer;
         tb.activeProfile      = activeProfile;
         tb.hasPrimaryDiskCard = (diskCard != nullptr);
-        // Eject-all is offered when ANY disk is currently mounted —
-        // across every Disk II card, the HDV card, and the two
-        // SmartPort 3.5" image slots.
-        bool anyLoaded = false;
-        for (auto* c : diskCards) {
-            if (c && c->isDiskLoaded()) { anyLoaded = true; break; }
-        }
-        if (!anyLoaded && hdvCard && hdvCard->isImageLoaded()) anyLoaded = true;
-        if (!anyLoaded &&
-            (controller->disk35Internal().isLoaded() ||
-             controller->disk35External().isLoaded()))           anyLoaded = true;
-        tb.hasAnyDiskLoaded   = anyLoaded;
         tb.charRomLocale      = charRomLocale;
 
         const auto tr = toolbar->render(showToolbar,
@@ -3711,36 +3733,6 @@ void MainWindow::render()
             // picks it up next frame and routes to `diskCard`.
             diskPanel->insertDialogOpen = true;
             if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks/";
-        }
-        if (tr.requestEjectAllDisks) {
-            // Eject under stateMutex for the things we own directly
-            // (DiskII, HDV, SmartPort units). `eject35` re-locks
-            // stateMutex itself — call it OUTSIDE the lock to avoid
-            // recursive locking on the non-recursive std::mutex (was
-            // crashing POM2 when Eject-All was clicked).
-            {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                for (auto* c : diskCards) if (c) c->ejectDisk();
-                if (hdvCard) hdvCard->ejectImage();
-                if (smartPortCard) {
-                    for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
-                        pom2::SmartPortUnit* u = smartPortCard->unit(k);
-                        if (u && u->isLoaded()) {
-                            u->eject();
-                            const std::string base =
-                                "smartport_slot" +
-                                std::to_string(smartPortCard->getSlot()) +
-                                "_unit" + std::to_string(k);
-                            settings->setString(base + "_path", "");
-                        }
-                    }
-                    settings->save();
-                }
-            }
-            controller->eject35(0);
-            controller->eject35(1);
-            tapeStatusMessage = "Ejected all disks";
-            tapeStatusUntil   = lastFrameTime + 3.0;
         }
         if (tr.setCharRomRequested) {
             // Hot swap: Memory::loadCharRom rewrites the csbits table

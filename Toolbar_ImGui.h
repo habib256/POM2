@@ -36,9 +36,8 @@ public:
         int           cyclesPerFrame     = 17045;
         bool          memViewerVisible   = false;
         SystemProfile activeProfile      = SystemProfile::AppleIIPlus;
-        // Enable / disable hints for the disk buttons.
+        // Enable / disable hint for the disk button(s).
         bool          hasPrimaryDiskCard = false;
-        bool          hasAnyDiskLoaded   = false;
         // Active character-generator ROM locale. The dropdown only
         // surfaces entries that fit the active profile (see
         // charRomFitsProfile) — switching is hot, no cold reset needed
@@ -54,7 +53,6 @@ public:
         bool requestStep             = false;   // single-instruction step
         bool requestScreenshot       = false;
         bool requestInsertDisk       = false;   // open Insert-disk popup
-        bool requestEjectAllDisks    = false;
         bool requestMemViewerToggle  = false;
         // -1 = no change. Set to the new cyclesPerFrame on speed dropdown
         // click; the host applies it via `EmulationController::setCyclesPerFrame`.

@@ -364,6 +364,22 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     ImGui::Combo("##library_sort", &sortMode_, kSortLabels,
                  IM_ARRAYSIZE(kSortLabels));
 
+    // Eject-all lives at the top of the Library (moved here from the
+    // toolbar) so the one window that mounts disks also unmounts them.
+    // Disabled unless something is actually mounted on any path.
+    const bool anyMounted =
+        !mounted.diskII.empty()        || !mounted.disk35Internal.empty() ||
+        !mounted.disk35External.empty() || !mounted.hdv.empty();
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!anyMounted);
+    if (ImGui::Button(ICON_FA_EJECT " Eject All"))
+        r.requestEjectAllDisks = true;
+    ImGui::EndDisabled();
+    if (anyMounted && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Eject every loaded Disk II / HDV / SmartPort image");
+
     ImGui::Separator();
     ImGui::TextDisabled(
         "left-click = insert + boot      right-click = more options");

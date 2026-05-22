@@ -589,6 +589,59 @@ MAME `floppy_image_device::get_next_transition`, wraps across
 revolutions. `writeFlux(track, start, end, count, transitions)`
 splices flux window back into nibble buffer.
 
+### ProDOSHardDiskCard (HDV) — synthetic-block model
+
+`ProDOSHardDiskCard.{h,cpp}`. Slot-plugged ProDOS hard disk (default
+slot 5, label `hdv`) backed by a raw `.hdv` / `.2mg` block image
+(`loadImage`: 2IMG-envelope parse + write-back via `saveDirty`).
+
+**Deliberate divergence from the "MAME source of truth" convention** —
+unlike every other hardware subsystem here, this is intentionally NOT a
+port. MAME has no generic HDV card: it emulates the *real boards*, each
+running its **dumped ROM driver** against an **emulated bus chip**, with
+the image stored as **CHD / raw** behind that chip. Canonical contrast:
+`src/devices/bus/a2bus/a2cffa.cpp` — CFFA = `required_device<
+ata_interface_device> m_ata`, `ROM_LOAD("cffa20ee02.bin", …)`, ProDOS
+drives `m_ata->cs0_w / cs0_r` over `$C0xx`, storage = ATA `"hdd"`
+device. Siblings: `a2scsi.cpp` / `a2hsscsi.cpp` (NCR 5380 / 53C80 +
+CHD), `a2vulcan.cpp` / `a2zipdrive.cpp` (IDE), `a2corvus.cpp`.
+
+POM2 follows the **AppleWin `HardDisk.cpp` lineage** instead: no ATA /
+SCSI silicon, no real ROM. The card *fabricates* its 256-byte slot ROM
+at runtime (`buildRom`, ProDOSHardDiskCard.cpp:307-431 — hand-assembled
+6502) and that firmware talks to a host-implemented streaming protocol
+on the per-slot device-select window `$C080 + slot×16`:
+```
+off 0  write   block LO byte               (resets stream offset)
+off 1  write   block HI byte               (resets stream offset)
+off 2  read    next byte of selected 512 B block (auto-incr, wraps 512)
+off 2  write   next byte INTO block         (write-back-gated)
+off 3  read    status: bit7 = no image, bit6 = write-protected
+```
+`deviceSelectRead / Write` (ProDOSHardDiskCard.cpp:244-305) move bytes
+straight to / from the in-memory `image` vector — a host `memcpy`, **no
+GCR, no flux, no LSS**. Slot ROM marks `$Cn07 = $01` (plain ProDOS block
+device, not SmartPort `$3C`); JSR trio `$Cn01/03/05 = $20/$00/$03`. F8
+Autostart won't scan `$01`, so boot is via `PR#n` / `bootFromSlot`
+(see § DiskIICard).
+
+**Consequences of the divergence** (documented so a future contributor
+reads it as by-design, not an unfinished port):
+
+- ✓ Mounts `.hdv` / `.2mg` directly — the dominant Apple II hard-disk
+  formats — which MAME does *not* accept as a hard disk (CHD / raw only).
+- ✓ No card-ROM dump required (a true `a2cffa` port would need
+  `cffa20ee02.bin`).
+- ✗ Cannot execute real CFFA / SCSI firmware, cannot mount CHD, and
+  card-specific behaviour (partition maps, >32 MB schemes, SmartPort
+  pass-through) is unreachable until/unless an ATA-class port lands.
+
+The ONE storage path POM2 *does* port faithfully is the //c+ 3.5" Sony
+stack (real IWM + GCR — § IWM, § SmartPort 3.5" stack); `SmartPortCard`
+(below) is this same synthetic-block model with a SmartPort signature.
+Pinned: `hdv_card_smoke_test.cpp` (`hdv_card_smoke`),
+`hdv_writeback_smoke_test.cpp`.
+
 ### SmartPortCard (//e Liron-class)
 
 `SmartPortCard.{h,cpp}`. Lets //e / II+ / II / //c mount Sony 800 K
@@ -597,10 +650,13 @@ disks through a slot-plugged Apple "Disk 3.5 Controller Card"
 pair that `EmulationController` owns.
 
 **Architecture choice — block-level, no IWM**. Real Liron carries
-IWM + tiny 6502 ROM with SmartPort dispatcher. POM2's //c+ profile
-already emulates the full stack; for slot-plugged on //e we **skip
+IWM + tiny 6502 ROM with SmartPort dispatcher (a MAME-faithful port
+would model the real chip + dumped driver). POM2's //c+ profile
+already emulates the full IWM stack; for slot-plugged on //e we **skip
 the bit-level path entirely** and expose blocks directly through a
-streaming protocol identical to `ProDOSHardDiskCard`'s.
+streaming protocol identical to `ProDOSHardDiskCard`'s — the same
+synthetic-block divergence documented under § ProDOSHardDiskCard (HDV)
+(cf. MAME `a2cffa.cpp`).
 
 **Device-select protocol** (`$C0nX`):
 ```

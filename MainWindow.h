@@ -380,6 +380,10 @@ private:
     // within the same session.
     void saveScreenshot();
 
+    // Eject every loaded image (Disk II, HDV, SmartPort units, 3.5").
+    // Shared by the Disk Library header-row button.
+    void ejectAllDisks();
+
     void uploadScreenTexture();
 
     // Translate a GLFW key/codepoint into an ASCII byte and feed it to

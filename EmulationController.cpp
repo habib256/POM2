@@ -207,6 +207,18 @@ void EmulationController::eject35(int idx)
 
 void EmulationController::start()
 {
+    // "Start" means "make the machine run": resume execution AND, on the
+    // first call, spawn the worker thread. Re-arming the mode here is the
+    // load-bearing part — applyProfile() and restartEmulationFromSettings()
+    // both do stop()…rebuild cards…start() while the worker is ALREADY
+    // live, so start() can't re-spawn the thread (worker.joinable() short-
+    // circuits below). Without setting Running here the machine would stay
+    // Stopped after a profile/slot switch and sit frozen on a garbage
+    // (HOME-never-ran) text page — the "doesn't boot on launch" bug, since
+    // a saved non-default profile auto-applies on startup. Keeps stop()/
+    // start() symmetric: stop() parks the mode, start() un-parks it.
+    mode.store(Mode::Running);
+    wakeCv.notify_all();
     if (worker.joinable()) return;
     worker = std::thread([this] { workerLoop(); });
 }

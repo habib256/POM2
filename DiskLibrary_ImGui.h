@@ -63,6 +63,8 @@ public:
         std::string requestHdvMountAndBoot;
         std::string requestHdvMountOnly;
         bool        requestHdvEject      = false;
+        // Eject every loaded image at once (header-row "Eject All" button).
+        bool        requestEjectAllDisks = false;
     };
 
     Result render(const char*               title,

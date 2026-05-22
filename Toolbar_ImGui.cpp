@@ -232,18 +232,9 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     ImGui::SameLine();
 
     // ── Disk shortcuts ───────────────────────────────────────────────
-    // Insert is covered by the Disk Library panel (multi-source picker
-    // with boot-on-click) — removed from the toolbar to avoid having
-    // two ways to do the same thing.
-    if (iconButton({ ICON_FA_EJECT,        "EjectAll",
-                     "Eject every loaded Disk II / HDV / SmartPort image" },
-                   snap.hasAnyDiskLoaded)) {
-        r.requestEjectAllDisks = true;
-    }
-
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    // Both insert AND eject-all now live in the Disk Library panel
+    // (multi-source picker with boot-on-click + header-row "Eject All")
+    // — kept out of the toolbar to avoid two ways to do the same thing.
 
     // ── Tooling ──────────────────────────────────────────────────────
     if (iconButton({ ICON_FA_CAMERA,       "Screenshot",

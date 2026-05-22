@@ -291,6 +291,32 @@ void testSpeed(EmulationController& ctrl, pom2::AiControlServer& /*srv*/)
     std::puts("  speed: OK");
 }
 
+// Regression: applyProfile() / restartEmulationFromSettings() rebuild the
+// machine with stop()…tear down cards…start() while the CPU worker thread
+// is ALREADY running. start() then can't re-spawn the thread, so it must
+// re-arm the run mode itself — otherwise the machine stays Stopped after a
+// profile or slot-config switch and freezes on an uncleared ("@"-tile
+// garbage) text page. Because a saved non-default profile auto-applies on
+// startup, that surfaced as "the emulator doesn't boot on launch". Pin that
+// start() resumes Running on BOTH the cold path (no worker yet) and the hot
+// path (worker already live) that the profile switch actually hits.
+void testStartResumesMode(EmulationController& ctrl)
+{
+    ctrl.stop();
+    assert(ctrl.getMode() == EmulationController::Mode::Stopped);
+    ctrl.start();   // cold path: spawns the worker AND arms Running
+    assert(ctrl.getMode() == EmulationController::Mode::Running &&
+           "start() must resume Running after stop()");
+    ctrl.stop();
+    assert(ctrl.getMode() == EmulationController::Mode::Stopped);
+    ctrl.start();   // hot path: worker already joinable — must STILL arm Running
+    assert(ctrl.getMode() == EmulationController::Mode::Running &&
+           "start() must resume Running even when the worker is already "
+           "live (the applyProfile/restart frozen-on-switch regression)");
+    ctrl.stop();    // park again so the worker idles quietly until teardown
+    std::puts("  start-resumes-mode: OK");
+}
+
 } // namespace
 
 int main()
@@ -312,6 +338,7 @@ int main()
     testSpeed            (ctrl, srv);
     testSnapshotPathSafety(ctrl, srv);
     testNotFoundAndMethod(ctrl, srv);
+    testStartResumesMode (ctrl);   // last: it spawns the CPU worker thread
 
     srv.stop();
     std::puts("ai_control_server_smoke_test: OK");
