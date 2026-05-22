@@ -781,6 +781,24 @@ active-low register file (`/INSERTED`, `/TRACK0`, `/READY`,
 `Sony35Drive*` via `setFloppy` / `setSony35` overloads.
 $C0EE-status WPT bit consults `Sony35Drive::senseR()`.
 
+*No-disk noise flux*. When the active drive has no media (or sits on
+an unformatted track) `nextTransition()` would otherwise return
+`INT64_MAX`, so the read FSM only ever shifts in 0-bits, `data_` stays
+`$00`, bit-7 ("byte ready") never asserts, and the boot firmware's
+wait-for-byte loop spins forever on the un-cleared power-up screen.
+A real spinning empty drive feeds the IWM noise flux instead, so
+`nextTransition()` falls back to `noiseTransition()` — a deterministic
+LCG keyed on the read-window index that straddles `windowSize()`
+boundaries so the SR accumulates a mix of 1s/0s and keeps emitting
+garbage bytes with bit-7 set. This is what lets the //c reach **"Check
+Disk Drive."** and the //c+ reach **"UNABLE TO FIND A BOOTABLE DISK
+ONLINE."** at power-on with no disk (the 16 KB //c / II+ / IIe spin in
+the dumb Disk II PROM on a HOME-cleared screen — real-hardware
+behaviour, unchanged). MAME models this implicitly: the floppy reports
+no transition but the IWM's window timer still cycles the SR; POM2
+collapsed that timer into `nextTransition()`, so the noise is injected
+there. Pinned by `tests/iic_nodisk_boot_trace.cpp`.
+
 *GCR encoder* (`Sony35Drive.cpp`, verbatim MAME
 `flopimg.cpp::build_mac_track_gcr 2017-2106`). Five concentric speed
 zones (`kCellsPerRev[5] = {76950, 70695, 64234, 57749, 51388}`,
