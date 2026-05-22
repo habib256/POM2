@@ -69,6 +69,33 @@ door.
 `softSwitchAccess()`; RAM bypasses (cheap). Reset vector defaults to
 `$F800`. ROM regions reject writes silently.
 
+### MemoryProfile (//c-class strategy)
+
+All //c / //c+ memory quirks live behind `MemoryProfile`
+(`MemoryProfile.h` + `MemoryProfile_IIcClass.{h,cpp}`) instead of
+leaking `isIIcClass`/`isIIcPlus`/`iicHasAltBank` predicates across the
+dispatcher. `Memory::iicProfile_` (a `unique_ptr<MemoryProfile>`) is
+**non-null only on //c-class profiles**, created/destroyed inside
+`loadAppleIIRom` from the ROM probes (MAME `apple2e.cpp:1275-1299`).
+II/II+/IIe leave it null → a single `if (iicProfile_)` branch on the
+hot path, **zero virtual calls** on those machines.
+
+The dispatcher delegates each //c-specific concern: `forcesIntCxRom()`
+(no slots → INTCXROM), `romBankToggle()` (`$C028`), `onResetSoftSwitches()`
+(ROMBANK→bank 0), `ioReadIWM`/`ioWriteIWM` (`$C0E0-$C0EF` on-board IWM),
+`internalRomRead`/`internalRomWrite` (`$C100-$CFFF` under INTCXROM —
+//c+ MIG `$CC00/$CE00` + alt-firmware bank 1), and `languageCardRomRead`
+(`$D000-$FFFF` alt firmware). `IIcClassProfile` owns the alt firmware
+(16 KB), ROMBANK flag, //c+ flag, the 2 KB MIG gate-array (`migRead`/
+`migWrite`, verbatim MAME `apple2e.cpp:532-624`) and the IWM/SmartPort
+hub pointers. `Memory::setIWM/setSmartPortHub/setIWMAuthoritative` stay
+as façades that forward to the profile when present (so test wiring is
+order-independent). What stays in `Memory`: `ioudis` (read shared with
+//e), `intC8Rom` (the //e `$C300`/`$C800`/`$CFFF` mechanism //c
+inherits), LC/paging/generic soft switches. Pinned by `iic_boot_trace`,
+`iic_nodisk_boot_trace`, `iicplus_boot_trace`, `system_profile_smoke`,
+`iwm_device_smoke`.
+
 ### IIe paging
 
 `isIIE()`. `setIIEMode(true)` MUST be called BEFORE `loadAppleIIRom`

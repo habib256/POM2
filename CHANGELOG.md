@@ -6,6 +6,26 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-23
+
+- **Memory — stratégie de profil //c-class extraite** (`MemoryProfile`).
+  Toutes les spécificités //c / //c+ qui fuyaient dans le dispatcher
+  générique `Memory::memRead/memWrite` (alt-firmware `$C028` ROMBANK,
+  IWM on-board `$C0E0-$C0EF`, MIG `$CC00/$CE00`, INTCXROM forcé, alt
+  firmware sur `$C100-$FFFF`) passent derrière une interface
+  `MemoryProfile` (`MemoryProfile.h` + `MemoryProfile_IIcClass.{h,cpp}`).
+  `Memory::iicProfile_` est non-null **uniquement** sur //c/c+
+  (créé/détruit dans `loadAppleIIRom`) ; II/II+/IIe → un seul
+  `if (iicProfile_)` sur le hot path, **zéro virtual call**. `migRead`/
+  `migWrite` (MAME `apple2e.cpp:532-624`) déplacés verbatim dans le
+  profil. Les façades `setIWM/setSmartPortHub/setIWMAuthoritative`
+  forwardent vers le profil (câblage des tests inchangé = garde-fou).
+  Supprime les prédicats `isIIcClass`/`isIIcPlus`/`iicHasAltBank`
+  éparpillés ; prérequis du split `Memory` god-object restant
+  (`Keyboard`/`PaddleInputs`) et du futur profil IIgs. Vérifié : 62/62
+  ctest + boot //c (U4boot.dsk → écran-titre) + banner //c+. Voir
+  `DEV.md § MemoryProfile`.
+
 ## 2026-05-16
 
 - **Cassette auto-rewind opt-in** (`3f42efc`). L'auto-rewind 500 ms

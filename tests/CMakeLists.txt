@@ -41,6 +41,7 @@ endif()
 set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -773,6 +774,7 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
@@ -1563,6 +1565,7 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -1604,6 +1607,7 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -1643,6 +1647,7 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -1683,6 +1688,7 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -1723,6 +1729,7 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp

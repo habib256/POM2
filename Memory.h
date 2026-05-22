@@ -28,11 +28,13 @@
 #define POM2_MEMORY_H
 
 #include "SlotBus.h"
+#include "MemoryProfile.h"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -72,7 +74,10 @@ public:
     /// machine (MAME `iwm.cpp` port — see `IWMDevice.{h,cpp}`)
     /// evolves in lock-step with the slot-6 DiskIICard's lightweight
     /// IWM-mode shadow.
-    void setIWM(pom2::IWMDevice* iwm) { iwmDevice = iwm; }
+    void setIWM(pom2::IWMDevice* iwm) {
+        iwmDevice = iwm;
+        if (iicProfile_) iicProfile_->setIwm(iwm);
+    }
 
     /// When true (default), `$C0E0-$C0EF` reads on iicHasAltBank
     /// profiles return the IWMDevice's value rather than the slot-6
@@ -84,13 +89,19 @@ public:
     /// during the SmartPort port to A/B-compare the two paths; the
     /// env var `POM2_IWM_LEGACY_DATA_PATH` lets the user flip this
     /// without rebuilding.
-    void setIWMAuthoritative(bool on) { iwmAuthoritative = on; }
+    void setIWMAuthoritative(bool on) {
+        iwmAuthoritative = on;
+        if (iicProfile_) iicProfile_->setIwmAuthoritative(on);
+    }
     bool isIWMAuthoritative() const   { return iwmAuthoritative; }
 
     /// //c+ SmartPort hub — owned by EmulationController, wired here so
     /// MIG state changes ($C0CC/$C0CE windows) can call
     /// `recalc_active_device` per MAME `apple2e.cpp:638-679`. Non-owning.
-    void setSmartPortHub(pom2::SmartPortHub* hub) { smartPortHub = hub; }
+    void setSmartPortHub(pom2::SmartPortHub* hub) {
+        smartPortHub = hub;
+        if (iicProfile_) iicProfile_->setSmartPortHub(hub);
+    }
     pom2::SmartPortHub* getSmartPortHub() const   { return smartPortHub; }
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
@@ -437,69 +448,14 @@ private:
     // `iie_c8xx_smoke_test.cpp`.
     bool intC8Rom = false;
 
-    // Apple //c ROMBANK ($C028 soft switch). When a 32 KB //c-style dump
-    // is loaded, the second 16 KB firmware bank is stashed in
-    // `iicAltFirmware`. Reads of $C028 toggle `iicRomBank`; when bank 1
-    // is selected, $C100-$CFFF (under INTCXROM) and $D000-$FFFF (ROM
-    // mode) dispatch to the alt firmware bytes instead of the regular
-    // `internalIORom`/`mem` paths. `iicHasAltBank` gates the whole
-    // mechanism — on II/II+/IIe profiles the $C028 access stays in the
-    // cassette-toggle path (which is what those machines actually do).
-    std::array<uint8_t, 0x4000> iicAltFirmware{};
-    bool iicHasAltBank = false;
-    bool iicRomBank    = false;   // false = bank 0 (cold-start), true = bank 1
-
-    // ROM-content probes (MAME `apple2e.cpp:1275-1299`):
-    //   `payload[0x3bc0] == 0x00`           → //c-class (forces INTCXROM on)
-    //   `payload[0x3bbf] == 0x05` (and above) → //c+
-    // `isIIcClass` covers BOTH the 16 KB rev-255 //c ROM and the 32 KB rev-0/3/4
-    // dumps, so INTCXROM forcing and on-board slot ROM dispatch work the same
-    // way for both. `iicHasAltBank` is also the IWM gate: it means "we loaded a
-    // 32 KB //c-class dump capable of $C028 ROMBANK toggling" — equivalently
-    // "this //c is from the IWM era (rev 0/3/4) or it's a //c+". MAME's ROM-to-
-    // machine-config mapping at `apple2e.cpp:6281-6302` wires `apple2c0`,
-    // `apple2c3`, `apple2c4`, `apple2cp` all through `A2BUS_IWM`; only the
-    // original 16 KB `apple2c` (rev 255) keeps `A2BUS_DISKIING`. On a 16 KB
-    // //c rev-255 dump, `isIIcClass=true` but `iicHasAltBank=false` (LSS path).
-    // `isIIcPlus` strictly gates the //c+-only MIG window ($CC00/$CE00) and
-    // anything else //c+-specific — IWM dispatch itself is broader.
-    bool isIIcClass = false;
-    bool isIIcPlus  = false;
-
-    // Apple //c+ MIG (Multi-drive Interface Glue, MAME `apple2e.cpp:451`
-    // + `apple2e.cpp:532-624 mig_r/mig_w`). Custom Apple gate-array that
-    // bridges the on-board IWM to the //c+'s integrated 5.25" + 3.5"
-    // drives. The //c+ alt firmware (bank 1) hits two MIG windows in the
-    // expansion ROM area when ROMSWITCH is on:
-    //   $CC00-$CCFF  →  mig offset 0x000-0x0FF  (drive control)
-    //   $CE00-$CEFF  →  mig offset 0x200-0x2FF  (MIG RAM + head select)
-    // Sub-decode (MAME lines 532-624):
-    //   off  $40       write  → IWM reset
-    //   off $80-$9F    write  → enable internal drive
-    //   off $C0-$DF    write  → disable internal drive
-    //   off $200-$21F  R/W    → migRam[migPage + (off & 0x1F)]
-    //   off $220-$23F  R/W    → same, then migPage += 0x20 (mod 0x800)
-    //   off $240-$25F  R/W    → clear 3.5" head select
-    //   off $260-$27F  R/W    → set 3.5" head select
-    //   off $2A0        R/W   → reset migPage = 0
-    //   anything else  read   → floating bus
-    //
-    // The 2 KB migRam holds //c+ accelerator/disk-geometry state the
-    // firmware caches across resets. MAME `apple2e.cpp:1700-1703` resets
-    // it when ROMSWITCH transitions off; POM2 does the equivalent in
-    // resetSoftSwitches() when iicRomBank flips back to 0. The 3.5"
-    // side (hdsel + intdrive routing) is captured here even though POM2
-    // doesn't model a 3.5" SmartPort drive — keeping the state lets the
-    // //c+ alt firmware's probes complete without spinning.
-    std::array<uint8_t, 0x800> migRam{};
-    uint16_t                   migPage    = 0;
-    bool                       migIntDrive = false;
-    bool                       migHdSel    = false;
-
-    /// MIG read at offset 0x000-0x2FF. CPU $CC00 = migOffset 0; CPU $CE00
-    /// = migOffset 0x200 (the $CD00 gap is plain ROM).
-    uint8_t migRead (uint16_t migOffset);
-    void    migWrite(uint16_t migOffset, uint8_t value);
+    // Machine-profile strategy for all //c-class memory behaviour: alt
+    // firmware $C028 ROMBANK, on-board IWM $C0E0-$C0EF, //c+ MIG windows
+    // $CC00/$CE00, forced INTCXROM (no slots), and the alt-firmware
+    // override of $C100-$FFFF. Non-null ONLY on //c / //c+ profiles —
+    // created/destroyed in loadAppleIIRom from the ROM probes. II/II+/IIe
+    // leave it null: a single `if (iicProfile_)` branch on the hot path,
+    // zero virtual calls. See `MemoryProfile_IIcClass` + DEV.md § Memory.
+    std::unique_ptr<MemoryProfile> iicProfile_;
 
     // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
     // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not

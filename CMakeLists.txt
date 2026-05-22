@@ -54,6 +54,7 @@ file(GLOB IMGUI_SOURCES
 set(SOURCES
     M6502.cpp
     Memory.cpp
+    MemoryProfile_IIcClass.cpp
     AiControlServer.cpp
     Apple2Display.cpp
     AudioDevice.cpp
@@ -108,6 +109,8 @@ set(SOURCES
 set(HEADERS
     M6502.h
     Memory.h
+    MemoryProfile.h
+    MemoryProfile_IIcClass.h
     AiControlServer.h
     Apple2Display.h
     AudioDevice.h
@@ -249,6 +252,7 @@ add_executable(pom2_headless
     LeChatMauveCard.cpp
     M6502.cpp
     Memory.cpp
+    MemoryProfile_IIcClass.cpp
     Mockingboard.cpp
     RomLoader.cpp
     SlotBus.cpp

@@ -15,7 +15,7 @@ ci-dessous.
 | # | Sous-système | Parité | Refs MAME | Écarts / Bugs |
 |---|---|---|---|---|
 | 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | NMOS undocumented ANC/SBC-imm laissés NOP. Casts C-style + commentaires FR/EN hérités 🟢 |
-| 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (1657+561 L), 🟠 spécificités //c+ qui fuient dans dispatcher, 🟡 `dataMutable()` contourne `writable[]` |
+| 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (reste Keyboard/PaddleInputs) ; //c+ extrait en `MemoryProfile` ✅ ; 🟡 `dataMutable()` contourne `writable[]` |
 | 3 | Display HGR/DHGR/80-col | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` | 🟢 mono DHGR 1-px alignment, 🟢 floating-TTL `empty_words`, 🟢 per-scanline DHGR switch ; ChatMauve palette idx 5≢10 (divergence assumée vs AppleWin) |
 | 4 | SpeakerDevice | Verbatim | `spkrdev.cpp:74-327` | Aucun écart connu |
 | 5 | CassetteDevice | POM2-original | `apple2.cpp:362` (sign-flip) | Auto-rewind 500 ms désormais opt-in default-off ✅ (`3f42efc`) — aucun écart connu |
@@ -48,65 +48,14 @@ ci-dessous.
       câbler les 4 diviseurs et pulser `assertIrq` au rythme TP.
       Utilitaires interval-timing (Clockworks) ne tickent jamais sans
       ça. **Effort : 2-3 h**, pinnable (count IRQs sur N cycles).
-- [ ] **[Memory] god-object** (`Memory.cpp` 1657 L + `Memory.h` 561 L).
-      Extraire `Keyboard` (FIFO + strobe + paste), `PaddleInputs` (RC +
-      boutons + Open/Solid Apple), `IIcPlusBank` (alt firmware + MIG +
-      iicRomBank). Prérequis profil IIgs futur ; réduit recompilations.
-      **Effort : 2 j.**
-- [ ] **[Memory] Spécificités //c+ qui fuient dans `memRead/Write`**
-      (`Memory.cpp:1338,1370-1391`). Pattern cible : stratégie de
-      profil (`IProfileMemoryStrategy`) injectée. À traiter avec
-      `IIcPlusBank` ci-dessus.
-
-  **Design acté 2026-05-17** (effort ≈ 1.5 j ; SnapshotIO non
-  concerné — aucun état //c+ sérialisé).
-
-  *Interface* `MemoryProfile.h` :
-  - `forcesIntCxRom() const` — prédicat OR'd dans la gate $C1xx
-  - `romBankToggle() → bool` — $C028 ; false ⇒ fallback cassette
-  - `ioudisWrite(bool set)` + `ioudisOwned() const` — $C07E/F
-    write (`ioudis` reste dans Memory, partagé avec les reads //e)
-  - `ioRead/ioWrite(addr, cyc, out/val) → bool` — $C0E0-$C0EF
-  - `internalRomRead/Write(addr, out/val) → bool` — $C1xx-$CFFF
-    sous INTCXROM (MIG $CC00/$CE00 + alt firmware bank 1)
-  - `languageCardRomRead(addr, out) → bool` — alt firmware bank 1
-    sur $D000-$FFFF quand `lcReadRam=false`
-  - `onResetSoftSwitches() / onResetSoftSwitchesWarm()`
-  - `onRomLoaded(payload, pickLowerHalf)` — stash alt firmware +
-    set internal `hasAltBank_` / `isPlus_` par probes MAME
-    (`apple2e.cpp:1275-1299`)
-
-  *Implémentation* : **pas de `BaseProfile` matérialisée**.
-  `Memory::iicProfile_ = nullptr` sur II/II+/IIe → un seul branch
-  `if (iicProfile_)`, **zéro virtual call** sur ces profils (coût
-  identique à la gate `iicHasAltBank && iwmDevice` actuelle).
-  `IIcClassProfile` (`MemoryProfile_IIcClass.{h,cpp}`) couvre
-  16K //c rev-255 + 32K //c rev-0/3/4 + //c+ ; détient
-  `iicAltFirmware[16K]`, `hasAltBank_`, `iicRomBank_`, `isPlus_`,
-  `migRam[2K]`, `migPage`, `migIntDrive`, `migHdSel`, et les
-  pointeurs `IWMDevice*` + `SmartPortHub*` + `iwmAuthoritative_`.
-  `migRead/migWrite` déplacés verbatim.
-
-  *Wiring* : `EmulationController` continue d'allouer IWM+Hub
-  inconditionnellement (ctor) ; dans `applyProfile` post-ROM-load,
-  construit `IIcClassProfile(iwm, hub, iwmAuthoritative)` si
-  `profile ∈ {AppleIIc, AppleIIcPlus}`, sinon `nullptr`. Installe
-  via `mem.setMemoryProfile(...)`.
-
-  *Tests à porter* : `iic_boot_trace`, `iicplus_boot_trace`,
-  `iwm_device_smoke_test`, `system_profile_smoke_test`
-  (`test_rombank` + `test_ioudis`). **Décision en suspens** :
-  garder façades `mem.setIWM/setSmartPortHub` (rétro-compat tests)
-  ou faire construire `IIcClassProfile` par les tests (~4 fichiers
-  touchés, plus propre).
-
-  *Ce qui RESTE dans Memory* : `ioudis` (read partagé //e/c),
-  `intC8Rom` (mécanisme //e dont //c hérite), LC, paging, soft
-  switches génériques.
-
-  *Reste à câbler hors-design* : le hook `$C300 auto-INTCXROM`
-  garde `intC8Rom = true` dans Memory ; seule la sortie (alt
-  firmware vs `internalIORom`) passe par `internalRomRead`.
+- [ ] **[Memory] god-object** (`Memory.cpp` / `Memory.h`). Reste à
+      extraire `Keyboard` (FIFO + strobe + paste) et `PaddleInputs`
+      (RC + boutons + Open/Solid Apple). L'`IIcPlusBank` est **fait** :
+      toutes les spécificités //c/c+ ($C028 ROMBANK, IWM $C0E0-$C0EF,
+      MIG $CC00/$CE00, INTCXROM forcé, alt firmware) sont extraites
+      derrière `MemoryProfile` / `IIcClassProfile` (voir `CHANGELOG.md`
+      + `DEV.md § MemoryProfile`). Prérequis profil IIgs ; réduit
+      recompilations.
 
 ## 🟡 Medium
 
