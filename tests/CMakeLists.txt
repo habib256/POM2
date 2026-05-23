@@ -1536,6 +1536,28 @@ endif()
 add_test(NAME cmos_6502_smoke COMMAND test_cmos_6502)
 set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)
 
+# ─── 6502 cycle-count test ────────────────────────────────────────────────
+# Pins per-instruction CYCLE counts (Klaus/cmos pin results, not timing).
+# Guards the RMW dummy-cycle accounting (INC/DEC abs were 5, must be 6).
+add_executable(test_cpu_cycle_count
+    cpu_cycle_count_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_cpu_cycle_count PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cpu_cycle_count PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_cpu_cycle_count PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_cpu_cycle_count PRIVATE winmm)
+endif()
+add_test(NAME cpu_cycle_count COMMAND test_cpu_cycle_count)
+set_tests_properties(cpu_cycle_count PROPERTIES TIMEOUT 5)
+
 
 # ─── M68705P3 CPU decode smoke test ──────────────────────────────────────
 # Pins the verbatim port of MAME's HMOS 6805 instruction set

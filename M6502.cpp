@@ -644,7 +644,12 @@ void M6502::INC(void)
     uint8_t val = static_cast<uint8_t>(orig + 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
-    cycles += 2;
+    cycles += 3;     // RMW: read + dummy (rmwSecondBusCycle) + write — was
+                     // 2, undercounting the dummy cycle that ASL/LSR/ROL/
+                     // ROR/TSB/TRB already charge. The 1-cycle shortfall
+                     // drifted disk timing on tight RWTS loops (Mr. Robot
+                     // 4am boot). MAME `om6502.lst` / `ow65c02.lst`: INC
+                     // mem = 5/6/6/7 (zp/abs/zp,X/abs,X).
 }
 
 void M6502::DEC(void)
@@ -654,7 +659,8 @@ void M6502::DEC(void)
     uint8_t val = static_cast<uint8_t>(orig - 1);
     setStatusRegisterNZ(val);
     memory->memWrite(op, val);
-    cycles += 2;
+    cycles += 3;     // RMW: read + dummy + write (see INC) — fixes the
+                     // 1-cycle undercount that broke Mr. Robot's boot.
 }
 
 void M6502::INX(void)
@@ -1607,7 +1613,49 @@ void M6502::executeOpcode(void)
 
     unsigned char opcode = memory->memRead(programCounter++);
 
+    // DIAGNOSTIC (POM2_TRACE_PC=path): log every instruction (PC, opcode,
+    // A/X/Y) to a file for trace-diffing against a MAME reference. Capped.
+    {
+        static FILE* pcTrace = [] {
+            const char* p = std::getenv("POM2_TRACE_PC");
+            return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
+        }();
+        static long pcTraceN = 0;
+        if (pcTrace && pcTraceN < 3000000) {
+            // cum = cumulative CPU cycles BEFORE this instruction (memory's
+            // counter is bumped by advanceCycles after each opcode). Lets us
+            // diff cycle accounting against a MAME totalcycles trace.
+            const unsigned long long cum = memory
+                ? static_cast<unsigned long long>(memory->getCycleCounter())
+                : 0ULL;
+            std::fprintf(pcTrace, "%04X %02X A=%02X X=%02X Y=%02X SP=%02X cyc=%llu\n",
+                static_cast<unsigned>(programCounter - 1), opcode,
+                accumulator, xRegister, yRegister, stackPointer, cum);
+            if ((++pcTraceN % 4096) == 0) std::fflush(pcTrace);
+        }
+    }
+
     const OpcodeEntry& entry = opcodeTable[opcode];
+    // DIAGNOSTIC (POM2_TRACE_ILLEGAL=1): log when execution hits an
+    // unimplemented/undocumented opcode (Unoff* = NOP placeholder) or a
+    // KIL (Hang). Used to find whether a crack's loader depends on an
+    // illegal opcode POM2 doesn't model. Cheap when off.
+    {
+        static const bool kTraceIllegal =
+            std::getenv("POM2_TRACE_ILLEGAL") != nullptr;
+        if (kTraceIllegal &&
+            (entry.addrMode == &M6502::Unoff  ||
+             entry.addrMode == &M6502::Unoff1 ||
+             entry.addrMode == &M6502::Unoff2 ||
+             entry.addrMode == &M6502::Unoff3 ||
+             entry.addrMode == &M6502::Hang)) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf),
+                "illegal/NOP opcode $%02X at $%04X", opcode,
+                static_cast<int>(programCounter - 1));
+            pom2::log().warn("CPU", buf);
+        }
+    }
     (this->*entry.addrMode)();
     if (entry.operation)
         (this->*entry.operation)();

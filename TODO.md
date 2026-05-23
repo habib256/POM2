@@ -23,7 +23,7 @@ ci-dessous.
 | 7 | FloppySoundDevice | Verbatim | `floppy.cpp:1532-1620`, `:2925-3020` | Aucun écart connu |
 | 8 | SlotBus + IRQ wire-OR | POM2-original | Pattern MAME slot bus | Aucun gap fonctionnel |
 | 9 | DiskImage (.dsk/.po/.nib/.2mg/.woz) | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106` | 🟡 WOZ1 splice TRK+6650 ignoré, 🟢 .nib2/.app non supportés, 🟢 half-tracked NIB (88) absent |
-| 10 | DiskIICard (wozfdc + diskiing) | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction inflation RAII vs MAME per-cycle (rare impact protections), Disk II hors snapshot délibérément |
+| 10 | DiskIICard (wozfdc + diskiing) | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction inflation RAII vs MAME per-cycle (la LSS s'est avérée NON coupable du bug Mr. Robot — c'était `bootFromSlot` qui sautait l'autostart F8, voir § Medium) ; Disk II hors snapshot délibérément |
 | 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` (audit 2026-05-16) | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate ; window-size round-down vs round-up choices |
 | 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 32 MB HDV + .2mg variantes pinnés ✅ ; 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
 | 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |

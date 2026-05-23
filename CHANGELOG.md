@@ -6,8 +6,44 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-24
+
+- **`bootFromSlot` réplique l'init zéro-page du Monitor F8 (corrige Mr. Robot
+  4am)**. `EmulationController::bootFromSlot` (raccourci `coldBoot + PC=$Cn00`
+  utilisé par le kiosk/CLI, les boutons « Boot » de la Disk Library ET « Boot
+  HDV ») saute le cold-start du Monitor F8 — donc n'initialisait PAS la
+  zéro-page texte/I-O que les routines écran du Monitor attendent. Concret :
+  CLREOP (`$FCA0`) boucle sur `CPY WNDWDTH($21)` ; avec `$21` laissé à 0 elle
+  **déborde la ligne et écrase le loader en `$0800`** → le crack Mr. Robot 4am
+  (`.dsk` **et** `.woz`) calait (boot1 effacé → `$A0`, moteur tournant). Le
+  même disque **bootait via l'autostart naturel**. Fix : après `clearRam`,
+  `bootFromSlot` initialise la fenêtre texte (`$20-$23`), `CH/CV` (`$24/$25`),
+  `BASL/BASH` (`$28/$29`=$0400), `INVFLG` (`$32`), et les hooks `CSW/KSW`
+  (`$36-$39` → COUT1/KEYIN) — valeurs vérifiées contre un dump autostart→BASIC.
+  Corrige **tous** les chemins (kiosk, GUI Disk Library, HDV) tout en gardant
+  le ciblage de slot. Diagnostic via **MAME oracle** (flatpak `apple2p`, romset
+  reconstitué depuis `roms/` — [[reference_mame_oracle]]) : MAME bootait
+  l'image, POM2 non ; diff de trace POM2↔MAME puis bootFromSlot↔autostart →
+  confounds éliminés un par un (profil, turbo, image, opcodes illégaux, phase
+  d'échantillonnage, moniteur ROM, long-cycle, LSS) jusqu'à isoler l'init F8.
+  Mr. Robot affiche son écran-titre ; Choplifter + Total Replay (HDV) bootent
+  toujours (71/71 tests verts). Le **bug CPU INC/DEC** trouvé en chemin (cf.
+  ci-dessous) était réel mais distinct — gardé.
+
 ## 2026-05-23
 
+- **M6502 — INC/DEC mémoire : 1 cycle manquant corrigé** (`cpu_cycle_count`).
+  `INC`/`DEC` en zp/abs/zp,X/abs,X chargeaient 1 cycle de trop peu (le
+  cycle « dummy » read-modify-write : `INC abs` = 5 au lieu de 6). Les
+  autres RMW (`ASL/LSR/ROL/ROR/TSB/TRB`) étaient déjà corrects (`+3`) ;
+  seuls `INC`/`DEC` faisaient `+2`. Klaus ne l'attrapait pas (il teste les
+  *résultats*, pas le *timing*). Trouvé via un diff de trace cycle-à-cycle
+  contre MAME (`apple2p`, oracle reconstitué) sur le boot d'un loader
+  sensible au timing : les cycles du boot0 collent désormais exactement à
+  MAME. Réf MAME `om6502.lst` / `ow65c02.lst` (INC mem = 5/6/6/7). Affecte
+  NMOS **et** 65C02. Nouveau test `cpu_cycle_count` épingle les timings RMW
+  (premier test de *comptage de cycles* — leur absence avait laissé passer
+  le bug). Voir `TODO.md § High [DiskII]` pour le contexte (Mr. Robot 4am).
 - **ClockCard — interruptions TP (Timing-Pulse) câblées** (`clock_card_smoke`,
   5 nouveaux cas). La sortie TP de l'uPD1990AC bascule à une cadence
   sélectionnable et la ThunderClock+ la route (via une bascule d'activation)

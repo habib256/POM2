@@ -327,6 +327,28 @@ void EmulationController::bootFromSlot(int slot)
     for (uint16_t a = 0x0400; a <= 0x07FF; ++a) {
         mem.memWrite(a, 0xA0);
     }
+    // Replicate the F8 Autostart Monitor's text + I/O zero-page setup. The
+    // normal boot reaches the slot ROM via the Monitor cold-start (SETNORM/
+    // INIT/SETTXT/VTAB), which initialises the text-window and I/O-hook
+    // zero page; bootFromSlot jumps straight to $Cn00 and skips it. Without
+    // this, a boot's RWTS that calls Monitor screen routines hits garbage:
+    // e.g. CLREOP ($FCA0) loops on `CPY WNDWDTH($21)` — with $21 left at 0
+    // it overruns the line and clobbers the boot loader in $0800, hanging
+    // the Mr. Robot 4am crack (and any timing/screen-sensitive loader).
+    // Values verified against a clean autostart-to-BASIC dump.
+    mem.memWrite(0x0020, 0x00);   // WNDLFT  = 0
+    mem.memWrite(0x0021, 0x28);   // WNDWDTH = 40
+    mem.memWrite(0x0022, 0x00);   // WNDTOP  = 0
+    mem.memWrite(0x0023, 0x18);   // WNDBTM  = 24
+    mem.memWrite(0x0024, 0x00);   // CH (cursor column)
+    mem.memWrite(0x0025, 0x00);   // CV (cursor row)
+    mem.memWrite(0x0028, 0x00);   // BASL ┐ text base = $0400 (page 1, row 0)
+    mem.memWrite(0x0029, 0x04);   // BASH ┘
+    mem.memWrite(0x0032, 0xFF);   // INVFLG = normal video
+    mem.memWrite(0x0036, 0xF0);   // CSWL ┐ output hook → COUT1 ($FDF0)
+    mem.memWrite(0x0037, 0xFD);   // CSWH ┘
+    mem.memWrite(0x0038, 0x1B);   // KSWL ┐ input hook  → KEYIN ($FD1B)
+    mem.memWrite(0x0039, 0xFD);   // KSWH ┘
     processor.hardReset();
     processor.setProgramCounter(cnxx);
     mode.store(Mode::Running);

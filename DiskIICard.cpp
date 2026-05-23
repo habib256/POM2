@@ -605,6 +605,27 @@ void DiskIICard::lssSync(uint64_t extraCycles)
                               ? nextFlux + 1
                               : DiskImage::kFluxNever;
 
+    // DIAGNOSTIC (POM2_TRACE_LSS=path): sampled LSS state to see whether
+    // lssCycle / nextFlux / qt advance during a stuck read. Every 80th
+    // call, capped, so the window spans the whole boot.
+    {
+        static FILE* lf = [] {
+            const char* p = std::getenv("POM2_TRACE_LSS");
+            return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
+        }();
+        static long lc = 0, kept = 0;
+        if (lf && (lc++ % 80) == 0 && kept < 4000) {
+            std::fprintf(lf,
+                "cyc=%llu lss=%lld qt=%d rev=%lld nextFlux=%lld nflen=%d data=%02X\n",
+                static_cast<unsigned long long>(cpuCycleTotal),
+                static_cast<long long>(lssCycle), qt,
+                static_cast<long long>(revStart),
+                static_cast<long long>(nextFlux),
+                static_cast<int>(img.fluxEvents(qt).size()), lssData);
+            ++kept;
+        }
+    }
+
     // Initial PULSE state: address bit 4 low for the LSS-cycle range
     // [nextFlux, nextFluxDown), high otherwise. (MAME: `if(cycles >= cycles_next_flux && cycles < cycles_next_flux_down) address &= ~0x10; else address |= 0x10;`)
     if (static_cast<int64_t>(lssCycle) >= nextFlux
