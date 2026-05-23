@@ -6,6 +6,8 @@
 #include "ProDOSVolume.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 
 namespace {
@@ -16,6 +18,19 @@ constexpr uint8_t  kBootOff    = 0x20;
 void emit(std::array<uint8_t, 256>& rom, uint8_t& pc, std::initializer_list<uint8_t> bytes)
 {
     for (uint8_t b : bytes) rom[pc++] = b;
+}
+
+// Block-level I/O trace, gated by POM2_TRACE_HDV=1 (mirrors the env-var
+// diagnostics in DiskIICard.cpp / Memory.cpp). One line per 512-byte block
+// transfer — enough to see the read/write sequence around a game crash
+// without drowning in 512 lines per block.
+bool hdvTraceOn()
+{
+    // POM2_TRACE_HANG implies HDV tracing too, so a single env var captures
+    // both the frozen-loop dump and the block-read sequence that led to it.
+    static const bool on = std::getenv("POM2_TRACE_HDV")  != nullptr ||
+                           std::getenv("POM2_TRACE_HANG") != nullptr;
+    return on;
 }
 
 } // namespace
@@ -252,10 +267,16 @@ void ProDOSHardDiskCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     if (low4 == 0x0) {
         selectedBlock = static_cast<uint16_t>((selectedBlock & 0xFF00u) | v);
         streamOffset = 0;
+        if (hdvTraceOn())
+            std::fprintf(stderr, "[HDV] SETLO blk=%u\n",
+                         static_cast<unsigned>(selectedBlock));
     } else if (low4 == 0x1) {
         selectedBlock = static_cast<uint16_t>((selectedBlock & 0x00FFu) |
                                               (static_cast<uint16_t>(v) << 8));
         streamOffset = 0;
+        if (hdvTraceOn())
+            std::fprintf(stderr, "[HDV] SETHI blk=%u\n",
+                         static_cast<unsigned>(selectedBlock));
     } else if (low4 == 0x2) {
         writeDataByte(v);
     }
@@ -281,6 +302,15 @@ uint8_t ProDOSHardDiskCard::readDataByte()
 {
     if (!imageLoaded) return 0xFF;
 
+    activityTicks.store(kBusyHysteresisFrames, std::memory_order_relaxed);
+    if (hdvTraceOn() && streamOffset == 0) {
+        const bool inRange =
+            (static_cast<size_t>(selectedBlock) + 1) * kBlockBytes <= image.size();
+        std::fprintf(stderr, "[HDV] READ  blk=%u%s\n",
+                     static_cast<unsigned>(selectedBlock),
+                     inRange ? "" : " (OUT-OF-RANGE -> $FF)");
+    }
+
     const size_t absolute = static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
     const uint8_t out = (absolute < image.size()) ? image[absolute] : 0xFF;
     streamOffset = (streamOffset + 1) % kBlockBytes;
@@ -289,7 +319,25 @@ uint8_t ProDOSHardDiskCard::readDataByte()
 
 void ProDOSHardDiskCard::writeDataByte(uint8_t v)
 {
-    if (!imageLoaded || !writeBackEnabled || writeProtectedHeader) return;
+    // Writes always land in the in-memory image so the running session sees a
+    // fully writable volume (a real hard disk is read/write to ProDOS). Only
+    // the real medium WP flag (2MG header) blocks the write. Persisting those
+    // RAM changes to the host .hdv/.2mg file is a SEPARATE opt-in handled by
+    // writeBackEnabled in saveDirty()/ejectImage() — so the user's file stays
+    // untouched by default while the game still works. (Previously the
+    // write-back-off default also gated this, which surfaced a write-
+    // protected boot volume to ProDOS and crashed games that write on the fly,
+    // e.g. Nox Archaist when entering a city.)
+    if (!imageLoaded || writeProtectedHeader) return;
+
+    activityTicks.store(kBusyHysteresisFrames, std::memory_order_relaxed);
+    if (hdvTraceOn() && streamOffset == 0) {
+        const bool inRange =
+            (static_cast<size_t>(selectedBlock) + 1) * kBlockBytes <= image.size();
+        std::fprintf(stderr, "[HDV] WRITE blk=%u wb=%d%s\n",
+                     static_cast<unsigned>(selectedBlock), writeBackEnabled ? 1 : 0,
+                     inRange ? "" : " (OUT-OF-RANGE -> dropped)");
+    }
 
     const size_t absolute = static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
     if (absolute < image.size()) {

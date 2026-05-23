@@ -19,6 +19,7 @@
 #include "M6502.h"
 #include "Logger.h"
 #include "Memory.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -1697,6 +1698,68 @@ void M6502::setNMI(void)
 
 void M6502::step(void)
 {
+    // CPU crash trap (POM2_TRACE_HANG=1): a deterministic "plantage" where the
+    // PC jumps into non-code (stack page or $C0xx I/O) — i.e. it executes RAM
+    // data / soft-switch bytes as opcodes — is the signature of a corrupted
+    // jump/return after the city decompression. Catch the first such PC and
+    // dump the trail of the last 32 PCs so we see WHERE the bad jump came from.
+    {
+        static const bool crashTrap = std::getenv("POM2_TRACE_HANG") != nullptr;
+        if (crashTrap) {
+            static const int RN = 512;
+            static uint16_t ring[512] = {0};
+            static unsigned rpos = 0;
+            static bool dumped = false;
+            static uint16_t prevPc = 0xFFFF;
+            static long sameCount = 0;
+            ring[rpos % RN] = programCounter;
+            ++rpos;
+            const uint16_t pc = programCounter;
+            // Trace every entry to the $0080 ZP bank-switch trampoline with the
+            // ALTZP state + caller. Normal calls run with ALTZP=0 (main ZP, the
+            // only bank the routine was copied to); the fatal call has ALTZP=1
+            // → executes empty aux ZP → crash. The caller of that one is the
+            // culprit jump.
+            if ((pc == 0x0080 || pc == 0x0081) && memory) {
+                static int tn = 0;
+                if (tn++ < 90) {
+                    const uint16_t caller = ring[(rpos + RN - 2) % RN];
+                    std::fprintf(stderr,
+                        "[TRAMP] enter $%04X ALTZP=%d  caller=$%04X\n",
+                        pc, (memory->iieModeFlags() & 0x10) ? 1 : 0, caller);
+                }
+            }
+            // Self-loop detection: PC literally not advancing = a JMP-self /
+            // BRK-to-self-vector spin (the real freeze: $0081, $3231, …). Dump
+            // EARLY (after 200 identical PCs) so the 512-ring still holds the
+            // ~300 PCs BEFORE the loop = the jump that landed in garbage.
+            if (pc == prevPc) ++sameCount; else { sameCount = 0; prevPc = pc; }
+            const bool selfLoop = (sameCount == 200);
+            const bool ioCrash  = (pc >= 0xC000 && pc <= 0xC0FF);
+            if ((selfLoop || ioCrash) && !dumped) {
+                dumped = true;
+                std::fprintf(stderr,
+                    "\n*** POM2 %s — PC=$%04X ***\n",
+                    selfLoop ? "HANG: PC stuck (self-loop / BRK trap)"
+                             : "CPU CRASH (executing $C0xx I/O as code)",
+                    pc);
+                std::fprintf(stderr,
+                    "  A=%02X X=%02X Y=%02X SP=%02X P=%02X\n",
+                    getAccumulator(), getXRegister(), getYRegister(),
+                    getStackPointer(), getStatusRegister());
+                std::fprintf(stderr,
+                    "  PC trail (oldest -> newest, %d entries) — find where it left valid code:\n   ",
+                    RN);
+                for (int i = 0; i < RN; ++i) {
+                    std::fprintf(stderr, " %04X", ring[(rpos + i) % RN]);
+                    if ((i & 15) == 15) std::fprintf(stderr, "\n   ");
+                }
+                std::fprintf(stderr, "\n");
+                std::fflush(stderr);
+            }
+        }
+    }
+
     // STP-halted CPU: burn cycles, ignore IRQ/NMI (only RESET wakes,
     // and that's `softReset()` / `hardReset()` clearing `halted`).
     if (halted) {

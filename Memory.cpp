@@ -57,6 +57,43 @@ Memory::Memory()
     mem[0xFFFF] = 0xF8;
     mem[0xFFFA] = 0x00;
     mem[0xFFFB] = 0xF8;
+
+    // POM2_TRACE_HANG implies the bank-mismatch detector too, so one env var
+    // captures everything in a single run.
+    if (std::getenv("POM2_TRACE_BANK") || std::getenv("POM2_TRACE_HANG")) {
+        bankTrace_ = true;
+        writeBank_.assign(0xC000, static_cast<int8_t>(-1));
+        writeVal_.assign(0xC000, 0);
+        std::fprintf(stderr, "[BANK] write/read bank-mismatch detector ARMED\n");
+    }
+}
+
+void Memory::noteBankWrite(uint16_t addr, bool toAux, uint8_t v)
+{
+    if (!bankTrace_ || addr >= 0xC000) return;
+    writeBank_[addr] = toAux ? 1 : 0;
+    writeVal_[addr]  = v;
+}
+
+void Memory::checkBankRead(uint16_t addr, bool fromAux, uint8_t v)
+{
+    if (!bankTrace_ || addr >= 0xC000) return;
+    const int8_t wb = writeBank_[addr];
+    if (wb < 0) return;                         // never written this session
+    const int rb = fromAux ? 1 : 0;
+    if (rb != wb && v != writeVal_[addr]) {
+        static int n = 0;
+        if (n++ < 300) {
+            std::fprintf(stderr,
+                "[BANK] MISMATCH $%04X: wrote bank%d=%02X, read bank%d=%02X "
+                "(80STORE=%d RAMRD=%d RAMWRT=%d ALTZP=%d PAGE2=%d HIRES=%d) cyc=%llu\n",
+                addr, wb, writeVal_[addr], rb, v,
+                (iieMemMode & MF_80STORE) ? 1 : 0, (iieMemMode & MF_RAMRD) ? 1 : 0,
+                (iieMemMode & MF_RAMWRT) ? 1 : 0, (iieMemMode & MF_ALTZP) ? 1 : 0,
+                display.page2 ? 1 : 0, display.hiRes ? 1 : 0,
+                static_cast<unsigned long long>(cycleCounter));
+        }
+    }
 }
 
 void Memory::setCpu(M6502* c)
@@ -985,6 +1022,13 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
     if (on) iieMemMode |= flag;
     else    iieMemMode &= static_cast<uint16_t>(~flag);
 
+    if (bankTrace_ && flag == MF_ALTZP) {
+        std::fprintf(stderr, "[ALTZP] %s via $%04X  PC=$%04X cyc=%llu\n",
+                     on ? "ON " : "OFF", static_cast<unsigned>(addr),
+                     cpu ? static_cast<unsigned>(cpu->getProgramCounter()) : 0u,
+                     static_cast<unsigned long long>(cycleCounter));
+    }
+
     if (iieRebootTraceEnabled()) {
         static const char* names[8] = {
             "80STORE", "RAMRD", "RAMWRT", "INTCXROM",
@@ -1077,57 +1121,49 @@ uint8_t Memory::iieMemRead(uint16_t addr)
     // formally because the writers DO take the mutex, but no actual
     // race exists. Adding a per-access mutex acquire here would tank
     // performance (one lock per emulated bus cycle).
-    if (addr < 0x0200) {
-        return (iieMemMode & MF_ALTZP) ? aux[addr] : mem[addr];
-    }
     const bool ramrd = (iieMemMode & MF_RAMRD) != 0;
-    if (addr >= 0x0400 && addr <= 0x07FF) {
-        if (iieMemMode & MF_80STORE) {
-            const bool page2 = display.page2;
-            return page2 ? aux[addr] : mem[addr];
-        }
-        return ramrd ? aux[addr] : mem[addr];
+    bool fromAux;
+    if (addr < 0x0200) {
+        fromAux = (iieMemMode & MF_ALTZP) != 0;
+    } else if (addr >= 0x0400 && addr <= 0x07FF) {
+        fromAux = (iieMemMode & MF_80STORE) ? display.page2 : ramrd;
+    } else if (addr >= 0x2000 && addr <= 0x3FFF) {
+        fromAux = ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2 : ramrd;
+    } else {
+        fromAux = ramrd;
     }
-    if (addr >= 0x2000 && addr <= 0x3FFF) {
-        if ((iieMemMode & MF_80STORE) && display.hiRes) {
-            const bool page2 = display.page2;
-            return page2 ? aux[addr] : mem[addr];
-        }
-        return ramrd ? aux[addr] : mem[addr];
-    }
-    return ramrd ? aux[addr] : mem[addr];
+    const uint8_t v = fromAux ? aux[addr] : mem[addr];
+    if (bankTrace_) checkBankRead(addr, fromAux, v);
+    return v;
 }
 
 void Memory::iieMemWrite(uint16_t addr, uint8_t value)
 {
-    if (addr < 0x0200) {
-        if (iieMemMode & MF_ALTZP) aux[addr] = value;
-        else                       mem[addr] = value;
-        return;
-    }
     const bool ramwrt = (iieMemMode & MF_RAMWRT) != 0;
-    if (addr >= 0x0400 && addr <= 0x07FF) {
-        if (iieMemMode & MF_80STORE) {
-            if (display.page2) aux[addr] = value;
-            else               mem[addr] = value;
-            return;
-        }
-        if (ramwrt) aux[addr] = value;
-        else        mem[addr] = value;
-        return;
+    bool toAux;
+    if (addr < 0x0200) {
+        toAux = (iieMemMode & MF_ALTZP) != 0;
+    } else if (addr >= 0x0400 && addr <= 0x07FF) {
+        toAux = (iieMemMode & MF_80STORE) ? display.page2 : ramwrt;
+    } else if (addr >= 0x2000 && addr <= 0x3FFF) {
+        toAux = ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2 : ramwrt;
+    } else {
+        toAux = ramwrt;
     }
-    if (addr >= 0x2000 && addr <= 0x3FFF) {
-        if ((iieMemMode & MF_80STORE) && display.hiRes) {
-            if (display.page2) aux[addr] = value;
-            else               mem[addr] = value;
-            return;
-        }
-        if (ramwrt) aux[addr] = value;
-        else        mem[addr] = value;
-        return;
+    if (toAux) aux[addr] = value;
+    else       mem[addr] = value;
+    if (bankTrace_) {
+        noteBankWrite(addr, toAux, value);
+        // Trace writes to the $0080-$00AB zero-page trampoline region (the
+        // routine the Nox freeze jumps to) — shows which bank (main/aux) the
+        // game copies it into vs the ALTZP state when later executed.
+        if (addr >= 0x0080 && addr <= 0x00AB)
+            std::fprintf(stderr,
+                "[ZP] W $%04X=%02X -> %s (ALTZP=%d) cyc=%llu\n",
+                addr, value, toAux ? "AUX" : "MAIN",
+                (iieMemMode & MF_ALTZP) ? 1 : 0,
+                static_cast<unsigned long long>(cycleCounter));
     }
-    if (ramwrt) aux[addr] = value;
-    else        mem[addr] = value;
 }
 
 uint8_t Memory::languageCardSwitchAccess(uint16_t addr, bool isWrite)
@@ -1137,22 +1173,34 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr, bool isWrite)
     // $C080-$C087 select bank 2, $C088-$C08F select bank 1. Within each
     // half, the low two bits choose ROM/RAM read mode and whether the
     // prewrite latch is armed. $C084-$C087 mirror $C080-$C083.
-    const bool bank2 = (low4 & 0x08) == 0;
-    const uint8_t mode = low4 & 0x03;
-    const bool readRam = (mode == 0x00 || mode == 0x03);
-    const bool writeCandidate = (mode == 0x01 || mode == 0x03);
-    const bool previousPrewrite = lcPrewrite;
+    //
+    // Write-enable is STICKY (MAME apple2e.cpp:1506-1564 `lc_update`):
+    //   - any EVEN access ($C08{0,2,4,6,8,A,C,E}) clears prewrite AND
+    //     write-enable;
+    //   - any WRITE clears prewrite only — write-enable is left UNCHANGED
+    //     (so flipping the bank with `STA $C08x` mid-write keeps writes on);
+    //   - the first odd READ arms prewrite; a second consecutive odd READ
+    //     commits write-enable.
+    // The previous formula (`writeEnable = odd && prevPrewrite`, recomputed
+    // every access) diverged from this — it dropped/re-armed write-enable on
+    // repeated odd writes/reads, so a game that streams data into Language-
+    // Card RAM while toggling banks (Nox Archaist's city decompressor, into
+    // aux LC at $D000) had its LC writes silently dropped → corrupt $D000
+    // code → crash. Pin: tests/iie_langcard_writeenable_smoke_test.cpp.
+    if ((low4 & 1) == 0) {            // even access: disable prewrite + writing
+        lcPrewrite    = false;
+        lcWriteEnable = false;
+    }
+    if (isWrite) {                    // any write disables prewrite (WE unchanged)
+        lcPrewrite = false;
+    } else if ((low4 & 1) == 1) {     // odd read: arm, then commit
+        if (!lcPrewrite) lcPrewrite = true;
+        else             lcWriteEnable = true;
+    }
 
-    lcBank2Active = bank2;
-    lcReadRam = readRam;
-    lcWriteEnable = writeCandidate && previousPrewrite;
-    // Pre-write latch: armed only by READ-cycle accesses (`LDA $C08x`,
-    // `BIT $C08x`). Any STORE to $C08x clears the latch — MAME
-    // ramcard16k.cpp:61-64 + apple2e.cpp:1515-1520 "any write disables
-    // pre-write". This is what makes the classic enable sequence
-    // `LDA $C081 / LDA $C081` work (two reads arm + commit) while
-    // `STA $C081 / STA $C081` does NOT enable RAM writes.
-    lcPrewrite = isWrite ? false : writeCandidate;
+    const uint8_t mode = low4 & 0x03;
+    lcReadRam     = (mode == 0x00 || mode == 0x03);   // 0/3 = RAM, 1/2 = ROM
+    lcBank2Active = (low4 & 0x08) == 0;                // bank2 when !(offset&8)
 
     // The card itself does not drive the data lines for $C08x — the byte
     // the CPU reads is whatever the video DMA last latched onto the bus.
@@ -1290,6 +1338,57 @@ void Memory::languageCardWrite(uint16_t addr, uint8_t value)
     else        lcHigh[addr - 0xE000] = value;
 }
 
+std::string Memory::recentIoReadSummary() const
+{
+    const uint32_t n = (ioReadRingPos_ < kIoReadRing) ? ioReadRingPos_ : kIoReadRing;
+    if (n == 0) return "(none captured)";
+    uint16_t addrs[kIoReadRing];
+    int      cnts [kIoReadRing];
+    int t = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint16_t a = ioReadRing_[(ioReadRingPos_ - 1 - i) % kIoReadRing];
+        int j = 0;
+        for (; j < t; ++j) if (addrs[j] == a) { ++cnts[j]; break; }
+        if (j == t) { addrs[t] = a; cnts[t] = 1; ++t; }
+    }
+    // Sort distinct addresses by descending count (t is tiny).
+    for (int i = 0; i < t; ++i)
+        for (int j = i + 1; j < t; ++j)
+            if (cnts[j] > cnts[i]) {
+                int ct = cnts[i]; cnts[i] = cnts[j]; cnts[j] = ct;
+                uint16_t at = addrs[i]; addrs[i] = addrs[j]; addrs[j] = at;
+            }
+    auto label = [](uint16_t a) -> const char* {
+        switch (a) {
+            case 0xC000: return "KBD";
+            case 0xC010: return "KBDSTRB";
+            case 0xC011: case 0xC012: return "LCSTATE";
+            case 0xC019: return "RDVBL";
+            case 0xC01F: return "RD80COL";
+            case 0xC061: return "PB0/OpenApple";
+            case 0xC062: return "PB1/SolidApple";
+            case 0xC064: case 0xC065: return "PADDLE";
+            default: break;
+        }
+        if (a >= 0xC0E0 && a <= 0xC0EF) return "DISKII/IWM";
+        if (a >= 0xC0D0 && a <= 0xC0DF) return "HDV(slot5)";
+        return "";
+    };
+    std::string out;
+    const int show = (t < 8) ? t : 8;
+    char buf[24];
+    for (int i = 0; i < show; ++i) {
+        if (i) out += "  ";
+        std::snprintf(buf, sizeof(buf), "$%04X", addrs[i]);
+        out += buf;
+        const char* lab = label(addrs[i]);
+        if (*lab) { out += '('; out += lab; out += ')'; }
+        std::snprintf(buf, sizeof(buf), "x%d", cnts[i]);
+        out += buf;
+    }
+    return out;
+}
+
 uint8_t Memory::memRead(uint16_t addr)
 {
     // Klaus harness: flat 64 KB RAM, no side effects.
@@ -1301,6 +1400,10 @@ uint8_t Memory::memRead(uint16_t addr)
         return iieMode ? iieMemRead(addr) : mem[addr];
     }
     if (addr >= 0xD000) return languageCardRead(addr);
+
+    // Diagnostic: record $C000-$C0FF reads (soft switches + slot registers)
+    // so the hang detector can show which register a frozen loop polls.
+    if (addr <= 0xC0FF) noteIoRead(addr);
 
     // $C000-$C07F — built-in I/O page (keyboard, speaker, cassette,
     // display soft switches, paddles).

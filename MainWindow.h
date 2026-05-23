@@ -330,6 +330,7 @@ private:
     void renderCassetteDeckWindow(float deltaSeconds);
     void renderTapeFileDialogs();
     void renderPasteFileDialog();
+    void updateAutoTurbo();
     void renderDiskPanelWindow();
     void renderDiskFileDialog();
     void renderDiskLibraryWindow();

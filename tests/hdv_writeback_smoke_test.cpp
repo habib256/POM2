@@ -5,9 +5,14 @@
 //     creator/comment chunk all survive a save bit-for-bit; only the
 //     data window is updated.
 //   - 2MG write-protected flag (offset 16 bit 0) is honoured even when
-//     the user opts in via setWriteBackEnabled(true).
-//   - Default write-back-OFF: writes go nowhere (image stays clean,
-//     hasUnsavedChanges() stays false), file untouched on eject.
+//     the user opts in via setWriteBackEnabled(true) — only the real medium
+//     WP flag blocks writes outright.
+//   - write-back-OFF: writes still land in RAM (image becomes dirty and
+//     reads back the new bytes — the running session sees a read/write
+//     volume) but are NOT flushed to the host file on eject; the file stays
+//     byte-for-byte unchanged. This is the fix for games that write state on
+//     the fly (e.g. Nox Archaist entering a city) crashing on a default-
+//     mounted HDV that used to surface as write-protected to ProDOS.
 
 #include "ProDOSHardDiskCard.h"
 
@@ -80,10 +85,10 @@ int main()
         ProDOSHardDiskCard card;
         assert(card.loadImage(p.string()));
         assert(card.getBlockCount() == 4);
-        assert(card.canWriteBack());                 // not WP
-        assert(card.isWriteProtected());             // user hasn't opted in
+        assert(card.canWriteBack());                 // not WP (no header flag)
+        assert(!card.isWriteProtected());            // no medium WP → R/W in session
         card.setWriteBackEnabled(true);
-        assert(!card.isWriteProtected());
+        assert(!card.isWriteProtected());            // write-back doesn't drive WP
 
         uint8_t pattern[kBlock];
         for (size_t i = 0; i < kBlock; ++i) {
@@ -210,7 +215,10 @@ int main()
         std::printf("hdv_writeback: 2MG WP flag honoured OK\n");
     }
 
-    // ── Case D: default write-back OFF — writes silently dropped ────────
+    // ── Case D: write-back OFF — writes land in RAM, host file stays clean ─
+    // New contract: a hard disk with no medium WP flag is read/write to the
+    // running session even with write-back off; only PERSISTING those RAM
+    // changes to the host file is gated by the opt-in.
     {
         const fs::path p = tmpFile("d", ".hdv");
         std::vector<uint8_t> file(2 * kBlock, 0);
@@ -224,19 +232,28 @@ int main()
         assert(card.loadImage(p.string()));
         assert(card.canWriteBack());
         // Don't call setWriteBackEnabled(true).
-        assert(card.isWriteProtected());
+        assert(!card.isWriteProtected());            // R/W in session
 
         uint8_t pattern[kBlock];
         std::memset(pattern, 0xAA, sizeof(pattern));
         cardWriteBlock(card, 0, pattern);
-        assert(!card.hasUnsavedChanges());
-        card.ejectImage();
+        assert(card.hasUnsavedChanges());            // write reached RAM
+
+        // Read-back through the card returns the freshly written bytes
+        // (re-select block 0 to rewind streamOffset to 0).
+        card.deviceSelectWrite(0x0, 0x00);
+        card.deviceSelectWrite(0x1, 0x00);
+        for (size_t i = 0; i < kBlock; ++i) {
+            assert(card.deviceSelectRead(0x2) == pattern[i]);
+        }
+
+        card.ejectImage();                           // write-back off → no flush
 
         const auto after = readAll(p);
-        assert(after == original);
+        assert(after == original);                   // host file untouched
 
         fs::remove(p);
-        std::printf("hdv_writeback: opt-in default OFF OK\n");
+        std::printf("hdv_writeback: write-back OFF = RAM-only OK\n");
     }
 
     std::printf("hdv_writeback_smoke OK\n");

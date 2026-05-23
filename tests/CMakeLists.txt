@@ -487,6 +487,84 @@ add_test(NAME hdv_writeback_smoke COMMAND test_hdv_writeback)
 set_tests_properties(hdv_writeback_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── HDV RAM-writable smoke test ──────────────────────────────────────────
+# Pins the Nox-Archaist crash fix: a hard disk with no medium WP flag is a
+# read/write volume to ProDOS (status $Cn03 bit6 clear) even with write-back
+# off; RAM writes round-trip; host file untouched. A 2MG header WP flag is
+# still honoured (status bit6 set, writes dropped).
+add_executable(test_hdv_ram_writable
+    hdv_ram_writable_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_hdv_ram_writable PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_hdv_ram_writable PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_hdv_ram_writable PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_hdv_ram_writable PRIVATE winmm)
+endif()
+
+add_test(NAME hdv_ram_writable_smoke COMMAND test_hdv_ram_writable)
+set_tests_properties(hdv_ram_writable_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── //e auxiliary-memory paging conformance ──────────────────────────────
+# Pins POM2's //e MMU bank selection (RAMRD/RAMWRT/80STORE/PAGE2/HIRES/ALTZP
+# across all address ranges + write-only paging switches) against documented
+# Apple //e behaviour. Motivated by the Nox Archaist city-entry freeze.
+add_executable(test_iie_aux_paging
+    iie_aux_paging_conformance_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iie_aux_paging PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iie_aux_paging PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iie_aux_paging PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iie_aux_paging PRIVATE winmm)
+endif()
+
+add_test(NAME iie_aux_paging_conformance COMMAND test_iie_aux_paging)
+set_tests_properties(iie_aux_paging_conformance PROPERTIES TIMEOUT 5)
+
+
+# ─── //e Language-Card write-enable conformance (MAME lc_update parity) ────
+# Pins the $C08x prewrite/write-enable state machine to MAME apple2e.cpp
+# lc_update. Regression guard for the Nox Archaist crash (dropped LC RAM
+# writes from a non-sticky write-enable).
+add_executable(test_iie_langcard_we
+    iie_langcard_writeenable_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iie_langcard_we PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iie_langcard_we PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iie_langcard_we PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iie_langcard_we PRIVATE winmm)
+endif()
+
+add_test(NAME iie_langcard_writeenable COMMAND test_iie_langcard_we)
+set_tests_properties(iie_langcard_writeenable PROPERTIES TIMEOUT 5)
+
+
 # ─── ProDOS host-folder volume synthesizer smoke test ─────────────────────
 # Builds a synthetic ProDOS volume from a temp folder of host files.
 # Pins: volume header bytes (storage_type, name, file_count, total_blocks),
@@ -1275,6 +1353,7 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${POM2_TEST_CORE_SOURCES}

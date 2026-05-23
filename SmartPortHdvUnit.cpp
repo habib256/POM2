@@ -30,7 +30,11 @@ bool SmartPortHdvUnit::readBlock(uint32_t idx, uint8_t* out) const
 bool SmartPortHdvUnit::writeBlock(uint32_t idx, const uint8_t* in)
 {
     if (!loaded_ || !in) return false;
-    if (writeProtectedHeader_ || !writeBackEnabled_) return false;
+    // Only the real medium WP flag blocks the write. write-back-off still
+    // accepts the write into RAM (so the session is read/write); it just
+    // won't be flushed to the host file by saveDirty(). Mirrors
+    // ProDOSHardDiskCard::writeDataByte.
+    if (writeProtectedHeader_) return false;
     const std::size_t off = static_cast<std::size_t>(idx) * kBlockBytes;
     if (off + kBlockBytes > image_.size()) return false;
     std::memcpy(image_.data() + off, in, kBlockBytes);

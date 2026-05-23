@@ -315,7 +315,35 @@ public:
     void advanceCycles(int cycles);
     uint64_t getCycleCounter() const { return cycleCounter; }
 
+    // $C0xx I/O read tracer (POM2_TRACE_HANG diagnostics). Records recent
+    // soft-switch / slot-register read addresses so a frozen poll loop can be
+    // identified by WHICH register it spins on — independent of where the code
+    // lives or how aux/main RAM is paged at dump time. No-op unless enabled.
+    void setIoReadTrace(bool on) { ioReadTrace_ = on; }
+    std::string recentIoReadSummary() const;
+
 private:
+    void noteIoRead(uint16_t a) {
+        if (!ioReadTrace_) return;
+        ioReadRing_[ioReadRingPos_ % kIoReadRing] = a;
+        ++ioReadRingPos_;
+    }
+    static constexpr uint32_t kIoReadRing = 128;
+    bool     ioReadTrace_   = false;
+    uint16_t ioReadRing_[kIoReadRing] = {};
+    uint32_t ioReadRingPos_ = 0;
+
+    // Bank-mismatch detector (POM2_TRACE_BANK=1): per-address shadow of the
+    // bank the last write went to (+ the value), so a read returning data from
+    // a DIFFERENT bank than it was written to is flagged — the signature of
+    // the Nox decompressor output landing in the wrong aux/main bank.
+    bool                 bankTrace_ = false;
+    std::vector<int8_t>  writeBank_;   // -1 none / 0 main / 1 aux, sized $C000
+    std::vector<uint8_t> writeVal_;
+    void noteBankWrite(uint16_t addr, bool toAux, uint8_t v);
+    void checkBankRead(uint16_t addr, bool fromAux, uint8_t v);
+
+
     std::array<uint8_t, 0x10000> mem{};       // flat 64 KB RAM/ROM mirror
     std::array<bool,    0x10000> writable{};  // false in ROM regions
     // Apple II/II+ 16 KB Language Card. $D000-$DFFF has two 4 KB banks;

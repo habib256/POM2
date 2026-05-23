@@ -154,14 +154,17 @@ bool testMixedStatus()
     if ((readReg(card, 0x4) & 0x80) != 0) {
         std::printf("FAIL: loaded HDV status bit7 still set\n"); return false;
     }
-    // HDV with writeBack off → bit6 (WP) set.
-    if ((readReg(card, 0x4) & 0x40) == 0) {
-        std::printf("FAIL: HDV WP bit not set with writeBack off\n");
+    // Raw .hdv has no medium WP flag, so ProDOS sees a read/write volume
+    // regardless of the host-file write-back preference. write-back only
+    // gates whether RAM writes are flushed back to the file (saveDirty),
+    // not in-session read/write — so the WP bit stays clear either way.
+    if ((readReg(card, 0x4) & 0x40) != 0) {
+        std::printf("FAIL: HDV WP bit set with no medium WP flag (writeBack off)\n");
         return false;
     }
     uraw->setWriteBackEnabled(true);
     if ((readReg(card, 0x4) & 0x40) != 0) {
-        std::printf("FAIL: HDV WP bit still set after writeBack on\n");
+        std::printf("FAIL: HDV WP bit set after writeBack on\n");
         return false;
     }
     std::printf("OK : per-unit status routing\n");

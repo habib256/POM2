@@ -8,6 +8,7 @@
 //
 // Not registered as a CTest target — debug aid only.
 
+#include "Apple2Display.h"
 #include "DiskIICard.h"
 #include "Disassembler6502.h"
 #include "M6502.h"
@@ -36,6 +37,26 @@ std::string findFirst(std::initializer_list<const char*> candidates)
     return {};
 }
 
+void writePpm(Apple2Display& disp, Memory& mem, const std::string& path)
+{
+    disp.render(mem);
+    const uint32_t* px = disp.pixels();
+    const int w = disp.width(), h = disp.height();
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return;
+    std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+    for (int i = 0; i < w * h; ++i) {
+        const uint32_t p = px[i];
+        const unsigned char rgb[3] = {
+            static_cast<unsigned char>( p        & 0xFF),
+            static_cast<unsigned char>((p >>  8) & 0xFF),
+            static_cast<unsigned char>((p >> 16) & 0xFF),
+        };
+        std::fwrite(rgb, 1, 3, f);
+    }
+    std::fclose(f);
+}
+
 void dumpScreen(Memory& mem, const char* label)
 {
     std::printf("=== SCREEN %s ===\n", label);
@@ -57,10 +78,37 @@ int main(int argc, char** argv)
 {
     std::string hdvImage;
     int budgetSec = 20;
+    std::string keysRaw;        // fed one key per keyboard-wait
+    int keysAtSec = -1;         // unused now; kept for compat
+    std::string shotDir;        // if set, write a PPM screenshot each second
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--image" && i + 1 < argc) hdvImage = argv[++i];
         else if (a == "--seconds" && i + 1 < argc) budgetSec = std::atoi(argv[++i]);
+        else if (a == "--keys" && i + 1 < argc) keysRaw = argv[++i];
+        else if (a == "--keys-at" && i + 1 < argc) keysAtSec = std::atoi(argv[++i]);
+        else if (a == "--shotdir" && i + 1 < argc) shotDir = argv[++i];
+    }
+    // Decode escapes in the key script: \r=Return(0x0D), \n=0x0D, \e=Esc(0x1B),
+    // \t=Tab, \\=backslash. Everything else is taken verbatim (ASCII).
+    std::string keys;
+    for (size_t i = 0; i < keysRaw.size(); ++i) {
+        if (keysRaw[i] == '\\' && i + 1 < keysRaw.size()) {
+            char c = keysRaw[++i];
+            switch (c) {
+                case 'r': case 'n': keys.push_back('\r'); break;
+                case 'e': keys.push_back('\x1b'); break;
+                case 't': keys.push_back('\t'); break;
+                // Apple //e arrow keys.
+                case 'u': keys.push_back('\x0b'); break;   // up
+                case 'd': keys.push_back('\x0a'); break;   // down
+                case 'l': keys.push_back('\x08'); break;   // left
+                case 'g': keys.push_back('\x15'); break;   // right
+                default:  keys.push_back(c); break;
+            }
+        } else {
+            keys.push_back(keysRaw[i]);
+        }
     }
     if (hdvImage.empty()) {
         std::fprintf(stderr, "Usage: %s --image <path.2mg|.hdv> [--seconds N]\n",
@@ -78,6 +126,7 @@ int main(int argc, char** argv)
 
     Memory mem;
     mem.setIIEMode(true);
+    mem.setIoReadTrace(true);   // record $C0xx reads for the wait-loop tally
     if (!mem.loadAppleIIRom(romPath.c_str())) {
         std::fprintf(stderr, "loadAppleIIRom failed\n");
         return 1;
@@ -91,6 +140,9 @@ int main(int argc, char** argv)
     }
     mem.slotBus().plug(5, std::move(hdv));
 
+    Apple2Display disp;
+    disp.setAuxMemory(mem.auxData());
+
     M6502 cpu(&mem);
     cpu.hardReset();
     mem.slotBus().reset();
@@ -103,6 +155,9 @@ int main(int argc, char** argv)
     int total = 0;
     int lastSec = -1;
     uint16_t lastPC = 0;
+    bool keysFed = false;
+    size_t keyIdx = 0;
+    int lastFeedSec = -100;
     bool brkSeen = false;
     uint16_t brkPC = 0;
     uint8_t brkA = 0, brkX = 0, brkY = 0, brkP = 0, brkS = 0;
@@ -147,12 +202,38 @@ int main(int argc, char** argv)
         lastPC = pc;
 
         const int sec = total / 1'022'727;
-        if (sec != lastSec && (sec % 5 == 0)) {
-            std::printf("\n[t=%ds] PC=$%04X\n", sec, pc);
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "t=%ds", sec);
-            dumpScreen(mem, buf);
+        if (sec != lastSec) {
+            const std::string tally = mem.recentIoReadSummary();
+            std::printf("[t=%2ds] PC=$%04X  io: %s\n", sec, pc, tally.c_str());
             lastSec = sec;
+            if (!shotDir.empty())
+                writePpm(disp, mem, shotDir + "/f" + std::to_string(sec) + ".ppm");
+            // Feed the key script ONE key per input-responsive moment: when
+            // the recent reads include $C000 (the game is polling the
+            // keyboard) and a minimum gap has elapsed since the last key, so
+            // each key lands on its own prompt (title → slot → moves → enter).
+            (void)keysFed; (void)keysAtSec;
+            // Key feeding. The first two keys (Return on the title, '1' at the
+            // slot prompt) are STATIC menu screens: feed only when $C000 is the
+            // top read AND there is NO $C019/VBL (i.e. NOT the animated title —
+            // feeding during the title animation gets the key dropped). The
+            // remaining keys (↑ ↑ E) act on the OVERWORLD, which animates (VBL
+            // present), so just require $C000 to be the top read. 3 s gap so
+            // each key lands on its own prompt. pasteRawKeys uses the proven
+            // FIFO+strobe path.
+            const bool c000top  = (tally.rfind("$C000", 0) == 0);
+            const bool noVbl    = (tally.find("$C019") == std::string::npos);
+            const bool menuKey  = (keyIdx < 2);
+            const bool ready    = menuKey ? (c000top && noVbl) : c000top;
+            if (keyIdx < keys.size() && (sec - lastFeedSec) >= 3 && ready) {
+                const char k = keys[keyIdx];
+                mem.pasteRawKeys(&k, 1);
+                std::printf("    >>> fed key[%zu] = 0x%02X ('%c')\n",
+                            keyIdx, (unsigned char)k,
+                            (k >= 32 && k < 127) ? k : '.');
+                ++keyIdx;
+                lastFeedSec = sec;
+            }
         }
     }
 
@@ -257,6 +338,26 @@ int main(int argc, char** argv)
                     cpu.getProgramCounter(), cpu.getAccumulator(),
                     cpu.getXRegister(), cpu.getYRegister(),
                     cpu.getStackPointer(), cpu.getStatusRegister());
+        std::printf("recent $C0xx reads (most-polled first):\n  %s\n",
+                    mem.recentIoReadSummary().c_str());
+        // Zero-page trampoline diagnosis: the freeze jumps to $0081 (empty →
+        // BRK). Show ZP $0040-$00BF in BOTH banks + paging, to see whether the
+        // trampoline routine is in main or aux (or neither).
+        std::printf("//e paging flags=$%04X (ALTZP=%d RAMRD=%d RAMWRT=%d 80STORE=%d)\n",
+                    (unsigned)mem.iieModeFlags(),
+                    (mem.iieModeFlags() & 0x10) ? 1 : 0,
+                    (mem.iieModeFlags() & 0x02) ? 1 : 0,
+                    (mem.iieModeFlags() & 0x04) ? 1 : 0,
+                    (mem.iieModeFlags() & 0x01) ? 1 : 0);
+        const uint8_t* mn = mem.data();
+        const uint8_t* ax = mem.auxData();
+        for (uint16_t base = 0x0000; base < 0x00C0; base += 16) {
+            std::printf("  ZP $%04X main:", base);
+            for (int k = 0; k < 16; ++k) std::printf(" %02X", mn[base + k]);
+            std::printf("\n          aux :");
+            for (int k = 0; k < 16; ++k) std::printf(" %02X", ax[base + k]);
+            std::printf("\n");
+        }
         dumpScreen(mem, "final");
     }
     return 0;

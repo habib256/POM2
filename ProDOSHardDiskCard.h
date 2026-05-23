@@ -21,6 +21,7 @@
 #include "SlotPeripheral.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -58,14 +59,42 @@ public:
     const std::string& getLastError() const { return lastError; }
     size_t getBlockCount() const { return image.size() / kBlockBytes; }
 
-    /// User opt-in for write-back. Default off — disk-image files and host
-    /// folders are not modified until the user explicitly enables it.
-    bool isWriteProtected()  const { return !writeBackEnabled || writeProtectedHeader; }
+    /// Hardware write-protect, as seen by the emulated ProDOS driver. This
+    /// reflects ONLY the real medium's WP state (the 2MG header flag) — NOT
+    /// the host-file write-back preference. A real hard disk presents a
+    /// read/write volume to the OS; "don't modify my .hdv file" is a separate
+    /// host-side concern handled by `writeBackEnabled` (see writeDataByte /
+    /// saveDirty). Conflating the two used to make ProDOS see a write-
+    /// protected boot volume by default, so games that write state on the fly
+    /// (e.g. Nox Archaist entering a city) got an unexpected $2B error and
+    /// crashed. Cf. AppleWin Harddisk.cpp: image writes always land in RAM;
+    /// a separate read-only flag gates the medium.
+    bool isWriteProtected()  const { return writeProtectedHeader; }
+    /// User opt-in for persisting RAM writes back to the host .hdv/.2mg file.
+    /// Default off — the in-session volume is fully writable either way, but
+    /// the file on disk is not modified until the user explicitly enables it.
     bool isWriteBackEnabled() const { return writeBackEnabled; }
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
     bool canWriteBack()       const { return supportsWriteBack && !writeProtectedHeader; }
     bool hasUnsavedChanges() const { return anyDirty; }
     bool isSynthVolumeMounted() const { return isSynthVolume; }
+
+    /// Recent block-I/O activity, used by MainWindow's auto-turbo. A ProDOS
+    /// hard disk has no "motor" line like the Disk II, so we treat any access
+    /// to the streaming data port as activity and decay it over a few UI
+    /// frames (hysteresis) so a multi-block load stays in turbo end-to-end.
+    /// Lock-free: the data port is touched on the CPU thread while the UI
+    /// thread polls at 60 Hz.
+    bool isBusy() const
+    {
+        return activityTicks.load(std::memory_order_relaxed) > 0;
+    }
+    /// Called once per UI frame by the turbo poller to bleed off activity.
+    void tickActivityDecay()
+    {
+        uint32_t v = activityTicks.load(std::memory_order_relaxed);
+        if (v) activityTicks.store(v - 1, std::memory_order_relaxed);
+    }
     /// Persist all dirty 512-byte blocks back to the source file (.hdv/.2mg)
     /// preserving the 2MG container header verbatim, OR for synth volumes,
     /// decode the modified volume back to the host folder. No-op when
@@ -98,6 +127,13 @@ private:
 
     uint16_t selectedBlock = 0;
     size_t streamOffset = 0;       // byte offset within the selected 512-byte block
+
+    // Auto-turbo busy signal: reloaded on every data-port access, decayed one
+    // step per UI frame by tickActivityDecay(). kBusyHysteresisFrames keeps
+    // turbo engaged across the short gaps between consecutive block reads in a
+    // single ProDOS load.
+    static constexpr uint32_t kBusyHysteresisFrames = 8;
+    mutable std::atomic<uint32_t> activityTicks{0};
 
     void buildRom();
     uint8_t readDataByte();

@@ -41,9 +41,12 @@ public:
     std::string_view kindLabel() const override { return kKindLabel; }
 
     bool     isLoaded()         const override { return loaded_; }
-    bool     isWriteProtected() const override {
-        return !writeBackEnabled_ || writeProtectedHeader_;
-    }
+    // Reflects ONLY the real medium WP flag (2MG header), not the host-file
+    // write-back preference — so ProDOS sees a read/write volume by default
+    // and games that write state on the fly don't hit a spurious WP error.
+    // Persisting RAM writes to the file is the separate writeBackEnabled_
+    // opt-in (see writeBlock / saveDirty). Mirrors ProDOSHardDiskCard.
+    bool     isWriteProtected() const override { return writeProtectedHeader_; }
     uint32_t blockCount() const override {
         return static_cast<uint32_t>(image_.size() / kBlockBytes);
     }

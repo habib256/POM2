@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 
 EmulationController::EmulationController()
@@ -353,6 +354,95 @@ void EmulationController::workerLoop()
     using clock = std::chrono::steady_clock;
     auto nextTick = clock::now();
 
+    // ── Hang detector (POM2_TRACE_HANG=1) ──────────────────────────────────
+    // Diagnostic for deterministic freezes (e.g. Nox Archaist hanging when
+    // entering a city): if the CPU stays confined to a small PC window for a
+    // few seconds it is spinning in a wait loop. We disassemble that loop so
+    // the operand reveals exactly which hardware register the game is polling
+    // forever ($C019 VBL / $C0EC disk data / $C0D3 HDV status / $C000 kbd …),
+    // which pinpoints the missing/incorrect emulation. Near-zero cost when off.
+    const bool hangTrace = std::getenv("POM2_TRACE_HANG") != nullptr;
+    if (hangTrace) mem.setIoReadTrace(true);
+    constexpr int kHangSamples = 180;        // ~3 s at 60 Hz
+    uint16_t pcRing[kHangSamples] = {0};
+    int  pcRingCount = 0;
+    int  pcRingHead  = 0;
+    bool hangDumped     = false;
+    int  framesConfined = 0;
+    auto dumpHang = [&](uint16_t lo, uint16_t hi, bool repeat) {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        std::fprintf(stderr,
+            "\n*** POM2 %s — CPU confined to $%04X..$%04X ***\n",
+            repeat ? "STILL FROZEN (permanent loop — this is the real freeze)"
+                   : "HANG DETECTED (could be a slow chunk; watch for STILL FROZEN)",
+            lo, hi);
+        std::fprintf(stderr,
+            "  A=%02X X=%02X Y=%02X SP=%02X P=%02X PC=%04X  cycles=%llu\n",
+            processor.getAccumulator(), processor.getXRegister(),
+            processor.getYRegister(), processor.getStackPointer(),
+            processor.getStatusRegister(), processor.getProgramCounter(),
+            static_cast<unsigned long long>(mem.getCycleCounter()));
+        const uint16_t mm = mem.iieModeFlags();
+        std::fprintf(stderr,
+            "  //e paging: 80STORE=%d RAMRD=%d RAMWRT=%d INTCXROM=%d ALTZP=%d "
+            "80COL=%d (flags=$%04X)\n",
+            (mm & Memory::MF_80STORE) ? 1 : 0, (mm & Memory::MF_RAMRD) ? 1 : 0,
+            (mm & Memory::MF_RAMWRT) ? 1 : 0, (mm & Memory::MF_INTCXROM) ? 1 : 0,
+            (mm & Memory::MF_ALTZP) ? 1 : 0, (mm & Memory::MF_80COL) ? 1 : 0,
+            static_cast<unsigned>(mm));
+        const uint16_t start = (lo >= 3) ? static_cast<uint16_t>(lo - 3) : 0;
+        const uint16_t end   = static_cast<uint16_t>(hi + 8);
+        std::fprintf(stderr, "  loop bytes (as currently paged; may be aux RAM):\n");
+        for (uint32_t a = start; a <= end; a += 16) {
+            std::fprintf(stderr, "    $%04X:", static_cast<unsigned>(a));
+            for (uint32_t k = 0; k < 16 && (a + k) <= end; ++k)
+                std::fprintf(stderr, " %02X",
+                             mem.memRead(static_cast<uint16_t>(a + k)));
+            std::fprintf(stderr, "\n");
+        }
+        std::fprintf(stderr,
+            "  recent $C0xx reads (addr(label)xcount, most-polled first):\n    %s\n",
+            mem.recentIoReadSummary().c_str());
+        // Zero-page pointers used by the decompressor + the buffer it reads,
+        // so we can compare the in-RAM compressed data against the .hdv to
+        // tell data-corruption (disk/paging bug) from a pure logic/CPU bug.
+        const uint8_t z04 = mem.memRead(0x04), z05 = mem.memRead(0x05);
+        const uint8_t z06 = mem.memRead(0x06), z07 = mem.memRead(0x07);
+        const uint8_t zEA = mem.memRead(0xEA), zEB = mem.memRead(0xEB);
+        const uint8_t zEC = mem.memRead(0xEC), zED = mem.memRead(0xED);
+        std::fprintf(stderr,
+            "  ZP: $04=%02X $05=%02X $06=%02X $07=%02X  out($EA/EB)=%02X%02X"
+            "  in($EC/ED)=%02X%02X\n",
+            z04, z05, z06, z07, zEB, zEA, zED, zEC);
+        const uint16_t inPtr = static_cast<uint16_t>(zEC | (zED << 8));
+        std::fprintf(stderr, "  bytes around input ptr $%04X (current paging):\n",
+                     inPtr);
+        for (int row = -16; row < 32; row += 16) {
+            const uint16_t base = static_cast<uint16_t>(inPtr + row);
+            std::fprintf(stderr, "    $%04X:", base);
+            for (int k = 0; k < 16; ++k)
+                std::fprintf(stderr, " %02X",
+                             mem.memRead(static_cast<uint16_t>(base + k)));
+            std::fprintf(stderr, "\n");
+        }
+        // Decisive: the SAME input addresses in BOTH physical banks. Tells us
+        // whether the real (compressed, non-$00FF) data is in main or aux —
+        // i.e. whether the decompressor is reading the WRONG bank, or the data
+        // was never written to the bank it expects.
+        const uint8_t* mn = mem.data();
+        const uint8_t* ax = mem.auxData();
+        std::fprintf(stderr, "  input region MAIN vs AUX (which bank holds real data?):\n");
+        for (int row = -16; row < 32; row += 16) {
+            const uint16_t base = static_cast<uint16_t>(inPtr + row);
+            std::fprintf(stderr, "    $%04X main:", base);
+            for (int k = 0; k < 16; ++k) std::fprintf(stderr, " %02X", mn[(base + k) & 0xFFFF]);
+            std::fprintf(stderr, "\n            aux :");
+            for (int k = 0; k < 16; ++k) std::fprintf(stderr, " %02X", ax[(base + k) & 0xFFFF]);
+            std::fprintf(stderr, "\n");
+        }
+        std::fflush(stderr);
+    };
+
     while (!exitRequested.load()) {
         const Mode m = mode.load();
 
@@ -420,6 +510,40 @@ void EmulationController::workerLoop()
             std::lock_guard<std::mutex> lk(stateMtx);
             iwmDev->tick(mem.getCycleCounter());
         }
+
+        // Hang detector: sample end-of-frame PC; if every sample over the
+        // last ~3 s sits inside a small window, the CPU is stuck in a wait
+        // loop — dump it once.
+        if (hangTrace) {
+            const uint16_t pc = processor.getProgramCounter();
+            pcRing[pcRingHead] = pc;
+            pcRingHead = (pcRingHead + 1) % kHangSamples;
+            if (pcRingCount < kHangSamples) ++pcRingCount;
+            if (pcRingCount == kHangSamples) {
+                uint16_t lo = 0xFFFF, hi = 0;
+                for (int i = 0; i < kHangSamples; ++i) {
+                    lo = std::min(lo, pcRing[i]);
+                    hi = std::max(hi, pcRing[i]);
+                }
+                if (hi - lo <= 0x2000) {   // wide window: catch big freeze loops too
+                    // Confined. Dump once immediately, then keep re-dumping
+                    // every ~3 s while STILL confined — a transient slow chunk
+                    // dumps once then escapes; a permanent freeze keeps
+                    // printing "STILL FROZEN".
+                    if (!hangDumped) {
+                        hangDumped = true; framesConfined = 0;
+                        dumpHang(lo, hi, /*repeat=*/false);
+                    } else if (++framesConfined >= kHangSamples) {
+                        framesConfined = 0;
+                        dumpHang(lo, hi, /*repeat=*/true);
+                    }
+                } else {
+                    hangDumped = false;   // PC escaped — re-arm for next freeze
+                    framesConfined = 0;
+                }
+            }
+        }
+
         nextTick += std::chrono::microseconds(1'000'000 / 60);
         const auto now = clock::now();
         if (now < nextTick) {

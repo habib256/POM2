@@ -2217,6 +2217,49 @@ void MainWindow::renderMockingboardPanelWindow()
 
 // ─── Disk II ─────────────────────────────────────────────────────────────
 
+void MainWindow::updateAutoTurbo()
+{
+    // Auto-turbo: while a disk is actively streaming, crank the CPU to ~60x
+    // emulated so loads don't crawl at 1 MHz. Two activity sources:
+    //
+    //   • DiskII (5.25"): the motor line. Multi-instance friendly — one card
+    //     spinning up is enough to enter turbo; all must be idle to leave it.
+    //   • ProDOS hard disk (ProDOSHardDiskCard): no motor line, so the byte-
+    //     loop firmware streams blocks at the plain CPU rate and HD games
+    //     (e.g. Nox Archaist) load far slower than a 5.25" game that gets the
+    //     motor-on turbo. Treat recent HDV data-port activity as the same
+    //     "busy" signal; the card decays it over a few frames so a multi-block
+    //     load stays in turbo end-to-end, then drops back for gameplay.
+    //
+    // Called every frame from render() (NOT from renderDiskPanelWindow, which
+    // early-returns when its window is hidden — the default).
+    bool anyMotorOn = false;
+    for (auto* c : diskCards) {
+        if (c && c->isMotorOn()) { anyMotorOn = true; break; }
+    }
+    bool hdvBusy = false;
+    if (hdvCard) {
+        hdvCard->tickActivityDecay();
+        hdvBusy = hdvCard->isBusy();
+    }
+    const bool anyBusy       = anyMotorOn || hdvBusy;
+    const bool turboEligible =
+        diskTurboWhileMotor && (!diskCards.empty() || hdvCard != nullptr);
+    if (turboEligible) {
+        if (anyBusy && !diskTurboActive) {
+            diskSavedCyclesPerFrame = controller->getCyclesPerFrame();
+            controller->setCyclesPerFrame(1'000'000);
+            diskTurboActive = true;
+        } else if (!anyBusy && diskTurboActive) {
+            controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
+            diskTurboActive = false;
+        }
+    } else if (diskTurboActive) {
+        controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
+        diskTurboActive = false;
+    }
+}
+
 void MainWindow::renderDiskPanelWindow()
 {
     if (!showDiskPanel) return;
@@ -2271,28 +2314,9 @@ void MainWindow::renderDiskPanelWindow()
                   });
     }
 
-    // Auto-turbo: while ANY plugged DiskII's motor is spinning, crank the
-    // CPU to ~60 MHz emulated. Multi-instance friendly — one card spinning
-    // up is enough to enter turbo, all cards must be idle to leave it.
-    // (Real //e setups don't run two drives concurrently anyway, but
-    // logging the OR of motor states is the safest semantics.)
-    bool anyMotorOn = false;
-    for (auto* c : diskCards) {
-        if (c && c->isMotorOn()) { anyMotorOn = true; break; }
-    }
-    if (!diskCards.empty() && diskTurboWhileMotor) {
-        if (anyMotorOn && !diskTurboActive) {
-            diskSavedCyclesPerFrame = controller->getCyclesPerFrame();
-            controller->setCyclesPerFrame(1'000'000);
-            diskTurboActive = true;
-        } else if (!anyMotorOn && diskTurboActive) {
-            controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
-            diskTurboActive = false;
-        }
-    } else if (diskTurboActive) {
-        controller->setCyclesPerFrame(diskSavedCyclesPerFrame);
-        diskTurboActive = false;
-    }
+    // (Auto-turbo lives in updateAutoTurbo(), called every frame from
+    // render() — it must run even when this panel window is hidden, which is
+    // the default. See MainWindow::updateAutoTurbo.)
 
     // ── Render one window per plugged DiskII ──────────────────────────
     // Title carries the slot number so ImGui assigns each card its own
@@ -3710,6 +3734,10 @@ void MainWindow::render()
     lastFrameTime = now;
 
     pollJoystickAndPushToMemory();
+
+    // Decide CPU turbo from disk activity every frame, independent of whether
+    // any disk panel window is open (the disk panel defaults to hidden).
+    updateAutoTurbo();
 
     renderMenuBar();
     // Toolbar must render after the menu bar so we know its height
