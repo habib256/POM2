@@ -291,6 +291,140 @@ void testShiftLaxAcrossModes()
     assert(readBitThenAdvance(*card, baseline) == 0);
 }
 
+// ─── TP (Timing-Pulse) interrupt path ────────────────────────────────────
+//
+// The uPD1990AC's TP output toggles at a software-selectable rate; the
+// ThunderClock+ gates it to the slot IRQ line via the $C0n0 bit-6 enable
+// latch. These cases pin the rates (MAME `upd1990a.cpp:248-257`) and the
+// card-level IRQ wiring (ThunderClock Plus manual ch. V).
+
+constexpr uint8_t kBitIrqEnable = 0x40;
+
+// One emulated second of CPU cycles (matches POM2_CPU_CLOCK_HZ).
+constexpr int kCpuHz = 1022727;
+
+// Latch a TP rate via STB and enable interrupts. `tpMode` is the raw
+// C0/C1/C2 mode code (4=64Hz, 5=256Hz, 6=2048Hz, 7=4096Hz).
+void armTpInterrupts(ClockCard& card, uint8_t tpMode)
+{
+    const uint8_t modeShifted = static_cast<uint8_t>(tpMode << 3);
+    card.deviceSelectWrite(0, modeShifted);              // set C0/C1/C2, STB low
+    card.deviceSelectWrite(0, modeShifted | kBitStb);    // STB rising → program TP
+    card.deviceSelectWrite(0, modeShifted);              // STB low
+    card.deviceSelectWrite(0, kBitIrqEnable);            // $40 → enable IRQs
+}
+
+// Count IRQ assertions over `totalCycles`, clearing after each so the next
+// TP edge re-asserts. Steps in small increments so each edge is observed.
+int countIrqPulses(ClockCard& card, int totalCycles)
+{
+    constexpr int kStep = 64;     // < the shortest TP period (~250 cyc @ 4096Hz)
+    int count = 0;
+    for (int c = 0; c < totalCycles; c += kStep) {
+        card.advanceCycles(kStep);
+        if (card.slotIrqAsserted()) {
+            ++count;
+            card.deviceSelectRead(8);     // clear via device-select read
+        }
+    }
+    return count;
+}
+
+// Each TP rate produces ~rate IRQ pulses per emulated second.
+void testTpRatesProduceExpectedPulseCounts()
+{
+    struct { uint8_t mode; int rateHz; } cases[] = {
+        { 0x04,   64 }, { 0x05,  256 }, { 0x06, 2048 }, { 0x07, 4096 },
+    };
+    for (const auto& c : cases) {
+        auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+        assert(card->tpRateHz() == 0);            // TP off until a rate latched
+        armTpInterrupts(*card, c.mode);
+        assert(card->tpRateHz() == c.rateHz);
+        assert(card->interruptsEnabled());
+
+        const int pulses = countIrqPulses(*card, kCpuHz);
+        // Allow a small tolerance for cycle-budget rounding + step phasing.
+        const int lo = c.rateHz - c.rateHz / 32 - 1;
+        const int hi = c.rateHz + c.rateHz / 32 + 1;
+        assert(pulses >= lo && pulses <= hi);
+    }
+}
+
+// With interrupts disabled, TP still toggles internally but never pulls IRQ.
+void testNoIrqWhenDisabled()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+    // Latch 2048 Hz but do NOT write the $40 enable.
+    const uint8_t modeShifted = 0x06 << 3;
+    card->deviceSelectWrite(0, modeShifted);
+    card->deviceSelectWrite(0, modeShifted | kBitStb);
+    card->deviceSelectWrite(0, modeShifted);
+    assert(card->tpRateHz() == 2048);
+    assert(!card->interruptsEnabled());
+
+    card->advanceCycles(kCpuHz);
+    assert(!card->slotIrqAsserted());
+    assert(!card->interruptPending());
+}
+
+// Writing bit-6-clear to $C0n0 (as the clock-read driver does) disables
+// interrupts; a bare $40 write re-arms without disturbing the TP rate.
+void testEnableLatchTracksBit6()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+    armTpInterrupts(*card, 0x06);                 // 2048 Hz, enabled
+    assert(card->interruptsEnabled());
+
+    card->deviceSelectWrite(0, 0x00);             // bit 6 clear → disable
+    assert(!card->interruptsEnabled());
+    card->advanceCycles(kCpuHz);
+    assert(!card->slotIrqAsserted());
+
+    card->deviceSelectWrite(0, kBitIrqEnable);    // $40 → re-enable, rate intact
+    assert(card->interruptsEnabled());
+    assert(card->tpRateHz() == 2048);
+    assert(countIrqPulses(*card, kCpuHz) > 1900);
+}
+
+// The "interrupt asserted" flag (read $C0n0 bit 5) reflects a pending
+// request and is cleared by the read (manual 5-3 polling sequence).
+void testInterruptAssertedFlagBit5()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+    armTpInterrupts(*card, 0x06);                 // 2048 Hz, enabled
+
+    // Advance one full TP period (~500 cyc) so a pulse latches.
+    card->advanceCycles(kCpuHz / 2048 + 4);
+    assert(card->slotIrqAsserted());
+    assert(card->interruptPending());
+
+    // Reading $C0n0 returns bit 5 set, then clears the request.
+    const uint8_t reg = card->deviceSelectRead(0);
+    assert((reg & 0x20) != 0);                    // bit 5 = interrupt asserted
+    assert(!card->slotIrqAsserted());             // cleared by the read
+    assert(!card->interruptPending());
+
+    // A second read now sees bit 5 clear.
+    assert((card->deviceSelectRead(0) & 0x20) == 0);
+}
+
+// RESET disables interrupts and stops the TP timer (manual 5-2 point 2).
+void testResetStopsTpAndIrq()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+    armTpInterrupts(*card, 0x06);
+    card->advanceCycles(kCpuHz / 2048 + 4);
+    assert(card->slotIrqAsserted());
+
+    card->onReset();
+    assert(!card->interruptsEnabled());
+    assert(!card->slotIrqAsserted());
+    assert(card->tpRateHz() == 0);
+    card->advanceCycles(kCpuHz);
+    assert(!card->slotIrqAsserted());             // TP stopped → no new pulses
+}
+
 }  // namespace
 
 int main()
@@ -315,6 +449,21 @@ int main()
 
     testShiftLaxAcrossModes();
     std::printf("MODE_SHIFT lax: CLK shifts in any mode (ProDOS compat): OK\n");
+
+    testTpRatesProduceExpectedPulseCounts();
+    std::printf("TP rates 64/256/2048/4096 Hz → IRQ pulse counts: OK\n");
+
+    testNoIrqWhenDisabled();
+    std::printf("TP toggles but no IRQ while disabled: OK\n");
+
+    testEnableLatchTracksBit6();
+    std::printf("$C0n0 bit-6 enable latch (disable/re-arm): OK\n");
+
+    testInterruptAssertedFlagBit5();
+    std::printf("Read $C0n0 bit 5 interrupt-asserted flag + clear: OK\n");
+
+    testResetStopsTpAndIrq();
+    std::printf("RESET stops TP timer + disables interrupts: OK\n");
 
     std::printf("clock_card_smoke OK\n");
     return 0;

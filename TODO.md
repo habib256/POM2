@@ -27,7 +27,7 @@ ci-dessous.
 | 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` (audit 2026-05-16) | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate ; window-size round-down vs round-up choices |
 | 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 32 MB HDV + .2mg variantes pinnés ✅ ; 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
 | 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |
-| 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | 🟠 TP tick rates 64/256/2048/4096 Hz pas câblés ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
+| 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | TP tick rates 64/256/2048/4096 Hz + IRQ wiring ✅ (interval timers uPD4990A-serial-only, hors portée) ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
 | 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; 🟡 Pascal 1.1 ID block `$CnFB-$CnFF` manquant ; 🟢 IRQ gate SW2:6 DIP non gated |
 | 16 | MouseCard | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | 🟠 X axis bloqué ~8 px Apple ; 🟡 sync curseur pixel-près host/guest delta-based ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
 
@@ -42,12 +42,6 @@ ci-dessous.
       `MouseCard::updateAxis` X (PB0/PB1) vs Y (PB2/PB3). Outils en
       place : `POM2_MOUSE_TRACE=1`, AI Control `/mem?bank=aux`.
       **Effort : 4-8 h.**
-- [ ] **[ClockCard] TP tick rates non câblés** (64/256/2048/4096 Hz +
-      interval timers). MAME `upd1990a.cpp:248-267`. La ligne IRQ
-      slot-bus est exposée via `SlotPeripheral::assertIrq` ; reste à
-      câbler les 4 diviseurs et pulser `assertIrq` au rythme TP.
-      Utilitaires interval-timing (Clockworks) ne tickent jamais sans
-      ça. **Effort : 2-3 h**, pinnable (count IRQs sur N cycles).
 - [ ] **[Memory] god-object** (`Memory.cpp` / `Memory.h`). Reste à
       extraire `Keyboard` (FIFO + strobe + paste) et `PaddleInputs`
       (RC + boutons + Open/Solid Apple). L'`IIcPlusBank` est **fait** :
@@ -220,10 +214,9 @@ apparaît → **P3** seulement si CHD requis.
 
 | Rang | Item | Effort | Impact | Pour qui |
 |---|---|---|---|---|
-| 1 | [ClockCard] TP tick rates | 2-3 h | 🟠 Clockworks utility | ClockCard users (niche) |
-| 2 | [Memory] god-object split | 2 jours | 🟠 Prépare IIgs + reduces recompile | Dev velocity |
-| 3 | [MouseCard] X axis stuck | 4-8 h | 🟠 A2Desktop usability | Mouse Card users |
-| 4 | [Disques] WOZ1 splice point | 1 jour | 🟡 Applesauce remaster parity | Disk imaging tools |
+| 1 | [Memory] god-object split | 2 jours | 🟠 Prépare IIgs + reduces recompile | Dev velocity |
+| 2 | [MouseCard] X axis stuck | 4-8 h | 🟠 A2Desktop usability | Mouse Card users |
+| 3 | [Disques] WOZ1 splice point | 1 jour | 🟡 Applesauce remaster parity | Disk imaging tools |
 
 ## Hors scope
 

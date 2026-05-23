@@ -2486,7 +2486,18 @@ void MainWindow::renderDiskLibraryWindow()
     // tags rows with `* ` when their path matches any of these — gives
     // the user a visual cue across all plugged cards at once.
     for (auto* c : diskCards) {
-        if (c && c->isDiskLoaded()) mounted.diskII.push_back(c->getDiskPath());
+        if (!c) continue;
+        pom2::DiskLibrary_ImGui::CurrentlyMounted::DiskIICardInfo info;
+        info.slot = c->getSlot();
+        if (c->isDiskLoaded(0)) {
+            info.drive1 = c->getDiskPath(0);
+            mounted.diskII.push_back(info.drive1);
+        }
+        if (c->isDiskLoaded(1)) {
+            info.drive2 = c->getDiskPath(1);
+            mounted.diskII.push_back(info.drive2);
+        }
+        mounted.diskIICards.push_back(info);
     }
     // 3.5" mount sources: the //c+ on-board hub OR a slot-plugged
     // SmartPort card's unit 0/1 (one or the other, never both on the
@@ -2527,34 +2538,52 @@ void MainWindow::renderDiskLibraryWindow()
     // ── Eject-all (header-row button, moved here from the toolbar) ─────
     if (r.requestEjectAllDisks) ejectAllDisks();
 
-    // ── 5.25" actions → primary DiskII card ───────────────────────────
-    if (!r.request525InsertAndBoot.empty() && diskCard) {
+    // ── 5.25" actions → the DiskII card/drive the right-click menu picked ──
+    // request525Slot = -1 means "primary card" (left-click default); a real
+    // slot routes to that specific DiskII card. drive 0 = drive 1, 1 = drive 2.
+    auto resolve525 = [&](int slot) -> DiskIICard* {
+        if (slot < 0) return diskCard;
+        for (auto* c : diskCards) if (c && c->getSlot() == slot) return c;
+        return diskCard;
+    };
+    if (!r.request525InsertAndBoot.empty()) {
+        DiskIICard* target = resolve525(r.request525Slot);
+        const int   drive  = (r.request525Drive == 1) ? 1 : 0;
         const std::string path = r.request525InsertAndBoot;
         bool ok = false;
         std::string err;
         {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = diskCard->insertDisk(path);
-            if (ok) diskCard->seekTrack0();
-            else    err = diskCard->getLastError();
+            if (target) {
+                ok = target->insertDisk(drive, path);
+                if (ok) target->seekTrack0();
+                else    err = target->getLastError(drive);
+            }
         }
-        if (ok) {
-            controller->coldBoot();
+        if (ok && target) {
+            // Boot the target card's slot (its boot PROM boots drive 1).
+            controller->bootFromSlot(target->getSlot());
             controller->setMode(EmulationController::Mode::Running);
-            tapeStatusMessage = "Library: inserted + booted: " + path;
+            tapeStatusMessage = "Library: inserted + booted (slot " +
+                std::to_string(target->getSlot()) + " drive " +
+                std::to_string(drive + 1) + "): " + path;
         } else {
             tapeStatusMessage = "Library: boot failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
-    if (!r.request525InsertOnly.empty() && diskCard) {
+    if (!r.request525InsertOnly.empty()) {
+        DiskIICard* target = resolve525(r.request525Slot);
+        const int   drive  = (r.request525Drive == 1) ? 1 : 0;
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (diskCard->insertDisk(r.request525InsertOnly)) {
-            tapeStatusMessage = "Library: inserted (no boot): " +
-                                r.request525InsertOnly;
+        if (target && target->insertDisk(drive, r.request525InsertOnly)) {
+            tapeStatusMessage = "Library: inserted (slot " +
+                std::to_string(target->getSlot()) + " drive " +
+                std::to_string(drive + 1) + ", no boot): " +
+                r.request525InsertOnly;
         } else {
             tapeStatusMessage = "Library: insert failed: " +
-                                diskCard->getLastError();
+                (target ? target->getLastError(drive) : std::string("no DiskII card"));
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
@@ -2715,9 +2744,12 @@ void MainWindow::renderDiskLibraryWindow()
     if (!r.request525EjectPath.empty()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         for (auto* c : diskCards) {
-            if (c && c->isDiskLoaded() &&
-                c->getDiskPath() == r.request525EjectPath) {
-                c->ejectDisk();
+            if (!c) continue;
+            for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
+                if (c->isDiskLoaded(d) &&
+                    c->getDiskPath(d) == r.request525EjectPath) {
+                    c->ejectDisk(d);
+                }
             }
         }
         tapeStatusMessage = "Library: 5.25\" disk ejected";

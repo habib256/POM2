@@ -39,7 +39,17 @@ public:
     /// with a `* ` prefix so a re-click is recognisable. Empty strings
     /// = nothing in that slot.
     struct CurrentlyMounted {
-        std::vector<std::string> diskII;          // one per plugged DiskII card
+        // Every mounted 5.25" path (any card, any drive) — for "* " flagging.
+        std::vector<std::string> diskII;
+        // Per plugged DiskII card: its slot + each drive's mounted path
+        // (empty = empty drive). Lets the 5.25" right-click menu offer every
+        // present drive as a target, not just the primary card's drive 1.
+        struct DiskIICardInfo {
+            int         slot = 6;
+            std::string drive1;   // empty = no disk in drive 1
+            std::string drive2;   // empty = no disk in drive 2
+        };
+        std::vector<DiskIICardInfo> diskIICards;
         std::string              disk35Internal;
         std::string              disk35External;
         std::string              hdv;
@@ -49,7 +59,12 @@ public:
         // 5.25" floppy — empty string = no action.
         std::string request525InsertAndBoot;
         std::string request525InsertOnly;
-        // Path to eject (only the card(s) currently holding this path
+        // Target for the insert above: DiskII card slot (-1 = primary/lowest)
+        // and drive (0 = drive 1, 1 = drive 2). Set by the right-click menu so
+        // an image can be mounted into ANY present 5.25" drive.
+        int         request525Slot  = -1;
+        int         request525Drive = 0;
+        // Path to eject (only the card(s)/drive(s) currently holding this path
         // are ejected). Empty = no eject.
         std::string request525EjectPath;
         // 3.5" Sony disk.
@@ -88,6 +103,9 @@ private:
     char searchBuf_[128]   = "";
     int  sortMode_         = 0;     // 0=name, 1=size, 2=date desc
     bool needsRescan_      = true;
+    // Stashed for the duration of render() so the 5.25" context-menu callback
+    // can enumerate every plugged DiskII card/drive as a mount target.
+    const CurrentlyMounted* mounted_ = nullptr;
 
     void rescan();
     void rescanInto(std::vector<Entry>& out,

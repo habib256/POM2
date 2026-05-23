@@ -36,7 +36,26 @@
 //     bit 5  C2          mode bit 2
 //
 //   read  $C0n0:
+//     bit 5  IRQ_ASSERTED (this card pulled the slot IRQ line — manual 5-3)
 //     bit 7  DATA_OUT    (LSB of shift register, sampled after CLK)
+//
+// Interrupts (TP / Timing-Pulse)
+// ------------------------------
+// The uPD1990AC's TP output toggles at a software-selectable rate. The
+// ThunderClock+ wires TP (gated by an enable latch) to the slot IRQ line,
+// giving a periodic interrupt source (used by clock/scheduler utilities).
+// Per the ThunderClock Plus manual ch. V:
+//
+//   write $C0n0 bit 6 ($40)  enable interrupts   ("INTERRUPT CONTROL REG")
+//   write $C0n0 bit 6 = 0     disable + reset interrupt hardware
+//   any device-select read/write   clears a pending request (manual 5-2)
+//   RESET                          disables interrupts
+//
+// The rate is the chip's TP rate, selected via the C0/C1/C2 mode field:
+// MODE_TP_64HZ/256/2048/4096 (= modes 4..7). The parallel uPD1990AC's
+// 3-bit C field can't reach the uPD4990A interval timers (1/10/30/60 s,
+// modes 8..15), so those are not modelled. The firmware exposes only
+// 64/256/2048 Hz to the user ("," "." "/" write-mode chars).
 //
 // To read time, the host driver writes mode = 0b011 (MODE_TIME_READ),
 // pulses STB to load the current time counter into the 48-bit shift
@@ -76,6 +95,18 @@ public:
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead(uint8_t low8) override { return rom[low8]; }
     void    onReset() override;
+    void    advanceCycles(int cycles) override;
+
+    // ─── Interrupt / TP state (for debug panels + tests) ─────────────────
+    /// True when the INTERRUPT CONTROL REGISTER enable bit ($C0n0 bit 6)
+    /// is set, i.e. TP edges currently reach the slot IRQ line.
+    bool interruptsEnabled() const { return irqEnabled_; }
+    /// True while a TP-driven interrupt request is latched (cleared by any
+    /// device-select access). Mirrors the bit-5 "interrupt asserted" flag.
+    bool interruptPending() const { return irqPending_; }
+    /// Currently-selected TP rate in Hz (0 = TP timer stopped). One of
+    /// 64 / 256 / 2048 / 4096 once a TP/REGISTER_HOLD mode has been latched.
+    int  tpRateHz() const { return tpRateHz_; }
 
     /// Time-source hook. Defaults to std::time + std::localtime; the
     /// public test factory below swaps in a deterministic source.
@@ -127,7 +158,45 @@ private:
     bool        userOffsetActive  = false;
     std::time_t userOffsetSeconds = 0;
 
+    // ── uPD1990AC TP (Timing Pulse) timer ──────────────────────────────
+    //
+    // The chip toggles its TP output at 2× the labelled rate (MAME
+    // `upd1990a.cpp:248-257` programs `m_timer_tp` at `(clock()/div)*2`).
+    // We track the labelled rate plus the CPU cycles per toggle, and drive
+    // the toggle from `advanceCycles()`. A TP rising edge is the IRQ-worthy
+    // event, so the slot IRQ fires `tpRateHz_` times per second while
+    // enabled. tpHalfPeriodCycles_ == 0 means the timer is stopped.
+    int  tpRateHz_           = 0;
+    int  tpHalfPeriodCycles_ = 0;
+    int  tpAccumCycles_      = 0;
+    bool tpLevel_            = false;     // current TP output level
+
+    // ── ThunderClock+ interrupt logic (card-level, POM2-original) ───────
+    //
+    // MAME's `a2thunderclock.cpp` never binds the chip's tp_callback, so
+    // the TP→IRQ path is not modelled upstream; the wiring here follows
+    // the ThunderClock Plus manual ch. V. `irqEnabled_` is the $C0n0 bit-6
+    // enable latch; `irqPending_` is the request flip-flop clocked by TP
+    // and cleared by any device-select access.
+    bool irqEnabled_ = false;
+    bool irqPending_ = false;
+
     void buildRom();
+
+    /// (Re)program the TP timer for a freshly-latched C0/C1/C2 mode.
+    /// Only REGISTER_HOLD and the four TP modes change the rate; SHIFT /
+    /// TIME_SET / TIME_READ leave TP running at its previous rate (matching
+    /// MAME normal-mode behaviour). Called on STB rising edge.
+    void programTpTimer(uint8_t mode);
+
+    /// Set the TP rate in Hz (0 = stop) and recompute the per-toggle cycle
+    /// budget. Resets the accumulator so the rate change takes effect from
+    /// the next edge.
+    void setTpRate(int hz);
+
+    /// Clear a pending interrupt request and release the slot IRQ line.
+    /// The enable latch is left intact so a periodic source keeps firing.
+    void clearIrqRequest();
 
     /// Resolve the time the next MODE_TIME_READ snapshot should emit.
     /// Without a prior TIME_SET this is just `timeFn()`; with a TIME_SET

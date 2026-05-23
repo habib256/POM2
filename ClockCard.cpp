@@ -3,24 +3,36 @@
 
 #include "ClockCard.h"
 
+#include "CpuClock.h"
+
 #include <ctime>
 
 namespace {
 
 // uPD1990AC mode codes carried on C0/C1/C2 (bits 3,4,5 of the $C0n0
-// write). MAME `upd1990a.h:58-73` defines the full 16-entry table; we
-// only react to the first four. Tick-pulse modes (TP_64HZ … TP_4096HZ
-// and interval timers) require an IRQ output line; their plumbing is
-// tracked in TODO §3 and not yet hooked up.
+// write). MAME `upd1990a.h:58-73` defines the full 16-entry table; the
+// parallel uPD1990AC's 3-bit C field reaches modes 0..7 only. We react to
+// the first four plus the four TP (Timing-Pulse) rates below; the interval
+// timers (modes 8..15) are uPD4990A-serial-only and unreachable here.
 constexpr uint8_t kModeRegisterHold = 0x00;
 [[maybe_unused]] constexpr uint8_t kModeShift = 0x01;
 constexpr uint8_t kModeTimeSet      = 0x02;
 constexpr uint8_t kModeTimeRead     = 0x03;
+constexpr uint8_t kModeTp64Hz       = 0x04;
+constexpr uint8_t kModeTp256Hz      = 0x05;
+constexpr uint8_t kModeTp2048Hz     = 0x06;
+constexpr uint8_t kModeTp4096Hz     = 0x07;
 
 // $C0n0 write-side bit positions.
-constexpr uint8_t kBitDataIn = 0x01;
-constexpr uint8_t kBitClk    = 0x02;
-constexpr uint8_t kBitStb    = 0x04;
+constexpr uint8_t kBitDataIn    = 0x01;
+constexpr uint8_t kBitClk       = 0x02;
+constexpr uint8_t kBitStb       = 0x04;
+constexpr uint8_t kBitIrqEnable = 0x40;   // bit 6 — ThunderClock+ INTERRUPT
+                                          // CONTROL REGISTER (manual 5-1)
+
+// uPD1990AC crystal — 32.768 kHz (a2thunderclock.cpp:73). TP rates are
+// derived as XTAL / divider; see programTpTimer().
+constexpr int kChipXtalHz = 32768;
 
 uint8_t toBcd(int n)
 {
@@ -68,6 +80,12 @@ void ClockCard::onReset()
     lastMode           = kModeRegisterHold;
     userOffsetActive   = false;
     userOffsetSeconds  = 0;
+    // RESET disables interrupts (manual 5-2 point 2) and stops the TP
+    // timer — the real chip doesn't program m_timer_tp until an STB
+    // latches a TP/REGISTER_HOLD mode.
+    irqEnabled_        = false;
+    setTpRate(0);
+    clearIrqRequest();
 }
 
 std::tm ClockCard::effectiveTime() const
@@ -146,19 +164,39 @@ void ClockCard::commitTimeSetFromShiftReg()
 
 uint8_t ClockCard::deviceSelectRead(uint8_t low4)
 {
-    // DATA_OUT in bit 7, all other bits zero — the host driver does
-    // `BIT $C0n0 / BMI ...` to test it. MAME `a2thunderclock.cpp:112-115`
-    // ignores the low 4 bits of `offset` entirely and mirrors DATA_OUT
-    // across all of $C0n0-$C0nF, so a probe at $C0n5 sees the same
-    // bit 7 as $C0n0. POM2 used to return 0xFF for non-zero offsets,
-    // which broke some software-detect probes that scan the slot.
+    // DATA_OUT in bit 7, the "interrupt asserted" flag in bit 5, all other
+    // bits zero. The host driver does `BIT $C0n0 / BMI ...` to test
+    // DATA_OUT, and `LDA $C080,Y / AND #$20` to test the IRQ flag (manual
+    // 5-3). MAME `a2thunderclock.cpp:112-115` ignores the low 4 bits of
+    // `offset` and mirrors DATA_OUT across all of $C0n0-$C0nF, so a probe
+    // at $C0n5 sees the same bit 7 as $C0n0; we mirror the IRQ flag the
+    // same way. Sample the flag BEFORE the access clears the request.
     (void)low4;
-    return (shiftReg[0] & 0x01) ? 0x80 : 0x00;
+    const uint8_t out = static_cast<uint8_t>(
+        ((shiftReg[0] & 0x01) ? 0x80 : 0x00) |
+        (irqPending_           ? 0x20 : 0x00));
+    // Any read or write of the card clears a pending request (manual 5-2
+    // point 3 + the `LDA $C088,Y / LDA $C080,Y` clear sequence at 5-1).
+    clearIrqRequest();
+    return out;
 }
 
 void ClockCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
+    // Any device-select access clears a pending interrupt request (manual
+    // 5-2 point 3) — applies to every offset, before the $C0n0-only decode.
+    clearIrqRequest();
+
     if (low4 != 0) return;
+
+    // $C0n0 bit 6 is the INTERRUPT CONTROL REGISTER enable latch: writing
+    // $40 enables interrupts, any write with bit 6 clear disables them
+    // (manual 5-1 / 5-2). The clock-read/write driver code always issues
+    // bit-6-clear writes, which is why "interrupts are left disabled after
+    // you read or wrote the THUNDERCLOCK" (manual 5-2). Enable is
+    // independent of STB, so a bare $40 write arms IRQs without disturbing
+    // the latched chip mode / TP rate.
+    irqEnabled_ = (v & kBitIrqEnable) != 0;
 
     const bool clkPrev = (prevWrite & kBitClk) != 0;
     const bool clkNow  = (v         & kBitClk) != 0;
@@ -181,6 +219,10 @@ void ClockCard::deviceSelectWrite(uint8_t low4, uint8_t v)
         } else if (mode == kModeTimeSet) {
             commitTimeSetFromShiftReg();
         }
+        // (Re)program the TP timer for the freshly-latched mode. The chip
+        // reprograms TP on STB just like the read/set/shift functions
+        // (MAME `upd1990a.cpp:174-257`).
+        programTpTimer(mode);
     }
 
     // CLK rising edge — shift the 48-bit register right by one bit.
@@ -210,6 +252,70 @@ void ClockCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     }
 
     prevWrite = v;
+}
+
+void ClockCard::programTpTimer(uint8_t mode)
+{
+    // TP rate = XTAL / divider. MAME `upd1990a.cpp:248-257` (TP modes) and
+    // `:176-181` (REGISTER_HOLD default) — divider values 512/128/16/8 for
+    // 64/256/2048/4096 Hz against the 32.768 kHz crystal. Only these modes
+    // touch TP; SHIFT / TIME_SET / TIME_READ leave it running at its prior
+    // rate in normal (non-test) mode, matching MAME.
+    switch (mode) {
+    case kModeRegisterHold: setTpRate(kChipXtalHz / 512); break;   // 64 Hz
+    case kModeTp64Hz:       setTpRate(kChipXtalHz / 512); break;   // 64 Hz
+    case kModeTp256Hz:      setTpRate(kChipXtalHz / 128); break;   // 256 Hz
+    case kModeTp2048Hz:     setTpRate(kChipXtalHz / 16);  break;   // 2048 Hz
+    case kModeTp4096Hz:     setTpRate(kChipXtalHz / 8);   break;   // 4096 Hz
+    default:                /* TP rate unchanged */        break;
+    }
+}
+
+void ClockCard::setTpRate(int hz)
+{
+    tpRateHz_      = hz;
+    tpAccumCycles_ = 0;
+    if (hz <= 0) {
+        tpHalfPeriodCycles_ = 0;
+        tpLevel_            = false;
+        return;
+    }
+    // The chip toggles TP at 2× the labelled rate, so a half-period (one
+    // toggle) is CPU_HZ / (2·hz) emulated cycles, rounded to nearest. A
+    // full period (one rising edge) is the IRQ-worthy event → `hz` IRQs/s.
+    tpHalfPeriodCycles_ = (POM2_CPU_CLOCK_HZ + hz) / (2 * hz);
+}
+
+void ClockCard::clearIrqRequest()
+{
+    // Drop the request flip-flop and release the slot IRQ contribution.
+    // The enable latch is intentionally left intact so a periodic TP
+    // source re-asserts on the next rising edge (a clock/scheduler IRQ
+    // handler clears by reading the card, then keeps receiving ticks).
+    if (irqPending_) {
+        irqPending_ = false;
+        assertIrq(false);
+    }
+}
+
+void ClockCard::advanceCycles(int cycles)
+{
+    if (cycles <= 0 || tpHalfPeriodCycles_ <= 0) return;
+    tpAccumCycles_ += cycles;
+    while (tpAccumCycles_ >= tpHalfPeriodCycles_) {
+        tpAccumCycles_ -= tpHalfPeriodCycles_;
+        const bool rising = !tpLevel_;     // level is about to go 0 → 1
+        tpLevel_ = !tpLevel_;
+        // The ThunderClock+ clocks its interrupt-request FF on the TP
+        // rising edge; the FF drives the wire-OR'd slot IRQ while the
+        // $C0n0 enable latch is set. assertIrq() is idempotent, so holding
+        // the level across repeated edges (until a device-access clear)
+        // costs nothing.
+        if (rising && irqEnabled_) {
+            irqPending_ = true;
+            assertIrq(true);
+        }
+    }
 }
 
 void ClockCard::buildRom()

@@ -1008,8 +1008,9 @@ form benign fall-through; `$Cs08 = RTS`.
 
 **uPD1990AC bit-bang at `$C0C0`**:
 ```
-write bit 0 = DATA_IN; bit 1 = CLK; bit 2 = STB; bits 3..5 = C0/C1/C2
-read  bit 7 = DATA_OUT (LSB of shift register)
+write bit 0 = DATA_IN; bit 1 = CLK; bit 2 = STB; bits 3..5 = C0/C1/C2;
+      bit 6 = IRQ enable ($40)
+read  bit 5 = IRQ asserted; bit 7 = DATA_OUT (LSB of shift register)
 ```
 
 Mode `0b011` = `MODE_TIME_READ`: arm via `$C0C0=$18`, pulse STB
@@ -1021,10 +1022,31 @@ TIME_SET commits. `commitTimeSetFromShiftReg()` decodes BCD via
 `std::mktime`, captures delta as `userOffsetSeconds`;
 `effectiveTime()` composes `timeFn() + offset`.
 
-TP tick-pulse modes (64/256/2048/4096 Hz, MAME `upd1990a.cpp:248-267`)
-**not hooked up**. Slot-bus IRQ line exposed via
-`SlotPeripheral::assertIrq` — remaining work is wiring the four
-dividers.
+**TP (Timing-Pulse) interrupts**. The chip's TP output toggles at a
+software-selected rate; the ThunderClock+ gates it onto the slot IRQ
+line, giving a periodic interrupt source (clock/scheduler utilities).
+
+- *Rates* — MAME source of truth `upd1990a.cpp:248-257` (TP modes) +
+  `:176-181` (REGISTER_HOLD default). `programTpTimer()` decodes the
+  latched C0/C1/C2 mode on the STB rising edge: dividers 512/128/16/8
+  against the 32.768 kHz XTAL → **64 / 256 / 2048 / 4096 Hz** (modes
+  4-7), plus 64 Hz for REGISTER_HOLD. SHIFT/TIME_SET/TIME_READ leave
+  TP at its prior rate (MAME normal-mode behaviour). The interval
+  timers (1/10/30/60 s, modes 8-15) need the uPD4990A 4-bit serial
+  command and are unreachable on the parallel uPD1990AC — not
+  modelled. `setTpRate()` converts to CPU cycles/toggle; `advanceCycles()`
+  drives the toggle and fires the IRQ on each rising edge.
+- *IRQ wiring* — **POM2-original**: MAME's `a2thunderclock.cpp` never
+  binds the chip's `tp_callback`, so there is no upstream model. The
+  wiring follows the **ThunderClock Plus manual ch. V**: `$C0n0` bit 6
+  (`$40`) is the enable latch (`irqEnabled_`); a TP rising edge sets the
+  request FF (`irqPending_`) → `assertIrq(true)` while enabled; **any**
+  device-select read/write clears the request (enable latch persists, so
+  a periodic source keeps ticking); read `$C0n0` bit 5 is the
+  "interrupt asserted" flag (manual 5-3 polling); RESET disables.
+  Pinned: `clock_card_smoke_test.cpp` — `testTpRatesProduceExpectedPulseCounts`,
+  `testNoIrqWhenDisabled`, `testEnableLatchTracksBit6`,
+  `testInterruptAssertedFlagBit5`, `testResetStopsTpAndIrq`.
 
 **MODE_SHIFT lax-gating divergence**: POM2 deliberately diverges
 from MAME `upd1990a.cpp:312-327` which gates CLK-shift on

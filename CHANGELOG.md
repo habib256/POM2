@@ -8,6 +8,25 @@ courante → `DEV.md`.
 
 ## 2026-05-23
 
+- **ClockCard — interruptions TP (Timing-Pulse) câblées** (`clock_card_smoke`,
+  5 nouveaux cas). La sortie TP de l'uPD1990AC bascule à une cadence
+  sélectionnable et la ThunderClock+ la route (via une bascule d'activation)
+  vers la ligne IRQ du slot — source d'interruption périodique pour les
+  utilitaires horloge/scheduler, qui ne tickaient jamais avant. *Rates* =
+  source de vérité MAME `upd1990a.cpp:248-257` (modes TP) + `:176-181`
+  (REGISTER_HOLD) : diviseurs 512/128/16/8 sur le XTAL 32.768 kHz →
+  **64/256/2048/4096 Hz** (modes 4-7) ; SHIFT/TIME_SET/TIME_READ laissent
+  TP inchangé (comportement normal-mode MAME). `programTpTimer()` décode le
+  mode latché sur front montant STB, `setTpRate()` convertit en cycles
+  CPU/bascule, `advanceCycles()` pilote la bascule et lève l'IRQ sur chaque
+  front montant. *Câblage IRQ* = **POM2-original** (MAME `a2thunderclock.cpp`
+  ne lie jamais `tp_callback`) suivant le **manuel ThunderClock Plus ch. V** :
+  `$C0n0` bit 6 (`$40`) = latch d'activation ; tout accès device-select
+  efface la requête (le latch persiste → tick continu) ; lecture `$C0n0`
+  bit 5 = drapeau « interrupt asserted » (polling manuel 5-3) ; RESET
+  désactive. **Hors portée** : les interval timers (1/10/30/60 s, modes
+  8-15) exigent la commande série 4-bit de l'uPD4990A, inatteignable sur
+  l'uPD1990AC parallèle de la carte. Voir `DEV.md § ProDOS clock card`.
 - **Disk II 13-secteurs (pré-DOS 3.3) — DOS 3.2 boote** (`dos32_boot_trace`,
   `d13_roundtrip_smoke`). Support complet des disquettes DOS 3.1/3.2/3.2.1 :
   détection `.d13` / 116480 o → `ImageKind::Dos32_13` (+ détection 13s des

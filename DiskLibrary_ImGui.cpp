@@ -197,16 +197,54 @@ void DiskLibrary_ImGui::on525Left(const std::string& path, Result& r)
 }
 void DiskLibrary_ImGui::on525Ctx(const std::string& path, int mountedMask, Result& r)
 {
-    if (ImGui::MenuItem("Insert + boot (slot 6 / primary)")) {
-        r.request525InsertAndBoot = path;
+    (void)mountedMask;
+    const CurrentlyMounted* m = mounted_;
+
+    // Fallback when the host gave no per-card info: legacy single-target.
+    if (!m || m->diskIICards.empty()) {
+        if (ImGui::MenuItem("Insert + boot (slot 6 / primary)")) {
+            r.request525InsertAndBoot = path;
+            r.request525Slot = -1; r.request525Drive = 0;
+        }
+        if (ImGui::MenuItem("Insert only (no boot — hot-swap)")) {
+            r.request525InsertOnly = path;
+            r.request525Slot = -1; r.request525Drive = 0;
+        }
+        return;
     }
-    if (ImGui::MenuItem("Insert only (no boot — hot-swap)")) {
-        r.request525InsertOnly = path;
-    }
-    if (mountedMask & 0x1) {
-        ImGui::Separator();
-        if (ImGui::MenuItem("Eject")) {
-            r.request525EjectPath = path;
+
+    // Emit the three mount targets (+ eject) for one DiskII card. drive 1 is
+    // bootable; drive 2 is data-only (the boot PROM boots drive 1).
+    auto emitCard = [&](const CurrentlyMounted::DiskIICardInfo& card) {
+        if (ImGui::MenuItem("Drive 1: insert + boot")) {
+            r.request525InsertAndBoot = path;
+            r.request525Slot = card.slot; r.request525Drive = 0;
+        }
+        if (ImGui::MenuItem("Drive 1: insert only")) {
+            r.request525InsertOnly = path;
+            r.request525Slot = card.slot; r.request525Drive = 0;
+        }
+        if (ImGui::MenuItem("Drive 2: insert only")) {
+            r.request525InsertOnly = path;
+            r.request525Slot = card.slot; r.request525Drive = 1;
+        }
+        if (card.drive1 == path || card.drive2 == path) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Eject this image")) r.request525EjectPath = path;
+        }
+    };
+
+    // One card → flat items; several DiskII cards → one submenu per slot.
+    if (m->diskIICards.size() == 1) {
+        emitCard(m->diskIICards.front());
+    } else {
+        for (const auto& card : m->diskIICards) {
+            char hdr[24];
+            std::snprintf(hdr, sizeof(hdr), "Slot %d", card.slot);
+            if (ImGui::BeginMenu(hdr)) {
+                emitCard(card);
+                ImGui::EndMenu();
+            }
         }
     }
 }
@@ -341,6 +379,7 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
 {
     Result r;
     if (!open) return r;
+    mounted_ = &mounted;     // for on525Ctx's per-drive target enumeration
 
     // No SetNextWindowSize here — the host pre-applies a curated default
     // via SetNextWindowPos/Size (see MainWindow::renderDiskLibraryWindow).
