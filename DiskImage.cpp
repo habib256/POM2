@@ -81,6 +81,26 @@ constexpr std::array<uint8_t, 256> makeGcrInverse()
 }
 constexpr std::array<uint8_t, 256> kGcrInverse = makeGcrInverse();
 
+// 5-bit → on-disk nibble table for 13-sector (5-and-3) GCR, used by
+// DOS 3.1/3.2/3.2.1. Verbatim from MAME `formats/ap2_dsk.cpp`
+// a2_13sect_format::translate5 (lines 411-415).
+constexpr uint8_t kTranslate5[32] = {
+    0xAB, 0xAD, 0xAE, 0xAF, 0xB5, 0xB6, 0xB7, 0xBA,
+    0xBB, 0xBD, 0xBE, 0xBF, 0xD6, 0xD7, 0xDA, 0xDB,
+    0xDD, 0xDE, 0xDF, 0xEA, 0xEB, 0xED, 0xEE, 0xEF,
+    0xF5, 0xF6, 0xF7, 0xFA, 0xFB, 0xFD, 0xFE, 0xFF,
+};
+
+// Inverse of kTranslate5: disk byte → 5-bit value (0..31), 0xFF if invalid.
+constexpr std::array<uint8_t, 256> makeUntranslate5()
+{
+    std::array<uint8_t, 256> t{};
+    for (int i = 0; i < 256; ++i) t[i] = 0xFF;
+    for (uint8_t v = 0; v < 32; ++v) t[kTranslate5[v]] = v;
+    return t;
+}
+constexpr std::array<uint8_t, 256> kUntranslate5 = makeUntranslate5();
+
 // Decode one 4-and-4 byte (8 nibbles → 4 bytes). Returns the byte; the
 // caller advances the cursor by 2.
 inline uint8_t decode4and4(const uint8_t* p)
@@ -309,6 +329,20 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         return r;
     }
 
+    // ── 116 480-byte 13-sector image (DOS 3.1/3.2/3.2.1) ──────────────
+    // 35 × 13 × 256. Pre-DOS-3.3, 5-and-3 GCR. Always DOS sector order
+    // (ProDOS predates this format's relevance and is 16-sector only).
+    if (n == static_cast<std::size_t>(kBytesPerImage13)) {
+        r.kind         = ImageKind::Dos32_13;
+        r.payloadOff   = baseOff;
+        r.payloadLen   = n;
+        r.order        = SectorOrder::Dos33;
+        r.volumeNumber = 254;
+        r.diag = "116 480-byte image, DOS 3.x 13-sector (5-and-3 GCR)";
+        addMacBinaryNote(r);
+        return r;
+    }
+
     // ── 143 360-byte sector image — DOS 3.3 vs ProDOS skew ─────────────
     if (n == static_cast<std::size_t>(kBytesPerImage)) {
         // Default from extension hint. `.po` → ProDOS, else DOS 3.3.
@@ -414,6 +448,19 @@ bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
                         static_cast<std::size_t>(kNibblesPerTrack - nibblesPerTrack));
         }
     }
+    // 13-sector detection for raw nibble streams: a 13-sector disk's
+    // address fields use the D5 AA B5 prologue (vs D5 AA 96 for 16-sector).
+    // Scan track 0 so the card serves the 341-0009 boot PROM for 13s .nib
+    // dumps (e.g. dos32std.nib).
+    sectorsPerTrack_ = kSectorsPerTrack;
+    {
+        const auto& b = tracks[0];
+        for (int i = 0; i + 2 < kNibblesPerTrack; ++i) {
+            if (b[i] != 0xD5 || b[i + 1] != 0xAA) continue;
+            if (b[i + 2] == 0xB5) { sectorsPerTrack_ = kSectorsPerTrack13; break; }
+            if (b[i + 2] == 0x96) break;   // 16-sector address mark seen first
+        }
+    }
     path        = imgPath;
     loaded      = true;
     nibFormat   = true;
@@ -435,20 +482,30 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
                                           SectorOrder order, uint8_t volume,
                                           const std::string& imgPath)
 {
-    if (len != static_cast<std::size_t>(kBytesPerImage)) {
+    if (len == static_cast<std::size_t>(kBytesPerImage13)) {
+        // DOS 3.1/3.2/3.2.1 13-sector, 5-and-3 GCR. Always DOS order.
+        sectorsPerTrack_ = kSectorsPerTrack13;
+        for (int t = 0; t < kTracks; ++t) {
+            nibblizeTrack13(t,
+                data + t * kSectorsPerTrack13 * kSectorBytes, volume);
+        }
+    } else if (len == static_cast<std::size_t>(kBytesPerImage)) {
+        sectorsPerTrack_ = kSectorsPerTrack;
+        const int* skew = (order == SectorOrder::ProDOS)
+                          ? kProDosLogicalForPhysical
+                          : kDos33LogicalForPhysical;
+        for (int t = 0; t < kTracks; ++t) {
+            nibblizeTrack(t,
+                data + t * kSectorsPerTrack * kSectorBytes,
+                volume, skew);
+        }
+    } else {
         lastError = "loadSectorImageFromBuffer: expected " +
-                    std::to_string(kBytesPerImage) + " bytes, got " +
+                    std::to_string(kBytesPerImage) + " or " +
+                    std::to_string(kBytesPerImage13) + " bytes, got " +
                     std::to_string(len);
         loaded = false;
         return false;
-    }
-    const int* skew = (order == SectorOrder::ProDOS)
-                      ? kProDosLogicalForPhysical
-                      : kDos33LogicalForPhysical;
-    for (int t = 0; t < kTracks; ++t) {
-        nibblizeTrack(t,
-            data + t * kSectorsPerTrack * kSectorBytes,
-            volume, skew);
     }
     path        = imgPath;
     loaded      = true;
@@ -505,6 +562,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
     const std::size_t payloadLen = det.payloadLen;
 
     bool ok = false;
+    sectorsPerTrack_ = kSectorsPerTrack;   // 13s loader overrides; reset on re-mount
     switch (det.kind) {
         case ImageKind::Woz:
             // loadWoz reopens the file itself; refactor to take a buffer
@@ -531,6 +589,7 @@ bool DiskImage::loadFile(const std::string& imgPath)
         case ImageKind::ProDos143k:
         case ImageKind::TwoImgDos:
         case ImageKind::TwoImgProDos:
+        case ImageKind::Dos32_13:
             ok = loadSectorImageFromBuffer(payload, payloadLen,
                                            det.order, det.volumeNumber,
                                            imgPath);
@@ -1537,6 +1596,66 @@ void DiskImage::writeAddressField(uint8_t*& dst, uint8_t volume,
     *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;
 }
 
+// ── 13-sector (5-and-3) encoder — DOS 3.1/3.2/3.2.1 ──────────────────────
+// Verbatim port of MAME `formats/ap2_dsk.cpp` a2_13sect_format::load.
+
+void DiskImage::nibblizeTrack13(int track, const uint8_t* sectors, uint8_t volume)
+{
+    auto& buf = tracks[track];
+    buf.fill(0xFF);
+    uint8_t* dst = buf.data();
+
+    // Physical position i holds sector S = (i*10)%13 (the 10:13 interleave,
+    // MAME load() line ~467); the address field AND the file data are both
+    // indexed by S. ~450 nibbles/sector × 13 = ~5850, fits kNibblesPerTrack.
+    for (int i = 0; i < kSectorsPerTrack13; ++i) {
+        const int s = (i * 10) % kSectorsPerTrack13;
+        for (int k = 0; k < 14; ++k) *dst++ = 0xFF;   // sync gap
+        writeAddressField13(dst, volume, static_cast<uint8_t>(track),
+                            static_cast<uint8_t>(s));
+        for (int k = 0; k < 5; ++k) *dst++ = 0xFF;
+        writeDataField13(dst, sectors + s * kSectorBytes);
+    }
+}
+
+void DiskImage::writeAddressField13(uint8_t*& dst, uint8_t volume,
+                                    uint8_t track, uint8_t sector)
+{
+    *dst++ = 0xD5; *dst++ = 0xAA; *dst++ = 0xB5;   // 13-sector addr prologue
+    write4and4(dst, volume);
+    write4and4(dst, track);
+    write4and4(dst, sector);
+    write4and4(dst, static_cast<uint8_t>(volume ^ track ^ sector));
+    *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;
+}
+
+void DiskImage::writeDataField13(uint8_t*& dst, const uint8_t* src)
+{
+    *dst++ = 0xD5; *dst++ = 0xAA; *dst++ = 0xAD;   // data prologue
+
+    uint8_t pval = 0;
+    auto wr = [&](uint8_t nval) {
+        nval &= 0x1F;
+        *dst++ = kTranslate5[(pval ^ nval) & 0x1F];   // running-XOR through translate5
+        pval = nval;
+    };
+    // 5-and-3 stream (MAME load lines 488-515): 154 "low" then 256 "high".
+    wr(static_cast<uint8_t>(src[255] & 7));
+    for (int k = 2; k >= 0; --k)
+        for (int j = 0; j < 51; ++j)
+            wr(static_cast<uint8_t>(
+                  ((src[j * 5 + k] & 7) << 2)
+                | (((src[j * 5 + 3] >> (2 - k)) & 1) << 1)
+                |  ((src[j * 5 + 4] >> (2 - k)) & 1)));
+    for (int k = 0; k < 5; ++k)
+        for (int j = 50; j >= 0; --j)
+            wr(static_cast<uint8_t>(src[j * 5 + k] >> 3));
+    wr(static_cast<uint8_t>(src[255] >> 3));
+    *dst++ = kTranslate5[pval & 0x1F];             // checksum nibble
+
+    *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;   // data epilogue
+}
+
 // ── Decoder ─────────────────────────────────────────────────────────────
 
 bool DiskImage::decodeTrack(int track, uint8_t outSectors[kSectorsPerTrack][kSectorBytes]) const
@@ -1618,6 +1737,79 @@ bool DiskImage::decodeTrack(int track, uint8_t outSectors[kSectorsPerTrack][kSec
             }
             // Skip past the data field (3 + 343 + 3 epilogue = 349).
             i += 348;
+            curSector = -1;
+            continue;
+        }
+    }
+    return decodedAny;
+}
+
+bool DiskImage::decodeTrack13(int track,
+                              uint8_t outSectors[kSectorsPerTrack13][kSectorBytes]) const
+{
+    if (track < 0 || track >= kTracks) return false;
+    const auto& buf = tracks[track];
+    bool decodedAny = false;
+    auto at = [&](int i) -> uint8_t {
+        return buf[((i % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack];
+    };
+
+    int curSector = -1;
+    for (int i = 0; i < 2 * kNibblesPerTrack; ++i) {
+        // 13-sector address prologue: D5 AA B5.
+        if (at(i) == 0xD5 && at(i + 1) == 0xAA && at(i + 2) == 0xB5) {
+            uint8_t addr[4];
+            for (int k = 0; k < 4; ++k) {
+                uint8_t pair[2] = { at(i + 3 + k * 2), at(i + 4 + k * 2) };
+                addr[k] = decode4and4(pair);
+            }
+            curSector = addr[2];
+            i += 13;                       // 3 + 8 + 3 epilogue - 1
+            continue;
+        }
+        // Data prologue: D5 AA AD.
+        if (at(i) == 0xD5 && at(i + 1) == 0xAA && at(i + 2) == 0xAD &&
+            curSector >= 0 && curSector < kSectorsPerTrack13) {
+            const int d = i + 3;
+            // 411 nibbles = 410 data (154 low + 256 high) + 1 checksum.
+            // Running-XOR inverse of writeDataField13's `wr`: nv[n] = nval.
+            uint8_t nv[410];
+            uint8_t prev = 0;
+            bool ok = true;
+            for (int n = 0; n < 410; ++n) {
+                const uint8_t v = kUntranslate5[at(d + n)];
+                if (v == 0xFF) { ok = false; break; }
+                const uint8_t cur = static_cast<uint8_t>(prev ^ v);
+                nv[n] = cur;
+                prev  = cur;
+            }
+            if (ok) {
+                const uint8_t chk = kUntranslate5[at(d + 410)];
+                if (chk == 0xFF || chk != prev) ok = false;   // checksum
+            }
+            if (ok) {
+                // Inverse of writeDataField13. Stream layout:
+                //   nv[0]                        = src[255] & 7
+                //   nv[1 + (2-k)*51 + j], k=2..0 = low triple for (k,j)
+                //   nv[154 + k*51 + (50-j)] k0..4= src[j*5+k] >> 3
+                //   nv[409]                      = src[255] >> 3
+                uint8_t* out = outSectors[curSector];
+                auto tri = [&](int k, int j) { return nv[1 + (2 - k) * 51 + j]; };
+                auto hi  = [&](int k, int j) { return nv[154 + k * 51 + (50 - j)]; };
+                for (int j = 0; j <= 50; ++j) {
+                    for (int k = 0; k < 3; ++k)
+                        out[j*5+k] = static_cast<uint8_t>(
+                            (hi(k, j) << 3) | ((tri(k, j) >> 2) & 7));
+                    const uint8_t t0 = tri(0, j), t1 = tri(1, j), t2 = tri(2, j);
+                    out[j*5+3] = static_cast<uint8_t>((hi(3, j) << 3) |
+                        ((((t0 >> 1) & 1) << 2) | (((t1 >> 1) & 1) << 1) | ((t2 >> 1) & 1)));
+                    out[j*5+4] = static_cast<uint8_t>((hi(4, j) << 3) |
+                        (((t0 & 1) << 2) | ((t1 & 1) << 1) | (t2 & 1)));
+                }
+                out[255] = static_cast<uint8_t>((nv[409] << 3) | (nv[0] & 7));
+                decodedAny = true;
+            }
+            i += 3 + 411 + 3 - 1;          // skip prologue + data + epilogue
             curSector = -1;
             continue;
         }
@@ -1719,6 +1911,41 @@ bool DiskImage::saveDirty()
             std::string("Saved (.nib") +
             (cnib2Format ? " CNib2 6384/track" : "") +
             (twoImgFormat ? ", 2IMG-wrapped" : "") + "): " + path);
+        return true;
+    }
+
+    // 13-sector (.d13 / DOS 3.x): decode via the 5-and-3 path into a
+    // 116480-byte image. 13-sector images aren't 2IMG-wrapped, so no
+    // header/trailer handling. File offset = (track*13 + S)*256 where S
+    // is the address-field sector number (decodeTrack13 indexes by S).
+    if (is13Sector()) {
+        std::vector<uint8_t> bytes(kBytesPerImage13, 0);
+        {
+            std::ifstream rf(path, std::ios::binary);
+            if (rf) rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage13);
+        }
+        int decodedTracks = 0;
+        for (int t = 0; t < kTracks; ++t) {
+            if (!dirty[t]) continue;
+            uint8_t sectors[kSectorsPerTrack13][kSectorBytes];
+            for (int s = 0; s < kSectorsPerTrack13; ++s)
+                std::memcpy(sectors[s],
+                    bytes.data() + (t * kSectorsPerTrack13 + s) * kSectorBytes,
+                    kSectorBytes);
+            if (!decodeTrack13(t, sectors)) continue;
+            for (int s = 0; s < kSectorsPerTrack13; ++s)
+                std::memcpy(bytes.data() + (t * kSectorsPerTrack13 + s) * kSectorBytes,
+                    sectors[s], kSectorBytes);
+            ++decodedTracks;
+        }
+        std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
+        wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage13);
+        if (!wf) { lastError = "Short write on " + path; return false; }
+        dirty.fill(false);
+        anyDirty = false;
+        pom2::log().info("Disk II", "Saved " + std::to_string(decodedTracks) +
+                         " modified track(s) to " + path + " (13-sector)");
         return true;
     }
 

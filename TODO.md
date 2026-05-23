@@ -227,9 +227,9 @@ apparaît → **P3** seulement si CHD requis.
 
 ## Hors scope
 
-- IIgs / ProDOS 16 · Disk II 13-secteurs (pré-DOS 3.3) · Z-80 SoftCard
-  CP/M · CFFA CompactFlash (HDV + host folder suffit ; portage
-  MAME-fidèle proposé → § Cartes de stockage MAME-fidèles).
+- IIgs / ProDOS 16 · Z-80 SoftCard CP/M · CFFA CompactFlash (HDV + host
+  folder suffit ; portage MAME-fidèle proposé → § Cartes de stockage
+  MAME-fidèles).
 
 ## Changelog
 

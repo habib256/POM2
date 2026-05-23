@@ -120,6 +120,12 @@ public:
     /// $FF and `PR#6` jumps into nothing.
     bool loadBootRom(const std::string& path);
     bool hasBootRom() const { return bootRomLoaded; }
+    /// 13-sector boot PROM (Apple 341-0009, "P5" 13-sector) + LSS PROM
+    /// (341-0010, "P6" 13-sector). Served instead of the 16-sector pair
+    /// only while a 13-sector (pre-DOS-3.3) disk is mounted. Optional —
+    /// without them a 13-sector disk mounts but can't boot.
+    bool loadBootRom13(const std::string& path);
+    bool loadLssRom13(const std::string& path);
 
     /// Load the 256-byte Disk II Logic State Sequencer PROM (Apple part
     /// 341-0028-A, "P6"). When loaded, the card switches to a cycle-
@@ -207,6 +213,9 @@ private:
     int activeDrive = 0;
     std::array<uint8_t, 256> bootRom{};
     bool bootRomLoaded = false;
+    // 13-sector (341-0009) boot PROM — served only when serving13_.
+    std::array<uint8_t, 256> bootRom13{};
+    bool bootRom13Loaded = false;
 
     bool motorOn   = false;
     // MAME `wozfdc_device::active` — MODE_IDLE / MODE_ACTIVE / MODE_DELAY.
@@ -308,6 +317,14 @@ private:
     // differently. roms/diskii_p6.rom on disk is also MAME-layout.
     std::array<uint8_t, 256> p6Rom{};
     bool    p6RomLoaded = false;
+    // 13-sector (341-0010) LSS PROM + the "this card is currently a
+    // 13-sector controller" latch. serving13_ is recomputed on every
+    // insertDisk from whether any mounted disk is 13-sector AND both
+    // 13-sector PROMs are present; slotRomRead / lssSync then index the
+    // 13-sector pair instead of the 16-sector one.
+    std::array<uint8_t, 256> p6Rom13{};
+    bool    p6Rom13Loaded = false;
+    bool    serving13_    = false;
     bool    useBitLss   = false;        // false → legacy 32-cycle gate
     uint8_t address     = 0x10;         // MAME's persistent LSS address reg
     uint8_t lssData     = 0;            // 8-bit shift / data register

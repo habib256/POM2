@@ -639,6 +639,23 @@ void MainWindow::plugSlotsFromSettings()
         for (const char* p : lssRomCandidates) {
             if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
         }
+        // Optional 13-sector PROMs (Apple 341-0009 boot + 341-0010 LSS) for
+        // pre-DOS-3.3 disks. The card serves them only while a 13-sector
+        // disk is mounted (see DiskIICard serving13_). Bundled at
+        // roms/disk2_13.rom + roms/diskii_p6_13.rom.
+        static const char* boot13Candidates[] = {
+            "roms/disk2_13.rom", "../roms/disk2_13.rom", "../../roms/disk2_13.rom"
+        };
+        for (const char* p : boot13Candidates) {
+            if (fs::exists(p)) { (void)card->loadBootRom13(p); break; }
+        }
+        static const char* lss13Candidates[] = {
+            "roms/diskii_p6_13.rom", "../roms/diskii_p6_13.rom",
+            "../../roms/diskii_p6_13.rom"
+        };
+        for (const char* p : lss13Candidates) {
+            if (fs::exists(p)) { (void)card->loadLssRom13(p); break; }
+        }
         // Wire the CPU pointer for sub-instruction cycle accuracy on
         // MMIO reads/writes (cycle-precise copy protections rely on the
         // LSS state at the exact sub-cycle of the data fetch, not at

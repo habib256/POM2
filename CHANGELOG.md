@@ -8,6 +8,23 @@ courante → `DEV.md`.
 
 ## 2026-05-23
 
+- **Disk II 13-secteurs (pré-DOS 3.3) — DOS 3.2 boote** (`dos32_boot_trace`,
+  `d13_roundtrip_smoke`). Support complet des disquettes DOS 3.1/3.2/3.2.1 :
+  détection `.d13` / 116480 o → `ImageKind::Dos32_13` (+ détection 13s des
+  `.nib` par scan `D5 AA B5`), encode/decode GCR **5-and-3**
+  (`nibblizeTrack13`/`decodeTrack13`, port verbatim MAME
+  `formats/ap2_dsk.cpp` `a2_13sect_format` — `kTranslate5`, prologue
+  adresse `D5 AA B5`, champ data 411 nibbles), write-back,
+  `sectorsPerTrack_`/`is13Sector()`. `DiskIICard` sert la boot PROM
+  **341-0009** (`roms/disk2_13.rom`) quand une 13s est montée
+  (`serving13_`), force la LSS bit-level, et **lit via le séquenceur P6
+  16-secteurs** (341-0028) — la LSS est agnostique de l'encodage, le
+  décodage 5-and-3 est logiciel (boot/RWTS) ; le dump brut 341-0010 ne
+  pilote pas `lssSync`. Un vrai master **DOS 3.2 boote** (`DOS32STD.d13`)
+  via l'Autostart ][+ jusqu'au prompt `]` (greeting « LANGUAGE NOT
+  AVAILABLE » = HELLO Integer sur II+ Applesoft). Round-trip encode↔decode
+  pinné byte-pour-byte sur 35 pistes ; boot pinné end-to-end. Images de
+  test dans `disks/dsk/` (DOS32STD.d13, DOS32PLS.D13, dos32std.nib…).
 - **HDV mass-storage — pinning 32 MB** (`hdv_mass_storage_smoke_test`).
   Nouveau smoke test couvrant les trous restants du stockage de masse
   ProDOS : borne de capacité (65536 blocs = 32 MiB acceptés, 65537

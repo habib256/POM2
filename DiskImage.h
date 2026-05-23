@@ -48,6 +48,13 @@ public:
     static constexpr int kBytesPerImage     = kTracks * kSectorsPerTrack * kSectorBytes; // 143360
     static constexpr int kNibblesPerTrack   = 6656;
 
+    // Pre-DOS-3.3 (DOS 3.1/3.2/3.2.1) 13-sector, 5-and-3 GCR. A whole
+    // .d13 / .dsk image is 35 × 13 × 256 = 116480 bytes. The 13-sector
+    // track nibblizes shorter than 16-sector, so it fits in the same
+    // kNibblesPerTrack buffer.
+    static constexpr int kSectorsPerTrack13 = 13;
+    static constexpr int kBytesPerImage13   = kTracks * kSectorsPerTrack13 * kSectorBytes; // 116480
+
     /// Quarter-track positions per WOZ TMAP (4 per whole track ×
     /// kTracks). The LSS-side bit-cell / flux storage indexes on this
     /// granularity so .woz disks can expose distinct streams per
@@ -76,6 +83,7 @@ public:
         TwoImgDos,     // .2mg / 2IMG header wrapping DOS-skew payload
         TwoImgProDos,  // .2mg / 2IMG header wrapping ProDOS-skew payload
         TwoImgNib,     // .2mg / 2IMG header wrapping raw nibbles
+        Dos32_13,      // 116 480-byte image, DOS 3.x 13-sector (5-and-3 GCR)
     };
 
     DiskImage();
@@ -92,7 +100,11 @@ public:
     bool loadFile(const std::string& path);
     bool loadFile(const std::string& path, SectorOrder order);
     SectorOrder getSectorOrder() const { return sectorOrder; }
+    /// 13-sector (pre-DOS-3.3) when true. Lets DiskIICard serve the
+    /// 341-0009 boot PROM + 341-0010 LSS instead of the 16-sector pair.
     bool isNib() const { return nibFormat; }
+    int  sectorsPerTrack() const { return sectorsPerTrack_; }
+    bool is13Sector() const { return sectorsPerTrack_ == kSectorsPerTrack13; }
     /// True iff the image was loaded from a .woz file. WOZ images are
     /// bit-cell-native: the legacy 32-cycle nibble gate cannot decode
     /// them; DiskIICard forces the LSS path on insert. Always reported
@@ -244,6 +256,7 @@ public:
 private:
     bool loaded = false;
     SectorOrder sectorOrder = SectorOrder::Dos33;
+    int         sectorsPerTrack_ = kSectorsPerTrack;   // 16, or 13 for DOS 3.x
     bool nibFormat = false;
     /// True iff the source was the rarer 6384-byte/track NIB variant
     /// (`CNib2` in AppleWin's terminology). The on-disk format omits the
@@ -368,6 +381,14 @@ private:
                                   uint8_t track, uint8_t sector);
     static void writeDataField   (uint8_t*& dst, const uint8_t* src);
 
+    // 13-sector (5-and-3) counterparts — verbatim port of MAME
+    // `formats/ap2_dsk.cpp` a2_13sect_format. Address prologue D5 AA B5
+    // (vs D5 AA 96), data field 5-and-3 (411 nibbles vs 6-and-2 343).
+    void nibblizeTrack13(int track, const uint8_t* sectors, uint8_t volume);
+    static void writeAddressField13(uint8_t*& dst, uint8_t volume,
+                                    uint8_t track, uint8_t sector);
+    static void writeDataField13   (uint8_t*& dst, const uint8_t* src);
+
     /// Result of the content-driven format detector. `payloadOff` and
     /// `payloadLen` describe the slice of the input buffer that the
     /// matching per-format loader should consume — e.g. for a 2MG-wrapped
@@ -441,6 +462,11 @@ private:
     /// left untouched in `outSectors` (which the caller pre-fills with
     /// the existing file content so unmodified sectors persist).
     bool decodeTrack(int track, uint8_t outSectors[kSectorsPerTrack][kSectorBytes]) const;
+
+    /// 13-sector (5-and-3) decoder, inverse of writeDataField13. Used by
+    /// saveDirty for .d13/.dsk write-back. outSectors indexed by the
+    /// address-field sector number (0..12).
+    bool decodeTrack13(int track, uint8_t outSectors[kSectorsPerTrack13][kSectorBytes]) const;
 };
 
 #endif // POM2_DISK_IMAGE_H

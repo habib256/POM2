@@ -18,10 +18,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// 5.25" extensions: .dsk .do .po(143360) .nib .woz. We do NOT size-gate
-// on the .po here — the dedicated 3.5" scanner sees the 800K bucket.
+// 5.25" extensions: .dsk .do .po(143360) .nib .woz .d13. We do NOT size-gate
+// on the .po here — the dedicated 3.5" scanner sees the 800K bucket. `.d13`
+// is the 13-sector (DOS 3.1/3.2/3.2.1) raw image (35×13×256 = 116480 B).
+// `ext` arrives already lower-cased from rescanInto.
 bool accept525(const std::string& ext, uint64_t sz) {
-    if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz")
+    if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz"
+        || ext == ".d13")
         return true;
     if (ext == ".po") {
         // 143 360 = 35 tracks × 16 sectors × 256 B = stock 5.25" ProDOS.
@@ -110,7 +113,11 @@ void DiskLibrary_ImGui::rescanInto(
                 continue;
             }
             if (!de.is_regular_file(ec)) continue;
-            const std::string ext = de.path().extension().string();
+            // Lower-case the extension so MAJUSCULE dumps (DOS32PLS.D13,
+            // DOS13SEC.DSK) match the accept predicates' lower-case literals.
+            std::string ext = de.path().extension().string();
+            for (char& c : ext)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const auto sz = static_cast<uint64_t>(de.file_size(ec));
             if (ec) continue;
             if (!acceptExtAndSize(ext, sz)) continue;
@@ -391,7 +398,7 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
                       ICON_FA_FLOPPY_DISK " 5.25\"  (%zu)", disk525_.size());
         if (ImGui::BeginTabItem(tabLabel)) {
             renderTab(disk525_, mounted.diskII,
-                      "  (drop .dsk / .do / .po / .nib / .woz into disks/)",
+                      "  (drop .dsk / .do / .po / .nib / .woz / .d13 into disks/)",
                       &DiskLibrary_ImGui::on525Left,
                       &DiskLibrary_ImGui::on525Ctx,
                       r);

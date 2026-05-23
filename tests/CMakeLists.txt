@@ -702,6 +702,17 @@ target_include_directories(test_disk_image PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME disk_image_smoke COMMAND test_disk_image)
 set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
 
+# ─── 13-sector (DOS 3.x, 5-and-3 GCR) round-trip ──────────────────────────
+# Pins nibblizeTrack13 ↔ decodeTrack13 (port of MAME a2_13sect_format) and
+# 116480-byte format detection. Synthesized image, no network/PROM.
+add_executable(test_d13_roundtrip
+    d13_roundtrip_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_d13_roundtrip PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME d13_roundtrip_smoke COMMAND test_d13_roundtrip)
+set_tests_properties(d13_roundtrip_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Disk image skew-sniff smoke test ───────────────────────────────────
 # Pins the content-driven DOS/ProDOS detection in DiskImage::loadFile.
 # Verifies the cc65-Chess.po skew-override case (commit 50a8bf9) and that
@@ -1081,6 +1092,37 @@ endif()
 
 add_test(NAME disk_boot_smoke COMMAND test_disk_boot)
 set_tests_properties(disk_boot_smoke PROPERTIES TIMEOUT 30)
+
+# ─── DOS 3.2 (13-sector) end-to-end boot trace ────────────────────────────
+# Boots a real DOS 3.2 .d13 master through the 341-0009 boot PROM + the
+# 5-and-3 nibblizer + the bit-level LSS read, via the ][+ Autostart ROM,
+# and asserts DOS loaded (the "LANGUAGE NOT AVAILABLE" greeting + multi-
+# track head seek). Skip-if-absent (needs apple2p.rom + disk2_13.rom +
+# diskii_p6_13.rom + DOS32STD.d13, all bundled).
+add_executable(test_dos32_boot_trace
+    dos32_boot_trace.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dos32_boot_trace PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dos32_boot_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dos32_boot_trace PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dos32_boot_trace PRIVATE winmm)
+endif()
+add_test(NAME dos32_boot_trace COMMAND test_dos32_boot_trace)
+set_tests_properties(dos32_boot_trace PROPERTIES TIMEOUT 60)
 
 
 # ─── DOS 3.3 SAVE / LOAD round-trip smoke test ────────────────────────────

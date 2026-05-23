@@ -165,6 +165,44 @@ bool DiskIICard::loadLssRom(const std::string& path)
     return true;
 }
 
+bool DiskIICard::loadBootRom13(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;                      // optional — silent when absent
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    if (size != 256) {
+        pom2::log().warn("Disk II",
+            "13-sector boot PROM must be 256 bytes, got " + std::to_string(size));
+        return false;
+    }
+    f.read(reinterpret_cast<char*>(bootRom13.data()), 256);
+    if (!f) return false;
+    bootRom13Loaded = true;
+    pom2::log().info("Disk II", "13-sector boot PROM loaded: " + path);
+    return true;
+}
+
+bool DiskIICard::loadLssRom13(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;                      // optional — silent when absent
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    if (size != 256) {
+        pom2::log().warn("Disk II",
+            "13-sector LSS PROM must be 256 bytes, got " + std::to_string(size));
+        return false;
+    }
+    f.read(reinterpret_cast<char*>(p6Rom13.data()), 256);
+    if (!f) return false;
+    p6Rom13Loaded = true;
+    pom2::log().info("Disk II", "13-sector LSS PROM loaded: " + path);
+    return true;
+}
+
 bool DiskIICard::insertDisk(int drive, const std::string& path)
 {
     if (drive < 0 || drive >= kDriveCount) {
@@ -211,6 +249,31 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     for (int d = 0; d < kDriveCount; ++d) {
         if (images[d].isWoz()) { useBitLss = true; break; }
     }
+    // 13-sector controller selection. A Disk II controller is physically
+    // either 13- or 16-sector (different P5/P6 PROMs); you can't mix them
+    // on one card. So any mounted 13-sector disk flips the whole card to
+    // the 341-0009 boot PROM + 341-0010 LSS — provided both were loaded
+    // (loadBootRom13 / loadLssRom13). slotRomRead / lssSync index the 13s
+    // pair while serving13_ is set; otherwise nothing changes for 16s.
+    bool any13 = false;
+    for (int d = 0; d < kDriveCount; ++d)
+        if (images[d].isLoaded() && images[d].is13Sector()) { any13 = true; break; }
+    // A 13-sector disk flips the card to the 341-0009 boot PROM at $Cn00.
+    // The READ sequencer stays the 16-sector P6 (341-0028): the LSS is
+    // bit-level and encoding-agnostic — it recovers the 5-and-3 nibble
+    // stream (D5 AA B5 / translate5 bytes) just as well, and the 5-and-3
+    // *decode* is done in software by the 341-0009 boot / DOS 3.2 RWTS.
+    // (The raw 341-0010 dump doesn't drive POM2's wozfdc-port lssSync —
+    // it yields zero byte-ready — whereas the 16s P6 reads 13s correctly;
+    // verified by tests/dos32_boot_trace.cpp phase 0.) We force the
+    // bit-level LSS on because the 341-0009 read loop is tighter than the
+    // 16s-tuned legacy 32-cycle gate (which mis-frames the 5-and-3 read).
+    serving13_ = any13 && bootRom13Loaded;
+    if (any13 && !serving13_)
+        pom2::log().warn("Disk II",
+            "13-sector disk mounted but the 341-0009 boot PROM "
+            "(roms/disk2_13.rom) is missing — it won't boot");
+    if (serving13_) useBitLss = true;
     // No click here — fires at user-initiated insert via UI / CLI only.
     // Auto-restore of the previous-session disk path calls insertDisk
     // during MainWindow construction; firing the click there would
@@ -246,7 +309,7 @@ uint8_t DiskIICard::slotRomRead(uint8_t low8)
             "PROM entered (first slot ROM read at offset $%02X)", low8);
         pom2::log().info("Disk II", buf);
     }
-    return bootRom[low8];
+    return (serving13_ ? bootRom13 : bootRom)[low8];
 }
 
 void DiskIICard::dumpRecentReads(size_t maxEntries) const

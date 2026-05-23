@@ -460,6 +460,52 @@ Pinned: `disk_image_smoke_test.cpp`, `disk_skew_sniff_smoke_test.cpp`,
 `disk_macbinary_smoke_test.cpp`, `disk_cnib2_smoke_test.cpp`,
 `disk_refuse_smoke_test.cpp`.
 
+### 13-sector (5-and-3, pre-DOS-3.3)
+
+DOS 3.1/3.2/3.2.1 used **13 sectors/track** with **5-and-3 GCR** (vs
+DOS 3.3's 16-sector 6-and-2). A whole `.d13` / `.dsk` image is 35 × 13 ×
+256 = **116480** bytes. `detectFormat` maps that size → `ImageKind::
+Dos32_13` (always DOS order); `loadSectorImageFromBuffer` then calls
+`nibblizeTrack13` and sets `sectorsPerTrack_ = 13` (`is13Sector()`).
+
+Codec (`DiskImage.cpp`) is a **verbatim port of MAME
+`formats/ap2_dsk.cpp` `a2_13sect_format`**: `nibblizeTrack13` /
+`writeDataField13` (encode, `kTranslate5[32]`, addr prologue `D5 AA B5`,
+data prologue `D5 AA AD`, 411-nibble data field) + `decodeTrack13` /
+`kUntranslate5` (write-back). Physical interleave `sector = (i*10)%13`;
+address-field number == file sector index == S. Pinned **byte-for-byte
+round-trip** by `d13_roundtrip_smoke_test.cpp` (encode→decode all 35
+tracks, no network).
+
+**Boot wiring.** `DiskIICard` serves the **341-0009 boot PROM**
+(`roms/disk2_13.rom`) at `$Cn00` while a 13-sector disk is mounted:
+`insertDisk` recomputes `serving13_ = any 13s disk && bootRom13Loaded`,
+and `slotRomRead` indexes `bootRom13`. You can't mix 13- and 16-sector
+on one controller, so a single 13s disk flips the whole card. 13-sector
+disks **force the bit-level LSS** (`useBitLss`) — the 341-0009 read loop
+is tighter than POM2's 16s-tuned legacy 32-cycle gate (which mis-frames
+the 5-and-3 read).
+
+Key gotcha: the **read sequencer stays the 16-sector P6** (341-0028).
+The LSS is bit-level and **encoding-agnostic** — it recovers the 5-and-3
+nibble stream (D5 AA B5 / translate5) just as well as 6-and-2; the
+5-and-3 *decode* is software (the 341-0009 boot / DOS 3.2 RWTS). The raw
+341-0010 dump does **not** drive POM2's wozfdc-port `lssSync` (it yields
+zero byte-ready), whereas the 16s P6 reads 13s correctly — verified by
+`dos32_boot_trace` phase 0. (`loadLssRom13` exists but `p6Rom13` is
+currently unused for reads.)
+
+**Boots end-to-end.** A real DOS 3.2 master (`disks/dsk/DOS32STD.d13`,
+and the raw-nibble reference `dos32std.nib`) boots via the ][+ Autostart
+ROM: DOS loads across the disk (head seeks to track 13), runs its
+greeting, and drops to its hooked `]` prompt with `LANGUAGE NOT
+AVAILABLE` (the disk's Integer-BASIC HELLO can't run on the Applesoft
+][+ — authentic behaviour, and proof DOS itself is running). Pinned by
+`tests/dos32_boot_trace.cpp` (skip-if-absent). NB: needs an Autostart
+machine (][+); the non-autostart Original monitor sits at `*` (no
+auto-boot), and a 13s `.nib`/`.woz` is detected by content (D5 AA B5
+scan) so it serves the 341-0009 PROM too.
+
 ### `.woz`
 
 `isWoz()`. Verbatim port of MAME `lib/formats/woz_dsk.cpp`. WOZ
