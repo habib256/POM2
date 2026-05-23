@@ -348,6 +348,13 @@ private:
     /// unit 0, auto-creating a SmartPortHdvUnit if needed. `bootSlotOut`
     /// receives the slot to boot from.
     bool routeMountHdv(const std::string& path, int& bootSlotOut, std::string& errOut);
+    /// Ensure the config can host an HDV image: returns the slot of an
+    /// existing HDV or SmartPort card, or plugs a fresh ProDOSHardDiskCard
+    /// into a free slot (preferring slot 7) and returns that. Used by the
+    /// CLI/kiosk launcher so `POM2 game.hdv` boots even when the saved slot
+    /// config has only Disk II cards. Returns -1 if no free slot exists.
+    /// NOT persisted — the saved slot configuration is left untouched.
+    int  ensureHdvCardForBoot();
 
     void renderMenuBar();
     void renderScreenWindow();

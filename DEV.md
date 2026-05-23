@@ -1284,6 +1284,17 @@ Flags: `--preset ii|ii+|iie|iic|iic+`, `--speed`, `--cpu-max`,
   lambdas were promoted to `MainWindow` methods so both callers route
   identically (SmartPort unit auto-create, //c+ on-board hub, HDV card vs
   SmartPort unit 0). 5.25" → `DiskIICard::insertDisk` + `bootFromSlot`.
+- **HDV auto-provision**: an HDV needs an HDV/SmartPort card, but a saved
+  config may have only Disk II cards (the Library boot just errors there).
+  `ensureHdvCardForBoot()` plugs a `ProDOSHardDiskCard` into a free slot
+  (prefers 7) for the session if none is present, so `POM2 game.hdv` boots
+  regardless of the saved slot layout. The plug is **not persisted** — see
+  the no-save note below — so the user's GUI slot config is untouched.
+- **No persistence in kiosk**: the `~MainWindow` `settings->save()` is
+  gated `if (!kiosk_)`, so a kiosk session never writes `state.cfg` (the
+  auto-plugged HDV card, the booted disk path, etc. stay session-local).
+  `imgui.ini` is likewise disabled (main.cpp). Bare `POM2 <disk>` in GUI
+  *does* persist normally.
 - Defers the boot to a small frame countdown in the main loop (runs on the
   UI thread between frames, after the worker is up + slots plugged), so the
   SlotBus mutation doesn't race the CPU thread. Works in GUI and kiosk.

@@ -205,9 +205,12 @@ profile + slot config**, then cold-boots it after a short frame settle
 boot" buttons). `--kiosk` adds **exclusive full-screen** (primary monitor
 video mode) with a **chrome-free render path** (`MainWindow::renderKiosk`:
 only the Apple II screen, letterboxed on black — no menu bar / toolbar /
-panels) and disables `imgui.ini` persistence. The kiosk window closes only
-via the OS (Alt-F4 / WM). Bare `POM2 <disk>` (no `--kiosk`) boots the disk
-in the normal GUI. Pinned by `tests/cli_kiosk_test.cpp`.
+panels). Kiosk is **read-only**: it writes neither `imgui.ini` nor
+`state.cfg` (the `~MainWindow` save is gated `if (!kiosk_)`). An HDV with
+no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard`
+into a free slot (`ensureHdvCardForBoot`, session-local). The kiosk window
+closes only via the OS (Alt-F4 / WM). Bare `POM2 <disk>` (no `--kiosk`)
+boots the disk in the normal GUI. Pinned by `tests/cli_kiosk_test.cpp`.
 
 ## Version string locations
 

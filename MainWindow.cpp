@@ -504,7 +504,11 @@ MainWindow::~MainWindow()
         settings->setBool ("mockingboard_muted",  mockingboardCard->isMuted());
     }
 
-    settings->save();
+    // Kiosk is a read-only launcher: don't write state.cfg, so the disk it
+    // booted (and any HDV card auto-plugged for it by ensureHdvCardForBoot)
+    // never leak into the user's saved GUI config. The setString calls
+    // above are in-memory only and discarded with `settings` here.
+    if (!kiosk_) settings->save();
 }
 
 // ─── Slot configuration ─────────────────────────────────────────────────
@@ -2589,6 +2593,37 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
     return false;
 }
 
+int MainWindow::ensureHdvCardForBoot()
+{
+    if (hdvCard)       return hdvCard->getSlot();
+    if (smartPortCard) return smartPortCard->getSlot();
+
+    // Neither an HDV nor a SmartPort card is plugged (e.g. a saved config
+    // that only has Disk II cards). Plug a ProDOSHardDiskCard into a free
+    // slot for THIS session so the CLI/kiosk launcher can still boot the
+    // named HDV. Prefer slot 7 (conventional HDV/SmartPort slot), else the
+    // highest free slot. Not persisted — the saved config is untouched.
+    int slot = -1;
+    for (int s = 7; s >= 1; --s) {
+        if (!controller->memory().slotBus().isPlugged(s)) { slot = s; break; }
+    }
+    if (slot < 0) return -1;
+
+    // Plug under the state lock (the slot is empty, so no card destructor
+    // races the worker — a held lock is enough; no stop/start needed).
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto card = std::make_unique<ProDOSHardDiskCard>(slot);
+        hdvCard = card.get();
+        controller->memory().slotBus().plug(slot, std::move(card));
+        slotCards[slot] = "hdv";
+    }
+    pom2::log().info("CLI",
+        "auto-plugged ProDOS HDV card in slot " + std::to_string(slot) +
+        " (saved slot config unchanged)");
+    return slot;
+}
+
 bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut)
 {
     // Classify by extension + size, route into the matching slot under the
@@ -2598,7 +2633,14 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
     // boot" buttons but with no UI surface.
     switch (classifyDiskForSlot(path)) {
         case DiskSlotClass::Floppy525: {
-            DiskIICard* target = diskCard;     // primary (lowest slot)
+            // Prefer the Disk II in the conventional boot slot 6; fall back
+            // to the primary (lowest-slot) card. Booting a single floppy
+            // from a non-6 slot is unconventional and breaks software that
+            // hardcodes slot 6 for its loader — matters when the config has
+            // Disk II in several slots (primary = lowest = e.g. slot 5).
+            DiskIICard* target = nullptr;
+            for (auto* c : diskCards) if (c && c->getSlot() == 6) { target = c; break; }
+            if (!target) target = diskCard;
             if (!target) { errOut = "no Disk II card in the current config"; return false; }
             bool ok = false;
             {
@@ -2624,6 +2666,12 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             return true;
         }
         case DiskSlotClass::Hdv: {
+            // Make sure a card exists to host the HDV (auto-plug one if the
+            // saved config has none), then route + boot.
+            if (ensureHdvCardForBoot() < 0) {
+                errOut = "no free slot to plug an HDV card into";
+                return false;
+            }
             int bootSlot = 0;
             if (!routeMountHdv(path, bootSlot, errOut)) return false;
             controller->bootFromSlot(bootSlot);
