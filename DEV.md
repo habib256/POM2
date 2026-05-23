@@ -1266,3 +1266,30 @@ Flags: `--preset ii|ii+|iie|iic|iic+`, `--speed`, `--cpu-max`,
 `--tape`, `--35-disk1` / `--35-disk2`, `--load addr:file`, `--run`,
 `--paste`, `--step`, `--play`/`--rec`/`--rewind`,
 `--snapshot-save`/`--snapshot-load`.
+
+**Parser / runner split** (2026-05-23): `parseCli` + `printUsage` +
+`resolveSaveTapePath` live in `CliDispatcher.cpp` with **no
+`EmulationController` dependency**; the Phase-C runner (`runDeferredActions`
++ `runLoad` / `runPasteFile`) moved to `CliRunner.cpp`. This lets
+`tests/cli_kiosk_test.cpp` link the parser against just `DiskImage.cpp`.
+
+**Positional disk + `--kiosk`**. A first non-flag argument is captured into
+`CliPlan::bootDiskPath`; `--kiosk` sets `CliPlan::kiosk`. main.cpp:
+
+- Picks the slot by type via `classifyDiskForSlot(path)` (`DiskImage.*` —
+  `DiskSlotClass` = `Floppy525` / `Sony35` / `Hdv`, mirroring the Disk
+  Library's `accept525/35/hdv` predicates), then calls
+  `MainWindow::insertAndBootImage(path, err)`. That method shares the
+  routing with the Disk Library UI: the `routeMount35` / `routeMountHdv`
+  lambdas were promoted to `MainWindow` methods so both callers route
+  identically (SmartPort unit auto-create, //c+ on-board hub, HDV card vs
+  SmartPort unit 0). 5.25" → `DiskIICard::insertDisk` + `bootFromSlot`.
+- Defers the boot to a small frame countdown in the main loop (runs on the
+  UI thread between frames, after the worker is up + slots plugged), so the
+  SlotBus mutation doesn't race the CPU thread. Works in GUI and kiosk.
+- `--kiosk` → exclusive full-screen window from the primary monitor's video
+  mode (`glfwGetVideoMode` bit-depth/refresh hints + `glfwCreateWindow(...,
+  monitor, ...)`); `io.IniFilename = nullptr`; `MainWindow::setKioskMode`.
+  `render()` short-circuits to `renderKiosk()` — one borderless
+  full-viewport window (`drawScreenImage()` letterboxed on black), no menu
+  bar / toolbar / panels / dialogs. The window closes only via the OS.

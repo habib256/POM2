@@ -116,7 +116,35 @@ int main(int argc, char* argv[])
     // opens them on demand via Devices menu / Slot Configuration.
     // The `FirstUseEver` pos/size calls in MainWindow rely on roughly
     // this canvas.
-    GLFWwindow* window = glfwCreateWindow(1568, 850, "POM2 v0.5 - Apple II Emulator", nullptr, nullptr);
+    const char* kWindowTitle = "POM2 v0.5 - Apple II Emulator";
+    GLFWwindow* window = nullptr;
+    if (plan->kiosk) {
+        // Exclusive full-screen on the primary monitor at its current
+        // video mode (no resolution change beyond what the mode dictates).
+        // Copying the mode's bit depths + refresh into the hints is the
+        // GLFW-recommended way to request a "windowed full screen" that
+        // doesn't force a mode switch.
+        GLFWmonitor* mon = glfwGetPrimaryMonitor();
+        const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+        if (mon && vm) {
+            glfwWindowHint(GLFW_RED_BITS,     vm->redBits);
+            glfwWindowHint(GLFW_GREEN_BITS,   vm->greenBits);
+            glfwWindowHint(GLFW_BLUE_BITS,    vm->blueBits);
+            glfwWindowHint(GLFW_REFRESH_RATE, vm->refreshRate);
+            window = glfwCreateWindow(vm->width, vm->height, kWindowTitle,
+                                      mon, nullptr);
+            pom2::log().info("CLI", "--kiosk: full-screen " +
+                std::to_string(vm->width) + "x" + std::to_string(vm->height));
+        }
+        if (!window) {
+            pom2::log().warn("CLI",
+                "--kiosk: no primary monitor / video mode — falling back "
+                "to a windowed canvas");
+        }
+    }
+    if (!window) {
+        window = glfwCreateWindow(1568, 850, kWindowTitle, nullptr, nullptr);
+    }
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -138,7 +166,11 @@ int main(int argc, char* argv[])
     // right column). Subsequent launches restore whatever the user
     // dragged into place. Falls back to the cwd `imgui.ini` if $HOME
     // isn't set (matches Settings's fallback path).
-    {
+    if (plan->kiosk) {
+        // Kiosk has no movable windows, and we don't want it to overwrite
+        // the GUI layout the user curated — disable .ini persistence.
+        io.IniFilename = nullptr;
+    } else {
         static std::string iniPath;
         namespace fs = std::filesystem;
         if (const char* home = std::getenv("HOME"); home && *home) {
@@ -273,6 +305,7 @@ int main(int argc, char* argv[])
     // the profile-driven title update (step 13 in applyProfile) sees a
     // valid handle even when --preset triggers the switch.
     mainWindow.setGlfwWindow(window);
+    mainWindow.setKioskMode(plan->kiosk);
     // CLI --preset selection (must come AFTER MainWindow's legacy boot so
     // it overrides via the full cold-reset path applyProfile uses).
     if (plan->preset != pom2::CliPreset::Default) {
@@ -396,8 +429,24 @@ int main(int argc, char* argv[])
         }
     }
 
+    // Positional disk image → mount + boot once the worker thread and the
+    // first few frames have settled (slot cards plugged, CPU running). A
+    // small frame countdown keeps this on the UI thread between frames, so
+    // the SlotBus mutation in insertAndBootImage() doesn't race the worker.
+    // Works in both GUI and --kiosk mode (bare `POM2 disk` boots in GUI).
+    int cliBootCountdown = plan->bootDiskPath.empty() ? -1 : 30;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        if (cliBootCountdown > 0 && --cliBootCountdown == 0) {
+            std::string err;
+            if (mainWindow.insertAndBootImage(plan->bootDiskPath, err)) {
+                pom2::log().info("CLI", "booted disk: " + plan->bootDiskPath);
+            } else {
+                pom2::log().warn("CLI", "disk boot failed: " + err);
+            }
+        }
 
         if (autoBootRequested.exchange(false)) {
             mainWindow.bootHdvImage();

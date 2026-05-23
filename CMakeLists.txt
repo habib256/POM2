@@ -61,6 +61,7 @@ set(SOURCES
     CassetteDevice.cpp
     CassetteDeck_ImGui.cpp
     CliDispatcher.cpp
+    CliRunner.cpp
     ClockCard.cpp
     Disassembler6502.cpp
     Disk35Image.cpp

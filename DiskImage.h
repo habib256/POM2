@@ -469,4 +469,22 @@ private:
     bool decodeTrack13(int track, uint8_t outSectors[kSectorsPerTrack13][kSectorBytes]) const;
 };
 
+/// Slot-routing class for a disk image — which kind of card/slot the image
+/// belongs in. Coarser than `DiskImage::ImageKind`: it only answers "5.25"
+/// Disk II vs 800K Sony 3.5" vs ProDOS hard-disk (HDV)", which is what the
+/// 1-click "insert + boot" path (Disk Library UI and the `--kiosk` / CLI
+/// positional disk launcher) needs to pick a target slot.
+enum class DiskSlotClass {
+    Unknown,    // extension/size not recognised — caller reports an error
+    Floppy525,  // 5.25" Disk II: .dsk/.do/.nib/.woz/.d13, or .po @143360
+    Sony35,     // 800K 3.5": .po/.2mg sized ~819200 (±2IMG header slack)
+    Hdv,        // ProDOS hard disk: .hdv/.2mg > 800K, 512-aligned
+};
+
+/// Classify `path` for slot routing by file extension + size. Mirrors the
+/// per-tab predicates the Disk Library scanner uses (accept525 / accept35 /
+/// acceptHdv in DiskLibrary_ImGui.cpp) so the UI and the CLI launcher route
+/// identically. Returns `Unknown` if the file is missing or unrecognised.
+DiskSlotClass classifyDiskForSlot(const std::string& path);
+
 #endif // POM2_DISK_IMAGE_H

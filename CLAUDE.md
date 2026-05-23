@@ -187,13 +187,27 @@ Keyboard wiring (post Theme 1):
 
 ## CLI
 
-`CliDispatcher`. Three phases: parse → pre-boot (preset/ROM/snapshot-
-load/`--load addr:file`) → post-boot (tape ops/paste/run/step).
+`CliDispatcher` (parser, no `EmulationController` dependency) +
+`CliRunner` (Phase-C runner — split out so the parser is unit-testable).
+Three phases: parse → pre-boot (preset/ROM/snapshot-load/`--load
+addr:file`) → post-boot (tape ops/paste/run/step).
 
 Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`,
 `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"),
 `--load addr:file`, `--run`, `--paste`, `--step`,
 `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
+
+**Positional disk + kiosk** (2026-05-23): `POM2 <disk-image>` mounts the
+image into the slot its type maps to (`classifyDiskForSlot` in
+`DiskImage.*`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the **saved
+profile + slot config**, then cold-boots it after a short frame settle
+(`MainWindow::insertAndBootImage`, shared with the Disk Library "insert +
+boot" buttons). `--kiosk` adds **exclusive full-screen** (primary monitor
+video mode) with a **chrome-free render path** (`MainWindow::renderKiosk`:
+only the Apple II screen, letterboxed on black — no menu bar / toolbar /
+panels) and disables `imgui.ini` persistence. The kiosk window closes only
+via the OS (Alt-F4 / WM). Bare `POM2 <disk>` (no `--kiosk`) boots the disk
+in the normal GUI. Pinned by `tests/cli_kiosk_test.cpp`.
 
 ## Version string locations
 

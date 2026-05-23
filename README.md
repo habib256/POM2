@@ -136,8 +136,21 @@ X/Y → PADL(0/1), buttons → PB0/PB1/PB2. PADL(2/3) read centred.
 
 ## CLI
 
+```bash
+POM2 <disk-image>          # mount + boot a disk in the GUI
+POM2 --kiosk <disk-image>  # full-screen, no menus — just the screen
+```
+
+The positional `<disk-image>` (`.dsk/.do/.po/.nib/.woz/.d13/.hdv/.2mg`) is
+auto-routed to its slot (5.25" Disk II / 800K 3.5" / ProDOS HDV) under your
+**saved profile + slot config**, then booted. `--kiosk` runs exclusive
+full-screen showing only the Apple II screen (no menu bar, toolbar or
+panels); close it with Alt-F4 / your window manager.
+
 | Flag | Effect |
 |---|---|
+| *(positional)* `disk-image` | Mount + boot a disk under the saved config |
+| `--kiosk` | Full-screen, chrome-free; implies booting the disk |
 | `--preset ii\|ii+\|iie\|iic\|iic+` | Pick profile up front |
 | `--speed N` / `--cpu-max` | Cycles/frame (1× = 17 045) / uncap |
 | `--tape PATH` | Pre-load cassette |

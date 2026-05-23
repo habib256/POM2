@@ -15,6 +15,7 @@
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
+#include "DiskImage.h"
 #include "DiskLibrary_ImGui.h"
 #include "EmulationController.h"
 #include "HdvController_ImGui.h"
@@ -1476,29 +1477,60 @@ void MainWindow::renderScreenWindow()
             }
         }
 
-        uploadScreenTexture();
-
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        float scale = std::min(avail.x / Apple2Display::kWidth,
-                               avail.y / Apple2Display::kHeight);
-        scale = std::max(scale, 1.0f);
-        ImVec2 size(Apple2Display::kWidth  * scale,
-                    Apple2Display::kHeight * scale);
-
-        ImVec2 cur = ImGui::GetCursorPos();
-        ImGui::SetCursorPos(ImVec2(
-            cur.x + std::max(0.0f, (avail.x - size.x) * 0.5f),
-            cur.y + std::max(0.0f, (avail.y - size.y) * 0.5f)));
-
-        ImGui::Image(static_cast<ImTextureID>(screenTexture), size);
-        // Capture the screen widget's screen-space rect so the GLFW
-        // cursor-pos callback (Phase 5) can route motion over the
-        // screen to the Mouse Card.
-        screenRectMin = ImGui::GetItemRectMin();
-        screenRectMax = ImGui::GetItemRectMax();
+        drawScreenImage();
     }
     ImGui::End();
     ImGui::PopStyleColor();
+}
+
+void MainWindow::drawScreenImage()
+{
+    uploadScreenTexture();
+
+    // Scale to fill the content region while preserving the 4:3 aspect,
+    // then centre — letterboxes on a wider/taller region (e.g. a full
+    // kiosk viewport). Never shrink below 1× (tiny windows just clip).
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float scale = std::min(avail.x / Apple2Display::kWidth,
+                           avail.y / Apple2Display::kHeight);
+    scale = std::max(scale, 1.0f);
+    ImVec2 size(Apple2Display::kWidth  * scale,
+                Apple2Display::kHeight * scale);
+
+    ImVec2 cur = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(
+        cur.x + std::max(0.0f, (avail.x - size.x) * 0.5f),
+        cur.y + std::max(0.0f, (avail.y - size.y) * 0.5f)));
+
+    ImGui::Image(static_cast<ImTextureID>(screenTexture), size);
+    // Capture the screen widget's screen-space rect so the GLFW
+    // cursor-pos callback (Phase 5) can route motion over the
+    // screen to the Mouse Card.
+    screenRectMin = ImGui::GetItemRectMin();
+    screenRectMax = ImGui::GetItemRectMax();
+}
+
+void MainWindow::renderKiosk()
+{
+    // Chrome-free full-viewport window: just the Apple II screen, centred
+    // and letterboxed on a black background. No title bar, no resize, no
+    // background decoration — the OS window is already full-screen.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    if (ImGui::Begin("##kiosk", nullptr, flags)) {
+        drawScreenImage();
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 // ─── Mouse Card input routing ───────────────────────────────────────────
@@ -2470,6 +2502,141 @@ void MainWindow::ejectAllDisks()
     tapeStatusUntil   = lastFrameTime + 3.0;
 }
 
+bool MainWindow::routeMount35(int driveIdx, const std::string& path,
+                              std::string& errOut)
+{
+    // On any non-//c+ profile with a SmartPort card, the card's units own
+    // 3.5" media; auto-create a SmartPort35Unit on the target index if it's
+    // empty or holds a different kind (HDV). On //c+ the on-board hub owns
+    // 3.5". (Promoted from a lambda in renderDiskLibraryWindow so the CLI
+    // insert+boot path shares the exact routing.)
+    if (smartPortCard &&
+        activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        pom2::SmartPortUnit* u =
+            smartPortCard->unit(static_cast<size_t>(driveIdx));
+        if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
+            smartPortCard->setUnit(
+                static_cast<size_t>(driveIdx),
+                std::make_unique<pom2::SmartPort35Unit>());
+            u = smartPortCard->unit(static_cast<size_t>(driveIdx));
+        }
+        if (!u->loadImage(path)) {
+            errOut = u->lastError();
+            return false;
+        }
+        const std::string base =
+            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "_unit" + std::to_string(driveIdx);
+        settings->setString(base + "_type",
+            std::string(pom2::SmartPort35Unit::kKindKey));
+        settings->setString(base + "_path", path);
+        settings->save();
+        return true;
+    }
+    // //c+ on-board path.
+    if (!controller->mount35(driveIdx, path)) {
+        const auto& img = (driveIdx == 0)
+            ? controller->disk35Internal()
+            : controller->disk35External();
+        errOut = img.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
+                               std::string& errOut)
+{
+    // Prefer a dedicated ProDOSHardDiskCard; else route to a SmartPort
+    // card's unit 0 (auto-creating a SmartPortHdvUnit). Promoted from a
+    // lambda in renderDiskLibraryWindow.
+    if (hdvCard) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        if (!hdvCard->loadImage(path)) {
+            errOut = hdvCard->getLastError();
+            hdvStatus = "no image mounted";
+            return false;
+        }
+        hdvPath = path;
+        hdvStatus = "loaded: " + path;
+        bootSlotOut = hdvCard->getSlot();
+        return true;
+    }
+    if (smartPortCard) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        pom2::SmartPortUnit* u = smartPortCard->unit(0);
+        if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
+            smartPortCard->setUnit(
+                0, std::make_unique<pom2::SmartPortHdvUnit>());
+            u = smartPortCard->unit(0);
+        }
+        if (!u->loadImage(path)) {
+            errOut = u->lastError();
+            return false;
+        }
+        const std::string base =
+            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "_unit0";
+        settings->setString(base + "_type",
+            std::string(pom2::SmartPortHdvUnit::kKindKey));
+        settings->setString(base + "_path", path);
+        settings->save();
+        bootSlotOut = smartPortCard->getSlot();
+        return true;
+    }
+    errOut = "no HDV or SmartPort card plugged";
+    return false;
+}
+
+bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut)
+{
+    // Classify by extension + size, route into the matching slot under the
+    // active profile/slot config, then cold-boot. Shared by the CLI
+    // positional-disk / --kiosk launcher and (potentially) any future
+    // single-call boot entry point. Mirrors the Disk Library "insert +
+    // boot" buttons but with no UI surface.
+    switch (classifyDiskForSlot(path)) {
+        case DiskSlotClass::Floppy525: {
+            DiskIICard* target = diskCard;     // primary (lowest slot)
+            if (!target) { errOut = "no Disk II card in the current config"; return false; }
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                ok = target->insertDisk(0, path);
+                if (ok) target->seekTrack0();
+                else    errOut = target->getLastError(0);
+            }
+            if (!ok) return false;
+            controller->bootFromSlot(target->getSlot());
+            controller->setMode(EmulationController::Mode::Running);
+            return true;
+        }
+        case DiskSlotClass::Sony35: {
+            if (!routeMount35(0, path, errOut)) return false;
+            if (smartPortCard &&
+                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+                controller->bootFromSlot(smartPortCard->getSlot());
+            } else {
+                controller->coldBoot();
+            }
+            controller->setMode(EmulationController::Mode::Running);
+            return true;
+        }
+        case DiskSlotClass::Hdv: {
+            int bootSlot = 0;
+            if (!routeMountHdv(path, bootSlot, errOut)) return false;
+            controller->bootFromSlot(bootSlot);
+            controller->setMode(EmulationController::Mode::Running);
+            return true;
+        }
+        case DiskSlotClass::Unknown:
+        default:
+            errOut = "unrecognised disk image (extension/size): " + path;
+            return false;
+    }
+}
+
 void MainWindow::renderDiskLibraryWindow()
 {
     if (!showDiskLibrary) return;
@@ -2595,42 +2762,8 @@ void MainWindow::renderDiskLibraryWindow()
     // we auto-create a SmartPort35Unit on the target index if the slot
     // is empty or holds a different kind (HDV) — the user can re-pick
     // the type later from the SmartPort Configuration panel.
-    auto routeMount35 = [&](int driveIdx, const std::string& path,
-                            std::string& errOut) -> bool {
-        if (smartPortCard &&
-            activeProfile != pom2::SystemProfile::AppleIIcPlus) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            pom2::SmartPortUnit* u =
-                smartPortCard->unit(static_cast<size_t>(driveIdx));
-            if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
-                smartPortCard->setUnit(
-                    static_cast<size_t>(driveIdx),
-                    std::make_unique<pom2::SmartPort35Unit>());
-                u = smartPortCard->unit(static_cast<size_t>(driveIdx));
-            }
-            if (!u->loadImage(path)) {
-                errOut = u->lastError();
-                return false;
-            }
-            const std::string base =
-                "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
-                "_unit" + std::to_string(driveIdx);
-            settings->setString(base + "_type",
-                std::string(pom2::SmartPort35Unit::kKindKey));
-            settings->setString(base + "_path", path);
-            settings->save();
-            return true;
-        }
-        // //c+ on-board path.
-        if (!controller->mount35(driveIdx, path)) {
-            const auto& img = (driveIdx == 0)
-                ? controller->disk35Internal()
-                : controller->disk35External();
-            errOut = img.lastError();
-            return false;
-        }
-        return true;
-    };
+    // routeMount35 / routeMountHdv are now member methods (shared with the
+    // CLI insert+boot path) — see their definitions above.
 
     if (!r.request35MountAndBoot.empty()) {
         std::string err;
@@ -2673,46 +2806,6 @@ void MainWindow::renderDiskLibraryWindow()
     // mount HDV; on a SmartPort-only config, auto-create / replace
     // unit 0 with a SmartPortHdvUnit so users don't have to detour
     // through the SmartPort Configuration panel.
-    auto routeMountHdv = [&](const std::string& path, int& bootSlotOut,
-                             std::string& errOut) -> bool {
-        if (hdvCard) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (!hdvCard->loadImage(path)) {
-                errOut = hdvCard->getLastError();
-                hdvStatus = "no image mounted";
-                return false;
-            }
-            hdvPath = path;
-            hdvStatus = "loaded: " + path;
-            bootSlotOut = hdvCard->getSlot();
-            return true;
-        }
-        if (smartPortCard) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            pom2::SmartPortUnit* u = smartPortCard->unit(0);
-            if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
-                smartPortCard->setUnit(
-                    0, std::make_unique<pom2::SmartPortHdvUnit>());
-                u = smartPortCard->unit(0);
-            }
-            if (!u->loadImage(path)) {
-                errOut = u->lastError();
-                return false;
-            }
-            const std::string base =
-                "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
-                "_unit0";
-            settings->setString(base + "_type",
-                std::string(pom2::SmartPortHdvUnit::kKindKey));
-            settings->setString(base + "_path", path);
-            settings->save();
-            bootSlotOut = smartPortCard->getSlot();
-            return true;
-        }
-        errOut = "no HDV or SmartPort card plugged";
-        return false;
-    };
-
     if (!r.requestHdvMountAndBoot.empty()) {
         const std::string path = r.requestHdvMountAndBoot;
         int bootSlot = 0;
@@ -3770,6 +3863,13 @@ void MainWindow::render()
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).
     updateAutoTurbo();
+
+    // Kiosk: only the screen, no chrome. Joystick + auto-turbo above still
+    // run so the machine behaves identically; everything else is skipped.
+    if (kiosk_) {
+        renderKiosk();
+        return;
+    }
 
     renderMenuBar();
     // Toolbar must render after the menu bar so we know its height

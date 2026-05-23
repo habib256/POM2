@@ -1733,6 +1733,25 @@ add_test(NAME clock_card_smoke COMMAND test_clock_card)
 set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── CLI kiosk / positional-disk smoke test ──────────────────────────────
+# Pins parseCli's positional disk + --kiosk handling and the
+# classifyDiskForSlot extension/size → slot routing the insert+boot path
+# (Disk Library UI and the --kiosk launcher) keys off. Links just the
+# parser TU + DiskImage (the Phase-C runner lives in CliRunner.cpp, so the
+# parser carries no EmulationController dependency).
+add_executable(test_cli_kiosk
+    cli_kiosk_test.cpp
+    ${CMAKE_SOURCE_DIR}/CliDispatcher.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_cli_kiosk PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cli_kiosk PRIVATE Threads::Threads)
+endif()
+add_test(NAME cli_kiosk COMMAND test_cli_kiosk)
+set_tests_properties(cli_kiosk PROPERTIES TIMEOUT 5)
+
+
 # ─── Mockingboard smoke test ─────────────────────────────────────────────
 # Pins the four behaviours music drivers depend on: $Cn0X / $Cn8X address
 # decode (VIA1 / VIA2 selection from the slot ROM window), VIA → AY

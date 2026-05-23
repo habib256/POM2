@@ -87,6 +87,19 @@ struct CliPlan {
     /// 12 KB ROM but trips a still-unresolved IIe-paging bug under the
     /// 16 KB Enhanced ROM.
     bool                            forceIIPlus = false;
+
+    /// Positional disk image (first non-flag argument). When set, main()
+    /// mounts it into the matching slot — 5.25" Disk II / 800K 3.5" /
+    /// ProDOS HDV, picked by `classifyDiskForSlot` — and boots from it
+    /// once the worker thread + first frame have settled. Works in both
+    /// GUI and `--kiosk` mode.
+    std::string                     bootDiskPath;
+
+    /// `--kiosk`: launch chrome-free, full-screen, with no menus/panels —
+    /// only the Apple II screen. Implies the positional disk auto-boot
+    /// above. The window can only be closed via the OS (Alt-F4 / WM).
+    bool                            kiosk = false;
+
     std::optional<int>              executionSpeed;        // cycles/frame
     std::string                     initialTapePath;       // --tape <path>
     bool                            initialTapeAutoPlay = false;

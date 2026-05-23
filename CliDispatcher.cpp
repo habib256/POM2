@@ -7,14 +7,11 @@
 
 #include "CliDispatcher.h"
 
-#include "EmulationController.h"
 #include "Logger.h"
 
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -104,7 +101,14 @@ bool parsePresetName(const std::string& raw, CliPreset& out)
 void printUsage()
 {
     std::fprintf(stderr,
-        "Usage: POM2 [options]\n"
+        "Usage: POM2 [options] [disk-image]\n"
+        "\n"
+        "  disk-image                 Mount + boot a disk (.dsk/.do/.po/.nib/\n"
+        "                              .woz/.d13/.hdv/.2mg). Slot is auto-picked\n"
+        "                              from type. Boots under the saved profile.\n"
+        "  --kiosk                    Full-screen, no menus/panels — just the\n"
+        "                              screen. Implies booting [disk-image].\n"
+        "                              Closes only via the OS (Alt-F4 / WM).\n"
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
         "  -p, --preset <ii|ii+|iie|iic|iic+>  System profile to boot into\n"
@@ -180,6 +184,9 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
         }
         else if (a == "--ii-plus" || a == "--ii+") {
             plan.forceIIPlus = true;
+        }
+        else if (a == "--kiosk") {
+            plan.kiosk = true;
         }
         else if (a == "--display") {
             const char* v = needArg(i, "--display"); if (!v) return std::nullopt;
@@ -302,6 +309,19 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
             CliAction act{}; act.kind = CliAction::Kind::SnapshotLoad; act.pathS = v;
             plan.deferredActions.push_back(std::move(act));
         }
+        else if (!a.empty() && a[0] != '-') {
+            // First non-flag argument = positional disk image to mount +
+            // boot (5.25" / 3.5" / HDV, auto-routed). A second positional
+            // is an error — we only boot one disk.
+            if (!plan.bootDiskPath.empty()) {
+                pom2::log().error("CLI",
+                    "unexpected extra argument: " + a +
+                    " (only one disk image may be given)");
+                printUsage();
+                return std::nullopt;
+            }
+            plan.bootDiskPath = a;
+        }
         else {
             pom2::log().error("CLI", std::string("unknown flag: ") + a);
             printUsage();
@@ -310,108 +330,6 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
     }
 
     return plan;
-}
-
-namespace {
-
-/// Read a file and feed it through Memory::pasteText, which normalises
-/// line-endings (\r\n / \r / \n → CR) and drains via the strobe-aware
-/// queue (one byte per $C010 clear). Capped at Memory::kPasteMaxChars.
-void runPasteFile(const std::string& path, EmulationController& emu)
-{
-    std::ifstream f(path);
-    if (!f) {
-        pom2::log().error("CLI", "--paste cannot open " + path);
-        return;
-    }
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-    const size_t queued = emu.memory().pasteText(content);
-    pom2::log().info("CLI", "--paste queued " + std::to_string(queued) +
-                            " chars from " + path);
-}
-
-void runLoad(const CliAction& a, EmulationController& emu)
-{
-    std::ifstream f(a.pathS, std::ios::binary);
-    if (!f) {
-        pom2::log().error("CLI", "--load cannot open " + a.pathS);
-        return;
-    }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
-    if (bytes.empty()) {
-        pom2::log().error("CLI", "--load file is empty: " + a.pathS);
-        return;
-    }
-    if (static_cast<size_t>(a.addressI) + bytes.size() > 0x10000) {
-        pom2::log().error("CLI", "--load overflows $FFFF");
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lk(emu.stateMutex());
-        for (size_t i = 0; i < bytes.size(); ++i) {
-            emu.memory().memWrite(static_cast<uint16_t>(a.addressI + i), bytes[i]);
-        }
-    }
-    char buf[128];
-    std::snprintf(buf, sizeof(buf),
-                  "--load wrote %zu bytes at $%04X (from %s)",
-                  bytes.size(), a.addressI, a.pathS.c_str());
-    pom2::log().info("CLI", buf);
-}
-
-} // namespace
-
-void runDeferredActions(const std::vector<CliAction>& actions,
-                        EmulationController& emu)
-{
-    for (const CliAction& a : actions) {
-        switch (a.kind) {
-            case CliAction::Kind::Load:
-                runLoad(a, emu);
-                break;
-            case CliAction::Kind::Run: {
-                std::lock_guard<std::mutex> lk(emu.stateMutex());
-                emu.cpu().setProgramCounter(static_cast<uint16_t>(a.addressI));
-                emu.setMode(EmulationController::Mode::Running);
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "--run jumped to $%04X", a.addressI);
-                pom2::log().info("CLI", buf);
-                break;
-            }
-            case CliAction::Kind::Paste:
-                runPasteFile(a.pathS, emu);
-                break;
-            case CliAction::Kind::Step: {
-                emu.setMode(EmulationController::Mode::Stopped);
-                for (int n = 0; n < a.countI; ++n) emu.requestStep();
-                pom2::log().info("CLI", "--step requested " + std::to_string(a.countI));
-                break;
-            }
-            case CliAction::Kind::TraceBrk:
-                pom2::log().info("CLI", "--trace-brk: not yet wired in M6502");
-                break;
-            case CliAction::Kind::PlayTape:
-                emu.playTape();
-                pom2::log().info("CLI", "--play: tape rolling");
-                break;
-            case CliAction::Kind::RecTape:
-                emu.cassette().armRecording();
-                pom2::log().info("CLI", "--rec: cassette capture armed");
-                break;
-            case CliAction::Kind::RewindTape:
-                emu.rewindTape();
-                pom2::log().info("CLI", "--rewind: tape rewound");
-                break;
-            case CliAction::Kind::SnapshotSave:
-                pom2::log().info("CLI", "--snapshot-save: not yet wired in MainWindow");
-                break;
-            case CliAction::Kind::SnapshotLoad:
-                pom2::log().info("CLI", "--snapshot-load: not yet wired in MainWindow");
-                break;
-        }
-    }
 }
 
 } // namespace pom2

@@ -102,6 +102,21 @@ public:
     // trace capture without going through the File menu.
     void bootHdvImage();
 
+    /// Mount `path` into the slot matching its type (5.25" Disk II / 800K
+    /// 3.5" / ProDOS HDV, via `classifyDiskForSlot`) under the currently
+    /// active profile + slot config, then cold-boot from it. Returns true
+    /// on success; on failure `errOut` carries the reason. Drives both the
+    /// Disk Library "insert + boot" buttons and the CLI positional-disk /
+    /// `--kiosk` launcher. Must run on the UI thread (takes the state lock
+    /// internally between frames).
+    bool insertAndBootImage(const std::string& path, std::string& errOut);
+
+    /// Kiosk mode: chrome-free full-screen — render() draws only the Apple
+    /// II screen (no menu bar, toolbar, panels or dialogs). Set by main()
+    /// from the `--kiosk` CLI flag before the first render.
+    void setKioskMode(bool k) { kiosk_ = k; }
+    bool kioskMode() const { return kiosk_; }
+
     // Apple II memory map region — used by the bar / grid widgets in
     // MainWindow_MemoryMaps.cpp. Public so file-local helpers in that TU
     // can take a `const std::vector<MemRegion>&`.
@@ -277,6 +292,10 @@ private:
 
     bool showAbout = false;
 
+    // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
+    // screen, full-viewport, with no menu bar / toolbar / panels.
+    bool kiosk_ = false;
+
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
     // Apple II Screen widget rect, window-relative. Updated every
     // frame by `renderScreenWindow()` so the GLFW cursor-pos callback
@@ -318,8 +337,28 @@ private:
     /// raw `*Card` pointer fields and the `slotCards[]` index.
     void plugSlotsFromSettings();
 
+    // ── Disk insert+boot routing (shared by Disk Library UI + CLI) ───────
+    // Promoted from file-local lambdas in renderDiskLibraryWindow so
+    // insertAndBootImage() can reuse the exact same routing. Each takes
+    // the state lock internally.
+    /// Route a 3.5" image to the //c+ on-board hub or a SmartPort card
+    /// unit `driveIdx`, auto-creating a SmartPort35Unit if needed.
+    bool routeMount35 (int driveIdx, const std::string& path, std::string& errOut);
+    /// Route an HDV image to the ProDOSHardDiskCard or a SmartPort card's
+    /// unit 0, auto-creating a SmartPortHdvUnit if needed. `bootSlotOut`
+    /// receives the slot to boot from.
+    bool routeMountHdv(const std::string& path, int& bootSlotOut, std::string& errOut);
+
     void renderMenuBar();
     void renderScreenWindow();
+    /// Draw the Apple II framebuffer texture into the current ImGui
+    /// window's content region, scaled + centred (letterboxed) to preserve
+    /// the 4:3 aspect. Shared by the normal screen window and the kiosk
+    /// full-viewport path. Updates screenRectMin/Max for Mouse Card routing.
+    void drawScreenImage();
+    /// Kiosk render path: a single borderless full-viewport window showing
+    /// only the screen. No menu bar / toolbar / panels.
+    void renderKiosk();
     void renderControlsWindow();
     void renderMemoryViewerWindow();
     // Memory map visualisations — implemented in MainWindow_MemoryMaps.cpp.

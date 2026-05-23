@@ -5,7 +5,9 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <vector>
 
@@ -2053,4 +2055,40 @@ void DiskImage::writeDataField(uint8_t*& dst, const uint8_t* src)
     *dst++ = kGcrTable[prev & 0x3F];   // final XOR checksum nibble
 
     *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;
+}
+
+DiskSlotClass classifyDiskForSlot(const std::string& path)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return DiskSlotClass::Unknown;
+    const std::uintmax_t szRaw = fs::file_size(path, ec);
+    if (ec) return DiskSlotClass::Unknown;
+    const uint64_t sz = static_cast<uint64_t>(szRaw);
+
+    std::string ext = fs::path(path).extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    // 5.25" Disk II — mirrors accept525(). The 800K `.po` is NOT caught
+    // here (only the 143360-byte 5.25" ProDOS size); it falls through to
+    // the Sony35 bucket below.
+    if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz"
+        || ext == ".d13")
+        return DiskSlotClass::Floppy525;
+    if (ext == ".po" && (sz == 143360 || sz == 143360 + 64))
+        return DiskSlotClass::Floppy525;
+
+    // 800K Sony 3.5" — mirrors accept35() (819200 ± 2IMG header slack).
+    if ((ext == ".po" || ext == ".2mg") &&
+        (sz == 819200 || sz == 819200 + 64 ||
+         (sz > 819200 && sz < 819200 + 4096)))
+        return DiskSlotClass::Sony35;
+
+    // ProDOS hard disk — mirrors acceptHdv() (> 800K, 512-aligned, or
+    // 2IMG with the standard 64-byte header).
+    if ((ext == ".hdv" || ext == ".2mg") && sz > 819200 &&
+        ((sz % 512 == 0) || ((sz - 64) % 512 == 0)))
+        return DiskSlotClass::Hdv;
+
+    return DiskSlotClass::Unknown;
 }
