@@ -1,0 +1,45 @@
+-------Wilderness: Sierra Nevada-------
+A 4am crack                  2018-07-07
+---------------------------------------
+
+Name: Wilderness: Sierra Nevada
+Version: 1.1
+Genre: educational
+Year: 1984
+Credits: Titan Software
+Publisher: Electric Transit
+Platform: Apple ][+ or later
+Media: 5.25-inch disk
+Sides: 2
+OS: DOS 3.3
+Previous cracks: none (of this version)
+
+This disk was automatically cracked by
+Passport. Here is the transcript for
+side B (the bootable side):
+
+                 --v--
+
+READING FROM S6,D1
+T00,S00 FOUND DOS 3.3 BOOTLOADER
+USING DISK'S OWN RWTS
+T22,S0F SWITCHING TO BUILT-IN RWTS
+WRITING TO S5,D2
+T02,S02 VOLUME NAME IS DISK VOLUME
+T00,S03,$91: AA -> DE
+T00,S03,$9B: DE -> AA
+T00,S06,$AE: AA -> DE
+T00,S06,$B3: DE -> AA
+CRACK COMPLETE. PRESS ANY KEY
+
+                 --^--
+
+More information and source code is
+available at
+https://archive.org/details/Passport4am
+
+Quod erat liberandum.
+
+---------------------------------------
+A 4am crack                    No. 1771
+------------------EOF------------------

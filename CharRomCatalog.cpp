@@ -1,0 +1,148 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+
+#include "CharRomCatalog.h"
+
+#include <filesystem>
+
+namespace pom2 {
+
+namespace {
+
+const std::vector<CharRomEntry>& catalogStorage()
+{
+    // Order matters: the dropdown renders in this order so locales of
+    // related origin (FR / FR-CA, UK enh / unenh, DE / DE improved)
+    // group together visually.
+    static const std::vector<CharRomEntry> all = {
+        { CharRomLocale::ProfileDefault,
+          "Default (per profile)",                 "",                                  /*isIIeClass=*/true },
+        { CharRomLocale::ProfileDefault,
+          "Default (per profile)",                 "",                                  /*isIIeClass=*/false },
+        // The two ProfileDefault entries are functionally identical but
+        // we duplicate them so the dropdown always offers at least one
+        // entry for any profile — see charRomFitsProfile. They share a
+        // tag so the persistence round-trip stays simple.
+
+        // ── II / II+ (2 KB, uppercase only) ───────────────────────────
+        { CharRomLocale::AppleIIClassic,
+          "Apple ][/][+ — Classic (US, 2 KB)",     "roms/apple2_char.rom",              false },
+
+        // ── IIe-class (4 KB, with lowercase + mousetext when Enhanced)
+        { CharRomLocale::AppleIIeUS_Enhanced,
+          "//e/c — US Enhanced (342-0265-A)",      "roms/apple2e_char_us.rom",          true },
+        { CharRomLocale::AppleIIeUS_Unenhanced,
+          "//e — US Unenhanced (342-0133-A)",      "roms/apple2e_char_us_unenh.rom",    true },
+        { CharRomLocale::AppleIIeFrench,
+          "//e/c — Français (342-0274-A)",         "roms/apple2e_char_fr.rom",          true },
+        { CharRomLocale::AppleIIeFrenchCanadian,
+          "//e/c — FR Canadien Enhanced",          "roms/apple2e_char_frca.rom",        true },
+        { CharRomLocale::AppleIIeFrenchCanadianUnenhanced,
+          "//e — FR Canadien (341-0168-A)",        "roms/apple2e_char_frca_unenh.rom",  true },
+        { CharRomLocale::AppleIIeUK_Enhanced,
+          "//e/c — UK Enhanced (342-0273-A)",      "roms/apple2e_char_uk.rom",          true },
+        { CharRomLocale::AppleIIeUK_Unenhanced,
+          "//e — UK Unenhanced (341-0160-A)",      "roms/apple2e_char_uk_unenh.rom",    true },
+        { CharRomLocale::AppleIIeGerman,
+          "//e/c — Deutsch (341-0161-A)",          "roms/apple2e_char_de.rom",          true },
+        { CharRomLocale::AppleIIeGermanImproved,
+          "//e/c — Deutsch Improved",              "roms/apple2e_char_de_improved.rom", true },
+    };
+    return all;
+}
+
+}  // namespace
+
+const std::vector<CharRomEntry>& charRomCatalog()
+{
+    return catalogStorage();
+}
+
+bool charRomFitsProfile(const CharRomEntry& e, SystemProfile p)
+{
+    // The profile drives the char ROM layout: II / II+ load a 2 KB file
+    // (Memory::loadCharRom accepts either size, but IIe paging on a 2 KB
+    // ROM gives no mousetext — and vice-versa the IIe 4 KB ROMs render
+    // garbage on a II+ because the upper 2 KB are unused). So we strictly
+    // partition the dropdown by profile family.
+    const bool iieProfile =
+        (p == SystemProfile::AppleIIe              ||
+         p == SystemProfile::AppleIIeUnenhanced    ||
+         p == SystemProfile::AppleIIc              ||
+         p == SystemProfile::AppleIIcPlus);
+
+    if (e.locale == CharRomLocale::ProfileDefault) {
+        // Show exactly one "Default" entry, whichever side matches.
+        return e.isIIeClass == iieProfile;
+    }
+    return e.isIIeClass == iieProfile;
+}
+
+const CharRomEntry& charRomEntry(CharRomLocale l)
+{
+    for (const auto& e : catalogStorage()) {
+        if (e.locale == l) return e;
+    }
+    // Defensive: stale enum value → first ProfileDefault entry.
+    return catalogStorage().front();
+}
+
+const char* charRomLocaleKey(CharRomLocale l)
+{
+    switch (l) {
+        case CharRomLocale::ProfileDefault:                      return "default";
+        case CharRomLocale::AppleIIClassic:                      return "ii_classic";
+        case CharRomLocale::AppleIIeUS_Enhanced:                 return "iie_us";
+        case CharRomLocale::AppleIIeUS_Unenhanced:               return "iie_us_unenh";
+        case CharRomLocale::AppleIIeFrench:                      return "iie_fr";
+        case CharRomLocale::AppleIIeFrenchCanadian:              return "iie_frca";
+        case CharRomLocale::AppleIIeFrenchCanadianUnenhanced:    return "iie_frca_unenh";
+        case CharRomLocale::AppleIIeUK_Enhanced:                 return "iie_uk";
+        case CharRomLocale::AppleIIeUK_Unenhanced:               return "iie_uk_unenh";
+        case CharRomLocale::AppleIIeGerman:                      return "iie_de";
+        case CharRomLocale::AppleIIeGermanImproved:              return "iie_de_improved";
+    }
+    return "default";
+}
+
+std::string resolveCharRomPath(const std::string& catalogPath)
+{
+    if (catalogPath.empty()) return {};
+    // The catalog stores paths as `roms/foo.rom`. POM2 is launched from
+    // either the repo root (via run_emulator.sh) or directly from
+    // `build/` (CLion / `./POM2`), so probe both levels. Mirrors the
+    // boot-time `charRomIIeCandidates` table in MainWindow.cpp — kept
+    // in sync by hand because the catalog must work both for the
+    // MainWindow restore path and the live toolbar swap.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::exists(catalogPath, ec)) return catalogPath;
+    const std::string up1 = "../"   + catalogPath;
+    if (fs::exists(up1, ec))         return up1;
+    const std::string up2 = "../../" + catalogPath;
+    if (fs::exists(up2, ec))         return up2;
+    return {};
+}
+
+std::string resolveCharRomPath(CharRomLocale l)
+{
+    if (l == CharRomLocale::ProfileDefault) return {};
+    return resolveCharRomPath(std::string(charRomEntry(l).path));
+}
+
+CharRomLocale charRomLocaleFromKey(const std::string& key)
+{
+    if (key == "ii_classic")        return CharRomLocale::AppleIIClassic;
+    if (key == "iie_us")            return CharRomLocale::AppleIIeUS_Enhanced;
+    if (key == "iie_us_unenh")      return CharRomLocale::AppleIIeUS_Unenhanced;
+    if (key == "iie_fr")            return CharRomLocale::AppleIIeFrench;
+    if (key == "iie_frca")          return CharRomLocale::AppleIIeFrenchCanadian;
+    if (key == "iie_frca_unenh")    return CharRomLocale::AppleIIeFrenchCanadianUnenhanced;
+    if (key == "iie_uk")            return CharRomLocale::AppleIIeUK_Enhanced;
+    if (key == "iie_uk_unenh")      return CharRomLocale::AppleIIeUK_Unenhanced;
+    if (key == "iie_de")            return CharRomLocale::AppleIIeGerman;
+    if (key == "iie_de_improved")   return CharRomLocale::AppleIIeGermanImproved;
+    return CharRomLocale::ProfileDefault;
+}
+
+}  // namespace pom2
