@@ -1101,6 +1101,8 @@ add_executable(test_smartport_card
     ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_smartport_card PRIVATE ${CMAKE_SOURCE_DIR})
@@ -1124,6 +1126,8 @@ add_executable(test_smartport_mixed_units
     ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_smartport_mixed_units PRIVATE ${CMAKE_SOURCE_DIR})
@@ -1133,6 +1137,48 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME smartport_mixed_units_smoke COMMAND test_smartport_mixed_units)
 set_tests_properties(smartport_mixed_units_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── Multi-card smoke (bus enumeration + MountableMediaCard isolation) ──
+# Regression guard for the single-instance GUI bugs: several block / SmartPort
+# cards coexist on one SlotBus and are enumerated + driven independently via
+# the MountableMediaCard capability (same dynamic_cast walk MainWindow uses).
+add_executable(test_slot_multi_card
+    slot_multi_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/SlotBus.cpp
+)
+target_include_directories(test_slot_multi_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_slot_multi_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME slot_multi_card_smoke COMMAND test_slot_multi_card
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(slot_multi_card_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── Floppy Emu (BMOW) device-model smoke ──────────────────────────────
+# Pins the pure FloppyEmuDevice logic: mode label/key round-trip, per-mode
+# format filtering, SD-card navigation bounded to root, favdisks.txt parse.
+add_executable(test_floppy_emu
+    floppy_emu_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/FloppyEmuDevice.cpp
+)
+target_include_directories(test_floppy_emu PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_floppy_emu PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME floppy_emu_smoke COMMAND test_floppy_emu)
+set_tests_properties(floppy_emu_smoke PROPERTIES TIMEOUT 10)
 
 
 # ─── Total Replay boot diagnostic (//e + SmartPort + HDV) ──────────────
@@ -1146,6 +1192,8 @@ add_executable(test_total_replay_boot_trace EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${CMAKE_SOURCE_DIR}/SystemProfile.cpp
     ${POM2_TEST_CORE_SOURCES}
 )

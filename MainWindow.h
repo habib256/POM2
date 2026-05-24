@@ -53,6 +53,9 @@ namespace pom2 {
     class Settings;
     class SmartPortCard;
     class SmartPort_ImGui;
+    class SlotManager_ImGui;
+    class FloppyEmuDevice;
+    class FloppyEmu_ImGui;
     class Toolbar_ImGui;
     enum class SystemProfile;
     enum class CharRomLocale : uint8_t;
@@ -152,6 +155,10 @@ private:
     std::unique_ptr<pom2::DiskLibrary_ImGui>      diskLibrary;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
     std::unique_ptr<pom2::SmartPort_ImGui>        smartPortPanel;
+    std::unique_ptr<pom2::SlotManager_ImGui>      slotManagerPanel;
+    // BMOW Floppy Emu: the device model (mode/SD/favorites) + its OLED panel.
+    std::unique_ptr<pom2::FloppyEmuDevice>        floppyEmu;
+    std::unique_ptr<pom2::FloppyEmu_ImGui>        floppyEmuPanel;
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
     std::unique_ptr<pom2::Toolbar_ImGui>          toolbar;
@@ -222,6 +229,17 @@ private:
     bool         showAudioMixer     = false;
     bool         showEmulationPanel = false;
     bool         showSlotConfigPanel = false;
+    // Consolidated control center: every slot + its card + inline media in
+    // one window. Off by default; opened from Machine → Slot Manager.
+    // Persisted as `show_slot_manager`.
+    bool         showSlotManager     = false;
+    // BMOW Floppy Emu panel. Off by default; Devices → Floppy Emu.
+    // Persisted as `show_floppy_emu`. `floppyEmuFavActive_` tracks the
+    // Favorites-vs-File-Explorer toggle; `floppyEmuStatus` is the last
+    // mount/eject/mode message shown under the OLED.
+    bool         showFloppyEmu       = false;
+    bool         floppyEmuFavActive_ = false;
+    std::string  floppyEmuStatus;
     bool         showAiControlPanel  = false;
     // Toolbar pinned just below the menu bar. On by default — toggled
     // via Window → Toolbar; persisted as `show_toolbar`.
@@ -420,6 +438,16 @@ private:
     void renderAboutDialog();
     /// Slot Configuration panel. Implemented in MainWindow_Slots.cpp.
     void renderSlotConfigPanel();
+    /// Consolidated Slot Manager panel — every slot + card + media bay.
+    /// Builds its snapshot by enumerating the SlotBus (so it is correct for
+    /// multiple cards of a kind) and applies media actions live; card-type
+    /// changes route through restartEmulationFromSettings(). Implemented in
+    /// MainWindow_Slots.cpp.
+    void renderSlotManagerWindow();
+    /// BMOW Floppy Emu panel — OLED-style SD browser + emulation-mode select.
+    /// Routes the selected image into the matching controller card
+    /// (DiskIICard / SmartPortCard units) per the device's current mode.
+    void renderFloppyEmuWindow();
     /// Tear down the SlotBus and re-run plugSlotsFromSettings(). Called
     /// by the Slot Configuration panel's Apply button. Stops the
     /// emulation worker around the rebuild so card destructors / new

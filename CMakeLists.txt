@@ -95,8 +95,11 @@ set(SOURCES
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
     RomLoader.cpp
+    FloppyEmuDevice.cpp
+    FloppyEmu_ImGui.cpp
     Settings.cpp
     SlotBus.cpp
+    SlotManager_ImGui.cpp
     SmartPort35Unit.cpp
     SmartPortCard.cpp
     SmartPortHdvUnit.cpp
@@ -148,6 +151,7 @@ set(HEADERS
     MemoryViewer_ImGui.h
     Mockingboard.h
     MouseCard.h
+    MountableMediaCard.h
     Block512Backing.h
     ProDOSHardDiskCard.h
     ProDOSVolume.h
@@ -155,7 +159,11 @@ set(HEADERS
     Settings.h
     CpuClock.h
     RomLoader.h
+    FloppyEmuDevice.h
+    FloppyEmu_ImGui.h
     SlotBus.h
+    SlotCardCatalog.h
+    SlotManager_ImGui.h
     SlotPeripheral.h
     SmartPort35Unit.h
     SmartPortCard.h
