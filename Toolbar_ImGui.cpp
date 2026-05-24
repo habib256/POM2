@@ -236,6 +236,26 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // (multi-source picker with boot-on-click + header-row "Eject All")
     // — kept out of the toolbar to avoid two ways to do the same thing.
 
+    // ── Display color / monochrome toggle ────────────────────────────
+    // One-click flip between color and B&W phosphor. The host remembers
+    // the specific submode on each side (e.g. Mono Green ↔ Color 4-bit).
+    // Tinted active when a mono mode is showing.
+    if (snap.displayIsMono) {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+            ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+    }
+    if (iconButton({ ICON_FA_CIRCLE_HALF_STROKE, "MonoColorToggle",
+                     snap.displayIsMono
+                         ? "Monochrome — click for color"
+                         : "Color — click for black & white" })) {
+        r.requestMonoColorToggle = true;
+    }
+    if (snap.displayIsMono) ImGui::PopStyleColor();
+
+    ImGui::SameLine();
+    ImGui::TextUnformatted("|");
+    ImGui::SameLine();
+
     // ── Tooling ──────────────────────────────────────────────────────
     if (iconButton({ ICON_FA_CAMERA,       "Screenshot",
                      "Save screenshot to ./screenshot_NNN.ppm  (F9)" })) {

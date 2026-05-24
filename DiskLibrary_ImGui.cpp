@@ -390,7 +390,23 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
 
     if (needsRescan_) rescan();
 
-    // ── Header row: refresh + search + sort ───────────────────────────
+    // ── Header row: eject-all + refresh + search + sort ───────────────
+    // Eject-All lives at the far left of the Library header (moved here
+    // from the toolbar) so the one window that mounts disks also unmounts
+    // them. Disabled unless something is actually mounted on any path.
+    const bool anyMounted =
+        !mounted.diskII.empty()        || !mounted.disk35Internal.empty() ||
+        !mounted.disk35External.empty() || !mounted.hdv.empty();
+    ImGui::BeginDisabled(!anyMounted);
+    if (ImGui::Button(ICON_FA_EJECT " Eject All"))
+        r.requestEjectAllDisks = true;
+    ImGui::EndDisabled();
+    if (anyMounted && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Eject every loaded Disk II / HDV / SmartPort image");
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
     if (ImGui::Button(ICON_FA_ROTATE " Refresh")) needsRescan_ = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Re-scan disks/, disks35/, hdv/");
@@ -409,22 +425,6 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     static const char* kSortLabels[] = { "Name", "Size", "Date" };
     ImGui::Combo("##library_sort", &sortMode_, kSortLabels,
                  IM_ARRAYSIZE(kSortLabels));
-
-    // Eject-all lives at the top of the Library (moved here from the
-    // toolbar) so the one window that mounts disks also unmounts them.
-    // Disabled unless something is actually mounted on any path.
-    const bool anyMounted =
-        !mounted.diskII.empty()        || !mounted.disk35Internal.empty() ||
-        !mounted.disk35External.empty() || !mounted.hdv.empty();
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!anyMounted);
-    if (ImGui::Button(ICON_FA_EJECT " Eject All"))
-        r.requestEjectAllDisks = true;
-    ImGui::EndDisabled();
-    if (anyMounted && ImGui::IsItemHovered())
-        ImGui::SetTooltip("Eject every loaded Disk II / HDV / SmartPort image");
 
     ImGui::Separator();
     ImGui::TextDisabled(

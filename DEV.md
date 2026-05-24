@@ -726,17 +726,66 @@ reads it as by-design, not an unfinished port):
   `cffa20ee02.bin`).
 - ✗ Cannot execute real CFFA / SCSI firmware, cannot mount CHD, and
   card-specific behaviour (partition maps, >32 MB schemes, SmartPort
-  pass-through) is unreachable until/unless an ATA-class port lands.
+  pass-through) is unreachable. The ATA-class port has since **landed**
+  as `CffaCard` (below); the synthetic model stays as the zero-ROM
+  default and is being repurposed toward ProDOS-volume / host-folder
+  bridging (`loadImageFromBytes`, `pom2::buildVolumeFromFolder`).
 
-The ONE storage path POM2 *does* port faithfully is the //c+ 3.5" Sony
-stack (real IWM + GCR — § IWM, § SmartPort 3.5" stack); `SmartPortCard`
-(below) is this same synthetic-block model with a SmartPort signature.
+Storage now shares a common backing — `Block512Backing.{h,cpp}` — between
+the synthetic `ProDOSHardDiskCard` and the faithful `CffaCard`: it owns the
+in-memory image, the 2IMG envelope (header + trailer preserved on
+write-back), medium WP, dirty-block tracking, opt-in host-file write-back,
+and host-folder synth volumes. Both cards also implement
+`pom2::ProDOSBlockCard` (image-management interface) so the HDV Library,
+disk-turbo, and persistence target either uniformly via
+`MainWindow::hdvDevice()` (prefers CFFA when plugged).
+
 Pinned: `hdv_card_smoke_test.cpp` (`hdv_card_smoke`),
 `hdv_writeback_smoke_test.cpp` (header/trailer/WP/opt-in round-trip),
 `hdv_mass_storage_smoke_test.cpp` (32 MB capacity boundary, 16-bit
 block addressing, .2mg data-offset ≠ 64). Multi-partition images
 (1 image = N ProDOS volumes, CFFA3000-style) are **not** supported —
 one image = one unit = one volume.
+
+### CffaCard (CFFA 2.0 — MAME-faithful IDE)
+
+`CffaCard.{h,cpp}` + `AtaBlockDevice.{h,cpp}`. The MAME-faithful counterpart
+to the synthetic HDV card: the **real 4 KB firmware dump** executed over an
+**emulated ATA chip**, image stored as raw LBA behind it. Ported from MAME
+`src/devices/bus/a2bus/a2cffa.cpp` (master; re-pin line ranges on touch per
+the "MAME path drift refresher").
+
+- **`AtaBlockDevice`** — ATA/IDE taskfile subset over `Block512Backing`,
+  isomorphic to MAME `ata_interface_device` cs0 access: `cs0_r/cs0_w(reg)`
+  with the 16-bit data register at reg 0. Honours IDENTIFY DEVICE ($EC),
+  READ SECTOR(S) ($20/$C4), WRITE SECTOR(S) ($30/$C5), LBA28; unknown
+  commands complete as no-ops. DRQ/BSY/DRDY PIO flow; no DMA/IRQ/CHS-I/O.
+  Reusable for future Vulcan/Zip/Focus. Pinned: `ata_block_device_test`.
+  **Gotcha**: the CFFA firmware sizes its partitions from IDENTIFY **words
+  57-58** ("current capacity in sectors"), NOT words 60-61 (LBA28 total) —
+  leaving 57-58 zero makes every image fail with "Could not boot partition 1
+  / Err $28" (firmware `$CD35-$CD52` reads $C0n8/$C0n0 for words 57-58 after
+  skipping 57 words). `fillIdentify` sets 57-58 = 60-61 = total, word 53
+  bit 0 (current fields valid). Debug aid: `POM2_TRACE_CFFA=1` logs every ATA
+  command; `tests/cffa_boot_dump --image X --slot N` boots //e via CFFA.
+- **`CffaCard`** — `SlotPeripheral` + `ProDOSBlockCard`. Decode mirrors
+  `a2cffa.cpp`: `read_c0nx`/`write_c0nx` ($C0nX) drive the ATA taskfile with
+  the 8↔16-bit data latch ($C0n0 = high byte, $C0n8 = low byte + commit;
+  $C0n3/$C0n4 toggle EEPROM write-enable); `read_cnxx` ($CnXX) returns
+  `rom[off + slot*0x100]`; `read_c800`/`write_c800` ($C800) returns
+  `rom[off + 0x800]`, writes WP-gated. The real firmware presents
+  `$Cn07 = $3C`, so unlike the synthetic HDV ($01) the **F8 Autostart boots
+  it natively** — no GUI shortcut needed.
+- **ROM**: user-supplied `roms/cffa20ee02.bin` (6502) / `cffa20eec02.bin`
+  (65C02), 4096 B exact (CRC `3ecafce5` / `fb3726f8`); plug-time probe picks
+  the variant matching the CPU. Card type hidden from Slot Config when
+  absent. Sourced from dreher.net `Run6_CDROM.zip` (`Firmware/V2.0/`).
+- **Image**: `.hdv` / `.2mg` raw LBA backing (compat preserved). **CHD is
+  phase 2** (separate container reader). Mounts via the HDV Library.
+- Pinned: `cffa_card_smoke_test.cpp` (`cffa_card_smoke`, ROM-gated) drives
+  the real firmware's card view through `Memory` — slot-ROM signature +
+  $C0nX→ATA READ/WRITE round-trip. Full ProDOS-boot parity = MAME oracle
+  `mame apple2ee -sl7 cffa2 -hard1 <img>` (romset in `~/mame_roms/cffa2/`).
 
 ### SmartPortCard (//e Liron-class)
 

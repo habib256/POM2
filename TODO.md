@@ -172,22 +172,23 @@ matérielle plutôt que suffisance fonctionnelle. Revisite le « Hors
 scope » CFFA et les lignes SCSI / Apple 3.5 IWM-level ci-dessus :
 ces items les remplaceraient si la fidélité prime sur la simplicité.
 
-- [ ] 🟡 **P1 — Cœur ATA/IDE + carte CFFA** (ROI le plus haut). MAME
-      `bus/a2bus/a2cffa.cpp` : `ata_interface_device m_ata`,
-      `ROM_LOAD("cffa20ee02.bin")`, ProDOS pilote `m_ata->cs0_r/cs0_w`
-      via `$C0xx`.
-      1. `AtaBlockDevice` — sous-ensemble taskfile (IDENTIFY DEVICE,
-         READ/WRITE SECTOR(S), LBA28) sur un backing bloc plat.
-         Réutilisable CFFA + Vulcan + Zip + Focus.
-      2. `CffaCard : SlotPeripheral` — ROM dumpé user-fourni
-         (`roms/cffa20ee02.bin` 6502 / `cffa20eec02.bin` 65C02),
-         décode `$C080+slot×16` → ATA, cité ligne-à-ligne (convention
-         « MAME source of truth »).
-      3. Image : `.hdv` / `.2mg` = backing LBA brut (compat conservée) ;
-         **CHD en phase 2** (lecteur conteneur séparé).
-      4. Pin : boot Total Replay `.2mg` via firmware CFFA réel
-         (`mame apple2ee -sl7 cffa2 -hard1 …` comme oracle).
-      **Effort : ~12-20 h** (cœur ATA + décodage CFFA + sourcing ROM).
+- [x] 🟡 **P1 — Cœur ATA/IDE + carte CFFA** — **FAIT (2026-05-24)**. MAME
+      `bus/a2bus/a2cffa.cpp` porté.
+      1. ✅ `AtaBlockDevice` — taskfile (IDENTIFY/READ/WRITE SECTOR(S),
+         LBA28) sur `Block512Backing` (backing partagé extrait de
+         `ProDOSHardDiskCard`). Réutilisable CFFA + Vulcan + Zip + Focus.
+         Pin : `ata_block_device_test`.
+      2. ✅ `CffaCard : SlotPeripheral, ProDOSBlockCard` — ROM réel
+         (`cffa20ee02.bin` / `cffa20eec02.bin`), `$C0nX` → ATA (latch
+         8↔16-bit), `$CnXX`/`$C800` ROM ; cité vs `a2cffa.cpp`.
+      3. ✅ `.hdv` / `.2mg` LBA brut conservé ; **CHD = phase 2**.
+      4. ✅ Intégration GUI : type de slot « cffa » (gaté ROM),
+         persistance `cffa_slotN_*`, réutilise la HDV Library via
+         `ProDOSBlockCard` / `hdvDevice()`. CFFA `$Cn07=$3C` ⇒ boot F8
+         natif. Pin : `cffa_card_smoke` (ROM-gated, décode via Memory).
+      - **Reste** : oracle MAME boot `.2mg` réel
+        (`mame apple2ee -sl7 cffa2`, romset prêt `~/mame_roms/cffa2/`) ;
+        CHD ; préservation média CFFA au switch de profil.
 
 - [ ] 🟡 **P2 — Carte Liron / UniDisk 3.5 réelle (IWM en slot)**.
       Remplace le driver bloc synthétique de `SmartPortCard` par le

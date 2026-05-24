@@ -3,12 +3,9 @@
 
 #include "ProDOSHardDiskCard.h"
 #include "Logger.h"
-#include "ProDOSVolume.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 
 namespace {
 
@@ -43,206 +40,36 @@ ProDOSHardDiskCard::ProDOSHardDiskCard(int slotNum)
 
 bool ProDOSHardDiskCard::loadImage(const std::string& path)
 {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        lastError = "Cannot open HDV image: " + path;
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-
-    f.seekg(0, std::ios::end);
-    const auto fileSize = static_cast<size_t>(f.tellg());
-    f.seekg(0, std::ios::beg);
-    if (fileSize == 0) {
-        lastError = "HDV image is empty: " + path;
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-
-    std::vector<uint8_t> bytes(fileSize);
-    f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!f) {
-        lastError = "Short read on HDV image: " + path;
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-
-    // 2IMG / .2mg container: 64-byte header followed by raw block data.
-    // Spec: https://apple2.org.za/gswv/a2zine/Docs/DiskImage_2MG_Info.txt
-    //   bytes  0..3  magic "2IMG"
-    //   bytes 12..15 image format (LE u32) — 0=DOS 3.3 sector, 1=ProDOS, 2=NIB
-    //   bytes 16..19 flags         (LE u32) — bit 0 = write-protected
-    //   bytes 24..27 data offset   (LE u32) — typically 64
-    //   bytes 28..31 data length   (LE u32) — bytes of block data following
-    size_t parsedOffset = 0;
-    size_t parsedLength = bytes.size();
-    bool   parsedWp     = false;
-    if (bytes.size() >= 64 &&
-        bytes[0] == '2' && bytes[1] == 'I' && bytes[2] == 'M' && bytes[3] == 'G') {
-        auto rd32 = [&](size_t o) {
-            return static_cast<uint32_t>(bytes[o]) |
-                   (static_cast<uint32_t>(bytes[o + 1]) << 8) |
-                   (static_cast<uint32_t>(bytes[o + 2]) << 16) |
-                   (static_cast<uint32_t>(bytes[o + 3]) << 24);
-        };
-        const uint32_t format = rd32(12);
-        const uint32_t flags  = rd32(16);
-        const uint32_t off    = rd32(24);
-        const uint32_t len    = rd32(28);
-        if (format != 1) {
-            lastError = "2IMG image is not in ProDOS block order (format=" +
-                        std::to_string(format) + ")";
-            pom2::log().warn("HDV", lastError);
-            return false;
-        }
-        if (off < 64 || off > bytes.size() ||
-            len == 0 || static_cast<size_t>(off) + len > bytes.size()) {
-            lastError = "2IMG header points outside the file (offset=" +
-                        std::to_string(off) + ", length=" + std::to_string(len) + ")";
-            pom2::log().warn("HDV", lastError);
-            return false;
-        }
-        parsedOffset = off;
-        parsedLength = len;
-        parsedWp     = (flags & 1u) != 0;
-    }
-
-    if ((parsedLength % kBlockBytes) != 0) {
-        lastError = "HDV image data is not a whole number of 512-byte blocks: " +
-                    std::to_string(parsedLength);
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-    if ((parsedLength / kBlockBytes) > 0x10000u) {
-        lastError = "HDV image has more than 65536 ProDOS blocks: " +
-                    std::to_string(parsedLength / kBlockBytes);
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-
-    headerBytes.assign(bytes.begin(),
-                       bytes.begin() + static_cast<std::ptrdiff_t>(parsedOffset));
-    image.assign(bytes.begin() + static_cast<std::ptrdiff_t>(parsedOffset),
-                 bytes.begin() + static_cast<std::ptrdiff_t>(parsedOffset + parsedLength));
-    dataOffset = parsedOffset;
-    dataLength = parsedLength;
-    writeProtectedHeader = parsedWp;
-    supportsWriteBack    = true;
-    isSynthVolume        = false;
-    hostFolderPath.clear();
-    dirtyBlocks.assign(getBlockCount(), false);
-    anyDirty = false;
-    imagePath = path;
-    imageLoaded = true;
+    const bool ok = backing_.loadImage(path);
     selectedBlock = 0;
-    streamOffset = 0;
-
-    pom2::log().info("HDV", "Loaded " + path + " (" +
-                            std::to_string(getBlockCount()) + " blocks)");
-    return true;
+    streamOffset  = 0;
+    return ok;
 }
 
 bool ProDOSHardDiskCard::loadImageFromBytes(std::vector<uint8_t> bytes,
                                             const std::string& label,
                                             const std::string& hostFolder)
 {
-    if (bytes.empty() || (bytes.size() % kBlockBytes) != 0) {
-        lastError = "synthesised image is empty or not a multiple of 512";
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-    image = std::move(bytes);
-    headerBytes.clear();
-    dataOffset = 0;
-    dataLength = image.size();
-    isSynthVolume        = !hostFolder.empty();
-    hostFolderPath       = hostFolder;
-    supportsWriteBack    = isSynthVolume;
-    writeProtectedHeader = false;
-    dirtyBlocks.assign(getBlockCount(), false);
-    anyDirty = false;
-    imagePath = label;
-    imageLoaded = true;
+    const bool ok = backing_.loadFromBytes(std::move(bytes), label, hostFolder);
     selectedBlock = 0;
-    streamOffset = 0;
-    pom2::log().info("HDV", "Loaded synthesised volume: " + label +
-                            " (" + std::to_string(getBlockCount()) + " blocks)");
-    return true;
+    streamOffset  = 0;
+    return ok;
 }
 
 void ProDOSHardDiskCard::ejectImage()
 {
-    if (imageLoaded && anyDirty && writeBackEnabled && !writeProtectedHeader) {
-        if (!saveDirty()) {
-            pom2::log().warn("HDV", "Save-on-eject failed: " + lastError);
+    // Save-on-eject policy lives here (the card owns the user-facing eject):
+    // flush dirty blocks first when write-back is on and the medium allows it,
+    // then drop the image. backing_.saveDirty() is itself a guarded no-op.
+    if (backing_.isLoaded() && backing_.hasUnsavedChanges() &&
+        backing_.isWriteBackEnabled() && !backing_.isWriteProtected()) {
+        if (!backing_.saveDirty()) {
+            pom2::log().warn("HDV", "Save-on-eject failed: " + backing_.lastError());
         }
     }
-    image.clear();
-    headerBytes.clear();
-    dirtyBlocks.clear();
-    dataOffset = 0;
-    dataLength = 0;
-    imagePath.clear();
-    hostFolderPath.clear();
-    imageLoaded = false;
-    isSynthVolume = false;
-    supportsWriteBack = false;
-    writeProtectedHeader = false;
-    anyDirty = false;
+    backing_.eject();
     selectedBlock = 0;
-    streamOffset = 0;
-}
-
-bool ProDOSHardDiskCard::saveDirty()
-{
-    if (!imageLoaded || !anyDirty || !writeBackEnabled
-        || writeProtectedHeader || !supportsWriteBack) {
-        return true;
-    }
-
-    if (isSynthVolume) {
-        pom2::ProDOSDecodeResult r = pom2::decodeVolumeToFolder(image, hostFolderPath);
-        if (!r.ok) {
-            lastError = r.error;
-            pom2::log().warn("HDV", "Synth folder write-back failed: " + lastError);
-            return false;
-        }
-        std::fill(dirtyBlocks.begin(), dirtyBlocks.end(), false);
-        anyDirty = false;
-        pom2::log().info("HDV", "Synth folder write-back: " +
-                                std::to_string(r.filesWritten) + " file(s) → " +
-                                hostFolderPath);
-        return true;
-    }
-
-    // .hdv / .2mg: in-place rewrite of dirty blocks. Open as in|out (no
-    // trunc) so the 2MG header AND any trailing comment / creator chunk
-    // past dataOffset+dataLength are preserved bit-for-bit.
-    std::fstream f(imagePath, std::ios::binary | std::ios::in | std::ios::out);
-    if (!f) {
-        lastError = "Cannot open " + imagePath + " for write";
-        pom2::log().warn("HDV", lastError);
-        return false;
-    }
-    size_t written = 0;
-    for (size_t b = 0; b < dirtyBlocks.size(); ++b) {
-        if (!dirtyBlocks[b]) continue;
-        f.seekp(static_cast<std::streamoff>(dataOffset + b * kBlockBytes));
-        f.write(reinterpret_cast<const char*>(&image[b * kBlockBytes]),
-                static_cast<std::streamsize>(kBlockBytes));
-        if (!f) {
-            lastError = "Short write on " + imagePath;
-            pom2::log().warn("HDV", lastError);
-            return false;
-        }
-        ++written;
-    }
-    f.flush();
-    std::fill(dirtyBlocks.begin(), dirtyBlocks.end(), false);
-    anyDirty = false;
-    pom2::log().info("HDV", "Saved " + std::to_string(written) +
-                            " modified block(s) to " + imagePath);
-    return true;
+    streamOffset  = 0;
 }
 
 void ProDOSHardDiskCard::onReset()
@@ -291,8 +118,8 @@ uint8_t ProDOSHardDiskCard::deviceSelectRead(uint8_t low4)
         //   bit-6 = 1 when write-protected (new — used by the write driver
         //           in $Cn88 to gate ProDOS WRITE_BLOCK and return $2B
         //           without touching the in-memory image).
-        uint8_t s = imageLoaded ? 0x00 : 0x80;
-        if (isWriteProtected()) s |= 0x40;
+        uint8_t s = backing_.isLoaded() ? 0x00 : 0x80;
+        if (backing_.isWriteProtected()) s |= 0x40;
         return s;
     }
     return 0xFF;
@@ -300,19 +127,18 @@ uint8_t ProDOSHardDiskCard::deviceSelectRead(uint8_t low4)
 
 uint8_t ProDOSHardDiskCard::readDataByte()
 {
-    if (!imageLoaded) return 0xFF;
+    if (!backing_.isLoaded()) return 0xFF;
 
-    activityTicks.store(kBusyHysteresisFrames, std::memory_order_relaxed);
     if (hdvTraceOn() && streamOffset == 0) {
-        const bool inRange =
-            (static_cast<size_t>(selectedBlock) + 1) * kBlockBytes <= image.size();
+        const bool inRange = (selectedBlock + 1u) <= backing_.blockCount();
         std::fprintf(stderr, "[HDV] READ  blk=%u%s\n",
                      static_cast<unsigned>(selectedBlock),
                      inRange ? "" : " (OUT-OF-RANGE -> $FF)");
     }
 
-    const size_t absolute = static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
-    const uint8_t out = (absolute < image.size()) ? image[absolute] : 0xFF;
+    const size_t absolute =
+        static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
+    const uint8_t out = backing_.readByte(absolute);
     streamOffset = (streamOffset + 1) % kBlockBytes;
     return out;
 }
@@ -323,32 +149,20 @@ void ProDOSHardDiskCard::writeDataByte(uint8_t v)
     // fully writable volume (a real hard disk is read/write to ProDOS). Only
     // the real medium WP flag (2MG header) blocks the write. Persisting those
     // RAM changes to the host .hdv/.2mg file is a SEPARATE opt-in handled by
-    // writeBackEnabled in saveDirty()/ejectImage() — so the user's file stays
-    // untouched by default while the game still works. (Previously the
-    // write-back-off default also gated this, which surfaced a write-
-    // protected boot volume to ProDOS and crashed games that write on the fly,
-    // e.g. Nox Archaist when entering a city.)
-    if (!imageLoaded || writeProtectedHeader) return;
+    // writeBackEnabled in saveDirty()/ejectImage().
+    if (!backing_.isLoaded() || backing_.isWriteProtected()) return;
 
-    activityTicks.store(kBusyHysteresisFrames, std::memory_order_relaxed);
     if (hdvTraceOn() && streamOffset == 0) {
-        const bool inRange =
-            (static_cast<size_t>(selectedBlock) + 1) * kBlockBytes <= image.size();
+        const bool inRange = (selectedBlock + 1u) <= backing_.blockCount();
         std::fprintf(stderr, "[HDV] WRITE blk=%u wb=%d%s\n",
-                     static_cast<unsigned>(selectedBlock), writeBackEnabled ? 1 : 0,
+                     static_cast<unsigned>(selectedBlock),
+                     backing_.isWriteBackEnabled() ? 1 : 0,
                      inRange ? "" : " (OUT-OF-RANGE -> dropped)");
     }
 
-    const size_t absolute = static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
-    if (absolute < image.size()) {
-        if (image[absolute] != v) {
-            image[absolute] = v;
-            if (selectedBlock < dirtyBlocks.size() && !dirtyBlocks[selectedBlock]) {
-                dirtyBlocks[selectedBlock] = true;
-                anyDirty = true;
-            }
-        }
-    }
+    const size_t absolute =
+        static_cast<size_t>(selectedBlock) * kBlockBytes + streamOffset;
+    backing_.writeByte(absolute, v);
     streamOffset = (streamOffset + 1) % kBlockBytes;
 }
 

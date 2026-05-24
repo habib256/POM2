@@ -38,6 +38,9 @@ public:
         SystemProfile activeProfile      = SystemProfile::AppleIIPlus;
         // Enable / disable hint for the disk button(s).
         bool          hasPrimaryDiskCard = false;
+        // True when the display is currently in a monochrome phosphor mode
+        // (drives the color/mono toggle button's icon tint + tooltip).
+        bool          displayIsMono      = false;
         // Active character-generator ROM locale. The dropdown only
         // surfaces entries that fit the active profile (see
         // charRomFitsProfile) — switching is hot, no cold reset needed
@@ -54,6 +57,7 @@ public:
         bool requestScreenshot       = false;
         bool requestInsertDisk       = false;   // open Insert-disk popup
         bool requestMemViewerToggle  = false;
+        bool requestMonoColorToggle  = false;   // flip color ↔ monochrome
         // -1 = no change. Set to the new cyclesPerFrame on speed dropdown
         // click; the host applies it via `EmulationController::setCyclesPerFrame`.
         int           setCyclesPerFrame   = -1;

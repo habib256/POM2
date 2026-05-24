@@ -405,12 +405,59 @@ add_test(NAME language_card_smoke COMMAND test_language_card)
 set_tests_properties(language_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── ATA/IDE taskfile core (AtaBlockDevice) unit test ─────────────────────
+# Pure-logic pin (no ROM): IDENTIFY capacity, single/multi-sector READ/WRITE,
+# sector-count==0 ⇒ 256, DRQ flow. Foundation for the MAME-faithful CffaCard.
+add_executable(test_ata_block_device
+    ata_block_device_test.cpp
+    ${CMAKE_SOURCE_DIR}/AtaBlockDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_ata_block_device PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ata_block_device PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME ata_block_device COMMAND test_ata_block_device)
+set_tests_properties(ata_block_device PROPERTIES TIMEOUT 5)
+
+
+# ─── CFFA 2.0 (MAME-faithful IDE) card smoke test ─────────────────────────
+# Drives the real firmware ROM's card view through Memory: slot-ROM signature
+# + $C0nX→ATA decode (READ/WRITE round-trip). ROM-gated (SKIPs without the
+# firmware dump). Full boot parity = MAME oracle `apple2ee -sl7 cffa2`.
+add_executable(test_cffa_card
+    cffa_card_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/CffaCard.cpp
+    ${CMAKE_SOURCE_DIR}/AtaBlockDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_cffa_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cffa_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_cffa_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_cffa_card PRIVATE winmm)
+endif()
+add_test(NAME cffa_card_smoke COMMAND test_cffa_card)
+set_tests_properties(cffa_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── ProDOS HDV block-device card smoke test ──────────────────────────────
 # Pins the slot-5 block-device ROM signature and the $C0D0-$C0D2 block read
 # protocol used by the embedded ProDOS driver.
 add_executable(test_hdv_card
     hdv_card_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
 )
@@ -439,6 +486,7 @@ set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_hdv_mass_storage
     hdv_mass_storage_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
 )
@@ -467,6 +515,7 @@ set_tests_properties(hdv_mass_storage_smoke PROPERTIES TIMEOUT 10)
 add_executable(test_hdv_writeback
     hdv_writeback_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
 )
@@ -495,6 +544,7 @@ set_tests_properties(hdv_writeback_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_hdv_ram_writable
     hdv_ram_writable_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
 )
@@ -1305,6 +1355,7 @@ add_executable(copy2plus_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -1354,6 +1405,7 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${POM2_TEST_CORE_SOURCES}
@@ -1361,6 +1413,22 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
 target_include_directories(hdv_boot_dump PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
     target_link_libraries(hdv_boot_dump PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+
+# CFFA boot dump — same idea via the MAME-faithful CffaCard (debug aid).
+add_executable(cffa_boot_dump EXCLUDE_FROM_ALL
+    cffa_boot_dump.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/CffaCard.cpp
+    ${CMAKE_SOURCE_DIR}/AtaBlockDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(cffa_boot_dump PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(cffa_boot_dump PRIVATE
         ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
 if(APPLE)
@@ -1730,6 +1798,7 @@ add_executable(test_slot_config
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
     ${CMAKE_SOURCE_DIR}/SuperSerialCard.cpp

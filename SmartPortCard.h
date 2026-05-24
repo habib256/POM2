@@ -51,6 +51,7 @@
 #ifndef POM2_SMARTPORT_CARD_H
 #define POM2_SMARTPORT_CARD_H
 
+#include "MountableMediaCard.h"
 #include "SlotPeripheral.h"
 #include "SmartPortUnit.h"
 
@@ -59,12 +60,14 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 class FloppySoundSink;
 
 namespace pom2 {
 
-class SmartPortCard : public SlotPeripheral
+class SmartPortCard : public SlotPeripheral, public MountableMediaCard
 {
 public:
     static constexpr int    kDefaultSlot   = 5;
@@ -113,6 +116,19 @@ public:
     uint8_t slotRomRead      (uint8_t low8) override;
     void    onReset() override;
     void    advanceCycles(int cycles) override;
+
+    // ── MountableMediaCard: one bay per unit, with per-bay type select ──
+    // (empty / 3.5" / HDV). Lets the Slot Manager drive each unit
+    // generically. NOTE: persistence (smartport_slotN_unitK_*) is the
+    // host's (MainWindow's) job — these only touch in-memory unit state.
+    int  bayCount() const override { return static_cast<int>(kMaxUnits); }
+    MediaBayInfo bayInfo(int bay) const override;
+    bool mountBay(int bay, const std::string& path, std::string& errOut) override;
+    void ejectBay(int bay) override;
+    void setBayWriteBack(int bay, bool on) override;
+    std::vector<std::pair<std::string, std::string>>
+         bayTypeOptions(int bay) const override;
+    void setBayType(int bay, const std::string& kindKey) override;
 
 private:
     int  slot_;

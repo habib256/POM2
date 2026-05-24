@@ -57,8 +57,10 @@ set(SOURCES
     MemoryProfile_IIcClass.cpp
     AiControlServer.cpp
     Apple2Display.cpp
+    AtaBlockDevice.cpp
     AudioDevice.cpp
     CassetteDevice.cpp
+    CffaCard.cpp
     CassetteDeck_ImGui.cpp
     CliDispatcher.cpp
     CliRunner.cpp
@@ -89,6 +91,7 @@ set(SOURCES
     MemoryViewer_ImGui.cpp
     Mockingboard.cpp
     MouseCard.cpp
+    Block512Backing.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
     RomLoader.cpp
@@ -114,9 +117,11 @@ set(HEADERS
     MemoryProfile_IIcClass.h
     AiControlServer.h
     Apple2Display.h
+    AtaBlockDevice.h
     AudioDevice.h
     CassetteDevice.h
     CassetteDeck_ImGui.h
+    CffaCard.h
     CharRomCatalog.h
     CliDispatcher.h
     ClockCard.h
@@ -143,6 +148,7 @@ set(HEADERS
     MemoryViewer_ImGui.h
     Mockingboard.h
     MouseCard.h
+    Block512Backing.h
     ProDOSHardDiskCard.h
     ProDOSVolume.h
     Logger.h

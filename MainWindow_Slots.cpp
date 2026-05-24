@@ -38,6 +38,7 @@
 #include "MouseCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
+#include "SlotCardCatalog.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
 
@@ -47,49 +48,12 @@
 #include <array>
 #include <filesystem>
 
-namespace {
-
-// Card types the user can pick for any slot.
-struct CardType {
-    const char* key;
-    const char* label;
-};
-
-constexpr CardType kCardTypes[] = {
-    { "",             "(empty)"           },
-    { "diskii",       "Disk II"           },
-    { "hdv",          "ProDOS HDV"        },
-    // SmartPort 3.5" — Apple Disk 3.5 Controller card (the "Liron" /
-    // 670-0186). Brings 2× Sony 800K drives to a //e or II+ via the
-    // standard ProDOS block-device protocol, no IWM. The Disk 3.5"
-    // panel reads the same Disk35Image objects whether they're driven
-    // by this card (any non-//c+ profile) or by the //c+ on-board hub.
-    { "smartport35",  "SmartPort 3.5\""   },
-    { "ssc",          "Super Serial"      },
-    { "clock",        "Clock (ProDOS)"    },
-    { "chatmauve",    "Le Chat Mauve"     },
-    { "mouse",        "Mouse Interface"   },
-    { "mockingboard", "Mockingboard A/C"  },
-};
-
-bool mouseRomsPresent()
-{
-    namespace fs = std::filesystem;
-    bool slotRom = false, mcuRom = false;
-    for (const char* p : { "roms/mouse_341-0270-c.bin",
-                           "../roms/mouse_341-0270-c.bin",
-                           "../../roms/mouse_341-0270-c.bin" }) {
-        if (fs::exists(p)) { slotRom = true; break; }
-    }
-    for (const char* p : { "roms/mouse_341-0269.bin",
-                           "../roms/mouse_341-0269.bin",
-                           "../../roms/mouse_341-0269.bin" }) {
-        if (fs::exists(p)) { mcuRom = true; break; }
-    }
-    return slotRom && mcuRom;
-}
-
-}  // namespace
+// Card catalog + ROM-presence probes now live in SlotCardCatalog.h so the
+// Slot Manager panel shares them. Bring the names into this TU unqualified
+// to keep the existing panel body unchanged.
+using pom2::kCardTypes;
+using pom2::mouseRomsPresent;
+using pom2::cffaRomPresent;
 
 void MainWindow::renderSlotConfigPanel()
 {
@@ -117,6 +81,7 @@ void MainWindow::renderSlotConfigPanel()
     }
 
     const bool mouseAvailable = mouseRomsPresent();
+    const bool cffaAvailable  = cffaRomPresent();
 
     // ── AUX slot (IIe-class only) ─────────────────────────────────────
     // On real //e/c/c+ the 80-column text card lives in the dedicated
@@ -190,8 +155,9 @@ void MainWindow::renderSlotConfigPanel()
         if (ImGui::BeginCombo(label, preview)) {
             for (const auto& ct : kCardTypes) {
                 const bool selected = (ct.key == draft[s]);
-                const bool disabled = (std::string(ct.key) == "mouse")
-                                       && !mouseAvailable;
+                const bool disabled =
+                    ((std::string(ct.key) == "mouse") && !mouseAvailable) ||
+                    ((std::string(ct.key) == "cffa")  && !cffaAvailable);
                 if (disabled) ImGui::BeginDisabled();
                 if (ImGui::Selectable(ct.label, selected)) {
                     draft[s] = ct.key;
@@ -370,6 +336,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         diskPanels.clear();
         diskPanel        = nullptr;
         hdvCard          = nullptr;
+        cffaCard         = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
         clockCard        = nullptr;
@@ -571,6 +538,7 @@ void MainWindow::restartEmulationFromSettings()
         diskPanels.clear();
         diskPanel        = nullptr;
         hdvCard          = nullptr;
+        cffaCard         = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
         clockCard        = nullptr;

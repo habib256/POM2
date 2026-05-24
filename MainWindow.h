@@ -16,6 +16,7 @@
 // forward decl, no SystemProfile.h needed here.
 
 #include "M6502.h"
+#include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
@@ -44,6 +45,8 @@ namespace pom2 {
     class Disk35Controller_ImGui;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
+    class CffaCard;
+    class ProDOSBlockCard;
     class HdvController_ImGui;
     class JoystickPanel_ImGui;
     class LeChatMauve_ImGui;
@@ -129,6 +132,11 @@ private:
     // T to be a complete type).
     std::unique_ptr<EmulationController>          controller;
     std::unique_ptr<Apple2Display>                display;
+    // Toolbar color↔mono toggle remembers the last mode on each side, so
+    // round-tripping preserves the user's specific submode (e.g. Mono Green
+    // ↔ Color 4-bit) rather than snapping to a single default each way.
+    Apple2Display::HiResMode lastColorHiResMode_ = Apple2Display::HiResMode::ColorNTSC;
+    Apple2Display::HiResMode lastMonoHiResMode_  = Apple2Display::HiResMode::MonoWhite;
     std::unique_ptr<MemoryViewer_ImGui>           memViewer;
     std::unique_ptr<pom2::Settings>               settings;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
@@ -155,6 +163,7 @@ private:
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
+    pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
@@ -348,6 +357,22 @@ private:
     /// unit 0, auto-creating a SmartPortHdvUnit if needed. `bootSlotOut`
     /// receives the slot to boot from.
     bool routeMountHdv(const std::string& path, int& bootSlotOut, std::string& errOut);
+    /// The active HDV-class block device for the HDV Library / turbo / eject —
+    /// prefers the MAME-faithful CffaCard when plugged, else the synthetic
+    /// ProDOSHardDiskCard. nullptr when neither is present.
+    /// NOTE: this is the *primary* (single-target) accessor kept for the
+    /// legacy menu/library paths; for anything that must touch EVERY block
+    /// card (eject-all, auto-turbo, the Slot Manager) enumerate via
+    /// `blockCards()` so a second block card isn't silently ignored.
+    pom2::ProDOSBlockCard* hdvDevice() const;
+    /// Enumerate ALL plugged ProDOS block-device cards (synthetic HDV +
+    /// MAME-faithful CFFA), sorted by slot ascending, by walking the
+    /// SlotBus. The bus — not our raw `*Card` pointers — is the source of
+    /// truth, so this stays correct when several block cards coexist.
+    std::vector<pom2::ProDOSBlockCard*> blockCards() const;
+    /// Enumerate ALL plugged SmartPort (Liron-class) slot cards, sorted by
+    /// slot ascending. Same rationale as `blockCards()`.
+    std::vector<pom2::SmartPortCard*> smartPortCards() const;
     /// Ensure the config can host an HDV image: returns the slot of an
     /// existing HDV or SmartPort card, or plugs a fresh ProDOSHardDiskCard
     /// into a free slot (preferring slot 7) and returns that. Used by the

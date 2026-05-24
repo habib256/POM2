@@ -5,6 +5,8 @@
 
 #include "FloppySoundSink.h"
 #include "Logger.h"
+#include "SmartPort35Unit.h"
+#include "SmartPortHdvUnit.h"
 
 #include <cstring>
 
@@ -326,6 +328,76 @@ void SmartPortCard::buildRom()
         0x18,
         0x60
     });
+}
+
+// ── MountableMediaCard ──────────────────────────────────────────────────
+// Each unit is one media bay. The bay's media kind is user-selectable
+// (empty / 3.5" / HDV); mounting requires a kind to have been chosen first
+// (the Slot Manager surfaces the type combo next to the mount control).
+
+MediaBayInfo SmartPortCard::bayInfo(int bay) const
+{
+    MediaBayInfo info;
+    const SmartPortUnit* u = unit(static_cast<size_t>(bay));
+    if (!u) return info;  // empty bay → "(empty)" type, no media
+    info.kindLabel         = std::string(u->kindLabel());
+    info.typeKey           = std::string(u->kindKey());
+    info.path              = u->path();
+    info.lastError         = u->lastError();
+    info.blockCount        = u->blockCount();
+    info.loaded            = u->isLoaded();
+    info.writeProtected    = u->isWriteProtected();
+    info.writeBackEnabled  = u->isWriteBackEnabled();
+    info.supportsWriteBack = true;
+    info.supportsTypeSelect = true;
+    return info;
+}
+
+bool SmartPortCard::mountBay(int bay, const std::string& path,
+                             std::string& errOut)
+{
+    SmartPortUnit* u = unit(static_cast<size_t>(bay));
+    if (!u) {
+        errOut = "select a media type for this unit first";
+        return false;
+    }
+    if (!u->loadImage(path)) {
+        errOut = u->lastError();
+        return false;
+    }
+    return true;
+}
+
+void SmartPortCard::ejectBay(int bay)
+{
+    if (SmartPortUnit* u = unit(static_cast<size_t>(bay))) u->eject();
+}
+
+void SmartPortCard::setBayWriteBack(int bay, bool on)
+{
+    if (SmartPortUnit* u = unit(static_cast<size_t>(bay)))
+        u->setWriteBackEnabled(on);
+}
+
+std::vector<std::pair<std::string, std::string>>
+SmartPortCard::bayTypeOptions(int /*bay*/) const
+{
+    return {
+        { std::string(),                              "(empty)" },
+        { std::string(SmartPort35Unit::kKindKey),     "3.5\" 800K" },
+        { std::string(SmartPortHdvUnit::kKindKey),    "ProDOS HDV" },
+    };
+}
+
+void SmartPortCard::setBayType(int bay, const std::string& kindKey)
+{
+    if (bay < 0 || static_cast<size_t>(bay) >= kMaxUnits) return;
+    if (kindKey.empty()) {
+        setUnit(static_cast<size_t>(bay), nullptr);   // clear the bay
+        return;
+    }
+    if (auto unit = makeSmartPortUnit(kindKey))
+        setUnit(static_cast<size_t>(bay), std::move(unit));
 }
 
 } // namespace pom2
