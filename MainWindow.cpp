@@ -30,6 +30,7 @@
 #include "CffaCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
+#include "ResourcePaths.h"
 #include "Settings.h"
 #include "SmartPortCard.h"
 #include "SmartPort35Unit.h"
@@ -126,15 +127,20 @@ MainWindow::MainWindow(bool forceIIPlus)
                                                 "../roms/apple2_char.rom",
                                                 "../../roms/apple2_char.rom" };
 
+    // findResource resolves each candidate against the CWD, the build/-
+    // relative roots (dev), and the executable-relative / FHS roots
+    // (portable bundle, AppImage, /usr/bin). See ResourcePaths.h.
     bool iiePresent = false;
     if (!forceIIPlus) {
         for (const char* p : iieRomCandidates) {
-            if (fs::exists(p)) { romPath = p; iiePresent = true; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { romPath = r; iiePresent = true; break; }
         }
     }
     if (!iiePresent) {
         for (const char* p : romCandidates) {
-            if (fs::exists(p)) { romPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { romPath = r; break; }
         }
     }
     charRomPath.clear();
@@ -164,12 +170,14 @@ MainWindow::MainWindow(bool forceIIPlus)
     }
     if (charRomPath.empty() && iiePresent) {
         for (const char* p : charRomIIeCandidates) {
-            if (fs::exists(p)) { charRomPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { charRomPath = r; break; }
         }
     }
     if (charRomPath.empty()) {
         for (const char* p : charRomCandidates) {
-            if (fs::exists(p)) { charRomPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { charRomPath = r; break; }
         }
     }
 
@@ -201,11 +209,12 @@ MainWindow::MainWindow(bool forceIIPlus)
         "../../roms/floppy_samples",
     };
     for (const char* d : floppySampleDirs) {
-        if (!fs::is_directory(d)) continue;
+        const std::string dir = pom2::findResource(d);
+        if (dir.empty() || !fs::is_directory(dir)) continue;
         const bool ok525 = controller->floppySound525().loadSamples(
-            d, FloppySoundDevice::FormFactor::FF525);
+            dir, FloppySoundDevice::FormFactor::FF525);
         const bool ok35  = controller->floppySound35().loadSamples(
-            d, FloppySoundDevice::FormFactor::FF35);
+            dir, FloppySoundDevice::FormFactor::FF35);
         if (ok525 || ok35) break;
     }
     {
@@ -677,7 +686,8 @@ void MainWindow::plugSlotsFromSettings()
             "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom"
         };
         for (const char* p : diskRomCandidates) {
-            if (fs::exists(p)) { diskRomPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { diskRomPath = r; break; }
         }
         auto card = std::make_unique<DiskIICard>(s);
         // DiskIICard ctor pre-loads the embedded Apple 341-0027-A boot PROM,
@@ -696,7 +706,8 @@ void MainWindow::plugSlotsFromSettings()
             "../../roms/diskii_p6.rom"
         };
         for (const char* p : lssRomCandidates) {
-            if (fs::exists(p)) { (void)card->loadLssRom(p); break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { (void)card->loadLssRom(r); break; }
         }
         // Optional 13-sector PROMs (Apple 341-0009 boot + 341-0010 LSS) for
         // pre-DOS-3.3 disks. The card serves them only while a 13-sector
@@ -706,14 +717,16 @@ void MainWindow::plugSlotsFromSettings()
             "roms/disk2_13.rom", "../roms/disk2_13.rom", "../../roms/disk2_13.rom"
         };
         for (const char* p : boot13Candidates) {
-            if (fs::exists(p)) { (void)card->loadBootRom13(p); break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { (void)card->loadBootRom13(r); break; }
         }
         static const char* lss13Candidates[] = {
             "roms/diskii_p6_13.rom", "../roms/diskii_p6_13.rom",
             "../../roms/diskii_p6_13.rom"
         };
         for (const char* p : lss13Candidates) {
-            if (fs::exists(p)) { (void)card->loadLssRom13(p); break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { (void)card->loadLssRom13(r); break; }
         }
         // Wire the CPU pointer for sub-instruction cycle accuracy on
         // MMIO reads/writes (cycle-precise copy protections rely on the
@@ -770,13 +783,14 @@ void MainWindow::plugSlotsFromSettings()
         // Pick the firmware variant matching the CPU (65C02 → eec02, else
         // ee02), falling back to whichever dump is present. No ROM → the slot
         // is left empty (the card type is also hidden in Slot Config then).
-        static const char* kRomDirs[] = { "roms/", "../roms/", "../../roms/" };
+        // findResource adds the executable-relative / FHS roots on top of
+        // the CWD + build/-relative ones, so the CFFA dumps resolve in a
+        // portable bundle / AppImage / install too. See ResourcePaths.h.
         auto probe = [&](const char* a, const char* b) -> std::string {
-            for (const char* nm : { a, b })
-                for (const char* dir : kRomDirs) {
-                    std::string p = std::string(dir) + nm;
-                    if (fs::exists(p)) return p;
-                }
+            for (const char* nm : { a, b }) {
+                std::string p = pom2::findResource(std::string("roms/") + nm);
+                if (!p.empty()) return p;
+            }
             return std::string();
         };
         const bool cmos =
@@ -947,10 +961,12 @@ void MainWindow::plugSlotsFromSettings()
             "../../roms/mouse_341-0269.bin"
         };
         for (const char* p : slotRomCandidates) {
-            if (fs::exists(p)) { slotRomPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { slotRomPath = r; break; }
         }
         for (const char* p : mcuRomCandidates) {
-            if (fs::exists(p)) { mcuRomPath = p; break; }
+            std::string r = pom2::findResource(p);
+            if (!r.empty()) { mcuRomPath = r; break; }
         }
         if (slotRomPath.empty() || mcuRomPath.empty()) {
             mouseRomStatus = "ROMs missing (need roms/mouse_341-0270-c.bin "

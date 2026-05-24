@@ -51,6 +51,7 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
 )
@@ -946,6 +947,7 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
 )
 target_include_directories(test_diskii_lss PRIVATE ${CMAKE_SOURCE_DIR})
@@ -1938,6 +1940,7 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
@@ -1980,6 +1983,7 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_sync PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
@@ -2020,6 +2024,7 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_4am_detect PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
@@ -2061,6 +2066,7 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_irq_delivery PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)
@@ -2102,6 +2108,7 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
     ${CMAKE_SOURCE_DIR}/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_iie_irq PRIVATE ${CMAKE_SOURCE_DIR})
 if(UNIX AND NOT APPLE)

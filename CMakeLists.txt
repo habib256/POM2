@@ -94,6 +94,7 @@ set(SOURCES
     Block512Backing.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
+    ResourcePaths.cpp
     RomLoader.cpp
     FloppyEmuDevice.cpp
     FloppyEmu_ImGui.cpp
@@ -158,6 +159,7 @@ set(HEADERS
     Logger.h
     Settings.h
     CpuClock.h
+    ResourcePaths.h
     RomLoader.h
     FloppyEmuDevice.h
     FloppyEmu_ImGui.h
@@ -269,6 +271,7 @@ add_executable(pom2_headless
     Memory.cpp
     MemoryProfile_IIcClass.cpp
     Mockingboard.cpp
+    ResourcePaths.cpp
     RomLoader.cpp
     SlotBus.cpp
     SnapshotIO.cpp
@@ -319,3 +322,64 @@ if(POM2_IPO_SUPPORTED)
     set_property(TARGET ${PROJECT_NAME} PROPERTY
                  INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
 endif()
+
+# ─── Install + packaging ──────────────────────────────────────────────────
+# Layout: the binary in <prefix>/bin, redistributable assets in
+# <prefix>/share/POM2. ResourcePaths resolves assets via <exeDir>/../share/
+# POM2 (and the per-user ~/.local/share/POM2), so this same tree works for
+# a relocatable tarball (CPack TGZ), an FHS /usr install (CPack DEB), and an
+# AppImage. The Apple ROMs are deliberately NOT installed — they are user-
+# supplied (copyright); only a drop-here README ships in roms/.
+include(GNUInstallDirs)
+set(POM2_DATADIR "${CMAKE_INSTALL_DATADIR}/POM2")
+# GNUInstallDirs derives DOCDIR from the (internal) project name pom2_imgui;
+# force the user-facing "POM2" so docs land in share/doc/POM2.
+set(CMAKE_INSTALL_DOCDIR "${CMAKE_INSTALL_DATADIR}/doc/POM2")
+
+install(TARGETS ${PROJECT_NAME}
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# Bundled UI fonts (DejaVu Sans + Font Awesome Free — both redistributable).
+install(FILES fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf
+        DESTINATION "${POM2_DATADIR}/fonts")
+
+# MAME floppy mechanical samples (BSD-3-Clause — roms/floppy_samples/
+# README.txt). Optional: only when present in the source tree.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms/floppy_samples")
+    install(DIRECTORY roms/floppy_samples
+            DESTINATION "${POM2_DATADIR}/roms"
+            FILES_MATCHING PATTERN "*.wav" PATTERN "*.txt")
+endif()
+
+# Drop-here note in place of the (non-redistributable) Apple ROMs.
+install(FILES packaging/roms_README.txt
+        DESTINATION "${POM2_DATADIR}/roms" RENAME README.txt)
+
+# Docs + desktop integration.
+install(FILES README.md CHANGELOG.md DEV.md TODO.md LICENSE
+        DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+install(FILES packaging/POM2.desktop
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+
+# ─── CPack ─────────────────────────────────────────────────────────────────
+# `cpack -G TGZ` → relocatable POM2-<ver>-Linux.tar.gz (bin/ + share/POM2).
+# `cpack -G DEB` → .deb depending on the system GLFW + OpenGL runtimes.
+# build_dist.sh drives this and collects the artifacts into DIST/.
+set(CPACK_PACKAGE_NAME            "POM2")
+set(CPACK_PACKAGE_VENDOR          "POM2")
+set(CPACK_PACKAGE_VERSION         "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Apple II / II+ / //e / //c / //c+ emulator")
+set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/")
+set(CPACK_RESOURCE_FILE_LICENSE   "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_PACKAGE_CONTACT         "gist974@gmail.com")
+set(CPACK_PACKAGE_FILE_NAME
+    "POM2-v${PROJECT_VERSION}-linux-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_STRIP_FILES             ON)
+
+# Debian package: link against the distro's shared GLFW + OpenGL.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS  "libglfw3 (>= 3.3), libgl1")
+set(CPACK_DEBIAN_PACKAGE_SECTION  "otherosfs")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+
+include(CPack)

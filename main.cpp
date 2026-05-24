@@ -12,6 +12,7 @@
 #include "EmulationController.h"
 #include "CassetteDevice.h"
 #include "Disk35Image.h"
+#include "ResourcePaths.h"
 #include "SystemProfile.h"
 
 #include "imgui.h"
@@ -220,10 +221,14 @@ int main(int argc, char* argv[])
             "/Library/Fonts/Arial Unicode.ttf",
             "C:\\Windows\\Fonts\\segoeui.ttf",
         };
+        // findResource resolves the bundled "fonts/…" entries against the
+        // executable-relative / FHS roots too (so an installed binary finds
+        // its TTF), and returns the absolute system paths verbatim when
+        // they exist. See ResourcePaths.h.
         std::string basePath;
         for (const char* c : baseCandidates) {
-            std::error_code ec;
-            if (fs::is_regular_file(c, ec)) { basePath = c; break; }
+            std::string r = pom2::findResource(c);
+            if (!r.empty()) { basePath = r; break; }
         }
         // Latin-1 Supplement + selected General Punctuation. Listed
         // pair-by-pair (ImGui ranges are inclusive [from, to] pairs
@@ -265,7 +270,6 @@ int main(int argc, char* argv[])
         }
     }
     {
-        namespace fs = std::filesystem;
         const char* candidates[] = {
             "fonts/fa-solid-900.ttf",
             "../fonts/fa-solid-900.ttf",
@@ -273,8 +277,8 @@ int main(int argc, char* argv[])
         };
         std::string fontPath;
         for (const char* c : candidates) {
-            std::error_code ec;
-            if (fs::is_regular_file(c, ec)) { fontPath = c; break; }
+            std::string r = pom2::findResource(c);
+            if (!r.empty()) { fontPath = r; break; }
         }
         if (!fontPath.empty()) {
             ImFontConfig iconsConfig;

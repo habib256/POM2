@@ -2,6 +2,7 @@
 // Copyright (C) 2026
 
 #include "CharRomCatalog.h"
+#include "ResourcePaths.h"
 
 #include <filesystem>
 
@@ -108,20 +109,12 @@ const char* charRomLocaleKey(CharRomLocale l)
 std::string resolveCharRomPath(const std::string& catalogPath)
 {
     if (catalogPath.empty()) return {};
-    // The catalog stores paths as `roms/foo.rom`. POM2 is launched from
-    // either the repo root (via run_emulator.sh) or directly from
-    // `build/` (CLion / `./POM2`), so probe both levels. Mirrors the
-    // boot-time `charRomIIeCandidates` table in MainWindow.cpp — kept
-    // in sync by hand because the catalog must work both for the
-    // MainWindow restore path and the live toolbar swap.
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    if (fs::exists(catalogPath, ec)) return catalogPath;
-    const std::string up1 = "../"   + catalogPath;
-    if (fs::exists(up1, ec))         return up1;
-    const std::string up2 = "../../" + catalogPath;
-    if (fs::exists(up2, ec))         return up2;
-    return {};
+    // The catalog stores paths as `roms/foo.rom`. findResource probes the
+    // CWD, the build/-relative `../` `../../` roots (dev), and the
+    // executable-relative / FHS-install roots (portable bundle, AppImage,
+    // /usr/bin) — so the catalog resolves identically on the MainWindow
+    // restore path and the live toolbar swap. See ResourcePaths.h.
+    return findResource(catalogPath);
 }
 
 std::string resolveCharRomPath(CharRomLocale l)

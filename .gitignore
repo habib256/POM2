@@ -1,5 +1,6 @@
 build/
 build-*/
+DIST/
 imgui/
 *.o
 *.obj

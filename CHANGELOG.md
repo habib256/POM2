@@ -8,6 +8,28 @@ courante → `DEV.md`.
 
 ## 2026-05-24
 
+- **Infra de release Linux** (branche `release-infra`). Nouveau résolveur
+  d'assets `ResourcePaths` (`.h/.cpp`) : centralise la recherche des assets
+  *bundlés* (roms/, fonts/, floppy_samples/) avec, en plus des racines
+  historiques relatives au CWD (`.`, `..`, `../..` — comportement dev
+  inchangé), des racines **relatives à l'exécutable** (`<exe>`, `<exe>/..`,
+  `<exe>/../share/POM2`) et la racine **utilisateur** `~/.local/share/POM2`.
+  Indispensable pour qu'un binaire *installé* (AppImage, `.deb` → `/usr/bin`,
+  tarball lancé par chemin absolu) trouve ses fichiers. Câblé sur les
+  chokepoints : `RomLoader::probe*`, `MainWindow::firstExistingPath`,
+  `CharRomCatalog::resolveCharRomPath`, le probe ROM CFFA, les boucles
+  inline disk2/LSS/mouse/char/auto-détect, et les polices de `main.cpp`.
+  **Pourquoi** : tous les sites répétaient `X` / `../X` / `../../X`, qui ne
+  marche que si le CWD est la racine du dépôt — ce qu'une release casse.
+  Les 76 tests passent inchangés. CMake gagne `install()` (bin/ +
+  share/POM2) + **CPack** (TGZ relocatable + DEB shlibdeps) ; `build_dist.sh`
+  produit `DIST/POM2-v0.6-linux-x86_64.{tar.gz,deb}` (+ AppImage si
+  `linuxdeploy` présent). **Les ROMs Apple ne sont jamais incluses**
+  (copyright) — un `roms/README.txt` indique où les déposer. Pièges :
+  la cible CMake GUI est `pom2_imgui` (sortie `POM2`) — `make POM2` est un
+  no-op, le script build via `--target pom2_imgui` ; `pom2_headless` et les
+  tests compilent `RomLoader.cpp` donc linkent aussi `ResourcePaths.cpp`.
+
 - **Release v0.6** — jalon regroupant CFFA 2.0 (carte IDE MAME-fidèle),
   Floppy Emu (BMOW), Slot Manager consolidé, rendu Video-7 / Le Chat Mauve
   complet, et le support Disk II 13-secteurs (DOS 3.1/3.2). Version bumpée
