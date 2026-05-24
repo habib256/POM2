@@ -4111,7 +4111,7 @@ void MainWindow::renderAboutDialog()
     if (!showAbout) return;
     ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("About POM2", &showAbout, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("POM2 v0.5");
+        ImGui::Text("POM2 v0.6");
         ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator");
         ImGui::Text("MOS 6502 / 65C02 / Rockwell / WDC, Dear ImGui frontend");
         ImGui::Spacing();

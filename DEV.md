@@ -17,6 +17,7 @@ fixes résolus → `CHANGELOG.md`.
 - [SmartPort 3.5" stack](#smartport-35-stack)
 - [Peripherals](#peripherals)
 - [UI (ImGui)](#ui-imgui)
+- [Host control center (Slot Manager + Floppy Emu)](#host-control-center-slot-manager--floppy-emu)
 - [Profile switching](#profile-switching)
 - [CLI](#cli)
 
@@ -738,7 +739,10 @@ write-back), medium WP, dirty-block tracking, opt-in host-file write-back,
 and host-folder synth volumes. Both cards also implement
 `pom2::ProDOSBlockCard` (image-management interface) so the HDV Library,
 disk-turbo, and persistence target either uniformly via
-`MainWindow::hdvDevice()` (prefers CFFA when plugged).
+`MainWindow::hdvDevice()` (prefers CFFA when plugged); `ProDOSBlockCard`
+in turn implements `MountableMediaCard` as a single fixed bay, so both
+cards also appear in the Slot Manager generically (see § Host control
+center).
 
 Pinned: `hdv_card_smoke_test.cpp` (`hdv_card_smoke`),
 `hdv_writeback_smoke_test.cpp` (header/trailer/WP/opt-in round-trip),
@@ -838,6 +842,16 @@ first; returns `$2B` (write-protected) without touching memory if WP.
 **Boot wiring**: library click on non-//c+ →
 `controller->bootFromSlot(smartPortCard->getSlot())`; on //c+ on-board
 falls back to `coldBoot()`.
+
+**Per-unit storage**: each `SmartPortUnit` owns its bytes (no
+`thread_local`). The HDV-flavoured `SmartPortHdvUnit` is now a thin
+adapter over the shared `Block512Backing` (the same store behind
+`ProDOSHardDiskCard` / `CffaCard`) — it gets the 2IMG envelope, dirty
+tracking, medium-WP and opt-in write-back for free instead of
+re-implementing them. Per-unit settings persist as
+`smartport_slotN_unitK_{type,path,writeback}`. The card also implements
+`MountableMediaCard` over its 2 units (see § Host control center) so the
+Slot Manager drives them generically.
 
 Pinned: `smartport_card_smoke_test.cpp`,
 `smartport_mixed_units_smoke_test.cpp`.
@@ -1223,6 +1237,106 @@ panels.
 - **main.cpp** — GLFW char/key callbacks gated by ImGui keyboard
   capture so editing widgets don't leak into Apple II.
 - **Screenshot (F9)** — `screenshot_NNN.ppm` (P6 binary RGB) in cwd.
+
+## Host control center (Slot Manager + Floppy Emu)
+
+Two host-side facilities sit *above* the slot bus — neither is a bus
+device. Both are data-in / actions-out ImGui panels driven from a
+snapshot `MainWindow` builds under `stateMutex` and apply the returned
+actions itself (mount/eject/persist/restart) — the same contract as
+every other `*_ImGui` panel.
+
+### MountableMediaCard + SlotCardCatalog
+
+`MountableMediaCard.h` is the capability mix-in that lets the GUI drive
+*any* card with mountable media bays generically — no
+`if (cardKey == "...")` ladder. Orthogonal **host-side** interface (NOT a
+bus concern; the `$Cnxx`/`$C0nx` dispatch path never touches it), same
+"mix-in alongside `SlotPeripheral`" pattern as `ProDOSBlockCard`. API:
+`bayCount()`, `bayInfo(bay) → MediaBayInfo`, `mountBay` / `ejectBay` /
+`setBayWriteBack`, plus type-select for bays whose kind the user may pick
+(`bayTypeOptions` / `setBayType`).
+
+- `ProDOSBlockCard` implements it as a single fixed bay, so both
+  HDV-class cards (`ProDOSHardDiskCard`, `CffaCard`) gain a bay for free.
+- `SmartPortCard` implements it directly over its 2 units, advertising
+  per-bay type select (`""` empty / `"35"` 3.5" / `"hdv"` HDV).
+
+`SlotCardCatalog.h` is the single list of user-assignable card types
+(`kCardTypes`, index 0 = empty slot) + the ROM-presence probes
+(`mouseRomsPresent()`, `cffaRomPresent()`) that gate the conditional
+entries (Mouse needs both mouse ROMs, CFFA needs `cffa20ee02/eec02.bin`).
+Extracted from `MainWindow_Slots.cpp` so BOTH the legacy Slot
+Configuration panel and the Slot Manager drive their dropdowns +
+built-in-name resolution from one source.
+
+### Slot Manager
+
+`SlotManager_ImGui.{h,cpp}`. The consolidated "control center" for the
+expansion bus: one window lists every slot (1-7, plus the AUX 80-col row
+on IIe-class), the card per slot (a dropdown, or a locked built-in
+badge), and — for any `MountableMediaCard` — inline mount / eject /
+write-back / type-select / **boot** per bay (status dot: grey empty /
+orange WP / green loaded).
+
+Built from a **SlotBus enumeration**: `MainWindow_Slots.cpp` walks
+`bus.peripheral(s)` + `dynamic_cast<MountableMediaCard*>` instead of
+chasing the single global `*Card` pointers, so it stays correct no matter
+how many cards of a kind are plugged. Multi-instance is wider here than
+in the legacy panel: `isMultiInstance` (`SlotManager_ImGui.cpp:23`)
+allows **`diskii`, `cffa`, `smartport35`** in more than one slot — each
+has per-slot persistence (`disk_path_slotN`, `cffa_slotN_*`,
+`smartport_slotN_*`). The older Slot Configuration panel
+(`renderSlotConfigPanel`) still red-flags everything but `diskii` as a
+duplicate; the Slot Manager is the authoritative path.
+
+The detailed per-card panels survive for deep state (Disk II track LEDs,
+motor, Disk Library browsing); the Slot Manager's "Open detailed panel"
+button returns `openDetailForSlot`, which MainWindow maps to the right
+panel toggle. Settings: `show_slot_manager`. Menu: Machine → Slot
+Manager… Pinned: `slot_multi_card_smoke_test.cpp` (`slot_multi_card_smoke`).
+
+### Floppy Emu (BMOW)
+
+`FloppyEmuDevice.{h,cpp}` + `FloppyEmu_ImGui.{h,cpp}` — a faithful model
+of the Big Mess o' Wires **Floppy Emu** (bigmessowires.com): an SD-card +
+OLED + 3-button gadget that plugs into the disk port and *becomes* a
+drive. POM2 already emulates every drive type the Emu can present, so the
+class models the device's *defining* behaviour rather than another FDC:
+
+- the persistent emulation **MODE** (its NVRAM) — four `FloppyEmuMode`s
+  mapped onto POM2's drives: `Disk525` (140K, Disk II), `Disk35` (800K
+  dumb 3.5"), `Unidisk35` (800K smart, ejectable), `SmartportHD` (≤32 MB
+  ProDOS block). The device's Dual-5.25 and Smartport-Unit-2 (IIgs
+  daisy-chain boot trick) modes are out of scope for v1.
+- the SD-card **file explorer** — bounded to the SD root, ".." +
+  dirs-first listing sorted case-insensitively, format-filtered per mode
+  (`acceptsFile`: 5.25 → dsk/do/po/nib/woz/2mg ; 3.5/Unidisk →
+  dsk/do/po/2mg ; Smartport → po/hdv/2mg).
+- **favorites** — `favdisks.txt` in the SD root: optional `automount N`
+  first line (0 never / 1 first / 2 most-recent) then one image path per
+  line (relative to the SD root or absolute), matching the real device's
+  format.
+
+The actual mounting is **routed by MainWindow** into the existing
+controller cards (`DiskIICard` for 5.25/3.5, `SmartPortCard` units for
+HDV) — the device only picks the image + the mode. The core is
+deliberately UI- and emulator-agnostic (no ImGui / MainWindow / SlotBus)
+so format filtering, SD navigation, and favdisks parsing unit-test in
+isolation. Reference: BMOW Floppy Emu Model C manual §3 (Disk Emulation
+Mode / Selecting an Image / Favorites) + §5 (Apple II Usage).
+
+`FloppyEmu_ImGui` draws the device's face: a stylised 128×64
+blue-on-black OLED + the three hardware buttons (PREV / NEXT / SELECT),
+two OLED views (SD File Explorer + Settings → Disk Emulation Mode), the
+mode always shown in the header.
+
+The virtual "SD card" is the `floppyemu/` folder — kept SEPARATE from the
+Disk Library folders (`disks/` `disks35/` `hdv/`) because the Emu is its
+own card (see `floppyemu/README.txt`); subfolders are walked. Settings:
+`floppyemu_mode`, `floppyemu_sd_root`, `show_floppy_emu`. Menu: Devices →
+Floppy Emu (BMOW). Pinned: `floppy_emu_smoke_test.cpp`
+(`floppy_emu_smoke`).
 
 ## Profile switching
 
