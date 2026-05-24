@@ -8,6 +8,64 @@ courante → `DEV.md`.
 
 ## 2026-05-24
 
+- **Release v0.6** — jalon regroupant CFFA 2.0 (carte IDE MAME-fidèle),
+  Floppy Emu (BMOW), Slot Manager consolidé, rendu Video-7 / Le Chat Mauve
+  complet, et le support Disk II 13-secteurs (DOS 3.1/3.2). Version bumpée
+  dans `main.cpp` (bannière + titre fenêtre), `MainWindow.cpp` (À propos),
+  `CMakeLists.txt` (`project VERSION`) et `CLAUDE.md`.
+
+- **Floppy Emu (BMOW) — modèle du gadget SD/OLED** (`floppy_emu_smoke`).
+  Nouveaux `FloppyEmuDevice` + `FloppyEmu_ImGui` modélisant le Big Mess o'
+  Wires Floppy Emu : carte SD + OLED 128×64 + 3 boutons (PREV/NEXT/SELECT)
+  qui *devient* un lecteur. POM2 émule déjà tous les types de lecteurs que
+  l'Emu peut présenter — la valeur ajoutée est donc le comportement *propre*
+  du gadget : le **mode d'émulation** persistant (sa NVRAM ; 4 modes 5.25 /
+  3.5 / Unidisk 3.5 / Smartport HD), l'**explorateur de fichiers SD** (borné
+  à la racine, filtré par mode), les **favoris** (`favdisks.txt` + directive
+  `automount`), le workflow de swap. Le montage réel est **routé par
+  MainWindow** vers les cartes existantes (`DiskIICard` / unités
+  `SmartPortCard`) — le device choisit l'image + le mode, rien d'autre. Le
+  cœur est volontairement agnostique UI/émulateur (zéro ImGui / MainWindow /
+  SlotBus) → testable en isolation (filtrage de format, navigation SD,
+  parsing favdisks). La « carte SD » est le dossier `floppyemu/`, **séparé**
+  des dossiers Disk Library (`disks/` `disks35/` `hdv/`) car l'Emu est sa
+  propre carte. Réf : manuel BMOW Floppy Emu Model C §3 + §5. Menu : Devices
+  → Floppy Emu. Réglages `floppyemu_mode` / `floppyemu_sd_root` /
+  `show_floppy_emu`. Hors scope v1 : modes Dual-5.25 et Smartport-Unit-2
+  (boot daisy-chain IIgs). Voir `DEV.md § Host control center`.
+
+- **Slot Manager — panneau bus consolidé + `MountableMediaCard`**
+  (`slot_multi_card_smoke`). Nouveau `SlotManager_ImGui` : une seule fenêtre
+  liste tous les slots (1-7 + ligne AUX 80-col en IIe), la carte par slot
+  (dropdown ou badge built-in verrouillé), et — pour toute carte exposant des
+  baies média — mount / eject / write-back / type-select / boot inline par
+  baie. **Pourquoi** : le bus est multi-instance (plusieurs cartes bloc,
+  plusieurs SmartPort) mais les anciens panneaux par-carte supposaient chacun
+  un pointeur global unique. Le Slot Manager se construit depuis une
+  **énumération du SlotBus** (`bus.peripheral(s)` +
+  `dynamic_cast<MountableMediaCard*>`), donc reste correct quel que soit le
+  nombre de cartes plugguées. `MountableMediaCard.h` = mix-in **côté hôte**
+  (pas une préoccupation bus, même motif que `ProDOSBlockCard`) :
+  `bayCount/bayInfo/mountBay/ejectBay/setBayWriteBack` + type-select
+  (`bayTypeOptions/setBayType`). `ProDOSBlockCard` l'implémente comme une
+  baie fixe → HDV + CFFA l'obtiennent gratuitement ; `SmartPortCard`
+  l'implémente sur ses 2 unités (type empty / 3.5" / hdv). `SlotCardCatalog.h`
+  extrait la liste unique `kCardTypes` + les sondes ROM
+  (`mouseRomsPresent`/`cffaRomPresent`), partagée entre le panneau Slot Config
+  hérité et le Slot Manager. Multi-instance élargie : le Slot Manager autorise
+  `diskii`/`cffa`/`smartport35` en plusieurs slots (persistance par slot). Les
+  panneaux par-carte détaillés subsistent pour l'état profond (LED de piste,
+  moteur, Disk Library) via « Open detailed panel ». Menu : Machine → Slot
+  Manager. Réglage `show_slot_manager`. Voir `DEV.md § Host control center`.
+
+- **SmartPortHdvUnit — adossé au `Block512Backing` partagé**. L'unité HDV
+  d'une carte SmartPort réimplémentait son propre stockage ; elle est
+  désormais un fin adaptateur sur le `Block512Backing` commun (le store
+  derrière `ProDOSHardDiskCard` / `CffaCard`) → envelope 2IMG, suivi des
+  blocs sales, WP médium et write-back opt-in obtenus sans duplication. Chaque
+  `SmartPortUnit` possède ses octets (fin du `thread_local`). Pinné par
+  `smartport_mixed_units_smoke`.
+
 - **Rendu Video-7 / Le Chat Mauve complet (4 rgbmodes DHGR + texte
   foreground-background)**. `Apple2Display::renderDhgr` consulte désormais le
   mode FIFO AN3 de la carte (`LeChatMauveCard::currentMode()`) pour choisir

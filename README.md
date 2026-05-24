@@ -18,19 +18,21 @@ cd build && cmake .. && make -j
 `setup_imgui.sh` covers macOS (Homebrew), Debian/Ubuntu (apt), Fedora
 (dnf), Arch (pacman). Windows: install GLFW via vcpkg and run CMake
 by hand. Drop ROMs into `roms/`, 5.25" images into `disks/`, 3.5" into
-`disks35/`, hard-disk images into `hdv/`.
+`disks35/`, hard-disk images into `hdv/`, and Floppy Emu (BMOW) images
+into `floppyemu/`.
 
 ## System profiles
 
 | Profile | CPU | iieMode | Main ROM probes |
 |---|---|---|---|
-| Apple ][ (1977)   | NMOS  | off | `apple2o.rom`, `apple2.rom` |
-| Apple ][+ (1979)  | NMOS  | off | `apple2p.rom`, `apple2.rom` |
-| Apple //e (1985)  | 65C02 | on  | `apple2e.rom` |
-| Apple //c (1984)  | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` |
-| Apple //c+ (1988) | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom` |
+| Apple ][ (1977)          | NMOS  | off | `apple2o.rom`, `apple2.rom` |
+| Apple ][+ (1979)         | NMOS  | off | `apple2p.rom`, `apple2.rom` |
+| Apple //e Unenh. (1983)  | NMOS  | on  | `apple2e_unenh.rom`, `apple2e.rom` |
+| Apple //e Enh. (1985)    | 65C02 | on  | `apple2e.rom` |
+| Apple //c (1984)         | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` |
+| Apple //c+ (1988)        | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom` |
 
-`Machine → Profile` or `--preset <ii|ii+|iie|iic|iic+>`. Switching
+`Machine → Profile` or `--preset <ii|ii+|iie-u|iie|iic|iic+>`. Switching
 profiles cold-resets and re-plugs cards; previously inserted disks
 re-mount across the switch.
 
@@ -45,8 +47,10 @@ IIc), 20 KB system-pack (4 KB filler skipped), 32 KB system+video
 | `apple2e.rom`          | 16 / 32 KB | //e firmware (+ optional charset) |
 | `apple2cp.rom`         | 32 KB | //c+ banks 0 + 1 (ROMSWITCH `$C028`) |
 | `apple2_char.rom`      | 2 / 4 KB | Character ROM (4 KB = IIe + mousetext) |
-| `disk2.rom`            | 256 B | Disk II P5A boot PROM |
+| `disk2.rom`            | 256 B | Disk II P5A 16-sector boot PROM |
+| `disk2_13.rom`         | 256 B | Disk II 341-0009 13-sector boot PROM (DOS 3.2) |
 | `diskii_p6.rom`        | 256 B | Disk II P6 LSS sequencer (required for `.woz`) |
+| `cffa20ee02.bin` / `cffa20eec02.bin` | 4 KB | CFFA 2.0 firmware (6502 / 65C02) |
 | `mouse_341-0270-c.bin` | 2 KB  | Mouse Card slot ROM |
 | `mouse_341-0269.bin`   | 2 KB  | Mouse Card 68705 MCU mask ROM |
 | `roms/floppy_samples/*.wav` | — | MAME-vendored mechanical samples |
@@ -68,13 +72,21 @@ IIc), 20 KB system-pack (4 KB filler skipped), 32 KB system+video
   cassette deck (WAV/MP3/OGG/FLAC/`.aci`), **Mockingboard** (dual
   6522 + dual AY-3-8910), **floppy mechanical sounds** for Disk II
   and Sony 3.5" (cycle-driven, MAME samples).
-- **Storage**: Disk II 5.25" **multi-instance**, ProDOS HDV any slot
-  (32 MB `.hdv`/`.2mg` or synthetic `[host folder]`), SmartPort 3.5"
-  on //c+ (IWM + Sony GCR) or on //e via Liron-class card (block
-  level), WOZ1 + WOZ2 with `optimal_bit_timing`. Write-back opt-in.
+- **Storage**: Disk II 5.25" **multi-instance** (16-sector DOS 3.3 /
+  ProDOS + **13-sector DOS 3.1/3.2**), ProDOS HDV any slot (32 MB
+  `.hdv`/`.2mg` or synthetic `[host folder]`), **CFFA 2.0** (MAME-faithful
+  IDE — real firmware over an emulated ATA chip), SmartPort 3.5" on //c+
+  (IWM + Sony GCR) or on //e via Liron-class card (block level), WOZ1 +
+  WOZ2 with `optimal_bit_timing`. Write-back opt-in.
 - **Peripherals**: Super Serial Card (6551 ACIA + telnet bridge on
-  `127.0.0.1:6502`), ProDOS Clock (ThunderClock+ at `$C0C0`), Apple
-  Mouse Card (M68705P3 + MC6821), GLFW joystick → PADL(0/1)+PB0/1/2.
+  `127.0.0.1:6502`), ProDOS Clock (ThunderClock+ at `$C0C0`, with TP
+  interrupts), Apple Mouse Card (M68705P3 + MC6821), GLFW joystick →
+  PADL(0/1)+PB0/1/2.
+- **Host control center**: a **Slot Manager** panel driving the whole
+  expansion bus from one window (assign cards, mount/eject/boot media per
+  bay), and a **Floppy Emu (BMOW)** device — an SD-card + OLED disk
+  emulator with its own on-screen file browser + favorites, mounting into
+  the existing drives.
 - **Tooling**: AI control HTTP server on `127.0.0.1:6503`,
   `POM2SNAP` snapshots (CPU + RAM + soft switches), memory viewer
   with disassembly, screenshot (F9).
@@ -99,9 +111,11 @@ honoured.
 
 ## Slot configuration
 
-`Hardware → Slot Configuration`. Cards: `diskii` (multi-instance),
-`hdv`, `smartport35`, `ssc`, `clock`, `chatmauve`, `mouse`,
-`mockingboard`. Default layout:
+`Machine → Slot Manager` (the consolidated control center — assign
+cards, mount/eject/boot media per bay) or the legacy `Machine → Slot
+Configuration`. Cards: `diskii` (multi-instance), `hdv`, `cffa` (when
+the CFFA firmware is present), `smartport35`, `ssc`, `clock`,
+`chatmauve`, `mouse`, `mockingboard`. Default layout:
 
 | Slot | Card |
 |---|---|

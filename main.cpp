@@ -91,7 +91,7 @@ static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, in
 
 int main(int argc, char* argv[])
 {
-    pom2::log().info("POM2", "v0.5 - Apple II Emulator (Dear ImGui)");
+    pom2::log().info("POM2", "v0.6 - Apple II Emulator (Dear ImGui)");
 
     bool helpRequested = false;
     auto plan = pom2::parseCli(argc, argv, helpRequested);
@@ -116,7 +116,7 @@ int main(int argc, char* argv[])
     // opens them on demand via Devices menu / Slot Configuration.
     // The `FirstUseEver` pos/size calls in MainWindow rely on roughly
     // this canvas.
-    const char* kWindowTitle = "POM2 v0.5 - Apple II Emulator";
+    const char* kWindowTitle = "POM2 v0.6 - Apple II Emulator";
     GLFWwindow* window = nullptr;
     if (plan->kiosk) {
         // Exclusive full-screen on the primary monitor at its current

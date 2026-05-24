@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-État 2026-05-22. Backlog **dédupliqué** : chaque item n'apparaît qu'une
+État 2026-05-24. Backlog **dédupliqué** : chaque item n'apparaît qu'une
 seule fois, groupé par sévérité (🟠 high · 🟡 medium · 🟢 low), puis les
 buckets non-bug (skips délibérés, propositions, hors scope). Tag
 `[sous-système]` par item. Items résolus → `CHANGELOG.md`. Refs MAME →
@@ -103,6 +103,20 @@ ci-dessous.
 
 ## 🟢 Low
 
+- [ ] **[UI] Slot Config hérité vs Slot Manager — règle multi-instance
+      divergente**. Le panneau `Slot Configuration` ne marque que `diskii`
+      multi-instance (duplicate cffa/smartport35 affiché rouge ;
+      `isDuplicate`, `MainWindow_Slots.cpp:114`), alors que le `Slot
+      Manager` autorise `diskii`/`cffa`/`smartport35` en plusieurs slots
+      (`isMultiInstance`, `SlotManager_ImGui.cpp:23`). Aligner les deux
+      (ou retirer le panneau hérité maintenant que le Slot Manager couvre
+      tout le bus). **Effort : ~1 h.**
+- [ ] **[Floppy Emu] modes Dual-5.25" + Smartport-Unit-2**. Le modèle
+      `FloppyEmuDevice` couvre 4 modes (5.25 / 3.5 / Unidisk 3.5 /
+      Smartport HD) ; les modes « Dual 5.25 » (2 lecteurs sur un
+      contrôleur) et « Smartport Unit 2 » (astuce de boot daisy-chain
+      IIgs) du vrai device sont hors scope v1. À reprendre si un cas
+      d'usage concret apparaît.
 - [ ] **[UI] Layout par défaut plus aéré** : ImGui Docking ou
       `SetNextWindowPos` cascade adaptative selon nombre de cartes.
 - [ ] **[Audio] AY Port A read mask par DDR** (`Mockingboard.cpp`,
