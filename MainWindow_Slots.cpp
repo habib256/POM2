@@ -27,6 +27,7 @@
 // forward-declares the controller / cards / panels.
 #include "AiControlServer.h"
 #include "Apple2Display.h"
+#include "CffaCard.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
 #include "DiskController_ImGui.h"
@@ -34,11 +35,17 @@
 #include "EmulationController.h"
 #include "LeChatMauveCard.h"
 #include "Logger.h"
+#include "Memory.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
+#include "SlotBus.h"
 #include "SlotCardCatalog.h"
+#include "SlotManager_ImGui.h"
+#include "SmartPort35Unit.h"
+#include "SmartPortCard.h"
+#include "SmartPortHdvUnit.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
 
@@ -593,4 +600,178 @@ void MainWindow::restartEmulationFromSettings()
     }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
+}
+
+// ─── Slot Manager (consolidated control center) ─────────────────────────────
+
+void MainWindow::renderSlotManagerWindow()
+{
+    if (!showSlotManager) return;
+
+    // Persist a bay's media state with the right key scheme for its card
+    // type — persistence is inherently per-card (SmartPort uses per-unit
+    // keys, CFFA per-slot, the synthetic HDV a legacy global key). Called
+    // under stateMutex right after a mount/eject/type/write-back action so
+    // it captures the post-action state. `p` is the live bus peripheral.
+    auto persistBay = [&](int slot, int bay, SlotPeripheral* p) {
+        if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(p)) {
+            const std::string base = "smartport_slot" + std::to_string(slot) +
+                                     "_unit" + std::to_string(bay);
+            const pom2::SmartPortUnit* u = sp->unit(static_cast<size_t>(bay));
+            settings->setString(base + "_type",
+                                u ? std::string(u->kindKey()) : std::string());
+            settings->setString(base + "_path", u ? u->path() : std::string());
+            settings->setBool  (base + "_writeback",
+                                u ? u->isWriteBackEnabled() : false);
+        } else if (auto* cffa = dynamic_cast<pom2::CffaCard*>(p)) {
+            const std::string base = "cffa_slot" + std::to_string(slot);
+            settings->setString(base + "_path", cffa->getImagePath());
+            settings->setBool  (base + "_writeback", cffa->isWriteBackEnabled());
+        } else if (auto* hdv = dynamic_cast<ProDOSHardDiskCard*>(p)) {
+            settings->setString("hdv_path", hdv->getImagePath());
+            settings->setBool  ("hdv_writeback", hdv->isWriteBackEnabled());
+            // Keep the legacy single-HDV members in sync so the standalone
+            // HDV panel's title/status reflect a Slot-Manager mount/eject.
+            hdvPath   = hdv->getImagePath();
+            hdvStatus = hdv->isImageLoaded()
+                          ? ("loaded: " + hdv->getImagePath())
+                          : std::string("no image mounted");
+        }
+    };
+
+    // ── Build the snapshot from the bus (the authoritative registry). ────
+    pom2::SlotManager_ImGui::PanelSnapshot snap;
+    const auto& cfg = pom2::profileConfig(activeProfile);
+    snap.iieMode        = cfg.iieMode;
+    snap.mouseAvailable = pom2::mouseRomsPresent();
+    snap.cffaAvailable  = pom2::cffaRomPresent();
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        SlotBus& bus = controller->memory().slotBus();
+        for (int s = 1; s <= 7; ++s) {
+            auto& ss     = snap.slots[s];
+            ss.slot      = s;
+            ss.cardKey   = slotCards[s];
+            ss.cardLabel = pom2::cardLabelForKey(slotCards[s]);
+            SlotPeripheral* p = bus.peripheral(s);
+            ss.occupied  = (p != nullptr);
+            if (cfg.builtInSlots[s].has_value()) {
+                ss.builtIn      = true;
+                ss.builtInBadge = cfg.builtInSlots[s]->label;
+            }
+            const std::string& k = slotCards[s];
+            ss.hasDetailPanel = (k == "diskii" || k == "hdv" ||
+                                 k == "cffa"   || k == "smartport35");
+
+            if (auto* media = dynamic_cast<pom2::MountableMediaCard*>(p)) {
+                const int nb = media->bayCount();
+                for (int b = 0;
+                     b < nb && b < pom2::SlotManager_ImGui::kMaxBays; ++b) {
+                    const pom2::MediaBayInfo info = media->bayInfo(b);
+                    pom2::SlotManager_ImGui::BaySnapshot bs;
+                    bs.kindLabel          = info.kindLabel;
+                    bs.path               = info.path;
+                    bs.lastError          = info.lastError;
+                    bs.blockCount         = info.blockCount;
+                    bs.loaded             = info.loaded;
+                    bs.writeProtected     = info.writeProtected;
+                    bs.writeBackEnabled   = info.writeBackEnabled;
+                    bs.supportsWriteBack  = info.supportsWriteBack;
+                    bs.supportsTypeSelect = info.supportsTypeSelect;
+                    bs.typeKey            = info.typeKey;
+                    if (info.supportsTypeSelect)
+                        bs.typeOptions = media->bayTypeOptions(b);
+                    ss.bays.push_back(std::move(bs));
+                }
+            }
+        }
+    }
+
+    const auto r =
+        slotManagerPanel->render("Slot Manager", showSlotManager, snap);
+
+    // ── Card-assignment changes → persist + full restart (mirrors the
+    //    Slot Configuration panel's Apply). Snapshot is stale afterwards. ─
+    if (r.applyAssignments) {
+        for (int s = 1; s <= 7; ++s)
+            settings->setString("slot_" + std::to_string(s) + "_card",
+                                r.draftCards[s]);
+        settings->save();
+        restartEmulationFromSettings();
+        return;
+    }
+
+    // ── "Open detailed panel" → flip the matching panel's visibility. ────
+    if (r.openDetailForSlot >= 1 && r.openDetailForSlot <= 7) {
+        const std::string& k = slotCards[r.openDetailForSlot];
+        if      (k == "diskii")      showDiskPanel = true;
+        else if (k == "hdv" || k == "cffa") showHdvPanel = true;
+        else if (k == "smartport35") { showSmartPortPanel = true;
+                                       showDisk35Panel    = true; }
+    }
+
+    // ── Live media actions per bay. The bus is stable here (a restart
+    //    would have returned above), so caching the peripheral pointer is
+    //    safe; each mutating call takes the state mutex. ─────────────────
+    bool dirty = false;
+    SlotBus& bus = controller->memory().slotBus();
+    for (int s = 1; s <= 7; ++s) {
+        SlotPeripheral* p = bus.peripheral(s);
+        auto* media = dynamic_cast<pom2::MountableMediaCard*>(p);
+        if (!media) continue;
+        for (int b = 0; b < pom2::SlotManager_ImGui::kMaxBays; ++b) {
+            const auto& a = r.bays[s][b];
+
+            if (a.typeChanged) {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                media->setBayType(b, a.newType);
+                persistBay(s, b, p);
+                dirty = true;
+                tapeStatusMessage = "Slot " + std::to_string(s) + " unit " +
+                    std::to_string(b) + ": type = " +
+                    (a.newType.empty() ? "(empty)" : a.newType);
+                tapeStatusUntil = lastFrameTime + 3.0;
+                continue;  // type change drops media → skip the rest
+            }
+            if (a.writeBackChanged) {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                media->setBayWriteBack(b, a.writeBackOn);
+                persistBay(s, b, p);
+                dirty = true;
+                tapeStatusMessage = "Slot " + std::to_string(s) +
+                    ": write-back " + (a.writeBackOn ? "ON" : "OFF");
+                tapeStatusUntil = lastFrameTime + 3.0;
+            }
+            if (!a.mountPath.empty()) {
+                std::string err;
+                bool ok = false;
+                {
+                    std::lock_guard<std::mutex> lk(controller->stateMutex());
+                    ok = media->mountBay(b, a.mountPath, err);
+                    if (ok) persistBay(s, b, p);
+                }
+                dirty = dirty || ok;
+                tapeStatusMessage = ok
+                    ? ("Slot " + std::to_string(s) + ": mounted " + a.mountPath)
+                    : ("Slot " + std::to_string(s) + ": mount failed: " + err);
+                tapeStatusUntil = lastFrameTime + 4.0;
+            }
+            if (a.eject) {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                media->ejectBay(b);
+                persistBay(s, b, p);
+                dirty = true;
+                tapeStatusMessage = "Slot " + std::to_string(s) + ": ejected";
+                tapeStatusUntil = lastFrameTime + 3.0;
+            }
+            if (a.boot) {
+                // bootFromSlot runs its own cold boot + PC set; no lock here
+                // (matches the Disk Library / 3.5" panel boot paths).
+                controller->bootFromSlot(s);
+                tapeStatusMessage = "Booting slot " + std::to_string(s);
+                tapeStatusUntil = lastFrameTime + 3.0;
+            }
+        }
+    }
+    if (dirty) settings->save();
 }

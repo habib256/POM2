@@ -35,6 +35,9 @@
 #include "SmartPort35Unit.h"
 #include "SmartPortHdvUnit.h"
 #include "SmartPortUnit.h"
+#include "FloppyEmuDevice.h"
+#include "FloppyEmu_ImGui.h"
+#include "SlotManager_ImGui.h"
 #include "SmartPort_ImGui.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
@@ -75,6 +78,9 @@ MainWindow::MainWindow(bool forceIIPlus)
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
       smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
+      slotManagerPanel(std::make_unique<pom2::SlotManager_ImGui>()),
+      floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
+      floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
@@ -246,6 +252,34 @@ MainWindow::MainWindow(bool forceIIPlus)
         showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
         showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
+        showSlotManager    = settings->getBool ("show_slot_manager", showSlotManager);
+        showFloppyEmu      = settings->getBool ("show_floppy_emu", showFloppyEmu);
+        // Floppy Emu: restore the emulation mode + SD-card root (its NVRAM).
+        {
+            pom2::FloppyEmuMode fm;
+            if (pom2::FloppyEmuDevice::modeFromKey(
+                    settings->getString("floppyemu_mode", "smartporthd"), fm))
+                floppyEmu->setMode(fm);
+            std::string sd = settings->getString("floppyemu_sd_root", "");
+            if (sd.empty()) {
+                // The Floppy Emu owns a DEDICATED 'floppyemu/' folder — its
+                // virtual SD card, kept separate from the Disk Library's
+                // disks/ ・ disks35/ ・ hdv/. Probe the usual cwd anchors and,
+                // if none exists, create it so there's always a clear place
+                // to drop images.
+                namespace fs = std::filesystem;
+                std::error_code ec;
+                for (const char* c : { "floppyemu", "../floppyemu",
+                                       "../../floppyemu" }) {
+                    if (fs::is_directory(c, ec)) { sd = c; break; }
+                }
+                if (sd.empty()) {
+                    fs::create_directories("floppyemu", ec);
+                    sd = "floppyemu";
+                }
+            }
+            floppyEmu->setSdRoot(sd);
+        }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
         showToolbar        = settings->getBool ("show_toolbar",    showToolbar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
@@ -489,6 +523,11 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_disk_library", showDiskLibrary);
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
     settings->setBool  ("show_smartport_panel", showSmartPortPanel);
+    settings->setBool  ("show_slot_manager", showSlotManager);
+    settings->setBool  ("show_floppy_emu", showFloppyEmu);
+    settings->setString("floppyemu_mode",
+                        pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
+    settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
     settings->setBool  ("show_toolbar",    showToolbar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
@@ -603,17 +642,22 @@ void MainWindow::plugSlotsFromSettings()
     }
 
     // Validate uniqueness — each card type plugs into at most one slot.
-    // Exception: "diskii" is allowed in multiple slots (option C 2026-05-15:
-    // historical //e configurations could carry DiskII slot 6 + DiskII slot 4
-    // for 4 drives 5.25" total). Every other card type stays single-instance
-    // because its driver, ROM signature, or settings keys assume exclusivity.
+    // Exceptions (multi-instance): "diskii" (option C 2026-05-15: //e configs
+    // carried DiskII slot 6 + slot 4 for 4 drives), and — since the Slot
+    // Manager can drive several of each — "cffa" and "smartport35", whose
+    // persistence is already per-slot (cffa_slotN_*, smartport_slotN_*). The
+    // rest stay single-instance because their driver / ROM signature / global
+    // settings keys assume exclusivity ("hdv" uses the global hdv_path key).
+    auto multiInstance = [](const std::string& k) -> bool {
+        return k == "diskii" || k == "cffa" || k == "smartport35";
+    };
     auto firstOccurrence = [&](const std::string& type) -> int {
         for (int s = 1; s <= 7; ++s) if (slotCards[s] == type) return s;
         return -1;
     };
     for (int s = 1; s <= 7; ++s) {
         if (slotCards[s].empty())  continue;
-        if (slotCards[s] == "diskii") continue;       // multi-instance OK
+        if (multiInstance(slotCards[s])) continue;    // multi-instance OK
         const int first = firstOccurrence(slotCards[s]);
         if (first != s) {
             pom2::log().warn("Slots",
@@ -716,7 +760,7 @@ void MainWindow::plugSlotsFromSettings()
             hdvStatus = "no image mounted";
         }
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
-        hdvCard = card.get();
+        if (!hdvCard) hdvCard = card.get();   // primary = lowest slot
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -760,7 +804,7 @@ void MainWindow::plugSlotsFromSettings()
                 pom2::log().warn("CFFA", "Re-mount failed: " + card->getLastError());
         }
         card->setWriteBackEnabled(settings->getBool(key + "_writeback", false));
-        cffaCard = card.get();
+        if (!cffaCard) cffaCard = card.get();   // primary = lowest slot
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -885,7 +929,7 @@ void MainWindow::plugSlotsFromSettings()
             }
             card->setUnit(k, std::move(unit));
         }
-        smartPortCard = card.get();
+        if (!smartPortCard) smartPortCard = card.get();   // primary = lowest slot
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1357,12 +1401,14 @@ void MainWindow::renderMenuBar()
             ImGui::EndMenu();
         }
         ImGui::Separator();
+        ImGui::MenuItem("Slot Manager...", nullptr, &showSlotManager);
         ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Devices")) {
         ImGui::MenuItem("Disk Library (all formats)",    nullptr, &showDiskLibrary);
+        ImGui::MenuItem("Floppy Emu (BMOW)",             nullptr, &showFloppyEmu);
         ImGui::Separator();
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
         ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
@@ -3132,6 +3178,225 @@ void MainWindow::renderSmartPortPanelWindow()
     if (dirtySettings) settings->save();
 }
 
+void MainWindow::renderFloppyEmuWindow()
+{
+    if (!showFloppyEmu) return;
+    namespace fs = std::filesystem;
+    using Mode = pom2::FloppyEmuMode;
+    const Mode mode = floppyEmu->mode();
+
+    auto baseName = [](const std::string& p) {
+        return fs::path(p).filename().string();
+    };
+    auto human = [](uint64_t b) -> std::string {
+        if (b == 0)              return std::string();
+        if (b >= 1024 * 1024)    return std::to_string(b / (1024 * 1024)) + "M";
+        if (b >= 1024)           return std::to_string(b / 1024) + "K";
+        return std::to_string(b) + "B";
+    };
+    // Live-plug a SmartPort (Liron-class) card into a free slot, mirroring
+    // ensureHdvCardForBoot — the empty slot means no card destructor races
+    // the worker, so a held lock suffices (no stop/start). Returns slot/-1.
+    auto ensureSmartPort = [&]() -> int {
+        if (smartPortCard) return smartPortCard->getSlot();
+        SlotBus& bus = controller->memory().slotBus();
+        int slot = (!bus.isPlugged(5)) ? 5 : -1;
+        if (slot < 0)
+            for (int s = 7; s >= 1; --s)
+                if (!bus.isPlugged(s)) { slot = s; break; }
+        if (slot < 0) return -1;
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto card = std::make_unique<pom2::SmartPortCard>(slot);
+        card->setFloppySound(&controller->floppySound35());
+        smartPortCard = card.get();
+        controller->memory().slotBus().plug(slot, std::move(card));
+        slotCards[slot] = "smartport35";
+        pom2::log().info("FloppyEmu",
+            "auto-plugged SmartPort card in slot " + std::to_string(slot));
+        return slot;
+    };
+    auto controllerReady = [&](Mode m) -> bool {
+        switch (m) {
+            case Mode::Disk525:   return diskCard != nullptr;
+            case Mode::Disk35:
+            case Mode::Unidisk35: return smartPortCard != nullptr ||
+                                         activeProfile == pom2::SystemProfile::AppleIIcPlus;
+            case Mode::SmartportHD: return hdvDevice() != nullptr ||
+                                           smartPortCard != nullptr;
+        }
+        return false;
+    };
+    auto controllerHint = [&](Mode m) -> std::string {
+        switch (m) {
+            case Mode::Disk525:
+                return "No Disk II controller — add 'Disk II' in the Slot Manager.";
+            case Mode::Disk35:
+            case Mode::Unidisk35:
+                return "No SmartPort/Liron controller for 3.5\" media.";
+            case Mode::SmartportHD:
+                return "No SmartPort or HDV controller for hard-disk media.";
+        }
+        return std::string();
+    };
+    auto insertedLabel = [&](Mode m) -> std::string {
+        switch (m) {
+            case Mode::Disk525:
+                return (diskCard && diskCard->isDiskLoaded())
+                           ? baseName(diskCard->getDiskPath()) : std::string();
+            case Mode::Disk35:
+            case Mode::Unidisk35:
+                if (smartPortCard) {
+                    const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+                    return (u && u->isLoaded()) ? baseName(u->path()) : std::string();
+                }
+                return controller->disk35Internal().isLoaded()
+                           ? baseName(controller->disk35Internal().path())
+                           : std::string();
+            case Mode::SmartportHD:
+                if (pom2::ProDOSBlockCard* dev = hdvDevice())
+                    return dev->isImageLoaded() ? baseName(dev->getImagePath())
+                                                : std::string();
+                if (smartPortCard) {
+                    const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+                    return (u && u->isLoaded()) ? baseName(u->path()) : std::string();
+                }
+                return std::string();
+        }
+        return std::string();
+    };
+    auto mountImage = [&](const std::string& path, Mode m) {
+        std::string err;
+        int bootSlot = 0;
+        switch (m) {
+            case Mode::Disk525:
+                if (!diskCard) { floppyEmuStatus = controllerHint(m); break; }
+                if (diskCard->insertDisk(path))
+                    floppyEmuStatus = "Inserted " + baseName(path) +
+                        " — reboot the Apple II to boot it.";
+                else
+                    floppyEmuStatus = "5.25 mount failed: " + baseName(path);
+                break;
+            case Mode::Disk35:
+            case Mode::Unidisk35:
+                if (!controllerReady(m)) ensureSmartPort();
+                floppyEmuStatus = routeMount35(0, path, err)
+                    ? ("3.5\" mounted: " + baseName(path))
+                    : ("3.5\" mount failed: " + err);
+                break;
+            case Mode::SmartportHD:
+                if (!controllerReady(m)) ensureSmartPort();
+                floppyEmuStatus = routeMountHdv(path, bootSlot, err)
+                    ? ("Smartport mounted: " + baseName(path))
+                    : ("Smartport mount failed: " + err);
+                break;
+        }
+    };
+    auto ejectCurrent = [&](Mode m) {
+        switch (m) {
+            case Mode::Disk525: {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                if (diskCard) diskCard->ejectDisk();
+                break;
+            }
+            case Mode::Disk35:
+            case Mode::Unidisk35:
+                if (smartPortCard) {
+                    std::lock_guard<std::mutex> lk(controller->stateMutex());
+                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) u->eject();
+                } else {
+                    controller->eject35(0);  // re-locks the state mutex itself
+                }
+                break;
+            case Mode::SmartportHD: {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                if (pom2::ProDOSBlockCard* dev = hdvDevice()) dev->ejectImage();
+                else if (smartPortCard) {
+                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) u->eject();
+                }
+                break;
+            }
+        }
+        floppyEmuStatus = "Ejected";
+    };
+
+    // ── Build the snapshot. ──────────────────────────────────────────────
+    pom2::FloppyEmu_ImGui::Snapshot snap;
+    snap.modeLabel = pom2::FloppyEmuDevice::modeLabel(mode);
+    snap.sdPresent = floppyEmu->sdPresent();
+    snap.sdRootDisplay = floppyEmu->sdRoot();
+    {
+        const std::string cur = floppyEmu->currentDir();
+        const std::string root = floppyEmu->sdRoot();
+        snap.dirLabel = (cur.size() >= root.size() &&
+                         cur.compare(0, root.size(), root) == 0)
+                            ? cur.substr(root.size()) : cur;
+    }
+    const auto fav = floppyEmu->favorites();
+    snap.favoritesAvailable = fav.present;
+    snap.favoritesActive    = floppyEmuFavActive_ && fav.present;
+    if (snap.favoritesActive) {
+        for (const auto& e : fav.entries) {
+            pom2::FloppyEmu_ImGui::Item it;
+            it.label = e.name; it.sublabel = human(e.sizeBytes);
+            snap.items.push_back(std::move(it));
+        }
+    } else {
+        for (const auto& e : floppyEmu->listing()) {
+            pom2::FloppyEmu_ImGui::Item it;
+            it.label = e.name; it.isDir = e.isDir; it.isUp = e.isUp;
+            it.sublabel = e.isDir ? "DIR" : human(e.sizeBytes);
+            snap.items.push_back(std::move(it));
+        }
+    }
+    snap.controllerReady = controllerReady(mode);
+    snap.controllerHint  = controllerHint(mode);
+    snap.insertedLabel   = insertedLabel(mode);
+    snap.statusLine      = floppyEmuStatus;
+    for (Mode m : pom2::FloppyEmuDevice::allModes()) {
+        snap.modeOptions.push_back(pom2::FloppyEmuDevice::modeLabel(m));
+        if (m == mode) snap.currentModeIndex =
+            static_cast<int>(snap.modeOptions.size()) - 1;
+    }
+
+    const auto r = floppyEmuPanel->render("Floppy Emu (BMOW)", showFloppyEmu, snap);
+
+    // ── Apply actions. ───────────────────────────────────────────────────
+    if (r.setModeIndex >= 0) {
+        const auto modes = pom2::FloppyEmuDevice::allModes();
+        if (r.setModeIndex < static_cast<int>(modes.size())) {
+            floppyEmu->setMode(modes[r.setModeIndex]);
+            floppyEmuFavActive_ = false;
+            floppyEmuStatus = std::string("Mode: ") +
+                pom2::FloppyEmuDevice::modeLabel(modes[r.setModeIndex]);
+        }
+    }
+    if (r.toggleFavorites) floppyEmuFavActive_ = !floppyEmuFavActive_;
+    if (r.requestConfigureController) {
+        if (mode == Mode::Disk525)
+            floppyEmuStatus = "Add a Disk II card via the Slot Manager (Apply restarts).";
+        else {
+            const int s = ensureSmartPort();
+            floppyEmuStatus = (s >= 0)
+                ? ("Added SmartPort card in slot " + std::to_string(s))
+                : "No free slot for a SmartPort card.";
+        }
+    }
+    if (r.requestEject) ejectCurrent(mode);
+    if (r.activateIndex >= 0) {
+        if (snap.favoritesActive) {
+            if (r.activateIndex < static_cast<int>(fav.entries.size()))
+                mountImage(fav.entries[r.activateIndex].fullPath, mode);
+        } else {
+            const auto items = floppyEmu->listing();
+            if (r.activateIndex < static_cast<int>(items.size())) {
+                const auto& e = items[r.activateIndex];
+                if (e.isDir || e.isUp) floppyEmu->enterDir(e);
+                else                   mountImage(e.fullPath, mode);
+            }
+        }
+    }
+}
+
 void MainWindow::renderHdvPanelWindow()
 {
     if (!showHdvPanel) return;
@@ -4191,5 +4456,7 @@ void MainWindow::render()
     renderAudioMixerWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
+    renderSlotManagerWindow();
+    renderFloppyEmuWindow();
     renderAboutDialog();
 }

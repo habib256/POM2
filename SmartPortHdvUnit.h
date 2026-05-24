@@ -2,29 +2,30 @@
 // Copyright (C) 2026
 //
 // SmartPortHdvUnit — block-level ProDOS HDV / 2MG image as a `SmartPortUnit`.
-// Independent of `ProDOSHardDiskCard` (which wires its own slot ROM); this
-// unit only handles the byte store + dirty tracking + load/save so it
-// can plug into a `SmartPortCard` chain alongside 3.5" units.
+// A thin adapter over the shared `pom2::Block512Backing` (the same store the
+// HDV-class cards use), so the 2IMG envelope parsing, dirty tracking, medium
+// write-protect, and host-file write-back live in ONE tested place rather
+// than being re-implemented per consumer. This unit only maps the
+// SmartPortUnit interface onto that store so it can plug into a SmartPortCard
+// chain alongside 3.5" units.
 //
 // Supports:
 //   * Raw .hdv  — whole file is a stream of 512-byte ProDOS blocks
 //   * .2mg      — 64-byte 2IMG header + ProDOS block data (format must = 1)
 //
 // Hard caps: ≥ 1 block, ≤ 65536 blocks (32 MB ProDOS-8 ceiling). The 2MG
-// write-back path preserves the original header verbatim (in-place rewrite
-// of dirty blocks only — no truncation / regeneration). Synth-from-folder
-// volumes are not supported here; for that, plug a separate
+// write-back path preserves the original header verbatim. Synth-from-folder
+// volumes are deliberately NOT exposed here; for that, plug a separate
 // `ProDOSHardDiskCard` (which keeps the existing `prodos_disk/` UX).
 
 #ifndef POM2_SMARTPORT_HDV_UNIT_H
 #define POM2_SMARTPORT_HDV_UNIT_H
 
+#include "Block512Backing.h"
 #include "SmartPortUnit.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace pom2 {
 
@@ -40,38 +41,28 @@ public:
     std::string_view kindKey()   const override { return kKindKey; }
     std::string_view kindLabel() const override { return kKindLabel; }
 
-    bool     isLoaded()         const override { return loaded_; }
+    bool     isLoaded()         const override { return backing_.isLoaded(); }
     // Reflects ONLY the real medium WP flag (2MG header), not the host-file
-    // write-back preference — so ProDOS sees a read/write volume by default
-    // and games that write state on the fly don't hit a spurious WP error.
-    // Persisting RAM writes to the file is the separate writeBackEnabled_
-    // opt-in (see writeBlock / saveDirty). Mirrors ProDOSHardDiskCard.
-    bool     isWriteProtected() const override { return writeProtectedHeader_; }
+    // write-back preference — so ProDOS sees a read/write volume by default.
+    // Persisting RAM writes to the file is the separate write-back opt-in.
+    bool     isWriteProtected() const override { return backing_.isWriteProtected(); }
     uint32_t blockCount() const override {
-        return static_cast<uint32_t>(image_.size() / kBlockBytes);
+        return static_cast<uint32_t>(backing_.blockCount());
     }
     bool     readBlock (uint32_t idx, uint8_t* out) const override;
     bool     writeBlock(uint32_t idx, const uint8_t* in) override;
 
     bool     loadImage(const std::string& path) override;
     void     eject() override;
-    const std::string& path()      const override { return path_; }
-    const std::string& lastError() const override { return lastError_; }
+    const std::string& path()      const override { return backing_.path(); }
+    const std::string& lastError() const override { return backing_.lastError(); }
 
-    bool     isWriteBackEnabled() const override { return writeBackEnabled_; }
-    void     setWriteBackEnabled(bool on) override { writeBackEnabled_ = on; }
-    bool     saveDirty() override;
+    bool     isWriteBackEnabled() const override { return backing_.isWriteBackEnabled(); }
+    void     setWriteBackEnabled(bool on) override { backing_.setWriteBackEnabled(on); }
+    bool     saveDirty() override { return backing_.saveDirty(); }
 
 private:
-    std::vector<uint8_t> image_;                  // 512-byte block stream
-    std::vector<bool>    dirtyBlocks_;
-    std::size_t          dataOffset_           = 0;   // bytes before block 0 in source file
-    bool                 loaded_               = false;
-    bool                 anyDirty_             = false;
-    bool                 writeBackEnabled_     = false;
-    bool                 writeProtectedHeader_ = false;
-    std::string          path_;
-    std::string          lastError_;
+    Block512Backing backing_;
 };
 
 } // namespace pom2
