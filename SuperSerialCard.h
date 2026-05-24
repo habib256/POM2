@@ -110,6 +110,12 @@ public:
     /// worker thread which calls the same method internally.
     void deliverRxBytes(const uint8_t* data, size_t n);
 
+    /// Telnet RX line-ending normaliser (drop NUL, CR LF → CR, LF → CR).
+    /// Public + static so it is unit-testable in isolation; the RX worker
+    /// calls it on every non-raw inbound chunk. Mutates `data` in place,
+    /// returns the new length. RFC 854: a bare CR arrives as CR NUL.
+    static size_t normalizeLineEndings(uint8_t* data, size_t n);
+
     // Test/debug introspection — read-only reflection of the decoded
     // command/control register state.
     double  bytesPerSecond() const { return bytesPerSecond_; }

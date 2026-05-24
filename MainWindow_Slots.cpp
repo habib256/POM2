@@ -267,7 +267,7 @@ void MainWindow::setGlfwWindow(GLFWwindow* w)
     // reflect the active machine otherwise.
     if (window) {
         const auto& cfg = pom2::profileConfig(activeProfile);
-        std::string title = "POM2 v0.5 — ";
+        std::string title = "POM2 v0.6 — ";
         title.append(cfg.displayName);
         glfwSetWindowTitle(window, title.c_str());
     }
@@ -484,7 +484,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //     Skipped when called from the constructor (window not yet set
     //     by main.cpp's setGlfwWindow).
     if (window) {
-        std::string title = "POM2 v0.5 — ";
+        std::string title = "POM2 v0.6 — ";
         title.append(cfg.displayName);
         glfwSetWindowTitle(window, title.c_str());
     }

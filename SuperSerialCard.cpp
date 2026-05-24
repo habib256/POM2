@@ -76,34 +76,37 @@ size_t swallowTelnetIac(uint8_t* data, size_t n)
     return w;
 }
 
-// Line-ending normalisation for telnet-sourced RX: a stock telnet
-// client sends CR LF on ENTER and bare LF on some line-mode tools,
-// but Apple II expects CR alone. POM2 used to apply this only at the
-// keyboard-sink forwarding step (PR#2 path) and leave rxBuf raw — so
-// terminal apps reading via $C0A8 saw CRLF pairs and stranded LFs.
-// Applying once here on RX symmetrises the two consumers.
-// Transformations in order:
-//   * drop NUL ($00) — telnet's standalone LF line terminator on some
-//     clients pads with NULs the Apple II shouldn't see.
+// normalizeLineEndings moved to a public static member (see header) so it
+// can be unit-tested directly; definition follows the anonymous namespace.
+
+}  // namespace
+
+// Line-ending normalisation for telnet-sourced RX: a stock telnet client
+// sends CR LF on ENTER and bare LF on some line-mode tools, but the Apple
+// II expects CR alone. Applying once here on RX symmetrises the rxBuf and
+// keyboard-sink consumers.
+// Transformations:
+//   * drop NUL ($00) FIRST — per RFC 854 a telnet client transmits a bare
+//     carriage return as the two-byte sequence CR NUL. The NUL must be
+//     dropped before it can touch `prevCR`; otherwise the CR-state is lost
+//     and a following LF (CR NUL LF) is wrongly emitted as a second CR.
 //   * collapse CR LF → CR (strip the LF after a CR).
 //   * map bare LF → CR.
 // Buffer mutated in place, returns new length.
-size_t normalizeLineEndings(uint8_t* data, size_t n)
+size_t SuperSerialCard::normalizeLineEndings(uint8_t* data, size_t n)
 {
     size_t w = 0;
     bool prevCR = false;
     for (size_t r = 0; r < n; ++r) {
         uint8_t c = data[r];
+        if (c == 0) continue;                       // drop NUL before prevCR
         if (c == '\n' && prevCR) { prevCR = false; continue; }
         prevCR = (c == '\r');
         if (c == '\n') c = '\r';
-        if (c == 0)    continue;
         data[w++] = c;
     }
     return w;
 }
-
-}  // namespace
 
 SuperSerialCard::SuperSerialCard(int slotNum)
     : slot(slotNum)

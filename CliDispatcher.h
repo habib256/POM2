@@ -50,9 +50,10 @@ enum class CliDisplayMode {
 /// Phase A boot.
 enum class CliPreset {
     Default,
-    AppleII,        // → pom2::SystemProfile::AppleII
-    AppleIIPlus,    // → pom2::SystemProfile::AppleIIPlus
-    AppleIIe,       // → pom2::SystemProfile::AppleIIe
+    AppleII,            // → pom2::SystemProfile::AppleII
+    AppleIIPlus,        // → pom2::SystemProfile::AppleIIPlus
+    AppleIIeUnenhanced, // → pom2::SystemProfile::AppleIIeUnenhanced (1983 NMOS)
+    AppleIIe,           // → pom2::SystemProfile::AppleIIe
     AppleIIc,       // → pom2::SystemProfile::AppleIIc
     AppleIIcPlus,   // → pom2::SystemProfile::AppleIIcPlus
 };

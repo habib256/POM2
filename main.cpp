@@ -317,6 +317,8 @@ int main(int argc, char* argv[])
         switch (plan->preset) {
             case pom2::CliPreset::AppleII:      sp = pom2::SystemProfile::AppleII;      break;
             case pom2::CliPreset::AppleIIPlus:  sp = pom2::SystemProfile::AppleIIPlus;  break;
+            case pom2::CliPreset::AppleIIeUnenhanced:
+                                                sp = pom2::SystemProfile::AppleIIeUnenhanced; break;
             case pom2::CliPreset::AppleIIe:     sp = pom2::SystemProfile::AppleIIe;     break;
             case pom2::CliPreset::AppleIIc:     sp = pom2::SystemProfile::AppleIIc;     break;
             case pom2::CliPreset::AppleIIcPlus: sp = pom2::SystemProfile::AppleIIcPlus; break;
@@ -368,6 +370,16 @@ int main(int argc, char* argv[])
     }
     auto mount35Cli = [&](int idx, const std::string& path, const char* flag) {
         if (path.empty()) return;
+        // Documented contract: --35-disk1/2 drive the //c+ on-board Sony 3.5"
+        // hub, which only exists on the //c+ profile. On any other profile
+        // mount35() would silently write into a hub the machine can't read,
+        // so warn and ignore (CliDispatcher.h). Slot SmartPort 3.5" cards on
+        // //e/II+ are mounted through the GUI/Library, not this flag.
+        if (mainWindow.currentProfile() != pom2::SystemProfile::AppleIIcPlus) {
+            pom2::log().warn("CLI", std::string(flag) +
+                " ignored: 3.5\" disks require the //c+ profile (--preset iic+)");
+            return;
+        }
         if (mainWindow.emul().mount35(idx, path)) {
             pom2::log().info("CLI", std::string(flag) + " mounted: " + path);
         } else {

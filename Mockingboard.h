@@ -192,6 +192,9 @@ private:
     uint32_t viaWriteCount_[2] = {0, 0};
     uint32_t ayWriteCount_[2]  = {0, 0};
     uint32_t ayResetCount_[2]  = {0, 0};
+    // Bumped on every write to R13 (envelope shape) so the audio thread can
+    // restart the envelope even when the shape value is unchanged.
+    uint32_t ayEnvWriteCount_[2] = {0, 0};
 
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot

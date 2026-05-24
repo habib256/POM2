@@ -396,9 +396,14 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
         rsh_ = 0;
     }
 
-    // Asynchronous mode update scheduling (MAME line 246-247).
+    // Asynchronous mode update scheduling (MAME line 246-247). MAME's `14`
+    // is in IWM-clock ticks (= half a default 28-tick window); POM2 runs the
+    // FSM on the CPU clock and scales every window constant by /7 (see
+    // windowSize / halfWindowSize / readRegisterUpdateDelay). This one was
+    // left raw — 14/7 = 2 — so the async "data goes stale → 0" timer fired
+    // ~7× late on 3.5" async reads.
     if (active_ && !(control_ & 0x80) && !isSync() && (data_ & 0x80)) {
-        asyncUpdate_ = lastSync_ + 14;
+        asyncUpdate_ = lastSync_ + 2;
     }
 
     // Mode register / data register write (MAME line 248-254).
@@ -698,7 +703,7 @@ void IWMDevice::sync(uint64_t nowCycles)
                         if (mode_ & 0x02) {
                             rwState_         = SW_WINDOW_LOAD;
                             rwBitCount_      = 8;
-                            nextStateChange_ = lastSync_ + 7;
+                            nextStateChange_ = lastSync_ + 1;  // MAME 7 / 7
                         } else {
                             wsh_             = data_;
                             rwState_         = SW_WINDOW_MIDDLE;
@@ -727,7 +732,11 @@ void IWMDevice::sync(uint64_t nowCycles)
                             wsh_             = data_;
                             rwState_         = SW_WINDOW_MIDDLE;
                             whd_            |= 0x80;
-                            nextStateChange_ = lastSync_ + halfWindowSize() - 7;
+                            // MAME `half_window_size() - 7`; both terms are in
+                            // IWM ticks. POM2 scaled halfWindowSize() by /7 but
+                            // left the 7 raw → halfWindowSize()∈{1,2} - 7
+                            // underflowed in uint64_t. 7/7 = 1.
+                            nextStateChange_ = lastSync_ + halfWindowSize() - 1;
                         }
                         break;
                     case SW_WINDOW_MIDDLE:
@@ -749,7 +758,7 @@ void IWMDevice::sync(uint64_t nowCycles)
                             if (rwBitCount_ == 0) {
                                 rwState_         = SW_WINDOW_LOAD;
                                 rwBitCount_      = 8;
-                                nextStateChange_ = lastSync_ + 7;
+                                nextStateChange_ = lastSync_ + 1;  // MAME 7 / 7
                             } else {
                                 rwState_         = SW_WINDOW_MIDDLE;
                                 nextStateChange_ = lastSync_ + halfWindowSize();

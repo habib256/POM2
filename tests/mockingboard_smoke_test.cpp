@@ -220,6 +220,54 @@ void testAyAudioSynthesis()
     assert(sumSq == 0.0);
 }
 
+// ─── Test 5b: envelope restarts on a same-value R13 write ────────────────
+void testEnvelopeRetriggerOnSameShape()
+{
+    MockingboardCard card(4);
+    card.setSampleRate(44100);
+    card.setVolume(1.0f);
+    card.setMuted(false);
+
+    // Channel A amplitude = envelope mode (R8 bit4); disable tone+noise so
+    // the channel emits only the envelope level. The Mockingboard output is
+    // AC-coupled (DC blocked, like the real card's output cap), so a steady
+    // level is inaudible — what shows up is the ramp TRANSIENT. Shape 0
+    // (\___): ramp 15→0 once, then HOLD at 0. Fast period so the ramp
+    // completes well inside one 4096-sample buffer.
+    ayWrite(card, 0, 7,  0x3F);    // R7: all tone + noise disabled
+    ayWrite(card, 0, 8,  0x10);    // R8: chan A use-envelope
+    ayWrite(card, 0, 11, 0x01);    // R11: envelope period low
+    ayWrite(card, 0, 12, 0x00);    // R12: envelope period high
+    ayWrite(card, 0, 13, 0x00);    // R13: shape 0
+
+    AudioSource* src = card.audioSource();
+    constexpr int N = 4096;
+    std::vector<float> buf(N);
+
+    auto rms = [&](int from, int to) {
+        double s = 0; for (int i = from; i < to; ++i) s += double(buf[i]) * buf[i];
+        return std::sqrt(s / (to - from));
+    };
+
+    // Buffer 1: envelope ramps down (a transient) then holds at 0 (silence).
+    src->fillAudioBuffer(buf.data(), N);
+    const double buf1Head = rms(0, N / 4);
+    assert(buf1Head > 0.002);            // initial ramp produced a transient
+    assert(rms(3 * N / 4, N) < 0.0005);  // then held at 0 (DC → silence)
+
+    // Re-write R13 with the SAME shape value. A real AY-3-8910 restarts the
+    // envelope on ANY R13 write; the bug only restarted on a changed value
+    // (so buffer 2 would stay held at 0).
+    ayWrite(card, 0, 13, 0x00);
+
+    // Buffer 2: the retrigger must reproduce the initial ramp transient.
+    src->fillAudioBuffer(buf.data(), N);
+    const double buf2Head = rms(0, N / 4);
+    assert(buf2Head > 0.5 * buf1Head);   // retriggered (bug → ~0)
+
+    std::printf("  ok: envelope retriggers on same-value R13 write\n");
+}
+
 // ─── Test 6: Reset clears VIA + AY state ─────────────────────────────────
 void testReset()
 {
@@ -250,6 +298,8 @@ int main()
     testT1IrqContinuous();      std::printf("T1 IRQ continuous ..... OK\n");
     testT1IrqOneShot();         std::printf("T1 IRQ one-shot ....... OK\n");
     testAyAudioSynthesis();     std::printf("AY audio synthesis .... OK\n");
+    testEnvelopeRetriggerOnSameShape();
+                                std::printf("envelope retrigger .... OK\n");
     testReset();                std::printf("reset ................. OK\n");
     std::printf("Mockingboard smoke test passed.\n");
     return 0;

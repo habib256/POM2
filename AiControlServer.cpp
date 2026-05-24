@@ -880,6 +880,13 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
         w.endSection(h);
     }
     w.writeSection("MEM", ctrl_->memory().data(), 0x10000);
+    // MEX (v2): aux RAM + Language-Card RAM + RamWorks banks + paging
+    // soft-switches + DisplayState — everything the MEM main-64K misses.
+    {
+        std::vector<uint8_t> mex;
+        ctrl_->memory().appendSnapshotState(mex);
+        w.writeSection("MEX", mex.data(), mex.size());
+    }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
@@ -912,20 +919,25 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
             const uint8_t  p  = r.readU8();
             const uint8_t  sp = r.readU8();
             const uint8_t  cpuMode = r.readU8();
-            // cycles read but currently no public setter — track for parity
-            // but ignore on load for now (cycleCounter is only consulted by
-            // paddle RC math; resetting it briefly is harmless).
-            (void)r.readU64();
+            const uint64_t cycles  = r.readU64();
             cpu.setProgramCounter(pc);
             cpu.setCpuMode(cpuMode ? M6502::CpuMode::CMOS : M6502::CpuMode::NMOS);
-            // A/X/Y/P/SP setters are not exposed; the snapshot's CPU
-            // section is therefore informational on the round-trip for
-            // those four — the file still records them so a future
-            // M6502 setter API lights up the path without a format bump.
-            (void)a; (void)x; (void)y; (void)p; (void)sp;
+            cpu.setAccumulator(a);
+            cpu.setXRegister(x);
+            cpu.setYRegister(y);
+            cpu.setStatusRegister(p);
+            cpu.setStackPointer(sp);
+            mem.setCycleCounter(cycles);
         } else if (name == "MEM" && len == 0x10000) {
-            uint8_t* dst = mem.dataMutable();
-            r.readBytes(dst, 0x10000);
+            // Restore the main 64 KB through writable[] so the ROM mirror in
+            // $C000-$FFFF isn't clobbered (LC RAM is restored via MEX).
+            std::vector<uint8_t> buf(0x10000);
+            r.readBytes(buf.data(), buf.size());
+            mem.restoreMainRam(buf.data(), buf.size());
+        } else if (name == "MEX") {
+            std::vector<uint8_t> buf(len);
+            if (len) r.readBytes(buf.data(), len);
+            mem.loadSnapshotState(buf.data(), len);
         } else {
             r.skipCurrentSection();
         }

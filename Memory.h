@@ -117,6 +117,11 @@ public:
     void setTestMode(bool enabled) { testMode = enabled; }
     bool isTestMode() const        { return testMode; }
 
+    /// Test/debug accessor for the current floating-bus byte (the value an
+    /// undriven soft-switch read returns). Wraps the private floatingBus()
+    /// so unit tests can pin the video-scanner address logic.
+    uint8_t peekFloatingBus() const { return floatingBus(); }
+
     // CPU bus interface (called from M6502).
     uint8_t memRead(uint16_t addr);
     void    memWrite(uint16_t addr, uint8_t value);
@@ -314,6 +319,23 @@ public:
     // the cassette device too (so its pulse advance stays cycle-aligned).
     void advanceCycles(int cycles);
     uint64_t getCycleCounter() const { return cycleCounter; }
+    void     setCycleCounter(uint64_t c) { cycleCounter = c; }
+
+    // ── Snapshot state (de)serialization ────────────────────────────────
+    // The main 64 KB (mem) is the caller's "MEM" section; these cover
+    // everything else that defines the machine's memory state: aux RAM,
+    // Language-Card RAM (main + aux), RamWorks banks, the IIe paging
+    // soft-switches (iieMemMode), the LC latch flags, and DisplayState.
+    /// Append a self-describing, versioned blob of the extended state.
+    void appendSnapshotState(std::vector<uint8_t>& out);
+    /// Restore extended state from a blob produced by appendSnapshotState.
+    /// Parses defensively (returns false on a malformed/short buffer) and
+    /// best-effort on a RamWorks bank-count mismatch.
+    bool loadSnapshotState(const uint8_t* data, size_t n);
+    /// Restore the main 64 KB honouring writable[] so ROM/I-O regions are
+    /// not clobbered (the snapshot records the full 64 KB incl. the ROM
+    /// mirror, but only RAM cells should be written back).
+    void restoreMainRam(const uint8_t* data, size_t n);
 
     // $C0xx I/O read tracer (POM2_TRACE_HANG diagnostics). Records recent
     // soft-switch / slot-register read addresses so a frozen poll loop can be

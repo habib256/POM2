@@ -98,6 +98,54 @@ void testNoArgsCleanPlan()
     assert(p->bootDiskPath.empty());
 }
 
+void testAddrParsingHex()
+{
+    // Bare addresses are HEX (Apple II convention): "2000" → $2000,
+    // "0300" → $0300. "$"/"0x" prefixes also hex. (R3-#1)
+    bool help = false;
+    auto p = parse({"POM2", "--load", "2000:dummy.bin", "--run", "0300"}, help);
+    assert(p.has_value());
+    assert(p->deferredActions.size() == 2);
+    assert(p->deferredActions[0].kind == pom2::CliAction::Kind::Load);
+    assert(p->deferredActions[0].addressI == 0x2000);
+    assert(p->deferredActions[0].pathS == "dummy.bin");
+    assert(p->deferredActions[1].kind == pom2::CliAction::Kind::Run);
+    assert(p->deferredActions[1].addressI == 0x0300);
+
+    assert(parse({"POM2", "--run", "768"},   help)->deferredActions[0].addressI == 0x768);
+    assert(parse({"POM2", "--run", "$4000"}, help)->deferredActions[0].addressI == 0x4000);
+    assert(parse({"POM2", "--run", "0xC0"},  help)->deferredActions[0].addressI == 0x00C0);
+    assert(parse({"POM2", "--run", "FFFF"},  help)->deferredActions[0].addressI == 0xFFFF);
+}
+
+void testAddrParsingRejectsGarbage()
+{
+    // Trailing garbage and out-of-range must be rejected (not silently
+    // truncated to a partial parse). (R3-#2)
+    bool help = false;
+    assert(!parse({"POM2", "--run",  "12ZZ"}, help).has_value());
+    assert(!parse({"POM2", "--run",  "3G"},   help).has_value());
+    assert(!parse({"POM2", "--run",  "10000"},help).has_value());  // > $FFFF
+    assert(!parse({"POM2", "--load", "ZZ:dummy.bin"}, help).has_value());
+}
+
+void testPresetIieUnenhanced()
+{
+    // The documented Unenhanced-//e preset family must be CLI-reachable. (R3-#3)
+    bool help = false;
+    assert(parse({"POM2","--preset","iie-u"},        help)->preset
+               == pom2::CliPreset::AppleIIeUnenhanced);
+    assert(parse({"POM2","--preset","iieunenhanced"},help)->preset
+               == pom2::CliPreset::AppleIIeUnenhanced);
+    assert(parse({"POM2","--preset","apple2e-1983"}, help)->preset
+               == pom2::CliPreset::AppleIIeUnenhanced);
+    assert(parse({"POM2","--preset","//e-u"},        help)->preset
+               == pom2::CliPreset::AppleIIeUnenhanced);
+    // Plain "iie" still resolves to the Enhanced profile (not the new one).
+    assert(parse({"POM2","--preset","iie"}, help)->preset
+               == pom2::CliPreset::AppleIIe);
+}
+
 // ── classifyDiskForSlot ──────────────────────────────────────────────────
 
 // Create a temp file of exactly `size` bytes with the given name.
@@ -154,6 +202,12 @@ int main()
     std::printf("parseCli rejects unknown flag: OK\n");
     testNoArgsCleanPlan();
     std::printf("parseCli no-args clean plan: OK\n");
+    testAddrParsingHex();
+    std::printf("parseCli --load/--run hex addresses: OK\n");
+    testAddrParsingRejectsGarbage();
+    std::printf("parseCli rejects garbage/out-of-range addresses: OK\n");
+    testPresetIieUnenhanced();
+    std::printf("parseCli --preset iie-u family: OK\n");
     testClassifier();
     std::printf("classifyDiskForSlot 5.25/3.5/HDV/unknown: OK\n");
 

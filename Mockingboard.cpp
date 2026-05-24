@@ -532,6 +532,12 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         uint8_t  envAlternate   = 0;
         uint8_t  envHolding     = 0;
         int      lastShape      = -1;    // forces setShape on first sample
+        // Tracks `ayEnvWriteCount_[chip]` so a write to R13 with an
+        // UNCHANGED shape value still restarts the envelope (real AY-3-8910
+        // behaviour — set_shape runs on every R13 store). The register
+        // snapshot alone can't reveal a same-value store.
+        uint32_t lastSeenEnvWriteCount = 0;
+        bool     envRetrigger          = false;
     };
     ChipState chip[2];
 
@@ -551,12 +557,15 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // the noise LFSR per MAME (deterministic noise after reset).
         uint8_t  regSnap[2][kAyNumRegs];
         uint32_t resetCountSnap[2];
+        uint32_t envWriteCountSnap[2];
         {
             std::lock_guard<std::mutex> lk(parent->mtx);
             std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
             std::memcpy(regSnap[1], parent->ay_[1]->regs, kAyNumRegs);
             resetCountSnap[0] = parent->ayResetCount_[0];
             resetCountSnap[1] = parent->ayResetCount_[1];
+            envWriteCountSnap[0] = parent->ayEnvWriteCount_[0];
+            envWriteCountSnap[1] = parent->ayEnvWriteCount_[1];
         }
         for (int ci = 0; ci < 2; ++ci) {
             if (chip[ci].lastSeenResetCount != resetCountSnap[ci]) {
@@ -564,6 +573,11 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 chip[ci].noiseLfsr     = 1;   // MAME ay8910.cpp:1309
                 chip[ci].noisePrescale = 0;
                 chip[ci].noiseOut      = 0;
+            }
+            // A write to R13 (even same value) restarts the envelope.
+            if (chip[ci].lastSeenEnvWriteCount != envWriteCountSnap[ci]) {
+                chip[ci].lastSeenEnvWriteCount = envWriteCountSnap[ci];
+                chip[ci].envRetrigger = true;
             }
         }
 
@@ -653,7 +667,8 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 // cycle freq = clock/(256*envPer), matches datasheet.
                 {
                     const int shape = r[13] & 0x0F;
-                    if (shape != cs.lastShape) {
+                    if (shape != cs.lastShape || cs.envRetrigger) {
+                        cs.envRetrigger = false;   // consumed
                         // MAME `ay8910.h:204-219` set_shape:
                         //   attack = (shape & 0x04) ? mask : 0
                         //   if (!(shape & 0x08))  // continue == 0
@@ -788,6 +803,7 @@ void MockingboardCard::onReset()
     viaWriteCount_[0] = viaWriteCount_[1] = 0;
     ayWriteCount_[0]  = ayWriteCount_[1]  = 0;
     ayResetCount_[0]  = ayResetCount_[1]  = 0;
+    ayEnvWriteCount_[0] = ayEnvWriteCount_[1] = 0;
 }
 
 AudioSource* MockingboardCard::audioSource()
@@ -897,6 +913,11 @@ void MockingboardCard::onViaPortBChange(int chip)
     const auto res = ay_[chip]->applyControl(pa, pb);
     if (res == Ay3_8910::ApplyResult::Wrote) {
         ++ayWriteCount_[chip];
+        // R13 (envelope shape) restarts the envelope generator on EVERY
+        // write, even when the value is unchanged. Surface same-value R13
+        // stores to the audio thread (which only sees the register snapshot)
+        // as a monotonic counter, mirroring the ayResetCount_ pattern.
+        if ((ay_[chip]->latchedAddr & 0x0F) == 13) ++ayEnvWriteCount_[chip];
     } else if (res == Ay3_8910::ApplyResult::ResetOnly) {
         ++ayResetCount_[chip];
     }
