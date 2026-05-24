@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=POM2
+GenericName=Apple II Emulator
+Comment=Apple II / II+ / //e / //c / //c+ emulator
+Exec=POM2 %f
+Icon=POM2
+Terminal=false
+Categories=Game;Emulator;
+Keywords=apple;applation;emulator;6502;retro;
+MimeType=application/x-apple2-disk;

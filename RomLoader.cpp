@@ -3,6 +3,7 @@
 
 #include "RomLoader.h"
 #include "Memory.h"
+#include "ResourcePaths.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -47,19 +48,16 @@ bool RomLoader::loadBytes(Memory& mem,
 
 std::string RomLoader::probeRomPath(const std::vector<std::string>& candidates)
 {
-    namespace fs = std::filesystem;
-    for (const std::string& c : candidates) {
-        std::error_code ec;
-        if (fs::is_regular_file(c, ec)) return c;
-    }
-    return {};
+    // Each candidate is resolved against POM2's full resource search set
+    // (CWD, build/-relative, executable-relative, FHS install) so a ROM
+    // dropped in roms/ is found whether POM2 runs from the repo root, an
+    // AppImage, or /usr/bin. See ResourcePaths.h.
+    return pom2::findFirstResource(candidates);
 }
 
 std::string RomLoader::probeStandardRomPath(const std::string& filename)
 {
-    return probeRomPath({
-        "roms/" + filename,
-        "../roms/" + filename,
-        "../../roms/" + filename,
-    });
+    // The executable-relative / FHS roots are supplied by findResource;
+    // a single "roms/<name>" candidate now covers every launch layout.
+    return pom2::findResource("roms/" + filename);
 }

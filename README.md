@@ -21,6 +21,23 @@ by hand. Drop ROMs into `roms/`, 5.25" images into `disks/`, 3.5" into
 `disks35/`, hard-disk images into `hdv/`, and Floppy Emu (BMOW) images
 into `floppyemu/`.
 
+## Releases
+
+```bash
+./build_dist.sh            # → DIST/POM2-v<ver>-linux-<arch>.{tar.gz,deb}
+./build_dist.sh --tests    # run the ctest suite first
+```
+
+`build_dist.sh` produces a relocatable tarball (`bin/POM2` +
+`share/POM2/`), a Debian package, and — when [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)
+is on `PATH` — an AppImage, all under `DIST/`. The binary finds its
+assets relative to itself (`ResourcePaths`), so the tarball runs from
+anywhere once extracted. **Apple ROMs are never bundled** (copyright):
+drop your own dumps into the bundle's `share/POM2/roms/`, or into
+`~/.local/share/POM2/roms/` for a system-wide (`.deb`) install — see the
+`roms/README.txt` shipped in each artifact. Windows / macOS / WASM
+release targets are in progress on the `release-infra` branch.
+
 ## System profiles
 
 | Profile | CPU | iieMode | Main ROM probes |

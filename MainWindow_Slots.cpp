@@ -39,6 +39,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "ProDOSHardDiskCard.h"
+#include "ResourcePaths.h"
 #include "Settings.h"
 #include "SlotBus.h"
 #include "SlotCardCatalog.h"
@@ -231,21 +232,11 @@ void MainWindow::renderSlotConfigPanel()
 
 std::string MainWindow::firstExistingPath(const std::vector<std::string>& candidates)
 {
-    namespace fs = std::filesystem;
-    for (const auto& p : candidates) {
-        std::error_code ec;
-        if (!p.empty() && fs::exists(p, ec)) return p;
-    }
-    // Also probe build-time relative paths (`../`, `../../`) so the
-    // emulator works whether launched from the repo root or `build/`.
-    for (const auto& p : candidates) {
-        std::error_code ec;
-        const std::string up1 = "../" + p;
-        if (fs::exists(up1, ec)) return up1;
-        const std::string up2 = "../../" + p;
-        if (fs::exists(up2, ec)) return up2;
-    }
-    return {};
+    // pom2::findFirstResource probes each candidate against CWD, the
+    // build/-relative `../` `../../` roots (dev), and the executable-
+    // relative / FHS-install roots (portable bundle, AppImage, /usr/bin).
+    // See ResourcePaths.h.
+    return pom2::findFirstResource(candidates);
 }
 
 M6502::CpuMode MainWindow::resolveCpuMode(M6502::CpuMode profileDefault) const
