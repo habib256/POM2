@@ -504,6 +504,13 @@ int M68705P3::step()
         reg.CC |= ZFLAG;
         return uint8_t(0);
     };
+    // 6805 CLR on a memory operand is WRITE-ONLY: it computes the EA and
+    // stores 0 WITHOUT reading the location (MAME `clr` uses ARGADDR, not
+    // ARGBYTE). Routing it through rmw_mem would do a spurious rdmem(ea),
+    // firing read side-effects on the port latches ($00 Port A / $01 Port B
+    // / $02 Port C) — e.g. an unintended quadrature-edge read in the mouse
+    // bridge. (Register CLRA/CLRX go through rmw_reg and never read memory.)
+    auto clr_mem = [&](uint16_t ea) { wrmem(ea, clr_op(0)); };
 
     auto suba_imm = [&](uint16_t t) {
         const uint16_t r = reg.A - t;
@@ -640,10 +647,18 @@ int M68705P3::step()
         case 0x3A: rmw_mem(direct_ea(), dec_op); break;
         case 0x3C: rmw_mem(direct_ea(), inc_op); break;
         case 0x3D: rmw_mem(direct_ea(), tst_op); break;
-        case 0x3F: rmw_mem(direct_ea(), clr_op); break;
+        case 0x3F: clr_mem(direct_ea()); break;
 
         // RMW A — $40..$4F.
         case 0x40: rmw_reg(reg.A, neg_op); break;
+        case 0x42: {                            // MUL — X:A = X × A (HMOS op)
+            const uint16_t r = static_cast<uint16_t>(reg.X) *
+                               static_cast<uint16_t>(reg.A);
+            clr_hc();                           // MUL clears H and C
+            reg.X = static_cast<uint8_t>(r >> 8);
+            reg.A = static_cast<uint8_t>(r & 0xFF);
+            break;
+        }
         case 0x43: rmw_reg(reg.A, com_op); break;
         case 0x44: rmw_reg(reg.A, lsr_op); break;
         case 0x46: rmw_reg(reg.A, ror_op); break;
@@ -679,7 +694,7 @@ int M68705P3::step()
         case 0x6A: rmw_mem(indexed1_ea(), dec_op); break;
         case 0x6C: rmw_mem(indexed1_ea(), inc_op); break;
         case 0x6D: rmw_mem(indexed1_ea(), tst_op); break;
-        case 0x6F: rmw_mem(indexed1_ea(), clr_op); break;
+        case 0x6F: clr_mem(indexed1_ea()); break;
 
         // RMW indexed (no offset) — $70..$7F.
         case 0x70: rmw_mem(indexed_ea(), neg_op); break;
@@ -692,7 +707,7 @@ int M68705P3::step()
         case 0x7A: rmw_mem(indexed_ea(), dec_op); break;
         case 0x7C: rmw_mem(indexed_ea(), inc_op); break;
         case 0x7D: rmw_mem(indexed_ea(), tst_op); break;
-        case 0x7F: rmw_mem(indexed_ea(), clr_op); break;
+        case 0x7F: clr_mem(indexed_ea()); break;
 
         // Inherent — $80..$8F.
         case 0x80: { // RTI

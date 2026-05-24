@@ -219,7 +219,11 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
     // (rare, possible at buffer-end rounding). Keeps ordering best-effort.
     if (evIdx < windowEvents.size()) {
         std::lock_guard<std::mutex> lk(eventMutex);
-        for (size_t k = evIdx; k < windowEvents.size(); ++k) {
+        // Reverse-iterate: push_front of ascending k would REVERSE the tail
+        // and break the strictly-ascending-by-cycle invariant the consumer
+        // relies on (front() is the earliest pending toggle). Walking k
+        // downward leaves windowEvents[evIdx] at the front, ascending.
+        for (size_t k = windowEvents.size(); k-- > evIdx; ) {
             events.push_front(windowEvents[k]);
         }
     }

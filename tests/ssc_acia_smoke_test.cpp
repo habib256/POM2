@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -265,6 +266,28 @@ void testCommandRegWriteClearsPendingRxIrq()
     std::printf("  ok: cmd write clears pending IRQ when enable goes off\n");
 }
 
+void testTelnetLineEndingNormalisation()
+{
+    // SuperSerialCard::normalizeLineEndings — telnet RX line-ending fixup.
+    // RFC 854: a bare carriage return is transmitted as CR NUL, ENTER as
+    // CR LF. The Apple II expects CR alone. Regression pinned here: the
+    // NUL in CR NUL LF used to reset prevCR before being dropped, leaking
+    // a spurious second CR (CR NUL LF → CR CR instead of CR).
+    auto norm = [](std::vector<uint8_t> in) {
+        const size_t m = SuperSerialCard::normalizeLineEndings(in.data(), in.size());
+        in.resize(m);
+        return in;
+    };
+    assert((norm({0x0D, 0x00})       == std::vector<uint8_t>{0x0D}));        // CR NUL → CR
+    assert((norm({0x0D, 0x00, 0x0A}) == std::vector<uint8_t>{0x0D}));        // CR NUL LF → CR (the bug)
+    assert((norm({0x0D, 0x0A})       == std::vector<uint8_t>{0x0D}));        // CR LF → CR
+    assert((norm({0x0A})             == std::vector<uint8_t>{0x0D}));        // bare LF → CR
+    assert(norm({0x00}).empty());                                           // lone NUL dropped
+    assert((norm({'H','i',0x0D,0x00,0x0A,'!'})
+                == std::vector<uint8_t>{'H','i',0x0D,'!'}));                 // embedded, passthrough
+    std::printf("  ok: telnet CR/NUL/LF normalisation\n");
+}
+
 void testStatusReadDcdDsr()
 {
     SuperSerialCard ssc(2);
@@ -289,6 +312,7 @@ int main()
     testControlRegBaud();
     testRxIrqGatedByCommand();
     testCommandRegWriteClearsPendingRxIrq();
+    testTelnetLineEndingNormalisation();
     testStatusReadDcdDsr();
     std::printf("OK ssc_acia_smoke\n");
     return 0;

@@ -6,7 +6,143 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-25
+
+- **Bug hunt round 3 — 9 correctifs (CLI / audio / 6805 souris)**. Audit des
+  sous-systèmes restants (cœur 6805 du MC68705P3, pile audio, profils + CLI,
+  synthèse ProDOS + RamWorks). La synthèse ProDOS et RamWorks sont ressorties
+  **propres** (re-vérifiées vs spec + 3 images réelles). 81 tests passent.
+  1. **[CLI] `parseAddr16` adresses + garbage** (`CliDispatcher.cpp`). Décodage
+     incohérent (branche décimale gatée sur la longueur > 4) + `std::stol` sans
+     vérif de consommation totale → `"12ZZ"`→$12, `"  5"`→$5 acceptés
+     silencieusement. Réécrit : adresses **hex** (convention Apple II, comme
+     `README` « hex address »), préfixe `$`/`0x` optionnel, premier caractère
+     hex obligatoire, token entièrement consommé, plage $0000-$FFFF. Pin :
+     `cli_kiosk`.
+  2. (avec #1) rejet du garbage / hors-plage.
+  3. **[CLI] `--preset iie-u` injoignable** (`CliDispatcher.{h,cpp}` +
+     `main.cpp`). `CliPreset` n'avait pas `AppleIIeUnenhanced` et
+     `parsePresetName` aucun cas — alors que `profileFromKey` (menu) et la doc
+     les listent. Ajout de la valeur enum, des alias
+     (`iie-u`/`iieunenhanced`/`apple2e-1983`/`//e-u`) et du `case` du switch
+     `main.cpp`. Pin : `cli_kiosk`.
+  4. **[CLI] `--ii-plus` écrasé par le profil persistant** (`MainWindow` ctor).
+     `forceIIPlus` n'était honoré que dans l'auto-probe legacy ; le rattrapage
+     « saved profile » réappliquait ensuite un `iie/iic` sauvegardé. Gardé : le
+     profil persistant est ignoré quand `forceIIPlus`.
+  5. **[CLI] `--35-disk1/2` sans gate de profil** (`main.cpp mount35Cli`).
+     Montait dans le hub 3.5" on-board même hors //c+ (contrat documenté //c+
+     only). Gate `currentProfile()==AppleIIcPlus` + warning sinon.
+  6. **[Audio] requeue d'événements speaker en ordre inversé**
+     (`SpeakerDevice.cpp`). `push_front` en k croissant inversait la queue des
+     événements résiduels (fin de buffer) → invariant ascendant rompu →
+     glitches de timing de clic. Reverse-iteration.
+  7. **[Audio] enveloppe AY non re-déclenchée sur réécriture R13 même valeur**
+     (`Mockingboard.{h,cpp}`). Un vrai AY-3-8910 redémarre l'enveloppe à
+     CHAQUE écriture R13 ; POM2 ne re-init que sur valeur changée. Le thread
+     audio ne voit pas une écriture même-valeur via le snapshot de registres →
+     compteur monotone `ayEnvWriteCount_` (calque de `ayResetCount_`). Pin :
+     `mockingboard_smoke` (la sortie est AC-couplée comme la vraie carte, donc
+     le test mesure le transitoire de rampe).
+  8. **[6805] CLR mémoire faisait une lecture parasite** (`M68705P3.cpp`).
+     MAME `clr` est write-only (ARGADDR) ; POM2 passait par `rmw_mem` (rdmem
+     d'abord) → sur une adresse de port ($00/$01/$02) ça déclenchait une
+     lecture (synthèse de front quadrature côté souris). Helper `clr_mem`
+     write-only pour `$3F/$6F/$7F`. Pin : `m68705_decode`.
+  9. **[6805] MUL ($42) absent** → décodé en NOP. Opcode HMOS réel (X:A = X×A,
+     efface H et C). Ajouté. Pin : `m68705_decode`.
+  - **[#4/#5/#6]** correctifs GUI/arrondi non pinnés unitairement (intégration
+    MainWindow / chemin de fin de buffer) — couverts en régression.
+
+- **Bug hunt round 2 — 6 correctifs (stockage / FDC / snapshot)**. Audit des
+  sous-systèmes non couverts au round 1 (IWM, pile 3.5"/SmartPort, cartes
+  bloc ProDOS, glue système). 81 tests passent.
+  1. **[SmartPort] WRITE_BLOCK firmware exécutait la routine READ**
+     (`SmartPortCard.cpp` `buildRom`). Erreur d'offset d'un octet dans le
+     dispatch ProDOS `$Cn50` : `BEQ write` encodé `$22` (saute à
+     l'offset 53 = milieu de la routine READ) au lieu de `$2E` (offset 65 =
+     routine WRITE). Toute écriture ProDOS via le firmware (la carte
+     s'annonce write-capable, `$CnFE=$13`, et ProDOS dispatche par
+     `$CnFF=$50`) **lisait** le bloc dans le buffer appelant, n'écrivait
+     rien sur le média, et renvoyait « succès » → perte de données
+     silencieuse + corruption du buffer. Pin CPU-driven :
+     `smartport_write_dispatch`. (Les pins existants n'exécutaient que le
+     protocole brut `$C0nX`, jamais le dispatch `$Cn50`.)
+  2. **[Sony 3.5"] tête bloquée en pas-vers-track-0** (`Sony35Drive.cpp`
+     `strobeWriteRegister`). `directionIn_` n'était jamais remis à false :
+     reg 0x0 → inward, reg 0x4 → eject, **aucun chemin outward** (la branche
+     cyl+1 du step était morte). Réaligné sur MAME `mac_floppy_device::
+     seek_phase_w` : reg 0x0 = DirNext (cyl+1, outward), reg 0x4 = DirPrev
+     (cyl-1, vers track 0), reg 0x7 = StartEject. Les tracks 1-79 du 3.5"
+     étaient inatteignables via le protocole. Pin : `sony_seek_direction`.
+  3. **[Snapshot] restore incomplet** (`AiControlServer` + `M6502` +
+     `Memory` + `SnapshotIO`). Le load (a) jetait A/X/Y/P/SP (M6502 n'avait
+     que `setProgramCounter`) et (b) la section MEM ne couvrait que les
+     64 Ko principaux visibles — aux RAM, Language-Card RAM, banques
+     RamWorks, soft-switches de pagination (`iieMemMode`) et DisplayState
+     n'étaient jamais sérialisés. Tout programme IIe/aux/LC restaurait du
+     garbage. Ajout des setters registres M6502, de
+     `Memory::appendSnapshotState`/`loadSnapshotState` (nouvelle section
+     « MEX », format **v2** — les v1 se chargent toujours) et de
+     `restoreMainRam` (respecte `writable[]` → la ROM n'est plus écrasée).
+     Pin : `snapshot_state_roundtrip`.
+  4. **[IWM] délai async `+14` non mis à l'échelle** (`IWMDevice.cpp`).
+     POM2 fait tourner la FSM IWM sur l'horloge CPU et divise les
+     constantes de fenêtre MAME (base 7,16 MHz) par 7 ; ce `+14` était resté
+     brut → le timer « data devient stale → 0 » des lectures 3.5" async se
+     déclenchait ~7× trop tard. 14/7 = 2.
+  5. **[CFFA] octets de config EEPROM non patchés** (`CffaCard.cpp`
+     `loadRom`). MAME `a2cffa.cpp` device_start() force `m_rom[0x800]=13`,
+     `m_rom[0x801]=13` à chaque boot (le dump brut porte `0x04`/`0x00`,
+     `$C801=0` désactive le 2e connecteur) ; POM2 chargeait verbatim → le
+     firmware scannait une EEPROM différente de l'oracle MAME. Pin ajouté à
+     `cffa_card_smoke`.
+  6. **[IWM] sous-dépassement `halfWindowSize() - 7`** (`IWMDevice.cpp`,
+     FSM d'écriture). `halfWindowSize()` mis à l'échelle ∈ {1,2} moins `7`
+     brut sous-dépassait en `uint64_t`. 7/7 = 1 ; corrige aussi les deux
+     offsets de chargement `+7` → `+1`.
+  - **[#4/#6]** pinnés au niveau régression (`iwm_device_smoke` +
+    `iic`/`iicplus` boot traces) — un test de timing dédié exigerait un
+    harnais flux-replay disproportionné.
+
 ## 2026-05-24
+
+- **Bug hunt — 5 correctifs de parité (audit multi-sous-systèmes)**. Tous
+  pinnés ; 78 tests passent.
+  1. **[CPU] Cycles d'entrée IRQ/NMI perdus** (`M6502.cpp` `step`).
+     `handleIRQ`/`handleNMI` accumulaient les 7 cycles d'entrée dans
+     `cycles`, mais `executeOpcode()` réinitialise `cycles = 1` juste après
+     → les 7 cycles étaient **écrasés** avant `advanceCycles`. Chaque
+     interruption coûtait donc **0 cycle**, désynchronisant toutes les
+     horloges dérivées de `cycleCounter` (VBL, timers de slot type
+     Mockingboard 6522 T1, cassette) sur le logiciel piloté par IRQ. Corrigé
+     en capturant le coût d'entrée puis en le réinjectant après
+     l'instruction. Même classe que le bug RMW de Mr. Robot. Pin :
+     `cpu_cycle_count` (IRQ + NMI = 7 + instr).
+  2. **[Disques] `writeFlux` largeur de cellule codée en dur à 8 LSS**
+     (`DiskImage.cpp`). Le chemin de lecture espace les cellules à
+     `i*lssCyclesPerCell()`, mais le write-back divisait par `8`. Pour un
+     WOZ2 dont `optimal_bit_timing != 32` (cyc ≠ 8) les transitions étaient
+     éparpillées dans les mauvaises cellules → **corruption silencieuse** de
+     la piste au write-back. (Le test `woz_writeback` fixe `info[39]=32`,
+     d'où l'angle mort.) Corrigé via `lssCyclesPerCell()` dans les deux
+     branches. Pin : `woz_writeflux_smoke` (obt=40/28 round-trip).
+  3. **[CPU] `INC A`/`DEC A` 65C02 ($1A/$3A) facturés 4 cycles** au lieu de
+     2 (`M6502.cpp`) : le corps ajoutait `+2` en plus du fetch + `Imp`.
+     Aligné sur INX/DEX (corps = 0). Pin : `cpu_cycle_count`.
+  4. **[SSC] CR NUL telnet → CR parasite** (`SuperSerialCard.cpp`
+     `normalizeLineEndings`). RFC 854 : un retour-chariot nu arrive en
+     `CR NUL`. Le NUL exécutait `prevCR = false` **avant** d'être supprimé,
+     si bien qu'un `CR NUL LF` produisait `CR CR` au lieu de `CR` (ENTER
+     doublé en session telnet interactive). Corrigé en supprimant le NUL en
+     premier ; fonction rendue `static` publique pour le test. Pin :
+     `ssc_acia_smoke`.
+  5. **[Memory] Floating bus ignore 80STORE** (`Memory.cpp` `floatingBus`).
+     Le scanner vidéo n'honore PAGE2 que si 80STORE est OFF
+     (MAME `apple2video.cpp` `use_page_2() = page2 && !80store`) ; avec
+     80STORE ON, PAGE2 redirige la sélection de banque aux et non la page
+     affichée. `floatingBus` lisait donc la mauvaise page DRAM sous tout
+     programme 80-col/DHGR. Pin : `floatingbus_page2_smoke`.
 
 - **Infra de release Linux** (branche `release-infra`). Nouveau résolveur
   d'assets `ResourcePaths` (`.h/.cpp`) : centralise la recherche des assets

@@ -773,8 +773,15 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
     // internal state machine are the minimum needed for the //c+
     // SmartPort probe; finer-grained behaviour (step debouncing, eject
     // animation, RPM ramp-up) is deferred.
+    // Direction / eject registers aligned to MAME
+    // `mac_floppy_device::seek_phase_w`: reg 0x0 "DirNext" = step toward
+    // cyl+1 (outward), reg 0x4 "DirPrev" = step toward cyl-1 (track 0),
+    // reg 0x7 "StartEject". POM2 previously mapped 0x0→inward and 0x4→eject
+    // with NO outward path at all, so the head could only ever step toward
+    // track 0 (the cyl+1 branch in case 0x1 was dead). Motor/head registers
+    // keep POM2's boot-tuned mapping (see DEV.md Sony register-table note).
     switch (reg) {
-        case 0x0: directionIn_ = true;  break;       // direction inward
+        case 0x0: directionIn_ = false; break;       // DirNext: step toward cyl+1 (outward)
         case 0x1: {                                   // step
             bool moved = false;
             if (directionIn_ && track_ > 0)  {
@@ -803,7 +810,8 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
             }
             motorOn_ = false;
             break;
-        case 0x4:                                     // eject
+        case 0x4: directionIn_ = true;  break;        // DirPrev: step toward cyl-1 (track 0)
+        case 0x7:                                      // StartEject
             if (image_ && image_->isLoaded()) {
                 image_->eject();
                 diskSwitched_ = true;

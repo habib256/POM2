@@ -264,7 +264,7 @@ void SmartPortCard::buildRom()
         0xC9, 0x01,            // CMP #$01
         0xF0, 0x10,            // BEQ read   (+16)
         0xC9, 0x02,            // CMP #$02
-        0xF0, 0x22,            // BEQ write  (+34)
+        0xF0, 0x2E,            // BEQ write  (+46: skip the 34-byte read block)
         0xC9, 0x00,            // CMP #$00
         0xF0, 0x04,            // BEQ status (+4)
         0xA9, 0x01,            // bad cmd: LDA #$01

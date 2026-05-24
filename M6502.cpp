@@ -972,18 +972,20 @@ void M6502::STZ(void)
     cycles++;
 }
 
+// 65C02 INC A / DEC A ($1A/$3A) are 2-cycle implied-accumulator ops:
+// the fetch (executeOpcode seeds cycles=1) plus the implied cycle added
+// by the Imp addressing handler. Like INX/DEX/INY/DEY, the operation
+// body adds NOTHING further. (Previously these added +2, charging 4.)
 void M6502::INA(void)
 {
     accumulator++;
     setStatusRegisterNZ(accumulator);
-    cycles += 2;
 }
 
 void M6502::DEA(void)
 {
     accumulator--;
     setStatusRegisterNZ(accumulator);
-    cycles += 2;
 }
 
 void M6502::PHX(void)
@@ -1821,12 +1823,28 @@ void M6502::step(void)
     // pending (ow65c02.lst:247 + m6502.cpp prefetch_end). The previous
     // order here let an IRQ run first when both fired in the same
     // instruction window, masking the NMI for one instruction.
-    if (NMI)
+    //
+    // The interrupt-entry sequence costs 7 bus cycles on both NMOS and
+    // CMOS (MAME om6502.lst irq/nmi sequences; pushPC + flags + vector
+    // fetch). handleNMI/handleIRQ accumulate those into `cycles`, but
+    // executeOpcode() reseeds `cycles = 1` for the opcode fetch and would
+    // wipe them. Capture the entry cost first, then fold it back in after
+    // the next instruction runs. Previously every IRQ/NMI was charged 0
+    // cycles, silently desyncing every cycleCounter-derived clock (VBL,
+    // slot-peripheral timers, cassette) on interrupt-driven software.
+    int interruptCycles = 0;
+    if (NMI) {
+        cycles = 0;
         handleNMI();
-    else if (!(statusRegister & M6502::Status::I) && IRQ)
+        interruptCycles = cycles;
+    } else if (!(statusRegister & M6502::Status::I) && IRQ) {
+        cycles = 0;
         handleIRQ();
+        interruptCycles = cycles;
+    }
 
     executeOpcode();
+    cycles += interruptCycles;
     if (memory != nullptr) {
         memory->advanceCycles(cycles);
     }

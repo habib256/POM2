@@ -7,7 +7,7 @@
 // Format (versioned, little-endian throughout — POM2 is host-side LE only):
 //
 //   "POM2SNAP" (8 bytes)               magic
-//   uint32_t  version                  format version (current = 1)
+//   uint32_t  version                  format version (current = 2)
 //   uint32_t  flags                    reserved, 0 for now
 //
 //   Section: 8-byte fixed name (NUL-padded) + uint32_t length + payload
@@ -15,7 +15,9 @@
 // Suggested section roster for Apple II:
 //
 //   "CPU"      M6502::serialize() — PC, A, X, Y, SP, status, IRQ/NMI flags
-//   "MEM"      full 64 KB RAM + soft-switch state (DisplayState packed)
+//   "MEM"      main 64 KB RAM (restored through writable[] — ROM preserved)
+//   "MEX"      (v2) aux RAM + Language-Card RAM + RamWorks banks + paging
+//              soft-switches (iieMemMode) + LC latch flags + DisplayState
 //   "CASS"     CassetteDevice — loaded path, recorded buffer, position
 //   "SLOT0".."SLOT7"   per-slot peripheral payloads (each card decides)
 //
@@ -39,7 +41,10 @@
 namespace pom2 {
 
 inline constexpr char     kSnapshotMagic[8] = {'P','O','M','2','S','N','A','P'};
-inline constexpr uint32_t kSnapshotVersion  = 1;
+// v2 adds the "MEX" section (aux RAM, Language-Card RAM, RamWorks banks,
+// paging soft-switches, DisplayState) so IIe/IIc state restores fully.
+// The reader accepts any version <= kSnapshotVersion, so v1 files still load.
+inline constexpr uint32_t kSnapshotVersion  = 2;
 inline constexpr std::size_t kSectionNameLen = 8;
 
 class SnapshotWriter

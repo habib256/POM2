@@ -1700,6 +1700,117 @@ endif()
 add_test(NAME cpu_cycle_count COMMAND test_cpu_cycle_count)
 set_tests_properties(cpu_cycle_count PROPERTIES TIMEOUT 5)
 
+# ─── WOZ2 writeFlux cell-width regression ─────────────────────────────────
+# Pins DiskImage::writeFlux to lssCyclesPerCell() (not a hard-coded 8) so
+# write-back to a WOZ2 with optimal_bit_timing != 32 lands transitions in
+# the correct cells. See woz_writeflux_smoke_test.cpp.
+add_executable(test_woz_writeflux
+    woz_writeflux_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_woz_writeflux PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_woz_writeflux PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_woz_writeflux PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_woz_writeflux PRIVATE winmm)
+endif()
+add_test(NAME woz_writeflux_smoke COMMAND test_woz_writeflux)
+set_tests_properties(woz_writeflux_smoke PROPERTIES TIMEOUT 10)
+
+# ─── Floating-bus PAGE2 / 80STORE gating regression ───────────────────────
+# Pins Memory::floatingBus to MAME's use_page_2() = page2 && !80store.
+# See floatingbus_page2_smoke_test.cpp.
+add_executable(test_floatingbus_page2
+    floatingbus_page2_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_floatingbus_page2 PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_floatingbus_page2 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_floatingbus_page2 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_floatingbus_page2 PRIVATE winmm)
+endif()
+add_test(NAME floatingbus_page2_smoke COMMAND test_floatingbus_page2)
+set_tests_properties(floatingbus_page2_smoke PROPERTIES TIMEOUT 5)
+
+# ─── Sony 3.5" head step-direction regression ─────────────────────────────
+add_executable(test_sony_seek_direction
+    sony_seek_direction_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_sony_seek_direction PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_sony_seek_direction PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_sony_seek_direction PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_sony_seek_direction PRIVATE winmm)
+endif()
+add_test(NAME sony_seek_direction COMMAND test_sony_seek_direction)
+set_tests_properties(sony_seek_direction PROPERTIES TIMEOUT 5)
+
+# ─── Snapshot full-state round-trip regression ────────────────────────────
+add_executable(test_snapshot_state_roundtrip
+    snapshot_state_roundtrip_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_snapshot_state_roundtrip PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_snapshot_state_roundtrip PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_snapshot_state_roundtrip PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_snapshot_state_roundtrip PRIVATE winmm)
+endif()
+add_test(NAME snapshot_state_roundtrip COMMAND test_snapshot_state_roundtrip)
+set_tests_properties(snapshot_state_roundtrip PROPERTIES TIMEOUT 5)
+
+# ─── SmartPort slot-ROM WRITE-dispatch regression (CPU-driven) ────────────
+add_executable(test_smartport_write_dispatch
+    smartport_write_dispatch_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_smartport_write_dispatch PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_write_dispatch PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_write_dispatch PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_write_dispatch PRIVATE winmm)
+endif()
+add_test(NAME smartport_write_dispatch COMMAND test_smartport_write_dispatch)
+set_tests_properties(smartport_write_dispatch PROPERTIES TIMEOUT 10)
+
 
 # ─── M68705P3 CPU decode smoke test ──────────────────────────────────────
 # Pins the verbatim port of MAME's HMOS 6805 instruction set

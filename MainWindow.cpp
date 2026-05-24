@@ -388,7 +388,13 @@ MainWindow::MainWindow(bool forceIIPlus)
     // full cold reset via applyProfile() (which the menu also calls).
     activeProfile = iiePresent ? pom2::SystemProfile::AppleIIe
                                : pom2::SystemProfile::AppleIIPlus;
-    const std::string savedProfile = settings->getString("system_profile", "");
+    // `--ii-plus` (forceIIPlus) must win over any persisted profile: it was
+    // requested precisely to avoid the IIe path. Without this guard the
+    // saved-profile catch-up below would re-apply a saved iie/iic/iic+ and
+    // silently defeat the flag. (forceIIPlus already suppressed the IIe ROM
+    // probe above, so activeProfile is AppleIIPlus here.)
+    const std::string savedProfile =
+        forceIIPlus ? std::string() : settings->getString("system_profile", "");
     if (!savedProfile.empty()) {
         const pom2::SystemProfile saved = pom2::profileFromKey(savedProfile);
         if (saved != activeProfile) {

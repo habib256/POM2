@@ -32,6 +32,16 @@ bool CffaCard::loadRom(const std::string& path)
         pom2::log().warn("CFFA", lastError_);
         return false;
     }
+    // MAME `a2cffa.cpp` device_start() patches two EEPROM config defaults
+    // every boot, before the firmware's device scan runs: enable the slave
+    // device and allow up to 13 devices on each IDE connector. The raw dump
+    // ships 0x04 / 0x00 ($C801 = 0 disables the 2nd connector); without the
+    // patch the firmware scans a different EEPROM than the MAME oracle.
+    //   m_rom[0x800] = 13;  m_rom[0x801] = 13;   (a2cffa.cpp device_start)
+    // rom_[0x800] is the first byte of the $C800 shared-ROM window.
+    rom_[0x800] = 0x0D;
+    rom_[0x801] = 0x0D;
+
     romLoaded_ = true;
     pom2::log().info("CFFA", "Loaded firmware ROM: " + path);
     return true;

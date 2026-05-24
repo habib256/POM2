@@ -52,6 +52,13 @@ int main() {
     auto card = std::make_unique<pom2::CffaCard>(kSlot);
     assert(card->loadRom(romPath));
 
+    // MAME a2cffa.cpp device_start() patches two EEPROM config bytes every
+    // boot (enable slave + 13 devices/connector). loadRom must apply the
+    // same patch — the raw dump ships 0x04/0x00 ($C801=0 disables connector
+    // 2). $C800 window byte 0/1 = rom_[0x800]/rom_[0x801].
+    assert(card->expansionRomRead(0x000) == 0x0D);   // $C800 config byte
+    assert(card->expansionRomRead(0x001) == 0x0D);   // $C801 config byte
+
     // 16-block synthetic image with a known per-block pattern.
     const uint32_t blocks = 16;
     std::vector<uint8_t> img(blocks * kBlk);

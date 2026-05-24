@@ -229,7 +229,10 @@ boots the disk in the normal GUI. Pinned by `tests/cli_kiosk_test.cpp`.
 
 Current release: **v0.6**. Bump in:
 
-- `main.cpp` (window title + console banner)
+- `main.cpp` (initial window title + console banner)
+- `MainWindow_Slots.cpp` (runtime window title — `setGlfwWindow` +
+  `applyProfile` step 13; **overrides** main.cpp's title once the
+  profile resolves, so this is the version the user actually sees)
 - `MainWindow.cpp` (About dialog)
 - `CMakeLists.txt` (`project(... VERSION x.y ...)`)
 - `README.md` (status section, if a version pill is reintroduced)

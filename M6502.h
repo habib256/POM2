@@ -123,6 +123,15 @@ public:
     /// directly into $0400).
     void setProgramCounter(uint16_t pc) { programCounter = pc; }
 
+    /// Register setters — used by snapshot restore (and the debugger) to
+    /// reconstruct the exact CPU state. Without these the snapshot CPU
+    /// section could only restore PC, leaving A/X/Y/P/SP stale on load.
+    void setAccumulator(uint8_t v)    { accumulator    = v; }
+    void setXRegister(uint8_t v)      { xRegister      = v; }
+    void setYRegister(uint8_t v)      { yRegister      = v; }
+    void setStatusRegister(uint8_t v) { statusRegister = v; }
+    void setStackPointer(uint8_t v)   { stackPointer   = v; }
+
     /// Cycles accumulated inside the *current* opcode (reset to 1 at the
     /// fetch by executeOpcode and incremented as the instruction runs).
     /// Memory::cycleCounter is updated only at the end of each step(), so

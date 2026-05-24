@@ -1448,14 +1448,20 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
             return;
         }
 
-        const int firstCell = static_cast<int>(startMod / 8);
-        const int lastCell  = static_cast<int>((endMod + 7) / 8);
+        // Bit-cell width in LSS cycles. MUST match the read path
+        // (expandTrackFlux: cell i is centred at `i*lssCyclesPerCell()`),
+        // else a write-back to a WOZ2 image whose optimal_bit_timing != 32
+        // (cyc != 8) scatters transitions into the wrong cells and
+        // corrupts the track. Previously hard-coded to 8.
+        const int cyc       = lssCyclesPerCell();
+        const int firstCell = static_cast<int>(startMod / cyc);
+        const int lastCell  = static_cast<int>((endMod + cyc - 1) / cyc);
         const int spanCells = lastCell - firstCell;
         std::vector<bool> newBits(spanCells, false);
         const int64_t origBase = startLssCycle - startMod;
         for (int i = 0; i < count; ++i) {
             const int64_t t = ((transitions[i] - origBase) % period + period) % period;
-            const int cell  = static_cast<int>(t / 8) - firstCell;
+            const int cell  = static_cast<int>(t / cyc) - firstCell;
             if (cell >= 0 && cell < spanCells) newBits[cell] = true;
         }
 
@@ -1518,18 +1524,22 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     // Cell-window the [startMod, endMod) range. Inclusive of partial
     // cells at the start and end so a sub-cell-wide write doesn't drop
     // bits.
-    const int firstCell = static_cast<int>(startMod / 8);
-    const int lastCell  = static_cast<int>((endMod + 7) / 8);   // exclusive
+    // Cell width in LSS cycles — same accessor as the read/WOZ paths so
+    // the two stay consistent (non-WOZ images keep the 32-default → 8,
+    // so this is a no-op for them today, but keeps the branches aligned).
+    const int cyc       = lssCyclesPerCell();
+    const int firstCell = static_cast<int>(startMod / cyc);
+    const int lastCell  = static_cast<int>((endMod + cyc - 1) / cyc);  // exclusive
 
     // Map each transition into a cell index and mark that cell's bit = 1.
     // PULSE-detect window per MAME: address bit 4 goes low for exactly one
     // LSS cycle, at the cycle equal to the transition's timestamp. Any
-    // transition timestamped inside [k*8, k*8+8) lights cell k.
+    // transition timestamped inside [k*cyc, k*cyc+cyc) lights cell k.
     const int64_t origBase = startLssCycle - startMod;
     std::vector<bool> newBits(lastCell - firstCell, false);
     for (int i = 0; i < count; ++i) {
         const int64_t t = ((transitions[i] - origBase) % period + period) % period;
-        const int cell  = static_cast<int>(t / 8) - firstCell;
+        const int cell  = static_cast<int>(t / cyc) - firstCell;
         if (cell >= 0 && cell < static_cast<int>(newBits.size())) {
             newBits[cell] = true;
         }

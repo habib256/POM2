@@ -28,7 +28,13 @@ bool endsWithIcase(const std::string& s, std::string_view suffix)
     return true;
 }
 
-/// Parse "0x0300", "$0300", "0300", or "768" → 16-bit address.
+/// Parse a 16-bit address. Apple II convention: addresses are HEX.
+/// "$0300", "0x0300", and bare "0300"/"2000" all parse as hex ($0300 /
+/// $2000). An optional "$" or "0x"/"0X" prefix is accepted and stripped.
+/// The ENTIRE token must be valid hex (no trailing garbage, no leading
+/// whitespace/sign) or it's a parse error. Range $0000-$FFFF.
+/// (Decimal input is intentionally NOT supported — bare tokens are hex so
+/// "--run 2000" means $2000, not 2000 decimal.)
 bool parseAddr16(const std::string& s, int& out)
 {
     if (s.empty()) return false;
@@ -37,24 +43,14 @@ bool parseAddr16(const std::string& s, int& out)
         v.erase(0, 2);
     } else if (v[0] == '$') {
         v.erase(0, 1);
-    } else {
-        bool hasHexLetter = false;
-        for (char c : v) {
-            if (std::isxdigit(static_cast<unsigned char>(c)) &&
-                !std::isdigit(static_cast<unsigned char>(c))) hasHexLetter = true;
-        }
-        if (!hasHexLetter && v.size() > 4) {
-            try {
-                long n = std::stol(v, nullptr, 10);
-                if (n < 0 || n > 0xFFFF) return false;
-                out = static_cast<int>(n);
-                return true;
-            } catch (...) { return false; }
-        }
     }
-    if (v.empty() || v.size() > 4) return false;
+    // Require the first remaining char to be a hex digit so std::stol can't
+    // silently skip leading whitespace / accept a sign.
+    if (v.empty() || !std::isxdigit(static_cast<unsigned char>(v[0]))) return false;
     try {
-        long n = std::stol(v, nullptr, 16);
+        size_t idx = 0;
+        long n = std::stol(v, &idx, 16);
+        if (idx != v.size()) return false;     // reject trailing garbage
         if (n < 0 || n > 0xFFFF) return false;
         out = static_cast<int>(n);
         return true;
@@ -88,6 +84,9 @@ bool parsePresetName(const std::string& raw, CliPreset& out)
     if (s == "ii"  || s == "apple2"  || s == "appleii")  { out = CliPreset::AppleII;     return true; }
     if (s == "ii+" || s == "iiplus" || s == "apple2plus" ||
         s == "appleiiplus" || s == "ii-plus") { out = CliPreset::AppleIIPlus; return true; }
+    if (s == "iie-u" || s == "iie-unenh" || s == "iie-unenhanced" ||
+        s == "iieunenhanced" || s == "apple2e-1983" || s == "//e-u")
+                                            { out = CliPreset::AppleIIeUnenhanced; return true; }
     if (s == "iie" || s == "apple2e" || s == "appleiie" ||
         s == "//e" || s == "iie-enhanced")  { out = CliPreset::AppleIIe;    return true; }
     if (s == "iic" || s == "apple2c" || s == "appleiic" ||

@@ -346,6 +346,65 @@ void test_port_input_read()
     assert(cpu.peekRam(0x30) == 0x55);
 }
 
+void test_clr_is_write_only()
+{
+    // 6805 CLR on a memory operand is WRITE-ONLY (MAME `clr` uses ARGADDR,
+    // not ARGBYTE). On a port address ($00/$01/$02) a spurious read would
+    // fire the port-read callback (the mouse bridge's quadrature edge).
+    RomImage rom;
+    // $0080: CLR $01   (3F 01)   ; CLR Port B (direct)
+    // $0082: BRA $0082 (20 FE)
+    rom.emit(0x80, { 0x3F, 0x01, 0x20, 0xFE });
+    rom.setReset(0x0080);
+
+    M68705P3 cpu;
+    cpu.loadRomBytes(rom.bytes.data(), rom.bytes.size());
+    cpu.reset();
+
+    int reads = 0;
+    cpu.setPortReadCallback([&](int) { ++reads; return uint8_t(0x55); });
+
+    cpu.step();   // CLR $01
+    assert(reads == 0);                    // must NOT read the port
+    assert(cpu.getPortLatch(1) == 0x00);   // latch cleared to 0
+    std::printf("  ok: CLR memory is write-only (no spurious port read)\n");
+}
+
+void test_mul()
+{
+    // MUL ($42): X:A = X × A, clears H and C. Set H (via a half-carrying
+    // ADD) and C (via SEC) first so we can prove MUL clears both.
+    RomImage rom;
+    // $0080: LDA #$08   A6 08
+    // $0082: ADD #$08   AB 08    ; A=$10, H set (carry out of bit 3)
+    // $0084: LDA #$20   A6 20    ; A=$20 (LDA leaves H untouched)
+    // $0086: LDX #$10   AE 10
+    // $0088: SEC        99       ; C set
+    // $0089: MUL        42       ; $10 × $20 = $0200 → X=$02, A=$00
+    // $008A: BRA $008A  20 FE
+    rom.emit(0x80, { 0xA6, 0x08, 0xAB, 0x08, 0xA6, 0x20,
+                     0xAE, 0x10, 0x99, 0x42, 0x20, 0xFE });
+    rom.setReset(0x0080);
+
+    M68705P3 cpu;
+    cpu.loadRomBytes(rom.bytes.data(), rom.bytes.size());
+    cpu.reset();
+
+    cpu.step();   // LDA #$08
+    cpu.step();   // ADD #$08
+    assert(cpu.getCC() & 0x10);    // H set by the half-carry
+    cpu.step();   // LDA #$20
+    cpu.step();   // LDX #$10
+    cpu.step();   // SEC
+    assert(cpu.getCC() & 0x01);    // C set
+    cpu.step();   // MUL
+    assert(cpu.getX() == 0x02);            // high byte
+    assert(cpu.getA() == 0x00);            // low byte
+    assert((cpu.getCC() & 0x01) == 0);     // C cleared
+    assert((cpu.getCC() & 0x10) == 0);     // H cleared
+    std::printf("  ok: MUL ($42) X:A = X*A, clears H and C\n");
+}
+
 }  // namespace
 
 int main()
@@ -359,6 +418,8 @@ int main()
     test_irq_vector_and_push_order();
     test_port_latch_and_callback();
     test_port_input_read();
+    test_clr_is_write_only();
+    test_mul();
 
     std::printf("OK m68705_decode_smoke\n");
     return 0;

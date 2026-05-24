@@ -538,6 +538,180 @@ void Memory::ramWorksSwapToBank(uint8_t newBank)
     std::memcpy(auxLcHigh.data(),  curr + 0x12000,   0x2000);
 }
 
+// Extended-state blob layout version. Bump if the field order below changes.
+static constexpr uint8_t kMemStateBlobVersion = 1;
+
+void Memory::appendSnapshotState(std::vector<uint8_t>& out)
+{
+    auto putU8  = [&](uint8_t v) { out.push_back(v); };
+    auto putU16 = [&](uint16_t v) {
+        out.push_back(static_cast<uint8_t>(v));
+        out.push_back(static_cast<uint8_t>(v >> 8));
+    };
+    auto putU32 = [&](uint32_t v) {
+        for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    };
+    auto putU64 = [&](uint64_t v) {
+        for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    };
+    auto putBytes = [&](const void* p, size_t k) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        out.insert(out.end(), b, b + k);
+    };
+
+    putU8(kMemStateBlobVersion);
+    putU8(iieMode ? 1 : 0);
+    putU16(iieMemMode);
+    putU8(lcReadRam     ? 1 : 0);
+    putU8(lcWriteEnable ? 1 : 0);
+    putU8(lcBank2Active ? 1 : 0);
+    putU8(lcPrewrite    ? 1 : 0);
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        putU8(display.textMode    ? 1 : 0);
+        putU8(display.mixedMode   ? 1 : 0);
+        putU8(display.page2       ? 1 : 0);
+        putU8(display.hiRes       ? 1 : 0);
+        putU8(display.eightyCol   ? 1 : 0);
+        putU8(display.an3         ? 1 : 0);
+        putU8(display.altChar     ? 1 : 0);
+        putU8(display.dhgr        ? 1 : 0);
+        putU8(display.eightyStore ? 1 : 0);
+    }
+    putU64(cycleCounter);
+    putU64(paddleLatchCycle);
+
+    // Main Language-Card RAM (II/II+ and IIe main-bank LC live here; the
+    // mem[] $D000-$FFFF region is always the ROM mirror).
+    putBytes(lcBank1.data(), lcBank1.size());
+    putBytes(lcBank2.data(), lcBank2.size());
+    putBytes(lcHigh.data(),  lcHigh.size());
+
+    putU32(ramWorksBanks_);
+    putU8(ramWorksBank_);
+    if (ramWorksBanks_ <= 1) {
+        // Stock aux — serialize the visible aux + aux-LC arrays directly.
+        putBytes(aux.data(),        aux.size());
+        putBytes(auxLcBank1.data(), auxLcBank1.size());
+        putBytes(auxLcBank2.data(), auxLcBank2.size());
+        putBytes(auxLcHigh.data(),  auxLcHigh.size());
+    } else {
+        // RamWorks — flush the live visible bank back into the backing store
+        // so the serialized backing is fully coherent (see ramWorksSwapToBank
+        // for the per-bank layout), then dump the whole backing.
+        uint8_t* slot = ramWorksBacking_.data()
+                      + static_cast<size_t>(ramWorksBank_) * kRamWorksBankStride;
+        std::memcpy(slot,           aux.data(),        0x10000);
+        std::memcpy(slot + 0x10000, auxLcBank1.data(), 0x1000);
+        std::memcpy(slot + 0x11000, auxLcBank2.data(), 0x1000);
+        std::memcpy(slot + 0x12000, auxLcHigh.data(),  0x2000);
+        putU32(static_cast<uint32_t>(ramWorksBacking_.size()));
+        putBytes(ramWorksBacking_.data(), ramWorksBacking_.size());
+    }
+}
+
+bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
+{
+    size_t pos = 0;
+    auto need  = [&](size_t k) { return pos + k <= n; };
+    auto getU8 = [&]() -> uint8_t { return data[pos++]; };
+    auto getU16 = [&]() -> uint16_t {
+        uint16_t v = static_cast<uint16_t>(data[pos] | (data[pos + 1] << 8));
+        pos += 2; return v;
+    };
+    auto getU32 = [&]() -> uint32_t {
+        uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[pos + i]) << (8 * i);
+        pos += 4; return v;
+    };
+    auto getU64 = [&]() -> uint64_t {
+        uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(data[pos + i]) << (8 * i);
+        pos += 8; return v;
+    };
+    auto getBytes = [&](void* dst, size_t k) {
+        std::memcpy(dst, data + pos, k); pos += k;
+    };
+
+    if (!need(1)) return false;
+    if (getU8() != kMemStateBlobVersion) return false;
+    // iieMode(1) + iieMemMode(2) + lc flags(4) + display(9) + 2×u64(16) = 32
+    if (!need(32)) return false;
+    (void)getU8();                       // iieMode — informational (mode is set by the profile)
+    iieMemMode    = getU16();
+    lcReadRam     = getU8() != 0;
+    lcWriteEnable = getU8() != 0;
+    lcBank2Active = getU8() != 0;
+    lcPrewrite    = getU8() != 0;
+    DisplayState ds;
+    ds.textMode    = getU8() != 0; ds.mixedMode = getU8() != 0; ds.page2 = getU8() != 0;
+    ds.hiRes       = getU8() != 0; ds.eightyCol = getU8() != 0; ds.an3   = getU8() != 0;
+    ds.altChar     = getU8() != 0; ds.dhgr      = getU8() != 0; ds.eightyStore = getU8() != 0;
+    cycleCounter     = getU64();
+    paddleLatchCycle = getU64();
+    { std::lock_guard<std::mutex> lk(stateMutex); display = ds; }
+
+    if (!need(lcBank1.size() + lcBank2.size() + lcHigh.size())) return false;
+    getBytes(lcBank1.data(), lcBank1.size());
+    getBytes(lcBank2.data(), lcBank2.size());
+    getBytes(lcHigh.data(),  lcHigh.size());
+
+    if (!need(5)) return false;
+    const uint32_t savedBanks = getU32();
+    const uint8_t  savedBank  = getU8();
+
+    if (savedBanks <= 1) {
+        if (!need(aux.size() + auxLcBank1.size() + auxLcBank2.size() + auxLcHigh.size()))
+            return false;
+        getBytes(aux.data(),        aux.size());
+        getBytes(auxLcBank1.data(), auxLcBank1.size());
+        getBytes(auxLcBank2.data(), auxLcBank2.size());
+        getBytes(auxLcHigh.data(),  auxLcHigh.size());
+        if (ramWorksBanks_ > 1) {
+            // Live config has RamWorks; mirror the restored data into the
+            // current backing slot so a later bank swap doesn't lose it.
+            uint8_t* slot = ramWorksBacking_.data()
+                          + static_cast<size_t>(ramWorksBank_) * kRamWorksBankStride;
+            std::memcpy(slot,           aux.data(),        0x10000);
+            std::memcpy(slot + 0x10000, auxLcBank1.data(), 0x1000);
+            std::memcpy(slot + 0x11000, auxLcBank2.data(), 0x1000);
+            std::memcpy(slot + 0x12000, auxLcHigh.data(),  0x2000);
+        }
+    } else {
+        if (!need(4)) return false;
+        const uint32_t backingSize = getU32();
+        if (!need(backingSize)) return false;
+        if (savedBanks == ramWorksBanks_ && backingSize == ramWorksBacking_.size()) {
+            std::memcpy(ramWorksBacking_.data(), data + pos, backingSize);
+            ramWorksBank_ = static_cast<uint8_t>(savedBank % ramWorksBanks_);
+            const uint8_t* slot = ramWorksBacking_.data()
+                                + static_cast<size_t>(ramWorksBank_) * kRamWorksBankStride;
+            std::memcpy(aux.data(),        slot,           0x10000);
+            std::memcpy(auxLcBank1.data(), slot + 0x10000, 0x1000);
+            std::memcpy(auxLcBank2.data(), slot + 0x11000, 0x1000);
+            std::memcpy(auxLcHigh.data(),  slot + 0x12000, 0x2000);
+        } else if (static_cast<size_t>(savedBank) * kRamWorksBankStride
+                       + kRamWorksBankStride <= backingSize) {
+            // Bank-count mismatch — best effort: lift just the saved current
+            // bank's visible slice into the live aux arrays.
+            const uint8_t* slot = data + pos
+                                + static_cast<size_t>(savedBank) * kRamWorksBankStride;
+            std::memcpy(aux.data(),        slot,           0x10000);
+            std::memcpy(auxLcBank1.data(), slot + 0x10000, 0x1000);
+            std::memcpy(auxLcBank2.data(), slot + 0x11000, 0x1000);
+            std::memcpy(auxLcHigh.data(),  slot + 0x12000, 0x2000);
+        }
+        pos += backingSize;
+    }
+    return true;
+}
+
+void Memory::restoreMainRam(const uint8_t* data, size_t n)
+{
+    const size_t lim = (n < mem.size()) ? n : mem.size();
+    for (size_t i = 0; i < lim; ++i) {
+        if (writable[i]) mem[i] = data[i];   // skip ROM / I-O regions
+    }
+}
+
 void Memory::queueKey(uint8_t apple2Key)
 {
     std::lock_guard<std::mutex> lk(kbMutex);
@@ -1238,7 +1412,13 @@ uint8_t Memory::floatingBus() const
     }
     int Hires = (ds.hiRes && !ds.textMode) ? 1 : 0;
     const int Mixed = ds.mixedMode ? 1 : 0;
-    const int Page2 = ds.page2    ? 1 : 0;
+    // The video scanner honours PAGE2 only when 80STORE is off. With
+    // 80STORE on, PAGE2 redirects aux-bank selection rather than the
+    // displayed page, so the scanner — and therefore the floating bus —
+    // always reads page 1. MAME apple2video.cpp use_page_2() = m_page2 &&
+    // !m_80store. Uses iieMemMode (same source as the iieMemRead routing)
+    // so II/II+ (no 80STORE bit) are unaffected.
+    const int Page2 = (ds.page2 && !(iieMemMode & MF_80STORE)) ? 1 : 0;
 
     // MAME `apple2video.cpp:140`: two 0-states ([0, 0..63]).
     const int h_state = h_clock - (h_clock > 0);
