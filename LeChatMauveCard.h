@@ -19,25 +19,25 @@
 // $C05E→$C05F transition) pushes the current 80COL bit into the FIFO,
 // selecting one of four render modes:
 //
-//     00  BW560      Strict monochrome (560-pixel-equivalent on DHGR;
-//                    on standard HGR it just disables color decoding).
-//     01  Mixed      DHGR mode: 140-color top + 560-mono bottom. On
-//                    standard HGR we fall back to ChatMauve-RGB.
-//     10  Chunky160  Video-7 chunky byte mode. On standard HGR we fall
-//                    back to ChatMauve-RGB (DHGR not modelled).
-//     11  COL140     Default at reset — RGB 16-color decoding.
+//     00  BW560      Strict monochrome 560-dot DHR (no chroma).
+//     01  Mixed      Per-byte: MSB set → 4-bit color cell, MSB clear →
+//                    7-dot bit-mapped mono (Video-7 "mixed" mode).
+//     10  Chunky160  Video-7 160-wide chunky bytes: aux+(main<<8) → four
+//                    4-bit pixels of three dots each, centred in 560.
+//     11  COL140     Default at reset — RGB 16-color 140-cell decoding.
 //
 // The card is purely a renderer-mode selector: Apple2Display queries
 // `currentMode()` each frame to choose between the NTSC pipeline (no card)
-// and the ChatMauve RGB / Mono pipelines (card present).
+// and the ChatMauve RGB / Mono pipelines (card present). The full DHGR
+// render of all four modes — plus the Video-7 foreground-background colored
+// TEXT mode (40-col text + AN3, per-cell fg/bg nibbles in aux RAM) — is
+// implemented in Apple2Display::renderDhgr / renderTextChatMauveFgBg, ported
+// from MAME apple2video.cpp dhgr_update()/render_line_color_array() and
+// pinned by tests/video7_parity_smoke_test.cpp.
 //
 // Slot 7 by convention (Apple Color Card / Video-7 historical placement).
 // Slot 0 is the language-card slot; slots 1-5 are typically printer/serial;
 // slot 6 is taken by Disk II in this emulator.
-//
-// Hors scope (cf. TODO.md section 12):
-//   - DHGR proper (560×192) — needs aux RAM + 80STORE/RAMRD/RAMWRT
-//   - Eve Color TEXT mode ($C0B9) — needs aux RAM for per-cell attributes
 
 #ifndef POM2_LE_CHAT_MAUVE_CARD_H
 #define POM2_LE_CHAT_MAUVE_CARD_H

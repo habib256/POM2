@@ -1481,6 +1481,30 @@ endif()
 add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
 set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# Video-7 / Le Chat Mauve RGB parity (4 rgbmodes + fg/bg colored text)
+# against a self-contained MAME apple2video.cpp dhgr_update() oracle.
+add_executable(test_video7_parity
+    video7_parity_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_video7_parity PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_video7_parity PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_video7_parity PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_video7_parity PRIVATE winmm)
+endif()
+
+add_test(NAME video7_parity_smoke COMMAND test_video7_parity)
+set_tests_properties(video7_parity_smoke PROPERTIES TIMEOUT 5)
+
 
 # ─── Display persistence + Chat Mauve 560 smoke test ──────────────────────
 # Pins (1) the DHGR mono persistence buffer (persistenceL80, 560×192) so

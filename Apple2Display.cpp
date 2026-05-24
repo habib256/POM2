@@ -100,6 +100,20 @@ void Apple2Display::render(Memory& mem)
         return;
     }
 
+    // Le Chat Mauve / Video-7 foreground-background colored TEXT mode:
+    // 40-col text while the DHGR (AN3) soft-switch is on, with the RGB card
+    // plugged. Char from main RAM, per-cell fg/bg colours from aux. Renders
+    // straight into frame80 at 560 wide. (MAME text_update :788-791.)
+    const bool wantChatMauveText =
+        mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
+        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
+        auxRam != nullptr;
+    if (wantChatMauveText) {
+        renderTextChatMauveFgBg(mem, 0, 24);
+        useFrame80 = true;
+        return;
+    }
+
     // IIe + 80COL active. Sub-cases:
     //   (a) Full-screen 80-col text          → frame80 only.
     //   (b) DHGR full-screen (HIRES + DHGR)  → frame80 only, no text.
@@ -491,6 +505,80 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
                             lit ? 0xFFFFFFFFu : 0xFF000000u;
                     }
                 }
+            }
+        }
+    }
+}
+
+// Le Chat Mauve / Video-7 "foreground-background" colored TEXT mode.
+// Mirror of renderText's glyph generation, but each cell is painted at
+// 560-dot density into `frame80` with per-cell colours pulled from aux RAM.
+// MAME `apple2video.cpp` text_update :788-791 selects this path on
+//   (IIE||PRAVETZ_8C) && rgb_monitor() && m_dhires && !m_80col
+// and render_line_color_array :571-583 does the colouring: the 7-bit glyph
+// is doubled to 14 dots; a set dot picks the aux byte's high nibble
+// (foreground), a clear dot the low nibble (background) — both lo-res
+// palette indices.
+void Apple2Display::renderTextChatMauveFgBg(Memory& mem, int firstRow, int lastRow)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* ram = mem.data();
+    const uint8_t* aux = auxRam ? auxRam : ram;
+    const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
+
+    const auto& charRom    = mem.charRom();
+    const bool  useCharRom = charRom.size() >= 2048;
+    const bool  altCharSet = state.altChar;
+
+    for (int row = firstRow; row < lastRow; ++row) {
+        const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
+        const int cellY = row * 8;
+        for (int col = 0; col < 40; ++col) {
+            // Char code from main RAM; fg/bg attribute from aux at the same
+            // text address (MAME: char = m_ram_ptr[address], colours =
+            // aux_page[aux_address]).
+            const uint8_t src    = ram[rowAddr + col];
+            const uint8_t attr   = aux[rowAddr + col];
+            const uint32_t fg = kChatMauveLoResPalette[(attr >> 4) & 0x0Fu];
+            const uint32_t bg = kChatMauveLoResPalette[attr & 0x0Fu];
+
+            // Resolve the glyph into a uniform 7-bit row (bit i = pixel i,
+            // bit 0 = leftmost, 1 = lit) with invert/flash already applied,
+            // so the 14-dot widening below is shared by both font paths.
+            uint8_t glyphRows[8];
+            if (useCharRom) {
+                const auto g = lookupCsbitsGlyph(
+                    src, charRom.data(), charRom.size(), altCharSet);
+                for (int gy = 0; gy < 8; ++gy) {
+                    uint8_t bits = g.bytes[gy];
+                    if (g.flash && flashPhase) bits ^= 0x7Fu;
+                    glyphRows[gy] = bits & 0x7Fu;
+                }
+            } else {
+                uint8_t glyph[8];
+                bool invert = false, flash = false;
+                resolveGlyph(src, glyph, invert, flash);
+                if (flash && flashPhase) invert = !invert;
+                for (int gy = 0; gy < 8; ++gy) {
+                    const uint8_t row8 = glyph[gy];
+                    uint8_t bits = 0;
+                    for (int gx = 0; gx < 7; ++gx) {
+                        bool lit = (gx >= 1 && gx <= 5)
+                                && ((row8 >> (5 - gx)) & 1);
+                        if (invert) lit = !lit;
+                        if (lit) bits |= static_cast<uint8_t>(1u << gx);
+                    }
+                    glyphRows[gy] = bits;
+                }
+            }
+
+            for (int gy = 0; gy < 8; ++gy) {
+                const uint8_t bits = glyphRows[gy];
+                uint32_t* outRow = frame80.data()
+                    + static_cast<size_t>(cellY + gy) * kWidth80;
+                // Double each glyph pixel to two dots (MAME double_7_bits).
+                for (int d = 0; d < 14; ++d)
+                    outRow[col * 14 + d] = ((bits >> (d >> 1)) & 1u) ? fg : bg;
             }
         }
     }
@@ -1325,21 +1413,73 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                 outRow[x] = (uint32_t(0xFF) << 24) | (b << 16) | (g << 8) | r;
             }
         } else {
-            // RGB-card 4-dot block decode (ChatMauveRGB). Rotated left by
-            // 1 to match MAME's `rotl4(n, 1)` Video-7 RGB color path.
-            for (int x = 0; x < kWidth80; x += 4) {
-                const uint8_t raw = static_cast<uint8_t>(
-                      dots[x + 0]
-                    | (dots[x + 1] << 1)
-                    | (dots[x + 2] << 2)
-                    | (dots[x + 3] << 3));
-                const uint8_t nibble = static_cast<uint8_t>(
-                    ((raw << 1) | (raw >> 3)) & 0x0Fu);
-                const uint32_t rgb = rgbCardPalette[nibble];
-                outRow[x + 0] = rgb;
-                outRow[x + 1] = rgb;
-                outRow[x + 2] = rgb;
-                outRow[x + 3] = rgb;
+            // Le Chat Mauve / Video-7 RGB card. Its 2-bit AN3 FIFO mode
+            // (currentMode) selects one of four DHGR renders — verbatim
+            // port of MAME `apple2video.cpp` dhgr_update() (rgbmode 0/1/2/3),
+            // with POM2's RGB-card lo-res palette as the 16-colour LUT.
+            using Mode = LeChatMauveCard::RenderMode;
+            const Mode rmode = chatMauve->currentMode();
+            constexpr uint32_t kWhite = 0xFFFFFFFFu;
+            constexpr uint32_t kBlack = 0xFF000000u;
+
+            if (rmode == Mode::Chunky160) {
+                // rgbmode==2: Video-7 "160-wide" chunky mode (MAME :906-930).
+                // Each column = aux + (main<<8) → four 4-bit pixels of three
+                // dots each (480 wide), centred in 560 with 40 black margins.
+                int x = 0;
+                for (int b = 0; b < 40; ++b) outRow[x++] = kBlack;
+                for (int c = 0; c < 40; ++c) {
+                    unsigned v = aux_[rowAddr + c]
+                               + (static_cast<unsigned>(main_[rowAddr + c]) << 8);
+                    for (int i = 0; i < 4; ++i) {
+                        const uint32_t col = rgbCardPalette[v & 0x0Fu];
+                        outRow[x++] = col; outRow[x++] = col; outRow[x++] = col;
+                        v >>= 4;
+                    }
+                }
+                for (int b = 0; b < 40; ++b) outRow[x++] = kBlack;
+            } else if (rmode == Mode::BW560) {
+                // rgbmode==0: monochrome DHR — the 560-dot stream as clean
+                // black/white (no NTSC artifacts). MAME forces the mono
+                // renderer for rgbmode 0 (dhgr_update :896,941-944).
+                for (int x = 0; x < kWidth80; ++x)
+                    outRow[x] = dots[x] ? kWhite : kBlack;
+            } else {
+                // rgbmode==1 (Mixed) or ==3 (COL140 / colour). Walk the
+                // aux+main bytes two columns at a time (28-bit window). In
+                // colour mode every pixel is colour; in Mixed mode each
+                // source byte's MSB picks colour (1) vs bit-mapped mono (0)
+                // for its seven dots. MAME `apple2video.cpp:946-977`.
+                const bool colorAll = (rmode == Mode::COL140);
+                for (int c = 0; c < 40; c += 2) {
+                    const uint8_t a0 = aux_ [rowAddr + c];
+                    const uint8_t m0 = main_[rowAddr + c];
+                    const uint8_t a1 = aux_ [rowAddr + c + 1];
+                    const uint8_t m1 = main_[rowAddr + c + 1];
+                    const unsigned w =
+                          (a0 & 0x7Fu)
+                        | (static_cast<unsigned>(m0 & 0x7Fu) << 7)
+                        | (static_cast<unsigned>(a1 & 0x7Fu) << 14)
+                        | (static_cast<unsigned>(m1 & 0x7Fu) << 21);
+                    // Per-byte MSB → colour mask (each source byte owns 7
+                    // dots). MAME: vaux*0x7f + vram*0x3f80 + ...
+                    const unsigned colorMask = colorAll ? ~0u :
+                          ((a0 >> 7) ? 0x0000007Fu : 0u)
+                        | ((m0 >> 7) ? 0x00003F80u : 0u)
+                        | ((a1 >> 7) ? 0x001FC000u : 0u)
+                        | ((m1 >> 7) ? 0x0FE00000u : 0u);
+                    for (int b = 0; b < 28; ++b) {
+                        const int absX = c * 14 + b;
+                        if (colorMask & (1u << b)) {
+                            // Colour: the 4-dot block's nibble, rotl4 by 1.
+                            const unsigned nib = (w >> (b & ~3u)) & 0x0Fu;
+                            outRow[absX] = rgbCardPalette[
+                                ((nib << 1) | (nib >> 3)) & 0x0Fu];
+                        } else {
+                            outRow[absX] = (w & (1u << b)) ? kWhite : kBlack;
+                        }
+                    }
+                }
             }
         }
     }

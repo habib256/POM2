@@ -233,17 +233,36 @@ per byte → 560-dot stream. Three color paths, matching MAME
   560 dots → `kArtifactColorLut[128]` → `rotl4b(value, absX+1)` →
   4-bit lo-res palette index. `+1` matches MAME's `is_80_column=1`
   in `render_line_artifact_color`. Per-pixel decode.
-- **`ChatMauveRGB`** — 4-dot block → raw nibble (bit 0 leftmost) →
-  `rotl4(n, 1)` (MAME Video-7 `dhgr_update`) →
-  `kChatMauveLoResPalette`. Palette verbatim from AppleWin
-  `PaletteRGB_Feline`; MAME's Video-7 collapses idx 5≡10, POM2
-  follows AppleWin so the "two distinct grays" trademark survives
-  (intentional divergence).
+- **`ChatMauveRGB`** — Video-7 / Le Chat Mauve RGB card. The card's
+  2-bit AN3 FIFO (`LeChatMauveCard::currentMode()`) picks one of MAME's
+  four `dhgr_update` rgbmodes (POM2 enum == MAME rgbmode):
+  - `COL140`(3) — every 4-dot block → raw nibble (bit 0 leftmost) →
+    `rotl4(n,1)` → `kChatMauveLoResPalette`.
+  - `Mixed`(1) — two cols at a time as a 28-bit word; each **source
+    byte's MSB** picks color (`rotl4` nibble) vs 7-dot bit-mapped mono
+    for its dots (MAME `:946-977` `color_mask`).
+  - `Chunky160`(2) — `aux+(main<<8)` → four 4-bit pixels of three dots
+    each, 480 wide, centred in 560 with 40 black margins (MAME `:906-930`).
+  - `BW560`(0) — plain mono DHR (MAME forces the mono renderer for
+    rgbmode 0).
+  Palette verbatim from AppleWin `PaletteRGB_Feline`; MAME's Video-7
+  collapses idx 5≡10, POM2 follows AppleWin so the "two distinct grays"
+  trademark survives (intentional divergence).
 - **`Mono*`** — luminance × tint; persistence sized for 280-wide
   HGR so DHGR mono renders without afterglow.
 
-Mixed = DHGR top 160 + 80-col text bottom 4 rows. Pinned:
-`dhgr_render_smoke_test.cpp`.
+Mixed = DHGR top 160 + 80-col text bottom 4 rows.
+
+**Video-7 foreground-background colored TEXT** (`renderTextChatMauveFgBg`):
+40-col text with the RGB card while the DHGR (AN3) soft-switch is on —
+char code from main RAM, per-cell fg/bg colours from the **aux** byte at
+the same text address (hi nibble = fg, lo = bg, lo-res palette indices);
+the 7-bit glyph is doubled to 14 dots. Port of MAME `text_update`
+(`:788-791`) + `render_line_color_array` (`:571-583`).
+
+Pinned: `dhgr_render_smoke_test.cpp` (COL140 + composite/mono) and
+`video7_parity_smoke_test.cpp` (all 4 rgbmodes + fg/bg vs a self-contained
+MAME `dhgr_update` oracle, full 560-dot rows).
 
 ### 80-col text
 

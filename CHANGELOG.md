@@ -8,6 +8,24 @@ courante → `DEV.md`.
 
 ## 2026-05-24
 
+- **Rendu Video-7 / Le Chat Mauve complet (4 rgbmodes DHGR + texte
+  foreground-background)**. `Apple2Display::renderDhgr` consulte désormais le
+  mode FIFO AN3 de la carte (`LeChatMauveCard::currentMode()`) pour choisir
+  l'un des quatre rgbmodes de MAME `apple2video.cpp` `dhgr_update()` :
+  `COL140`(3, couleur 140-cellules, déjà présent), `Mixed`(1, le MSB de chaque
+  octet source choisit couleur vs mono 7-points), `Chunky160`(2, `aux+(main<<8)`
+  → quatre pixels 4-bit de 3 points, 480 centrés dans 560) et `BW560`(0, mono
+  strict). Nouveau `renderTextChatMauveFgBg` : mode **texte couleur Video-7**
+  (texte 40-col + AN3 actif) — le code char vient de la RAM principale, les
+  couleurs fg/bg par cellule de l'octet aux à la même adresse (quartet haut =
+  fg, bas = bg ; glyphe 7 bits doublé en 14 points). Porté verbatim de MAME
+  (`dhgr_update` `:885-980`, `render_line_color_array` `:571-583`, `text_update`
+  `:788-791`), palette Feline AppleWin conservée (deux gris distincts). Le
+  refactor de `COL140` est bit-identique à l'ancien chemin (les tests existants
+  passent inchangés). Épinglé par `tests/video7_parity_smoke_test.cpp` (les 4
+  rgbmodes + fg/bg comparés ligne par ligne — 560 points — à un oracle MAME
+  `dhgr_update` autonome embarqué dans le test). 72 tests OK.
+
 - **`bootFromSlot` réplique l'init zéro-page du Monitor F8 (corrige Mr. Robot
   4am)**. `EmulationController::bootFromSlot` (raccourci `coldBoot + PC=$Cn00`
   utilisé par le kiosk/CLI, les boutons « Boot » de la Disk Library ET « Boot

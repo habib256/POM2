@@ -146,6 +146,16 @@ private:
     // Monochrome HiResModes render dot-by-dot luminance through the
     // selected phosphor.
     void renderDhgr  (Memory& mem, int firstScanline, int lastScanline);
+    // Le Chat Mauve / Video-7 "foreground-background" colored TEXT mode.
+    // Active on a IIe-class machine with the RGB card in 40-col text while
+    // the DHGR (AN3) soft-switch is on. Char code comes from main RAM; the
+    // aux byte at the same text address holds the cell colours (high nibble
+    // = foreground, low nibble = background, both lo-res palette indices).
+    // The 7-bit glyph row is doubled to 14 dots, each dot painted fg/bg.
+    // Renders rows [firstRow, lastRow) into `frame80` at 560 wide. Port of
+    // MAME `apple2video.cpp` text_update (:788-791) + render_line_color_array
+    // (:571-583).
+    void renderTextChatMauveFgBg(Memory& mem, int firstRow, int lastRow);
     // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
     // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);
