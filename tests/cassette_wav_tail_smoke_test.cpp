@@ -77,5 +77,25 @@ int main()
         return 1;
     }
     std::printf("OK cassette_wav_tail (3 transitions incl. flushed tail)\n");
+
+    // Leader auto-rewind (`cassette_auto_rewind`, 3f42efc) — POM2 convenience
+    // that re-arms playback when the Monitor READ routine stops polling. It
+    // MUST default OFF: a custom loader polling its own way would otherwise get
+    // rewound underneath it. Pin the default + the toggle accessors.
+    if (cass.isAutoRewindEnabled()) {
+        std::printf("FAIL: auto-rewind must default OFF\n");
+        return 1;
+    }
+    cass.setAutoRewind(true);
+    if (!cass.isAutoRewindEnabled()) {
+        std::printf("FAIL: setAutoRewind(true) had no effect\n");
+        return 1;
+    }
+    cass.setAutoRewind(false);
+    if (cass.isAutoRewindEnabled()) {
+        std::printf("FAIL: setAutoRewind(false) had no effect\n");
+        return 1;
+    }
+    std::printf("OK cassette auto-rewind (default-off + toggle)\n");
     return 0;
 }

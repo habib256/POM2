@@ -146,10 +146,13 @@ ci-dessous.
 
 ## Tests de pin dus
 
-- [ ] Smoke tests pour les quick-wins audio/IO résolus dans `3f42efc`
-      (convention « MAME source of truth ») : **[Mockingboard]** AY
-      tone counter entier, **[SSC]** LF→CR + raw-mode, **[Cassette]**
-      auto-rewind opt-in.
+- [x] Smoke tests pour les quick-wins audio/IO de `3f42efc` (2026-05-25) :
+      **[Mockingboard]** AY tone counter — `mockingboard_smoke`
+      `testAyToneFrequency` (période 64 → 998.6 Hz mesuré vs 998.8 attendu) ;
+      **[SSC]** LF→CR déjà pinné par `testTelnetLineEndingNormalisation`, +
+      `testRawModeFlag` (défaut OFF + toggle) ; **[Cassette]** auto-rewind
+      défaut-OFF + toggle dans `cassette_wav_tail`. (LF→CR symétrique et IAC
+      FSM étaient déjà couverts.)
 
 ## Skips délibérés (won't-fix, documenté inline)
 

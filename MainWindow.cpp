@@ -418,6 +418,14 @@ MainWindow::MainWindow(bool forceIIPlus)
     // through applyProfile (auto-probe matching the saved profile, or
     // no saved profile at all).
     controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(activeProfile));
+
+    // activeProfile is now fully resolved (auto-probe + saved-profile
+    // catch-up). Refresh the AI server's cached label: the wiring above set it
+    // from the still-default activeProfile (AppleIIPlus) BEFORE resolution, and
+    // when the saved profile matches the auto-probe the applyProfile() path
+    // (which also refreshes the label) is skipped — so /status would otherwise
+    // report the wrong machine (e.g. "Apple ][+" while running a //e).
+    aiServer->setProfileLabel(std::string(pom2::profileConfig(activeProfile).displayName));
 }
 
 // Out-of-line accessor bodies — these need EmulationController and

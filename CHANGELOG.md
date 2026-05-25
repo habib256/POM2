@@ -8,6 +8,22 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **Tests de pin (dette `3f42efc`)** : `mockingboard_smoke` mesure désormais la
+  fondamentale du compteur de tons AY (période 64 → 998.6 Hz vs 998.8 attendu,
+  garde le refactor float→entier) ; `ssc_acia_smoke` pin le flag raw-mode
+  (défaut OFF + toggle ; LF→CR + IAC FSM déjà couverts) ; `cassette_wav_tail`
+  pin l'auto-rewind (défaut OFF + toggle) ; `ai_control_server_smoke` pin
+  l'endpoint `/mouse` (lookup carte, compteur 8 bits, clamp ±127, absolu,
+  reset, 503/405).
+- **`/status` rapportait le mauvais profil** (`Apple ][+` en tournant //e) —
+  `MainWindow` figeait le label AI dans le ctor avec `activeProfile` encore au
+  défaut, AVANT résolution ; quand le profil sauvé == auto-probe, `applyProfile`
+  (qui rafraîchit le label) est sauté. Fix : rafraîchir le label après la
+  résolution du profil.
+- **Build : `cmake --build . --target POM2` ne faisait rien** (la vraie cible est
+  `pom2_imgui`, `POM2` n'est que l'`OUTPUT_NAME`) — ajout d'un alias phony
+  `add_custom_target(POM2 DEPENDS pom2_imgui)` (hors `ALL`, donc zéro impact sur
+  le build normal).
 - **HDV/CFFA : images 32 Mio (65536 blocs) refusées — correctif off-by-one**.
   Le garde de `Block512Backing` rejetait tout `.hdv`/`.2mg` de **plus de
   65535 blocs**, ce qui bloquait au chargement les dumps 32 Mio **exactement

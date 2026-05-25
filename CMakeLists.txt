@@ -192,6 +192,13 @@ endforeach()
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
 
+# Convenience alias: the CMake target is ${PROJECT_NAME} (pom2_imgui) but the
+# output binary is POM2, so `cmake --build . --target POM2` is otherwise a
+# silent no-op (make: "Nothing to be done for 'POM2'"). This phony target maps
+# the intuitive name back to the real one. Use either; `cmake --build .` (no
+# --target) still builds everything.
+add_custom_target(POM2 DEPENDS ${PROJECT_NAME})
+
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
