@@ -115,7 +115,7 @@ struct MockingboardCard::Via6522
     // 0 → -1, i.e. the pulse fires when we count *through* zero).
     uint16_t t1Latch = 0xFFFF;
     int32_t  t1Counter = 0xFFFF;
-    bool     t1FireArmed = true;   // one-shot: fires only after a fresh load
+    bool     t1FireArmed = false;  // matches reset(): no T1 IRQ until SW loads T1CH
     // Timer 2. Verbatim port of MAME `6522via.cpp:761-782` (write)
     // and `:588-625` (read). T2 is a one-shot timer on phase-2 (the
     // ACR.bit5 PB6 pulse-counting mode is *not* modelled — POM2

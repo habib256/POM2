@@ -261,6 +261,28 @@ void testSnapshotPathSafety(EmulationController& /*ctrl*/, pom2::AiControlServer
     assert(contains(r.body, expected.string()));
     fs::remove(expected);
 
+    // R4-#3: a symlink under cwd whose target is OUTSIDE cwd must be
+    // rejected for save — weakly_canonical returns it lexically (inside
+    // cwd) but ofstream would follow it out of the jail.
+    {
+        const fs::path outside =
+            fs::temp_directory_path() / "pom2_symlink_escape_target.snap";
+        const std::string linkName = "pom2_evil_link.snap";
+        const fs::path link = fs::current_path() / linkName;
+        std::error_code ec;
+        fs::remove(outside, ec);
+        fs::remove(link, ec);
+        fs::create_symlink(outside, link, ec);
+        if (!ec) {                       // skip if the platform lacks symlinks
+            HttpResponse rs = post("/snapshot/save",
+                "{\"path\":\"" + linkName + "\"}");
+            assert(rs.status == 403);
+            assert(!fs::exists(outside)); // nothing written through the link
+            fs::remove(link, ec);
+            fs::remove(outside, ec);
+        }
+    }
+
     std::puts("  snapshot path-safety: OK");
 }
 
@@ -288,6 +310,34 @@ void testSpeed(EmulationController& ctrl, pom2::AiControlServer& /*srv*/)
     const HttpResponse r = oneShot(kTestPort, req);
     assert(r.status == 200);
     assert(ctrl.getCyclesPerFrame() == 34090);
+
+    auto postSpeed = [](const std::string& body) {
+        char rq[512];
+        std::snprintf(rq, sizeof(rq),
+            "POST /speed HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Length: %zu\r\n\r\n%s", body.size(), body.c_str());
+        return oneShot(kTestPort, rq);
+    };
+
+    // R4-#1: out-of-range cycles_per_frame is REJECTED, not cast to a
+    // garbage int that freezes/pauses the emulator. State stays unchanged.
+    HttpResponse rr = postSpeed("{\"cycles_per_frame\":9999999999}");
+    assert(rr.status == 400);
+    assert(ctrl.getCyclesPerFrame() == 34090);
+    rr = postSpeed("{\"cycles_per_frame\":0}");
+    assert(rr.status == 400);
+    // A valid in-range value is accepted.
+    rr = postSpeed("{\"cycles_per_frame\":50000}");
+    assert(rr.status == 200);
+    assert(ctrl.getCyclesPerFrame() == 50000);
+
+    // R4-#2: jsonGetString must match the key at an object-key position, not
+    // inside another field's VALUE. "label"'s value is the quoted string
+    // "cycles_per_frame"; the real numeric field must still be found.
+    rr = postSpeed("{\"label\":\"cycles_per_frame\",\"cycles_per_frame\":17045}");
+    assert(rr.status == 200);
+    assert(ctrl.getCyclesPerFrame() == 17045);
+
     std::puts("  speed: OK");
 }
 

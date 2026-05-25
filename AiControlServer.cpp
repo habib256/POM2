@@ -60,6 +60,12 @@ std::optional<std::string> safeCwdRelativePath(const std::string& in,
     // stable root to lexically normalise against.
     const fs::path full = fs::weakly_canonical(fs::absolute(fs::path(in), ec), ec);
     if (ec) return std::nullopt;
+    // Reject a symlink as the resolved target. weakly_canonical can return a
+    // final-component symlink LEXICALLY (so the path looks inside cwd) while
+    // the caller's ofstream/open() then FOLLOWS it out of the jail. The load
+    // path's is_regular_file dereferences, but the save path (mustExist=false)
+    // would otherwise overwrite an arbitrary file via a planted symlink.
+    if (fs::is_symlink(fs::symlink_status(full, ec))) return std::nullopt;
     if (mustExist && !fs::is_regular_file(full, ec)) return std::nullopt;
     // Component-wise prefix check on canonical paths. We can't use a
     // string-level `starts_with` because `/foo/barbaz` would falsely
@@ -115,47 +121,89 @@ std::string queryParam(const std::string& q, const std::string& key)
 /// JSON dependency. Accepts unquoted tokens (numbers, true/false), quoted
 /// strings with `\"`, `\\`, `\n`, `\r`, `\t` escapes. Unknown keys → empty
 /// string; the caller supplies the default.
-std::string jsonGetString(const std::string& body, const std::string& key)
+// Parse a JSON value (quoted string with escapes, or a bare token) that
+// starts at body[pos] (pos just past the key's ':'). Returns unescaped text.
+std::string jsonParseValueAt(const std::string& body, size_t pos)
 {
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = body.find(needle);
-    if (pos == std::string::npos) return {};
-    pos += needle.size();
-    while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
-    if (pos >= body.size() || body[pos] != ':') return {};
-    ++pos;
-    while (pos < body.size() && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
-    if (pos >= body.size()) return {};
+    const size_t n = body.size();
+    while (pos < n && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
+    if (pos >= n) return {};
     if (body[pos] == '"') {
         ++pos;
         std::string out;
-        while (pos < body.size() && body[pos] != '"') {
-            if (body[pos] == '\\' && pos + 1 < body.size()) {
-                const char esc = body[pos + 1];
-                switch (esc) {
+        while (pos < n && body[pos] != '"') {
+            if (body[pos] == '\\' && pos + 1 < n) {
+                switch (body[pos + 1]) {
                     case 'n': out.push_back('\n'); break;
                     case 'r': out.push_back('\r'); break;
                     case 't': out.push_back('\t'); break;
                     case '"': out.push_back('"');  break;
                     case '\\': out.push_back('\\'); break;
                     case '/':  out.push_back('/');  break;
-                    default:   out.push_back(esc);  break;
+                    default:   out.push_back(body[pos + 1]); break;
                 }
                 pos += 2;
             } else {
-                out.push_back(body[pos]);
-                ++pos;
+                out.push_back(body[pos]); ++pos;
             }
         }
         return out;
     }
     std::string out;
-    while (pos < body.size() && body[pos] != ',' && body[pos] != '}' &&
+    while (pos < n && body[pos] != ',' && body[pos] != '}' &&
            !std::isspace(static_cast<unsigned char>(body[pos]))) {
-        out.push_back(body[pos]);
-        ++pos;
+        out.push_back(body[pos]); ++pos;
     }
     return out;
+}
+
+// Return the index just past the value at body[pos] (past ':'), so the key
+// scan can skip a non-matching field's value without mistaking the value's
+// contents for a key.
+size_t jsonSkipValueAt(const std::string& body, size_t pos)
+{
+    const size_t n = body.size();
+    while (pos < n && std::isspace(static_cast<unsigned char>(body[pos]))) ++pos;
+    if (pos < n && body[pos] == '"') {
+        ++pos;
+        while (pos < n && body[pos] != '"') {
+            if (body[pos] == '\\' && pos + 1 < n) pos += 2; else ++pos;
+        }
+        if (pos < n) ++pos;                 // past closing quote
+    } else {
+        while (pos < n && body[pos] != ',' && body[pos] != '}') ++pos;
+    }
+    return pos;
+}
+
+/// Extract `key`'s value from flat one-level JSON. Walks the body skipping
+/// over string VALUES so the key only matches at an object-key position
+/// (immediately followed by ':') — a value containing another field's name
+/// as a substring no longer hijacks the match. Unknown key → empty string.
+std::string jsonGetString(const std::string& body, const std::string& key)
+{
+    const size_t n = body.size();
+    size_t i = 0;
+    while (i < n) {
+        if (body[i] != '"') { ++i; continue; }
+        // Read the string token at i (a key candidate).
+        std::string name;
+        size_t j = i + 1;
+        for (; j < n && body[j] != '"'; ++j) {
+            if (body[j] == '\\' && j + 1 < n) { name.push_back(body[j + 1]); ++j; }
+            else                              { name.push_back(body[j]); }
+        }
+        if (j >= n) break;                  // unterminated string
+        size_t k = j + 1;
+        while (k < n && std::isspace(static_cast<unsigned char>(body[k]))) ++k;
+        if (k < n && body[k] == ':') {       // `name` is an object key
+            if (name == key) return jsonParseValueAt(body, k + 1);
+            i = jsonSkipValueAt(body, k + 1);
+        } else {
+            i = j + 1;                       // `name` was a value string
+        }
+    }
+    return {};
 }
 
 bool jsonGetInt(const std::string& body, const std::string& key, long& out)
@@ -610,8 +658,14 @@ void AiControlServer::handleStatus(int fd, const Request& /*req*/)
     EmulationController::Mode mode = ctrl_->getMode();
     int cpf = ctrl_->getCyclesPerFrame();
 
+    // Sample CPU regs AND disk state under ONE lock so the /status JSON is a
+    // single coherent snapshot (the worker releases the lock between 4096-
+    // cycle chunks, so two separate lock scopes could straddle an emulated-
+    // time gap). Lock-then-check also serialises against a profile switch
+    // nulling disk6_ (see `detach()`).
     uint16_t pc; uint8_t a, x, y, p, sp; uint64_t cycles;
     std::string cpuMode;
+    std::string disks = "[]";
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         pc = cpu.getProgramCounter();
@@ -622,15 +676,6 @@ void AiControlServer::handleStatus(int fd, const Request& /*req*/)
         sp = cpu.getStackPointer();
         cycles = ctrl_->memory().getCycleCounter();
         cpuMode = cpuModeName(cpu.getCpuMode());
-    }
-
-    // Disk status. Lock-then-check so a profile switch nulling disk6_
-    // (see `detach()`) is serialised against this read. Without the
-    // lock-first ordering, disk6_ could be non-null at the if() but
-    // freed by the time we dereference inside the lock.
-    std::string disks = "[]";
-    {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         if (disk6_) {
             std::ostringstream oss;
             oss << "[";
@@ -949,7 +994,19 @@ void AiControlServer::handleSpeed(int fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     long cpf = -1;
-    if (jsonGetInt(req.body, "cycles_per_frame", cpf) && cpf > 0) {
+    if (jsonGetInt(req.body, "cycles_per_frame", cpf)) {
+        // The value becomes the per-"frame" worker cycle budget. An
+        // unbounded value freezes the UI (billions of cycles per frame
+        // holding the state lock), and values whose low 32 bits are ≤0
+        // truncate to a dead/negative budget when cast to int. Bound it to
+        // ~117× realtime (the "max" preset's order of magnitude) and reject
+        // anything outside [1, kMaxCpf] instead of silently casting.
+        constexpr long kMaxCpf = 2'000'000;
+        if (cpf <= 0 || cpf > kMaxCpf) {
+            sendJsonError(fd, 400,
+                "cycles_per_frame out of range (1.." + std::to_string(kMaxCpf) + ")");
+            return;
+        }
         ctrl_->setCyclesPerFrame(static_cast<int>(cpf));
     } else {
         const std::string preset = jsonGetString(req.body, "preset");
