@@ -10,6 +10,7 @@
 #include "Logger.h"
 
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -62,7 +63,10 @@ bool parseIntPositive(const std::string& s, int& out)
     try {
         size_t idx = 0;
         long n = std::stol(s, &idx, 10);
-        if (idx != s.size() || n < 0) return false;
+        // Reject trailing junk, negatives, AND values that would overflow int
+        // (std::stol caps at LONG_MAX; the cast below would wrap a huge value
+        // to a bogus-but-positive cycles/frame or step count).
+        if (idx != s.size() || n < 0 || n > INT_MAX) return false;
         out = static_cast<int>(n);
         return true;
     } catch (...) { return false; }

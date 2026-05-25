@@ -93,7 +93,7 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 break;
             case CliAction::Kind::Step: {
                 emu.setMode(EmulationController::Mode::Stopped);
-                for (int n = 0; n < a.countI; ++n) emu.requestStep();
+                emu.requestStep(a.countI);   // queues N steps (counter, not coalesced)
                 pom2::log().info("CLI", "--step requested " + std::to_string(a.countI));
                 break;
             }
@@ -105,7 +105,7 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 pom2::log().info("CLI", "--play: tape rolling");
                 break;
             case CliAction::Kind::RecTape:
-                emu.cassette().armRecording();
+                emu.armRecording();   // locked wrapper — avoids racing the CPU worker
                 pom2::log().info("CLI", "--rec: cassette capture armed");
                 break;
             case CliAction::Kind::RewindTape:

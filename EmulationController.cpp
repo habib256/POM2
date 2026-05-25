@@ -150,6 +150,7 @@ void EmulationController::pauseTape(bool p)  { std::lock_guard<std::mutex> lk(st
 void EmulationController::rewindTape()       { std::lock_guard<std::mutex> lk(stateMtx); tape->rewindTape(); }
 void EmulationController::ejectTape()        { std::lock_guard<std::mutex> lk(stateMtx); tape->ejectTape(); }
 void EmulationController::clearTapeCapture() { std::lock_guard<std::mutex> lk(stateMtx); tape->clearRecordedTape(); }
+void EmulationController::armRecording()     { std::lock_guard<std::mutex> lk(stateMtx); tape->armRecording(); }
 void EmulationController::seekTapeRelative(double dt)
 {
     std::lock_guard<std::mutex> lk(stateMtx);
@@ -366,9 +367,12 @@ void EmulationController::bootFromSlot(int slot)
         std::to_string(slot) + "00)");
 }
 
-void EmulationController::requestStep()
+void EmulationController::requestStep(int n)
 {
-    stepRequested.store(true);
+    if (n <= 0) return;
+    // Counter, not a boolean: callers (e.g. CLI `--step N`) may queue many
+    // steps in a burst; a boolean would coalesce them into a single step.
+    stepsPending.fetch_add(n);
     setMode(Mode::Step);
     wakeCv.notify_all();
 }
@@ -487,20 +491,26 @@ void EmulationController::workerLoop()
         }
 
         if (m == Mode::Step) {
-            if (stepRequested.exchange(false)) {
-                std::lock_guard<std::mutex> lk(stateMtx);
-                processor.step();
-                // M6502::step() already calls memory->advanceCycles(cycles)
-                // with the *current instruction's* cycle count — per-step
-                // accounting is canonical so cassette + speaker + slot
-                // peripherals stay cycle-aligned. Calling it again here
-                // would double-count (which is exactly the bug that made
-                // the speaker tone freeze: cycleCounter drifted ahead of
-                // wallclock, the audio cursor lagged 200 ms+, the catch-up
-                // logic dropped events in a loop, and the synth got stuck
-                // on whatever level survived the drop).
+            // Drain ONE queued step per worker iteration, releasing stateMtx
+            // between steps (so the UI thread isn't starved during a long
+            // `--step N`), and stay in Step mode until the queue empties.
+            if (stepsPending.load() > 0) {
+                {
+                    std::lock_guard<std::mutex> lk(stateMtx);
+                    processor.step();
+                    // M6502::step() already calls memory->advanceCycles(cycles)
+                    // with the *current instruction's* cycle count — per-step
+                    // accounting is canonical so cassette + speaker + slot
+                    // peripherals stay cycle-aligned. Calling it again here
+                    // would double-count (which is exactly the bug that made
+                    // the speaker tone freeze: cycleCounter drifted ahead of
+                    // wallclock, the audio cursor lagged 200 ms+, the catch-up
+                    // logic dropped events in a loop, and the synth got stuck
+                    // on whatever level survived the drop).
+                }
+                stepsPending.fetch_sub(1);
             }
-            mode.store(Mode::Stopped);
+            if (stepsPending.load() <= 0) mode.store(Mode::Stopped);
             continue;
         }
 

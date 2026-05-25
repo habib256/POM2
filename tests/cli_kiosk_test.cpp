@@ -190,6 +190,19 @@ void testClassifier()
     fs::remove_all(dir);
 }
 
+void testIntArgOverflowRejected()
+{
+    bool help = false;
+    // Values > INT_MAX must be REJECTED, not truncated by long->int to a
+    // bogus-but-positive cycles/frame or step count (the n<=0 guard alone
+    // missed wrap-to-positive). 9999999999 and 0x1_0000_220D both overflow.
+    assert(!parse({"POM2", "--speed", "9999999999"}, help).has_value());
+    assert(!parse({"POM2", "--step",  "4294984461"}, help).has_value());
+    // Sane in-range values still parse.
+    assert(parse({"POM2", "--speed", "1000000"}, help).has_value());
+    assert(parse({"POM2", "--step",  "100"}, help).has_value());
+}
+
 }  // namespace
 
 int main()
@@ -214,6 +227,8 @@ int main()
     std::printf("parseCli rejects garbage/out-of-range addresses: OK\n");
     testPresetIieUnenhanced();
     std::printf("parseCli --preset iie-u family: OK\n");
+    testIntArgOverflowRejected();
+    std::printf("parseCli rejects --speed/--step int overflow: OK\n");
     testClassifier();
     std::printf("classifyDiskForSlot 5.25/3.5/HDV/unknown: OK\n");
 
