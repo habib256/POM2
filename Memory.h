@@ -134,6 +134,16 @@ public:
     /// so unit tests can pin the video-scanner address logic.
     uint8_t peekFloatingBus() const { return floatingBus(); }
 
+    /// Read a byte from MAIN-bank RAM directly, bypassing IIe aux paging
+    /// (80STORE/RAMRD/PAGE2/ALTZP) and the soft-switch / slot-bus / ROM
+    /// machinery. The AppleMouse firmware always maintains its position +
+    /// status screen holes ($0478+s / $0578+s / $04F8+s / $05F8+s /
+    /// $07F8+s) in main memory, so the host-side mouse-sync feedback loop
+    /// (`MainWindow::onMouseMove`) must read them from here — `memRead`
+    /// would route to aux whenever RAMRD/PAGE2 happen to be set when the
+    /// host cursor callback fires. Do NOT use for CPU bus emulation.
+    uint8_t peekMainRam(uint16_t addr) const { return mem[addr]; }
+
     // CPU bus interface (called from M6502).
     uint8_t memRead(uint16_t addr);
     void    memWrite(uint16_t addr, uint8_t value);
