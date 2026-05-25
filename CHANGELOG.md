@@ -8,6 +8,270 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **[UI] Fusion Slot Manager → Slot Configuration**. Le panneau autonome
+  *Slot Manager* est **supprimé** (`SlotManager_ImGui.{h,cpp}` retirés) ;
+  sa fonctionnalité de baies montables est repliée dans une **2ᵉ colonne**
+  de *Slot Configuration* (Machine → Slot Configuration). À gauche :
+  assignation carte par slot, avec **tout l'intégré grisé/verrouillé**
+  (AUX 80-col + built-ins du profil — sur //c/+/c+ : SSC, Mouse, SmartPort,
+  Disk II). À droite : **disques internes + ports montables** construits par
+  un parcours **live** du SlotBus — baies `MountableMediaCard` (SmartPort
+  2 unités avec type-select, CFFA + HDV 1 baie) **et** lecteurs `DiskIICard`
+  (5.25" internes), chacun avec montage/éjection/write-back/**Boot slot**.
+  `persistMediaBay` (ex-lambda du Slot Manager) promu membre. Visibilité du
+  panneau désormais persistée (`show_slot_config`). Vérifié à l'écran en //c.
+  89 tests passent.
+
+- **//c / //c+ : boot 3.5" ET HDV via SmartPort embarqué**. Symptôme : en
+  profil //c, les images 3.5" et HDV ne bootaient pas depuis la Disk Library
+  (le 5.25" oui). Diagnostic en cascade :
+  * Les ROM de slot sont **masquées sur tout //c-class** (`IIcClassProfile::
+    forcesIntCxRom()` toujours `true`) → une carte slot (`ProDOSHardDiskCard`,
+    `SmartPortCard`, `CffaCard`) n'est **jamais bootable** (`$Cn00` lit la ROM
+    interne, pas la carte). Auto-brancher une carte slot (l'astuce kiosk
+    `ensureHdvCardForBoot`) est donc inopérant en //c-class.
+  * **MAME ne modélise pas** le 3.5"/SmartPort sur le //c simple : sa carte
+    `A2BUS_IWM` (`bus/a2bus/a2iwm.cpp`, machines apple2c0/c3/c4) n'a que **deux
+    lecteurs 5.25"** ("WANTED: there are no ROM dumps"). Seul le //c+ a un 3.5"
+    (IWM+MIG+Sony porté en `SmartPortHub`), mais son **boot 3.5" n'a jamais
+    marché** (état documenté : "banner + 5.25" only" ; vérifié → "UNABLE TO
+    FIND A BOOTABLE DISK ONLINE"). Donc aucun //c-class ne bootait 3.5"/HDV.
+  * **Solution** (pas un portage MAME — il n'y a rien de fidèle à porter pour
+    le //c simple) : un **SmartPort servi par l'hôte** au slot 5 intégré. Le
+    vrai //c y avait son firmware SmartPort ; POM2 substitue un **stub bloc**
+    (la `SmartPortCard` déjà prouvée sur //e). `Memory::memRead` perce un trou
+    unique à `$C500-$C5FF` (bank 0) à travers le masque INTCXROM **ssi** la
+    carte slot-5 a un média (`SlotPeripheral::exposesIicOnboardRom` — garde
+    contre un boot autostart d'une carte vide → JMP $0801 sur du vide). Le
+    device-select (`$C0D0-$C0DF`) n'étant jamais masqué, le protocole bloc
+    `$C0D0-$C0D4` atteignait déjà le bus. Câblage : `routeMount35` utilise la
+    carte SmartPort sur **tous** les profils (plus seulement non-//c+) ;
+    `routeMountHdv`/`ensureHdvCardForBoot` routent le HDV //c-class vers le
+    SmartPort slot 5 (jamais une cffa/hdv slot — masquée). Profil //c : ajout
+    de `smartport35` en slot 5 intégré (le //c+ l'avait déjà). `bootFromSlot(5)`
+    boote. Vérifié à l'écran : //c & //c+ × 3.5"+HDV (JEUX, Total Replay, ARCHON).
+    Pin : `tests/iic_onboard_smartport_test.cpp` (+ `system_profile` mis à jour).
+    88 tests passent. Détails : `project_iic_smartport_boot`.
+
+- **Bug hunt round 9 — correctifs (Disk II / profils / threading)**. Audit des
+  sous-systèmes restants : contrôleur Disk II + LSS, parsers d'images disque,
+  bus de slots + agrégation IRQ, `EmulationController` (horloge/threads),
+  machinerie de profils (`applyProfile`). **Parsers `DiskImage`** (WOZ/DSK/NIB/
+  2MG, robustesse sur fichiers forgés/tronqués) et **`SlotBus`/`SlotPeripheral`**
+  (bornes de slot, wire-OR IRQ, cycle de vie) ressortent **propres**. 89 tests
+  passent (nouveau pin : `disk_wp` ; `diskii_lss` étendu).
+  * **[Disk II] écriture d'une disquette protégée en écriture** (`DiskIICard.cpp`
+    sites d'écriture + `DiskImage` `writeFlux`/`writeNibbleAt`/`saveDirty`) — les
+    sites ne testaient que `writeBackEnabled`, pas la **WP physique du médium**
+    (WOZ INFO+2 / flag 2IMG). `isWriteProtected() = fileWriteProtected ||
+    !writeBackEnabled` reportait bien la WP au logiciel, mais un logiciel qui
+    l'ignore et écrit quand même corrompait le buffer puis **écrasait le fichier
+    source** à l'éjection. Sur vrai matériel la WP **inhibe le courant
+    d'écriture** : `writeFlux`/`writeNibbleAt`/`saveDirty` honorent désormais
+    `fileWriteProtected` (nouveau getter `isFileWriteProtected()`). Pin :
+    `disk_wp` (le médium WP n'est muté ni en RAM ni sur disque).
+  * **[Disk II] spin-down bloqué quand le lecteur sélectionné est vide**
+    (`DiskIICard::advanceCycles`) — le `return` anticipé sur `!isLoaded` était
+    AVANT le décompte du délai d'arrêt moteur, donc un motor-off sur un lecteur
+    vide laissait `motorOn`/`active` coincés indéfiniment (LED + son). Le chemin
+    données reste gardé par la présence du média, mais le spin-down tourne
+    désormais quoi qu'il arrive. Pin : `diskii_lss` (cas spin-down sans disque).
+  * **[Disk II] getters par-lecteur non bornés** (`DiskIICard.h`) — index `drive`
+    non validé → accès hors bornes des tableaux `images[]`/`headQuarterTrack[]`/
+    `trackPos[]`. Bornés (défaut sûr hors plage), cohérent avec insert/eject.
+    Pin : `diskii_lss` (assertions OOB).
+  * **[Profils] `applyProfile` appliquait les slots intégrés du MAUVAIS profil**
+    (`MainWindow_Slots.cpp`) — `plugSlotsFromSettings()` (étape 7) lit
+    `activeProfile` pour forcer les cartes built-in, mais `activeProfile = p`
+    n'était posé qu'à l'étape 12. Switch VERS //c/c+ → cartes embarquées (SSC/
+    souris/SmartPort/Disk II) non forcées (pas de contrôleur de boot, y compris
+    au démarrage où le ctor appelle `applyProfile(saved)`) ; switch DEPUIS //c/c+
+    → fuite des built-in dans un II+/IIe propre. `activeProfile = p` remonté en
+    étape 0.
+  * **[Threading] lecture inter-threads non verrouillée des registres CPU**
+    (`MainWindow.cpp`, panneau Emulation) — PC/A/X/Y/SP + compteur de cycles lus
+    sans verrou pendant que le worker les écrit sous `stateMtx` (data race / UB ;
+    tous les autres lecteurs prennent le verrou). Snapshot sous `stateMutex()`.
+  * **[Profils] RamWorks III désactivé sur le //e Unenhanced** — la grille ne
+    testait que `AppleIIe` (Enhanced) ; le //e 1983 a le même bus aux. Étendu aux
+    deux variantes //e.
+  * **[Profils] RAM auxiliaire non effacée au cold-switch VERS un profil IIe** —
+    `clearRam()` n'efface l'aux que si `iieMode` est déjà vrai, mais tournait
+    AVANT `setIIEMode`. Réordonné : `setIIEMode` → `clearRam` → `resetSoftSwitches`
+    (et `setIIEMode` reste avant `loadAppleIIRom`).
+  * **[Threading] `stop()` ne bloque pas jusqu'à l'arrêt du worker** (latent) —
+    documenté : les appelants exigeant l'exclusivité après `stop()` doivent
+    prendre `stateMutex()` (c'est le verrou, pas `stop()`, qui sérialise).
+  * **Note** : les correctifs profils/threading vivent dans `MainWindow*` (classe
+    GUI sans harnais de test unitaire) — validés par compilation + suite verte +
+    vérification structurelle, comme les autres changements MainWindow du repo.
+
+- **Bug hunt round 8 — correctifs (SmartPort / sécurité ProDOS / threading
+  audio / ATA)**. Audit des sous-systèmes encore vierges : pile bloc SmartPort,
+  backing bloc partagé + ATA/HDV, chemin audio (Speaker/Cassette), entrées
+  (joystick/paddles/souris), moteur d'affichage. **Entrées** et **affichage**
+  ressortent **propres** (seuls des commentaires périmés). 87 tests passent
+  (3 nouvelles cibles : `smartport_io_error`, `prodos_decode_safety`,
+  `speaker_overflow`).
+  * **[Sécurité — ProDOS synth] traversée de chemin au write-back**
+    (`ProDOSVolume.cpp` `decodeVolumeToFolder`) — le nom de chaque entrée de
+    répertoire était lu depuis l'image **inscriptible par l'invité** et joint
+    au dossier hôte sans validation : un nom forgé `../PWNED` s'échappait du
+    bac à sable quand le write-back est actif (même classe que les évasions
+    symlink/`goUp` corrigées R4/R6). Nouveau garde `isHostSafeProDOSName`
+    (rejette séparateurs, NUL, `.`/`..`, hors `[A-Za-z0-9.]`) appliqué aux
+    deux sites de jonction (fichier + sous-répertoire). Pin :
+    `prodos_decode_safety`.
+  * **[SmartPort] READBLOCK/WRITEBLOCK silencieusement « réussis »**
+    (`SmartPortCard.cpp`) — un `readBlock`/`writeBlock` hors-plage renvoyait
+    `CLC` (succès) à ProDOS : lecture → buffer de `0xFF` + carry clair, et
+    désync du flux d'octets ; écriture → données perdues sans erreur. La carte
+    verrouille désormais un bit d'erreur I/O ($C0n4 bit 0) ; les routines ROM
+    lecture/écriture le testent et renvoient carry-set ($27). Le flux reste en
+    phase (cache 0xFF). L'allongement de la routine de lecture (34→45 o) a
+    décalé le bloc d'écriture → opérande `BEQ write` recalculé `$2E`→`$39`
+    (revalidé par `smartport_write_dispatch`). Pin : `smartport_io_error`.
+  * **[SmartPort] sélection d'unité par masque, buffer d'écriture non purgé**
+    (`SmartPortCard.cpp`) — `$C0n0` utilisait `& (kMaxUnits-1)` (faux si
+    kMaxUnits non puissance de 2) → `% kMaxUnits` + `static_assert` ; et ne
+    purgeait pas `writeBufPrimed_`/`readCacheValid_` → un write à moitié
+    streamé pouvait commiter des octets périmés. Les deux corrigés.
+  * **[Audio — Cassette] data race sur les drapeaux de mode**
+    (`CassetteDevice`) — `audioStreamMode` (lu sans verrou sur le thread audio,
+    muté sur le thread UI) et le compteur de rampe (touché sous deux mutex
+    différents) rendus `std::atomic` (comme `playbackPaused`/`muted`). Pin :
+    `static_assert` de discipline threading dans le constructeur (revertir vers
+    un type nu casse la compilation).
+  * **[Stockage — ATA] écriture sur médium write-protected « réussie »**
+    (`AtaBlockDevice.cpp`) — une commande WRITE accordait DRQ puis jetait
+    silencieusement les données (`flushBufferToSector`) sur un backing WP, sans
+    `ERR`. ATA-1 : abort avec `ERR`+`DF` en statut et `ABRT` dans le registre
+    d'erreur, pas de DRQ. Atteignable via une image 2IMG WP sous CFFA. Pin :
+    `ata_block_device` (cas WP).
+  * **[Stockage] plafond de blocs off-by-one** (`Block512Backing.h`) —
+    `kMaxBlocks` acceptait 65536 blocs alors que les numéros de bloc ProDOS
+    sont 16 bits (max 65535, et `selectedBlock` est un `uint16_t`). Ramené à
+    `0xFFFF` (+ `static_assert`). Pin : `hdv_mass_storage` (frontière 65535
+    accepté / 65536 rejeté).
+  * **[Audio — Speaker] perte de toggle à l'overflow inversait la parité**
+    (`SpeakerDevice.cpp`) — le haut-parleur est une bascule 1 bit : chaque
+    événement est un flip de parité. Jeter UN toggle à l'overflow inversait le
+    niveau reconstruit de tous les échantillons suivants → on jette désormais
+    par **paires**. Pin : `speaker_overflow`. + suppression de l'accesseur mort
+    `getAudioCpuCursor()` (lecture 64-bit déchirée, zéro appelant).
+  * **Vérifié propre** : entrées (timing RC paddle = MAME `apple2.cpp`,
+    quadrature souris MAME-fidèle), moteur d'affichage (interleave HGR/texte,
+    DHGR aux/main, lookup char-ROM 2K/4K), bornes lecture/écriture du backing
+    bloc, dispatch/persistance/propriété SmartPort.
+
+- **Bug hunt round 7 — correctifs (SnapshotIO / clavier-paste / char-ROM /
+  désassembleur)**. Audit des sous-systèmes restants : I/O snapshot,
+  pipeline clavier/coller, chargeur de ROM de caractères, désassembleur du
+  Memory Viewer. Le cœur NMOS du désassembleur ressort **correct** ; seul le
+  jeu 65C02 manquait. 84 tests passent (2 nouvelles cibles : `disasm_cmos`,
+  `char_rom`).
+  * **[SnapshotIO] longueur de section non bornée → crash** (`SnapshotIO.cpp`
+    `nextSection`) — un `.snap` forgé (ou tronqué) déclarant une longueur de
+    section gigantesque pilotait une allocation/`readBytes` dimensionnée par
+    le fichier lui-même (`bad_alloc` → crash, ou over-read sur section
+    tronquée). La taille du fichier est désormais relevée à l'ouverture et
+    **chaque** section est rejetée si `sectionEnd > fileSize` (ou overflow).
+    Une seule borne couvre crash + over-read pour tous les consommateurs.
+    Atteignable via l'API AI-control (localhost). Défense en profondeur
+    additionnelle : cap 16 Mio sur la section MEX (`AiControlServer.cpp`) +
+    `try/catch` autour de `handleClient` dans le worker. Pin :
+    `snapshot_io_smoke` (4 cas malformés : longueur géante, longueur>fichier,
+    longueur tronquée, taille exacte acceptée).
+  * **[Clavier] frappe live pendant un coller écrasait la FIFO**
+    (`Memory::queueKey`) — une touche arrivant en plein coller faisait
+    `lastKey=…` et clobberait l'octet de coller latché (saut de file). Elle
+    est maintenant **appendée** derrière le coller si une file est en cours,
+    et garde le comportement matériel « dernière touche gagne » sinon. Pin :
+    `paste_smoke`.
+  * **[Clavier] un reset n'abandonnait pas le coller en cours**
+    (`Memory::resetSoftSwitches` IIe + `resetSoftSwitchesWarm` II/II+) — la
+    `pasteQueue` survivait à F11/F12 et continuait à se vider après le reset.
+    `pasteQueue.clear()` ajouté aux deux chemins. Pin : `paste_smoke`.
+  * **[Clavier] cap du coller par-appel et non sur la file vivante**
+    (`Memory::pasteText` + `pasteRawKeys`) — des collers répétés pouvaient
+    faire croître `pasteQueue` sans borne (DoS mémoire via AI-control /
+    presse-papiers). Le cap `kPasteMaxChars` est désormais calculé contre
+    `pasteQueue.size() + (keyReady?1:0)`. Pin : `paste_smoke`.
+  * **[Clavier] coller minuscules sur ][/][+** (`Memory::pasteText`) — le
+    clavier II/II+ n'a pas de minuscules ; `a-z` → `A-Z` au coller quand
+    `!iieMode` (un vrai clavier ne peut émettre `$61-$7A`), les claviers
+    IIe-class gardent la casse. Pin : `paste_smoke`.
+  * **[char-ROM] dump 8K accepté puis rendu en garbage** (`Memory::loadCharRom`)
+    — seuls 2K (II/II+) et 4K (IIe) ont un chemin de normalisation ; toute
+    autre taille était stockée brute et dessinée en glyphes corrompus. Le
+    gate rejette désormais proprement tout ce qui n'est pas 2K/4K (8K, taille
+    impaire, vide) et vide `characterRom` sur lecture courte. Pin :
+    `char_rom`.
+  * **[Désassembleur] jeu 65C02 décodé en `???` 1 octet** (`Disassembler6502`)
+    — l'émulateur tourne en 65C02 par défaut mais le désassembleur était
+    NMOS-only ; les opcodes CMOS sortaient en `???` de 1 octet, **désynchro-
+    nisant** tout le listing Disasm (piège classique des BBR/BBS 3 octets
+    traités comme 1). Ajout d'une table CMOS (TSB/TRB/STZ/BRA/PHX/PHY/PLX/PLY/
+    INC A/DEC A/(zp)/JMP (abs,X)/RMB/SMB/BBR/BBS/WAI/STP…) sélectionnée par un
+    flag `cmos` câblé depuis `MainWindow` via `MemoryViewer::setCmosMode`
+    (poussé chaque frame selon `M6502::getCpuMode`). Pin : `disasm_cmos`
+    (mnémonique + longueur, dont la longueur 3 octets des BBR/BBS, + repli
+    NMOS → `???`).
+
+- **Bug hunt round 6 — correctifs (Floppy Emu / SSC threading / ProDOS / son)**.
+  Audit des sous-systèmes encore vierges (gadget BMOW Floppy Emu, ClockCard,
+  pont TCP/telnet SSC, décode ProDOS, son disque). ClockCard ressort
+  **propre** (seul un octet d'année superflu dans le shift, inoffensif pour
+  ProDOS). 82 tests passent.
+  * **[Floppy Emu] évasion du sandbox SD par symlink** (`FloppyEmuDevice.cpp`
+    `listing`) — `directory_iterator`/`is_directory` suivent les liens ;
+    skip des symlinks pour rester dans `floppyemu/`. Pin : `floppy_emu_smoke`.
+  * **[Floppy Emu] `goUp` testait la LONGUEUR de chaîne** (pas un préfixe) —
+    un frère plus long que la racine échappait ; check par composants.
+  * **[Floppy Emu] taille d'un favori manquant = garbage** (`file_size` `ec`
+    ignoré → `(uint64_t)-1`) → 0. Pin : `floppy_emu_smoke`.
+  * **[Floppy Emu] curseur du browser non remis à 0 au changement de listing**
+    (entrée/sortie de dossier, toggle Favoris, switch de mode) →
+    surbrillance sur une entrée périmée (`FloppyEmu_ImGui.cpp`).
+  * **[SSC] machine à états IAC telnet persistante** (`SuperSerialCard.cpp`
+    `processTelnetRx`) remplace le filtre sans état : gère `IAC SB … IAC SE`
+    (sous-négociation longueur variable — la rafale NAWS d'un client telnet
+    fuyait ~5 octets en RX) ET une séquence IAC coupée entre deux `recv()`.
+    Pin : `ssc_acia_smoke`.
+  * **[SSC] data race sur la ligne IRQ** — le thread TCP appelait
+    `setIrqLine`/`assertIrq` (RMW non-atomiques) en concurrence avec le
+    thread CPU. `M6502::IRQ`/`irqSourceMask` rendus atomiques + l'IRQ du
+    worker est *marshalée* sur le thread CPU via `SuperSerialCard::
+    advanceCycles` (assertIrq devient CPU-thread-only).
+  * **[SSC] race de cycle de vie des sockets** — le thread UI fermait
+    `clientFd`/`listenFd` pendant que le worker était dans `recv`/`accept`
+    (use-after-close / double-close). fds atomiques ; l'UI ne fait que
+    `shutdown()` (réveil), le worker est seul à `close()`, `listenFd` fermé
+    après `join()`.
+  * **[ProDOS] round-trip de nom de fichier non idempotent** (décode) — un
+    nom à extension conservée (ex. `NOTES.DATA`) accumulait `.bin` à chaque
+    sauvegarde ; fichier sans extension → `.bin`. Fix : extensionless →
+    type 0x00 (typeless) à l'encode, `0x00` → "" au décode, et pas d'ajout
+    d'extension si le nom en a déjà une. Round-trip lossless pour les cas
+    courants. (Chemin atteint via le write-back host-folder synth.)
+  * **[ProDOS] trous de fichier sparse tronquaient** (décode, défensif) — une
+    entrée d'index `0x0000` faisait `break` au lieu de zéro-remplir +
+    continuer. Corrigé (non atteignable sur volumes synth — 0 bloc libre —
+    mais correct si le décode est un jour étendu aux images réelles).
+    Seedling `eof>512` → warn.
+  * **[Son disque] `kSeekJoinMs == kSeekTimeoutMs == 100`** →
+    chevauchement : un flux de pas à la cadence-join max pouvait déclencher
+    le timeout entre deux pas → clic « atterrissage » parasite en plein
+    seek ; + bande morte 50-100 ms (gap classé seek mais sans sample →
+    clic). `kSeekJoinMs` abaissé à 50 (= plage de `pickSeekSample`), timeout
+    100 > join → plus de chevauchement, plus de bande morte (résultat
+    audible inchangé). (`FloppySoundDevice.h`)
+  * **Reporté** : Floppy Emu `automount` (jamais câblé — *feature*, pas un
+    bug de correction ; wire-up délicat à l'ordre de boot) ; garde anti-cycle
+    de répertoire ProDOS (le plafond de profondeur 16 empêche déjà le hang ;
+    défensif sur image corrompue, impossible sur volume synth) ; fichiers
+    *tree* ProDOS (>128 Ko) déjà skippés proprement.
+
 - **Bug hunt round 5 — 9 correctifs (affichage / persistance / cassette)**.
   Audit des dernières zones non couvertes (pipeline vidéo, parseurs de
   formats disque non-WOZ2, orchestration boot/slot/persistance MainWindow,

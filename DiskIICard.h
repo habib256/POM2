@@ -143,6 +143,13 @@ public:
     /// images[1]).
     static constexpr int kDriveCount = 2;
 
+    /// True iff `drive` is a valid 0-based drive index. Used by the per-drive
+    /// getters below to reject an out-of-range index instead of indexing the
+    /// fixed-size images[]/headQuarterTrack[]/trackPos[] arrays out of bounds.
+    static constexpr bool validDrive(int drive) {
+        return drive >= 0 && drive < kDriveCount;
+    }
+
     /// Insert / eject a disk image. The single-arg variants target
     /// drive 1 (= index 0) for backwards compatibility with existing UI
     /// and test call sites; pass an explicit drive index (0 or 1) for
@@ -152,19 +159,31 @@ public:
     void ejectDisk(int drive);
     void ejectDisk() { ejectDisk(0); }
 
-    bool isDiskLoaded(int drive = 0) const { return images[drive].isLoaded(); }
-    const std::string& getDiskPath (int drive = 0) const { return images[drive].getPath(); }
-    const std::string& getLastError(int drive = 0) const { return images[drive].getLastError(); }
+    // All per-drive getters bound-check `drive` (0..kDriveCount-1) and return
+    // a safe default out of range — insertDisk/ejectDisk already validate, so
+    // these match that contract instead of indexing images[]/headQuarterTrack[]
+    // out of bounds.
+    bool isDiskLoaded(int drive = 0) const {
+        return validDrive(drive) && images[drive].isLoaded();
+    }
+    const std::string& getDiskPath (int drive = 0) const {
+        static const std::string kEmpty;
+        return validDrive(drive) ? images[drive].getPath() : kEmpty;
+    }
+    const std::string& getLastError(int drive = 0) const {
+        static const std::string kEmpty;
+        return validDrive(drive) ? images[drive].getLastError() : kEmpty;
+    }
 
-    int  getCurrentTrack(int drive = 0) const { return headQuarterTrack[drive] / 4; }
-    int  getHalfTrack   (int drive = 0) const { return headQuarterTrack[drive] / 2; }
-    int  getQuarterTrack(int drive = 0) const { return headQuarterTrack[drive]; }
+    int  getCurrentTrack(int drive = 0) const { return validDrive(drive) ? headQuarterTrack[drive] / 4 : 0; }
+    int  getHalfTrack   (int drive = 0) const { return validDrive(drive) ? headQuarterTrack[drive] / 2 : 0; }
+    int  getQuarterTrack(int drive = 0) const { return validDrive(drive) ? headQuarterTrack[drive] : 0; }
     bool isMotorOn() const { return motorOn; }
     /// Index of the drive currently selected by the most recent
     /// $C0nA / $C0nB access (0 = drive 1, 1 = drive 2).
     int  getActiveDrive() const { return activeDrive; }
-    int  getTrackPosition(int drive = 0) const { return trackPos[drive]; }
-    bool hasUnsavedChanges(int drive = 0) const { return images[drive].hasUnsavedChanges(); }
+    int  getTrackPosition(int drive = 0) const { return validDrive(drive) ? trackPos[drive] : 0; }
+    bool hasUnsavedChanges(int drive = 0) const { return validDrive(drive) && images[drive].hasUnsavedChanges(); }
     /// Total nibble write flushes (across both drives) since last reset.
     /// Used by the dos33_save smoke test to confirm SAVE actually
     /// exercised the write pipeline (vs. erroring out before any write).

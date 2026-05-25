@@ -72,6 +72,14 @@ struct ProDOSDecodeResult {
 ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
                                         const std::string& hostFolder);
 
+/// True iff `name` (a directory-entry name decoded from an untrusted volume
+/// image) is safe to use as a single host path component. The image is
+/// guest-writable RAM, so a hostile/corrupt entry can carry path separators,
+/// NUL, "." / ".." — which `decodeVolumeToFolder` would otherwise join to the
+/// host folder and escape the jail. A legal ProDOS name is 1..15 chars of
+/// [A-Za-z0-9.] and is never "." or ".."; anything else is rejected.
+bool isHostSafeProDOSName(const std::string& name);
+
 } // namespace pom2
 
 #endif // POM2_PRODOS_VOLUME_H

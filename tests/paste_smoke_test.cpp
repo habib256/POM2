@@ -133,6 +133,84 @@ int main()
         assert(!keyReady(mem));
     }
 
-    std::printf("Paste smoke: OK (line endings, controls, 7-bit, cap, cancel)\n");
+    // ── queueKey during a paste APPENDS (doesn't clobber the FIFO) ───────
+    // A live keystroke arriving mid-paste must queue behind the in-flight
+    // paste, not overwrite the currently-latched paste byte and jump the
+    // FIFO. Pins Memory::queueKey's "paste in flight" branch.
+    {
+        Memory mem;
+        mem.pasteText("AB");                  // 'A' latched, 'B' queued
+        assert(mem.pendingPasteSize() == 1);
+        mem.queueKey('Z');                    // append after 'B'
+        assert(mem.pendingPasteSize() == 2);
+        std::string out;
+        while (keyReady(mem)) out.push_back(static_cast<char>(consumeKey(mem)));
+        assert(out == "ABZ");
+    }
+
+    // ── queueKey with NO paste in flight overwrites the latch (hardware) ──
+    {
+        Memory mem;
+        mem.queueKey('A');
+        assert(keyReady(mem));
+        mem.queueKey('B');                    // newest key wins, like the latch
+        assert(mem.pendingPasteSize() == 0);
+        assert(consumeKey(mem) == 'B');
+        assert(!keyReady(mem));               // only one key survived
+    }
+
+    // ── A reset abandons an in-flight paste (IIe full + II/II+ warm) ─────
+    {
+        Memory mem;                            // II+ default (iieMode off)
+        mem.pasteText("HELLO");
+        assert(mem.pendingPasteSize() == 4);
+        mem.resetSoftSwitchesWarm();           // II/II+ machine_reset path
+        assert(mem.pendingPasteSize() == 0);
+        assert(!keyReady(mem));
+    }
+    {
+        Memory mem;
+        mem.setIIEMode(true);
+        mem.pasteText("HELLO");
+        assert(mem.pendingPasteSize() == 4);
+        mem.resetSoftSwitches();               // IIe full reset_w path
+        assert(mem.pendingPasteSize() == 0);
+        assert(!keyReady(mem));
+    }
+
+    // ── ][/][+ has no lowercase: paste folds a-z → A-Z; IIe keeps case ──
+    {
+        Memory mem;                            // iieMode off
+        mem.pasteText("print 1");
+        std::string out;
+        while (keyReady(mem)) out.push_back(static_cast<char>(consumeKey(mem)));
+        assert(out == "PRINT 1");
+    }
+    {
+        Memory mem;
+        mem.setIIEMode(true);                  // IIe keyboard has lowercase
+        mem.pasteText("print 1");
+        std::string out;
+        while (keyReady(mem)) out.push_back(static_cast<char>(consumeKey(mem)));
+        assert(out == "print 1");
+    }
+
+    // ── Cap is against the LIVE queue, not per-call: repeated pastes can't
+    //    grow pasteQueue past kPasteMaxChars (memory-DoS guard). ──────────
+    {
+        Memory mem;
+        const size_t q1 = mem.pasteText(std::string(Memory::kPasteMaxChars - 10, 'X'));
+        assert(q1 == Memory::kPasteMaxChars - 10);
+        const size_t q2 = mem.pasteText(std::string(100, 'Y'));
+        assert(q2 == 10);                      // only 10 slots remained
+        const size_t q3 = mem.pasteText("Z");
+        assert(q3 == 0);                       // queue is full
+        // pasteRawKeys shares the same live-queue accounting.
+        const char z = 'Z';
+        assert(mem.pasteRawKeys(&z, 1) == 0);
+    }
+
+    std::printf("Paste smoke: OK (line endings, controls, 7-bit, cap, cancel, "
+                "queueKey-order, reset-clear, case-fold, live-cap)\n");
     return 0;
 }

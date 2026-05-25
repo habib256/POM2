@@ -17,8 +17,12 @@ namespace pom2 {
 /// Disassemble the 6502 instruction at `mem[pc]`. `mem` must point to a
 /// contiguous 64 KB region (uses `(pc + N) & 0xFFFF` for operand fetches).
 /// Writes the instruction byte length (1/2/3) into `instrLen` and returns
-/// the formatted mnemonic.
-std::string disassemble6502(const uint8_t* mem, uint16_t pc, int& instrLen);
+/// the formatted mnemonic. When `cmos` is true, decodes the 65C02
+/// (Rockwell/WDC) extensions (STZ/BRA/PHX/…, the 3-byte BBR/BBS bit-branch
+/// ops, etc.) instead of rendering them as "???" — pass the live CPU mode so
+/// the Disasm panel doesn't desync on 65C02 code.
+std::string disassemble6502(const uint8_t* mem, uint16_t pc, int& instrLen,
+                            bool cmos = false);
 
 } // namespace pom2
 

@@ -53,28 +53,11 @@ double baudIndexToBytesPerSec(uint8_t idx)
 // commands: WILL/WONT/DO/DONT) so a stock `telnet` client's option
 // negotiation doesn't leak garbage bytes into the Apple II keyboard.
 // IAC IAC ($FF $FF) is a literal escaped $FF — pass one $FF through.
-size_t swallowTelnetIac(uint8_t* data, size_t n)
-{
-    size_t w = 0;
-    for (size_t r = 0; r < n; ++r) {
-        if (data[r] != 0xFF) {
-            data[w++] = data[r];
-            continue;
-        }
-        if (r + 1 >= n) break;          // partial; drop the trailing IAC
-        const uint8_t cmd = data[r + 1];
-        if (cmd == 0xFF) {              // escaped literal
-            data[w++] = 0xFF;
-            r += 1;
-        } else if (cmd >= 0xFB && cmd <= 0xFE) {
-            // WILL / WONT / DO / DONT — 3-byte command, drop all three.
-            r += 2;
-        } else {
-            r += 1;                     // 2-byte command, drop both.
-        }
-    }
-    return w;
-}
+// swallowTelnetIac replaced by the persistent member state machine
+// SuperSerialCard::processTelnetRx (see header) — a stateless per-call
+// function can neither span a recv() chunk boundary nor handle the
+// variable-length IAC SB … IAC SE subnegotiation. Definition follows the
+// anonymous namespace.
 
 // normalizeLineEndings moved to a public static member (see header) so it
 // can be unit-tested directly; definition follows the anonymous namespace.
@@ -104,6 +87,44 @@ size_t SuperSerialCard::normalizeLineEndings(uint8_t* data, size_t n)
         prevCR = (c == '\r');
         if (c == '\n') c = '\r';
         data[w++] = c;
+    }
+    return w;
+}
+
+size_t SuperSerialCard::processTelnetRx(uint8_t* data, size_t n)
+{
+    size_t w = 0;
+    for (size_t r = 0; r < n; ++r) {
+        const uint8_t b = data[r];
+        switch (telnetState_) {
+        case TelnetState::Text:
+            if (b == 0xFF) telnetState_ = TelnetState::Iac;   // start of command
+            else           data[w++] = b;                     // data byte
+            break;
+        case TelnetState::Iac:
+            if (b == 0xFF) {                                  // IAC IAC → literal 0xFF
+                data[w++] = 0xFF;
+                telnetState_ = TelnetState::Text;
+            } else if (b >= 0xFB && b <= 0xFE) {              // WILL/WONT/DO/DONT
+                telnetState_ = TelnetState::Opt;              // one option byte follows
+            } else if (b == 0xFA) {                           // SB — subnegotiation
+                telnetState_ = TelnetState::Sb;
+            } else {                                          // 2-byte command (GA, NOP, …)
+                telnetState_ = TelnetState::Text;
+            }
+            break;
+        case TelnetState::Opt:
+            telnetState_ = TelnetState::Text;                 // swallow the option byte
+            break;
+        case TelnetState::Sb:
+            if (b == 0xFF) telnetState_ = TelnetState::SbIac; // maybe IAC SE
+            // else: subnegotiation payload — dropped
+            break;
+        case TelnetState::SbIac:
+            if (b == 0xF0)      telnetState_ = TelnetState::Text; // IAC SE → end SB
+            else                telnetState_ = TelnetState::Sb;   // IAC IAC / nested cmd → stay in SB
+            break;
+        }
     }
     return w;
 }
@@ -166,22 +187,28 @@ void SuperSerialCard::stopListening()
 {
     if (!listening && !worker.joinable()) return;
     stopRequested = true;
-    closeClient();
-    if (listenFd >= 0) {
-        ::shutdown(listenFd, SHUT_RDWR);
-        ::close(listenFd);
-        listenFd = -1;
-    }
+    // Wake the worker out of recv()/accept() WITHOUT close()-ing the fds
+    // under it (close + recv on the same fd from two threads is a use-after-
+    // close / fd-recycle hazard). shutdown() only half-closes; the actual
+    // close() of clientFd is the worker's job (on its exit path), and
+    // listenFd is closed here only AFTER join() so nothing recv()s/accept()s
+    // a recycled descriptor.
+    { const int fd = clientFd.load(); if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
+    { const int fd = listenFd.load(); if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
     if (worker.joinable()) worker.join();
+    { const int fd = listenFd.exchange(-1); if (fd >= 0) ::close(fd); }
+    // Worker closed clientFd on exit; exchange() makes a stray close a no-op.
+    { const int fd = clientFd.exchange(-1); if (fd >= 0) ::close(fd); }
     listening = false;
 }
 
 void SuperSerialCard::closeClient()
 {
-    if (clientFd >= 0) {
-        ::shutdown(clientFd, SHUT_RDWR);
-        ::close(clientFd);
-        clientFd = -1;
+    // exchange() guarantees exactly one close even if called from two paths.
+    const int fd = clientFd.exchange(-1);
+    if (fd >= 0) {
+        ::shutdown(fd, SHUT_RDWR);
+        ::close(fd);
     }
     connected = false;
 }
@@ -210,6 +237,7 @@ void SuperSerialCard::runWorker()
 
         clientFd  = fd;
         connected = true;
+        resetTelnet();   // fresh IAC parser state per connection
         onConnectionEdge(true);
         pom2::log().info("SSC",
             std::string("client connected from ") +
@@ -226,7 +254,7 @@ void SuperSerialCard::runWorker()
                 // Raw mode: skip both filters so XMODEM/Kermit/ADTPro
                 // see every byte (including $FF and bare LFs).
                 if (!rawMode_.load(std::memory_order_relaxed)) {
-                    n = swallowTelnetIac(scratch, n);
+                    n = processTelnetRx(scratch, n);
                     n = normalizeLineEndings(scratch, n);
                 }
                 if (n > 0) {
@@ -471,14 +499,30 @@ void SuperSerialCard::onConnectionEdge(bool nowConnected)
 
 void SuperSerialCard::raiseIrqSource(uint8_t mask)
 {
+    // Worker-thread path (RX arrival, connection edge). Update the source
+    // bits atomically but DON'T touch the CPU IRQ line here — assertIrq()
+    // mutates non-atomic SlotPeripheral state and must run on the CPU
+    // thread. advanceCycles() (CPU thread) applies it within a frame.
     irqState_ |= mask;
-    pushIrqLine();
+    irqLineDirty_.store(true, std::memory_order_release);
 }
 
 void SuperSerialCard::clearIrqSource(uint8_t mask)
 {
+    // CPU-thread path (guest read of status/data clears the source) — apply
+    // the line immediately so the clear is responsive.
     irqState_ &= ~mask;
     pushIrqLine();
+}
+
+void SuperSerialCard::advanceCycles(int /*cycles*/)
+{
+    // Drive the CPU IRQ line from a worker-thread-pending change. Runs on the
+    // CPU thread (Memory::advanceCycles → SlotBus fan-out), so assertIrq() is
+    // CPU-thread-only across the whole card.
+    if (irqLineDirty_.exchange(false, std::memory_order_acquire)) {
+        pushIrqLine();
+    }
 }
 
 void SuperSerialCard::pushIrqLine()

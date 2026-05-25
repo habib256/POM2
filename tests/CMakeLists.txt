@@ -631,6 +631,34 @@ target_include_directories(test_prodos_volume PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME prodos_volume_smoke COMMAND test_prodos_volume)
 set_tests_properties(prodos_volume_smoke PROPERTIES TIMEOUT 5)
 
+# ─── ProDOS synth write-back path-traversal guard ─────────────────────────
+add_executable(test_prodos_decode_safety
+    prodos_decode_safety_test.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_prodos_decode_safety PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME prodos_decode_safety COMMAND test_prodos_decode_safety)
+set_tests_properties(prodos_decode_safety PROPERTIES TIMEOUT 5)
+
+# ─── SpeakerDevice overflow parity (drop toggles in pairs) ────────────────
+add_executable(test_speaker_overflow
+    speaker_overflow_test.cpp
+    ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
+)
+target_include_directories(test_speaker_overflow PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_speaker_overflow PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_speaker_overflow PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_speaker_overflow PRIVATE winmm)
+endif()
+add_test(NAME speaker_overflow COMMAND test_speaker_overflow)
+set_tests_properties(speaker_overflow PROPERTIES TIMEOUT 5)
+
 
 # ─── VBL ($C019) scanline-accurate smoke test ─────────────────────────────
 # Pins the 262-scanline × 65-cycle frame model, the bit-7 polarity (HIGH
@@ -830,6 +858,15 @@ target_include_directories(test_disk_image PRIVATE ${CMAKE_SOURCE_DIR})
 
 add_test(NAME disk_image_smoke COMMAND test_disk_image)
 set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
+
+# ─── Disk II physical write-protect (WP medium never mutated) ──────────────
+add_executable(test_disk_wp
+    disk_wp_test.cpp
+    ${CMAKE_SOURCE_DIR}/DiskImage.cpp
+)
+target_include_directories(test_disk_wp PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME disk_wp COMMAND test_disk_wp)
+set_tests_properties(disk_wp PROPERTIES TIMEOUT 5)
 
 # ─── 13-sector (DOS 3.x, 5-and-3 GCR) round-trip ──────────────────────────
 # Pins nibblizeTrack13 ↔ decodeTrack13 (port of MAME a2_13sect_format) and
@@ -1116,6 +1153,55 @@ endif()
 add_test(NAME smartport_card_smoke COMMAND test_smartport_card
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(smartport_card_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── //c-class on-board SmartPort ($C500 ROM hole + block I/O via Memory) ──
+# Pins that //c/+/c+ punch the slot-5 SmartPort firmware through the forced
+# INTCXROM mask only when the card holds media, and stream blocks through the
+# (never-masked) $C0D0-$C0DF device-select. See project_iic_smartport_boot.
+add_executable(test_iic_onboard_smartport
+    iic_onboard_smartport_test.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_onboard_smartport PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_onboard_smartport PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iic_onboard_smartport PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iic_onboard_smartport PRIVATE winmm)
+endif()
+add_test(NAME iic_onboard_smartport_smoke COMMAND test_iic_onboard_smartport
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(iic_onboard_smartport_smoke PROPERTIES TIMEOUT 15)
+
+# Diagnostic only (not a CTest): //c autostart with Disk II + on-board SmartPort.
+add_executable(test_iic_dual_boot_trace EXCLUDE_FROM_ALL
+    iic_dual_boot_trace.cpp
+    ${CMAKE_SOURCE_DIR}/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_dual_boot_trace PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_dual_boot_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
 
 
 # ─── SmartPort mixed-unit smoke (3.5" + HDV in one card) ────────────────
@@ -1811,6 +1897,32 @@ endif()
 add_test(NAME smartport_write_dispatch COMMAND test_smartport_write_dispatch)
 set_tests_properties(smartport_write_dispatch PROPERTIES TIMEOUT 10)
 
+# ─── SmartPort I/O-error reporting (out-of-range read/write → carry-set) ───
+add_executable(test_smartport_io_error
+    smartport_io_error_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/ProDOSVolume.cpp
+)
+target_include_directories(test_smartport_io_error PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_io_error PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_io_error PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_io_error PRIVATE winmm)
+endif()
+add_test(NAME smartport_io_error COMMAND test_smartport_io_error)
+set_tests_properties(smartport_io_error PROPERTIES TIMEOUT 10)
+
 # ─── CassetteDevice WAV tail-flush regression ─────────────────────────────
 add_executable(test_cassette_wav_tail
     cassette_wav_tail_smoke_test.cpp
@@ -1830,6 +1942,34 @@ if(WIN32)
 endif()
 add_test(NAME cassette_wav_tail COMMAND test_cassette_wav_tail)
 set_tests_properties(cassette_wav_tail PROPERTIES TIMEOUT 5)
+
+# ─── 65C02 disassembler regression ────────────────────────────────────────
+add_executable(test_disasm_cmos
+    disasm_cmos_test.cpp
+    ${CMAKE_SOURCE_DIR}/Disassembler6502.cpp
+)
+target_include_directories(test_disasm_cmos PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME disasm_cmos COMMAND test_disasm_cmos)
+set_tests_properties(disasm_cmos PROPERTIES TIMEOUT 5)
+
+# ─── Character-ROM loader hardening (size gate) ───────────────────────────
+add_executable(test_char_rom
+    char_rom_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_char_rom PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_char_rom PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_char_rom PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_char_rom PRIVATE winmm)
+endif()
+add_test(NAME char_rom COMMAND test_char_rom)
+set_tests_properties(char_rom PROPERTIES TIMEOUT 5)
 
 
 # ─── M68705P3 CPU decode smoke test ──────────────────────────────────────

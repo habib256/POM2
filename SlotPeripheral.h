@@ -82,6 +82,15 @@ public:
     /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
     virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
 
+    /// On //c-class machines the forced INTCXROM masks ALL slot ROM
+    /// ($C100-$CFFF). POM2 punches a single hole for a built-in SmartPort
+    /// whose $Cn00 firmware substitutes for the (unmodelled) IWM/Sony 3.5"
+    /// boot path — but only while the card actually holds bootable media,
+    /// so an empty SmartPort never presents a half-working bootable
+    /// signature to the //c autostart (which would JMP $0801 into garbage).
+    /// Default: ROM stays masked. See Memory::memRead + SmartPortCard.
+    virtual bool exposesIicOnboardRom() const { return false; }
+
     /// Slot number assigned by the bus at plug-time (1..7), or -1 before
     /// `SlotBus::plug()` adopts the card. Concrete cards may still carry
     /// their own constructor-time slot field for ROM addressing reasons

@@ -68,6 +68,11 @@ private:
     bool showSettings_   = false;
     int  browseCursor_   = 0;
     int  settingsCursor_ = 0;
+    // Last-seen listing identity; browseCursor_ re-homes to 0 when it changes
+    // (dir enter/leave, Favorites toggle, mode switch).
+    std::string lastDirLabel_;
+    bool        lastFavActive_ = false;
+    int         lastModeIndex_ = -1;
 };
 
 } // namespace pom2

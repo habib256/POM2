@@ -447,20 +447,20 @@ void DiskIICard::advanceCycles(int cycles)
 {
     cpuCycleTotal += static_cast<uint64_t>(cycles);
 
-    // Either path no-ops cleanly when the active drive has no media —
-    // the LSS path bails after updating lssCycle, the legacy path bails
-    // on motor-off below.
-    if (!images[activeDrive].isLoaded()) {
-        return;
-    }
-
-    if (!useBitLss) {
-        if (!motorOn) return;
-        legacyAdvance(cycles);
-    } else {
-        // MAME wozfdc: catch up the LSS to the new CPU time. lss_sync
-        // skips when active == MODE_IDLE so a stopped drive is cheap.
-        lssSync();
+    // The DATA path (nibble/LSS) only runs with media present. The motor
+    // spin-down delay, however, must tick REGARDLESS of media: a motor-off on
+    // an empty selected drive still has to time out and stop, otherwise
+    // motorOn / active stay stuck on forever (drive LED never clears, the
+    // spin-down sound never fires). The early `return` here used to skip the
+    // countdown below whenever the active drive had no disk.
+    if (images[activeDrive].isLoaded()) {
+        if (!useBitLss) {
+            if (motorOn) legacyAdvance(cycles);
+        } else {
+            // MAME wozfdc: catch up the LSS to the new CPU time. lss_sync
+            // skips when active == MODE_IDLE so a stopped drive is cheap.
+            lssSync();
+        }
     }
 
     // Tick the spin-down delay. When it expires the motor truly stops

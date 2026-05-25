@@ -17,7 +17,7 @@ fixes résolus → `CHANGELOG.md`.
 - [SmartPort 3.5" stack](#smartport-35-stack)
 - [Peripherals](#peripherals)
 - [UI (ImGui)](#ui-imgui)
-- [Host control center (Slot Manager + Floppy Emu)](#host-control-center-slot-manager--floppy-emu)
+- [Host control center (Slot Configuration + Floppy Emu)](#host-control-center-slot-configuration--floppy-emu)
 - [Profile switching](#profile-switching)
 - [CLI](#cli)
 
@@ -741,8 +741,8 @@ and host-folder synth volumes. Both cards also implement
 disk-turbo, and persistence target either uniformly via
 `MainWindow::hdvDevice()` (prefers CFFA when plugged); `ProDOSBlockCard`
 in turn implements `MountableMediaCard` as a single fixed bay, so both
-cards also appear in the Slot Manager generically (see § Host control
-center).
+cards also appear in the Slot Configuration panel's media column
+generically (see § Host control center).
 
 Pinned: `hdv_card_smoke_test.cpp` (`hdv_card_smoke`),
 `hdv_writeback_smoke_test.cpp` (header/trailer/WP/opt-in round-trip),
@@ -839,9 +839,11 @@ to `$C0n0` (drive 1), 1 → write `1` (drive 2). Then standard 2-page
 stream into ProDOS buffer at `$44/$45`. Write probes `$C0n4` bit 6
 first; returns `$2B` (write-protected) without touching memory if WP.
 
-**Boot wiring**: library click on non-//c+ →
-`controller->bootFromSlot(smartPortCard->getSlot())`; on //c+ on-board
-falls back to `coldBoot()`.
+**Boot wiring**: a library click (or CLI insert+boot) routes 3.5"/HDV to
+the primary `SmartPortCard` and `controller->bootFromSlot(smartPortCard->
+getSlot())` **on every profile that has one** — including //c-class, whose
+built-in slot-5 card is the boot path (see next subsection). Only when no
+SmartPort card is plugged at all does it fall back to `coldBoot()`.
 
 **Per-unit storage**: each `SmartPortUnit` owns its bytes (no
 `thread_local`). The HDV-flavoured `SmartPortHdvUnit` is now a thin
@@ -851,10 +853,50 @@ tracking, medium-WP and opt-in write-back for free instead of
 re-implementing them. Per-unit settings persist as
 `smartport_slotN_unitK_{type,path,writeback}`. The card also implements
 `MountableMediaCard` over its 2 units (see § Host control center) so the
-Slot Manager drives them generically.
+Slot Configuration panel's media column drives them generically.
 
 Pinned: `smartport_card_smoke_test.cpp`,
 `smartport_mixed_units_smoke_test.cpp`.
+
+### //c-class on-board SmartPort (3.5" + HDV boot)
+
+The //c, //c rev0/3/4 and //c+ profiles all boot 3.5" **and** HDV through
+a host-served SmartPort block device — the **same `SmartPortCard`** as the
+//e path, but built into slot 5. Why not the faithful IWM/Sony path:
+
+- Real //c-class masks **all** slot ROM behind a forced INTCXROM
+  (`IIcClassProfile::forcesIntCxRom()` ≡ true), so a normal slot card's
+  `$Cn00` firmware is invisible → `bootFromSlot` reads internal ROM, not
+  the card, and no slot card can ever boot.
+- MAME doesn't model 3.5"/SmartPort on the plain //c at all: apple2c0/c3/c4
+  use the `A2BUS_IWM` card (`bus/a2bus/a2iwm.cpp`) which wires **two 5.25"
+  drives only** ("WANTED: there are no ROM dumps"). Only //c+ (apple2cp)
+  models 3.5" via the motherboard IWM+MIG+Sony (ported as `SmartPortHub`)
+  — but that boot path doesn't reach a bootable disk (the full IWM bit
+  shifter isn't modelled). So there is no faithful //c 3.5"/HDV to port.
+
+Mechanism:
+
+- **ROM hole** (`Memory::memRead`, inside the //c-class INTCXROM branch):
+  `$C500-$C5FF` (bank 0) returns `slots.slotRomRead(addr)` instead of
+  internal ROM **iff** `slots.peripheral(5)->exposesIicOnboardRom()`. That
+  capability (`SlotPeripheral`, overridden by `SmartPortCard`) is true only
+  while a unit holds media — an empty card stays masked so the //c autostart
+  never JMPs `$0801` into a unit-less device. Bank 1 is handled earlier by
+  `internalRomRead`, so the hole is bank-0 only (preserves the //c+ alt
+  firmware's `$C500` data).
+- **Device-select** (`$C0D0-$C0DF` = slot 5) is never masked on //c-class
+  (only `$C100-$CFFF` is), so the block stub's `$C0D0-$C0D4` protocol
+  already reaches the bus unchanged.
+- **Routing** (`MainWindow`): `routeMount35` uses the SmartPort card on all
+  profiles; `routeMountHdv` + `ensureHdvCardForBoot` send //c-class HDV to
+  the slot-5 SmartPort (a `SmartPortHdvUnit`), **never** to a cffa/hdv slot
+  card (masked, unbootable there). Profile //c gains a `smartport35` built-in
+  at slot 5 (//c+ already had one). `bootFromSlot(5)` then boots either unit.
+
+Verified on screen for //c and //c+ × {3.5", HDV}. Pinned by
+`tests/iic_onboard_smartport_test.cpp` (ROM-hole gating + block I/O via
+`Memory`). See the `project_iic_smartport_boot` memory for the full dig.
 
 ### 3.5" mechanical sounds
 
@@ -1238,7 +1280,7 @@ panels.
   capture so editing widgets don't leak into Apple II.
 - **Screenshot (F9)** — `screenshot_NNN.ppm` (P6 binary RGB) in cwd.
 
-## Host control center (Slot Manager + Floppy Emu)
+## Host control center (Slot Configuration + Floppy Emu)
 
 Two host-side facilities sit *above* the slot bus — neither is a bus
 device. Both are data-in / actions-out ImGui panels driven from a
@@ -1266,35 +1308,43 @@ bus concern; the `$Cnxx`/`$C0nx` dispatch path never touches it), same
 (`kCardTypes`, index 0 = empty slot) + the ROM-presence probes
 (`mouseRomsPresent()`, `cffaRomPresent()`) that gate the conditional
 entries (Mouse needs both mouse ROMs, CFFA needs `cffa20ee02/eec02.bin`).
-Extracted from `MainWindow_Slots.cpp` so BOTH the legacy Slot
-Configuration panel and the Slot Manager drive their dropdowns +
-built-in-name resolution from one source.
+Extracted from `MainWindow_Slots.cpp` so the Slot Configuration panel
+drives its dropdowns + built-in-name resolution from one source.
 
-### Slot Manager
+### Slot Configuration
 
-`SlotManager_ImGui.{h,cpp}`. The consolidated "control center" for the
-expansion bus: one window lists every slot (1-7, plus the AUX 80-col row
-on IIe-class), the card per slot (a dropdown, or a locked built-in
-badge), and — for any `MountableMediaCard` — inline mount / eject /
-write-back / type-select / **boot** per bay (status dot: grey empty /
-orange WP / green loaded).
+`MainWindow::renderSlotConfigPanel` (`MainWindow_Slots.cpp`). One
+**two-column** window (Machine → Slot Configuration) is the whole
+expansion-bus control center — it absorbed the old standalone "Slot
+Manager" panel (deleted 2026-05-25; `SlotManager_ImGui.*` removed):
 
-Built from a **SlotBus enumeration**: `MainWindow_Slots.cpp` walks
-`bus.peripheral(s)` + `dynamic_cast<MountableMediaCard*>` instead of
-chasing the single global `*Card` pointers, so it stays correct no matter
-how many cards of a kind are plugged. Multi-instance is wider here than
-in the legacy panel: `isMultiInstance` (`SlotManager_ImGui.cpp:23`)
-allows **`diskii`, `cffa`, `smartport35`** in more than one slot — each
-has per-slot persistence (`disk_path_slotN`, `cffa_slotN_*`,
-`smartport_slotN_*`). The older Slot Configuration panel
-(`renderSlotConfigPanel`) still red-flags everything but `diskii` as a
-duplicate; the Slot Manager is the authoritative path.
+- **LEFT — card assignment.** The AUX 80-col row (IIe-class) plus slots
+  1-7. Each slot is a `kCardTypes` dropdown, EXCEPT profile built-ins
+  (`builtInSlots[s]`) which render as a locked, greyed `LabelText` with a
+  "card — built-in …" badge (so //c/+/c+'s SSC/Mouse/SmartPort/Disk II are
+  visibly fixed). `diskii` is multi-instance (never a duplicate); other
+  keys red-flag duplicates and disable Apply. Apply persists `slot_N_card`
+  and calls `restartEmulationFromSettings()`.
 
-The detailed per-card panels survive for deep state (Disk II track LEDs,
-motor, Disk Library browsing); the Slot Manager's "Open detailed panel"
-button returns `openDetailForSlot`, which MainWindow maps to the right
-panel toggle. Settings: `show_slot_manager`. Menu: Machine → Slot
-Manager… Pinned: `slot_multi_card_smoke_test.cpp` (`slot_multi_card_smoke`).
+- **RIGHT — internal disks + mountable ports.** A **live SlotBus walk**
+  (`bus.peripheral(s)`, no global `*Card` pointers, so it's correct with
+  multiple cards of a kind). For each plugged card:
+  - `dynamic_cast<MountableMediaCard*>` → render its bays inline: status
+    dot (grey empty / orange WP / green loaded), per-bay type select
+    (SmartPort units only), path InputText + Mount/Eject, write-back
+    checkbox, and a **Boot slot** button (`bootFromSlot`). Covers
+    SmartPort (2 units), CFFA + synthetic HDV (1 bay).
+  - else `dynamic_cast<DiskIICard*>` → the internal 5.25" drives (1-2),
+    each with path + Insert/Eject, plus Boot slot. Drive 1 persists to
+    `disk_path_slotN`; drive 2 is session-only (legacy single-key scheme).
+
+  Each media action takes `stateMutex` and calls `persistMediaBay()`
+  (SmartPort per-unit / CFFA per-slot / synthetic-HDV global keys), then
+  `settings->save()`.
+
+Settings: `show_slot_config` (now persisted). Menu: Machine → Slot
+Configuration… Pinned: `slot_multi_card_smoke_test.cpp`
+(`slot_multi_card_smoke`).
 
 ### Floppy Emu (BMOW)
 

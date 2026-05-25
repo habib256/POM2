@@ -44,6 +44,10 @@ public:
     static constexpr uint8_t kStDRQ  = 0x08; // data request
     static constexpr uint8_t kStERR  = 0x01; // error
 
+    // ATA Error-register bit: aborted command (used for a write to a
+    // write-protected device — ATA-1 §9.1).
+    static constexpr uint8_t kErrABRT = 0x04;
+
     // ATA commands we honour explicitly; everything else completes as a no-op.
     static constexpr uint8_t kCmdRead       = 0x20;
     static constexpr uint8_t kCmdReadMulti  = 0xC4;

@@ -36,7 +36,15 @@ void SpeakerDevice::recordToggle(uint64_t cpuCycle)
 {
     std::lock_guard<std::mutex> lk(eventMutex);
     events.push_back(cpuCycle);
-    while (events.size() > kMaxEvents) events.pop_front();
+    // The speaker is a 1-bit flip-flop: each event is a parity flip, not an
+    // absolute level. Dropping a single toggle on overflow would invert the
+    // reconstructed level of every later sample, so drop in PAIRS (round the
+    // excess up to an even count) to keep the surviving stream's parity.
+    if (events.size() > kMaxEvents) {
+        size_t excess = events.size() - kMaxEvents;
+        if (excess & 1u) ++excess;
+        while (excess-- > 0 && !events.empty()) events.pop_front();
+    }
     latestEventCycle.store(cpuCycle, std::memory_order_relaxed);
 }
 

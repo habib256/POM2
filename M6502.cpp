@@ -227,7 +227,11 @@ void M6502::IndZeroX(void)
     uint8_t zp = (memory->memRead(programCounter++) + xRegister) & 0xFF;
     op = memory->memRead(zp);
     op |= (uint16_t)memory->memRead((uint8_t)((zp + 1) & 0xFF)) << 8;
-    cycles += 3;
+    // 6 cycles total for (zp,X) ops (fetch 1 + this 4 + op 1): the real CPU
+    // does a dummy read of the unindexed zero-page pointer before adding X
+    // (MAME om6502/ow65c02 `*_idx`). `ZeroX` charges the analogous dummy;
+    // this used to add only 3 → a 1-cycle undercount on all 8 (zp,X) ops.
+    cycles += 4;
 }
 
 // 65C02 zero-page indirect (zp). Same as (zp,X) without the X offset.
@@ -279,6 +283,24 @@ void M6502::WAbsX(void)
     base |= (uint16_t)memory->memRead(programCounter++) << 8;
     op = base + xRegister;
     cycles += 3;
+}
+
+// abs,X for the 65C02 RMW shift/rotate ops (ASL/LSR/ROL/ROR). On the 65C02
+// these take 6 cycles, 7 only when the index crosses a page (6502.org: "On
+// the 65C02 they take 6 cycles when a page boundary is not crossed"); NMOS
+// takes the fixed 7. INC/DEC abs,X always take 7 on BOTH CPUs, so those keep
+// the fixed-max WAbsX path.
+void M6502::RmwAbsX(void)
+{
+    uint16_t base = memory->memRead(programCounter++);
+    base |= (uint16_t)memory->memRead(programCounter++) << 8;
+    op = base + xRegister;
+    if (cpuMode == CpuMode::CMOS) {
+        cycles += 2;
+        if ((base & 0xFF00) != (op & 0xFF00)) cycles++;
+    } else {
+        cycles += 3;
+    }
 }
 
 void M6502::WAbsY(void)
@@ -447,10 +469,13 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
         // sbc_c_aba mirrors adc_c_aba).
         if (cpuMode == CpuMode::CMOS) {
             setStatusRegisterNZ(accumulator);
-            // V on CMOS SBC decimal: compute from final accumulator
-            // using same NMOS-style binary overflow test (works
-            // because the BCD adjustment is monotonic).
-            if (((Op1 ^ Op2) & (Op1 ^ accumulator)) & 0x80)
+            // V on CMOS SBC (incl. decimal) is computed from the BINARY
+            // difference, NOT the BCD-adjusted accumulator — same as the
+            // 6502/65C02/65816 (6502.org: "V is the same in decimal mode").
+            // `tmp` holds Op1-Op2-borrow (line above). Using `accumulator`
+            // here diverges from real hardware on 2400 BCD inputs
+            // (MAME w65c02 do_sbc_cd).
+            if (((Op1 ^ Op2) & (Op1 ^ (uint8_t)tmp)) & 0x80)
                 statusRegister |= M6502::Status::V;
             else
                 statusRegister &= ~M6502::Status::V;
@@ -1310,7 +1335,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x1B */ {&M6502::Unoff,     nullptr},
     /* 0x1C */ {&M6502::Abs,       &M6502::TRB},     // 65C02 TRB abs
     /* 0x1D */ {&M6502::AbsX,      &M6502::ORA},
-    /* 0x1E */ {&M6502::WAbsX,     &M6502::ASL},
+    /* 0x1E */ {&M6502::RmwAbsX,   &M6502::ASL},
     /* 0x1F */ {&M6502::BBRn<1>,   nullptr},
 
     /* 0x20 */ {&M6502::JSR,       nullptr},
@@ -1344,7 +1369,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x3B */ {&M6502::Unoff,     nullptr},
     /* 0x3C */ {&M6502::AbsX,      &M6502::BIT},     // 65C02 BIT abs,X
     /* 0x3D */ {&M6502::AbsX,      &M6502::AND},
-    /* 0x3E */ {&M6502::WAbsX,     &M6502::ROL},
+    /* 0x3E */ {&M6502::RmwAbsX,   &M6502::ROL},
     /* 0x3F */ {&M6502::BBRn<3>,   nullptr},
 
     /* 0x40 */ {&M6502::Imp,       &M6502::RTI},
@@ -1378,7 +1403,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x5B */ {&M6502::Unoff,     nullptr},
     /* 0x5C */ {&M6502::Unoff3,    nullptr},
     /* 0x5D */ {&M6502::AbsX,      &M6502::EOR},
-    /* 0x5E */ {&M6502::WAbsX,     &M6502::LSR},
+    /* 0x5E */ {&M6502::RmwAbsX,   &M6502::LSR},
     /* 0x5F */ {&M6502::BBRn<5>,   nullptr},
 
     /* 0x60 */ {&M6502::Imp,       &M6502::RTS},
@@ -1412,7 +1437,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x7B */ {&M6502::Unoff,     nullptr},
     /* 0x7C */ {&M6502::IndAbsX,   &M6502::JMP},     // 65C02 JMP (abs,X)
     /* 0x7D */ {&M6502::AbsX,      &M6502::ADC},
-    /* 0x7E */ {&M6502::WAbsX,     &M6502::ROR},
+    /* 0x7E */ {&M6502::RmwAbsX,   &M6502::ROR},
     /* 0x7F */ {&M6502::BBRn<7>,   nullptr},
 
     /* 0x80 */ {&M6502::Rel,       &M6502::BRA},     // 65C02 BRA
@@ -1728,12 +1753,14 @@ void M6502::setIrqLine(int sourceId, bool asserted)
     // whichever one released last won, even if the other still wanted
     // the line asserted.
     const uint32_t bit = 1u << (sourceId & 31);
-    const uint32_t prev = irqSourceMask;
-    if (asserted) irqSourceMask |=  bit;
-    else          irqSourceMask &= ~bit;
-    if (irqSourceMask != prev) {
-        IRQ = (irqSourceMask != 0) ? 1 : 0;
-    }
+    // Atomic RMW so a cross-thread caller (the SSC TCP worker) and the CPU
+    // thread can't lose each other's update. `newMask` is the post-op value
+    // — deriving IRQ from it keeps the level correct even if two threads
+    // interleave (the surviving asserted bit still drives IRQ=1).
+    const uint32_t newMask = asserted
+        ? (irqSourceMask.fetch_or(bit,  std::memory_order_relaxed) | bit)
+        : (irqSourceMask.fetch_and(~bit, std::memory_order_relaxed) & ~bit);
+    IRQ.store(newMask != 0 ? 1 : 0, std::memory_order_relaxed);
 }
 
 void M6502::setIRQ(int state)
@@ -1837,7 +1864,8 @@ void M6502::step(void)
         cycles = 0;
         handleNMI();
         interruptCycles = cycles;
-    } else if (!(statusRegister & M6502::Status::I) && IRQ) {
+    } else if (!(statusRegister & M6502::Status::I) &&
+               IRQ.load(std::memory_order_relaxed)) {
         cycles = 0;
         handleIRQ();
         interruptCycles = cycles;

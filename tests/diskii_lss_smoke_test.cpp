@@ -488,6 +488,56 @@ bool testFullSectorReadback() {
 
 }  // namespace
 
+// Test: motor spin-down must complete even when the selected drive is empty.
+// Bug (round 9 #4): advanceCycles early-returned on !isLoaded BEFORE ticking
+// the spin-down delay, so motor-off on an empty selected drive left motorOn /
+// active stuck on forever (drive LED never clears, no spin-down sound).
+bool testSpinDownNoDisk() {
+    const std::string lssPath = findFirst({
+        "../roms/diskii_p6.rom", "roms/diskii_p6.rom",
+        "../../roms/diskii_p6.rom"
+    });
+    if (lssPath.empty()) {
+        std::printf("[SKIP] roms/diskii_p6.rom not found — skipping spin-down test\n");
+        return true;
+    }
+    DiskIICard card;
+    if (!card.loadLssRom(lssPath)) { std::printf("FAIL: loadLssRom\n"); return false; }
+    // Insert then eject so the LSS path is latched active (useBitLss) but the
+    // selected drive (0) is now EMPTY — the exact bug condition.
+    const std::string nibPath = makeSyntheticNib();
+    if (!card.insertDisk(nibPath)) {
+        std::printf("FAIL: insertDisk: %s\n", card.getLastError().c_str());
+        return false;
+    }
+    card.ejectDisk(0);
+    assert(!card.isDiskLoaded(0));
+
+    card.deviceSelectRead(0x9);   // motor on  → MODE_ACTIVE
+    card.deviceSelectRead(0x8);   // motor off → MODE_DELAY (≈1.02M-cycle spin-down)
+    if (!card.isMotorOn()) {
+        std::printf("FAIL: motor should still be on during the spin-down delay\n");
+        return false;
+    }
+    card.advanceCycles(2'000'000);   // well past the spin-down delay
+    if (card.isMotorOn()) {
+        std::printf("FAIL: motor stuck on after spin-down (empty selected drive)\n");
+        return false;
+    }
+
+    // Round 9 #7: out-of-range drive indices must return safe defaults, not
+    // index images[]/headQuarterTrack[]/trackPos[] out of bounds.
+    assert(!card.isDiskLoaded(99));
+    assert(card.getCurrentTrack(99) == 0);
+    assert(card.getQuarterTrack(-1) == 0);
+    assert(card.getTrackPosition(7) == 0);
+    assert(card.getDiskPath(-1).empty());
+    assert(!card.hasUnsavedChanges(5));
+
+    std::printf("[ OK ] spin-down completes with no disk in the selected drive\n");
+    return true;
+}
+
 int main() {
     bool ok = true;
     ok &= testRomLoad();
@@ -497,6 +547,7 @@ int main() {
     ok &= testLegacyFallback();
     ok &= testFullSectorReadback();
     ok &= testSubInstructionCycleAccuracyNoOpWithZero();
+    ok &= testSpinDownNoDisk();
     if (ok) {
         std::printf("diskii_lss_smoke OK\n");
         return 0;

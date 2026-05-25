@@ -38,7 +38,6 @@
 #include "SmartPortUnit.h"
 #include "FloppyEmuDevice.h"
 #include "FloppyEmu_ImGui.h"
-#include "SlotManager_ImGui.h"
 #include "SmartPort_ImGui.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
@@ -79,7 +78,6 @@ MainWindow::MainWindow(bool forceIIPlus)
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
       smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
-      slotManagerPanel(std::make_unique<pom2::SlotManager_ImGui>()),
       floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
       floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
@@ -261,7 +259,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
         showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
-        showSlotManager    = settings->getBool ("show_slot_manager", showSlotManager);
+        showSlotConfigPanel = settings->getBool ("show_slot_config", showSlotConfigPanel);
         showFloppyEmu      = settings->getBool ("show_floppy_emu", showFloppyEmu);
         // Floppy Emu: restore the emulation mode + SD-card root (its NVRAM).
         {
@@ -548,7 +546,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_disk_library", showDiskLibrary);
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
     settings->setBool  ("show_smartport_panel", showSmartPortPanel);
-    settings->setBool  ("show_slot_manager", showSlotManager);
+    settings->setBool  ("show_slot_config", showSlotConfigPanel);
     settings->setBool  ("show_floppy_emu", showFloppyEmu);
     settings->setString("floppyemu_mode",
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
@@ -1433,7 +1431,6 @@ void MainWindow::renderMenuBar()
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        ImGui::MenuItem("Slot Manager...", nullptr, &showSlotManager);
         ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
         ImGui::EndMenu();
     }
@@ -1775,16 +1772,25 @@ void MainWindow::renderControlsWindow()
         }
 
         ImGui::Separator();
-        ImGui::Text("PC=$%04X A=$%02X X=$%02X Y=$%02X SP=$%02X",
-            controller->cpu().getProgramCounter(),
-            controller->cpu().getAccumulator(),
-            controller->cpu().getXRegister(),
-            controller->cpu().getYRegister(),
-            controller->cpu().getStackPointer());
-        ImGui::Text("Cycles: %llu",
-            (unsigned long long)controller->memory().getCycleCounter());
-        ImGui::Text("Speaker toggles: %llu",
-            (unsigned long long)controller->memory().getSpeakerToggleCount());
+        // Snapshot live CPU/Memory state under stateMutex — the worker thread
+        // writes these (PC/regs every instruction, cycle counter via
+        // advanceCycles) so reading them unlocked from the UI thread was a data
+        // race. Copy under the lock, then format from the locals (don't hold the
+        // lock across ImGui calls), matching the other UI snapshot sites.
+        uint16_t pc; uint8_t a, x, y, sp; uint64_t cyc, spkToggles;
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            pc  = controller->cpu().getProgramCounter();
+            a   = controller->cpu().getAccumulator();
+            x   = controller->cpu().getXRegister();
+            y   = controller->cpu().getYRegister();
+            sp  = controller->cpu().getStackPointer();
+            cyc = controller->memory().getCycleCounter();
+            spkToggles = controller->memory().getSpeakerToggleCount();
+        }
+        ImGui::Text("PC=$%04X A=$%02X X=$%02X Y=$%02X SP=$%02X", pc, a, x, y, sp);
+        ImGui::Text("Cycles: %llu", (unsigned long long)cyc);
+        ImGui::Text("Speaker toggles: %llu", (unsigned long long)spkToggles);
 
         // Audio mixing controls moved to the dedicated Audio Mixer panel
         // (View → Audio Mixer). Keep a one-liner so users notice the
@@ -2645,13 +2651,14 @@ void MainWindow::ejectAllDisks()
 bool MainWindow::routeMount35(int driveIdx, const std::string& path,
                               std::string& errOut)
 {
-    // On any non-//c+ profile with a SmartPort card, the card's units own
-    // 3.5" media; auto-create a SmartPort35Unit on the target index if it's
-    // empty or holds a different kind (HDV). On //c+ the on-board hub owns
-    // 3.5". (Promoted from a lambda in renderDiskLibraryWindow so the CLI
-    // insert+boot path shares the exact routing.)
-    if (smartPortCard &&
-        activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+    // Whenever a SmartPort card is plugged its units own 3.5" media;
+    // auto-create a SmartPort35Unit on the target index if it's empty or
+    // holds a different kind (HDV). This now includes //c-class: the //c /
+    // //c+ built-in SmartPort (slot 5) is the boot path POM2 exposes
+    // (block-level — the on-board IWM/Sony GCR boot is unmodelled, see
+    // project_iic_smartport_boot). (Promoted from a lambda in
+    // renderDiskLibraryWindow so the CLI insert+boot path shares it.)
+    if (smartPortCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         pom2::SmartPortUnit* u =
             smartPortCard->unit(static_cast<size_t>(driveIdx));
@@ -2688,21 +2695,31 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
 bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
                                std::string& errOut)
 {
+    // On //c-class the cffa/hdv slot cards are ROM-masked by the forced
+    // INTCXROM and can't boot ($Cn00 reads internal ROM, not the card) —
+    // the only bootable block device is the on-board SmartPort (slot 5),
+    // so skip the dedicated-HDV-card branch there and route HDV to the
+    // SmartPort unit. See project_iic_smartport_boot.
+    const bool iicClass =
+        (activeProfile == pom2::SystemProfile::AppleIIc ||
+         activeProfile == pom2::SystemProfile::AppleIIcPlus);
     // Prefer a dedicated HDV-class card — the MAME-faithful CffaCard if
     // plugged, else the synthetic ProDOSHardDiskCard; else route to a
     // SmartPort card's unit 0 (auto-creating a SmartPortHdvUnit). Promoted
     // from a lambda in renderDiskLibraryWindow.
-    if (pom2::ProDOSBlockCard* dev = hdvDevice()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (!dev->loadImage(path)) {
-            errOut = dev->getLastError();
-            hdvStatus = "no image mounted";
-            return false;
+    if (!iicClass) {
+        if (pom2::ProDOSBlockCard* dev = hdvDevice()) {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            if (!dev->loadImage(path)) {
+                errOut = dev->getLastError();
+                hdvStatus = "no image mounted";
+                return false;
+            }
+            hdvPath = path;
+            hdvStatus = "loaded: " + path;
+            bootSlotOut = dev->getSlot();
+            return true;
         }
-        hdvPath = path;
-        hdvStatus = "loaded: " + path;
-        bootSlotOut = dev->getSlot();
-        return true;
     }
     if (smartPortCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -2767,6 +2784,14 @@ std::vector<pom2::SmartPortCard*> MainWindow::smartPortCards() const
 
 int MainWindow::ensureHdvCardForBoot()
 {
+    // On //c-class only the on-board SmartPort (slot 5) is ROM-visible /
+    // bootable — cffa/hdv slot cards are masked by the forced INTCXROM, so
+    // prefer the SmartPort and never plug a (dead) ProDOSHardDiskCard here.
+    // See project_iic_smartport_boot.
+    if (activeProfile == pom2::SystemProfile::AppleIIc ||
+        activeProfile == pom2::SystemProfile::AppleIIcPlus) {
+        if (smartPortCard) return smartPortCard->getSlot();
+    }
     if (cffaCard)      return cffaCard->getSlot();
     if (hdvCard)       return hdvCard->getSlot();
     if (smartPortCard) return smartPortCard->getSlot();
@@ -2830,8 +2855,9 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
         }
         case DiskSlotClass::Sony35: {
             if (!routeMount35(0, path, errOut)) return false;
-            if (smartPortCard &&
-                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+            // SmartPort card present (incl. //c-class built-in slot 5) →
+            // boot it explicitly; otherwise cold-boot (//c+ on-board hub).
+            if (smartPortCard) {
                 controller->bootFromSlot(smartPortCard->getSlot());
             } else {
                 controller->coldBoot();
@@ -2991,11 +3017,11 @@ void MainWindow::renderDiskLibraryWindow()
         std::string err;
         if (routeMount35(r.request35BootDrive,
                          r.request35MountAndBoot, err)) {
-            // Slot-aware boot: explicit `bootFromSlot(N)` when a
-            // SmartPort card is plugged on a non-//c+ profile, else
-            // `coldBoot()` so the //c+ ROM autostart kicks in.
-            if (smartPortCard &&
-                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+            // Slot-aware boot: explicit `bootFromSlot(N)` whenever a
+            // SmartPort card is plugged — now including the //c-class
+            // built-in SmartPort (slot 5). Falls back to `coldBoot()`
+            // only when there is no SmartPort card at all.
+            if (smartPortCard) {
                 controller->bootFromSlot(smartPortCard->getSlot());
             } else {
                 controller->coldBoot();
@@ -4203,6 +4229,8 @@ void MainWindow::renderMemoryViewerWindow()
         // Hold the state mutex briefly so the snapshot the viewer reads
         // (Memory::data()) is consistent — no torn writes mid-row.
         std::lock_guard<std::mutex> lk(controller->stateMutex());
+        memViewer->setCmosMode(
+            controller->cpu().getCpuMode() == M6502::CpuMode::CMOS);
         memViewer->render();
     }
     ImGui::End();
@@ -4497,7 +4525,6 @@ void MainWindow::render()
     renderAudioMixerWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
-    renderSlotManagerWindow();
     renderFloppyEmuWindow();
     renderAboutDialog();
 }

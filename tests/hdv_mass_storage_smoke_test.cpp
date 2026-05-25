@@ -77,17 +77,20 @@ std::vector<uint8_t> twoImgHeader(uint32_t blocks, uint32_t dataOffset,
 
 int main()
 {
-    // ── (a) 32 MB capacity boundary ──────────────────────────────────
+    // ── (a) ProDOS 16-bit capacity boundary ──────────────────────────
+    // ProDOS block numbers are 16-bit → max addressable volume = 65535
+    // blocks (≈32 MB). Block 65536 is unaddressable, so it's rejected
+    // (round-8 #6: the cap was off-by-one, accepting 0x10000).
     {
-        const std::string p = "/tmp/pom2_hdv_32mb.hdv";
-        writeSparseHdv(p, 0x10000);          // 65536 blocks = 32 MiB
+        const std::string p = "/tmp/pom2_hdv_max.hdv";
+        writeSparseHdv(p, 0xFFFF);           // 65535 blocks — the legal max
         ProDOSHardDiskCard c;
         assert(c.loadImage(p));
-        assert(c.getBlockCount() == 0x10000);
+        assert(c.getBlockCount() == 0xFFFF);
     }
     {
         const std::string p = "/tmp/pom2_hdv_over.hdv";
-        writeSparseHdv(p, 0x10001);          // 65537 blocks — over the cap
+        writeSparseHdv(p, 0x10000);          // 65536 blocks — over the 16-bit cap
         ProDOSHardDiskCard c;
         assert(!c.loadImage(p));
     }

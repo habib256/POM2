@@ -232,6 +232,23 @@ int main()
     });
     assert(cpu.getAccumulator() == 0xCC);
 
+    // ── 65C02 decimal-mode SBC overflow (V) flag (round 10 #1) ───────────
+    // On the 65C02 the V flag in decimal SBC is computed from the BINARY
+    // difference, identical to binary mode (6502.org). POM2 wrongly used the
+    // BCD-adjusted accumulator → V diverged from real hardware on 2400 inputs.
+    // Canonical divergent case: A=$00, M=$80, C=1 (no borrow) ⇒ hardware V=1;
+    // the buggy code produced V=0.
+    cpu.setCpuMode(M6502::CpuMode::CMOS);
+    runProgram(mem, cpu, {
+        0xF8,                  // SED  (decimal mode)
+        0x38,                  // SEC  (carry set = no borrow)
+        0xA9, 0x00,            // LDA #$00
+        0xE9, 0x80,            // SBC #$80
+        0xD8,                  // CLD  (leave decimal so BRK/handler is sane)
+    });
+    assert((cpu.getStatusRegister() & M6502::Status::V) != 0 &&
+           "CMOS decimal SBC $00-$80 must set V (computed from binary diff)");
+
     std::printf("cmos_6502_smoke OK\n");
     return 0;
 }

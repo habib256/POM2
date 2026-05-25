@@ -232,6 +232,7 @@ void EmulationController::stop()
 void EmulationController::hardReset()
 {
     std::lock_guard<std::mutex> lk(stateMtx);
+    mem.setIicSmartPortArmed(false);   // reboot → //c sees its real $C500 firmware
     mem.resetSoftSwitches();
     mem.slotBus().reset();
     if (spk)    spk->reset();
@@ -254,6 +255,7 @@ void EmulationController::softReset()
     // `apple2e.cpp:1453-1508`). resetSoftSwitchesWarm() applies the
     // right one based on iieMode.
     std::lock_guard<std::mutex> lk(stateMtx);
+    mem.setIicSmartPortArmed(false);   // reboot → //c sees its real $C500 firmware
     mem.resetSoftSwitchesWarm();
     mem.slotBus().reset();
     // SmartPort hub state — MAME re-asserts m_35sel=false and
@@ -268,6 +270,7 @@ void EmulationController::softReset()
 void EmulationController::coldBoot()
 {
     std::lock_guard<std::mutex> lk(stateMtx);
+    mem.setIicSmartPortArmed(false);   // reboot → //c sees its real $C500 firmware
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();
@@ -282,6 +285,11 @@ void EmulationController::bootFromSlot(int slot)
 {
     if (slot < 1 || slot > 7) return;
     std::lock_guard<std::mutex> lk(stateMtx);
+    // Explicit GUI/CLI boot — arm the //c-class on-board SmartPort so its
+    // $C500 firmware stub becomes visible for the signature check + boot
+    // below (every reset/cold-boot disarms it again). See Memory::
+    // setIicSmartPortArmed + project_iic_smartport_boot. No-op off //c-class.
+    mem.setIicSmartPortArmed(true);
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();

@@ -288,6 +288,34 @@ void testTelnetLineEndingNormalisation()
     std::printf("  ok: telnet CR/NUL/LF normalisation\n");
 }
 
+void testTelnetIacFsm()
+{
+    // processTelnetRx — persistent IAC state machine. Pins: variable-length
+    // IAC SB … IAC SE subnegotiation fully swallowed (R6-#1, the NAWS leak),
+    // 3-byte WILL/WONT/DO/DONT swallowed, IAC IAC → literal 0xFF, and an IAC
+    // sequence SPLIT across recv() chunks parsed correctly (R6-#2).
+    SuperSerialCard ssc(2);
+    auto filter = [&](std::vector<uint8_t> in) {
+        const size_t m = ssc.processTelnetRx(in.data(), in.size());
+        in.resize(m);
+        return in;
+    };
+    ssc.resetTelnet();
+    assert((filter({0xFF,0xFA,0x1F,0x00,0x50,0x00,0x18,0xFF,0xF0,'A'})   // IAC SB NAWS … IAC SE
+                == std::vector<uint8_t>{'A'}));
+    ssc.resetTelnet();
+    assert((filter({0xFF,0xFB,0x01,'X'}) == std::vector<uint8_t>{'X'}));  // WILL ECHO (3-byte)
+    ssc.resetTelnet();
+    assert((filter({'A',0xFF,0xFF,'B'}) == std::vector<uint8_t>{'A',0xFF,'B'})); // IAC IAC → 0xFF
+    // Split across two chunks — the trailing IAC must be remembered.
+    ssc.resetTelnet();
+    auto c1 = filter({'A', 0xFF});           // 'A', then a dangling IAC
+    auto c2 = filter({0xFB, 0x01, 'B'});     // …WILL ECHO completes, then 'B'
+    c1.insert(c1.end(), c2.begin(), c2.end());
+    assert((c1 == std::vector<uint8_t>{'A','B'}));
+    std::printf("  ok: telnet IAC FSM (SB / WILL / IAC-IAC / split chunk)\n");
+}
+
 void testStatusReadDcdDsr()
 {
     SuperSerialCard ssc(2);
@@ -313,6 +341,7 @@ int main()
     testRxIrqGatedByCommand();
     testCommandRegWriteClearsPendingRxIrq();
     testTelnetLineEndingNormalisation();
+    testTelnetIacFsm();
     testStatusReadDcdDsr();
     std::printf("OK ssc_acia_smoke\n");
     return 0;

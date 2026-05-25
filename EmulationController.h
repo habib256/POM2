@@ -80,6 +80,12 @@ public:
     void setCassetteVolume(float v);
 
     void start();
+    /// Request the worker to park (sets Mode::Stopped + wakes it). NOTE: this
+    /// does NOT block until the worker actually stops — it may still be mid-step
+    /// for up to one budget chunk. Callers that need exclusive access to CPU /
+    /// Memory after stop() (e.g. applyProfile's card teardown) MUST take
+    /// stateMutex(): the worker only touches CPU/Memory under that lock, so the
+    /// lock — not stop() — is what serialises against an in-flight step.
     void stop();
 
     // Reset API — POM2 exposes 4 verbs. The MAME equivalents are only 2

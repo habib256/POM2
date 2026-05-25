@@ -11,6 +11,12 @@
 
 namespace pom2 {
 
+// ProDOS block numbers are 16-bit, so a volume can address at most 65535
+// blocks; the synthetic HDV card's selectedBlock is a uint16_t. Keep the
+// cap ProDOS-addressable (round-8 #6 fix — reverting it to 0x10000 trips here).
+static_assert(Block512Backing::kMaxBlocks <= 0xFFFFu,
+              "kMaxBlocks must stay within the 16-bit ProDOS block range");
+
 bool Block512Backing::loadImage(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -85,7 +91,7 @@ bool Block512Backing::loadImage(const std::string& path)
         return false;
     }
     if ((parsedLength / kBlockBytes) > kMaxBlocks) {
-        lastError_ = "HDV image has more than 65536 ProDOS blocks: " +
+        lastError_ = "HDV image has more than 65535 ProDOS blocks: " +
                      std::to_string(parsedLength / kBlockBytes);
         pom2::log().warn("HDV", lastError_);
         return false;

@@ -284,13 +284,22 @@ int Memory::loadCharRom(const char* filename)
     f.seekg(0, std::ios::end);
     auto size = static_cast<size_t>(f.tellg());
     f.seekg(0, std::ios::beg);
-    if (size != 2048 && size != 4096 && size != 8192) {
-        lastError = "Char ROM must be 2K/4K/8K, got " + std::to_string(size);
+    // Only 2K and 4K dumps have a normalization path below; an 8K dump would
+    // be stored raw and the renderer would draw garbage glyphs. Reject it
+    // cleanly rather than accept-and-corrupt (no shipped char ROM is 8K).
+    if (size != 2048 && size != 4096) {
+        lastError = "Char ROM must be 2K or 4K, got " + std::to_string(size);
         return 0;
     }
     characterRom.resize(size);
     f.read(reinterpret_cast<char*>(characterRom.data()), size);
-    if (!f) return 0;
+    if (!f) {
+        // Short read — don't leave a partial ROM the renderer would treat as
+        // valid (it gates on size >= 2048 and would draw the garbage tail).
+        characterRom.clear();
+        lastError = std::string("Short read on char ROM: ") + filename;
+        return 0;
+    }
 
     // Normalize to AppleWin's "csbits" convention so the renderer can
     // treat all ROM dumps uniformly:
@@ -331,7 +340,6 @@ int Memory::loadCharRom(const char* filename)
             characterRom[i] ^= 0xFF;
         }
     }
-    // 8K (PAL or langsw variants) not preprocessed yet.
     pom2::log().info("ROM",
         "Loaded char ROM (" + std::to_string(size) + " B): " + filename);
     return 1;
@@ -383,6 +391,7 @@ void Memory::resetSoftSwitchesWarm()
     }
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
+    pasteQueue.clear();   // a reset abandons any in-flight host paste
     // NB: cnxx-slot tracker analogue lives in SlotBus, which the caller
     // (EmulationController::softReset) drives via slotBus().reset();
     // nothing else needs touching here on II/II+.
@@ -428,6 +437,7 @@ void Memory::resetSoftSwitches()
     }
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
+    pasteQueue.clear();   // a reset abandons any in-flight host paste
 }
 
 void Memory::clearRam()
@@ -715,8 +725,18 @@ void Memory::restoreMainRam(const uint8_t* data, size_t n)
 void Memory::queueKey(uint8_t apple2Key)
 {
     std::lock_guard<std::mutex> lk(kbMutex);
-    lastKey  = apple2Key & 0x7F;
-    keyReady = true;
+    const uint8_t b = apple2Key & 0x7F;
+    if (!pasteQueue.empty()) {
+        // A host paste is draining — append so this live keystroke is
+        // delivered in order AFTER it, instead of clobbering the currently
+        // latched paste byte and jumping the FIFO.
+        pasteQueue.push_back(b);
+    } else {
+        // No paste in flight: behave like the hardware latch — newest key
+        // wins (fast typing overwrites an unread key, as on real hardware).
+        lastKey  = b;
+        keyReady = true;
+    }
 }
 
 void Memory::clearKeyStrobe()
@@ -742,9 +762,15 @@ size_t Memory::pasteText(const char* data, size_t length)
     if (!data || length == 0) return 0;
     std::lock_guard<std::mutex> lk(kbMutex);
 
+    // Cap against the LIVE queue size, not just this call, so repeated pastes
+    // can't grow pasteQueue without bound (a memory DoS via the AI-control or
+    // clipboard paths).
+    const size_t inFlight = pasteQueue.size() + (keyReady ? 1u : 0u);
+    const size_t room = (inFlight >= kPasteMaxChars) ? 0u : (kPasteMaxChars - inFlight);
+
     size_t queued = 0;
     bool   prevWasCR = false;
-    for (size_t i = 0; i < length && queued < kPasteMaxChars; ++i) {
+    for (size_t i = 0; i < length && queued < room; ++i) {
         uint8_t b = static_cast<uint8_t>(data[i]);
 
         // Line-ending normalisation: \r, \n, and \r\n all collapse to one
@@ -766,6 +792,10 @@ size_t Memory::pasteText(const char* data, size_t length)
         if (b < 0x20 && b != 0x0D && b != 0x09) continue;
         // Strip the high bit — Apple II is 7-bit ASCII.
         b &= 0x7F;
+        // The ][ / ][+ keyboard has no lowercase; fold a-z → A-Z so pasted
+        // BASIC/Monitor input is accepted (a real II keyboard can't emit
+        // $61-$7A). IIe-class keyboards do have lowercase, so leave them.
+        if (!iieMode && b >= 'a' && b <= 'z') b = static_cast<uint8_t>(b - 'a' + 'A');
 
         // First byte goes straight into the latch if it's empty; rest go
         // into the queue and drain via clearKeyStrobe().
@@ -784,8 +814,10 @@ size_t Memory::pasteRawKeys(const char* data, size_t length)
 {
     if (!data || length == 0) return 0;
     std::lock_guard<std::mutex> lk(kbMutex);
+    const size_t inFlight = pasteQueue.size() + (keyReady ? 1u : 0u);
+    const size_t room = (inFlight >= kPasteMaxChars) ? 0u : (kPasteMaxChars - inFlight);
     size_t queued = 0;
-    for (size_t i = 0; i < length && queued < kPasteMaxChars; ++i) {
+    for (size_t i = 0; i < length && queued < room; ++i) {
         const uint8_t b = static_cast<uint8_t>(data[i]) & 0x7F;
         if (!keyReady && pasteQueue.empty()) {
             lastKey  = b;
@@ -1657,6 +1689,22 @@ uint8_t Memory::memRead(uint16_t addr)
             uint8_t out;
             if (iicProfile_ && iicProfile_->internalRomRead(addr, floatingBus(), out)) {
                 return out;
+            }
+            // //c-class on-board SmartPort: punch the slot-5 SmartPort
+            // firmware ROM ($C500-$C5FF) through the INTCXROM mask so ProDOS
+            // and bootFromSlot(5) see a bootable block device. Real //c kept
+            // its SmartPort firmware here too; POM2 substitutes a host-
+            // serviced block stub (the IWM/Sony 3.5" boot path is unmodelled
+            // — see project_iic_smartport_boot). Device-select I/O
+            // ($C0D0-$C0DF) is never masked (it reaches the slot bus above).
+            // Bank 1 is handled by internalRomRead() above, so this is bank-0
+            // only; gated on the card holding media (exposesIicOnboardRom) so
+            // an empty SmartPort never offers a half-working boot signature.
+            if (iicProfile_ && iicSmartPortArmed_ &&
+                addr >= 0xC500 && addr <= 0xC5FF) {
+                if (SlotPeripheral* p = slots.peripheral(5);
+                    p && p->exposesIicOnboardRom())
+                    return slots.slotRomRead(addr);
             }
             return internalIORom[addr - 0xC000];
         }

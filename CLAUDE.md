@@ -67,13 +67,13 @@ probe order — see [System profiles](#system-profiles). Legacy auto-detect
 | ProDOS block backing + HDV-class cards | `Block512Backing.*`, `ProDOSBlockCard.h`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [DEV.md § ProDOSHardDiskCard](DEV.md#prodoshardiskcard-hdv-synthetic-block-model) + [§ CffaCard](DEV.md#cffacard-cffa-20--mame-faithful-ide) — shared `Block512Backing` (2IMG envelope, dirty/WP/write-back, host-folder synth). Two cards behind the `ProDOSBlockCard` interface: synthetic `hdv` (zero-ROM, AppleWin lineage) and **MAME-faithful `cffa`** (real `cffa20ee02/eec02.bin` over emulated ATA; `$Cn07=$3C` ⇒ F8-bootable). `MainWindow::hdvDevice()` targets whichever for the HDV Library/turbo/persistence (`cffa_slotN_*`). Pinned: `ata_block_device`, `cffa_card_smoke`. |
 | IWM (Apple FDC for //c / //c+ / Mac / IIgs) | `IWMDevice.*` | [DEV.md § Storage](DEV.md#storage) (live + authoritative on //c+ AND on 32 KB-ROM //c rev 0/3/4; Memory routes $C0E0-$C0EF through IWM whenever `iicHasAltBank` is set — MAME wires `A2BUS_IWM` for `apple2c0`/`apple2c3`/`apple2c4`/`apple2cp` per `apple2e.cpp:5249-5272` + `6281-6291`. Only the 16 KB rev-255 //c keeps `A2BUS_DISKIING`. Toggle shadow mode via `POM2_IWM_AUTHORITATIVE=0`. Pinned by `tests/iic_boot_trace.cpp`.) |
 | SmartPort 3.5" — //c+ on-board (full IWM/GCR) | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*`, `Disk35Controller_ImGui.*` | [DEV.md § Storage](DEV.md#storage) — image loader, Sony register protocol, MIG `recalc_active_device`, zoned 4:4 GCR encoder + decoder, IWM `setSony35()` dispatch (read + write), ImGui panel, CLI `--35-disk1/2`, Settings persistence, flux write-back with save-on-eject. Mechanical sound sink wired (`Sony35Drive::setFloppySound`). |
-| SmartPort slot card (//e / II+, Liron-class) | `SmartPortCard.*`, `SmartPortUnit.*`, `SmartPort35Unit.*`, `SmartPortHdvUnit.*`, `SmartPort_ImGui.*` | [DEV.md § SmartPortCard](DEV.md#smartportcard-e-liron-class) — block-level ProDOS driver, 2 units per card, each unit is a polymorphic `SmartPortUnit` (today: 3.5" Sony 800K OR ProDOS HDV; extensible via `makeSmartPortUnit`). Each card OWNS its unit storage — no sharing with the //c+ on-board hub; the HDV-flavoured `SmartPortHdvUnit` wraps the shared `Block512Backing` (2IMG/dirty/WP/write-back for free). Per-unit type + path + write-back persisted as `smartport_slotN_unitK_{type,path,writeback}`. Plug as `smartport35` in Slot Config; configure units via the **SmartPort Configuration** panel (Panels menu) or the **Slot Manager** (2 bays, type-select). Implements `MountableMediaCard`. Pinned by `tests/smartport_card_smoke_test.cpp` + `tests/smartport_mixed_units_smoke_test.cpp`. |
+| SmartPort slot card (//e / II+, Liron-class) | `SmartPortCard.*`, `SmartPortUnit.*`, `SmartPort35Unit.*`, `SmartPortHdvUnit.*`, `SmartPort_ImGui.*` | [DEV.md § SmartPortCard](DEV.md#smartportcard-e-liron-class) — block-level ProDOS driver, 2 units per card, each unit is a polymorphic `SmartPortUnit` (today: 3.5" Sony 800K OR ProDOS HDV; extensible via `makeSmartPortUnit`). Each card OWNS its unit storage — no sharing with the //c+ on-board hub; the HDV-flavoured `SmartPortHdvUnit` wraps the shared `Block512Backing` (2IMG/dirty/WP/write-back for free). Per-unit type + path + write-back persisted as `smartport_slotN_unitK_{type,path,writeback}`. Plug as `smartport35` in Slot Config; configure units via the **SmartPort Configuration** panel (Panels menu) or the **Slot Configuration** panel's right column (2 bays, type-select). Implements `MountableMediaCard`. Pinned by `tests/smartport_card_smoke_test.cpp` + `tests/smartport_mixed_units_smoke_test.cpp`. |
 | Super Serial Card + telnet (slot 2) | `SuperSerialCard.h/.cpp` | [DEV.md § SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | ProDOS clock card (slot 4) | `ClockCard.h/.cpp` | [DEV.md § Clock card](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (slot 4 by conv.) | `MouseCard.h/.cpp` | [DEV.md § Mouse Card](DEV.md#mouse-card) |
 | Joystick / paddles | `JoystickInput.h/.cpp` + Memory paddle RC | [DEV.md § Joystick / paddles](DEV.md#joystick--paddles) |
 | UI (ImGui) | `MainWindow.*`, `MemoryViewer_ImGui.*`, … | [DEV.md § UI](DEV.md#ui-imgui) |
-| Slot Manager + card catalog + media-bay capability | `SlotManager_ImGui.*`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [DEV.md § Host control center](DEV.md#host-control-center-slot-manager--floppy-emu) — consolidated bus panel (Machine → Slot Manager) built from a **SlotBus enumeration**, so it stays correct with multiple cards of a kind. `MountableMediaCard` = host-side mix-in (HDV/CFFA = 1 bay, SmartPort = 2 units) → GUI drives mount/eject/write-back/type-select/boot generically. `SlotCardCatalog` = single `kCardTypes` list + ROM-presence probes, shared with the legacy Slot Config panel. Slot Manager treats `diskii`/`cffa`/`smartport35` as multi-instance. Pinned `slot_multi_card_smoke`. |
+| Slot Configuration + card catalog + media-bay capability | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [DEV.md § Host control center](DEV.md#host-control-center-slot-configuration--floppy-emu) — **two-column panel** (Machine → Slot Configuration): LEFT = per-slot card assignment (built-in slots greyed/locked, incl. //c-class), RIGHT = internal disks + mountable ports built from a **live SlotBus walk** (MountableMediaCard bays for SmartPort/CFFA/HDV + DiskIICard drives) with mount/eject/type-select/write-back/boot. `MountableMediaCard` = host-side mix-in (HDV/CFFA = 1 bay, SmartPort = 2 units). `SlotCardCatalog` = single `kCardTypes` list + ROM-presence probes. **The standalone Slot Manager panel was folded into this one (deleted 2026-05-25).** Pinned `slot_multi_card_smoke`. |
 | Floppy Emu (BMOW SD/OLED gadget) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [DEV.md § Host control center](DEV.md#host-control-center-slot-manager--floppy-emu) — model of the Big Mess o' Wires Floppy Emu (Devices → Floppy Emu). 4 modes (5.25 / 3.5 / Unidisk 3.5 / Smartport HD); SD file explorer + `favdisks.txt` favorites over the `floppyemu/` folder; mounting **routed into the existing `DiskIICard` / `SmartPortCard` units**. Device core is UI/emulator-agnostic (unit-testable). Pinned `floppy_emu_smoke`. |
 | Clock & threading | `EmulationController.h/.cpp` | [DEV.md § Clock & threading](DEV.md#clock--threading) |
 | System profiles | `SystemProfile.h/.cpp` | [System profiles](#system-profiles) + [DEV.md § Profile internals](DEV.md#profile-switching-internals) |
@@ -139,7 +139,7 @@ aux 64 KB under paging switches — see table at top of `Memory.h`.
 | Apple ][+ (1979) | NMOS | off | `apple2p.rom`, `apple2.rom` | — |
 | Apple //e (1983, Unenhanced) | NMOS | on | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | — (AUX = ext80 label) |
 | Apple //e Enhanced (1985) | 65C02 | on | `apple2e.rom` | — (AUX = ext80 label) |
-| Apple //c (1984) | 65C02 | on | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl2 SSC, sl4 Mouse, sl6 Disk II |
+| Apple //c (1984) | 65C02 | on | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl2 SSC, sl4 Mouse, sl5 SmartPort, sl6 Disk II |
 | Apple //c Plus (1988) | 65C02 | on | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl2 SSC, sl4 Mouse, sl5 SmartPort 3.5", sl6 Disk II (IWM) |
 
 Profiles with built-in slots force the listed cards into the SlotBus on
@@ -167,9 +167,29 @@ expansion ROM area (drive enable, 2 KB MIG RAM, 3.5" head select)
 and an IWM at `$C0E0-$C0EF` with mode + status + WHD registers on
 top of the normal Q6/Q7 control. POM2 implements both in the
 minimum form needed for cold boot (banner display + 5.25" auto-
-boot); the full IWM bit-shift state machine is **not** modelled.
+boot); the full IWM bit-shift state machine is **not** modelled, so
+the firmware's IWM/Sony **3.5" boot never reaches a bootable disk**.
 See [DEV.md § //c+ MIG + IWM handshake](DEV.md#storage) for the
-exact register decode and the pinned smoke test. Profile switching is a full cold reset with strict ordering
+exact register decode and the pinned smoke test.
+
+**//c-class on-board SmartPort (3.5" + HDV boot)**: because the
+real IWM/Sony GCR boot is unmodelled — and MAME doesn't emulate
+3.5"/SmartPort on the plain //c at all (its `A2BUS_IWM` card is
+5.25"-only) — POM2 boots 3.5" **and** HDV on //c / //c+ through a
+**host-served SmartPort block device** at the built-in slot 5. The
+forced INTCXROM masks all slot ROM, but `Memory::memRead` punches a
+single hole at `$C500-$C5FF` (bank 0) for the slot-5 `SmartPortCard`
+firmware **iff the card holds media** (`SlotPeripheral::exposesIicOnboardRom`)
+— device-select I/O (`$C0D0-$C0DF`) is never masked, so the block
+stub's `$C0D0-$C0D4` protocol already reaches the bus. `routeMount35`/
+`routeMountHdv`/`ensureHdvCardForBoot` route //c-class 3.5"/HDV to that
+slot-5 SmartPort (never a cffa/hdv slot card — those are masked,
+unbootable). `bootFromSlot(5)` then boots it. Pinned by
+`tests/iic_onboard_smartport_test.cpp`; see
+[DEV.md § //c-class on-board SmartPort](DEV.md#storage) and the
+`project_iic_smartport_boot` memory.
+
+Profile switching is a full cold reset with strict ordering
 — see [DEV.md § Profile switching internals](DEV.md#profile-switching-internals)
 for 32 KB ROM disambiguation, `$C028` ROMBANK toggle, //c INTCXROM
 override, 20 KB II+ dumps, and the 13-step `applyProfile` sequence.

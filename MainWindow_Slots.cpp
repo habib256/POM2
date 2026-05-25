@@ -43,7 +43,8 @@
 #include "Settings.h"
 #include "SlotBus.h"
 #include "SlotCardCatalog.h"
-#include "SlotManager_ImGui.h"
+#include "IconsFontAwesome6.h"
+#include "MountableMediaCard.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
 #include "SmartPortHdvUnit.h"
@@ -63,167 +64,430 @@ using pom2::kCardTypes;
 using pom2::mouseRomsPresent;
 using pom2::cffaRomPresent;
 
+// Persist a media bay's state with the right key scheme for its card type
+// (SmartPort per-unit, CFFA per-slot, synthetic HDV a legacy global key).
+// Called under stateMutex right after a mount/eject/type/write-back action.
+// Promoted to a member so renderSlotConfigPanel's media column can reuse it
+// (was a lambda in the now-removed Slot Manager).
+void MainWindow::persistMediaBay(int slot, int bay, SlotPeripheral* p)
+{
+    if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(p)) {
+        const std::string base = "smartport_slot" + std::to_string(slot) +
+                                 "_unit" + std::to_string(bay);
+        const pom2::SmartPortUnit* u = sp->unit(static_cast<size_t>(bay));
+        settings->setString(base + "_type",
+                            u ? std::string(u->kindKey()) : std::string());
+        settings->setString(base + "_path", u ? u->path() : std::string());
+        settings->setBool  (base + "_writeback",
+                            u ? u->isWriteBackEnabled() : false);
+    } else if (auto* cffa = dynamic_cast<pom2::CffaCard*>(p)) {
+        const std::string base = "cffa_slot" + std::to_string(slot);
+        settings->setString(base + "_path", cffa->getImagePath());
+        settings->setBool  (base + "_writeback", cffa->isWriteBackEnabled());
+    } else if (auto* hdv = dynamic_cast<ProDOSHardDiskCard*>(p)) {
+        settings->setString("hdv_path", hdv->getImagePath());
+        settings->setBool  ("hdv_writeback", hdv->isWriteBackEnabled());
+        hdvPath   = hdv->getImagePath();
+        hdvStatus = hdv->isImageLoaded()
+                      ? ("loaded: " + hdv->getImagePath())
+                      : std::string("no image mounted");
+    }
+}
+
 void MainWindow::renderSlotConfigPanel()
 {
     if (!showSlotConfigPanel) return;
 
-    ImGui::SetNextWindowSize(ImVec2(440, 360), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(880, 480), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Slot Configuration", &showSlotConfigPanel)) {
         ImGui::End();
         return;
     }
 
     ImGui::TextWrapped(
-        "Assign a card type to each Apple II expansion slot. Click Apply "
-        "to restart the emulator with the new layout. Each card type may "
-        "appear in at most one slot.");
+        "Left: assign a card to each expansion slot — cards built into the "
+        "active profile are locked and shown greyed. Right: mount media into "
+        "the internal disks and the mountable ports of the storage cards that "
+        "are plugged.");
     ImGui::Spacing();
-
-    // Snapshot the current canonical mapping into a working copy so the
-    // user's edits are local until Apply.
-    static std::array<std::string, 8> draft{};
-    static bool draftInited = false;
-    if (!draftInited) {
-        for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
-        draftInited = true;
-    }
-
-    const bool mouseAvailable = mouseRomsPresent();
-    const bool cffaAvailable  = cffaRomPresent();
-
-    // ── AUX slot (IIe-class only) ─────────────────────────────────────
-    // On real //e/c/c+ the 80-column text card lives in the dedicated
-    // AUX slot, not one of the 7 expansion slots — its firmware lives
-    // in the IIe ROM at $C300 (mapped when SLOTC3ROM=0) and its 1 KB
-    // of aux text RAM is exposed via the 80STORE/RAMRD/RAMWRT paging
-    // switches. We render it here as a non-editable row so it's
-    // visible in the slot panel even though the user can't swap it.
-    if (pom2::profileConfig(activeProfile).iieMode) {
-        ImGui::BeginDisabled(true);
-        char auxBuf[64];
-        std::snprintf(auxBuf, sizeof(auxBuf),
-                      "Extended 80-Column Card (built-in, $C300 firmware)");
-        ImGui::LabelText("AUX slot", "%s", auxBuf);
-        ImGui::EndDisabled();
-        ImGui::Spacing();
-    }
-
-    // ── Per-slot dropdowns ────────────────────────────────────────────
-    // "diskii" is multi-instance (option C 2026-05-15) — never flagged
-    // as a duplicate. Every other card type is single-instance because
-    // its driver/ROM/settings assume exclusivity.
-    auto isDuplicate = [&](int slot) -> bool {
-        if (draft[slot].empty())       return false;
-        if (draft[slot] == "diskii")   return false;
-        for (int s = 1; s <= 7; ++s) {
-            if (s != slot && draft[s] == draft[slot]) return true;
-        }
-        return false;
-    };
 
     const auto& profileCfg = pom2::profileConfig(activeProfile);
 
-    bool anyDuplicate = false;
-    for (int s = 1; s <= 7; ++s) {
-        char label[32];
-        std::snprintf(label, sizeof(label), "Slot %d", s);
+    // ══ LEFT COLUMN: per-slot card assignment ════════════════════════════
+    ImGui::BeginChild("##slotassign", ImVec2(400, 0), true);
+    {
+        ImGui::SeparatorText("Expansion slots");
 
-        // Profile-defined built-in slot — render read-only with a badge.
-        // The card key is forced regardless of user edits (plugSlotsFromSettings
-        // applies the same override); we sync the draft entry so an Apply
-        // cycle persists the locked value if the user had something stale
-        // saved in settings from a previous profile.
-        if (profileCfg.builtInSlots[s].has_value()) {
-            const auto& bis = *profileCfg.builtInSlots[s];
-            draft[s] = bis.cardKey;
-            // Resolve human-readable card name for the preview text.
-            const char* cardName = bis.cardKey.c_str();
-            for (const auto& ct : kCardTypes) {
-                if (ct.key == bis.cardKey) { cardName = ct.label; break; }
-            }
-            char preview[96];
-            std::snprintf(preview, sizeof(preview),
-                          "%s — %s", cardName, bis.label.c_str());
+        // Snapshot the canonical mapping into a working copy so the user's
+        // edits are local until Apply.
+        static std::array<std::string, 8> draft{};
+        static bool draftInited = false;
+        if (!draftInited) {
+            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+            draftInited = true;
+        }
+
+        const bool mouseAvailable = mouseRomsPresent();
+        const bool cffaAvailable  = cffaRomPresent();
+
+        // AUX slot (IIe-class only): built-in 80-column card at $C300 — shown
+        // greyed as a non-editable row.
+        if (profileCfg.iieMode) {
             ImGui::BeginDisabled(true);
-            ImGui::LabelText(label, "%s", preview);
+            ImGui::LabelText("AUX slot", "%s",
+                "Extended 80-Column Card (built-in, $C300 firmware)");
             ImGui::EndDisabled();
-            continue;
+            ImGui::Spacing();
         }
 
-        const bool dup = isDuplicate(s);
-        if (dup) anyDuplicate = true;
+        // "diskii" is multi-instance — never flagged as a duplicate. Every
+        // other card type is single-instance.
+        auto isDuplicate = [&](int slot) -> bool {
+            if (draft[slot].empty())       return false;
+            if (draft[slot] == "diskii")   return false;
+            for (int s = 1; s <= 7; ++s) {
+                if (s != slot && draft[s] == draft[slot]) return true;
+            }
+            return false;
+        };
 
-        // Resolve current card-type label for the combo's preview.
-        const char* preview = "(empty)";
-        for (const auto& ct : kCardTypes) {
-            if (ct.key == draft[s]) { preview = ct.label; break; }
-        }
+        bool anyDuplicate = false;
+        for (int s = 1; s <= 7; ++s) {
+            char label[32];
+            std::snprintf(label, sizeof(label), "Slot %d", s);
 
-        if (dup) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
-        if (ImGui::BeginCombo(label, preview)) {
-            for (const auto& ct : kCardTypes) {
-                const bool selected = (ct.key == draft[s]);
-                const bool disabled =
-                    ((std::string(ct.key) == "mouse") && !mouseAvailable) ||
-                    ((std::string(ct.key) == "cffa")  && !cffaAvailable);
-                if (disabled) ImGui::BeginDisabled();
-                if (ImGui::Selectable(ct.label, selected)) {
-                    draft[s] = ct.key;
+            // Profile built-in slot → read-only, greyed, with a badge. The
+            // card key is forced regardless of user edits; sync the draft so
+            // an Apply persists the locked value over a stale saved key.
+            if (profileCfg.builtInSlots[s].has_value()) {
+                const auto& bis = *profileCfg.builtInSlots[s];
+                draft[s] = bis.cardKey;
+                const char* cardName = bis.cardKey.c_str();
+                for (const auto& ct : kCardTypes) {
+                    if (ct.key == bis.cardKey) { cardName = ct.label; break; }
                 }
-                if (disabled) {
+                char preview[96];
+                std::snprintf(preview, sizeof(preview),
+                              "%s — %s", cardName, bis.label.c_str());
+                ImGui::BeginDisabled(true);
+                ImGui::LabelText(label, "%s", preview);
+                ImGui::EndDisabled();
+                continue;
+            }
+
+            const bool dup = isDuplicate(s);
+            if (dup) anyDuplicate = true;
+
+            const char* preview = "(empty)";
+            for (const auto& ct : kCardTypes) {
+                if (ct.key == draft[s]) { preview = ct.label; break; }
+            }
+
+            if (dup) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
+            if (ImGui::BeginCombo(label, preview)) {
+                for (const auto& ct : kCardTypes) {
+                    const bool selected = (ct.key == draft[s]);
+                    const bool disabled =
+                        ((std::string(ct.key) == "mouse") && !mouseAvailable) ||
+                        ((std::string(ct.key) == "cffa")  && !cffaAvailable);
+                    if (disabled) ImGui::BeginDisabled();
+                    if (ImGui::Selectable(ct.label, selected)) {
+                        draft[s] = ct.key;
+                    }
+                    if (disabled) {
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(ROMs missing)");
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (dup) ImGui::PopStyleColor();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        if (mouseAvailable) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                               "Mouse ROMs found.");
+        } else {
+            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                               "Mouse ROMs missing — Mouse Interface disabled. "
+                               "Add roms/mouse_341-0270-c.bin + "
+                               "roms/mouse_341-0269.bin.");
+        }
+        if (!mouseRomStatus.empty())
+            ImGui::TextWrapped("Mouse: %s", mouseRomStatus.c_str());
+
+        ImGui::Spacing();
+        if (anyDuplicate) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                               "One card type per slot — fix duplicates.");
+        }
+        ImGui::BeginDisabled(anyDuplicate);
+        if (ImGui::Button("Apply (restarts emulator)")) {
+            for (int s = 1; s <= 7; ++s)
+                settings->setString("slot_" + std::to_string(s) + "_card", draft[s]);
+            settings->save();
+            restartEmulationFromSettings();
+            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Revert"))
+            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // ══ RIGHT COLUMN: internal disks + mountable ports ═══════════════════
+    ImGui::BeginChild("##slotmedia", ImVec2(0, 0), true);
+    {
+        ImGui::SeparatorText("Internal disks & mountable ports");
+
+        auto dot = [](bool loaded, bool wp) {
+            ImVec4 c = !loaded   ? ImVec4(0.50f, 0.50f, 0.50f, 1.0f)
+                     : wp        ? ImVec4(0.95f, 0.65f, 0.20f, 1.0f)
+                                 : ImVec4(0.30f, 0.85f, 0.30f, 1.0f);
+            ImGui::TextColored(c, ICON_FA_CIRCLE);
+            ImGui::SameLine();
+        };
+
+        // Persistent InputText buffers, keyed [slot][bay/drive]. Primed once
+        // from the live path; re-primed (to the new live value) after eject.
+        static std::array<std::array<std::array<char, 512>, 2>, 8> mBuf{};
+        static std::array<std::array<bool, 2>, 8> mPrimed{};
+        static std::array<std::array<std::array<char, 512>, 2>, 8> dBuf{};
+        static std::array<std::array<bool, 2>, 8> dPrimed{};
+
+        bool any = false;
+        SlotBus& bus = controller->memory().slotBus();
+
+        for (int s = 1; s <= 7; ++s) {
+            SlotPeripheral* p = bus.peripheral(s);
+            if (!p) continue;
+            const bool builtIn = profileCfg.builtInSlots[s].has_value();
+
+            // ── Cards with mountable bays (SmartPort / CFFA / HDV) ────────
+            if (auto* media = dynamic_cast<pom2::MountableMediaCard*>(p)) {
+                any = true;
+                ImGui::PushID(2000 + s);
+                ImGui::Text("Slot %d — %s%s", s,
+                            pom2::cardLabelForKey(slotCards[s]),
+                            builtIn ? " (built-in)" : "");
+
+                int nb = media->bayCount();
+                if (nb > 2) nb = 2;
+                bool bootable = false;
+                for (int b = 0; b < nb; ++b) {
+                    const pom2::MediaBayInfo info = media->bayInfo(b);
+                    ImGui::PushID(b);
+                    ImGui::Indent();
+
+                    dot(info.loaded, info.writeProtected);
+                    if (info.supportsTypeSelect) ImGui::Text("Unit %d", b);
+                    else                         ImGui::TextUnformatted("Image");
+                    if (info.loaded) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(%s, %u blocks%s)",
+                            info.kindLabel.empty() ? "media" : info.kindLabel.c_str(),
+                            info.blockCount, info.writeProtected ? ", WP" : "");
+                    } else if (!info.kindLabel.empty()) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(%s)", info.kindLabel.c_str());
+                    }
+
+                    // Type selector (SmartPort units only).
+                    if (info.supportsTypeSelect) {
+                        const auto opts = media->bayTypeOptions(b);
+                        const char* curLabel = "(empty)";
+                        for (const auto& o : opts)
+                            if (o.first == info.typeKey) { curLabel = o.second.c_str(); break; }
+                        ImGui::SetNextItemWidth(150);
+                        if (ImGui::BeginCombo("Type", curLabel)) {
+                            for (const auto& o : opts) {
+                                const bool sel = (o.first == info.typeKey);
+                                if (ImGui::Selectable(o.second.c_str(), sel) &&
+                                    o.first != info.typeKey) {
+                                    {
+                                        std::lock_guard<std::mutex> lk(controller->stateMutex());
+                                        media->setBayType(b, o.first);
+                                        persistMediaBay(s, b, p);
+                                    }
+                                    settings->save();
+                                    mPrimed[s][b] = false;
+                                }
+                                if (sel) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                    }
+
+                    const bool typeAllows =
+                        !info.supportsTypeSelect || !info.typeKey.empty();
+
+                    char* buf = mBuf[s][b].data();
+                    if (!mPrimed[s][b]) {
+                        std::snprintf(buf, mBuf[s][b].size(), "%s", info.path.c_str());
+                        mPrimed[s][b] = true;
+                    }
+                    ImGui::SetNextItemWidth(300);
+                    ImGui::InputText("##path", buf, mBuf[s][b].size());
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(buf[0] == '\0' || !typeAllows);
+                    if (ImGui::Button("Mount")) {
+                        std::string err;
+                        bool ok = false;
+                        {
+                            std::lock_guard<std::mutex> lk(controller->stateMutex());
+                            ok = media->mountBay(b, buf, err);
+                            if (ok) persistMediaBay(s, b, p);
+                        }
+                        if (ok) settings->save();
+                        tapeStatusMessage = ok
+                            ? ("Slot " + std::to_string(s) + ": mounted " + buf)
+                            : ("Slot " + std::to_string(s) + ": mount failed: " + err);
+                        tapeStatusUntil = lastFrameTime + 4.0;
+                    }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(ROMs missing)");
+                    ImGui::BeginDisabled(!info.loaded);
+                    if (ImGui::Button("Eject")) {
+                        {
+                            std::lock_guard<std::mutex> lk(controller->stateMutex());
+                            media->ejectBay(b);
+                            persistMediaBay(s, b, p);
+                        }
+                        settings->save();
+                        mPrimed[s][b] = false;
+                        tapeStatusMessage = "Slot " + std::to_string(s) + ": ejected";
+                        tapeStatusUntil = lastFrameTime + 3.0;
+                    }
+                    ImGui::EndDisabled();
+
+                    if (info.supportsWriteBack) {
+                        bool wb = info.writeBackEnabled;
+                        ImGui::BeginDisabled(!typeAllows);
+                        if (ImGui::Checkbox("Write-back (save on eject)", &wb)) {
+                            {
+                                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                                media->setBayWriteBack(b, wb);
+                                persistMediaBay(s, b, p);
+                            }
+                            settings->save();
+                        }
+                        ImGui::EndDisabled();
+                    }
+
+                    if (!info.lastError.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f),
+                                           "Error: %s", info.lastError.c_str());
+
+                    if (b == 0 && info.loaded) bootable = true;
+                    ImGui::Unindent();
+                    ImGui::PopID();
                 }
-                if (selected) ImGui::SetItemDefaultFocus();
+
+                ImGui::BeginDisabled(!bootable);
+                if (ImGui::SmallButton("Boot slot")) {
+                    controller->bootFromSlot(s);
+                    tapeStatusMessage = "Booting slot " + std::to_string(s);
+                    tapeStatusUntil = lastFrameTime + 3.0;
+                }
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                ImGui::Separator();
             }
-            ImGui::EndCombo();
+            // ── Internal Disk II drives (5.25") ───────────────────────────
+            else if (auto* d2 = dynamic_cast<DiskIICard*>(p)) {
+                any = true;
+                ImGui::PushID(3000 + s);
+                ImGui::Text("Slot %d — %s%s", s,
+                            pom2::cardLabelForKey(slotCards[s]),
+                            builtIn ? " (built-in)" : "");
+
+                bool bootable = false;
+                for (int drv = 0; drv < DiskIICard::kDriveCount; ++drv) {
+                    const bool loaded = d2->isDiskLoaded(drv);
+                    if (drv == 0 && loaded) bootable = true;
+                    ImGui::PushID(drv);
+                    ImGui::Indent();
+                    dot(loaded, false);
+                    ImGui::Text("Drive %d", drv + 1);
+
+                    char* buf = dBuf[s][drv].data();
+                    if (!dPrimed[s][drv]) {
+                        std::snprintf(buf, dBuf[s][drv].size(), "%s",
+                                      d2->getDiskPath(drv).c_str());
+                        dPrimed[s][drv] = true;
+                    }
+                    ImGui::SetNextItemWidth(300);
+                    ImGui::InputText("##d2path", buf, dBuf[s][drv].size());
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(buf[0] == '\0');
+                    if (ImGui::Button("Insert")) {
+                        bool ok = false;
+                        {
+                            std::lock_guard<std::mutex> lk(controller->stateMutex());
+                            ok = d2->insertDisk(drv, buf);
+                            if (ok) d2->seekTrack0();
+                        }
+                        // Only drive 1 has a persisted path key (disk_path_slotN);
+                        // drive 2 mounts are session-only (matches legacy scheme).
+                        if (ok && drv == 0) {
+                            settings->setString(
+                                "disk_path_slot" + std::to_string(s), std::string(buf));
+                            settings->save();
+                        }
+                        tapeStatusMessage = ok
+                            ? ("Slot " + std::to_string(s) + " drive " +
+                               std::to_string(drv + 1) + ": inserted")
+                            : ("Slot " + std::to_string(s) + ": insert failed: " +
+                               d2->getLastError(drv));
+                        tapeStatusUntil = lastFrameTime + 4.0;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(!loaded);
+                    if (ImGui::Button("Eject")) {
+                        {
+                            std::lock_guard<std::mutex> lk(controller->stateMutex());
+                            d2->ejectDisk(drv);
+                        }
+                        if (drv == 0) {
+                            settings->setString(
+                                "disk_path_slot" + std::to_string(s), std::string());
+                            settings->save();
+                        }
+                        dPrimed[s][drv] = false;
+                        tapeStatusMessage = "Slot " + std::to_string(s) +
+                            " drive " + std::to_string(drv + 1) + ": ejected";
+                        tapeStatusUntil = lastFrameTime + 3.0;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::Unindent();
+                    ImGui::PopID();
+                }
+
+                ImGui::BeginDisabled(!bootable);
+                if (ImGui::SmallButton("Boot slot")) {
+                    controller->bootFromSlot(s);
+                    tapeStatusMessage = "Booting slot " + std::to_string(s);
+                    tapeStatusUntil = lastFrameTime + 3.0;
+                }
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                ImGui::Separator();
+            }
         }
-        if (dup) ImGui::PopStyleColor();
-    }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ── ROM presence diagnostics ──────────────────────────────────────
-    if (mouseAvailable) {
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
-                           "Mouse ROMs found.");
-    } else {
-        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
-                           "Mouse ROMs missing — the Mouse Interface entry is "
-                           "disabled. Place roms/mouse_341-0270-c.bin and "
-                           "roms/mouse_341-0269.bin to enable.");
+        if (!any)
+            ImGui::TextDisabled("No storage cards plugged.");
     }
-    if (!mouseRomStatus.empty()) {
-        ImGui::TextWrapped("Mouse: %s", mouseRomStatus.c_str());
-    }
-
-    ImGui::Spacing();
-
-    // ── Action buttons ────────────────────────────────────────────────
-    if (anyDuplicate) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                           "One card type per slot — fix duplicates above.");
-    }
-
-    ImGui::BeginDisabled(anyDuplicate);
-    if (ImGui::Button("Apply (restarts emulator)")) {
-        // Persist the draft to settings->
-        for (int s = 1; s <= 7; ++s) {
-            settings->setString("slot_" + std::to_string(s) + "_card", draft[s]);
-        }
-        settings->save();
-        restartEmulationFromSettings();
-        // Re-seed the draft from the live state (it should match what we
-        // just wrote, but roundtripping confirms).
-        for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Revert")) {
-        for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
-    }
+    ImGui::EndChild();
 
     ImGui::End();
 }
@@ -278,6 +542,16 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     const auto& cfg = pom2::profileConfig(p);
     pom2::log().info("Profile",
         std::string("Switching to ") + std::string(cfg.displayName));
+
+    // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
+    //    which reads `activeProfile` to apply the profile's built-in locked slots
+    //    (//c / //c+ on-board SSC / Mouse / SmartPort / Disk II). Setting it only
+    //    at step 12 meant the re-plug used the PREVIOUS profile's built-ins:
+    //    switching INTO //c/c+ never forced its on-board cards (no boot disk
+    //    controller — also at startup, where the ctor calls applyProfile(saved)),
+    //    and switching AWAY leaked //c built-ins into a clean II+/IIe. Everything
+    //    between here and step 7 keys off the local `cfg`/`p`, not the member.
+    activeProfile = p;
 
     // 1. Stop the worker thread (cards' destructors must not race a
     //    running CPU step or worker idle-loop probe).
@@ -345,27 +619,29 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         display->setChatMauveCard(nullptr);
 
         // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
-        //    soft switches. The internal IIe IO ROM is re-loaded together
-        //    with the main ROM below (loadAppleIIRom slots the 4 KB IO ROM
-        //    into Memory::internalIORom).
+        //    soft switches. setIIEMode FIRST, for two reasons:
+        //    (a) clearRam() wipes aux / aux-LC / RamWorks ONLY when iieMode is
+        //        set — so switching INTO a IIe-class profile must flip the mode
+        //        before the wipe, or the new machine inherits the previous
+        //        session's aux RAM instead of a clean 00/FF cold-boot pattern
+        //        (round 9 #6);
+        //    (b) loadAppleIIRom (step 5) populates internalIORom only when
+        //        iieMode is true for a 16/32 KB dump, so the mode must be set
+        //        before the load too.
+        controller->memory().setIIEMode(cfg.iieMode);
         controller->memory().clearRam();
         controller->memory().resetSoftSwitches();
-        // Flip IIe paging FIRST — loadAppleIIRom's path depends on this:
-        // when `iieMode == true` and the dump is 16/32 KB, the loader
-        // also populates `internalIORom`. Calling setIIEMode after the
-        // load would leave the internal IO ROM in whatever state the
-        // previous profile left it.
-        controller->memory().setIIEMode(cfg.iieMode);
 
         // RamWorks III — Applied Engineering aux-slot RAM expansion.
-        // Plugs into the IIe aux slot, which //c and //c+ don't have
-        // (their aux RAM is on the motherboard, no expansion bus). Gate
-        // strictly on AppleIIe so $C073 writes on //c stay in the
-        // paddle-reset-only path. Tiers: 1 (stock 64K), 4 (256K),
-        // 8 (512K), 16 (1M), 48 (3M), 128 (8M). Default 1 = no RamWorks
-        // (legacy behaviour for users without the setting). The
-        // setIIEMode(false) branch already cleared backing storage.
-        if (p == pom2::SystemProfile::AppleIIe) {
+        // Plugs into the IIe aux slot, present on BOTH the 1983 Unenhanced
+        // and 1985 Enhanced //e; only //c and //c+ lack it (their aux RAM is
+        // on the motherboard, no expansion bus). Gate on either //e variant
+        // so $C073 writes on //c stay in the paddle-reset-only path. Tiers:
+        // 1 (stock 64K), 4 (256K), 8 (512K), 16 (1M), 48 (3M), 128 (8M).
+        // Default 1 = no RamWorks. The setIIEMode(false) branch already
+        // cleared backing storage.
+        if (p == pom2::SystemProfile::AppleIIe ||
+            p == pom2::SystemProfile::AppleIIeUnenhanced) {
             const int banks = settings->getInt("ramworks_banks", 1);
             controller->memory().setRamWorksBanks(
                 static_cast<uint32_t>(banks > 0 ? banks : 1));
@@ -473,8 +749,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     controller->hardReset();
     controller->start();
 
-    // 12. Persist the profile choice for the next launch.
-    activeProfile = p;
+    // 12. Persist the profile choice for the next launch. (activeProfile was
+    //     already committed in step 0 so plugSlotsFromSettings saw the new one.)
     controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(p));
     settings->setString("system_profile", std::string(cfg.key));
     settings->save();
@@ -620,178 +896,4 @@ void MainWindow::restartEmulationFromSettings()
     }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
-}
-
-// ─── Slot Manager (consolidated control center) ─────────────────────────────
-
-void MainWindow::renderSlotManagerWindow()
-{
-    if (!showSlotManager) return;
-
-    // Persist a bay's media state with the right key scheme for its card
-    // type — persistence is inherently per-card (SmartPort uses per-unit
-    // keys, CFFA per-slot, the synthetic HDV a legacy global key). Called
-    // under stateMutex right after a mount/eject/type/write-back action so
-    // it captures the post-action state. `p` is the live bus peripheral.
-    auto persistBay = [&](int slot, int bay, SlotPeripheral* p) {
-        if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(p)) {
-            const std::string base = "smartport_slot" + std::to_string(slot) +
-                                     "_unit" + std::to_string(bay);
-            const pom2::SmartPortUnit* u = sp->unit(static_cast<size_t>(bay));
-            settings->setString(base + "_type",
-                                u ? std::string(u->kindKey()) : std::string());
-            settings->setString(base + "_path", u ? u->path() : std::string());
-            settings->setBool  (base + "_writeback",
-                                u ? u->isWriteBackEnabled() : false);
-        } else if (auto* cffa = dynamic_cast<pom2::CffaCard*>(p)) {
-            const std::string base = "cffa_slot" + std::to_string(slot);
-            settings->setString(base + "_path", cffa->getImagePath());
-            settings->setBool  (base + "_writeback", cffa->isWriteBackEnabled());
-        } else if (auto* hdv = dynamic_cast<ProDOSHardDiskCard*>(p)) {
-            settings->setString("hdv_path", hdv->getImagePath());
-            settings->setBool  ("hdv_writeback", hdv->isWriteBackEnabled());
-            // Keep the legacy single-HDV members in sync so the standalone
-            // HDV panel's title/status reflect a Slot-Manager mount/eject.
-            hdvPath   = hdv->getImagePath();
-            hdvStatus = hdv->isImageLoaded()
-                          ? ("loaded: " + hdv->getImagePath())
-                          : std::string("no image mounted");
-        }
-    };
-
-    // ── Build the snapshot from the bus (the authoritative registry). ────
-    pom2::SlotManager_ImGui::PanelSnapshot snap;
-    const auto& cfg = pom2::profileConfig(activeProfile);
-    snap.iieMode        = cfg.iieMode;
-    snap.mouseAvailable = pom2::mouseRomsPresent();
-    snap.cffaAvailable  = pom2::cffaRomPresent();
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        SlotBus& bus = controller->memory().slotBus();
-        for (int s = 1; s <= 7; ++s) {
-            auto& ss     = snap.slots[s];
-            ss.slot      = s;
-            ss.cardKey   = slotCards[s];
-            ss.cardLabel = pom2::cardLabelForKey(slotCards[s]);
-            SlotPeripheral* p = bus.peripheral(s);
-            ss.occupied  = (p != nullptr);
-            if (cfg.builtInSlots[s].has_value()) {
-                ss.builtIn      = true;
-                ss.builtInBadge = cfg.builtInSlots[s]->label;
-            }
-            const std::string& k = slotCards[s];
-            ss.hasDetailPanel = (k == "diskii" || k == "hdv" ||
-                                 k == "cffa"   || k == "smartport35");
-
-            if (auto* media = dynamic_cast<pom2::MountableMediaCard*>(p)) {
-                const int nb = media->bayCount();
-                for (int b = 0;
-                     b < nb && b < pom2::SlotManager_ImGui::kMaxBays; ++b) {
-                    const pom2::MediaBayInfo info = media->bayInfo(b);
-                    pom2::SlotManager_ImGui::BaySnapshot bs;
-                    bs.kindLabel          = info.kindLabel;
-                    bs.path               = info.path;
-                    bs.lastError          = info.lastError;
-                    bs.blockCount         = info.blockCount;
-                    bs.loaded             = info.loaded;
-                    bs.writeProtected     = info.writeProtected;
-                    bs.writeBackEnabled   = info.writeBackEnabled;
-                    bs.supportsWriteBack  = info.supportsWriteBack;
-                    bs.supportsTypeSelect = info.supportsTypeSelect;
-                    bs.typeKey            = info.typeKey;
-                    if (info.supportsTypeSelect)
-                        bs.typeOptions = media->bayTypeOptions(b);
-                    ss.bays.push_back(std::move(bs));
-                }
-            }
-        }
-    }
-
-    const auto r =
-        slotManagerPanel->render("Slot Manager", showSlotManager, snap);
-
-    // ── Card-assignment changes → persist + full restart (mirrors the
-    //    Slot Configuration panel's Apply). Snapshot is stale afterwards. ─
-    if (r.applyAssignments) {
-        for (int s = 1; s <= 7; ++s)
-            settings->setString("slot_" + std::to_string(s) + "_card",
-                                r.draftCards[s]);
-        settings->save();
-        restartEmulationFromSettings();
-        return;
-    }
-
-    // ── "Open detailed panel" → flip the matching panel's visibility. ────
-    if (r.openDetailForSlot >= 1 && r.openDetailForSlot <= 7) {
-        const std::string& k = slotCards[r.openDetailForSlot];
-        if      (k == "diskii")      showDiskPanel = true;
-        else if (k == "hdv" || k == "cffa") showHdvPanel = true;
-        else if (k == "smartport35") { showSmartPortPanel = true;
-                                       showDisk35Panel    = true; }
-    }
-
-    // ── Live media actions per bay. The bus is stable here (a restart
-    //    would have returned above), so caching the peripheral pointer is
-    //    safe; each mutating call takes the state mutex. ─────────────────
-    bool dirty = false;
-    SlotBus& bus = controller->memory().slotBus();
-    for (int s = 1; s <= 7; ++s) {
-        SlotPeripheral* p = bus.peripheral(s);
-        auto* media = dynamic_cast<pom2::MountableMediaCard*>(p);
-        if (!media) continue;
-        for (int b = 0; b < pom2::SlotManager_ImGui::kMaxBays; ++b) {
-            const auto& a = r.bays[s][b];
-
-            if (a.typeChanged) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                media->setBayType(b, a.newType);
-                persistBay(s, b, p);
-                dirty = true;
-                tapeStatusMessage = "Slot " + std::to_string(s) + " unit " +
-                    std::to_string(b) + ": type = " +
-                    (a.newType.empty() ? "(empty)" : a.newType);
-                tapeStatusUntil = lastFrameTime + 3.0;
-                continue;  // type change drops media → skip the rest
-            }
-            if (a.writeBackChanged) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                media->setBayWriteBack(b, a.writeBackOn);
-                persistBay(s, b, p);
-                dirty = true;
-                tapeStatusMessage = "Slot " + std::to_string(s) +
-                    ": write-back " + (a.writeBackOn ? "ON" : "OFF");
-                tapeStatusUntil = lastFrameTime + 3.0;
-            }
-            if (!a.mountPath.empty()) {
-                std::string err;
-                bool ok = false;
-                {
-                    std::lock_guard<std::mutex> lk(controller->stateMutex());
-                    ok = media->mountBay(b, a.mountPath, err);
-                    if (ok) persistBay(s, b, p);
-                }
-                dirty = dirty || ok;
-                tapeStatusMessage = ok
-                    ? ("Slot " + std::to_string(s) + ": mounted " + a.mountPath)
-                    : ("Slot " + std::to_string(s) + ": mount failed: " + err);
-                tapeStatusUntil = lastFrameTime + 4.0;
-            }
-            if (a.eject) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                media->ejectBay(b);
-                persistBay(s, b, p);
-                dirty = true;
-                tapeStatusMessage = "Slot " + std::to_string(s) + ": ejected";
-                tapeStatusUntil = lastFrameTime + 3.0;
-            }
-            if (a.boot) {
-                // bootFromSlot runs its own cold boot + PC set; no lock here
-                // (matches the Disk Library / 3.5" panel boot paths).
-                controller->bootFromSlot(s);
-                tapeStatusMessage = "Booting slot " + std::to_string(s);
-                tapeStatusUntil = lastFrameTime + 3.0;
-            }
-        }
-    }
-    if (dirty) settings->save();
 }

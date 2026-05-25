@@ -433,7 +433,9 @@ void testBuiltInSlots()
         }
     }
 
-    // //c — sl2/sl4/sl6 locked; sl1/sl3/sl5/sl7 free.
+    // //c — sl2/sl4/sl5/sl6 locked; sl1/sl3/sl7 free. sl5 = built-in
+    // SmartPort (host-served block device for 3.5"/HDV boot — see
+    // project_iic_smartport_boot / cfgAppleIIc).
     {
         const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIc);
         assert(!cfg.builtInSlots[1].has_value());
@@ -442,7 +444,8 @@ void testBuiltInSlots()
         assert(!cfg.builtInSlots[3].has_value());
         assert(cfg.builtInSlots[4].has_value()
                && cfg.builtInSlots[4]->cardKey == "mouse");
-        assert(!cfg.builtInSlots[5].has_value());
+        assert(cfg.builtInSlots[5].has_value()
+               && cfg.builtInSlots[5]->cardKey == "smartport35");
         assert(cfg.builtInSlots[6].has_value()
                && cfg.builtInSlots[6]->cardKey == "diskii");
         assert(!cfg.builtInSlots[7].has_value());

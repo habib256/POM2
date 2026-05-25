@@ -66,9 +66,6 @@ public:
     /// Drop pending events + reset filter state. Called on hard reset.
     void reset();
 
-    /// Diagnostic — last audio-thread cursor in CPU cycles. UI displays
-    /// it as a sanity check.
-    uint64_t getAudioCpuCursor() const { return audioCpuCursor; }
     size_t   getQueuedEventCount() const;
 
 private:

@@ -10,6 +10,7 @@
 #include "third_party/miniaudio.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -96,6 +98,16 @@ std::string CassetteDevice::lookupTapeInfo(const std::string& path)
 
 CassetteDevice::CassetteDevice()
 {
+    // Threading-discipline guard: these flags cross the UI ↔ audio-callback
+    // thread boundary (audioStreamMode is read lock-free in fillAudioBuffer;
+    // the ramp counter is touched under two different mutexes). They MUST stay
+    // atomic — reverting either to a plain type breaks the build here on
+    // purpose (this is the pin for the round-8 data-race fix).
+    static_assert(std::is_same_v<decltype(audioStreamMode), std::atomic<bool>>,
+                  "audioStreamMode must be atomic (cross-thread flag)");
+    static_assert(std::is_same_v<decltype(audioRampInSamplesRemaining),
+                                 std::atomic<uint32_t>>,
+                  "audioRampInSamplesRemaining must be atomic (cross-thread)");
     reset();
 }
 
