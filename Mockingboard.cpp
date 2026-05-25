@@ -253,11 +253,13 @@ struct MockingboardCard::Via6522
             ifr &= ~IFR_T1;
             break;
         case VIA_T1LH:
-            // Latch high (no transfer to counter, no IFR clear) — except
-            // a real 6522 *does* clear IFR.T1 on T1LH write, per WDC
-            // datasheet table 4. Mocked the same way for parity.
+            // Latch high only: NO transfer to the counter and NO IFR side
+            // effect. On a real 6522/W65C22 the T1 interrupt flag is cleared
+            // only by reading T1C-L or writing T1C-H ($05) — NOT by writing
+            // T1L-H ($07). (MAME 6522via.cpp T1L-H case leaves IFR untouched.)
+            // Clearing it here would spuriously drop a pending T1 IRQ for a
+            // driver that updates just the latch high byte.
             t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
-            ifr &= ~IFR_T1;
             break;
         case VIA_T2CL:
             // T2CL write: store the low latch. No effect on the running
@@ -848,7 +850,16 @@ bool MockingboardCard::isMuted() const
 void MockingboardCard::syncToCpuCycle()
 {
     if (!cpu_) return;
-    const uint64_t now = cpu_->getCycleCountNow();
+    syncToCpuCycleAt(cpu_->getCycleCountNow());
+}
+
+// Advance the VIAs to an explicit absolute CPU cycle. Split out from
+// syncToCpuCycle() so the end-of-step batch path can pass the CORRECTED
+// "now": at that point Memory::advanceCycles has already folded the slice
+// into cycleCounter while cpu->cycles still holds it, so getCycleCountNow()
+// overshoots by one instruction (see advanceCycles).
+void MockingboardCard::syncToCpuCycleAt(uint64_t now)
+{
     if (now <= lastSyncCycle_) {
         lastSyncCycle_ = now;
         return;
@@ -928,11 +939,18 @@ void MockingboardCard::advanceCycles(int cycles)
     if (cycles <= 0) return;
     std::lock_guard<std::mutex> lk(mtx);
     if (cpu_) {
-        // Lazy-sync path: any cycles already accounted for via MMIO
-        // accesses during this slice are skipped — `syncToCpuCycle()`
-        // advanced the VIAs to that point already. Just catch up the
-        // remainder so end-of-slice IRQ state is published.
-        syncToCpuCycle();
+        // Lazy-sync path: any cycles already accounted for via MMIO accesses
+        // during this slice were advanced by syncToCpuCycle() already; catch
+        // up the remainder so end-of-slice IRQ state is published.
+        //
+        // Memory::advanceCycles ran `cycleCounter += cycles` BEFORE dispatching
+        // to us, yet M6502::step() hasn't cleared cpu->cycles (still == this
+        // `cycles`). So getCycleCountNow() == cycleCounter + cpu->cycles
+        // overshoots the true "now" by exactly `cycles`. Subtract them, or the
+        // VIAs jump one instruction ahead and the next mid-instruction MMIO
+        // read hits the `now <= lastSyncCycle_` early-out — losing cycle
+        // accuracy precisely where the lazy-sync was meant to provide it.
+        syncToCpuCycleAt(cpu_->getCycleCountNow() - static_cast<uint64_t>(cycles));
     } else {
         // No CPU back-pointer (unit-test harness — see
         // mockingboard_smoke_test.cpp). Fall back to the legacy

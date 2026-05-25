@@ -28,10 +28,12 @@
 #include "Mockingboard.h"
 #include "Memory.h"
 #include "M6502.h"
+#include "SlotBus.h"
 
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 
 namespace {
 
@@ -149,6 +151,63 @@ bool testSyncAcrossMultipleAccesses()
     return true;
 }
 
+// ─── Test 4: end-of-step batch sync must not overshoot by one instruction ─
+// Regression for the advanceCycles double-count. Memory::advanceCycles folds
+// the slice into cycleCounter BEFORE dispatching to the card, yet M6502::step()
+// still holds cpu->cycles == that slice, so getCycleCountNow() (= cycleCounter
+// + cpu->cycles) overshot "now" by one instruction. A CPU-driven card thus
+// advanced its VIAs ~k cycles ahead of a batch-driven one. Drive the SAME
+// elapsed cycles two ways and require the T1 counter to match exactly.
+bool testNoEndOfStepOvershoot()
+{
+    constexpr uint16_t kLatch  = 1000;   // large: no T1 underflow in-window
+    constexpr uint64_t kCycles = 40;
+
+    auto t1Counter = [](MockingboardCard& c) -> uint16_t {
+        return static_cast<uint16_t>(c.peekViaRegister(0, 0x04)) |
+               static_cast<uint16_t>(c.peekViaRegister(0, 0x05) << 8);
+    };
+
+    // Reference: legacy batched advance (no CPU back-pointer).
+    MockingboardCard ref(4);
+    ref.onReset();
+    armT1(ref, kLatch);
+    ref.advanceCycles(static_cast<int>(kCycles));
+    const uint16_t refCtr = t1Counter(ref);
+
+    // CPU-driven: the same elapsed cycles via real M6502 NOP stepping through
+    // the Memory::advanceCycles -> slotBus -> card path.
+    Memory mem;
+    M6502  cpu(&mem);
+    auto cardp = std::make_unique<MockingboardCard>(4);
+    cardp->setCpu(&cpu);
+    MockingboardCard* card = cardp.get();
+    mem.slotBus().plug(4, std::move(cardp));
+    cpu.hardReset();
+    mem.slotBus().reset();
+    for (uint16_t a = 0x0300; a < 0x0360; ++a) mem.memWrite(a, 0xEA);  // NOPs
+    armT1(*card, kLatch);
+    cpu.setProgramCounter(0x0300);
+    const uint64_t start = mem.getCycleCounter();
+    while (mem.getCycleCounter() - start < kCycles) cpu.step();
+    const uint64_t elapsed = mem.getCycleCounter() - start;
+    const uint16_t cpuCtr = t1Counter(*card);
+
+    if (elapsed != kCycles) {
+        std::fprintf(stderr, "overshoot test: NOP stepping landed at %llu cycles "
+                     "(want %llu)\n", (unsigned long long)elapsed,
+                     (unsigned long long)kCycles);
+        return false;
+    }
+    if (cpuCtr != refCtr) {
+        std::fprintf(stderr, "end-of-step overshoot: CPU-driven T1 counter=%u != "
+                     "batch-driven=%u after %llu cycles (VIAs advanced a different "
+                     "amount)\n", cpuCtr, refCtr, (unsigned long long)elapsed);
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int main()
@@ -157,6 +216,7 @@ int main()
     ok &= testLazySyncOnReadIfr();
     ok &= testFallbackBatchedAdvance();
     ok &= testSyncAcrossMultipleAccesses();
+    ok &= testNoEndOfStepOvershoot();
     if (!ok) return 1;
     std::printf("mockingboard_sync_smoke OK: lazy timer-sync + legacy "
                 "fallback both wired\n");

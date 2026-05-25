@@ -185,6 +185,7 @@ private:
     // Broadside detection-failure class this fixes.
     uint64_t lastSyncCycle_ = 0;
     void syncToCpuCycle();
+    void syncToCpuCycleAt(uint64_t now);
 
     // Telemetry counters, bumped by slotRomWrite / onViaPortBChange.
     // Read by the Mockingboard ImGui panel; never affect emulation
