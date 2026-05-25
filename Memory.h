@@ -104,6 +104,18 @@ public:
     }
     pom2::SmartPortHub* getSmartPortHub() const   { return smartPortHub; }
 
+    /// //c-class on-board SmartPort "armed" gate. The slot-5 SmartPort
+    /// firmware stub is punched through the INTCXROM mask at $C500-$C5FF
+    /// ONLY while this is set (EmulationController::bootFromSlot sets it;
+    /// every reset/cold-boot clears it). Rationale: the //c ROM's own
+    /// autostart + a booted ProDOS expect the REAL //c SmartPort firmware
+    /// at $C500 for device enumeration — substituting the block stub there
+    /// during a normal reboot corrupts a multi-device boot (Disk II + the
+    /// on-board SmartPort). Exposing the stub only for an explicit GUI
+    /// "Boot" (bootFromSlot) avoids that. See project_iic_smartport_boot.
+    void setIicSmartPortArmed(bool on) { iicSmartPortArmed_ = on; }
+    bool iicSmartPortArmed() const     { return iicSmartPortArmed_; }
+
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
     /// SlotBus. Memory routes $C080-$CFFF accesses through it.
     SlotBus&       slotBus()       { return slots; }
@@ -506,6 +518,9 @@ private:
     // leave it null: a single `if (iicProfile_)` branch on the hot path,
     // zero virtual calls. See `MemoryProfile_IIcClass` + DEV.md § Memory.
     std::unique_ptr<MemoryProfile> iicProfile_;
+
+    // //c-class on-board SmartPort ROM-exposure gate (see setIicSmartPortArmed).
+    bool iicSmartPortArmed_ = false;
 
     // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
     // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not

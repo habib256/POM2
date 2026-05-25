@@ -49,9 +49,14 @@ public:
         writeCallback = std::move(cb);
     }
 
+    // Push the live CPU mode so the Disasm view decodes 65C02 opcodes
+    // correctly (and doesn't desync on 3-byte BBR/BBS). Set each frame.
+    void setCmosMode(bool on) { cmosDisasm_ = on; }
+
 private:
     Memory* memory;
     std::function<void(uint16_t, uint8_t)> writeCallback;
+    bool cmosDisasm_ = false;
 
     // Layout state.
     int  startAddress  = 0x0000;

@@ -103,14 +103,15 @@ ci-dessous.
 
 ## 🟢 Low
 
-- [ ] **[UI] Slot Config hérité vs Slot Manager — règle multi-instance
-      divergente**. Le panneau `Slot Configuration` ne marque que `diskii`
-      multi-instance (duplicate cffa/smartport35 affiché rouge ;
-      `isDuplicate`, `MainWindow_Slots.cpp:114`), alors que le `Slot
-      Manager` autorise `diskii`/`cffa`/`smartport35` en plusieurs slots
-      (`isMultiInstance`, `SlotManager_ImGui.cpp:23`). Aligner les deux
-      (ou retirer le panneau hérité maintenant que le Slot Manager couvre
-      tout le bus). **Effort : ~1 h.**
+- [x] **[UI] Slot Config hérité vs Slot Manager — fusion** (2026-05-25).
+      Résolu en **fusionnant** les deux : le `Slot Manager` autonome a été
+      supprimé (`SlotManager_ImGui.*` retiré) et sa zone médias intégrée
+      dans la colonne droite de `Slot Configuration` (built-ins grisés à
+      gauche, disques internes + ports montables à droite). Reste un écart
+      mineur : `renderSlotConfigPanel`'s `isDuplicate` marque encore
+      cffa/smartport35 en double dans la colonne d'assignation (seul
+      `diskii` est multi-instance là) — acceptable, l'assignation reste
+      single-instance pour ces cartes par défaut.
 - [ ] **[Floppy Emu] modes Dual-5.25" + Smartport-Unit-2**. Le modèle
       `FloppyEmuDevice` couvre 4 modes (5.25 / 3.5 / Unidisk 3.5 /
       Smartport HD) ; les modes « Dual 5.25 » (2 lecteurs sur un

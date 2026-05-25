@@ -1137,6 +1137,7 @@ void DiskImage::eject()
 void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
 {
     if (!loaded || track < 0 || track >= kTracks) return;
+    if (fileWriteProtected) return;   // physical WP inhibits the write current
     const int n = ((index % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack;
     if (tracks[track][n] != value) {
         tracks[track][n] = value;
@@ -1409,13 +1410,13 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
 {
     if (!loaded || qt < 0 || qt >= kQuarterTracks) return;
     if (endLssCycle <= startLssCycle) return;
-    // The DiskIICard caller already gates writeFlux behind the user
-    // writeBackEnabled toggle; we mirror that gate at the per-image
-    // level only via saveDirty()'s `writeBackEnabled` check so unit
-    // tests can splice into the in-memory bit/nibble buffer without
-    // needing to flip the toggle. fileWriteProtected (the WOZ INFO
-    // byte) is surfaced through $C0nD WP-status reads — software that
-    // honours WP won't reach writeFlux in the first place.
+    // A PHYSICALLY write-protected medium (WOZ INFO+2 / 2IMG WP flag) inhibits
+    // the write current on real hardware, so the bit-cell buffer must never be
+    // mutated even if software ignores the $C0nD WP sense and writes anyway —
+    // otherwise the user's source file is corrupted on the next saveDirty().
+    // (The write-back TOGGLE is still honoured separately via saveDirty(); a
+    // non-fileWriteProtected image can still splice in-memory for unit tests.)
+    if (fileWriteProtected) return;
     if (wozFormat) {
         // WOZ canonical storage = bitStream[qt]. The flux→bit-cell
         // conversion is the same cell-window logic as the non-WOZ path
@@ -1831,8 +1832,8 @@ bool DiskImage::decodeTrack13(int track,
 
 bool DiskImage::saveDirty()
 {
-    if (!loaded || !anyDirty || !writeBackEnabled) {
-        return true;   // nothing to save (or save disabled) — no error
+    if (!loaded || !anyDirty || !writeBackEnabled || fileWriteProtected) {
+        return true;   // nothing to save, save disabled, or medium WP — no error
     }
 
     // .woz: splice each dirty quarter-track's bit cells back into wozRaw

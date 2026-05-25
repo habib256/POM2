@@ -31,7 +31,11 @@
 //   $C0n2 write = block HI byte (selected unit)
 //   $C0n3 read  = next byte of selected block (auto-incrementing)
 //   $C0n3 write = next byte INTO selected block (write-back gated)
-//   $C0n4 read  = status: bit 7 = no media, bit 6 = write-protected
+//   $C0n4 read  = status: bit 7 = no media, bit 6 = write-protected,
+//                 bit 0 = last block transfer hit an I/O error (out-of-range
+//                 / rejected block) — the ROM driver tests this after a
+//                 read/write stream and returns carry-set (ProDOS $27) so a
+//                 failed transfer is never reported as success.
 //
 // Slot ROM ($Cn00-$CnFF) holds a ProDOS block driver that ProDOS scans
 // for at boot. Signature:
@@ -114,6 +118,7 @@ public:
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
+    bool    exposesIicOnboardRom() const override;
     void    onReset() override;
     void    advanceCycles(int cycles) override;
 
@@ -147,6 +152,10 @@ private:
     std::array<uint16_t, kMaxUnits> readCacheBlock_{};
     std::array<std::array<uint8_t, kBlockBytes>, kMaxUnits> writeBuf_{};
     std::array<bool,     kMaxUnits> writeBufPrimed_{};
+    // Set when the active unit's readBlock/writeBlock fails (out-of-range /
+    // rejected). Surfaced as $C0n4 bit 0; cleared at the start of each
+    // transfer (unit-select / block-register write). See buildRom().
+    std::array<bool,     kMaxUnits> ioError_{};
 
     // ── Sound state ─────────────────────────────────────────────────────
     FloppySoundSink* sound_           = nullptr;
@@ -159,6 +168,7 @@ private:
     uint8_t readDataByte();
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;
+    uint8_t blockCountByte(int which) const;   // 0 = low, 1 = high (STATUS)
     void    noteAccess();
 };
 

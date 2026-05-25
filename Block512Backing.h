@@ -30,7 +30,10 @@ class Block512Backing
 {
 public:
     static constexpr size_t kBlockBytes = 512;
-    static constexpr size_t kMaxBlocks  = 0x10000; // 65536 ProDOS blocks (32 MB)
+    // ProDOS block numbers are 16-bit, so the largest addressable volume is
+    // 65535 blocks (≈32 MB). Block 65536 is unaddressable by ProDOS and by the
+    // synthetic HDV card's uint16_t selectedBlock, so reject it.
+    static constexpr size_t kMaxBlocks  = 0xFFFF;  // 65535 ProDOS blocks
 
     /// Load a raw .hdv or 2IMG/.2mg image. Parses + strips the 2IMG header,
     /// validates ProDOS block order, 512-byte multiple, and ≤65536 blocks.

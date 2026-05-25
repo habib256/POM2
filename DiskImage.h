@@ -251,6 +251,11 @@ public:
     bool isWriteProtected() const {
         return fileWriteProtected || !writeBackEnabled;
     }
+    /// PHYSICAL write-protect of the medium (WOZ INFO+2 / 2IMG WP flag),
+    /// independent of the write-back toggle. On real hardware this signal
+    /// inhibits the write current, so a WP disk can never be mutated — the
+    /// write functions and saveDirty() honour it regardless of writeBackEnabled.
+    bool isFileWriteProtected() const { return fileWriteProtected; }
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:

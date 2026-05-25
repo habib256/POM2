@@ -90,7 +90,12 @@ std::uint8_t fileTypeFromExtension(const std::string& ext)
     if (e == ".sys") return 0xFF;
     if (e == ".txt") return 0x04;
     if (e == ".int") return 0xFA;
-    return 0x06;  // default BIN
+    // Extensionless host files → typeless (0x00) so the decode adds NO
+    // extension and the name round-trips verbatim ("GAME" → "GAME", not
+    // "GAME.bin"). Unknown extensions keep their dot in the ProDOS name, so
+    // their type is informational → plain BIN.
+    if (e.empty() || e == ".") return 0x00;
+    return 0x06;
 }
 
 std::string sanitiseProDOSName(const std::string& hostName)
@@ -592,6 +597,7 @@ const char* extFromFileType(std::uint8_t t)
     // Inverse of fileTypeFromExtension. Default to .bin for anything we
     // didn't originally produce — keeps round-trip safe.
     switch (t) {
+        case 0x00: return "";       // typeless → no extension (extensionless host file)
         case 0x04: return ".txt";
         case 0xFA: return ".int";
         case 0xFC: return ".bas";
@@ -706,7 +712,15 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
             // Subdirectory entry → recurse.
             if (storage == kStorageSubdirEntry) {
                 while (!name.empty() && name.back() == '.') name.pop_back();
-                if (name.empty()) { ++r.filesSkipped; continue; }
+                // The name is decoded from untrusted (guest-writable) image
+                // bytes; reject anything that isn't a safe single component
+                // before joining it to the host folder (path-traversal guard).
+                if (!isHostSafeProDOSName(name)) {
+                    pom2::log().warn("ProDOSVol",
+                        "decode: skipping unsafe subdir name under " + hostFolder);
+                    ++r.filesSkipped;
+                    continue;
+                }
                 const fs::path subDest = fs::path(hostFolder) / name;
                 std::error_code ec;
                 fs::create_directories(subDest, ec);
@@ -782,12 +796,22 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
             // Compose host filename: ProDOS name + extension from file_type.
             // Strip any trailing dot the synth path may have left.
             while (!name.empty() && name.back() == '.') name.pop_back();
-            if (name.empty()) {
+            // Reject names that aren't a safe single host component — the image
+            // is guest-writable, so a crafted entry could carry '/' or '..'
+            // and escape `hostFolder` (path-traversal guard).
+            if (!isHostSafeProDOSName(name)) {
+                pom2::log().warn("ProDOSVol",
+                    "decode: skipping unsafe file name under " + hostFolder);
                 ++r.filesSkipped;
                 continue;
             }
-            const fs::path dest = fs::path(hostFolder) /
-                                  (name + extFromFileType(fileType));
+            // Append a type-derived extension ONLY when the ProDOS name has
+            // no extension of its own. Names that retain a dotted suffix
+            // (sanitiseProDOSName keeps non-stripped extensions like ".DATA")
+            // must NOT accrete a spurious ".bin" on every save cycle.
+            const char* typeExt =
+                (name.find('.') == std::string::npos) ? extFromFileType(fileType) : "";
+            const fs::path dest = fs::path(hostFolder) / (name + typeExt);
             if (writeFileAtomic(dest, data)) {
                 ++r.filesWritten;
             }
@@ -798,6 +822,21 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
 }
 
 }  // namespace
+
+bool isHostSafeProDOSName(const std::string& name)
+{
+    // A decoded entry name becomes a single host path component, so it must
+    // not be empty, "." / "..", over-length, or contain anything outside the
+    // ProDOS-legal set (which excludes '/', '\\', NUL → blocks traversal).
+    if (name.empty() || name.size() > 15) return false;
+    if (name == "." || name == "..")     return false;
+    for (unsigned char c : name) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
 
 ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
                                         const std::string& hostFolder)

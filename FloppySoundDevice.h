@@ -238,8 +238,15 @@ private:
     /// `rate_ms`. Returns SAMPLE_COUNT if rate is out of range.
     static int pickSeekSample(double rateMs);
 
-    /// Time thresholds, in ms.
-    static constexpr double kSeekJoinMs    = 100.0;
+    /// Time thresholds, in ms. kSeekJoinMs (the "still seeking" gap) matches
+    /// the slowest seek sample pickSeekSample() can supply (20 ms sample,
+    /// usable up to ~50 ms): gaps beyond it are genuinely isolated steps, so
+    /// classifying them as seek only to fall through to a click (the old
+    /// 50–100 ms dead band) was inconsistent. kSeekTimeoutMs (leave-seek)
+    /// must be STRICTLY GREATER than kSeekJoinMs, else a steady stream at the
+    /// max joined cadence trips the timeout between steps → a spurious
+    /// mid-seek "landing" click. (Previously both were 100 → overlap.)
+    static constexpr double kSeekJoinMs    = 50.0;
     static constexpr double kSeekTimeoutMs = 100.0;
     /// Wall-clock hold after motor(false) before the spin loop yields
     /// to spin_end. Decouples audible motor duration from emulated CPU

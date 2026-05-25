@@ -100,7 +100,6 @@ set(SOURCES
     FloppyEmu_ImGui.cpp
     Settings.cpp
     SlotBus.cpp
-    SlotManager_ImGui.cpp
     SmartPort35Unit.cpp
     SmartPortCard.cpp
     SmartPortHdvUnit.cpp
@@ -165,7 +164,6 @@ set(HEADERS
     FloppyEmu_ImGui.h
     SlotBus.h
     SlotCardCatalog.h
-    SlotManager_ImGui.h
     SlotPeripheral.h
     SmartPort35Unit.h
     SmartPortCard.h

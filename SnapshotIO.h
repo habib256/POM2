@@ -113,6 +113,7 @@ private:
     std::string    errorMsg;
     std::streampos cursor{};
     std::streampos sectionEnd{};
+    std::streamoff fileSize_ = 0;   // total file size; nextSection bounds against it
 };
 
 } // namespace pom2

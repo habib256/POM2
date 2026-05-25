@@ -99,11 +99,12 @@ IIc), 20 KB system-pack (4 KB filler skipped), 32 KB system+video
   `127.0.0.1:6502`), ProDOS Clock (ThunderClock+ at `$C0C0`, with TP
   interrupts), Apple Mouse Card (M68705P3 + MC6821), GLFW joystick →
   PADL(0/1)+PB0/1/2.
-- **Host control center**: a **Slot Manager** panel driving the whole
-  expansion bus from one window (assign cards, mount/eject/boot media per
-  bay), and a **Floppy Emu (BMOW)** device — an SD-card + OLED disk
-  emulator with its own on-screen file browser + favorites, mounting into
-  the existing drives.
+- **Host control center**: a two-column **Slot Configuration** panel
+  driving the whole expansion bus from one window (left: assign cards,
+  built-ins greyed; right: mount/eject/boot media per internal disk &
+  mountable port), and a **Floppy Emu (BMOW)** device — an SD-card + OLED
+  disk emulator with its own on-screen file browser + favorites, mounting
+  into the existing drives.
 - **Tooling**: AI control HTTP server on `127.0.0.1:6503`,
   `POM2SNAP` snapshots (CPU + RAM + soft switches), memory viewer
   with disassembly, screenshot (F9).
@@ -128,9 +129,10 @@ honoured.
 
 ## Slot configuration
 
-`Machine → Slot Manager` (the consolidated control center — assign
-cards, mount/eject/boot media per bay) or the legacy `Machine → Slot
-Configuration`. Cards: `diskii` (multi-instance), `hdv`, `cffa` (when
+`Machine → Slot Configuration` — one two-column window: left assigns a
+card per slot (built-ins greyed/locked), right mounts/ejects/boots media
+per internal disk & mountable port. Cards: `diskii` (multi-instance),
+`hdv`, `cffa` (when
 the CFFA firmware is present), `smartport35`, `ssc`, `clock`,
 `chatmauve`, `mouse`, `mockingboard`. Default layout:
 

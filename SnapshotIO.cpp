@@ -107,6 +107,13 @@ SnapshotReader::SnapshotReader(const std::string& path)
         return;
     }
 
+    // Record the file size up front so nextSection() can reject a section
+    // whose declared length runs past EOF — otherwise a crafted huge length
+    // drives an unbounded allocation in the consumer (→ bad_alloc → crash).
+    in.seekg(0, std::ios::end);
+    fileSize_ = in.tellg();
+    in.seekg(0, std::ios::beg);
+
     char magic[sizeof(kSnapshotMagic)]{};
     in.read(magic, sizeof(kSnapshotMagic));
     if (!in.good() ||
@@ -176,6 +183,14 @@ bool SnapshotReader::nextSection(std::string& name, std::uint32_t& length)
 
     cursor     = in.tellg();
     sectionEnd = cursor + static_cast<std::streamoff>(length);
+    // Reject a section whose payload runs past EOF (a crafted/truncated file).
+    // This single bound protects every consumer from an over-read and from an
+    // unbounded allocation sized by the file's own length field.
+    if (sectionEnd > fileSize_ || sectionEnd < cursor) {
+        errorMsg = "snapshot section length exceeds file size";
+        ok = false;
+        return false;
+    }
     return true;
 }
 

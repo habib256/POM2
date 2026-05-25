@@ -32,6 +32,19 @@ FloppyEmu_ImGui::render(const char* title, bool& open, const Snapshot& snap)
 
     const int nItems = static_cast<int>(snap.items.size());
     const int nModes = static_cast<int>(snap.modeOptions.size());
+    // Re-home the browse cursor whenever the listing identity changes (dir
+    // enter/leave, Favorites↔All-Disks toggle, or a mode switch that changes
+    // the file filter). Otherwise the highlight stays on a stale index and
+    // mere clamping can strand it mid-list — or make a shrunk listing's top
+    // entry unreachable.
+    if (snap.dirLabel != lastDirLabel_ ||
+        snap.favoritesActive != lastFavActive_ ||
+        snap.currentModeIndex != lastModeIndex_) {
+        browseCursor_  = 0;
+        lastDirLabel_  = snap.dirLabel;
+        lastFavActive_ = snap.favoritesActive;
+        lastModeIndex_ = snap.currentModeIndex;
+    }
     browseCursor_   = clampCursor(browseCursor_, nItems);
     settingsCursor_ = clampCursor(settingsCursor_, nModes);
 

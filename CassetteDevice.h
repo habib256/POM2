@@ -195,7 +195,10 @@ private:
     mutable std::mutex audioMutex;
     std::deque<AudioSegment> audioQueue;
     float    audioPlaybackSample       = 0.0f;
-    uint32_t audioRampInSamplesRemaining = 0;
+    // Atomic: touched by the program-tape fill path (under audioMutex), the
+    // stream fill path (under audioStreamMutex) and setPlaybackPaused — i.e.
+    // across different locks, so a plain int would be a visibility race.
+    std::atomic<uint32_t> audioRampInSamplesRemaining{0};
 
     // Mechanical "clunk" mixed on top of whatever is playing whenever the
     // deck mode flips (NoTape ↔ ProgramTape ↔ AudioStream).
@@ -235,7 +238,10 @@ private:
     // Stream mode: miniaudio decodes the file on demand at the device
     // output rate, no pulse extraction.
     mutable std::mutex audioStreamMutex;
-    bool      audioStreamMode         = false;
+    // Atomic: read lock-free on the audio-callback thread (fillAudioBuffer's
+    // first branch, before any lock) while the UI thread flips it in
+    // loadTape/ejectTape/loadAudioStream — a plain bool here is a data race.
+    std::atomic<bool> audioStreamMode{false};
     bool      audioStreamDecoderOpen  = false;
     ma_decoder audioStreamDecoder{};
     uint64_t  audioStreamCursor       = 0;

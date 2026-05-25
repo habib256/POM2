@@ -8,6 +8,10 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using pom2::AtaBlockDevice;
@@ -53,6 +57,25 @@ void writeSector(AtaBlockDevice& a, const uint8_t* src) {
                      (static_cast<uint16_t>(src[2 * i + 1]) << 8);
         a.cs0_w(0, w);
     }
+}
+
+// Build a tiny write-protected 2IMG (flags bit0 = 1) on disk; returns its path.
+std::string writeWp2img(uint32_t blocks) {
+    const auto p = std::filesystem::temp_directory_path() / "pom2_ata_wp.2mg";
+    std::vector<uint8_t> f(64 + blocks * kBlk, 0);
+    std::memcpy(f.data(), "2IMG", 4);
+    auto wr32 = [&](size_t o, uint32_t v) {
+        f[o] = v & 0xFF; f[o + 1] = (v >> 8) & 0xFF;
+        f[o + 2] = (v >> 16) & 0xFF; f[o + 3] = (v >> 24) & 0xFF;
+    };
+    wr32(12, 1);                       // format = ProDOS block order
+    wr32(16, 1);                       // flags  = write-protected
+    wr32(24, 64);                      // data offset
+    wr32(28, blocks * kBlk);           // data length
+    std::ofstream o(p, std::ios::binary);
+    o.write(reinterpret_cast<const char*>(f.data()),
+            static_cast<std::streamsize>(f.size()));
+    return p.string();
 }
 
 } // namespace
@@ -154,6 +177,22 @@ int main() {
         readSector(a, buf);
         for (size_t i = 0; i < kBlk; ++i) assert(buf[i] == 0x00);
         assert((a.cs0_r(7) & AtaBlockDevice::kStDRQ) == 0);
+    }
+
+    // ── WRITE to a write-protected device aborts (ERR), no silent success ──
+    {
+        AtaBlockDevice a;
+        const std::string p = writeWp2img(8);
+        assert(a.backing().loadImage(p));
+        assert(a.backing().isWriteProtected());
+        setLba(a, 2, 1);
+        a.cs0_w(7, AtaBlockDevice::kCmdWrite);
+        const uint8_t st = static_cast<uint8_t>(a.cs0_r(7));
+        assert((st & AtaBlockDevice::kStERR) != 0);   // error flagged in Status
+        assert((st & AtaBlockDevice::kStDRQ) == 0);   // data phase NOT granted
+        assert((static_cast<uint8_t>(a.cs0_r(1)) & AtaBlockDevice::kErrABRT) != 0);
+        assert(!a.backing().hasUnsavedChanges());      // nothing written
+        std::filesystem::remove(p);
     }
 
     std::printf("ata_block_device_test: OK\n");

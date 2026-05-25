@@ -119,19 +119,20 @@ const ProfileConfig& cfgAppleIIc()
         /*iieMode=*/true,        // same paging as IIe
         M6502::CpuMode::CMOS,    // //c always shipped 65C02
         17045,
-        // builtInSlots: [_, _, ssc, _, mouse, _, diskii, _]
-        // sl1/sl5/sl7 left free (per-//c rev variations and historical
-        // patches sometimes parked third-party adapters there — kept
-        // editable so power users can experiment without lying to them
-        // about hardware availability). sl3 is the internal 80-col
-        // firmware area covered by the AUX label.
+        // builtInSlots: [_, _, ssc, _, mouse, smartport35, diskii, _]
+        // sl5 = built-in SmartPort (the 32 KB ROM 0/3/4 //c shipped with
+        // SmartPort firmware here for an external 3.5"/hard disk). POM2
+        // serves it as a host-backed block device so 3.5" + HDV boot via
+        // SmartPort — the real IWM/Sony GCR boot path is unmodelled (see
+        // project_iic_smartport_boot). sl1/sl7 left free for power users;
+        // sl3 is the internal 80-col firmware area covered by the AUX label.
         {
             std::nullopt,                                // sl0 reserved
             std::nullopt,                                // sl1
             BuiltInSlot{"ssc",    "built-in serial"},    // sl2
             std::nullopt,                                // sl3 (AUX 80-col label)
             BuiltInSlot{"mouse",  "built-in mouse"},     // sl4
-            std::nullopt,                                // sl5
+            BuiltInSlot{"smartport35", "built-in SmartPort"}, // sl5
             BuiltInSlot{"diskii", "built-in Disk II"},   // sl6
             std::nullopt,                                // sl7
         },

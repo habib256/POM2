@@ -72,6 +72,12 @@ int main()
         // ROR ($66/$6E) control.
         {"ROR zp",    {0x66, 0x40},             5, false},
         {"ROR abs",   {0x6E, 0x00, 0x03},       6, false},
+        // (zp,X) indexed-indirect = 6 cycles (the dummy unindexed-pointer
+        // read). Was undercounted at 5 (round 10 #2). withX4 sets X=4 so the
+        // zp pointer is $44 — (zp,X) has no page-cross, always 6.
+        {"LDA (zp,X)",{0xA1, 0x40},             6, true },
+        {"ADC (zp,X)",{0x61, 0x40},             6, true },
+        {"STA (zp,X)",{0x81, 0x40},             6, true },
         // Sanity anchors (must stay correct).
         {"LDA #imm",  {0xA9, 0x00},             2, false},
         {"NOP",       {0xEA},                   2, false},
@@ -108,6 +114,29 @@ int main()
             assert(ina == 2 && dea == 2);
         }
         std::printf("INA = %d, DEA = %d cycles: OK\n", ina, dea);
+    }
+
+    // ── 65C02 ASL/LSR/ROL/ROR abs,X = 6 cycles (7 on page-cross) ─────────
+    // vs NMOS fixed 7. INC/DEC abs,X stay 7 on both CPUs (round 10 #6).
+    {
+        M6502 ccpu(&mem);
+        ccpu.setCpuMode(M6502::CpuMode::CMOS);
+        ccpu.hardReset();
+        // X=4: base $0300 + 4 = $0304 (same page) → 6 cycles.
+        const int aslNoCross = withX4(ccpu, mem, {0x1E, 0x00, 0x03});
+        // base $03FF + 4 = $0403 (page cross) → 7 cycles.
+        const int aslCross   = withX4(ccpu, mem, {0x1E, 0xFF, 0x03});
+        // ROR abs,X no-cross → 6 (cover another shift op).
+        const int rorNoCross = withX4(ccpu, mem, {0x7E, 0x00, 0x03});
+        // INC abs,X must STAY 7 on CMOS (the fixed-max RMW path).
+        const int incCmos    = withX4(ccpu, mem, {0xFE, 0x00, 0x03});
+        if (aslNoCross != 6 || aslCross != 7 || rorNoCross != 6 || incCmos != 7) {
+            std::printf("FAIL CMOS abs,X: ASL %d/%d (want 6/7), ROR %d (want 6), "
+                        "INC %d (want 7)\n", aslNoCross, aslCross, rorNoCross, incCmos);
+            assert(aslNoCross == 6 && aslCross == 7 && rorNoCross == 6 && incCmos == 7);
+        }
+        std::printf("CMOS abs,X: ASL %d/%d, ROR %d, INC %d cycles: OK\n",
+                    aslNoCross, aslCross, rorNoCross, incCmos);
     }
 
     // ── Interrupt-entry cycles (IRQ + NMI) = 7, on both NMOS and CMOS ─────

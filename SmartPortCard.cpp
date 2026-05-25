@@ -25,6 +25,10 @@ void emit(std::array<uint8_t, 256>& rom, uint8_t& pc,
 
 } // anon namespace
 
+// $C0n0 unit-select maps the written value with `% kMaxUnits` (deviceSelectWrite
+// case 0x0); that is only well-defined for a non-zero unit count.
+static_assert(SmartPortCard::kMaxUnits >= 1, "kMaxUnits must be >= 1");
+
 SmartPortCard::SmartPortCard(int slot)
     : slot_(slot)
 {
@@ -60,6 +64,7 @@ void SmartPortCard::onReset()
     readCacheValid_.fill(false);
     readCacheBlock_.fill(0xFFFF);
     writeBufPrimed_.fill(false);
+    ioError_.fill(false);
     if (audibleMotorOn_ && sound_) sound_->motor(false, true);
     audibleMotorOn_ = false;
     lastAccessCycle_ = 0;
@@ -97,22 +102,56 @@ uint8_t SmartPortCard::slotRomRead(uint8_t low8)
     return rom_[low8];
 }
 
+bool SmartPortCard::exposesIicOnboardRom() const
+{
+    // //c-class memory map masks all slot ROM behind the forced INTCXROM;
+    // Memory punches a hole for this card's $Cn00 firmware ONLY while a unit
+    // holds media, so the //c autostart never JMPs into an empty SmartPort.
+    // See SlotPeripheral::exposesIicOnboardRom + project_iic_smartport_boot.
+    for (const auto& u : units_)
+        if (u && u->isLoaded()) return true;
+    return false;
+}
+
 uint8_t SmartPortCard::deviceSelectRead(uint8_t low4)
 {
     switch (low4) {
         case 0x3: return readDataByte();
         case 0x4: return statusByte();
+        case 0x5: return blockCountByte(0);   // STATUS block count, low
+        case 0x6: return blockCountByte(1);   // STATUS block count, high
         default:  return 0xFF;
     }
+}
+
+uint8_t SmartPortCard::blockCountByte(int which) const
+{
+    // The ProDOS STATUS driver call (cmd $00) must return the device's total
+    // block count in X (low) / Y (high). The ROM status routine reads it from
+    // these two registers. A driver that left X/Y unset returned garbage,
+    // which crashed a ProDOS volume scanner (e.g. BITSY) that enumerated this
+    // device after booting from another slot — the //c "Disk II + on-board
+    // SmartPort" garble (see project_iic_smartport_boot).
+    const SmartPortUnit* u =
+        (activeUnit_ < kMaxUnits) ? units_[activeUnit_].get() : nullptr;
+    const uint32_t blocks = (u && u->isLoaded()) ? u->blockCount() : 0u;
+    return static_cast<uint8_t>((blocks >> (which ? 8 : 0)) & 0xFF);
 }
 
 void SmartPortCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
     switch (low4) {
         case 0x0: {                             // drive / unit select
-            const size_t u = static_cast<size_t>(v) & (kMaxUnits - 1);
+            // Modulo (not a bitmask) so the mapping stays correct if kMaxUnits
+            // is ever raised to a non-power-of-two for extended SmartPort.
+            const size_t u = static_cast<size_t>(v) % kMaxUnits;
             activeUnit_ = u;
-            streamOffset_[u] = 0;
+            // A unit-select starts a fresh transfer: drop any half-streamed
+            // write buffer / stale read cache / error so the next op is clean.
+            streamOffset_[u]   = 0;
+            writeBufPrimed_[u] = false;
+            readCacheValid_[u] = false;
+            ioError_[u]        = false;
             break;
         }
         case 0x1: {                             // block LO of active unit
@@ -122,6 +161,7 @@ void SmartPortCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             streamOffset_[u]   = 0;
             readCacheValid_[u] = false;
             writeBufPrimed_[u] = false;
+            ioError_[u]        = false;
             break;
         }
         case 0x2: {                             // block HI of active unit
@@ -132,6 +172,7 @@ void SmartPortCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             streamOffset_[u]   = 0;
             readCacheValid_[u] = false;
             writeBufPrimed_[u] = false;
+            ioError_[u]        = false;
             break;
         }
         case 0x3:                               // streaming write
@@ -148,6 +189,7 @@ uint8_t SmartPortCard::statusByte() const
         ? units_[activeUnit_].get() : nullptr;
     uint8_t s = (u && u->isLoaded()) ? 0x00 : 0x80;
     if (!u || u->isWriteProtected()) s |= 0x40;
+    if (activeUnit_ < kMaxUnits && ioError_[activeUnit_]) s |= 0x01;  // I/O error
     return s;
 }
 
@@ -166,7 +208,13 @@ uint8_t SmartPortCard::readDataByte()
         readCacheBlock_[u] != selectedBlock_[u])
     {
         if (!unit->readBlock(selectedBlock_[u], readCache_[u].data())) {
-            return 0xFF;
+            // Out-of-range / failed read: latch an I/O error so the ROM read
+            // routine returns carry-set (ProDOS $27) instead of CLC "success"
+            // with a garbage buffer, AND keep the byte stream in phase by
+            // serving a 0xFF-filled cache — a mid-transfer failure must not
+            // desync the remaining 511 reads of the block.
+            ioError_[u] = true;
+            readCache_[u].fill(0xFF);
         }
         readCacheBlock_[u] = selectedBlock_[u];
         readCacheValid_[u] = true;
@@ -181,7 +229,8 @@ void SmartPortCard::writeDataByte(uint8_t v)
 {
     const size_t u = activeUnit_;
     SmartPortUnit* unit = units_[u].get();
-    if (!unit || !unit->isLoaded() || unit->isWriteProtected()) return;
+    if (!unit || !unit->isLoaded()) return;
+    if (unit->isWriteProtected()) { ioError_[u] = true; return; }  // surface WP
 
     // Mirror the read cache for writes: accumulate 512 bytes in
     // `writeBuf_[u]`, commit when streamOffset_ wraps back to 0.
@@ -196,7 +245,11 @@ void SmartPortCard::writeDataByte(uint8_t v)
     writeBuf_[u][streamOffset_[u]] = v;
     streamOffset_[u] = (streamOffset_[u] + 1) % kBlockBytes;
     if (streamOffset_[u] == 0) {
-        (void)unit->writeBlock(selectedBlock_[u], writeBuf_[u].data());
+        if (!unit->writeBlock(selectedBlock_[u], writeBuf_[u].data())) {
+            // Out-of-range / rejected commit → report failure to ProDOS
+            // (ROM write routine tests $C0n4 bit 0 and returns carry-set).
+            ioError_[u] = true;
+        }
         writeBufPrimed_[u] = false;
         // The just-committed block is no longer the most-recently-read
         // one; invalidate the read cache so the next read pulls fresh.
@@ -219,7 +272,16 @@ void SmartPortCard::buildRom()
     rom_[0x02] = kSlotRomHi;
     rom_[0x03] = 0x00;
     rom_[0x05] = 0x03;
-    rom_[0x07] = 0x3C;                          // SmartPort signature
+    // $Cn07 identifies the controller class to the //c-class boot firmware.
+    // $3C = Disk II (the //c internal $C607!) — claiming it makes a //c see
+    // TWO Disk II controllers (slot 5 + the internal slot 6) and its boot
+    // scan corrupts. $00 = SmartPort, which triggers a SmartPort enumeration
+    // this block-only stub can't service. $01 = plain ProDOS block device
+    // (non-removable, like ProDOSHardDiskCard) → the //c boots it via the
+    // standard JMP $Cn00 path with no Disk II / SmartPort confusion, and //e
+    // boot (bootFromSlot, ProDOS via $CnFF) is unaffected. See
+    // project_iic_smartport_boot.
+    rom_[0x07] = 0x01;                          // ProDOS block device
     rom_[0xFE] = 0x13;                          // read+write+status, 2 units
     rom_[0xFF] = kDriverOff;
 
@@ -264,69 +326,108 @@ void SmartPortCard::buildRom()
         0xC9, 0x01,            // CMP #$01
         0xF0, 0x10,            // BEQ read   (+16)
         0xC9, 0x02,            // CMP #$02
-        0xF0, 0x2E,            // BEQ write  (+46: skip the 34-byte read block)
+        0xF0, 0x39,            // BEQ write  (+57: skip the 45-byte read block)
         0xC9, 0x00,            // CMP #$00
         0xF0, 0x04,            // BEQ status (+4)
         0xA9, 0x01,            // bad cmd: LDA #$01
         0x38,                  // SEC
         0x60,                  // RTS
-        0xA9, 0x00,            // status: LDA #$00
-        0x18,                  // CLC
-        0x60                   // RTS
+        // status: jump to the full STATUS routine at $CnC0 (returns the
+        // block count in X/Y). Kept 4 bytes (JMP + NOP pad) so the BEQ
+        // read/write offsets above stay valid — pinned by
+        // tests/smartport_write_dispatch_test.cpp.
+        0x4C, 0xC0, kSlotRomHi, // status: JMP $CnC0
+        0xEA                    // pad
     });
+
+    // ── STATUS routine ($CnC0) ─────────────────────────────────────────
+    // ProDOS STATUS (cmd $00) must return total blocks in X (low) / Y (high)
+    // so a volume scanner (BITSY, ProDOS ONLINE) can size the device. The
+    // count comes from $C0n5/$C0n6 (deviceSelectRead 0x5/0x6). The unit was
+    // already latched via $C0n0 at the top of the dispatch.
+    {
+        uint8_t sp = 0xC0;
+        emit(rom_, sp, {
+            0xAE, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDX $C0n5
+            0xAC, static_cast<uint8_t>(kDeviceBase + 0x06), 0xC0, // LDY $C0n6
+            0xA9, 0x00,        // LDA #$00
+            0x18,              // CLC
+            0x60               // RTS
+        });
+    }
 
     const uint8_t blkLoReg = static_cast<uint8_t>(kDeviceBase + 0x01);
     const uint8_t blkHiReg = static_cast<uint8_t>(kDeviceBase + 0x02);
     const uint8_t dataReg  = static_cast<uint8_t>(kDeviceBase + 0x03);
     const uint8_t statReg  = static_cast<uint8_t>(kDeviceBase + 0x04);
 
-    // ── Read block ─────────────────────────────────────────────────────
+    // ── Read block (45 bytes) ──────────────────────────────────────────
+    // Streams 512 bytes, then tests $C0n4 bit 0 (I/O error) so a failed /
+    // out-of-range readBlock returns carry-set (ProDOS $27) rather than CLC
+    // "success" over a 0xFF-filled buffer. Lengthening this block past the
+    // original 34 bytes is why the dispatch `BEQ write` operand above is $39
+    // (was $2E) — pinned by tests/smartport_write_dispatch_test.cpp.
     emit(rom_, pc, {
         0xA5, 0x46,            // LDA $46
         0x8D, blkLoReg, 0xC0,
         0xA5, 0x47,            // LDA $47
         0x8D, blkHiReg, 0xC0,
-        0xA0, 0x00,
-        0xAD, dataReg, 0xC0,
-        0x91, 0x44,
-        0xC8,
-        0xD0, 0xF8,
-        0xE6, 0x45,
-        0xAD, dataReg, 0xC0,
-        0x91, 0x44,
-        0xC8,
-        0xD0, 0xF8,
-        0xC6, 0x45,
-        0x18,
-        0x60
+        0xA0, 0x00,            // LDY #$00
+        0xAD, dataReg, 0xC0,   // LDA $C0n3
+        0x91, 0x44,            // STA ($44),Y
+        0xC8,                  // INY
+        0xD0, 0xF8,            // BNE -8
+        0xE6, 0x45,            // INC $45
+        0xAD, dataReg, 0xC0,   // LDA $C0n3
+        0x91, 0x44,            // STA ($44),Y
+        0xC8,                  // INY
+        0xD0, 0xF8,            // BNE -8
+        0xC6, 0x45,            // DEC $45
+        0xAD, statReg, 0xC0,   // LDA $C0n4   ; status
+        0x29, 0x01,            // AND #$01    ; I/O error bit
+        0xD0, 0x02,            // BNE rderr
+        0x18,                  // CLC         ; success
+        0x60,                  // RTS
+        0xA9, 0x27,            // rderr: LDA #$27 (ProDOS I/O error)
+        0x38,                  // SEC
+        0x60                   // RTS
     });
 
     // ── Write block ────────────────────────────────────────────────────
+    // WP pre-check up front ($2B); after streaming 512 bytes, tests $C0n4
+    // bit 0 so an out-of-range / rejected writeBlock returns carry-set
+    // ($27) instead of the old unconditional CLC "success".
     emit(rom_, pc, {
-        0xAD, statReg, 0xC0,
-        0x29, 0x40,
-        0xF0, 0x04,
-        0xA9, 0x2B,            // write-protected error
-        0x38,
-        0x60,
-        0xA5, 0x46,
+        0xAD, statReg, 0xC0,   // LDA $C0n4
+        0x29, 0x40,            // AND #$40    ; WP bit
+        0xF0, 0x04,            // BEQ +4 (not WP → proceed)
+        0xA9, 0x2B,            // LDA #$2B    ; write-protected error
+        0x38,                  // SEC
+        0x60,                  // RTS
+        0xA5, 0x46,            // LDA $46
         0x8D, blkLoReg, 0xC0,
-        0xA5, 0x47,
+        0xA5, 0x47,            // LDA $47
         0x8D, blkHiReg, 0xC0,
-        0xA0, 0x00,
-        0xB1, 0x44,
-        0x8D, dataReg, 0xC0,
-        0xC8,
-        0xD0, 0xF8,
-        0xE6, 0x45,
-        0xB1, 0x44,
-        0x8D, dataReg, 0xC0,
-        0xC8,
-        0xD0, 0xF8,
-        0xC6, 0x45,
-        0xA9, 0x00,
-        0x18,
-        0x60
+        0xA0, 0x00,            // LDY #$00
+        0xB1, 0x44,            // LDA ($44),Y
+        0x8D, dataReg, 0xC0,   // STA $C0n3
+        0xC8,                  // INY
+        0xD0, 0xF8,            // BNE -8
+        0xE6, 0x45,            // INC $45
+        0xB1, 0x44,            // LDA ($44),Y
+        0x8D, dataReg, 0xC0,   // STA $C0n3
+        0xC8,                  // INY
+        0xD0, 0xF8,            // BNE -8
+        0xC6, 0x45,            // DEC $45
+        0xAD, statReg, 0xC0,   // LDA $C0n4   ; re-read status
+        0x29, 0x01,            // AND #$01    ; I/O error bit
+        0xD0, 0x04,            // BNE wrerr
+        0xA9, 0x00,            // LDA #$00    ; success
+        0x18,                  // CLC
+        0x60,                  // RTS
+        0xA9, 0x27,            // wrerr: LDA #$27 (ProDOS I/O error)
+        0x38,                  // SEC
+        0x60                   // RTS
     });
 }
 

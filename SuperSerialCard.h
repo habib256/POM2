@@ -116,6 +116,15 @@ public:
     /// returns the new length. RFC 854: a bare CR arrives as CR NUL.
     static size_t normalizeLineEndings(uint8_t* data, size_t n);
 
+    /// Telnet IAC filter — a PERSISTENT state machine (member state) so an
+    /// IAC sequence split across recv() chunks, and the variable-length
+    /// IAC SB … IAC SE subnegotiation, are handled correctly. Mutates `data`
+    /// in place, returns the kept length. Public for unit testing (the RX
+    /// worker calls it on every non-raw inbound chunk). Call resetTelnet()
+    /// at the start of each connection.
+    size_t processTelnetRx(uint8_t* data, size_t n);
+    void   resetTelnet() { telnetState_ = TelnetState::Text; }
+
     // Test/debug introspection — read-only reflection of the decoded
     // command/control register state.
     double  bytesPerSecond() const { return bytesPerSecond_; }
@@ -139,6 +148,10 @@ public:
     uint8_t slotRomRead(uint8_t low8) override;
     void    onReset() override;
     void    onUnplug() override;
+    // CPU-thread hook: apply a worker-thread-pending IRQ-line change here so
+    // assertIrq() (which mutates non-atomic SlotPeripheral state) is only
+    // ever called from the CPU thread. See raiseIrqSource()/pushIrqLine().
+    void    advanceCycles(int cycles) override;
 
 private:
     int slot;
@@ -147,8 +160,17 @@ private:
     std::atomic<bool> connected { false };
     uint16_t port = kDefaultPort;
 
-    int listenFd = -1;
-    int clientFd = -1;
+    // Persistent telnet IAC parser state (worker thread only). Survives
+    // recv() chunk boundaries so a split IAC / SB sequence parses correctly.
+    enum class TelnetState { Text, Iac, Opt, Sb, SbIac };
+    TelnetState telnetState_ = TelnetState::Text;
+
+    // Atomic so the UI/dtor thread can shutdown() these to wake the worker
+    // out of accept()/recv() without a torn read, and so close() happens
+    // exactly once (the worker is the sole closer of clientFd). See
+    // stopListening()/closeClient().
+    std::atomic<int> listenFd { -1 };
+    std::atomic<int> clientFd { -1 };
     std::thread worker;
     std::atomic<bool> stopRequested { false };
 
@@ -205,7 +227,13 @@ private:
     // IRQ state (MAME-style mask). The pin level pushed to the bus is
     // simply `irqState_ != 0`; edge debouncing is handled by the base
     // class's `assertIrq()` so we don't cache an extra bool here.
-    uint8_t irqState_    = 0;
+    // Atomic: the TCP worker raises IRQ sources while the CPU thread reads
+    // status / clears them. (The CPU IRQ *line* is only ever driven from the
+    // CPU thread — see raiseIrqSource/advanceCycles.)
+    std::atomic<uint8_t> irqState_{0};
+    // Set by the worker when it changes irqState_; the CPU thread's
+    // advanceCycles() consumes it to drive assertIrq() on the CPU thread.
+    std::atomic<bool> irqLineDirty_{false};
 
     // Connection-edge tracking for DCD/DSR IRQ generation. Both bits move
     // together in this model (SSC + telnet has no separate carrier-vs-DTR

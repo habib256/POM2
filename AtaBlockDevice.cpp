@@ -141,6 +141,18 @@ void AtaBlockDevice::startCommand(uint8_t cmd)
 
         case kCmdWrite:
         case kCmdWriteMulti: {
+            // ATA-1: a WRITE to a write-protected device must abort — ERR set
+            // in Status, ABRT in the Error register, no DRQ — rather than
+            // accept the data and silently drop it in flushBufferToSector
+            // (which returns "success" to ProDOS). The HDV synthetic card
+            // surfaces WP via its own status path; the ATA/CFFA path does it
+            // here so a WP 2IMG can't be "written" without an error.
+            if (backing_.isWriteProtected()) {
+                error_  = kErrABRT;
+                status_ = kStDRDY | kStDSC | kStDF | kStERR;
+                phase_  = Phase::Idle;
+                break;
+            }
             lba_         = currentLba();
             sectorsLeft_ = (sectorCount_ == 0) ? 256 : sectorCount_;
             wordIdx_     = 0;

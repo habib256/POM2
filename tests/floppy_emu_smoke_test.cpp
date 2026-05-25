@@ -112,6 +112,25 @@ bool testNavigation()
     d.goUp();
     if (!d.atRoot()) { std::printf("FAIL: escaped above root\n"); return false; }
 
+    // R6-#1: a symlink in the SD root must NOT be followed — directory_iterator
+    // + is_directory() dereference links, which would let an in-root symlink
+    // browse files anywhere on the host (sandbox escape).
+    {
+        const fs::path outside = fs::temp_directory_path() / "pom2_femu_outside";
+        fs::create_directories(outside);
+        touch(outside / "SECRET.po");
+        std::error_code ec;
+        fs::create_symlink(outside, root / "ESCAPE", ec);
+        if (!ec) {   // skip if the platform/FS lacks symlink support
+            auto lst = d.listing();
+            if (hasEntry(lst, "ESCAPE")) {
+                std::printf("FAIL: symlink ESCAPE listed — SD sandbox escape\n");
+                return false;
+            }
+        }
+        fs::remove_all(outside);
+    }
+
     fs::remove_all(root);
     std::printf("OK : SD navigation bounded to root\n");
     return true;
@@ -142,7 +161,15 @@ bool testFavorites()
         std::printf("FAIL: absolute favorite altered: %s\n",
                     fav.entries[1].fullPath.c_str()); return false;
     }
-    std::printf("OK : favdisks.txt parse (automount + paths)\n");
+    // R6-#4: a favorite whose file doesn't exist must report size 0, not the
+    // (uint64_t)-1 garbage from an ignored file_size error code. Neither
+    // favorite exists in this test's context.
+    if (fav.entries[1].sizeBytes != 0) {
+        std::printf("FAIL: missing favorite size = %llu (want 0)\n",
+                    static_cast<unsigned long long>(fav.entries[1].sizeBytes));
+        return false;
+    }
+    std::printf("OK : favdisks.txt parse (automount + paths + missing size)\n");
     return true;
 }
 

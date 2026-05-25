@@ -439,7 +439,16 @@ void AiControlServer::runWorker()
             std::lock_guard<std::mutex> lk(mtx_);
             lastClient_ = ::inet_ntoa(peer.sin_addr);
         }
-        handleClient(fd);
+        // A handler must never escape an exception out of the worker thread —
+        // that calls std::terminate() and kills the whole emulator. Catch all,
+        // log, and keep serving (the fd is still closed below).
+        try {
+            handleClient(fd);
+        } catch (const std::exception& e) {
+            pom2::log().warn("AICtrl", std::string("handler exception: ") + e.what());
+        } catch (...) {
+            pom2::log().warn("AICtrl", "handler exception (unknown)");
+        }
         ::shutdown(fd, SHUT_RDWR);
         ::close(fd);
         ++requestsServed_;
@@ -980,6 +989,14 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
             r.readBytes(buf.data(), buf.size());
             mem.restoreMainRam(buf.data(), buf.size());
         } else if (name == "MEX") {
+            // Bound the allocation. nextSection() already rejects len > file
+            // size; cap here too (a legit MEX is ≤ ~11 MB: aux + LC + 128
+            // RamWorks banks) so even a large crafted file can't OOM us.
+            constexpr uint32_t kMaxMexBytes = 16u * 1024u * 1024u;
+            if (len > kMaxMexBytes) {
+                sendJsonError(fd, 400, "snapshot MEX section too large");
+                return;
+            }
             std::vector<uint8_t> buf(len);
             if (len) r.readBytes(buf.data(), len);
             mem.loadSnapshotState(buf.data(), len);

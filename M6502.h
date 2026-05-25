@@ -21,6 +21,8 @@
 
 #include "Memory.h"
 
+#include <atomic>
+
 class M6502
 {
 public:
@@ -70,7 +72,7 @@ public:
     /// Cards assert with their slot number (`slot_`). Idempotent.
     void setIrqLine(int sourceId, bool asserted);
     /// Wire-OR mask of currently asserted sources. Debug / test hook.
-    uint32_t getIrqSourceMask() const { return irqSourceMask; }
+    uint32_t getIrqSourceMask() const { return irqSourceMask.load(std::memory_order_relaxed); }
 
     /// Legacy entry — equivalent to `setIrqLine(IRQ_SRC_LEGACY, state!=0)`.
     /// Kept so existing callers (and the Klaus harness, snapshot tools)
@@ -161,11 +163,16 @@ private :
 
     bool debugBrkTrace = false;   // see setDebugBrkTrace()
     uint8_t accumulator, xRegister, yRegister, statusRegister, stackPointer;
-    int IRQ, NMI;
+    // `IRQ` and `irqSourceMask` are atomic because off-CPU-thread cards (the
+    // SSC TCP worker) call setIrqLine() concurrently with the CPU thread's
+    // own setIrqLine() / per-step `IRQ` read. Relaxed atomics make the
+    // read-modify-write race-free; on x86 the hot-path load is a plain mov.
+    std::atomic<int> IRQ{0};
+    int NMI = 0;
     /// OR'd contributions from every IRQ source registered via
     /// `setIrqLine()`. `IRQ` mirrors `(irqSourceMask != 0)` after every
     /// update so the dispatch loop stays a single-int test.
-    uint32_t irqSourceMask = 0;
+    std::atomic<uint32_t> irqSourceMask{0};
     uint16_t programCounter;
     uint16_t op;
     int tmp;
@@ -192,6 +199,7 @@ private :
     void IndZeroY(void);
     void Rel(void);
     void WAbsX(void);
+    void RmwAbsX(void);   // 65C02 ASL/LSR/ROL/ROR abs,X (6c, +1 on page-cross)
     void WAbsY(void);
     void WIndZeroY(void);
     void setStatusRegisterNZ(unsigned char val);
