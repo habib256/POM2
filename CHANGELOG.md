@@ -8,6 +8,52 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **Bug hunt round 5 — 9 correctifs (affichage / persistance / cassette)**.
+  Audit des dernières zones non couvertes (pipeline vidéo, parseurs de
+  formats disque non-WOZ2, orchestration boot/slot/persistance MainWindow,
+  cassette + joystick). Les parseurs disque sont ressortis **propres** (aucun
+  over-read sur taille/offset fournis par le fichier). 82 tests passent.
+  1. **[Affichage] texte-40-col / lo-res / HGR simple lisaient l'AUX sous
+     80STORE+PAGE2** (`Apple2Display.cpp`). Le scanner vidéo //e ne
+     multiplexe l'aux qu'en 80-col/DHGR ; en 40-col (80COL off) il lit
+     TOUJOURS la page 1 PRINCIPALE. La base page1/page2 est déjà choisie par
+     `videoTextPage2/videoHgrPage2` (= `page2 && !80store`, MAME
+     `use_page_2()`) ; lire cette base depuis l'aux était un bug montrant du
+     garbage aux pour les programmes qui font du page-flip 80STORE hors
+     80-col. 4 redirections supprimées (renderText/renderLoRes/renderHiRes/
+     renderHiResChatMauve80). Pin : `hgr_render` (MAIN=blanc, AUX=noir).
+  2. **[GUI] le mode kiosque n'était pas read-only pour 3.5"/HDV**
+     (`MainWindow.cpp` routeMount35/routeMountHdv) — `settings->save()`
+     inconditionnel écrasait `state.cfg` depuis un lancement kiosque. Gardé
+     sur `!kiosk_`.
+  3. **[GUI] `POM2 game.hdv` (sans --kiosk) fuyait une carte fantôme dans la
+     config sauvée** — `ensureHdvCardForBoot` est « non persisté » par
+     contrat, mais `~MainWindow` écrivait `slot_N_card="hdv"` + `hdv_path`.
+     Slot auto-provisionné tracé (`autoProvisionedHdvSlot_`) et exclu de la
+     persistance.
+  4. **[GUI] persistance CFFA multi-instance** — `~MainWindow` ne sauvait que
+     la carte CFFA primaire ; une 2e carte perdait son image. Boucle sur
+     `blockCards()` (comme DiskII).
+  5. **[GUI] `restartEmulationFromSettings` perdait le média live** — un
+     Insert menu / mount HDV/CFFA ne met à jour que la carte live (clés
+     écrites au shutdown), donc un « Apply » de Slot Config reconstruisait
+     depuis des clés périmées → disque monté perdu. Snapshot du média live
+     dans les settings avant le teardown (symétrique avec `applyProfile`).
+  6. **[Cassette] dernière impulsion de chaque bande WAV/MP3 perdue**
+     (`CassetteDevice.cpp` `pcmToDurations`) — une durée n'était émise que
+     SUR un changement de signe ; le segment tenu après le dernier
+     zéro-crossing (leader final / demi-bit) n'était jamais converti. Flush
+     de la queue après la boucle (symétrique avec le trailer 0,1 s du save).
+     Pin : `cassette_wav_tail`.
+  - **LOWs** : `diskDialogTargetSlot` remis à -1 à la fermeture du popup ;
+    sniff ProDOS `next >= 280` (vol 280-blocs = blocs 0..279) ; valeur paddle
+    centrée 127→128 (cohérence avec la valeur live + défaut Memory).
+  - **Reporté** : SmartPort multi-instance demi-supporté (pas de persistance
+    au shutdown — MED, involved) ; `loadAudioStream` mode flux mort (jamais
+    dispatché — décision feature, pas un bug de correction) ; overload
+    `loadFile(path,order)` Force-secteur-ordre limité au 143360 brut (latent,
+    aucun appelant UI).
+
 - **Bug hunt round 4 — 8 correctifs (serveur HTTP AI / souris / VIA / banking //c)**.
   Audit des sous-systèmes restants (serveur de contrôle HTTP, MC6821 + souris,
   6522 VIA, banking //c/c+). Le **bug X de la souris a été circonscrit** : la

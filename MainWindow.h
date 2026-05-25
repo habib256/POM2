@@ -323,6 +323,11 @@ private:
     // screen, full-viewport, with no menu bar / toolbar / panels.
     bool kiosk_ = false;
 
+    // Slot of the HDV card auto-plugged by ensureHdvCardForBoot for a CLI
+    // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so
+    // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.
+    int autoProvisionedHdvSlot_ = -1;
+
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
     // Apple II Screen widget rect, window-relative. Updated every
     // frame by `renderScreenWindow()` so the GLFW cursor-pos callback

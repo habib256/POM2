@@ -740,6 +740,13 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
             data.reserve(eof);
 
             if (storage == kStorageSeedling) {
+                if (eof > kBlockBytes) {
+                    // A seedling is defined as eof ≤ 512; a larger eof means
+                    // an inconsistent entry (ProDOS promotes to sapling past
+                    // 512). Warn rather than silently emit a 512-byte file.
+                    pom2::log().warn("ProDOSVol",
+                        "seedling entry claims eof>512, truncating: " + name);
+                }
                 const std::uint8_t* d = blockPtr(keyPtr);
                 const std::size_t   take = std::min<std::size_t>(eof, kBlockBytes);
                 data.insert(data.end(), d, d + take);
@@ -752,10 +759,18 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
                     const std::uint16_t db =
                         static_cast<std::uint16_t>(idx[i]) |
                         static_cast<std::uint16_t>(idx[256 + i]) << 8;
-                    if (db == 0 || db >= totalBlocks) break;
                     const std::size_t take = std::min<std::size_t>(remaining, kBlockBytes);
-                    const std::uint8_t* d = blockPtr(db);
-                    data.insert(data.end(), d, d + take);
+                    if (db == 0) {
+                        // Sparse hole: ProDOS reads an unallocated index entry
+                        // back as a zero-filled block. Zero-fill and CONTINUE
+                        // — the file's EOF terminates the read, not the hole.
+                        data.insert(data.end(), take, 0u);
+                    } else if (db >= totalBlocks) {
+                        break;   // genuinely out-of-range pointer → stop
+                    } else {
+                        const std::uint8_t* d = blockPtr(db);
+                        data.insert(data.end(), d, d + take);
+                    }
                     remaining -= take;
                 }
                 if (data.size() < eof) {

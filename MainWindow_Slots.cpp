@@ -509,6 +509,35 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
 void MainWindow::restartEmulationFromSettings()
 {
+    // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
+    //    and the HDV/CFFA library mounts update the live cards but NOT the
+    //    settings keys (those are written only at shutdown), so without this a
+    //    Slot-Config "Apply" rebuilds from stale keys and silently drops the
+    //    mounted disk/HDV/CFFA. plugSlotsFromSettings + step 4 restore FROM
+    //    settings, so persisting the live state here preserves it.
+    for (auto* c : diskCards) {
+        if (!c) continue;
+        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
+        settings->setString("disk_path" + slotKey,
+            c->isDiskLoaded() ? c->getDiskPath() : std::string());
+        settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
+    }
+    if (hdvCard && hdvCard->getSlot() != autoProvisionedHdvSlot_ &&
+        hdvCard->isImageLoaded()) {
+        const std::string& p = hdvCard->getImagePath();
+        if (p.rfind("[host folder] ", 0) == std::string::npos)
+            settings->setString("hdv_path", p);
+    }
+    for (auto* blk : blockCards()) {
+        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+        if (!cffa) continue;
+        const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
+        settings->setString(key + "_path",
+            cffa->isImageLoaded() ? cffa->getImagePath() : std::string());
+        settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
+    }
+    // (3.5"/SmartPort media is already saved eagerly on mount.)
+
     // 1. Stop the worker thread so card destructors don't race against a
     //    running CPU step.
     controller->stop();

@@ -441,7 +441,11 @@ MainWindow::~MainWindow()
 
     // Persist the current state so the next launch restores the same
     // mounted disks, video mode, panels, and audio levels.
-    if (hdvCard && hdvCard->isImageLoaded()) {
+    // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
+    // a one-shot `POM2 <image.hdv>` boot — it's session-local by contract.
+    const bool hdvIsAutoProvisioned =
+        hdvCard && hdvCard->getSlot() == autoProvisionedHdvSlot_;
+    if (!hdvIsAutoProvisioned && hdvCard && hdvCard->isImageLoaded()) {
         // Don't persist the synthesised host-folder volume — the path is
         // a sentinel, not a real file. Re-synthesis happens on click.
         const std::string& p = hdvCard->getImagePath();
@@ -491,13 +495,18 @@ MainWindow::~MainWindow()
         settings->setBool("hdv_writeback", hdvCard->isWriteBackEnabled());
     }
 
-    // CFFA per-slot image + write-back (saved-path-only restore, like HDV).
-    if (cffaCard) {
-        const std::string key = "cffa_slot" + std::to_string(cffaCard->getSlot());
+    // CFFA per-slot image + write-back for EVERY plugged CFFA card. `cffa`
+    // is multi-instance, so persist each (not just the primary `cffaCard`),
+    // mirroring the DiskII loop above. (blockCards() also returns synthetic
+    // HDV cards — those persist via hdv_path; skip them here.)
+    for (auto* blk : blockCards()) {
+        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+        if (!cffa) continue;
+        const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
         settings->setString(key + "_path",
-                            cffaCard->isImageLoaded() ? cffaCard->getImagePath()
-                                                      : std::string());
-        settings->setBool(key + "_writeback", cffaCard->isWriteBackEnabled());
+                            cffa->isImageLoaded() ? cffa->getImagePath()
+                                                  : std::string());
+        settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
     }
 
     if (sscCard) {
@@ -516,6 +525,7 @@ MainWindow::~MainWindow()
     // Persist the per-slot card mapping so changes via the Slot
     // Configuration panel survive a restart.
     for (int s = 1; s <= 7; ++s) {
+        if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug; leave saved config intact
         settings->setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
     }
 
@@ -2661,7 +2671,7 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
         settings->setString(base + "_type",
             std::string(pom2::SmartPort35Unit::kKindKey));
         settings->setString(base + "_path", path);
-        settings->save();
+        if (!kiosk_) settings->save();   // kiosk is read-only: never touch state.cfg
         return true;
     }
     // //c+ on-board path.
@@ -2712,7 +2722,7 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
         settings->setString(base + "_type",
             std::string(pom2::SmartPortHdvUnit::kKindKey));
         settings->setString(base + "_path", path);
-        settings->save();
+        if (!kiosk_) settings->save();   // kiosk is read-only: never touch state.cfg
         bootSlotOut = smartPortCard->getSlot();
         return true;
     }
@@ -2780,6 +2790,7 @@ int MainWindow::ensureHdvCardForBoot()
         hdvCard = card.get();
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
+        autoProvisionedHdvSlot_ = slot;   // session-local; ~MainWindow won't persist it
     }
     pom2::log().info("CLI",
         "auto-plugged ProDOS HDV card in slot " + std::to_string(slot) +
@@ -3759,10 +3770,14 @@ void MainWindow::renderDiskFileDialog()
             }
             tapeStatusUntil = lastFrameTime + 5.0;
         }
+        diskDialogTargetSlot = -1;   // popup closed — clear the latched slot
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        diskDialogTargetSlot = -1;   // popup closed — clear the latched slot
+        ImGui::CloseCurrentPopup();
+    }
     ImGui::EndPopup();
 }
 

@@ -441,16 +441,14 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
 {
     const auto state = mem.getDisplayState();
     // IIe scanner routing for text/lo-res page 1 ($0400-$07FF): when
-    // 80STORE is on, PAGE2 selects aux instead of main RAM (Sather
-    // Fig 5.14). Same routing applies in DHGR's 80-col path
-    // (renderText80) but POM2 historically had this gated only there.
-    // Without it, IIe software that uses aux text $0400-$07FF (e.g.
-    // any DHGR text panel, or 40-col code that pre-stages aux) renders
-    // stale/blank in 40-col mode. Note MAME `hgr_update` shares this
-    // limitation, so this fix takes POM2 closer to real hardware than
-    // to MAME parity strictly.
+    // 40-column text always displays MAIN page 1; the //e video scanner only
+    // multiplexes aux RAM in 80-column mode (renderText80) — NOT here. The
+    // page-1/page-2 base is already chosen by videoTextPage2() = page2 &&
+    // !80store (MAME use_page_2()); reading that base from aux when
+    // 80STORE+PAGE2 was a bug that showed aux garbage for 40-col programs
+    // page-flipping via 80STORE (MAME apple2video.cpp text_update reads only
+    // m_ram_ptr in 40-col).
     const uint8_t* ram = mem.data();
-    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
 
     // Flash phase: 0 = invert as-stored, 1 = flip back to normal. Toggles
     // every kFlashHalfPeriodFrames frames. Half-period = 15 frames @ 60 Hz
@@ -655,10 +653,10 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
     // byte stores TWO blocks: low nibble is the upper block, high nibble
     // the lower one.
     const auto state = mem.getDisplayState();
-    // IIe: 80STORE+PAGE2 routes text/lo-res page 1 to aux RAM. Same
-    // path as renderText — see the comment there.
+    // Lo-res always displays MAIN page 1 — the scanner only reads aux in
+    // 80-column/double modes (see renderText). page2 base via
+    // videoTextPage2(). (Reading aux under 80STORE+PAGE2 was a bug.)
     const uint8_t* ram = mem.data();
-    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
 
     // Palette selection. ChatMauveRGB swaps in the 16-colour Péritel
     // table — same indices, but indices 5 and 10 are now visibly distinct
@@ -893,14 +891,12 @@ constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
 void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline)
 {
     const auto state = mem.getDisplayState();
-    // IIe HGR page 1 routing: when 80STORE is on AND HIRES is on AND
-    // PAGE2 is on, the scanner pulls $2000-$3FFF from aux RAM instead
-    // of main (Sather 5-25 + MAME `apple2e.cpp:1401`). Without this,
-    // IIe games that build a HGR frame in aux page 1 (rare but it
-    // exists, e.g. some Beagle Bros demos and the IIe self-test
-    // splash) draw stale/main content.
+    // Single hi-res always displays MAIN page 1. Aux HGR ($2000-$3FFF) is
+    // only shown via DHGR (80COL+DHIRES, renderDhgr) — with 80COL off the
+    // scanner never reads aux, so reading it under 80STORE+HIRES+PAGE2 was a
+    // bug (showed aux garbage for single-HGR 80STORE page-flipping). page2
+    // base via videoHgrPage2(). MAME hgr_update reads only m_ram_ptr.
     const uint8_t* ram = mem.data();
-    if (state.eightyStore && state.hiRes && state.page2 && auxRam) ram = auxRam;
 
     // IIe DHIRES annunciator on + 80COL off = rev-0 emulation: mask
     // bit 7 of every HGR byte so no half-dot delay / no orange-blue
@@ -1187,12 +1183,10 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
                                            int lastScanline)
 {
     const auto state = mem.getDisplayState();
+    // Single hi-res (Chat Mauve 80-col-text-window variant) displays MAIN
+    // page 1; aux HGR is only shown via DHGR. (Reading aux under
+    // 80STORE+PAGE2 was a bug — see renderHiRes.)
     const uint8_t* ram = mem.data();
-    // 80STORE+PAGE2 routes HGR page 1 to aux RAM (same rule renderHiRes
-    // applies — `state.hiRes` is necessarily true here so we don't need
-    // to re-gate on it). Matters for IIe software that double-buffers
-    // into aux while keeping PAGE2 selected.
-    if (state.eightyStore && state.page2 && auxRam) ram = auxRam;
 
     using Mode = LeChatMauveCard::RenderMode;
     const Mode mode = chatMauve->currentMode();

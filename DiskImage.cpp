@@ -365,7 +365,7 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
             const uint16_t next =
                 static_cast<uint16_t>(p[2]) |
                 (static_cast<uint16_t>(p[3]) << 8);
-            if (next == 0 || next > 280) return false;
+            if (next == 0 || next >= 280) return false;  // 280-block vol = blocks 0..279
             const uint8_t st_nl = p[4];
             if ((st_nl & 0xF0) != 0xF0) return false;
             const uint8_t nlen = st_nl & 0x0F;

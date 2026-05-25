@@ -64,12 +64,13 @@ void JoystickInput::autoBindIfUnconfigured()
 
 uint8_t JoystickInput::paddleValue(int paddleIdx) const
 {
-    // Only paddles 0/1 are driven by the active host; 2/3 are not wired
-    // (return centered).
-    if (paddleIdx < 0 || paddleIdx >= kAxes) return 127;
-    if (active.hostIdx < 0 || active.hostIdx >= kHostCount) return 127;
+    // Only paddles 0/1 are driven by the active host; 2/3 are not wired.
+    // Return centered = 128 to match both the centered live value
+    // (axisToPaddle(0.0) → 128) and Memory's paddleValue default.
+    if (paddleIdx < 0 || paddleIdx >= kAxes) return 128;
+    if (active.hostIdx < 0 || active.hostIdx >= kHostCount) return 128;
     const DeviceState& d = devices[active.hostIdx];
-    if (!d.present) return 127;
+    if (!d.present) return 128;
     return axisToPaddle(d.axis[paddleIdx],
                         active.deadzone,
                         active.invert[paddleIdx]);
