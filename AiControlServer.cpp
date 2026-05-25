@@ -9,6 +9,8 @@
 #include "Logger.h"
 #include "M6502.h"
 #include "Memory.h"
+#include "MouseCard.h"
+#include "SlotBus.h"
 #include "SnapshotIO.h"
 
 #include <arpa/inet.h>
@@ -648,6 +650,7 @@ void AiControlServer::handleClient(int fd)
     if (req.path == "/snapshot/load")        return handleSnapshotLoad(fd, req);
     if (req.path == "/speed")                return handleSpeed(fd, req);
     if (req.path == "/screen.ppm")           return handleScreen(fd, req);
+    if (req.path == "/mouse")                return handleMouse(fd, req);
 
     sendJsonError(fd, 404, "no such endpoint: " + req.path);
 }
@@ -839,6 +842,62 @@ void AiControlServer::handleKeyboard(int fd, const Request& req)
     if (!text.empty()) n += ctrl_->memory().pasteText(text);
     if (!raw.empty())  n += ctrl_->memory().pasteRawKeys(raw.data(), raw.size());
     sendJsonOk(fd, "{\"queued\":" + std::to_string(n) + "}");
+}
+
+void AiControlServer::handleMouse(int fd, const Request& req)
+{
+    if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
+    if (!ctrl_)               { sendJsonError(fd, 503, "no controller"); return; }
+
+    // All keys optional. Absolute "x"/"y" win over relative "dx"/"dy".
+    long dx = 0, dy = 0, ax = 0, ay = 0, btn = 0, rst = 0;
+    const bool haveDx  = jsonGetInt(req.body, "dx",    dx);
+    const bool haveDy  = jsonGetInt(req.body, "dy",    dy);
+    const bool haveAx  = jsonGetInt(req.body, "x",     ax);
+    const bool haveAy  = jsonGetInt(req.body, "y",     ay);
+    const bool haveBtn = jsonGetInt(req.body, "btn",   btn);
+    jsonGetInt(req.body, "reset", rst);
+
+    // Clamp per-call delta to ±127 — the MCU's 8-bit signed wrap window,
+    // matching MainWindow::onMouseMove. Larger deltas must be split across
+    // requests (which is what we want anyway: one "pixel ramp" per tick so
+    // the live CPU drains quadrature between calls).
+    auto clamp127 = [](long v) -> int {
+        if (v >  127) return  127;
+        if (v < -127) return -127;
+        return static_cast<int>(v);
+    };
+
+    int slot = -1;
+    uint8_t outX = 0, outY = 0;
+    bool outBtn = false;
+    {
+        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+        SlotBus& bus = ctrl_->memory().slotBus();
+        MouseCard* mouse = nullptr;
+        for (int s = 1; s <= 7 && !mouse; ++s)
+            mouse = dynamic_cast<MouseCard*>(bus.peripheral(s));
+        if (!mouse) { sendJsonError(fd, 503, "no Mouse Card plugged"); return; }
+        slot = mouse->getSlot();
+
+        if (rst) { mouseAccumX_ = 0; mouseAccumY_ = 0; }
+
+        if (haveAx)      mouseAccumX_ = static_cast<uint8_t>(ax & 0xFF);
+        else if (haveDx) mouseAccumX_ = static_cast<uint8_t>(mouseAccumX_ + clamp127(dx));
+        if (haveAy)      mouseAccumY_ = static_cast<uint8_t>(ay & 0xFF);
+        else if (haveDy) mouseAccumY_ = static_cast<uint8_t>(mouseAccumY_ + clamp127(dy));
+        if (haveBtn)     mouseBtn_ = (btn != 0);
+
+        mouse->setHostMouse(mouseAccumX_, mouseAccumY_, mouseBtn_);
+        outX = mouseAccumX_; outY = mouseAccumY_; outBtn = mouseBtn_;
+    }
+
+    std::ostringstream oss;
+    oss << "{\"x\":"   << +outX
+        << ",\"y\":"   << +outY
+        << ",\"btn\":" << (outBtn ? 1 : 0)
+        << ",\"slot\":" << slot << "}";
+    sendJsonOk(fd, oss.str());
 }
 
 void AiControlServer::handleDiskInsert(int fd, const Request& req)

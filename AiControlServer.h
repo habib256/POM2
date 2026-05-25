@@ -29,6 +29,12 @@
 //   POST /snapshot/load       → body {"path":"..."}
 //   POST /speed               → body {"cycles_per_frame":N} OR {"preset":"1x|2x|max"}
 //   GET  /screen.ppm          → binary PPM of the live framebuffer
+//   POST /mouse               → body {"dx":?,"dy":?} signed Apple-cursor delta
+//                                (±127/call) OR {"x":?,"y":?} absolute counter,
+//                                {"btn":0|1}, {"reset":1}. Drives the Mouse
+//                                Card's host-motion input exactly as
+//                                MainWindow::onMouseMove would — lets an agent
+//                                exercise mouse-driven apps headlessly.
 //
 // Authentication: optional shared-secret in the `X-POM2-Token` header. When
 // the configured token is empty, requests are accepted unauthenticated
@@ -56,6 +62,7 @@ class Memory;
 class DiskIICard;
 class ProDOSHardDiskCard;
 class Apple2Display;
+class MouseCard;
 
 namespace pom2 {
 
@@ -143,6 +150,16 @@ private:
     std::string            profileLabel_;
     std::string            lastClient_;
 
+    // ─── /mouse running state ────────────────────────────────────────────
+    // Running Apple-cursor counters mirrored from MainWindow's own
+    // mouseAppleX/Y, so an agent can feed deltas across many requests and
+    // the card sees a continuous 8-bit counter (the MCU firmware computes
+    // motion via wrap-corrected subtraction — see MouseCard::updateAxis).
+    // Guarded by ctrl_->stateMutex() when written (same as the card read).
+    uint8_t mouseAccumX_ = 0;
+    uint8_t mouseAccumY_ = 0;
+    bool    mouseBtn_    = false;
+
     void runWorker();
     void handleClient(int fd);
 
@@ -183,6 +200,7 @@ private:
     void handleSnapshotLoad(int fd, const Request& req);
     void handleSpeed   (int fd, const Request& req);
     void handleScreen  (int fd, const Request& req);
+    void handleMouse   (int fd, const Request& req);
 
     /// True when the request carries a valid auth token (or when no token
     /// is configured server-side). Caller still has to send the 401 — this
