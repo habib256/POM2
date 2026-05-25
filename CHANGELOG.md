@@ -6,8 +6,35 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
-## 2026-05-25
+## 2026-05-25 — BUGJAM
 
+- **Mockingboard : sync VIA en fin d'instruction sur-comptait d'une
+  instruction**. `Memory::advanceCycles` fait `cycleCounter += cycles` AVANT de
+  dispatcher aux slots, mais `M6502::step()` n'a pas encore remis `cpu->cycles`
+  à zéro → `getCycleCountNow()` (= cycleCounter + cpu->cycles) dépassait le vrai
+  « now » de `cycles`. La carte avançait ses VIA ~k cycles en avance, puis le
+  prochain accès MMIO mid-instruction tombait dans le court-circuit
+  `now <= lastSyncCycle_` — perdant la précision-cycle là où la lazy-sync devait
+  justement la garantir (T1/T2/IFR pour Nox/Skyfox/Broadside). Fix :
+  `advanceCycles` synchronise vers `getCycleCountNow() - cycles`. Pin :
+  `mockingboard_sync_smoke::testNoEndOfStepOvershoot` (différentiel CPU-step vs
+  batch ; échoue sans le fix : 958≠960).
+- **Mockingboard : 6522 effaçait IFR.T1 sur écriture T1L-H ($07)**. Sur un vrai
+  6522/W65C22 le flag T1 n'est effacé que par lecture de T1C-L ou écriture de
+  T1C-H ($05) — jamais par T1L-H ($07). Le commentaire prétendait l'inverse.
+  Une IRQ T1 pendante était indûment annulée si un driver ne mettait à jour que
+  l'octet haut du latch. Fix : retrait du `ifr &= ~IFR_T1` du cas T1L-H.
+- **Memory : lectures des soft-switches $C050-$C05F renvoyaient 0 au lieu du
+  floating bus**. Les commutateurs d'affichage + annonciateurs ne pilotent pas
+  le bus de données → une LECTURE doit renvoyer l'octet du scanner vidéo
+  (comme les chemins paddle/catch-all `isWrite ? 0 : floatingBus()`), pas 0.
+  Du code RNG/anti-copie échantillonne ces registres en attendant des bits de
+  poids faible non-déterministes. Fix aligné sur la convention du fichier.
+- **Audit sanitizer (ASan+UBSan)** : suite complète (90/90) propre, zéro erreur
+  mémoire/UB sur les chemins testés.
+- (Non-bug confirmé : `Mouseapps Apple2.hdv` « UNABLE TO LOAD PRODOS » = l'image
+  n'a pas de fichier de démarrage `PRODOS`/`*.SYSTEM` ; POM2 exécute fidèlement
+  le boot1 du disque.)
 - **SSC : bloc Pascal 1.1**. L'SSC publiait les octets d'identification
   (`$Cn05=$38`/`$Cn07=$18`/`$Cn0B=$01`/`$Cn0C=$31`) mais pas la table
   d'entrée du protocole firmware Pascal 1.1 → une appli Pascal détectait la

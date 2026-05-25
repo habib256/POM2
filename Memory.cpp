@@ -1002,7 +1002,11 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
                 vblIrqMask = true;
             }
         }
-        return 0;
+        // Annunciators don't drive the data bus: a READ returns the floating
+        // bus (video scanner byte), like the paddle/catch-all paths below —
+        // not a hard 0. RNG / copy-protection code samples these expecting
+        // non-deterministic low bits.
+        return isWrite ? 0 : floatingBus();
     }
 
     // $C040 utility strobe — MAME `apple2e.cpp:1711-1716` pulses the
@@ -1059,7 +1063,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             display.eightyCol = (low == 0x0D);
         }
         slots.broadcastVideoSwitch(addr);
-        return 0;
+        return isWrite ? 0 : floatingBus();
     }
 
     // AN3 annunciator ($C05E off / $C05F on). Used as the FIFO clock by
@@ -1079,7 +1083,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             if (iieMode) display.dhgr = (low == 0x5E);
         }
         slots.broadcastVideoSwitch(addr);
-        return 0;
+        return isWrite ? 0 : floatingBus();
     }
 
     // Speaker click — toggles on every access ($C030-$C03F all alias).
