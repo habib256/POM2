@@ -330,6 +330,25 @@ void testStatusReadDcdDsr()
 
 }  // namespace
 
+void testRawModeFlag()
+{
+    // Raw-mode (`ssc_raw_mode`, 3f42efc) gates the inbound telnet pipeline:
+    // when ON the TCP worker skips BOTH processTelnetRx (IAC strip) AND
+    // normalizeLineEndings (CR/NUL/LF fixup) — SuperSerialCard.cpp:256-261.
+    // Those two transforms are pinned by testTelnetIacFsm +
+    // testTelnetLineEndingNormalisation; here we pin the FLAG contract. The
+    // default MUST be off so stock telnet clients get line-ending
+    // normalisation without opting in — defaulting it on would silently
+    // corrupt CR handling for every connection.
+    SuperSerialCard ssc(2);
+    assert(!ssc.rawMode());            // default: telnet processing ON
+    ssc.setRawMode(true);
+    assert(ssc.rawMode());
+    ssc.setRawMode(false);
+    assert(!ssc.rawMode());
+    std::printf("  ok: raw-mode flag default-off + toggle\n");
+}
+
 int main()
 {
     testDtrAndCommandDecode();
@@ -343,6 +362,7 @@ int main()
     testTelnetLineEndingNormalisation();
     testTelnetIacFsm();
     testStatusReadDcdDsr();
+    testRawModeFlag();
     std::printf("OK ssc_acia_smoke\n");
     return 0;
 }

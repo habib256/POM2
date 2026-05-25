@@ -20,7 +20,12 @@
 
 #include "AiControlServer.h"
 #include "EmulationController.h"
+#include "Memory.h"
+#include "MouseCard.h"
+#include "SlotBus.h"
 #include "SnapshotIO.h"
+
+#include <memory>
 
 #include <arpa/inet.h>
 #include <cassert>
@@ -422,6 +427,61 @@ void testSnapshotCpuSectionGate(EmulationController& /*ctrl*/, pom2::AiControlSe
     std::puts("  snapshot CPU-section gate: OK");
 }
 
+// Pins the POST /mouse endpoint: card lookup via the SlotBus, the 8-bit
+// running counter (mirrors MainWindow::onMouseMove), ±127 per-call clamp,
+// absolute set, reset, and the 503/405 error shapes. This is the headless
+// driver used to verify mouse apps end-to-end (it closed the "X stuck" item).
+void testMouseEndpoint(EmulationController& ctrl, pom2::AiControlServer& /*srv*/)
+{
+    auto postMouse = [](const std::string& body) {
+        char req[512];
+        std::snprintf(req, sizeof(req),
+            "POST /mouse HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+            body.size(), body.c_str());
+        return oneShot(kTestPort, req);
+    };
+
+    // No Mouse Card plugged yet → 503.
+    HttpResponse r = postMouse("{\"dx\":1}");
+    assert(r.status == 503 && contains(r.body, "no Mouse Card"));
+
+    // Plug a Mouse Card in slot 4. No ROMs needed: the endpoint finds it via
+    // the SlotBus and calls setHostMouse, which just stores the host position.
+    {
+        std::lock_guard<std::mutex> lk(ctrl.stateMutex());
+        ctrl.memory().slotBus().plug(4, std::make_unique<MouseCard>(4));
+    }
+
+    // GET is rejected (POST only).
+    r = oneShot(kTestPort, "GET /mouse HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    assert(r.status == 405);
+
+    // Relative deltas accumulate into an 8-bit running counter; the response
+    // echoes the counter and the slot the card was found in.
+    r = postMouse("{\"dx\":40,\"dy\":10}");
+    assert(r.status == 200);
+    assert(contains(r.body, "\"x\":40") && contains(r.body, "\"y\":10"));
+    assert(contains(r.body, "\"slot\":4"));
+    r = postMouse("{\"dx\":40,\"dy\":10}");
+    assert(contains(r.body, "\"x\":80") && contains(r.body, "\"y\":20"));
+
+    // Per-call delta clamps to +127 (MCU 8-bit signed wrap window): 80+127=207.
+    r = postMouse("{\"dx\":999}");
+    assert(contains(r.body, "\"x\":207"));
+
+    // Absolute set overrides the accumulator; button flag echoes.
+    r = postMouse("{\"x\":12,\"y\":34,\"btn\":1}");
+    assert(contains(r.body, "\"x\":12") && contains(r.body, "\"y\":34"));
+    assert(contains(r.body, "\"btn\":1"));
+
+    // reset zeroes the running counter.
+    r = postMouse("{\"reset\":1}");
+    assert(contains(r.body, "\"x\":0") && contains(r.body, "\"y\":0"));
+
+    std::puts("  mouse: OK");
+}
+
 } // namespace
 
 int main()
@@ -444,6 +504,7 @@ int main()
     testSnapshotPathSafety(ctrl, srv);
     testSnapshotCpuSectionGate(ctrl, srv);
     testNotFoundAndMethod(ctrl, srv);
+    testMouseEndpoint    (ctrl, srv);
     testStartResumesMode (ctrl);   // last: it spawns the CPU worker thread
 
     srv.stop();

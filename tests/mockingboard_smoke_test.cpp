@@ -291,6 +291,49 @@ void testReset()
 
 }  // namespace
 
+// ─── Test 5c: AY tone counter produces the correct fundamental ──────────
+void testAyToneFrequency()
+{
+    // Pins the AY tone COUNTER math touched by the float→integer refactor
+    // (3f42efc; MAME parity ay8910.cpp:998-1015). A tone toggles every
+    // `period` tone-ticks, the tick rate is kAyToneStepHz = CPU_CLOCK/8
+    // (≈127.84 kHz), so the square-wave fundamental is
+    // kAyToneStepHz / (2*period). Render an audible period and measure the
+    // fundamental by counting upward mean-crossings — a broken counter (wrong
+    // divisor, drift, off-by-one) shifts the frequency well outside tolerance.
+    MockingboardCard card(4);
+    card.setSampleRate(44100);
+    card.setVolume(1.0f);
+    card.setMuted(false);
+
+    constexpr int period = 64;                  // 12-bit R0/R1 period
+    ayWrite(card, 0, 0, period & 0xFF);         // R0 period low
+    ayWrite(card, 0, 1, (period >> 8) & 0x0F);  // R1 period high
+    ayWrite(card, 0, 7, 0x3E);                  // R7 mixer: tone A only
+    ayWrite(card, 0, 8, 0x0F);                  // R8 chan-A amplitude = 15
+
+    constexpr int N = 16384;
+    std::vector<float> buf(N);
+    AudioSource* src = card.audioSource();
+    assert(src);
+    src->fillAudioBuffer(buf.data(), N);
+
+    double mean = 0.0;
+    for (float s : buf) mean += s;
+    mean /= N;
+    int cycles = 0;                             // one upward mean-crossing per period
+    for (int i = 1; i < N; ++i)
+        if (buf[i - 1] <= mean && buf[i] > mean) ++cycles;
+
+    const double sr       = 44100.0;
+    const double measured = cycles * sr / N;
+    // kAyToneStepHz = POM2_CPU_CLOCK_HZ(1022727)/8; fundamental = /(2*period).
+    const double expected = (1022727.0 / 8.0) / (2.0 * period);   // ≈ 998.8 Hz
+    std::printf("  AY tone period %d: measured=%.1f Hz expected=%.1f Hz (%d cyc)\n",
+                period, measured, expected, cycles);
+    assert(measured > expected * 0.94 && measured < expected * 1.06);
+}
+
 int main()
 {
     testAddressDecode();        std::printf("address decode ........ OK\n");
@@ -298,6 +341,7 @@ int main()
     testT1IrqContinuous();      std::printf("T1 IRQ continuous ..... OK\n");
     testT1IrqOneShot();         std::printf("T1 IRQ one-shot ....... OK\n");
     testAyAudioSynthesis();     std::printf("AY audio synthesis .... OK\n");
+    testAyToneFrequency();      std::printf("AY tone frequency ..... OK\n");
     testEnvelopeRetriggerOnSameShape();
                                 std::printf("envelope retrigger .... OK\n");
     testReset();                std::printf("reset ................. OK\n");
