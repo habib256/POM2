@@ -3,6 +3,7 @@
 
 #include "Disk35Controller_ImGui.h"
 
+#include "StatusLed.h"
 #include "imgui.h"
 
 #include <cstdio>
@@ -37,6 +38,9 @@ void renderDriveBlock(int                                       driveIdx,
 {
     ImGui::PushID(driveIdx);
 
+    pom2::statusLed(drv.diskLoaded, drv.writeProtected,
+                    /*error=*/(!drv.diskLoaded && !drv.lastError.empty()),
+                    drv.diskLoaded ? drv.diskPath.c_str() : nullptr);
     ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "%s", driveName);
     ImGui::SameLine();
     drawMotorLed(drv.motorOn);

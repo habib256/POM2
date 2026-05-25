@@ -3,6 +3,7 @@
 
 #include "DiskController_ImGui.h"
 
+#include "StatusLed.h"
 #include "imgui.h"
 
 #include <cstdio>
@@ -23,6 +24,19 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     if (!ImGui::Begin(title, &open)) {
         ImGui::End();
         return r;
+    }
+
+    // ─── Header status LED ───────────────────────────────────────────────
+    // grey empty / green disk inserted / red last-insert error.
+    {
+        const bool err = !snap.diskLoaded && !snap.lastError.empty();
+        pom2::statusLed(snap.diskLoaded, /*wp=*/false, err,
+                        snap.diskLoaded ? snap.diskPath.c_str()
+                        : err           ? snap.lastError.c_str()
+                                        : "No disk inserted");
+        ImGui::TextUnformatted(snap.diskLoaded ? "Disk inserted"
+                               : err           ? "Insert failed"
+                                               : "Empty");
     }
 
     // ─── PROM state ──────────────────────────────────────────────────────

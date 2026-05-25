@@ -8,6 +8,18 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **UI : LED de statut par carte**. Nouveau helper partagé `StatusLed.h`
+  (gris vide / vert OK / jaune write-protect / **rouge erreur** + tooltip) qui
+  unifie les pastilles jusque-là dupliquées (Slot Configuration, SmartPort) et
+  ajoute l'état erreur manquant. Câblé en tête des panels HDV, Disk II, 3.5"
+  (par lecteur, rouge sur échec de montage via `lastError`) et SmartPort (par
+  unité). Lisibilité immédiate de l'état média. (Les LED sont de l'UI hôte
+  ImGui, donc invisibles via `/screen.ppm` qui ne capture que l'écran Apple II.)
+- **`.hdv` 800K refusé au boot** (« unrecognised disk image ») —
+  `classifyDiskForSlot` exigeait `sz > 819200`, donc un `.hdv` de pile 800K
+  (1600 blocs, AppleWorks_AW.hdv) tombait en `Unknown`. Un `.hdv` est sans
+  ambiguïté un volume disque dur → classé `Hdv` à toute taille 512-alignée ;
+  `.2mg` garde le partage 3.5"/HDV par taille. Pin : `cli_kiosk_test`.
 - **Tests de pin (dette `3f42efc`)** : `mockingboard_smoke` mesure désormais la
   fondamentale du compteur de tons AY (période 64 → 998.6 Hz vs 998.8 attendu,
   garde le refactor float→entier) ; `ssc_acia_smoke` pin le flag raw-mode

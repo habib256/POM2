@@ -6,6 +6,7 @@
 #include "IconsFontAwesome6.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortHdvUnit.h"
+#include "StatusLed.h"
 #include "imgui.h"
 
 #include <cstdio>
@@ -84,14 +85,9 @@ SmartPort_ImGui::Result SmartPort_ImGui::render(
         std::snprintf(hdr, sizeof(hdr), "Unit %zu", k);
         ImGui::TextUnformatted(hdr);
         ImGui::SameLine();
-        // Activity / status indicator: green dot = media loaded,
-        // grey dot = empty, orange dot = mounted but write-protected.
-        ImVec4 col;
-        if (!u.loaded)               col = ImVec4(0.50f, 0.50f, 0.50f, 1.0f);
-        else if (u.writeProtected)   col = ImVec4(0.95f, 0.65f, 0.20f, 1.0f);
-        else                         col = ImVec4(0.30f, 0.85f, 0.30f, 1.0f);
-        ImGui::TextColored(col, ICON_FA_CIRCLE);
-        ImGui::SameLine();
+        // Shared status LED: grey empty / green loaded / yellow write-protected.
+        pom2::statusLed(u.loaded, u.writeProtected, /*error=*/false,
+                        u.loaded ? u.path.c_str() : nullptr);
         ImGui::TextDisabled("(%s)", u.kind.empty() ? "no type"
                                                    : u.kindLabel.c_str());
 

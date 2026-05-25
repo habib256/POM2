@@ -43,6 +43,7 @@
 #include "Settings.h"
 #include "SlotBus.h"
 #include "SlotCardCatalog.h"
+#include "StatusLed.h"
 #include "IconsFontAwesome6.h"
 #include "MountableMediaCard.h"
 #include "SmartPort35Unit.h"
@@ -248,13 +249,9 @@ void MainWindow::renderSlotConfigPanel()
     {
         ImGui::SeparatorText("Internal disks & mountable ports");
 
-        auto dot = [](bool loaded, bool wp) {
-            ImVec4 c = !loaded   ? ImVec4(0.50f, 0.50f, 0.50f, 1.0f)
-                     : wp        ? ImVec4(0.95f, 0.65f, 0.20f, 1.0f)
-                                 : ImVec4(0.30f, 0.85f, 0.30f, 1.0f);
-            ImGui::TextColored(c, ICON_FA_CIRCLE);
-            ImGui::SameLine();
-        };
+        // Shared media status LED (grey/green/yellow/red). Kept as a local
+        // alias so the existing per-row call sites read unchanged.
+        auto dot = [](bool loaded, bool wp) { pom2::statusLed(loaded, wp); };
 
         // Persistent InputText buffers, keyed [slot][bay/drive]. Primed once
         // from the live path; re-primed (to the new live value) after eject.
