@@ -139,6 +139,52 @@ int main()
                     aslNoCross, aslCross, rorNoCross, incCmos);
     }
 
+    // ── 65C02 undocumented-NOP cycle counts ─────────────────────────────
+    // The generic Unoff2/Unoff3 handlers charged 3/5 cycles; real 65C02
+    // undoc-NOP timings vary by form. Byte counts were already right (no
+    // desync) — this pins the cycle totals (imm=2, zp,X=4, abs,X=4; zp=3
+    // control). $5C (8 cyc) is left as a documented residual (mode-divergent).
+    {
+        M6502 ccpu(&mem);
+        ccpu.setCpuMode(M6502::CpuMode::CMOS);
+        ccpu.hardReset();
+        const int nopImm  = oneInstr(ccpu, mem, {0x02, 0x00},       0x0200);
+        const int nopZpX  = oneInstr(ccpu, mem, {0x54, 0x40},       0x0200);
+        const int nopAbsX = oneInstr(ccpu, mem, {0xDC, 0x00, 0x03}, 0x0200);
+        const int nopZp   = oneInstr(ccpu, mem, {0x44, 0x40},       0x0200);
+        if (nopImm != 2 || nopZpX != 4 || nopAbsX != 4 || nopZp != 3) {
+            std::printf("FAIL undoc NOP cycles: #imm=%d(want 2) zp,X=%d(want 4) "
+                        "abs,X=%d(want 4) zp=%d(want 3)\n",
+                        nopImm, nopZpX, nopAbsX, nopZp);
+            assert(nopImm == 2 && nopZpX == 4 && nopAbsX == 4 && nopZp == 3);
+        }
+        std::printf("undoc NOP cycles: #imm=%d zp,X=%d abs,X=%d zp=%d: OK\n",
+                    nopImm, nopZpX, nopAbsX, nopZp);
+    }
+
+    // ── NMOS undoc 2-byte ops consume their operand (no PC desync) ────────
+    // $0B/$2B = ANC #imm, $EB = USBC #imm are 2-byte on NMOS. The 65C02 table
+    // left them as 1-byte NOPs; in NMOS mode they MUST advance PC by 2 or the
+    // operand byte is mis-decoded as the next opcode.
+    {
+        M6502 ncpu(&mem);
+        ncpu.setCpuMode(M6502::CpuMode::NMOS);
+        ncpu.hardReset();
+        for (uint8_t op : {uint8_t(0x0B), uint8_t(0x2B), uint8_t(0xEB)}) {
+            mem.memWrite(0x0200, op);
+            mem.memWrite(0x0201, 0x55);    // operand — must be consumed
+            ncpu.setProgramCounter(0x0200);
+            (void)ncpu.run(1);
+            const uint16_t pc = ncpu.getProgramCounter();
+            if (pc != 0x0202) {
+                std::printf("FAIL NMOS undoc $%02X: PC=$%04X (want $0202 — "
+                            "operand not consumed)\n", op, pc);
+                assert(pc == 0x0202);
+            }
+        }
+        std::printf("NMOS undoc 2-byte $0B/$2B/$EB consume operand: OK\n");
+    }
+
     // ── Interrupt-entry cycles (IRQ + NMI) = 7, on both NMOS and CMOS ─────
     // POM2 runs the 7-cycle entry sequence AND the first handler
     // instruction in a single step(), so one step charges 7 + (first

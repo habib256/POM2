@@ -14,7 +14,7 @@ ci-dessous.
 
 | # | Sous-système | Parité | Refs MAME | Écarts / Bugs |
 |---|---|---|---|---|
-| 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | NMOS undocumented ANC/SBC-imm laissés NOP. Casts C-style + commentaires FR/EN hérités 🟢 |
+| 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | NMOS undoc ANC/SBC-imm = NOP 2-octets ✅ (bugjam) ; cycles undoc-NOP 65C02 corrigés ✅ ($5C 8-cyc résiduel) ; Casts C-style + commentaires FR/EN hérités 🟢 |
 | 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (reste Keyboard/PaddleInputs) ; //c+ extrait en `MemoryProfile` ✅ ; 🟡 `dataMutable()` contourne `writable[]` |
 | 3 | Display HGR/DHGR/80-col | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` | 🟢 mono DHGR 1-px alignment, 🟢 floating-TTL `empty_words`, 🟢 per-scanline DHGR switch ; ChatMauve palette idx 5≢10 (divergence assumée vs AppleWin) |
 | 4 | SpeakerDevice | Verbatim | `spkrdev.cpp:74-327` | Aucun écart connu |

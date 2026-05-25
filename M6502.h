@@ -307,6 +307,9 @@ private :
     void Unoff1(void);
     void Unoff2(void);
     void Unoff3(void);
+    void UnoffImm(void);    // 2-byte, 2-cycle undoc NOP (imm) / NMOS ANC/SBC #imm
+    void UnoffZpX(void);    // 2-byte, 4-cycle undoc NOP (zp,X)
+    void UnoffAbs4(void);   // 3-byte, 4-cycle undoc NOP (abs / abs,X $DC/$FC)
     void Hang(void);
     void executeOpcode(void);
 
