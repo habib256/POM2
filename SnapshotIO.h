@@ -14,7 +14,10 @@
 //
 // Suggested section roster for Apple II:
 //
-//   "CPU"      M6502::serialize() — PC, A, X, Y, SP, status, IRQ/NMI flags
+//   "CPU"      16 bytes: PC(2) A X Y status SP cpuMode (6) + cycle count(8).
+//              IRQ/NMI lines are NOT persisted — they are transient bus
+//              signals re-asserted by the cards on each MMIO access, so they
+//              self-correct within a frame of resuming.
 //   "MEM"      main 64 KB RAM (restored through writable[] — ROM preserved)
 //   "MEX"      (v2) aux RAM + Language-Card RAM + RamWorks banks + paging
 //              soft-switches (iieMemMode) + LC latch flags + DisplayState

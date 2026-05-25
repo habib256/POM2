@@ -6,12 +6,14 @@
 void LeChatMauveCard::onReset()
 {
     // Real Féline cards default to COL140 at power-up — the FIFO bits
-    // are pulled to 1 by the Péritel output stage. AN3/80COL latched
-    // levels are cleared so a STA $C05E right after reset is correctly
-    // recorded as "AN3 went low" (no spurious rising edge later).
+    // are pulled to 1 by the Péritel output stage. AN3 powers up HIGH
+    // (DHIRES off — matches MAME `apple2video device_reset` m_dhires=false),
+    // so an3Prev starts TRUE: a bare $C05F right after reset is NOT a rising
+    // edge and must not clock the FIFO. (A normal $C05E→$C05F pair still
+    // produces exactly one shift; init=false admitted a spurious first shift.)
     fifo             = 0b11;
     mode             = RenderMode::COL140;
-    an3Prev          = false;
+    an3Prev          = true;
     eightyColLatched = false;
 }
 

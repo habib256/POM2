@@ -965,7 +965,12 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     std::string name;
     uint32_t len = 0;
     while (r.nextSection(name, len)) {
-        if (name == "CPU" && len >= 9) {
+        // Require the FULL 16-byte CPU section (PC2 + a/x/y/p/sp/cpuMode = 6 +
+        // cycles8). The reader below consumes 16 bytes unconditionally; a gate
+        // of `>= 9` let a crafted/truncated section (9..15 B) through, reading
+        // up to 7 bytes past it (into the next section) → garbage cycle counter
+        // / CPU mode (round 10 #3). A normal save always writes exactly 16.
+        if (name == "CPU" && len >= 16) {
             const uint16_t pc = r.readU16();
             const uint8_t  a  = r.readU8();
             const uint8_t  x  = r.readU8();
