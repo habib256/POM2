@@ -171,6 +171,7 @@ set(HEADERS
     SmartPortUnit.h
     SnapshotIO.h
     SpeakerDevice.h
+    StatusLed.h
     SuperSerialCard.h
 )
 

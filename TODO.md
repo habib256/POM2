@@ -73,8 +73,11 @@ ci-dessous.
       en aux RAM (offset non identifié) ; Pearson scan main+aux 44
       waypoints sans candidat `|r|>0.7`. Reprise : désassembler
       A2Desktop v1.5 ou hook memory-write X/Y-corrélé.
-- [ ] **[UI] LED de statut colorée par slot card** (vert / jaune WP /
-      rouge erreur) en tête de chaque panel. Lisibilité immédiate.
+- [x] **[UI] LED de statut colorée par slot card** (2026-05-25) — helper
+      partagé `StatusLed.h` (gris vide / vert OK / jaune WP / **rouge erreur** +
+      tooltip) câblé en tête des panels HDV, Disk II, 3.5" (par lecteur) et
+      SmartPort (par unité, dédupliqué), + la pastille de la colonne droite de
+      Slot Configuration. (DiskLibrary reste un navigateur sans LED de tête.)
 - [ ] **[SSC] Pascal 1.1 ID block manquant** `$CnFB-$CnFF` (signature
       slot ROM).
 - [ ] **[Features] PADL(2)/PADL(3) binding host** (second stick, centrés

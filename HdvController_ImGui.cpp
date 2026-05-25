@@ -3,6 +3,7 @@
 
 #include "HdvController_ImGui.h"
 
+#include "StatusLed.h"
 #include "imgui.h"
 
 namespace pom2 {
@@ -21,6 +22,14 @@ HdvController_ImGui::FrameResult HdvController_ImGui::render(
     }
 
     // ─── Card status ────────────────────────────────────────────────────
+    // Header status LED: grey empty / green mounted / yellow write-protected.
+    pom2::statusLed(snap.imageLoaded,
+                    snap.imageLoaded && !snap.supportsWriteBack,
+                    /*error=*/false,
+                    snap.imageLoaded ? snap.imagePath.c_str() : "No image mounted");
+    ImGui::TextUnformatted(snap.imageLoaded
+        ? (snap.supportsWriteBack ? "Mounted" : "Mounted (write-protected)")
+        : "Empty");
     // The ProDOS block-device ROM is built into the card (no external
     // .rom file to load) — flag it so the user knows nothing else is
     // needed for slot 5 to work.
