@@ -8,6 +8,15 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **SSC : bloc Pascal 1.1**. L'SSC publiait les octets d'identification
+  (`$Cn05=$38`/`$Cn07=$18`/`$Cn0B=$01`/`$Cn0C=$31`) mais pas la table
+  d'entrée du protocole firmware Pascal 1.1 → une appli Pascal détectait la
+  carte puis sautait dans le remplissage NOP. Ajout de la table en
+  **`$Cn0D-$Cn10`** (offsets bas de PINIT/PREAD/PWRITE/PSTATUS — pas
+  `$CnFB-$CnFF`, la note du TODO était erronée) + les 4 routines dans
+  `buildRom()`, layout & convention d'appel calqués sur le vrai ROM SSC
+  (carry=prêt pour PSTATUS, X=0, char 7 bits en A pour PREAD). Pin :
+  `ssc_acia_smoke::testPascalIdBlock`.
 - **UI : LED de statut par carte**. Nouveau helper partagé `StatusLed.h`
   (gris vide / vert OK / jaune write-protect / **rouge erreur** + tooltip) qui
   unifie les pastilles jusque-là dupliquées (Slot Configuration, SmartPort) et

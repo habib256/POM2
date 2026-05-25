@@ -662,6 +662,7 @@ void SuperSerialCard::buildRom()
     const uint8_t devLo  = static_cast<uint8_t>(0x80 + slot * 16);
     const uint8_t statusReg = static_cast<uint8_t>(devLo + 0x9);
     const uint8_t dataReg   = static_cast<uint8_t>(devLo + 0x8);
+    const uint8_t cmdRegAddr = static_cast<uint8_t>(devLo + 0xA);
 
     auto putAt = [&](uint8_t addr, std::initializer_list<uint8_t> bytes) {
         for (uint8_t b : bytes) rom[addr++] = b;
@@ -694,6 +695,72 @@ void SuperSerialCard::buildRom()
     rom[0x07] = 0x18;
     rom[0x0B] = 0x01;
     rom[0x0C] = 0x31;
+
+    // ── Pascal 1.1 firmware protocol entry block ─────────────────────────
+    // Apple II Pascal recognises a Pascal-1.1 card by $Cn05/$Cn07/$Cn0B/$Cn0C
+    // above, then dispatches through four single-byte entry OFFSETS at
+    // $Cn0D-$Cn10 (each is the LOW byte of a routine in this $Cn page; the
+    // interpreter forms $Cn00|offset). Layout + calling convention verified
+    // against the real SSC ROM disassembly (6502disassembly.com/a2-rom/SSC):
+    //   PINIT   X = error (0 = OK)
+    //   PREAD   returns char in A, high bit cleared
+    //   PWRITE  char to send in A
+    //   PSTATUS A=0 → "ready for output?", A=1 → "input available?";
+    //           carry SET = ready, X = 0.
+    // Without this block POM2's SSC published the ID bytes but no entry
+    // table, so a Pascal program detected the card then jumped into NOP fill.
+    rom[0x0D] = 0x50;     // <PINIT   ($Cn50)
+    rom[0x0E] = 0x60;     // <PREAD   ($Cn60)
+    rom[0x0F] = 0x70;     // <PWRITE  ($Cn70)
+    rom[0x10] = 0x80;     // <PSTATUS ($Cn80)
+
+    // PINIT $Cn50 — assert DTR + RTS-low/TX-IRQ-off (cmd=$0B) so the port
+    // can transmit, then return success (X=0).
+    putAt(0x50, {
+        0xA9, 0x0B,            // LDA #$0B
+        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
+        0xA2, 0x00,            // LDX #$00    (no error)
+        0x60                   // RTS
+    });
+
+    // PREAD $Cn60 — spin until RDRF, return the byte in A with the high bit
+    // cleared (Pascal wants 7-bit ASCII), X=0.
+    putAt(0x60, {
+        0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
+        0x29, 0x08,            // AND #$08  (RDRF)
+        0xF0, 0xF9,            // BEQ -7 → loop
+        0xAD, dataReg, 0xC0,   // LDA $C0n8
+        0x29, 0x7F,            // AND #$7F  (strip high bit)
+        0xA2, 0x00,            // LDX #$00
+        0x60                   // RTS
+    });
+
+    // PWRITE $Cn70 — spin until TDRE, send the char in A, X=0.
+    putAt(0x70, {
+        0x48,                  // PHA
+        0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
+        0x29, 0x10,            // AND #$10  (TDRE)
+        0xF0, 0xF9,            // BEQ -7 → loop
+        0x68,                  // PLA
+        0x8D, dataReg, 0xC0,   // STA $C0n8
+        0xA2, 0x00,            // LDX #$00
+        0x60                   // RTS
+    });
+
+    // PSTATUS $Cn80 — A=0 → output-ready (TDRE), A=1 → input-avail (RDRF).
+    // LSR moves the request code into carry; CMP #$01 maps "masked bit set"
+    // back into the carry flag (ready). X=0.
+    putAt(0x80, {
+        0x4A,                  // LSR A            (C=0 output, C=1 input)
+        0xAD, statusReg, 0xC0, // LDA $C0n9
+        0xB0, 0x05,            // BCS $Cn8B  (input path)
+        0x29, 0x10,            // AND #$10   (TDRE)
+        0x4C, 0x8D, slotHi,    // JMP $Cn8D  (PS_TST)
+        0x29, 0x08,            // $Cn8B: AND #$08  (RDRF)
+        0xC9, 0x01,            // $Cn8D: CMP #$01  (A!=0 → C set = ready)
+        0xA2, 0x00,            // LDX #$00
+        0x60                   // RTS
+    });
 
     // PR#n entry at $Cn20 — patches CSWL/CSWH to point at the output
     // routine at $CnB0, then RTS so the BASIC interpreter resumes.
