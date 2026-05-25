@@ -349,6 +349,33 @@ void testRawModeFlag()
     std::printf("  ok: raw-mode flag default-off + toggle\n");
 }
 
+void testPascalIdBlock()
+{
+    // Apple II Pascal 1.1 firmware protocol. Pascal recognises the card by the
+    // ID bytes, then dispatches through the four entry OFFSETS at $Cn0D-$Cn10
+    // (low byte of each routine in the $Cn page). Layout matches the real SSC
+    // ROM (6502disassembly.com/a2-rom/SSC). Before this the SSC published the
+    // ID bytes but no entry table → Pascal jumped into NOP fill.
+    SuperSerialCard ssc(2);
+    assert(ssc.slotRomRead(0x05) == 0x38);     // Pascal 1.1 sig 1
+    assert(ssc.slotRomRead(0x07) == 0x18);     // Pascal 1.1 sig 2
+    assert(ssc.slotRomRead(0x0B) == 0x01);     // generic Pascal 1.1 signature
+    assert(ssc.slotRomRead(0x0C) == 0x31);     // device signature (comms, class 3)
+
+    const uint8_t pinit  = ssc.slotRomRead(0x0D);
+    const uint8_t pread  = ssc.slotRomRead(0x0E);
+    const uint8_t pwrite = ssc.slotRomRead(0x0F);
+    const uint8_t pstat  = ssc.slotRomRead(0x10);
+    assert(pinit == 0x50 && pread == 0x60 && pwrite == 0x70 && pstat == 0x80);
+
+    // Each offset must point at real code, not NOP ($EA) fill.
+    assert(ssc.slotRomRead(pinit)  == 0xA9);   // PINIT   : LDA #$0B
+    assert(ssc.slotRomRead(pread)  == 0xAD);   // PREAD   : LDA $C0n9
+    assert(ssc.slotRomRead(pwrite) == 0x48);   // PWRITE  : PHA
+    assert(ssc.slotRomRead(pstat)  == 0x4A);   // PSTATUS : LSR A
+    std::printf("  ok: Pascal 1.1 ID block + entry table\n");
+}
+
 int main()
 {
     testDtrAndCommandDecode();
@@ -363,6 +390,7 @@ int main()
     testTelnetIacFsm();
     testStatusReadDcdDsr();
     testRawModeFlag();
+    testPascalIdBlock();
     std::printf("OK ssc_acia_smoke\n");
     return 0;
 }

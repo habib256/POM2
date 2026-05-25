@@ -28,7 +28,7 @@ ci-dessous.
 | 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 32 MB HDV + .2mg variantes pinnés ✅ ; 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
 | 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |
 | 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | TP tick rates 64/256/2048/4096 Hz + IRQ wiring ✅ (interval timers uPD4990A-serial-only, hors portée) ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
-| 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; 🟡 Pascal 1.1 ID block `$CnFB-$CnFF` manquant ; 🟢 IRQ gate SW2:6 DIP non gated |
+| 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; Pascal 1.1 ID block + entry table `$Cn0D-$Cn10` ✅ ; 🟢 IRQ gate SW2:6 DIP non gated |
 | 16 | MouseCard | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | ✅ X axis vérifié OK (bits+`updateAxis` = MAME ; A2Desktop X tracke via `/mouse`) ; 🟡 sync curseur pixel-près host/guest delta-based ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
 
 ## 🟠 High
@@ -78,8 +78,12 @@ ci-dessous.
       tooltip) câblé en tête des panels HDV, Disk II, 3.5" (par lecteur) et
       SmartPort (par unité, dédupliqué), + la pastille de la colonne droite de
       Slot Configuration. (DiskLibrary reste un navigateur sans LED de tête.)
-- [ ] **[SSC] Pascal 1.1 ID block manquant** `$CnFB-$CnFF` (signature
-      slot ROM).
+- [x] **[SSC] Pascal 1.1 ID block** (2026-05-25). Le bloc d'entrée n'est PAS
+      en `$CnFB-$CnFF` (note initiale erronée) mais en **`$Cn0D-$Cn10`** :
+      offsets bas de PINIT/PREAD/PWRITE/PSTATUS, juste après la signature
+      `$Cn0B=$01`/`$Cn0C=$31`. Layout + convention d'appel calqués sur le vrai
+      ROM SSC (6502disassembly.com/a2-rom/SSC). 4 routines ajoutées dans
+      `buildRom()`. Pin : `ssc_acia_smoke` `testPascalIdBlock`.
 - [ ] **[Features] PADL(2)/PADL(3) binding host** (second stick, centrés
       127, `JoystickInput.cpp:65-75`).
 - [ ] **[Features] Mapping souris → paddles** : paddle 0/1 sur axe X/Y

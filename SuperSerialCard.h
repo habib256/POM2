@@ -23,9 +23,10 @@
 //
 // Slot ROM ($Cs00-$CsFF, s=2 → $C200-$C2FF) advertises the SSC
 // auto-detection signature ($Cn05 = $38, $Cn07 = $18, $Cn0B = $01,
-// $Cn0C = $31) and provides a tiny PR#n / IN#n hook that hands character
-// I/O off to the device-select range. Boot from $Cs00 isn't supported —
-// the SSC was rarely a boot device on real hardware.
+// $Cn0C = $31), the Pascal 1.1 firmware-protocol entry table at $Cn0D-$Cn10
+// (PINIT/PREAD/PWRITE/PSTATUS routine offsets), and a tiny PR#n / IN#n hook
+// that hands character I/O off to the device-select range. Boot from $Cs00
+// isn't supported — the SSC was rarely a boot device on real hardware.
 //
 // TCP bridge: a worker thread listens on 127.0.0.1:`port` (default 6502)
 // and accepts at most one client at a time. Bytes flow through two
