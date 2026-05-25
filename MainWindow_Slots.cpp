@@ -543,6 +543,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     pom2::log().info("Profile",
         std::string("Switching to ") + std::string(cfg.displayName));
 
+    // The session-local auto-plugged HDV (POM2 <image.hdv> one-shot boot) is
+    // destroyed by the slot rebuild below; clear its marker so a later real
+    // HDV in the same slot number isn't wrongly skipped at shutdown.
+    autoProvisionedHdvSlot_ = -1;
+
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
     //    (//c / //c+ on-board SSC / Mouse / SmartPort / Disk II). Setting it only
@@ -786,6 +791,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
 void MainWindow::restartEmulationFromSettings()
 {
+    // The session-local auto-plugged HDV is destroyed by the rebuild below;
+    // clear its marker so a later real HDV in the same slot isn't wrongly
+    // skipped at shutdown (the marker is read only in ~MainWindow).
+    autoProvisionedHdvSlot_ = -1;
+
     // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
     //    and the HDV/CFFA library mounts update the live cards but NOT the
     //    settings keys (those are written only at shutdown), so without this a

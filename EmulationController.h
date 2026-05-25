@@ -76,6 +76,7 @@ public:
     void rewindTape();
     void ejectTape();
     void clearTapeCapture();
+    void armRecording();   // takes stateMutex — safe to call off the CPU thread
     void seekTapeRelative(double deltaSeconds);
     void setCassetteVolume(float v);
 
@@ -121,7 +122,7 @@ public:
     void softReset();
     void coldBoot();
     void bootFromSlot(int slot);
-    void requestStep();        // single-instruction step
+    void requestStep(int n = 1);   // queue n single-instruction steps
 
     void setMode(Mode m);
     Mode getMode() const { return mode.load(); }
@@ -154,7 +155,7 @@ private:
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};
-    std::atomic<bool> stepRequested{false};
+    std::atomic<int>  stepsPending{0};   // queued single-step count (Step mode)
     std::atomic<bool> exitRequested{false};
 
     std::mutex              stateMtx;
