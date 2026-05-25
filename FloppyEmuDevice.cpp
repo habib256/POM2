@@ -126,6 +126,11 @@ std::vector<FloppyEmuDevice::Entry> FloppyEmuDevice::listing() const
         for (const auto& de : fs::directory_iterator(currentDir_, ec)) {
             const std::string name = de.path().filename().string();
             if (name.empty() || name.front() == '.') continue;  // skip hidden
+            // Never follow a symlink: directory_iterator + is_directory()
+            // dereference links, which would let an in-root symlink browse
+            // (and mount) files anywhere on the host, escaping the SD-root
+            // sandbox. Skip them so navigation stays inside floppyemu/.
+            if (de.is_symlink(ec)) continue;
             if (de.is_directory(ec)) {
                 Entry e;
                 e.name     = name;
@@ -169,13 +174,18 @@ void FloppyEmuDevice::enterDir(const Entry& e)
 void FloppyEmuDevice::goUp()
 {
     if (atRoot()) return;
-    const fs::path parent = fs::path(currentDir_).parent_path();
-    // Never escape above the SD root.
-    const fs::path root = fs::path(sdRoot_).lexically_normal();
-    const std::string p = parent.lexically_normal().string();
-    // If the parent no longer contains the root prefix, clamp to root.
-    if (p.size() < root.string().size()) currentDir_ = sdRoot_;
-    else                                  currentDir_ = p;
+    const fs::path root   = fs::path(sdRoot_).lexically_normal();
+    const fs::path parent = fs::path(currentDir_).parent_path().lexically_normal();
+    // Clamp to root unless `parent` is root or a descendant of root. Use a
+    // COMPONENT-wise prefix check, not a string-length test — a sibling like
+    // "/sdcard" is longer than root "/sd" but is NOT under it.
+    bool under = true;
+    auto rIt = root.begin(), rEnd = root.end();
+    auto pIt = parent.begin(), pEnd = parent.end();
+    for (; rIt != rEnd; ++rIt, ++pIt) {
+        if (pIt == pEnd || *pIt != *rIt) { under = false; break; }
+    }
+    currentDir_ = under ? parent.string() : root.string();
 }
 
 FloppyEmuDevice::Favorites
@@ -209,7 +219,10 @@ FloppyEmuDevice::parseFavorites(const std::string& content,
         e.name      = p.filename().string();
         e.fullPath  = p.lexically_normal().string();
         std::error_code ec;
-        e.sizeBytes = static_cast<uint64_t>(fs::file_size(e.fullPath, ec));
+        const auto sz = fs::file_size(e.fullPath, ec);
+        // A favorite whose file is gone: file_size returns (uintmax_t)-1 and
+        // sets ec. Honor ec → report 0 instead of "17592186044415M".
+        e.sizeBytes = ec ? 0u : static_cast<uint64_t>(sz);
         fav.entries.push_back(std::move(e));
     }
     return fav;

@@ -1811,6 +1811,26 @@ endif()
 add_test(NAME smartport_write_dispatch COMMAND test_smartport_write_dispatch)
 set_tests_properties(smartport_write_dispatch PROPERTIES TIMEOUT 10)
 
+# ─── CassetteDevice WAV tail-flush regression ─────────────────────────────
+add_executable(test_cassette_wav_tail
+    cassette_wav_tail_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_cassette_wav_tail PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cassette_wav_tail PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_cassette_wav_tail PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_cassette_wav_tail PRIVATE winmm)
+endif()
+add_test(NAME cassette_wav_tail COMMAND test_cassette_wav_tail)
+set_tests_properties(cassette_wav_tail PROPERTIES TIMEOUT 5)
+
 
 # ─── M68705P3 CPU decode smoke test ──────────────────────────────────────
 # Pins the verbatim port of MAME's HMOS 6805 instruction set

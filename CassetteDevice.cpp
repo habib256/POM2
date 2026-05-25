@@ -774,6 +774,18 @@ bool CassetteDevice::pcmToDurations(const std::vector<float>& mono,
             lastTransition  = i;
         }
     }
+    // Flush the final held segment after the last transition. The loop only
+    // emits a duration ON a sign change, so without this the last pulse (the
+    // trailing leader / final half-bit — saveWavTape appends a 0.1 s trailer)
+    // is dropped, truncating the recovered transition stream by one segment.
+    if (mono.size() > lastTransition) {
+        const size_t deltaSamples = mono.size() - lastTransition;
+        const uint32_t cycles = std::max<uint32_t>(1, static_cast<uint32_t>(
+            std::llround(static_cast<double>(deltaSamples) *
+                         static_cast<double>(kTapeFileTimebaseHz) /
+                         static_cast<double>(sampleRate))));
+        outDurations.push_back(cycles);
+    }
     return true;
 }
 

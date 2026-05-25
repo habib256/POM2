@@ -227,6 +227,30 @@ int main()
         assert(got == kBlack);
     }
 
+    // ── 80STORE+PAGE2 must NOT redirect single-HGR to aux (round-5 fix) ──
+    //    The //e video scanner only reads aux RAM in DHGR (80COL on); single
+    //    hi-res always displays MAIN page 1. A MAIN row of $7F must render
+    //    white even when aux page 1 holds $00 and 80STORE+HIRES+PAGE2 are
+    //    all set. (The bug redirected the scanner to aux → black garbage.)
+    {
+        Memory m2;
+        m2.setIIEMode(true);
+        Apple2Display d2;
+        d2.setAuxMemory(m2.auxData());   // bind aux so the (buggy) redirect could fire
+        (void)m2.memRead(0xC050);   // graphics (text off)
+        (void)m2.memRead(0xC057);   // hi-res on
+        (void)m2.memRead(0xC055);   // PAGE2 on
+        m2.memWrite(0xC001, 0);     // 80STORE on
+        uint8_t* mainRam = const_cast<uint8_t*>(m2.data());
+        uint8_t* auxRamP = m2.auxDataMutable();
+        for (int col = 0; col < 40; ++col) {
+            mainRam[0x2000 + col] = 0x7F;   // MAIN HGR page-1 row 0 = white
+            auxRamP[0x2000 + col] = 0x00;   // AUX  HGR page-1 row 0 = black
+        }
+        d2.render(m2);
+        for (int x = 0; x < 280; ++x) assert(*pixelAt(d2, x, 0) == kWhite);
+    }
+
     std::printf("HGR render smoke: OK (sliding window NTSC, mono phosphors, persistence)\n");
     return 0;
 }
