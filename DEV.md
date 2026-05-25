@@ -879,24 +879,43 @@ Mechanism:
 
 - **ROM hole** (`Memory::memRead`, inside the //c-class INTCXROM branch):
   `$C500-$C5FF` (bank 0) returns `slots.slotRomRead(addr)` instead of
-  internal ROM **iff** `slots.peripheral(5)->exposesIicOnboardRom()`. That
-  capability (`SlotPeripheral`, overridden by `SmartPortCard`) is true only
-  while a unit holds media — an empty card stays masked so the //c autostart
-  never JMPs `$0801` into a unit-less device. Bank 1 is handled earlier by
-  `internalRomRead`, so the hole is bank-0 only (preserves the //c+ alt
-  firmware's `$C500` data).
+  internal ROM **iff** `iicSmartPortArmed_` AND
+  `slots.peripheral(5)->exposesIicOnboardRom()` (a unit holds media). Bank 1
+  is handled earlier by `internalRomRead`, so the hole is bank-0 only
+  (preserves the //c+ alt firmware's `$C500` data).
+- **"Armed" gate — the critical subtlety** (`Memory::setIicSmartPortArmed`).
+  The stub MUST NOT be visible during the //c ROM's *own* autostart: real
+  //c rev0/3/4 keeps its SmartPort firmware at `$C500`, and the autostart +
+  a booted ProDOS call into `$C5xx` entries that the real firmware provides
+  but the block stub does not. Substituting the stub there corrupted a
+  **multi-device** boot (a Disk II disk in slot 6 + media in the on-board
+  SmartPort): ProDOS booted from slot 6, enumerated slot 5, ran the wrong
+  `$C5xx` bytes, and splattered stub code over the text page (the "garbled
+  Apple //c banner" bug). So `EmulationController::bootFromSlot` **arms** the
+  gate (explicit GUI/CLI boot only) and **every** `coldBoot`/`softReset`/
+  `hardReset` disarms it. Net: a normal reboot always sees the real `$C500`
+  firmware (clean Disk II boot / banner); the on-board SmartPort boots only
+  via the Disk Library / Slot Configuration "Boot" button (→ `bootFromSlot`).
+  Trade-off: persisted SmartPort media does not auto-reboot — use "Boot".
 - **Device-select** (`$C0D0-$C0DF` = slot 5) is never masked on //c-class
   (only `$C100-$CFFF` is), so the block stub's `$C0D0-$C0D4` protocol
   already reaches the bus unchanged.
+- **Stub signature/STATUS fixes** (`SmartPortCard::buildRom`): `$Cn07` is
+  `$01` (ProDOS non-removable block device), NOT `$3C` — `$3C` is the **Disk
+  II** marker and made a //c treat the slot-5 SmartPort as a second Disk II.
+  The ProDOS STATUS call (cmd `$00`, `$CnC0` routine) returns the unit's
+  block count in X/Y via `$C0n5/$C0n6`, so a volume scanner that enumerates
+  the device (ProDOS ONLINE / BITSY) sizes it correctly instead of crashing.
 - **Routing** (`MainWindow`): `routeMount35` uses the SmartPort card on all
   profiles; `routeMountHdv` + `ensureHdvCardForBoot` send //c-class HDV to
   the slot-5 SmartPort (a `SmartPortHdvUnit`), **never** to a cffa/hdv slot
   card (masked, unbootable there). Profile //c gains a `smartport35` built-in
   at slot 5 (//c+ already had one). `bootFromSlot(5)` then boots either unit.
 
-Verified on screen for //c and //c+ × {3.5", HDV}. Pinned by
-`tests/iic_onboard_smartport_test.cpp` (ROM-hole gating + block I/O via
-`Memory`). See the `project_iic_smartport_boot` memory for the full dig.
+Verified on screen for //c and //c+ × {3.5", HDV} (explicit boot) and a
+clean multi-device reboot. Pinned by `tests/iic_onboard_smartport_test.cpp`
+(armed ROM-hole gating + block I/O via `Memory`); `tests/iic_dual_boot_trace.cpp`
+is a headless diagnostic for the garble. See `project_iic_smartport_boot`.
 
 ### 3.5" mechanical sounds
 

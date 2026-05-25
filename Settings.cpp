@@ -44,6 +44,44 @@ std::string trim(const std::string& s)
     return s.substr(a, b - a);
 }
 
+// Escape the record-separator and the escape char so arbitrary string values
+// round-trip through the line-oriented `key=value` store: a newline would
+// otherwise split one entry into two (the second dropped as a no-`=` line),
+// and a backslash is escaped to keep the encoding unambiguous. ('#' does NOT
+// need escaping — load treats it as a comment only at the start of a line.)
+std::string escapeValue(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+std::string unescapeValue(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            const char n = s[++i];
+            if      (n == 'n')  out += '\n';
+            else if (n == 'r')  out += '\r';
+            else if (n == '\\') out += '\\';
+            else { out += '\\'; out += n; }   // unknown escape — pass through
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 bool Settings::load()
@@ -54,16 +92,16 @@ bool Settings::load()
 
     std::string line;
     while (std::getline(f, line)) {
-        // Strip comments (anything after the first '#') and trim.
-        const size_t hash = line.find('#');
-        if (hash != std::string::npos) line.resize(hash);
         line = trim(line);
-        if (line.empty()) continue;
+        // A '#' is a comment marker ONLY at the start of a line — stripping
+        // after the first '#' anywhere would truncate any value that legally
+        // contains '#' (e.g. a disk path "/home/u/My#Disks/game.dsk").
+        if (line.empty() || line[0] == '#') continue;
 
         const size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
-        const std::string key   = trim(line.substr(0, eq));
-        const std::string value = trim(line.substr(eq + 1));
+        const std::string key   = unescapeValue(trim(line.substr(0, eq)));
+        const std::string value = unescapeValue(trim(line.substr(eq + 1)));
         if (!key.empty()) store[key] = value;
     }
     pom2::log().info("Settings",
@@ -85,10 +123,16 @@ bool Settings::save() const
         f << "# POM2 runtime config — written automatically on exit.\n";
         f << "# Edit by hand at your own risk; unknown keys are preserved.\n";
         for (const auto& kv : store) {
-            f << kv.first << '=' << kv.second << '\n';
+            f << escapeValue(kv.first) << '=' << escapeValue(kv.second) << '\n';
         }
+        // Flush + close BEFORE the rename so a deferred write error (disk full /
+        // quota) is observed here — checking the stream while it's still open
+        // misses the failure and would rename a truncated .tmp over the good
+        // config, defeating the whole atomic-write dance.
+        f.flush();
+        f.close();
         if (!f) {
-            pom2::log().warn("Settings", "Short write on " + tmp.string());
+            pom2::log().warn("Settings", "Write/flush failed on " + tmp.string());
             return false;
         }
     }

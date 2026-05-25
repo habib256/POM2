@@ -93,7 +93,7 @@ public:
 
 private:
     int         slot_;
-    bool        an3Prev          = false;          // last seen AN3 level
+    bool        an3Prev          = true;           // AN3 powers up HIGH (DHIRES off)
     bool        eightyColLatched = false;          // last seen 80COL level
     uint8_t     fifo             = 0b11;           // 2 bits, MSB shifted out
     RenderMode  mode             = RenderMode::COL140;

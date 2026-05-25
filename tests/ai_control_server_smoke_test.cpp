@@ -20,6 +20,7 @@
 
 #include "AiControlServer.h"
 #include "EmulationController.h"
+#include "SnapshotIO.h"
 
 #include <arpa/inet.h>
 #include <cassert>
@@ -367,6 +368,60 @@ void testStartResumesMode(EmulationController& ctrl)
     std::puts("  start-resumes-mode: OK");
 }
 
+// Round 10 #3: the CPU section is a fixed 16 bytes (PC2 + 6 regs + cycles8).
+// The reader consumes 16 unconditionally, so a CPU section declaring fewer
+// bytes must be REJECTED — the old `len>=9` gate processed a short section,
+// reading up to 7 bytes past it (garbage cycle counter / CPU mode) from a
+// crafted/truncated snapshot reachable over the localhost API.
+void testSnapshotCpuSectionGate(EmulationController& /*ctrl*/, pom2::AiControlServer& /*srv*/)
+{
+    namespace fs = std::filesystem;
+    auto post = [](const std::string& target, const std::string& body) {
+        char req[1024];
+        std::snprintf(req, sizeof(req),
+            "POST %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+            target.c_str(), body.size(), body.c_str());
+        return oneShot(kTestPort, req);
+    };
+    auto getReq = [](const std::string& target) {
+        char req[256];
+        std::snprintf(req, sizeof(req),
+            "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", target.c_str());
+        return oneShot(kTestPort, req);
+    };
+
+    // Craft a snapshot whose CPU section is only 12 bytes (< 16) and encodes a
+    // sentinel PC = $1234 in its first two bytes.
+    const std::string relName = "test_cpu_section_gate.snap";
+    const fs::path path = fs::weakly_canonical(fs::current_path() / relName);
+    fs::remove(path);
+    {
+        pom2::SnapshotWriter w(path.string());
+        assert(w.good());
+        const uint8_t cpu12[12] = {0x34, 0x12};   // PC lo/hi = $1234; rest zero
+        w.writeSection("CPU", cpu12, sizeof(cpu12));
+    }
+
+    // Set a known live PC ($0300), then load the crafted file.
+    HttpResponse r = post("/cpu", "{\"pc\":768}");
+    assert(r.status == 200);
+    r = post("/snapshot/load", "{\"path\":\"" + relName + "\"}");
+    assert(r.status == 200);
+
+    // The short CPU section must be SKIPPED → PC stays $0300 (768), NOT the
+    // sentinel $1234 (4660). The old gate set PC from the under-length section.
+    r = getReq("/cpu");
+    assert(r.status == 200);
+    assert(contains(r.body, "\"pc\":768") &&
+           "short CPU section must be skipped (PC unchanged)");
+    assert(!contains(r.body, "\"pc\":4660") &&
+           "short CPU section must NOT set PC past its declared length");
+
+    fs::remove(path);
+    std::puts("  snapshot CPU-section gate: OK");
+}
+
 } // namespace
 
 int main()
@@ -387,6 +442,7 @@ int main()
     testReset            (ctrl, srv);
     testSpeed            (ctrl, srv);
     testSnapshotPathSafety(ctrl, srv);
+    testSnapshotCpuSectionGate(ctrl, srv);
     testNotFoundAndMethod(ctrl, srv);
     testStartResumesMode (ctrl);   // last: it spawns the CPU worker thread
 

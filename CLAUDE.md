@@ -179,12 +179,19 @@ real IWM/Sony GCR boot is unmodelled — and MAME doesn't emulate
 **host-served SmartPort block device** at the built-in slot 5. The
 forced INTCXROM masks all slot ROM, but `Memory::memRead` punches a
 single hole at `$C500-$C5FF` (bank 0) for the slot-5 `SmartPortCard`
-firmware **iff the card holds media** (`SlotPeripheral::exposesIicOnboardRom`)
-— device-select I/O (`$C0D0-$C0DF`) is never masked, so the block
-stub's `$C0D0-$C0D4` protocol already reaches the bus. `routeMount35`/
+firmware **iff the SmartPort is "armed"** (`Memory::setIicSmartPortArmed`)
+**and holds media** (`SlotPeripheral::exposesIicOnboardRom`). The armed
+gate is essential: `bootFromSlot` arms it (explicit GUI/CLI boot only) and
+every reset/cold-boot disarms it, so the //c ROM's **own autostart always
+sees its real `$C500` firmware** (substituting the stub there corrupts a
+multi-device reboot — the "garbled Apple //c banner" bug). Net: a reboot is
+always clean (Disk II / banner); the on-board SmartPort boots via the Disk
+Library / Slot Configuration "Boot" button. Device-select I/O
+(`$C0D0-$C0DF`) is never masked, so the block stub's `$C0D0-$C0D4` protocol
+(incl. STATUS block-count at `$C0n5/6`) reaches the bus. `routeMount35`/
 `routeMountHdv`/`ensureHdvCardForBoot` route //c-class 3.5"/HDV to that
 slot-5 SmartPort (never a cffa/hdv slot card — those are masked,
-unbootable). `bootFromSlot(5)` then boots it. Pinned by
+unbootable). Pinned by
 `tests/iic_onboard_smartport_test.cpp`; see
 [DEV.md § //c-class on-board SmartPort](DEV.md#storage) and the
 `project_iic_smartport_boot` memory.

@@ -8,6 +8,31 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **//c / //c+ : banner corrompu au reboot avec plusieurs périphériques —
+  correctif**. Régression du SmartPort embarqué : exposer mon stub bloc à
+  `$C500` (à la place du **vrai** firmware SmartPort interne du //c) cassait
+  l'autostart du ROM //c dès qu'un disque Disk II (slot 6) ET un média
+  SmartPort (slot 5) coexistaient — un ProDOS booté depuis le Disk II (ex.
+  le navigateur BITSY) énumérait le slot 5, appelait des points d'entrée
+  `$C5xx` que le vrai firmware fournit mais pas mon stub → exécution erronée
+  → la page texte se remplissait de fragments de code du stub (« fE1DMS@HP »
+  au lieu de « Apple //c », `finalPC=$FD23` moniteur). Trace headless :
+  `tests/iic_dual_boot_trace.cpp`.
+  * **Fix** : flag « armé » (`Memory::setIicSmartPortArmed`). Le stub `$C500`
+    n'est exposé à travers le masque INTCXROM **que** lorsque
+    `EmulationController::bootFromSlot` l'arme (boot explicite GUI/CLI) ;
+    **tout reset/cold-boot le désarme**. Donc l'autostart du //c voit
+    toujours son **vrai** firmware → reboot propre (boot Disk II / banner),
+    et le SmartPort se boote via le bouton « Boot » de la Disk Library / Slot
+    Configuration. Conséquence : un média SmartPort persisté ne se réamorce
+    pas tout seul au reboot (utiliser « Boot »).
+  * Corrections de fond du stub au passage : `$Cn07` `$3C`→`$01` ($3C = la
+    signature **Disk II**, qui faisait passer le slot 5 pour un 2ᵉ Disk II)
+    et **STATUS ProDOS** complet (renvoie le nombre de blocs en X/Y via
+    `$C0n5/$C0n6`) — un STATUS incomplet corrompait un scanner de volumes.
+  Vérifié à l'écran (//c) : reboot Disk II+SmartPort propre (BITSY), boot
+  explicite 3.5" OK (JEUX). 89 tests passent. Voir `project_iic_smartport_boot`.
+
 - **[UI] Fusion Slot Manager → Slot Configuration**. Le panneau autonome
   *Slot Manager* est **supprimé** (`SlotManager_ImGui.{h,cpp}` retirés) ;
   sa fonctionnalité de baies montables est repliée dans une **2ᵉ colonne**
@@ -52,6 +77,54 @@ courante → `DEV.md`.
     boote. Vérifié à l'écran : //c & //c+ × 3.5"+HDV (JEUX, Total Replay, ARCHON).
     Pin : `tests/iic_onboard_smartport_test.cpp` (+ `system_profile` mis à jour).
     88 tests passent. Détails : `project_iic_smartport_boot`.
+
+- **Bug hunt round 10 — correctifs (CPU 65C02 / snapshot / Settings / Le Chat
+  Mauve)**. Audit des sous-systèmes restants : couche HTTP AiControlServer,
+  cœur CPU M6502, décode soft-switch / Language-Card / RamWorks de Memory,
+  sérialisation de snapshot, Le Chat Mauve + Settings. **AiControlServer**
+  (testé ASan — pas de crash/OOB distant) et **paging Memory** (LC + RamWorks)
+  ressortent **propres**. 90 tests passent (nouveau pin : `settings_roundtrip`).
+  * **[CPU] flag V de `SBC` décimal sur 65C02 faux** (`M6502.cpp` `SBC`) —
+    l'overflow était calculé depuis l'accumulateur **ajusté BCD** au lieu de la
+    différence binaire ; diverge du matériel (MAME `w65c02`) sur **2400**
+    entrées. Recalculé depuis `(uint8_t)tmp` (binaire) → identique au matériel
+    sur les 131072 entrées. NMOS inchangé. Pin : `cmos_6502_smoke`.
+  * **[CPU] `(zp,X)` sous-compté d'1 cycle** (`M6502::IndZeroX`) — les 8 ops
+    `(zp,X)` (LDA/STA/ADC/AND/CMP/EOR/ORA/SBC) prenaient 5 cycles au lieu de
+    **6** (lecture-bidon du pointeur zero-page non indexé manquante). +1.
+    Pin : `cpu_cycle_count`.
+  * **[CPU] `ASL/LSR/ROL/ROR abs,X` sur 65C02 sur-comptés** (`M6502.cpp`) —
+    facturés 7 cycles fixes ; le 65C02 prend **6** (7 seulement si page
+    franchie). Nouvelle adresse `RmwAbsX` ; `INC/DEC abs,X` restent 7 sur les
+    deux CPU. Pin : `cpu_cycle_count`.
+  * **[Snapshot] section CPU : garde de longueur trop laxiste** (`AiControlServer.cpp`
+    chargement) — la garde était `len >= 9` mais le lecteur consomme **16**
+    octets → un snapshot forgé/tronqué (9–15 o) lisait jusqu'à 7 octets au-delà
+    de la section (compteur de cycles / mode CPU corrompus, silencieux ;
+    atteignable via l'API localhost). Garde `len >= 16` + docstring corrigée
+    (les lignes IRQ/NMI ne sont pas persistées — signaux transitoires). Pin :
+    `ai_control_server_smoke` (section CPU courte → ignorée).
+  * **[Settings] valeur contenant `#` tronquée au rechargement** (`Settings.cpp`)
+    — `load` coupait après le premier `#` n'importe où, mais `save` écrivait
+    brut : un chemin `/home/u/My#Disks/jeu.dsk` rechargeait en `/home/u/My`
+    (montage cassé silencieux). `#` n'est désormais un commentaire qu'en début
+    de ligne. Pin : `settings_roundtrip`.
+  * **[Settings] valeur contenant un saut de ligne corrompait le fichier** —
+    échappement `\\`/`\n`/`\r` à l'écriture, dés-échappement à la lecture →
+    round-trip sans perte pour toute chaîne. Pin : `settings_roundtrip`.
+  * **[Settings] écriture atomique défaite à l'échec de flush** (`save`) — le
+    stream était testé AVANT `close()` ; une erreur différée (disque plein)
+    renommait alors le `.tmp` tronqué par-dessus la bonne config. `flush()`+
+    `close()`+vérification avant le `rename`.
+  * **[Le Chat Mauve] décalage FIFO parasite au reset** (`LeChatMauveCard`) —
+    `an3Prev` initialisé à `false` ; un `$C05F` isolé après reset était vu
+    comme front montant et clockait la FIFO. AN3 démarre HAUT (DHIRES off,
+    comme MAME `device_reset` `m_dhires=false`) → `an3Prev = true`. Pin :
+    `le_chat_mauve_smoke`.
+  * **Vérifié propre** : AiControlServer (parsing HTTP/JSON, bornes mem
+    peek/poke, cycle de vie sockets, threading — testé ASan), décode
+    soft-switch Memory (machine LC write-enable, combinaisons paging IIe,
+    banques RamWorks, lectures de statut).
 
 - **Bug hunt round 9 — correctifs (Disk II / profils / threading)**. Audit des
   sous-systèmes restants : contrôleur Disk II + LSS, parsers d'images disque,

@@ -106,6 +106,14 @@ int main()
         // After Apple II reset, FIFO returns to COL140.
         raw->onReset();
         assert(raw->fifoBits() == 0b11);
+
+        // Round 10 #8: AN3 powers up HIGH, so a bare $C05F right after reset
+        // is NOT a rising edge and must NOT clock the FIFO. (With an3Prev
+        // mis-initialised to false this spuriously shifted COL140 → 0b10.)
+        (void)mem.memRead(0xC00C);   // data bit = 0 (would land in FIFO if it shifted)
+        (void)mem.memRead(0xC05F);   // bare $C05F after reset — no preceding $C05E
+        assert(raw->fifoBits() == 0b11 &&
+               "bare $C05F after reset must not shift (AN3 powers up high)");
     }
 
     // ─── 2. ChatMauveRGB COL140 HGR decode ───────────────────────────────

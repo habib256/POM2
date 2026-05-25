@@ -631,6 +631,15 @@ target_include_directories(test_prodos_volume PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME prodos_volume_smoke COMMAND test_prodos_volume)
 set_tests_properties(prodos_volume_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Settings key=value round-trip (#-in-value, newline, backslash) ───────
+add_executable(test_settings_roundtrip
+    settings_roundtrip_test.cpp
+    ${CMAKE_SOURCE_DIR}/Settings.cpp
+)
+target_include_directories(test_settings_roundtrip PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME settings_roundtrip COMMAND test_settings_roundtrip)
+set_tests_properties(settings_roundtrip PROPERTIES TIMEOUT 5)
+
 # ─── ProDOS synth write-back path-traversal guard ─────────────────────────
 add_executable(test_prodos_decode_safety
     prodos_decode_safety_test.cpp
