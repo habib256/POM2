@@ -173,9 +173,15 @@ void testClassifier()
     assert(classifyDiskForSlot(makeFile(dir, "p525.po", 143360)) == DiskSlotClass::Floppy525);
     assert(classifyDiskForSlot(makeFile(dir, "p35.po",  819200)) == DiskSlotClass::Sony35);
     assert(classifyDiskForSlot(makeFile(dir, "m35.2mg", 819200)) == DiskSlotClass::Sony35);
-    // HDV: > 800K, 512-aligned.
+    // HDV: 512-aligned. A `.hdv` is a hard disk at ANY size — including
+    // EXACTLY 800K (1600 blocks). Regression: the old `> 819200` bound dropped
+    // exactly-800K .hdv images (AppleWorks_AW.hdv) into Unknown.
+    assert(classifyDiskForSlot(makeFile(dir, "aw.hdv", 819200)) == DiskSlotClass::Hdv);
+    assert(classifyDiskForSlot(makeFile(dir, "small.hdv", 143360)) == DiskSlotClass::Hdv);
     assert(classifyDiskForSlot(makeFile(dir, "h.hdv", 1024 * 1024)) == DiskSlotClass::Hdv);
     assert(classifyDiskForSlot(makeFile(dir, "h.2mg", 4 * 1024 * 1024)) == DiskSlotClass::Hdv);
+    // A `.2mg` stays ambiguous: exactly 800K is a 3.5" disk (asserted above),
+    // not an HDV — only LARGER .2mg reach the HDV bucket.
     // Unknown: wrong extension, wrong size, or missing file.
     assert(classifyDiskForSlot(makeFile(dir, "x.txt", 143360)) == DiskSlotClass::Unknown);
     assert(classifyDiskForSlot(makeFile(dir, "odd.po", 999))   == DiskSlotClass::Unknown);

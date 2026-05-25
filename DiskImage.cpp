@@ -2095,9 +2095,17 @@ DiskSlotClass classifyDiskForSlot(const std::string& path)
          (sz > 819200 && sz < 819200 + 4096)))
         return DiskSlotClass::Sony35;
 
-    // ProDOS hard disk — mirrors acceptHdv() (> 800K, 512-aligned, or
-    // 2IMG with the standard 64-byte header).
-    if ((ext == ".hdv" || ext == ".2mg") && sz > 819200 &&
+    // ProDOS hard disk. A `.hdv` is UNAMBIGUOUSLY a hard-disk volume (AppleWin
+    // lineage) — never a Sony 3.5" floppy — so it lands here at ANY valid
+    // 512-aligned size, including exactly 800K (1600 blocks, e.g.
+    // AppleWorks_AW.hdv). The old `> 819200` bound silently dropped exactly-800K
+    // .hdv images into Unknown ("unrecognised disk image"). A `.2mg` IS
+    // ambiguous, so it only reaches the HDV bucket when LARGER than 800K — a
+    // ≤800K .2mg was already claimed by the Sony35 rule above.
+    if (ext == ".hdv" && sz >= 512 &&
+        ((sz % 512 == 0) || (sz > 64 && (sz - 64) % 512 == 0)))
+        return DiskSlotClass::Hdv;
+    if (ext == ".2mg" && sz > 819200 &&
         ((sz % 512 == 0) || ((sz - 64) % 512 == 0)))
         return DiskSlotClass::Hdv;
 
