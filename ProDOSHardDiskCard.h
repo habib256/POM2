@@ -48,9 +48,9 @@ public:
     /// rebuilding the ROM.
     explicit ProDOSHardDiskCard(int slot = kDefaultSlot);
 
-    int getSlot() const { return slot; }
+    int getSlot() const override { return slot; }
 
-    bool loadImage(const std::string& path);
+    bool loadImage(const std::string& path) override;
     /// Replace the in-memory image with synthesised bytes (e.g. produced by
     /// pom2::buildVolumeFromFolder). `label` is what the UI shows; it does
     /// not have to be a real filesystem path. `hostFolder`, when non-empty,
@@ -59,35 +59,35 @@ public:
     /// `bytes` is empty or not a multiple of 512.
     bool loadImageFromBytes(std::vector<uint8_t> bytes,
                             const std::string& label,
-                            const std::string& hostFolder = std::string{});
-    void ejectImage();
+                            const std::string& hostFolder = std::string{}) override;
+    void ejectImage() override;
 
-    bool isImageLoaded() const { return backing_.isLoaded(); }
-    const std::string& getImagePath() const { return backing_.path(); }
-    const std::string& getLastError() const { return backing_.lastError(); }
-    size_t getBlockCount() const { return backing_.blockCount(); }
+    bool isImageLoaded() const override { return backing_.isLoaded(); }
+    const std::string& getImagePath() const override { return backing_.path(); }
+    const std::string& getLastError() const override { return backing_.lastError(); }
+    size_t getBlockCount() const override { return backing_.blockCount(); }
 
     /// Hardware write-protect, as seen by the emulated ProDOS driver — reflects
     /// ONLY the real medium's WP state (the 2MG header flag), NOT the host-file
     /// write-back preference. See Block512Backing.
-    bool isWriteProtected()  const { return backing_.isWriteProtected(); }
+    bool isWriteProtected()  const override { return backing_.isWriteProtected(); }
     /// User opt-in for persisting RAM writes back to the host .hdv/.2mg file.
     /// Default off — the in-session volume is fully writable either way.
-    bool isWriteBackEnabled() const { return backing_.isWriteBackEnabled(); }
-    void setWriteBackEnabled(bool on) { backing_.setWriteBackEnabled(on); }
-    bool canWriteBack()       const { return backing_.canWriteBack(); }
-    bool hasUnsavedChanges()  const { return backing_.hasUnsavedChanges(); }
+    bool isWriteBackEnabled() const override { return backing_.isWriteBackEnabled(); }
+    void setWriteBackEnabled(bool on) override { backing_.setWriteBackEnabled(on); }
+    bool canWriteBack()       const override { return backing_.canWriteBack(); }
+    bool hasUnsavedChanges()  const override { return backing_.hasUnsavedChanges(); }
     bool isSynthVolumeMounted() const { return backing_.isSynthVolume(); }
 
     /// Recent block-I/O activity, used by MainWindow's auto-turbo (forwarded
     /// to the shared backing's busy signal).
-    bool isBusy() const { return backing_.isBusy(); }
-    void tickActivityDecay() { backing_.tickActivityDecay(); }
+    bool isBusy() const override { return backing_.isBusy(); }
+    void tickActivityDecay() override { backing_.tickActivityDecay(); }
 
     /// Persist all dirty 512-byte blocks back to the source file (.hdv/.2mg)
     /// preserving the 2MG container header verbatim, OR for synth volumes,
     /// decode the modified volume back to the host folder.
-    bool saveDirty() { return backing_.saveDirty(); }
+    bool saveDirty() override { return backing_.saveDirty(); }
 
     /// Direct backing access for ProDOS volume management features (host-folder
     /// bridging, library tooling). Hardware paths use the methods above.

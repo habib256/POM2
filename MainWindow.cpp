@@ -87,8 +87,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
       aiPortInput    (pom2::AiControlServer::kDefaultPort),
-      activeProfile  (pom2::SystemProfile::AppleIIPlus),
-      charRomLocale  (pom2::CharRomLocale::ProfileDefault)
+      charRomLocale  (pom2::CharRomLocale::ProfileDefault),
+      activeProfile  (pom2::SystemProfile::AppleIIPlus)
 {
     // Memory viewer writes go through Memory::memWrite under stateMutex,
     // so a byte poked from the UI passes through ROM-write protection and
@@ -809,10 +809,10 @@ void MainWindow::plugSlotsFromSettings()
         };
         const bool cmos =
             controller->cpu().getCpuMode() == M6502::CpuMode::CMOS;
-        const std::string romPath = cmos
+        const std::string cffaRomPath = cmos
             ? probe("cffa20eec02.bin", "cffa20ee02.bin")
             : probe("cffa20ee02.bin", "cffa20eec02.bin");
-        if (romPath.empty()) {
+        if (cffaRomPath.empty()) {
             pom2::log().warn("CFFA", "Slot " + std::to_string(s) +
                 " requested CFFA but no firmware ROM (roms/cffa20ee02.bin) — "
                 "leaving slot empty");
@@ -820,7 +820,7 @@ void MainWindow::plugSlotsFromSettings()
             return;
         }
         auto card = std::make_unique<pom2::CffaCard>(s);
-        if (!card->loadRom(romPath)) { slotCards[s] = ""; return; }
+        if (!card->loadRom(cffaRomPath)) { slotCards[s] = ""; return; }
 
         // Restore ONLY the explicitly-saved image (no folder scan — same
         // policy as plugHdv). Per-slot keys so a CFFA can live in any slot.

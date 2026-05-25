@@ -57,7 +57,6 @@ constexpr ImU32 kHubMid         = IM_COL32( 40,  42,  48, 255);
 
 // ─── Layout (design coordinates) ──────────────────────────────────────────
 struct Rect { float x0, y0, x1, y1; };
-constexpr Rect kCounterBarR {   9.0f,  14.0f, 369.0f,  70.0f };
 constexpr Rect kBrandBadgeR { 306.0f,  30.0f, 360.0f,  56.0f };
 constexpr Rect kCounterWinR { 148.0f,  26.0f, 212.0f,  60.0f };
 constexpr Rect kRecLedR     {  22.0f,  22.0f,  46.0f,  46.0f };

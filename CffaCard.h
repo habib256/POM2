@@ -38,7 +38,7 @@ public:
 
     explicit CffaCard(int slot = kDefaultSlot) : slot_(slot) {}
 
-    int getSlot() const { return slot_; }
+    int getSlot() const override { return slot_; }
 
     /// Load the 4 KB CFFA firmware EEPROM dump. Must be exactly 4096 bytes.
     bool loadRom(const std::string& path);
@@ -46,23 +46,23 @@ public:
 
     /// Image management — forwarded to the ATA device's block backing so the
     /// HDV Library can mount .hdv/.2mg into the CFFA exactly like the HDV card.
-    bool loadImage(const std::string& path);
+    bool loadImage(const std::string& path) override;
     bool loadImageFromBytes(std::vector<uint8_t> bytes, const std::string& label,
-                            const std::string& hostFolder = std::string{});
-    void ejectImage();
-    bool saveDirty() { return ata_.backing().saveDirty(); }
+                            const std::string& hostFolder = std::string{}) override;
+    void ejectImage() override;
+    bool saveDirty() override { return ata_.backing().saveDirty(); }
 
-    bool isImageLoaded()      const { return ata_.backing().isLoaded(); }
-    const std::string& getImagePath() const { return ata_.backing().path(); }
-    const std::string& getLastError() const { return lastError_; }
-    size_t getBlockCount()    const { return ata_.backing().blockCount(); }
-    bool isWriteProtected()   const { return ata_.backing().isWriteProtected(); }
-    bool isWriteBackEnabled() const { return ata_.backing().isWriteBackEnabled(); }
-    void setWriteBackEnabled(bool on) { ata_.backing().setWriteBackEnabled(on); }
-    bool canWriteBack()       const { return ata_.backing().canWriteBack(); }
-    bool hasUnsavedChanges()  const { return ata_.backing().hasUnsavedChanges(); }
-    bool isBusy() const { return ata_.backing().isBusy(); }
-    void tickActivityDecay() { ata_.backing().tickActivityDecay(); }
+    bool isImageLoaded()      const override { return ata_.backing().isLoaded(); }
+    const std::string& getImagePath() const override { return ata_.backing().path(); }
+    const std::string& getLastError() const override { return lastError_; }
+    size_t getBlockCount()    const override { return ata_.backing().blockCount(); }
+    bool isWriteProtected()   const override { return ata_.backing().isWriteProtected(); }
+    bool isWriteBackEnabled() const override { return ata_.backing().isWriteBackEnabled(); }
+    void setWriteBackEnabled(bool on) override { ata_.backing().setWriteBackEnabled(on); }
+    bool canWriteBack()       const override { return ata_.backing().canWriteBack(); }
+    bool hasUnsavedChanges()  const override { return ata_.backing().hasUnsavedChanges(); }
+    bool isBusy() const override { return ata_.backing().isBusy(); }
+    void tickActivityDecay() override { ata_.backing().tickActivityDecay(); }
 
     std::string_view name() const override { return "CFFA 2.0"; }
     uint8_t deviceSelectRead (uint8_t low4) override;       // read_c0nx
