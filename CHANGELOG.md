@@ -8,6 +8,34 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **HDV/CFFA : images 32 Mio (65536 blocs) refusées — correctif off-by-one**.
+  Le garde de `Block512Backing` rejetait tout `.hdv`/`.2mg` de **plus de
+  65535 blocs**, ce qui bloquait au chargement les dumps 32 Mio **exactement
+  65536 blocs** (ex. `A2DeskTop-GIST.hdv` → boot kiosk « disk boot failed:
+  more than 65535 ProDOS blocks »). Le raisonnement de « round-8 #6 » (« bloc
+  65536 inadressable ») confondait **nombre de blocs** et **index max** : un
+  numéro de bloc ProDOS est 16 bits → index max `$FFFF` → une image peut
+  contenir **65536 blocs** (index 0..`$FFFF`), tous atteints par le
+  `selectedBlock` (uint16_t) de la carte. Le STATUS du driver ROM ne renvoie
+  d'ailleurs **aucun** compte de blocs (`LDA #$00; CLC; RTS` ; ProDOS lit
+  `total_blocks` dans le volume), donc aucun débordement 16 bits à craindre.
+  * **Fix** : `kMaxBlocks` `0xFFFF`→`0x10000` ; garde « > 65536 ⇒ reject » ;
+    static_assert reformulé sur l'index max. Pin mis à jour :
+    `hdv_mass_storage_smoke_test` (65535 ✓, **65536 ✓**, 65537 ✗).
+- **MouseCard « axe X bloqué à ~8 px » — non reproductible, item clos**.
+  Vérifié sur 4 fronts : (1) `mouse_card_axis_parity_test` headless X=Y=800 ;
+  (2) le mapping bits PB + `updateAxis` sont **identiques** à MAME
+  `mouse.cpp` (X `dir=$01/clk=$02`, Y `dir=$04/clk=$08`) ; (3) clean-room
+  firmware live (rampes égales → X≈Y) ; (4) **A2Desktop lui-même** (l'appli du
+  rapport) : injection identique +150 → X=+134, Y=+95 (X tracke *plus* que Y).
+  Le symptôme historique était soit déjà corrigé (fix `kWidth` de
+  `onMouseMove`), soit propre au clamp d'une appli — pas un bug de la carte.
+- **AiControlServer : endpoint `POST /mouse`**. Injection souris pilotable par
+  agent : `{"dx","dy"}` (delta Apple-cursor signé, ±127/appel), `{"x","y"}`
+  absolu, `{"btn"}`, `{"reset"}`. Atteint la `MouseCard` via le SlotBus,
+  maintient un compteur 8 bits continu (comme `MainWindow::onMouseMove`), et
+  permet de tester les applis souris en tête-à-tête avec `/screen.ppm` +
+  `/mem` (trous écran ProDOS). A servi à clore l'item MouseCard ci-dessus.
 - **//c / //c+ : banner corrompu au reboot avec plusieurs périphériques —
   correctif**. Régression du SmartPort embarqué : exposer mon stub bloc à
   `$C500` (à la place du **vrai** firmware SmartPort interne du //c) cassait

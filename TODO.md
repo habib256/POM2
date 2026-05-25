@@ -29,19 +29,19 @@ ci-dessous.
 | 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |
 | 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | TP tick rates 64/256/2048/4096 Hz + IRQ wiring ✅ (interval timers uPD4990A-serial-only, hors portée) ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
 | 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; 🟡 Pascal 1.1 ID block `$CnFB-$CnFF` manquant ; 🟢 IRQ gate SW2:6 DIP non gated |
-| 16 | MouseCard | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | 🟠 X axis bloqué ~8 px Apple ; 🟡 sync curseur pixel-près host/guest delta-based ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
+| 16 | MouseCard | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | ✅ X axis vérifié OK (bits+`updateAxis` = MAME ; A2Desktop X tracke via `/mouse`) ; 🟡 sync curseur pixel-près host/guest delta-based ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
 
 ## 🟠 High
 
-- [ ] **[MouseCard] Curseur X bloqué à ~8 px Apple** alors que Y
-      fonctionne sur toute la plage. Bbox screenshot-diff x=[0..5..8]
-      même quand l'hôte traverse 600 px. Hypothèses : (a) A2Desktop
-      clamp X via `SetMouse` post-init ; (b) firmware MCU idle loop
-      ignore motion tant que `RAM $58 bit 0` non set par `ReadMouse`,
-      A2Desktop ne pulse pas assez ; (c) bug subtil
-      `MouseCard::updateAxis` X (PB0/PB1) vs Y (PB2/PB3). Outils en
-      place : `POM2_MOUSE_TRACE=1`, AI Control `/mem?bank=aux`.
-      **Effort : 4-8 h.**
+- [x] **[MouseCard] Curseur X bloqué à ~8 px Apple — NON REPRODUCTIBLE,
+      clos (2026-05-25).** Vérifié sur 4 fronts : parité headless X=Y=800,
+      mapping bits + `updateAxis` identiques à MAME, clean-room firmware
+      live (X≈Y), et **A2Desktop lui-même** via le nouvel endpoint
+      `POST /mouse` (injection +150 identique → X=+134, Y=+95, donc X tracke
+      *plus* que Y). L'hypothèse (c) updateAxis était fausse ; le symptôme
+      était déjà résorbé (fix `kWidth` de `onMouseMove`) ou propre au clamp
+      d'une appli. Détail → `CHANGELOG.md`. Reste ouvert l'item *distinct*
+      « sync curseur pixel-près » en 🟡 Medium.
 - [ ] **[Memory] god-object** (`Memory.cpp` / `Memory.h`). Reste à
       extraire `Keyboard` (FIFO + strobe + paste) et `PaddleInputs`
       (RC + boutons + Open/Solid Apple). L'`IIcPlusBank` est **fait** :
@@ -231,8 +231,8 @@ apparaît → **P3** seulement si CHD requis.
 | Rang | Item | Effort | Impact | Pour qui |
 |---|---|---|---|---|
 | 1 | [Memory] god-object split | 2 jours | 🟠 Prépare IIgs + reduces recompile | Dev velocity |
-| 2 | [MouseCard] X axis stuck | 4-8 h | 🟠 A2Desktop usability | Mouse Card users |
-| 3 | [Disques] WOZ1 splice point | 1 jour | 🟡 Applesauce remaster parity | Disk imaging tools |
+| 2 | [Disques] WOZ1 splice point | 1 jour | 🟡 Applesauce remaster parity | Disk imaging tools |
+| 3 | [Disques] UI Force DOS/ProDOS | ~30 min | 🟡 quick win, backend prêt | Disk wranglers |
 
 ## Hors scope
 

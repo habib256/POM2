@@ -30,10 +30,12 @@ class Block512Backing
 {
 public:
     static constexpr size_t kBlockBytes = 512;
-    // ProDOS block numbers are 16-bit, so the largest addressable volume is
-    // 65535 blocks (≈32 MB). Block 65536 is unaddressable by ProDOS and by the
-    // synthetic HDV card's uint16_t selectedBlock, so reject it.
-    static constexpr size_t kMaxBlocks  = 0xFFFF;  // 65535 ProDOS blocks
+    // ProDOS block NUMBERS are 16-bit, so the highest addressable block index is
+    // $FFFF — which means a volume can hold up to 65536 blocks (indices
+    // 0..$FFFF) = exactly 32 MiB. The HDV card's uint16_t selectedBlock reaches
+    // every one of them. Many real 32 MiB raw .hdv dumps (e.g. A2DeskTop) are
+    // exactly 65536 blocks; only 65537+ (index $10000, unreachable) is rejected.
+    static constexpr size_t kMaxBlocks  = 0x10000;  // 65536 blocks (indices 0..$FFFF)
 
     /// Load a raw .hdv or 2IMG/.2mg image. Parses + strips the 2IMG header,
     /// validates ProDOS block order, 512-byte multiple, and ≤65536 blocks.

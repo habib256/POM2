@@ -2458,6 +2458,9 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/EmulationController.cpp
     ${CMAKE_SOURCE_DIR}/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCard.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ai_control_server PRIVATE

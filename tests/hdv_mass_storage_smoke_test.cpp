@@ -78,19 +78,27 @@ std::vector<uint8_t> twoImgHeader(uint32_t blocks, uint32_t dataOffset,
 int main()
 {
     // ── (a) ProDOS 16-bit capacity boundary ──────────────────────────
-    // ProDOS block numbers are 16-bit → max addressable volume = 65535
-    // blocks (≈32 MB). Block 65536 is unaddressable, so it's rejected
-    // (round-8 #6: the cap was off-by-one, accepting 0x10000).
+    // ProDOS block numbers are 16-bit → highest block INDEX is $FFFF, so a
+    // volume can hold up to 65536 blocks (indices 0..$FFFF) = exactly 32 MiB.
+    // Real 32 MiB raw .hdv dumps (e.g. A2DeskTop-GIST.hdv) are exactly 65536
+    // blocks and MUST load; only 65537+ needs the unreachable index $10000.
     {
         const std::string p = "/tmp/pom2_hdv_max.hdv";
-        writeSparseHdv(p, 0xFFFF);           // 65535 blocks — the legal max
+        writeSparseHdv(p, 0xFFFF);           // 65535 blocks
         ProDOSHardDiskCard c;
         assert(c.loadImage(p));
         assert(c.getBlockCount() == 0xFFFF);
     }
     {
+        const std::string p = "/tmp/pom2_hdv_32mb.hdv";
+        writeSparseHdv(p, 0x10000);          // 65536 blocks — full 32 MiB, legal max
+        ProDOSHardDiskCard c;
+        assert(c.loadImage(p));
+        assert(c.getBlockCount() == 0x10000);
+    }
+    {
         const std::string p = "/tmp/pom2_hdv_over.hdv";
-        writeSparseHdv(p, 0x10000);          // 65536 blocks — over the 16-bit cap
+        writeSparseHdv(p, 0x10001);          // 65537 blocks — index $10000 unaddressable
         ProDOSHardDiskCard c;
         assert(!c.loadImage(p));
     }
