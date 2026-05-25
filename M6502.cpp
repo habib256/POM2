@@ -1273,6 +1273,16 @@ void M6502::setCpuMode(CpuMode mode)
     // WDC WAI / STP (1-byte) — undefined on NMOS, treat as 1-byte NOP.
     opcodeTable[0xCB] = u1;
     opcodeTable[0xDB] = u1;
+
+    // NMOS undocumented 2-byte immediate ops the 65C02 table left as 1-byte
+    // NOPs: $0B/$2B = ANC #imm, $EB = USBC #imm. They MUST consume the operand
+    // byte or the instruction stream desyncs (the next byte is decoded as an
+    // opcode). Emulate as a 2-byte, 2-cycle NOP — faithful enough; these are
+    // vanishingly rare on the Apple II.
+    auto uimm = OpcodeEntry{&M6502::UnoffImm, nullptr};
+    opcodeTable[0x0B] = uimm;
+    opcodeTable[0x2B] = uimm;
+    opcodeTable[0xEB] = uimm;
 }
 
 void M6502::Unoff1(void)
@@ -1292,6 +1302,26 @@ void M6502::Unoff3(void)
     cycles += 4;
 }
 
+// Cycle-accurate undocumented-NOP variants (cycles seeded to 1 for the fetch
+// in executeOpcode, so these add total-1). The byte counts were already
+// correct via Unoff2/Unoff3; these only fix the cycle totals for the few
+// undoc opcodes whose timing differs from the generic 2-byte-3 / 3-byte-5.
+void M6502::UnoffImm(void)   // 2 bytes, 2 cycles: 65C02 NOP #imm, NMOS DOP/ANC/SBC #imm
+{
+    programCounter++;
+    cycles += 1;
+}
+void M6502::UnoffZpX(void)   // 2 bytes, 4 cycles: NOP zp,X ($54/$D4/$F4)
+{
+    programCounter++;
+    cycles += 3;
+}
+void M6502::UnoffAbs4(void)  // 3 bytes, 4 cycles: NOP abs/abs,X ($DC/$FC, NMOS TOP)
+{
+    programCounter += 2;
+    cycles += 3;
+}
+
 void M6502::Hang(void)
 {
     programCounter--;
@@ -1305,7 +1335,7 @@ void M6502::Hang(void)
 const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x00 */ {&M6502::Imp,      &M6502::BRK},
     /* 0x01 */ {&M6502::IndZeroX,  &M6502::ORA},
-    /* 0x02 */ {&M6502::Unoff2,    nullptr},          // 65C02: NOP imm (2 bytes)
+    /* 0x02 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm (2 bytes, 2 cyc)
                                                        // NMOS:  KIL — overridden in setCpuMode(NMOS)
     /* 0x03 */ {&M6502::Unoff,     nullptr},
     /* 0x04 */ {&M6502::Zero,      &M6502::TSB},     // 65C02 TSB zp
@@ -1340,7 +1370,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 
     /* 0x20 */ {&M6502::JSR,       nullptr},
     /* 0x21 */ {&M6502::IndZeroX,  &M6502::AND},
-    /* 0x22 */ {&M6502::Unoff2,    nullptr},          // 65C02: NOP imm; NMOS: KIL
+    /* 0x22 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: KIL
     /* 0x23 */ {&M6502::Unoff,     nullptr},
     /* 0x24 */ {&M6502::Zero,      &M6502::BIT},
     /* 0x25 */ {&M6502::Zero,      &M6502::AND},
@@ -1374,7 +1404,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 
     /* 0x40 */ {&M6502::Imp,       &M6502::RTI},
     /* 0x41 */ {&M6502::IndZeroX,  &M6502::EOR},
-    /* 0x42 */ {&M6502::Unoff2,    nullptr},          // 65C02: NOP imm; NMOS: KIL
+    /* 0x42 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: KIL
     /* 0x43 */ {&M6502::Unoff,     nullptr},
     /* 0x44 */ {&M6502::Unoff2,    nullptr},
     /* 0x45 */ {&M6502::Zero,      &M6502::EOR},
@@ -1393,7 +1423,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x51 */ {&M6502::IndZeroY,  &M6502::EOR},
     /* 0x52 */ {&M6502::IndZero,   &M6502::EOR},     // 65C02 EOR (zp)
     /* 0x53 */ {&M6502::Unoff,     nullptr},
-    /* 0x54 */ {&M6502::Unoff2,    nullptr},
+    /* 0x54 */ {&M6502::UnoffZpX,  nullptr},          // NOP zp,X (2 bytes, 4 cyc)
     /* 0x55 */ {&M6502::ZeroX,     &M6502::EOR},
     /* 0x56 */ {&M6502::ZeroX,     &M6502::LSR},
     /* 0x57 */ {&M6502::RMBn<5>,   nullptr},
@@ -1408,7 +1438,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 
     /* 0x60 */ {&M6502::Imp,       &M6502::RTS},
     /* 0x61 */ {&M6502::IndZeroX,  &M6502::ADC},
-    /* 0x62 */ {&M6502::Unoff2,    nullptr},          // 65C02: NOP imm; NMOS: KIL
+    /* 0x62 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: KIL
     /* 0x63 */ {&M6502::Unoff,     nullptr},
     /* 0x64 */ {&M6502::Zero,      &M6502::STZ},     // 65C02 STZ zp
     /* 0x65 */ {&M6502::Zero,      &M6502::ADC},
@@ -1442,7 +1472,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 
     /* 0x80 */ {&M6502::Rel,       &M6502::BRA},     // 65C02 BRA
     /* 0x81 */ {&M6502::IndZeroX,  &M6502::STA},
-    /* 0x82 */ {&M6502::Unoff2,    nullptr},
+    /* 0x82 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: DOP #imm
     /* 0x83 */ {&M6502::Unoff,     nullptr},
     /* 0x84 */ {&M6502::Zero,      &M6502::STY},
     /* 0x85 */ {&M6502::Zero,      &M6502::STA},
@@ -1510,7 +1540,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
 
     /* 0xC0 */ {&M6502::Imm,       &M6502::CPY},
     /* 0xC1 */ {&M6502::IndZeroX,  &M6502::CMP},
-    /* 0xC2 */ {&M6502::Unoff2,    nullptr},
+    /* 0xC2 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: DOP #imm
     /* 0xC3 */ {&M6502::Unoff,     nullptr},
     /* 0xC4 */ {&M6502::Zero,      &M6502::CPY},
     /* 0xC5 */ {&M6502::Zero,      &M6502::CMP},
@@ -1529,7 +1559,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0xD1 */ {&M6502::IndZeroY,  &M6502::CMP},
     /* 0xD2 */ {&M6502::IndZero,   &M6502::CMP},     // 65C02 CMP (zp)
     /* 0xD3 */ {&M6502::Unoff,     nullptr},
-    /* 0xD4 */ {&M6502::Unoff2,    nullptr},
+    /* 0xD4 */ {&M6502::UnoffZpX,  nullptr},          // NOP zp,X (2 bytes, 4 cyc)
     /* 0xD5 */ {&M6502::ZeroX,     &M6502::CMP},
     /* 0xD6 */ {&M6502::ZeroX,     &M6502::DEC},
     /* 0xD7 */ {&M6502::SMBn<5>,   nullptr},
@@ -1537,14 +1567,14 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0xD9 */ {&M6502::AbsY,      &M6502::CMP},
     /* 0xDA */ {&M6502::Imp,       &M6502::PHX},     // 65C02 PHX
     /* 0xDB */ {&M6502::STP,       nullptr},
-    /* 0xDC */ {&M6502::Unoff3,    nullptr},
+    /* 0xDC */ {&M6502::UnoffAbs4, nullptr},          // NOP abs,X (3 bytes, 4 cyc)
     /* 0xDD */ {&M6502::AbsX,      &M6502::CMP},
     /* 0xDE */ {&M6502::WAbsX,     &M6502::DEC},
     /* 0xDF */ {&M6502::BBSn<5>,   nullptr},
 
     /* 0xE0 */ {&M6502::Imm,       &M6502::CPX},
     /* 0xE1 */ {&M6502::IndZeroX,  &M6502::SBC},
-    /* 0xE2 */ {&M6502::Unoff2,    nullptr},
+    /* 0xE2 */ {&M6502::UnoffImm,  nullptr},          // 65C02: NOP imm; NMOS: DOP #imm
     /* 0xE3 */ {&M6502::Unoff,     nullptr},
     /* 0xE4 */ {&M6502::Zero,      &M6502::CPX},
     /* 0xE5 */ {&M6502::Zero,      &M6502::SBC},
@@ -1563,7 +1593,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0xF1 */ {&M6502::IndZeroY,  &M6502::SBC},
     /* 0xF2 */ {&M6502::IndZero,   &M6502::SBC},     // 65C02 SBC (zp)
     /* 0xF3 */ {&M6502::Unoff,     nullptr},
-    /* 0xF4 */ {&M6502::Unoff2,    nullptr},
+    /* 0xF4 */ {&M6502::UnoffZpX,  nullptr},          // NOP zp,X (2 bytes, 4 cyc)
     /* 0xF5 */ {&M6502::ZeroX,     &M6502::SBC},
     /* 0xF6 */ {&M6502::ZeroX,     &M6502::INC},
     /* 0xF7 */ {&M6502::SMBn<7>,   nullptr},
@@ -1571,7 +1601,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0xF9 */ {&M6502::AbsY,      &M6502::SBC},
     /* 0xFA */ {&M6502::Imp,       &M6502::PLX},     // 65C02 PLX
     /* 0xFB */ {&M6502::Unoff,     nullptr},
-    /* 0xFC */ {&M6502::Unoff3,    nullptr},
+    /* 0xFC */ {&M6502::UnoffAbs4, nullptr},          // NOP abs,X (3 bytes, 4 cyc)
     /* 0xFD */ {&M6502::AbsX,      &M6502::SBC},
     /* 0xFE */ {&M6502::WAbsX,     &M6502::INC},
     /* 0xFF */ {&M6502::BBSn<7>,   nullptr},

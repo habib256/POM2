@@ -8,6 +8,25 @@ courante → `DEV.md`.
 
 ## 2026-05-25 — BUGJAM
 
+- **M6502 : NMOS undoc 2-byte ops $0B/$2B/$EB traités en 1 octet → desync PC**.
+  $0B/$2B = ANC #imm, $EB = USBC #imm sont 2 octets sur NMOS ; la table 65C02
+  les laissait en NOP 1-octet, donc en mode NMOS l'octet opérande était
+  redécodé comme opcode. Fix : `setCpuMode(NMOS)` les remappe en NOP 2-octets /
+  2-cycles (`UnoffImm`). Pin : `cpu_cycle_count_test` (PC += 2).
+- **M6502 : cycles des NOP 65C02 non documentés**. Les handlers génériques
+  `Unoff2`/`Unoff3` facturaient 3/5 cycles ; les vrais timings varient : NOP
+  #imm = 2, NOP zp,X ($54/$D4/$F4) = 4, NOP abs,X ($DC/$FC) = 4 (NOP zp $44 = 3
+  reste correct). Les *nombres d'octets* étaient déjà bons (aucun desync) —
+  c'est purement la précision-cycle pour ces opcodes quasi-jamais exécutés.
+  Nouveaux handlers `UnoffImm`/`UnoffZpX`/`UnoffAbs4`. ($5C = 8 cyc laissé tel
+  quel : divergent CMOS/NMOS, jamais exécuté.) Pin : `cpu_cycle_count_test`.
+- **Non-bugs confirmés par les tests** (signalés par le bugjam, vérifiés
+  *intentionnels*) : (a) lecture ATA hors-plage renvoie des zéros « no crash »
+  — comportement délibéré, épinglé par `ata_block_device_test` (« reads as
+  zeros ») ; (b) le parseur 2IMG de `Block512Backing` accepte un champ
+  header-length à 0 (offset 64) là où `DiskImage` exige ≥ 52 — la version
+  permissive de Block512 accepte *plus* d'images réelles, durcir casserait des
+  `.hdv`/`.2mg` valides (image WP du test). Les deux laissés inchangés.
 - **Mockingboard : sync VIA en fin d'instruction sur-comptait d'une
   instruction**. `Memory::advanceCycles` fait `cycleCounter += cycles` AVANT de
   dispatcher aux slots, mais `M6502::step()` n'a pas encore remis `cpu->cycles`
