@@ -37,7 +37,10 @@ bool IIcClassProfile::romBankToggle()
     // resets — page cursor to 0, internal-drive + 3.5"-select cleared
     // (the hub recomputes the active floppy on its next access). RAM
     // contents survive (MAME `apple2e.cpp:1917-1922`).
-    if (!romBank_) {
+    // MAME gates this MIG reset on `m_isiicplus` (do_io:1701-1706): the MIG
+    // gate-array only exists on the //c+. A plain 32 KB //c (rev 0/3/4) has
+    // an alt bank but no MIG, so it must not poke MIG/hub state.
+    if (isPlus_ && !romBank_) {
         migPage_ = 0;
         if (hub_) {
             hub_->setMigIntDrive(false);

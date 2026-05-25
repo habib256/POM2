@@ -8,6 +8,53 @@ courante → `DEV.md`.
 
 ## 2026-05-25
 
+- **Bug hunt round 4 — 8 correctifs (serveur HTTP AI / souris / VIA / banking //c)**.
+  Audit des sous-systèmes restants (serveur de contrôle HTTP, MC6821 + souris,
+  6522 VIA, banking //c/c+). Le **bug X de la souris a été circonscrit** : la
+  carte (MC6821 + quadrature + M68705) est fidèle à MAME (prouvé end-to-end
+  contre le vrai firmware) — l'asymétrie X/Y est dans le GUI. 81 tests passent.
+  1. **[AI HTTP] `/speed` gèle l'émulateur** (`AiControlServer.cpp`).
+     `cycles_per_frame` (un `long`) était casté en `int` sans borne sup →
+     `9999999999`→1,4 G cycles/frame (UI gelée) ; `4294967296`→0 (CPU en
+     pause). Bornage [1, 2 000 000] + rejet 400 hors plage. Pin :
+     `ai_control_server_smoke`.
+  2. **[AI HTTP] `jsonGetString` matchait la clé n'importe où** (substring
+     `body.find("\"key\"")`) → une valeur contenant le nom d'un autre champ
+     détournait le match (toutes les routes). Réécrit en scan structurel qui
+     saute les valeurs-chaîne (la clé ne matche qu'en position de clé, suivie
+     de `:`). Pin : `ai_control_server_smoke`.
+  3. **[AI HTTP] évasion du jail cwd via symlink** (sauvegarde snapshot).
+     `weakly_canonical` rend un symlink final lexicalement (dans cwd) mais
+     `ofstream` le suit hors du jail → écriture de fichier arbitraire. Rejet
+     du symlink final (`symlink_status`). Pin : `ai_control_server_smoke`.
+  4. **[GUI souris] X 2× trop sensible en 80-col/DHGR** (`MainWindow.cpp`).
+     Le widget est toujours dessiné en `kWidth`(280)×`kHeight`(192), mais
+     `sxRatio` divisait par `display->width()`=560 en DHGR (vs 192 pour Y) →
+     X suivait 2× plus vite que Y en 80-col (là où tourne A2Desktop). Utilise
+     `kWidth/kHeight` pour les deux axes. (Le « stuck à 8 px » résiduel est
+     très probablement le clamp X d'A2Desktop, hors émulateur.)
+  5. **[AI HTTP] `/status` échantillonnait CPU et disque sous deux locks**
+     séparés → snapshot incohérent (le worker relâche le lock entre chunks
+     de 4096 cycles). Lecture sous un seul `lock_guard`.
+  6. **[VIA] `t1FireArmed` init membre (`true`) ≠ `reset()` (`false`)**
+     (`Mockingboard.cpp`) — landmine latente (ctor reset, inoffensif
+     aujourd'hui). Aligné à `false`.
+  7. **[//c] décode IOUDIS incomplet** (`Memory.cpp`). MAME : sur //c TOUT
+     `$C078/A/C/E` est SETIOUDIS et tout `$C079/B/D/F` CLRIOUDIS ; POM2 ne
+     décodait que `$C078/E` / `$C079/F`. Décodage par parité sur
+     `$C078-$C07F`.
+  8. **[//c] reset MIG non gardé sur `isPlus_`** (`MemoryProfile_IIcClass.cpp`).
+     MAME garde le reset MIG sur `m_isiicplus` ; un //c 32 K (rev 0/3/4) a une
+     banque alt mais pas de MIG. Gardé sur `isPlus_`.
+  - **[#4/#5/#6/#7/#8]** correctifs GUI / refactor / banking LOW non pinnés
+    unitairement (intégration MainWindow, cohérence concurrente, profil //c
+    coûteux à monter) — couverts en régression (iic/iicplus boot traces).
+  - **Reporté sans corriger** (avec raisons) : 6522 SR/CA-CB/PCR non modélisés
+    (features hors scope, déjà dans TODO) ; reload T1 continu `+3` vs `+2`
+    (disputé, impact <0,5 % sub-audible — ne pas toucher un timing fonctionnel
+    sans oracle MAME cycle-trace) ; `jsonGetInt` hex négatif + DoS mono-thread
+    (mineurs).
+
 - **Bug hunt round 3 — 9 correctifs (CLI / audio / 6805 souris)**. Audit des
   sous-systèmes restants (cœur 6805 du MC68705P3, pile audio, profils + CLI,
   synthèse ProDOS + RamWorks). La synthèse ProDOS et RamWorks sont ressorties

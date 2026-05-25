@@ -1155,9 +1155,10 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         // (ioudis=false). $C078/$C079 are //c mouse firmware mirrors
         // of the same SET/CLR pair. The paddle-latch side-effect above
         // still fires; the IOUDIS toggle is a parallel decode.
-        if (isWrite && iicProfile_) {
-            if (low == 0x7E || low == 0x78) ioudis = true;
-            if (low == 0x7F || low == 0x79) ioudis = false;
+        if (isWrite && iicProfile_ && low >= 0x78) {
+            // MAME apple2e.cpp: on //c EVERY even $C078/A/C/E is SETIOUDIS
+            // and every odd $C079/B/D/F is CLRIOUDIS (not just $C078/E).
+            ioudis = !(low & 1);
         }
         // $C07E read returns bit 7 = ioudis state (MAME `:2276-2278`).
         // Shared by IIe/IIc/IIc+. Other $C07x reads keep returning

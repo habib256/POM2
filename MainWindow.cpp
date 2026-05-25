@@ -1682,11 +1682,15 @@ void MainWindow::onMouseMove(double x, double y)
     // ── Speed mapping ────────────────────────────────────────────────
     // Convert host-pixel deltas to Apple-cursor units so 1 host pixel of
     // motion = 1 host pixel of cursor motion visually in the widget.
-    //   apple_per_host_px = display->width() / widget_host_width
-    // Widget rect is live (handles window resize) and `display->width()`
-    // returns 560 in DHGR / 280 in HGR. Sub-pixel motion accumulates.
-    const double sxRatio = double(display->width())  / double(widgetW);
-    const double syRatio = double(display->height()) / double(widgetH);
+    //   apple_per_host_px = logical_screen_dim / widget_host_dim
+    // The widget is ALWAYS drawn at kWidth(280)×kHeight(192) aspect
+    // (drawScreenImage), so the X mapping must use kWidth, NOT
+    // display->width() — the latter returns 560 in DHGR/80-col, which made
+    // X track 2× faster than Y in 80-column mode (where A2Desktop runs).
+    // Both axes now share the same logical→widget scale. Sub-pixel motion
+    // accumulates across events.
+    const double sxRatio = double(Apple2Display::kWidth)  / double(widgetW);
+    const double syRatio = double(Apple2Display::kHeight) / double(widgetH);
     mouseSubAppleX += rawDx * sxRatio;
     mouseSubAppleY += rawDy * syRatio;
     int dxApple = static_cast<int>(mouseSubAppleX);
