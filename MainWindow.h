@@ -359,6 +359,23 @@ private:
     double  mouseSubAppleX = 0.0;
     double  mouseSubAppleY = 0.0;
 
+    // ── Absolute closed-loop cursor sync (host ⇄ guest) ────────────────
+    // The Mouse Card is a purely *relative* quadrature device, so a host
+    // delta fed open-loop drifts away from the guest cursor in absolute
+    // terms (clamp-edge losses + scale mismatch). When the AppleMouse
+    // firmware is active (mode byte $07F8+s bit 0) we instead drive the
+    // guest *toward* the host cursor's absolute position-in-widget, read
+    // back from the firmware screen holes ($0478+s/$0578+s low/high X,
+    // $04F8+s/$05F8+s low/high Y — layout per the Apple II Mouse FAQ).
+    // To avoid quadrature windup (host cursor events fire far faster than
+    // the app polls READMOUSE, so the holes are stale between polls) we
+    // edge-trigger: a correction is injected only once the holes have
+    // moved, i.e. once the app has consumed the previous batch. Sentinel
+    // -1 forces the first correction.
+    int  lastSyncHoleX  = -1;
+    int  lastSyncHoleY  = -1;
+    bool mouseSyncActive = false;   // true while in absolute mode (mouse on)
+
     /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
     /// instantiating each card with its slot number. Falls back to legacy
     /// defaults (DiskII=6, HDV=5, SSC=2, Clock=4, ChatMauve=7) when a

@@ -2111,6 +2111,34 @@ endif()
 add_test(NAME mouse_card_axis_parity COMMAND test_mouse_card_axis_parity)
 set_tests_properties(mouse_card_axis_parity PROPERTIES TIMEOUT 30)
 
+# Absolute closed-loop cursor sync. Boots the real firmware and pins the
+# property that the host-side feedback loop in MainWindow::onMouseMove
+# converges the guest cursor to an absolute target (pixel-exact) and
+# recovers after a clamp-edge excursion — the open-loop drift it fixes.
+# Skips if the user-provided ROMs are absent.
+add_executable(test_mouse_card_absolute_sync
+    mouse_card_absolute_sync_test.cpp
+    ${CMAKE_SOURCE_DIR}/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_mouse_card_absolute_sync PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mouse_card_absolute_sync PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mouse_card_absolute_sync PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mouse_card_absolute_sync PRIVATE winmm)
+endif()
+
+add_test(NAME mouse_card_absolute_sync COMMAND test_mouse_card_absolute_sync)
+set_tests_properties(mouse_card_absolute_sync PROPERTIES TIMEOUT 60)
+
 
 # ─── Slot configuration smoke test ───────────────────────────────────────
 # Pins the slot constructor refactor (Phase 1 of the Mouse Card / Slot
