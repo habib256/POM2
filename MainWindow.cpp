@@ -1733,81 +1733,15 @@ void MainWindow::onMouseMove(double x, double y)
         return;
     }
 
-    // Host cursor position as a fraction (0..1) across the widget — the
-    // common input to both the absolute and relative paths below.
-    const double fracX = (x - screenRectMin.x) / widgetW;
-    const double fracY = (y - screenRectMin.y) / widgetH;
-
-    // ── Absolute closed-loop sync (primary path) ─────────────────────
-    // The Mouse Card is a purely *relative* quadrature device, so feeding
-    // host deltas open-loop drifts away from the guest cursor in absolute
-    // terms (clamp-edge losses + scale mismatch). Instead, while the
-    // AppleMouse firmware is live, read its current cursor position from
-    // the screen holes and drive the guest *toward* the host cursor's
-    // absolute position-in-widget. The firmware keeps these in MAIN ram
-    // regardless of the current RAMRD/PAGE2 state, so we peek main RAM
-    // directly (memRead could route to aux when this UI-thread callback
-    // happens to fire mid-frame). Layout per the Apple II Mouse FAQ:
-    //   X = $0478+s (lo) | $0578+s (hi)   Y = $04F8+s (lo) | $05F8+s (hi)
-    //   mode = $07F8+s   (bit 0 = mouse on)
-    // NOTE the X-high hole is $0578+s, NOT $04F8+s — the latter is Y-low.
-    // The earlier (reverted, f8280bb) correction loop scrambled exactly
-    // this and pinned X; that is why it was ripped out.
-    const int slot = activeMouseSlot;
-    bool absoluteDone = false;
-    if (slot >= 1 && slot <= 7) {
-        int holeX = 0, holeY = 0, mode = 0;
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            Memory& mem = controller->memory();
-            mode  = mem.peekMainRam(static_cast<uint16_t>(0x07F8 + slot));
-            holeX = mem.peekMainRam(static_cast<uint16_t>(0x0478 + slot)) |
-                   (mem.peekMainRam(static_cast<uint16_t>(0x0578 + slot)) << 8);
-            holeY = mem.peekMainRam(static_cast<uint16_t>(0x04F8 + slot)) |
-                   (mem.peekMainRam(static_cast<uint16_t>(0x05F8 + slot)) << 8);
-        }
-        const bool mouseOn = (mode & 0x01) != 0;           // mode bit0 = mouse on
-        // The guest coordinate range is the firmware clamp window; for the
-        // standard MGTK / desktop apps it tracks the active display
-        // resolution (280/560 × 192). Target the host fraction across that.
-        const int maxX = display->width()  - 1;
-        const int maxY = display->height() - 1;
-        const bool holesValid = holeX >= 0 && holeX <= maxX &&
-                                holeY >= 0 && holeY <= maxY;
-        if (mouseOn && holesValid) {
-            // Edge-trigger to avoid quadrature windup: host motion events
-            // fire far faster than the app polls READMOUSE, so the holes
-            // are stale between polls. Inject a correction only once the
-            // holes have moved (app consumed our previous batch) — or on
-            // the first event after entering absolute mode.
-            if (!mouseSyncActive || holeX != lastSyncHoleX || holeY != lastSyncHoleY) {
-                const int tgtX = static_cast<int>(fracX * maxX + 0.5);
-                const int tgtY = static_cast<int>(fracY * maxY + 0.5);
-                int cdx = tgtX - holeX;
-                int cdy = tgtY - holeY;
-                // One setHostMouse delta must fit the MCU's 8-bit signed
-                // diff-wrap window; big errors converge over several frames.
-                if (cdx >  127) cdx =  127;
-                if (cdx < -127) cdx = -127;
-                if (cdy >  127) cdy =  127;
-                if (cdy < -127) cdy = -127;
-                mouseAppleX = static_cast<uint8_t>(mouseAppleX + cdx);
-                mouseAppleY = static_cast<uint8_t>(mouseAppleY + cdy);
-                pushMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
-                lastSyncHoleX = holeX;   // pre-injection hole; the app read moves it
-                lastSyncHoleY = holeY;
-            }
-            mouseSyncActive = true;
-            absoluteDone    = true;
-            // Keep the relative accumulators clean so a later fallback
-            // (mouse turned off) doesn't replay stale sub-pixel residue.
-            mouseSubAppleX = mouseSubAppleY = 0.0;
-        }
-    }
-    if (absoluteDone) return;
-    mouseSyncActive = false;     // left absolute mode → relative fallback below
-
-    // ── Speed mapping (relative fallback) ────────────────────────────
+    // ── Speed mapping (relative drive — the only path) ──────────────
+    // The closed-loop absolute sync was an experiment that didn't survive
+    // contact with real apps: the cursor's real clamp range lives behind the
+    // firmware (the MCU on the //e card, the internal ROM on the //c) and the
+    // app's ClampMouse parameters don't reliably land in 6502-readable holes
+    // for MGTK-based apps (A2Desktop/MousePaint), so any absolute target was
+    // guesswork. The proven proportional drive below — what AppleWin/MAME do
+    // — gives no centre-jump and lets the app's own firmware clamp at its
+    // own edges naturally.
     // Used when the AppleMouse firmware is off or its clamp window is
     // non-standard (holes out of display range). Convert host-pixel
     // deltas to Apple-cursor units so 1 host pixel of motion = 1 host
