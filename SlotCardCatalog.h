@@ -38,6 +38,9 @@ inline constexpr CardType kCardTypes[] = {
     { "clock",        "Clock (ProDOS)"    },
     { "chatmauve",    "Le Chat Mauve"     },
     { "mouse",        "Mouse Interface"   },
+    // AppleWin-style HLE variant — only needs the slot EPROM (no MCU mask
+    // ROM). Different code path from "mouse" (no MC68705 emulation).
+    { "mouseaw",      "Mouse (AppleWin HLE)" },
     { "mockingboard", "Mockingboard A/C"  },
 };
 
@@ -67,6 +70,19 @@ inline bool mouseRomsPresent()
         if (fs::exists(p)) { mcuRom = true; break; }
     }
     return slotRom && mcuRom;
+}
+
+/// AppleWin-style Mouse HLE needs only the 2 KB slot EPROM (the MCU side
+/// is synthesised in C++). Reuses the same `mouse_341-0270-c.bin` dump.
+inline bool mouseAwRomPresent()
+{
+    namespace fs = std::filesystem;
+    for (const char* p : { "roms/mouse_341-0270-c.bin",
+                           "../roms/mouse_341-0270-c.bin",
+                           "../../roms/mouse_341-0270-c.bin" }) {
+        if (fs::exists(p)) return true;
+    }
+    return false;
 }
 
 inline bool cffaRomPresent()

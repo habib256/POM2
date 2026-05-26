@@ -27,6 +27,7 @@
 #include "MemoryViewer_ImGui.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
+#include "MouseCardAppleWin.h"
 #include "CffaCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
@@ -1023,6 +1024,33 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "clock")       plugClock(s);
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
+        else if (kind == "mouseaw")     {
+            // AppleWin HLE variant — only the slot EPROM is needed.
+            std::string slotRomPath;
+            static const char* slotRomCandidates[] = {
+                "roms/mouse_341-0270-c.bin", "../roms/mouse_341-0270-c.bin",
+                "../../roms/mouse_341-0270-c.bin"
+            };
+            for (const char* p : slotRomCandidates) {
+                std::string r = pom2::findResource(p);
+                if (!r.empty()) { slotRomPath = r; break; }
+            }
+            if (slotRomPath.empty()) {
+                pom2::log().warn("MouseAW",
+                    "Mouse (AppleWin HLE) requested in slot " +
+                    std::to_string(s) +
+                    " but roms/mouse_341-0270-c.bin not found — leaving slot empty");
+                continue;
+            }
+            auto card = std::make_unique<MouseCardAppleWin>(s);
+            if (!card->loadRom(slotRomPath)) {
+                pom2::log().warn("MouseAW",
+                    "ROM load failed for slot " + std::to_string(s));
+                continue;
+            }
+            mouseAwCard = card.get();
+            controller->memory().slotBus().plug(s, std::move(card));
+        }
         else if (kind == "mockingboard") plugMockingboard(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
@@ -1682,7 +1710,18 @@ void MainWindow::onMouseMove(double x, double y)
     lastMouseHostX = x;
     lastMouseHostY = y;
 
-    if (!mouseCard) return;
+    // Either MAME-faithful MouseCard or AppleWin HLE MouseCardAppleWin
+    // can be plugged (mutually exclusive). Both expose the same
+    // `setHostMouse(rawX, rawY, button)` + `getSlot()` API; route through
+    // tiny lambdas so the absolute / relative cursor logic below stays
+    // variant-agnostic.
+    if (!mouseCard && !mouseAwCard) return;
+    auto pushMouse = [&](uint8_t rx, uint8_t ry, bool btn) {
+        if (mouseCard)   mouseCard  ->setHostMouse(rx, ry, btn);
+        if (mouseAwCard) mouseAwCard->setHostMouse(rx, ry, btn);
+    };
+    const int activeMouseSlot = mouseCard ? mouseCard->getSlot()
+                                          : mouseAwCard->getSlot();
 
     // Gate on cursor inside the Apple II Screen widget. Outside, leave
     // the host mouse free for ImGui interaction.
@@ -1714,7 +1753,7 @@ void MainWindow::onMouseMove(double x, double y)
     // NOTE the X-high hole is $0578+s, NOT $04F8+s — the latter is Y-low.
     // The earlier (reverted, f8280bb) correction loop scrambled exactly
     // this and pinned X; that is why it was ripped out.
-    const int slot = mouseCard->getSlot();
+    const int slot = activeMouseSlot;
     bool absoluteDone = false;
     if (slot >= 1 && slot <= 7) {
         int holeX = 0, holeY = 0, mode = 0;
@@ -1754,7 +1793,7 @@ void MainWindow::onMouseMove(double x, double y)
                 if (cdy < -127) cdy = -127;
                 mouseAppleX = static_cast<uint8_t>(mouseAppleX + cdx);
                 mouseAppleY = static_cast<uint8_t>(mouseAppleY + cdy);
-                mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+                pushMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
                 lastSyncHoleX = holeX;   // pre-injection hole; the app read moves it
                 lastSyncHoleY = holeY;
             }
@@ -1799,7 +1838,7 @@ void MainWindow::onMouseMove(double x, double y)
 
     mouseAppleX = static_cast<uint8_t>(mouseAppleX + dxApple);
     mouseAppleY = static_cast<uint8_t>(mouseAppleY + dyApple);
-    mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+    pushMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
 }
 
 void MainWindow::onMouseButton(int button, int action)
@@ -1822,9 +1861,10 @@ void MainWindow::onMouseButton(int button, int action)
         }
     }
     mouseButtonHeld = press;             // GLFW_RELEASE = 0, others = press/repeat
-    if (mouseCard) {
+    if (mouseCard)
         mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
-    }
+    if (mouseAwCard)
+        mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
 }
 
 void MainWindow::renderControlsWindow()

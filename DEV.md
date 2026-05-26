@@ -1255,6 +1255,61 @@ correct interleave is Xlo=$0478+s, Ylo=$04F8+s, Xhi=$0578+s,
 Yhi=$05F8+s). The bad feedback pinned X. No screen-hole reads remain in
 production; `mouse_card_axis_parity_test.cpp` guards against recurrence.
 
+#### AppleWin HLE variant — `MouseCardAppleWin` (card key `mouseaw`)
+
+Alternative implementation, ported verbatim from AppleWin
+`source/MouseInterface.cpp` (CMouseInterface). Same SlotPeripheral
+interface, same `setHostMouse(rawX, rawY, button)` UI plumbing, **same
+slot EPROM** (`mouse_341-0270-c.bin`) — but **no MCU mask ROM
+required**: the MC68705P3 side is replaced by a C++ command-byte state
+machine. Plug as `"mouseaw"` in Slot Configuration; mutually exclusive
+with the MAME `"mouse"` variant (only one of the two slot pointers is
+set at a time in `MainWindow`).
+
+Protocol (mirrored from AppleWin `OnCommand` / `OnWrite` — opcodes are
+the high nibble of the first command byte):
+```
+$00 MOUSE_SET     1 B   set mode (MOUSE_ON / INT_VBL / INT_BUTTON / INT_MOVEMENT)
+$10 MOUSE_READ    6 B   reply Xlo, Xhi, Ylo, Yhi, status
+$20 MOUSE_SERV    2 B   pending-IRQ source + CpuIrqDeassert
+$30 MOUSE_CLEAR   1 B   wipe position + state
+$40 MOUSE_POS     5 B   set absolute position (X16, Y16)
+$50 MOUSE_INIT    3 B   clamp 0..1023, position = 0, canned $FF reply
+$60 MOUSE_CLAMP   5 B   set X or Y clamp window (cmd byte bit 0 = axis)
+$70 MOUSE_HOME    1 B   re-home to (0, 0)
+$90 MOUSE_TIME    1..4 B no-op (cmd-byte bits 2..3 select data length)
+```
+
+PIA Port B is used as a 2-line handshake (verbatim from AppleWin
+`On6821_B`): BIT5 (PB5) is the write-strobe (firmware → "MCU"), BIT4
+(PB4) the read-strobe. BIT6 / BIT7 are status bits driven *back* to the
+firmware so its polling loops complete. BIT1..BIT3 still drive the
+slot-ROM bank-select (`bank = (by6821B << 7) & 0x0700` —
+identical to the MAME variant, just read on-demand instead of memcpy'd
+into peripheral ROM).
+
+VBL interrupt: `OnMouseEvent(true)` fires once per ~17045 CPU cycles
+(60 Hz at 1 MHz) from `advanceCycles`; the host-input poll
+(`pollHostInput`) drains the atomic shadow on every `advanceCycles` so
+movement/button changes raise IRQ immediately when the mode bits
+allow. `CpuIrqAssert(IS_MOUSE)` → `SlotPeripheral::assertIrq(true)`;
+`CpuIrqDeassert` (in MOUSE_SERV) → `assertIrq(false)`.
+
+Pinned by `tests/mouse_card_applewin_smoke_test.cpp`: slot-ROM bank-
+select round trip, size/missing-file rejection, and the BIT5 strobe
+handshake reaching `OnCommand` (MOUSE_INIT writes its canned $FF reply
+back to PRA — caught DDR-direction errors in the test itself, see
+fix-up where `DDRA=0` is required before the read).
+
+Why ship both variants? `mouse` (MAME) is preferred — it boots
+verbatim Apple ROMs, so anything the real card does is reproduced. But
+the MCU mask ROM (`mouse_341-0269.bin`) is not always available;
+`mouseaw` lets users with just the slot EPROM (a more commonly
+archived dump) get a working mouse. The two share the absolute
+closed-loop cursor sync in `MainWindow::onMouseMove` (firmware screen
+holes at `$0478+s` / `$0578+s` / `$04F8+s` / `$05F8+s` / `$07F8+s`
+are written by the same Apple slot firmware in both cases).
+
 ### Joystick / paddles
 
 `JoystickInput` polls all 16 GLFW slots each UI frame (hot-plug).
