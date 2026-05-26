@@ -63,6 +63,7 @@
 // to keep the existing panel body unchanged.
 using pom2::kCardTypes;
 using pom2::mouseRomsPresent;
+using pom2::mouseAwRomPresent;
 using pom2::cffaRomPresent;
 
 // Persist a media bay's state with the right key scheme for its card type
@@ -128,8 +129,9 @@ void MainWindow::renderSlotConfigPanel()
             draftInited = true;
         }
 
-        const bool mouseAvailable = mouseRomsPresent();
-        const bool cffaAvailable  = cffaRomPresent();
+        const bool mouseAvailable    = mouseRomsPresent();
+        const bool mouseAwAvailable  = mouseAwRomPresent();
+        const bool cffaAvailable     = cffaRomPresent();
 
         // AUX slot (IIe-class only): built-in 80-column card at $C300 — shown
         // greyed as a non-editable row.
@@ -189,8 +191,9 @@ void MainWindow::renderSlotConfigPanel()
                 for (const auto& ct : kCardTypes) {
                     const bool selected = (ct.key == draft[s]);
                     const bool disabled =
-                        ((std::string(ct.key) == "mouse") && !mouseAvailable) ||
-                        ((std::string(ct.key) == "cffa")  && !cffaAvailable);
+                        ((std::string(ct.key) == "mouse")   && !mouseAvailable) ||
+                        ((std::string(ct.key) == "mouseaw") && !mouseAwAvailable) ||
+                        ((std::string(ct.key) == "cffa")    && !cffaAvailable);
                     if (disabled) ImGui::BeginDisabled();
                     if (ImGui::Selectable(ct.label, selected)) {
                         draft[s] = ct.key;
@@ -610,6 +613,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         sscCard          = nullptr;
         clockCard        = nullptr;
         mouseCard        = nullptr;
+        mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
@@ -843,6 +847,7 @@ void MainWindow::restartEmulationFromSettings()
         sscCard          = nullptr;
         clockCard        = nullptr;
         mouseCard        = nullptr;
+        mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();

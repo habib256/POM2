@@ -91,6 +91,7 @@ set(SOURCES
     MemoryViewer_ImGui.cpp
     Mockingboard.cpp
     MouseCard.cpp
+    MouseCardAppleWin.cpp
     Block512Backing.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
@@ -151,6 +152,7 @@ set(HEADERS
     MemoryViewer_ImGui.h
     Mockingboard.h
     MouseCard.h
+    MouseCardAppleWin.h
     MountableMediaCard.h
     Block512Backing.h
     ProDOSHardDiskCard.h
