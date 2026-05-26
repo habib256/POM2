@@ -22,6 +22,7 @@
 
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -232,6 +233,19 @@ private:
     // that used to live in the Status panel. Persisted as `show_mixer`.
     bool         showAudioMixer     = false;
     bool         showEmulationPanel = false;
+    // Mouse Inspector — live readout of host cursor position, Apple II
+    // Screen widget rect, MouseCard 8-bit counter + sub-pixel accumulator,
+    // AppleWin HLE firmware state (iX/iY/clamps/mode), and the firmware
+    // screen holes. Off by default; toggled from Panels menu; persisted as
+    // `show_mouse_inspector`. Helper for future cursor-alignment tuning.
+    bool         showMouseInspector = false;
+    // Optional CSV log path for the Mouse Inspector. Empty = not logging.
+    // `mouseInspectorLogStream` is opened when logging starts and closed
+    // when it stops; flushed after every row so a crash mid-tune still
+    // leaves a usable trace on disk.
+    std::string  mouseInspectorLogPath;
+    std::unique_ptr<std::ofstream> mouseInspectorLogStream;
+    double       mouseInspectorLastLogTime = 0.0;
     // Slot Configuration: left = per-slot card assignment (built-ins greyed),
     // right = internal disks + mountable ports of plugged storage cards.
     // Persisted as `show_slot_config`. (Absorbed the old Slot Manager.)
@@ -457,6 +471,11 @@ private:
     void renderMockingboardPanelWindow();
     void renderSscPanelWindow();
     void renderJoystickPanelWindow();
+    /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.
+    /// Live host cursor position + Apple II Screen widget rect + Mouse
+    /// Card running counter + AppleWin HLE firmware state + screen holes.
+    /// Optional CSV log to `mouseInspectorLogPath` for offline review.
+    void renderMouseInspectorWindow();
     void renderAudioMixerWindow();
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();

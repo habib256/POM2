@@ -291,6 +291,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
         showToolbar        = settings->getBool ("show_toolbar",    showToolbar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
+        showMouseInspector = settings->getBool ("show_mouse_inspector",
+                                                 showMouseInspector);
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
@@ -563,6 +565,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_cassette",   showCassetteDeck);
     settings->setBool  ("show_toolbar",    showToolbar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
+    settings->setBool  ("show_mouse_inspector", showMouseInspector);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
     settings->setBool  ("show_mixer",      showAudioMixer);
@@ -1508,6 +1511,7 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
         ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
+        ImGui::MenuItem("Mouse Inspector",               nullptr, &showMouseInspector);
         ImGui::Separator();
         ImGui::MenuItem("Audio Mixer",                   nullptr, &showAudioMixer);
         ImGui::EndMenu();
@@ -1723,11 +1727,68 @@ void MainWindow::onMouseMove(double x, double y)
     const int activeMouseSlot = mouseCard ? mouseCard->getSlot()
                                           : mouseAwCard->getSlot();
 
-    // Gate on cursor inside the Apple II Screen widget. Outside, leave
-    // the host mouse free for ImGui interaction.
+    // Need a valid Apple II Screen widget rect to map host pixels into
+    // Apple-cursor coordinates. Bail until renderScreen has populated it.
     const float widgetW = screenRectMax.x - screenRectMin.x;
     const float widgetH = screenRectMax.y - screenRectMin.y;
     if (widgetW <= 0.0f || widgetH <= 0.0f) return;
+
+    // ── Absolute closed-loop cursor sync (AppleWin HLE only) ───────────
+    // When the `mouseaw` card is plugged AND the AppleMouse firmware has
+    // been turned on (MODE_MOUSE_ON, bit 0 of the latched MODE byte), the
+    // card's HLE'd MCU keeps the cursor position in `iX/iY` clamped to
+    // the firmware-installed window `[iMinX..iMaxX] × [iMinY..iMaxY]`.
+    // We read that authoritative state via the debug snapshot, project
+    // the host cursor's position onto the widget rect (saturating clamp
+    // outside, so wandering out of the widget pins the Apple cursor at
+    // the matching edge instead of letting it drift), and inject the
+    // delta needed to drive `iX/iY` toward the projected target. The
+    // earlier closed-loop attempt (reverted in commit ccd9a95) failed
+    // because it assumed the clamp range equalled the display resolution
+    // — that's true for the //e desktop but wrong for e.g. MousePaint's
+    // 0..559 horizontal clamp. Using the card-reported clamp window
+    // sidesteps that guess entirely.
+    // Each push is bounded to ±127 (the MCU's 8-bit signed wrap range);
+    // large gaps (first event after re-entry, big window resize) converge
+    // over several events.
+    bool absoluteHandled = false;
+    if (mouseAwCard) {
+        const auto s = mouseAwCard->debugSnapshot();
+        const bool mouseOn = (s.byMode & 0x01) != 0;
+        const int rangeX = s.iMaxX - s.iMinX;
+        const int rangeY = s.iMaxY - s.iMinY;
+        if (mouseOn && rangeX > 0 && rangeY > 0) {
+            const double fracX = std::clamp(
+                (x - double(screenRectMin.x)) / double(widgetW), 0.0, 1.0);
+            const double fracY = std::clamp(
+                (y - double(screenRectMin.y)) / double(widgetH), 0.0, 1.0);
+            const int targetX = s.iMinX + int(fracX * rangeX + 0.5);
+            const int targetY = s.iMinY + int(fracY * rangeY + 0.5);
+            int dx = targetX - s.iX;
+            int dy = targetY - s.iY;
+            if (dx >  127) dx =  127;
+            if (dx < -127) dx = -127;
+            if (dy >  127) dy =  127;
+            if (dy < -127) dy = -127;
+            mouseAppleX = static_cast<uint8_t>(mouseAppleX + dx);
+            mouseAppleY = static_cast<uint8_t>(mouseAppleY + dy);
+            pushMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+            // Drop relative sub-pixel residue so a later fallback (mouse
+            // turned off mid-session) doesn't replay stale fractional
+            // motion accumulated before sync was active.
+            mouseSubAppleX = 0.0;
+            mouseSubAppleY = 0.0;
+            absoluteHandled = true;
+        }
+    }
+    if (absoluteHandled) return;
+
+    // ── Relative drive (fallback) ───────────────────────────────────
+    // Used by the MAME-faithful MouseCard (no iX/iY exposed — firmware
+    // lives inside the 68705P3 MCU's internal RAM) and by the AppleWin
+    // HLE card before the firmware enables MOUSE_ON. Gate on cursor
+    // inside the widget so the host can still drive ImGui menus/panels
+    // outside the screen.
     if (x < screenRectMin.x || x > screenRectMax.x ||
         y < screenRectMin.y || y > screenRectMax.y) {
         return;
@@ -2119,6 +2180,253 @@ void MainWindow::renderJoystickPanelWindow()
         bind.deadzone = result.deadzone;
         bind.invert   = result.invert;
     }
+}
+
+// ─── Mouse Inspector ─────────────────────────────────────────────────────
+//
+// Diagnostic panel for tuning Apple II Mouse Card alignment. Live readout
+// of: host cursor (window coords + widget-local + in-widget fraction),
+// Apple II Screen widget rect + per-axis logical→host scale, MouseCard's
+// 8-bit running counter + sub-pixel accumulator, AppleWin HLE firmware
+// state (clamp window, current iX/iY, MOUSE_READ snapshot, mode/state
+// bits, PIA port latches, last command), and the AppleMouse firmware
+// screen holes for the active slot. Optional CSV log at ~30 Hz so a
+// session of cursor motion can be replayed offline.
+
+void MainWindow::renderMouseInspectorWindow()
+{
+    if (!showMouseInspector) return;
+    ImGui::SetNextWindowPos (ImVec2(40, 80), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 640), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Mouse Inspector", &showMouseInspector)) {
+        ImGui::End();
+        return;
+    }
+
+    const float widgetW = screenRectMax.x - screenRectMin.x;
+    const float widgetH = screenRectMax.y - screenRectMin.y;
+    const double hostLocalX = lastMouseHostX - double(screenRectMin.x);
+    const double hostLocalY = lastMouseHostY - double(screenRectMin.y);
+    const bool hostInside =
+        widgetW > 0.0f && widgetH > 0.0f &&
+        lastMouseHostX >= double(screenRectMin.x) &&
+        lastMouseHostX <= double(screenRectMax.x) &&
+        lastMouseHostY >= double(screenRectMin.y) &&
+        lastMouseHostY <= double(screenRectMax.y);
+    const double fracX = widgetW > 0.0f ? hostLocalX / double(widgetW) : 0.0;
+    const double fracY = widgetH > 0.0f ? hostLocalY / double(widgetH) : 0.0;
+    const int dispW = display->width();
+    const int dispH = display->height();
+    // Apple-cursor pixels per host pixel — what onMouseMove uses to scale
+    // host deltas to MCU 8-bit counts. Always derived from the constant
+    // kWidth/kHeight (the widget is rendered at that aspect, not at the
+    // current display resolution — see the comment in onMouseMove).
+    const double sxRatio =
+        widgetW > 0.0f ? double(Apple2Display::kWidth)  / double(widgetW) : 0.0;
+    const double syRatio =
+        widgetH > 0.0f ? double(Apple2Display::kHeight) / double(widgetH) : 0.0;
+
+    // ── Host cursor ────────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Host cursor", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Window coords : (%.1f, %.1f)", lastMouseHostX, lastMouseHostY);
+        ImGui::Text("Widget-local  : (%.1f, %.1f)", hostLocalX, hostLocalY);
+        ImGui::Text("Fraction      : (%.3f, %.3f)", fracX, fracY);
+        ImGui::Text("Button held   : %s", mouseButtonHeld ? "YES" : "no");
+        ImGui::TextColored(
+            hostInside ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f)
+                       : ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+            "Inside Apple II Screen widget: %s", hostInside ? "YES" : "no");
+    }
+
+    // ── Apple II Screen widget rect ───────────────────────────────────
+    if (ImGui::CollapsingHeader("Apple II Screen widget",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Rect min      : (%.1f, %.1f)", screenRectMin.x, screenRectMin.y);
+        ImGui::Text("Rect max      : (%.1f, %.1f)", screenRectMax.x, screenRectMax.y);
+        ImGui::Text("Size          : %.1f x %.1f host px", widgetW, widgetH);
+        ImGui::Text("Display res   : %d x %d (kWidth=%d kHeight=%d)",
+                    dispW, dispH, Apple2Display::kWidth, Apple2Display::kHeight);
+        ImGui::Text("Apple px/host : %.4f x %.4f (used by onMouseMove)",
+                    sxRatio, syRatio);
+    }
+
+    // ── MouseCard 8-bit running counter (MainWindow side) ─────────────
+    if (ImGui::CollapsingHeader("MouseCard input (8-bit counter)",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Apple counter : (%3u, %3u)  [0x%02X, 0x%02X]",
+                    mouseAppleX, mouseAppleY, mouseAppleX, mouseAppleY);
+        ImGui::Text("Sub-pixel acc : (%.3f, %.3f)",
+                    mouseSubAppleX, mouseSubAppleY);
+        const char* cardName =
+            mouseAwCard ? "AppleWin HLE (mouseaw)" :
+            mouseCard   ? "MAME-faithful (mouse)" :
+                          "(no card plugged)";
+        ImGui::Text("Active card   : %s", cardName);
+    }
+
+    // ── AppleWin HLE card-internal state ──────────────────────────────
+    if (mouseAwCard) {
+        if (ImGui::CollapsingHeader("AppleWin HLE — firmware state",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+            const auto s = mouseAwCard->debugSnapshot();
+            ImGui::Text("Clamp X       : [%d .. %d]", s.iMinX, s.iMaxX);
+            ImGui::Text("Clamp Y       : [%d .. %d]", s.iMinY, s.iMaxY);
+            ImGui::Text("Cursor iX/iY  : (%d, %d)", s.iX, s.iY);
+            ImGui::Text("Read   nX/nY  : (%d, %d)  (last MOUSE_READ snap)",
+                        s.nX, s.nY);
+            ImGui::Text("Buttons curr  : btn0=%d btn1=%d   prev: btn0=%d btn1=%d",
+                        s.bBtn0, s.bBtn1, s.bPrevBtn0, s.bPrevBtn1);
+            ImGui::Text("MODE  ($00)   : 0x%02X  on=%d intMove=%d intBtn=%d intVBL=%d",
+                        s.byMode,
+                        (s.byMode & 0x01) ? 1 : 0,
+                        (s.byMode & 0x02) ? 1 : 0,
+                        (s.byMode & 0x04) ? 1 : 0,
+                        (s.byMode & 0x08) ? 1 : 0);
+            ImGui::Text("STATE byte    : 0x%02X  curBtn0=%d curBtn1=%d moved=%d",
+                        s.byState,
+                        (s.byState & 0x80) ? 1 : 0,
+                        (s.byState & 0x10) ? 1 : 0,
+                        (s.byState & 0x20) ? 1 : 0);
+            const char* cmdName = "(unknown)";
+            switch (s.lastCmd & 0xF0) {
+                case 0x00: cmdName = "MOUSE_SET";   break;
+                case 0x10: cmdName = "MOUSE_READ";  break;
+                case 0x20: cmdName = "MOUSE_SERV";  break;
+                case 0x30: cmdName = "MOUSE_CLEAR"; break;
+                case 0x40: cmdName = "MOUSE_POS";   break;
+                case 0x50: cmdName = "MOUSE_INIT";  break;
+                case 0x60: cmdName = "MOUSE_CLAMP"; break;
+                case 0x70: cmdName = "MOUSE_HOME";  break;
+                case 0x90: cmdName = "MOUSE_TIME";  break;
+            }
+            ImGui::Text("Last cmd byte : 0x%02X (%s)  buffPos=%d dataLen=%d",
+                        s.lastCmd, cmdName, s.buffPos, s.dataLen);
+            ImGui::Text("PIA latches   : A=0x%02X  B=0x%02X", s.by6821A, s.by6821B);
+        }
+    } else if (mouseCard) {
+        if (ImGui::CollapsingHeader("MAME-faithful — card state",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled(
+                "Firmware position lives inside the 68705P3 MCU RAM —");
+            ImGui::TextDisabled(
+                "use the screen-hole readout below for the cursor state.");
+        }
+    }
+
+    // ── AppleMouse firmware screen holes (per Apple II Mouse FAQ) ─────
+    if (ImGui::CollapsingHeader("Screen holes (AppleMouse firmware)",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        const int activeSlot =
+            mouseAwCard ? mouseAwCard->getSlot() :
+            mouseCard   ? mouseCard  ->getSlot() : 0;
+        if (activeSlot < 1 || activeSlot > 7) {
+            ImGui::TextDisabled("(no mouse card plugged)");
+        } else {
+            int holeXlo = 0, holeXhi = 0, holeYlo = 0, holeYhi = 0;
+            int holeMode = 0, holeStatus = 0;
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                Memory& mem = controller->memory();
+                holeXlo   = mem.peekMainRam(uint16_t(0x0478 + activeSlot));
+                holeXhi   = mem.peekMainRam(uint16_t(0x0578 + activeSlot));
+                holeYlo   = mem.peekMainRam(uint16_t(0x04F8 + activeSlot));
+                holeYhi   = mem.peekMainRam(uint16_t(0x05F8 + activeSlot));
+                holeStatus = mem.peekMainRam(uint16_t(0x0778 + activeSlot));
+                holeMode  = mem.peekMainRam(uint16_t(0x07F8 + activeSlot));
+            }
+            const int holeX = (holeXhi << 8) | holeXlo;
+            const int holeY = (holeYhi << 8) | holeYlo;
+            ImGui::Text("Slot          : %d", activeSlot);
+            ImGui::Text("X = $%04X     : %d  (lo $%04X=0x%02X  hi $%04X=0x%02X)",
+                        0x0478 + activeSlot, holeX,
+                        0x0478 + activeSlot, holeXlo,
+                        0x0578 + activeSlot, holeXhi);
+            ImGui::Text("Y = $%04X     : %d  (lo $%04X=0x%02X  hi $%04X=0x%02X)",
+                        0x04F8 + activeSlot, holeY,
+                        0x04F8 + activeSlot, holeYlo,
+                        0x05F8 + activeSlot, holeYhi);
+            ImGui::Text("Mode  $%04X   : 0x%02X (bit0=mouseOn=%d)",
+                        0x07F8 + activeSlot, holeMode, holeMode & 0x01);
+            ImGui::Text("Status $%04X  : 0x%02X (bit7=btnDown bit5=moved)",
+                        0x0778 + activeSlot, holeStatus);
+        }
+    }
+
+    // ── CSV logging ───────────────────────────────────────────────────
+    ImGui::Separator();
+    const bool logging = mouseInspectorLogStream != nullptr;
+    if (!logging) {
+        if (ImGui::Button("Start logging to CSV")) {
+            mouseInspectorLogPath = "mouse_inspector.csv";
+            mouseInspectorLogStream =
+                std::make_unique<std::ofstream>(mouseInspectorLogPath);
+            if (*mouseInspectorLogStream) {
+                *mouseInspectorLogStream
+                    << "t_s,hostX,hostY,inside,widgetMinX,widgetMinY,"
+                       "widgetW,widgetH,appleCntX,appleCntY,btn,"
+                       "awIX,awIY,awMinX,awMaxX,awMinY,awMaxY,"
+                       "awMode,awState,holeX,holeY,holeMode\n";
+                mouseInspectorLastLogTime = 0.0;
+                pom2::log().info("MouseInspector",
+                    "Logging to " + mouseInspectorLogPath);
+            } else {
+                mouseInspectorLogStream.reset();
+                pom2::log().warn("MouseInspector",
+                    "Cannot open " + mouseInspectorLogPath);
+            }
+        }
+    } else {
+        if (ImGui::Button("Stop logging")) {
+            mouseInspectorLogStream.reset();
+            pom2::log().info("MouseInspector",
+                "Stopped logging to " + mouseInspectorLogPath);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("→ %s", mouseInspectorLogPath.c_str());
+    }
+    ImGui::TextDisabled(
+        "CSV row per ~33 ms (panel-driven); flushed after each row.");
+
+    // Rate-limit to ~30 Hz so a 5-minute capture stays small. Use
+    // ImGui's frame time (monotonic, decoupled from emulated CPU
+    // cycles) — the panel is paced by the UI loop, not the worker.
+    if (mouseInspectorLogStream) {
+        const double now = ImGui::GetTime();
+        if (now - mouseInspectorLastLogTime >= 1.0 / 30.0) {
+            mouseInspectorLastLogTime = now;
+            int activeSlot =
+                mouseAwCard ? mouseAwCard->getSlot() :
+                mouseCard   ? mouseCard  ->getSlot() : 0;
+            int holeX = 0, holeY = 0, holeMode = 0;
+            if (activeSlot >= 1 && activeSlot <= 7) {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                Memory& mem = controller->memory();
+                holeX = mem.peekMainRam(uint16_t(0x0478 + activeSlot)) |
+                       (mem.peekMainRam(uint16_t(0x0578 + activeSlot)) << 8);
+                holeY = mem.peekMainRam(uint16_t(0x04F8 + activeSlot)) |
+                       (mem.peekMainRam(uint16_t(0x05F8 + activeSlot)) << 8);
+                holeMode = mem.peekMainRam(uint16_t(0x07F8 + activeSlot));
+            }
+            MouseCardAppleWin::DebugSnapshot s{};
+            if (mouseAwCard) s = mouseAwCard->debugSnapshot();
+            auto& os = *mouseInspectorLogStream;
+            os << now << ','
+               << lastMouseHostX << ',' << lastMouseHostY << ','
+               << (hostInside ? 1 : 0) << ','
+               << screenRectMin.x << ',' << screenRectMin.y << ','
+               << widgetW << ',' << widgetH << ','
+               << int(mouseAppleX) << ',' << int(mouseAppleY) << ','
+               << (mouseButtonHeld ? 1 : 0) << ','
+               << s.iX << ',' << s.iY << ','
+               << s.iMinX << ',' << s.iMaxX << ','
+               << s.iMinY << ',' << s.iMaxY << ','
+               << int(s.byMode) << ',' << int(s.byState) << ','
+               << holeX << ',' << holeY << ',' << holeMode << '\n';
+            os.flush();
+        }
+    }
+
+    ImGui::End();
 }
 
 // ─── Audio Mixer ─────────────────────────────────────────────────────────
@@ -4580,9 +4888,35 @@ void MainWindow::render()
     renderMockingboardPanelWindow();
     renderSscPanelWindow();
     renderJoystickPanelWindow();
+    renderMouseInspectorWindow();
     renderAudioMixerWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderFloppyEmuWindow();
     renderAboutDialog();
+
+    // Hide the host OS cursor whenever the AppleWin HLE firmware is
+    // driving a visible emulated cursor AND the host pointer is over the
+    // Apple II Screen widget — the two cursors are otherwise stacked and
+    // distracting. The ImGui-Glfw backend honours
+    // ImGuiMouseCursor_None at EndFrame by calling
+    // glfwSetInputMode(GLFW_CURSOR_HIDDEN); on the next frame, leaving
+    // it Normal (default ImGuiMouseCursor_Arrow) brings the OS cursor
+    // back. The screen rect is fresh because `renderScreenWindow()` ran
+    // earlier this frame.
+    if (mouseAwCard) {
+        const auto s = mouseAwCard->debugSnapshot();
+        const bool mouseOn = (s.byMode & 0x01) != 0;
+        const float w = screenRectMax.x - screenRectMin.x;
+        const float h = screenRectMax.y - screenRectMin.y;
+        const bool insideWidget =
+            w > 0.0f && h > 0.0f &&
+            lastMouseHostX >= double(screenRectMin.x) &&
+            lastMouseHostX <= double(screenRectMax.x) &&
+            lastMouseHostY >= double(screenRectMin.y) &&
+            lastMouseHostY <= double(screenRectMax.y);
+        if (mouseOn && insideWidget) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        }
+    }
 }
