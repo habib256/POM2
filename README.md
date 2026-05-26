@@ -33,8 +33,23 @@ Debian package, and — when [`linuxdeploy`](https://github.com/linuxdeploy/linu
 is on `PATH` — an AppImage, all under `DIST/`. **Apple ROMs are
 never bundled**: drop dumps into the bundle's `share/POM2/roms/`
 or into `~/.local/share/POM2/roms/` for `.deb` installs (see
-`roms/README.txt` shipped in each artifact). Windows / macOS /
-WASM targets in progress on `release-infra`.
+`roms/README.txt` shipped in each artifact). Windows / macOS
+targets in progress on `release-infra`.
+
+### WebAssembly (browser)
+
+```bash
+# One-time: install + activate the Emscripten SDK, then:
+./build_wasm.sh              # → dist/wasm/{index.html, POM2.{js,wasm,data}}
+./build_wasm.sh --serve      # build + serve on :8080 with COOP/COEP
+```
+
+The asset bundle defaults to `roms/` + `fonts/` (~1.7 MB). Add
+`-DPOM2_WASM_BUNDLE_DISKS=ON` (passed through to `emcmake cmake`)
+to fold in `disks/` + `disks35/` + `hdv/` + `floppyemu/` (which can
+run to hundreds of MB). The telnet bridge (SSC) and AI control HTTP
+server are compiled out in WASM; every Apple II-side feature stays.
+Details and deployment notes: [`dist/wasm/README.md`](dist/wasm/README.md).
 
 ## System profiles
 

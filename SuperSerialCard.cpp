@@ -5,15 +5,23 @@
 #include "Logger.h"
 #include "M6502.h"
 
-#include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#ifndef __EMSCRIPTEN__
+// POSIX socket stack — used for the telnet bridge listener. Under
+// Emscripten there is no BSD-socket API in the browser, so the
+// listener / worker thread is compiled out and startListening()
+// becomes a logged no-op. The rest of the SSC (6551 ACIA registers,
+// slot ROM, Pascal 1.1 block) is fully functional in WASM; only the
+// host-side TCP plumbing is dropped.
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -142,6 +150,12 @@ SuperSerialCard::~SuperSerialCard()
 
 bool SuperSerialCard::startListening(uint16_t newPort)
 {
+#ifdef __EMSCRIPTEN__
+    // No BSD sockets in the browser — telnet bridge is unavailable.
+    port = newPort;
+    pom2::log().info("SSC", "telnet listener disabled in WASM build");
+    return false;
+#else
     if (listening) {
         if (newPort == port) return true;
         stopListening();
@@ -181,10 +195,15 @@ bool SuperSerialCard::startListening(uint16_t newPort)
         "listening on 127.0.0.1:" + std::to_string(port) +
         " (telnet to connect to slot " + std::to_string(slot) + ")");
     return true;
+#endif
 }
 
 void SuperSerialCard::stopListening()
 {
+#ifdef __EMSCRIPTEN__
+    listening = false;
+    return;
+#else
     if (!listening && !worker.joinable()) return;
     stopRequested = true;
     // Wake the worker out of recv()/accept() WITHOUT close()-ing the fds
@@ -200,10 +219,15 @@ void SuperSerialCard::stopListening()
     // Worker closed clientFd on exit; exchange() makes a stray close a no-op.
     { const int fd = clientFd.exchange(-1); if (fd >= 0) ::close(fd); }
     listening = false;
+#endif
 }
 
 void SuperSerialCard::closeClient()
 {
+#ifdef __EMSCRIPTEN__
+    connected = false;
+    return;
+#else
     // exchange() guarantees exactly one close even if called from two paths.
     const int fd = clientFd.exchange(-1);
     if (fd >= 0) {
@@ -211,8 +235,10 @@ void SuperSerialCard::closeClient()
         ::close(fd);
     }
     connected = false;
+#endif
 }
 
+#ifndef __EMSCRIPTEN__
 void SuperSerialCard::runWorker()
 {
     while (!stopRequested) {
@@ -337,6 +363,7 @@ void SuperSerialCard::runWorker()
         onConnectionEdge(false);
     }
 }
+#endif // !__EMSCRIPTEN__
 
 void SuperSerialCard::deliverRxBytes(const uint8_t* data, size_t n)
 {

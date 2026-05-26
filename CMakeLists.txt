@@ -209,51 +209,118 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # ─── Platform deps ───────────────────────────────────────────────────────
-find_package(OpenGL REQUIRED)
-
-find_package(glfw3 3.3 QUIET CONFIG)
-if(glfw3_FOUND)
-    set(GLFW_TARGET glfw)
+if(EMSCRIPTEN)
+    # Browser build: Emscripten ships GLFW3 + WebGL2 ports built-in. The
+    # POSIX socket bridges (telnet, AI control HTTP) are compiled out
+    # via #ifdef __EMSCRIPTEN__ guards in SuperSerialCard.cpp /
+    # AiControlServer.cpp — symbols stay declared so callers still link.
+    #
+    # Single-threaded build by design — runs on any static host
+    # (GitHub Pages, Cloudflare Pages, plain S3, etc.) without the
+    # COOP/COEP headers that pthreads / SharedArrayBuffer would
+    # require. The CPU worker thread is replaced by
+    # `EmulationController::tickFrame()` called from the main render
+    # loop (see main.cpp). Trade-off: no parallel audio thread, but
+    # miniaudio's Web Audio backend runs in a worklet outside our
+    # control, so this is invisible in practice.
+    #
+    # FORCE_FILESYSTEM + preload-file: ROMs are baked into POM2.data
+    # at build time. Settings persistence routes through IDBFS
+    # (mounted at /persistent in the shell preRun hook).
+    set(POM2_WASM_LINK
+        "-sUSE_GLFW=3"
+        "-sUSE_WEBGL2=1"
+        "-sFULL_ES3=1"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sMAX_WEBGL_VERSION=2"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=134217728"      # 128 MiB
+        "-sSTACK_SIZE=1048576"            # 1 MiB stack
+        "-sEXIT_RUNTIME=0"
+        "-sFORCE_FILESYSTEM=1"
+        "-lidbfs.js"
+        "-sEXPORTED_RUNTIME_METHODS=['FS','IDBFS','ccall','cwrap']"
+        "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+    )
+    # Preload host folders into POM2.data. Each clause maps an
+    # on-disk source folder to a virtual path the binary's std::ifstream
+    # / ResourcePaths probes will resolve against (`./roms/...`,
+    # `./disks/...`, etc — exactly what the CWD-based search finds on
+    # native).
+    # Default WASM bundle: ROMs (~600 KB) + fonts (~1 MB). The user-disk
+    # folders (`disks/`, `disks35/`, `hdv/`, `floppyemu/`) are
+    # opt-in because they can be hundreds of MB and there's no point
+    # shipping someone else's `.dsk` collection. Build with
+    # `-DPOM2_WASM_BUNDLE_DISKS=ON` to fold them in.
+    #
+    # --preload-file: pass src+dst as ONE token via SHELL: so CMake
+    # doesn't try to interpret the bare `@` as a response-file marker.
+    set(POM2_WASM_BUNDLE "roms;fonts" CACHE STRING
+        "Asset folders to preload into POM2.data (semicolon-separated)")
+    option(POM2_WASM_BUNDLE_DISKS
+        "Include disks/disks35/hdv/floppyemu in the WASM bundle" OFF)
+    if(POM2_WASM_BUNDLE_DISKS)
+        list(APPEND POM2_WASM_BUNDLE disks disks35 hdv floppyemu)
+    endif()
+    foreach(_pom2_asset ${POM2_WASM_BUNDLE})
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}")
+            list(APPEND POM2_WASM_LINK
+                "SHELL:--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}@/${_pom2_asset}")
+        endif()
+    endforeach()
+    target_link_options(${PROJECT_NAME} PRIVATE ${POM2_WASM_LINK})
+    # Match shell.html's <canvas id="canvas"> ID convention.
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        OUTPUT_NAME "POM2"
+        SUFFIX      ".html"
+    )
 else()
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
-    set(GLFW_TARGET PkgConfig::GLFW3)
-endif()
+    find_package(OpenGL REQUIRED)
 
-target_link_libraries(${PROJECT_NAME}
-    ${GLFW_TARGET}
-    ${OPENGL_LIBRARIES}
-)
+    find_package(glfw3 3.3 QUIET CONFIG)
+    if(glfw3_FOUND)
+        set(GLFW_TARGET glfw)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
+        set(GLFW_TARGET PkgConfig::GLFW3)
+    endif()
 
-# Miniaudio + stb_vorbis (vendored single-header decoders) need libdl /
-# libpthread / libm on Linux; CoreAudio + AudioToolbox + AudioUnit on
-# macOS; nothing extra on Windows beyond winmm.
-if(UNIX AND NOT APPLE)
-    find_package(Threads REQUIRED)
-    target_link_libraries(${PROJECT_NAME} ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
     target_link_libraries(${PROJECT_NAME}
-        "-framework CoreAudio"
-        "-framework AudioToolbox"
-        "-framework AudioUnit"
+        ${GLFW_TARGET}
+        ${OPENGL_LIBRARIES}
     )
-endif()
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} winmm)
-endif()
 
-if(APPLE)
-    target_link_libraries(${PROJECT_NAME}
-        "-framework Cocoa"
-        "-framework IOKit"
-        "-framework CoreVideo"
-    )
-    target_compile_definitions(${PROJECT_NAME} PRIVATE GL_SILENCE_DEPRECATION)
-endif()
+    # Miniaudio + stb_vorbis (vendored single-header decoders) need libdl /
+    # libpthread / libm on Linux; CoreAudio + AudioToolbox + AudioUnit on
+    # macOS; nothing extra on Windows beyond winmm.
+    if(UNIX AND NOT APPLE)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${PROJECT_NAME} ${CMAKE_DL_LIBS} Threads::Threads m)
+    endif()
+    if(APPLE)
+        target_link_libraries(${PROJECT_NAME}
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+            "-framework AudioUnit"
+        )
+    endif()
+    if(WIN32)
+        target_link_libraries(${PROJECT_NAME} winmm)
+    endif()
 
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} opengl32)
+    if(APPLE)
+        target_link_libraries(${PROJECT_NAME}
+            "-framework Cocoa"
+            "-framework IOKit"
+            "-framework CoreVideo"
+        )
+        target_compile_definitions(${PROJECT_NAME} PRIVATE GL_SILENCE_DEPRECATION)
+    endif()
+
+    if(WIN32)
+        target_link_libraries(${PROJECT_NAME} opengl32)
+    endif()
 endif()
 
 # ─── pom2_headless ────────────────────────────────────────────────────────
@@ -261,6 +328,8 @@ endif()
 # Disk II / Super Serial cards) wired to a TCP listener via the SSC, so
 # you can `telnet 127.0.0.1 6502` and drive the Apple II from anywhere
 # without an X server / Cocoa window. Used for self-tests and CI.
+# Skipped under Emscripten — no TCP listener, no terminal anyway.
+if(NOT EMSCRIPTEN)
 add_executable(pom2_headless
     pom2_headless.cpp
     AudioDevice.cpp
@@ -305,6 +374,7 @@ endif()
 if(WIN32)
     target_link_libraries(pom2_headless PRIVATE winmm)
 endif()
+endif() # NOT EMSCRIPTEN (pom2_headless)
 
 if(MSVC)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -316,7 +386,7 @@ endif()
 
 # ─── Tests ───────────────────────────────────────────────────────────────
 option(POM2_ENABLE_TESTS "Build POM2 unit tests" ON)
-if(POM2_ENABLE_TESTS)
+if(POM2_ENABLE_TESTS AND NOT EMSCRIPTEN)
     enable_testing()
     add_subdirectory(tests)
 endif()

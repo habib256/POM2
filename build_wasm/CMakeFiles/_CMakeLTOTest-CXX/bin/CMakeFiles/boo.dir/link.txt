@@ -1,0 +1,1 @@
+/opt/homebrew/Cellar/emscripten/5.0.5/libexec/em++ -flto=thin @CMakeFiles/boo.dir/objects1.rsp -o boo.js @CMakeFiles/boo.dir/linkLibs.rsp
