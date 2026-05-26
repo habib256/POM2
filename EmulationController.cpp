@@ -103,7 +103,9 @@ EmulationController::~EmulationController()
 {
     exitRequested.store(true);
     wakeCv.notify_all();
+#ifndef __EMSCRIPTEN__
     if (worker.joinable()) worker.join();
+#endif
 
     // Tear down audio first so the callback thread is drained before the
     // sources it's pulling from go away.
@@ -221,8 +223,48 @@ void EmulationController::start()
     // start() symmetric: stop() parks the mode, start() un-parks it.
     mode.store(Mode::Running);
     wakeCv.notify_all();
+#ifndef __EMSCRIPTEN__
     if (worker.joinable()) return;
     worker = std::thread([this] { workerLoop(); });
+#endif
+    // Under Emscripten the browser owns the frame schedule — the host
+    // calls tickFrame() once per RAF. No worker thread is spawned.
+}
+
+void EmulationController::tickFrame()
+{
+    const Mode m = mode.load();
+    if (m == Mode::Stopped) {
+        return;
+    }
+    if (m == Mode::Step) {
+        const int n = stepsPending.exchange(0);
+        if (n > 0) {
+            std::lock_guard<std::mutex> lk(stateMtx);
+            for (int i = 0; i < n; ++i) {
+                processor.step();   // step() runs mem.advanceCycles internally
+            }
+        }
+        mode.store(Mode::Stopped);
+        return;
+    }
+    // Mode::Running — same chunking as workerLoop (4 KiB cycles per
+    // lock-hold) so any host code that grabs stateMtx between frames
+    // still gets fair access mid-budget. On WASM there's only one
+    // thread, but the lock is cheap and keeps the lock-discipline
+    // contract identical to the threaded path.
+    constexpr int kLockChunkCycles = 4096;
+    const int budget = cyclesPerFrame.load();
+    for (int done = 0; done < budget; ) {
+        const int chunk = std::min(kLockChunkCycles, budget - done);
+        std::lock_guard<std::mutex> lk(stateMtx);
+        const int actually = processor.run(chunk);
+        done += (actually > 0 ? actually : chunk);
+    }
+    if (iwmDev) {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        iwmDev->tick(mem.getCycleCounter());
+    }
 }
 
 void EmulationController::stop()
@@ -383,6 +425,7 @@ void EmulationController::setMode(Mode m)
     wakeCv.notify_all();
 }
 
+#ifndef __EMSCRIPTEN__
 void EmulationController::workerLoop()
 {
     using clock = std::chrono::steady_clock;
@@ -594,3 +637,4 @@ void EmulationController::workerLoop()
         }
     }
 }
+#endif // !__EMSCRIPTEN__

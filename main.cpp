@@ -28,6 +28,10 @@
 #include <string>
 #include <thread>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 static void glfw_error_callback(int error, const char* description)
 {
     std::fprintf(stderr, "GLFW Error %d: %s\n", error, description);
@@ -102,12 +106,29 @@ int main(int argc, char* argv[])
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) return -1;
 
+#ifdef __EMSCRIPTEN__
+    // WebGL2 ≈ OpenGL ES 3.0. ImGui's OpenGL3 backend selects shader
+    // source variant from the GLSL version string — desktop "#version
+    // 150" produces shaders WebGL2 can't compile, so ImGui silently
+    // draws nothing (CPU + audio keep running → black canvas symptom).
+    // CMake forces -sUSE_WEBGL2 / MIN=MAX=2 so the actual context is
+    // always WebGL2 regardless of these hints; we still set them so
+    // GLFW's Emscripten port doesn't fight us. GLFW_ALPHA_BITS=0 → the
+    // canvas is opaque, otherwise the page background bleeds through
+    // wherever we don't draw.
+    const char* glsl_version = "#version 300 es";
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_ALPHA_BITS, 0);
+#else
     const char* glsl_version = "#version 150";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 #endif
 
     // 1568×850 matches the curated default layout (2026-05-15):
@@ -401,8 +422,9 @@ int main(int argc, char* argv[])
     // the lambda would dereference a destroyed EmulationController. The
     // `deferredCancelled` flag lets fast-quit skip the actions entirely
     // (sleep loop polls it every 10 ms) so shutdown stays snappy.
-    std::thread        deferredThread;
     std::atomic<bool>  deferredCancelled{false};
+#ifndef __EMSCRIPTEN__
+    std::thread        deferredThread;
     if (!plan->deferredActions.empty()) {
         deferredThread = std::thread(
             [actions = plan->deferredActions,
@@ -416,6 +438,7 @@ int main(int argc, char* argv[])
                 pom2::runDeferredActions(actions, *emu);
             });
     }
+#endif
 
     // Optional auto-boot path for capturing traces / repro headless-ish.
     // POM2_AUTO_BOOT_HDV=<N>  → after N seconds (default 1), call
@@ -423,9 +446,10 @@ int main(int argc, char* argv[])
     // POM2_AUTO_QUIT=<N>      → after N seconds, glfwSetWindowShouldClose
     //                          so the binary exits cleanly without state.cfg
     //                          stomping (state IS saved on clean exit).
-    std::thread       autoBootThread;
     std::atomic<bool> autoBootRequested{false};
     std::atomic<bool> autoQuitRequested{false};
+#ifndef __EMSCRIPTEN__
+    std::thread       autoBootThread;
     {
         const char* abEnv = std::getenv("POM2_AUTO_BOOT_HDV");
         const char* aqEnv = std::getenv("POM2_AUTO_QUIT");
@@ -444,6 +468,7 @@ int main(int argc, char* argv[])
             });
         }
     }
+#endif
 
     // Positional disk image → mount + boot once the worker thread and the
     // first few frames have settled (slot cards plugged, CPU running). A
@@ -452,48 +477,86 @@ int main(int argc, char* argv[])
     // Works in both GUI and --kiosk mode (bare `POM2 disk` boots in GUI).
     int cliBootCountdown = plan->bootDiskPath.empty() ? -1 : 30;
 
-    while (!glfwWindowShouldClose(window)) {
+    // Loop iteration packaged as a function so the native path can stay a
+    // plain `while`, and the WASM path can hand it to
+    // `emscripten_set_main_loop_arg` (which forbids a blocking loop on
+    // the main thread — the browser owns the frame schedule there).
+    struct FrameCtx {
+        GLFWwindow*         window;
+        MainWindow*         mainWindow;
+        std::string         bootDiskPath;
+        int                 cliBootCountdown;
+        std::atomic<bool>*  autoBootRequested;
+        std::atomic<bool>*  autoQuitRequested;
+    } frameCtx{
+        window, &mainWindow, plan->bootDiskPath, cliBootCountdown,
+        &autoBootRequested, &autoQuitRequested
+    };
+    auto iterate = [](void* userdata) {
+        auto& c = *static_cast<FrameCtx*>(userdata);
         glfwPollEvents();
+#ifdef __EMSCRIPTEN__
+        // Single-threaded build: drive the CPU from the render loop
+        // since there's no worker thread on this host. Run one frame's
+        // worth of cycles before drawing so input → CPU → display
+        // pipeline still updates every frame.
+        c.mainWindow->emul().tickFrame();
+#endif
 
-        if (cliBootCountdown > 0 && --cliBootCountdown == 0) {
+        if (c.cliBootCountdown > 0 && --c.cliBootCountdown == 0) {
             std::string err;
-            if (mainWindow.insertAndBootImage(plan->bootDiskPath, err)) {
-                pom2::log().info("CLI", "booted disk: " + plan->bootDiskPath);
+            if (c.mainWindow->insertAndBootImage(c.bootDiskPath, err)) {
+                pom2::log().info("CLI", "booted disk: " + c.bootDiskPath);
             } else {
                 pom2::log().warn("CLI", "disk boot failed: " + err);
             }
         }
 
-        if (autoBootRequested.exchange(false)) {
-            mainWindow.bootHdvImage();
+        if (c.autoBootRequested->exchange(false)) {
+            c.mainWindow->bootHdvImage();
         }
-        if (autoQuitRequested.load()) {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        if (c.autoQuitRequested->load()) {
+            glfwSetWindowShouldClose(c.window, GLFW_TRUE);
         }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        mainWindow.render();
+        c.mainWindow->render();
 
         ImGui::Render();
         int dw, dh;
-        glfwGetFramebufferSize(window, &dw, &dh);
+        glfwGetFramebufferSize(c.window, &dw, &dh);
         glViewport(0, 0, dw, dh);
         glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        glfwSwapBuffers(window);
+        glfwSwapBuffers(c.window);
+    };
+
+#ifdef __EMSCRIPTEN__
+    // `1` = simulate_infinite_loop → the runtime throws to terminate
+    // main() so the captured FrameCtx and surrounding locals stay alive
+    // for the lifetime of the browser tab. fps=0 → browser-driven RAF
+    // cadence; WebGL swap takes care of vsync.
+    // Captureless lambda decays to `void(*)(void*)` (em_arg_callback_func).
+    emscripten_set_main_loop_arg(iterate, &frameCtx, 0, 1);
+#else
+    while (!glfwWindowShouldClose(window)) {
+        iterate(&frameCtx);
     }
+#endif
 
     // Stop the deferred-actions worker before any destructors run.
     // Signal cancellation so a thread still in its 250 ms wakeup window
     // exits promptly instead of running actions on the about-to-be-
     // destroyed emulator.
     deferredCancelled.store(true, std::memory_order_release);
+#ifndef __EMSCRIPTEN__
     if (deferredThread.joinable()) deferredThread.join();
     if (autoBootThread.joinable()) autoBootThread.join();
+#endif
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

@@ -81,6 +81,16 @@ public:
     void setCassetteVolume(float v);
 
     void start();
+
+    /// Single-threaded tick path — execute ONE frame's worth of work
+    /// (cyclesPerFrame for Running, drain stepsPending for Step,
+    /// no-op for Stopped) and return. Designed for hosts that can't
+    /// run a CPU worker thread (browser WASM without SharedArrayBuffer
+    /// / pthreads); call once per render frame. Threaded hosts ignore
+    /// this entirely — the `workerLoop` spawned by `start()` covers
+    /// the same logic.
+    void tickFrame();
+
     /// Request the worker to park (sets Mode::Stopped + wakes it). NOTE: this
     /// does NOT block until the worker actually stops — it may still be mid-step
     /// for up to one budget chunk. Callers that need exclusive access to CPU /

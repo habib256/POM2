@@ -13,19 +13,26 @@
 #include "SlotBus.h"
 #include "SnapshotIO.h"
 
-#include <arpa/inet.h>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <optional>
 #include <sstream>
+#ifndef __EMSCRIPTEN__
+// POSIX socket stack — the HTTP control endpoint is desktop-only. In a
+// WASM build the listener loop and every socket call are compiled out,
+// and start()/stop() become logged no-ops. The rest of the server's
+// state machine (attach, detach, handlers) stays linked so any callers
+// inside the binary still see a valid object.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 namespace pom2 {
 
@@ -283,6 +290,7 @@ std::string jsonEscape(const std::string& in)
     return out;
 }
 
+#ifndef __EMSCRIPTEN__
 void applyRecvTimeout(int fd, int timeoutMs)
 {
     struct timeval tv{};
@@ -304,6 +312,7 @@ bool sendAll(int fd, const char* buf, size_t n)
     }
     return true;
 }
+#endif // !__EMSCRIPTEN__
 
 std::string cpuModeName(M6502::CpuMode m)
 {
@@ -369,6 +378,11 @@ void AiControlServer::detach()
 
 bool AiControlServer::start(uint16_t port)
 {
+#ifdef __EMSCRIPTEN__
+    (void)port;
+    pom2::log().info("AICtrl", "HTTP control listener disabled in WASM build");
+    return false;
+#else
     stop();
     if (!ctrl_) {
         pom2::log().warn("AICtrl", "start() called before attach() — refusing");
@@ -408,10 +422,15 @@ bool AiControlServer::start(uint16_t port)
         "listening on 127.0.0.1:" + std::to_string(port_) +
         " — POST/GET to drive the emulator from an AI agent");
     return true;
+#endif
 }
 
 void AiControlServer::stop()
 {
+#ifdef __EMSCRIPTEN__
+    running_ = false;
+    return;
+#else
     if (!running_ && !worker_.joinable()) return;
     stopRequested_ = true;
     if (listenFd_ >= 0) {
@@ -421,8 +440,10 @@ void AiControlServer::stop()
     }
     if (worker_.joinable()) worker_.join();
     running_ = false;
+#endif
 }
 
+#ifndef __EMSCRIPTEN__
 void AiControlServer::runWorker()
 {
     while (!stopRequested_) {
@@ -1133,5 +1154,6 @@ void AiControlServer::handleScreen(int fd, const Request& /*req*/)
     body.append(reinterpret_cast<const char*>(rgb.data()), rgb.size());
     sendResponse(fd, 200, "image/x-portable-pixmap", body);
 }
+#endif // !__EMSCRIPTEN__
 
 } // namespace pom2
