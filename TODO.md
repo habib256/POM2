@@ -6,103 +6,98 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 
 ## Parité MAME ↔ POM2 (dashboard)
 
-| # | Sous-système | Parité | Refs MAME | Gaps connus |
-|---|---|---|---|---|
-| 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | 🟢 $5C 8-cyc résiduel ; style hérité |
-| 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (Keyboard/PaddleInputs à extraire) |
-| 3 | Display HGR/DHGR/80-col | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` | 🟢 mono DHGR 1-px, floating-TTL, per-scanline DHGR switch ; ChatMauve idx 5≢10 (vs AppleWin, délibéré) |
-| 4 | SpeakerDevice | Verbatim | `spkrdev.cpp:74-327` | — |
-| 5 | CassetteDevice | POM2-original | `apple2.cpp:362` | — |
-| 6 | Mockingboard (6522 + AY) | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` | 🟢 Port A read mask par DDR ; 6522 subset (T2/SR/PCR) |
-| 7 | FloppySoundDevice | Verbatim | `floppy.cpp:1532-1620`, `:2925-3020` | — |
-| 8 | SlotBus + IRQ wire-OR | POM2-original | Pattern MAME slot bus | — |
-| 9 | DiskImage | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106` | 🟡 WOZ1 splice TRK+6650 ; 🟢 .nib2/.app, half-tracked NIB (88) |
-| 10 | DiskIICard | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction RAII vs per-cycle ; Disk II hors snapshot délibéré |
-| 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate (debugger lit RAM direct, jamais $C0Ex) ; window-size rounding |
-| 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 🟢 multi-partition ProDOS (CFFA3000) |
-| 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | — |
-| 14 | CFFA (MAME-faithful IDE) | Verbatim | `bus/a2bus/a2cffa.cpp` | 🟢 CHD = phase 2 ; pas de préservation média au switch de profil |
-| 15 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | 🟡 MODE_SHIFT lax (vs MAME strict, divergence ProDOS délibérée) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
-| 16 | SuperSerialCard | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | 🟢 IRQ gate SW2:6 DIP non gated |
-| 17 | MouseCard (MAME) | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | 🟡 sync curseur pixel-près (delta-based dérive en absolu) ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
-| 18 | MouseCard (AppleWin HLE) | Verbatim | AppleWin `source/MouseInterface.cpp` | — (slot EPROM seul, MCU synthétisé) |
+
+| #  | Sous-système                  | Parité          | Refs MAME                                                                | Gaps connus                                                                                                                               |
+| ---- | -------------------------------- | ------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`                                              | 🟢 $5C 8-cyc résiduel ; style hérité                                                                                                   |
+| 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs à extraire)                                                                                         |
+| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`                         | 🟢 mono DHGR 1-px, floating-TTL, per-scanline DHGR switch ; ChatMauve idx 5≢10 (vs AppleWin, délibéré)                                |
+| 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                                                                        |
+| 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                                                                        |
+| 6  | Mockingboard (6522 + AY)       | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309`                              | 🟢 Port A read mask par DDR ; 6522 subset (T2/SR/PCR)                                                                                     |
+| 7  | FloppySoundDevice              | Verbatim         | `floppy.cpp:1532-1620`, `:2925-3020`                                     | —                                                                                                                                        |
+| 8  | SlotBus + IRQ wire-OR          | POM2-original    | Pattern MAME slot bus                                                    | —                                                                                                                                        |
+| 9  | DiskImage                      | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106`                                   | 🟡 WOZ1 splice TRK+6650 ; 🟢 .nib2/.app, half-tracked NIB (88)                                                                            |
+| 10 | DiskIICard                     | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A                         | 🟢 sub-instruction RAII vs per-cycle ; Disk II hors snapshot délibéré                                                                  |
+| 11 | IWMDevice                      | Verbatim         | `machine/iwm.cpp:1-543`                                                  | 🟢 Q3 fast clock (Mac/IIgs only) ;`read()` sans side-effects-disabled gate (debugger lit RAM direct, jamais $C0Ex) ; window-size rounding |
+| 12 | SmartPortCard (//e Liron)      | POM2-original    | Spec SmartPort + Apple Tech Note                                         | 🟢 multi-partition ProDOS (CFFA3000)                                                                                                      |
+| 13 | SmartPortHub + Sony35Drive     | Verbatim         | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | —                                                                                                                                        |
+| 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2 ; pas de préservation média au switch de profil                                                                        |
+| 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`                                       | 🟡 MODE_SHIFT lax (vs MAME strict, divergence ProDOS délibérée) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs             |
+| 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP non gated                                                                                                           |
+| 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   |  🟢 PIA out_a/b sans`scheduler.synchronize`                                                                                               |
+| 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin`source/MouseInterface.cpp`                                      | — (slot EPROM seul, MCU synthétisé)                                                                                                    |
 
 ## 🟠 High
 
 - [ ] **[Memory] god-object** (`Memory.cpp/.h`). Reste à extraire
-      `Keyboard` (FIFO + strobe + paste) et `PaddleInputs` (RC +
-      boutons + Open/Solid Apple). `IIcPlusBank` déjà fait
-      (`MemoryProfile`/`IIcClassProfile`). Prérequis profil IIgs ;
-      réduit recompilations.
+  `Keyboard` (FIFO + strobe + paste) et `PaddleInputs` (RC +
+  boutons + Open/Solid Apple). `IIcPlusBank` déjà fait
+  (`MemoryProfile`/`IIcClassProfile`). Prérequis profil IIgs ;
+  réduit recompilations.
 
 ## 🟡 Medium
 
 - [ ] **[Disques] WOZ1 splice point (TRK+6650) ignoré**
-      (`DiskImage.cpp:381-398`). IWM call site câblé
-      (`iwm.cpp:218-221`), mais `DiskImage::setWriteSplice` reste
-      un stub. Re-master parité Applesauce. **Effort : 1 j.**
+  (`DiskImage.cpp:381-398`). IWM call site câblé
+  (`iwm.cpp:218-221`), mais `DiskImage::setWriteSplice` reste
+  un stub. Re-master parité Applesauce. **Effort : 1 j.**
 - [ ] **[Disques] UI « Force DOS / Force ProDOS »** — backend prêt
-      (`DiskImage::loadFile(path, SectorOrder)` à
-      `DiskImage.cpp:212`), reste le bouton dans `DiskLibrary_ImGui`
-      / `DiskController_ImGui`. **Effort : ~30 min.**
+  (`DiskImage::loadFile(path, SectorOrder)` à
+  `DiskImage.cpp:212`), reste le bouton dans `DiskLibrary_ImGui`
+  / `DiskController_ImGui`. **Effort : ~30 min.**
 - [ ] **[SmartPort] ProDOS multi-partition** (feature) — 1 image =
-      1 unit = 1 volume aujourd'hui. CFFA3000-style multi-volume
-      non supporté. 32 Mo / 16-bit / `.2mg` variantes pinnés
-      (`hdv_mass_storage_smoke` + `hdv_writeback_smoke`).
-- [ ] **[UI] MouseCard sync curseur pixel-près** non résolue.
-      Tracking delta-based dérive en absolu. MGTK `mouse_state:`
-      en aux RAM (offset non identifié) ; Pearson scan main+aux
-      44 waypoints sans candidat `|r|>0.7`. Reprise : désassembler
-      A2Desktop v1.5 ou hook memory-write X/Y-corrélé.
+  1 unit = 1 volume aujourd'hui. CFFA3000-style multi-volume
+  non supporté. 32 Mo / 16-bit / `.2mg` variantes pinnés
+  (`hdv_mass_storage_smoke` + `hdv_writeback_smoke`).
 - [ ] **[Features] PADL(2)/PADL(3) binding host** (second stick,
-      centrés 127, `JoystickInput.cpp:65-75`).
+  centrés 127, `JoystickInput.cpp:65-75`).
 - [ ] **[Features] Mapping souris → paddles** : paddle 0/1 sur
-      axe X/Y de la souris host (alternative aux pads).
+  axe X/Y de la souris host (alternative aux pads).
 - [ ] **[Features] Eve Color text mode (`$C0B9`)** — variante
-      ChatMauve/Eve, attributs FG/BG par caractère. Stub
-      `LeChatMauve_ImGui.cpp:200`.
+  ChatMauve/Eve, attributs FG/BG par caractère. Stub
+  `LeChatMauve_ImGui.cpp:200`.
 - [ ] **[Arch] Config éclatée** : env vars `POM2_*` + CLI flags +
-      `Settings`. Centraliser dans un `Config` (env → CLI →
-      Settings → defaults) et lister env vars dans `--help`.
-      **Effort : 1 j.**
+  `Settings`. Centraliser dans un `Config` (env → CLI →
+  Settings → defaults) et lister env vars dans `--help`.
+  **Effort : 1 j.**
 - [ ] **[Arch] stateMutex partagé CPU+UI**
-      (`EmulationController.h:118`). MainWindow_Slots prend ce
-      lock pendant plug/unplug — risque jitter audio. Partitionner
-      long terme.
+  (`EmulationController.h:118`). MainWindow_Slots prend ce
+  lock pendant plug/unplug — risque jitter audio. Partitionner
+  long terme.
 - [ ] **[Arch] Namespace `pom2::` incohérent** (54/105 fichiers
-      top-level ; tests/ ne l'utilise pas). Migrer mécaniquement.
+  top-level ; tests/ ne l'utilise pas). Migrer mécaniquement.
 - [ ] **[Arch] `Memory::memRead` hot path** (cascade `if` 7
-      niveaux, `Memory.cpp:1309-1437`). Table dispatch 256 entrées
-      par page haute. Prérequis : extraction `IIcPlusBank`.
+  niveaux, `Memory.cpp:1309-1437`). Table dispatch 256 entrées
+  par page haute. Prérequis : extraction `IIcPlusBank`.
 
 ## 🟢 Low
 
 - [ ] **[Floppy Emu] modes Dual-5.25" + Smartport-Unit-2** —
-      hors scope v1 (4 modes principaux couverts).
+  hors scope v1 (4 modes principaux couverts).
 - [ ] **[UI] Layout par défaut plus aéré** : ImGui Docking ou
-      `SetNextWindowPos` cascade adaptative.
+  `SetNextWindowPos` cascade adaptative.
 - [ ] **[UI] `isDuplicate` flagge cffa/smartport35 en double** dans
-      la colonne d'assignation Slot Config — cosmétique, le plug
-      reste single-instance par défaut.
+  la colonne d'assignation Slot Config — cosmétique, le plug
+  reste single-instance par défaut.
 - [ ] **[Audio] AY Port A read mask par DDR** (R14/R15 academic).
 - [ ] **[SSC] IRQ gate SW2:6 DIP** non implémenté (MAME
-      `a2ssc.cpp:373`).
+  `a2ssc.cpp:373`).
 - [ ] **[ClockCard] Slot ROM vide** (256 B signature + NOPs). Vrai
-      ThunderClock+ = 2 KB driver RTS-able DOS 3.3 / Applesoft.
+  ThunderClock+ = 2 KB driver RTS-able DOS 3.3 / Applesoft.
 - [ ] **[DHGR] mono 1-px alignment**, **floating-TTL `empty_words`**,
-      **per-scanline mode switching** — cosmétique / hors-bounds.
+  **per-scanline mode switching** — cosmétique / hors-bounds.
 - [ ] **[Features] Le Chat Mauve EVE** (64 KB ext RAM + SPEC1/
-      SPEC2/DASH/COL280), **Video-7 AppleColor RGB**, **Color
-      killer Rev 1**, **Strapping RAM 4K→48K**.
+  SPEC2/DASH/COL280), **Video-7 AppleColor RGB**, **Color
+  killer Rev 1**, **Strapping RAM 4K→48K**.
 - [ ] **[Disques] Half-tracked NIB (88)**, **Applesauce
-      `.nib2`/`.app`**, **Disk II dans snapshot** — délibérément
-      hors scope tant que WOZ couvre.
+  `.nib2`/`.app`**, **Disk II dans snapshot** — délibérément
+  hors scope tant que WOZ couvre.
 - [ ] **[Arch] M6502 style hérité** : commentaires FR/EN, casts
-      C-style, `void(void)`. `clang-format` + `clang-tidy
-      modernize-*` ciblé.
+  C-style, `void(void)`. `clang-format` + `clang-tidy modernize-*` ciblé.
 - [ ] **[Arch] `*Card` raw pointers dans MainWindow**
-      (`MainWindow.h:97-103`). Pas de notification quand SlotBus
-      replug. Observer pattern ou `controller.slotBus().peripheral(N)`.
+  (`MainWindow.h:97-103`). Pas de notification quand SlotBus
+  replug. Observer pattern ou `controller.slotBus().peripheral(N)`.
 
 ## Skips délibérés (documenté inline)
 
@@ -121,6 +116,7 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 ## Propositions / extensions
 
 ### SmartPort / stockage
+
 - 🟢 **UDC (Apple 1991)** — 4 baies hétérogènes (3.5"/5.25"/HDV).
 - 🟢 **Slinky / RamFAST RAM disk** — utilité limitée vs RamWorks III.
 - 🟢 **Apple II SCSI Card** (670-0144) — ProDOSHardDiskCard couvre
@@ -135,24 +131,24 @@ Complément aux modèles synthétiques (`DEV.md § ProDOSHardDiskCard` +
 P2/P3 restent.
 
 - [ ] 🟡 **P2 — Carte Liron / UniDisk 3.5 réelle (IWM en slot)**.
-      Stack déjà là (`IWMDevice` verbatim, `Sony35Drive`, GCR zoné,
-      `SmartPortHub`). Reste : `LironCard : SlotPeripheral` + ROM
-      Liron (343S0001). **Bloqueur** : aucun dump ROM Liron public
-      (MAME `a2iwm.cpp` « WANTED: no ROM dumps »). **Effort : ~8-12 h**
-      hors sourcing ROM.
-
+  Stack déjà là (`IWMDevice` verbatim, `Sony35Drive`, GCR zoné,
+  `SmartPortHub`). Reste : `LironCard : SlotPeripheral` + ROM
+  Liron (343S0001). **Bloqueur** : aucun dump ROM Liron public
+  (MAME `a2iwm.cpp` « WANTED: no ROM dumps »). **Effort : ~8-12 h**
+  hors sourcing ROM.
 - [ ] 🟢 **P3 — Apple II SCSI / High-Speed SCSI + CHD**. MAME
-      `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Gros lift
-      pour besoin niche. **Effort : ~30-50 h.** Garder 🟢 sauf
-      demande explicite CHD.
+  `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Gros lift
+  pour besoin niche. **Effort : ~30-50 h.** Garder 🟢 sauf
+  demande explicite CHD.
 
 ## Priorité conseillée (ROI)
 
-| Rang | Item | Effort | Impact |
-|---|---|---|---|
-| 1 | [Memory] god-object split | 2 j | 🟠 Prépare IIgs + reduces recompile |
-| 2 | [Disques] WOZ1 splice point | 1 j | 🟡 Applesauce remaster parity |
-| 3 | [Disques] UI Force DOS/ProDOS | ~30 min | 🟡 quick win, backend prêt |
+
+| Rang | Item                          | Effort  | Impact                               |
+| ------ | ------------------------------- | --------- | -------------------------------------- |
+| 1    | [Memory] god-object split     | 2 j     | 🟠 Prépare IIgs + reduces recompile |
+| 2    | [Disques] WOZ1 splice point   | 1 j     | 🟡 Applesauce remaster parity        |
+| 3    | [Disques] UI Force DOS/ProDOS | ~30 min | 🟡 quick win, backend prêt          |
 
 ## Hors scope
 
