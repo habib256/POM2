@@ -65,7 +65,7 @@ int main(int argc, char** argv)
     // no soft switches, no slot bus, no ROM write protect.
     Memory memory;
     memory.setTestMode(true);
-    std::memcpy(memory.dataMutable(), image.data(), kImageSize);
+    memory.loadFlatTestImage(image.data(), kImageSize);
 
     M6502 cpu(&memory);
     // The image's reset vector points at $0400 — set PC explicitly so we

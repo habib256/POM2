@@ -8,6 +8,24 @@ courante → `DEV.md`.
 
 ## 2026-05-26
 
+- **Memory : `dataMutable()` raw pointer supprimé (footgun debugger /
+  snapshot)**. L'accesseur retournait `mem.data()` sans aucun garde —
+  un poke debugger ou un futur consommateur (mem editor, restore path
+  externe) pouvait silencieusement clobber le ROM ($D000-$FFFF), le
+  Monitor ($F800-$FFFF) ou les ROM slots ($C100-$C7FF), avec aucun
+  diagnostic ; `restoreMainRam` se protégeait déjà via `writable[]`
+  mais rien n'imposait ce passage. Remplacé par deux accesseurs
+  narrow : `writeRamUnchecked(addr, val)` (`assert(addr < 0xC000)`,
+  bypass paging IIe vers main bank) pour les pokes ciblés, et
+  `loadFlatTestImage(src, len)` (`assert(testMode == true)`) pour le
+  bulk-load 64 KB des suites Klaus (où l'image inclut volontairement
+  la zone ROM-mirror et la mémoire entière doit se comporter en RAM
+  flat). 4 callers (tous tests) migrés ; suite verte
+  (`test_snapshot_state_roundtrip`, `test_klaus_6502`, `test_klaus_65c02`).
+  Bénéfice : le trap d'écriture ROM silencieuse est soit empêché à la
+  compilation (pas de pointeur), soit asserté à l'exécution. Item TODO
+  🟡 « [Arch] dataMutable() contourne writable[] » clos.
+
 - **Mouse Card : seconde variante AppleWin HLE (`mouseaw`)**. À côté de la
   carte MAME-faithful existante (`mouse`, qui émule le MC68705P3 cycle-par-
   cycle à partir de `mouse_341-0269.bin`), nouvelle classe

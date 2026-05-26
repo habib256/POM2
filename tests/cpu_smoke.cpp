@@ -18,11 +18,14 @@ int main()
     //   $0302 STA $0400    8D 00 04
     //   $0305 LDA $C030    AD 30 C0  ; speaker click
     //   $0308 JMP $0308    4C 08 03
-    auto* m = mem.dataMutable();
-    m[0x300] = 0xA9; m[0x301] = 0xC1;
-    m[0x302] = 0x8D; m[0x303] = 0x00; m[0x304] = 0x04;
-    m[0x305] = 0xAD; m[0x306] = 0x30; m[0x307] = 0xC0;
-    m[0x308] = 0x4C; m[0x309] = 0x08; m[0x30A] = 0x03;
+    const uint8_t program[] = {
+        0xA9, 0xC1,             // $0300 LDA #$C1
+        0x8D, 0x00, 0x04,       // $0302 STA $0400
+        0xAD, 0x30, 0xC0,       // $0305 LDA $C030
+        0x4C, 0x08, 0x03,       // $0308 JMP $0308
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        mem.writeRamUnchecked(static_cast<uint16_t>(0x300 + i), program[i]);
 
     // Force PC straight at $0300 (skip the boot-time reset vector).
     cpu.setProgramCounter(0x0300);
@@ -33,7 +36,7 @@ int main()
         totalCycles += 1;     // step() doesn't expose its own counter
     }
 
-    const uint8_t cellByte = m[0x400];
+    const uint8_t cellByte = mem.peekMainRam(0x400);
     const auto    speaker  = mem.getSpeakerToggleCount();
 
     std::printf("text[$0400] = $%02X (expected $C1)\n", cellByte);
