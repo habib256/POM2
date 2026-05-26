@@ -6,6 +6,27 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-26
+
+- **Mouse Card : seconde variante AppleWin HLE (`mouseaw`)**. À côté de la
+  carte MAME-faithful existante (`mouse`, qui émule le MC68705P3 cycle-par-
+  cycle à partir de `mouse_341-0269.bin`), nouvelle classe
+  `MouseCardAppleWin` portée verbatim depuis AppleWin
+  `source/MouseInterface.cpp` (CMouseInterface). Le MC6821 PIA reste réel
+  (réutilise notre chip model) mais la partie MCU est *synthétisée* en C++
+  : les écritures dans `$C0nX` passent par `On6821_A` / `On6821_B`, le
+  byte de commande sélectionne un opcode (`MOUSE_SET / READ / SERV / CLEAR
+  / POS / INIT / CLAMP / HOME / TIME`) et l'état mouse (X, Y, clamps,
+  boutons, IRQ status) est calculé directement à partir des entrées hôte.
+  Conséquence pratique : la variante AppleWin n'a besoin que de la slot
+  EPROM `mouse_341-0270-c.bin` — pas de ROM mask 341-0269. Le routage UI
+  (`MainWindow::onMouseMove/Button` + boucle de sync absolue via les
+  screen holes `$0478+s` / `$0578+s` / `$04F8+s` / `$05F8+s` / `$07F8+s`)
+  est partagé : les deux cartes exposent le même `setHostMouse(rawX, rawY,
+  button)`. Plug via Slot Configuration → « Mouse (AppleWin HLE) ». Pinné
+  par `mouse_card_applewin_smoke` (slot-ROM bank-select + BIT5 write-
+  strobe handshake → MOUSE_INIT canned $FF reply remonté sur PRA).
+
 ## 2026-05-25 — BUGJAM
 
 - **M6502 : NMOS undoc 2-byte ops $0B/$2B/$EB traités en 1 octet → desync PC**.
