@@ -101,6 +101,27 @@ void MouseCardAppleWin::setHostMouse(uint8_t rawX, uint8_t rawY, bool button)
     hostButton.store(button, std::memory_order_relaxed);
 }
 
+MouseCardAppleWin::DebugSnapshot MouseCardAppleWin::debugSnapshot() const
+{
+    DebugSnapshot s{};
+    s.iX        = iX;        s.iY        = iY;
+    s.nX        = nX;        s.nY        = nY;
+    s.iMinX     = iMinX;     s.iMaxX     = iMaxX;
+    s.iMinY     = iMinY;     s.iMaxY     = iMaxY;
+    s.bBtn0     = bButtons[0];
+    s.bBtn1     = bButtons[1];
+    s.bPrevBtn0 = bBtn0;
+    s.bPrevBtn1 = bBtn1;
+    s.byMode    = byMode;
+    s.byState   = byState;
+    s.by6821A   = by6821A;
+    s.by6821B   = by6821B;
+    s.buffPos   = nBuffPos;
+    s.dataLen   = nDataLen;
+    s.lastCmd   = byBuff[0];
+    return s;
+}
+
 // ─── SlotPeripheral ───────────────────────────────────────────────────────
 
 uint8_t MouseCardAppleWin::deviceSelectRead(uint8_t low4)

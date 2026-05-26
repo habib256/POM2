@@ -75,6 +75,31 @@ public:
     /// correction and apply them via the firmware's absolute clamp window.
     void setHostMouse(uint8_t rawX, uint8_t rawY, bool button);
 
+    /// Snapshot of internal mouse-firmware state for the Mouse Inspector
+    /// panel. Not part of the AppleWin protocol — POM2-only diagnostic
+    /// view of the HLE'd MCU's working set: clamp window, current
+    /// position iX/iY (firmware-resolved cursor inside the clamp),
+    /// last-MOUSE_READ snapshot nX/nY, button shadows, mode/state bytes,
+    /// and the PIA port latches. Read on the UI thread; the underlying
+    /// fields are scalars touched by the CPU thread, so values may be
+    /// momentarily stale but never torn for the purposes of a UI panel.
+    struct DebugSnapshot {
+        int iX, iY;
+        int nX, nY;
+        int iMinX, iMaxX;
+        int iMinY, iMaxY;
+        bool bBtn0, bBtn1;
+        bool bPrevBtn0, bPrevBtn1;
+        uint8_t byMode;
+        uint8_t byState;
+        uint8_t by6821A;
+        uint8_t by6821B;
+        int     buffPos;
+        int     dataLen;
+        uint8_t lastCmd;       // byBuff[0]
+    };
+    DebugSnapshot debugSnapshot() const;
+
     // ─── SlotPeripheral overrides ──────────────────────────────────────
     std::string_view name() const override { return "Mouse (AppleWin HLE)"; }
     uint8_t deviceSelectRead (uint8_t low4) override;
