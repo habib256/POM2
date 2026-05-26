@@ -91,7 +91,7 @@ int main(int argc, char** argv)
     // Flat RAM: every byte addressable, no soft switches, no slot bus.
     Memory memory;
     memory.setTestMode(true);
-    std::memcpy(memory.dataMutable(), image.data(), kImageSize);
+    memory.loadFlatTestImage(image.data(), kImageSize);
 
     M6502 cpu(&memory);
     // 65C02 mode is the default; assert it stays that way so a future

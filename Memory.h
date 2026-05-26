@@ -32,7 +32,9 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -170,7 +172,28 @@ public:
 
     // Direct access for the display / debugger / snapshot.
     const uint8_t* data() const { return mem.data(); }
-    uint8_t* dataMutable()      { return mem.data(); }
+
+    /// Test/debug write into MAIN-bank RAM, bypassing IIe aux paging
+    /// (80STORE/RAMRD/PAGE2/ALTZP) and ignoring the writable[] bitmap.
+    /// Asserts the target lies inside RAM (`addr < 0xC000`) so a stray
+    /// debugger poke can't silently rewrite slot ROM or the Monitor —
+    /// loadRomBytes()/loadAppleIIRom() are the only legitimate ways to
+    /// touch the ROM mirror.
+    void writeRamUnchecked(uint16_t addr, uint8_t value) {
+        assert(addr < 0xC000 && "writeRamUnchecked must target RAM, not ROM/I-O");
+        mem[addr] = value;
+    }
+
+    /// Flat-RAM bulk load for the Klaus Dormann functional tests, which
+    /// stuff a 64 KB image (including ROM-mirror bytes) into Memory and
+    /// then expect every byte to behave as plain RAM. Asserts that
+    /// `setTestMode(true)` has been called, so this can't be misused as
+    /// a back door from production code.
+    void loadFlatTestImage(const uint8_t* src, size_t length) {
+        assert(testMode && "loadFlatTestImage requires setTestMode(true)");
+        assert(length <= 0x10000 && "image larger than 64 KB");
+        if (src && length) std::memcpy(mem.data(), src, length);
+    }
 
     /// Bulk ROM load — bypasses the writable[] bitmap. Used by RomLoader
     /// (and by future cards) to flash their ROM image into protected

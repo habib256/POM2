@@ -91,10 +91,15 @@ ci-dessous.
 - [ ] **[Features] Eve Color text mode (`$C0B9`)** — variante
       ChatMauve/Eve, attributs FG/BG par caractère. Stub
       `LeChatMauve_ImGui.cpp:200`.
-- [ ] **[Arch] `Memory::dataMutable()` contourne `writable[]`**
-      (`Memory.h:135,258`). Remplacer par `DebugWriteScope` RAII ou
-      `writeRamUnchecked` avec assert `addr < 0xC000`. Évite écritures
-      ROM silencieuses depuis debugger / snapshot. **Effort : 2 h.**
+- [x] **[Arch] `Memory::dataMutable()` contourne `writable[]`** (2026-05-26).
+      Raw mutable pointer supprimé, remplacé par deux accesseurs
+      narrow : `writeRamUnchecked(addr, val)` (`assert(addr < 0xC000)`,
+      bypass IIe paging → main bank) pour les pokes RAM ciblés, et
+      `loadFlatTestImage(src, len)` (`assert(testMode == true)`) pour le
+      bulk-load Klaus 64 KB. Le trap d'écriture ROM silencieuse est
+      désormais soit empêché à la compilation (pas de pointeur exposé),
+      soit asserté à l'exécution. 4 tests mis à jour, suite verte. Détail
+      → `CHANGELOG.md`.
 - [ ] **[Arch] Config éclatée** : env vars `POM2_*` + CLI flags +
       `Settings`. Centraliser dans un `Config` (env → CLI → Settings →
       defaults) et lister les env vars dans `--help`. **Effort : 1 j.**

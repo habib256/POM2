@@ -110,8 +110,8 @@ int main()
     // ── Part C: restoreMainRam restores RAM cells ────────────────────────
     {
         Memory src;
-        src.dataMutable()[0x1000] = 0xAB;
-        src.dataMutable()[0xBFFF] = 0xCD;
+        src.writeRamUnchecked(0x1000, 0xAB);
+        src.writeRamUnchecked(0xBFFF, 0xCD);
         std::vector<uint8_t> snap(0x10000);
         for (size_t i = 0; i < 0x10000; ++i) snap[i] = src.data()[i];
 
