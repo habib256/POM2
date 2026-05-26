@@ -1,259 +1,163 @@
 # POM2 — TODO
 
-État 2026-05-24. Backlog **dédupliqué** : chaque item n'apparaît qu'une
-seule fois, groupé par sévérité (🟠 high · 🟡 medium · 🟢 low), puis les
-buckets non-bug (skips délibérés, propositions, hors scope). Tag
-`[sous-système]` par item. Items résolus → `CHANGELOG.md`. Refs MAME →
-`DEV.md`.
+État 2026-05-26. Backlog dédupliqué, groupé par sévérité (🟠 high ·
+🟡 medium · 🟢 low) puis buckets non-bug. Tag `[sous-système]`.
+Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 
 ## Parité MAME ↔ POM2 (dashboard)
 
-Snapshot transversal post-IWM (audit 2026-05-16). Vue d'ensemble par
-sous-système ; le détail actionnable vit dans les sections par sévérité
-ci-dessous.
-
-| # | Sous-système | Parité | Refs MAME | Écarts / Bugs |
+| # | Sous-système | Parité | Refs MAME | Gaps connus |
 |---|---|---|---|---|
-| 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | NMOS undoc ANC/SBC-imm = NOP 2-octets ✅ (bugjam) ; cycles undoc-NOP 65C02 corrigés ✅ ($5C 8-cyc résiduel) ; Casts C-style + commentaires FR/EN hérités 🟢 |
-| 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (reste Keyboard/PaddleInputs) ; //c+ extrait en `MemoryProfile` ✅ ; 🟡 `dataMutable()` contourne `writable[]` |
-| 3 | Display HGR/DHGR/80-col | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` | 🟢 mono DHGR 1-px alignment, 🟢 floating-TTL `empty_words`, 🟢 per-scanline DHGR switch ; ChatMauve palette idx 5≢10 (divergence assumée vs AppleWin) |
-| 4 | SpeakerDevice | Verbatim | `spkrdev.cpp:74-327` | Aucun écart connu |
-| 5 | CassetteDevice | POM2-original | `apple2.cpp:362` (sign-flip) | Auto-rewind 500 ms désormais opt-in default-off ✅ (`3f42efc`) — aucun écart connu |
-| 6 | Mockingboard (6522 + AY) | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` | AY tone counter entier ✅ (`3f42efc`) ; 🟢 Port A read mask par DDR absent, 6522 subset (T2/SR/PCR pas modélisés) |
-| 7 | FloppySoundDevice | Verbatim | `floppy.cpp:1532-1620`, `:2925-3020` | Aucun écart connu |
-| 8 | SlotBus + IRQ wire-OR | POM2-original | Pattern MAME slot bus | Aucun gap fonctionnel |
-| 9 | DiskImage (.dsk/.po/.nib/.2mg/.woz) | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106` | 🟡 WOZ1 splice TRK+6650 ignoré, 🟢 .nib2/.app non supportés, 🟢 half-tracked NIB (88) absent |
-| 10 | DiskIICard (wozfdc + diskiing) | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction inflation RAII vs MAME per-cycle (la LSS s'est avérée NON coupable du bug Mr. Robot — c'était `bootFromSlot` qui sautait l'autostart F8, voir § Medium) ; Disk II hors snapshot délibérément |
-| 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` (audit 2026-05-16) | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate ; window-size round-down vs round-up choices |
-| 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 32 MB HDV + .2mg variantes pinnés ✅ ; 🟢 multiples partitions ProDOS (CFFA3000 style) absent |
-| 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | Aucun gap connu |
-| 14 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | TP tick rates 64/256/2048/4096 Hz + IRQ wiring ✅ (interval timers uPD4990A-serial-only, hors portée) ; 🟡 MODE_SHIFT lax (divergence assumée ProDOS) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
-| 15 | SuperSerialCard (6551 ACIA) | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | LF→CR RX symétrique + raw-mode toggle ✅ (`3f42efc`) ; Pascal 1.1 ID block + entry table `$Cn0D-$Cn10` ✅ ; 🟢 IRQ gate SW2:6 DIP non gated |
-| 16 | MouseCard | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | ✅ X axis vérifié OK (bits+`updateAxis` = MAME ; A2Desktop X tracke via `/mouse`) ; 🟡 sync curseur pixel-près host/guest delta-based ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
+| 1 | M6502 / 65C02 / Rockwell / WDC | Verbatim | `om6502.lst`, `ow65c02.lst` | 🟢 $5C 8-cyc résiduel ; style hérité |
+| 2 | Memory + IIe + RamWorks | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115` | 🟠 god-object (Keyboard/PaddleInputs à extraire) |
+| 3 | Display HGR/DHGR/80-col | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` | 🟢 mono DHGR 1-px, floating-TTL, per-scanline DHGR switch ; ChatMauve idx 5≢10 (vs AppleWin, délibéré) |
+| 4 | SpeakerDevice | Verbatim | `spkrdev.cpp:74-327` | — |
+| 5 | CassetteDevice | POM2-original | `apple2.cpp:362` | — |
+| 6 | Mockingboard (6522 + AY) | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` | 🟢 Port A read mask par DDR ; 6522 subset (T2/SR/PCR) |
+| 7 | FloppySoundDevice | Verbatim | `floppy.cpp:1532-1620`, `:2925-3020` | — |
+| 8 | SlotBus + IRQ wire-OR | POM2-original | Pattern MAME slot bus | — |
+| 9 | DiskImage | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106` | 🟡 WOZ1 splice TRK+6650 ; 🟢 .nib2/.app, half-tracked NIB (88) |
+| 10 | DiskIICard | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A | 🟢 sub-instruction RAII vs per-cycle ; Disk II hors snapshot délibéré |
+| 11 | IWMDevice | Verbatim | `machine/iwm.cpp:1-543` | 🟢 Q3 fast clock (Mac/IIgs only) ; `read()` sans side-effects-disabled gate (debugger lit RAM direct, jamais $C0Ex) ; window-size rounding |
+| 12 | SmartPortCard (//e Liron) | POM2-original | Spec SmartPort + Apple Tech Note | 🟢 multi-partition ProDOS (CFFA3000) |
+| 13 | SmartPortHub + Sony35Drive | Verbatim | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | — |
+| 14 | CFFA (MAME-faithful IDE) | Verbatim | `bus/a2bus/a2cffa.cpp` | 🟢 CHD = phase 2 ; pas de préservation média au switch de profil |
+| 15 | ClockCard / ThunderClock+ | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327` | 🟡 MODE_SHIFT lax (vs MAME strict, divergence ProDOS délibérée) ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs |
+| 16 | SuperSerialCard | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373` | 🟢 IRQ gate SW2:6 DIP non gated |
+| 17 | MouseCard (MAME) | Verbatim | `bus/a2bus/mouse.cpp`, M68705 + MC6821 | 🟡 sync curseur pixel-près (delta-based dérive en absolu) ; 🟢 PIA out_a/b sans `scheduler.synchronize` |
+| 18 | MouseCard (AppleWin HLE) | Verbatim | AppleWin `source/MouseInterface.cpp` | — (slot EPROM seul, MCU synthétisé) |
 
 ## 🟠 High
 
-- [x] **[MouseCard] Curseur X bloqué à ~8 px Apple — NON REPRODUCTIBLE,
-      clos (2026-05-25).** Vérifié sur 4 fronts : parité headless X=Y=800,
-      mapping bits + `updateAxis` identiques à MAME, clean-room firmware
-      live (X≈Y), et **A2Desktop lui-même** via le nouvel endpoint
-      `POST /mouse` (injection +150 identique → X=+134, Y=+95, donc X tracke
-      *plus* que Y). L'hypothèse (c) updateAxis était fausse ; le symptôme
-      était déjà résorbé (fix `kWidth` de `onMouseMove`) ou propre au clamp
-      d'une appli. Détail → `CHANGELOG.md`. Reste ouvert l'item *distinct*
-      « sync curseur pixel-près » en 🟡 Medium.
-- [ ] **[Memory] god-object** (`Memory.cpp` / `Memory.h`). Reste à
-      extraire `Keyboard` (FIFO + strobe + paste) et `PaddleInputs`
-      (RC + boutons + Open/Solid Apple). L'`IIcPlusBank` est **fait** :
-      toutes les spécificités //c/c+ ($C028 ROMBANK, IWM $C0E0-$C0EF,
-      MIG $CC00/$CE00, INTCXROM forcé, alt firmware) sont extraites
-      derrière `MemoryProfile` / `IIcClassProfile` (voir `CHANGELOG.md`
-      + `DEV.md § MemoryProfile`). Prérequis profil IIgs ; réduit
-      recompilations.
+- [ ] **[Memory] god-object** (`Memory.cpp/.h`). Reste à extraire
+      `Keyboard` (FIFO + strobe + paste) et `PaddleInputs` (RC +
+      boutons + Open/Solid Apple). `IIcPlusBank` déjà fait
+      (`MemoryProfile`/`IIcClassProfile`). Prérequis profil IIgs ;
+      réduit recompilations.
 
 ## 🟡 Medium
 
 - [ ] **[Disques] WOZ1 splice point (TRK+6650) ignoré**
-      (`DiskImage.cpp:381-398`). MAME passe via `set_write_splice` ;
-      IWM call site câblé (2026-05-16) mais `DiskImage::setWriteSplice`
-      reste un stub. Re-master parité Applesauce. **Effort : 1 j.**
+      (`DiskImage.cpp:381-398`). IWM call site câblé
+      (`iwm.cpp:218-221`), mais `DiskImage::setWriteSplice` reste
+      un stub. Re-master parité Applesauce. **Effort : 1 j.**
 - [ ] **[Disques] UI « Force DOS / Force ProDOS »** — backend prêt
-      (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
-      reste le bouton dans `DiskLibrary_ImGui` / `DiskController_ImGui`.
-      **Effort : ~30 min.**
-- [ ] **[SmartPort] ProDOS multi-partition** (feature, pas un test) —
-      1 image = 1 unit = 1 volume aujourd'hui. Les images CFFA3000-style
-      multi-volume (partition map → plusieurs units ProDOS) ne sont pas
-      supportées. La capacité 32 Mo (65536 blocs), l'adressage bloc
-      16-bit ($C0D1) et les variantes d'en-tête .2mg (data-offset ≠ 64,
-      WP, trailer préservé au write-back) sont désormais **pinnés**
-      (`hdv_mass_storage_smoke_test` + `hdv_writeback_smoke_test`).
-- [ ] **[UI] MouseCard sync curseur pixel-près** non résolue. Tracking
-      delta-based dérive en absolu. Investigation : MGTK `mouse_state:`
-      en aux RAM (offset non identifié) ; Pearson scan main+aux 44
-      waypoints sans candidat `|r|>0.7`. Reprise : désassembler
+      (`DiskImage::loadFile(path, SectorOrder)` à
+      `DiskImage.cpp:212`), reste le bouton dans `DiskLibrary_ImGui`
+      / `DiskController_ImGui`. **Effort : ~30 min.**
+- [ ] **[SmartPort] ProDOS multi-partition** (feature) — 1 image =
+      1 unit = 1 volume aujourd'hui. CFFA3000-style multi-volume
+      non supporté. 32 Mo / 16-bit / `.2mg` variantes pinnés
+      (`hdv_mass_storage_smoke` + `hdv_writeback_smoke`).
+- [ ] **[UI] MouseCard sync curseur pixel-près** non résolue.
+      Tracking delta-based dérive en absolu. MGTK `mouse_state:`
+      en aux RAM (offset non identifié) ; Pearson scan main+aux
+      44 waypoints sans candidat `|r|>0.7`. Reprise : désassembler
       A2Desktop v1.5 ou hook memory-write X/Y-corrélé.
-- [x] **[UI] LED de statut colorée par slot card** (2026-05-25) — helper
-      partagé `StatusLed.h` (gris vide / vert OK / jaune WP / **rouge erreur** +
-      tooltip) câblé en tête des panels HDV, Disk II, 3.5" (par lecteur) et
-      SmartPort (par unité, dédupliqué), + la pastille de la colonne droite de
-      Slot Configuration. (DiskLibrary reste un navigateur sans LED de tête.)
-- [x] **[SSC] Pascal 1.1 ID block** (2026-05-25). Le bloc d'entrée n'est PAS
-      en `$CnFB-$CnFF` (note initiale erronée) mais en **`$Cn0D-$Cn10`** :
-      offsets bas de PINIT/PREAD/PWRITE/PSTATUS, juste après la signature
-      `$Cn0B=$01`/`$Cn0C=$31`. Layout + convention d'appel calqués sur le vrai
-      ROM SSC (6502disassembly.com/a2-rom/SSC). 4 routines ajoutées dans
-      `buildRom()`. Pin : `ssc_acia_smoke` `testPascalIdBlock`.
-- [ ] **[Features] PADL(2)/PADL(3) binding host** (second stick, centrés
-      127, `JoystickInput.cpp:65-75`).
-- [ ] **[Features] Mapping souris → paddles** : paddle 0/1 sur axe X/Y
-      de la souris host (alternative aux pads).
+- [ ] **[Features] PADL(2)/PADL(3) binding host** (second stick,
+      centrés 127, `JoystickInput.cpp:65-75`).
+- [ ] **[Features] Mapping souris → paddles** : paddle 0/1 sur
+      axe X/Y de la souris host (alternative aux pads).
 - [ ] **[Features] Eve Color text mode (`$C0B9`)** — variante
       ChatMauve/Eve, attributs FG/BG par caractère. Stub
       `LeChatMauve_ImGui.cpp:200`.
-- [x] **[Arch] `Memory::dataMutable()` contourne `writable[]`** (2026-05-26).
-      Raw mutable pointer supprimé, remplacé par deux accesseurs
-      narrow : `writeRamUnchecked(addr, val)` (`assert(addr < 0xC000)`,
-      bypass IIe paging → main bank) pour les pokes RAM ciblés, et
-      `loadFlatTestImage(src, len)` (`assert(testMode == true)`) pour le
-      bulk-load Klaus 64 KB. Le trap d'écriture ROM silencieuse est
-      désormais soit empêché à la compilation (pas de pointeur exposé),
-      soit asserté à l'exécution. 4 tests mis à jour, suite verte. Détail
-      → `CHANGELOG.md`.
 - [ ] **[Arch] Config éclatée** : env vars `POM2_*` + CLI flags +
-      `Settings`. Centraliser dans un `Config` (env → CLI → Settings →
-      defaults) et lister les env vars dans `--help`. **Effort : 1 j.**
-- [ ] **[Arch] stateMutex partagé CPU+UI** (`EmulationController.h:118`).
-      MainWindow_Slots prend ce lock pendant plug/unplug — risque
-      jitter audio. Partitionner long terme.
+      `Settings`. Centraliser dans un `Config` (env → CLI →
+      Settings → defaults) et lister env vars dans `--help`.
+      **Effort : 1 j.**
+- [ ] **[Arch] stateMutex partagé CPU+UI**
+      (`EmulationController.h:118`). MainWindow_Slots prend ce
+      lock pendant plug/unplug — risque jitter audio. Partitionner
+      long terme.
 - [ ] **[Arch] Namespace `pom2::` incohérent** (54/105 fichiers
-      top-level ; tests/ ne l'utilisent pas). Migrer mécaniquement en
-      une passe.
-- [ ] **[Arch] `Memory::memRead` hot path** (cascade `if` 7 niveaux,
-      `Memory.cpp:1309-1437`). Table dispatch 256 entrées par page
-      haute. Prérequis : extraction `IIcPlusBank`.
+      top-level ; tests/ ne l'utilise pas). Migrer mécaniquement.
+- [ ] **[Arch] `Memory::memRead` hot path** (cascade `if` 7
+      niveaux, `Memory.cpp:1309-1437`). Table dispatch 256 entrées
+      par page haute. Prérequis : extraction `IIcPlusBank`.
 
 ## 🟢 Low
 
-- [x] **[UI] Slot Config hérité vs Slot Manager — fusion** (2026-05-25).
-      Résolu en **fusionnant** les deux : le `Slot Manager` autonome a été
-      supprimé (`SlotManager_ImGui.*` retiré) et sa zone médias intégrée
-      dans la colonne droite de `Slot Configuration` (built-ins grisés à
-      gauche, disques internes + ports montables à droite). Reste un écart
-      mineur : `renderSlotConfigPanel`'s `isDuplicate` marque encore
-      cffa/smartport35 en double dans la colonne d'assignation (seul
-      `diskii` est multi-instance là) — acceptable, l'assignation reste
-      single-instance pour ces cartes par défaut.
-- [ ] **[Floppy Emu] modes Dual-5.25" + Smartport-Unit-2**. Le modèle
-      `FloppyEmuDevice` couvre 4 modes (5.25 / 3.5 / Unidisk 3.5 /
-      Smartport HD) ; les modes « Dual 5.25 » (2 lecteurs sur un
-      contrôleur) et « Smartport Unit 2 » (astuce de boot daisy-chain
-      IIgs) du vrai device sont hors scope v1. À reprendre si un cas
-      d'usage concret apparaît.
+- [ ] **[Floppy Emu] modes Dual-5.25" + Smartport-Unit-2** —
+      hors scope v1 (4 modes principaux couverts).
 - [ ] **[UI] Layout par défaut plus aéré** : ImGui Docking ou
-      `SetNextWindowPos` cascade adaptative selon nombre de cartes.
-- [ ] **[Audio] AY Port A read mask par DDR** (`Mockingboard.cpp`,
-      R14/R15 « unused, academic »). Sans impact concret.
-- [ ] **[SSC] IRQ gate SW2:6 DIP** non implémenté (MAME `a2ssc.cpp:373`).
+      `SetNextWindowPos` cascade adaptative.
+- [ ] **[UI] `isDuplicate` flagge cffa/smartport35 en double** dans
+      la colonne d'assignation Slot Config — cosmétique, le plug
+      reste single-instance par défaut.
+- [ ] **[Audio] AY Port A read mask par DDR** (R14/R15 academic).
+- [ ] **[SSC] IRQ gate SW2:6 DIP** non implémenté (MAME
+      `a2ssc.cpp:373`).
 - [ ] **[ClockCard] Slot ROM vide** (256 B signature + NOPs). Vrai
-      ThunderClock+ = 2 KB driver RTS-able pour DOS 3.3 / Applesoft.
-- [ ] **[DHGR] `monochrome_dhr_shift()` 1-px alignment** absent en mono
-      (MAME `apple2video.cpp:460-471`). Cosmétique.
-- [ ] **[DHGR] Floating-TTL** `empty_words[40]` non modélisé pour rows
-      hors bounds (MAME `:751-758`). Jamais atteint en 48 K+.
-- [ ] **[DHGR] per-scanline mode switching** — bottom-of-mixed utilise
-      région 4-line statique.
-- [ ] **[Features] Le Chat Mauve EVE** (64 KB ext RAM + modes SPEC1/
-      SPEC2/DASH/COL280), **Video-7 AppleColor RGB**, **Color killer
-      Rev 1**, **Strapping RAM 4K→48K**.
-- [ ] **[Disques] Half-tracked NIB (88 tracks)**, **Applesauce
-      `.nib2`/`.app`**, **Disk II dans snapshot** — délibérément hors
-      scope tant que WOZ couvre.
-- [ ] **[Arch] M6502 style hérité** : commentaires FR/EN, casts C-style,
-      signatures `void(void)`. `clang-format` + `clang-tidy
+      ThunderClock+ = 2 KB driver RTS-able DOS 3.3 / Applesoft.
+- [ ] **[DHGR] mono 1-px alignment**, **floating-TTL `empty_words`**,
+      **per-scanline mode switching** — cosmétique / hors-bounds.
+- [ ] **[Features] Le Chat Mauve EVE** (64 KB ext RAM + SPEC1/
+      SPEC2/DASH/COL280), **Video-7 AppleColor RGB**, **Color
+      killer Rev 1**, **Strapping RAM 4K→48K**.
+- [ ] **[Disques] Half-tracked NIB (88)**, **Applesauce
+      `.nib2`/`.app`**, **Disk II dans snapshot** — délibérément
+      hors scope tant que WOZ couvre.
+- [ ] **[Arch] M6502 style hérité** : commentaires FR/EN, casts
+      C-style, `void(void)`. `clang-format` + `clang-tidy
       modernize-*` ciblé.
 - [ ] **[Arch] `*Card` raw pointers dans MainWindow**
-      (`MainWindow.h:97-103`). Pas de notification quand SlotBus replug.
-      Observer pattern ou `controller.slotBus().peripheral(N)`.
+      (`MainWindow.h:97-103`). Pas de notification quand SlotBus
+      replug. Observer pattern ou `controller.slotBus().peripheral(N)`.
 
-## Tests de pin dus
+## Skips délibérés (documenté inline)
 
-- [x] Smoke tests pour les quick-wins audio/IO de `3f42efc` (2026-05-25) :
-      **[Mockingboard]** AY tone counter — `mockingboard_smoke`
-      `testAyToneFrequency` (période 64 → 998.6 Hz mesuré vs 998.8 attendu) ;
-      **[SSC]** LF→CR déjà pinné par `testTelnetLineEndingNormalisation`, +
-      `testRawModeFlag` (défaut OFF + toggle) ; **[Cassette]** auto-rewind
-      défaut-OFF + toggle dans `cassette_wav_tail`. (LF→CR symétrique et IAC
-      FSM étaient déjà couverts.)
-
-## Skips délibérés (won't-fix, documenté inline)
-
-- 🟢 **[Memory] `$C040` STRB pas gated `!//c`** (MAME `apple2e.cpp:1927`).
-  Aucun sink wired → 0 effet observable.
+- 🟢 **[Memory] `$C040` STRB pas gated `!//c`** (MAME
+  `apple2e.cpp:1927`) — aucun sink wired.
 - 🟢 **[ClockCard] DATA_OUT live** vs MAME latch sur CLK edge en
-  MODE_SHIFT (`ClockCard.cpp:193-200`). Gating strict casserait les
-  reads ProDOS stock — hack délibéré, documenté inline.
+  MODE_SHIFT (`ClockCard.cpp:193-200`) — strict casserait stock
+  ProDOS.
 - 🟢 **[MouseCard] PIA out_a/b sans `scheduler.synchronize`** (MAME
-  `mouse.cpp:280-294`). Pas de race firmware-visible observée.
+  `mouse.cpp:280-294`) — pas de race firmware-visible.
 - 🟢 **[ClockCard] offset model vs MAME `set_time`** — équivalent
-  comportementalement tant que `timeFn()` avance en lock-step.
-- 🔁 **[MAME] path drift refresher** tous les ~6 mois pour suivre les
+  comportementalement tant que `timeFn()` lock-step.
+- 🔁 **[MAME] path drift refresher** ~6 mois pour suivre les
   renommages upstream (récent : `wozfdc.cpp` `bus/a2bus → machine`).
 
 ## Propositions / extensions
 
-### SmartPort
-- 🟢 **UDC (Apple 1991)** — 4 baies hétérogènes (3.5"/5.25"/HDV). 99 %
-  des configs réelles utilisaient Liron + Disk II en 2 slots.
-- 🟢 **Slinky / RamFAST RAM disk** — trivial sur le papier mais utilité
-  limitée vs RamWorks III.
-- 🟢 **Apple II SCSI Card** (670-0144) — ProDOSHardDiskCard couvre déjà
-  le besoin fonctionnel.
-- 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice pour vivre
-  attaché à un slot card (rare ; ex : « Mr. Robot » .woz Sony).
+### SmartPort / stockage
+- 🟢 **UDC (Apple 1991)** — 4 baies hétérogènes (3.5"/5.25"/HDV).
+- 🟢 **Slinky / RamFAST RAM disk** — utilité limitée vs RamWorks III.
+- 🟢 **Apple II SCSI Card** (670-0144) — ProDOSHardDiskCard couvre
+  déjà le fonctionnel.
+- 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice pour
+  vivre attaché à un slot card (rare).
 
-### Cartes de stockage MAME-fidèles (2026-05-22)
+### Cartes MAME-fidèles (vraie ROM + bus émulé)
 
-Complément « vraie carte » au modèle synthétique (lignée AppleWin)
-documenté `DEV.md § ProDOSHardDiskCard (HDV)` + `§ SmartPortCard`.
-Objectif : exécuter le **firmware réel** des cartes du commerce
-par-dessus des **puces de bus émulées**, comme MAME — fidélité
-matérielle plutôt que suffisance fonctionnelle. Revisite le « Hors
-scope » CFFA et les lignes SCSI / Apple 3.5 IWM-level ci-dessus :
-ces items les remplaceraient si la fidélité prime sur la simplicité.
-
-- [x] 🟡 **P1 — Cœur ATA/IDE + carte CFFA** — **FAIT (2026-05-24)**. MAME
-      `bus/a2bus/a2cffa.cpp` porté.
-      1. ✅ `AtaBlockDevice` — taskfile (IDENTIFY/READ/WRITE SECTOR(S),
-         LBA28) sur `Block512Backing` (backing partagé extrait de
-         `ProDOSHardDiskCard`). Réutilisable CFFA + Vulcan + Zip + Focus.
-         Pin : `ata_block_device_test`.
-      2. ✅ `CffaCard : SlotPeripheral, ProDOSBlockCard` — ROM réel
-         (`cffa20ee02.bin` / `cffa20eec02.bin`), `$C0nX` → ATA (latch
-         8↔16-bit), `$CnXX`/`$C800` ROM ; cité vs `a2cffa.cpp`.
-      3. ✅ `.hdv` / `.2mg` LBA brut conservé ; **CHD = phase 2**.
-      4. ✅ Intégration GUI : type de slot « cffa » (gaté ROM),
-         persistance `cffa_slotN_*`, réutilise la HDV Library via
-         `ProDOSBlockCard` / `hdvDevice()`. CFFA `$Cn07=$3C` ⇒ boot F8
-         natif. Pin : `cffa_card_smoke` (ROM-gated, décode via Memory).
-      - **Reste** : oracle MAME boot `.2mg` réel
-        (`mame apple2ee -sl7 cffa2`, romset prêt `~/mame_roms/cffa2/`) ;
-        CHD ; préservation média CFFA au switch de profil.
+Complément aux modèles synthétiques (`DEV.md § ProDOSHardDiskCard` +
+`§ SmartPortCard`). P1 (CFFA) **fait** (`CHANGELOG.md` 2026-05-24) ;
+P2/P3 restent.
 
 - [ ] 🟡 **P2 — Carte Liron / UniDisk 3.5 réelle (IWM en slot)**.
-      Remplace le driver bloc synthétique de `SmartPortCard` par le
-      vrai chemin GCR/IWM en slot //e. Le gros du stack existe déjà :
-      `IWMDevice` (verbatim MAME `iwm.cpp`), `Sony35Drive` + GCR zoné,
-      `SmartPortHub`. Reste : `LironCard : SlotPeripheral` câblant ce
-      stack à un slot + ROM Liron (343S0001).
-      **Bloqueur** : aucun dump ROM Liron public — MAME `a2iwm.cpp`
-      note « WANTED: there are no ROM dumps from this card ». Sans ROM,
-      rester synthétique. Recoupe « Apple 3.5 Controller IWM-level »
-      ci-dessus. **Effort : ~8-12 h** hors sourcing ROM.
+      Stack déjà là (`IWMDevice` verbatim, `Sony35Drive`, GCR zoné,
+      `SmartPortHub`). Reste : `LironCard : SlotPeripheral` + ROM
+      Liron (343S0001). **Bloqueur** : aucun dump ROM Liron public
+      (MAME `a2iwm.cpp` « WANTED: no ROM dumps »). **Effort : ~8-12 h**
+      hors sourcing ROM.
 
 - [ ] 🟢 **P3 — Apple II SCSI / High-Speed SCSI + CHD**. MAME
-      `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Émuler la puce
-      NCR + protocole SCSI + lecteur CHD : gros lift pour besoin niche
-      (ProDOSHardDiskCard couvre déjà le fonctionnel). **Effort :
-      ~30-50 h.** Garder 🟢 sauf demande explicite CHD.
-
-Ordre conseillé : **P1** (compat `.2mg` conservée + carte la plus
-répandue, débloque le vrai firmware) → **P2** si un dump Liron
-apparaît → **P3** seulement si CHD requis.
+      `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Gros lift
+      pour besoin niche. **Effort : ~30-50 h.** Garder 🟢 sauf
+      demande explicite CHD.
 
 ## Priorité conseillée (ROI)
 
-| Rang | Item | Effort | Impact | Pour qui |
-|---|---|---|---|---|
-| 1 | [Memory] god-object split | 2 jours | 🟠 Prépare IIgs + reduces recompile | Dev velocity |
-| 2 | [Disques] WOZ1 splice point | 1 jour | 🟡 Applesauce remaster parity | Disk imaging tools |
-| 3 | [Disques] UI Force DOS/ProDOS | ~30 min | 🟡 quick win, backend prêt | Disk wranglers |
+| Rang | Item | Effort | Impact |
+|---|---|---|---|
+| 1 | [Memory] god-object split | 2 j | 🟠 Prépare IIgs + reduces recompile |
+| 2 | [Disques] WOZ1 splice point | 1 j | 🟡 Applesauce remaster parity |
+| 3 | [Disques] UI Force DOS/ProDOS | ~30 min | 🟡 quick win, backend prêt |
 
 ## Hors scope
 
-- IIgs / ProDOS 16 · Z-80 SoftCard CP/M · CFFA CompactFlash (HDV + host
-  folder suffit ; portage MAME-fidèle proposé → § Cartes de stockage
-  MAME-fidèles).
+- IIgs / ProDOS 16 · Z-80 SoftCard CP/M · CFFA CompactFlash (HDV +
+  host folder suffit ; portage MAME-fidèle → P2/P3 ci-dessus).
 
 ## Changelog
 
