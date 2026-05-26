@@ -2052,6 +2052,34 @@ add_test(NAME mouse_card_smoke COMMAND test_mouse_card)
 set_tests_properties(mouse_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Apple II Mouse Card (AppleWin HLE variant) smoke test ──────────────
+# Pins the AppleWin port of CMouseInterface: slot-ROM bank-select via PIA
+# Port B bits 1..3 (= `(by6821B << 7) & 0x0700`), the BIT5 write-strobe
+# handshake reaching OnCommand, and the MOUSE_INIT canned reply $FF
+# landing back on PRA. Independent of the 341-0269 MCU mask ROM.
+add_executable(test_mouse_card_applewin
+    mouse_card_applewin_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/MC6821.cpp
+    ${CMAKE_SOURCE_DIR}/MouseCardAppleWin.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_mouse_card_applewin PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mouse_card_applewin PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mouse_card_applewin PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mouse_card_applewin PRIVATE winmm)
+endif()
+
+add_test(NAME mouse_card_applewin_smoke COMMAND test_mouse_card_applewin)
+set_tests_properties(mouse_card_applewin_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── MouseCard quadrature edge smoke test ───────────────────────────────
 # Pins MouseCard::updateAxis against MAME mouse.cpp's update_axis<>: each
 # call emits at most one quadrature edge (CLK toggle + conditional DIR

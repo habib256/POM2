@@ -36,6 +36,7 @@ class JoystickInput;
 class LeChatMauveCard;
 class MockingboardCard;
 class MouseCard;
+class MouseCardAppleWin;
 class ProDOSHardDiskCard;
 class SlotPeripheral;
 class SuperSerialCard;
@@ -174,6 +175,10 @@ private:
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
+    // AppleWin-style HLE mouse — alternative to MouseCard (only one of
+    // the two is plugged at a time). Both implement the same setHostMouse
+    // API so the UI input layer is variant-agnostic.
+    MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
