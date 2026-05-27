@@ -311,6 +311,91 @@ destroying the card. Persisted: `mockingboard_volume`,
 `mockingboard_muted`. Pinned: `mockingboard_smoke`,
 `mockingboard_sync_smoke`.
 
+### Phasor (Applied Engineering)
+
+`PhasorCard` (`PhasorCard.h/.cpp`) — dual-mode successor to the
+Mockingboard. 2× 6522 VIA + 4× AY-3-8913 PSG (12 voices). Same VIA +
+AY hardware as Mockingboard (verbatim from `Via6522.h` + `Ay3_8910.h`,
+extracted 2026-05-27 specifically so the two cards share the same VIA
+timing + AY register-bank decoder).
+
+Address map (s = slot, slotHi = $C0+s):
+
+```
+$Cs00..$Cs0F   VIA1   (drives AY1 / AY2)
+$Cs10..$Cs7F   VIA1 mirrors (partial decode)
+$Cs80..$Cs8F   VIA2   (drives AY3 / AY4)
+$Cs90..$CsFF   VIA2 mirrors
+$C0(8+s)0..F   Mode soft-switch (responds to BOTH reads and writes)
+```
+
+**Mode soft-switch** (AppleWin rules):
+- Read OR write to `$C0(8+s)X` triggers the update — the address (not
+  the data) drives the mode bits.
+- `if offset & 0x8`: clear mode bits 2:0
+- `mode |= offset & 0x7`
+- Power-up = `PH_Mockingboard` (0). Canonical writes:
+  - `$C0(8+s)8` → mode = 0 = MB compat
+  - `$C0(8+s)D` → mode = 5 = Phasor native
+  - `$C0(8+s)F` → mode = 7 = EchoPlus (acknowledged, routed as native
+    in v1)
+
+**Chip-select decode** (Phasor native only):
+```
+chip_sel = (~(port_b >> 3)) & 3
+  0  no AY selected      (PB3=1, PB4=1)
+  1  primary AY only     (PB3=0, PB4=1)  → VIA1: AY1; VIA2: AY3
+  2  secondary AY only   (PB3=1, PB4=0)  → VIA1: AY2; VIA2: AY4
+  3  BOTH AYs broadcast  (PB3=0, PB4=0)
+```
+
+In `PH_Mockingboard` mode the chip-select bits are **ignored**: each
+VIA always drives its primary AY only (AY1 / AY3), and the secondary
+AYs (AY2 / AY4) stay silent — matching the real card's compat
+default. This is what lets a vanilla Mockingboard music driver run
+unchanged on a Phasor.
+
+**Clock scaling**. `clockScale() == 2` in `PH_Phasor`; 1 in MB /
+EchoPlus. The audio synth multiplies the AY input clock by this
+factor — same register values produce notes one octave higher in
+native mode (real Phasor halves the AY divider).
+
+**Audio synth — 4-AY mono mix**. The `AudioSrc` snapshots the 4
+register banks + reset/env-write counts + the current `clockScale()`
+under the parent mutex, then runs the MAME-parity AY synth loop per
+chip: integer tone counter + fractional accumulator (no float-aliasing
+drift), 17-bit LFSR noise with prescale (clock/16/NP effective LFSR
+rate), 4-flag envelope state machine (set_shape on every R13 store
+including same-value re-stores). Mono mix divides by 12 — 4 chips ×
+3 channels × peak 1.0 — so a maxed-out Phasor-native signal sits at
+1.0 before the volume knob. `clockScale` multiplies the per-sample
+step rate for tone / noise / envelope counters so the same register
+values produce notes one octave higher in native mode (chip clock
+doubles; AY periods unchanged).
+
+In PH_Mockingboard only AY1 + AY3 receive strobes (chip-select
+ignored), so the effective mix sits ~6 dB lower than a real
+Mockingboard. The user compensates with the volume slider. The
+alternative — a dynamic divisor — would clip when Phasor-native
+software hits full amplitude across all 4 chips. Predictable
+headroom wins.
+
+Pinned: `phasor_card_smoke` — dual-VIA register layout + mirrors,
+mode soft-switch decode, MB-compat routing (primary AY only),
+Phasor-native chip-select PB3/PB4 decode (4 cases:
+pri/sec/both/none), telemetry counters, 4-AY non-silent mix +
+mute path, **clockScale ×2 pitch doubling measured by
+zero-crossing** (target 2.0, observed ~2.01).
+
+**UI**: Devices → Phasor panel. Banner with current mode (MB / Phasor
+/ EchoPlus — color-coded), clock multiplier, slot IRQ, volume, the
+device-select mode-switch addresses for the slot. 2 columns of VIA
+telemetry (T1 counter / ACR / IFR / IER), 4 columns of AY register
+banks with R0/R1/R2/R3/R4/R5/R6 channel periods + R8/R9/R10 volume
+decoded for quick read. In MB-compat mode the secondary AY columns
+(AY1, AY3) carry a "(MB-compat: silent)" tag so the user understands
+why those banks stay zero even with a music driver running.
+
 ### Floppy mechanical sounds
 
 `FloppySoundDevice`. Port of MAME `imagedev/floppy.cpp::

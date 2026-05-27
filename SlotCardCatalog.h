@@ -46,6 +46,10 @@ inline constexpr CardType kCardTypes[] = {
     // ROM). Different code path from "mouse" (no MC68705 emulation).
     { "mouseaw",      "Mouse (AppleWin HLE)" },
     { "mockingboard", "Mockingboard A/C"  },
+    // Phasor (Applied Engineering) — dual-mode successor to Mockingboard.
+    // Starts in MB-compat mode (2 active AYs), software-switchable to
+    // native (4 AYs, 12 voices, doubled chip clock). Audio synth = TODO.
+    { "phasor",       "Phasor (AE)"       },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

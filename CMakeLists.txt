@@ -92,6 +92,7 @@ set(SOURCES
     Mockingboard.cpp
     MouseCard.cpp
     MouseCardAppleWin.cpp
+    PhasorCard.cpp
     PrinterCard.cpp
     Block512Backing.cpp
     ProDOSHardDiskCard.cpp
@@ -155,7 +156,10 @@ set(HEADERS
     MouseCard.h
     MouseCardAppleWin.h
     MountableMediaCard.h
+    Ay3_8910.h
+    PhasorCard.h
     PrinterCard.h
+    Via6522.h
     Block512Backing.h
     ProDOSHardDiskCard.h
     ProDOSVolume.h

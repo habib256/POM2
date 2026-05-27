@@ -8,6 +8,50 @@ courante → `DEV.md`.
 
 ## 2026-05-27
 
+- **Phasor (Applied Engineering) — skeleton dual-mode**. Nouvelle carte
+  `PhasorCard` : 2 × 6522 VIA + 4 × AY-3-8913 (12 voix en natif),
+  mode soft-switch runtime au $C0(8+s)X qui flippe entre
+  PH_Mockingboard (compat — 1 AY actif par VIA) et PH_Phasor (natif —
+  2 AYs par VIA via chip-select PB3/PB4 actif-bas, clock chip ×2),
+  plus PH_EchoPlus (7) routé comme natif en v1. Décode mode :
+  `if (offset & 0x8) mode &= ~0x7; mode |= offset & 0x7;` — matche
+  AppleWin `Mockingboard.cpp`. Décode chip-select :
+  `chip_sel = (~(pb >> 3)) & 3` (4 cas : none / primary / secondary
+  / broadcast) — matche MAME `a2bus/phasor.cpp`. Boot en MB-compat
+  pour que les jeux Mockingboard tournent unchanged sur un slot
+  Phasor. **Audio synth 4-AY mono mix** (livré dans la foulée, même
+  commit) : `PhasorCard::AudioSrc` snapshot les 4 register banks +
+  reset/env-write counts + `clockScale()` sous le mutex parent, puis
+  tourne le synth MAME-parity par chip (tone counter integer + accum
+  fractionnel, noise LFSR 17-bit avec prescale, envelope 4-flag state
+  machine avec retrigger sur R13). Mix mono divisé par 12 (4 chips ×
+  3 channels × peak 1.0) → peak Phasor-native = 1.0 avant la knob
+  volume. `clockScale ×2` applique au step-rate des compteurs : mêmes
+  register values = notes une octave plus haut en natif (Phasor
+  double le chip clock, pas les périodes AY). En MB-compat seul
+  AY1+AY3 sonnent → ~6 dB plus bas qu'un vrai Mockingboard
+  (compensé via la knob ; le divisor dynamique clipperait en natif
+  full-amp). Pin `phasor_card_smoke` étendu : RMS mix 4-AY > 0.05
+  avec mute path → 0, et zero-crossing freq estimator confirme
+  ratio pitch Phasor/MB = 2.011 sur period $200 (cible 2.0).
+  **UI panel** (Devices → Phasor) : bannière mode color-coded (gris MB
+  / vert Phasor / bleu EP) + clock multiplier + nombre d'AYs actifs,
+  2 cols VIA telemetry, 4 cols AY register banks avec décodage
+  ch A/B/C period + volume. Les colonnes AY1/AY3 portent un tag
+  "(MB-compat: silent)" en mode MB pour expliquer pourquoi ces bancs
+  restent zéro malgré un music driver actif.
+  **Refactor préalable** : `Via6522` et `Ay3_8910` (jusque-là
+  privées nichées dans `MockingboardCard`) extraites vers
+  `Via6522.h` + `Ay3_8910.h` (namespace `pom2::`, header-only,
+  inline). MockingboardCard utilise les types extraits via alias
+  `using` au file scope ; le code dead-stub reste dans un bloc
+  `#if 0` (l. 92-452) en attente de revue avant suppression (TODO
+  [Refactor] cleanup). 5 tests Mockingboard tous verts après
+  extraction (mockingboard_smoke + sync + 4am_detect +
+  irq_delivery + iie_irq) — aucune régression. **UI panel
+  Phasor** non livrée dans ce commit (modeste, ~30 min, item
+  TODO).
+
 - **Carte imprimante parallèle synthétique (`PrinterCard`)**. Nouvelle
   carte slot-pluggable qui capture les bytes envoyés via `PR#n` dans
   un spool host-side, sauvegardable en `.txt` depuis Devices →

@@ -67,8 +67,10 @@
 #ifndef POM2_MOCKINGBOARD_H
 #define POM2_MOCKINGBOARD_H
 
+#include "Ay3_8910.h"
 #include "AudioDevice.h"
 #include "SlotPeripheral.h"
+#include "Via6522.h"
 
 #include <cstdint>
 #include <memory>
@@ -157,10 +159,9 @@ public:
     uint32_t getAyCommandCount(int chip, int cmd) const;
 
 private:
-    // Forward declarations of internal subdevices. Definitions live in
-    // Mockingboard.cpp so the header stays light.
-    struct Via6522;
-    struct Ay3_8910;
+    // Forward declarations. `Via6522` and `Ay3_8910` are shared with
+    // PhasorCard (see `Via6522.h` / `Ay3_8910.h`); only AudioSrc remains
+    // private to this card.
     struct AudioSrc;
 
     int slot_;
@@ -168,9 +169,9 @@ private:
 
     // VIAs and AYs — each VIA drives the AY at the same index. Held by
     // unique_ptr so the inner types can stay opaque in this header.
-    std::unique_ptr<Via6522>  via_[2];
-    std::unique_ptr<Ay3_8910> ay_[2];
-    std::unique_ptr<AudioSrc> audio_;
+    std::unique_ptr<pom2::Via6522>  via_[2];
+    std::unique_ptr<pom2::Ay3_8910> ay_[2];
+    std::unique_ptr<AudioSrc>       audio_;
 
     // Combined slot IRQ state — `via_[0].irqOut() || via_[1].irqOut()`.
     // Edge debouncing lives in SlotPeripheral::assertIrq, so no local
