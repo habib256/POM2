@@ -103,6 +103,20 @@ int main(int argc, char* argv[])
     if (helpRequested) return 0;
     if (!plan)         return 1;
 
+#ifdef __EMSCRIPTEN__
+    // WASM default experience: //c profile booting Total Replay from the
+    // floppyemu/ bundle. The browser has no CLI, so we inject these as if
+    // the user had typed `--preset iic <hdv>`. Honour anything already set
+    // (e.g. via URL-driven arguments wired through the shell) so future
+    // launch overrides keep working.
+    if (plan->preset == pom2::CliPreset::Default) {
+        plan->preset = pom2::CliPreset::AppleIIc;
+    }
+    if (plan->bootDiskPath.empty()) {
+        plan->bootDiskPath = "floppyemu/Total Replay v5.2.hdv";
+    }
+#endif
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) return -1;
 
