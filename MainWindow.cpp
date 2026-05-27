@@ -12,6 +12,7 @@
 #include "CassetteDevice.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
+#include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
@@ -297,6 +298,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
+        showPhasorPanel    = settings->getBool ("show_phasor",     showPhasorPanel);
         showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
         showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
@@ -570,6 +572,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
+    settings->setBool  ("show_phasor",       showPhasorPanel);
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
     settings->setBool  ("show_printer",    showPrinterPanel);
@@ -892,6 +895,25 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugPhasor = [&](int s) {
+        // Applied Engineering Phasor. Same MMIO surface as a Mockingboard
+        // plus a mode soft-switch at $C0(8+s)X that flips between MB-
+        // compat (1 AY per VIA) and Phasor-native (2 AYs per VIA × 2 VIAs
+        // = 4 chips, 12 voices). Audio synth is a v1 placeholder — the
+        // card detects + responds to MMIO correctly but emits silence
+        // until the 4-AY mix lands (TODO 🟡 [Phasor] audio synth).
+        auto card = std::make_unique<PhasorCard>(s);
+        card->setSampleRate(controller->audio().getActualSampleRate());
+        card->setCpu(&controller->cpu());
+        card->setVolume(settings->getFloat("phasor_volume", 0.5f));
+        card->setMuted (settings->getBool ("phasor_muted",  false));
+        if (controller->audio().isAvailable()) {
+            controller->audio().addSource(card->audioSource());
+        }
+        phasorCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMockingboard = [&](int s) {
         // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
         // image to mount: software detects it by writing to the VIA at
@@ -1065,6 +1087,7 @@ void MainWindow::plugSlotsFromSettings()
             controller->memory().slotBus().plug(s, std::move(card));
         }
         else if (kind == "mockingboard") plugMockingboard(s);
+        else if (kind == "phasor")      plugPhasor(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",
@@ -1518,6 +1541,15 @@ void MainWindow::renderMenuBar()
             ImGui::EndDisabled();
         }
         ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
+        if (phasorCard) {
+            const std::string lbl = "Phasor (slot " +
+                std::to_string(phasorCard->getSlot()) + ")";
+            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showPhasorPanel);
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::MenuItem("Phasor (no card plugged)",  nullptr, &showPhasorPanel);
+            ImGui::EndDisabled();
+        }
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
         if (printerCard) {
             const std::string label = "Printer (slot " +
@@ -2852,6 +2884,170 @@ void MainWindow::renderMockingboardPanelWindow()
                         (v.ay[7] & 0x08) ? '.' : 'A',
                         (v.ay[7] & 0x10) ? '.' : 'B',
                         (v.ay[7] & 0x20) ? '.' : 'C');
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::End();
+}
+
+// ─── Phasor ──────────────────────────────────────────────────────────────
+
+void MainWindow::renderPhasorPanelWindow()
+{
+    if (!showPhasorPanel) return;
+
+    ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(640, 560), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Phasor (mode + 2×VIA + 4×AY)",
+                      &showPhasorPanel,
+                      ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!phasorCard) {
+        ImGui::TextDisabled("No Phasor plugged. Use Hardware → Slot "
+                            "Configuration to assign it to a slot.");
+        ImGui::End();
+        return;
+    }
+
+    // Snapshot everything under one lock so VIAs + AYs + mode are
+    // coherent. None of the read accessors mutate emulator state.
+    struct ViaSnap {
+        uint8_t  t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
+        uint32_t writes;
+    } via[2]{};
+    struct AySnap {
+        uint8_t  regs[16];
+        uint32_t writes, resets;
+    } ay[4]{};
+    PhasorCard::Mode mode = PhasorCard::PH_Mockingboard;
+    int  clockScale = 1;
+    bool slotIrq    = false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        mode       = phasorCard->mode();
+        clockScale = phasorCard->clockScale();
+        slotIrq    = phasorCard->isIrqAsserted();
+        for (int c = 0; c < 2; ++c) {
+            via[c].t1cl = phasorCard->peekViaRegister(c, 0x04);
+            via[c].t1ch = phasorCard->peekViaRegister(c, 0x05);
+            via[c].t1ll = phasorCard->peekViaRegister(c, 0x06);
+            via[c].t1lh = phasorCard->peekViaRegister(c, 0x07);
+            via[c].sr   = phasorCard->peekViaRegister(c, 0x0A);
+            via[c].acr  = phasorCard->peekViaRegister(c, 0x0B);
+            via[c].pcr  = phasorCard->peekViaRegister(c, 0x0C);
+            via[c].ifr  = phasorCard->peekViaRegister(c, 0x0D);
+            via[c].ier  = phasorCard->peekViaRegister(c, 0x0E);
+            via[c].writes = phasorCard->getViaWriteCount(c);
+        }
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 16; ++r)
+                ay[c].regs[r] = phasorCard->getAyRegister(c, r);
+            ay[c].writes = phasorCard->getAyWriteCount(c);
+            ay[c].resets = phasorCard->getAyResetCount(c);
+        }
+    }
+
+    // ── Mode banner ─────────────────────────────────────────────────────
+    const char* modeLabel =
+        (mode == PhasorCard::PH_Phasor)       ? "PHASOR NATIVE"  :
+        (mode == PhasorCard::PH_EchoPlus)     ? "ECHO+"          :
+        (mode == PhasorCard::PH_Mockingboard) ? "MOCKINGBOARD"   :
+                                                "(unknown)";
+    const ImVec4 modeColor =
+        (mode == PhasorCard::PH_Phasor)       ? ImVec4(0.30f, 0.85f, 0.45f, 1.0f) :
+        (mode == PhasorCard::PH_EchoPlus)     ? ImVec4(0.40f, 0.65f, 0.95f, 1.0f) :
+                                                ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+    ImGui::TextColored(modeColor, "Mode: %s", modeLabel);
+    ImGui::SameLine();
+    ImGui::TextDisabled("  (clock ×%d, %d AYs active)",
+                        clockScale,
+                        (mode == PhasorCard::PH_Mockingboard) ? 2 : 4);
+    ImGui::Text("Slot IRQ line: %s", slotIrq ? "ASSERTED (low)" : "released");
+    ImGui::SameLine();
+    ImGui::TextDisabled(" | Volume: %.2f %s",
+                        phasorCard->getVolume(),
+                        phasorCard->isMuted() ? "(MUTED)" : "");
+    {
+        // Device-select page for this slot is $C0n0..$C0nF where
+        // n = 8 + slot (e.g. slot 4 → $C0C0..$C0CF). The mode soft-
+        // switch responds to read OR write of those 16 addresses.
+        const int devHi = 0x8 + phasorCard->getSlot();
+        ImGui::TextDisabled(
+            "Mode soft-switch: read/write $C0%X8 → MB, $C0%XD → Phasor",
+            devHi, devHi);
+    }
+    ImGui::Separator();
+
+    // ── VIA telemetry (2 cols) ─────────────────────────────────────────
+    if (ImGui::BeginTable("##ph_vias", 2,
+                          ImGuiTableFlags_Borders
+                          | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("VIA #1 ($Cs00-$Cs0F) → AY0 / AY1");
+        ImGui::TableSetupColumn("VIA #2 ($Cs80-$Cs8F) → AY2 / AY3");
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        for (int c = 0; c < 2; ++c) {
+            ImGui::TableSetColumnIndex(c);
+            const auto& v = via[c];
+            ImGui::Text("VIA writes : %u", v.writes);
+            ImGui::Text("T1 ctr  $%02X%02X   latch $%02X%02X",
+                        v.t1ch, v.t1cl, v.t1lh, v.t1ll);
+            ImGui::Text("ACR=$%02X  PCR=$%02X  SR=$%02X",
+                        v.acr, v.pcr, v.sr);
+            ImGui::Text("IFR=$%02X  IER=$%02X  T1en=%s",
+                        v.ifr, v.ier, (v.ier & 0x40) ? "yes" : "no");
+            const bool t1Fired = (v.ifr & 0x40) != 0;
+            ImGui::TextColored(t1Fired
+                                 ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
+                                 : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                               "IFR.T1: %s", t1Fired ? "PENDING" : "clear");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Separator();
+
+    // ── AY-3-8913 register banks (4 cols) ─────────────────────────────
+    if (ImGui::BeginTable("##ph_ays", 4,
+                          ImGuiTableFlags_Borders
+                          | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("AY0 (VIA1 pri)");
+        ImGui::TableSetupColumn("AY1 (VIA1 sec)");
+        ImGui::TableSetupColumn("AY2 (VIA2 pri)");
+        ImGui::TableSetupColumn("AY3 (VIA2 sec)");
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        for (int c = 0; c < 4; ++c) {
+            ImGui::TableSetColumnIndex(c);
+            const auto& a = ay[c];
+            // In MB-compat mode the secondary AYs (1, 3) are unreachable
+            // — flag the cell so the user understands why the bank
+            // stays at zero even with a music driver running.
+            const bool unreachableInMb =
+                (mode == PhasorCard::PH_Mockingboard) && ((c & 1) != 0);
+            if (unreachableInMb) {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.4f, 1.0f),
+                                   "(MB-compat: silent)");
+            }
+            ImGui::Text("writes %u", a.writes);
+            ImGui::Text("resets %u", a.resets);
+            ImGui::Separator();
+            // Compact reg dump: 8 rows × 2 regs per cell.
+            for (int row = 0; row < 8; ++row) {
+                const int r0 = row, r1 = row + 8;
+                ImGui::Text("R%-2d $%02X  R%-2d $%02X",
+                            r0, a.regs[r0], r1, a.regs[r1]);
+            }
+            ImGui::Separator();
+            const uint16_t periodA = a.regs[0] | ((a.regs[1] & 0x0F) << 8);
+            const uint16_t periodB = a.regs[2] | ((a.regs[3] & 0x0F) << 8);
+            const uint16_t periodC = a.regs[4] | ((a.regs[5] & 0x0F) << 8);
+            ImGui::Text("A $%03X v$%X", periodA, a.regs[8]  & 0x1F);
+            ImGui::Text("B $%03X v$%X", periodB, a.regs[9]  & 0x1F);
+            ImGui::Text("C $%03X v$%X", periodC, a.regs[10] & 0x1F);
         }
         ImGui::EndTable();
     }
@@ -4993,6 +5189,7 @@ void MainWindow::render()
     renderSmartPortPanelWindow();
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();
+    renderPhasorPanelWindow();
     renderSscPanelWindow();
     renderPrinterPanelWindow();
     renderJoystickPanelWindow();

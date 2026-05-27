@@ -40,63 +40,56 @@ constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
 constexpr float kAyToneStepHz    = kAyClockHz / 8.0f;    // ~127.8 kHz
 constexpr float kAyNoiseStepHz   = kAyClockHz / 8.0f;    // ~127.8 kHz
 
-// Mockingboard PB → AY control pin map. Reading PB0..2 gives the AY
-// command nibble; bit 0 doubles as !RESET (active low).
-// 6522 Port B → AY-3-8910/8913 control bus, matching the schematic of
-// the real Sweet Microsystems Mockingboard A/C and Phasor cards. Verified
-// against AppleWin `Mockingboard.cpp:193` and the AY-3-8913 datasheet:
-//   PB0 → BC1
-//   PB1 → BDIR
-//   PB2 → /RESET (active LOW; 1 = chip running, 0 = chip held in reset)
-//   PB3..7 unused on Mockingboard A/C (chip-select bits on Phasor)
-//
-// Earlier versions of this file had PB0=/RESET and PB2=BC1 which inverted
-// the AY's view of the bus: every "INACTIVE" pulse a music driver
-// emitted between LATCH and WRITE (typically PB=$04 on real HW)
-// was misinterpreted as /RESET-asserted by POM2 and wiped the AY
-// register bank. Nox Archaist, Ultima IV and every other IRQ-driven
-// music driver therefore sounded silent — the AY regs got cleared
-// before the next WRITE strobe could land. Fixed 2026-05-14.
-constexpr uint8_t kPbBitBc1   = 0x01;   // PB0 → AY BC1
-constexpr uint8_t kPbBitBdir  = 0x02;   // PB1 → AY BDIR
-constexpr uint8_t kPbBitReset = 0x04;   // PB2 → AY /RESET (active low)
-
-// AY-3-8910 register count.
-constexpr int kAyNumRegs = 16;
-
-// 6522 VIA register indices.
-enum : uint8_t {
-    VIA_ORB    = 0x0,  // Output Reg B / Input Reg B
-    VIA_ORA    = 0x1,  // Output Reg A (with handshake)
-    VIA_DDRB   = 0x2,
-    VIA_DDRA   = 0x3,
-    VIA_T1CL   = 0x4,  // Timer 1 counter low
-    VIA_T1CH   = 0x5,  // Timer 1 counter high
-    VIA_T1LL   = 0x6,  // Timer 1 latch low
-    VIA_T1LH   = 0x7,  // Timer 1 latch high
-    VIA_T2CL   = 0x8,
-    VIA_T2CH   = 0x9,
-    VIA_SR     = 0xA,
-    VIA_ACR    = 0xB,
-    VIA_PCR    = 0xC,
-    VIA_IFR    = 0xD,
-    VIA_IER    = 0xE,
-    VIA_ORANH  = 0xF,  // Output Reg A no handshake
-};
-
-// IFR / IER bit positions (see WDC W65C22 datasheet).
-constexpr uint8_t IFR_T2   = 0x20;
-constexpr uint8_t IFR_T1   = 0x40;
-constexpr uint8_t IFR_ANY  = 0x80;   // computed on read
+// Convenience aliases — the VIA register layout, IFR bits, AY register
+// count, and PB control-bus map all live as static members of the
+// shared `pom2::Via6522` / `pom2::Ay3_8910` types since 2026-05-27.
+// These using-declarations preserve the existing call sites without
+// touching the (already-tested) implementation below.
+using Via    = pom2::Via6522;
+using AyChip = pom2::Ay3_8910;
+constexpr int     kAyNumRegs    = AyChip::kAyNumRegs;
+constexpr uint8_t kPbBitBc1     = AyChip::kPbBitBc1;
+constexpr uint8_t kPbBitBdir    = AyChip::kPbBitBdir;
+constexpr uint8_t kPbBitReset   = AyChip::kPbBitReset;
+constexpr uint8_t IFR_T1        = Via::IFR_T1;
+constexpr uint8_t IFR_T2        = Via::IFR_T2;
+constexpr uint8_t IFR_ANY       = Via::IFR_ANY;
+constexpr uint8_t VIA_ORB       = Via::VIA_ORB;
+constexpr uint8_t VIA_ORA       = Via::VIA_ORA;
+constexpr uint8_t VIA_DDRB      = Via::VIA_DDRB;
+constexpr uint8_t VIA_DDRA      = Via::VIA_DDRA;
+constexpr uint8_t VIA_T1CL      = Via::VIA_T1CL;
+constexpr uint8_t VIA_T1CH      = Via::VIA_T1CH;
+constexpr uint8_t VIA_T1LL      = Via::VIA_T1LL;
+constexpr uint8_t VIA_T1LH      = Via::VIA_T1LH;
+constexpr uint8_t VIA_T2CL      = Via::VIA_T2CL;
+constexpr uint8_t VIA_T2CH      = Via::VIA_T2CH;
+constexpr uint8_t VIA_SR        = Via::VIA_SR;
+constexpr uint8_t VIA_ACR       = Via::VIA_ACR;
+constexpr uint8_t VIA_PCR       = Via::VIA_PCR;
+constexpr uint8_t VIA_IFR       = Via::VIA_IFR;
+constexpr uint8_t VIA_IER       = Via::VIA_IER;
+constexpr uint8_t VIA_ORANH     = Via::VIA_ORANH;
 
 }  // namespace
 
 // ─── Forward types ───────────────────────────────────────────────────────
 //
-// Definitions for the VIA, AY, and AudioSrc subdevices. Kept in this TU
-// (not the header) so the rest of the codebase doesn't compile their
-// internals on every include.
+// Via6522 + Ay3_8910 live in shared headers (`Via6522.h` / `Ay3_8910.h`)
+// since 2026-05-27 so PhasorCard can reuse them verbatim — same VIA
+// timer logic, same AY register-bank + control-bus decoder. AudioSrc
+// stays private to this card; its 2-AY synthesis state is tightly
+// coupled to MockingboardCard's `ayResetCount_` / `ayEnvWriteCount_`
+// telemetry and the audio thread's mutex protocol. Phasor ships its
+// own AudioSrc until/unless we extract a shared multi-AY synth class.
 
+// File-scope aliases so call sites below (constructors,
+// `via_[chip]->advance()`, `Ay3_8910::ApplyResult::Wrote`, …) stay
+// unchanged after the extraction.
+using Via6522  = pom2::Via6522;
+using Ay3_8910 = pom2::Ay3_8910;
+
+#if 0
 struct MockingboardCard::Via6522
 {
     // Register file. `regs[]` is the canonical view at `read()` time
@@ -455,6 +448,8 @@ struct MockingboardCard::Ay3_8910
     uint32_t readStrobeCount  = 0;
     uint32_t inactiveCount    = 0;
 };
+
+#endif  // 0 — old Via6522 / Ay3_8910 dead code, extracted to shared headers
 
 // ─── AudioSrc ─────────────────────────────────────────────────────────────
 //

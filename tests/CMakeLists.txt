@@ -2260,6 +2260,32 @@ add_test(NAME printer_card_smoke COMMAND test_printer_card)
 set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Phasor card smoke test ──────────────────────────────────────────────
+# Pins the dual-mode Phasor: VIA register layout (dual-VIA + mirrors),
+# mode soft-switch ($C0(8+s)X bit-decode), MB-compat routing (PB3/4
+# ignored), and Phasor-native chip-select decode (PB3/PB4 active-low).
+add_executable(test_phasor_card
+    phasor_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/PhasorCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_phasor_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_phasor_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_phasor_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_phasor_card PRIVATE winmm)
+endif()
+
+add_test(NAME phasor_card_smoke COMMAND test_phasor_card)
+set_tests_properties(phasor_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── CLI kiosk / positional-disk smoke test ──────────────────────────────
 # Pins parseCli's positional disk + --kiosk handling and the
 # classifyDiskForSlot extension/size → slot routing the insert+boot path

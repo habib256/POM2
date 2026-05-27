@@ -38,6 +38,14 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 
 ## 🟡 Medium
 
+- [ ] **[Refactor] Cleanup `#if 0` Via6522/Ay3_8910 dans
+  `Mockingboard.cpp`** (l. 92-452). Bloc de code déplacé vers
+  `Via6522.h` + `Ay3_8910.h` ; le `#if 0` est dead-code en attente
+  de revue avant suppression. Une fois validé, supprimer ~360
+  lignes.
+
+
+
 - [ ] **[Disques] WOZ1 splice point (TRK+6650) ignoré**
   (`DiskImage.cpp:381-398`). IWM call site câblé
   (`iwm.cpp:218-221`), mais `DiskImage::setWriteSplice` reste

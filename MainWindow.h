@@ -38,6 +38,7 @@ class LeChatMauveCard;
 class MockingboardCard;
 class MouseCard;
 class MouseCardAppleWin;
+class PhasorCard;
 class PrinterCard;
 class ProDOSHardDiskCard;
 class SlotPeripheral;
@@ -182,6 +183,7 @@ private:
     // API so the UI input layer is variant-agnostic.
     MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
+    PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
@@ -239,6 +241,10 @@ private:
     // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
     // whether the music handler is actually writing AY registers.
     bool         showMockingboardPanel = false;
+    // Phasor live state panel — same layout as Mockingboard but
+    // widened to 4 AY-3-8913 banks, with a mode banner (MB / Phasor /
+    // EchoPlus) and clockScale at the top.
+    bool         showPhasorPanel       = false;
     // Audio mixer — master + per-channel sliders/mute (Speaker, Cassette,
     // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
     // that used to live in the Status panel. Persisted as `show_mixer`.
@@ -480,6 +486,7 @@ private:
     void renderSmartPortPanelWindow();
     void renderChatMauvePanelWindow();
     void renderMockingboardPanelWindow();
+    void renderPhasorPanelWindow();
     void renderSscPanelWindow();
     void renderPrinterPanelWindow();
     void renderJoystickPanelWindow();
