@@ -3167,11 +3167,9 @@ void MainWindow::renderEchoPlusPanelWindow()
 
     // ── Status footer ──────────────────────────────────────────────────
     ImGui::TextWrapped(
-        "Audio: silent in v1. The chip's MMIO + IRQ timing are complete; "
-        "the 62-phoneme PCM blob lives in a separate commit pending the "
-        "AppleWin LGPL-vs-POM2 license decision. Games detect the card "
-        "and exercise their speech drivers correctly — they just don't "
-        "speak yet.");
+        "Audio: live — 62-phoneme PCM blob (ported from AppleWin) "
+        "resampled from 22050 Hz to the host rate, scaled by the AMP "
+        "register. Power-down (CTL=1) or FILFREQ=$FF squelches output.");
 
     ImGui::End();
 }

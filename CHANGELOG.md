@@ -8,6 +8,27 @@ courante → `DEV.md`.
 
 ## 2026-05-27
 
+- **SSI263 audio — phoneme PCM blob (62 phonèmes, ~313 KB)**. Livraison
+  B du SSI263, branchée sur la chip emulation livrée précédemment
+  dans le même jour. Import verbatim de `SSI263Phonemes.h` d'AppleWin
+  (LGPL, compat avec POM2 GPL3 → la combinaison s'exécute sous GPL3).
+  Nouvelle paire `Ssi263PhonemeData.h/.cpp` : header expose
+  `kPhonemeInfo[62]` (table offset/length) + `kPhonemeData[156566]`
+  (uint16_t PCM signé à 22050 Hz natif) dans namespace
+  `pom2::ssi263_data`. `Ssi263::fillAudio` lit le sample à
+  l'offset courant, scale par AMP register (R3[3:0]), resample
+  vers le host rate via curseur linéaire (pas de filtre — la
+  source est déjà band-limited par l'analog output du chip réel),
+  loop sur fin de phonème jusqu'au DURPHON suivant ou power-down.
+  Power-down (CTL=1) et `FILFREQ=$FF` (silence sentinel)
+  squelchent. `EchoPlusCard::AudioSrc::fillAudioBuffer` consomme
+  `Ssi263::fillAudio` sous le mutex parent + scale par volume
+  master. Pin `ssi263_smoke` étendu : phoneme $05 audio
+  RMS = 0.18 (range −0.51 à +0.50 — vraie speech) ; power-down +
+  $FF filter sentinel produisent silence exact. Tous tests audio
+  cards verts (mockingboard ×5, phasor ×1, printer ×1, ssi263 ×1,
+  echoplus ×1).
+
 - **SSI263 speech synth — chip model + Echo+ card (audio silent v1)**.
   Nouveau `pom2::Ssi263` (header + cpp) : modèle Silicon Systems Inc.
   SSI263A partagé, 5 registres ($00-$04), mode soft-bits (00 IRQ

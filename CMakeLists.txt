@@ -96,6 +96,7 @@ set(SOURCES
     PhasorCard.cpp
     PrinterCard.cpp
     Ssi263.cpp
+    Ssi263PhonemeData.cpp
     Block512Backing.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
@@ -163,6 +164,7 @@ set(HEADERS
     PhasorCard.h
     PrinterCard.h
     Ssi263.h
+    Ssi263PhonemeData.h
     Via6522.h
     Block512Backing.h
     ProDOSHardDiskCard.h
