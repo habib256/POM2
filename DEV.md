@@ -982,6 +982,55 @@ rising edge regardless of mode (MAME `upd1990a.cpp:312-327` gates on
 still in MODE_TIME_READ; strict gating breaks stock ProDOS. Observed
 HW permits the shortcut. Pinned: `testShiftLaxAcrossModes`.
 
+### Printer card (parallel, synthetic)
+
+`PrinterCard` (`PrinterCard.h/.cpp`) — host-side spool that captures every
+byte the Apple II "prints" through `PR#n` into a `std::vector<uint8_t>`
+the UI saves to `.txt` (PDF deferred — see TODO). No PROM dump
+required; the synthetic 256-byte slot ROM only does the PR#n CSWL/CSWH
+hook + a 4-byte output trampoline.
+
+Slot ROM layout (s = slot, slotHi = $C0+s):
+
+```
+$Cn00  4C 20 ss   JMP $Cn20            (skip the Pascal sig region)
+$Cn05  38         Pascal 1.1 sig 1     (SEC)
+$Cn07  18         Pascal 1.1 sig 2     (CLC)
+$Cn0B  01         Pascal firmware rev
+$Cn0C  00         Pascal device class = printer
+$Cn20  A9 31      LDA #$31             ; CSWL low byte
+$Cn22  85 36      STA CSWL
+$Cn24  A9 ss      LDA #slotHi
+$Cn26  85 37      STA CSWH
+$Cn28  60         RTS
+$Cn31  8D 91 c0   STA $C0(8+s)1        ; data port write
+$Cn34  60         RTS
+```
+
+Data port at `$C0(8+s)1`: write enqueues the byte verbatim (no high-bit
+strip — the UI/spoolText() does that), read returns $FF (always
+ready). Other device-select offsets read $FF / writes ignored.
+
+The full Pascal 1.1 entry block (PINIT/PREAD/PWRITE/PSTATUS at
+$Cn0D-$Cn10) is **not** implemented — BASIC `PR#n` is the only
+documented use case for a printer card in the POM2 software corpus,
+and Pascal printer drivers were rare. Signature bytes alone are
+enough to keep ProDOS's device scanner happy.
+
+**Built-in for //c and //c+** (`SystemProfile.cpp:cfgAppleIIc /
+cfgAppleIIcPlus`) at slot 1, free-slot pick on II / II+ / //e via
+the Slot Configuration panel. The //c built-in is a **POM2-original
+substitution** — real //c shipped a *second* SSC at $C100 (firmware
+labelled "printer port" but electrically serial); we substitute the
+synthetic parallel card so PR#1 from BASIC has a useful sink that
+spools to a host file, matching the macOS print-to-PDF affordance.
+Divergent from MAME's `apple2c` (which keeps the serial SSC at $C100)
+but consistent with POM2's earlier //c liberties (Mouse at sl4 where
+MAME has Mockingboard).
+
+Pinned: `printer_card_smoke` — ROM fingerprint + data-port spool
+semantics + CPU-driven `PR#1` + 3 COUT-style writes flow.
+
 ### Mouse Card
 
 Verbatim port of MAME `bus/a2bus/mouse.cpp`. Pieces:
@@ -1359,3 +1408,72 @@ bumps the CPU to ~60×, which collapses wall-clock gaps to zero
 across an audio-buffer tick). Canonical example:
 `FloppySoundDevice::drainCommands` uses the cycle stamp passed by
 `DiskIICard::seekPhaseW`.
+
+## WebAssembly (browser build)
+
+Driver: `build_wasm.sh` → `dist/wasm/{index.html, POM2.js, POM2.wasm,
+POM2.data, serve.py}`. Per-folder doc: `dist/wasm/README.md` (build,
+deploy, caching hints). User-facing summary lives in `README.md`
+§ "WebAssembly (browser)".
+
+**Single-threaded by design**. No `std::thread`, no `SharedArrayBuffer`,
+no COOP/COEP — runs on any static host (GitHub Pages, Cloudflare
+Pages, plain S3). The CPU worker thread is replaced by
+`EmulationController::tickFrame()` called from the render loop in
+`main.cpp` (look for `#ifdef __EMSCRIPTEN__`). Trade-off vs the
+native build: no parallel audio thread, but miniaudio's Web Audio
+backend runs in a browser-managed worklet anyway, so the difference
+is invisible in practice.
+
+**CMake Emscripten branch** at `CMakeLists.txt:212-276`:
+
+- `-sUSE_GLFW=3 -sUSE_WEBGL2=1 -sFULL_ES3=1` — Emscripten ships
+  GLFW3 + WebGL2 ports built-in, so the ImGui GLFW/OpenGL3 backends
+  link unchanged.
+- `-sINITIAL_MEMORY=134217728` (128 MiB) `-sALLOW_MEMORY_GROWTH=1` —
+  grows on demand; 128 MiB is enough for a IIe with RamWorks III
+  + a few mounted HDV images.
+- `-lidbfs.js` + `-sFORCE_FILESYSTEM=1` — IndexedDB-backed filesystem
+  mountable at `/persistent` via `FS.mount(IDBFS, …)` in the shell
+  preRun hook (see `web/shell.html`). **Not yet wired to
+  `Settings.cpp`** — see TODO 🟡 [WASM] IDBFS settings persistence.
+- `--preload-file roms@/roms fonts@/fonts` — baked into `POM2.data`
+  at build time. Disks are opt-in via `-DPOM2_WASM_BUNDLE_DISKS=ON`
+  (folds in `disks/`, `disks35/`, `hdv/`, `floppyemu/`).
+- `pom2_headless` target is skipped under EMSCRIPTEN
+  (`CMakeLists.txt:332`) — no TCP listener, no terminal.
+
+**Compile-out gates** (sandbox-incompatible POSIX bridges, guarded
+by `#ifdef __EMSCRIPTEN__`):
+
+| Subsystem | Stub behaviour | Apple II side |
+|---|---|---|
+| Super Serial Card TCP listener (`SuperSerialCard.cpp:153`, `:203`, `:227`, `:241`, `:366`) | `startListening` returns false + logs; `acceptClient`/`pollRx`/`writeTx` no-op | ACIA still emulated — software inside the Apple II can still PR#2 / read $C0A9; just no host network bridge |
+| AiControlServer HTTP listener (`AiControlServer.cpp:381-430`) | `start()` returns false; `stop()` no-op | None — entire feature is a host-side control plane |
+
+The symbols stay declared so every caller still links — only the
+implementation degrades. **Rule for editors of these two files**:
+keep the `#ifdef __EMSCRIPTEN__` guards intact; new socket calls
+must have a no-op WASM branch returning a safe sentinel
+(`false`/0/empty), not `#error`.
+
+**Asset resolution**. `ResourcePaths` searches CWD-relative paths
+(`./roms/apple2.rom`, etc.). Under Emscripten the CWD is `/` and
+preloaded folders live at `/roms`, `/fonts`, `/disks`, … — same
+relative shape, so probes resolve unchanged. The native
+exec-relative path (added in d582b2f for Linux dist) is also
+applied via the IDBFS mount path for future user uploads.
+
+**Known gaps** (tracked in `TODO.md`):
+
+- IDBFS settings persistence not wired → `state.cfg`/`imgui.ini`
+  reset on every page reload.
+- No file picker / drop-zone for user disks (`.dsk`/`.woz`/`.hdv`).
+- No touch input on mobile (GLFW3-EM doesn't synthesise
+  touch→mouse outside the canvas).
+- Audio worklet latency not tuned.
+
+**No CI yet** — `./build_wasm.sh --clean` can regress silently on
+refactors of `main.cpp`, `MainWindow.cpp`, `EmulationController.cpp`,
+`AiControlServer.cpp`, `SuperSerialCard.cpp`, or `CMakeLists.txt`.
+Run it manually after touching any of those.

@@ -6,7 +6,82 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-27
+
+- **Carte imprimante parallèle synthétique (`PrinterCard`)**. Nouvelle
+  carte slot-pluggable qui capture les bytes envoyés via `PR#n` dans
+  un spool host-side, sauvegardable en `.txt` depuis Devices →
+  Printer. **Pourquoi synthétique (pas de portage MAME `a2parprn`)** :
+  la vraie carte parallèle pilotait un PIA 6821 avec STROBE/BUSY
+  bit-bangés vers une imprimante physique — émuler ça sans imprimante
+  câblée n'a aucun observable côté Apple II au-delà de "le byte est
+  parti". Modèle synthétique (lignée `ProDOSHardDiskCard`) : 256 B de
+  slot ROM dont le seul rôle est de hooker CSWL/CSWH ($36/$37) sur un
+  trampoline 4-byte qui STA dans notre port de données ; le reste vit
+  côté C++ dans un `std::vector<uint8_t>`. **Pourquoi built-in slot 1
+  pour //c et //c+** : matche le « Save as PDF » du print dialog
+  macOS — un PR#1 depuis BASIC remplit un fichier directement, zéro
+  config. Divergent de MAME (qui keep une 2e SSC à $C100 sur //c
+  réel) mais cohérent avec la philosophie POM2 (Mouse au sl4 du //c
+  où MAME a Mockingboard). Sur II / II+ / //e la carte reste
+  pluggable libre via Slot Configuration (catalogue clé `"printer"`).
+  **PDF deferred** — le `.txt` couvre 90 % du use case (copy-paste,
+  édition, impression hôte) ; un export PDF monospace ou via libharu
+  pourra arriver en suivi. Pin `printer_card_smoke` : ROM fingerprint
+  (PR#n trampoline + Pascal autodetect + handler $Cn31) + spool
+  data-port semantics + CPU-driven `PR#1` + 3 COUT-style writes.
+
+- **WASM : doc consolidée** (TODO + DEV + CHANGELOG). Les 4 gaps
+  connus (IDBFS settings persistence, file drop-zone, touch mobile,
+  audio worklet tuning) qui vivaient uniquement dans
+  `dist/wasm/README.md` migrent vers `TODO.md` (sections 🟡/🟢
+  `[WASM]`). `DEV.md` gagne une section « WebAssembly (browser
+  build) » qui documente la branche EMSCRIPTEN du `CMakeLists` (l.
+  212-276), les compile-out gates `SuperSerialCard::startListening`
+  (l. 153 etc) et `AiControlServer::start` (l. 381-430), et la
+  règle pour les futurs éditeurs : *new socket calls must have a
+  no-op WASM branch returning a safe sentinel*. Pas de CI WASM
+  encore — un refactor sur ces 6 fichiers (main, MainWindow,
+  EmulationController, AiControlServer, SuperSerialCard,
+  CMakeLists) doit toujours être suivi d'un `./build_wasm.sh
+  --clean` manuel.
+
 ## 2026-05-26
+
+- **WASM : portage browser (Emscripten) — MVP single-threaded**.
+  Nouvelle cible build via `./build_wasm.sh` (driver + dev server
+  COOP/COEP) → `dist/wasm/{index.html, POM2.{js,wasm,data}}`.
+  Branche `EMSCRIPTEN` dans `CMakeLists.txt:212-276` :
+  `-sUSE_GLFW=3 -sUSE_WEBGL2=1`, mémoire 128 MiB growable, IDBFS
+  (`-lidbfs.js`) monté `/persistent` pour future persistance, asset
+  bundle ROMs+fonts par défaut (disks opt-in via
+  `-DPOM2_WASM_BUNDLE_DISKS=ON`). **Pourquoi single-threaded** :
+  pas de SAB → pas de COOP/COEP requis → déployable sur
+  n'importe quel host statique (GitHub Pages, S3, …) sans
+  configurer les headers cross-origin. Le CPU worker thread
+  natif est remplacé par `EmulationController::tickFrame()`
+  appelé depuis la boucle RAF dans `main.cpp` ; coût pratique
+  nul car miniaudio Web Audio tourne dans un worklet géré par
+  le browser de toute façon. **Compile-out gates** via
+  `#ifdef __EMSCRIPTEN__` : `SuperSerialCard` TCP listener
+  (`:153`, `:203`, `:227`, `:241`, `:366`) et `AiControlServer`
+  HTTP listener (`:381-430`) deviennent des no-ops retournant
+  `false`/sentinelles — les symboles restent déclarés (link
+  intact), seule l'impl host-side dégrade ; l'ACIA SSC continue
+  d'être émulée côté Apple II. **Pourquoi compile-out plutôt
+  que stub comportemental** : pas de sockets POSIX dans le
+  sandbox browser, et émuler une stack telnet/HTTP en JS pour
+  un MVP n'apporte rien — la GUI reste accessible pour driver
+  ces cartes. **`pom2_headless` skipped sous EMSCRIPTEN**
+  (`CMakeLists.txt:332`) — pas de TCP, pas de TTY.
+  Documentation : `dist/wasm/README.md` (utilisateur),
+  `DEV.md § WebAssembly` (developer). Gaps connus → `TODO.md`
+  (IDBFS settings, file drop-zone, touch mobile, audio
+  worklet). **Pas de CI** — refactors de `main.cpp`,
+  `MainWindow.cpp`, `EmulationController.cpp`,
+  `AiControlServer.cpp`, `SuperSerialCard.cpp` ou
+  `CMakeLists.txt` doivent être suivis d'un
+  `./build_wasm.sh --clean` manuel.
 
 - **Memory : `dataMutable()` raw pointer supprimé (footgun debugger /
   snapshot)**. L'accesseur retournait `mem.data()` sans aucun garde —

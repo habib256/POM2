@@ -119,16 +119,22 @@ const ProfileConfig& cfgAppleIIc()
         /*iieMode=*/true,        // same paging as IIe
         M6502::CpuMode::CMOS,    // //c always shipped 65C02
         17045,
-        // builtInSlots: [_, _, ssc, _, mouse, smartport35, diskii, _]
+        // builtInSlots: [_, printer, ssc, _, mouse, smartport35, diskii, _]
+        // sl1 = built-in printer (POM2-synthetic parallel-style). On real
+        // //c hardware $C100 was a *second* SSC (firmware labelled it the
+        // "printer port" but it was serial); we substitute a synthetic
+        // parallel printer that spools to a host file (.txt / .pdf) so
+        // PR#1 from BASIC has a useful sink out of the box — the same
+        // "print to PDF" affordance macOS bakes into its print dialog.
         // sl5 = built-in SmartPort (the 32 KB ROM 0/3/4 //c shipped with
         // SmartPort firmware here for an external 3.5"/hard disk). POM2
         // serves it as a host-backed block device so 3.5" + HDV boot via
         // SmartPort — the real IWM/Sony GCR boot path is unmodelled (see
-        // project_iic_smartport_boot). sl1/sl7 left free for power users;
+        // project_iic_smartport_boot). sl7 left free for power users;
         // sl3 is the internal 80-col firmware area covered by the AUX label.
         {
             std::nullopt,                                // sl0 reserved
-            std::nullopt,                                // sl1
+            BuiltInSlot{"printer", "built-in printer"},  // sl1
             BuiltInSlot{"ssc",    "built-in serial"},    // sl2
             std::nullopt,                                // sl3 (AUX 80-col label)
             BuiltInSlot{"mouse",  "built-in mouse"},     // sl4
@@ -170,10 +176,12 @@ const ProfileConfig& cfgAppleIIcPlus()
         // cycle-driven so a 4× CPU still produces correctly-paced
         // nibbles). 4 × 17045 = 68180 cycles per 60 Hz frame.
         68180,
-        // builtInSlots: [_, _, ssc, _, mouse, smartport35, diskii, _]
+        // builtInSlots: [_, printer, ssc, _, mouse, smartport35, diskii, _]
+        // sl1 = built-in printer (same POM2-synthetic substitution as on
+        // the //c — see cfgAppleIIc comment).
         {
             std::nullopt,
-            std::nullopt,                                          // sl1
+            BuiltInSlot{"printer",     "built-in printer"},        // sl1
             BuiltInSlot{"ssc",         "built-in serial"},         // sl2
             std::nullopt,                                          // sl3 (AUX)
             BuiltInSlot{"mouse",       "built-in mouse"},          // sl4

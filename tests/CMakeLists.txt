@@ -2234,6 +2234,32 @@ add_test(NAME clock_card_smoke COMMAND test_clock_card)
 set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Printer card smoke test ─────────────────────────────────────────────
+# Pins the PrinterCard slot ROM fingerprint (PR#n trampoline + Pascal
+# autodetect bytes + output handler at $Cn31), the data-port spool, and
+# the CPU-driven PR#1 + 3× COUT-style writes flow.
+add_executable(test_printer_card
+    printer_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/PrinterCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_printer_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_printer_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_printer_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_printer_card PRIVATE winmm)
+endif()
+
+add_test(NAME printer_card_smoke COMMAND test_printer_card)
+set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── CLI kiosk / positional-disk smoke test ──────────────────────────────
 # Pins parseCli's positional disk + --kiosk handling and the
 # classifyDiskForSlot extension/size → slot routing the insert+boot path

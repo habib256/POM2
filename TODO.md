@@ -57,6 +57,12 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 - [ ] **[Features] Eve Color text mode (`$C0B9`)** — variante
   ChatMauve/Eve, attributs FG/BG par caractère. Stub
   `LeChatMauve_ImGui.cpp:200`.
+- [ ] **[Features] Carte imprimante — export PDF**. La carte
+  parallèle synthétique (`PrinterCard`) est en place (CHANGELOG
+  2026-05-27) : spool host-side + UI « Save as .txt » + built-in
+  slot 1 pour //c/+. Reste l'export PDF (renderer monospace ou
+  libharu). Pin `printer_card_smoke` couvre déjà le ROM
+  fingerprint + le flow CPU PR#1.
 - [ ] **[Arch] Config éclatée** : env vars `POM2_*` + CLI flags +
   `Settings`. Centraliser dans un `Config` (env → CLI →
   Settings → defaults) et lister env vars dans `--help`.
@@ -70,6 +76,16 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 - [ ] **[Arch] `Memory::memRead` hot path** (cascade `if` 7
   niveaux, `Memory.cpp:1309-1437`). Table dispatch 256 entrées
   par page haute. Prérequis : extraction `IIcPlusBank`.
+- [ ] **[WASM] IDBFS settings persistence**. Build WASM monte
+  `/persistent` via IDBFS (`CMakeLists.txt:241`) mais `Settings.cpp`
+  écrit toujours dans `$HOME` — `state.cfg` + `imgui.ini` ne
+  survivent pas au reload. Router via `ResourcePaths` quand
+  `__EMSCRIPTEN__`. **Effort : 2-4 h.**
+- [ ] **[WASM] File picker / drop-zone disks** — bundling
+  build-time uniquement (`POM2_WASM_BUNDLE_DISKS=ON` ou rien).
+  Pas de mécanisme pour qu'un user upload un `.dsk`/`.woz`/`.hdv`
+  dans le browser. Drop-zone HTML5 → `FS.writeFile('/uploads/…')` →
+  `DiskIICard::insert`. **Effort : ~1 j.**
 
 ## 🟢 Low
 
@@ -98,6 +114,14 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 - [ ] **[Arch] `*Card` raw pointers dans MainWindow**
   (`MainWindow.h:97-103`). Pas de notification quand SlotBus
   replug. Observer pattern ou `controller.slotBus().peripheral(N)`.
+- [ ] **[WASM] Touch input mobile**. GLFW3 sous Emscripten ne map
+  pas touch → mouse hors-canvas ; tap sur menu ImGui ne fonctionne
+  pas sur iPad/Android. Wrapper JS `touchstart/move/end` →
+  `Module._inject_mouse_*`.
+- [ ] **[WASM] Audio worklet tuning**. miniaudio backend Web Audio
+  fonctionne mais latence par défaut (~150 ms) audible sur
+  speaker click ; explorer un `AudioWorkletNode` custom ou
+  réduire le buffer.
 
 ## Skips délibérés (documenté inline)
 

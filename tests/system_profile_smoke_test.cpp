@@ -418,8 +418,9 @@ void test20kIIPlusRomLoad()
 }
 
 // Theme 4 (Slot UI built-in lock): pin the builtInSlots contract — //c
-// must lock sl2 (SSC), sl4 (Mouse), sl6 (Disk II); //c+ adds sl5
-// (SmartPort 3.5"). II / II+ / IIe-U / IIe leave all slots free.
+// must lock sl1 (Printer), sl2 (SSC), sl4 (Mouse), sl5 (SmartPort),
+// sl6 (Disk II); //c+ matches. II / II+ / IIe-U / IIe leave all slots
+// free.
 void testBuiltInSlots()
 {
     // II / II+ / IIe-U / IIe — all 7 slots free.
@@ -433,12 +434,15 @@ void testBuiltInSlots()
         }
     }
 
-    // //c — sl2/sl4/sl5/sl6 locked; sl1/sl3/sl7 free. sl5 = built-in
-    // SmartPort (host-served block device for 3.5"/HDV boot — see
-    // project_iic_smartport_boot / cfgAppleIIc).
+    // //c — sl1/sl2/sl4/sl5/sl6 locked; sl3/sl7 free. sl1 = built-in
+    // synthetic printer (POM2-original substitution for real //c's
+    // 2nd SSC at $C100 — see cfgAppleIIc). sl5 = built-in SmartPort
+    // (host-served block device for 3.5"/HDV boot — see
+    // project_iic_smartport_boot).
     {
         const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIc);
-        assert(!cfg.builtInSlots[1].has_value());
+        assert(cfg.builtInSlots[1].has_value()
+               && cfg.builtInSlots[1]->cardKey == "printer");
         assert(cfg.builtInSlots[2].has_value()
                && cfg.builtInSlots[2]->cardKey == "ssc");
         assert(!cfg.builtInSlots[3].has_value());
@@ -451,9 +455,11 @@ void testBuiltInSlots()
         assert(!cfg.builtInSlots[7].has_value());
     }
 
-    // //c+ — sl2/sl4/sl5/sl6 locked; sl1/sl3/sl7 free.
+    // //c+ — same lock set as //c (sl1 Printer, sl2/sl4/sl5/sl6).
     {
         const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIcPlus);
+        assert(cfg.builtInSlots[1].has_value()
+               && cfg.builtInSlots[1]->cardKey == "printer");
         assert(cfg.builtInSlots[2].has_value()
                && cfg.builtInSlots[2]->cardKey == "ssc");
         assert(cfg.builtInSlots[4].has_value()

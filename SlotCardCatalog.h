@@ -35,6 +35,10 @@ inline constexpr CardType kCardTypes[] = {
     // or II+ via the standard ProDOS block-device protocol, no IWM.
     { "smartport35",  "SmartPort 3.5\""   },
     { "ssc",          "Super Serial"      },
+    // Printer (parallel) — synthetic card that spools COUT bytes to a host
+    // file (.txt / .pdf). Built-in at slot 1 of //c / //c+, free-slot pick
+    // on II / II+ / //e. No PROM dump needed.
+    { "printer",      "Printer (Parallel)" },
     { "clock",        "Clock (ProDOS)"    },
     { "chatmauve",    "Le Chat Mauve"     },
     { "mouse",        "Mouse Interface"   },
