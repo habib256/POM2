@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # POM2 — WebAssembly build driver.
 #
-# Output: dist/wasm/
+# Output: wasm/
 #   index.html        — entry point (renamed from POM2.html)
 #   POM2.js           — Emscripten loader
 #   POM2.wasm         — compiled module
@@ -54,13 +54,13 @@ if [ ! -d imgui ]; then
 fi
 
 BUILD_DIR=build_wasm
-DIST_DIR=dist/wasm
+WASM_DIR=wasm
 
 if [ $CLEAN -eq 1 ]; then
     rm -rf "$BUILD_DIR"
 fi
 
-mkdir -p "$BUILD_DIR" "$DIST_DIR"
+mkdir -p "$BUILD_DIR" "$WASM_DIR"
 
 # Configure with the Emscripten toolchain.
 emcmake cmake -S . -B "$BUILD_DIR" \
@@ -70,23 +70,23 @@ emcmake cmake -S . -B "$BUILD_DIR" \
 # Build. -j auto: emmake picks reasonable parallelism.
 cmake --build "$BUILD_DIR" -j
 
-# Stage artefacts into dist/wasm/.
+# Stage artefacts into wasm/.
 ARTEFACTS=(POM2.html POM2.js POM2.wasm POM2.data POM2.worker.js)
 for f in "${ARTEFACTS[@]}"; do
     src="$BUILD_DIR/$f"
     if [ -f "$src" ]; then
-        cp -f "$src" "$DIST_DIR/"
+        cp -f "$src" "$WASM_DIR/"
     fi
 done
 # Rename the entry document so the deployment URL is clean.
-if [ -f "$DIST_DIR/POM2.html" ]; then
-    mv -f "$DIST_DIR/POM2.html" "$DIST_DIR/index.html"
+if [ -f "$WASM_DIR/POM2.html" ]; then
+    mv -f "$WASM_DIR/POM2.html" "$WASM_DIR/index.html"
 fi
 
 # Local dev server with COOP + COEP — required for SharedArrayBuffer /
 # pthreads. python3's built-in http.server doesn't ship those headers,
 # so we provide a tiny wrapper.
-cat > "$DIST_DIR/serve.py" <<'PY'
+cat > "$WASM_DIR/serve.py" <<'PY'
 #!/usr/bin/env python3
 """Local dev server for POM2 WASM with COOP+COEP headers.
 
@@ -104,16 +104,16 @@ class H(http.server.SimpleHTTPRequestHandler):
 print(f"POM2 WASM dev server: http://127.0.0.1:{PORT}/")
 http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
 PY
-chmod +x "$DIST_DIR/serve.py"
+chmod +x "$WASM_DIR/serve.py"
 
 echo
 echo "── done ────────────────────────────────────────────"
-echo "  artefacts: $DIST_DIR/"
-ls -lh "$DIST_DIR/" | awk 'NR>1 {printf "    %s %s\n", $5, $9}'
-echo "  serve:    cd $DIST_DIR && python3 serve.py"
+echo "  artefacts: $WASM_DIR/"
+ls -lh "$WASM_DIR/" | awk 'NR>1 {printf "    %s %s\n", $5, $9}'
+echo "  serve:    cd $WASM_DIR && python3 serve.py"
 echo "  open:     http://127.0.0.1:8080/"
 echo
 
 if [ $SERVE -eq 1 ]; then
-    exec python3 "$DIST_DIR/serve.py"
+    exec python3 "$WASM_DIR/serve.py"
 fi

@@ -1,10 +1,12 @@
 build/
 build-*/
+build_wasm/
 DIST/
 imgui/
 *.o
 *.obj
 .cache/
+.claude/
 compile_commands.json
 .vscode/
 .idea/
