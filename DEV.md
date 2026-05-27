@@ -1620,7 +1620,7 @@ is invisible in practice.
   + a few mounted HDV images.
 - `-lidbfs.js` + `-sFORCE_FILESYSTEM=1` — IndexedDB-backed filesystem
   mountable at `/persistent` via `FS.mount(IDBFS, …)` in the shell
-  preRun hook (see `web/shell.html`). **Not yet wired to
+  preRun hook (see `wasm/shell.html`). **Not yet wired to
   `Settings.cpp`** — see TODO 🟡 [WASM] IDBFS settings persistence.
 - `--preload-file roms@/roms fonts@/fonts` — baked into `POM2.data`
   at build time. Disks are opt-in via `-DPOM2_WASM_BUNDLE_DISKS=ON`

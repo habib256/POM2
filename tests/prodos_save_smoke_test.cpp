@@ -84,8 +84,8 @@ int main() {
     const std::string promPath = findFirst({
         "../roms/disk2.rom", "roms/disk2.rom", "../../roms/disk2.rom" });
     const std::string masterPath = findFirst({
-        "../disks/ProDOS_2_4_3.po", "disks/ProDOS_2_4_3.po",
-        "../../disks/ProDOS_2_4_3.po" });
+        "../disks_5.4/ProDOS_2_4_3.po", "disks_5.4/ProDOS_2_4_3.po",
+        "../../disks_5.4/ProDOS_2_4_3.po" });
 
     if (romPath.empty() || promPath.empty() || masterPath.empty()) {
         std::printf("prodos_save_smoke SKIP: missing ROM or disk\n");

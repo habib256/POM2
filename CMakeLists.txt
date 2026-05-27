@@ -256,29 +256,36 @@ if(EMSCRIPTEN)
         "-sFORCE_FILESYSTEM=1"
         "-lidbfs.js"
         "-sEXPORTED_RUNTIME_METHODS=['FS','IDBFS','ccall','cwrap']"
-        "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+        "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/wasm/shell.html"
     )
     # Preload host folders into POM2.data. Each clause maps an
     # on-disk source folder to a virtual path the binary's std::ifstream
     # / ResourcePaths probes will resolve against (`./roms/...`,
-    # `./disks/...`, etc — exactly what the CWD-based search finds on
+    # `./disks_5.4/...`, etc — exactly what the CWD-based search finds on
     # native).
-    # Default WASM bundle: ROMs (~600 KB) + fonts (~1 MB). The user-disk
-    # folders (`disks/`, `disks35/`, `hdv/`, `floppyemu/`) are
+    # Apple ROMs are always bundled — without them the emulator can't boot,
+    # and the browser build has no drag-and-drop ROM upload path yet. The
+    # user is responsible for populating `roms/` before building WASM
+    # (same constraint as native); we just guarantee the folder ships
+    # inside POM2.data when it exists.
+    #
+    # Default extras: fonts (~1 MB) + floppyemu/ (curated BMOW SD images).
+    # The bulk user-disk folders (`disks_5.4/`, `disks_3.5/`, `hdv/`) are
     # opt-in because they can be hundreds of MB and there's no point
     # shipping someone else's `.dsk` collection. Build with
     # `-DPOM2_WASM_BUNDLE_DISKS=ON` to fold them in.
     #
     # --preload-file: pass src+dst as ONE token via SHELL: so CMake
     # doesn't try to interpret the bare `@` as a response-file marker.
-    set(POM2_WASM_BUNDLE "roms;fonts" CACHE STRING
-        "Asset folders to preload into POM2.data (semicolon-separated)")
+    set(POM2_WASM_BUNDLE "fonts;floppyemu" CACHE STRING
+        "Extra asset folders to preload into POM2.data (semicolon-separated). roms/ is always included.")
     option(POM2_WASM_BUNDLE_DISKS
-        "Include disks/disks35/hdv/floppyemu in the WASM bundle" OFF)
+        "Include disks_5.4/disks_3.5/hdv in the WASM bundle" OFF)
+    set(POM2_WASM_PRELOAD roms ${POM2_WASM_BUNDLE})
     if(POM2_WASM_BUNDLE_DISKS)
-        list(APPEND POM2_WASM_BUNDLE disks disks35 hdv floppyemu)
+        list(APPEND POM2_WASM_PRELOAD disks_5.4 disks_3.5 hdv)
     endif()
-    foreach(_pom2_asset ${POM2_WASM_BUNDLE})
+    foreach(_pom2_asset ${POM2_WASM_PRELOAD})
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}")
             list(APPEND POM2_WASM_LINK
                 "SHELL:--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}@/${_pom2_asset}")

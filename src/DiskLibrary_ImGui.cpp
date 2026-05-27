@@ -145,11 +145,11 @@ void DiskLibrary_ImGui::rescanInto(
 void DiskLibrary_ImGui::rescan()
 {
     rescanInto(disk525_,
-               { "disks", "../disks", "../../disks" },
+               { "disks_5.4", "../disks_5.4", "../../disks_5.4" },
                &accept525);
     rescanInto(disk35_,
-               { "disks35", "../disks35", "../../disks35",
-                 "disks",   "../disks",   "../../disks" },
+               { "disks_3.5", "../disks_3.5", "../../disks_3.5",
+                 "disks_5.4",   "../disks_5.4",   "../../disks_5.4" },
                &accept35);
     rescanInto(hdv_,
                { "hdv", "../hdv", "../../hdv" },
@@ -409,7 +409,7 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_ROTATE " Refresh")) needsRescan_ = true;
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Re-scan disks/, disks35/, hdv/");
+        ImGui::SetTooltip("Re-scan disks_5.4/, disks_3.5/, hdv/");
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(220.0f);
@@ -437,7 +437,7 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
                       ICON_FA_FLOPPY_DISK " 5.25\"  (%zu)", disk525_.size());
         if (ImGui::BeginTabItem(tabLabel)) {
             renderTab(disk525_, mounted.diskII,
-                      "  (drop .dsk / .do / .po / .nib / .woz / .d13 into disks/)",
+                      "  (drop .dsk / .do / .po / .nib / .woz / .d13 into disks_5.4/)",
                       &DiskLibrary_ImGui::on525Left,
                       &DiskLibrary_ImGui::on525Ctx,
                       r);
@@ -449,7 +449,7 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
             std::vector<std::string> marks35 = {
                 mounted.disk35Internal, mounted.disk35External };
             renderTab(disk35_, marks35,
-                      "  (drop 800K .po / .2mg into disks35/)",
+                      "  (drop 800K .po / .2mg into disks_3.5/)",
                       &DiskLibrary_ImGui::on35Left,
                       &DiskLibrary_ImGui::on35Ctx,
                       r);

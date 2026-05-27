@@ -91,8 +91,8 @@ int main() {
     const std::string promPath = findFirst({
         "../roms/disk2.rom", "roms/disk2.rom", "../../roms/disk2.rom" });
     const std::string masterPath = findFirst({
-        "../disks/dos33_master.dsk", "disks/dos33_master.dsk",
-        "../../disks/dos33_master.dsk" });
+        "../disks_5.4/dos33_master.dsk", "disks_5.4/dos33_master.dsk",
+        "../../disks_5.4/dos33_master.dsk" });
 
     if (romPath.empty() || promPath.empty() || masterPath.empty()) {
         std::printf("dos33_save_smoke SKIP: missing ROM or disk\n");

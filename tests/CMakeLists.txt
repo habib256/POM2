@@ -1436,7 +1436,7 @@ set_tests_properties(dos33_save_smoke PROPERTIES TIMEOUT 60)
 # ─── ProDOS 2.4.3 SAVE / LOAD round-trip smoke test ──────────────────────
 # Same regression gate as dos33_save but driving a ProDOS .po image
 # through BITSY BYE → BASIC → SAVE/LOAD. Skips silently when ProDOS_2_4_3.po
-# isn't in disks/.
+# isn't in disks_5.4/.
 
 add_executable(test_prodos_save
     prodos_save_smoke_test.cpp

@@ -71,9 +71,9 @@ int main()
     if (!diskRom.empty()) card->loadBootRom(diskRom);
     const std::string lssRom = firstExisting({"roms/diskii_p6.rom"});
     if (!lssRom.empty()) card->loadLssRom(lssRom);
-    const std::string disk = firstExisting({"disks/dsk/dos33_master.dsk"});
+    const std::string disk = firstExisting({"disks_5.4/dsk/dos33_master.dsk"});
     if (disk.empty()) {
-        std::printf("SKIP iic_boot_trace: disks/dsk/dos33_master.dsk not present\n");
+        std::printf("SKIP iic_boot_trace: disks_5.4/dsk/dos33_master.dsk not present\n");
         return 0;
     }
     card->insertDisk(disk);

@@ -62,7 +62,7 @@
 
 namespace {
 // Sentinel prefix used in HdvController_ImGui::LibraryEntry::fullPath to
-// flag the synthetic prodos_disk/ host-folder mount. The dispatcher in
+// flag the synthetic prodos_folder/ host-folder mount. The dispatcher in
 // renderHdvPanelWindow detects this prefix and routes to the synthesiser
 // instead of treating the path as a real .hdv file.
 constexpr const char* kProDOSHostSentinel = "@PRODOS_HOST_FOLDER@:";
@@ -276,7 +276,7 @@ MainWindow::MainWindow(bool forceIIPlus)
             if (sd.empty()) {
                 // The Floppy Emu owns a DEDICATED 'floppyemu/' folder — its
                 // virtual SD card, kept separate from the Disk Library's
-                // disks/ ・ disks35/ ・ hdv/. Probe the usual cwd anchors and,
+                // disks_5.4/ ・ disks_3.5/ ・ hdv/. Probe the usual cwd anchors and,
                 // if none exists, create it so there's always a clear place
                 // to drop images.
                 namespace fs = std::filesystem;
@@ -1426,7 +1426,7 @@ void MainWindow::renderMenuBar()
         ImGui::BeginDisabled(diskCard == nullptr);
         if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
             diskPanel->insertDialogOpen = true;
-            if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks/";
+            if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks_5.4/";
         }
         if (ImGui::MenuItem("Eject disk", nullptr, false,
                             diskCard && diskCard->isDiskLoaded())) {
@@ -3470,12 +3470,12 @@ void MainWindow::renderDiskPanelWindow()
     if (!showDiskPanel) return;
 
     // Disk library is the same for every plugged DiskII (it's the
-    // contents of disks/ on disk). Build it once and share via copy.
+    // contents of disks_5.4/ on disk). Build it once and share via copy.
     std::vector<pom2::DiskController_ImGui::LibraryEntry> sharedLibrary;
-    // Disk library — scan disks/ recursively for .dsk/.do/.po/.nib/.woz.
+    // Disk library — scan disks_5.4/ recursively for .dsk/.do/.po/.nib/.woz.
     // Sub-folders are honoured so users can shelve their library by
-    // format (`disks/dsk/`, `disks/woz/`, …) or by collection
-    // (`disks/games/`, `disks/dev/`, …) without losing the one-click
+    // format (`disks_5.4/dsk/`, `disks_5.4/woz/`, …) or by collection
+    // (`disks_5.4/games/`, `disks_5.4/dev/`, …) without losing the one-click
     // boot. Cheap (a few dirent reads per frame); sorted alphabetically
     // so the list doesn't reshuffle as the OS hands us a different
     // dirent order. `displayName` carries the path relative to the
@@ -3484,7 +3484,7 @@ void MainWindow::renderDiskPanelWindow()
     {
         namespace fs = std::filesystem;
         std::error_code ec;
-        const char* dirCandidates[] = { "disks", "../disks", "../../disks" };
+        const char* dirCandidates[] = { "disks_5.4", "../disks_5.4", "../../disks_5.4" };
         for (const char* dir : dirCandidates) {
             if (!fs::is_directory(dir, ec)) continue;
             const fs::path root(dir);
@@ -3674,7 +3674,7 @@ void MainWindow::ejectAllDisks()
     }
     controller->eject35(0);
     controller->eject35(1);
-    tapeStatusMessage = "Ejected all disks";
+    tapeStatusMessage = "Ejected all disks_5.4";
     tapeStatusUntil   = lastFrameTime + 3.0;
 }
 
@@ -4508,7 +4508,7 @@ void MainWindow::renderHdvPanelWindow()
 
     // Library scan — hdv/ for .hdv and .2mg, sorted alphabetically so the
     // list stays stable across frames regardless of dirent order. Plus a
-    // synthetic entry for prodos_disk/ if that folder exists (host-folder
+    // synthetic entry for prodos_folder/ if that folder exists (host-folder
     // mount: contents are synthesised into a read-only ProDOS volume on
     // click, see kProDOSHostSentinel below).
     {
@@ -4550,7 +4550,7 @@ void MainWindow::renderHdvPanelWindow()
 
         // Synthetic entry for the host-folder mount.
         const char* prodosCandidates[] = {
-            "prodos_disk", "../prodos_disk", "../../prodos_disk"
+            "prodos_folder", "../prodos_folder", "../../prodos_folder"
         };
         std::string prodosDir;
         for (const char* d : prodosCandidates) {
@@ -4794,10 +4794,10 @@ void MainWindow::renderDiskFileDialog()
             popupPanel->dialogPath = buf;
     }
 
-    // Quick list of disk images in disks/ (mirrors the cassette dialog).
+    // Quick list of disk images in disks_5.4/ (mirrors the cassette dialog).
     namespace fs = std::filesystem;
     std::error_code ec;
-    for (const char* dir : { "disks", "../disks", "../../disks" }) {
+    for (const char* dir : { "disks_5.4", "../disks_5.4", "../../disks_5.4" }) {
         if (!fs::is_directory(dir, ec)) continue;
         ImGui::Separator();
         ImGui::TextDisabled("%s/", dir);
@@ -4985,8 +4985,8 @@ void MainWindow::renderDisk35PanelWindow()
     {
         namespace fs = std::filesystem;
         std::error_code ec;
-        for (const char* dir : { "disks35", "../disks35", "../../disks35",
-                                 "disks",   "../disks",   "../../disks" }) {
+        for (const char* dir : { "disks_3.5", "../disks_3.5", "../../disks_3.5",
+                                 "disks_5.4",   "../disks_5.4",   "../../disks_5.4" }) {
             if (!fs::is_directory(dir, ec)) continue;
             const fs::path root(dir);
             for (auto it = fs::recursive_directory_iterator(root,
@@ -5091,7 +5091,7 @@ void MainWindow::renderDisk35PanelWindow()
     if (result.openMountDialog) {
         disk35Panel->mountDialogOpen     = true;
         disk35Panel->mountDialogForDrive = result.openMountDialogForDrive;
-        if (disk35Panel->dialogPath.empty()) disk35Panel->dialogPath = "disks35/";
+        if (disk35Panel->dialogPath.empty()) disk35Panel->dialogPath = "disks_3.5/";
     }
     if (!result.requestMountPath.empty()) {
         // routeMount35 sends the image to the SmartPort card's unit on
@@ -5167,7 +5167,7 @@ void MainWindow::renderDisk35FileDialog()
 
     namespace fs = std::filesystem;
     std::error_code ec;
-    for (const char* dir : { "disks35", "../disks35", "../../disks35" }) {
+    for (const char* dir : { "disks_3.5", "../disks_3.5", "../../disks_3.5" }) {
         if (!fs::is_directory(dir, ec)) continue;
         ImGui::Separator();
         ImGui::TextDisabled("%s/", dir);
@@ -5489,7 +5489,7 @@ void MainWindow::render()
             // its own "Insert .dsk…" button does. `renderDiskFileDialog`
             // picks it up next frame and routes to `diskCard`.
             diskPanel->insertDialogOpen = true;
-            if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks/";
+            if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks_5.4/";
         }
         if (tr.setCharRomRequested) {
             // Hot swap: Memory::loadCharRom rewrites the csbits table

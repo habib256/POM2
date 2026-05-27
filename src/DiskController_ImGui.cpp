@@ -93,7 +93,7 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     // ─── Buttons ─────────────────────────────────────────────────────────
     if (ImGui::Button("Insert .dsk...")) {
         insertDialogOpen = true;
-        if (dialogPath.empty()) dialogPath = "disks/";
+        if (dialogPath.empty()) dialogPath = "disks_5.4/";
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!snap.diskLoaded);
@@ -143,14 +143,14 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     }
 
     // ─── Disk library ───────────────────────────────────────────────────
-    // One-click insert + cold-boot for any .dsk found in disks/.
+    // One-click insert + cold-boot for any .dsk found in disks_5.4/.
     ImGui::Separator();
     ImGui::TextUnformatted("Library:");
     ImGui::SameLine();
     ImGui::TextDisabled("(left-click: insert + boot — right-click: insert only)");
 
     if (snap.library.empty()) {
-        ImGui::TextDisabled("  (drop .dsk / .do files into disks/ to populate)");
+        ImGui::TextDisabled("  (drop .dsk / .do files into disks_5.4/ to populate)");
     } else {
         // 540 px (3× the original 180) — extended downward by half its
         // previous height (360 + 180). If the surrounding Disk II panel

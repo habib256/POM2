@@ -14,7 +14,7 @@
 #   POM2-v<ver>-linux-<arch>.deb      Debian/Ubuntu package (if cpack DEB ok)
 #   POM2-v<ver>-x86_64.AppImage       single-file portable (if tooling present)
 #
-# The Apple ROMs are NEVER bundled (copyright); each artifact ships a
+# The Apple ROMs are always bundled ; each artifact ships a
 # roms/README.txt telling the user where to drop their own dumps.
 set -euo pipefail
 

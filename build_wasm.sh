@@ -5,7 +5,7 @@
 #   index.html        — entry point (renamed from POM2.html)
 #   POM2.js           — Emscripten loader
 #   POM2.wasm         — compiled module
-#   POM2.data         — preloaded asset bundle (roms/ + disks/ + …)
+#   POM2.data         — preloaded asset bundle (roms/ + fonts/ + floppyemu/)
 #   POM2.worker.js    — pthread worker (when USE_PTHREADS=1)
 #   serve.py          — local dev server that sets COOP+COEP headers
 #                       (required for SharedArrayBuffer / pthreads)

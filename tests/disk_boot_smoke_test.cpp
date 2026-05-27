@@ -135,12 +135,12 @@ int main()
     const std::string promPath = findFirst({
         "../roms/disk2.rom", "roms/disk2.rom", "../../roms/disk2.rom" });
     const std::string dskPath  = findFirst({
-        "../disks/dos33_master.dsk", "disks/dos33_master.dsk",
-        "../../disks/dos33_master.dsk" });
+        "../disks_5.4/dos33_master.dsk", "disks_5.4/dos33_master.dsk",
+        "../../disks_5.4/dos33_master.dsk" });
 
     if (romPath.empty() || promPath.empty() || dskPath.empty()) {
         std::printf("disk_boot_smoke SKIP: missing one of"
-                    " roms/apple2.rom, roms/disk2.rom, disks/dos33_master.dsk\n");
+                    " roms/apple2.rom, roms/disk2.rom, disks_5.4/dos33_master.dsk\n");
         return 0;
     }
 
@@ -152,8 +152,8 @@ int main()
     // check that the .po path round-trips through DiskIICard / GCR / the
     // boot loader.
     const std::string poPath = findFirst({
-        "../disks/ProDOS_2_4_3.po", "disks/ProDOS_2_4_3.po",
-        "../../disks/ProDOS_2_4_3.po" });
+        "../disks_5.4/ProDOS_2_4_3.po", "disks_5.4/ProDOS_2_4_3.po",
+        "../../disks_5.4/ProDOS_2_4_3.po" });
     if (!poPath.empty()) {
         if (const int r = bootAndVerify(romPath, promPath, poPath, "ProDOS .po");
             r != 0) return r;

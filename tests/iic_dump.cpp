@@ -29,7 +29,7 @@ int main() {
     auto card = std::make_unique<DiskIICard>(6);
     card->loadBootRom(firstExisting({"roms/disk2.rom"}));
     card->loadLssRom(firstExisting({"roms/diskii_p6.rom"}));
-    card->insertDisk(firstExisting({"disks/dsk/dos33_master.dsk"}));
+    card->insertDisk(firstExisting({"disks_5.4/dsk/dos33_master.dsk"}));
     mem.slotBus().plug(6, std::move(card));
 
     cpu.setCpuMode(M6502::CpuMode::CMOS);
