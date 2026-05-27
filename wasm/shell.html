@@ -50,7 +50,21 @@
     progressEl.style.width = Math.min(100, (100 * num / total)) + '%';
   }
 
+  // Default WASM experience: //c profile auto-booting Total Replay from
+  // the bundled floppyemu/. Both knobs are URL-overridable so a deeplink
+  // can pick a different profile or disk without rebuilding:
+  //   ?preset=iie&disk=floppyemu/A2DeskTop-1.5-en_800k.2mg
+  //   ?preset=ii+        (no auto-boot — drops to the BASIC prompt)
+  //   ?nodisk=1          (keep the preset, skip the disk arg)
+  const _qs = new URLSearchParams(window.location.search);
+  const _preset = _qs.get('preset') || 'iic';
+  const _disk   = _qs.get('nodisk') === '1' ? null
+                 : (_qs.get('disk') || 'floppyemu/Total Replay v5.2.hdv');
+  const _args = ['--preset', _preset];
+  if (_disk) _args.push(_disk);
+
   var Module = {
+    arguments: _args,
     canvas: (function() {
       const c = document.getElementById('canvas');
       // ContextLost recovery is the user's problem (refresh tab).
