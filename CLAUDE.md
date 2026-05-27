@@ -1,30 +1,17 @@
 # CLAUDE.md
 
-Orientation for the **emulator side** of POM2 — the always-loaded
-index. Reach for the other docs in this order:
+Orientation **always-loaded index** — keep terse, defer detail to other docs.
 
-- `README.md` — user walkthrough (build, profiles, ROM/disk
-  placement, keys, CLI).
-- `DEV.md` — deep implementation notes (MAME-parity ports, port
-  internals, format gotchas, pinned smoke tests).
+- `README.md` — user walkthrough (build, profiles, ROM/disk placement, keys, CLI).
+- `DEV.md` — implementation deep-dives (MAME-parity ports, internals, gotchas, pinned tests).
 - `TODO.md` — active backlog + MAME↔POM2 parity dashboard.
-- `CHANGELOG.md` — resolved items + the *why* behind non-obvious
-  fixes (`git log` is canonical mechanics; this captures
-  rationale).
+- `CHANGELOG.md` — resolved items + the **why** behind non-obvious fixes.
 
 **Conventions**:
 
-- **One concern per file** — each `.cpp/.h` pair owns one
-  subsystem.
-- **MAME source of truth** — when porting hardware behaviour,
-  cite the MAME file + line range in a comment and pin the
-  behaviour with a smoke test under `tests/`.
-- **CPU → audio/UI events carry an `emuCycles` stamp.** Consumers
-  measure cadence in emulated CPU cycles, not wall-clock frames.
-  Disk-turbo bumps the CPU to ~60× real-time → wall-clock gaps
-  collapse to zero across an audio-buffer tick. Canonical
-  example: `FloppySoundDevice::drainCommands` uses the cycle
-  stamp passed by `DiskIICard::seekPhaseW`.
+- **One concern per file** — each `.cpp/.h` pair owns one subsystem.
+- **MAME = source of truth** — when porting hardware, cite the MAME file + line range in a comment and pin with a smoke test under `tests/`.
+- **`emuCycles` everywhere** — CPU → audio/UI events carry a CPU-cycle stamp, not wall-clock. Disk-turbo (~60×) collapses wall-clock gaps to zero across an audio-buffer tick. Example: `FloppySoundDevice::drainCommands` consumes the stamp from `DiskIICard::seekPhaseW`.
 
 ## Table of contents
 
@@ -41,48 +28,46 @@ index. Reach for the other docs in this order:
 ```bash
 ./setup_imgui.sh             # one-time deps + clones imgui/
 cd build && cmake .. && make # → build/POM2
-./run_emulator.sh            # runs from repo root so roms/ probes resolve
+./run_emulator.sh            # cwd = repo root so roms/ probes resolve
 ```
 
-ROMs are user-provided. Active profile (default `Apple ][+`) drives
-ROM probe order — see [System profiles](#system-profiles). Legacy
-auto-detect (flip to IIe on `roms/apple2e.rom` presence) survives
-as fallback.
+`POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
+
+ROMs are user-provided. Default profile is `Apple ][+`; see [System profiles](#system-profiles) for ROM probe order.
 
 ## Subsystem map
 
-| Subsystem | Files | Deep notes |
-|---|---|---|
-| 6502 / 65C02 / Rockwell / WDC | `M6502.h/.cpp` | [DEV § CPU](DEV.md#cpu) |
-| Main memory, IIe paging, RamWorks | `Memory.h/.cpp` | [DEV § Memory](DEV.md#memory) — `dataMutable()` replaced by `writeRamUnchecked` + `loadFlatTestImage` (2026-05-26) |
-| Display (HGR / DHGR / 80-col) | `Apple2Display.h/.cpp` | [DEV § Display](DEV.md#display) |
-| Audio / Speaker / Cassette | `AudioDevice.*`, `SpeakerDevice.*`, `CassetteDevice.*` | [DEV § Audio](DEV.md#audio) |
-| Mockingboard (6522 + AY) + Sound II | `Mockingboard.h/.cpp` | [DEV § Mockingboard](DEV.md#mockingboard) — VIA + AY structs extraits vers `Via6522.h` + `Ay3_8910.h` (partagés avec Phasor). `Variant::AC` (vanilla) + `Variant::SoundII` (ajout SSI263 à `$Cs40-$Cs44`, A/!R → VIA1.CA1). Catalog keys `mockingboard` + `mockingboard_c` |
-| Phasor (AE — 2×VIA, 4×AY) | `PhasorCard.h/.cpp` | [DEV § Phasor](DEV.md#phasor-applied-engineering) — mode soft-switch $C0(8+s)X (MB/Phasor/EP), chip-select PB3/PB4 actif-bas, **4-AY mono mix + clockScale ×2 en natif** (MAME-parity AY synth). Pinned `phasor_card_smoke` (incl. mix non-silent + ratio pitch 2.01) |
-| SSI263 speech synth | `Ssi263.h/.cpp` + `Ssi263PhonemeData.h/.cpp` | [DEV § SSI263 + Echo+](DEV.md#ssi263--echo-street-electronics) — chip model partagé (MAME n'implémente pas SSI263 ; ref = AppleWin). 5 registres, A/!R bit + IRQ wiring, formule durée AppleWin-parity, **audio live via blob PCM 62 phonèmes** (313 KB ported AppleWin LGPL → POM2 GPL3 compat). Pinned `ssi263_smoke` (7 sub-tests incl. RMS audio > 0.005) |
-| Echo+ (Street Electronics) | `EchoPlusCard.h/.cpp` | [DEV § EchoPlusCard](DEV.md#echopluscard) — standalone SSI263 à $Cs00-$Cs04, A/!R → slot IRQ direct. Pinned `echoplus_card_smoke` |
-| Floppy mechanical sounds | `FloppySoundDevice.h/.cpp` | [DEV § Floppy mechanical sounds](DEV.md#floppy-mechanical-sounds) |
-| Slot bus, wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [DEV § Slot bus](DEV.md#slot-bus--irq-aggregation) |
-| Disk image, Disk II, ProDOS HDV, Snapshot | `DiskImage.*`, `DiskIICard.*`, `ProDOSVolume.*`, `SnapshotIO.*` | [DEV § Storage](DEV.md#storage) — DiskII **multi-instance**; per-slot persistence keys `disk_path_slotN`; WOZ2 honours INFO+39 |
-| ProDOS block backing + HDV-class cards | `Block512Backing.*`, `ProDOSBlockCard.h`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [DEV § ProDOSHardDiskCard](DEV.md#prodoshardiskcard-hdv-synthetic-block-model) + [§ CffaCard](DEV.md#cffacard-cffa-20--mame-faithful-ide) — shared `Block512Backing`; synthetic `hdv` (zero-ROM, AppleWin lineage) vs MAME-faithful `cffa` (real `cffa20ee(c)02.bin` over emulated ATA; `$Cn07=$3C` ⇒ F8-bootable). `hdvDevice()` targets whichever |
-| IWM (Apple FDC, //c / //c+ / Mac / IIgs) | `IWMDevice.*` | [DEV § Storage](DEV.md#storage) — live on //c+ AND on 32 KB-ROM //c rev 0/3/4; toggle via `POM2_IWM_AUTHORITATIVE=0`. Pinned `iic_boot_trace` |
-| SmartPort 3.5" — //c+ on-board (IWM/GCR) | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*`, `Disk35Controller_ImGui.*` | [DEV § SmartPort 3.5" stack](DEV.md#smartport-35-stack) |
-| SmartPort slot card (//e / II+, Liron-class) | `SmartPortCard.*`, `SmartPortUnit.*`, `SmartPort35Unit.*`, `SmartPortHdvUnit.*` | [DEV § SmartPortCard](DEV.md#smartportcard-e-liron-class) — block-level driver, 2 units/card, polymorphic `SmartPortUnit` (Sony 800K or ProDOS HDV via `Block512Backing`). Per-unit `smartport_slotN_unitK_*`. Implements `MountableMediaCard` |
-| Super Serial Card (slot 2) + telnet | `SuperSerialCard.h/.cpp` | [DEV § SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
-| Printer card (parallel, synthetic) | `PrinterCard.h/.cpp` | [DEV § Printer card](DEV.md#printer-card-parallel-synthetic) — synthetic 256 B slot ROM hooks CSWL/CSWH → host-side spool, saved as `.txt` from Devices → Printer. Built-in sl1 on //c/+; pluggable any slot on II/II+/IIe. PDF deferred. Pinned `printer_card_smoke` |
-| ProDOS clock card (slot 4) | `ClockCard.h/.cpp` | [DEV § Clock card](DEV.md#prodos-clock-card-slot-4) |
-| Mouse Card (slot 4 by conv.) | `MouseCard.h/.cpp`, `MouseCardAppleWin.h/.cpp` | [DEV § Mouse Card](DEV.md#mouse-card) — TWO variants: `mouse` = MAME-faithful 68705P3 + 6821 (needs `mouse_341-0270-c.bin` + `mouse_341-0269.bin`), `mouseaw` = AppleWin HLE (slot EPROM only). Pinned `mouse_card_smoke` + `mouse_card_applewin_smoke` |
-| Joystick / paddles | `JoystickInput.h/.cpp` + Memory paddle RC | [DEV § Joystick / paddles](DEV.md#joystick--paddles) |
-| UI (ImGui) | `MainWindow.*`, `MemoryViewer_ImGui.*`, … | [DEV § UI](DEV.md#ui-imgui) |
-| Slot Configuration + card catalog + media bay | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [DEV § Host control center](DEV.md#host-control-center-slot-configuration--floppy-emu) — two-column panel: left assigns cards (built-ins greyed), right is a live SlotBus walk over `MountableMediaCard` bays + Disk II drives. The standalone Slot Manager was folded in (deleted 2026-05-25). Pinned `slot_multi_card_smoke` |
-| Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [DEV § Host control center](DEV.md#host-control-center-slot-configuration--floppy-emu) — Devices → Floppy Emu. 4 modes (5.25 / 3.5 / Unidisk 3.5 / Smartport HD); SD explorer + `favdisks.txt` over `floppyemu/`; mounting **routed into existing `DiskIICard` / `SmartPortCard` units**. Pinned `floppy_emu_smoke` |
-| Clock & threading | `EmulationController.h/.cpp` | [DEV § Clock & threading](DEV.md#clock--threading) |
-| System profiles | `SystemProfile.h/.cpp` | [System profiles](#system-profiles) + [DEV § Profile switching](DEV.md#profile-switching-internals) |
-| CLI | `CliDispatcher.h/.cpp` | [CLI](#cli) + [DEV § CLI](DEV.md#cli-clidispatcher) |
+Detail lives in `DEV.md`. This map is the index — file pair + one-line note + DEV anchor.
 
-`POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU
-worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex`
-guards CPU + Memory.
+| Subsystem | Files | DEV anchor |
+|---|---|---|
+| 6502 / 65C02 / Rockwell / WDC | `M6502.h/.cpp` | [§ CPU](DEV.md#cpu) |
+| Memory + IIe paging + RamWorks | `Memory.h/.cpp` | [§ Memory](DEV.md#memory) |
+| Display (HGR / DHGR / 80-col) | `Apple2Display.h/.cpp` | [§ Display](DEV.md#display) |
+| Speaker / Cassette / Audio bus | `AudioDevice.*`, `SpeakerDevice.*`, `CassetteDevice.*` | [§ Audio](DEV.md#audio) |
+| Mockingboard A/C + Sound II | `Mockingboard.h/.cpp` + `Via6522.h` + `Ay3_8910.h` | [§ Mockingboard](DEV.md#mockingboard), [§ Sound II](DEV.md#mockingboardcard-variantsoundii) |
+| Phasor (2×VIA, 4×AY) | `PhasorCard.h/.cpp` | [§ Phasor](DEV.md#phasor-applied-engineering) |
+| SSI263 speech chip | `Ssi263.h/.cpp` + `Ssi263PhonemeData.h/.cpp` | [§ SSI263](DEV.md#ssi263--echo-street-electronics) |
+| Echo+ (standalone SSI263) | `EchoPlusCard.h/.cpp` | [§ EchoPlusCard](DEV.md#echopluscard) |
+| Floppy mechanical sounds | `FloppySoundDevice.h/.cpp` | [§ Floppy sounds](DEV.md#floppy-mechanical-sounds) |
+| Slot bus + wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [§ Slot bus](DEV.md#slot-bus--irq-aggregation) |
+| DiskImage / DiskIICard / Snapshot | `DiskImage.*`, `DiskIICard.*`, `SnapshotIO.*` | [§ Storage](DEV.md#storage) |
+| ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodoshardiskcard-hdv-synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
+| IWM (//c, //c+, Mac, IIgs) | `IWMDevice.*` | [§ IWM](DEV.md#iwm-c-on-board) |
+| SmartPort 3.5" //c+ on-board | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
+| SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
+| Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
+| Printer card (synthetic → spool) | `PrinterCard.h/.cpp` | [§ Printer](DEV.md#printer-card-parallel-synthetic) |
+| ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
+| Mouse Card (MAME + AppleWin HLE) | `MouseCard.*`, `MouseCardAppleWin.*` | [§ Mouse](DEV.md#mouse-card) |
+| Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |
+| UI (ImGui) | `MainWindow.*`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui) |
+| Slot Config + catalog + media bay | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
+| Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
+| Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
+| System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
+| CLI | `CliDispatcher.h/.cpp` | [§ CLI](DEV.md#cli-clidispatcher) |
+| WebAssembly build | `build_wasm.sh`, `web/shell.html` | [§ WASM](DEV.md#webassembly-browser-build) |
 
 ## Memory map
 
@@ -102,24 +87,26 @@ $C000-$C00F  IIe paging (80STORE/RAMRD/RAMWRT/INTCXROM/ALTZP/SLOTC3ROM/
 $C010        Clear keyboard strobe
 $C013-$C018  IIe paging status reads (bit 7 = on)
 $C01E/$C01F  IIe RDALTCHAR / RD80COL
-$C028        //c ROMBANK toggle on any //c-class ROM (both 16 KB rev-255
-             and 32 KB rev-0/3/4/X dumps; alt-firmware reads further
-             require `iicHasAltBank`, set only by 32 KB dumps).
-             Falls through to cassette on II/II+/IIe.
+$C028        //c ROMBANK toggle (any //c-class ROM; alt-firmware reads
+             further require `iicHasAltBank`). Cassette on II/II+/IIe.
 $C030-$C03F  Speaker toggle (any access)
 $C050-$C057  Display mode pairs (text/gfx, mixed, page 1/2, lo/hi-res)
-$C05E/$C05F  IIe DHGR enable / disable (AN3 pulses for Le Chat Mauve FIFO)
+$C05E/$C05F  IIe DHGR enable/disable (AN3 pulses → Le Chat Mauve FIFO)
 $C061-$C063  Push-buttons (negative when pressed)
 $C064-$C067  Paddle inputs (negative while RC discharging)
 $C070        Paddle reset latch (mirrored $C070-$C07F)
 $C071/3/5/7  RamWorks III aux-bank select (write `data & 0x7F`)
 $C078/$C079  //c mouse-firmware IOUDIS SET/CLR mirrors (of $C07E/F)
-$C07E/$C07F  IOUDIS SET/CLR (writes effective on //c/c+ only; read $C07E
-             returns bit-7 IOUDIS state on all IIe-class)
+$C07E/$C07F  IOUDIS SET/CLR (writes effective on //c/c+ only)
 $C0A8-$C0AB  SSC ACIA (slot 2)
 $C0C0        ThunderClock+ uPD1990AC bit-bang (slot 4)
-$C0E0-$C0EF  Disk II soft switches (slot 6 — $C0EC=Q6L data, $C0ED=Q6H)
-$C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on)
+$C0E0-$C0EF  Disk II soft switches (slot 6 — $C0EC=Q6L, $C0ED=Q6H)
+$C0(8+s)X    Per-slot device select (e.g. Phasor mode soft-switch
+             $C0(8+s)0..F when a Phasor sits in slot s)
+$C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on).
+             When MockingboardCard SoundII is in slot s, $Cs40-$Cs44
+             routes to the SSI263; when EchoPlusCard is in slot s,
+             $Cs00-$Cs04 routes to its SSI263.
 $C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)
 $C400-$C4FF  ProDOS clock card slot ROM
 $C600-$C6FF  Disk II boot PROM (when roms/disk2.rom present)
@@ -128,123 +115,64 @@ $D000-$F7FF  Applesoft BASIC ROM
 $F800-$FFFF  Monitor ROM + 6502 vectors ($FFFA-$FFFF)
 ```
 
-In IIe mode the same map applies but most of `$0000-$BFFF` can route
-to aux 64 KB under paging switches — see table at top of `Memory.h`.
+In IIe mode the same map applies but most of `$0000-$BFFF` can route to aux 64 KB under paging switches — see table at top of `Memory.h`.
 
 ## System profiles
 
 | Profile | CPU | iieMode | Main ROM probes | Built-in slots (locked in UI) |
 |---|---|---|---|---|
-| Apple ][ Original (1977)  | NMOS  | off | `apple2o.rom`, `apple2.rom` | — (all 7 free) |
+| Apple ][ Original (1977)  | NMOS  | off | `apple2o.rom`, `apple2.rom` | — |
 | Apple ][+ (1979)          | NMOS  | off | `apple2p.rom`, `apple2.rom` | — |
-| Apple //e Unenh. (1983)   | NMOS  | on  | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | — (AUX = ext80) |
+| Apple //e Unenh. (1983)   | NMOS  | on  | `apple2e_unenh.rom`, `apple2e.rom` | — (AUX = ext80) |
 | Apple //e Enh. (1985)     | 65C02 | on  | `apple2e.rom` | — (AUX = ext80) |
-| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1 Printer, sl2 SSC, sl4 Mouse, sl5 SmartPort, sl6 Disk II |
-| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1 Printer, sl2 SSC, sl4 Mouse, sl5 SmartPort 3.5" (IWM), sl6 Disk II |
+| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1 Printer · sl2 SSC · sl4 Mouse · sl5 SmartPort · sl6 Disk II |
+| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom` | sl1 Printer · sl2 SSC · sl4 Mouse · sl5 SmartPort 3.5" (IWM) · sl6 Disk II |
 
-Profiles with built-in slots force the listed cards into the SlotBus
-on profile load (overrides user `slot_N_card` settings) and render
-those rows disabled in Slot Config with a "built-in" badge. Mechanism
-detail → [DEV § Profile switching](DEV.md#profile-switching-internals).
+Built-in slots force their listed card onto the SlotBus on profile load (overriding `slot_N_card` settings) and grey out their row in Slot Config. Detail → [DEV § Profile switching](DEV.md#profile-switching-internals).
 
-**ROM identity check**: when the generic `apple2.rom` fallback
-resolves because no profile-specific dump is present, the loader
-emits a warning that the loaded ROM may not match the selected
-machine.
+**ROM identity check**: when the generic `apple2.rom` fallback resolves (no profile-specific dump present), the loader warns the ROM may not match the selected machine.
 
-Default `cyclesPerFrame` = 17045 for II/II+/IIe/IIc; **//c+ defaults
-to 68180 (4×)** to match the on-board Zip-style accelerator. POM2
-doesn't model the `$C036` 1 MHz fall-back during disk I/O, but the
-event-driven disk LSS is cycle-driven so 4× CPU still produces
-correctly-paced nibbles. `cpu_mode_override = auto|nmos|65c02`
-(Machine → CPU menu).
+Default `cyclesPerFrame` = 17045 for II/II+/IIe/IIc; **//c+ defaults to 68180 (4×)** for its on-board Zip-style accelerator. `$C036` 1 MHz fall-back during disk I/O not modelled (event-driven disk LSS keeps nibbles cycle-correct anyway). `cpu_mode_override = auto|nmos|65c02` (Machine → CPU menu).
 
-**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives an Apple MIG
-gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` (drive enable, 2 KB MIG
-RAM, 3.5" head select) and an IWM at `$C0E0-$C0EF`. POM2 implements
-the minimum for cold boot (banner + 5.25" auto-boot); the full IWM
-bit-shift state machine is **not** modelled, so the firmware's
-IWM/Sony 3.5" boot never reaches a bootable disk. Detail → [DEV §
-//c+ MIG + IWM handshake](DEV.md#profile-switching-internals).
+**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. POM2 implements enough for cold boot (banner + 5.25" auto-boot); the full IWM bit-shift state machine is **not** modelled, so the firmware's IWM/Sony 3.5" boot path never reaches a bootable disk. → [DEV](DEV.md#profile-switching-internals).
 
-**//c-class on-board SmartPort (3.5" + HDV boot)**: because the
-real IWM/Sony GCR boot is unmodelled — and MAME doesn't emulate
-3.5"/SmartPort on the plain //c at all — POM2 boots 3.5" **and**
-HDV on //c/+/c+ through a **host-served SmartPort block device** at
-the built-in slot 5. `Memory::memRead` punches a hole at
-`$C500-$C5FF` (bank 0) for the slot-5 `SmartPortCard` firmware
-**iff** the SmartPort is "armed" (`Memory::setIicSmartPortArmed`)
-AND holds media (`SlotPeripheral::exposesIicOnboardRom`). The armed
-gate is essential: `bootFromSlot` arms it (explicit GUI/CLI boot
-only) and every reset/cold-boot disarms it, so the //c ROM's **own
-autostart always sees its real `$C500` firmware** (substituting the
-stub there corrupts a multi-device reboot — the "garbled Apple //c
-banner" bug). Net: a reboot is always clean (Disk II / banner);
-on-board SmartPort boots via the Disk Library / Slot Config "Boot"
-button. Device-select I/O (`$C0D0-$C0DF`) is never masked. Pinned
-by `iic_onboard_smartport_test`; see [DEV § //c-class on-board
-SmartPort](DEV.md#storage) and the `project_iic_smartport_boot`
-memory.
+**//c-class on-board SmartPort (3.5" + HDV boot)**: real IWM/Sony GCR boot is unmodelled, and MAME doesn't emulate 3.5"/SmartPort on the plain //c. POM2 boots 3.5" and HDV on //c/+/c+ through a host-served SmartPort block device at built-in slot 5. `Memory::memRead` punches a hole at `$C500-$C5FF` for the SmartPort firmware iff the slot is **armed** + holds media. `bootFromSlot` arms it; every reset disarms it, so the //c ROM's autostart always sees its real `$C500` firmware (avoids the "garbled //c banner" bug). Pinned by `iic_onboard_smartport_test`. → [DEV § Storage](DEV.md#c-class-on-board-smartport-35--hdv-boot).
 
-Profile switching is a full cold reset with strict ordering — see
-[DEV § Profile switching](DEV.md#profile-switching-internals) for
-the 13-step `applyProfile` sequence + 32 KB ROM disambiguation.
+Profile switching is a full cold reset with strict ordering — 13-step `applyProfile` sequence detailed in [DEV](DEV.md#profile-switching-internals).
 
-CLI `--preset` triggers the same path after the legacy auto-probe
-— wins. Aliases: `apple2`, `apple2plus`, `iie-u`/`iieunenhanced`/
-`apple2e-1983`, `apple2e`, `apple2c`, `apple2cplus`, `//e-u`, `//e`,
-`//c`, `//c+`.
+CLI `--preset` triggers the same path. Aliases: `apple2`, `apple2plus`, `iie-u`, `apple2e`, `apple2c`, `apple2cplus`, `//e`, `//c`, `//c+`.
 
 ## Reset architecture
 
-Three classes of reset, mirroring MAME's split:
+Three classes of reset (+ one boot shortcut), mirroring MAME's split:
 
 | POM2 verb | Trigger | Behaviour | MAME analogue |
 |---|---|---|---|
-| `softReset()` | F11, toolbar, AI `/reset?kind=soft`, `applyProfile` | RAM survives. IIe-class wipes full MMU/IOU/LC list; II/II+ leaves LC + display untouched (kbd strobe only). CPU `SP -= 3`, I flag set, PC = $FFFC. | `reset_w(true→false)` per profile |
-| `hardReset()` | F12, toolbar, AI `/reset?kind=hard`, `applyProfile` step 11 | RAM survives; CPU additionally zeros A/X/Y. POM2-only convention. | Same as `reset_w` plus extra register wipe |
-| `coldBoot()` | Toolbar power, AI `/reset?kind=cold`, MainWindow ctor, Disk Library "Insert + boot" | Wipes user RAM + LC + aux with `00 FF 00 FF…` MAME pattern; full reset; hard reset CPU. | `machine_start` + `machine_reset` |
-| `bootFromSlot(N)` | HDV / SmartPort / Disk II Library menu "Boot" | `coldBoot` then `PC = $C000 + N*256` after validating JSR-dispatch trio ($Cn01=$20, $Cn03=$00, $Cn05=$03 — Apple II Ref Manual Appx C). $Cn07 deliberately NOT validated: HDV cards have $Cn07=$01 and F8 firmware won't scan them. JSR-trio mismatch → falls back to `coldBoot`. | Synthetic shortcut |
+| `softReset()` | F11, toolbar, AI `/reset?kind=soft`, `applyProfile` | RAM survives. IIe-class wipes full MMU/IOU/LC; II/II+ leaves LC + display untouched (kbd strobe only). CPU `SP -= 3`, I flag set, PC = $FFFC. | `reset_w(true→false)` |
+| `hardReset()` | F12, toolbar, AI `/reset?kind=hard`, `applyProfile` step 11 | RAM survives; CPU additionally zeros A/X/Y. POM2-only convention. | `reset_w` + register wipe |
+| `coldBoot()` | Toolbar power, AI `/reset?kind=cold`, MainWindow ctor, "Insert + boot" | Wipes user RAM + LC + aux with `00 FF 00 FF…` MAME pattern; full reset; hard reset CPU. | `machine_start` + `machine_reset` |
+| `bootFromSlot(N)` | HDV / SmartPort / Disk II Library "Boot" | `coldBoot` then `PC = $C000 + N*256` after validating JSR-dispatch trio ($Cn01=$20, $Cn03=$00, $Cn05=$03 — Apple II Ref Manual Appx C). $Cn07 NOT validated (HDV cards have $Cn07=$01). Mismatch → falls back to `coldBoot`. | Synthetic shortcut |
 
 Keyboard wiring:
 
-- **Left Alt = Open-Apple** → `Memory::setOpenAppleKey` → $C061 bit 7
-- **Right Alt = Solid-Apple** → `Memory::setSolidAppleKey` → $C062 bit 7
-- F11 / F12 / F9 / Left Alt / Right Alt routed unconditionally even
-  when ImGui captures keyboard focus.
+- **Left Alt = Open-Apple** → $C061 bit 7
+- **Right Alt = Solid-Apple** → $C062 bit 7
+- F11 / F12 / F9 / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI
 
-`CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner`
-(Phase-C runner). Three phases: parse → pre-boot (preset/ROM/
-snapshot-load/`--load addr:file`) → post-boot (tape ops/paste/run/
-step).
+`CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner` (Phase-C runner). Three phases: parse → pre-boot (preset/ROM/snapshot-load/`--load addr:file`) → post-boot (tape ops/paste/run/step).
 
-Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`,
-`--tape`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"),
-`--load addr:file`, `--run`, `--paste`, `--step`,
-`--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
+Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
 
-**Positional disk + kiosk**: `POM2 <disk-image>` mounts the image
-into the slot its type maps to (`classifyDiskForSlot` in
-`DiskImage.*`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the
-**saved profile + slot config**, then cold-boots it after a short
-frame settle (`MainWindow::insertAndBootImage`, shared with Disk
-Library "insert + boot"). `--kiosk` adds **exclusive full-screen**
-with a chrome-free render path (`MainWindow::renderKiosk`).
-Kiosk is **read-only** (no `imgui.ini` / `state.cfg` writes). An
-HDV with no HDV/SmartPort card in the saved config auto-plugs a
-`ProDOSHardDiskCard` into a free slot (`ensureHdvCardForBoot`,
-session-local). Pinned: `cli_kiosk_test`.
+**Positional disk + kiosk**: `POM2 <disk-image>` mounts the image into the slot its type maps to (`classifyDiskForSlot`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the saved profile + slot config, then cold-boots. `--kiosk` adds exclusive full-screen with a chrome-free render path. Kiosk is read-only (no settings writes). An HDV with no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard` into a free slot. Pinned: `cli_kiosk_test`.
 
 ## Version string locations
 
 Current release: **v0.6**. Bump in:
 
 - `main.cpp` (initial window title + console banner)
-- `MainWindow_Slots.cpp` (runtime window title — `setGlfwWindow` +
-  `applyProfile` step 13; **overrides** main.cpp's title once the
-  profile resolves)
+- `MainWindow_Slots.cpp` (runtime title — overrides main.cpp's once the profile resolves)
 - `MainWindow.cpp` (About dialog)
 - `CMakeLists.txt` (`project(... VERSION x.y ...)`)
-- `README.md` (status section, if a version pill is reintroduced)
+- `README.md` (status section)
