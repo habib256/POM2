@@ -43,6 +43,19 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
   `Via6522.h` + `Ay3_8910.h` ; le `#if 0` est dead-code en attente
   de revue avant suppression. Une fois validé, supprimer ~360
   lignes.
+- [ ] **[SSI263] Phoneme PCM blob (audio v2)**. Chip model +
+  EchoPlusCard structure complets (pin `ssi263_smoke` + `echoplus_card_smoke`,
+  18+3 sub-tests), mais audio silencieux faute des 62 phonèmes
+  pré-rendus. Deux paths : (a) importer `SSI263Phonemes.h` d'AppleWin
+  (LGPL — implique POM2 distribué sous LGPL), (b) regénérer offline
+  via espeak ou autre TTS libre. Décision license requise du
+  mainteneur (POM2 n'a pas de LICENSE file actuellement).
+- [ ] **[SSI263] MockingboardCard variant "Sound II"**. Ajouter un
+  SSI263 optionnel à $C(s)40-$C(s)44 (et potentiellement $C(s)60
+  pour la version dual-chip). Nécessite d'étendre `Via6522.h` pour
+  modéliser CA1 edge → IFR.CA1 (le SSI263 A/!R drive CA1 sur
+  MB-C). Plus invasif que Echo+ standalone, défèré au prochain
+  commit. **Effort : ~1 j.**
 
 
 

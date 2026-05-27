@@ -72,6 +72,7 @@ set(SOURCES
     DiskIICard.cpp
     DiskImage.cpp
     DiskLibrary_ImGui.cpp
+    EchoPlusCard.cpp
     EmulationController.cpp
     FloppySoundDevice.cpp
     HdvController_ImGui.cpp
@@ -94,6 +95,7 @@ set(SOURCES
     MouseCardAppleWin.cpp
     PhasorCard.cpp
     PrinterCard.cpp
+    Ssi263.cpp
     Block512Backing.cpp
     ProDOSHardDiskCard.cpp
     ProDOSVolume.cpp
@@ -139,6 +141,7 @@ set(HEADERS
     DiskImage.h
     SmartPortHub.h
     Sony35Drive.h
+    EchoPlusCard.h
     EmulationController.h
     FloppySoundDevice.h
     FloppySoundSink.h
@@ -159,6 +162,7 @@ set(HEADERS
     Ay3_8910.h
     PhasorCard.h
     PrinterCard.h
+    Ssi263.h
     Via6522.h
     Block512Backing.h
     ProDOSHardDiskCard.h

@@ -35,6 +35,7 @@ class DiskIICard;
 class EmulationController;
 class JoystickInput;
 class LeChatMauveCard;
+class EchoPlusCard;
 class MockingboardCard;
 class MouseCard;
 class MouseCardAppleWin;
@@ -184,6 +185,7 @@ private:
     MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
+    EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
@@ -245,6 +247,9 @@ private:
     // widened to 4 AY-3-8913 banks, with a mode banner (MB / Phasor /
     // EchoPlus) and clockScale at the top.
     bool         showPhasorPanel       = false;
+    // Echo+ panel — single SSI263 register dump + current phoneme +
+    // A/!R + duration countdown.
+    bool         showEchoPlusPanel     = false;
     // Audio mixer — master + per-channel sliders/mute (Speaker, Cassette,
     // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
     // that used to live in the Status panel. Persisted as `show_mixer`.
@@ -487,6 +492,7 @@ private:
     void renderChatMauvePanelWindow();
     void renderMockingboardPanelWindow();
     void renderPhasorPanelWindow();
+    void renderEchoPlusPanelWindow();
     void renderSscPanelWindow();
     void renderPrinterPanelWindow();
     void renderJoystickPanelWindow();

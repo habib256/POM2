@@ -12,6 +12,7 @@
 #include "CassetteDevice.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
+#include "EchoPlusCard.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
@@ -299,6 +300,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
         showPhasorPanel    = settings->getBool ("show_phasor",     showPhasorPanel);
+        showEchoPlusPanel  = settings->getBool ("show_echoplus",   showEchoPlusPanel);
         showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
         showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
@@ -573,6 +575,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
     settings->setBool  ("show_phasor",       showPhasorPanel);
+    settings->setBool  ("show_echoplus",     showEchoPlusPanel);
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
     settings->setBool  ("show_printer",    showPrinterPanel);
@@ -914,6 +917,23 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugEchoPlus = [&](int s) {
+        // Street Electronics Echo+ — standalone SSI263 speech synth.
+        // No PROM, no ROM dependency, audio is silent in v1 (chip
+        // model complete but phoneme PCM blob deferred to a separate
+        // commit pending license review of AppleWin's data).
+        auto card = std::make_unique<EchoPlusCard>(s);
+        card->setSampleRate(controller->audio().getActualSampleRate());
+        card->setCpu(&controller->cpu());
+        card->setVolume(settings->getFloat("echoplus_volume", 0.7f));
+        card->setMuted (settings->getBool ("echoplus_muted",  false));
+        if (controller->audio().isAvailable()) {
+            controller->audio().addSource(card->audioSource());
+        }
+        echoPlusCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMockingboard = [&](int s) {
         // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
         // image to mount: software detects it by writing to the VIA at
@@ -1088,6 +1108,7 @@ void MainWindow::plugSlotsFromSettings()
         }
         else if (kind == "mockingboard") plugMockingboard(s);
         else if (kind == "phasor")      plugPhasor(s);
+        else if (kind == "echoplus")    plugEchoPlus(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",
@@ -1548,6 +1569,15 @@ void MainWindow::renderMenuBar()
         } else {
             ImGui::BeginDisabled();
             ImGui::MenuItem("Phasor (no card plugged)",  nullptr, &showPhasorPanel);
+            ImGui::EndDisabled();
+        }
+        if (echoPlusCard) {
+            const std::string lbl = "Echo+ (slot " +
+                std::to_string(echoPlusCard->getSlot()) + ")";
+            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showEchoPlusPanel);
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::MenuItem("Echo+ (no card plugged)",   nullptr, &showEchoPlusPanel);
             ImGui::EndDisabled();
         }
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
@@ -3051,6 +3081,97 @@ void MainWindow::renderPhasorPanelWindow()
         }
         ImGui::EndTable();
     }
+
+    ImGui::End();
+}
+
+// ─── Echo+ ───────────────────────────────────────────────────────────────
+
+void MainWindow::renderEchoPlusPanelWindow()
+{
+    if (!showEchoPlusPanel) return;
+
+    ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Echo+ (SSI263 speech)", &showEchoPlusPanel,
+                      ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!echoPlusCard) {
+        ImGui::TextDisabled("No Echo+ plugged. Use Hardware → Slot "
+                            "Configuration to assign it to a slot.");
+        ImGui::End();
+        return;
+    }
+
+    EchoPlusCard::ChipSnap s;
+    bool slotIrq = false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        s       = echoPlusCard->snapshotChip();
+        slotIrq = echoPlusCard->isIrqAsserted();
+    }
+
+    // ── Header ────────────────────────────────────────────────────────
+    ImGui::Text("Slot %d  |  Volume %.2f %s",
+                echoPlusCard->getSlot(),
+                echoPlusCard->getVolume(),
+                echoPlusCard->isMuted() ? "(MUTED)" : "");
+    ImGui::TextColored(slotIrq
+                         ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
+                         : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                       "Slot IRQ: %s", slotIrq ? "ASSERTED (low)" : "released");
+    ImGui::Separator();
+
+    // ── Live chip state ───────────────────────────────────────────────
+    if (s.powerDown) {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.4f, 1.0f),
+                           "CTL=1  →  POWER DOWN (silent)");
+    } else {
+        ImGui::Text("CTL=0  →  RUN");
+    }
+    const char* modeStr =
+        (s.mode == pom2::Ssi263::MODE_IRQ_DISABLED)                    ? "00 IRQ disabled" :
+        (s.mode == pom2::Ssi263::MODE_FRAME_IMMEDIATE_INFLECTION)      ? "01 Frame imm. infl." :
+        (s.mode == pom2::Ssi263::MODE_PHONEME_IMMEDIATE_INFLECTION)    ? "10 Phon. imm. infl." :
+        (s.mode == pom2::Ssi263::MODE_PHONEME_TRANSITIONED_INFLECTION) ? "11 Phon. trans. infl." :
+                                                                          "??";
+    ImGui::Text("Mode: %s  |  IRQ enable: %s",
+                modeStr, s.irqEnabled ? "yes" : "no");
+    ImGui::TextColored(s.aRequest
+                         ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
+                         : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                       "A/!R: %s", s.aRequest ? "REQUEST (phoneme done)"
+                                              : "running");
+    ImGui::Text("Current phoneme: $%02X (%d)",
+                s.currentPhoneme, s.currentPhoneme);
+    ImGui::Text("Duration remaining: %d cycles (≈ %.1f ms)",
+                s.phonemeRemainingCycles,
+                s.phonemeRemainingCycles / 1022.727);
+    ImGui::Text("Phoneme writes since reset: %u",
+                s.phonemeWriteCount);
+    ImGui::Separator();
+
+    // ── Register dump ──────────────────────────────────────────────────
+    ImGui::TextDisabled("SSI263 registers ($Cs00-$Cs04):");
+    const char* labels[5] = {
+        "$00 DURPHON", "$01 INFLECT", "$02 RATEINF",
+        "$03 CTTRAMP", "$04 FILFREQ"
+    };
+    for (int r = 0; r < 5; ++r) {
+        ImGui::Text("%s = $%02X (%3u)", labels[r], s.regs[r], s.regs[r]);
+    }
+    ImGui::Separator();
+
+    // ── Status footer ──────────────────────────────────────────────────
+    ImGui::TextWrapped(
+        "Audio: silent in v1. The chip's MMIO + IRQ timing are complete; "
+        "the 62-phoneme PCM blob lives in a separate commit pending the "
+        "AppleWin LGPL-vs-POM2 license decision. Games detect the card "
+        "and exercise their speech drivers correctly — they just don't "
+        "speak yet.");
 
     ImGui::End();
 }
@@ -5190,6 +5311,7 @@ void MainWindow::render()
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();
     renderPhasorPanelWindow();
+    renderEchoPlusPanelWindow();
     renderSscPanelWindow();
     renderPrinterPanelWindow();
     renderJoystickPanelWindow();

@@ -8,6 +8,35 @@ courante → `DEV.md`.
 
 ## 2026-05-27
 
+- **SSI263 speech synth — chip model + Echo+ card (audio silent v1)**.
+  Nouveau `pom2::Ssi263` (header + cpp) : modèle Silicon Systems Inc.
+  SSI263A partagé, 5 registres ($00-$04), mode soft-bits (00 IRQ
+  disabled / 01 frame imm. infl. / 10 phon. imm. infl. / 11 phon.
+  trans. infl.), CTL power-down/run, formule de durée parité
+  AppleWin (`ms = ((16-(rate>>4))*4096/1023) * (4-(dur>>6))` → 4 ms
+  à 256 ms), A/!R bit avec ack via writes $00/$01/$02. **Pas de
+  référence MAME** (vérifié 2026-05-27 — aucun `ssi263*` dans
+  `src/devices/sound`) ; AppleWin `source/SSI263.cpp` est la ref
+  canonique, code POM2 indépendant. Nouvelle carte `EchoPlusCard`
+  (Street Electronics Echo+/Echo II) : SSI263 standalone à
+  $Cs00-$Cs04, A/!R → slot IRQ direct (pas de 6522), open bus pour
+  le reste du slot ROM. Catalog clé `"echoplus"`, slot 4 par défaut,
+  pluggable libre. Audio panel Devices → Echo+ avec mode courant,
+  state CTL, A/!R, phonème courant, countdown durée (cycles + ms),
+  dump 5 registres.
+  **v1 audio = silencieux** : MMIO + IRQ timing complets et pinnés
+  (`ssi263_smoke` 6 sub-tests + `echoplus_card_smoke` 3 sub-tests),
+  mais le blob PCM de 62 phonèmes (~313 KB) sera importé dans un
+  commit suivant. POM2 étant GPL3 et AppleWin étant LGPL,
+  l'import de `SSI263Phonemes.h` est compatible licence. Pourquoi
+  ship silent ici : isoler les hooks bus-protocol (« mon jeu
+  Echo+ détecte-t-il la carte ? ») du travail data-import (« les
+  phonèmes sonnent-ils correctes ? »). Le 2e commit pourra se
+  concentrer sur la qualité audio sans risquer la régression du
+  protocole bus. **MockingboardCard variant Sound II** (SSI263 à
+  $C(s)40, IRQ via VIA1.CA1) : différée au prochain commit —
+  nécessite d'étendre `Via6522.h` pour modéliser le CA1 edge.
+
 - **Phasor (Applied Engineering) — skeleton dual-mode**. Nouvelle carte
   `PhasorCard` : 2 × 6522 VIA + 4 × AY-3-8913 (12 voix en natif),
   mode soft-switch runtime au $C0(8+s)X qui flippe entre

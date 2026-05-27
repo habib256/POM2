@@ -59,6 +59,8 @@ as fallback.
 | Audio / Speaker / Cassette | `AudioDevice.*`, `SpeakerDevice.*`, `CassetteDevice.*` | [DEV § Audio](DEV.md#audio) |
 | Mockingboard (6522 + AY) | `Mockingboard.h/.cpp` | [DEV § Mockingboard](DEV.md#mockingboard) — VIA + AY structs extraits vers `Via6522.h` + `Ay3_8910.h` (partagés avec Phasor) |
 | Phasor (AE — 2×VIA, 4×AY) | `PhasorCard.h/.cpp` | [DEV § Phasor](DEV.md#phasor-applied-engineering) — mode soft-switch $C0(8+s)X (MB/Phasor/EP), chip-select PB3/PB4 actif-bas, **4-AY mono mix + clockScale ×2 en natif** (MAME-parity AY synth). Pinned `phasor_card_smoke` (incl. mix non-silent + ratio pitch 2.01) |
+| SSI263 speech synth | `Ssi263.h/.cpp` | [DEV § SSI263 + Echo+](DEV.md#ssi263--echo-street-electronics) — chip model partagé (MAME n'implémente pas SSI263 ; ref = AppleWin). 5 registres, A/!R bit + IRQ wiring, formule durée AppleWin-parity. **Audio = silent v1** (PCM blob phoneme défèré). Pinned `ssi263_smoke` (6 sub-tests) |
+| Echo+ (Street Electronics) | `EchoPlusCard.h/.cpp` | [DEV § EchoPlusCard](DEV.md#echopluscard) — standalone SSI263 à $Cs00-$Cs04, A/!R → slot IRQ direct. Pinned `echoplus_card_smoke` |
 | Floppy mechanical sounds | `FloppySoundDevice.h/.cpp` | [DEV § Floppy mechanical sounds](DEV.md#floppy-mechanical-sounds) |
 | Slot bus, wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [DEV § Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | Disk image, Disk II, ProDOS HDV, Snapshot | `DiskImage.*`, `DiskIICard.*`, `ProDOSVolume.*`, `SnapshotIO.*` | [DEV § Storage](DEV.md#storage) — DiskII **multi-instance**; per-slot persistence keys `disk_path_slotN`; WOZ2 honours INFO+39 |

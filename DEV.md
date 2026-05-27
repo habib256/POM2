@@ -311,6 +311,76 @@ destroying the card. Persisted: `mockingboard_volume`,
 `mockingboard_muted`. Pinned: `mockingboard_smoke`,
 `mockingboard_sync_smoke`.
 
+### SSI263 + Echo+ (Street Electronics)
+
+`pom2::Ssi263` (`Ssi263.h/.cpp`) — Silicon Systems Inc. SSI263A
+phoneme speech synth, shared chip model for any host card that
+fronts an SSI263 (Echo+, Echo II, Mockingboard C Sound II — last one
+deferred to a follow-up, see TODO).
+
+**No MAME reference**: MAME does NOT implement the SSI263 (verified
+2026-05-27 — no `ssi263*` file in `src/devices/sound`). The canonical
+reference is AppleWin `source/SSI263.cpp`. POM2's chip emulation is
+independent code modelling the same protocol contract.
+
+Register layout (5 registers at $00..$04 within the chip's window):
+
+```
+$00 DURPHON  bits 7:6 = mode (00=IRQ disabled, 01=frame imm. infl.,
+                              10=phon. imm. infl., 11=phon. trans. infl.)
+             bits 5:0 = phoneme code (0..63; 62 defined)
+$01 INFLECT  inflection value
+$02 RATEINF  bits 7:4 = rate (playback speed)
+             bits 3:0 = inflection low
+$03 CTTRAMP  bit 7    = CTL (1 = power-down/silent; 0 = run)
+             bits 6:4 = articulation
+             bits 3:0 = amplitude
+$04 FILFREQ  filter frequency (formant 4 cutoff)
+```
+
+Reading any register returns a status byte with **bit 7 = A/!R**
+(Acknowledge / not Request) — high while the chip is requesting the
+next phoneme. The CPU clears A/!R by writing to one of $00..$02 (also
+de-asserts IRQ). Writes to $03 (CTTRAMP) or $04 (FILFREQ) do not ack.
+
+CTL H→L transition (power-down exit) restarts the loaded phoneme
+without bumping `phonemeWriteCount`. CTL L→H clears A/!R + silences.
+
+**Phoneme duration formula** (AppleWin parity):
+```
+ms = ((16 - (rate>>4)) * 4096 / 1023) * (4 - (dur>>6))
+cycles = ms * POM2_CPU_CLOCK_HZ / 1000
+```
+Range: ~4 ms fastest (rate=15, dur=3 → ~4090 cyc), ~256 ms slowest
+(rate=0, dur=0 → ~262k cyc). Pinned by `ssi263_smoke`.
+
+`MODE_IRQ_DISABLED` (mode 00) plays the phoneme silently and never
+asserts A/!R — the phoneme repeats indefinitely until a new DURPHON
+is written or CTL goes high.
+
+#### EchoPlusCard
+
+`EchoPlusCard` (`EchoPlusCard.h/.cpp`) — standalone SSI263 at
+$Cs00-$Cs04, A/!R wired directly to the slot IRQ line. No 6522. Open
+bus ($FF) for the rest of the slot ROM page.
+
+`advanceCycles` ticks the chip and asserts slot IRQ on A/!R edge;
+host writes to $00/$01/$02 release the IRQ. Default slot 4, pluggable
+in any slot via Slot Configuration. Pairs naturally with a
+Mockingboard A/C at slot 4 + Echo+ at slot 2 (the standard "MB for
+music, Echo+ for speech" combo).
+
+**Audio v1 = silent**. Chip register state machine + IRQ timing
+complete and pinned by `ssi263_smoke` (6 sub-tests) + `echoplus_card_smoke`
+(3 sub-tests). The 62-phoneme PCM blob (~313 KB) is a follow-up
+commit pending the AppleWin LGPL-vs-POM2 license decision (POM2 has
+no LICENSE file currently). Games detect the card and exercise their
+speech drivers correctly — they just don't speak yet.
+
+**UI**: Devices → Echo+ panel. Mode + IRQ enable + A/!R + power-down
+state + current phoneme + duration countdown (cycles + ms) + the 5
+register banks. Footer explains the v1 silent state.
+
 ### Phasor (Applied Engineering)
 
 `PhasorCard` (`PhasorCard.h/.cpp`) — dual-mode successor to the
