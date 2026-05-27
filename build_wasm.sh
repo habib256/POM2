@@ -20,6 +20,7 @@
 #   ./build_wasm.sh                # release build
 #   ./build_wasm.sh --clean        # nuke build_wasm/ first
 #   ./build_wasm.sh --serve        # build + launch dev server on :8080
+#   ./build_wasm.sh --with-data    # also bundle disks_5.4/disks_3.5/hdv into POM2.data
 
 set -euo pipefail
 
@@ -27,10 +28,12 @@ cd "$(dirname "$0")"
 
 CLEAN=0
 SERVE=0
+WITH_DATA=0
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
         --serve) SERVE=1 ;;
+        --with-data) WITH_DATA=1 ;;
         -h|--help)
             sed -n '2,/^set -e/p' "$0" | sed '$d' | sed 's/^# \?//'
             exit 0 ;;
@@ -63,9 +66,16 @@ fi
 mkdir -p "$BUILD_DIR" "$WASM_DIR"
 
 # Configure with the Emscripten toolchain.
+CMAKE_EXTRA=()
+if [ $WITH_DATA -eq 1 ]; then
+    CMAKE_EXTRA+=(-DPOM2_WASM_BUNDLE_DISKS=ON)
+else
+    CMAKE_EXTRA+=(-DPOM2_WASM_BUNDLE_DISKS=OFF)
+fi
 emcmake cmake -S . -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DPOM2_ENABLE_TESTS=OFF
+    -DPOM2_ENABLE_TESTS=OFF \
+    "${CMAKE_EXTRA[@]}"
 
 # Build. -j auto: emmake picks reasonable parallelism.
 cmake --build "$BUILD_DIR" -j
