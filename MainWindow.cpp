@@ -58,6 +58,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 namespace {
 // Sentinel prefix used in HdvController_ImGui::LibraryEntry::fullPath to
@@ -306,6 +307,14 @@ MainWindow::MainWindow(bool forceIIPlus)
         showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
         sscPortInput       = settings->getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
+        // Dallas DS1216E "No-Slot Clock" — sits under the Monitor ROM
+        // and ProDOS 2.0.3+ / GS-OS auto-detect it via the magic-key
+        // scan. Default ON (battery-backed RTC for all profiles incl.
+        // //c, which never had a slot to host a ThunderClock card).
+        controller->noSlotClock().setEnabled(
+            settings->getBool("nsclock_enable", true));
+        showNoSlotClockPanel = settings->getBool("show_nsclock",
+                                                 showNoSlotClockPanel);
     }
 
     // ── Restore Disk II state per-slot ────────────────────────────────
@@ -524,6 +533,18 @@ MainWindow::~MainWindow()
         settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
     }
 
+    // Per-slot persistence so the //c's two SSC ports (printer sl1 +
+    // modem sl2) each keep their own port / listener / raw-mode state.
+    // Legacy global keys (`ssc_listening`, `ssc_port`, `ssc_raw_mode`)
+    // are mirrored to the primary SSC for backwards-compat with older
+    // settings files and the AI control path.
+    for (auto* ssc : sscCards) {
+        if (!ssc) continue;
+        const std::string sk = "_slot" + std::to_string(ssc->getSlot());
+        settings->setBool("ssc_listening" + sk, ssc->isListening());
+        settings->setInt ("ssc_port"      + sk, ssc->getPort());
+        settings->setBool("ssc_raw_mode"  + sk, ssc->rawMode());
+    }
     if (sscCard) {
         settings->setBool("ssc_listening", sscCard->isListening());
         settings->setInt ("ssc_port",      sscCard->getPort());
@@ -579,6 +600,8 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
     settings->setBool  ("show_printer",    showPrinterPanel);
+    settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
+    settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
@@ -668,6 +691,13 @@ void MainWindow::plugSlotsFromSettings()
     // and CANNOT be unplugged (D-6-1, E-6-1). Keep the settings file's
     // value out of harm's way so toggling profiles back and forth doesn't
     // produce a wedged machine.
+    //
+    // When the profile declares `noPhysicalSlots` (//c, //c+), the
+    // remaining "free" slots (sl3 = AUX, sl7) are FORCED EMPTY too —
+    // there's no physical connector on real //c hardware, so plugging
+    // anything there is meaningless. The user's saved key is left
+    // untouched in settings (so switching back to //e restores it) but
+    // ignored for this run.
     {
         const auto& cfg = pom2::profileConfig(activeProfile);
         for (int s = 1; s <= 7; ++s) {
@@ -681,6 +711,13 @@ void MainWindow::plugSlotsFromSettings()
                         "); user setting '" + slotCards[s] + "' ignored");
                     slotCards[s] = forced;
                 }
+            } else if (cfg.noPhysicalSlots && !slotCards[s].empty()) {
+                pom2::log().info("Slots",
+                    "Slot " + std::to_string(s) + " left empty on " +
+                    std::string(cfg.displayName) +
+                    " (no physical slot connector on this model); "
+                    "user setting '" + slotCards[s] + "' ignored");
+                slotCards[s] = "";
             }
         }
     }
@@ -692,9 +729,15 @@ void MainWindow::plugSlotsFromSettings()
     // persistence is already per-slot (cffa_slotN_*, smartport_slotN_*). The
     // rest stay single-instance because their driver / ROM signature / global
     // settings keys assume exclusivity ("hdv" uses the global hdv_path key).
+    //
+    // Built-in slots are ALWAYS exempt: when a profile forces the same card
+    // type into multiple slots (e.g. //c has two SSC-compatible serial ports
+    // at sl1+sl2), the uniqueness rule would otherwise eject the second one.
+    // Profile authors are trusted to declare hardware that actually shipped.
     auto multiInstance = [](const std::string& k) -> bool {
         return k == "diskii" || k == "cffa" || k == "smartport35";
     };
+    const auto& uniqCfg = pom2::profileConfig(activeProfile);
     auto firstOccurrence = [&](const std::string& type) -> int {
         for (int s = 1; s <= 7; ++s) if (slotCards[s] == type) return s;
         return -1;
@@ -702,6 +745,8 @@ void MainWindow::plugSlotsFromSettings()
     for (int s = 1; s <= 7; ++s) {
         if (slotCards[s].empty())  continue;
         if (multiInstance(slotCards[s])) continue;    // multi-instance OK
+        if (uniqCfg.builtInSlots[s].has_value())          // forced by profile
+            continue;
         const int first = firstOccurrence(slotCards[s]);
         if (first != s) {
             pom2::log().warn("Slots",
@@ -866,11 +911,11 @@ void MainWindow::plugSlotsFromSettings()
 
     auto plugSsc = [&](int s) {
         auto card = std::make_unique<SuperSerialCard>(s);
-        sscCard = card.get();
+        SuperSerialCard* raw = card.get();
         // Use pasteText (not queueKey) — pasteText respects the paste
         // queue, so a stream of bytes from telnet doesn't clobber earlier
         // characters that BASIC hasn't picked up yet.
-        sscCard->setKeyboardSink(
+        raw->setKeyboardSink(
             [&mem = controller->memory()](uint8_t b) {
                 const char buf[1] = { static_cast<char>(b) };
                 mem.pasteText(buf, 1);
@@ -878,11 +923,23 @@ void MainWindow::plugSlotsFromSettings()
         // IRQ routing is auto-wired by SlotBus's installed router (see
         // Memory::setCpu) — no per-card setup needed.
         controller->memory().slotBus().plug(s, std::move(card));
-        sscCard->setRawMode(settings->getBool("ssc_raw_mode", false));
-        if (settings->getBool("ssc_listening", false)) {
-            const int p = settings->getInt("ssc_port",
-                                          SuperSerialCard::kDefaultPort);
-            sscCard->startListening(static_cast<uint16_t>(p));
+        sscCards.push_back(raw);
+        if (sscCard == nullptr) sscCard = raw;     // primary alias = lowest slot
+        // Per-slot persistence; fall back to legacy global keys (the
+        // primary SSC was the only one before //c dual-port support).
+        const std::string sk = "_slot" + std::to_string(s);
+        const bool legacyPrimary = (raw == sscCard);
+        raw->setRawMode(settings->getBool(
+            "ssc_raw_mode" + sk,
+            legacyPrimary ? settings->getBool("ssc_raw_mode", false) : false));
+        const bool listenDefault = legacyPrimary
+            ? settings->getBool("ssc_listening", false) : false;
+        if (settings->getBool("ssc_listening" + sk, listenDefault)) {
+            const int portDefault = legacyPrimary
+                ? settings->getInt("ssc_port", SuperSerialCard::kDefaultPort)
+                : SuperSerialCard::kDefaultPort;
+            const int p = settings->getInt("ssc_port" + sk, portDefault);
+            raw->startListening(static_cast<uint16_t>(p));
         }
     };
 
@@ -1095,17 +1152,25 @@ void MainWindow::plugSlotsFromSettings()
                 std::string r = pom2::findResource(p);
                 if (!r.empty()) { slotRomPath = r; break; }
             }
+            // Real //c always shipped with on-board mouse hardware, so on
+            // //c-class profiles a missing AppleWin EPROM is a worse UX
+            // than falling back to the MC68705 variant (which has its
+            // own ROM probe). Hand off to plugMouse() in that case.
             if (slotRomPath.empty()) {
                 pom2::log().warn("MouseAW",
                     "Mouse (AppleWin HLE) requested in slot " +
                     std::to_string(s) +
-                    " but roms/mouse_341-0270-c.bin not found — leaving slot empty");
+                    " but roms/mouse_341-0270-c.bin not found — "
+                    "falling back to MC68705 \"mouse\" card");
+                plugMouse(s);
                 continue;
             }
             auto card = std::make_unique<MouseCardAppleWin>(s);
             if (!card->loadRom(slotRomPath)) {
                 pom2::log().warn("MouseAW",
-                    "ROM load failed for slot " + std::to_string(s));
+                    "ROM load failed for slot " + std::to_string(s) +
+                    " — falling back to MC68705 \"mouse\" card");
+                plugMouse(s);
                 continue;
             }
             mouseAwCard = card.get();
@@ -1586,7 +1651,30 @@ void MainWindow::renderMenuBar()
             ImGui::MenuItem("Echo+ (no card plugged)",   nullptr, &showEchoPlusPanel);
             ImGui::EndDisabled();
         }
-        ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
+        // Super Serial — //c ships TWO (printer + modem), other profiles
+        // have at most one. Label shows actual slot(s) so the user knows
+        // which entry opens which port.
+        {
+            std::string lbl;
+            if (sscCards.empty()) {
+                lbl = "Super Serial (no card plugged)";
+                ImGui::BeginDisabled();
+                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
+                ImGui::EndDisabled();
+            } else if (sscCards.size() == 1) {
+                lbl = "Super Serial (slot " +
+                      std::to_string(sscCards[0]->getSlot()) + ")";
+                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
+            } else {
+                lbl = "Super Serial (slots";
+                for (size_t i = 0; i < sscCards.size(); ++i) {
+                    lbl += (i == 0) ? " " : ", ";
+                    lbl += std::to_string(sscCards[i]->getSlot());
+                }
+                lbl += ")";
+                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
+            }
+        }
         if (printerCard) {
             const std::string label = "Printer (slot " +
                 std::to_string(printerCard->getSlot()) + ")";
@@ -1599,6 +1687,8 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
         ImGui::MenuItem("Mouse Inspector",               nullptr, &showMouseInspector);
+        ImGui::MenuItem("No-Slot Clock (DS1216E under Monitor ROM)",
+                        nullptr, &showNoSlotClockPanel);
         ImGui::Separator();
         ImGui::MenuItem("Audio Mixer",                   nullptr, &showAudioMixer);
         ImGui::EndMenu();
@@ -2085,78 +2175,120 @@ void MainWindow::pollJoystickAndPushToMemory()
 
 void MainWindow::renderSscPanelWindow()
 {
-    if (!showSscPanel || !sscCard) return;
+    if (!showSscPanel || sscCards.empty()) return;
 
-    ImGui::SetNextWindowSize(ImVec2(440, 280), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Super Serial (slot 2)", &showSscPanel)) {
+    ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Super Serial###sscPanel", &showSscPanel)) {
         ImGui::End();
         return;
     }
 
-    const bool listening = sscCard->isListening();
-    const bool connected = sscCard->clientConnected();
+    // One panel hosts every plugged SSC under a tab bar. //c boots with
+    // two (printer + modem); other profiles typically run zero or one.
+    // Per-slot port-input state lives in a static map so each tab keeps
+    // its own draft port number across frames.
+    auto renderOne = [&](SuperSerialCard* ssc) {
+        if (!ssc) return;
+        const int slot = ssc->getSlot();
+        static std::map<int, int> portDrafts;
+        auto it = portDrafts.find(slot);
+        if (it == portDrafts.end()) {
+            portDrafts[slot] = ssc->getPort() ? ssc->getPort()
+                : SuperSerialCard::kDefaultPort;
+            it = portDrafts.find(slot);
+        }
+        int& portDraft = it->second;
 
-    ImGui::Text("Status: %s%s",
-        listening ? "listening" : "stopped",
-        connected ? " — client connected" : "");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(slot %d)", sscCard->getSlot());
+        const bool listening = ssc->isListening();
+        const bool connected = ssc->clientConnected();
 
-    ImGui::Separator();
-    ImGui::SetNextItemWidth(120);
-    ImGui::InputInt("TCP port", &sscPortInput, 0, 0);
-    if (sscPortInput < 1)     sscPortInput = 1;
-    if (sscPortInput > 65535) sscPortInput = 65535;
+        ImGui::Text("Status: %s%s",
+            listening ? "listening" : "stopped",
+            connected ? " — client connected" : "");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(slot %d)", slot);
 
-    ImGui::SameLine();
-    if (!listening) {
-        if (ImGui::Button("Start listener")) {
-            if (!sscCard->startListening(static_cast<uint16_t>(sscPortInput))) {
-                tapeStatusMessage = "SSC: bind failed (port busy?)";
-                tapeStatusUntil   = lastFrameTime + 4.0;
+        ImGui::Separator();
+        ImGui::PushID(slot);
+        ImGui::SetNextItemWidth(120);
+        ImGui::InputInt("TCP port", &portDraft, 0, 0);
+        if (portDraft < 1)     portDraft = 1;
+        if (portDraft > 65535) portDraft = 65535;
+
+        ImGui::SameLine();
+        if (!listening) {
+            if (ImGui::Button("Start listener")) {
+                if (!ssc->startListening(static_cast<uint16_t>(portDraft))) {
+                    tapeStatusMessage = "SSC slot " + std::to_string(slot) +
+                        ": bind failed (port busy?)";
+                    tapeStatusUntil   = lastFrameTime + 4.0;
+                }
+            }
+        } else {
+            if (ImGui::Button("Stop listener")) ssc->stopListening();
+        }
+
+        if (listening) {
+            ImGui::TextWrapped("Connect from a host terminal:");
+            ImGui::TextWrapped("  telnet 127.0.0.1 %d", ssc->getPort());
+            ImGui::TextWrapped("In the Apple II:  PR#%d  (or IN#%d for input)",
+                slot, slot);
+        } else {
+            ImGui::TextDisabled("Click Start, then telnet to the port to "
+                                "bridge I/O between your host shell and "
+                                "the Apple II.");
+        }
+
+        ImGui::Separator();
+        bool raw = ssc->rawMode();
+        if (ImGui::Checkbox("Raw mode (8-bit binary)", &raw)) {
+            ssc->setRawMode(raw);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Off: stock telnet — IAC ($FF) negotiation\n"
+                              "swallowed + CR/LF normalised to CR.\n"
+                              "On: every byte forwarded verbatim. Use for\n"
+                              "XMODEM / Kermit / ADTPro / any binary protocol.");
+        }
+
+        ImGui::Separator();
+        ImGui::Text("RX (telnet → A2): %llu B",
+            static_cast<unsigned long long>(ssc->bytesRx()));
+        ImGui::Text("TX (A2 → telnet): %llu B",
+            static_cast<unsigned long long>(ssc->bytesTx()));
+
+        if (ImGui::CollapsingHeader("Recent traffic")) {
+            ImGui::TextDisabled("Last bytes the Apple II printed via PR#%d:",
+                                slot);
+            ImGui::TextWrapped("%s", ssc->recentTxText().c_str());
+            ImGui::Spacing();
+            ImGui::TextDisabled("Last bytes the host typed:");
+            ImGui::TextWrapped("%s", ssc->recentRxText().c_str());
+        }
+        ImGui::PopID();
+    };
+
+    if (sscCards.size() == 1) {
+        renderOne(sscCards[0]);
+    } else if (ImGui::BeginTabBar("##sscTabs")) {
+        // //c convention: sl1 = printer port, sl2 = modem port. Other
+        // profiles just label by slot number.
+        const bool isIIcLayout = (sscCards.size() == 2) &&
+            (sscCards[0]->getSlot() == 1) && (sscCards[1]->getSlot() == 2);
+        for (size_t i = 0; i < sscCards.size(); ++i) {
+            const int slot = sscCards[i]->getSlot();
+            std::string tab;
+            if (isIIcLayout) tab = (i == 0) ? "Printer port (sl1)"
+                                            : "Modem port (sl2)";
+            else             tab = "Slot " + std::to_string(slot);
+            if (ImGui::BeginTabItem(tab.c_str())) {
+                renderOne(sscCards[i]);
+                ImGui::EndTabItem();
             }
         }
-    } else {
-        if (ImGui::Button("Stop listener")) sscCard->stopListening();
-    }
-
-    if (listening) {
-        ImGui::TextWrapped("Connect from a host terminal:");
-        ImGui::TextWrapped("  telnet 127.0.0.1 %d", sscCard->getPort());
-        ImGui::TextWrapped("In the Apple II:  PR#%d  (or IN#%d for input)",
-            sscCard->getSlot(), sscCard->getSlot());
-    } else {
-        ImGui::TextDisabled("Click Start, then telnet to the port to bridge "
-                            "I/O between your host shell and the Apple II.");
-    }
-
-    ImGui::Separator();
-    bool raw = sscCard->rawMode();
-    if (ImGui::Checkbox("Raw mode (8-bit binary)", &raw)) {
-        sscCard->setRawMode(raw);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Off: stock telnet — IAC ($FF) negotiation\n"
-                          "swallowed + CR/LF normalised to CR.\n"
-                          "On: every byte forwarded verbatim. Use for\n"
-                          "XMODEM / Kermit / ADTPro / any binary protocol.");
-    }
-
-    ImGui::Separator();
-    ImGui::Text("RX (telnet → A2): %llu B",
-        static_cast<unsigned long long>(sscCard->bytesRx()));
-    ImGui::Text("TX (A2 → telnet): %llu B",
-        static_cast<unsigned long long>(sscCard->bytesTx()));
-
-    if (ImGui::CollapsingHeader("Recent traffic")) {
-        ImGui::TextDisabled("Last bytes the Apple II printed via PR#%d:",
-                            sscCard->getSlot());
-        ImGui::TextWrapped("%s", sscCard->recentTxText().c_str());
-        ImGui::Spacing();
-        ImGui::TextDisabled("Last bytes the host typed:");
-        ImGui::TextWrapped("%s", sscCard->recentRxText().c_str());
+        ImGui::EndTabBar();
     }
 
     ImGui::End();
@@ -2322,6 +2454,55 @@ void MainWindow::renderAiControlPanelWindow()
     ImGui::Spacing();
     ImGui::TextDisabled("Endpoints: /status /reset /cpu /mem /keyboard /disk "
                         "/eject /snapshot/save /snapshot/load /speed /screen.ppm");
+
+    ImGui::End();
+}
+
+void MainWindow::renderNoSlotClockPanelWindow()
+{
+    if (!showNoSlotClockPanel) return;
+
+    ImGui::SetNextWindowSize(ImVec2(420, 200), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("No-Slot Clock (Dallas DS1216E)###nsclockPanel",
+                      &showNoSlotClockPanel)) {
+        ImGui::End();
+        return;
+    }
+
+    pom2::NoSlotClock& nsc = controller->noSlotClock();
+    bool enabled = nsc.isEnabled();
+    if (ImGui::Checkbox("Enabled", &enabled)) {
+        nsc.setEnabled(enabled);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Dallas DS1216E SmartWatch — virtual chip under the\n"
+            "internal ROM. AppleWin-parity placement:\n"
+            "  II / II+   : under Monitor ROM at $F800-$FFFF\n"
+            "  //e / //c  : under $C300 + $C800 internal ROM\n"
+            "ProDOS 2.0.3+ / GS-OS walk the 64-bit magic key\n"
+            "0x5CA33AC55CA33AC5 (A2=0 reads, A0 = next bit),\n"
+            "then read 64 clock bits via A2=1 reads on D0.");
+    }
+
+    ImGui::Separator();
+    const auto phase = nsc.phase();
+    const char* phaseName = (phase == pom2::NoSlotClock::Phase::Idle)
+        ? "idle (pass-through)"
+        : (phase == pom2::NoSlotClock::Phase::MatchingKey)
+            ? "matching magic key"
+            : "reading clock register";
+    ImGui::Text("Phase: %s", phaseName);
+    ImGui::Text("Key bits matched : %d / 64", nsc.keyBitsMatched());
+    ImGui::Text("Clock bits read  : %d / 64", nsc.clockBitsRead());
+
+    ImGui::Separator();
+    ImGui::TextWrapped(
+        "Place a free clock card in a slot for older software, or "
+        "leave this enabled for ProDOS 2.0.3+/GS-OS auto-detection "
+        "on any profile (incl. //c, where no slot card can exist).");
 
     ImGui::End();
 }
@@ -5373,6 +5554,7 @@ void MainWindow::render()
     renderEchoPlusPanelWindow();
     renderSscPanelWindow();
     renderPrinterPanelWindow();
+    renderNoSlotClockPanelWindow();
     renderJoystickPanelWindow();
     renderMouseInspectorWindow();
     renderAudioMixerWindow();

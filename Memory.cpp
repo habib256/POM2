@@ -8,6 +8,7 @@
 #include "SmartPortHub.h"
 #include "Logger.h"
 #include "M6502.h"
+#include "NoSlotClock.h"
 #include "SpeakerDevice.h"
 
 #include <cstdio>
@@ -1616,7 +1617,21 @@ uint8_t Memory::memRead(uint16_t addr)
     if (addr < 0xC000) {
         return iieMode ? iieMemRead(addr) : mem[addr];
     }
-    if (addr >= 0xD000) return languageCardRead(addr);
+    if (addr >= 0xD000) {
+        uint8_t v = languageCardRead(addr);
+        // Dallas DS1216E "SmartWatch" on Apple II / II+ ONLY. AppleWin
+        // parity (Memory.cpp:IO_F8xx — "NSC for Apple II/II+, GH#827"):
+        // II/II+ have no internal slot-3/8 ROM, so the chip sits under
+        // the Monitor ROM at $F800 instead. //e / //c-class hook the
+        // NSC inside the INTCXROM/SLOTC3ROM branches at $C300 + $C800
+        // (where ProDOS 2.4 + GS-OS actually scan). Gate on
+        // !iieMode + LC-ROM-mapped so this exactly matches AppleWin's
+        // `!SW_HIGHRAM && !SW_WRITERAM` check.
+        if (noSlotClock_ && !iieMode && addr >= 0xF800 && !lcReadRam) {
+            v = noSlotClock_->interceptRead(addr, v);
+        }
+        return v;
+    }
 
     // Diagnostic: record $C000-$C0FF reads (soft switches + slot registers)
     // so the hang detector can show which register a frozen loop polls.
@@ -1694,23 +1709,46 @@ uint8_t Memory::memRead(uint16_t addr)
             if (iicProfile_ && iicProfile_->internalRomRead(addr, floatingBus(), out)) {
                 return out;
             }
-            // //c-class on-board SmartPort: punch the slot-5 SmartPort
-            // firmware ROM ($C500-$C5FF) through the INTCXROM mask so ProDOS
-            // and bootFromSlot(5) see a bootable block device. Real //c kept
-            // its SmartPort firmware here too; POM2 substitutes a host-
-            // serviced block stub (the IWM/Sony 3.5" boot path is unmodelled
-            // — see project_iic_smartport_boot). Device-select I/O
-            // ($C0D0-$C0DF) is never masked (it reaches the slot bus above).
-            // Bank 1 is handled by internalRomRead() above, so this is bank-0
-            // only; gated on the card holding media (exposesIicOnboardRom) so
-            // an empty SmartPort never offers a half-working boot signature.
-            if (iicProfile_ && iicSmartPortArmed_ &&
-                addr >= 0xC500 && addr <= 0xC5FF) {
-                if (SlotPeripheral* p = slots.peripheral(5);
-                    p && p->exposesIicOnboardRom())
-                    return slots.slotRomRead(addr);
+            // //c-class slot-ROM punch: a slot peripheral can override the
+            // forced INTCXROM mask for its own $Cn00 firmware window by
+            // returning true from exposesIicOnboardRom(). Bank 1 is handled
+            // by internalRomRead() above, so this is bank-0 only. Device-
+            // select I/O ($C0(8+s)0-$C0(8+s)F) is never masked — it reaches
+            // the slot bus above. Used today by:
+            //
+            //   sl5 SmartPort: kept on real //c at $C500-$C5FF too. POM2
+            //     substitutes a host-served block stub (IWM/Sony 3.5" boot
+            //     path is unmodelled — see project_iic_smartport_boot).
+            //     Additionally gated by iicSmartPortArmed_ so an unarmed
+            //     //c cold boot never finds a bootable signature there
+            //     (would JMP $0801 into garbage on empty SmartPort).
+            //   sl4 AppleWin HLE mouse: PR#4 needs the EPROM at $C400 to
+            //     reach the slot card's PIA at $C0C0. The //c's internal
+            //     mouse firmware talks to on-board IOU hardware POM2
+            //     doesn't model, so without this punch the //c sees a
+            //     dead mouse. No autostart probe at $C400, so unarmed.
+            if (iicProfile_ && addr >= 0xC100 && addr <= 0xC7FF) {
+                const int slot = (addr >> 8) & 0x07;
+                const bool armOk = (slot != 5) || iicSmartPortArmed_;
+                if (armOk) {
+                    if (SlotPeripheral* p = slots.peripheral(slot);
+                        p && p->exposesIicOnboardRom())
+                        return slots.slotRomRead(addr);
+                }
             }
-            return internalIORom[addr - 0xC000];
+            uint8_t romVal = internalIORom[addr - 0xC000];
+            // Dallas DS1216E "No-Slot Clock" — AppleWin parity. On //e /
+            // //c-class (INTCXROM forced or SLOTC3ROM off) the NSC sits
+            // under the internal ROM at $C300-$C3FF and the expansion
+            // ROM page at $C800-$C8FF. ProDOS 2.4 + GS-OS walk the magic
+            // key there, not at $F800. See AppleWin Memory.cpp
+            // IsPotentialNoSlotClockAccess (UAIIe:5-28).
+            if (noSlotClock_ &&
+                ((addr >= 0xC300 && addr <= 0xC3FF) ||
+                 (addr >= 0xC800 && addr <= 0xC8FF))) {
+                romVal = noSlotClock_->interceptRead(addr, romVal);
+            }
+            return romVal;
         }
         // $C300-$C3FF with SLOTC3ROM=off: return internal 80-col
         // firmware AND auto-enable `intC8Rom` so the firmware's
@@ -1733,7 +1771,13 @@ uint8_t Memory::memRead(uint16_t addr)
             uint8_t out;
             if (iicProfile_ && iicProfile_->internalRomRead(addr, floatingBus(), out))
                 return out;
-            return internalIORom[addr - 0xC000];
+            uint8_t romVal = internalIORom[addr - 0xC000];
+            // NSC at $C300 with SLOTC3ROM=off (//e default). Same hook
+            // as the INTCXROM-forced branch above.
+            if (noSlotClock_) {
+                romVal = noSlotClock_->interceptRead(addr, romVal);
+            }
+            return romVal;
         }
         // $C800-$CFFF with `intC8Rom` set: shared expansion window
         // mapped to internal ROM. Reading $CFFF additionally clears
@@ -1741,7 +1785,12 @@ uint8_t Memory::memRead(uint16_t addr)
         // MAME `apple2e.cpp:c800_int_r`: `if (offset == 0x7ff) {
         // m_cnxx_slot = CNXX_UNCLAIMED; m_intc8rom = false; ... }`.
         if (intC8Rom && addr >= 0xC800 && addr <= 0xCFFF) {
-            const uint8_t v = internalIORom[addr - 0xC000];
+            uint8_t v = internalIORom[addr - 0xC000];
+            // NSC hook at $C800-$C8FF (AppleWin parity: only page 8 is
+            // watched, the rest of $C800-$CFFF is left alone).
+            if (noSlotClock_ && addr >= 0xC800 && addr <= 0xC8FF) {
+                v = noSlotClock_->interceptRead(addr, v);
+            }
             if (addr == 0xCFFF) {
                 intC8Rom = false;
                 slots.deactivateExpansion();

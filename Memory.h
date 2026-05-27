@@ -45,6 +45,7 @@
 class CassetteDevice;
 class M6502;
 class SpeakerDevice;
+namespace pom2 { class NoSlotClock; }
 
 namespace pom2 { class IWMDevice; class SmartPortHub; }
 
@@ -63,6 +64,14 @@ public:
     /// by the $C030 handler to timestamp toggles with sub-instruction
     /// precision (`cycleCounter + cpu->getCurrentInstructionCycles()`).
     void setSpeakerDevice(SpeakerDevice* s) { speaker = s; }
+
+    /// Dallas DS1216E "No-Slot Clock" — sits under the Monitor ROM
+    /// ($F800-$FFFF). Memory hooks reads to that range through the
+    /// chip's pattern-matcher; when 64 magic-key bits match, the next
+    /// 64 reads return clock bits on D0. Non-owning pointer set by
+    /// EmulationController; nullptr disables the intercept.
+    void setNoSlotClock(pom2::NoSlotClock* nsc) { noSlotClock_ = nsc; }
+    pom2::NoSlotClock* getNoSlotClock() const { return noSlotClock_; }
     /// Wire the host CPU. Also installs a SlotBus IRQ router so cards
     /// can raise IRQ via `SlotPeripheral::assertIrq()` without each
     /// holding their own M6502*. Pass nullptr to disconnect (the router
@@ -488,6 +497,11 @@ private:
 
     // Cassette: non-owning pointer set by EmulationController.
     CassetteDevice* cassette = nullptr;
+
+    // Dallas DS1216E No-Slot Clock. Non-owning; lives in
+    // EmulationController so it survives profile switches (battery-
+    // backed RTC keeps state across resets on real hardware).
+    pom2::NoSlotClock* noSlotClock_ = nullptr;
 
     // Speaker + CPU back-pointers for $C030 sub-instruction timestamping.
     SpeakerDevice* speaker = nullptr;

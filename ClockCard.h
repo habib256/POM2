@@ -94,6 +94,12 @@ public:
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead(uint8_t low8) override { return rom[low8]; }
+    // //c-class profiles force INTCXROM on, masking every slot ROM with
+    // the internal IORom — which means ProDOS's slot scan never sees the
+    // $08/$28/$58/$70 ThunderClock signature at $Cs00/02/04/06. Punch
+    // the hole so a clock plugged into a free //c slot (typically sl7;
+    // sl3 collides with the built-in 80-col firmware) is detectable.
+    bool    exposesIicOnboardRom() const override { return true; }
     void    onReset() override;
     void    advanceCycles(int cycles) override;
 

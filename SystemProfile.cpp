@@ -134,8 +134,15 @@ const ProfileConfig& cfgAppleIIc()
         // sl3 is the internal 80-col firmware area covered by the AUX label.
         {
             std::nullopt,                                // sl0 reserved
-            BuiltInSlot{"printer", "built-in printer"},  // sl1
-            BuiltInSlot{"ssc",    "built-in serial"},    // sl2
+            // Real //c has TWO serial ports (both RS-232 via the on-board
+            // Zilog SCC), exposed as SSC-compatible firmware at $C100
+            // (printer port) and $C200 (modem port). Apple //c Technical
+            // Reference Manual, app. A; MAME apple2e.cpp machine config
+            // apple2c. POM2 used to put a parallel PrinterCard at sl1 —
+            // wrong: the //c had no parallel port, the "printer" name
+            // refers to the serial port wired to the ImageWriter DIN.
+            BuiltInSlot{"ssc",    "built-in printer port (serial)"}, // sl1
+            BuiltInSlot{"ssc",    "built-in modem port (serial)"},   // sl2
             std::nullopt,                                // sl3 (AUX 80-col label)
             // sl4: AppleWin-style HLE mouse — the real //c on-board mouse
             // shares the same firmware-visible API as the slot card but the
@@ -147,6 +154,7 @@ const ProfileConfig& cfgAppleIIc()
             BuiltInSlot{"diskii", "built-in Disk II"},   // sl6
             std::nullopt,                                // sl7
         },
+        /*noPhysicalSlots=*/true,
     };
     return cfg;
 }
@@ -181,19 +189,21 @@ const ProfileConfig& cfgAppleIIcPlus()
         // cycle-driven so a 4× CPU still produces correctly-paced
         // nibbles). 4 × 17045 = 68180 cycles per 60 Hz frame.
         68180,
-        // builtInSlots: [_, printer, ssc, _, mouse, smartport35, diskii, _]
-        // sl1 = built-in printer (same POM2-synthetic substitution as on
-        // the //c — see cfgAppleIIc comment).
+        // builtInSlots: [_, ssc(printer), ssc(modem), _, mouse,
+        //                smartport35, diskii, _]. Same dual-serial layout
+        // as cfgAppleIIc — //c+ inherits the //c's two on-board RS-232
+        // ports (Apple //c+ Reference Addendum, MAME apple2cp config).
         {
             std::nullopt,
-            BuiltInSlot{"printer",     "built-in printer"},        // sl1
-            BuiltInSlot{"ssc",         "built-in serial"},         // sl2
+            BuiltInSlot{"ssc",         "built-in printer port (serial)"}, // sl1
+            BuiltInSlot{"ssc",         "built-in modem port (serial)"},   // sl2
             std::nullopt,                                          // sl3 (AUX)
             BuiltInSlot{"mouseaw",     "built-in mouse"},          // sl4
             BuiltInSlot{"smartport35", "built-in SmartPort 3.5\""}, // sl5
             BuiltInSlot{"diskii",      "built-in Disk II (IWM)"},  // sl6
             std::nullopt,                                          // sl7
         },
+        /*noPhysicalSlots=*/true,
     };
     return cfg;
 }

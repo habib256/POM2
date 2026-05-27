@@ -107,6 +107,11 @@ public:
     uint8_t slotRomRead(uint8_t low8) override;
     void    advanceCycles(int cycles) override;
     void    onReset() override;
+    // //c-class punches the forced INTCXROM mask for this card's $Cn00
+    // firmware so PR#4 runs the AppleWin EPROM (which drives our PIA at
+    // $C0C0) instead of the //c's on-board mouse firmware (which would
+    // poke IOU hardware POM2 doesn't model — making the mouse a no-op).
+    bool    exposesIicOnboardRom() const override { return slotRomLoaded; }
 
 private:
     int      slot_;

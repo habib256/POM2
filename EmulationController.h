@@ -15,6 +15,7 @@
 #include "IWMDevice.h"
 #include "M6502.h"
 #include "Memory.h"
+#include "NoSlotClock.h"
 #include "SmartPortHub.h"
 #include "Sony35Drive.h"
 #include "SpeakerDevice.h"
@@ -51,6 +52,10 @@ public:
     AudioDevice&       audio()       { return *audioDev; }
     pom2::IWMDevice&   iwm()         { return *iwmDev; }
     pom2::SmartPortHub& smartPortHub() { return *hub; }
+    /// Dallas DS1216E "SmartWatch" — lives at controller scope so its
+    /// (battery-backed on real hardware) state machine survives profile
+    /// switches and CPU resets.
+    pom2::NoSlotClock&  noSlotClock() { return *noSlotClock_; }
     pom2::Sony35Drive&  sony35Internal() { return *drive35Int; }
     pom2::Sony35Drive&  sony35External() { return *drive35Ext; }
     pom2::Disk35Image&  disk35Internal()  { return *image35Int; }
@@ -162,6 +167,7 @@ private:
     std::unique_ptr<pom2::Sony35Drive>  drive35Int;
     std::unique_ptr<pom2::Sony35Drive>  drive35Ext;
     std::unique_ptr<pom2::SmartPortHub> hub;
+    std::unique_ptr<pom2::NoSlotClock>  noSlotClock_;
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};

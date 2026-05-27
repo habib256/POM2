@@ -145,13 +145,20 @@ void MainWindow::renderSlotConfigPanel()
             ImGui::Spacing();
         }
 
-        // "diskii" is multi-instance — never flagged as a duplicate. Every
-        // other card type is single-instance.
+        // "diskii" is multi-instance — never flagged as a duplicate.
+        // Built-in slots forced by the profile are also exempt: e.g. //c
+        // ships TWO SSC-compatible serial ports at sl1+sl2 (printer +
+        // modem), both forced by cfgAppleIIc, and the user picker must
+        // not light them up red. Same logic as plugSlotsFromSettings'
+        // uniqueness check.
         auto isDuplicate = [&](int slot) -> bool {
-            if (draft[slot].empty())       return false;
-            if (draft[slot] == "diskii")   return false;
+            if (draft[slot].empty())                    return false;
+            if (draft[slot] == "diskii")                return false;
+            if (profileCfg.builtInSlots[slot].has_value()) return false;
             for (int s = 1; s <= 7; ++s) {
-                if (s != slot && draft[s] == draft[slot]) return true;
+                if (s == slot) continue;
+                if (profileCfg.builtInSlots[s].has_value()) continue;
+                if (draft[s] == draft[slot])            return true;
             }
             return false;
         };
@@ -176,6 +183,18 @@ void MainWindow::renderSlotConfigPanel()
                               "%s — %s", cardName, bis.label.c_str());
                 ImGui::BeginDisabled(true);
                 ImGui::LabelText(label, "%s", preview);
+                ImGui::EndDisabled();
+                continue;
+            }
+
+            // Profile has no physical expansion bus (//c / //c+): even the
+            // "empty" virtual slots aren't pluggable on real hardware. Show
+            // the row greyed-out so the user understands why.
+            if (profileCfg.noPhysicalSlots) {
+                draft[s] = "";
+                ImGui::BeginDisabled(true);
+                ImGui::LabelText(label, "(no physical slot on %s)",
+                                 std::string(profileCfg.displayName).c_str());
                 ImGui::EndDisabled();
                 continue;
             }
@@ -627,6 +646,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         cffaCard         = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
+        sscCards.clear();
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mouseAwCard      = nullptr;
@@ -875,6 +895,7 @@ void MainWindow::restartEmulationFromSettings()
         cffaCard         = nullptr;
         chatMauveCard    = nullptr;
         sscCard          = nullptr;
+        sscCards.clear();
         clockCard        = nullptr;
         mouseCard        = nullptr;
         mouseAwCard      = nullptr;

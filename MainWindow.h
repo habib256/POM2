@@ -176,6 +176,12 @@ private:
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
     LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
+    // Plural alias: the //c built-in lineup ships TWO SSC-compatible
+    // serial ports (printer + modem). `sscCard` is the primary alias =
+    // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
+    // callers like SnapshotIO + AI control). Multi-instance code paths
+    // (menu, panel tabs, settings persistence) iterate `sscCards`.
+    std::vector<SuperSerialCard*> sscCards;
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
@@ -229,6 +235,10 @@ private:
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
+    // Dallas DS1216E "No-Slot Clock" diagnostics panel — pattern-matcher
+    // counter + clock-readout bit counter so the user can verify ProDOS
+    // walked the magic key successfully.
+    bool         showNoSlotClockPanel = false;
     // Printer panel — view spool buffer, save as .txt, clear.
     bool         showPrinterPanel   = false;
     // Pending path the user has typed into the "Save spool as…" text box.
@@ -495,6 +505,7 @@ private:
     void renderEchoPlusPanelWindow();
     void renderSscPanelWindow();
     void renderPrinterPanelWindow();
+    void renderNoSlotClockPanelWindow();
     void renderJoystickPanelWindow();
     /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.
     /// Live host cursor position + Apple II Screen widget rect + Mouse
