@@ -32,12 +32,14 @@
 #include "ClockCard.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
+#include "EchoPlusCard.h"
 #include "EmulationController.h"
 #include "LeChatMauveCard.h"
 #include "Logger.h"
 #include "Memory.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
+#include "PhasorCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ResourcePaths.h"
 #include "Settings.h"
@@ -605,8 +607,17 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // requests will see null and return 503. We re-attach at the
         // end after the new cards are in place.
         aiServer->detach();
-        if (mockingboardCard && controller->audio().isAvailable()) {
-            controller->audio().removeSource(mockingboardCard->audioSource());
+        // Any card that registered an AudioSource with the audio device
+        // must be unregistered BEFORE slotBus().clear() destroys it —
+        // otherwise the audio thread's next callback dereferences a
+        // freed source. Mirror this in restartEmulationFromSettings.
+        if (controller->audio().isAvailable()) {
+            if (mockingboardCard)
+                controller->audio().removeSource(mockingboardCard->audioSource());
+            if (phasorCard)
+                controller->audio().removeSource(phasorCard->audioSource());
+            if (echoPlusCard)
+                controller->audio().removeSource(echoPlusCard->audioSource());
         }
         diskCard         = nullptr;
         diskCards.clear();
@@ -620,6 +631,9 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         mouseCard        = nullptr;
         mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
+        phasorCard       = nullptr;
+        echoPlusCard     = nullptr;
+        printerCard      = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
@@ -840,12 +854,18 @@ void MainWindow::restartEmulationFromSettings()
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         aiServer->detach();
-        // Mockingboard's AudioSource lives inside the card. We must
-        // unregister it from the audio device BEFORE the slot bus
-        // destroys the card, otherwise the audio thread's next callback
-        // would dereference a freed source.
-        if (mockingboardCard && controller->audio().isAvailable()) {
-            controller->audio().removeSource(mockingboardCard->audioSource());
+        // Every card that owns an AudioSource (Mockingboard / Phasor /
+        // Echo+) must be unregistered from the audio device BEFORE the
+        // slot bus destroys it — otherwise the audio thread's next
+        // callback dereferences a freed source. Same gotcha mirrored
+        // in applyProfile's teardown.
+        if (controller->audio().isAvailable()) {
+            if (mockingboardCard)
+                controller->audio().removeSource(mockingboardCard->audioSource());
+            if (phasorCard)
+                controller->audio().removeSource(phasorCard->audioSource());
+            if (echoPlusCard)
+                controller->audio().removeSource(echoPlusCard->audioSource());
         }
         diskCard         = nullptr;
         diskCards.clear();
@@ -859,6 +879,9 @@ void MainWindow::restartEmulationFromSettings()
         mouseCard        = nullptr;
         mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
+        phasorCard       = nullptr;
+        echoPlusCard     = nullptr;
+        printerCard      = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the

@@ -2683,7 +2683,8 @@ void MainWindow::renderAudioMixerWindow()
     if (tapeVol != tape.getVolume()) tape.setVolume(tapeVol);
     if (tapeMute != tape.isMuted()) tape.setMuted(tapeMute);
 
-    // ── Mockingboard ───────────────────────────────────────────────────
+    // ── Slot audio cards (Mockingboard / Phasor / Echo+) ──────────────
+    // Only rows for plugged cards — empty slots stay out of the mixer.
     if (mockingboardCard) {
         float mbVol = mockingboardCard->getVolume();
         bool  mbMute = mockingboardCard->isMuted();
@@ -2696,9 +2697,32 @@ void MainWindow::renderAudioMixerWindow()
         channelRow(lbl.c_str(), mbVol, mbMute, mbPeak, "mb", false);
         if (mbVol != mockingboardCard->getVolume()) mockingboardCard->setVolume(mbVol);
         if (mbMute != mockingboardCard->isMuted()) mockingboardCard->setMuted(mbMute);
-    } else {
-        float dummyVol = 0; bool dummyMute = false;
-        channelRow("Mockingbd (no card)", dummyVol, dummyMute, 0.0f, "mb", true);
+    }
+    if (phasorCard) {
+        float phVol = phasorCard->getVolume();
+        bool  phMute = phasorCard->isMuted();
+        const std::string lbl = "Phasor (S" +
+            std::to_string(phasorCard->getSlot()) + ")";
+        AudioSource* phSrc = phasorCard->audioSource();
+        const float phPeak = phSrc
+            ? phSrc->lastBufferPeak.load(std::memory_order_relaxed)
+            : 0.0f;
+        channelRow(lbl.c_str(), phVol, phMute, phPeak, "phasor", false);
+        if (phVol != phasorCard->getVolume()) phasorCard->setVolume(phVol);
+        if (phMute != phasorCard->isMuted()) phasorCard->setMuted(phMute);
+    }
+    if (echoPlusCard) {
+        float epVol = echoPlusCard->getVolume();
+        bool  epMute = echoPlusCard->isMuted();
+        const std::string lbl = "Echo+ (S" +
+            std::to_string(echoPlusCard->getSlot()) + ")";
+        AudioSource* epSrc = echoPlusCard->audioSource();
+        const float epPeak = epSrc
+            ? epSrc->lastBufferPeak.load(std::memory_order_relaxed)
+            : 0.0f;
+        channelRow(lbl.c_str(), epVol, epMute, epPeak, "echop", false);
+        if (epVol != echoPlusCard->getVolume()) echoPlusCard->setVolume(epVol);
+        if (epMute != echoPlusCard->isMuted()) echoPlusCard->setMuted(epMute);
     }
 
     // ── Disk 5.25" ─────────────────────────────────────────────────────
