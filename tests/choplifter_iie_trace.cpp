@@ -99,7 +99,7 @@ int main(int argc, char** argv)
         }
     }
     const std::string disk = !diskArg.empty() ? diskArg : firstExisting({
-        "disks/woz/Choplifter (1982)(Br\xc3\xb8""derbund)(II-II+)[48K].woz",
+        "disks_5.4/woz/Choplifter (1982)(Br\xc3\xb8""derbund)(II-II+)[48K].woz",
     });
     if (disk.empty()) {
         std::printf("FAIL: Choplifter WOZ not found (pass --disk <path>)\n");

@@ -42,8 +42,8 @@ int main(int argc, char** argv)
 {
     const std::string dskPath = argc > 1 ? argv[1] :
         findFirst({
-            "disks/H.E.R.O. (1984)(Activision)[cr 4am][48K].dsk",
-            "../disks/H.E.R.O. (1984)(Activision)[cr 4am][48K].dsk",
+            "disks_5.4/H.E.R.O. (1984)(Activision)[cr 4am][48K].dsk",
+            "../disks_5.4/H.E.R.O. (1984)(Activision)[cr 4am][48K].dsk",
         });
     int probeTrack = argc > 2 ? std::atoi(argv[2]) : 2;
 

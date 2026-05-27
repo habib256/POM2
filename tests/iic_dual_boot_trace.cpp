@@ -54,7 +54,7 @@ int main(int argc, char** argv)
     auto d2 = std::make_unique<DiskIICard>(6);
     const std::string dr = firstExisting({"roms/disk2.rom"}); if (!dr.empty()) d2->loadBootRom(dr);
     const std::string lr = firstExisting({"roms/diskii_p6.rom"}); if (!lr.empty()) d2->loadLssRom(lr);
-    const std::string d5 = firstExisting({"disks/dsk/ProDOS_2_4_3.po"});
+    const std::string d5 = firstExisting({"disks_5.4/dsk/ProDOS_2_4_3.po"});
     if (!d5.empty()) d2->insertDisk(d5);
     d2->setIWM(&iwm);
     mem.slotBus().plug(6, std::move(d2));
@@ -63,7 +63,7 @@ int main(int argc, char** argv)
     if (withSp) {
         auto sp = std::make_unique<pom2::SmartPortCard>(5);
         sp->setUnit(0, std::make_unique<pom2::SmartPort35Unit>());
-        const std::string s35 = firstExisting({"disks35/TheBestGames.2mg"});
+        const std::string s35 = firstExisting({"disks_3.5/TheBestGames.2mg"});
         std::string err;
         if (!s35.empty() && !sp->mountBay(0, s35, err))
             std::printf("WARN: 3.5 mount: %s\n", err.c_str());

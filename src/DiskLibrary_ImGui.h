@@ -2,7 +2,7 @@
 // Copyright (C) 2026
 //
 // DiskLibrary_ImGui — unified browser over every disk image POM2 can
-// mount: 5.25" floppies (disks/), 3.5" Sony disks (disks35/), and
+// mount: 5.25" floppies (disks_5.4/), 3.5" Sony disks (disks_3.5/), and
 // ProDOS HDV / 2IMG (hdv/). One panel, three tabs. Replaces the
 // per-card "Library:" child-list section (which each card duplicated)
 // with a single search-and-sort UI.

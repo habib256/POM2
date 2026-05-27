@@ -83,7 +83,7 @@ std::vector<uint8_t> makeTwoImgDos(const std::vector<uint8_t>& payload,
 bool loadDosFixture(std::vector<uint8_t>& payload)
 {
     static const char* prefixes[] = {
-        "../../disks/", "../../disks2/", "disks/", "disks2/"
+        "../../disks_5.4/", "../../disks2/", "disks_5.4/", "disks2/"
     };
     for (const char* pfx : prefixes) {
         const std::string p = std::string(pfx) + "dos33_master.dsk";

@@ -11,9 +11,9 @@
 //      Dos33 with no spurious override.
 //
 // Canonical fixture paths (build/tests/ cwd):
-//   ../../disks/dsk/cc65-Chess.po
-//   ../../disks/dsk/dos33_master.dsk
-//   ../../disks/ProDOS_2_4_3.po       (kept at disks/ root historically)
+//   ../../disks_5.4/dsk/cc65-Chess.po
+//   ../../disks_5.4/dsk/dos33_master.dsk
+//   ../../disks_5.4/ProDOS_2_4_3.po       (kept at disks_5.4/ root historically)
 //
 // Earlier versions of this test treated a missing fixture as "not a
 // failure" — combined with a probe list that didn't cover the dsk/
@@ -51,13 +51,13 @@ bool runRealDiskCase(const char* fixtureName,
                      const char* label)
 {
     // ctest cwd is build/tests/. The fixture pack is split: WOZ images
-    // under disks/woz/, sector images under disks/dsk/, with some legacy
-    // disks/ and disks2/ roots still in use. Probe all variants so the
+    // under disks_5.4/woz/, sector images under disks_5.4/dsk/, with some legacy
+    // disks_5.4/ and disks2/ roots still in use. Probe all variants so the
     // test locates fixtures regardless of layout changes.
     static const char* prefixes[] = {
-        "../../disks/",      "../../disks/dsk/",  "../../disks/woz/",
+        "../../disks_5.4/",      "../../disks_5.4/dsk/",  "../../disks_5.4/woz/",
         "../../disks2/",
-        "disks/",            "disks/dsk/",        "disks/woz/",
+        "disks_5.4/",            "disks_5.4/dsk/",        "disks_5.4/woz/",
         "disks2/",
     };
     std::string path;
@@ -68,8 +68,8 @@ bool runRealDiskCase(const char* fixtureName,
     }
     if (path.empty()) {
         std::fprintf(stderr,
-            "%s: required fixture %s not found under disks/, disks/dsk/, "
-            "disks/woz/, or disks2/ — failing loud rather than silently "
+            "%s: required fixture %s not found under disks_5.4/, disks_5.4/dsk/, "
+            "disks_5.4/woz/, or disks2/ — failing loud rather than silently "
             "green-passing (fix the fixture or extend the probe list)\n",
             label, fixtureName);
         return false;

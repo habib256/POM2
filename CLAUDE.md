@@ -67,7 +67,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
 | CLI | `CliDispatcher.h/.cpp` | [§ CLI](DEV.md#cli-clidispatcher) |
-| WebAssembly build | `build_wasm.sh`, `web/shell.html` | [§ WASM](DEV.md#webassembly-browser-build) |
+| WebAssembly build | `build_wasm.sh`, `wasm/shell.html` | [§ WASM](DEV.md#webassembly-browser-build) |
 
 ## Memory map
 

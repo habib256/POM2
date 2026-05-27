@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
     const std::string romIIPath  = findFirst({"../roms/apple2.rom",  "roms/apple2.rom"});
     const std::string promPath   = findFirst({"../roms/disk2.rom",   "roms/disk2.rom"});
     const std::string imgPath    = (argc > 1) ? argv[1] : findFirst({
-        "../disks/Copy II Plus v8.3.do", "disks/Copy II Plus v8.3.do"});
+        "../disks_5.4/Copy II Plus v8.3.do", "disks_5.4/Copy II Plus v8.3.do"});
 
     bool useIIe = !romIIePath.empty();
     for (int i = 1; i < argc; ++i) {

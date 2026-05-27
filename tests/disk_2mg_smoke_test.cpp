@@ -76,7 +76,7 @@ bool loadFixture(const std::string& name, std::vector<uint8_t>& out,
                  std::size_t expectedSize)
 {
     static const char* prefixes[] = {
-        "../../disks/", "../../disks2/", "disks/", "disks2/"
+        "../../disks_5.4/", "../../disks2/", "disks_5.4/", "disks2/"
     };
     for (const char* pfx : prefixes) {
         const std::string p = std::string(pfx) + name;

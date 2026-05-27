@@ -91,8 +91,8 @@ int main()
         "../roms/diskii_p6_13.rom", "roms/diskii_p6_13.rom",
         "../../roms/diskii_p6_13.rom" });
     const std::string d13     = findFirst({
-        "../disks/dsk/DOS32STD.d13", "disks/dsk/DOS32STD.d13",
-        "../../disks/dsk/DOS32STD.d13" });
+        "../disks_5.4/dsk/DOS32STD.d13", "disks_5.4/dsk/DOS32STD.d13",
+        "../../disks_5.4/dsk/DOS32STD.d13" });
 
     if (romPath.empty() || boot13.empty() || lss13.empty() || d13.empty()) {
         std::printf("dos32_boot_trace SKIP: missing apple2.rom / disk2_13.rom /"

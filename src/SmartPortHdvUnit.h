@@ -16,7 +16,7 @@
 // Hard caps: ≥ 1 block, ≤ 65536 blocks (32 MB ProDOS-8 ceiling). The 2MG
 // write-back path preserves the original header verbatim. Synth-from-folder
 // volumes are deliberately NOT exposed here; for that, plug a separate
-// `ProDOSHardDiskCard` (which keeps the existing `prodos_disk/` UX).
+// `ProDOSHardDiskCard` (which keeps the existing `prodos_folder/` UX).
 
 #ifndef POM2_SMARTPORT_HDV_UNIT_H
 #define POM2_SMARTPORT_HDV_UNIT_H

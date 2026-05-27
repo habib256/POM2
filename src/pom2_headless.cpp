@@ -115,8 +115,8 @@ int main(int argc, char** argv)
     const std::string promPath = !promArg.empty() ? promArg : findFirst({
         "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom" });
     const std::string diskPath = !diskArg.empty() ? diskArg : findFirst({
-        "disks/dos33_master.dsk", "../disks/dos33_master.dsk",
-        "../../disks/dos33_master.dsk" });
+        "disks_5.4/dos33_master.dsk", "../disks_5.4/dos33_master.dsk",
+        "../../disks_5.4/dos33_master.dsk" });
 
     if (romPath.empty() || promPath.empty() || diskPath.empty()) {
         std::fprintf(stderr, "missing rom/prom/disk; try --help\n");

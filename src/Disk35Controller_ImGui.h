@@ -31,7 +31,7 @@ class Disk35Controller_ImGui
 public:
     struct LibraryEntry {
         std::string displayName;   // e.g. "ProDOS_2_4_2.po"
-        std::string fullPath;      // e.g. "../disks35/ProDOS_2_4_2.po"
+        std::string fullPath;      // e.g. "../disks_3.5/ProDOS_2_4_2.po"
     };
 
     struct DriveSnapshot {

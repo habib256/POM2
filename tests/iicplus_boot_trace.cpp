@@ -93,7 +93,7 @@ int main()
     // mounted volume and (we hope) auto-boots into DOS / ProDOS
     // instead of dropping into the Monitor.
     const std::string disk = firstExisting({
-        "disks/dsk/dos33_master.dsk",
+        "disks_5.4/dsk/dos33_master.dsk",
         "dos33_master.dsk",
     });
     if (!disk.empty()) {

@@ -81,9 +81,9 @@ int main(int argc, char** argv)
         "../../roms/diskii_p6.rom" });
     const std::string dskPath  = !diskOverride.empty() ? diskOverride :
         findFirst({
-            "../disks/Copy II Plus v8.3.do",
-            "disks/Copy II Plus v8.3.do",
-            "../../disks/Copy II Plus v8.3.do" });
+            "../disks_5.4/Copy II Plus v8.3.do",
+            "disks_5.4/Copy II Plus v8.3.do",
+            "../../disks_5.4/Copy II Plus v8.3.do" });
     const std::string hdvImg = findFirst({
         "../hdv/A2DeskTop-GIST.hdv",
         "hdv/A2DeskTop-GIST.hdv",
