@@ -12,6 +12,7 @@
 #include "CassetteDevice.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
+#include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
@@ -298,6 +299,7 @@ MainWindow::MainWindow(bool forceIIPlus)
                                                   showMockingboardPanel);
         showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
+        showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
         sscPortInput       = settings->getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
     }
@@ -570,6 +572,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
+    settings->setBool  ("show_printer",    showPrinterPanel);
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
@@ -883,6 +886,12 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugPrinter = [&](int s) {
+        auto card = std::make_unique<PrinterCard>(s);
+        printerCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMockingboard = [&](int s) {
         // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
         // image to mount: software detects it by writing to the VIA at
@@ -1024,6 +1033,7 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "hdv")         plugHdv(s);
         else if (kind == "cffa")        plugCffa(s);
         else if (kind == "ssc")         plugSsc(s);
+        else if (kind == "printer")     plugPrinter(s);
         else if (kind == "clock")       plugClock(s);
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
@@ -1509,6 +1519,15 @@ void MainWindow::renderMenuBar()
         }
         ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
         ImGui::MenuItem("Super Serial (slot 2)",         nullptr, &showSscPanel);
+        if (printerCard) {
+            const std::string label = "Printer (slot " +
+                std::to_string(printerCard->getSlot()) + ")";
+            ImGui::MenuItem(label.c_str(),               nullptr, &showPrinterPanel);
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::MenuItem("Printer (no card plugged)", nullptr, &showPrinterPanel);
+            ImGui::EndDisabled();
+        }
         ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
         ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
         ImGui::MenuItem("Mouse Inspector",               nullptr, &showMouseInspector);
@@ -2071,6 +2090,94 @@ void MainWindow::renderSscPanelWindow()
         ImGui::TextDisabled("Last bytes the host typed:");
         ImGui::TextWrapped("%s", sscCard->recentRxText().c_str());
     }
+
+    ImGui::End();
+}
+
+void MainWindow::renderPrinterPanelWindow()
+{
+    if (!showPrinterPanel || !printerCard) return;
+
+    ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
+    const std::string title = "Printer (slot " +
+        std::to_string(printerCard->getSlot()) + ")###printerPanel";
+    if (!ImGui::Begin(title.c_str(), &showPrinterPanel)) {
+        ImGui::End();
+        return;
+    }
+
+    const size_t nBytes = printerCard->bytesWritten();
+    ImGui::Text("Spool: %zu byte%s", nBytes, nBytes == 1 ? "" : "s");
+    ImGui::SameLine();
+    ImGui::TextDisabled("— PR#%d from BASIC sends output here",
+                        printerCard->getSlot());
+
+    ImGui::Separator();
+
+    // Auto-suggest a timestamped path on first open so the user can hit
+    // Save without typing anything. printerSavePath persists across saves
+    // within a session — the user can edit it freely.
+    if (printerSavePath.empty()) {
+        const auto t   = std::time(nullptr);
+        const auto tm  = *std::localtime(&t);
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
+        printerSavePath = std::string("printouts/spool-") + stamp + ".txt";
+    }
+
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "%s", printerSavePath.c_str());
+    ImGui::SetNextItemWidth(-110);
+    if (ImGui::InputText("##printerPath", buf, sizeof(buf))) {
+        printerSavePath = buf;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save as .txt", ImVec2(100, 0))) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path p = fs::path(printerSavePath);
+        if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            printerLastSaveStatus = "Save failed: cannot open " +
+                                    p.string();
+        } else {
+            const std::string text = printerCard->spoolText();
+            out.write(text.data(), static_cast<std::streamsize>(text.size()));
+            out.close();
+            printerLastSaveStatus = "Saved " + std::to_string(text.size()) +
+                                    " bytes → " + p.string();
+        }
+    }
+
+    if (!printerLastSaveStatus.empty()) {
+        ImGui::TextDisabled("%s", printerLastSaveStatus.c_str());
+    }
+
+    if (ImGui::Button("Clear spool")) {
+        printerCard->clearSpool();
+        printerLastSaveStatus.clear();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(host-side buffer only — does NOT touch the Apple II)");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Preview (high bit stripped, CR → LF):");
+
+    // Snapshot once per frame; printerCard mutates this from the CPU
+    // thread, but we hold the state lock everywhere it's touched so a
+    // single read is consistent.
+    const std::string preview = printerCard->spoolText();
+    ImGui::BeginChild("##printerPreview", ImVec2(0, 0), true,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    if (preview.empty()) {
+        ImGui::TextDisabled("(empty — try `PR#%d : PRINT \"HELLO\"` from BASIC)",
+                            printerCard->getSlot());
+    } else {
+        ImGui::TextUnformatted(preview.data(),
+                               preview.data() + preview.size());
+    }
+    ImGui::EndChild();
 
     ImGui::End();
 }
@@ -4887,6 +4994,7 @@ void MainWindow::render()
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();
     renderSscPanelWindow();
+    renderPrinterPanelWindow();
     renderJoystickPanelWindow();
     renderMouseInspectorWindow();
     renderAudioMixerWindow();

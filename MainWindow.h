@@ -38,6 +38,7 @@ class LeChatMauveCard;
 class MockingboardCard;
 class MouseCard;
 class MouseCardAppleWin;
+class PrinterCard;
 class ProDOSHardDiskCard;
 class SlotPeripheral;
 class SuperSerialCard;
@@ -182,6 +183,7 @@ private:
     MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
+    PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -223,6 +225,15 @@ private:
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
+    // Printer panel — view spool buffer, save as .txt, clear.
+    bool         showPrinterPanel   = false;
+    // Pending path the user has typed into the "Save spool as…" text box.
+    // Auto-suggested with a timestamped filename under ./printouts/ on
+    // first open; reused across save clicks within the same session.
+    std::string  printerSavePath;
+    // Last save outcome — shown under the Save button, persists until the
+    // user saves again or closes the panel. Empty = nothing saved yet.
+    std::string  printerLastSaveStatus;
     // Mockingboard live state panel — shows VIA T1 / IFR / IER and the
     // two AY-3-8910 register banks. Primary use: diagnose silent
     // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
@@ -470,6 +481,7 @@ private:
     void renderChatMauvePanelWindow();
     void renderMockingboardPanelWindow();
     void renderSscPanelWindow();
+    void renderPrinterPanelWindow();
     void renderJoystickPanelWindow();
     /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.
     /// Live host cursor position + Apple II Screen widget rect + Mouse

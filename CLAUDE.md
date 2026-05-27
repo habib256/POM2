@@ -66,6 +66,7 @@ as fallback.
 | SmartPort 3.5" — //c+ on-board (IWM/GCR) | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*`, `Disk35Controller_ImGui.*` | [DEV § SmartPort 3.5" stack](DEV.md#smartport-35-stack) |
 | SmartPort slot card (//e / II+, Liron-class) | `SmartPortCard.*`, `SmartPortUnit.*`, `SmartPort35Unit.*`, `SmartPortHdvUnit.*` | [DEV § SmartPortCard](DEV.md#smartportcard-e-liron-class) — block-level driver, 2 units/card, polymorphic `SmartPortUnit` (Sony 800K or ProDOS HDV via `Block512Backing`). Per-unit `smartport_slotN_unitK_*`. Implements `MountableMediaCard` |
 | Super Serial Card (slot 2) + telnet | `SuperSerialCard.h/.cpp` | [DEV § SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
+| Printer card (parallel, synthetic) | `PrinterCard.h/.cpp` | [DEV § Printer card](DEV.md#printer-card-parallel-synthetic) — synthetic 256 B slot ROM hooks CSWL/CSWH → host-side spool, saved as `.txt` from Devices → Printer. Built-in sl1 on //c/+; pluggable any slot on II/II+/IIe. PDF deferred. Pinned `printer_card_smoke` |
 | ProDOS clock card (slot 4) | `ClockCard.h/.cpp` | [DEV § Clock card](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (slot 4 by conv.) | `MouseCard.h/.cpp`, `MouseCardAppleWin.h/.cpp` | [DEV § Mouse Card](DEV.md#mouse-card) — TWO variants: `mouse` = MAME-faithful 68705P3 + 6821 (needs `mouse_341-0270-c.bin` + `mouse_341-0269.bin`), `mouseaw` = AppleWin HLE (slot EPROM only). Pinned `mouse_card_smoke` + `mouse_card_applewin_smoke` |
 | Joystick / paddles | `JoystickInput.h/.cpp` + Memory paddle RC | [DEV § Joystick / paddles](DEV.md#joystick--paddles) |
@@ -135,8 +136,8 @@ to aux 64 KB under paging switches — see table at top of `Memory.h`.
 | Apple ][+ (1979)          | NMOS  | off | `apple2p.rom`, `apple2.rom` | — |
 | Apple //e Unenh. (1983)   | NMOS  | on  | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | — (AUX = ext80) |
 | Apple //e Enh. (1985)     | 65C02 | on  | `apple2e.rom` | — (AUX = ext80) |
-| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl2 SSC, sl4 Mouse, sl5 SmartPort, sl6 Disk II |
-| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl2 SSC, sl4 Mouse, sl5 SmartPort 3.5" (IWM), sl6 Disk II |
+| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1 Printer, sl2 SSC, sl4 Mouse, sl5 SmartPort, sl6 Disk II |
+| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1 Printer, sl2 SSC, sl4 Mouse, sl5 SmartPort 3.5" (IWM), sl6 Disk II |
 
 Profiles with built-in slots force the listed cards into the SlotBus
 on profile load (overrides user `slot_N_card` settings) and render
