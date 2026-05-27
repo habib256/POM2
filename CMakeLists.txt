@@ -93,6 +93,7 @@ set(SOURCES
     Mockingboard.cpp
     MouseCard.cpp
     MouseCardAppleWin.cpp
+    NoSlotClock.cpp
     PhasorCard.cpp
     PrinterCard.cpp
     Ssi263.cpp
@@ -360,6 +361,7 @@ add_executable(pom2_headless
     Memory.cpp
     MemoryProfile_IIcClass.cpp
     Mockingboard.cpp
+    NoSlotClock.cpp
     ResourcePaths.cpp
     RomLoader.cpp
     SlotBus.cpp

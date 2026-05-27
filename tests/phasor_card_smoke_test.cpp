@@ -19,13 +19,17 @@
 //      strobes land on the AY2/AY3 pair.
 
 #include "AudioDevice.h"
+#include "M6502.h"
+#include "Memory.h"
 #include "PhasorCard.h"
+#include "SlotBus.h"
 #include "Via6522.h"
 
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -340,6 +344,76 @@ void testTelemetry()
     std::printf("  ok: per-AY + per-VIA telemetry counters\n");
 }
 
+// Regression for the end-of-step overshoot. Memory::advanceCycles folds
+// the slice into cycleCounter BEFORE dispatching to the card, yet
+// M6502::step() still holds cpu->cycles == that slice, so
+// getCycleCountNow() (= cycleCounter + cpu->cycles) overshoots "now" by
+// one instruction. Pre-fix PhasorCard::advanceCycles compensated with
+// syncToCpuCycleAt(now - cycles) but THEN also called via_->advance(cycles)
+// a second time, double-charging T1 by one slice per call. Drive the
+// same elapsed cycles two ways and require the T1 counter to match.
+void testNoEndOfStepOvershoot()
+{
+    constexpr uint16_t kLatch  = 1000;
+    constexpr uint64_t kCycles = 40;
+
+    auto t1Counter = [](PhasorCard& c) -> uint16_t {
+        return static_cast<uint16_t>(c.peekViaRegister(0, 0x04)) |
+               static_cast<uint16_t>(c.peekViaRegister(0, 0x05) << 8);
+    };
+    auto armT1 = [](PhasorCard& c, uint16_t latch) {
+        c.slotRomWrite(pom2::Via6522::VIA_T1LL,
+                       static_cast<uint8_t>(latch & 0xFF));
+        c.slotRomWrite(pom2::Via6522::VIA_T1LH,
+                       static_cast<uint8_t>((latch >> 8) & 0xFF));
+        c.slotRomWrite(pom2::Via6522::VIA_ACR, 0x40);    // continuous
+        c.slotRomWrite(pom2::Via6522::VIA_T1CH,
+                       static_cast<uint8_t>((latch >> 8) & 0xFF));
+        c.slotRomWrite(pom2::Via6522::VIA_IER, 0xC0);    // enable T1
+    };
+
+    // Reference: legacy batched advance (no CPU back-pointer).
+    PhasorCard ref(4);
+    ref.onReset();
+    armT1(ref, kLatch);
+    ref.advanceCycles(static_cast<int>(kCycles));
+    const uint16_t refCtr = t1Counter(ref);
+
+    // CPU-driven: same elapsed cycles via real M6502 NOP stepping through
+    // the Memory::advanceCycles -> slotBus -> card path.
+    Memory mem;
+    M6502  cpu(&mem);
+    auto cardp = std::make_unique<PhasorCard>(4);
+    cardp->setCpu(&cpu);
+    PhasorCard* card = cardp.get();
+    mem.slotBus().plug(4, std::move(cardp));
+    cpu.hardReset();
+    mem.slotBus().reset();
+    for (uint16_t a = 0x0300; a < 0x0360; ++a) mem.memWrite(a, 0xEA); // NOPs
+    armT1(*card, kLatch);
+    cpu.setProgramCounter(0x0300);
+    const uint64_t start = mem.getCycleCounter();
+    while (mem.getCycleCounter() - start < kCycles) cpu.step();
+    const uint64_t elapsed = mem.getCycleCounter() - start;
+    const uint16_t cpuCtr = t1Counter(*card);
+
+    if (elapsed != kCycles) {
+        std::fprintf(stderr, "Phasor overshoot test: NOP stepping landed at "
+                     "%llu cycles (want %llu)\n",
+                     (unsigned long long)elapsed,
+                     (unsigned long long)kCycles);
+        std::abort();
+    }
+    if (cpuCtr != refCtr) {
+        std::fprintf(stderr, "Phasor end-of-step overshoot: CPU-driven T1=%u "
+                     "!= batch-driven=%u after %llu cycles\n",
+                     cpuCtr, refCtr, (unsigned long long)elapsed);
+        std::abort();
+    }
+    std::printf("  ok: CPU-driven advance matches batch (T1=%u, %llu cycles)\n",
+                cpuCtr, (unsigned long long)elapsed);
+}
+
 } // namespace
 
 int main()
@@ -352,6 +426,7 @@ int main()
     testAudioSynth4Chips();
     testClockScaleDoublesPitch();
     testTelemetry();
+    testNoEndOfStepOvershoot();
     std::printf("PASS\n");
     return 0;
 }

@@ -65,6 +65,12 @@ struct ProfileConfig {
     // entry means "the on-board hardware lives here and the user cannot
     // swap it". An empty entry (nullopt) means the slot is free.
     std::array<std::optional<BuiltInSlot>, 8> builtInSlots;
+    // True for machines with NO physical expansion bus — //c and //c+.
+    // On these, even the "empty" `builtInSlots` entries (sl3 / sl7) are
+    // not user-pluggable: the slot connector simply doesn't exist on
+    // real hardware, so POM2 force-empties any non-builtIn slot at
+    // profile-apply time and locks the Slot Config picker greyed out.
+    bool                   noPhysicalSlots = false;
 };
 
 /// Resolve a profile enum to its full configuration. The probe orders

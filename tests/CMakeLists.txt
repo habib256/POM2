@@ -42,6 +42,7 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/SlotBus.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
@@ -989,6 +990,7 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/SpeakerDevice.cpp
@@ -2234,6 +2236,27 @@ add_test(NAME clock_card_smoke COMMAND test_clock_card)
 set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── No-Slot Clock (Dallas DS1216E) smoke test ───────────────────────────
+# Pins the magic-key pattern matcher + 64-bit clock readout state machine.
+# No Memory plumbing — drives NoSlotClock::interceptRead directly so the
+# test stays focused on the protocol.
+add_executable(test_no_slot_clock
+    no_slot_clock_test.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
+)
+target_include_directories(test_no_slot_clock PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_no_slot_clock PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    target_link_libraries(test_no_slot_clock PRIVATE winmm)
+endif()
+
+add_test(NAME no_slot_clock_smoke COMMAND test_no_slot_clock)
+set_tests_properties(no_slot_clock_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Printer card smoke test ─────────────────────────────────────────────
 # Pins the PrinterCard slot ROM fingerprint (PR#n trampoline + Pascal
 # autodetect bytes + output handler at $Cn31), the data-port spool, and
@@ -2361,6 +2384,7 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -2406,6 +2430,7 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -2449,6 +2474,7 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -2493,6 +2519,7 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp
@@ -2537,6 +2564,7 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/NoSlotClock.cpp
     ${CMAKE_SOURCE_DIR}/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/SmartPortHub.cpp

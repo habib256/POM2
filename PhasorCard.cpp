@@ -348,7 +348,16 @@ void PhasorCard::syncToCpuCycle()
 
 void PhasorCard::syncToCpuCycleAt(uint64_t now)
 {
-    if (now <= lastSyncCycle_) return;
+    if (now <= lastSyncCycle_) {
+        // Defensive rewind (mirrors MockingboardCard::syncToCpuCycleAt):
+        // the end-of-step batch path passes (getCycleCountNow() - cycles),
+        // which can be < lastSyncCycle_ if a mid-instruction MMIO access
+        // already synced past that point. Pin lastSyncCycle_ to the
+        // smaller value so the next syncs the freshly-elapsed delta and
+        // doesn't no-op every batch tick.
+        lastSyncCycle_ = now;
+        return;
+    }
     const int delta = static_cast<int>(now - lastSyncCycle_);
     via_[0]->advance(delta);
     via_[1]->advance(delta);
@@ -460,14 +469,16 @@ void PhasorCard::advanceCycles(int cycles)
     std::lock_guard<std::mutex> lk(mtx_);
     if (cpu_) {
         // Same protocol as MockingboardCard::advanceCycles — sync up to
-        // (now - cycles) first (any reads/writes between the previous
-        // step and now were already caught up by syncToCpuCycle in
-        // those handlers), then advance the freshly-elapsed slice.
-        const uint64_t now = cpu_->getCycleCountNow();
-        syncToCpuCycleAt(now - cycles);
-        via_[0]->advance(cycles);
-        via_[1]->advance(cycles);
-        lastSyncCycle_ = now;
+        // (now - cycles) only. Memory::advanceCycles folded `cycles` into
+        // cycleCounter BEFORE dispatching, yet cpu->cycles still holds
+        // them, so getCycleCountNow() overshoots the true "now" by
+        // exactly one instruction. Subtracting `cycles` lands us at the
+        // real end-of-instruction time; the VIAs are then correctly at
+        // that point. Adding another via_->advance(cycles) here would
+        // double-charge T1 by one instruction per slice (pinned by
+        // testNoEndOfStepOvershoot in phasor_card_smoke).
+        syncToCpuCycleAt(cpu_->getCycleCountNow() -
+                         static_cast<uint64_t>(cycles));
     } else {
         via_[0]->advance(cycles);
         via_[1]->advance(cycles);

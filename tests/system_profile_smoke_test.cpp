@@ -434,20 +434,21 @@ void testBuiltInSlots()
         }
     }
 
-    // //c — sl1/sl2/sl4/sl5/sl6 locked; sl3/sl7 free. sl1 = built-in
-    // synthetic printer (POM2-original substitution for real //c's
-    // 2nd SSC at $C100 — see cfgAppleIIc). sl5 = built-in SmartPort
-    // (host-served block device for 3.5"/HDV boot — see
-    // project_iic_smartport_boot).
+    // //c — sl1/sl2/sl4/sl5/sl6 locked; sl3/sl7 free. Real //c shipped
+    // TWO on-board serial ports (Zilog SCC), both SSC-firmware-
+    // compatible: sl1 = printer port, sl2 = modem port (Apple //c
+    // Technical Reference Manual app. A; MAME apple2e.cpp apple2c
+    // config). sl5 = built-in SmartPort (host-served block device for
+    // 3.5"/HDV boot — see project_iic_smartport_boot).
     {
         const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIc);
         assert(cfg.builtInSlots[1].has_value()
-               && cfg.builtInSlots[1]->cardKey == "printer");
+               && cfg.builtInSlots[1]->cardKey == "ssc");
         assert(cfg.builtInSlots[2].has_value()
                && cfg.builtInSlots[2]->cardKey == "ssc");
         assert(!cfg.builtInSlots[3].has_value());
         assert(cfg.builtInSlots[4].has_value()
-               && cfg.builtInSlots[4]->cardKey == "mouse");
+               && cfg.builtInSlots[4]->cardKey == "mouseaw");
         assert(cfg.builtInSlots[5].has_value()
                && cfg.builtInSlots[5]->cardKey == "smartport35");
         assert(cfg.builtInSlots[6].has_value()
@@ -455,15 +456,16 @@ void testBuiltInSlots()
         assert(!cfg.builtInSlots[7].has_value());
     }
 
-    // //c+ — same lock set as //c (sl1 Printer, sl2/sl4/sl5/sl6).
+    // //c+ — same lock set as //c (dual SSC sl1+sl2, sl4 mouse, sl5
+    // SmartPort 3.5", sl6 Disk II via IWM).
     {
         const auto& cfg = pom2::profileConfig(pom2::SystemProfile::AppleIIcPlus);
         assert(cfg.builtInSlots[1].has_value()
-               && cfg.builtInSlots[1]->cardKey == "printer");
+               && cfg.builtInSlots[1]->cardKey == "ssc");
         assert(cfg.builtInSlots[2].has_value()
                && cfg.builtInSlots[2]->cardKey == "ssc");
         assert(cfg.builtInSlots[4].has_value()
-               && cfg.builtInSlots[4]->cardKey == "mouse");
+               && cfg.builtInSlots[4]->cardKey == "mouseaw");
         assert(cfg.builtInSlots[5].has_value()
                && cfg.builtInSlots[5]->cardKey == "smartport35");
         assert(cfg.builtInSlots[6].has_value()

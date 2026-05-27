@@ -90,6 +90,12 @@ EmulationController::EmulationController()
     hub->attach(iwmDev.get());
     hub->setSony35(drive35Int.get(), drive35Ext.get());
 
+    // Dallas DS1216E "No-Slot Clock". Battery-backed on real hardware,
+    // so we hold it at controller scope; survives profile switches and
+    // CPU resets. Memory hooks the $F800-$FFFF intercept through this
+    // pointer; nullptr disables (MainWindow toggles via setEnabled()).
+    noSlotClock_ = std::make_unique<pom2::NoSlotClock>();
+
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
     mem.setCassetteDevice(tape.get());
@@ -97,6 +103,7 @@ EmulationController::EmulationController()
     mem.setCpu(&processor);
     mem.setIWM(iwmDev.get());
     mem.setSmartPortHub(hub.get());
+    mem.setNoSlotClock(noSlotClock_.get());
 }
 
 EmulationController::~EmulationController()
@@ -119,6 +126,7 @@ EmulationController::~EmulationController()
     mem.setCpu(nullptr);
     mem.setIWM(nullptr);
     mem.setSmartPortHub(nullptr);
+    mem.setNoSlotClock(nullptr);
     tape.reset();
     spk.reset();
     floppy525.reset();
