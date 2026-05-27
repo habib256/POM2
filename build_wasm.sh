@@ -21,6 +21,8 @@
 #   ./build_wasm.sh --clean        # nuke build_wasm/ first
 #   ./build_wasm.sh --serve        # build + launch dev server on :8080
 #   ./build_wasm.sh --with-data    # also bundle disks_5.4/disks_3.5/hdv into POM2.data
+#   POM2_WASM_ALLOW_LARGE_DATA=1 ./build_wasm.sh --with-data
+#                                 # allow a local POM2.data over GitHub's 100 MiB limit
 
 set -euo pipefail
 
@@ -58,6 +60,7 @@ fi
 
 BUILD_DIR=build_wasm
 WASM_DIR=wasm
+GITHUB_FILE_LIMIT_BYTES=$((100 * 1024 * 1024))
 
 if [ $CLEAN -eq 1 ]; then
     rm -rf "$BUILD_DIR"
@@ -79,6 +82,24 @@ emcmake cmake -S . -B "$BUILD_DIR" \
 
 # Build. -j auto: emmake picks reasonable parallelism.
 cmake --build "$BUILD_DIR" -j
+
+# Keep accidental --with-data builds from overwriting the tracked wasm/POM2.data
+# with a file GitHub will reject.
+DATA_SRC="$BUILD_DIR/POM2.data"
+if [ -f "$DATA_SRC" ]; then
+    DATA_SIZE_BYTES=$(wc -c < "$DATA_SRC" | tr -d '[:space:]')
+    if [ "$DATA_SIZE_BYTES" -gt "$GITHUB_FILE_LIMIT_BYTES" ] && [ "${POM2_WASM_ALLOW_LARGE_DATA:-0}" != "1" ]; then
+        DATA_SIZE_MIB=$(( (DATA_SIZE_BYTES + 1024 * 1024 - 1) / (1024 * 1024) ))
+        cat >&2 <<EOF
+error: $DATA_SRC is ${DATA_SIZE_MIB} MiB, above GitHub's 100 MiB file limit.
+
+Refusing to copy it into $WASM_DIR/ so it is not committed accidentally.
+For a local-only large bundle, rerun with:
+  POM2_WASM_ALLOW_LARGE_DATA=1 ./build_wasm.sh --with-data
+EOF
+        exit 1
+    fi
+fi
 
 # Stage artefacts into wasm/.
 ARTEFACTS=(POM2.html POM2.js POM2.wasm POM2.data POM2.worker.js)

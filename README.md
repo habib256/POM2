@@ -38,16 +38,21 @@ targets in progress on `release-infra`.
 
 ### WebAssembly (browser)
 
+Live build: <https://habib256.github.io/POM2/wasm/>
+
 ```bash
-./build_wasm.sh              # → dist/wasm/{index.html, POM2.{js,wasm,data}}
-./build_wasm.sh --serve      # build + serve on :8080
+./build_wasm.sh              # → wasm/{index.html, POM2.{js,wasm,data}, shell.html, serve.py}
+./build_wasm.sh --serve      # build + serve on :8080 with COOP+COEP headers
+./build_wasm.sh --with-data  # also bundle disks_3.5/ (≈ +4 MB)
 ```
 
-Asset bundle defaults to `roms/` + `fonts/` (~1.7 MB). Add
-`-DPOM2_WASM_BUNDLE_DISKS=ON` (passed to `emcmake cmake`) to fold in
-`disks/` + `disks35/` + `hdv/` + `floppyemu/`. Telnet bridge (SSC) and
-AI control HTTP server are compiled out in WASM; every Apple II-side
-feature stays. Details: [`dist/wasm/README.md`](dist/wasm/README.md).
+Asset bundle: `roms/` is **always** preloaded (without the user-supplied
+Apple ROMs the emulator can't boot, and the browser build has no
+drag-and-drop ROM upload yet). Default extras: `fonts/` + `floppyemu/`.
+`disks_5.4/` and `hdv/` are **never** bundled — they'd blow past
+GitHub Pages' per-file limits and choke browser preload. Telnet bridge
+(SSC) and AI-control HTTP server are compiled out under WASM; every
+Apple II-side feature stays.
 
 ## System profiles
 
@@ -127,7 +132,7 @@ system+video (IIe/IIc/IIc+).
 
 ## Disk images
 
-Drop files into `disks/`, `disks35/`, `hdv/`. Mount via each card's
+Drop files into `disks_5.4/`, `disks_3.5/`, `hdv/`. Mount via each card's
 panel or via the unified **Disk Library**.
 
 | Format | Size | Notes |
