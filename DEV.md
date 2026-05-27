@@ -358,6 +358,32 @@ Range: ~4 ms fastest (rate=15, dur=3 → ~4090 cyc), ~256 ms slowest
 asserts A/!R — the phoneme repeats indefinitely until a new DURPHON
 is written or CTL goes high.
 
+#### MockingboardCard Variant::SoundII
+
+`MockingboardCard` accepts a `Variant` constructor parameter
+(default `AC`). With `Variant::SoundII` an `Ssi263` is instantiated
+and slot ROM decode carves $40-$4F (5 SSI263 regs + 3 mirrors) out
+of the VIA1 mirror range — so the same card surfaces the A/C
+VIAs at $Cs00-$Cs0F + $Cs80-$Cs8F AND speech at $Cs40-$Cs44, the
+exact layout of real Sound II hardware.
+
+SSI263 A/!R wires (inverted) into VIA1.CA1 → on each phoneme-end
+edge, `advanceCycles` calls `via_[0]->setCa1NegativeEdge()` which
+latches `IFR.CA1` if `PCR.0 == 0` (the AppleWin-faithful default
+config used by Sound II drivers). Once the host CPU enables
+`IER.CA1`, the slot IRQ asserts → music driver's IRQ handler
+dequeues the next phoneme.
+
+Catalog key `mockingboard_c` selects this variant in Slot
+Configuration; `mockingboard` keeps the vanilla A/C decode (no
+SSI263, ssi_ stays null). The Mockingboard UI panel grows an
+SSI263 section at the bottom only when `hasSsi263()` returns
+true.
+
+Pinned by `mockingboard_smoke::testSoundIIVariantSSI263` —
+verifies no-SSI263 on AC variant, register decode at $40-$4F,
+A/!R → IFR.CA1 latching, IER.CA1 → slot IRQ.
+
 #### EchoPlusCard
 
 `EchoPlusCard` (`EchoPlusCard.h/.cpp`) — standalone SSI263 at

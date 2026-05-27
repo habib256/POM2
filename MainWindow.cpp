@@ -934,7 +934,7 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
-    auto plugMockingboard = [&](int s) {
+    auto plugMockingboard = [&](int s, MockingboardCard::Variant variant) {
         // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
         // image to mount: software detects it by writing to the VIA at
         // $C(s)00 and observing the read-back. We always-plug when
@@ -942,7 +942,12 @@ void MainWindow::plugSlotsFromSettings()
         // device so synthesised samples mix with the speaker output, and
         // the CPU IRQ line is wired so VIA T1 can drive the music
         // driver's tick.
-        auto card = std::make_unique<MockingboardCard>(s);
+        //
+        // Variant::SoundII additionally adds an SSI263 speech synth at
+        // $C(s)40-$C(s)44 with A/!R wired to VIA1.CA1 → IFR.CA1 →
+        // (gated by IER.CA1) slot IRQ. Drivers configure PCR.0=0 for
+        // negative-edge detection on the inverted A/!R wiring.
+        auto card = std::make_unique<MockingboardCard>(s, variant);
         card->setSampleRate(controller->audio().getActualSampleRate());
         // CPU pointer feeds the lazy-sync timer back-channel
         // (getCycleCountNow); IRQ routing is auto-wired via SlotBus.
@@ -1106,7 +1111,8 @@ void MainWindow::plugSlotsFromSettings()
             mouseAwCard = card.get();
             controller->memory().slotBus().plug(s, std::move(card));
         }
-        else if (kind == "mockingboard") plugMockingboard(s);
+        else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
+        else if (kind == "mockingboard_c") plugMockingboard(s, MockingboardCard::Variant::SoundII);
         else if (kind == "phasor")      plugPhasor(s);
         else if (kind == "echoplus")    plugEchoPlus(s);
         else if (kind == "smartport35") plugSmartPort35(s);
@@ -2916,6 +2922,37 @@ void MainWindow::renderMockingboardPanelWindow()
                         (v.ay[7] & 0x20) ? '.' : 'C');
         }
         ImGui::EndTable();
+    }
+
+    // ── Sound II SSI263 section (only if this variant has one) ─────────
+    MockingboardCard::Ssi263Snap ssiSnap;
+    bool hasSsi = false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        hasSsi = mockingboardCard->snapshotSsi263(&ssiSnap);
+    }
+    if (hasSsi) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
+                           "SSI263 (Sound II — speech @ $Cs40-$Cs44)");
+        if (ssiSnap.powerDown) {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.4f, 1.0f),
+                               "  CTL=1  →  POWER DOWN (silent)");
+        }
+        ImGui::TextColored(ssiSnap.aRequest
+                             ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
+                             : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                           "  A/!R: %s  →  VIA1.IFR.CA1 if PCR.0=0",
+                           ssiSnap.aRequest ? "REQUEST" : "running");
+        ImGui::Text("  Phoneme: $%02X (%d)  remaining: %d cyc",
+                    ssiSnap.currentPhoneme, ssiSnap.currentPhoneme,
+                    ssiSnap.phonemeRemainingCycles);
+        ImGui::Text("  Writes since reset: %u  |  IRQ enable: %s",
+                    ssiSnap.phonemeWriteCount,
+                    ssiSnap.irqEnabled ? "yes" : "no");
+        ImGui::Text("  Regs: $00=%02X  $01=%02X  $02=%02X  $03=%02X  $04=%02X",
+                    ssiSnap.regs[0], ssiSnap.regs[1], ssiSnap.regs[2],
+                    ssiSnap.regs[3], ssiSnap.regs[4]);
     }
 
     ImGui::End();

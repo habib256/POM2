@@ -70,6 +70,7 @@
 #include "Ay3_8910.h"
 #include "AudioDevice.h"
 #include "SlotPeripheral.h"
+#include "Ssi263.h"
 #include "Via6522.h"
 
 #include <cstdint>
@@ -84,8 +85,24 @@ class MockingboardCard : public SlotPeripheral
 public:
     static constexpr int kDefaultSlot = 4;
 
-    explicit MockingboardCard(int slot = kDefaultSlot);
+    /// Hardware variant:
+    ///   AC      = vanilla Mockingboard A or C (2× 6522 + 2× AY-3-8910, no
+    ///             speech). Slot ROM is just the two VIAs with partial
+    ///             address decode mirroring.
+    ///   SoundII = Mockingboard "C" / Sound II — adds an SSI263A speech
+    ///             synth at $C(s)40-$C(s)44. The SSI263's A/!R signal
+    ///             wires (inverted) to VIA1.CA1, so a phoneme-end edge
+    ///             latches IFR.CA1 in VIA1 and (if IER.CA1 is enabled by
+    ///             the host) drives the slot IRQ. Stock Sound II software
+    ///             configures PCR.0 = 0 (negative-edge active) to match
+    ///             the inverted wiring.
+    enum class Variant { AC, SoundII };
+
+    explicit MockingboardCard(int slot = kDefaultSlot, Variant variant = Variant::AC);
     ~MockingboardCard() override;
+
+    Variant getVariant() const { return variant_; }
+    bool    hasSsi263()  const { return ssi_ != nullptr; }
 
     int getSlot() const { return slot_; }
 
@@ -152,6 +169,21 @@ public:
     uint32_t getAyResetCount(int chip) const {
         return (chip == 0 || chip == 1) ? ayResetCount_[chip] : 0;
     }
+
+    /// Snapshot the SSI263 state for the UI panel. Returns false if this
+    /// card variant has no SSI263 (vanilla AC). When true, `*out` is
+    /// populated with the chip's current register banks + playback flags.
+    struct Ssi263Snap {
+        uint8_t  regs[5];
+        uint8_t  currentPhoneme;
+        uint8_t  mode;
+        bool     aRequest;
+        bool     powerDown;
+        bool     irqEnabled;
+        int      phonemeRemainingCycles;
+        uint32_t phonemeWriteCount;
+    };
+    bool snapshotSsi263(Ssi263Snap* out) const;
     /// Per-AY-command transition counters. `cmd` is the 2-bit
     /// {BDIR,BC1} encoding: 0=INACTIVE, 1=READ, 2=WRITE, 3=LATCH.
     /// Returning 0 for an out-of-range `chip` or `cmd` keeps the
@@ -164,13 +196,17 @@ private:
     // private to this card.
     struct AudioSrc;
 
-    int slot_;
-    M6502* cpu_ = nullptr;
+    int     slot_;
+    Variant variant_ = Variant::AC;
+    M6502*  cpu_ = nullptr;
 
     // VIAs and AYs — each VIA drives the AY at the same index. Held by
     // unique_ptr so the inner types can stay opaque in this header.
     std::unique_ptr<pom2::Via6522>  via_[2];
     std::unique_ptr<pom2::Ay3_8910> ay_[2];
+    // Optional SSI263 speech synth — non-null only on Variant::SoundII.
+    // Lives at slot ROM offsets $40-$4F (5 SSI263 regs + 11 mirrors).
+    std::unique_ptr<pom2::Ssi263>   ssi_;
     std::unique_ptr<AudioSrc>       audio_;
 
     // Combined slot IRQ state — `via_[0].irqOut() || via_[1].irqOut()`.

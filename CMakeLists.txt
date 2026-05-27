@@ -365,6 +365,8 @@ add_executable(pom2_headless
     SlotBus.cpp
     SnapshotIO.cpp
     SpeakerDevice.cpp
+    Ssi263.cpp
+    Ssi263PhonemeData.cpp
     SuperSerialCard.cpp
     SystemProfile.cpp
 )
