@@ -314,9 +314,10 @@ destroying the card. Persisted: `mockingboard_volume`,
 ### SSI263 + Echo+ (Street Electronics)
 
 `pom2::Ssi263` (`Ssi263.h/.cpp`) — Silicon Systems Inc. SSI263A
-phoneme speech synth, shared chip model for any host card that
-fronts an SSI263 (Echo+, Echo II, Mockingboard C Sound II — last one
-deferred to a follow-up, see TODO).
+phoneme speech synth, shared chip model used by both
+`EchoPlusCard` (standalone, slot ROM at `$Cs00-$Cs04`) and
+`MockingboardCard` `Variant::SoundII` (chip at `$Cs40-$Cs44`,
+A/!R wired to VIA1.CA1).
 
 **No MAME reference**: MAME does NOT implement the SSI263 (verified
 2026-05-27 — no `ssi263*` file in `src/devices/sound`). The canonical

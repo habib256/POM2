@@ -4,8 +4,8 @@
 
 Apple II / II+ / //e / //c / //c+ emulator built on Dear ImGui.
 MOS 6502 / 65C02, 48 KB – 8 MB RAM, text / lo-res / hi-res / DHGR
-video, speaker / cassette / Mockingboard / floppy mechanical
-sound, joystick, mouse, and an 8-slot peripheral bus.
+video, speaker / cassette / Mockingboard / Phasor / SSI263 speech /
+floppy mechanical sound, joystick, mouse, and an 8-slot peripheral bus.
 
 ## Quick start
 
@@ -28,28 +28,24 @@ Floppy Emu (BMOW) images into `floppyemu/`.
 ./build_dist.sh --tests    # run the ctest suite first
 ```
 
-Produces a relocatable tarball (`bin/POM2` + `share/POM2/`), a
-Debian package, and — when [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy)
-is on `PATH` — an AppImage, all under `DIST/`. **Apple ROMs are
-never bundled**: drop dumps into the bundle's `share/POM2/roms/`
-or into `~/.local/share/POM2/roms/` for `.deb` installs (see
-`roms/README.txt` shipped in each artifact). Windows / macOS
+Linux only. Produces a relocatable tarball (`bin/POM2` + `share/POM2/`),
+a Debian package, and — when `linuxdeploy` is on `PATH` — an AppImage.
+**Apple ROMs are never bundled** (drop dumps into the bundle's
+`share/POM2/roms/` or `~/.local/share/POM2/roms/`). Windows / macOS
 targets in progress on `release-infra`.
 
 ### WebAssembly (browser)
 
 ```bash
-# One-time: install + activate the Emscripten SDK, then:
 ./build_wasm.sh              # → dist/wasm/{index.html, POM2.{js,wasm,data}}
-./build_wasm.sh --serve      # build + serve on :8080 with COOP/COEP
+./build_wasm.sh --serve      # build + serve on :8080
 ```
 
-The asset bundle defaults to `roms/` + `fonts/` (~1.7 MB). Add
-`-DPOM2_WASM_BUNDLE_DISKS=ON` (passed through to `emcmake cmake`)
-to fold in `disks/` + `disks35/` + `hdv/` + `floppyemu/` (which can
-run to hundreds of MB). The telnet bridge (SSC) and AI control HTTP
-server are compiled out in WASM; every Apple II-side feature stays.
-Details and deployment notes: [`dist/wasm/README.md`](dist/wasm/README.md).
+Asset bundle defaults to `roms/` + `fonts/` (~1.7 MB). Add
+`-DPOM2_WASM_BUNDLE_DISKS=ON` (passed to `emcmake cmake`) to fold in
+`disks/` + `disks35/` + `hdv/` + `floppyemu/`. Telnet bridge (SSC) and
+AI control HTTP server are compiled out in WASM; every Apple II-side
+feature stays. Details: [`dist/wasm/README.md`](dist/wasm/README.md).
 
 ## System profiles
 
@@ -63,8 +59,8 @@ Details and deployment notes: [`dist/wasm/README.md`](dist/wasm/README.md).
 | Apple //c+ (1988)        | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom` |
 
 `Machine → Profile` or `--preset <ii|ii+|iie-u|iie|iic|iic+>`.
-Switching cold-resets and re-plugs cards; previously inserted
-disks re-mount across the switch.
+Switching cold-resets and re-plugs cards; previously inserted disks
+re-mount across the switch.
 
 ## ROM placement
 
@@ -87,42 +83,50 @@ system+video (IIe/IIc/IIc+).
 
 ## Features
 
-- **CPU**: NMOS 6502 + 65C02 / Rockwell / WDC (STZ, BRA, INA/DEA,
-  PHX/PLY, BIT-imm, TSB/TRB, JMP(abs,X), zp-indirect, RMB/SMB/BBR/
-  BBS, WAI/STP). Klaus Dormann clean.
+- **CPU**: NMOS 6502 + 65C02 / Rockwell / WDC (full extended op set,
+  WAI/STP, BBR/BBS). Klaus Dormann clean.
 - **Memory**: 48 KB + 16 KB ROM (II/II+); 128 KB main+aux (IIe/IIc)
-  with all paging soft switches. **RamWorks III** aux up to 8 MB
-  (IIe). Language Card + aux LC trio under ALTZP.
+  with all paging soft switches. **RamWorks III** aux up to 8 MB (IIe).
+  Language Card + aux LC trio under ALTZP.
 - **Display**: Text 40×24, lo-res 40×48, HGR 280×192 (3 composite
-  colour modes + White/Green/Amber mono w/ phosphor), 80-col text
-  + DHGR 560×192 (composite NTSC, Video-7 RGB, mono) on IIe.
-  **Le Chat Mauve** RGB card.
-- **Audio**: 1-bit speaker (4× oversample + sinc + DC blocker),
-  cassette deck (WAV/MP3/OGG/FLAC/`.aci`), **Mockingboard** (dual
-  6522 + dual AY-3-8910), **floppy mechanical sounds** for Disk II
-  and Sony 3.5" (cycle-driven, MAME samples).
-- **Storage**: Disk II 5.25" **multi-instance** (16-sector DOS 3.3
-  / ProDOS + **13-sector DOS 3.1/3.2**), ProDOS HDV any slot (32
-  MB `.hdv`/`.2mg` or synthetic `[host folder]`), **CFFA 2.0**
+  colour modes + White/Green/Amber mono w/ phosphor), 80-col text +
+  DHGR 560×192 (composite NTSC, Video-7 RGB, mono) on IIe. **Le Chat
+  Mauve** RGB card.
+- **Audio**:
+  - 1-bit speaker (4× oversample + sinc + DC blocker), cassette deck
+    (WAV / MP3 / OGG / FLAC / `.aci`).
+  - **Mockingboard A/C** (2× 6522 + 2× AY-3-8910).
+  - **Mockingboard "C" Sound II** (A/C + SSI263 speech at `$Cs40-$Cs44`,
+    A/!R → VIA1.CA1). Drives speech in Ultima V, Crime Wave, etc.
+  - **Phasor** (Applied Engineering — 2× 6522 + 4× AY-3-8913, 12 voices,
+    runtime mode switch between MB-compat and Phasor-native with 2× clock).
+  - **Echo+** (Street Electronics — standalone SSI263 at `$Cs00-$Cs04`).
+  - **Floppy mechanical sounds** for Disk II and Sony 3.5" (cycle-driven,
+    MAME samples).
+- **Storage**: Disk II 5.25" **multi-instance** (16-sector DOS 3.3 /
+  ProDOS + **13-sector DOS 3.1/3.2**), ProDOS HDV any slot (32 MB
+  `.hdv`/`.2mg` or synthetic `[host folder]`), **CFFA 2.0**
   (MAME-faithful IDE — real firmware over emulated ATA), SmartPort
-  3.5" on //c+ (IWM + Sony GCR) or on //e via Liron-class card,
-  WOZ1 + WOZ2 with `optimal_bit_timing`. Write-back opt-in.
+  3.5" on //c+ (IWM + Sony GCR) or on //e via Liron-class card, WOZ1 +
+  WOZ2 with `optimal_bit_timing`. Write-back opt-in.
 - **Peripherals**: Super Serial Card (6551 ACIA + telnet bridge on
-  `127.0.0.1:6502`), ProDOS Clock (ThunderClock+ at `$C0C0`, TP
-  interrupts), Apple Mouse Card (M68705P3 + MC6821) + AppleWin HLE
-  variant (no MCU ROM required), GLFW joystick → PADL(0/1)+PB0/1/2.
+  `127.0.0.1:6502`), **Printer card** (synthetic parallel → host spool
+  → save as `.txt`, built-in slot 1 of //c/+), ProDOS Clock
+  (ThunderClock+ at `$C0C0`, TP interrupts), Apple Mouse Card
+  (M68705P3 + MC6821) + AppleWin HLE variant (no MCU ROM required),
+  GLFW joystick → PADL(0/1)+PB0/1/2.
 - **Host control center**: two-column **Slot Configuration** panel
-  driving the whole expansion bus from one window, and a **Floppy
-  Emu (BMOW)** device — SD-card + OLED disk emulator with on-screen
-  file browser + favorites, mounting into the existing drives.
-- **Tooling**: AI control HTTP server on `127.0.0.1:6503`,
-  `POM2SNAP` snapshots (CPU + RAM + soft switches), memory viewer
-  with disassembly, screenshot (F9).
+  driving the whole expansion bus from one window, and a **Floppy Emu
+  (BMOW)** device — SD-card + OLED disk emulator with on-screen file
+  browser + favorites, mounting into the existing drives.
+- **Tooling**: AI control HTTP server on `127.0.0.1:6503`, `POM2SNAP`
+  snapshots (CPU + RAM + soft switches), memory viewer with
+  disassembly, screenshot (F9).
 
 ## Disk images
 
-Drop files into `disks/`, `disks35/`, `hdv/`. Mount via each
-card's panel or via the unified **Disk Library**.
+Drop files into `disks/`, `disks35/`, `hdv/`. Mount via each card's
+panel or via the unified **Disk Library**.
 
 | Format | Size | Notes |
 |---|---|---|
@@ -132,32 +136,50 @@ card's panel or via the unified **Disk Library**.
 | `.2mg` / `.2img` | + 64 B | 2IMG envelope, vol#/WP/comment preserved |
 | `.woz`           | varies | WOZ1 / WOZ2 + `optimal_bit_timing` |
 
-Format detection is content-driven (a `.po` that's actually
-DOS-skewed is sniffed via volume directory). MacBinary 128-byte
-wrappers stripped transparently. WOZ `INFO.write_protected` and
-2IMG WP flag honoured.
+Format detection is content-driven (a `.po` that's actually DOS-skewed
+is sniffed via volume directory). MacBinary 128-byte wrappers stripped
+transparently. WOZ `INFO.write_protected` and 2IMG WP flag honoured.
 
 ## Slot configuration
 
-`Machine → Slot Configuration` — one two-column window: left
-assigns a card per slot (built-ins greyed/locked), right
-mounts/ejects/boots media per internal disk & mountable port.
-Cards: `diskii` (multi-instance), `hdv`, `cffa` (when CFFA
-firmware is present), `smartport35`, `ssc`, `clock`, `chatmauve`,
-`mouse`, `mouseaw`, `mockingboard`. Default layout:
+`Machine → Slot Configuration` — one two-column window: left assigns
+a card per slot (built-ins greyed/locked), right mounts/ejects/boots
+media per internal disk & mountable port.
 
-| Slot | Card |
+Card catalog (key → label):
+
+| Key | Label |
 |---|---|
-| 1 | (free) |
+| `diskii`         | Disk II (multi-instance) |
+| `hdv`            | ProDOS HDV (synthetic) |
+| `cffa`           | CFFA 2.0 (IDE, real firmware) |
+| `smartport35`    | SmartPort 3.5" (Liron-class) |
+| `ssc`            | Super Serial Card |
+| `printer`        | Printer (parallel, synthetic spool) |
+| `clock`          | ProDOS Clock (ThunderClock+) |
+| `chatmauve`      | Le Chat Mauve RGB |
+| `mouse` / `mouseaw` | Mouse Card (MAME-faithful / AppleWin HLE) |
+| `mockingboard`   | Mockingboard A/C |
+| `mockingboard_c` | Mockingboard C (Sound II — adds SSI263 speech) |
+| `phasor`         | Phasor (AE — dual-mode, 4 AYs) |
+| `echoplus`       | Echo+ (standalone SSI263 speech) |
+
+Default slot layout on II / II+ / //e (everything free, user picks):
+
+| Slot | Typical choice |
+|---|---|
+| 1 | (free — printer or other) |
 | 2 | Super Serial Card |
 | 3 | (IIe internal 80-col firmware) |
-| 4 | ProDOS Clock card |
+| 4 | Mockingboard A/C (or `_c`, or Phasor) |
 | 5 | ProDOS HDV (or SmartPort 3.5") |
 | 6 | Disk II (auto if `disk2.rom` present) |
 | 7 | Le Chat Mauve RGB |
 
-Boot paths follow the live slot — move HDV from slot 5 to slot 2
-and `Boot HDV` / `PR#N` follow automatically.
+On //c / //c+, slots 1/2/4/5/6 are **built-in** (Printer / SSC / Mouse
+/ SmartPort / Disk II) and locked. Boot paths follow the live slot —
+move HDV from slot 5 to slot 2 and `Boot HDV` / `PR#N` follow
+automatically.
 
 ## Keyboard & joystick
 
@@ -175,8 +197,7 @@ and `Boot HDV` / `PR#N` follow automatically.
 | F12 | Hard reset / power-cycle |
 
 Joystick: GLFW pads, hot-plug, autobinds the first present pad.
-Axis X/Y → PADL(0/1), buttons → PB0/PB1/PB2. PADL(2/3) read
-centred.
+Axis X/Y → PADL(0/1), buttons → PB0/PB1/PB2. PADL(2/3) read centred.
 
 ## CLI
 
@@ -185,15 +206,15 @@ POM2 <disk-image>          # mount + boot a disk in the GUI
 POM2 --kiosk <disk-image>  # full-screen, no menus — just the screen
 ```
 
-The positional `<disk-image>` (`.dsk/.do/.po/.nib/.woz/.d13/.hdv/
-.2mg`) is auto-routed to its slot (5.25" Disk II / 800K 3.5" /
-ProDOS HDV) under your **saved profile + slot config**, then
-booted. `--kiosk` runs exclusive full-screen showing only the
-Apple II screen; close it with Alt-F4 / your window manager.
+The positional `<disk-image>` (`.dsk/.do/.po/.nib/.woz/.d13/.hdv/.2mg`)
+is auto-routed to its slot (5.25" Disk II / 800K 3.5" / ProDOS HDV)
+under your **saved profile + slot config**, then booted. `--kiosk`
+runs exclusive full-screen showing only the Apple II screen; close
+with Alt-F4 / your window manager.
 
 | Flag | Effect |
 |---|---|
-| *(positional)* `disk-image` | Mount + boot a disk under the saved config |
+| *(positional)* `disk-image` | Mount + boot under the saved config |
 | `--kiosk` | Full-screen, chrome-free; implies booting the disk |
 | `--preset ii\|ii+\|iie\|iic\|iic+` | Pick profile up front |
 | `--speed N` / `--cpu-max` | Cycles/frame (1× = 17 045) / uncap |
@@ -207,15 +228,18 @@ Apple II screen; close it with Alt-F4 / your window manager.
 
 ## Known limitations
 
-- **Mouse absolute position drift** under A2Desktop / MGTK —
-  tracking is delta-based; buttons + relative motion work fine.
-- **Anti-//e games** — twelve Brøderbund + Gebelli 1982 titles
-  refuse to boot on //e/c/c+ in original WOZ form (faithful
-  hardware behaviour). Use a 4am crack or run them under II+.
+- **Mouse absolute position drift** under A2Desktop / MGTK — tracking
+  is delta-based; buttons + relative motion work fine.
+- **Anti-//e games** — twelve Brøderbund + Gebelli 1982 titles refuse
+  to boot on //e/c/c+ in original WOZ form (faithful hardware
+  behaviour). Use a 4am crack or run them under II+.
+- **//c+ Sony 3.5" IWM boot** — full IWM bit-shift state machine not
+  modelled. POM2 routes 3.5" + HDV through the built-in slot-5
+  host-served SmartPort instead (boot via Disk Library / Slot Config).
 
-See [`TODO.md`](TODO.md) for the open backlog, [`DEV.md`](DEV.md)
-for implementation deep-dives, [`CHANGELOG.md`](CHANGELOG.md) for
-resolved items.
+See [`TODO.md`](TODO.md) for the open backlog, [`DEV.md`](DEV.md) for
+implementation deep-dives, [`CHANGELOG.md`](CHANGELOG.md) for resolved
+items.
 
 ## Licence
 
