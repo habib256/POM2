@@ -89,367 +89,6 @@ constexpr uint8_t VIA_ORANH     = Via::VIA_ORANH;
 using Via6522  = pom2::Via6522;
 using Ay3_8910 = pom2::Ay3_8910;
 
-#if 0
-struct MockingboardCard::Via6522
-{
-    // Register file. `regs[]` is the canonical view at `read()` time
-    // for everything except T1 (whose effective read goes through the
-    // counter), Port A/B (which combine DDR + output latch + input
-    // pins), and IFR/IER (which compute bit 7 dynamically).
-    uint8_t portAOut = 0x00;
-    uint8_t portBOut = 0x00;
-    uint8_t ddrA = 0x00;
-    uint8_t ddrB = 0x00;
-    uint8_t acr  = 0x00;
-    uint8_t pcr  = 0x00;
-    uint8_t sr   = 0x00;
-    // Timer 1 latches and counter. `t1Counter` is signed-extended to 32
-    // bits so we can detect the underflow transition (16-bit counter goes
-    // 0 → -1, i.e. the pulse fires when we count *through* zero).
-    uint16_t t1Latch = 0xFFFF;
-    int32_t  t1Counter = 0xFFFF;
-    bool     t1FireArmed = false;  // matches reset(): no T1 IRQ until SW loads T1CH
-    // Timer 2. Verbatim port of MAME `6522via.cpp:761-782` (write)
-    // and `:588-625` (read). T2 is a one-shot timer on phase-2 (the
-    // ACR.bit5 PB6 pulse-counting mode is *not* modelled — POM2
-    // exposes no PB6 pin so that mode would never tick). Unlocks
-    // Ultima IV's Echo+ speech driver and FrenchTouch sample demos.
-    uint8_t  t2ll   = 0xFF;
-    uint16_t t2Latch  = 0xFFFF;     // {t2lh:t2ll}, set by T2CH write
-    int32_t  t2Counter = 0xFFFF;
-    bool     t2Active  = false;     // armed → fires one IRQ on underflow
-    // IFR / IER — we store only the per-source bits (bits 0..6); bit 7
-    // is computed at read time.
-    uint8_t ifr = 0x00;
-    uint8_t ier = 0x00;
-
-    void reset()
-    {
-        portAOut = portBOut = 0;
-        ddrA = ddrB = 0;
-        acr  = pcr = sr = 0;
-        t1Latch = 0xFFFF;
-        t1Counter = 0xFFFF;
-        t1FireArmed = false;     // post-reset T1 doesn't fire until loaded
-        t2ll       = 0xFF;
-        t2Latch    = 0xFFFF;
-        t2Counter  = 0xFFFF;
-        t2Active   = false;
-        ifr = 0;
-        ier = 0;
-    }
-
-    // Composed Port B / Port A reads: input pins (DDR=0) are pulled
-    // high (Mockingboard has no inputs wired), output pins reflect the
-    // latch.
-    uint8_t readPortB() const
-    {
-        const uint8_t input = 0xFF;     // no inputs wired → all-ones
-        return (portBOut & ddrB) | (input & ~ddrB);
-    }
-    uint8_t readPortA() const
-    {
-        const uint8_t input = 0xFF;
-        return (portAOut & ddrA) | (input & ~ddrA);
-    }
-
-    bool irqOut() const
-    {
-        return (ifr & ier & 0x7F) != 0;
-    }
-
-    uint8_t computedIfr() const
-    {
-        return static_cast<uint8_t>(
-            (ifr & 0x7F) | (irqOut() ? IFR_ANY : 0));
-    }
-
-    // T1 mode bits live in ACR bits 7..6.
-    bool t1Continuous() const { return (acr & 0x40) != 0; }
-
-    // 6522 read — `reg` in 0..15. Some reads have side effects
-    // (clearing IFR.T1 on T1CL/T1CH).
-    uint8_t read(uint8_t reg)
-    {
-        switch (reg & 0x0F) {
-        case VIA_ORB:    return readPortB();
-        case VIA_ORA:    /* reading ORA also clears handshake state on real
-                            HW; we don't model handshake.            */
-                          return readPortA();
-        case VIA_DDRB:   return ddrB;
-        case VIA_DDRA:   return ddrA;
-        case VIA_T1CL: {
-            // Reading T1CL clears the T1 interrupt flag.
-            ifr &= ~IFR_T1;
-            return static_cast<uint8_t>(t1Counter & 0xFF);
-        }
-        case VIA_T1CH:   return static_cast<uint8_t>((t1Counter >> 8) & 0xFF);
-        case VIA_T1LL:   return static_cast<uint8_t>(t1Latch & 0xFF);
-        case VIA_T1LH:   return static_cast<uint8_t>((t1Latch >> 8) & 0xFF);
-        case VIA_T2CL: {
-            // T2CL read clears IFR.T2 (MAME `6522via.cpp:590-594`).
-            ifr &= ~IFR_T2;
-            return static_cast<uint8_t>(t2Counter & 0xFF);
-        }
-        case VIA_T2CH:   return static_cast<uint8_t>((t2Counter >> 8) & 0xFF);
-        case VIA_SR:     return sr;
-        case VIA_ACR:    return acr;
-        case VIA_PCR:    return pcr;
-        case VIA_IFR:    return computedIfr();
-        case VIA_IER:    return static_cast<uint8_t>(ier | 0x80);
-        case VIA_ORANH:  return readPortA();
-        default:         return 0xFF;
-        }
-    }
-
-    // 6522 write. Returns a bit-pattern of which "events" happened so
-    // the caller can react: bit 0 = Port B output changed, bit 1 = Port
-    // A output changed.
-    uint8_t write(uint8_t reg, uint8_t v)
-    {
-        uint8_t events = 0;
-        switch (reg & 0x0F) {
-        case VIA_ORB: {
-            const uint8_t prev = portBOut;
-            portBOut = v;
-            if ((prev & ddrB) != (v & ddrB)) events |= 0x01;
-            break;
-        }
-        case VIA_ORA: {
-            const uint8_t prev = portAOut;
-            portAOut = v;
-            if ((prev & ddrA) != (v & ddrA)) events |= 0x02;
-            break;
-        }
-        case VIA_DDRB: {
-            const uint8_t prev = portBOut & ddrB;
-            ddrB = v;
-            if ((portBOut & ddrB) != prev) events |= 0x01;
-            break;
-        }
-        case VIA_DDRA: {
-            const uint8_t prev = portAOut & ddrA;
-            ddrA = v;
-            if ((portAOut & ddrA) != prev) events |= 0x02;
-            break;
-        }
-        case VIA_T1CL:
-        case VIA_T1LL:
-            t1Latch = (t1Latch & 0xFF00) | v;
-            break;
-        case VIA_T1CH:
-            // Write T1CH: latch high byte, transfer latches into counter,
-            // start timer, clear IFR.T1.
-            t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
-            t1Counter = t1Latch;
-            t1FireArmed = true;
-            ifr &= ~IFR_T1;
-            break;
-        case VIA_T1LH:
-            // Latch high only: NO transfer to the counter and NO IFR side
-            // effect. On a real 6522/W65C22 the T1 interrupt flag is cleared
-            // only by reading T1C-L or writing T1C-H ($05) — NOT by writing
-            // T1L-H ($07). (MAME 6522via.cpp T1L-H case leaves IFR untouched.)
-            // Clearing it here would spuriously drop a pending T1 IRQ for a
-            // driver that updates just the latch high byte.
-            t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
-            break;
-        case VIA_T2CL:
-            // T2CL write: store the low latch. No effect on the running
-            // counter — only T2CH write reloads (MAME
-            // `6522via.cpp:764-766`).
-            t2ll    = v;
-            t2Latch = static_cast<uint16_t>((t2Latch & 0xFF00) | v);
-            break;
-        case VIA_T2CH:
-            // T2CH write: latch high, transfer {t2lh:t2ll} into the
-            // counter, clear IFR.T2, arm T2 (MAME `6522via.cpp:767-782`).
-            // PB6 pulse-counting mode (ACR bit 5 == 1) is acknowledged
-            // but never ticks in POM2 because no card we model drives
-            // the PB6 pin from outside.
-            t2Latch    = static_cast<uint16_t>((static_cast<uint16_t>(v) << 8) | t2ll);
-            t2Counter  = t2Latch;
-            ifr       &= ~IFR_T2;
-            t2Active   = true;
-            break;
-        case VIA_SR:    sr  = v; break;
-        case VIA_ACR:   acr = v; break;
-        case VIA_PCR:   pcr = v; break;
-        case VIA_IFR:
-            // Writing 1s to IFR clears those bits (only bits 0..6 are
-            // user-clearable; bit 7 is read-only on this register).
-            ifr &= ~(v & 0x7F);
-            break;
-        case VIA_IER:
-            // Bit 7 of the value selects set vs clear; bits 0..6 are the
-            // mask. Writing $C0 sets T1; writing $40 clears T1.
-            if (v & 0x80) ier |= (v & 0x7F);
-            else          ier &= ~(v & 0x7F);
-            break;
-        case VIA_ORANH: {
-            const uint8_t prev = portAOut;
-            portAOut = v;
-            if ((prev & ddrA) != (v & ddrA)) events |= 0x02;
-            break;
-        }
-        default: break;
-        }
-        return events;
-    }
-
-    // Advance T1 by `cycles` 1.0227 MHz ticks. Sets IFR.T1 on underflow
-    // and (in continuous mode) reloads from the latch automatically.
-    // Returns true if T1 fired this slice (caller doesn't usually care —
-    // updateIrq() will see ifr).
-    bool advance(int cycles)
-    {
-        if (cycles <= 0) return false;
-        bool fired = false;
-        // The 6522 counts down on every phase-2 falling edge; underflow
-        // fires when counter == -1 (i.e. 0 → 0xFFFF transition + 1 extra
-        // cycle). For our purposes the +1 is absorbed into `<= 0`.
-        t1Counter -= cycles;
-        // Loop: in continuous mode we may underflow many times in one
-        // slice (e.g. budget = 16384 cycles, period = 100 → 163 fires).
-        while (t1Counter < 0) {
-            if (t1FireArmed) {
-                ifr |= IFR_T1;
-                fired = true;
-                if (!t1Continuous()) {
-                    // One-shot: don't fire again until SW reloads T1CH.
-                    // Counter keeps free-running below.
-                    t1FireArmed = false;
-                }
-            }
-            // Continuous mode: reload from latch. One-shot mode: keep
-            // counting down through 0xFFFF to give SW visibility into
-            // the post-fire counter (matches real 6522 behaviour).
-            if (t1Continuous()) {
-                t1Counter += static_cast<int32_t>(t1Latch) + 3;
-                // +3 matches MAME `6522via.cpp:534,104` reload constant
-                // `TIMER1_VALUE + IFR_DELAY` where `IFR_DELAY = 3`. The
-                // 3 cycles account for the latch-to-counter copy plus
-                // the PB7 pulse pair (the +2 previously used here was
-                // off by one — within 0.5 % on typical music T1 periods
-                // but deviates from MAME timing on cycle-counting tests).
-            } else {
-                t1Counter += 0x10000;       // wrap 16-bit
-            }
-        }
-
-        // T2 advance — one-shot phase-2 mode only (ACR.bit5 == 0). PB6
-        // pulse-counting (ACR.bit5 == 1) is acknowledged but never
-        // ticks: no Mockingboard driver wires PB6 externally, so the
-        // counter would simply hold while POM2 still services the
-        // armed/disarmed semantics correctly via T2CH writes.
-        if ((acr & 0x20) == 0) {
-            t2Counter -= cycles;
-            // Underflow fires AT MOST ONCE per arming — real chip: "an
-            // underflow causes only one interrupt between T2CH writes"
-            // (MAME `6522via.cpp:107-112`). After firing, the counter
-            // keeps free-running through 0xFFFF for SW visibility.
-            while (t2Counter < 0) {
-                if (t2Active) {
-                    ifr |= IFR_T2;
-                    fired = true;
-                    t2Active = false;
-                }
-                t2Counter += 0x10000;
-            }
-        }
-        return fired;
-    }
-};
-
-// ─── AY-3-8910 ────────────────────────────────────────────────────────────
-//
-// Register-bank holder. The synthesis state (counters, LFSR, envelope
-// step) lives on the audio thread inside AudioSrc — not here. This
-// class is touched by both threads, so all access goes through the
-// parent card's `mtx`.
-struct MockingboardCard::Ay3_8910
-{
-    uint8_t regs[kAyNumRegs] = {0};
-    uint8_t latchedAddr = 0;
-
-    // PB control state, captured the last time the VIA toggled the
-    // command bus. Stored so `applyControl` can detect transitions.
-    uint8_t prevCommand = 0;     // {BC1, BDIR} as a 2-bit command
-
-    void reset()
-    {
-        // MAME `ay8910.cpp ay8910_reset_ym` clears regs 0..AY_PORTA-1
-        // (= 0..13) and leaves R14/R15 (I/O ports A/B) untouched. The
-        // Mockingboard wires R14/R15 unused so this is academic on
-        // music drivers, but a peek via getAyRegister(chip, 14|15)
-        // would diverge from MAME if we wiped all 16.
-        std::memset(regs, 0, 14);
-        latchedAddr = 0;
-        prevCommand = 0;
-    }
-
-    /// React to a VIA Port B change (or, on Latch/Write, also a Port A
-    /// change). `pa` is the AY data bus (VIA Port A output bits driven
-    /// by DDRA), `pb` is the VIA Port B output (after DDRB masking).
-    /// Returns true if a register was written (so the audio thread
-    /// might want to recompute envelope shape, etc.).
-    // !RESET (PB0) is active-low: while held low the AY stays in reset
-    // and every register reads zero. We mirror that behaviour here, but
-    // report it as a distinct `ResetOnly` event so the diagnostic panel
-    // can separate "the music driver is clearing the chip" from "the
-    // music driver successfully delivered a register-store strobe".
-    enum ApplyResult { NoChange, ResetOnly, Wrote };
-    ApplyResult applyControl(uint8_t pa, uint8_t pb)
-    {
-        if ((pb & kPbBitReset) == 0) {
-            reset();
-            return ApplyResult::ResetOnly;
-        }
-        const uint8_t cmd = static_cast<uint8_t>(
-            ((pb & kPbBitBdir) ? 0x02 : 0) |
-            ((pb & kPbBitBc1)  ? 0x01 : 0));
-        // MAME `mockingboard.cpp:391-410 via_psg_ctrl` fires on every
-        // PB write — no edge debounce. A music driver that holds BDIR
-        // through multiple PA changes legitimately re-strobes the same
-        // AY register with each new data byte; the previous edge-only
-        // path silently dropped those re-strobes. Diagnostic counters
-        // (latchCount/writeStrobeCount/etc.) only tick on real
-        // {BDIR,BC1} edges so a held strobe still reports as one.
-        ApplyResult result = ApplyResult::NoChange;
-        const bool edge = (cmd != prevCommand);
-        switch (cmd) {
-        case 0b11:    // LATCH ADDR
-            if (edge) ++latchCount;
-            latchedAddr = static_cast<uint8_t>(pa & 0x0F);
-            break;
-        case 0b10:    // WRITE
-            if (edge) ++writeStrobeCount;
-            regs[latchedAddr & 0x0F] = pa;
-            result = ApplyResult::Wrote;
-            break;
-        case 0b01:    // READ — Mockingboard drivers don't read.
-            if (edge) ++readStrobeCount;
-            break;
-        case 0b00:
-        default:
-            if (edge) ++inactiveCount;
-            break;    // INACTIVE
-        }
-        prevCommand = cmd;
-        return result;
-    }
-
-    // Per-command counters surfaced via MockingboardCard::getAyCommandCount.
-    // Tells us exactly which strobes the music driver is emitting — if
-    // `writeStrobeCount` stays 0 while `latchCount` is non-zero we know
-    // the driver issues addresses but never the data write that follows.
-    uint32_t latchCount       = 0;
-    uint32_t writeStrobeCount = 0;
-    uint32_t readStrobeCount  = 0;
-    uint32_t inactiveCount    = 0;
-};
-
-#endif  // 0 — old Via6522 / Ay3_8910 dead code, extracted to shared headers
 
 // ─── AudioSrc ─────────────────────────────────────────────────────────────
 //
@@ -767,13 +406,16 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
 
 // ─── MockingboardCard ─────────────────────────────────────────────────────
 
-MockingboardCard::MockingboardCard(int slotNum)
-    : slot_(slotNum)
+MockingboardCard::MockingboardCard(int slotNum, Variant variant)
+    : slot_(slotNum), variant_(variant)
 {
     via_[0] = std::make_unique<Via6522>();
     via_[1] = std::make_unique<Via6522>();
     ay_[0]  = std::make_unique<Ay3_8910>();
     ay_[1]  = std::make_unique<Ay3_8910>();
+    if (variant_ == Variant::SoundII) {
+        ssi_ = std::make_unique<pom2::Ssi263>();
+    }
     audio_  = std::make_unique<AudioSrc>(this);
     onReset();
 }
@@ -793,6 +435,7 @@ void MockingboardCard::onReset()
     via_[1]->reset();
     ay_[0]->reset();
     ay_[1]->reset();
+    if (ssi_) ssi_->reset();
     assertIrq(false);
     // Re-anchor the lazy-sync clock to "now" so a freshly reset card
     // doesn't run a giant catch-up on its first MMIO access.
@@ -831,6 +474,23 @@ void MockingboardCard::setMuted(bool m)
 bool MockingboardCard::isMuted() const
 {
     return audio_->muted.load(std::memory_order_relaxed);
+}
+
+bool MockingboardCard::snapshotSsi263(Ssi263Snap* out) const
+{
+    if (!ssi_ || !out) return false;
+    std::lock_guard<std::mutex> lk(mtx);
+    for (int r = 0; r <= pom2::Ssi263::REG_FILFREQ; ++r) {
+        out->regs[r] = ssi_->peekRegister(static_cast<uint8_t>(r));
+    }
+    out->currentPhoneme         = ssi_->currentPhoneme();
+    out->mode                   = static_cast<uint8_t>(ssi_->currentMode());
+    out->aRequest               = ssi_->aRequest();
+    out->powerDown              = ssi_->powerDown();
+    out->irqEnabled             = ssi_->irqEnabled();
+    out->phonemeRemainingCycles = ssi_->phonemeRemainingCycles();
+    out->phonemeWriteCount      = ssi_->phonemeWriteCount();
+    return true;
 }
 
 // Lazy timer catch-up. The Mockingboard's 6522 VIA T1/T2 counters tick
@@ -872,11 +532,17 @@ void MockingboardCard::syncToCpuCycleAt(uint64_t now)
 
 uint8_t MockingboardCard::slotRomRead(uint8_t low8)
 {
-    // Address decode: bit 7 selects which VIA, bits 0..3 select the
-    // register inside the VIA. Bits 4..6 are mirrors (real hardware
-    // partial-decodes the same way — the chip has only A0..A3 wired).
+    // Address decode:
+    //   Variant::AC      — bit 7 selects VIA, bits 0..3 select register,
+    //                      bits 4..6 are partial-decode mirrors.
+    //   Variant::SoundII — same, EXCEPT $40-$4F is the SSI263 (5 regs +
+    //                      mirrors) overriding what would otherwise be
+    //                      a VIA1 mirror at those addresses.
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // make T1/T2/IFR cycle-accurate at "now"
+    if (ssi_ && (low8 & 0xF8) == 0x40) {
+        return ssi_->read(low8 & 0x07);
+    }
     const int chip = (low8 & 0x80) ? 1 : 0;
     const uint8_t out = via_[chip]->read(low8 & 0x0F);
     updateIrq();          // T1CL clears IFR.T1, may drop IRQ
@@ -887,6 +553,15 @@ void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
 {
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // T1 counters reflect "now" before T1CH reload
+    if (ssi_ && (low8 & 0xF8) == 0x40) {
+        // SSI263 register write. The chip's own write() acks A/!R
+        // internally for $00..$02 — the host CPU clears the VIA's
+        // IFR.CA1 separately (typical Mockingboard Sound II driver
+        // writes the CA1 bit to IFR after each phoneme).
+        ssi_->write(low8 & 0x07, v);
+        updateIrq();
+        return;
+    }
     const int chip = (low8 & 0x80) ? 1 : 0;
     ++viaWriteCount_[chip];
     const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
@@ -933,6 +608,13 @@ void MockingboardCard::advanceCycles(int cycles)
 {
     if (cycles <= 0) return;
     std::lock_guard<std::mutex> lk(mtx);
+    // Tick the SSI263 (Sound II only) and surface A/!R end-of-phoneme
+    // to VIA1.CA1 — real card wires SSI263.A/!R inverted into CA1, so
+    // a 0→1 of A/!R = negative edge on CA1, matching PCR.0 == 0 (the
+    // default config used by stock Sound II drivers).
+    if (ssi_ && ssi_->advance(cycles)) {
+        via_[0]->setCa1NegativeEdge();
+    }
     if (cpu_) {
         // Lazy-sync path: any cycles already accounted for via MMIO accesses
         // during this slice were advanced by syncToCpuCycle() already; catch

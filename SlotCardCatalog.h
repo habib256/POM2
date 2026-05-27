@@ -46,6 +46,12 @@ inline constexpr CardType kCardTypes[] = {
     // ROM). Different code path from "mouse" (no MC68705 emulation).
     { "mouseaw",      "Mouse (AppleWin HLE)" },
     { "mockingboard", "Mockingboard A/C"  },
+    // Mockingboard "C" Sound II — A/C base + SSI263A speech synth at
+    // $C(s)40-$C(s)44. Drives speech in Ultima IV/V, Wasteland, Bard's
+    // Tale, Crime Wave, Hudson Hawk, etc. (any title that targets the
+    // Sound II variant). A/!R wired to VIA1.CA1 → IRQ-driven phoneme
+    // dequeue. Phoneme PCM ported from AppleWin (GPL3 compat).
+    { "mockingboard_c", "Mockingboard C (Sound II)" },
     // Phasor (Applied Engineering) — dual-mode successor to Mockingboard.
     // Starts in MB-compat mode (2 active AYs), software-switchable to
     // native (4 AYs, 12 voices, doubled chip clock). Audio synth = TODO.

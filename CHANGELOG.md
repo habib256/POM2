@@ -8,6 +8,29 @@ courante → `DEV.md`.
 
 ## 2026-05-27
 
+- **Mockingboard Sound II — SSI263 intégré à MB**. Nouveau
+  `Variant::SoundII` du `MockingboardCard` : la carte vanilla A/C
+  (2× VIA + 2× AY) reçoit en plus un SSI263 à `$Cs40-$Cs44`. Le
+  slot ROM decode est ajusté pour carve $40-$4F hors de la mirror
+  VIA1 (matche le hardware réel — l'address-decoder du Sound II
+  est plus strict que celui de l'A/C). A/!R du SSI263 (inversé sur
+  hardware réel) drive VIA1.CA1 ; nouvelle méthode
+  `pom2::Via6522::setCa1NegativeEdge()` set `IFR.CA1` quand
+  `PCR.0 == 0` (config par défaut des stock Sound II drivers,
+  AppleWin-parity). Une fois `IER.CA1` enabled par le driver, le
+  slot IRQ s'asserte → handler dequeue le phonème suivant.
+  Catalog clé `mockingboard_c` (label "Mockingboard C (Sound II)")
+  ajoutée, dispatch dans MainWindow accepte les deux variants
+  via paramètre `Variant`. Panel UI Mockingboard étend une section
+  SSI263 en bas du window quand `hasSsi263()`. Pin
+  `mockingboard_smoke::testSoundIIVariantSSI263` : variant AC
+  n'expose pas de SSI263, variant SoundII oui ; writes à $40-$44
+  atteignent le chip ; advance past duration → `IFR.CA1` latche ;
+  IER.CA1 + 2e phonème → slot IRQ. 5 tests Mockingboard tous verts
+  (zero régression sur A/C). **Cleanup `#if 0` Via6522/Ay3_8910**
+  appliqué en même temps : Mockingboard.cpp 1014 → 653 lignes
+  (−361 = exactement le bloc dead-code de l'extraction Phasor).
+
 - **SSI263 audio — phoneme PCM blob (62 phonèmes, ~313 KB)**. Livraison
   B du SSI263, branchée sur la chip emulation livrée précédemment
   dans le même jour. Import verbatim de `SSI263Phonemes.h` d'AppleWin

@@ -50,6 +50,7 @@ struct Via6522
     };
 
     // IFR / IER bit positions.
+    static constexpr uint8_t IFR_CA1 = 0x02;
     static constexpr uint8_t IFR_T2  = 0x20;
     static constexpr uint8_t IFR_T1  = 0x40;
     static constexpr uint8_t IFR_ANY = 0x80;   // computed on read
@@ -237,6 +238,25 @@ struct Via6522
         default: break;
         }
         return events;
+    }
+
+    /// Strobe an external CA1 input edge — used by Mockingboard "Sound II"
+    /// when the on-board SSI263's A/!R signal toggles. PCR bit 0 selects
+    /// the active edge: 0 = negative-going, 1 = positive-going. We model
+    /// the canonical Mockingboard wiring (SSI263 A/!R inverted into CA1
+    /// → 0→1 of A/!R = negative edge on CA1), so `setCa1NegativeEdge()`
+    /// sets IFR.CA1 only when PCR.0 == 0. If the host CPU has IER.CA1
+    /// (= IFR_CA1 bit) enabled, `irqOut()` will then go high.
+    /// AppleWin parity: `if ((GetPCR(m_device) & 1) == 0) UpdateIFR(0, IxR_SSI263)`.
+    inline void setCa1NegativeEdge()
+    {
+        if ((pcr & 0x01) == 0) ifr |= IFR_CA1;
+    }
+
+    /// Symmetric helper for cards that need the opposite polarity.
+    inline void setCa1PositiveEdge()
+    {
+        if ((pcr & 0x01) != 0) ifr |= IFR_CA1;
     }
 
     // Advance T1 (and T2 in one-shot phase-2 mode) by `cycles` 1.0227 MHz

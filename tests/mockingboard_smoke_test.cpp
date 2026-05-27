@@ -334,6 +334,78 @@ void testAyToneFrequency()
     assert(measured > expected * 0.94 && measured < expected * 1.06);
 }
 
+// Sound II variant — SSI263 at $Cn40..$Cn4F, A/!R wired to VIA1.CA1.
+//
+// Pins:
+//   (1) AC variant has no SSI263 (snapshotSsi263 → false).
+//   (2) SoundII variant has SSI263 + snapshotSsi263 succeeds.
+//   (3) Writes to $40..$44 reach the SSI263 (verify via the snapshot
+//       after a phoneme write).
+//   (4) Writes to $50+ still hit VIA1 (mirror-decode unchanged for
+//       the rest of the slot ROM page).
+//   (5) After a phoneme runs to completion via advanceCycles, VIA1's
+//       IFR.CA1 latches (PCR.0 = 0 default = negative-edge active,
+//       matching the SSI263 A/!R-inverted-into-CA1 wiring).
+//   (6) Slot IRQ asserts once the host enables IER.CA1.
+void testSoundIIVariantSSI263()
+{
+    // AC variant: no SSI263.
+    {
+        MockingboardCard ac(4);
+        assert(ac.getVariant() == MockingboardCard::Variant::AC);
+        assert(!ac.hasSsi263());
+        MockingboardCard::Ssi263Snap snap;
+        assert(!ac.snapshotSsi263(&snap));
+    }
+
+    // Sound II variant: SSI263 present at $40..$44.
+    MockingboardCard mb(4, MockingboardCard::Variant::SoundII);
+    assert(mb.getVariant() == MockingboardCard::Variant::SoundII);
+    assert(mb.hasSsi263());
+
+    // SSI263 register decode: write $03 (CTTRAMP) with CTL=0, amp=15,
+    // then $00 (DURPHON) to start a phoneme. The snapshot must reflect.
+    mb.slotRomWrite(0x43, 0x0F);          // CTTRAMP: CTL=0, amp=15
+    mb.slotRomWrite(0x42, 0xF0);          // RATEINF: rate=15 (fast)
+    mb.slotRomWrite(0x40, 0xC1);          // DURPHON: mode=11, phon=1
+    MockingboardCard::Ssi263Snap snap;
+    assert(mb.snapshotSsi263(&snap));
+    assert(snap.regs[0] == 0xC1);
+    assert(snap.regs[2] == 0xF0);
+    assert(snap.regs[3] == 0x0F);
+    assert(snap.currentPhoneme == 1);
+    assert(!snap.powerDown);
+    assert(snap.phonemeRemainingCycles > 0);
+    assert(snap.phonemeWriteCount == 1);
+
+    // $50+ still hits VIA1 mirrors (low4 = 0 → ORB). Write to $50,
+    // read back via VIA1 IFR-side-effect-free peek of ORB.
+    mb.slotRomWrite(0x52, 0xFF);          // VIA1 DDRB = $FF
+    mb.slotRomWrite(0x50, 0xA5);          // VIA1 ORB = $A5 (via mirror)
+    // ORB readback observes the latched output.
+    assert(mb.peekViaRegister(0, 0x00) == 0xA5);
+
+    // After advanceCycles past the phoneme duration, A/!R fires and
+    // VIA1.IFR.CA1 latches (PCR.0 = 0 at reset = negative-edge active).
+    // IER.CA1 stays disabled so slot IRQ is still released.
+    mb.advanceCycles(snap.phonemeRemainingCycles + 100);
+    const uint8_t ifr1 = mb.peekViaRegister(0, 0x0D);     // VIA1 IFR
+    assert((ifr1 & 0x02) != 0);                            // IFR.CA1 set
+    assert(!mb.isIrqAsserted());
+
+    // Enable IER.CA1 (write $82 = "set" bit 7 + CA1 bit 1). Drive
+    // another phoneme so a fresh A/!R edge fires and the slot IRQ
+    // line goes high.
+    mb.slotRomWrite(0x0D, 0xFF);                           // clear all IFR bits
+    mb.slotRomWrite(0x0E, 0x82);                           // IER set CA1
+    mb.slotRomWrite(0x40, 0xC2);                           // restart phoneme
+    mb.snapshotSsi263(&snap);
+    mb.advanceCycles(snap.phonemeRemainingCycles + 100);
+    assert(mb.isIrqAsserted());
+
+    std::printf("Sound II variant ...... OK\n");
+}
+
 int main()
 {
     testAddressDecode();        std::printf("address decode ........ OK\n");
@@ -345,6 +417,7 @@ int main()
     testEnvelopeRetriggerOnSameShape();
                                 std::printf("envelope retrigger .... OK\n");
     testReset();                std::printf("reset ................. OK\n");
+    testSoundIIVariantSSI263();
     std::printf("Mockingboard smoke test passed.\n");
     return 0;
 }

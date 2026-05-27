@@ -2356,6 +2356,8 @@ set_tests_properties(cli_kiosk PROPERTIES TIMEOUT 5)
 add_executable(test_mockingboard
     mockingboard_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
@@ -2399,6 +2401,8 @@ set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_mockingboard_sync
     mockingboard_sync_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
@@ -2440,6 +2444,8 @@ set_tests_properties(mockingboard_sync_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_mockingboard_4am_detect
     mockingboard_4am_detect_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
@@ -2482,6 +2488,8 @@ set_tests_properties(mockingboard_4am_detect_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_mockingboard_irq_delivery
     mockingboard_irq_delivery_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp
@@ -2524,6 +2532,8 @@ set_tests_properties(mockingboard_irq_delivery_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_mockingboard_iie_irq
     mockingboard_iie_irq_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/M6502.cpp
     ${CMAKE_SOURCE_DIR}/Memory.cpp
     ${CMAKE_SOURCE_DIR}/MemoryProfile_IIcClass.cpp

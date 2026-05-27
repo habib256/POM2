@@ -38,17 +38,6 @@ Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
 
 ## 🟡 Medium
 
-- [ ] **[Refactor] Cleanup `#if 0` Via6522/Ay3_8910 dans
-  `Mockingboard.cpp`** (l. 92-452). Bloc de code déplacé vers
-  `Via6522.h` + `Ay3_8910.h` ; le `#if 0` est dead-code en attente
-  de revue avant suppression. Une fois validé, supprimer ~360
-  lignes.
-- [ ] **[SSI263] MockingboardCard variant "Sound II"**. Ajouter un
-  SSI263 optionnel à $C(s)40-$C(s)44 (et potentiellement $C(s)60
-  pour la version dual-chip). Nécessite d'étendre `Via6522.h` pour
-  modéliser CA1 edge → IFR.CA1 (le SSI263 A/!R drive CA1 sur
-  MB-C). Plus invasif que Echo+ standalone, défèré au prochain
-  commit. **Effort : ~1 j.**
 
 
 
