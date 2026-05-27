@@ -7,6 +7,8 @@ MOS 6502 / 65C02, 48 KB – 8 MB RAM, text / lo-res / hi-res / DHGR
 video, speaker / cassette / Mockingboard / Phasor / SSI263 speech /
 floppy mechanical sound, joystick, mouse, and an 8-slot peripheral bus.
 
+▶️ **Try it in your browser**: <https://habib256.github.io/POM2/wasm/>
+
 ## Quick start
 
 ```bash
@@ -18,8 +20,8 @@ cd build && cmake .. && make -j
 `setup_imgui.sh` covers macOS (Homebrew), Debian/Ubuntu (apt),
 Fedora (dnf), Arch (pacman). Windows: install GLFW via vcpkg and
 run CMake by hand. Drop ROMs into `roms/`, 5.25" images into
-`disks/`, 3.5" into `disks35/`, hard-disk images into `hdv/`, and
-Floppy Emu (BMOW) images into `floppyemu/`.
+`disks_5.4/`, 3.5" into `disks_3.5/`, hard-disk images into `hdv/`,
+and Floppy Emu (BMOW) images into `floppyemu/`.
 
 ## Releases
 
