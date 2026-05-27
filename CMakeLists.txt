@@ -270,20 +270,20 @@ if(EMSCRIPTEN)
     # inside POM2.data when it exists.
     #
     # Default extras: fonts (~1 MB) + floppyemu/ (curated BMOW SD images).
-    # The bulk user-disk folders (`disks_5.4/`, `disks_3.5/`, `hdv/`) are
-    # opt-in because they can be hundreds of MB and there's no point
-    # shipping someone else's `.dsk` collection. Build with
-    # `-DPOM2_WASM_BUNDLE_DISKS=ON` to fold them in.
+    # `disks_5.4/` (hundreds of MB of 5.25" library) and `hdv/` (hundreds of
+    # MB of ProDOS hard-disk images) are NEVER bundled under WASM — they'd
+    # blow past GitHub Pages' per-file limits and choke browser preload.
+    # The small 3.5" library is opt-in via `-DPOM2_WASM_BUNDLE_DISKS=ON`.
     #
     # --preload-file: pass src+dst as ONE token via SHELL: so CMake
     # doesn't try to interpret the bare `@` as a response-file marker.
     set(POM2_WASM_BUNDLE "fonts;floppyemu" CACHE STRING
         "Extra asset folders to preload into POM2.data (semicolon-separated). roms/ is always included.")
     option(POM2_WASM_BUNDLE_DISKS
-        "Include disks_5.4/disks_3.5/hdv in the WASM bundle" OFF)
+        "Include disks_3.5 in the WASM bundle (disks_5.4 + hdv are excluded — too large)" OFF)
     set(POM2_WASM_PRELOAD roms ${POM2_WASM_BUNDLE})
     if(POM2_WASM_BUNDLE_DISKS)
-        list(APPEND POM2_WASM_PRELOAD disks_5.4 disks_3.5 hdv)
+        list(APPEND POM2_WASM_PRELOAD disks_3.5)
     endif()
     foreach(_pom2_asset ${POM2_WASM_PRELOAD})
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}")
