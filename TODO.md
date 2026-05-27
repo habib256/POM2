@@ -44,12 +44,11 @@ Ordre conseillé d'attaque — items à fort ratio impact/effort.
 
 | # | Item                                    | Effort  | Pourquoi                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | UI Force DOS / Force ProDOS             | ~30 min | backend prêt, bouton manquant           |
-| 2 | WASM IDBFS settings persistence         | 2-4 h   | utilisateur web n'a pas de state        |
-| 3 | Shader CRT post-process                 | 1-2 j   | polish visuel récurrent (V2/OE/μM8)     |
-| 4 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
-| 5 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
-| 6 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
+| 1 | WASM IDBFS settings persistence         | 2-4 h   | utilisateur web n'a pas de state        |
+| 2 | Shader CRT post-process                 | 1-2 j   | polish visuel récurrent (V2/OE/μM8)     |
+| 3 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
+| 4 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
+| 5 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
 
 ## Backlog
 
@@ -107,12 +106,14 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 - 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::setWriteSplice`
   est un stub (`DiskImage.cpp:381-398`) ; IWM call site câblé
   (`iwm.cpp:218-221`). Parité Applesauce re-master. *1 j.*
-- 🟡 **UI « Force DOS / Force ProDOS »** — backend prêt
-  (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
-  bouton manquant dans `DiskLibrary_ImGui` / `DiskController_ImGui`.
-  *~30 min.* ⭐ quick win
 - 🟡 **SmartPort ProDOS multi-partition** — 1 image = 1 unit = 1
   volume aujourd'hui ; multi-volume CFFA3000-style non supporté.
+- 🟢 **UI « Force DOS / Force ProDOS »** — backend prêt
+  (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
+  bouton manquant dans `DiskLibrary_ImGui` / `DiskController_ImGui`.
+  Auto-détect (extension + content sniff vol-dir `0x400`/`0xB00`)
+  couvre déjà 99 % des cas ; override manuel utile pour images
+  ambiguës / non-standard / debug. *~30 min.*
 - 🟢 **Half-tracked NIB (88)** + **Applesauce `.nib2`/`.app`** +
   **Disk II dans snapshot** — délibérément hors scope tant que
   WOZ couvre.
