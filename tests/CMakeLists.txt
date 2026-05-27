@@ -2287,12 +2287,12 @@ set_tests_properties(phasor_card_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── SSI263 chip-model smoke test ────────────────────────────────────────
-# Pins the register state machine + IRQ timing of the standalone
-# Ssi263 chip (independent of any host card). Audio render is silent
-# in v1 (no phoneme PCM data) so this test covers MMIO + IRQ only.
+# Pins the register state machine + IRQ timing + audio render of the
+# Ssi263 chip standalone (independent of any host card).
 add_executable(test_ssi263
     ssi263_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
 )
 target_include_directories(test_ssi263 PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME ssi263_smoke COMMAND test_ssi263)
@@ -2307,6 +2307,7 @@ add_executable(test_echoplus_card
     echoplus_card_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/EchoPlusCard.cpp
     ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263PhonemeData.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_echoplus_card PRIVATE ${CMAKE_SOURCE_DIR})

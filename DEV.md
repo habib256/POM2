@@ -370,16 +370,19 @@ in any slot via Slot Configuration. Pairs naturally with a
 Mockingboard A/C at slot 4 + Echo+ at slot 2 (the standard "MB for
 music, Echo+ for speech" combo).
 
-**Audio v1 = silent**. Chip register state machine + IRQ timing
-complete and pinned by `ssi263_smoke` (6 sub-tests) + `echoplus_card_smoke`
-(3 sub-tests). The 62-phoneme PCM blob (~313 KB) is a follow-up
-commit pending the AppleWin LGPL-vs-POM2 license decision (POM2 has
-no LICENSE file currently). Games detect the card and exercise their
-speech drivers correctly — they just don't speak yet.
+**Audio**: live. `Ssi263::fillAudio` pulls samples from the 62-phoneme
+PCM blob in `Ssi263PhonemeData.cpp` (~313 KB, ported verbatim from
+AppleWin `source/SSI263Phonemes.h` — LGPL → GPL3 compat), resamples
+from the chip's native 22050 Hz to the host audio rate via a simple
+linear cursor, scales by the AMP register (R3[3:0]). Power-down
+(CTL=1) and the `FILTER_FREQ_SILENCE` sentinel ($FF in R4) squelch
+output. The audio thread reads the chip's register banks + playback
+cursor under the host card's mutex. Pinned by `ssi263_smoke` test 6
+(RMS > 0.005 on a real phoneme; 0.0 in both squelch paths).
 
 **UI**: Devices → Echo+ panel. Mode + IRQ enable + A/!R + power-down
 state + current phoneme + duration countdown (cycles + ms) + the 5
-register banks. Footer explains the v1 silent state.
+register banks.
 
 ### Phasor (Applied Engineering)
 

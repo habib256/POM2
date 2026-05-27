@@ -7,8 +7,10 @@
 #include "Ssi263.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -184,6 +186,59 @@ void testIrqDisabledMode()
     std::printf("  ok: MODE_IRQ_DISABLED suppresses A/!R edge\n");
 }
 
+// Audio render — with the AppleWin-ported phoneme PCM blob now linked
+// in (Ssi263PhonemeData.cpp), fillAudio() must emit non-silent samples
+// when the chip is configured to play a phoneme.
+void testAudioRenderNonSilent()
+{
+    Ssi263 chip;
+    chip.reset();
+    chip.write(Ssi263::REG_CTTRAMP, 0x0F);     // exit power-down, amp=15
+    // Slow phoneme so playback runs throughout the buffer.
+    chip.write(Ssi263::REG_RATEINF, 0x00);     // rate=0
+    chip.write(Ssi263::REG_DURPHON, 0x80 | 0x05);    // mode=10, phon $05
+
+    constexpr int N = 4096;
+    constexpr uint32_t SR = 44100;
+    std::vector<float> buf(N, 0.0f);
+    chip.fillAudio(buf.data(), N, SR);
+
+    double sumSq = 0.0;
+    float vmin = +1e9f, vmax = -1e9f;
+    for (float s : buf) {
+        sumSq += static_cast<double>(s) * s;
+        if (s < vmin) vmin = s;
+        if (s > vmax) vmax = s;
+    }
+    const double rms = std::sqrt(sumSq / N);
+    std::printf("  phoneme $05 audio rms=%.4f vmin=%.4f vmax=%.4f\n",
+                rms, vmin, vmax);
+    // Expect non-trivial energy — a real speech phoneme has RMS in the
+    // 0.05-0.3 range at amp=15 depending on its envelope. Set the floor
+    // low enough to survive any phoneme.
+    assert(rms > 0.005);
+
+    // Power-down silences.
+    chip.write(Ssi263::REG_CTTRAMP, 0x80);
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    chip.fillAudio(buf.data(), N, SR);
+    double sumSq2 = 0.0;
+    for (float s : buf) sumSq2 += static_cast<double>(s) * s;
+    assert(sumSq2 == 0.0);
+
+    // FILTER_FREQ_SILENCE sentinel silences too.
+    chip.write(Ssi263::REG_CTTRAMP, 0x0F);                // unblock
+    chip.write(Ssi263::REG_FILFREQ, Ssi263::FILTER_FREQ_SILENCE);
+    chip.write(Ssi263::REG_DURPHON, 0x80 | 0x05);         // new phoneme
+    std::fill(buf.begin(), buf.end(), 0.0f);
+    chip.fillAudio(buf.data(), N, SR);
+    double sumSq3 = 0.0;
+    for (float s : buf) sumSq3 += static_cast<double>(s) * s;
+    assert(sumSq3 == 0.0);
+
+    std::printf("  ok: phoneme audio non-silent; power-down + $FF filter silence\n");
+}
+
 void testDurationFormulaBounds()
 {
     Ssi263 chip;
@@ -221,6 +276,7 @@ int main()
     testAckClearsRequest();
     testCtlPowerDownAndRestart();
     testIrqDisabledMode();
+    testAudioRenderNonSilent();
     testDurationFormulaBounds();
     std::printf("PASS\n");
     return 0;

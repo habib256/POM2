@@ -61,6 +61,7 @@
 
 #include "CpuClock.h"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace pom2 {
@@ -152,12 +153,18 @@ public:
     /// is actively pushing data".
     uint32_t phonemeWriteCount() const { return phonemeWriteCount_; }
 
-    // ─── Audio render (silent placeholder) ───────────────────────────────
+    // ─── Audio render ─────────────────────────────────────────────────────
     /// Sum the chip's current audio output into `output` (does NOT
-    /// overwrite). v1 ships without phoneme PCM data so this is a no-op
-    /// — the audio path is exercised by host cards (mix divisor, mute
-    /// state) but the contribution is silent.
-    void fillAudio(float* /*output*/, int /*frameCount*/, uint32_t /*sampleRate*/) const {}
+    /// overwrite). Pulls samples from the 62-phoneme PCM blob in
+    /// `Ssi263PhonemeData.cpp` (ported from AppleWin), resampling
+    /// from the chip's native 22050 Hz to `sampleRate` and scaling
+    /// by the current amplitude register (R3 bits 3:0).
+    ///
+    /// State (the audio thread's playback cursor) lives in mutable
+    /// members so the call signature stays simple; the host card's
+    /// mutex serialises both audio-thread reads and CPU-thread
+    /// register writes.
+    void fillAudio(float* output, int frameCount, uint32_t sampleRate);
 
 private:
     // Latched register values (last write).
@@ -176,6 +183,17 @@ private:
     bool aRequest_ = false;
 
     uint32_t phonemeWriteCount_ = 0;
+
+    // ── Audio playback state (touched by audio thread under host mutex)
+    // Current phoneme being rendered + position into its PCM segment.
+    // `playbackPhoneme_` is sticky — it follows the most recently
+    // WRITTEN phoneme; when the chip is requesting next (aRequest=true)
+    // we keep playing the same phoneme in a loop (datasheet behaviour
+    // for the "auto-rate, no inflection" modes).
+    int    playbackPhoneme_ = 0;
+    size_t playbackOffset_  = 0;
+    // Resampler accumulator (host-rate fraction of a source-rate sample).
+    float  resampleAccum_   = 0.0f;
 
     /// Compute the phoneme duration in CPU cycles based on the current
     /// `durPhon_` (mode + phoneme) and `rateInf_` (rate). AppleWin's

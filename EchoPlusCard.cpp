@@ -8,6 +8,7 @@
 #include "M6502.h"
 
 #include <algorithm>
+#include <vector>
 
 // ─── AudioSrc — silent placeholder until phoneme PCM data is imported ──
 
@@ -30,10 +31,21 @@ struct EchoPlusCard::AudioSrc : public AudioSource, public RateAware
     void fillAudioBuffer(float* output, int frameCount) override
     {
         if (frameCount <= 0) return;
-        // Silent v1 — see EchoPlusCard.h notes. When the phoneme PCM
-        // blob is imported, this becomes:
-        //   { lock parent->mtx_; ssi_.fillAudio(output, ...); }
         std::fill_n(output, frameCount, 0.0f);
+        if (muted.load(std::memory_order_relaxed)) return;
+        const float vol = volume.load(std::memory_order_relaxed);
+        const uint32_t sr = sampleRate.load(std::memory_order_relaxed);
+        // Render under the parent mutex so the chip's playback cursor
+        // is consistent with CPU-thread register writes. Render into a
+        // temp buffer + scale by master volume so the chip's own
+        // amplitude register stays in `Ssi263::fillAudio` (single
+        // source of truth for chip-side scaling).
+        std::vector<float> tmp(static_cast<size_t>(frameCount), 0.0f);
+        {
+            std::lock_guard<std::mutex> lk(parent->mtx_);
+            parent->ssi_.fillAudio(tmp.data(), frameCount, sr);
+        }
+        for (int i = 0; i < frameCount; ++i) output[i] = tmp[i] * vol;
     }
 };
 
