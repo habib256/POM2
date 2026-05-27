@@ -50,6 +50,11 @@ inline constexpr CardType kCardTypes[] = {
     // Starts in MB-compat mode (2 active AYs), software-switchable to
     // native (4 AYs, 12 voices, doubled chip clock). Audio synth = TODO.
     { "phasor",       "Phasor (AE)"       },
+    // Echo+ (Street Electronics) — standalone SSI263 speech synth at
+    // $Cs00-$Cs04. Pairs naturally with a Mockingboard A/C at another
+    // slot. v1: register state machine + IRQ timing complete, phoneme
+    // PCM data deferred to a separate commit (LGPL question).
+    { "echoplus",     "Echo+ (SSI263)"    },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

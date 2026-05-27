@@ -2286,6 +2286,46 @@ add_test(NAME phasor_card_smoke COMMAND test_phasor_card)
 set_tests_properties(phasor_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── SSI263 chip-model smoke test ────────────────────────────────────────
+# Pins the register state machine + IRQ timing of the standalone
+# Ssi263 chip (independent of any host card). Audio render is silent
+# in v1 (no phoneme PCM data) so this test covers MMIO + IRQ only.
+add_executable(test_ssi263
+    ssi263_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+)
+target_include_directories(test_ssi263 PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME ssi263_smoke COMMAND test_ssi263)
+set_tests_properties(ssi263_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Echo+ card smoke test ───────────────────────────────────────────────
+# Pins the SlotPeripheral glue around the Ssi263 chip: register decode
+# at $Cs00-$Cs04 (rest = open bus), IRQ assert on phoneme completion,
+# IRQ release on host ack via $00..$02 write.
+add_executable(test_echoplus_card
+    echoplus_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/EchoPlusCard.cpp
+    ${CMAKE_SOURCE_DIR}/Ssi263.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_echoplus_card PRIVATE ${CMAKE_SOURCE_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_echoplus_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_echoplus_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_echoplus_card PRIVATE winmm)
+endif()
+
+add_test(NAME echoplus_card_smoke COMMAND test_echoplus_card)
+set_tests_properties(echoplus_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── CLI kiosk / positional-disk smoke test ──────────────────────────────
 # Pins parseCli's positional disk + --kiosk handling and the
 # classifyDiskForSlot extension/size → slot routing the insert+boot path
