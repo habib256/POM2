@@ -1672,6 +1672,13 @@ uint8_t Memory::memRead(uint16_t addr)
         // Shadow mode (or no IWM/media): IWM state advanced, but the
         // byte returned to the CPU comes from the slot-6 DiskIICard LSS.
     }
+    // Eve-class Le Chat Mauve registers live in slot-3 device-select
+    // space ($C0B8-$C0BB — $C0B8/9 Color TEXT, $C0BA/B HGR Duochrome).
+    // The Eve sits in the AUX slot, not a numbered expansion slot, so
+    // these addresses don't collide unless the user also assigns a
+    // slot-3 card. Forward the access to plugged Chat Mauve cards via
+    // the video-switch broadcast so they update their internal flags.
+    if (addr >= 0xC0B8 && addr <= 0xC0BB) slots.broadcastVideoSwitch(addr);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
     // $C100-$CFFF — slot ROM dispatch.
@@ -1879,6 +1886,9 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         if (addr >= 0xC0E0 && addr <= 0xC0EF && iicProfile_) {
             iicProfile_->ioWriteIWM(addr, value, cycleCounter);
         }
+        // Le Chat Mauve Eve registers — mirror of the memRead path so the
+        // toggle reacts to STA $C0B9 and friends, not just LDA.
+        if (addr >= 0xC0B8 && addr <= 0xC0BB) slots.broadcastVideoSwitch(addr);
         slots.deviceSelectWrite(addr, value);
         return;
     }

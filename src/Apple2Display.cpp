@@ -78,9 +78,30 @@ void Apple2Display::render(Memory& mem)
     // it ever reached the screenshot path. Intercepts the IIe-80col
     // mixed-mode upscale path too, so HGR Chat Mauve + 80-col text mixes
     // cleanly at 560 throughout.
+    //
+    // Eve HGR Duochrome diverts this same gate when the card has
+    // `$C0BB`-armed it AND aux RAM is available — the renderer then
+    // pulls fg/bg colour metadata from aux at the matching HGR offset
+    // instead of running the 6-colour MSB-bank decode.
     const bool wantChatMauveHGR =
         state.hiRes && !state.textMode && !state.dhgr &&
         hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+    const bool wantHgrDuochrome =
+        wantChatMauveHGR && chatMauve->hgrDuochromeEnabled() && auxRam != nullptr;
+    if (wantHgrDuochrome) {
+        const int hiResEnd = state.mixedMode ? 160 : 192;
+        renderHgrDuochrome(mem, 0, hiResEnd);
+        if (state.mixedMode) {
+            if (mem.isIIE() && state.eightyCol) {
+                renderText80(mem, 20, 24, state.altChar);
+            } else {
+                renderText(mem, 20, 24);
+                upscaleFrameToFrame80(160, 192);
+            }
+        }
+        useFrame80 = true;
+        return;
+    }
     if (wantChatMauveHGR) {
         const int hiResEnd = state.mixedMode ? 160 : 192;
         renderHiResChatMauve80(mem, 0, hiResEnd);
@@ -104,10 +125,13 @@ void Apple2Display::render(Memory& mem)
     // 40-col text while the DHGR (AN3) soft-switch is on, with the RGB card
     // plugged. Char from main RAM, per-cell fg/bg colours from aux. Renders
     // straight into frame80 at 560 wide. (MAME text_update :788-791.)
+    // Eve $C0B9 master enable gates this; default = enabled, so AppleWin /
+    // Video-7 compatibility is preserved (a $C0B8 strobe disables it and
+    // the renderer falls back to the legacy monochrome IIe text path).
     const bool wantChatMauveText =
         mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
         hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
-        auxRam != nullptr;
+        auxRam != nullptr && chatMauve->colorTextEnabled();
     if (wantChatMauveText) {
         renderTextChatMauveFgBg(mem, 0, 24);
         useFrame80 = true;
@@ -1232,6 +1256,42 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
                 outRow[p * 2 + 1] = rgb;
                 outRow[p * 2 + 2] = rgb;
                 outRow[p * 2 + 3] = rgb;
+            }
+        }
+    }
+}
+
+// Le Chat Mauve Eve HGR Duochrome. Image bitmap from MAIN $2000-$3FFF,
+// fg/bg colour pair per 7-pixel block from AUX at the matching offset
+// (high nibble = foreground lo-res index, low = background). This is the
+// same idea as Color TEXT — the Eve overloads the aux RAM at the standard
+// screen pages as a "colour shadow" of the image — but applied to HGR
+// pixels instead of text glyphs.
+//
+// Output: 560-wide `frame80`, each HGR pixel becomes 2 identical dots
+// (matching renderHiResChatMauve80's BW560 sub-path).
+void Apple2Display::renderHgrDuochrome(Memory& mem, int firstScanline, int lastScanline)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* main_ = mem.data();
+    const uint8_t* aux_  = auxRam ? auxRam : main_;
+
+    for (int y = firstScanline; y < lastScanline; ++y) {
+        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
+        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
+
+        for (int col = 0; col < 40; ++col) {
+            const uint8_t  pix  = main_[rowAddr + col];
+            const uint8_t  attr = aux_ [rowAddr + col];
+            const uint32_t fg = kChatMauveLoResPalette[(attr >> 4) & 0x0Fu];
+            const uint32_t bg = kChatMauveLoResPalette[ attr       & 0x0Fu];
+            // 7 HGR pixels per byte (low 7 bits, bit 0 = leftmost), each
+            // doubled to 2 frame80 dots → 14 output dots per byte.
+            for (int b = 0; b < 7; ++b) {
+                const bool lit = ((pix >> b) & 1u) != 0;
+                const uint32_t c = lit ? fg : bg;
+                outRow[col * 14 + 2 * b + 0] = c;
+                outRow[col * 14 + 2 * b + 1] = c;
             }
         }
     }

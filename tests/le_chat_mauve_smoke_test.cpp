@@ -303,7 +303,109 @@ int main()
         raw->setInvertBit7(false);
     }
 
-    // ─── 6. ColorNTSC fallback when card not plugged ─────────────────────
+    // ─── 6. Eve $C0B8/$C0B9 — Color TEXT master enable ───────────────────
+    //
+    // Default = enabled (preserves the Video-7 / IIe-class Color TEXT
+    // path that has been live for a while). Soft-strobing $C0B8 turns
+    // it off; $C0B9 turns it back on. The flag is gated entirely on the
+    // card side — Memory broadcasts the access via the slot bus.
+    {
+        Memory mem;
+        auto card = std::make_unique<LeChatMauveCard>();
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+
+        // Default: Color TEXT enabled.
+        assert(raw->colorTextEnabled());
+        (void)mem.memRead(0xC0B8);
+        assert(!raw->colorTextEnabled());
+        (void)mem.memRead(0xC0B9);
+        assert(raw->colorTextEnabled());
+        // STA $C0B8 must also flip (the report says "écriture").
+        mem.memWrite(0xC0B8, 0);
+        assert(!raw->colorTextEnabled());
+        mem.memWrite(0xC0B9, 0);
+        assert(raw->colorTextEnabled());
+    }
+
+    // ─── 7. Eve $C0BA/$C0BB — HGR Duochrome ──────────────────────────────
+    //
+    // When $C0BB has armed the toggle AND aux RAM is available, standard
+    // HGR pulls fg/bg colour from aux at the matching offset. Image
+    // bitmap stays in MAIN $2000-$3FFF; the aux byte at the same address
+    // encodes high-nibble = fg, low-nibble = bg.
+    {
+        Memory mem;
+        mem.setIIEMode(true);                     // need aux RAM
+        Apple2Display display;
+        display.setAuxMemory(mem.auxData());
+        auto card = std::make_unique<LeChatMauveCard>();
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+
+        // Toggle: default off → $C0BB → on.
+        assert(!raw->hgrDuochromeEnabled());
+        (void)mem.memRead(0xC0BB);
+        assert(raw->hgrDuochromeEnabled());
+
+        // Force HGR + ChatMauve.
+        (void)mem.memRead(0xC050);   // graphics
+        (void)mem.memRead(0xC057);   // hires
+        (void)mem.memRead(0xC054);   // page 1
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+
+        // Row 0 col 0: image $7F (all 7 pixels lit), aux attr $93 →
+        // fg = idx 9 (Feline ORANGE), bg = idx 3 (Feline MAGENTA).
+        // All 14 output dots in the cell should be ORANGE.
+        clearHgrLine(mem, 0);
+        writeHgrByte(mem, 0, 0, 0x7F);
+        const uint16_t addr0 = static_cast<uint16_t>(0x2000
+            + 0x400 * (0 & 7) + 0x80 * ((0 >> 3) & 7) + 0x28 * (0 >> 6));
+        mem.auxDataMutable()[addr0 + 0] = 0x93;
+        display.render(mem);
+        assert(display.width() == 560);
+        const uint32_t orange = pack(0xFF, 0x72, 0x47);   // Feline idx 9
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);
+
+        // Row 1 col 0: image $00 (all dark), same attr → all 14 dots bg.
+        clearHgrLine(mem, 1);
+        const uint16_t addr1 = static_cast<uint16_t>(0x2000
+            + 0x400 * (1 & 7) + 0x80 * ((1 >> 3) & 7) + 0x28 * (1 >> 6));
+        mem.auxDataMutable()[addr1 + 0] = 0x93;
+        display.render(mem);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);  // Feline idx 3
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 1) == magenta);
+
+        // Row 2 col 0: alternating image $55 (bits 0,2,4,6 lit) → mixed
+        // fg/bg, doubled to 2 dots each (14 dots total).
+        clearHgrLine(mem, 2);
+        writeHgrByte(mem, 2, 0, 0x55);
+        const uint16_t addr2 = static_cast<uint16_t>(0x2000
+            + 0x400 * (2 & 7) + 0x80 * ((2 >> 3) & 7) + 0x28 * (2 >> 6));
+        mem.auxDataMutable()[addr2 + 0] = 0x93;
+        display.render(mem);
+        // Pattern: bits 0,2,4,6 → orange; bits 1,3,5 → magenta.
+        // Each HGR pixel = 2 dots in frame80.
+        for (int b = 0; b < 7; ++b) {
+            const uint32_t exp = ((0x55 >> b) & 1) ? orange : magenta;
+            assert(*pixelAt(display, 2 * b + 0, 2) == exp);
+            assert(*pixelAt(display, 2 * b + 1, 2) == exp);
+        }
+
+        // Disable Duochrome ($C0BA) — back to standard Chat Mauve HGR
+        // 6-colour decode. With $7F at col 0 + $00 elsewhere, pairs
+        // (0,1)/(2,3)/(4,5) decode as code=11 → white; the (6,7) pair
+        // straddles into the next ($00) byte and goes magenta. Either
+        // way the row is no longer orange (the Duochrome fg).
+        (void)mem.memRead(0xC0BA);
+        assert(!raw->hgrDuochromeEnabled());
+        display.render(mem);
+        for (int x = 0; x < 12; ++x) assert(*pixelAt(display, x, 0) == kWhite);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) != orange);
+    }
+
+    // ─── 8. ColorNTSC fallback when card not plugged ─────────────────────
     {
         Memory mem;     // no card plugged
         Apple2Display display;
@@ -320,6 +422,6 @@ int main()
         for (int x = 0; x < 280; ++x) assert(*pixelAt(display, x, 0) == kWhite);
     }
 
-    std::printf("Le Chat Mauve smoke: OK (FIFO clocking, COL140 + BW560 HGR, lo-res grays, bit7 invert, NTSC fallback)\n");
+    std::printf("Le Chat Mauve smoke: OK (FIFO, COL140 + BW560 HGR, lo-res grays, bit7 invert, Eve $C0B8-B Color TEXT + HGR Duochrome, NTSC fallback)\n");
     return 0;
 }
