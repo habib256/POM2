@@ -31,6 +31,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
+#include "NtscPostProcessor.h"
 #include "CffaCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
@@ -254,6 +255,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         else if (mode == "ColorCompMedium") display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
         else if (mode == "ColorComp4Bit")   display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
         else if (mode == "ChatMauveRGB")    display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        else if (mode == "ColorCompositeOE") display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
         else if (mode == "MonoWhite")       display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
         else if (mode == "MonoGreen")       display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
         else if (mode == "MonoAmber")       display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
@@ -315,6 +317,26 @@ MainWindow::MainWindow(bool forceIIPlus)
             settings->getBool("nsclock_enable", true));
         showNoSlotClockPanel = settings->getBool("show_nsclock",
                                                  showNoSlotClockPanel);
+        showNtscSettings   = settings->getBool("show_ntsc",
+                                               showNtscSettings);
+        // Composite-NTSC shader params (saved under ntsc_*). We can't
+        // call ntscFx->setParams() yet because the postprocessor is
+        // lazy-constructed in drawScreenImage; stash them into a
+        // pending-params instance that will be picked up on the first
+        // construction.
+        {
+            pom2::NtscParams p;
+            p.brightness  = settings->getFloat("ntsc_brightness",  p.brightness);
+            p.contrast    = settings->getFloat("ntsc_contrast",    p.contrast);
+            p.saturation  = settings->getFloat("ntsc_saturation",  p.saturation);
+            p.hue         = settings->getFloat("ntsc_hue",         p.hue);
+            p.sharpness   = settings->getFloat("ntsc_sharpness",   p.sharpness);
+            p.persistence = settings->getFloat("ntsc_persistence", p.persistence);
+            p.scanlines   = settings->getFloat("ntsc_scanlines",   p.scanlines);
+            p.barrel      = settings->getFloat("ntsc_barrel",      p.barrel);
+            ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+            ntscFx->setParams(p);
+        }
     }
 
     // ── Restore Disk II state per-slot ────────────────────────────────
@@ -582,6 +604,7 @@ MainWindow::~MainWindow()
             case Apple2Display::HiResMode::ColorCompMedium:  return "ColorCompMedium";
             case Apple2Display::HiResMode::ColorComp4Bit:    return "ColorComp4Bit";
             case Apple2Display::HiResMode::ChatMauveRGB:     return "ChatMauveRGB";
+            case Apple2Display::HiResMode::ColorCompositeOE: return "ColorCompositeOE";
             case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
             case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
             case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
@@ -613,6 +636,18 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_printer",    showPrinterPanel);
     settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
+    settings->setBool  ("show_ntsc",       showNtscSettings);
+    if (ntscFx) {
+        const auto& p = ntscFx->getParams();
+        settings->setFloat("ntsc_brightness",  p.brightness);
+        settings->setFloat("ntsc_contrast",    p.contrast);
+        settings->setFloat("ntsc_saturation",  p.saturation);
+        settings->setFloat("ntsc_hue",         p.hue);
+        settings->setFloat("ntsc_sharpness",   p.sharpness);
+        settings->setFloat("ntsc_persistence", p.persistence);
+        settings->setFloat("ntsc_scanlines",   p.scanlines);
+        settings->setFloat("ntsc_barrel",      p.barrel);
+    }
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
@@ -1717,6 +1752,14 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Color NTSC", nullptr,
                                 cur == Apple2Display::HiResMode::ColorNTSC))
                 display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+            // OpenEmulator-style composite simulation: true subcarrier
+            // demodulation through a GLSL shader. Disabled until the
+            // shader has had a chance to initialise — but always
+            // selectable since the first frame of the new mode does the
+            // setup. Opens the CRT Settings window for the eight knobs.
+            if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorCompositeOE))
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
             // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
             // no inter-byte fringing. Greyed out if the slot-7 card isn't
             // plugged (the Apple II would just see composite video).
@@ -1736,6 +1779,8 @@ void MainWindow::renderMenuBar()
                 display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
             ImGui::EndMenu();
         }
+        ImGui::MenuItem("CRT Settings (Composite NTSC)...",
+                        nullptr, &showNtscSettings);
         ImGui::Separator();
         ImGui::MenuItem("Toolbar",                     nullptr, &showToolbar);
         ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
@@ -1842,6 +1887,31 @@ void MainWindow::drawScreenImage()
 {
     uploadScreenTexture();
 
+    // OpenEmulator-style composite path: when the user selected
+    // ColorCompositeOE AND Apple2Display produced a 14.318 MHz signal
+    // this frame, lazily spin up the NTSC shader and run a single pass
+    // that consumes the signal texture and writes an RGBA output we
+    // hand to ImGui::Image. The first call compiles the shader; if
+    // anything fails (driver lacking GL 3.x, shader compile error, …)
+    // we fall back to the regular `screenTexture` for the rest of the
+    // session — no crashes, no flicker, just the existing LUT view.
+    unsigned int presentTex = screenTexture;
+    if (display->getHiResMode() == Apple2Display::HiResMode::ColorCompositeOE
+        && display->signalProduced()) {
+        if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+        if (!ntscFx->available() && !ntscFx->initialize()) {
+            // initialize() already logged the failure. Stop trying so
+            // we don't spam the log every frame.
+        }
+        if (ntscFx->available()) {
+            const unsigned int out = ntscFx->process(
+                display->signal(),
+                display->signalWidth(),
+                display->signalHeight());
+            if (out != 0) presentTex = out;
+        }
+    }
+
     // Scale to fill the content region while preserving the 4:3 aspect,
     // then centre — letterboxes on a wider/taller region (e.g. a full
     // kiosk viewport). Never shrink below 1× (tiny windows just clip).
@@ -1857,7 +1927,7 @@ void MainWindow::drawScreenImage()
         cur.x + std::max(0.0f, (avail.x - size.x) * 0.5f),
         cur.y + std::max(0.0f, (avail.y - size.y) * 0.5f)));
 
-    ImGui::Image(static_cast<ImTextureID>(screenTexture), size);
+    ImGui::Image(static_cast<ImTextureID>(presentTex), size);
     // Capture the screen widget's screen-space rect so the GLFW
     // cursor-pos callback (Phase 5) can route motion over the
     // screen to the Mouse Card.
@@ -2516,6 +2586,71 @@ void MainWindow::renderNoSlotClockPanelWindow()
         "Place a free clock card in a slot for older software, or "
         "leave this enabled for ProDOS 2.0.3+/GS-OS auto-detection "
         "on any profile (incl. //c, where no slot card can exist).");
+
+    ImGui::End();
+}
+
+// ─── CRT Settings (Composite NTSC mode) ──────────────────────────────────
+//
+// Eight sliders that drive the OpenEmulator-style shader: standard four
+// TV knobs (B/C/S/H), sharpness (chroma bandwidth), persistence (CRT
+// afterglow), and two pure post-effects (scanlines + barrel). All
+// values are persisted to settings.json under the `ntsc_*` keys so the
+// look survives across sessions.
+void MainWindow::renderNtscSettingsWindow()
+{
+    if (!showNtscSettings) return;
+
+    ImGui::SetNextWindowSize(ImVec2(380, 360), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("CRT Settings (Composite NTSC)",
+                      &showNtscSettings)) {
+        ImGui::End();
+        return;
+    }
+
+    if (display->getHiResMode()
+        != Apple2Display::HiResMode::ColorCompositeOE) {
+        ImGui::TextWrapped(
+            "These knobs only affect the 'Composite NTSC (OpenEmulator)' "
+            "hi-res mode. Select it from View -> Display to see them in "
+            "action.");
+        ImGui::Separator();
+    }
+
+    if (ntscFx && !ntscFx->available()) {
+        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1),
+            "Shader unavailable: %s", ntscFx->lastError().c_str());
+        ImGui::TextWrapped(
+            "POM2 falls back to the standard NTSC LUT framebuffer "
+            "for this mode.");
+        ImGui::Separator();
+    }
+
+    pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
+    bool changed = false;
+    changed |= ImGui::SliderFloat("Brightness",  &p.brightness,  -0.5f, 0.5f);
+    changed |= ImGui::SliderFloat("Contrast",    &p.contrast,     0.5f, 1.5f);
+    changed |= ImGui::SliderFloat("Saturation",  &p.saturation,   0.0f, 2.0f);
+    changed |= ImGui::SliderFloat("Hue",         &p.hue,         -0.5f, 0.5f);
+    ImGui::Separator();
+    changed |= ImGui::SliderFloat("Sharpness",   &p.sharpness,    0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Persistence", &p.persistence,  0.0f, 0.95f);
+    ImGui::Separator();
+    changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f);
+
+    ImGui::Spacing();
+    if (ImGui::Button("Reset to defaults")) {
+        p = pom2::NtscParams{};
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Saved to ntsc_* keys");
+
+    if (changed) {
+        if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+        ntscFx->setParams(p);
+    }
 
     ImGui::End();
 }
@@ -5579,6 +5714,7 @@ void MainWindow::render()
     renderJoystickPanelWindow();
     renderMouseInspectorWindow();
     renderAudioMixerWindow();
+    renderNtscSettingsWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderFloppyEmuWindow();
