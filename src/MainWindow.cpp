@@ -1834,13 +1834,58 @@ void MainWindow::renderMenuBar()
                                 cur == Apple2Display::HiResMode::ColorComp4Bit))
                 display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
             // OpenEmulator-style composite simulation: true subcarrier
-            // demodulation through a GLSL shader. Disabled until the
-            // shader has had a chance to initialise — but always
-            // selectable since the first frame of the new mode does the
-            // setup. Opens the CRT Settings window for the eight knobs.
-            if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
-                                cur == Apple2Display::HiResMode::ColorCompositeOE))
+            // demodulation through a GLSL shader. The submenu exposes
+            // four presets that shape NtscParams (sharpness / scanlines
+            // / shadow mask / PAL flag) — same pattern as the AppleWin
+            // submenu. Picking any preset switches to ColorCompositeOE
+            // AND applies the parameter bundle, so the user gets the
+            // intended look in one click. Fine-grained tuning still
+            // lives in "CRT Settings (Composite NTSC)..." below.
+            const bool oeSel = (cur == Apple2Display::HiResMode::ColorCompositeOE);
+            // Compute which preset (if any) matches the current params,
+            // so the menu can show a • dot next to the active one.
+            auto applyOePreset = [&](const char* preset) {
+                pom2::NtscParams p = ntscFx ? ntscFx->getParams()
+                                            : pom2::NtscParams{};
+                if (std::string(preset) == "monitor") {
+                    p.sharpness = 0.8f; p.scanlines = 0.10f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Off;
+                    p.barrel = 0.0f; p.palMode = false;
+                } else if (std::string(preset) == "tv") {
+                    p.sharpness = 0.4f; p.scanlines = 0.40f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.08f; p.palMode = false;
+                } else if (std::string(preset) == "trinitron") {
+                    p.sharpness = 0.6f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.03f; p.palMode = false;
+                } else if (std::string(preset) == "pal") {
+                    p.sharpness = 0.4f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.4f;
+                    p.barrel = 0.05f; p.palMode = true;
+                }
+                if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+                ntscFx->setParams(p);
                 display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+            };
+            if (ImGui::BeginMenu(oeSel ? "Composite NTSC (OE) ●"
+                                       : "Composite NTSC (OE)")) {
+                if (ImGui::MenuItem("Monitor (sharp, no mask)"))
+                    applyOePreset("monitor");
+                if (ImGui::MenuItem("TV (scanlines + triad mask)"))
+                    applyOePreset("tv");
+                if (ImGui::MenuItem("Trinitron (aperture grille)"))
+                    applyOePreset("trinitron");
+                if (ImGui::MenuItem("PAL TV (European)"))
+                    applyOePreset("pal");
+                ImGui::Separator();
+                if (ImGui::MenuItem("Use current CRT Settings", nullptr, oeSel))
+                    display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+                ImGui::EndMenu();
+            }
             // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
             // no inter-byte fringing. Greyed out if the slot-7 card isn't
             // plugged (the Apple II would just see composite video).
