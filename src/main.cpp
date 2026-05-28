@@ -394,6 +394,13 @@ int main(int argc, char* argv[])
         mainWindow.displayRef().setHiResMode(m);
         pom2::log().info("CLI", std::string("--display ") + label);
     }
+    if (plan->rgbCardInvertBit7.has_value()) {
+        const bool v = *plan->rgbCardInvertBit7;
+        const bool applied = mainWindow.setChatMauveInvertBit7(v);
+        pom2::log().info("CLI",
+            std::string("--rgb-card-invert-bit7=") + (v ? "on" : "off")
+            + (applied ? "" : " (no card plugged at boot)"));
+    }
     if (!plan->initialTapePath.empty()) {
         if (mainWindow.emul().loadTape(plan->initialTapePath)) {
             pom2::log().info("CLI", "--tape loaded: " + plan->initialTapePath);

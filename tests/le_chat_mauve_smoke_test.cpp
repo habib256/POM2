@@ -257,7 +257,53 @@ int main()
         assert(std::abs(int(r8(gray2)) - int(b8(gray2))) >= 4);   // tinted (not pure)
     }
 
-    // ─── 5. ColorNTSC fallback when card not plugged ─────────────────────
+    // ─── 5. Dragon Wars compat: invertBit7 flips HGR palette banks ───────
+    //
+    // Pins the AppleWin-style `-rgb-card-invert-bit7` toggle: when set,
+    // every Chat Mauve HGR byte is decoded with bit 7 XOR'd. $01 at col 0
+    // (MSB=0) normally hits the violet/magenta bank — with the toggle on,
+    // it should hit the BLUE bank instead (MSB=1 path).
+    {
+        Memory mem;
+        Apple2Display display;
+        auto card = std::make_unique<LeChatMauveCard>();
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+
+        (void)mem.memRead(0xC050);
+        (void)mem.memRead(0xC057);
+        (void)mem.memRead(0xC054);
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+
+        // Baseline — invertBit7 default OFF. $01 → bank 0 code 01 = magenta.
+        assert(!raw->invertBit7());
+        clearHgrLine(mem, 0);
+        writeHgrByte(mem, 0, 0, 0x01);
+        display.render(mem);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == magenta);
+
+        // Flip the toggle. Same $01 byte now decodes as if MSB were 1,
+        // so bank 1 code 01 = Feline BLUE. Bits 0..6 unchanged.
+        raw->setInvertBit7(true);
+        assert(raw->invertBit7());
+        clearHgrLine(mem, 1);
+        writeHgrByte(mem, 1, 0, 0x01);
+        display.render(mem);
+        const uint32_t blue = pack(0x00, 0x8A, 0xB5);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 1) == blue);
+
+        // Inverse: $81 (MSB=1) with toggle on → decodes as MSB=0 → magenta.
+        clearHgrLine(mem, 2);
+        writeHgrByte(mem, 2, 0, 0x81);
+        display.render(mem);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 2) == magenta);
+
+        raw->setInvertBit7(false);
+    }
+
+    // ─── 6. ColorNTSC fallback when card not plugged ─────────────────────
     {
         Memory mem;     // no card plugged
         Apple2Display display;
@@ -274,6 +320,6 @@ int main()
         for (int x = 0; x < 280; ++x) assert(*pixelAt(display, x, 0) == kWhite);
     }
 
-    std::printf("Le Chat Mauve smoke: OK (FIFO clocking, COL140 + BW560 HGR, lo-res grays, NTSC fallback)\n");
+    std::printf("Le Chat Mauve smoke: OK (FIFO clocking, COL140 + BW560 HGR, lo-res grays, bit7 invert, NTSC fallback)\n");
     return 0;
 }

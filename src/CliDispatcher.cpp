@@ -126,6 +126,9 @@ void printUsage()
         "  --snapshot-load <path>     Restore state at boot (Phase C)\n"
         "  --display <mode>           Hi-res render mode at boot. mode = ntsc | chatmauve\n"
         "                              | mono-white | mono-green | mono-amber\n"
+        "  --rgb-card-invert-bit7[=on|off]\n"
+        "                              Le Chat Mauve / Video-7 Dragon-Wars compat:\n"
+        "                              XOR bit 7 of HGR / DHGR-Mixed bytes at decode.\n"
         "\n"
         "Phase-C deferred (run in CLI order after a short settle):\n"
         "  --load <addr>:<path>       Load raw binary at addr\n"
@@ -214,6 +217,23 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
                 return std::nullopt;
             }
             plan.executionSpeed = n;
+        }
+        else if (a == "--rgb-card-invert-bit7"
+              || a.rfind("--rgb-card-invert-bit7=", 0) == 0) {
+            // Bare flag = enable; `=on`/`=off`/`=true`/`=false`/`=1`/`=0` honoured.
+            const auto eq = a.find('=');
+            if (eq == std::string::npos) {
+                plan.rgbCardInvertBit7 = true;
+            } else {
+                std::string v = a.substr(eq + 1);
+                for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if      (v == "on"  || v == "true"  || v == "1") plan.rgbCardInvertBit7 = true;
+                else if (v == "off" || v == "false" || v == "0") plan.rgbCardInvertBit7 = false;
+                else {
+                    pom2::log().error("CLI", "--rgb-card-invert-bit7 expects on|off, got: " + v);
+                    return std::nullopt;
+                }
+            }
         }
         else if (a == "--35-disk1") {
             const char* v = needArg(i, "--35-disk1"); if (!v) return std::nullopt;

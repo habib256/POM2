@@ -189,14 +189,28 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
     ImGui::TextDisabled("(matches Apple II RESET)");
 
     ImGui::Separator();
+
+    // Dragon Wars compatibility toggle. The game encodes its DHGR Mixed
+    // bit-7 selector with the opposite polarity to the Video-7 spec; this
+    // checkbox XORs bit 7 at decode time, restoring the intended rendering.
+    {
+        bool inv = snap.invertBit7;
+        if (ImGui::Checkbox("Invert bit 7 (Dragon Wars compat)", &inv)) {
+            r.requestInvertBit7 = true;
+            r.invertBit7To      = inv;
+        }
+    }
+
+    ImGui::Separator();
     ImGui::TextDisabled("Notes:");
     ImGui::TextDisabled(" - Standard HGR: 6 colors, no fringing");
     ImGui::TextDisabled(" - Lo-res: 16 colors with 2 distinct grays");
+    ImGui::TextDisabled(" - DHGR (IIe + aux RAM): COL140 / BW560 / Mixed / Chunky160");
+    ImGui::TextDisabled(" - 40-col TEXT + AN3 -> per-cell fg/bg colors (Video-7)");
     ImGui::TextDisabled(" - Mode actif via menu Display -> Le Chat Mauve");
     ImGui::Separator();
     ImGui::TextDisabled("Hors scope cette version :");
-    ImGui::TextDisabled(" - DHGR 560x192 (RAM aux requise)");
-    ImGui::TextDisabled(" - Eve Color TEXT $C0B9");
+    ImGui::TextDisabled(" - Eve-specific: $C0B9 Color TEXT lock, HGR Duochrome");
 
     ImGui::End();
     return r;

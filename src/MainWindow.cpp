@@ -453,6 +453,17 @@ MainWindow::MainWindow(bool forceIIPlus)
 EmulationController& MainWindow::emul()       { return *controller; }
 Apple2Display&       MainWindow::displayRef() { return *display; }
 
+bool MainWindow::setChatMauveInvertBit7(bool v)
+{
+    if (!chatMauveCard) return false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        chatMauveCard->setInvertBit7(v);
+    }
+    if (settings) settings->setBool("chatmauve_invert_bit7", v);
+    return true;
+}
+
 MainWindow::~MainWindow()
 {
     // Stop the AI control server BEFORE the CPU worker — pending requests
@@ -905,6 +916,8 @@ void MainWindow::plugSlotsFromSettings()
     auto plugChatMauve = [&](int s) {
         auto card = std::make_unique<LeChatMauveCard>(s);
         chatMauveCard = card.get();
+        if (settings)
+            chatMauveCard->setInvertBit7(settings->getBool("chatmauve_invert_bit7", false));
         controller->memory().slotBus().plug(s, std::move(card));
         display->setChatMauveCard(chatMauveCard);
     };
@@ -2953,11 +2966,12 @@ void MainWindow::renderChatMauvePanelWindow()
     pom2::LeChatMauve_ImGui::Snapshot snap;
     if (chatMauveCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.plugged   = true;
-        snap.mode      = chatMauveCard->currentMode();
-        snap.fifoBits  = chatMauveCard->fifoBits();
-        snap.eightyCol = chatMauveCard->eightyCol();
-        snap.an3High   = chatMauveCard->an3High();
+        snap.plugged    = true;
+        snap.mode       = chatMauveCard->currentMode();
+        snap.fifoBits   = chatMauveCard->fifoBits();
+        snap.eightyCol  = chatMauveCard->eightyCol();
+        snap.an3High    = chatMauveCard->an3High();
+        snap.invertBit7 = chatMauveCard->invertBit7();
     }
 
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
@@ -2973,6 +2987,13 @@ void MainWindow::renderChatMauvePanelWindow()
     if (chatMauveCard && result.requestReset) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         chatMauveCard->onReset();
+    }
+    if (chatMauveCard && result.requestInvertBit7) {
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            chatMauveCard->setInvertBit7(result.invertBit7To);
+        }
+        if (settings) settings->setBool("chatmauve_invert_bit7", result.invertBit7To);
     }
 }
 

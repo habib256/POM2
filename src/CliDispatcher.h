@@ -115,6 +115,14 @@ struct CliPlan {
     std::string                     disk35Internal;
     std::string                     disk35External;
 
+    /// `--rgb-card-invert-bit7` — Le Chat Mauve / Video-7 RGB-card
+    /// Dragon-Wars-compat toggle. XORs bit 7 of every Chat Mauve HGR /
+    /// DHGR-Mixed source byte at decode time, restoring the intended
+    /// rendering for software that encoded the brevet bit-7 selector with
+    /// the opposite polarity. Mirrors AppleWin's flag of the same name.
+    /// `std::nullopt` = leave the persisted value alone.
+    std::optional<bool>             rgbCardInvertBit7;
+
     // Phase C.
     std::vector<CliAction>          deferredActions;
 };
