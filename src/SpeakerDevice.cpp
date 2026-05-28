@@ -50,16 +50,17 @@ void SpeakerDevice::recordToggle(uint64_t cpuCycle)
 
 void SpeakerDevice::reset()
 {
-    std::lock_guard<std::mutex> lk(eventMutex);
-    events.clear();
-    latestEventCycle.store(0, std::memory_order_relaxed);
-    audioCpuCursor = 0;
-    subSampleAccum = 0.0;
-    lastUpdateFrac = 0.0;
-    currentLevel   = false;
-    composedVolume.fill(0.0);
-    composedIdx    = 0;
-    dcPrevX = dcPrevY = 0.0;
+    // Only touch shared state under eventMutex (events deque). The
+    // integrator fields (audioCpuCursor, subSampleAccum, currentLevel,
+    // composedVolume, …) belong to the audio thread; writing them here
+    // would race fillAudioBuffer (caught by TSan). Defer their wipe to
+    // the audio thread via resetPending_.
+    {
+        std::lock_guard<std::mutex> lk(eventMutex);
+        events.clear();
+        latestEventCycle.store(0, std::memory_order_relaxed);
+    }
+    resetPending_.store(true, std::memory_order_release);
 }
 
 void SpeakerDevice::setSampleRate(uint32_t hz)
@@ -86,6 +87,18 @@ size_t SpeakerDevice::getQueuedEventCount() const
 void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
 {
     if (frameCount <= 0) return;
+
+    // Apply a deferred reset() request from the CPU/UI thread. Done here
+    // (audio thread) so the integrator fields stay single-writer.
+    if (resetPending_.exchange(false, std::memory_order_acquire)) {
+        audioCpuCursor = 0;
+        subSampleAccum = 0.0;
+        lastUpdateFrac = 0.0;
+        currentLevel   = false;
+        composedVolume.fill(0.0);
+        composedIdx    = 0;
+        dcPrevX = dcPrevY = 0.0;
+    }
 
     const uint32_t sr = outputSampleRate.load(std::memory_order_relaxed);
     if (sr == 0) { std::fill_n(output, frameCount, 0.0f); return; }
