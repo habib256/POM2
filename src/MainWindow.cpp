@@ -336,6 +336,14 @@ MainWindow::MainWindow(bool forceIIPlus)
             p.persistence = settings->getFloat("ntsc_persistence", p.persistence);
             p.scanlines   = settings->getFloat("ntsc_scanlines",   p.scanlines);
             p.barrel      = settings->getFloat("ntsc_barrel",      p.barrel);
+            p.shadowMaskStrength = settings->getFloat(
+                "ntsc_shadow_strength", p.shadowMaskStrength);
+            const int sm = settings->getInt("ntsc_shadow_mask",
+                                            static_cast<int>(p.shadowMask));
+            p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
+                std::clamp(sm, 0, 3));
+            p.palMode    = settings->getBool("ntsc_pal",        p.palMode);
+            p.textSharp  = settings->getBool("ntsc_text_sharp", p.textSharp);
             ntscFx = std::make_unique<pom2::NtscPostProcessor>();
             ntscFx->setParams(p);
         }
@@ -649,6 +657,10 @@ MainWindow::~MainWindow()
         settings->setFloat("ntsc_persistence", p.persistence);
         settings->setFloat("ntsc_scanlines",   p.scanlines);
         settings->setFloat("ntsc_barrel",      p.barrel);
+        settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
+        settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
+        settings->setBool ("ntsc_pal",         p.palMode);
+        settings->setBool ("ntsc_text_sharp",  p.textSharp);
     }
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
@@ -1935,8 +1947,17 @@ void MainWindow::drawScreenImage()
     // we fall back to the regular `screenTexture` for the rest of the
     // session — no crashes, no flicker, just the existing LUT view.
     unsigned int presentTex = screenTexture;
-    if (display->getHiResMode() == Apple2Display::HiResMode::ColorCompositeOE
-        && display->signalProduced()) {
+    // Sharp-text override: when the user wants legible text under the
+    // composite mode, skip the shader for TEXT scanlines and let the
+    // crisp RGB framebuffer go straight to ImGui. The Apple II's text
+    // mode is full-screen — never mixed with HGR — so we either run the
+    // shader on the whole frame or not at all.
+    const auto displayState = controller->memory().getDisplayState();
+    const bool oeMode = display->getHiResMode()
+                      == Apple2Display::HiResMode::ColorCompositeOE;
+    const bool wantSharpText = ntscFx && ntscFx->getParams().textSharp
+                            && displayState.textMode;
+    if (oeMode && display->signalProduced() && !wantSharpText) {
         if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
         if (!ntscFx->available() && !ntscFx->initialize()) {
             // initialize() already logged the failure. Stop trying so
@@ -2677,6 +2698,35 @@ void MainWindow::renderNtscSettingsWindow()
     ImGui::Separator();
     changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f);
     changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f);
+
+    ImGui::Separator();
+    // Shadow mask: combo + strength slider. Procedural — no texture
+    // upload, no perf cost when Off.
+    static const char* kMaskNames[] = {
+        "Off", "Triad (3-stripe)", "Aperture grille (Trinitron)",
+        "Dot mask (offset triads)"
+    };
+    int maskIdx = static_cast<int>(p.shadowMask);
+    if (ImGui::Combo("Shadow mask", &maskIdx, kMaskNames,
+                     IM_ARRAYSIZE(kMaskNames))) {
+        p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(maskIdx);
+        changed = true;
+    }
+    ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
+    changed |= ImGui::SliderFloat("Mask strength",
+                                  &p.shadowMaskStrength, 0.0f, 1.0f);
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    // PAL composite — line-phase alternation. Off by default (POM2
+    // ships with the NTSC look most users associate with the Apple II).
+    changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
+                               &p.palMode);
+    // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping
+    // the shader for the whole text screen. HGR/DHGR/lo-res still run
+    // through the demodulator.
+    changed |= ImGui::Checkbox("Sharp text (bypass shader in TEXT mode)",
+                               &p.textSharp);
 
     ImGui::Spacing();
     if (ImGui::Button("Reset to defaults")) {

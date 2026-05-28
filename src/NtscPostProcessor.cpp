@@ -153,6 +153,9 @@ uniform float uSharpness;
 uniform float uPersistence;
 uniform float uScanlines;
 uniform float uBarrel;
+uniform int   uShadowMask;     // 0=off, 1=triad, 2=aperture grille, 3=dot
+uniform float uShadowStrength; // 0..1
+uniform int   uPalMode;        // 0=NTSC, 1=PAL (line-phase alternation)
 
 const float PI = 3.14159265358979;
 
@@ -177,6 +180,16 @@ void main()
     float sigX = uv.x * uSignalSize.x;
     float sigY = uv.y * uSignalSize.y;
 
+    // ── PAL line-phase alternation ────────────────────────────────
+    // PAL inverts the Q chroma component every other scanline. We
+    // simulate that by flipping the Q-tap sign when the source line is
+    // odd. Implemented as a Q-multiplier (±1) that NTSC keeps at +1.
+    float palQSign = 1.0;
+    if (uPalMode == 1) {
+        float lineIdx = floor(sigY);
+        palQSign = (mod(lineIdx, 2.0) < 1.0) ? 1.0 : -1.0;
+    }
+
     // ── Y / I / Q accumulation over a small kernel ────────────────
     // sigmaY narrow → sharp luminance.
     // sigmaC controlled by sharpness: high sharpness → narrow chroma
@@ -200,7 +213,7 @@ void main()
 
         Y   += s * wY;
         I   += s * sin(phase) * wC * 2.0;
-        Q   += s * cos(phase) * wC * 2.0;
+        Q   += s * cos(phase) * wC * 2.0 * palQSign;
         wYs += wY;
         wCs += wC;
     }
@@ -239,6 +252,35 @@ void main()
     if (mod(floor(outRow), 2.0) < 1.0) scan = 1.0;
     rgb *= scan;
 
+    // ── Shadow mask (post) ────────────────────────────────────────
+    // Procedural mask in output-pixel space. Approximates the
+    // multiplicative attenuation of off-channels in each CRT cell —
+    // not the additive luminance/halation that a real mask also
+    // imparts (a future per-channel glow pass could handle that).
+    //   Triad         — 3-pixel-wide RGB stripes, no vertical offset.
+    //   ApertureGrille — same stripes, no inter-line gap (Trinitron).
+    //   Dot           — same RGB rotation but each row shifts by 1
+    //                    triplet width, giving a quincunx pattern.
+    if (uShadowMask != 0 && uShadowStrength > 0.0) {
+        float ox = uv.x * (uSignalSize.x * 2.0); // output X in pixels
+        if (uShadowMask == 3) {
+            ox += (mod(floor(outRow * 0.5), 2.0) < 1.0) ? 0.0 : 1.5;
+        }
+        int phase = int(mod(floor(ox), 3.0));
+        vec3 maskColor = vec3(0.0);
+        if      (phase == 0) maskColor = vec3(1.0, 0.0, 0.0);
+        else if (phase == 1) maskColor = vec3(0.0, 1.0, 0.0);
+        else                 maskColor = vec3(0.0, 0.0, 1.0);
+        vec3 atten = mix(vec3(1.0), maskColor, uShadowStrength);
+        // Triad has horizontal gaps between cell rows; aperture grille
+        // does not. We darken every 3rd output row for Triad/Dot.
+        if (uShadowMask == 1 || uShadowMask == 3) {
+            float vrow = mod(floor(outRow), 3.0);
+            if (vrow < 1.0) atten *= mix(1.0, 0.6, uShadowStrength);
+        }
+        rgb *= atten;
+    }
+
     fragColor = vec4(rgb, 1.0);
 }
 )GLSL";
@@ -274,6 +316,9 @@ bool NtscPostProcessor::initialize()
     uScanlines   = glGetUniformLocation(program, "uScanlines");
     uBarrel      = glGetUniformLocation(program, "uBarrel");
     uSignalSize  = glGetUniformLocation(program, "uSignalSize");
+    uShadowMask  = glGetUniformLocation(program, "uShadowMask");
+    uShadowStr   = glGetUniformLocation(program, "uShadowStrength");
+    uPalMode     = glGetUniformLocation(program, "uPalMode");
 
     // Fullscreen quad: two triangles covering NDC [-1..1].
     const float verts[] = {
@@ -419,6 +464,9 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     if (uPersistence >= 0) glUniform1f(uPersistence, params.persistence);
     if (uScanlines   >= 0) glUniform1f(uScanlines,   params.scanlines);
     if (uBarrel      >= 0) glUniform1f(uBarrel,      params.barrel);
+    if (uShadowMask  >= 0) glUniform1i(uShadowMask,  static_cast<int>(params.shadowMask));
+    if (uShadowStr   >= 0) glUniform1f(uShadowStr,   params.shadowMaskStrength);
+    if (uPalMode     >= 0) glUniform1i(uPalMode,     params.palMode ? 1 : 0);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);

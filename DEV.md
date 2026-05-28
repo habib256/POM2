@@ -243,13 +243,13 @@ fallback.
 
 OpenEmulator-inspired GPU pass: instead of decoding to RGB on the
 CPU, `Apple2Display::fillCompositeSignal()` serialises the active
-video mode (HGR / DHGR / 40-col text / 80-col text) into a
-1-bit 14.318 MHz luminance waveform — 560 samples × 192 lines, one
-byte per sample (`signalBuf`). HGR reuses the existing
+video mode (HGR / DHGR / 40-col text / 80-col text / 40-col lo-res)
+into a 1-bit 14.318 MHz luminance waveform — 560 samples × 192
+lines, one byte per sample (`signalBuf`). HGR reuses the existing
 `buildBitStream()` so the per-byte half-dot delay is preserved.
-Lo-res is not yet generated; `signalProduced()` returns false there
-and MainWindow falls back to drawing the regular NTSC LUT
-framebuffer.
+Lo-res emits `(nibble >> (absX & 3)) & 1` at every sample, letting
+the shader's NTSC demodulator recover the 16 colours from the same
+spectral mechanism a real CRT uses (no palette lookup).
 
 `MainWindow::drawScreenImage()` uploads `signalBuf` to an `R8` GL
 texture and runs `NtscPostProcessor::process()`. The fragment shader
@@ -270,6 +270,21 @@ texture and runs `NtscPostProcessor::process()`. The fragment shader
 6. **Scanlines** darken odd output rows (output texture is 2× the
    signal height); the leftover **barrel** factor curls UVs at the
    edges.
+7. Optional **shadow mask** post-effect: procedural RGB-stripe mask
+   (`Triad` / `ApertureGrille` / `Dot`) multiplied into the pixel
+   after demodulation. No texture upload — driven by `mod(outX, 3)`
+   so the cost is one branch + one vec3 multiply per pixel. `Dot`
+   alternates triplet phase every other row for the quincunx look.
+8. Optional **PAL composite** mode: flips the sign of the Q chroma
+   tap on odd scanlines. Approximates PAL's line-phase alternation
+   (the cancellation of hue errors at the cost of vertical chroma
+   resolution). NTSC mode by default.
+
+**Sharp-text bypass.** TEXT under composite is faithful to a real
+CRT but blurry — fine for nostalgia, awkward for everyday use. The
+`textSharp` knob makes `MainWindow::drawScreenImage()` skip the
+shader for the whole text screen and draw the crisp RGB framebuffer
+instead. Toggled live in the CRT Settings panel; on by default.
 
 `OpenGLShader.cpp` provides the small `compileShaderProgram()` helper
 + a lazy `glfwGetProcAddress` table on Linux/Windows (macOS gets
@@ -280,10 +295,12 @@ copied — the implementation is rewritten from the public NTSC spec
 (FCC/CCIR §73.682) and the openemulator-explainer notebook by
 Zellyn Hunter (algorithm description only).
 
-All eight knobs persist under settings.json keys `ntsc_brightness`,
+All knobs persist under settings.json keys `ntsc_brightness`,
 `ntsc_contrast`, `ntsc_saturation`, `ntsc_hue`, `ntsc_sharpness`,
-`ntsc_persistence`, `ntsc_scanlines`, `ntsc_barrel`. The CRT
-Settings panel (View → CRT Settings) drives them live.
+`ntsc_persistence`, `ntsc_scanlines`, `ntsc_barrel`,
+`ntsc_shadow_mask` (int 0..3), `ntsc_shadow_strength`, `ntsc_pal`,
+`ntsc_text_sharp`. The CRT Settings panel (View → CRT Settings)
+drives them live.
 
 If shader compilation fails (driver too old, GLES2-only context,
 …), `NtscPostProcessor::available()` returns false and POM2 silently

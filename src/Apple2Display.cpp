@@ -1661,6 +1661,39 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
         }
     };
 
+    // Helper: paint a band of lo-res block-rows [first, last). Each
+    // block-row is 4 signal scanlines of one half (low nibble = upper,
+    // high nibble = lower) of one 40-byte text-row. A real Apple II in
+    // lo-res emits the 4-bit colour nibble as a repeating bit pattern at
+    // the 4×-subcarrier rate — exactly one of the 16 NTSC artifact
+    // patterns. We just emit `(nibble >> (x mod 4)) & 1` at every
+    // sample; the shader's Y/I/Q demodulator then recovers the colour
+    // from the pattern's spectral content, same path HGR uses.
+    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow) {
+        for (int blockRow = firstBlockRow; blockRow < lastBlockRow; ++blockRow) {
+            const int textRow = blockRow / 2;
+            const bool upperHalf = (blockRow % 2 == 0);
+            const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
+            for (int col = 0; col < 40; ++col) {
+                const uint8_t b = ram[rowAddr + col];
+                const uint8_t nibble = upperHalf
+                    ? static_cast<uint8_t>(b & 0x0Fu)
+                    : static_cast<uint8_t>((b >> 4) & 0x0Fu);
+                for (int dy = 0; dy < 4; ++dy) {
+                    const int y = blockRow * 4 + dy;
+                    uint8_t* dst = signalBuf.data()
+                                 + static_cast<size_t>(y) * kSignalWidth
+                                 + col * 14;
+                    for (int dx = 0; dx < 14; ++dx) {
+                        const int absX = col * 14 + dx;
+                        const uint8_t bit = (nibble >> (absX & 3)) & 1u;
+                        dst[dx] = bit ? 0xFFu : 0x00u;
+                    }
+                }
+            }
+        }
+    };
+
     // Top-level dispatch by current video soft-switches. Mirrors
     // renderInternal()'s decision tree, but writing into signalBuf
     // instead of frame / frame80.
@@ -1671,9 +1704,15 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
     }
 
     if (!state.hiRes) {
-        // Lo-res not supported by the signal path yet — caller will fall
-        // back to the regular RGB framebuffer.
-        return false;
+        // Lo-res: 48 block-rows full-screen, or 40 + 4 text rows mixed.
+        if (state.mixedMode) {
+            paintLoRes40(0, 40);
+            if (mem.isIIE() && state.eightyCol) paintText80(20, 24);
+            else                                paintText40(20, 24);
+        } else {
+            paintLoRes40(0, 48);
+        }
+        return true;
     }
 
     // Hi-res — DHGR variant when on IIe with 80COL + DHIRES, else HGR.
