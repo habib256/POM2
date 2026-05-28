@@ -104,19 +104,21 @@ int main(int argc, char* argv[])
     if (!plan)         return 1;
 
 #ifdef __EMSCRIPTEN__
-    // WASM default experience: //c profile booting Total Replay from the
-    // floppyemu/ bundle. The browser has no CLI, so we inject these as if
-    // the user had typed `--preset iic <hdv>`. Both injections are gated
-    // on a TRULY default plan — `?preset=ii+&nodisk=1` (shell.html) sets
-    // preset=AppleII+, leaves bootDiskPath empty, and expects to drop the
-    // user at BASIC. Pre-fix, the preset injection respected the URL but
-    // the disk injection didn't, so II+ landed with a 32 MiB HDV it can't
-    // mount instead of `]`.
+    // WASM default experience: //c+ profile booting Total Replay from the
+    // floppyemu/ bundle. //c+ comes up at 4× (defaultCyclesPerFrame =
+    // 68180), which is what feels right in a browser — the plain //c
+    // lands at 1× and disk-turbo is off by default. The browser has no
+    // CLI, so we inject these as if the user had typed `--preset iic+
+    // <hdv>`. Gate on a TRULY default plan (no preset AND no disk path)
+    // so `?preset=ii+&nodisk=1` (shell.html) actually drops to BASIC —
+    // pre-gate, the preset injection respected the URL but the disk
+    // injection didn't, so II+ landed with a 32 MiB HDV it can't mount
+    // instead of `]`.
     const bool wasmPlanWasDefault =
         (plan->preset == pom2::CliPreset::Default) &&
         plan->bootDiskPath.empty();
     if (wasmPlanWasDefault) {
-        plan->preset       = pom2::CliPreset::AppleIIc;
+        plan->preset       = pom2::CliPreset::AppleIIcPlus;
         plan->bootDiskPath = "floppyemu/Total Replay v5.2.hdv";
     }
 #endif
@@ -397,6 +399,13 @@ int main(int argc, char* argv[])
         }
         mainWindow.displayRef().setHiResMode(m);
         pom2::log().info("CLI", std::string("--display ") + label);
+    }
+    if (plan->rgbCardInvertBit7.has_value()) {
+        const bool v = *plan->rgbCardInvertBit7;
+        const bool applied = mainWindow.setChatMauveInvertBit7(v);
+        pom2::log().info("CLI",
+            std::string("--rgb-card-invert-bit7=") + (v ? "on" : "off")
+            + (applied ? "" : " (no card plugged at boot)"));
     }
     if (!plan->initialTapePath.empty()) {
         if (mainWindow.emul().loadTape(plan->initialTapePath)) {

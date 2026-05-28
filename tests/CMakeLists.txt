@@ -803,6 +803,8 @@ set_tests_properties(audio_mixer_smoke PROPERTIES TIMEOUT 10)
 add_executable(test_hgr_render
     hgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_hgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -821,6 +823,16 @@ endif()
 add_test(NAME hgr_render_smoke COMMAND test_hgr_render)
 set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# AppleWinNtsc CPU NTSC smoke test. No Apple II ROM or Memory needed —
+# the test feeds synthetic bitstreams straight into AppleWinNtsc.
+add_executable(test_applewin_ntsc
+    applewin_ntsc_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+)
+target_include_directories(test_applewin_ntsc PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME applewin_ntsc_smoke COMMAND test_applewin_ntsc)
+set_tests_properties(applewin_ntsc_smoke PROPERTIES TIMEOUT 5)
+
 
 # ─── Le Chat Mauve RGB card smoke test ────────────────────────────────────
 # Pins the FIFO clocking (Arlequin AN3+80COL sequence), the direct-from-
@@ -833,6 +845,7 @@ set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_le_chat_mauve
     le_chat_mauve_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1302,6 +1315,31 @@ if(UNIX AND NOT APPLE)
         ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
 
+# Headless renderer: boots Total Replay then dumps a PPM per HiResMode.
+# EXCLUDE_FROM_ALL — one-off tool, build with `make render_total_replay_modes`.
+add_executable(render_total_replay_modes EXCLUDE_FROM_ALL
+    render_total_replay_modes.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(render_total_replay_modes PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(render_total_replay_modes PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+
 
 # ─── Disk II two-drive routing smoke test ────────────────────────────────
 # Pins drive_select ($C0EA / $C0EB) routing the LSS and the legacy 32-cycle
@@ -1552,6 +1590,8 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
@@ -1567,6 +1607,8 @@ endif()
 add_executable(cffa_boot_dump EXCLUDE_FROM_ALL
     cffa_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
     ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
@@ -1677,6 +1719,7 @@ set_tests_properties(iie_lc_paging_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_dhgr_render
     dhgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1701,6 +1744,7 @@ set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_video7_parity
     video7_parity_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1729,6 +1773,7 @@ set_tests_properties(video7_parity_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_display_persistence
     display_persistence_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -2283,6 +2328,27 @@ add_test(NAME printer_card_smoke COMMAND test_printer_card)
 set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Grappler+ card smoke test ───────────────────────────────────────────
+# Pins the stub-ROM fingerprint (used when no roms/grappler_plus.bin dump
+# is present), the data-port spool semantics, and the 4 KB ROM-load gate
+# (wrong-size dumps are rejected so the stub stays in place).
+add_executable(test_grappler_card
+    grappler_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrapplerCard.cpp
+)
+target_include_directories(test_grappler_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_grappler_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    target_link_libraries(test_grappler_card PRIVATE winmm)
+endif()
+
+add_test(NAME grappler_card_smoke COMMAND test_grappler_card)
+set_tests_properties(grappler_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Phasor card smoke test ──────────────────────────────────────────────
 # Pins the dual-mode Phasor: VIA register layout (dual-VIA + mirrors),
 # mode soft-switch ($C0(8+s)X bit-decode), MB-compat routing (PB3/4
@@ -2637,6 +2703,8 @@ add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp

@@ -106,6 +106,12 @@ private:
     // Producer-published high-water mark.
     std::atomic<uint64_t> latestEventCycle{0};
 
+    // reset() runs on the CPU/UI thread but the integrator state above
+    // belongs to the audio thread — clobbering it directly is a data race
+    // (caught by TSan). Instead, reset() flips this flag and the audio
+    // callback applies the actual reset at the start of its next tick.
+    std::atomic<bool>     resetPending_{false};
+
     std::atomic<float>    volume{1.0f};
     std::atomic<bool>     muted{false};
     std::atomic<uint32_t> outputSampleRate{AudioDevice::kSampleRate};

@@ -91,12 +91,24 @@ public:
     // back to the FIFO-driven mode on the next AN3 rising edge.
     void overrideMode(RenderMode m) { mode = m; fifo = static_cast<uint8_t>(m); }
 
+    // Dragon Wars compatibility: a handful of titles (the eponymous one
+    // being the canonical case) encode their DHGR Mixed-mode data with
+    // bit 7 inverted relative to the Video-7 / Le Chat Mauve spec — colour
+    // cells where the brevet expects mono, and vice-versa. Setting this
+    // toggle to true XORs the bit-7 (mode flag in DHGR Mixed, bank flag
+    // in standard HGR) at decode time, restoring the intended rendering.
+    // Matches AppleWin's `-rgb-card-invert-bit7` CLI switch. Off = strict
+    // brevet semantics (default).
+    void setInvertBit7(bool v) { invertBit7_ = v; }
+    bool invertBit7() const    { return invertBit7_; }
+
 private:
     int         slot_;
     bool        an3Prev          = true;           // AN3 powers up HIGH (DHIRES off)
     bool        eightyColLatched = false;          // last seen 80COL level
     uint8_t     fifo             = 0b11;           // 2 bits, MSB shifted out
     RenderMode  mode             = RenderMode::COL140;
+    bool        invertBit7_      = false;          // Dragon Wars compatibility
 
     void clockFifo(bool dataBit);
 };

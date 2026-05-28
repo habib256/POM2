@@ -146,7 +146,7 @@ private:
     std::atomic<bool>      running_       { false };
     std::atomic<bool>      stopRequested_ { false };
     std::atomic<uint64_t>  requestsServed_{ 0 };
-    int                    listenFd_ = -1;
+    std::atomic<int>       listenFd_      { -1 };
     uint16_t               port_     = kDefaultPort;
     std::thread            worker_;
     std::string            authToken_;

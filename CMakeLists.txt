@@ -60,6 +60,7 @@ set(SOURCES
     src/MemoryProfile_IIcClass.cpp
     src/AiControlServer.cpp
     src/Apple2Display.cpp
+    src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp
@@ -76,6 +77,7 @@ set(SOURCES
     src/DiskImage.cpp
     src/DiskLibrary_ImGui.cpp
     src/EchoPlusCard.cpp
+    src/EchoPlusTMS5220Card.cpp
     src/EmulationController.cpp
     src/FloppySoundDevice.cpp
     src/HdvController_ImGui.cpp
@@ -97,6 +99,9 @@ set(SOURCES
     src/MouseCard.cpp
     src/MouseCardAppleWin.cpp
     src/NoSlotClock.cpp
+    src/GrapplerCard.cpp
+    src/NtscPostProcessor.cpp
+    src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp
     src/Ssi263.cpp
@@ -130,6 +135,7 @@ set(HEADERS
     src/MemoryProfile_IIcClass.h
     src/AiControlServer.h
     src/Apple2Display.h
+    src/AppleWinNtsc.h
     src/AtaBlockDevice.h
     src/AudioDevice.h
     src/CassetteDevice.h
@@ -147,6 +153,7 @@ set(HEADERS
     src/SmartPortHub.h
     src/Sony35Drive.h
     src/EchoPlusCard.h
+    src/EchoPlusTMS5220Card.h
     src/EmulationController.h
     src/FloppySoundDevice.h
     src/FloppySoundSink.h
@@ -163,8 +170,11 @@ set(HEADERS
     src/Mockingboard.h
     src/MouseCard.h
     src/MouseCardAppleWin.h
+    src/NtscPostProcessor.h
+    src/OpenGLShader.h
     src/MountableMediaCard.h
     src/Ay3_8910.h
+    src/GrapplerCard.h
     src/PhasorCard.h
     src/PrinterCard.h
     src/Ssi263.h

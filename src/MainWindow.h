@@ -36,6 +36,8 @@ class EmulationController;
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
+class EchoPlusTMS5220Card;
+class GrapplerCard;
 class MockingboardCard;
 class MouseCard;
 class MouseCardAppleWin;
@@ -49,6 +51,8 @@ namespace pom2 {
     class AiControlServer;
     class CassetteDeck_ImGui;
     class Disk35Controller_ImGui;
+    class NtscPostProcessor;
+    struct NtscParams;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
     class CffaCard;
@@ -95,6 +99,12 @@ public:
     /// stay clear of the EmulationController include cone.
     EmulationController& emul();
     Apple2Display&       displayRef();
+
+    /// Read/write the Le Chat Mauve "Dragon Wars compatibility" toggle
+    /// from main()'s Phase-B CLI handler. No-ops (returns false) when no
+    /// LeChatMauveCard is plugged at boot. Persists to Settings so the
+    /// next session picks it up automatically.
+    bool setChatMauveInvertBit7(bool v);
 
     void setGlfwWindow(GLFWwindow* w);
     void render();
@@ -192,8 +202,10 @@ private:
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
     EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
+    EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
+    GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -212,6 +224,12 @@ private:
     unsigned int screenTexture = 0;     // GL texture name (lazy)
     int          screenTextureWidth  = 0;
     int          screenTextureHeight = 0;
+    // OpenEmulator-style composite NTSC shader pipeline. Lazily
+    // initialised on the first frame the user selects ColorCompositeOE;
+    // stays alive across mode toggles so persistence state isn't lost
+    // when the user briefly flips to another mode and back.
+    std::unique_ptr<pom2::NtscPostProcessor> ntscFx;
+    bool         showNtscSettings = false;
     float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
@@ -318,8 +336,10 @@ private:
     std::string diskRomStatus;
     // Auto-turbo while the Disk II motor is spinning. Real Apple II boot
     // takes 10-15 s at 1 MHz; bumping to ~60 MHz emulated for the duration
-    // of the read drops it to <1 s. Off restores the user's chosen speed.
-    bool        diskTurboWhileMotor = true;
+    // of the read drops it to <1 s. Off by default — preserves authentic
+    // speed and the floppy mechanical sounds (the turbo collapses
+    // wall-clock to zero, which mutes the seek/spindle audio).
+    bool        diskTurboWhileMotor = false;
     int         diskSavedCyclesPerFrame = 17045;
     bool        diskTurboActive = false;
 
@@ -513,6 +533,7 @@ private:
     /// Optional CSV log to `mouseInspectorLogPath` for offline review.
     void renderMouseInspectorWindow();
     void renderAudioMixerWindow();
+    void renderNtscSettingsWindow();
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();

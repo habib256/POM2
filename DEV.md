@@ -185,13 +185,21 @@ RGBA. Reads `Memory::getDisplayState()` (mutex copy) + flat RAM.
 UI uploads via `glTex(Sub)Image2D`. Text flash via
 `frame_number() & 0x10` (MAME parity).
 
-Seven `HiResMode`:
+Nine `HiResMode`:
 - `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups,
   glow (MAME `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
 - `ChatMauveRGB` — only with `LeChatMauveCard`.
+- `ColorCompositeOE` — OpenEmulator-style true NTSC simulation
+  via GLSL shader (see § Composite NTSC shader below).
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer
   lerp).
+- `ColorAppleWin` — AppleWin-style IIR-based NTSC simulation
+  via 4-phase × 4096-entry CPU LUT (see § AppleWin NTSC below).
+
+The deep per-mode comparison with each origin source — algorithm
+provenance, deviations, pinned tests and side-by-side captures —
+lives in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
 
 ### DHGR (IIe, `eightyCol && hiRes && dhgr && !textMode`)
 
@@ -236,6 +244,115 @@ Aux RAM (cells 0,2,…) interleaved with main (1,3,…) into 560-wide
 frame. Mixed (HIRES+80COL+MIXED): HGR top 20 rows doubled, 80-col
 rows 20..23 overlay. ALTCHAR plumbed but no-op against built-in
 fallback.
+
+### Composite NTSC shader (`ColorCompositeOE`)
+
+OpenEmulator-inspired GPU pass: instead of decoding to RGB on the
+CPU, `Apple2Display::fillCompositeSignal()` serialises the active
+video mode (HGR / DHGR / 40-col text / 80-col text / 40-col lo-res)
+into a 1-bit 14.318 MHz luminance waveform — 560 samples × 192
+lines, one byte per sample (`signalBuf`). HGR reuses the existing
+`buildBitStream()` so the per-byte half-dot delay is preserved.
+Lo-res emits `(nibble >> (absX & 3)) & 1` at every sample, letting
+the shader's NTSC demodulator recover the 16 colours from the same
+spectral mechanism a real CRT uses (no palette lookup).
+
+`MainWindow::drawScreenImage()` uploads `signalBuf` to an `R8` GL
+texture and runs `NtscPostProcessor::process()`. The fragment shader
+(`NtscPostProcessor.cpp` `kFragmentShader`):
+
+1. Optional barrel distortion of UVs.
+2. For each output fragment, gaussian-weighted accumulation of 17
+   signal taps. Luma uses a narrow sigma (~0.8 samples); chroma uses
+   a wide sigma controlled by the **sharpness** knob.
+3. Chroma is recovered by multiplying each tap with
+   `sin(π/2 · x)` and `cos(π/2 · x)` — Apple II's 4× subcarrier
+   alignment means phase is just the dot index.
+4. YIQ → RGB via the standard NTSC matrix, then **hue** rotates the
+   IQ vector, **brightness**/**contrast**/**saturation** apply
+   in RGB space.
+5. **Persistence** is a `max(decoded, prev * decay)` blend with the
+   previous output frame held in a ping-pong FBO.
+6. **Scanlines** darken odd output rows (output texture is 2× the
+   signal height); the leftover **barrel** factor curls UVs at the
+   edges.
+7. Optional **shadow mask** post-effect: procedural RGB-stripe mask
+   (`Triad` / `ApertureGrille` / `Dot`) multiplied into the pixel
+   after demodulation. No texture upload — driven by `mod(outX, 3)`
+   so the cost is one branch + one vec3 multiply per pixel. `Dot`
+   alternates triplet phase every other row for the quincunx look.
+8. Optional **PAL composite** mode: flips the sign of the Q chroma
+   tap on odd scanlines. Approximates PAL's line-phase alternation
+   (the cancellation of hue errors at the cost of vertical chroma
+   resolution). NTSC mode by default.
+
+**Sharp-text bypass.** TEXT under composite is faithful to a real
+CRT but blurry — fine for nostalgia, awkward for everyday use. The
+`textSharp` knob makes `MainWindow::drawScreenImage()` skip the
+shader for the whole text screen and draw the crisp RGB framebuffer
+instead. Toggled live in the CRT Settings panel; on by default.
+
+`OpenGLShader.cpp` provides the small `compileShaderProgram()` helper
++ a lazy `glfwGetProcAddress` table on Linux/Windows (macOS gets
+GL 3.x from `<OpenGL/gl3.h>`, Emscripten from `<GLES3/gl3.h>`). The
+shader source is single-pass, gated on `#version 150` (desktop) /
+`#version 300 es` (WebGL2). No OpenEmulator / libemulation code is
+copied — the implementation is rewritten from the public NTSC spec
+(FCC/CCIR §73.682) and the openemulator-explainer notebook by
+Zellyn Hunter (algorithm description only).
+
+All knobs persist under settings.json keys `ntsc_brightness`,
+`ntsc_contrast`, `ntsc_saturation`, `ntsc_hue`, `ntsc_sharpness`,
+`ntsc_persistence`, `ntsc_scanlines`, `ntsc_barrel`,
+`ntsc_shadow_mask` (int 0..3), `ntsc_shadow_strength`, `ntsc_pal`,
+`ntsc_text_sharp`. The CRT Settings panel (View → CRT Settings)
+drives them live.
+
+If shader compilation fails (driver too old, GLES2-only context,
+…), `NtscPostProcessor::available()` returns false and POM2 silently
+falls back to the regular `ColorNTSC` LUT framebuffer for the mode —
+the menu entry stays usable but the result is indistinguishable
+from `ColorNTSC` until the GL state catches up.
+
+### AppleWin NTSC (`ColorAppleWin`)
+
+Re-implementation of AppleWin's CPU-side NTSC composite simulation
+(`source/NTSC.cpp` by Sheldon Simms / Tom Charlesworth / Michael
+Pohoreski — GPL v2+). POM2 rewrites the algorithm from the public
+description; no AppleWin source is copied, POM2 keeps its license.
+
+Consumes the same 14.318 MHz luminance bitstream `fillCompositeSignal`
+generates for `ColorCompositeOE`. Decoding happens through a static
+`chromaLut[4][4096]` (~64 KB) built once at first use by
+`AppleWinNtsc::ensureInitialized()` (`src/AppleWinNtsc.cpp`):
+
+- Walk the 12-bit history sample by sample. The window is *centred* on
+  the output pixel (`kCenterDelay = 6`, mirror-padded at the line
+  edges) so chroma extraction sees both past and future context.
+- Per (phase, 12-bit history): compute luma as a narrow gaussian
+  average (sigma 1.5) and chroma I/Q by DC-removed wide gaussian
+  (sigma 3.0) projected onto sin/cos at the local subcarrier phase
+  (π/2 per dot — Apple II's 4× alignment). Saturation boost ×10
+  compensates the broad filter's attenuation.
+- YIQ → RGB via the standard FCC matrix (same one
+  `NtscPostProcessor.cpp` uses on the GPU side), packed RGBA.
+
+Three sub-modes via `Apple2Display::AppleWinSubMode`:
+
+- **Monitor** — straight LUT lookup. Sharp, full composite artifacts.
+- **TV** — Monitor + 50% blend with the previous frame's same scanline
+  (`appleWinPrev80` buffer in `Apple2Display`). Approximates the
+  vertical phosphor persistence + comb-filter blur of a consumer TV.
+- **Idealized** — bypass the IIR LUT entirely, use a 4-phase × 16
+  nibble palette table (`idealizedLut`) with chroma boost ×8. No
+  transient ringing, no chroma roll-off — modern flat-panel-friendly.
+
+Pinned by `applewin_ntsc_smoke` (idempotent init, all-black/all-white
+sanity, $7F neutral luma, Idealized artifact non-black, Tv convergence
+toward Monitor, multi-line wrapping).
+
+Full mode-by-mode comparison vs MAME / OpenEmulator / hardware lives
+in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
 
 ### Test framework gotcha
 
@@ -385,11 +502,19 @@ Pinned by `mockingboard_smoke::testSoundIIVariantSSI263` —
 verifies no-SSI263 on AC variant, register decode at $40-$4F,
 A/!R → IFR.CA1 latching, IER.CA1 → slot IRQ.
 
-#### EchoPlusCard
+#### EchoPlusCard (Cricket / SSI263-class — catalog `echoplus`)
 
-`EchoPlusCard` (`EchoPlusCard.h/.cpp`) — standalone SSI263 at
+`EchoPlusCard` (`EchoPlusCard.h/.cpp`) — single-SSI263 card at
 $Cs00-$Cs04, A/!R wired directly to the slot IRQ line. No 6522. Open
 bus ($FF) for the rest of the slot ROM page.
+
+**Naming caveat** — historically labelled "Echo+" in POM2's UI and
+settings, but the markadev/AppleII-RevEng audit (2026-05-28) confirms
+the real Street Electronics ECHO+ used 2× AY-3-8913 + TMS5220, not the
+SSI263. The SSI263-based Street Electronics product was the Cricket.
+The catalog key stays `"echoplus"` for `settings.json` back-compat;
+the user-visible label is now "Cricket / Echo (SSI263)". See
+[§ EchoPlusTMS5220Card](#echoplustms5220card) for the real Echo+ chipset.
 
 `advanceCycles` ticks the chip and asserts slot IRQ on A/!R edge;
 host writes to $00/$01/$02 release the IRQ. Default slot 4, pluggable
@@ -410,6 +535,32 @@ cursor under the host card's mutex. Pinned by `ssi263_smoke` test 6
 **UI**: Devices → Echo+ panel. Mode + IRQ enable + A/!R + power-down
 state + current phoneme + duration countdown (cycles + ms) + the 5
 register banks.
+
+#### EchoPlusTMS5220Card
+
+`EchoPlusTMS5220Card` (`EchoPlusTMS5220Card.h/.cpp`) — Street Electronics
+ECHO+ **as actually shipped**: 2× AY-3-8913 PSGs + TMS5220 LPC speech
+chip. Distinct from the SSI263-based `EchoPlusCard` above. Catalog
+key `"echoplus_tms"`, default slot 2.
+
+**v1 scaffold — chip cores deferred.** The card registers on the slot
+bus with a stub register decode at $Cs00-$Cs0F so software that probes
+for the chipset finds something coherent (not open bus). TMS5220 LPC
+decoding (chirp ROM, K-parameter interpolation, energy/pitch tables)
+and AY synth are both stubs — audio is silent. The provisional address
+map (pin to markadev's schematic on next pass):
+
+```
+$Cs00  TMS5220 status / data (rd = status, wr = command/data byte)
+$Cs01  TMS5220 stop / reset
+$Cs04-05  AY-3-8913 #1 (address latch / data write)
+$Cs06-07  AY-3-8913 #2 (address latch / data write)
+$Cs08-FF  open bus
+```
+
+Source: markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+ (index.md
+states "two AY-3-8913 Programmable Sound Generator chips and a TMS5220
+Speech Synthesizer chip").
 
 ### Phasor (Applied Engineering)
 
@@ -1167,6 +1318,16 @@ rising edge regardless of mode (MAME `upd1990a.cpp:312-327` gates on
 still in MODE_TIME_READ; strict gating breaks stock ProDOS. Observed
 HW permits the shortcut. Pinned: `testShiftLaxAcrossModes`.
 
+**Optional real ROM dump.** Drop `roms/thunderclock_u9_v1.3.bin` (also
+accepted: `thunderclock_u9.bin`, `thunderclock.rom`,
+`Thunderware_REV_1.3_ROM_U9.bin`) and `ClockCard` swaps the synthetic
+slot-ROM stub for the dumped U9 EPROM. Accepts 256 B (slot ROM only)
+or 2 KB (slot ROM + $C800 expansion ROM mirroring the same chip into
+both windows so the firmware's $C8nn JMP continuations resolve).
+Source: markadev/AppleII-RevEng/Thunderware-Thunderclock-Plus. The
+load path validates the $08/$28/$58/$70 ProDOS signature at
+offsets 0/2/4/6 and falls back to the synth ROM if absent.
+
 ### Printer card (parallel, synthetic)
 
 `PrinterCard` (`PrinterCard.h/.cpp`) — host-side spool that captures every
@@ -1215,6 +1376,37 @@ MAME has Mockingboard).
 
 Pinned: `printer_card_smoke` — ROM fingerprint + data-port spool
 semantics + CPU-driven `PR#1` + 3 COUT-style writes flow.
+
+### Grappler+ (Orange Micro)
+
+`GrapplerCard` (`GrapplerCard.h/.cpp`) — ROM-gated parallel printer
+card. Catalog key `"grappler"`, default slot 1. Adds two things over
+`PrinterCard`:
+
+* **4 KB real ROM** (`roms/grappler_plus.bin`, also accepted:
+  `roms/grappler+.bin`, `roms/grappler.bin`). First 256 B map at
+  `$CnXX`; the lower 2 KB of the 4 KB EPROM are mirrored into the
+  shared expansion-ROM window at `$C800-$CFFF` so Grappler-aware
+  software (e.g. AppleWorks "Printer = Grappler+") finds the ROM
+  fingerprint. Wrong-size or missing dumps are rejected with a log
+  warning; the card falls back to a synthetic stub identical in
+  shape to `PrinterCard` so `PR#n` still works.
+* **Spool semantics identical to PrinterCard.** Data port at
+  `$C0(8+s)1` enqueues bytes verbatim; the host UI saves the spool
+  as `.txt`. Grappler-graphic-dump commands (`^I G` / `^I H`) emit
+  Epson-style printer escapes — those bytes are spooled too, ready
+  for a future "render as raster" mode.
+
+**Bank switching not modelled.** Real Grappler+ exposes the upper
+2 KB of its 4 KB EPROM via a write to a $C0(8+s)X bank-select
+register. POM2 currently only serves the lower 2 KB in the expansion
+window — enough for PR#n detection + the standard graphics-dump
+entry points but not for ROM tools that probe the upper bank. Pin
+to MAME `a2grappler.cpp` on next pass.
+
+Source: markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB
+EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
++ data-port spool + ROM-load size gate.
 
 ### Mouse Card
 

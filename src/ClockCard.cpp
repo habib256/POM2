@@ -4,8 +4,15 @@
 #include "ClockCard.h"
 
 #include "CpuClock.h"
+#include "Logger.h"
+#include "ResourcePaths.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <ctime>
+#include <fstream>
+#include <iterator>
+#include <vector>
 
 namespace {
 
@@ -65,6 +72,7 @@ ClockCard::ClockCard(int slotNum) : ClockCard(slotNum, &hostLocalTime) {}
 ClockCard::ClockCard(int slotNum, TimeFn fn) : slot(slotNum), timeFn(fn)
 {
     buildRom();
+    tryLoadDump();
     onReset();
 }
 
@@ -339,4 +347,73 @@ void ClockCard::buildRom()
     rom[0x06] = 0x70;   // BVS        — signature
     rom[0x07] = 0x00;   // BVS operand: branch +0 → $Cs08 either way
     rom[0x08] = 0x60;   // RTS — minimal "call did nothing" trap
+}
+
+void ClockCard::tryLoadDump()
+{
+    // Probe order: prefer the explicit Rev 1.3 dump from
+    // markadev/AppleII-RevEng/Thunderware-Thunderclock-Plus/
+    // Thunderware_REV_1.3_ROM_U9.bin; accept a few common aliases so users
+    // who renamed by chip number or revision still drop the file in roms/.
+    static const char* kCandidates[] = {
+        "roms/thunderclock_u9_v1.3.bin",
+        "roms/thunderclock_u9.bin",
+        "roms/thunderclock.rom",
+        "roms/Thunderware_REV_1.3_ROM_U9.bin",
+    };
+    std::string resolved;
+    for (const char* c : kCandidates) {
+        std::string r = pom2::findResource(c);
+        if (!r.empty()) { resolved = std::move(r); break; }
+    }
+    if (resolved.empty()) return;
+
+    std::ifstream f(resolved, std::ios::binary);
+    if (!f) return;
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+
+    // Accept 256 B (slot ROM only) or 2 KB (slot ROM + $C800 expansion).
+    // Anything else is almost certainly the wrong file — reject so a
+    // mis-named dump can't silently break ProDOS detection.
+    if (bytes.size() != 256 && bytes.size() != 0x800) {
+        pom2::log().warn("Clock",
+            "ThunderClock ROM " + resolved + " has unexpected size " +
+            std::to_string(bytes.size()) +
+            " B (expected 256 or 2048) — using synthetic ROM");
+        return;
+    }
+
+    // Sanity-check the ProDOS detection signature at offsets 0/2/4/6.
+    // Without these the card is invisible to ProDOS regardless of source,
+    // so a dump that lacks them is a poor substitute for the synth ROM.
+    if (bytes[0] != 0x08 || bytes[2] != 0x28 ||
+        bytes[4] != 0x58 || bytes[6] != 0x70) {
+        pom2::log().warn("Clock",
+            "ThunderClock ROM " + resolved +
+            " missing $08/$28/$58/$70 ProDOS signature — using synthetic ROM");
+        return;
+    }
+
+    std::copy_n(bytes.begin(), 256, rom.begin());
+    if (bytes.size() == 0x800) {
+        // 2 KB Thunderware EPROM: the same 2 KB chip is decoded into BOTH
+        // the slot ROM window ($CnXX = first 256 B of the chip) AND the
+        // shared expansion-ROM window ($C800-$CFFF = the entire 2 KB).
+        // Mirroring the full chip into expansionRom_ keeps the firmware's
+        // own JMP $C8nn continuations working — they expect to find their
+        // own slot-ROM bytes at $C800-$C8FF.
+        std::copy(bytes.begin(), bytes.end(), expansionRom_.begin());
+        expansionRomLoaded_ = true;
+    }
+    romFromDump_ = true;
+    romSource_   = resolved;
+    pom2::log().info("Clock", "Loaded ThunderClock+ ROM dump: " + resolved);
+}
+
+uint8_t ClockCard::expansionRomRead(uint16_t offset)
+{
+    if (!expansionRomLoaded_) return 0xFF;
+    if (offset >= expansionRom_.size()) return 0xFF;
+    return expansionRom_[offset];
 }

@@ -13,6 +13,8 @@
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
 #include "EchoPlusCard.h"
+#include "EchoPlusTMS5220Card.h"
+#include "GrapplerCard.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
@@ -31,6 +33,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
+#include "NtscPostProcessor.h"
 #include "CffaCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
@@ -254,9 +257,18 @@ MainWindow::MainWindow(bool forceIIPlus)
         else if (mode == "ColorCompMedium") display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
         else if (mode == "ColorComp4Bit")   display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
         else if (mode == "ChatMauveRGB")    display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        else if (mode == "ColorCompositeOE") display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
         else if (mode == "MonoWhite")       display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
         else if (mode == "MonoGreen")       display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
         else if (mode == "MonoAmber")       display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+        else if (mode == "ColorAppleWin")   display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        // AppleWin sub-mode (Monitor / Tv / Idealized).
+        {
+            const std::string s = settings->getString("applewin_submode", "monitor");
+            if      (s == "tv")        display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+            else if (s == "idealized") display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+            else                       display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+        }
 
         pixelScale         = settings->getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
@@ -315,6 +327,34 @@ MainWindow::MainWindow(bool forceIIPlus)
             settings->getBool("nsclock_enable", true));
         showNoSlotClockPanel = settings->getBool("show_nsclock",
                                                  showNoSlotClockPanel);
+        showNtscSettings   = settings->getBool("show_ntsc",
+                                               showNtscSettings);
+        // Composite-NTSC shader params (saved under ntsc_*). We can't
+        // call ntscFx->setParams() yet because the postprocessor is
+        // lazy-constructed in drawScreenImage; stash them into a
+        // pending-params instance that will be picked up on the first
+        // construction.
+        {
+            pom2::NtscParams p;
+            p.brightness  = settings->getFloat("ntsc_brightness",  p.brightness);
+            p.contrast    = settings->getFloat("ntsc_contrast",    p.contrast);
+            p.saturation  = settings->getFloat("ntsc_saturation",  p.saturation);
+            p.hue         = settings->getFloat("ntsc_hue",         p.hue);
+            p.sharpness   = settings->getFloat("ntsc_sharpness",   p.sharpness);
+            p.persistence = settings->getFloat("ntsc_persistence", p.persistence);
+            p.scanlines   = settings->getFloat("ntsc_scanlines",   p.scanlines);
+            p.barrel      = settings->getFloat("ntsc_barrel",      p.barrel);
+            p.shadowMaskStrength = settings->getFloat(
+                "ntsc_shadow_strength", p.shadowMaskStrength);
+            const int sm = settings->getInt("ntsc_shadow_mask",
+                                            static_cast<int>(p.shadowMask));
+            p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
+                std::clamp(sm, 0, 3));
+            p.palMode    = settings->getBool("ntsc_pal",        p.palMode);
+            p.textSharp  = settings->getBool("ntsc_text_sharp", p.textSharp);
+            ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+            ntscFx->setParams(p);
+        }
     }
 
     // ── Restore Disk II state per-slot ────────────────────────────────
@@ -453,6 +493,17 @@ MainWindow::MainWindow(bool forceIIPlus)
 EmulationController& MainWindow::emul()       { return *controller; }
 Apple2Display&       MainWindow::displayRef() { return *display; }
 
+bool MainWindow::setChatMauveInvertBit7(bool v)
+{
+    if (!chatMauveCard) return false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        chatMauveCard->setInvertBit7(v);
+    }
+    if (settings) settings->setBool("chatmauve_invert_bit7", v);
+    return true;
+}
+
 MainWindow::~MainWindow()
 {
     // Stop the AI control server BEFORE the CPU worker — pending requests
@@ -571,13 +622,24 @@ MainWindow::~MainWindow()
             case Apple2Display::HiResMode::ColorCompMedium:  return "ColorCompMedium";
             case Apple2Display::HiResMode::ColorComp4Bit:    return "ColorComp4Bit";
             case Apple2Display::HiResMode::ChatMauveRGB:     return "ChatMauveRGB";
+            case Apple2Display::HiResMode::ColorCompositeOE: return "ColorCompositeOE";
             case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
             case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
             case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
+            case Apple2Display::HiResMode::ColorAppleWin:    return "ColorAppleWin";
         }
         return "ColorNTSC";
     };
     settings->setString("hi_res_mode", modeName(display->getHiResMode()));
+    {
+        const char* sub = "monitor";
+        switch (display->getAppleWinSubMode()) {
+            case Apple2Display::AppleWinSubMode::Monitor:   sub = "monitor";   break;
+            case Apple2Display::AppleWinSubMode::Tv:        sub = "tv";        break;
+            case Apple2Display::AppleWinSubMode::Idealized: sub = "idealized"; break;
+        }
+        settings->setString("applewin_submode", sub);
+    }
     settings->setFloat ("pixel_scale", pixelScale);
     settings->setBool  ("show_disk_panel", showDiskPanel);
     settings->setBool  ("show_disk35_panel", showDisk35Panel);
@@ -602,6 +664,22 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_printer",    showPrinterPanel);
     settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
+    settings->setBool  ("show_ntsc",       showNtscSettings);
+    if (ntscFx) {
+        const auto& p = ntscFx->getParams();
+        settings->setFloat("ntsc_brightness",  p.brightness);
+        settings->setFloat("ntsc_contrast",    p.contrast);
+        settings->setFloat("ntsc_saturation",  p.saturation);
+        settings->setFloat("ntsc_hue",         p.hue);
+        settings->setFloat("ntsc_sharpness",   p.sharpness);
+        settings->setFloat("ntsc_persistence", p.persistence);
+        settings->setFloat("ntsc_scanlines",   p.scanlines);
+        settings->setFloat("ntsc_barrel",      p.barrel);
+        settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
+        settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
+        settings->setBool ("ntsc_pal",         p.palMode);
+        settings->setBool ("ntsc_text_sharp",  p.textSharp);
+    }
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
@@ -905,6 +983,8 @@ void MainWindow::plugSlotsFromSettings()
     auto plugChatMauve = [&](int s) {
         auto card = std::make_unique<LeChatMauveCard>(s);
         chatMauveCard = card.get();
+        if (settings)
+            chatMauveCard->setInvertBit7(settings->getBool("chatmauve_invert_bit7", false));
         controller->memory().slotBus().plug(s, std::move(card));
         display->setChatMauveCard(chatMauveCard);
     };
@@ -988,6 +1068,41 @@ void MainWindow::plugSlotsFromSettings()
             controller->audio().addSource(card->audioSource());
         }
         echoPlusCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugEchoPlusTms = [&](int s) {
+        // Street Electronics Echo+ AS ACTUALLY SHIPPED — 2×AY-3-8913 +
+        // TMS5220. Scaffold only: register decode is present so software
+        // detects the card, but the LPC core + AY synth are deferred.
+        // Audio is silent. See EchoPlusTMS5220Card.h for the chipset
+        // sourcing notes.
+        auto card = std::make_unique<EchoPlusTMS5220Card>(s);
+        echoPlusTmsCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugGrappler = [&](int s) {
+        // Orange Micro Grappler+ — ROM-gated parallel printer. Loads
+        // roms/grappler_plus.bin if present; falls back to a synthetic
+        // stub ROM (PR#n trampoline only) so the card always plugs.
+        auto card = std::make_unique<GrapplerCard>(s);
+        static const char* kCandidates[] = {
+            "roms/grappler_plus.bin",
+            "roms/grappler+.bin",
+            "roms/grappler.bin",
+        };
+        for (const char* c : kCandidates) {
+            std::string r = pom2::findResource(c);
+            if (!r.empty() && card->loadRom(r)) break;
+        }
+        if (!card->isRomLoaded()) {
+            pom2::log().warn("Grappler",
+                "Grappler+ plugged in slot " + std::to_string(s) +
+                " without a 4 KB ROM dump (roms/grappler_plus.bin) — "
+                "graphics dump commands unavailable, PR#n still works");
+        }
+        grapplerCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1180,6 +1295,8 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "mockingboard_c") plugMockingboard(s, MockingboardCard::Variant::SoundII);
         else if (kind == "phasor")      plugPhasor(s);
         else if (kind == "echoplus")    plugEchoPlus(s);
+        else if (kind == "echoplus_tms") plugEchoPlusTms(s);
+        else if (kind == "grappler")    plugGrappler(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",
@@ -1704,6 +1821,24 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Color NTSC", nullptr,
                                 cur == Apple2Display::HiResMode::ColorNTSC))
                 display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+            // MAME `composite_color_mode = 1`: same 7-bit window LUT as
+            // ColorNTSC but row 1 of the table — 8 entries differ to
+            // bias 4-dot colour runs at the cost of 40-col text.
+            if (ImGui::MenuItem("Color NTSC (medium)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorCompMedium))
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+            // MAME `composite_color_mode = 2`: skip the artifact window
+            // entirely, every 4-dot nibble → palette index direct.
+            // Sharp edges, no inter-byte fringing, more "RGB-looking".
+            if (ImGui::MenuItem("Color NTSC (4-bit square)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorComp4Bit))
+                display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
+            // OpenEmulator-style composite simulation (true subcarrier
+            // demodulation through a GLSL shader). Selectable directly,
+            // just like the other modes — presets live below.
+            if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorCompositeOE))
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
             // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
             // no inter-byte fringing. Greyed out if the slot-7 card isn't
             // plugged (the Apple II would just see composite video).
@@ -1721,8 +1856,84 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Mono Amber",  nullptr,
                                 cur == Apple2Display::HiResMode::MonoAmber))
                 display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+            // AppleWin-style NTSC (CPU IIR + 4-phase LUT). Clicking
+            // switches to ColorAppleWin with the previously selected
+            // sub-mode. Sub-mode picker lives below.
+            if (ImGui::MenuItem("AppleWin NTSC", nullptr,
+                                cur == Apple2Display::HiResMode::ColorAppleWin))
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+
+            // ── Sub-mode / preset pickers ────────────────────────────
+            // OE presets and AppleWin sub-modes — independent of the
+            // mode selector above so the user can flip between them
+            // without re-drilling. Selecting a preset also switches to
+            // the matching mode (one-click usability). Sub-rows
+            // disable themselves when their parent mode is inactive,
+            // so the menu hierarchy stays readable but the user can
+            // always force-select by clicking the mode line above.
+            ImGui::Separator();
+            ImGui::TextDisabled("OpenEmulator presets");
+            const bool oeSel = (cur == Apple2Display::HiResMode::ColorCompositeOE);
+            auto applyOePreset = [&](const char* preset) {
+                pom2::NtscParams p = ntscFx ? ntscFx->getParams()
+                                            : pom2::NtscParams{};
+                if (std::string(preset) == "monitor") {
+                    p.sharpness = 0.8f; p.scanlines = 0.10f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Off;
+                    p.barrel = 0.0f; p.palMode = false;
+                } else if (std::string(preset) == "tv") {
+                    p.sharpness = 0.4f; p.scanlines = 0.40f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.08f; p.palMode = false;
+                } else if (std::string(preset) == "trinitron") {
+                    p.sharpness = 0.6f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.03f; p.palMode = false;
+                } else if (std::string(preset) == "pal") {
+                    p.sharpness = 0.4f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.4f;
+                    p.barrel = 0.05f; p.palMode = true;
+                }
+                if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+                ntscFx->setParams(p);
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+            };
+            if (ImGui::MenuItem("  Monitor (sharp, no mask)"))
+                applyOePreset("monitor");
+            if (ImGui::MenuItem("  TV (scanlines + triad mask)"))
+                applyOePreset("tv");
+            if (ImGui::MenuItem("  Trinitron (aperture grille)"))
+                applyOePreset("trinitron");
+            if (ImGui::MenuItem("  PAL TV (European)"))
+                applyOePreset("pal");
+
+            ImGui::Separator();
+            ImGui::TextDisabled("AppleWin NTSC sub-mode");
+            const auto sub = display->getAppleWinSubMode();
+            const bool awSel = (cur == Apple2Display::HiResMode::ColorAppleWin);
+            if (ImGui::MenuItem("  Monitor (sharp)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Monitor)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            if (ImGui::MenuItem("  TV (50% line blur)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Tv)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            if (ImGui::MenuItem("  Idealized (saturated)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Idealized)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            (void)oeSel;
             ImGui::EndMenu();
         }
+        ImGui::MenuItem("CRT Settings (Composite NTSC)...",
+                        nullptr, &showNtscSettings);
         ImGui::Separator();
         ImGui::MenuItem("Toolbar",                     nullptr, &showToolbar);
         ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
@@ -1829,6 +2040,40 @@ void MainWindow::drawScreenImage()
 {
     uploadScreenTexture();
 
+    // OpenEmulator-style composite path: when the user selected
+    // ColorCompositeOE AND Apple2Display produced a 14.318 MHz signal
+    // this frame, lazily spin up the NTSC shader and run a single pass
+    // that consumes the signal texture and writes an RGBA output we
+    // hand to ImGui::Image. The first call compiles the shader; if
+    // anything fails (driver lacking GL 3.x, shader compile error, …)
+    // we fall back to the regular `screenTexture` for the rest of the
+    // session — no crashes, no flicker, just the existing LUT view.
+    unsigned int presentTex = screenTexture;
+    // Sharp-text override: when the user wants legible text under the
+    // composite mode, skip the shader for TEXT scanlines and let the
+    // crisp RGB framebuffer go straight to ImGui. The Apple II's text
+    // mode is full-screen — never mixed with HGR — so we either run the
+    // shader on the whole frame or not at all.
+    const auto displayState = controller->memory().getDisplayState();
+    const bool oeMode = display->getHiResMode()
+                      == Apple2Display::HiResMode::ColorCompositeOE;
+    const bool wantSharpText = ntscFx && ntscFx->getParams().textSharp
+                            && displayState.textMode;
+    if (oeMode && display->signalProduced() && !wantSharpText) {
+        if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+        if (!ntscFx->available() && !ntscFx->initialize()) {
+            // initialize() already logged the failure. Stop trying so
+            // we don't spam the log every frame.
+        }
+        if (ntscFx->available()) {
+            const unsigned int out = ntscFx->process(
+                display->signal(),
+                display->signalWidth(),
+                display->signalHeight());
+            if (out != 0) presentTex = out;
+        }
+    }
+
     // Scale to fill the content region while preserving the 4:3 aspect,
     // then centre — letterboxes on a wider/taller region (e.g. a full
     // kiosk viewport). Never shrink below 1× (tiny windows just clip).
@@ -1844,7 +2089,7 @@ void MainWindow::drawScreenImage()
         cur.x + std::max(0.0f, (avail.x - size.x) * 0.5f),
         cur.y + std::max(0.0f, (avail.y - size.y) * 0.5f)));
 
-    ImGui::Image(static_cast<ImTextureID>(screenTexture), size);
+    ImGui::Image(static_cast<ImTextureID>(presentTex), size);
     // Capture the screen widget's screen-space rect so the GLFW
     // cursor-pos callback (Phase 5) can route motion over the
     // screen to the Mouse Card.
@@ -2507,6 +2752,100 @@ void MainWindow::renderNoSlotClockPanelWindow()
     ImGui::End();
 }
 
+// ─── CRT Settings (Composite NTSC mode) ──────────────────────────────────
+//
+// Eight sliders that drive the OpenEmulator-style shader: standard four
+// TV knobs (B/C/S/H), sharpness (chroma bandwidth), persistence (CRT
+// afterglow), and two pure post-effects (scanlines + barrel). All
+// values are persisted to settings.json under the `ntsc_*` keys so the
+// look survives across sessions.
+void MainWindow::renderNtscSettingsWindow()
+{
+    if (!showNtscSettings) return;
+
+    ImGui::SetNextWindowSize(ImVec2(380, 360), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("CRT Settings (Composite NTSC)",
+                      &showNtscSettings)) {
+        ImGui::End();
+        return;
+    }
+
+    if (display->getHiResMode()
+        != Apple2Display::HiResMode::ColorCompositeOE) {
+        ImGui::TextWrapped(
+            "These knobs only affect the 'Composite NTSC (OpenEmulator)' "
+            "hi-res mode. Select it from View -> Display to see them in "
+            "action.");
+        ImGui::Separator();
+    }
+
+    if (ntscFx && !ntscFx->available()) {
+        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1),
+            "Shader unavailable: %s", ntscFx->lastError().c_str());
+        ImGui::TextWrapped(
+            "POM2 falls back to the standard NTSC LUT framebuffer "
+            "for this mode.");
+        ImGui::Separator();
+    }
+
+    pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
+    bool changed = false;
+    changed |= ImGui::SliderFloat("Brightness",  &p.brightness,  -0.5f, 0.5f);
+    changed |= ImGui::SliderFloat("Contrast",    &p.contrast,     0.5f, 1.5f);
+    changed |= ImGui::SliderFloat("Saturation",  &p.saturation,   0.0f, 2.0f);
+    changed |= ImGui::SliderFloat("Hue",         &p.hue,         -0.5f, 0.5f);
+    ImGui::Separator();
+    changed |= ImGui::SliderFloat("Sharpness",   &p.sharpness,    0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Persistence", &p.persistence,  0.0f, 0.95f);
+    ImGui::Separator();
+    changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f);
+    changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f);
+
+    ImGui::Separator();
+    // Shadow mask: combo + strength slider. Procedural — no texture
+    // upload, no perf cost when Off.
+    static const char* kMaskNames[] = {
+        "Off", "Triad (3-stripe)", "Aperture grille (Trinitron)",
+        "Dot mask (offset triads)"
+    };
+    int maskIdx = static_cast<int>(p.shadowMask);
+    if (ImGui::Combo("Shadow mask", &maskIdx, kMaskNames,
+                     IM_ARRAYSIZE(kMaskNames))) {
+        p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(maskIdx);
+        changed = true;
+    }
+    ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
+    changed |= ImGui::SliderFloat("Mask strength",
+                                  &p.shadowMaskStrength, 0.0f, 1.0f);
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    // PAL composite — line-phase alternation. Off by default (POM2
+    // ships with the NTSC look most users associate with the Apple II).
+    changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
+                               &p.palMode);
+    // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping
+    // the shader for the whole text screen. HGR/DHGR/lo-res still run
+    // through the demodulator.
+    changed |= ImGui::Checkbox("Sharp text (bypass shader in TEXT mode)",
+                               &p.textSharp);
+
+    ImGui::Spacing();
+    if (ImGui::Button("Reset to defaults")) {
+        p = pom2::NtscParams{};
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Saved to ntsc_* keys");
+
+    if (changed) {
+        if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+        ntscFx->setParams(p);
+    }
+
+    ImGui::End();
+}
+
 void MainWindow::renderJoystickPanelWindow()
 {
     if (!showJoystickPanel) return;
@@ -2953,11 +3292,12 @@ void MainWindow::renderChatMauvePanelWindow()
     pom2::LeChatMauve_ImGui::Snapshot snap;
     if (chatMauveCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.plugged   = true;
-        snap.mode      = chatMauveCard->currentMode();
-        snap.fifoBits  = chatMauveCard->fifoBits();
-        snap.eightyCol = chatMauveCard->eightyCol();
-        snap.an3High   = chatMauveCard->an3High();
+        snap.plugged    = true;
+        snap.mode       = chatMauveCard->currentMode();
+        snap.fifoBits   = chatMauveCard->fifoBits();
+        snap.eightyCol  = chatMauveCard->eightyCol();
+        snap.an3High    = chatMauveCard->an3High();
+        snap.invertBit7 = chatMauveCard->invertBit7();
     }
 
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
@@ -2973,6 +3313,13 @@ void MainWindow::renderChatMauvePanelWindow()
     if (chatMauveCard && result.requestReset) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         chatMauveCard->onReset();
+    }
+    if (chatMauveCard && result.requestInvertBit7) {
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            chatMauveCard->setInvertBit7(result.invertBit7To);
+        }
+        if (settings) settings->setBool("chatmauve_invert_bit7", result.invertBit7To);
     }
 }
 
@@ -5558,6 +5905,7 @@ void MainWindow::render()
     renderJoystickPanelWindow();
     renderMouseInspectorWindow();
     renderAudioMixerWindow();
+    renderNtscSettingsWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderFloppyEmuWindow();

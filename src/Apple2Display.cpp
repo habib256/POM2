@@ -2,6 +2,7 @@
 // Copyright (C) 2026
 
 #include "Apple2Display.h"
+#include "AppleWinNtsc.h"
 #include "LeChatMauveCard.h"
 #include "Memory.h"
 
@@ -12,8 +13,11 @@
 Apple2Display::Apple2Display()
     : frame(kWidth * kHeight, 0xFF000000)
     , frame80(kWidth80 * kHeight, 0xFF000000)
+    , appleWinPrev  (kWidth   * kHeight, 0xFF000000)
+    , appleWinPrev80(kWidth80 * kHeight, 0xFF000000)
     , persistenceL  (kWidth   * kHeight, 0)
     , persistenceL80(kWidth80 * kHeight, 0)
+    , signalBuf    (kSignalWidth * kSignalHeight, 0)
 {
 }
 
@@ -25,6 +29,26 @@ void Apple2Display::setHiResMode(HiResMode m)
     // tint a freshly-selected green or colour mode for a few frames.
     std::fill(persistenceL.begin(),   persistenceL.end(),   0);
     std::fill(persistenceL80.begin(), persistenceL80.end(), 0);
+    // Clear the composite signal buffer too: if we just left the
+    // OpenEmulator mode the leftover bytes would be irrelevant; if we
+    // just entered it, the first frame's render() will repopulate.
+    std::fill(signalBuf.begin(), signalBuf.end(), 0);
+    signalProducedFlag = false;
+    // Also clear the AppleWin Tv sub-mode's "previous frame" buffer so
+    // we don't blend leftover content from another mode.
+    std::fill(appleWinPrev  .begin(), appleWinPrev  .end(), 0xFF000000u);
+    std::fill(appleWinPrev80.begin(), appleWinPrev80.end(), 0xFF000000u);
+}
+
+void Apple2Display::setAppleWinSubMode(AppleWinSubMode m)
+{
+    if (m == appleWinSubMode) return;
+    appleWinSubMode = m;
+    // Tv blur references the previous frame's buffer — reset it on
+    // sub-mode switch so Monitor → Tv doesn't ghost the last Monitor
+    // frame in.
+    std::fill(appleWinPrev  .begin(), appleWinPrev  .end(), 0xFF000000u);
+    std::fill(appleWinPrev80.begin(), appleWinPrev80.end(), 0xFF000000u);
 }
 
 uint16_t Apple2Display::textRowAddress(int y, bool page2)
@@ -65,7 +89,7 @@ static bool videoHgrPage2(const Memory::DisplayState& s)
     return s.page2 && !(s.eightyStore && s.hiRes);
 }
 
-void Apple2Display::render(Memory& mem)
+void Apple2Display::renderInternal(Memory& mem)
 {
     ++frameCounter;     // drives the FLASH-attribute animation in renderText
     const auto state = mem.getDisplayState();
@@ -164,6 +188,50 @@ void Apple2Display::render(Memory& mem)
     } else {
         renderLoRes(mem, 0, 48);
         if (state.mixedMode) renderText(mem, 20, 24);
+    }
+}
+
+void Apple2Display::render(Memory& mem)
+{
+    renderInternal(mem);
+
+    // Both ColorCompositeOE and ColorAppleWin consume the same 14.318
+    // MHz composite bitstream — generate it once whenever either mode
+    // is active. ColorCompositeOE hands it off to MainWindow's GLSL
+    // pass (signalProduced() = true is the gate); ColorAppleWin
+    // demodulates it CPU-side right here and overwrites frame80.
+    const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE)
+                         || (hiResMode == HiResMode::ColorAppleWin);
+    if (needSignal) {
+        signalProducedFlag = fillCompositeSignal(mem);
+    } else {
+        signalProducedFlag = false;
+    }
+
+    if (hiResMode == HiResMode::ColorAppleWin && signalProducedFlag) {
+        // Map our public sub-mode enum onto the pom2::AppleWinNtsc::SubMode
+        // values 1-for-1 — they're declared as separate types only so
+        // the public Apple2Display API doesn't drag AppleWinNtsc.h into
+        // every TU that includes Apple2Display.h.
+        pom2::AppleWinNtsc::SubMode sub = pom2::AppleWinNtsc::SubMode::Monitor;
+        switch (appleWinSubMode) {
+            case AppleWinSubMode::Monitor:   sub = pom2::AppleWinNtsc::SubMode::Monitor;   break;
+            case AppleWinSubMode::Tv:        sub = pom2::AppleWinNtsc::SubMode::Tv;        break;
+            case AppleWinSubMode::Idealized: sub = pom2::AppleWinNtsc::SubMode::Idealized; break;
+        }
+        const int w = kSignalWidth;   // 560
+        const int h = kSignalHeight;  // 192
+        pom2::AppleWinNtsc::renderFrame(signalBuf.data(),
+                                  frame80.data(),
+                                  w, h,
+                                  sub,
+                                  appleWinPrev80.data());
+        // Stash this frame for next call's Tv blur.
+        std::memcpy(appleWinPrev80.data(), frame80.data(),
+                    static_cast<size_t>(w) * h * sizeof(uint32_t));
+        // The output IS native 560-wide regardless of the Apple II's
+        // soft-switch state, so route the UI to frame80.
+        useFrame80 = true;
     }
 }
 
@@ -828,13 +896,15 @@ inline uint32_t avgRgb(uint32_t a, uint32_t b)
 // ChatMauveRGB) are placeholders that are never actually read.
 struct Phosphor { uint8_t r, g, b; float decay; };
 constexpr Phosphor kPhosphors[] = {
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC       — placeholder
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorCompMedium — placeholder
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorComp4Bit   — placeholder
-    { 0xFF, 0xFF, 0xFF, 0.00f }, // ChatMauveRGB    — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorNTSC        — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorCompMedium  — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorComp4Bit    — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ChatMauveRGB     — placeholder
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorCompositeOE — placeholder (shader path)
     { 0xFF, 0xFF, 0xFF, 0.00f }, // MonoWhite
     { 0x33, 0xFF, 0x33, 0.85f }, // MonoGreen P31 (CIE x=0.280, y=0.595)
     { 0xFF, 0xB0, 0x00, 0.96f }, // MonoAmber (long persistence)
+    { 0xFF, 0xFF, 0xFF, 0.00f }, // ColorAppleWin    — placeholder (IIR LUT path)
 };
 
 // Le Chat Mauve / Video-7 AppleColor RGB — 6-color HGR palette, applied
@@ -911,10 +981,19 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     // Effective mode: ChatMauveRGB without a plugged card silently falls
     // back to NTSC (matches a real Apple II that's been pulled out of its
     // RGB adapter — the composite signal is still on the wire).
-    const HiResMode effMode =
-        (hiResMode == HiResMode::ChatMauveRGB && !chatMauve)
-            ? HiResMode::ColorNTSC
-            : hiResMode;
+    // ColorCompositeOE also renders the NTSC LUT into `frame` as a
+    // fallback — the real OE output comes from the shader in MainWindow
+    // which consumes signalBuf, but if for any reason the shader isn't
+    // available (lo-res, no GL context yet) the visible framebuffer is
+    // still a sensible composite-coloured image.
+    HiResMode effMode = hiResMode;
+    if (effMode == HiResMode::ChatMauveRGB && !chatMauve) effMode = HiResMode::ColorNTSC;
+    if (effMode == HiResMode::ColorCompositeOE)           effMode = HiResMode::ColorNTSC;
+    // ColorAppleWin overlays the AppleWin IIR-LUT output on top of
+    // frame80 after the regular HGR pass; for the underlying frame /
+    // frame80 we use NTSC as a sensible fallback (also covers the case
+    // where signal generation is skipped, e.g. lo-res top-of-screen).
+    if (effMode == HiResMode::ColorAppleWin)              effMode = HiResMode::ColorNTSC;
 
     // Le Chat Mauve / Video-7 RGB card. Decoded DIRECTLY from the raw
     // byte stream — bypassing every NTSC-specific transformation in this
@@ -949,6 +1028,8 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         using Mode = LeChatMauveCard::RenderMode;
         const Mode mode = chatMauve->currentMode();
         const bool monochrome = (mode == Mode::BW560);
+        // Dragon Wars compatibility — flips the per-byte palette-bank flag.
+        const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
 
         for (int y = firstScanline; y < lastScanline; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
@@ -957,7 +1038,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
             uint8_t  pixels[kWidth];
             uint8_t  msbHigh[40];
             for (int col = 0; col < 40; ++col) {
-                const uint8_t b = ram[rowAddr + col];
+                const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
                 msbHigh[col] = (b >> 7) & 1u;
                 pixels[col * 7 + 0] = (b >> 0) & 1u;
                 pixels[col * 7 + 1] = (b >> 1) & 1u;
@@ -1191,6 +1272,7 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
     using Mode = LeChatMauveCard::RenderMode;
     const Mode mode = chatMauve->currentMode();
     const bool monochrome = (mode == Mode::BW560);
+    const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
 
     uint8_t  pixels[kWidth];     // 280 raw HGR bits
     uint8_t  msbHigh[40];        // per-byte palette-bank flag
@@ -1199,7 +1281,7 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
         const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
 
         for (int col = 0; col < 40; ++col) {
-            const uint8_t b = ram[rowAddr + col];
+            const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
             msbHigh[col] = static_cast<uint8_t>((b >> 7) & 1u);
             pixels[col * 7 + 0] = static_cast<uint8_t>((b >> 0) & 1u);
             pixels[col * 7 + 1] = static_cast<uint8_t>((b >> 1) & 1u);
@@ -1445,11 +1527,15 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                 // source byte's MSB picks colour (1) vs bit-mapped mono (0)
                 // for its seven dots. MAME `apple2video.cpp:946-977`.
                 const bool colorAll = (rmode == Mode::COL140);
+                // Dragon Wars compatibility — flip the Mixed-mode bit-7
+                // selector (no-op in COL140 where bit 7 is ignored anyway).
+                const uint8_t bit7Xor = (rmode == Mode::Mixed && chatMauve->invertBit7())
+                                            ? uint8_t{0x80} : uint8_t{0};
                 for (int c = 0; c < 40; c += 2) {
-                    const uint8_t a0 = aux_ [rowAddr + c];
-                    const uint8_t m0 = main_[rowAddr + c];
-                    const uint8_t a1 = aux_ [rowAddr + c + 1];
-                    const uint8_t m1 = main_[rowAddr + c + 1];
+                    const uint8_t a0 = aux_ [rowAddr + c]     ^ bit7Xor;
+                    const uint8_t m0 = main_[rowAddr + c]     ^ bit7Xor;
+                    const uint8_t a1 = aux_ [rowAddr + c + 1] ^ bit7Xor;
+                    const uint8_t m1 = main_[rowAddr + c + 1] ^ bit7Xor;
                     const unsigned w =
                           (a0 & 0x7Fu)
                         | (static_cast<unsigned>(m0 & 0x7Fu) << 7)
@@ -1477,4 +1563,220 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
             }
         }
     }
+}
+
+// ─── Composite-signal generator for the OpenEmulator shader path ─────────
+//
+// Produces a 14.318 MHz 1-bit luminance waveform (560 samples × 192 lines)
+// that the GLSL shader in MainWindow demodulates into NTSC Y/I/Q. Each
+// scanline of the Apple II video output is exactly 560 samples wide at
+// the 4×-subcarrier rate — the same width DHGR already uses natively —
+// so HGR (with its half-dot delay), DHGR, and text all naturally fit.
+//
+// We only generate the signal for HGR, DHGR, and 40/80-column text in
+// v1; lo-res cells require a per-line 4-dot palette pattern table we
+// haven't ported yet, so the function returns false and MainWindow's
+// shader path falls back to drawing the regular RGB framebuffer.
+bool Apple2Display::fillCompositeSignal(Memory& mem)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* ram = mem.data();
+    const uint8_t* aux = auxRam ? auxRam : ram;
+    const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
+    const auto& charRom    = mem.charRom();
+    const bool  useCharRom = charRom.size() >= 2048;
+    const bool  altCharSet = state.altChar;
+
+    // Helper: paint one text row (40 cols × 8 scanlines = 7×8 dots per cell,
+    // each dot doubled to 2 signal samples → 14 samples per cell, 560/line).
+    auto paintText40 = [&](int firstRow, int lastRow) {
+        for (int row = firstRow; row < lastRow; ++row) {
+            const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
+            for (int col = 0; col < 40; ++col) {
+                const uint8_t src = ram[rowAddr + col];
+                uint8_t bytes[8] = {0};
+                if (useCharRom) {
+                    const auto g = lookupCsbitsGlyph(
+                        src, charRom.data(), charRom.size(), altCharSet);
+                    for (int i = 0; i < 8; ++i) {
+                        bytes[i] = g.bytes[i];
+                        if (g.flash && flashPhase) bytes[i] ^= 0x7Fu;
+                    }
+                } else {
+                    bool invert = false, flash = false;
+                    resolveGlyph(src, bytes, invert, flash);
+                    if (flash && flashPhase) invert = !invert;
+                    for (int gy = 0; gy < 8; ++gy) {
+                        uint8_t bits = 0;
+                        for (int gx = 0; gx < 7; ++gx) {
+                            bool lit = (gx >= 1 && gx <= 5)
+                                    && ((bytes[gy] >> (5 - gx)) & 1);
+                            if (invert) lit = !lit;
+                            if (lit) bits |= (1u << gx);
+                        }
+                        bytes[gy] = bits;
+                    }
+                }
+                for (int gy = 0; gy < 8; ++gy) {
+                    const int y = row * 8 + gy;
+                    uint8_t* dst = signalBuf.data()
+                                 + static_cast<size_t>(y) * kSignalWidth
+                                 + col * 14;
+                    for (int gx = 0; gx < 7; ++gx) {
+                        const uint8_t lit = ((bytes[gy] >> gx) & 1u) ? 0xFFu : 0x00u;
+                        dst[gx * 2 + 0] = lit;
+                        dst[gx * 2 + 1] = lit;
+                    }
+                }
+            }
+        }
+    };
+
+    // Helper: paint one 80-col text row (80 cols × 8 dots × 7 pixels = 560).
+    auto paintText80 = [&](int firstRow, int lastRow) {
+        for (int row = firstRow; row < lastRow; ++row) {
+            const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
+            for (int col = 0; col < 80; ++col) {
+                // Aux RAM holds even columns, main RAM odd columns
+                // (AppleWin scanner convention).
+                const uint8_t src = (col & 1) ? ram[rowAddr + (col >> 1)]
+                                              : aux[rowAddr + (col >> 1)];
+                uint8_t bytes[8] = {0};
+                if (useCharRom) {
+                    const auto g = lookupCsbitsGlyph(
+                        src, charRom.data(), charRom.size(), altCharSet);
+                    for (int i = 0; i < 8; ++i) {
+                        bytes[i] = g.bytes[i];
+                        if (g.flash && flashPhase) bytes[i] ^= 0x7Fu;
+                    }
+                } else {
+                    bool invert = false, flash = false;
+                    resolveGlyph(src, bytes, invert, flash);
+                    if (flash && flashPhase) invert = !invert;
+                    for (int gy = 0; gy < 8; ++gy) {
+                        uint8_t bits = 0;
+                        for (int gx = 0; gx < 7; ++gx) {
+                            bool lit = (gx >= 1 && gx <= 5)
+                                    && ((bytes[gy] >> (5 - gx)) & 1);
+                            if (invert) lit = !lit;
+                            if (lit) bits |= (1u << gx);
+                        }
+                        bytes[gy] = bits;
+                    }
+                }
+                for (int gy = 0; gy < 8; ++gy) {
+                    const int y = row * 8 + gy;
+                    uint8_t* dst = signalBuf.data()
+                                 + static_cast<size_t>(y) * kSignalWidth
+                                 + col * 7;
+                    for (int gx = 0; gx < 7; ++gx) {
+                        dst[gx] = ((bytes[gy] >> gx) & 1u) ? 0xFFu : 0x00u;
+                    }
+                }
+            }
+        }
+    };
+
+    // Helper: paint a band of HGR scanlines [first, last) at 280 dots ×
+    // 2 = 560 signal samples per line. Uses the existing 560-sub-pixel
+    // bit stream builder (which already applies the per-byte half-dot
+    // delay from bit 7).
+    auto paintHgr = [&](int first, int last) {
+        const uint8_t bit7Mask = state.dhgr ? uint8_t{0x7F} : uint8_t{0xFF};
+        uint8_t stream[kStreamLen];
+        for (int y = first; y < last; ++y) {
+            const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
+            buildBitStream(ram, rowAddr, stream, bit7Mask);
+            uint8_t* dst = signalBuf.data()
+                         + static_cast<size_t>(y) * kSignalWidth;
+            for (int x = 0; x < kStreamLen; ++x) {
+                dst[x] = stream[x] ? 0xFFu : 0x00u;
+            }
+        }
+    };
+
+    // Helper: paint a band of DHGR scanlines [first, last). DHGR
+    // interleaves aux+main HGR memory at 7 bits each — 14 dots per byte
+    // pair, 40 byte pairs per line = 560 dots = 560 signal samples.
+    auto paintDhgr = [&](int first, int last) {
+        for (int y = first; y < last; ++y) {
+            const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
+            uint8_t* dst = signalBuf.data()
+                         + static_cast<size_t>(y) * kSignalWidth;
+            for (int c = 0; c < 40; ++c) {
+                const uint8_t auxB  = aux[rowAddr + c] & 0x7Fu;
+                const uint8_t mainB = ram[rowAddr + c] & 0x7Fu;
+                const int base = c * 14;
+                for (int i = 0; i < 7; ++i) {
+                    dst[base + i    ] = ((auxB  >> i) & 1u) ? 0xFFu : 0x00u;
+                    dst[base + 7 + i] = ((mainB >> i) & 1u) ? 0xFFu : 0x00u;
+                }
+            }
+        }
+    };
+
+    // Helper: paint a band of lo-res block-rows [first, last). Each
+    // block-row is 4 signal scanlines of one half (low nibble = upper,
+    // high nibble = lower) of one 40-byte text-row. A real Apple II in
+    // lo-res emits the 4-bit colour nibble as a repeating bit pattern at
+    // the 4×-subcarrier rate — exactly one of the 16 NTSC artifact
+    // patterns. We just emit `(nibble >> (x mod 4)) & 1` at every
+    // sample; the shader's Y/I/Q demodulator then recovers the colour
+    // from the pattern's spectral content, same path HGR uses.
+    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow) {
+        for (int blockRow = firstBlockRow; blockRow < lastBlockRow; ++blockRow) {
+            const int textRow = blockRow / 2;
+            const bool upperHalf = (blockRow % 2 == 0);
+            const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
+            for (int col = 0; col < 40; ++col) {
+                const uint8_t b = ram[rowAddr + col];
+                const uint8_t nibble = upperHalf
+                    ? static_cast<uint8_t>(b & 0x0Fu)
+                    : static_cast<uint8_t>((b >> 4) & 0x0Fu);
+                for (int dy = 0; dy < 4; ++dy) {
+                    const int y = blockRow * 4 + dy;
+                    uint8_t* dst = signalBuf.data()
+                                 + static_cast<size_t>(y) * kSignalWidth
+                                 + col * 14;
+                    for (int dx = 0; dx < 14; ++dx) {
+                        const int absX = col * 14 + dx;
+                        const uint8_t bit = (nibble >> (absX & 3)) & 1u;
+                        dst[dx] = bit ? 0xFFu : 0x00u;
+                    }
+                }
+            }
+        }
+    };
+
+    // Top-level dispatch by current video soft-switches. Mirrors
+    // renderInternal()'s decision tree, but writing into signalBuf
+    // instead of frame / frame80.
+    if (state.textMode) {
+        if (mem.isIIE() && state.eightyCol) paintText80(0, 24);
+        else                                paintText40(0, 24);
+        return true;
+    }
+
+    if (!state.hiRes) {
+        // Lo-res: 48 block-rows full-screen, or 40 + 4 text rows mixed.
+        if (state.mixedMode) {
+            paintLoRes40(0, 40);
+            if (mem.isIIE() && state.eightyCol) paintText80(20, 24);
+            else                                paintText40(20, 24);
+        } else {
+            paintLoRes40(0, 48);
+        }
+        return true;
+    }
+
+    // Hi-res — DHGR variant when on IIe with 80COL + DHIRES, else HGR.
+    const bool isDhgr = mem.isIIE() && state.eightyCol && state.dhgr;
+    if (state.mixedMode) {
+        if (isDhgr) paintDhgr(0, 160); else paintHgr(0, 160);
+        if (mem.isIIE() && state.eightyCol) paintText80(20, 24);
+        else                                paintText40(20, 24);
+    } else {
+        if (isDhgr) paintDhgr(0, 192); else paintHgr(0, 192);
+    }
+    return true;
 }
