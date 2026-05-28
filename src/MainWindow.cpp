@@ -1821,6 +1821,18 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Color NTSC", nullptr,
                                 cur == Apple2Display::HiResMode::ColorNTSC))
                 display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+            // MAME `composite_color_mode = 1`: same 7-bit window LUT as
+            // ColorNTSC but row 1 of the table — 8 entries differ to
+            // bias 4-dot colour runs at the cost of 40-col text.
+            if (ImGui::MenuItem("Color NTSC (medium)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorCompMedium))
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+            // MAME `composite_color_mode = 2`: skip the artifact window
+            // entirely, every 4-dot nibble → palette index direct.
+            // Sharp edges, no inter-byte fringing, more "RGB-looking".
+            if (ImGui::MenuItem("Color NTSC (4-bit square)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorComp4Bit))
+                display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
             // OpenEmulator-style composite simulation: true subcarrier
             // demodulation through a GLSL shader. Disabled until the
             // shader has had a chance to initialise — but always
