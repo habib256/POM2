@@ -76,6 +76,7 @@ set(SOURCES
     src/DiskImage.cpp
     src/DiskLibrary_ImGui.cpp
     src/EchoPlusCard.cpp
+    src/EchoPlusTMS5220Card.cpp
     src/EmulationController.cpp
     src/FloppySoundDevice.cpp
     src/HdvController_ImGui.cpp
@@ -97,6 +98,7 @@ set(SOURCES
     src/MouseCard.cpp
     src/MouseCardAppleWin.cpp
     src/NoSlotClock.cpp
+    src/GrapplerCard.cpp
     src/NtscPostProcessor.cpp
     src/OpenGLShader.cpp
     src/PhasorCard.cpp
@@ -149,6 +151,7 @@ set(HEADERS
     src/SmartPortHub.h
     src/Sony35Drive.h
     src/EchoPlusCard.h
+    src/EchoPlusTMS5220Card.h
     src/EmulationController.h
     src/FloppySoundDevice.h
     src/FloppySoundSink.h
@@ -169,6 +172,7 @@ set(HEADERS
     src/OpenGLShader.h
     src/MountableMediaCard.h
     src/Ay3_8910.h
+    src/GrapplerCard.h
     src/PhasorCard.h
     src/PrinterCard.h
     src/Ssi263.h

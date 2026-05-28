@@ -8,6 +8,50 @@ courante → `DEV.md`.
 
 ## 2026-05-28
 
+- **Audit markadev/AppleII-RevEng : 3 nouvelles cartes + correction de
+  nommage Echo+**. Suite à l'analyse du dépôt
+  https://github.com/markadev/AppleII-RevEng/ (reverse-engineering Apple
+  II avec dumps ROM, schémas KiCad, datasheets), trois ajustements
+  intégrés dans POM2 :
+  1. **`EchoPlusCard` renommé "Cricket / Echo (SSI263)"**. L'audit
+     confirme que le vrai *Street Electronics ECHO+* contient 2×
+     AY-3-8913 + TMS5220, pas un SSI263 (cf. index.md du dossier
+     `Street-Electronics-Corp-ECHO+`). La carte SSI263 existante de POM2
+     modélise en réalité la lignée **Cricket** de Street Electronics. La
+     clé catalogue `"echoplus"` reste inchangée pour la compat
+     `settings.json` ; seule l'étiquette user-visible et les commentaires
+     d'en-tête sont mis à jour. Pas d'impact comportemental.
+  2. **`ClockCard` accepte le vrai dump Thunderware U9 v1.3**. Probe
+     automatique de `roms/thunderclock_u9_v1.3.bin` (alias :
+     `thunderclock_u9.bin`, `thunderclock.rom`,
+     `Thunderware_REV_1.3_ROM_U9.bin`). Accepte 256 B (slot ROM seul)
+     ou 2 KB (slot ROM + miroir $C800-$CFFF de la même puce, conforme
+     au câblage Thunderware où la même EPROM 2 KB est décodée dans les
+     deux fenêtres). Validation de la signature ProDOS
+     `$08/$28/$58/$70` aux offsets 0/2/4/6 — fallback vers la ROM
+     synthétique si la signature est absente ou si la taille n'est ni
+     256 ni 2048 octets. Source : markadev /
+     `Thunderware-Thunderclock-Plus/Thunderware_REV_1.3_ROM_U9.bin`.
+  3. **`EchoPlusTMS5220Card` (scaffold)** — nouvelle carte clé
+     catalogue `"echoplus_tms"`, modèle minimaliste du vrai Echo+
+     (2× AY-3-8913 + TMS5220) avec decode de registre stub à
+     $Cs00-$Cs0F : permet la détection logicielle sans crasher le bus.
+     Cores LPC10 TMS5220 et synthèse AY-3-8913 différés (le second
+     attend l'extraction d'un helper synth partagé depuis
+     Mockingboard/Phasor). Audio silencieux en v1.
+  4. **`GrapplerCard` (Orange Micro)** — nouvelle carte clé catalogue
+     `"grappler"`, parallel printer ROM-gated. Charge
+     `roms/grappler_plus.bin` (4 KB) si présent : les 256 premiers
+     octets exposent `$CnXX`, les 2 KB inférieurs sont miroir dans
+     `$C800-$CFFF` (assez pour la fingerprint de détection logicielle).
+     Sans dump, fallback synth ROM identique à `PrinterCard` →
+     `PR#n` continue à fonctionner. Source : markadev /
+     `Orange-Micro-Grappler+`. Bank-switch des 2 KB supérieurs non
+     modélisé (TODO).
+  Tests : `grappler_card_smoke` ajouté (stub ROM fingerprint + spool +
+  gate de taille à 4 KB). `clock_card_smoke`, `echoplus_card_smoke`,
+  `printer_card_smoke` inchangés (zéro régression).
+
 - **Le Chat Mauve — option compat Dragon Wars (`invertBit7`)**. Le RPG
   *Dragon Wars* encode son DHGR Mixed avec le bit 7 inversé par rapport
   à la spec brevetée Video-7/Le Chat Mauve : la zone interface texte

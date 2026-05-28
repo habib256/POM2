@@ -13,6 +13,8 @@
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
 #include "EchoPlusCard.h"
+#include "EchoPlusTMS5220Card.h"
+#include "GrapplerCard.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
@@ -1039,6 +1041,41 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugEchoPlusTms = [&](int s) {
+        // Street Electronics Echo+ AS ACTUALLY SHIPPED — 2×AY-3-8913 +
+        // TMS5220. Scaffold only: register decode is present so software
+        // detects the card, but the LPC core + AY synth are deferred.
+        // Audio is silent. See EchoPlusTMS5220Card.h for the chipset
+        // sourcing notes.
+        auto card = std::make_unique<EchoPlusTMS5220Card>(s);
+        echoPlusTmsCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugGrappler = [&](int s) {
+        // Orange Micro Grappler+ — ROM-gated parallel printer. Loads
+        // roms/grappler_plus.bin if present; falls back to a synthetic
+        // stub ROM (PR#n trampoline only) so the card always plugs.
+        auto card = std::make_unique<GrapplerCard>(s);
+        static const char* kCandidates[] = {
+            "roms/grappler_plus.bin",
+            "roms/grappler+.bin",
+            "roms/grappler.bin",
+        };
+        for (const char* c : kCandidates) {
+            std::string r = pom2::findResource(c);
+            if (!r.empty() && card->loadRom(r)) break;
+        }
+        if (!card->isRomLoaded()) {
+            pom2::log().warn("Grappler",
+                "Grappler+ plugged in slot " + std::to_string(s) +
+                " without a 4 KB ROM dump (roms/grappler_plus.bin) — "
+                "graphics dump commands unavailable, PR#n still works");
+        }
+        grapplerCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugMockingboard = [&](int s, MockingboardCard::Variant variant) {
         // Mockingboard A/C — 6522×2 + AY-3-8910×2. No ROM dependency, no
         // image to mount: software detects it by writing to the VIA at
@@ -1228,6 +1265,8 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "mockingboard_c") plugMockingboard(s, MockingboardCard::Variant::SoundII);
         else if (kind == "phasor")      plugPhasor(s);
         else if (kind == "echoplus")    plugEchoPlus(s);
+        else if (kind == "echoplus_tms") plugEchoPlusTms(s);
+        else if (kind == "grappler")    plugGrappler(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",

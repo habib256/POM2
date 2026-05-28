@@ -2286,6 +2286,27 @@ add_test(NAME printer_card_smoke COMMAND test_printer_card)
 set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Grappler+ card smoke test ───────────────────────────────────────────
+# Pins the stub-ROM fingerprint (used when no roms/grappler_plus.bin dump
+# is present), the data-port spool semantics, and the 4 KB ROM-load gate
+# (wrong-size dumps are rejected so the stub stays in place).
+add_executable(test_grappler_card
+    grappler_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/GrapplerCard.cpp
+)
+target_include_directories(test_grappler_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_grappler_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    target_link_libraries(test_grappler_card PRIVATE winmm)
+endif()
+
+add_test(NAME grappler_card_smoke COMMAND test_grappler_card)
+set_tests_properties(grappler_card_smoke PROPERTIES TIMEOUT 5)
+
+
 # ─── Phasor card smoke test ──────────────────────────────────────────────
 # Pins the dual-mode Phasor: VIA register layout (dual-VIA + mirrors),
 # mode soft-switch ($C0(8+s)X bit-decode), MB-compat routing (PB3/4

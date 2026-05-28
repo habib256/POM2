@@ -1,12 +1,28 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// EchoPlusCard — Street Electronics Echo II / Echo+ standalone speech
-// card. A single SSI263A phoneme synthesiser mapped at $Cs00..$Cs04
-// (5 registers), with the chip's A/!R signal wired directly to the
-// slot IRQ line. No 6522 in the basic Echo II — speech drivers poll
-// the status register OR rely on the IRQ to know when the chip wants
-// the next phoneme.
+// EchoPlusCard — single-SSI263 speech card. Maps the chip's 5 registers
+// at $Cs00..$Cs04 with the A/!R signal wired straight to the slot IRQ
+// line — drivers either poll the status register or take the IRQ to know
+// when the next phoneme byte is wanted.
+//
+// Naming caveat (markadev/AppleII-RevEng audit, 2026-05-28)
+// ---------------------------------------------------------
+// The real Street Electronics products labelled "Echo+" and "Echo IIb"
+// did NOT use the SSI263A. Per markadev's reverse-engineering dumps:
+//
+//   * "Echo+"   = 2× AY-3-8913 + TMS5220 (LPC speech, completely different
+//                 chip family). See `EchoPlusTMS5220Card`.
+//   * "Echo IIb" = single TMS5220 (TSP5220 relabelled).
+//   * "Cricket!" = the actual Street Electronics product line that paired
+//                  an SSI263 with a slot-mapped register window — what
+//                  this card emulates.
+//
+// POM2 keeps the class name `EchoPlusCard` + catalog key `"echoplus"` for
+// settings.json compatibility; the user-visible label was updated to
+// "Cricket / Echo (SSI263)" to reflect the actual chip. New designs that
+// want the real Echo+ should use `EchoPlusTMS5220Card` (catalog key
+// `"echoplus_tms"`).
 //
 // Address map (s = slot number):
 //
@@ -68,7 +84,7 @@ public:
     bool  isMuted() const;
 
     // ─── SlotPeripheral overrides ────────────────────────────────────────
-    std::string_view name() const override { return "Echo+"; }
+    std::string_view name() const override { return "Cricket / Echo (SSI263)"; }
     uint8_t slotRomRead  (uint8_t low8) override;
     void    slotRomWrite (uint8_t low8, uint8_t v) override;
     void    advanceCycles(int cycles) override;
