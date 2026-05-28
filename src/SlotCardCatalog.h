@@ -39,6 +39,11 @@ inline constexpr CardType kCardTypes[] = {
     // file (.txt / .pdf). Built-in at slot 1 of //c / //c+, free-slot pick
     // on II / II+ / //e. No PROM dump needed.
     { "printer",      "Printer (Parallel)" },
+    // Grappler+ (Orange Micro) — parallel printer card with a 4 KB ROM
+    // providing graphics dump commands (^I G / ^I H). Requires a ROM
+    // dump in roms/grappler_plus.bin; falls back to a stub when missing.
+    // See markadev/AppleII-RevEng/Orange-Micro-Grappler+.
+    { "grappler",     "Grappler+ (Orange Micro)" },
     { "clock",        "Clock (ProDOS)"    },
     { "chatmauve",    "Le Chat Mauve"     },
     { "mouse",        "Mouse Interface"   },
@@ -56,11 +61,18 @@ inline constexpr CardType kCardTypes[] = {
     // Starts in MB-compat mode (2 active AYs), software-switchable to
     // native (4 AYs, 12 voices, doubled chip clock). Audio synth = TODO.
     { "phasor",       "Phasor (AE)"       },
-    // Echo+ (Street Electronics) — standalone SSI263 speech synth at
-    // $Cs00-$Cs04. Pairs naturally with a Mockingboard A/C at another
-    // slot. v1: register state machine + IRQ timing complete, phoneme
-    // PCM data deferred to a separate commit (LGPL question).
-    { "echoplus",     "Echo+ (SSI263)"    },
+    // Cricket / Echo-class SSI263 card — standalone SSI263 speech synth
+    // at $Cs00-$Cs04. Historically shipped under the "Echo+" label in
+    // POM2 settings (key stays "echoplus" for back-compat) but markadev's
+    // dumps confirm Street Electronics' actual Echo+ used 2× AY-3-8913
+    // + TMS5220, not the SSI263. The SSI263-based product line was the
+    // Cricket. Pairs with a Mockingboard A/C in another slot.
+    { "echoplus",     "Cricket / Echo (SSI263)" },
+    // Echo+ (real) — Street Electronics ECHO+ as actually shipped:
+    // 2× AY-3-8913 PSGs + TMS5220 speech chip. Scaffolded stub — chip
+    // models silent in v1; the register decode is enough for software
+    // detection. See markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+.
+    { "echoplus_tms", "Echo+ (TMS5220 + 2×AY)" },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

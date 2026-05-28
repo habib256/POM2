@@ -385,11 +385,19 @@ Pinned by `mockingboard_smoke::testSoundIIVariantSSI263` —
 verifies no-SSI263 on AC variant, register decode at $40-$4F,
 A/!R → IFR.CA1 latching, IER.CA1 → slot IRQ.
 
-#### EchoPlusCard
+#### EchoPlusCard (Cricket / SSI263-class — catalog `echoplus`)
 
-`EchoPlusCard` (`EchoPlusCard.h/.cpp`) — standalone SSI263 at
+`EchoPlusCard` (`EchoPlusCard.h/.cpp`) — single-SSI263 card at
 $Cs00-$Cs04, A/!R wired directly to the slot IRQ line. No 6522. Open
 bus ($FF) for the rest of the slot ROM page.
+
+**Naming caveat** — historically labelled "Echo+" in POM2's UI and
+settings, but the markadev/AppleII-RevEng audit (2026-05-28) confirms
+the real Street Electronics ECHO+ used 2× AY-3-8913 + TMS5220, not the
+SSI263. The SSI263-based Street Electronics product was the Cricket.
+The catalog key stays `"echoplus"` for `settings.json` back-compat;
+the user-visible label is now "Cricket / Echo (SSI263)". See
+[§ EchoPlusTMS5220Card](#echoplustms5220card) for the real Echo+ chipset.
 
 `advanceCycles` ticks the chip and asserts slot IRQ on A/!R edge;
 host writes to $00/$01/$02 release the IRQ. Default slot 4, pluggable
@@ -410,6 +418,32 @@ cursor under the host card's mutex. Pinned by `ssi263_smoke` test 6
 **UI**: Devices → Echo+ panel. Mode + IRQ enable + A/!R + power-down
 state + current phoneme + duration countdown (cycles + ms) + the 5
 register banks.
+
+#### EchoPlusTMS5220Card
+
+`EchoPlusTMS5220Card` (`EchoPlusTMS5220Card.h/.cpp`) — Street Electronics
+ECHO+ **as actually shipped**: 2× AY-3-8913 PSGs + TMS5220 LPC speech
+chip. Distinct from the SSI263-based `EchoPlusCard` above. Catalog
+key `"echoplus_tms"`, default slot 2.
+
+**v1 scaffold — chip cores deferred.** The card registers on the slot
+bus with a stub register decode at $Cs00-$Cs0F so software that probes
+for the chipset finds something coherent (not open bus). TMS5220 LPC
+decoding (chirp ROM, K-parameter interpolation, energy/pitch tables)
+and AY synth are both stubs — audio is silent. The provisional address
+map (pin to markadev's schematic on next pass):
+
+```
+$Cs00  TMS5220 status / data (rd = status, wr = command/data byte)
+$Cs01  TMS5220 stop / reset
+$Cs04-05  AY-3-8913 #1 (address latch / data write)
+$Cs06-07  AY-3-8913 #2 (address latch / data write)
+$Cs08-FF  open bus
+```
+
+Source: markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+ (index.md
+states "two AY-3-8913 Programmable Sound Generator chips and a TMS5220
+Speech Synthesizer chip").
 
 ### Phasor (Applied Engineering)
 
@@ -1167,6 +1201,16 @@ rising edge regardless of mode (MAME `upd1990a.cpp:312-327` gates on
 still in MODE_TIME_READ; strict gating breaks stock ProDOS. Observed
 HW permits the shortcut. Pinned: `testShiftLaxAcrossModes`.
 
+**Optional real ROM dump.** Drop `roms/thunderclock_u9_v1.3.bin` (also
+accepted: `thunderclock_u9.bin`, `thunderclock.rom`,
+`Thunderware_REV_1.3_ROM_U9.bin`) and `ClockCard` swaps the synthetic
+slot-ROM stub for the dumped U9 EPROM. Accepts 256 B (slot ROM only)
+or 2 KB (slot ROM + $C800 expansion ROM mirroring the same chip into
+both windows so the firmware's $C8nn JMP continuations resolve).
+Source: markadev/AppleII-RevEng/Thunderware-Thunderclock-Plus. The
+load path validates the $08/$28/$58/$70 ProDOS signature at
+offsets 0/2/4/6 and falls back to the synth ROM if absent.
+
 ### Printer card (parallel, synthetic)
 
 `PrinterCard` (`PrinterCard.h/.cpp`) — host-side spool that captures every
@@ -1215,6 +1259,37 @@ MAME has Mockingboard).
 
 Pinned: `printer_card_smoke` — ROM fingerprint + data-port spool
 semantics + CPU-driven `PR#1` + 3 COUT-style writes flow.
+
+### Grappler+ (Orange Micro)
+
+`GrapplerCard` (`GrapplerCard.h/.cpp`) — ROM-gated parallel printer
+card. Catalog key `"grappler"`, default slot 1. Adds two things over
+`PrinterCard`:
+
+* **4 KB real ROM** (`roms/grappler_plus.bin`, also accepted:
+  `roms/grappler+.bin`, `roms/grappler.bin`). First 256 B map at
+  `$CnXX`; the lower 2 KB of the 4 KB EPROM are mirrored into the
+  shared expansion-ROM window at `$C800-$CFFF` so Grappler-aware
+  software (e.g. AppleWorks "Printer = Grappler+") finds the ROM
+  fingerprint. Wrong-size or missing dumps are rejected with a log
+  warning; the card falls back to a synthetic stub identical in
+  shape to `PrinterCard` so `PR#n` still works.
+* **Spool semantics identical to PrinterCard.** Data port at
+  `$C0(8+s)1` enqueues bytes verbatim; the host UI saves the spool
+  as `.txt`. Grappler-graphic-dump commands (`^I G` / `^I H`) emit
+  Epson-style printer escapes — those bytes are spooled too, ready
+  for a future "render as raster" mode.
+
+**Bank switching not modelled.** Real Grappler+ exposes the upper
+2 KB of its 4 KB EPROM via a write to a $C0(8+s)X bank-select
+register. POM2 currently only serves the lower 2 KB in the expansion
+window — enough for PR#n detection + the standard graphics-dump
+entry points but not for ROM tools that probe the upper bank. Pin
+to MAME `a2grappler.cpp` on next pass.
+
+Source: markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB
+EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
++ data-port spool + ROM-load size gate.
 
 ### Mouse Card
 

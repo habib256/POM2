@@ -75,6 +75,7 @@
 #include <cstdint>
 #include <ctime>
 #include <memory>
+#include <string>
 #include <string_view>
 
 class ClockCard : public SlotPeripheral
@@ -123,9 +124,25 @@ public:
     /// caller can transfer it to a SlotBus.
     static std::unique_ptr<ClockCard> makeForTest(int slot, TimeFn fn);
 
+    // ─── Expansion ROM ($C800-$CFFF) ────────────────────────────────────
+    // Populated only when a 2 KB Thunderware U9 dump is loaded — the synth
+    // ROM and the 256 B variant leave it empty (open bus).
+    uint8_t expansionRomRead(uint16_t offset) override;
+
+    /// Was the slot ROM sourced from a real Thunderware U9 dump (vs the
+    /// synthetic ProDOS-signature stub)? Surfaced for the UI's About /
+    /// hardware-status panel.
+    bool romFromDump()           const { return romFromDump_; }
+    /// Path the dump was loaded from (empty when synthetic).
+    const std::string& romSource() const { return romSource_; }
+
 private:
     int slot;
-    std::array<uint8_t, 256> rom{};
+    std::array<uint8_t, 256>   rom{};
+    std::array<uint8_t, 0x800> expansionRom_{};   // $C800-$CFFF (2 KB)
+    bool                       expansionRomLoaded_ = false;
+    bool                       romFromDump_        = false;
+    std::string                romSource_;
     TimeFn timeFn;
 
     // ── uPD1990AC bit-bang chip state ─────────────────────────────────
@@ -188,6 +205,15 @@ private:
     bool irqPending_ = false;
 
     void buildRom();
+
+    /// Probe `roms/thunderclock_u9_v1.3.bin` (and a couple of name variants)
+    /// and load it in place of the synthetic ROM if found. Accepts a 256 B
+    /// slot-ROM-only dump or a 2 KB dump that also covers $C800-$CFFF. On
+    /// failure (missing / wrong size / signature mismatch) the synthetic
+    /// ROM stays in place. Called once from the constructor before
+    /// `onReset`. See `Thunderware Thunderclock Plus` /
+    /// `Thunderware_REV_1.3_ROM_U9.bin` in markadev/AppleII-RevEng.
+    void tryLoadDump();
 
     /// (Re)program the TP timer for a freshly-latched C0/C1/C2 mode.
     /// Only REGISTER_HOLD and the four TP modes change the rate; SHIFT /

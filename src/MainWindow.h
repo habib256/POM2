@@ -36,6 +36,8 @@ class EmulationController;
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
+class EchoPlusTMS5220Card;
+class GrapplerCard;
 class MockingboardCard;
 class MouseCard;
 class MouseCardAppleWin;
@@ -198,8 +200,10 @@ private:
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
     EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
+    EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
+    GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the

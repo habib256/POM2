@@ -35,8 +35,10 @@ Référence canonique de ce qui est porté et avec quel niveau. Les
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM seul, MCU synthétisé)                                                      |
 | 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routé comme Phasor natif ; stéréo deferred                         |
 | 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME n'implémente pas)                 | 🟢 formant synth → PCM blob 62 phonèmes (AppleWin LGPL → GPL3)                           |
-| 21 | EchoPlusCard (Street Elec)     | POM2-original    | Echo II/Echo+ hardware spec                                              | —                                                                                        |
+| 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (mislabelled "Echo+" historiquement) | 🟢 audit markadev 2026-05-28 : le vrai Echo+ = TMS5220 (cf. ligne 21bis)                |
+| 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode ; cores TMS5220 LPC + AY-3-8913 synth deferred                  |
 | 22 | PrinterCard (parallèle synth)  | POM2-original    | Convention slot 1 Apple II + Pascal 1.1 sig                              | 🟡 export PDF deferred (`.txt` OK)                                                       |
+| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 bank-switch upper 2 KB non modélisé ; stub ROM si dump absent                        |
 
 ## Quick wins
 
@@ -126,15 +128,26 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   bus 6502, share RAM via mode-switch. Débloque ludothèque CP/M
   (BASIC-80, dBase II, Turbo Pascal, WordStar). Refs MAME
   `a2softcard.cpp` + Z-80 core. *10-15 j.*
-- 🟢 **Grappler+ printer variant** — PrinterCard couvre 90 % ; manque
-  les commandes d'impression d'écran HGR (CTRL-Y séquences). Refs
-  MAME `a2grappler.cpp`. *2 j.*
+- 🟡 **Grappler+ printer (`GrapplerCard`)** — coquille ROM-gated en
+  place (catalogue `grappler`, dump `roms/grappler_plus.bin` 4 KB
+  attendu). Reste : modéliser le bank-switch du haut des 2 KB
+  ($C0(8+s)X), pinner contre MAME `a2grappler.cpp`, et le rendu raster
+  des dumps HGR vers PDF host-side. *1-2 j.*
+- 🟡 **EchoPlusTMS5220Card (vrai Echo+)** — scaffold catalogue
+  `echoplus_tms` : SlotPeripheral + decode de registre stub à
+  $Cs00-$Cs0F suffisant pour la détection. Reste : décodeur LPC10
+  TMS5220 (chirp ROM + interpolation des paramètres K) et synth audio
+  AY-3-8913 (utilisable une fois le core Mockingboard/Phasor extrait
+  en helper partagé). *~3-5 j.*
 - 🟢 **No-Slot Clock (NSC, DS1216E)** — clock qui se plogue sous une
   ROM (pattern recognition). Pour machines sans slot libre (//c).
   ThunderClock+ couvre le cas général. Refs MAME `ds1216.cpp`. *1 j.*
 - 🟢 **SSC IRQ gate SW2:6 DIP** non implémenté (MAME `a2ssc.cpp:373`).
-- 🟢 **ClockCard slot ROM** vide (256 B signature + NOPs). Vrai
-  ThunderClock+ = 2 KB driver RTS-able DOS 3.3 / Applesoft.
+- 🟢 **ClockCard slot ROM réel** — load path en place
+  (`roms/thunderclock_u9_v1.3.bin`, 256 B ou 2 KB, source
+  markadev/AppleII-RevEng). Reste à fournir le dump par défaut + tester
+  contre des outils DOS 3.3 / Applesoft qui chargent le driver depuis
+  $C800.
 - 🟡 **[P2] Liron / UniDisk 3.5 réelle (IWM en slot)** — stack déjà
   là (`IWMDevice` verbatim, `Sony35Drive`, GCR zoné, `SmartPortHub`).
   Reste `LironCard : SlotPeripheral` + ROM 343S0001.

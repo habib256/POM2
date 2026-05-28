@@ -107,7 +107,13 @@ system+video (IIe/IIc/IIc+).
     A/!R → VIA1.CA1). Drives speech in Ultima V, Crime Wave, etc.
   - **Phasor** (Applied Engineering — 2× 6522 + 4× AY-3-8913, 12 voices,
     runtime mode switch between MB-compat and Phasor-native with 2× clock).
-  - **Echo+** (Street Electronics — standalone SSI263 at `$Cs00-$Cs04`).
+  - **Cricket / Echo (SSI263)** (catalog key `echoplus` — single SSI263
+    at `$Cs00-$Cs04`, models the SSI263-based Street Electronics line
+    historically mis-labelled "Echo+" in POM2; the real Echo+ chipset
+    lives in the next entry).
+  - **Echo+ (TMS5220 + 2× AY-3-8913)** (catalog key `echoplus_tms` —
+    Street Electronics ECHO+ as actually shipped; v1 scaffold, audio
+    silent, register decode adequate for software detection).
   - **Floppy mechanical sounds** for Disk II and Sony 3.5" (cycle-driven,
     MAME samples).
 - **Storage**: Disk II 5.25" **multi-instance** (16-sector DOS 3.3 /
@@ -118,8 +124,11 @@ system+video (IIe/IIc/IIc+).
   WOZ2 with `optimal_bit_timing`. Write-back opt-in.
 - **Peripherals**: Super Serial Card (6551 ACIA + telnet bridge on
   `127.0.0.1:6502`), **Printer card** (synthetic parallel → host spool
-  → save as `.txt`, built-in slot 1 of //c/+), ProDOS Clock
-  (ThunderClock+ at `$C0C0`, TP interrupts), Apple Mouse Card
+  → save as `.txt`, built-in slot 1 of //c/+), **Grappler+** (Orange
+  Micro — same spool, ROM-gated on `roms/grappler_plus.bin` for software
+  detection), ProDOS Clock (ThunderClock+ at `$C0C0`, TP interrupts;
+  auto-loads `roms/thunderclock_u9_v1.3.bin` when present, else synth
+  ROM), Apple Mouse Card
   (M68705P3 + MC6821) + AppleWin HLE variant (no MCU ROM required),
   GLFW joystick → PADL(0/1)+PB0/1/2.
 - **Host control center**: two-column **Slot Configuration** panel
@@ -163,13 +172,15 @@ Card catalog (key → label):
 | `smartport35`    | SmartPort 3.5" (Liron-class) |
 | `ssc`            | Super Serial Card |
 | `printer`        | Printer (parallel, synthetic spool) |
-| `clock`          | ProDOS Clock (ThunderClock+) |
+| `grappler`       | Grappler+ (Orange Micro — 4 KB ROM-gated) |
+| `clock`          | ProDOS Clock (ThunderClock+ — optional 256 B / 2 KB U9 dump) |
 | `chatmauve`      | Le Chat Mauve RGB |
 | `mouse` / `mouseaw` | Mouse Card (MAME-faithful / AppleWin HLE) |
 | `mockingboard`   | Mockingboard A/C |
 | `mockingboard_c` | Mockingboard C (Sound II — adds SSI263 speech) |
 | `phasor`         | Phasor (AE — dual-mode, 4 AYs) |
-| `echoplus`       | Echo+ (standalone SSI263 speech) |
+| `echoplus`       | Cricket / Echo (SSI263) |
+| `echoplus_tms`   | Echo+ (real — TMS5220 + 2× AY-3-8913, scaffold) |
 
 Default slot layout on II / II+ / //e (everything free, user picks):
 
