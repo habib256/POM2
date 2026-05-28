@@ -1303,6 +1303,29 @@ if(UNIX AND NOT APPLE)
         ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
 
+# Headless renderer: boots Total Replay then dumps a PPM per HiResMode.
+# EXCLUDE_FROM_ALL — one-off tool, build with `make render_total_replay_modes`.
+add_executable(render_total_replay_modes EXCLUDE_FROM_ALL
+    render_total_replay_modes.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(render_total_replay_modes PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(render_total_replay_modes PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+
 
 # ─── Disk II two-drive routing smoke test ────────────────────────────────
 # Pins drive_select ($C0EA / $C0EB) routing the LSS and the legacy 32-cycle
