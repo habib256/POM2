@@ -70,6 +70,25 @@ public:
         MonoWhite,
         MonoGreen,
         MonoAmber,
+        // AppleWin-style NTSC: CPU-only cascaded-IIR composite signal
+        // simulation + 4-phase × 12-bit-history LUT (chromaLut[4][4096]).
+        // Distinct from MAME's static 7-bit-window LUT and from
+        // OpenEmulator's full subcarrier shader — see DEV.md § AppleWin
+        // NTSC. Three sub-modes selected via setAppleWinSubMode():
+        // Monitor (sharp), Tv (50% scanline blur), Idealized (no IIR).
+        // Inserted at the END of the enum on purpose — the kPhosphors
+        // table (Apple2Display.cpp:850-859) is indexed by enum value, so
+        // appending keeps the existing mono indexes stable.
+        ColorAppleWin,
+    };
+
+    // Variant selector for the ColorAppleWin path. Mirrors AppleWin's
+    // VT_COLOR_MONITOR_NTSC / VT_COLOR_TV / VT_COLOR_IDEALIZED entries.
+    enum class AppleWinSubMode {
+        Monitor,        // sharp, IIR-filtered NTSC artifact decode
+        Tv,             // Monitor + 50% line-blur to mimic a TV receiver
+        Idealized,      // no IIR — saturated artifact palette, modern
+                        //          flat-panel-friendly look
     };
 
     Apple2Display();
@@ -95,6 +114,12 @@ public:
     /// phosphor.
     void      setHiResMode(HiResMode m);
     HiResMode getHiResMode() const { return hiResMode; }
+
+    /// AppleWin sub-mode selector. Only consulted when hiResMode ==
+    /// ColorAppleWin; ignored otherwise. Switching to Tv clears the
+    /// line-blur history so the previous Monitor frame doesn't bleed.
+    void            setAppleWinSubMode(AppleWinSubMode m);
+    AppleWinSubMode getAppleWinSubMode() const { return appleWinSubMode; }
 
     /// Le Chat Mauve / Video-7 RGB card. When non-null AND its render mode
     /// is anything other than NTSC-passthrough, the hi-res renderer takes
@@ -130,7 +155,13 @@ private:
     bool useFrame80     = false;     // true for the current frame when 80-col
     const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
     HiResMode hiResMode = HiResMode::ColorNTSC;
+    AppleWinSubMode appleWinSubMode = AppleWinSubMode::Monitor;
     LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
+    // Previous-frame RGBA buffer used by ColorAppleWin's Tv sub-mode for
+    // its 50% line-blur. Same dimensions as `frame` / `frame80`; one set
+    // each so HGR and DHGR don't share state.
+    std::vector<uint32_t> appleWinPrev;
+    std::vector<uint32_t> appleWinPrev80;
     // History buffer for monochrome phosphor decay. One byte per pixel
     // (0..255 luminance). Color mode leaves this untouched; switching modes
     // clears it. We carry two parallel buffers so HGR (280×192) and DHGR

@@ -242,13 +242,28 @@ int main(int argc, char** argv)
         { Apple2Display::HiResMode::MonoWhite,        "06_MonoWhite"        },
         { Apple2Display::HiResMode::MonoGreen,        "07_MonoGreen"        },
         { Apple2Display::HiResMode::MonoAmber,        "08_MonoAmber"        },
+        { Apple2Display::HiResMode::ColorAppleWin,    "09_ColorAppleWin_Monitor" },
+        { Apple2Display::HiResMode::ColorAppleWin,    "10_ColorAppleWin_Tv"      },
+        { Apple2Display::HiResMode::ColorAppleWin,    "11_ColorAppleWin_Idealized" },
     };
 
     namespace fs = std::filesystem;
     fs::create_directories(outDir);
 
-    for (const auto& e : kModes) {
+    for (size_t idx = 0; idx < sizeof(kModes) / sizeof(kModes[0]); ++idx) {
+        const auto& e = kModes[idx];
         display.setHiResMode(e.m);
+        // For the three AppleWin entries, the enum is the same but the
+        // sub-mode varies. Pick it from the tag suffix.
+        if (e.m == Apple2Display::HiResMode::ColorAppleWin) {
+            const std::string tag = e.tag;
+            if      (tag.find("_Tv")        != std::string::npos)
+                display.setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+            else if (tag.find("_Idealized") != std::string::npos)
+                display.setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+            else
+                display.setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+        }
         display.render(mem);
         const int w = display.width();
         const int h = display.height();

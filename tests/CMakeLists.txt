@@ -803,6 +803,7 @@ set_tests_properties(audio_mixer_smoke PROPERTIES TIMEOUT 10)
 add_executable(test_hgr_render
     hgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -822,6 +823,16 @@ endif()
 add_test(NAME hgr_render_smoke COMMAND test_hgr_render)
 set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# AppleWinNtsc CPU NTSC smoke test. No Apple II ROM or Memory needed —
+# the test feeds synthetic bitstreams straight into AppleWinNtsc.
+add_executable(test_applewin_ntsc
+    applewin_ntsc_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+)
+target_include_directories(test_applewin_ntsc PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME applewin_ntsc_smoke COMMAND test_applewin_ntsc)
+set_tests_properties(applewin_ntsc_smoke PROPERTIES TIMEOUT 5)
+
 
 # ─── Le Chat Mauve RGB card smoke test ────────────────────────────────────
 # Pins the FIFO clocking (Arlequin AN3+80COL sequence), the direct-from-
@@ -834,6 +845,7 @@ set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_le_chat_mauve
     le_chat_mauve_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1308,6 +1320,8 @@ endif()
 add_executable(render_total_replay_modes EXCLUDE_FROM_ALL
     render_total_replay_modes.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
     ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
@@ -1576,6 +1590,7 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
@@ -1592,6 +1607,7 @@ endif()
 add_executable(cffa_boot_dump EXCLUDE_FROM_ALL
     cffa_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
     ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
@@ -1703,6 +1719,7 @@ set_tests_properties(iie_lc_paging_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_dhgr_render
     dhgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1727,6 +1744,7 @@ set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_video7_parity
     video7_parity_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -1755,6 +1773,7 @@ set_tests_properties(video7_parity_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_display_persistence
     display_persistence_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -2684,6 +2703,7 @@ add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp

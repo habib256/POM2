@@ -185,7 +185,7 @@ RGBA. Reads `Memory::getDisplayState()` (mutex copy) + flat RAM.
 UI uploads via `glTex(Sub)Image2D`. Text flash via
 `frame_number() & 0x10` (MAME parity).
 
-Eight `HiResMode`:
+Nine `HiResMode`:
 - `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups,
   glow (MAME `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
@@ -194,6 +194,12 @@ Eight `HiResMode`:
   via GLSL shader (see § Composite NTSC shader below).
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer
   lerp).
+- `ColorAppleWin` — AppleWin-style IIR-based NTSC simulation
+  via 4-phase × 4096-entry CPU LUT (see § AppleWin NTSC below).
+
+The deep per-mode comparison with each origin source — algorithm
+provenance, deviations, pinned tests and side-by-side captures —
+lives in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
 
 ### DHGR (IIe, `eightyCol && hiRes && dhgr && !textMode`)
 
@@ -307,6 +313,46 @@ If shader compilation fails (driver too old, GLES2-only context,
 falls back to the regular `ColorNTSC` LUT framebuffer for the mode —
 the menu entry stays usable but the result is indistinguishable
 from `ColorNTSC` until the GL state catches up.
+
+### AppleWin NTSC (`ColorAppleWin`)
+
+Re-implementation of AppleWin's CPU-side NTSC composite simulation
+(`source/NTSC.cpp` by Sheldon Simms / Tom Charlesworth / Michael
+Pohoreski — GPL v2+). POM2 rewrites the algorithm from the public
+description; no AppleWin source is copied, POM2 keeps its license.
+
+Consumes the same 14.318 MHz luminance bitstream `fillCompositeSignal`
+generates for `ColorCompositeOE`. Decoding happens through a static
+`chromaLut[4][4096]` (~64 KB) built once at first use by
+`AppleWinNtsc::ensureInitialized()` (`src/AppleWinNtsc.cpp`):
+
+- Walk the 12-bit history sample by sample. The window is *centred* on
+  the output pixel (`kCenterDelay = 6`, mirror-padded at the line
+  edges) so chroma extraction sees both past and future context.
+- Per (phase, 12-bit history): compute luma as a narrow gaussian
+  average (sigma 1.5) and chroma I/Q by DC-removed wide gaussian
+  (sigma 3.0) projected onto sin/cos at the local subcarrier phase
+  (π/2 per dot — Apple II's 4× alignment). Saturation boost ×10
+  compensates the broad filter's attenuation.
+- YIQ → RGB via the standard FCC matrix (same one
+  `NtscPostProcessor.cpp` uses on the GPU side), packed RGBA.
+
+Three sub-modes via `Apple2Display::AppleWinSubMode`:
+
+- **Monitor** — straight LUT lookup. Sharp, full composite artifacts.
+- **TV** — Monitor + 50% blend with the previous frame's same scanline
+  (`appleWinPrev80` buffer in `Apple2Display`). Approximates the
+  vertical phosphor persistence + comb-filter blur of a consumer TV.
+- **Idealized** — bypass the IIR LUT entirely, use a 4-phase × 16
+  nibble palette table (`idealizedLut`) with chroma boost ×8. No
+  transient ringing, no chroma roll-off — modern flat-panel-friendly.
+
+Pinned by `applewin_ntsc_smoke` (idempotent init, all-black/all-white
+sanity, $7F neutral luma, Idealized artifact non-black, Tv convergence
+toward Monitor, multi-line wrapping).
+
+Full mode-by-mode comparison vs MAME / OpenEmulator / hardware lives
+in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
 
 ### Test framework gotcha
 

@@ -261,6 +261,14 @@ MainWindow::MainWindow(bool forceIIPlus)
         else if (mode == "MonoWhite")       display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
         else if (mode == "MonoGreen")       display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
         else if (mode == "MonoAmber")       display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+        else if (mode == "ColorAppleWin")   display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        // AppleWin sub-mode (Monitor / Tv / Idealized).
+        {
+            const std::string s = settings->getString("applewin_submode", "monitor");
+            if      (s == "tv")        display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+            else if (s == "idealized") display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+            else                       display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+        }
 
         pixelScale         = settings->getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
@@ -618,10 +626,20 @@ MainWindow::~MainWindow()
             case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
             case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
             case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
+            case Apple2Display::HiResMode::ColorAppleWin:    return "ColorAppleWin";
         }
         return "ColorNTSC";
     };
     settings->setString("hi_res_mode", modeName(display->getHiResMode()));
+    {
+        const char* sub = "monitor";
+        switch (display->getAppleWinSubMode()) {
+            case Apple2Display::AppleWinSubMode::Monitor:   sub = "monitor";   break;
+            case Apple2Display::AppleWinSubMode::Tv:        sub = "tv";        break;
+            case Apple2Display::AppleWinSubMode::Idealized: sub = "idealized"; break;
+        }
+        settings->setString("applewin_submode", sub);
+    }
     settings->setFloat ("pixel_scale", pixelScale);
     settings->setBool  ("show_disk_panel", showDiskPanel);
     settings->setBool  ("show_disk35_panel", showDisk35Panel);
@@ -1828,6 +1846,32 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Mono Amber",  nullptr,
                                 cur == Apple2Display::HiResMode::MonoAmber))
                 display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+            // AppleWin-style NTSC (CPU IIR + 4-phase LUT). Sub-mode
+            // (Monitor / TV / Idealized) selectable in the nested
+            // submenu — switching the parent always re-selects whatever
+            // sub-mode was last active, so the user doesn't have to
+            // redrill down each time.
+            ImGui::Separator();
+            const auto sub = display->getAppleWinSubMode();
+            const bool awSel = (cur == Apple2Display::HiResMode::ColorAppleWin);
+            if (ImGui::BeginMenu(awSel ? "AppleWin NTSC ●" : "AppleWin NTSC")) {
+                if (ImGui::MenuItem("Monitor (sharp)", nullptr,
+                                    awSel && sub == Apple2Display::AppleWinSubMode::Monitor)) {
+                    display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+                    display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+                }
+                if (ImGui::MenuItem("TV (50% line blur)", nullptr,
+                                    awSel && sub == Apple2Display::AppleWinSubMode::Tv)) {
+                    display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+                    display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+                }
+                if (ImGui::MenuItem("Idealized (saturated)", nullptr,
+                                    awSel && sub == Apple2Display::AppleWinSubMode::Idealized)) {
+                    display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+                    display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
         ImGui::MenuItem("CRT Settings (Composite NTSC)...",
