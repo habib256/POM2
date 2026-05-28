@@ -25,3 +25,7 @@ tests/CMakeCache.txt
 tests/cmake_install.cmake
 tests/CTestTestfile.cmake
 tests/Makefile
+
+# Scratch dir for `render_total_replay_modes` — the curated capture
+# subset lives in docs/img/ instead.
+mode_captures/
