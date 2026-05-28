@@ -949,6 +949,8 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         using Mode = LeChatMauveCard::RenderMode;
         const Mode mode = chatMauve->currentMode();
         const bool monochrome = (mode == Mode::BW560);
+        // Dragon Wars compatibility — flips the per-byte palette-bank flag.
+        const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
 
         for (int y = firstScanline; y < lastScanline; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
@@ -957,7 +959,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
             uint8_t  pixels[kWidth];
             uint8_t  msbHigh[40];
             for (int col = 0; col < 40; ++col) {
-                const uint8_t b = ram[rowAddr + col];
+                const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
                 msbHigh[col] = (b >> 7) & 1u;
                 pixels[col * 7 + 0] = (b >> 0) & 1u;
                 pixels[col * 7 + 1] = (b >> 1) & 1u;
@@ -1191,6 +1193,7 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
     using Mode = LeChatMauveCard::RenderMode;
     const Mode mode = chatMauve->currentMode();
     const bool monochrome = (mode == Mode::BW560);
+    const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
 
     uint8_t  pixels[kWidth];     // 280 raw HGR bits
     uint8_t  msbHigh[40];        // per-byte palette-bank flag
@@ -1199,7 +1202,7 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
         const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
 
         for (int col = 0; col < 40; ++col) {
-            const uint8_t b = ram[rowAddr + col];
+            const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
             msbHigh[col] = static_cast<uint8_t>((b >> 7) & 1u);
             pixels[col * 7 + 0] = static_cast<uint8_t>((b >> 0) & 1u);
             pixels[col * 7 + 1] = static_cast<uint8_t>((b >> 1) & 1u);
@@ -1445,11 +1448,15 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                 // source byte's MSB picks colour (1) vs bit-mapped mono (0)
                 // for its seven dots. MAME `apple2video.cpp:946-977`.
                 const bool colorAll = (rmode == Mode::COL140);
+                // Dragon Wars compatibility — flip the Mixed-mode bit-7
+                // selector (no-op in COL140 where bit 7 is ignored anyway).
+                const uint8_t bit7Xor = (rmode == Mode::Mixed && chatMauve->invertBit7())
+                                            ? uint8_t{0x80} : uint8_t{0};
                 for (int c = 0; c < 40; c += 2) {
-                    const uint8_t a0 = aux_ [rowAddr + c];
-                    const uint8_t m0 = main_[rowAddr + c];
-                    const uint8_t a1 = aux_ [rowAddr + c + 1];
-                    const uint8_t m1 = main_[rowAddr + c + 1];
+                    const uint8_t a0 = aux_ [rowAddr + c]     ^ bit7Xor;
+                    const uint8_t m0 = main_[rowAddr + c]     ^ bit7Xor;
+                    const uint8_t a1 = aux_ [rowAddr + c + 1] ^ bit7Xor;
+                    const uint8_t m1 = main_[rowAddr + c + 1] ^ bit7Xor;
                     const unsigned w =
                           (a0 & 0x7Fu)
                         | (static_cast<unsigned>(m0 & 0x7Fu) << 7)

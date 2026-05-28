@@ -6,6 +6,27 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-28
+
+- **Le Chat Mauve — option compat Dragon Wars (`invertBit7`)**. Le RPG
+  *Dragon Wars* encode son DHGR Mixed avec le bit 7 inversé par rapport
+  à la spec brevetée Video-7/Le Chat Mauve : la zone interface texte
+  passe en bouillie monochrome 560 et la zone graphique en couleur 140
+  illisible si le décodeur applique la spec à la lettre. Nouvel état
+  `LeChatMauveCard::invertBit7_` (off par défaut = strict brevet) ;
+  quand activé, XOR `0x80` est appliqué aux octets sources avant
+  l'extraction de la bank-flag (HGR 6-couleurs) et du sélecteur
+  color/mono (DHGR Mixed). N'affecte ni COL140 (bit 7 ignoré), ni BW560
+  (bit 7 ignoré), ni Chunky160 (où bit 7 = données, pas un flag). CLI
+  `--rgb-card-invert-bit7[=on|off]` (parité avec AppleWin), checkbox UI
+  dans le panneau Slot 7, clé Settings `chatmauve_invert_bit7`
+  persistante. Pin : `le_chat_mauve_smoke` section #5 — `$01` à
+  col 0 vire de Feline MAGENTA à Feline BLUE quand le flag passe à on,
+  et inversement pour `$81`. Panneau ImGui mis à jour : DHGR /
+  Color-TEXT fg/bg ne sont plus listés comme "hors scope" (livrés
+  précédemment) ; seule la famille Eve (`$C0B9` Color TEXT lock + HGR
+  Duochrome) reste explicitement hors scope.
+
 ## 2026-05-27
 
 - **Mockingboard Sound II — SSI263 intégré à MB**. Nouveau

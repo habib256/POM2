@@ -96,6 +96,12 @@ public:
     EmulationController& emul();
     Apple2Display&       displayRef();
 
+    /// Read/write the Le Chat Mauve "Dragon Wars compatibility" toggle
+    /// from main()'s Phase-B CLI handler. No-ops (returns false) when no
+    /// LeChatMauveCard is plugged at boot. Persists to Settings so the
+    /// next session picks it up automatically.
+    bool setChatMauveInvertBit7(bool v);
+
     void setGlfwWindow(GLFWwindow* w);
     void render();
 
