@@ -60,6 +60,7 @@ set(SOURCES
     src/MemoryProfile_IIcClass.cpp
     src/AiControlServer.cpp
     src/Apple2Display.cpp
+    src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp
@@ -134,6 +135,7 @@ set(HEADERS
     src/MemoryProfile_IIcClass.h
     src/AiControlServer.h
     src/Apple2Display.h
+    src/AppleWinNtsc.h
     src/AtaBlockDevice.h
     src/AudioDevice.h
     src/CassetteDevice.h

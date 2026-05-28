@@ -41,6 +41,37 @@ struct NtscParams
     // Scanlines + barrel are pure post-effects (no NTSC physics).
     float scanlines   = 0.25f;  // 0 = off, 1 = black between every line
     float barrel      = 0.05f;  // 0 = flat, 0.2 = old curved CRT
+
+    // Shadow-mask emulation (post-effect, after demodulation). The mask
+    // is a multiplicative pattern in RGB space — triad (3-stripe RGB
+    // mask of consumer TVs), aperture grille (vertical RGB stripes of
+    // Trinitron/Sony), or Bayer-like dot-mask (offset triads). Strength
+    // 0 = off (the GPU bypasses the mask multiplication entirely);
+    // strength 1 = full darkening of the off-channels in each cell.
+    enum class ShadowMask : int {
+        Off            = 0,
+        Triad          = 1,   // classic 3-stripe shadow mask
+        ApertureGrille = 2,   // Trinitron vertical stripes
+        Dot            = 3,   // offset triads (consumer CRT)
+    };
+    ShadowMask shadowMask         = ShadowMask::Off;
+    float      shadowMaskStrength = 0.5f;  // 0..1
+
+    // PAL composite mode: alternates the Q-subcarrier sign every other
+    // scanline (line-phase alternation). On a real PAL TV this cancels
+    // hue errors at the cost of vertical chroma resolution; here it
+    // produces the characteristic softer-coloured European Apple II
+    // look. Off by default — POM2 ships defaults that match the NTSC
+    // Apple II that 90% of users have in mind.
+    bool palMode = false;
+
+    // When ColorCompositeOE is selected and the Apple II is in TEXT
+    // mode (40 or 80 col), this toggle decides whether the shader
+    // demodulates the glyph bit-stream (composite-faithful, but blurry
+    // for white-on-black text) or whether MainWindow draws the sharp
+    // RGB framebuffer directly (legible, but breaks immersion). On by
+    // default — readability wins for daily use.
+    bool textSharp = true;
 };
 
 class NtscPostProcessor
@@ -112,6 +143,9 @@ private:
     int uScanlines   = -1;
     int uBarrel      = -1;
     int uSignalSize  = -1;
+    int uShadowMask  = -1;
+    int uShadowStr   = -1;
+    int uPalMode     = -1;
 
     int outW    = 0;
     int outH    = 0;

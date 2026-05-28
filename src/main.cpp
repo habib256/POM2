@@ -104,13 +104,16 @@ int main(int argc, char* argv[])
     if (!plan)         return 1;
 
 #ifdef __EMSCRIPTEN__
-    // WASM default experience: //c profile booting Total Replay from the
-    // floppyemu/ bundle. The browser has no CLI, so we inject these as if
-    // the user had typed `--preset iic <hdv>`. Honour anything already set
-    // (e.g. via URL-driven arguments wired through the shell) so future
-    // launch overrides keep working.
+    // WASM default experience: //c+ profile booting Total Replay from the
+    // floppyemu/ bundle. The //c+ comes up at 4× (defaultCyclesPerFrame =
+    // 68180), which is what feels right in a browser — the plain //c
+    // would land at 1× and disk-turbo is off by default. The browser has
+    // no CLI, so we inject these as if the user had typed
+    // `--preset iic+ <hdv>`. Honour anything already set (e.g. via
+    // URL-driven arguments wired through the shell) so future launch
+    // overrides keep working.
     if (plan->preset == pom2::CliPreset::Default) {
-        plan->preset = pom2::CliPreset::AppleIIc;
+        plan->preset = pom2::CliPreset::AppleIIcPlus;
     }
     if (plan->bootDiskPath.empty()) {
         plan->bootDiskPath = "floppyemu/Total Replay v5.2.hdv";

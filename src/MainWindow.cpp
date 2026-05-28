@@ -261,6 +261,14 @@ MainWindow::MainWindow(bool forceIIPlus)
         else if (mode == "MonoWhite")       display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
         else if (mode == "MonoGreen")       display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
         else if (mode == "MonoAmber")       display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+        else if (mode == "ColorAppleWin")   display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        // AppleWin sub-mode (Monitor / Tv / Idealized).
+        {
+            const std::string s = settings->getString("applewin_submode", "monitor");
+            if      (s == "tv")        display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+            else if (s == "idealized") display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+            else                       display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+        }
 
         pixelScale         = settings->getFloat("pixel_scale",     pixelScale);
         showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
@@ -336,6 +344,14 @@ MainWindow::MainWindow(bool forceIIPlus)
             p.persistence = settings->getFloat("ntsc_persistence", p.persistence);
             p.scanlines   = settings->getFloat("ntsc_scanlines",   p.scanlines);
             p.barrel      = settings->getFloat("ntsc_barrel",      p.barrel);
+            p.shadowMaskStrength = settings->getFloat(
+                "ntsc_shadow_strength", p.shadowMaskStrength);
+            const int sm = settings->getInt("ntsc_shadow_mask",
+                                            static_cast<int>(p.shadowMask));
+            p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
+                std::clamp(sm, 0, 3));
+            p.palMode    = settings->getBool("ntsc_pal",        p.palMode);
+            p.textSharp  = settings->getBool("ntsc_text_sharp", p.textSharp);
             ntscFx = std::make_unique<pom2::NtscPostProcessor>();
             ntscFx->setParams(p);
         }
@@ -610,10 +626,20 @@ MainWindow::~MainWindow()
             case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
             case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
             case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
+            case Apple2Display::HiResMode::ColorAppleWin:    return "ColorAppleWin";
         }
         return "ColorNTSC";
     };
     settings->setString("hi_res_mode", modeName(display->getHiResMode()));
+    {
+        const char* sub = "monitor";
+        switch (display->getAppleWinSubMode()) {
+            case Apple2Display::AppleWinSubMode::Monitor:   sub = "monitor";   break;
+            case Apple2Display::AppleWinSubMode::Tv:        sub = "tv";        break;
+            case Apple2Display::AppleWinSubMode::Idealized: sub = "idealized"; break;
+        }
+        settings->setString("applewin_submode", sub);
+    }
     settings->setFloat ("pixel_scale", pixelScale);
     settings->setBool  ("show_disk_panel", showDiskPanel);
     settings->setBool  ("show_disk35_panel", showDisk35Panel);
@@ -649,6 +675,10 @@ MainWindow::~MainWindow()
         settings->setFloat("ntsc_persistence", p.persistence);
         settings->setFloat("ntsc_scanlines",   p.scanlines);
         settings->setFloat("ntsc_barrel",      p.barrel);
+        settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
+        settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
+        settings->setBool ("ntsc_pal",         p.palMode);
+        settings->setBool ("ntsc_text_sharp",  p.textSharp);
     }
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
@@ -1791,11 +1821,21 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Color NTSC", nullptr,
                                 cur == Apple2Display::HiResMode::ColorNTSC))
                 display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
-            // OpenEmulator-style composite simulation: true subcarrier
-            // demodulation through a GLSL shader. Disabled until the
-            // shader has had a chance to initialise — but always
-            // selectable since the first frame of the new mode does the
-            // setup. Opens the CRT Settings window for the eight knobs.
+            // MAME `composite_color_mode = 1`: same 7-bit window LUT as
+            // ColorNTSC but row 1 of the table — 8 entries differ to
+            // bias 4-dot colour runs at the cost of 40-col text.
+            if (ImGui::MenuItem("Color NTSC (medium)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorCompMedium))
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+            // MAME `composite_color_mode = 2`: skip the artifact window
+            // entirely, every 4-dot nibble → palette index direct.
+            // Sharp edges, no inter-byte fringing, more "RGB-looking".
+            if (ImGui::MenuItem("Color NTSC (4-bit square)", nullptr,
+                                cur == Apple2Display::HiResMode::ColorComp4Bit))
+                display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
+            // OpenEmulator-style composite simulation (true subcarrier
+            // demodulation through a GLSL shader). Selectable directly,
+            // just like the other modes — presets live below.
             if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
                                 cur == Apple2Display::HiResMode::ColorCompositeOE))
                 display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
@@ -1816,6 +1856,80 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem("Mono Amber",  nullptr,
                                 cur == Apple2Display::HiResMode::MonoAmber))
                 display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+            // AppleWin-style NTSC (CPU IIR + 4-phase LUT). Clicking
+            // switches to ColorAppleWin with the previously selected
+            // sub-mode. Sub-mode picker lives below.
+            if (ImGui::MenuItem("AppleWin NTSC", nullptr,
+                                cur == Apple2Display::HiResMode::ColorAppleWin))
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+
+            // ── Sub-mode / preset pickers ────────────────────────────
+            // OE presets and AppleWin sub-modes — independent of the
+            // mode selector above so the user can flip between them
+            // without re-drilling. Selecting a preset also switches to
+            // the matching mode (one-click usability). Sub-rows
+            // disable themselves when their parent mode is inactive,
+            // so the menu hierarchy stays readable but the user can
+            // always force-select by clicking the mode line above.
+            ImGui::Separator();
+            ImGui::TextDisabled("OpenEmulator presets");
+            const bool oeSel = (cur == Apple2Display::HiResMode::ColorCompositeOE);
+            auto applyOePreset = [&](const char* preset) {
+                pom2::NtscParams p = ntscFx ? ntscFx->getParams()
+                                            : pom2::NtscParams{};
+                if (std::string(preset) == "monitor") {
+                    p.sharpness = 0.8f; p.scanlines = 0.10f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Off;
+                    p.barrel = 0.0f; p.palMode = false;
+                } else if (std::string(preset) == "tv") {
+                    p.sharpness = 0.4f; p.scanlines = 0.40f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.08f; p.palMode = false;
+                } else if (std::string(preset) == "trinitron") {
+                    p.sharpness = 0.6f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
+                    p.shadowMaskStrength = 0.5f;
+                    p.barrel = 0.03f; p.palMode = false;
+                } else if (std::string(preset) == "pal") {
+                    p.sharpness = 0.4f; p.scanlines = 0.30f;
+                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                    p.shadowMaskStrength = 0.4f;
+                    p.barrel = 0.05f; p.palMode = true;
+                }
+                if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+                ntscFx->setParams(p);
+                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+            };
+            if (ImGui::MenuItem("  Monitor (sharp, no mask)"))
+                applyOePreset("monitor");
+            if (ImGui::MenuItem("  TV (scanlines + triad mask)"))
+                applyOePreset("tv");
+            if (ImGui::MenuItem("  Trinitron (aperture grille)"))
+                applyOePreset("trinitron");
+            if (ImGui::MenuItem("  PAL TV (European)"))
+                applyOePreset("pal");
+
+            ImGui::Separator();
+            ImGui::TextDisabled("AppleWin NTSC sub-mode");
+            const auto sub = display->getAppleWinSubMode();
+            const bool awSel = (cur == Apple2Display::HiResMode::ColorAppleWin);
+            if (ImGui::MenuItem("  Monitor (sharp)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Monitor)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            if (ImGui::MenuItem("  TV (50% line blur)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Tv)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            if (ImGui::MenuItem("  Idealized (saturated)", nullptr,
+                                awSel && sub == Apple2Display::AppleWinSubMode::Idealized)) {
+                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+            }
+            (void)oeSel;
             ImGui::EndMenu();
         }
         ImGui::MenuItem("CRT Settings (Composite NTSC)...",
@@ -1935,8 +2049,17 @@ void MainWindow::drawScreenImage()
     // we fall back to the regular `screenTexture` for the rest of the
     // session — no crashes, no flicker, just the existing LUT view.
     unsigned int presentTex = screenTexture;
-    if (display->getHiResMode() == Apple2Display::HiResMode::ColorCompositeOE
-        && display->signalProduced()) {
+    // Sharp-text override: when the user wants legible text under the
+    // composite mode, skip the shader for TEXT scanlines and let the
+    // crisp RGB framebuffer go straight to ImGui. The Apple II's text
+    // mode is full-screen — never mixed with HGR — so we either run the
+    // shader on the whole frame or not at all.
+    const auto displayState = controller->memory().getDisplayState();
+    const bool oeMode = display->getHiResMode()
+                      == Apple2Display::HiResMode::ColorCompositeOE;
+    const bool wantSharpText = ntscFx && ntscFx->getParams().textSharp
+                            && displayState.textMode;
+    if (oeMode && display->signalProduced() && !wantSharpText) {
         if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
         if (!ntscFx->available() && !ntscFx->initialize()) {
             // initialize() already logged the failure. Stop trying so
@@ -2677,6 +2800,35 @@ void MainWindow::renderNtscSettingsWindow()
     ImGui::Separator();
     changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f);
     changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f);
+
+    ImGui::Separator();
+    // Shadow mask: combo + strength slider. Procedural — no texture
+    // upload, no perf cost when Off.
+    static const char* kMaskNames[] = {
+        "Off", "Triad (3-stripe)", "Aperture grille (Trinitron)",
+        "Dot mask (offset triads)"
+    };
+    int maskIdx = static_cast<int>(p.shadowMask);
+    if (ImGui::Combo("Shadow mask", &maskIdx, kMaskNames,
+                     IM_ARRAYSIZE(kMaskNames))) {
+        p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(maskIdx);
+        changed = true;
+    }
+    ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
+    changed |= ImGui::SliderFloat("Mask strength",
+                                  &p.shadowMaskStrength, 0.0f, 1.0f);
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    // PAL composite — line-phase alternation. Off by default (POM2
+    // ships with the NTSC look most users associate with the Apple II).
+    changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
+                               &p.palMode);
+    // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping
+    // the shader for the whole text screen. HGR/DHGR/lo-res still run
+    // through the demodulator.
+    changed |= ImGui::Checkbox("Sharp text (bypass shader in TEXT mode)",
+                               &p.textSharp);
 
     ImGui::Spacing();
     if (ImGui::Button("Reset to defaults")) {
