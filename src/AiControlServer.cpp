@@ -30,6 +30,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -458,15 +459,36 @@ void AiControlServer::stop()
 void AiControlServer::runWorker()
 {
     while (!stopRequested_) {
-        sockaddr_in peer{};
-        socklen_t peerLen = sizeof(peer);
         const int listenFd = listenFd_.load(std::memory_order_acquire);
         if (listenFd < 0) break;
+
+        // Poll the listen fd with a short timeout instead of blocking inside
+        // accept(). `shutdown(listen_fd, SHUT_RDWR)` wakes accept() on Linux
+        // but NOT on macOS/BSD — there the worker stays parked in accept()
+        // forever and stop() hangs in worker_.join() (reproduced as the
+        // ai_control_server_smoke ctest timeout: the binary completes every
+        // assertion, then dies in stop()). Polling caps stop() latency to
+        // one poll interval without burning CPU between requests (the kernel
+        // sleeps in poll() exactly the same as it would in accept()).
+        struct pollfd pfd{};
+        pfd.fd     = listenFd;
+        pfd.events = POLLIN;
+        const int pr = ::poll(&pfd, 1, 200);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pr == 0) continue;   // timeout → re-check stopRequested_
+        // listen fd invalidated under us (stop() shutdown / close).
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+
+        sockaddr_in peer{};
+        socklen_t peerLen = sizeof(peer);
         const int fd = ::accept(listenFd,
                                 reinterpret_cast<sockaddr*>(&peer), &peerLen);
         if (fd < 0) {
             if (stopRequested_) break;
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             break;
         }
         int yes = 1;
