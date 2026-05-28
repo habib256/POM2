@@ -102,6 +102,23 @@ public:
     void setInvertBit7(bool v) { invertBit7_ = v; }
     bool invertBit7() const    { return invertBit7_; }
 
+    // Eve Color TEXT master enable — soft-switched on real hardware at
+    // $C0B9 (set) / $C0B8 (clear). Default = enabled so software that
+    // doesn't poke the Eve register still gets the Video-7 fg/bg text
+    // path that has been live for a while (preserves backward
+    // compatibility with the rest of POM2's IIe TEXT+AN3 pipeline).
+    void setColorTextEnabled(bool v) { colorTextEnabled_ = v; }
+    bool colorTextEnabled() const    { return colorTextEnabled_; }
+
+    // Eve HGR Duochrome — soft-switched at $C0BB (set) / $C0BA (clear).
+    // When on, standard HGR ($2000-$3FFF in MAIN) renders with per-byte
+    // foreground/background colour pairs sourced from AUX at the matching
+    // address (high nibble = fg lo-res index, low nibble = bg). Off
+    // (default) keeps the 6-colour HGR bank/pair decode the Féline and
+    // Video-7 ship with.
+    void setHgrDuochromeEnabled(bool v) { hgrDuochromeEnabled_ = v; }
+    bool hgrDuochromeEnabled() const    { return hgrDuochromeEnabled_; }
+
 private:
     int         slot_;
     bool        an3Prev          = true;           // AN3 powers up HIGH (DHIRES off)
@@ -109,6 +126,8 @@ private:
     uint8_t     fifo             = 0b11;           // 2 bits, MSB shifted out
     RenderMode  mode             = RenderMode::COL140;
     bool        invertBit7_      = false;          // Dragon Wars compatibility
+    bool        colorTextEnabled_   = true;        // Eve $C0B8/$C0B9
+    bool        hgrDuochromeEnabled_= false;       // Eve $C0BA/$C0BB
 
     void clockFifo(bool dataBit);
 };

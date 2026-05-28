@@ -52,6 +52,26 @@ courante → `DEV.md`.
   gate de taille à 4 KB). `clock_card_smoke`, `echoplus_card_smoke`,
   `printer_card_smoke` inchangés (zéro régression).
 
+- **Le Chat Mauve Eve — Color TEXT master enable + HGR Duochrome**.
+  Le panneau Slot 7 listait deux fonctionnalités Eve "hors scope" :
+  livrées. **$C0B8/$C0B9** = bascule maître du Color TEXT (par défaut
+  ON pour préserver la pipeline Video-7 historique ; un strobe `LDA
+  $C0B8` la coupe et la TEXT 40-col + AN3 retombe sur le rendu mono
+  IIe standard). **$C0BA/$C0BB** = HGR Duochrome (off par défaut) :
+  bitmap dans MAIN $2000-$3FFF comme du HGR normal, métadonnées
+  couleur par octet dans AUX à l'offset image (quartet haut = fg
+  index palette lo-res, quartet bas = bg). Nouveau path
+  `Apple2Display::renderHgrDuochrome` qui dessine en frame80 à 560
+  natif (chaque pixel HGR doublé en 2 dots). La dispatch dans
+  `Memory::softSwitchAccess` broadcast les accès `$C0B8-$C0BB` via
+  `slots.broadcastVideoSwitch` (lecture ET écriture — le rapport dit
+  "écriture" mais les conventions Apple II acceptent les deux ; ne
+  coûte rien d'être tolérant). Settings persistés
+  (`chatmauve_color_text`, `chatmauve_hgr_duochrome`). Pin :
+  `le_chat_mauve_smoke` sections #6 ($C0B8/9 toggle) + #7 (Duochrome
+  fg/bg + fallback 6-couleurs après $C0BA). Tests IIe Memory restent
+  verts (la broadcast s'ajoute sans modifier la routing existante).
+
 - **Le Chat Mauve — option compat Dragon Wars (`invertBit7`)**. Le RPG
   *Dragon Wars* encode son DHGR Mixed avec le bit 7 inversé par rapport
   à la spec brevetée Video-7/Le Chat Mauve : la zone interface texte

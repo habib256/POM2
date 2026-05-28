@@ -983,8 +983,14 @@ void MainWindow::plugSlotsFromSettings()
     auto plugChatMauve = [&](int s) {
         auto card = std::make_unique<LeChatMauveCard>(s);
         chatMauveCard = card.get();
-        if (settings)
-            chatMauveCard->setInvertBit7(settings->getBool("chatmauve_invert_bit7", false));
+        if (settings) {
+            chatMauveCard->setInvertBit7(
+                settings->getBool("chatmauve_invert_bit7", false));
+            chatMauveCard->setColorTextEnabled(
+                settings->getBool("chatmauve_color_text", true));
+            chatMauveCard->setHgrDuochromeEnabled(
+                settings->getBool("chatmauve_hgr_duochrome", false));
+        }
         controller->memory().slotBus().plug(s, std::move(card));
         display->setChatMauveCard(chatMauveCard);
     };
@@ -3292,12 +3298,14 @@ void MainWindow::renderChatMauvePanelWindow()
     pom2::LeChatMauve_ImGui::Snapshot snap;
     if (chatMauveCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.plugged    = true;
-        snap.mode       = chatMauveCard->currentMode();
-        snap.fifoBits   = chatMauveCard->fifoBits();
-        snap.eightyCol  = chatMauveCard->eightyCol();
-        snap.an3High    = chatMauveCard->an3High();
-        snap.invertBit7 = chatMauveCard->invertBit7();
+        snap.plugged         = true;
+        snap.mode            = chatMauveCard->currentMode();
+        snap.fifoBits        = chatMauveCard->fifoBits();
+        snap.eightyCol       = chatMauveCard->eightyCol();
+        snap.an3High         = chatMauveCard->an3High();
+        snap.invertBit7      = chatMauveCard->invertBit7();
+        snap.colorTextEnable = chatMauveCard->colorTextEnabled();
+        snap.hgrDuochrome    = chatMauveCard->hgrDuochromeEnabled();
     }
 
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
@@ -3320,6 +3328,20 @@ void MainWindow::renderChatMauvePanelWindow()
             chatMauveCard->setInvertBit7(result.invertBit7To);
         }
         if (settings) settings->setBool("chatmauve_invert_bit7", result.invertBit7To);
+    }
+    if (chatMauveCard && result.requestColorTextEnable) {
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            chatMauveCard->setColorTextEnabled(result.colorTextEnableTo);
+        }
+        if (settings) settings->setBool("chatmauve_color_text", result.colorTextEnableTo);
+    }
+    if (chatMauveCard && result.requestHgrDuochrome) {
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            chatMauveCard->setHgrDuochromeEnabled(result.hgrDuochromeTo);
+        }
+        if (settings) settings->setBool("chatmauve_hgr_duochrome", result.hgrDuochromeTo);
     }
 }
 

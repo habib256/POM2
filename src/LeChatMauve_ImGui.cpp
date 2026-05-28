@@ -202,15 +202,37 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
     }
 
     ImGui::Separator();
+    ImGui::TextDisabled("Eve extensions:");
+
+    // Eve $C0B8/$C0B9 — Color TEXT master enable. When off, 40-col text
+    // under AN3 falls back to the standard monochrome IIe text renderer.
+    {
+        bool en = snap.colorTextEnable;
+        if (ImGui::Checkbox("Color TEXT enable ($C0B8/9)", &en)) {
+            r.requestColorTextEnable = true;
+            r.colorTextEnableTo      = en;
+        }
+    }
+
+    // Eve $C0BA/$C0BB — HGR Duochrome. When on, standard HGR pulls fg/bg
+    // colour pairs from aux RAM at the matching screen offset (high
+    // nibble = fg, low = bg, both lo-res palette indices).
+    {
+        bool en = snap.hgrDuochrome;
+        if (ImGui::Checkbox("HGR Duochrome ($C0BA/B)", &en)) {
+            r.requestHgrDuochrome = true;
+            r.hgrDuochromeTo      = en;
+        }
+    }
+
+    ImGui::Separator();
     ImGui::TextDisabled("Notes:");
     ImGui::TextDisabled(" - Standard HGR: 6 colors, no fringing");
     ImGui::TextDisabled(" - Lo-res: 16 colors with 2 distinct grays");
     ImGui::TextDisabled(" - DHGR (IIe + aux RAM): COL140 / BW560 / Mixed / Chunky160");
     ImGui::TextDisabled(" - 40-col TEXT + AN3 -> per-cell fg/bg colors (Video-7)");
+    ImGui::TextDisabled(" - Eve HGR Duochrome + Color TEXT ($C0B8-$C0BB)");
     ImGui::TextDisabled(" - Mode actif via menu Display -> Le Chat Mauve");
-    ImGui::Separator();
-    ImGui::TextDisabled("Hors scope cette version :");
-    ImGui::TextDisabled(" - Eve-specific: $C0B9 Color TEXT lock, HGR Duochrome");
 
     ImGui::End();
     return r;

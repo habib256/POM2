@@ -199,6 +199,14 @@ private:
     // upscaling is identical to the 280-wide path in the current model;
     // the gain is in the framebuffer fidelity itself.)
     void renderHiResChatMauve80(Memory& mem, int firstScanline, int lastScanline);
+    // Le Chat Mauve Eve "HGR Duochrome". Single-HGR resolution image
+    // bitmap lives in MAIN $2000-$3FFF (one bit per pixel as usual);
+    // at the matching offset in AUX, each byte holds a per-7-pixel-block
+    // colour pair (high nibble = foreground lo-res palette index, low
+    // nibble = background). Each HGR pixel becomes 2 dots in frame80.
+    // Renders into `frame80` (560 wide); the gate at the top of render()
+    // requires `auxRam != nullptr` so this path can read the aux bytes.
+    void renderHgrDuochrome(Memory& mem, int firstScanline, int lastScanline);
     // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
     // 560×192. Reads aux RAM for even columns and main RAM for odd
     // columns (per AppleWin's scanner). `altCharSet` toggles flashing

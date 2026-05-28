@@ -18,20 +18,26 @@ class LeChatMauve_ImGui
 {
 public:
     struct Snapshot {
-        bool                        plugged     = false;
-        LeChatMauveCard::RenderMode mode        = LeChatMauveCard::RenderMode::COL140;
-        uint8_t                     fifoBits    = 0b11;
-        bool                        eightyCol   = false;   // current data line
-        bool                        an3High     = false;   // current clock line
-        bool                        invertBit7  = false;   // Dragon Wars compat
+        bool                        plugged         = false;
+        LeChatMauveCard::RenderMode mode            = LeChatMauveCard::RenderMode::COL140;
+        uint8_t                     fifoBits        = 0b11;
+        bool                        eightyCol       = false;   // current data line
+        bool                        an3High         = false;   // current clock line
+        bool                        invertBit7      = false;   // Dragon Wars compat
+        bool                        colorTextEnable = true;    // Eve $C0B8/9
+        bool                        hgrDuochrome    = false;   // Eve $C0BA/B
     };
 
     struct FrameResult {
-        bool                        requestOverride     = false;
-        LeChatMauveCard::RenderMode overrideTo          = LeChatMauveCard::RenderMode::COL140;
-        bool                        requestReset        = false;
-        bool                        requestInvertBit7   = false;
-        bool                        invertBit7To        = false;
+        bool                        requestOverride        = false;
+        LeChatMauveCard::RenderMode overrideTo             = LeChatMauveCard::RenderMode::COL140;
+        bool                        requestReset           = false;
+        bool                        requestInvertBit7      = false;
+        bool                        invertBit7To           = false;
+        bool                        requestColorTextEnable = false;
+        bool                        colorTextEnableTo      = true;
+        bool                        requestHgrDuochrome    = false;
+        bool                        hgrDuochromeTo         = false;
     };
 
     FrameResult render(const char*     title,

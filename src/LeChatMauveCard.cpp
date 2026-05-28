@@ -37,6 +37,17 @@ void LeChatMauveCard::onVideoSoftSwitch(uint16_t addr)
         an3Prev = true;
         return;
     }
+
+    // Eve-class extension registers (no FIFO involvement — direct level
+    // toggles). $C0B8/9 = Color TEXT master enable, $C0BA/B = HGR
+    // Duochrome enable. Any access (read or write) flips the bit; that
+    // matches the documented "bascule" semantics of the brevet and lets
+    // a `LDA $C0B9` strobe enable the mode just like the SET/CLR pair on
+    // the standard Apple II soft switches.
+    if (addr == 0xC0B8) { colorTextEnabled_    = false; return; }
+    if (addr == 0xC0B9) { colorTextEnabled_    = true;  return; }
+    if (addr == 0xC0BA) { hgrDuochromeEnabled_ = false; return; }
+    if (addr == 0xC0BB) { hgrDuochromeEnabled_ = true;  return; }
 }
 
 void LeChatMauveCard::clockFifo(bool dataBit)
