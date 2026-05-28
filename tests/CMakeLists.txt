@@ -803,6 +803,7 @@ set_tests_properties(audio_mixer_smoke PROPERTIES TIMEOUT 10)
 add_executable(test_hgr_render
     hgr_render_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_hgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -1552,6 +1553,7 @@ add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
@@ -1567,6 +1569,7 @@ endif()
 add_executable(cffa_boot_dump EXCLUDE_FROM_ALL
     cffa_boot_dump.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
     ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
@@ -2637,6 +2640,7 @@ add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
