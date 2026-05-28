@@ -99,6 +99,8 @@ set(SOURCES
     src/MouseCardAppleWin.cpp
     src/NoSlotClock.cpp
     src/GrapplerCard.cpp
+    src/NtscPostProcessor.cpp
+    src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp
     src/Ssi263.cpp
@@ -166,6 +168,8 @@ set(HEADERS
     src/Mockingboard.h
     src/MouseCard.h
     src/MouseCardAppleWin.h
+    src/NtscPostProcessor.h
+    src/OpenGLShader.h
     src/MountableMediaCard.h
     src/Ay3_8910.h
     src/GrapplerCard.h

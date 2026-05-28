@@ -185,11 +185,13 @@ RGBA. Reads `Memory::getDisplayState()` (mutex copy) + flat RAM.
 UI uploads via `glTex(Sub)Image2D`. Text flash via
 `frame_number() & 0x10` (MAME parity).
 
-Seven `HiResMode`:
+Eight `HiResMode`:
 - `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups,
   glow (MAME `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
 - `ChatMauveRGB` — only with `LeChatMauveCard`.
+- `ColorCompositeOE` — OpenEmulator-style true NTSC simulation
+  via GLSL shader (see § Composite NTSC shader below).
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer
   lerp).
 
@@ -236,6 +238,58 @@ Aux RAM (cells 0,2,…) interleaved with main (1,3,…) into 560-wide
 frame. Mixed (HIRES+80COL+MIXED): HGR top 20 rows doubled, 80-col
 rows 20..23 overlay. ALTCHAR plumbed but no-op against built-in
 fallback.
+
+### Composite NTSC shader (`ColorCompositeOE`)
+
+OpenEmulator-inspired GPU pass: instead of decoding to RGB on the
+CPU, `Apple2Display::fillCompositeSignal()` serialises the active
+video mode (HGR / DHGR / 40-col text / 80-col text) into a
+1-bit 14.318 MHz luminance waveform — 560 samples × 192 lines, one
+byte per sample (`signalBuf`). HGR reuses the existing
+`buildBitStream()` so the per-byte half-dot delay is preserved.
+Lo-res is not yet generated; `signalProduced()` returns false there
+and MainWindow falls back to drawing the regular NTSC LUT
+framebuffer.
+
+`MainWindow::drawScreenImage()` uploads `signalBuf` to an `R8` GL
+texture and runs `NtscPostProcessor::process()`. The fragment shader
+(`NtscPostProcessor.cpp` `kFragmentShader`):
+
+1. Optional barrel distortion of UVs.
+2. For each output fragment, gaussian-weighted accumulation of 17
+   signal taps. Luma uses a narrow sigma (~0.8 samples); chroma uses
+   a wide sigma controlled by the **sharpness** knob.
+3. Chroma is recovered by multiplying each tap with
+   `sin(π/2 · x)` and `cos(π/2 · x)` — Apple II's 4× subcarrier
+   alignment means phase is just the dot index.
+4. YIQ → RGB via the standard NTSC matrix, then **hue** rotates the
+   IQ vector, **brightness**/**contrast**/**saturation** apply
+   in RGB space.
+5. **Persistence** is a `max(decoded, prev * decay)` blend with the
+   previous output frame held in a ping-pong FBO.
+6. **Scanlines** darken odd output rows (output texture is 2× the
+   signal height); the leftover **barrel** factor curls UVs at the
+   edges.
+
+`OpenGLShader.cpp` provides the small `compileShaderProgram()` helper
++ a lazy `glfwGetProcAddress` table on Linux/Windows (macOS gets
+GL 3.x from `<OpenGL/gl3.h>`, Emscripten from `<GLES3/gl3.h>`). The
+shader source is single-pass, gated on `#version 150` (desktop) /
+`#version 300 es` (WebGL2). No OpenEmulator / libemulation code is
+copied — the implementation is rewritten from the public NTSC spec
+(FCC/CCIR §73.682) and the openemulator-explainer notebook by
+Zellyn Hunter (algorithm description only).
+
+All eight knobs persist under settings.json keys `ntsc_brightness`,
+`ntsc_contrast`, `ntsc_saturation`, `ntsc_hue`, `ntsc_sharpness`,
+`ntsc_persistence`, `ntsc_scanlines`, `ntsc_barrel`. The CRT
+Settings panel (View → CRT Settings) drives them live.
+
+If shader compilation fails (driver too old, GLES2-only context,
+…), `NtscPostProcessor::available()` returns false and POM2 silently
+falls back to the regular `ColorNTSC` LUT framebuffer for the mode —
+the menu entry stays usable but the result is indistinguishable
+from `ColorNTSC` until the GL state catches up.
 
 ### Test framework gotcha
 

@@ -59,6 +59,14 @@ public:
                                 //   palette index. The sharp / hard-edge
                                 //   variant.
         ChatMauveRGB,
+        // True NTSC composite simulation à la OpenEmulator: the display
+        // emits a 1-bit luminance bitstream at 14.318 MHz (560 samples ×
+        // 192 lines) instead of pre-decoded RGB; MainWindow runs that
+        // through a GLSL shader that demodulates Y/I/Q on the subcarrier,
+        // applies low-pass filtering, persistence, scanlines and barrel.
+        // Falls back to ColorNTSC framebuffer when the signal can't be
+        // produced (lo-res mode, no GL context, etc.).
+        ColorCompositeOE,
         MonoWhite,
         MonoGreen,
         MonoAmber,
@@ -96,6 +104,26 @@ public:
     /// SlotBus that holds it.
     void setChatMauveCard(LeChatMauveCard* c) { chatMauve = c; }
 
+    /// Composite signal buffer for the ColorCompositeOE mode. 8-bit
+    /// per-sample luminance at 14.318 MHz (560 samples per scanline,
+    /// 192 scanlines, one byte per sample = 0 or 255). The MainWindow
+    /// uploads this as an R8 texture and feeds it to a GLSL shader that
+    /// demodulates the NTSC subcarrier. The buffer is filled by render()
+    /// whenever ColorCompositeOE is selected AND the current Apple II
+    /// video mode is one we can serialise (HGR / DHGR / 40-col text).
+    /// Lo-res cells require a per-line 4-dot pattern table we haven't
+    /// ported yet, so signalProduced() will return false in that case
+    /// and MainWindow will draw the regular RGB framebuffer instead.
+    static constexpr int kSignalWidth  = kWidth80;   // 560
+    static constexpr int kSignalHeight = kHeight;    // 192
+    const uint8_t* signal() const { return signalBuf.data(); }
+    int signalWidth () const { return kSignalWidth;  }
+    int signalHeight() const { return kSignalHeight; }
+    /// True when the last render() filled signalBuf with a valid composite
+    /// waveform. False in lo-res (not yet implemented) and when the
+    /// selected hi-res mode is not ColorCompositeOE.
+    bool signalProduced() const { return signalProducedFlag; }
+
 private:
     std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
     std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA pixels (IIe)
@@ -111,6 +139,13 @@ private:
     // the path wrote a 560-wide frame against a 280-wide history.
     std::vector<uint8_t> persistenceL;
     std::vector<uint8_t> persistenceL80;
+    // OpenEmulator-style composite signal: one byte per 14.318 MHz sample
+    // (0x00 = black, 0xFF = white). 560 samples × 192 lines = 105 600 bytes.
+    // Populated alongside `frame` / `frame80` when hiResMode ==
+    // ColorCompositeOE. The shader path in MainWindow only consumes this
+    // when `signalProducedFlag` is true.
+    std::vector<uint8_t> signalBuf;
+    bool signalProducedFlag = false;
     // Frame counter — drives the FLASH attribute animation for screen
     // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
     // and inverse-blinking spaces). Wraps freely; only the parity of
@@ -159,6 +194,16 @@ private:
     // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
     // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);
+
+    // Populate signalBuf from RAM for the active display state. Returns
+    // true on success (HGR / DHGR / 40-col text) and false when the
+    // current Apple II video mode has no signal generator yet (lo-res).
+    // Always called from render() when hiResMode == ColorCompositeOE.
+    bool fillCompositeSignal(Memory& mem);
+
+    // The actual frame dispatch (text / hires / dhgr / mixed). render()
+    // is a thin wrapper that calls this then optionally fills signalBuf.
+    void renderInternal(Memory& mem);
 
     // Address of the first byte of text/lo-res row `y` in the active page.
     static uint16_t textRowAddress(int y, bool page2);

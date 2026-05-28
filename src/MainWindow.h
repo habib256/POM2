@@ -51,6 +51,8 @@ namespace pom2 {
     class AiControlServer;
     class CassetteDeck_ImGui;
     class Disk35Controller_ImGui;
+    class NtscPostProcessor;
+    struct NtscParams;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
     class CffaCard;
@@ -222,6 +224,12 @@ private:
     unsigned int screenTexture = 0;     // GL texture name (lazy)
     int          screenTextureWidth  = 0;
     int          screenTextureHeight = 0;
+    // OpenEmulator-style composite NTSC shader pipeline. Lazily
+    // initialised on the first frame the user selects ColorCompositeOE;
+    // stays alive across mode toggles so persistence state isn't lost
+    // when the user briefly flips to another mode and back.
+    std::unique_ptr<pom2::NtscPostProcessor> ntscFx;
+    bool         showNtscSettings = false;
     float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
@@ -523,6 +531,7 @@ private:
     /// Optional CSV log to `mouseInspectorLogPath` for offline review.
     void renderMouseInspectorWindow();
     void renderAudioMixerWindow();
+    void renderNtscSettingsWindow();
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
