@@ -336,8 +336,10 @@ private:
     std::string diskRomStatus;
     // Auto-turbo while the Disk II motor is spinning. Real Apple II boot
     // takes 10-15 s at 1 MHz; bumping to ~60 MHz emulated for the duration
-    // of the read drops it to <1 s. Off restores the user's chosen speed.
-    bool        diskTurboWhileMotor = true;
+    // of the read drops it to <1 s. Off by default — preserves authentic
+    // speed and the floppy mechanical sounds (the turbo collapses
+    // wall-clock to zero, which mutes the seek/spindle audio).
+    bool        diskTurboWhileMotor = false;
     int         diskSavedCyclesPerFrame = 17045;
     bool        diskTurboActive = false;
 
