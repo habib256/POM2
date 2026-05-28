@@ -212,8 +212,11 @@ void main()
         float phase = PI * 0.5 * fx;
 
         Y   += s * wY;
-        I   += s * sin(phase) * wC * 2.0;
-        Q   += s * cos(phase) * wC * 2.0 * palQSign;
+        // FCC NTSC convention: I = cos-projection, Q = sin-projection.
+        // The earlier swap rotated the IQ plane 90° — orange artifact
+        // patterns landed on the green half of the colour wheel.
+        I   += s * cos(phase) * wC * 2.0;
+        Q   += s * sin(phase) * wC * 2.0 * palQSign;
         wYs += wY;
         wCs += wC;
     }
