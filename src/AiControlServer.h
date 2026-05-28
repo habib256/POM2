@@ -25,8 +25,11 @@
 //   POST /keyboard            → body {"text":"..."} or {"raw":"..."} — paste
 //   POST /disk                → body {"slot":6,"drive":0,"path":"..."} — insert
 //   POST /eject               → body {"slot":6,"drive":0} — eject
-//   POST /snapshot/save       → body {"path":"..."}
-//   POST /snapshot/load       → body {"path":"..."}
+//   POST /snapshot/save       → body {"path":"....pom2snap"} — save path MUST
+//                                end with `.pom2snap` so an agent can't
+//                                clobber unrelated files inside cwd.
+//   POST /snapshot/load       → body {"path":"..."} — any cwd-relative file;
+//                                magic-byte check inside rejects non-snapshots.
 //   POST /speed               → body {"cycles_per_frame":N} OR {"preset":"1x|2x|max"}
 //   GET  /screen.ppm          → binary PPM of the live framebuffer
 //   POST /mouse               → body {"dx":?,"dy":?} signed Apple-cursor delta

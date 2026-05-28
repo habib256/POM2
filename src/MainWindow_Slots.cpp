@@ -613,6 +613,18 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             savedHdvPath = path;
         }
     }
+    // Same idea for CFFA: a Disk-Library mid-session mount only updates the
+    // live card, not settings, so plugSlotsFromSettings's cffa_slotN_path
+    // restore would otherwise silently revert to the pre-session path (or
+    // drop the mount entirely if there wasn't one). Pair the path with the
+    // user's write-back toggle — re-plug defaults to read-only.
+    std::array<std::pair<std::string, bool>, 8> savedCffaPaths{};
+    for (auto* blk : blockCards()) {
+        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+        if (!cffa || !cffa->isImageLoaded()) continue;
+        savedCffaPaths[static_cast<size_t>(cffa->getSlot())] =
+            { cffa->getImagePath(), cffa->isWriteBackEnabled() };
+    }
 
     // 3. Tear down all slot cards under the state mutex. Mockingboard's
     //    AudioSource must be detached BEFORE the slot bus destroys the
@@ -772,6 +784,21 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         std::error_code ec;
         if (std::filesystem::is_regular_file(savedHdvPath, ec)) {
             (void)hdvCard->loadImage(savedHdvPath);
+        }
+    }
+    // CFFA: plugSlotsFromSettings already mounted whatever `cffa_slotN_path`
+    // settings held; if the user mounted a different image mid-session, the
+    // live snapshot wins (matches Disk II / HDV above). Empty snapshot ⇒
+    // leave plugSlots' settings-driven mount alone.
+    for (auto* blk : blockCards()) {
+        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+        if (!cffa) continue;
+        const auto& [path, wb] = savedCffaPaths[static_cast<size_t>(cffa->getSlot())];
+        if (path.empty()) continue;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(path, ec)) {
+            (void)cffa->loadImage(path);
+            cffa->setWriteBackEnabled(wb);
         }
     }
 
@@ -936,9 +963,16 @@ void MainWindow::restartEmulationFromSettings()
         }
     }
 
-    // 5. Hard reset + restart worker.
-    controller->cpu().hardReset();
-    controller->memory().slotBus().reset();
+    // 5. Hard reset + restart worker. Route through `controller->hardReset()`
+    //    rather than `cpu().hardReset()` + `slotBus().reset()` — the
+    //    controller path additionally disarms `iicSmartPortArmed_` (via
+    //    `Memory::setIicSmartPortArmed(false)`) and resets the speaker /
+    //    IWM / SmartPort hub. Pre-fix: on //c-class, the $C500 firmware
+    //    punch stayed armed after `bootFromSlot(5)`, so the post-Apply
+    //    reset vector fetched while the punch was live → //c F8 autostart
+    //    re-booted SmartPort instead of leaving the user at the BASIC
+    //    prompt the Apply was meant to give them.
+    controller->hardReset();
     controller->start();
 
     // 6. Re-attach the AI control server with the freshly rebuilt card

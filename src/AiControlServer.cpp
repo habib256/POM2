@@ -15,6 +15,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -40,7 +41,14 @@ namespace {
 
 constexpr size_t kMaxBodyBytes    = 1 << 20;   // 1 MiB hard cap on body
 constexpr size_t kMaxHeaderBytes  = 64 * 1024; // 64 KiB on the request preamble
-constexpr int    kRecvTimeoutMs   = 4000;      // per-client read deadline
+constexpr int    kRecvTimeoutMs   = 4000;      // per-recv SO_RCVTIMEO
+// Wall-clock cap on the whole readRequest call. The per-recv timeout above
+// only protects against an idle peer (no bytes at all); a slow-drip attacker
+// dribbling 1 byte every <kRecvTimeoutMs holds the single worker thread —
+// the entire AI bridge — for hours, because each recv() returns >0 and the
+// loop continues. With a deadline, the loop walks bytes up to a fixed wall-
+// clock budget regardless of drip rate.
+constexpr int    kRequestDeadlineMs = 10000;   // 10 s — generous for localhost
 
 // ─── Path safety ─────────────────────────────────────────────────────────
 // Canonicalise the caller-supplied path and require it to resolve under
@@ -484,12 +492,22 @@ bool AiControlServer::readRequest(int fd, Request& req)
 {
     applyRecvTimeout(fd, kRecvTimeoutMs);
 
+    // Wall-clock deadline for the whole request — see kRequestDeadlineMs
+    // comment. Independent of the per-recv timeout because a slow-drip
+    // attacker keeps every individual recv inside that budget.
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(kRequestDeadlineMs);
+    auto pastDeadline = [&]() {
+        return std::chrono::steady_clock::now() >= deadline;
+    };
+
     std::string buffer;
     buffer.reserve(2048);
     size_t headerEnd = std::string::npos;
     char chunk[2048];
     while (headerEnd == std::string::npos) {
         if (buffer.size() > kMaxHeaderBytes) return false;
+        if (pastDeadline()) return false;
         const ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
         if (got <= 0) return false;
         buffer.append(chunk, chunk + got);
@@ -544,6 +562,7 @@ bool AiControlServer::readRequest(int fd, Request& req)
             req.body.append(buffer, bodyStart, std::string::npos);
         }
         while (req.body.size() < static_cast<size_t>(cl)) {
+            if (pastDeadline()) return false;
             const ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
             if (got <= 0) return false;
             req.body.append(chunk, chunk + got);
@@ -986,6 +1005,21 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string path = jsonGetString(req.body, "path");
     if (path.empty()) { sendJsonError(fd, 400, "missing \"path\""); return; }
+    // The save path must end with `.pom2snap`. Without this an agent with
+    // an empty / leaked auth token could `POST /snapshot/save {"path":
+    // "roms/apple2.rom"}` and shred a ROM, settings file, or disk image
+    // with snapshot bytes — `safeCwdRelativePath` only checks cwd
+    // containment, not extension. The load path is read-only and the
+    // magic-byte check rejects non-snapshots, so loads stay permissive.
+    constexpr const char* kSaveExt = ".pom2snap";
+    constexpr size_t      kSaveExtLen = 9;
+    if (path.size() <= kSaveExtLen ||
+        path.compare(path.size() - kSaveExtLen, kSaveExtLen, kSaveExt) != 0) {
+        sendJsonError(fd, 400,
+            "path must end with \".pom2snap\" — refusing to write snapshot "
+            "bytes over an unrelated file (received \"" + path + "\")");
+        return;
+    }
     const auto safe = safeCwdRelativePath(path, /*mustExist=*/false);
     if (!safe) {
         sendJsonError(fd, 403,

@@ -106,13 +106,17 @@ int main(int argc, char* argv[])
 #ifdef __EMSCRIPTEN__
     // WASM default experience: //c profile booting Total Replay from the
     // floppyemu/ bundle. The browser has no CLI, so we inject these as if
-    // the user had typed `--preset iic <hdv>`. Honour anything already set
-    // (e.g. via URL-driven arguments wired through the shell) so future
-    // launch overrides keep working.
-    if (plan->preset == pom2::CliPreset::Default) {
-        plan->preset = pom2::CliPreset::AppleIIc;
-    }
-    if (plan->bootDiskPath.empty()) {
+    // the user had typed `--preset iic <hdv>`. Both injections are gated
+    // on a TRULY default plan — `?preset=ii+&nodisk=1` (shell.html) sets
+    // preset=AppleII+, leaves bootDiskPath empty, and expects to drop the
+    // user at BASIC. Pre-fix, the preset injection respected the URL but
+    // the disk injection didn't, so II+ landed with a 32 MiB HDV it can't
+    // mount instead of `]`.
+    const bool wasmPlanWasDefault =
+        (plan->preset == pom2::CliPreset::Default) &&
+        plan->bootDiskPath.empty();
+    if (wasmPlanWasDefault) {
+        plan->preset       = pom2::CliPreset::AppleIIc;
         plan->bootDiskPath = "floppyemu/Total Replay v5.2.hdv";
     }
 #endif

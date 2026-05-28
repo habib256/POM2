@@ -235,30 +235,40 @@ void testSnapshotPathSafety(EmulationController& /*ctrl*/, pom2::AiControlServer
         return oneShot(kTestPort, req);
     };
 
+    // /snapshot/save now requires a `.pom2snap` extension so an agent can't
+    // overwrite unrelated files (ROMs, configs, disk images) inside cwd. A
+    // path with a wrong extension → 400 before path-safety even runs.
+    HttpResponse rExt = post("/snapshot/save",
+        "{\"path\":\"roms/apple2e.rom\"}");
+    assert(rExt.status == 400);
+    assert(contains(rExt.body, ".pom2snap"));
+
     // /snapshot/save with an absolute path outside cwd → 403 rejected.
-    // /etc/passwd exists on every Linux host so weakly_canonical resolves
-    // cleanly; the prefix check is what must fire.
+    // /etc exists on every Linux host so weakly_canonical resolves cleanly;
+    // the cwd prefix check is what must fire (after the extension gate).
     HttpResponse r = post("/snapshot/save",
-        "{\"path\":\"/etc/pom2_should_never_write_here.snap\"}");
+        "{\"path\":\"/etc/pom2_should_never_write_here.pom2snap\"}");
     assert(r.status == 403);
     assert(contains(r.body, "path rejected"));
 
-    // /snapshot/load on the same kind of path → 403.
+    // /snapshot/load on the same kind of path → 403. Load keeps the
+    // permissive any-extension policy (it can't damage anything — only
+    // reads, and the magic-byte check rejects non-snapshots).
     r = post("/snapshot/load", "{\"path\":\"/etc/passwd\"}");
     assert(r.status == 403);
 
     // /snapshot/load on a non-existent file under cwd → 403 (mustExist
     // branch — weakly_canonical succeeds but is_regular_file fails).
     r = post("/snapshot/load",
-        "{\"path\":\"this_file_does_not_exist_pom2.snap\"}");
+        "{\"path\":\"this_file_does_not_exist_pom2.pom2snap\"}");
     assert(r.status == 403);
 
-    // Happy path: a relative path under cwd is accepted. Save, observe
-    // the file landed, clean up. Verifies the path-safety guard isn't
-    // over-rejecting and that the canonical path is what the response
-    // reports.
+    // Happy path: a relative `.pom2snap` path under cwd is accepted. Save,
+    // observe the file landed, clean up. Verifies the path-safety guard
+    // isn't over-rejecting and that the canonical path is what the
+    // response reports.
     namespace fs = std::filesystem;
-    const std::string relName = "test_path_safety_snapshot.snap";
+    const std::string relName = "test_path_safety_snapshot.pom2snap";
     const fs::path expected = fs::weakly_canonical(fs::current_path() / relName);
     fs::remove(expected);   // best-effort cleanup from a prior aborted run
     r = post("/snapshot/save", "{\"path\":\"" + relName + "\"}");
@@ -269,11 +279,12 @@ void testSnapshotPathSafety(EmulationController& /*ctrl*/, pom2::AiControlServer
 
     // R4-#3: a symlink under cwd whose target is OUTSIDE cwd must be
     // rejected for save — weakly_canonical returns it lexically (inside
-    // cwd) but ofstream would follow it out of the jail.
+    // cwd) but ofstream would follow it out of the jail. Use `.pom2snap`
+    // so the extension gate doesn't pre-empt the symlink check.
     {
         const fs::path outside =
-            fs::temp_directory_path() / "pom2_symlink_escape_target.snap";
-        const std::string linkName = "pom2_evil_link.snap";
+            fs::temp_directory_path() / "pom2_symlink_escape_target.pom2snap";
+        const std::string linkName = "pom2_evil_link.pom2snap";
         const fs::path link = fs::current_path() / linkName;
         std::error_code ec;
         fs::remove(outside, ec);
