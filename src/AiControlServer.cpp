@@ -388,32 +388,31 @@ bool AiControlServer::start(uint16_t port)
         pom2::log().warn("AICtrl", "start() called before attach() — refusing");
         return false;
     }
-    listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFd_ < 0) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
         pom2::log().warn("AICtrl", std::string("socket() failed: ") + std::strerror(errno));
         return false;
     }
     int yes = 1;
-    ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(port);
-    if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         pom2::log().warn("AICtrl",
             "bind 127.0.0.1:" + std::to_string(port) + " failed: " +
             std::strerror(errno));
-        ::close(listenFd_);
-        listenFd_ = -1;
+        ::close(fd);
         return false;
     }
-    if (::listen(listenFd_, 4) < 0) {
+    if (::listen(fd, 4) < 0) {
         pom2::log().warn("AICtrl", std::string("listen() failed: ") +
                          std::strerror(errno));
-        ::close(listenFd_);
-        listenFd_ = -1;
+        ::close(fd);
         return false;
     }
+    listenFd_.store(fd, std::memory_order_release);
     port_           = port;
     stopRequested_  = false;
     running_        = true;
@@ -433,12 +432,16 @@ void AiControlServer::stop()
 #else
     if (!running_ && !worker_.joinable()) return;
     stopRequested_ = true;
-    if (listenFd_ >= 0) {
-        ::shutdown(listenFd_, SHUT_RDWR);
-        ::close(listenFd_);
-        listenFd_ = -1;
-    }
+    // shutdown() wakes the worker out of accept() without invalidating
+    // the fd. close() must happen AFTER join() — closing first lets the
+    // kernel recycle the descriptor while the worker still holds it in
+    // an in-flight accept(), creating a use-after-close window. Mirrors
+    // SuperSerialCard::stopListening() exactly.
+    { const int fd = listenFd_.load(std::memory_order_acquire);
+      if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
     if (worker_.joinable()) worker_.join();
+    { const int fd = listenFd_.exchange(-1, std::memory_order_acq_rel);
+      if (fd >= 0) ::close(fd); }
     running_ = false;
 #endif
 }
@@ -449,7 +452,9 @@ void AiControlServer::runWorker()
     while (!stopRequested_) {
         sockaddr_in peer{};
         socklen_t peerLen = sizeof(peer);
-        const int fd = ::accept(listenFd_,
+        const int listenFd = listenFd_.load(std::memory_order_acquire);
+        if (listenFd < 0) break;
+        const int fd = ::accept(listenFd,
                                 reinterpret_cast<sockaddr*>(&peer), &peerLen);
         if (fd < 0) {
             if (stopRequested_) break;
