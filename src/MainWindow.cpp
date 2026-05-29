@@ -1848,130 +1848,131 @@ void MainWindow::renderMenuBar()
         ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("View")) {
-        if (ImGui::BeginMenu("Display")) {
-            ImGui::SliderFloat("Pixel scale", &pixelScale, 1.0f, 4.0f, "%.1fx");
+    if (ImGui::BeginMenu("Display")) {
+        ImGui::SliderFloat("Pixel scale", &pixelScale, 1.0f, 4.0f, "%.1fx");
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Hi-res mode");
-            const Apple2Display::HiResMode cur = display->getHiResMode();
-            if (ImGui::MenuItem("Color NTSC", nullptr,
-                                cur == Apple2Display::HiResMode::ColorNTSC))
-                display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
-            // MAME `composite_color_mode = 1`: same 7-bit window LUT as
-            // ColorNTSC but row 1 of the table — 8 entries differ to
-            // bias 4-dot colour runs at the cost of 40-col text.
-            if (ImGui::MenuItem("Color NTSC (medium)", nullptr,
-                                cur == Apple2Display::HiResMode::ColorCompMedium))
-                display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
-            // MAME `composite_color_mode = 2`: skip the artifact window
-            // entirely, every 4-dot nibble → palette index direct.
-            // Sharp edges, no inter-byte fringing, more "RGB-looking".
-            if (ImGui::MenuItem("Color NTSC (4-bit square)", nullptr,
-                                cur == Apple2Display::HiResMode::ColorComp4Bit))
-                display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
-            // OpenEmulator-style composite simulation (true subcarrier
-            // demodulation through a GLSL shader). Selectable directly,
-            // just like the other modes — presets live below.
-            if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
-                                cur == Apple2Display::HiResMode::ColorCompositeOE))
-                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
-            // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
-            // no inter-byte fringing. Greyed out if the slot-7 card isn't
-            // plugged (the Apple II would just see composite video).
-            ImGui::BeginDisabled(chatMauveCard == nullptr);
-            if (ImGui::MenuItem("Le Chat Mauve (RGB)", nullptr,
-                                cur == Apple2Display::HiResMode::ChatMauveRGB))
-                display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-            ImGui::EndDisabled();
-            if (ImGui::MenuItem("Mono White",  nullptr,
-                                cur == Apple2Display::HiResMode::MonoWhite))
-                display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
-            if (ImGui::MenuItem("Mono Green (P31)", nullptr,
-                                cur == Apple2Display::HiResMode::MonoGreen))
-                display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
-            if (ImGui::MenuItem("Mono Amber",  nullptr,
-                                cur == Apple2Display::HiResMode::MonoAmber))
-                display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
-            // AppleWin-style NTSC (CPU IIR + 4-phase LUT). Clicking
-            // switches to ColorAppleWin with the previously selected
-            // sub-mode. Sub-mode picker lives below.
-            if (ImGui::MenuItem("AppleWin NTSC", nullptr,
-                                cur == Apple2Display::HiResMode::ColorAppleWin))
-                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        ImGui::Separator();
+        ImGui::TextDisabled("Hi-res mode");
+        const Apple2Display::HiResMode cur = display->getHiResMode();
+        if (ImGui::MenuItem("Color NTSC", nullptr,
+                            cur == Apple2Display::HiResMode::ColorNTSC))
+            display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        // MAME `composite_color_mode = 1`: same 7-bit window LUT as
+        // ColorNTSC but row 1 of the table — 8 entries differ to
+        // bias 4-dot colour runs at the cost of 40-col text.
+        if (ImGui::MenuItem("Color NTSC (medium)", nullptr,
+                            cur == Apple2Display::HiResMode::ColorCompMedium))
+            display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+        // MAME `composite_color_mode = 2`: skip the artifact window
+        // entirely, every 4-dot nibble → palette index direct.
+        // Sharp edges, no inter-byte fringing, more "RGB-looking".
+        if (ImGui::MenuItem("Color NTSC (4-bit square)", nullptr,
+                            cur == Apple2Display::HiResMode::ColorComp4Bit))
+            display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
+        // OpenEmulator-style composite simulation (true subcarrier
+        // demodulation through a GLSL shader). Selectable directly,
+        // just like the other modes — presets live below.
+        if (ImGui::MenuItem("Composite NTSC (OpenEmulator)", nullptr,
+                            cur == Apple2Display::HiResMode::ColorCompositeOE))
+            display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+        // Le Chat Mauve RGB — clean Péritel decode, two distinct grays,
+        // no inter-byte fringing. Greyed out if the slot-7 card isn't
+        // plugged (the Apple II would just see composite video).
+        ImGui::BeginDisabled(chatMauveCard == nullptr);
+        if (ImGui::MenuItem("Le Chat Mauve (RGB)", nullptr,
+                            cur == Apple2Display::HiResMode::ChatMauveRGB))
+            display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        ImGui::EndDisabled();
+        if (ImGui::MenuItem("Mono White",  nullptr,
+                            cur == Apple2Display::HiResMode::MonoWhite))
+            display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
+        if (ImGui::MenuItem("Mono Green (P31)", nullptr,
+                            cur == Apple2Display::HiResMode::MonoGreen))
+            display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
+        if (ImGui::MenuItem("Mono Amber",  nullptr,
+                            cur == Apple2Display::HiResMode::MonoAmber))
+            display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
+        // AppleWin-style NTSC (CPU IIR + 4-phase LUT). Clicking
+        // switches to ColorAppleWin with the previously selected
+        // sub-mode. Sub-mode picker lives below.
+        if (ImGui::MenuItem("AppleWin NTSC", nullptr,
+                            cur == Apple2Display::HiResMode::ColorAppleWin))
+            display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
 
-            // ── Sub-mode / preset pickers ────────────────────────────
-            // OE presets and AppleWin sub-modes — independent of the
-            // mode selector above so the user can flip between them
-            // without re-drilling. Selecting a preset also switches to
-            // the matching mode (one-click usability). Sub-rows
-            // disable themselves when their parent mode is inactive,
-            // so the menu hierarchy stays readable but the user can
-            // always force-select by clicking the mode line above.
-            ImGui::Separator();
-            ImGui::TextDisabled("OpenEmulator presets");
-            const bool oeSel = (cur == Apple2Display::HiResMode::ColorCompositeOE);
-            auto applyOePreset = [&](const char* preset) {
-                pom2::NtscParams p = ntscFx ? ntscFx->getParams()
-                                            : pom2::NtscParams{};
-                if (std::string(preset) == "monitor") {
-                    p.sharpness = 0.8f; p.scanlines = 0.10f;
-                    p.shadowMask = pom2::NtscParams::ShadowMask::Off;
-                    p.barrel = 0.0f; p.palMode = false;
-                } else if (std::string(preset) == "tv") {
-                    p.sharpness = 0.4f; p.scanlines = 0.40f;
-                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
-                    p.shadowMaskStrength = 0.5f;
-                    p.barrel = 0.08f; p.palMode = false;
-                } else if (std::string(preset) == "trinitron") {
-                    p.sharpness = 0.6f; p.scanlines = 0.30f;
-                    p.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
-                    p.shadowMaskStrength = 0.5f;
-                    p.barrel = 0.03f; p.palMode = false;
-                } else if (std::string(preset) == "pal") {
-                    p.sharpness = 0.4f; p.scanlines = 0.30f;
-                    p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
-                    p.shadowMaskStrength = 0.4f;
-                    p.barrel = 0.05f; p.palMode = true;
-                }
-                if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
-                ntscFx->setParams(p);
-                display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
-            };
-            if (ImGui::MenuItem("  Monitor (sharp, no mask)"))
-                applyOePreset("monitor");
-            if (ImGui::MenuItem("  TV (scanlines + triad mask)"))
-                applyOePreset("tv");
-            if (ImGui::MenuItem("  Trinitron (aperture grille)"))
-                applyOePreset("trinitron");
-            if (ImGui::MenuItem("  PAL TV (European)"))
-                applyOePreset("pal");
+        // ── Sub-mode / preset pickers ────────────────────────────
+        // OE presets and AppleWin sub-modes — independent of the
+        // mode selector above so the user can flip between them
+        // without re-drilling. Selecting a preset also switches to
+        // the matching mode (one-click usability). Sub-rows
+        // disable themselves when their parent mode is inactive,
+        // so the menu hierarchy stays readable but the user can
+        // always force-select by clicking the mode line above.
+        ImGui::Separator();
+        ImGui::TextDisabled("OpenEmulator presets");
+        const bool oeSel = (cur == Apple2Display::HiResMode::ColorCompositeOE);
+        auto applyOePreset = [&](const char* preset) {
+            pom2::NtscParams p = ntscFx ? ntscFx->getParams()
+                                        : pom2::NtscParams{};
+            if (std::string(preset) == "monitor") {
+                p.sharpness = 0.8f; p.scanlines = 0.10f;
+                p.shadowMask = pom2::NtscParams::ShadowMask::Off;
+                p.barrel = 0.0f; p.palMode = false;
+            } else if (std::string(preset) == "tv") {
+                p.sharpness = 0.4f; p.scanlines = 0.40f;
+                p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                p.shadowMaskStrength = 0.5f;
+                p.barrel = 0.08f; p.palMode = false;
+            } else if (std::string(preset) == "trinitron") {
+                p.sharpness = 0.6f; p.scanlines = 0.30f;
+                p.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
+                p.shadowMaskStrength = 0.5f;
+                p.barrel = 0.03f; p.palMode = false;
+            } else if (std::string(preset) == "pal") {
+                p.sharpness = 0.4f; p.scanlines = 0.30f;
+                p.shadowMask = pom2::NtscParams::ShadowMask::Triad;
+                p.shadowMaskStrength = 0.4f;
+                p.barrel = 0.05f; p.palMode = true;
+            }
+            if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
+            ntscFx->setParams(p);
+            display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+        };
+        if (ImGui::MenuItem("  Monitor (sharp, no mask)"))
+            applyOePreset("monitor");
+        if (ImGui::MenuItem("  TV (scanlines + triad mask)"))
+            applyOePreset("tv");
+        if (ImGui::MenuItem("  Trinitron (aperture grille)"))
+            applyOePreset("trinitron");
+        if (ImGui::MenuItem("  PAL TV (European)"))
+            applyOePreset("pal");
 
-            ImGui::Separator();
-            ImGui::TextDisabled("AppleWin NTSC sub-mode");
-            const auto sub = display->getAppleWinSubMode();
-            const bool awSel = (cur == Apple2Display::HiResMode::ColorAppleWin);
-            if (ImGui::MenuItem("  Monitor (sharp)", nullptr,
-                                awSel && sub == Apple2Display::AppleWinSubMode::Monitor)) {
-                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
-                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
-            }
-            if (ImGui::MenuItem("  TV (50% line blur)", nullptr,
-                                awSel && sub == Apple2Display::AppleWinSubMode::Tv)) {
-                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
-                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
-            }
-            if (ImGui::MenuItem("  Idealized (saturated)", nullptr,
-                                awSel && sub == Apple2Display::AppleWinSubMode::Idealized)) {
-                display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
-                display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
-            }
-            (void)oeSel;
-            ImGui::EndMenu();
+        ImGui::Separator();
+        ImGui::TextDisabled("AppleWin NTSC sub-mode");
+        const auto sub = display->getAppleWinSubMode();
+        const bool awSel = (cur == Apple2Display::HiResMode::ColorAppleWin);
+        if (ImGui::MenuItem("  Monitor (sharp)", nullptr,
+                            awSel && sub == Apple2Display::AppleWinSubMode::Monitor)) {
+            display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+            display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
         }
+        if (ImGui::MenuItem("  TV (50% line blur)", nullptr,
+                            awSel && sub == Apple2Display::AppleWinSubMode::Tv)) {
+            display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+            display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        }
+        if (ImGui::MenuItem("  Idealized (saturated)", nullptr,
+                            awSel && sub == Apple2Display::AppleWinSubMode::Idealized)) {
+            display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Idealized);
+            display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        }
+        (void)oeSel;
+        ImGui::Separator();
         ImGui::MenuItem("CRT Settings (Composite NTSC)...",
                         nullptr, &showNtscSettings);
-        ImGui::Separator();
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Toolbar",                     nullptr, &showToolbar);
         ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
