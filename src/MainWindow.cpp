@@ -63,6 +63,35 @@
 #include <iterator>
 #include <map>
 
+// GL types/symbols are needed by uploadScreenTexture (further down) AND by
+// the About-dialog photo loader called from this same translation unit.
+// Pulling the platform-correct header once at the top keeps both sites
+// working without duplicating the #if/#else block.
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#elif defined(__APPLE__)
+#include <OpenGL/gl.h>
+#else
+#include <GL/gl.h>
+#endif
+
+// stb_image is bundled (single-header public-domain JPEG/PNG decoder)
+// solely for the About-dialog Apple ][+ photo. The implementation macro
+// is defined *here* so symbols land in MainWindow.cpp.o and nowhere else.
+// STB_IMAGE_STATIC keeps the unused entry points internal; we suppress
+// the resulting -Wunused-function noise locally rather than tagging the
+// third-party header.
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "stb_image.h"
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
+
 namespace {
 // Sentinel prefix used in HdvController_ImGui::LibraryEntry::fullPath to
 // flag the synthetic prodos_folder/ host-folder mount. The dispatcher in
@@ -703,6 +732,12 @@ MainWindow::~MainWindow()
     // never leak into the user's saved GUI config. The setString calls
     // above are in-memory only and discarded with `settings` here.
     if (!kiosk_) settings->save();
+
+    if (aboutImageTex_) {
+        GLuint t = aboutImageTex_;
+        glDeleteTextures(1, &t);
+        aboutImageTex_ = 0;
+    }
 }
 
 // ─── Slot configuration ─────────────────────────────────────────────────
@@ -1486,14 +1521,6 @@ void MainWindow::pasteFromFile(const std::string& path)
 
 // ─── Texture upload ──────────────────────────────────────────────────────
 
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-#elif defined(__APPLE__)
-#include <OpenGL/gl.h>
-#else
-#include <GL/gl.h>
-#endif
-
 void MainWindow::uploadScreenTexture()
 {
     if (screenTexture == 0) {
@@ -1591,14 +1618,18 @@ void MainWindow::renderMenuBar()
                 // $D000-$FFFF and can race with the CPU thread otherwise.
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
                 ok = controller->memory().loadAppleIIRom(romPath.c_str());
-                if (ok) {
-                    controller->hardReset();
-                } else {
-                    err = controller->memory().getLastError();
-                }
+                if (!ok) err = controller->memory().getLastError();
             }
-            if (ok) romStatus = std::string("loaded: ") + romPath;
-            else    romStatus = err;
+            // hardReset() re-acquires stateMutex internally, so it MUST run
+            // outside the lock_guard scope above — calling it while the lock
+            // is held self-deadlocks the non-recursive mutex (mirrors the
+            // coldBoot/bootFromSlot call sites elsewhere in this file).
+            if (ok) {
+                controller->hardReset();
+                romStatus = std::string("loaded: ") + romPath;
+            } else {
+                romStatus = err;
+            }
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Quit")) {
@@ -2417,11 +2448,16 @@ void MainWindow::pollJoystickAndPushToMemory()
 
     // Apple II paddles (4) and push buttons (3). The Memory side already
     // handles the $C064-$C067 RC discharge model and $C061-$C063 push
-    // buttons; we just hand it fresh values once per frame. No need to
-    // hold stateMutex — these setters write atomic-friendly scalars.
+    // buttons; we just hand it fresh values once per frame. Hold stateMutex
+    // while writing: the CPU worker reads paddleValue/paddleButton inside
+    // softSwitchAccess under the same lock (during processor.run()), so an
+    // unlocked write here is a data race on those non-atomic arrays.
     Memory& mem = controller->memory();
-    for (int i = 0; i < 4; ++i)  mem.setPaddle(i, joystick->paddleValue(i));
-    for (int i = 0; i < 3; ++i)  mem.setPaddleButton(i, joystick->buttonDown(i));
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        for (int i = 0; i < 4; ++i)  mem.setPaddle(i, joystick->paddleValue(i));
+        for (int i = 0; i < 3; ++i)  mem.setPaddleButton(i, joystick->buttonDown(i));
+    }
 }
 
 void MainWindow::renderSscPanelWindow()
@@ -5572,11 +5608,56 @@ void MainWindow::renderDisk35FileDialog()
     ImGui::EndPopup();
 }
 
+void MainWindow::ensureAboutImageLoaded()
+{
+    if (aboutImageTried_) return;
+    aboutImageTried_ = true;
+
+    const std::string path = pom2::findResource("pic/Apple_II_plus.jpg");
+    if (path.empty()) return;
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    if (!pixels) return;
+
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    stbi_image_free(pixels);
+
+    aboutImageTex_ = tex;
+    aboutImageW_   = w;
+    aboutImageH_   = h;
+}
+
 void MainWindow::renderAboutDialog()
 {
     if (!showAbout) return;
+    ensureAboutImageLoaded();
     ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("About POM2", &showAbout, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (aboutImageTex_ && aboutImageW_ > 0 && aboutImageH_ > 0) {
+            // Scale to a sensible width in the dialog while preserving the
+            // 800×792 aspect of the original photo (≈ 1:1).
+            const float displayW = 220.0f;
+            const float displayH = displayW *
+                static_cast<float>(aboutImageH_) /
+                static_cast<float>(aboutImageW_);
+            const float avail = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                                 std::max(0.0f, (avail - displayW) * 0.5f));
+            ImGui::Image(static_cast<ImTextureID>(
+                             static_cast<intptr_t>(aboutImageTex_)),
+                         ImVec2(displayW, displayH));
+            ImGui::Spacing();
+        }
+
         ImGui::Text("POM2 v0.6");
         ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator");
         ImGui::Text("MOS 6502 / 65C02 / Rockwell / WDC, Dear ImGui frontend");
@@ -5588,8 +5669,7 @@ void MainWindow::renderAboutDialog()
             "Hardware accuracy comes from verbatim ports of MAME's "
             "device models. Wherever POM2 emulates a chip or a "
             "peripheral, the implementation cites the MAME source "
-            "file and line range it follows, and each behaviour is "
-            "pinned by a smoke test under tests/.");
+            "file and line range it follows.");
         ImGui::Spacing();
         ImGui::TextWrapped("Subsystems ported from MAME include:");
         ImGui::BulletText("M6502 / 65C02 dispatch table and timing");

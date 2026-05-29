@@ -102,6 +102,14 @@ uint8_t MC6821::read(uint8_t offset)
             irq_a1 = false;
             irq_a2 = false;
             updateInterrupts();
+            // CA2 read-strobe: when CA2 is an output in pulse/strobe mode,
+            // reading port A pulses it low (and back high if strobe-E-reset
+            // is selected). Mirrors the CB2 write-strobe in write() case 0x02
+            // and MAME pia6821_device::port_a_r.
+            if (!c2_set_mode(ctl_a) && c2_output(ctl_a)) {
+                setOutCa2(false);
+                if (c2_set(ctl_a)) setOutCa2(true);
+            }
             return ret;
         }
         return ddr_a;

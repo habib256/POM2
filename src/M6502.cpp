@@ -384,6 +384,10 @@ void M6502::ADC(void)
 {
  uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
     cycles++;
+    // Carry-in captured before any flag math overwrites C below — the CMOS
+    // decimal-mode V recomputation needs it after C has been clobbered with
+    // the BCD carry-out.
+    const int carryIn = (statusRegister & M6502::Status::C) ? 1 : 0;
 
     if (statusRegister & M6502::Status::D)
     {
@@ -424,6 +428,17 @@ void M6502::ADC(void)
         // binary sum (which is what the code above set).
         if (cpuMode == CpuMode::CMOS) {
             setStatusRegisterNZ(accumulator);
+            // V on a 65C02 decimal-mode ADC is well-defined and equals the
+            // BINARY overflow (same as binary mode), unlike the NMOS
+            // partial-high-nibble-sum V left in place above. The C flag was
+            // already overwritten with the BCD carry-out, so recompute from
+            // the binary sum using the captured carry-in. Mirrors the CMOS
+            // SBC path, which already does this.
+            const int binResult = (Op1 + Op2 + carryIn) & 0xFF;
+            if (((Op1 ^ binResult) & ~(Op1 ^ Op2)) & 0x80)
+                statusRegister |= M6502::Status::V;
+            else
+                statusRegister &= ~M6502::Status::V;
             cycles++;
         }
     }

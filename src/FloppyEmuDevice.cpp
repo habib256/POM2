@@ -84,7 +84,14 @@ std::array<FloppyEmuMode, 4> FloppyEmuDevice::allModes()
 
 void FloppyEmuDevice::setSdRoot(const std::string& path)
 {
-    sdRoot_     = fs::path(path).lexically_normal().string();
+    // lexically_normal() preserves a trailing separator, which leaves an empty
+    // trailing path component. goUp()'s component-by-component sandbox check
+    // would then mismatch that empty component against a real subdir name and
+    // snap any deeply-nested directory straight back to root. Strip it so a
+    // user-entered path with a trailing '/' navigates one level at a time.
+    fs::path p = fs::path(path).lexically_normal();
+    if (!p.has_filename()) p = p.parent_path();   // drop empty trailing component
+    sdRoot_     = p.string();
     currentDir_ = sdRoot_;
 }
 

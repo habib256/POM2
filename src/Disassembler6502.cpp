@@ -134,6 +134,16 @@ OpcodeInfo cmosInfo(uint8_t op)
         case 0xAF: return {"BBS2", AM_ZPR}; case 0xBF: return {"BBS3", AM_ZPR};
         case 0xCF: return {"BBS4", AM_ZPR}; case 0xDF: return {"BBS5", AM_ZPR};
         case 0xEF: return {"BBS6", AM_ZPR}; case 0xFF: return {"BBS7", AM_ZPR};
+        // Undocumented multi-byte NOP slots the CMOS core actually executes
+        // (UnoffImm/Unoff2/UnoffZpX/Unoff3/UnoffAbs4 in M6502.cpp). Without
+        // these they fall through to the 1-byte "???" entry and desync every
+        // subsequent disasm line. Lengths mirror the core's PC advance.
+        case 0x02: case 0x22: case 0x42: case 0x62:
+        case 0x82: case 0xC2: case 0xE2: return {"NOP", AM_IMM};  // 2 B (UnoffImm)
+        case 0x44: return {"NOP", AM_ZP};                         // 2 B (Unoff2)
+        case 0x54: case 0xD4: case 0xF4: return {"NOP", AM_ZPX};  // 2 B (UnoffZpX)
+        case 0x5C: return {"NOP", AM_ABS};                        // 3 B (Unoff3)
+        case 0xDC: case 0xFC: return {"NOP", AM_ABX};             // 3 B (UnoffAbs4)
         default:   return opcodeInfo[op];
     }
 }

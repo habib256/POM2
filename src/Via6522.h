@@ -278,8 +278,17 @@ struct Via6522
             if (t1Continuous()) {
                 // +3 matches MAME `6522via.cpp:534,104` reload constant
                 // `TIMER1_VALUE + IFR_DELAY` (IFR_DELAY = 3 = latch-to-
-                // counter copy + PB7 pulse pair).
-                t1Counter += static_cast<int32_t>(t1Latch) + 3;
+                // counter copy + PB7 pulse pair). Collapse the reload
+                // arithmetically: a degenerate tiny latch (e.g. 0 → period 3)
+                // under a large `cycles` (clamped to ~2.1e9 on a sync desync)
+                // would otherwise spin this loop hundreds of millions of
+                // times. IFR_T1 has already latched (idempotent above), so
+                // jump t1Counter forward in one int64 step to ≥ 0.
+                const int64_t period  = static_cast<int64_t>(t1Latch) + 3;
+                const int64_t deficit = -static_cast<int64_t>(t1Counter);   // > 0
+                const int64_t periods = deficit / period + 1;
+                t1Counter = static_cast<int32_t>(
+                    static_cast<int64_t>(t1Counter) + periods * period);
             } else {
                 t1Counter += 0x10000;
             }

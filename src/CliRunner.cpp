@@ -32,8 +32,13 @@ void runPasteFile(const std::string& path, EmulationController& emu)
         pom2::log().error("CLI", "--paste cannot open " + path);
         return;
     }
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+    // Read at most the paste-queue cap so a huge/unbounded source (e.g.
+    // /dev/zero) can't exhaust memory before pasteText() applies its cap —
+    // pasteText discards anything beyond Memory::kPasteMaxChars anyway.
+    static constexpr size_t kMaxPaste = 4096;  // == Memory::kPasteMaxChars
+    char buf[kMaxPaste];
+    f.read(buf, sizeof(buf));
+    const std::string content(buf, static_cast<size_t>(f.gcount()));
     const size_t queued = emu.memory().pasteText(content);
     pom2::log().info("CLI", "--paste queued " + std::to_string(queued) +
                             " chars from " + path);
@@ -44,6 +49,16 @@ void runLoad(const CliAction& a, EmulationController& emu)
     std::ifstream f(a.pathS, std::ios::binary);
     if (!f) {
         pom2::log().error("CLI", "--load cannot open " + a.pathS);
+        return;
+    }
+    // Reject oversized sources before allocating, so an unbounded file (e.g.
+    // /dev/zero) or a multi-GB file can't exhaust memory. A 6502 image can be
+    // at most 64 KiB; the address+size>0x10000 check below still applies.
+    f.seekg(0, std::ios::end);
+    const std::streamoff fsz = f.tellg();
+    f.seekg(0, std::ios::beg);
+    if (fsz > 0x10000) {
+        pom2::log().error("CLI", "--load file exceeds 64 KiB: " + a.pathS);
         return;
     }
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),

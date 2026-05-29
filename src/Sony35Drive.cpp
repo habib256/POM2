@@ -401,6 +401,10 @@ std::vector<uint8_t> nibblesFromCells(const std::vector<uint8_t>& cells)
     }
     while (pos >= n) pos -= n;
     while (pos < n && !cells[pos]) ++pos;
+    if (pos == n) return out;   // alignment wrap landed in an all-zero tail;
+                                // without this, the found: reader dereferences
+                                // cells[n] (1-byte heap over-read). Mirrors the
+                                // guard on the goto-found path above.
  found:
 
     out.reserve(static_cast<size_t>(n) / 8 + 8);
@@ -813,6 +817,13 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
         case 0x4: directionIn_ = true;  break;        // DirPrev: step toward cyl-1 (track 0)
         case 0x7:                                      // StartEject
             if (image_ && image_->isLoaded()) {
+                // Flush guest write-back blocks before dropping the image —
+                // Disk35Image::eject() clears blocks_ + dirty_ with no file
+                // write, so without this a firmware-issued eject silently
+                // loses everything written since the last save (the UI eject
+                // path in EmulationController::eject35 already does this).
+                if (image_->hasUnsavedChanges() && !image_->isWriteProtected())
+                    image_->saveDirty();
                 image_->eject();
                 diskSwitched_ = true;
                 if (sound_) sound_->click();

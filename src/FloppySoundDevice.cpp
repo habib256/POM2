@@ -82,12 +82,14 @@ bool FloppySoundDevice::loadSamples(const std::string& dir, FormFactor ff)
                 std::string("missing sample: ") + full.string());
         }
     }
-    samplesLoaded_ = (loaded == SAMPLE_COUNT);
-    if (samplesLoaded_) {
+    const bool allLoaded = (loaded == SAMPLE_COUNT);
+    // Release-store publishes the samples_ writes above to the audio thread.
+    samplesLoaded_.store(allLoaded, std::memory_order_release);
+    if (allLoaded) {
         pom2::log().info("FloppySound",
             std::string("loaded 10 ") + p + "\" samples from " + dir);
     }
-    return samplesLoaded_;
+    return allLoaded;
 }
 
 bool FloppySoundDevice::loadOneWav(const std::string& path, Sample& out)
@@ -153,21 +155,21 @@ int FloppySoundDevice::queuedCommandCount() const
 
 void FloppySoundDevice::motor(bool on, bool withDisk)
 {
-    if (!samplesLoaded_) return;
+    if (!samplesLoaded_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
     cmdQueue_.push_back({on ? CmdKind::MotorOn : CmdKind::MotorOff, withDisk, 0});
 }
 
 void FloppySoundDevice::step(int /*newTrack*/, uint64_t emuCycles)
 {
-    if (!samplesLoaded_) return;
+    if (!samplesLoaded_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
     cmdQueue_.push_back({CmdKind::Step, false, emuCycles});
 }
 
 void FloppySoundDevice::click()
 {
-    if (!samplesLoaded_) return;
+    if (!samplesLoaded_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lk(cmdMtx_);
     cmdQueue_.push_back({CmdKind::Click, false, 0});
 }
@@ -357,7 +359,8 @@ void FloppySoundDevice::fillAudioBuffer(float* output, int frameCount)
 
     drainCommands();
 
-    if (!samplesLoaded_ || muted_.load(std::memory_order_relaxed)) {
+    if (!samplesLoaded_.load(std::memory_order_acquire) ||
+        muted_.load(std::memory_order_relaxed)) {
         // Still advance the frame counter so step-rate measurements stay
         // consistent across mute toggles.
         audioFrameCounter_.fetch_add(static_cast<uint64_t>(frameCount),

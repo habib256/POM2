@@ -13,8 +13,9 @@ uint8_t JoystickInput::axisToPaddle(float axis, float deadzone, bool invert)
 {
     if (invert) axis = -axis;
     if (std::fabs(axis) < deadzone) axis = 0.0f;
-    // Map [-1, +1] → [0, 255]. The +0.5 round-to-nearest puts 0.0 on 127
-    // and +1.0 on 255 cleanly. Clamp guards against drivers briefly
+    // Map [-1, +1] → [0, 255]. The +0.5 round-to-nearest puts 0.0 on 128
+    // (center, matching paddleValue()'s 128 fallback) and +1.0 on 255
+    // cleanly. Clamp guards against drivers briefly
     // returning slightly out-of-range values.
     float v = (axis + 1.0f) * 127.5f;
     if (v < 0.0f)   v = 0.0f;

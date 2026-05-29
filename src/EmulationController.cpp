@@ -262,9 +262,9 @@ void EmulationController::tickFrame()
     // thread, but the lock is cheap and keeps the lock-discipline
     // contract identical to the threaded path.
     constexpr int kLockChunkCycles = 4096;
-    const int budget = cyclesPerFrame.load();
-    for (int done = 0; done < budget; ) {
-        const int chunk = std::min(kLockChunkCycles, budget - done);
+    const int64_t budget = cyclesPerFrame.load();  // int64: see workerLoop note
+    for (int64_t done = 0; done < budget; ) {
+        const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
         std::lock_guard<std::mutex> lk(stateMtx);
         const int actually = processor.run(chunk);
         done += (actually > 0 ? actually : chunk);
@@ -561,7 +561,15 @@ void EmulationController::workerLoop()
                 }
                 stepsPending.fetch_sub(1);
             }
-            if (stepsPending.load() <= 0) mode.store(Mode::Stopped);
+            if (stepsPending.load() <= 0) {
+                mode.store(Mode::Stopped);
+                // A requestStep() on the UI/CLI thread can race the store
+                // above: it may have re-armed Mode::Step and queued a step
+                // between our load and this store, which we'd then clobber to
+                // Stopped — permanently losing that step. Recover by checking
+                // the queue once more and re-arming Step if work appeared.
+                if (stepsPending.load() > 0) mode.store(Mode::Step);
+            }
             continue;
         }
 
@@ -584,9 +592,13 @@ void EmulationController::workerLoop()
         // larger chunks (we tried 16K first) leave the UI noticeably
         // laggy during long disk reads.
         constexpr int kLockChunkCycles = 4096;
-        const int budget = cyclesPerFrame.load();
-        for (int done = 0; done < budget; ) {
-            const int chunk = std::min(kLockChunkCycles, budget - done);
+        // int64 accumulator: cyclesPerFrame is capped only at INT_MAX by the
+        // CLI, and processor.run() may overshoot `chunk`, so an `int done`
+        // could overflow (signed UB) near the ceiling. int64 makes the loop
+        // bound safe without restricting the accepted --speed range.
+        const int64_t budget = cyclesPerFrame.load();
+        for (int64_t done = 0; done < budget; ) {
+            const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
             std::lock_guard<std::mutex> lk(stateMtx);
             const int actually = processor.run(chunk);
             done += (actually > 0 ? actually : chunk);

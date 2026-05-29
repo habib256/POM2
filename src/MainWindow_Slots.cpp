@@ -125,10 +125,14 @@ void MainWindow::renderSlotConfigPanel()
         // Snapshot the canonical mapping into a working copy so the user's
         // edits are local until Apply.
         static std::array<std::string, 8> draft{};
-        static bool draftInited = false;
-        if (!draftInited) {
+        // Re-seed the working copy from the live slotCards[] whenever a
+        // profile switch / settings restart rebuilt them. slotDraftInited_ is
+        // a MainWindow member that applyProfile/restartEmulationFromSettings
+        // reset for exactly this purpose — a plain `static bool` here would
+        // never observe the rebuild and would keep stale assignments.
+        if (!slotDraftInited_) {
             for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
-            draftInited = true;
+            slotDraftInited_ = true;
         }
 
         const bool mouseAvailable    = mouseRomsPresent();
@@ -767,6 +771,9 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    (e.g. a user who put SSC in slot 4 keeps it across profile
     //    switches).
     plugSlotsFromSettings();
+    // Force the Slot Config panel to re-seed its draft from the rebuilt
+    // slotCards[] on its next render (stale-draft-after-profile-switch fix).
+    slotDraftInited_ = false;
 
     // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
     //    and look up its slot in the snapshot — empty entries mean no
@@ -939,6 +946,8 @@ void MainWindow::restartEmulationFromSettings()
 
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
     plugSlotsFromSettings();
+    // Re-seed the Slot Config draft from the rebuilt slotCards[] next render.
+    slotDraftInited_ = false;
 
     // 4. Restore each DiskII's persisted state (matches MainWindow ctor).
     //    Per-slot keys for multi-instance configs. Legacy `disk_path` /

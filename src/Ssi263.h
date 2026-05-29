@@ -85,7 +85,7 @@ public:
 
     // Mode bits (DR1:0) — bits 7:6 of DURPHON, after shift.
     enum SsiMode : uint8_t {
-        MODE_IRQ_DISABLED                    = 0x0, // 00 — A/!R inactive, silent IRQ
+        MODE_IRQ_DISABLED                    = 0x0, // 00 — host IRQ suppressed; A/!R (D7) still set on completion
         MODE_FRAME_IMMEDIATE_INFLECTION      = 0x1, // 01
         MODE_PHONEME_IMMEDIATE_INFLECTION    = 0x2, // 10
         MODE_PHONEME_TRANSITIONED_INFLECTION = 0x3, // 11

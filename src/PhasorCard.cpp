@@ -427,6 +427,24 @@ void PhasorCard::onViaPortBChange(int viaIdx)
     const uint8_t pa = v.portAOut & v.ddrA;
     const uint8_t pb = v.portBOut & v.ddrB;
 
+    // /RESET (PB2 low) is handled BEFORE the chip-select decode. MAME's
+    // a2bus_phasor via_out_b resets the AY pair outside the chip_sel
+    // computation: `m_ay1->reset_w(); if (m_native) m_ay2->reset_w();` — so
+    // a reset strobe is never gated by PB3/PB4. In Mockingboard-compat mode
+    // only the primary AY resets; in Phasor-native mode the whole pair does.
+    // The old code routed reset through the chip-select mask, leaving the
+    // secondary chip with stale register/LFSR/envelope state whenever native
+    // software pulses /RESET without re-asserting the per-chip select bits.
+    if ((pb & pom2::Ay3_8910::kPbBitReset) == 0) {
+        ay_[ayBase]->reset();
+        ++ayResetCount_[ayBase];
+        if (mode_ != PH_Mockingboard) {
+            ay_[ayBase + 1]->reset();
+            ++ayResetCount_[ayBase + 1];
+        }
+        return;
+    }
+
     // Decide which of the two AYs in the pair receive this strobe.
     // bit0 = primary, bit1 = secondary.
     int targetMask = 0;

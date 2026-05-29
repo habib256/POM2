@@ -462,7 +462,18 @@ int main(int argc, char* argv[])
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
                 if (cancel->load(std::memory_order_acquire)) return;
-                pom2::runDeferredActions(actions, *emu);
+                // Guard the worker: an uncaught exception escaping a
+                // std::thread callable calls std::terminate(). Deferred
+                // actions touch user-named files, so an I/O or alloc failure
+                // must not crash the whole emulator.
+                try {
+                    pom2::runDeferredActions(actions, *emu);
+                } catch (const std::exception& e) {
+                    pom2::log().error("CLI",
+                        std::string("deferred action failed: ") + e.what());
+                } catch (...) {
+                    pom2::log().error("CLI", "deferred action failed (unknown exception)");
+                }
             });
     }
 #endif

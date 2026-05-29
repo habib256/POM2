@@ -53,11 +53,20 @@ std::string escapeValue(const std::string& s)
 {
     std::string out;
     out.reserve(s.size());
-    for (char c : s) {
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        // Leading/trailing space & tab must be escaped too: load() runs the
+        // value through trim() (needed to drop a CRLF '\r' artifact), which
+        // would otherwise silently strip boundary whitespace from a value —
+        // e.g. a path legitimately ending in a space. Escaping only the
+        // boundary chars keeps interior spaces readable in the file.
+        const bool boundary = (i == 0 || i + 1 == s.size());
         switch (c) {
             case '\\': out += "\\\\"; break;
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
+            case ' ':  out += boundary ? "\\s" : " ";  break;
+            case '\t': out += boundary ? "\\t" : "\t"; break;
             default:   out += c;      break;
         }
     }
@@ -73,6 +82,8 @@ std::string unescapeValue(const std::string& s)
             const char n = s[++i];
             if      (n == 'n')  out += '\n';
             else if (n == 'r')  out += '\r';
+            else if (n == 's')  out += ' ';
+            else if (n == 't')  out += '\t';
             else if (n == '\\') out += '\\';
             else { out += '\\'; out += n; }   // unknown escape — pass through
         } else {

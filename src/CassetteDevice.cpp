@@ -108,6 +108,8 @@ CassetteDevice::CassetteDevice()
     static_assert(std::is_same_v<decltype(audioRampInSamplesRemaining),
                                  std::atomic<uint32_t>>,
                   "audioRampInSamplesRemaining must be atomic (cross-thread)");
+    static_assert(std::is_same_v<decltype(playbackActive), std::atomic<bool>>,
+                  "playbackActive must be atomic (written from the audio callback)");
     reset();
 }
 

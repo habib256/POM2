@@ -472,9 +472,16 @@ cycles = ms * POM2_CPU_CLOCK_HZ / 1000
 Range: ~4 ms fastest (rate=15, dur=3 → ~4090 cyc), ~256 ms slowest
 (rate=0, dur=0 → ~262k cyc). Pinned by `ssi263_smoke`.
 
-`MODE_IRQ_DISABLED` (mode 00) plays the phoneme silently and never
-asserts A/!R — the phoneme repeats indefinitely until a new DURPHON
-is written or CTL goes high.
+`MODE_IRQ_DISABLED` (mode 00) suppresses the **host IRQ only** — A/!R
+(D7) is still asserted on phoneme completion (AppleWin `SSI263.cpp`
+~line 724: D7 is raised regardless of the DR1:0 mode bits; only
+power-down holds it low). So polling drivers that select mode 00 and
+watch the D7 status bit to detect phoneme-complete still work. On
+completion the duration counter parks at 0 (it does not re-tick), so
+the chip is quiescent until the next DURPHON write — it does **not**
+"repeat". `Ssi263::advance()` returns `irqEnabled()` (gates the host
+IRQ edge) but always sets `aRequest_`. Pinned by `ssi263_smoke`
+(`testIrqDisabledMode`).
 
 #### MockingboardCard Variant::SoundII
 

@@ -903,7 +903,10 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         // software typically polls $C010 for ("is the user still
         // holding a key?"). On II+ the strobe-clear semantic is
         // historical: bit 7 LOW after clear.
-        const bool wasReady = keyReady;
+        // Reuse the bit captured under kbMutex into kbLatch above (bit 7 ==
+        // keyReady) rather than re-reading the keyReady member here unlocked —
+        // a bare read races the UI/HTTP threads that write it under kbMutex.
+        const bool wasReady = (kbLatch & 0x80) != 0;
         clearKeyStrobe();
         if (iieMode) {
             return static_cast<uint8_t>(

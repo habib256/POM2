@@ -43,6 +43,7 @@ PFNGLLINKPROGRAMPROC       glLinkProgram_       = nullptr;
 PFNGLGETPROGRAMIVPROC      glGetProgramiv_      = nullptr;
 PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog_ = nullptr;
 PFNGLDELETEPROGRAMPROC     glDeleteProgram_     = nullptr;
+PFNGLBINDATTRIBLOCATIONPROC glBindAttribLocation_ = nullptr;
 bool entryPointsLoaded_ = false;
 
 bool loadEntryPoints()
@@ -63,11 +64,13 @@ bool loadEntryPoints()
     glGetProgramiv_      = reinterpret_cast<PFNGLGETPROGRAMIVPROC>     (get("glGetProgramiv"));
     glGetProgramInfoLog_ = reinterpret_cast<PFNGLGETPROGRAMINFOLOGPROC>(get("glGetProgramInfoLog"));
     glDeleteProgram_     = reinterpret_cast<PFNGLDELETEPROGRAMPROC>    (get("glDeleteProgram"));
+    glBindAttribLocation_ = reinterpret_cast<PFNGLBINDATTRIBLOCATIONPROC>(get("glBindAttribLocation"));
     entryPointsLoaded_ =
         glCreateShader_ && glShaderSource_ && glCompileShader_ &&
         glGetShaderiv_ && glGetShaderInfoLog_ && glDeleteShader_ &&
         glCreateProgram_ && glAttachShader_ && glLinkProgram_ &&
-        glGetProgramiv_ && glGetProgramInfoLog_ && glDeleteProgram_;
+        glGetProgramiv_ && glGetProgramInfoLog_ && glDeleteProgram_ &&
+        glBindAttribLocation_;
     return entryPointsLoaded_;
 }
 } // namespace
@@ -85,6 +88,7 @@ bool loadEntryPoints()
 #  define glGetProgramiv      glGetProgramiv_
 #  define glGetProgramInfoLog glGetProgramInfoLog_
 #  define glDeleteProgram     glDeleteProgram_
+#  define glBindAttribLocation glBindAttribLocation_
 #endif
 
 namespace pom2 {
@@ -169,6 +173,11 @@ unsigned int compileShaderProgram(const char* vertexBody,
     }
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
+    // Pin the fullscreen-quad position attribute to location 0 before linking.
+    // Under GLSL 1.50 / 3.00 es the linker may otherwise assign `aPos` any
+    // generic slot, yet callers hardcode glVertexAttribPointer(0, ...).
+    // Binding a name absent from a given shader is a harmless no-op.
+    glBindAttribLocation(prog, 0, "aPos");
     glLinkProgram(prog);
     int ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);

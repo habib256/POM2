@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 namespace pom2 {
 
@@ -193,10 +194,15 @@ void buildIdealizedLut()
 
 void AppleWinNtsc::ensureInitialized()
 {
-    if (g_initDone.load(std::memory_order_acquire)) return;
-    buildChromaLut();
-    buildIdealizedLut();
-    g_initDone.store(true, std::memory_order_release);
+    // std::call_once makes the header's "safe to call from any thread"
+    // guarantee actually hold: the old check-then-act let two concurrent
+    // first-callers both run the build* writers and race on the shared LUTs.
+    static std::once_flag initFlag;
+    std::call_once(initFlag, [] {
+        buildChromaLut();
+        buildIdealizedLut();
+        g_initDone.store(true, std::memory_order_release);
+    });
 }
 
 void AppleWinNtsc::renderLine(const uint8_t* src,

@@ -140,14 +140,16 @@ bool Ssi263::advance(int cycles)
     phonemeRemainingCycles_ -= cycles;
     if (phonemeRemainingCycles_ > 0) return false;
     // Phoneme just finished. Don't re-tick over zero; leave the counter
-    // at 0 and assert A/!R (unless the chip is configured for
-    // MODE_IRQ_DISABLED, in which case the request flag stays low and
-    // the phoneme silently repeats per AppleWin's documented behaviour).
+    // at 0 and assert A/!R (D7). Per AppleWin SSI263.cpp ~line 724, the
+    // A/!R pin is raised on phoneme completion regardless of the DR1:0
+    // mode bits (only power-down — already handled above — suppresses it).
+    // The mode bits only gate whether the *host IRQ* fires. The return
+    // value signals an IRQ-worthy edge, so in MODE_IRQ_DISABLED (00) we
+    // still set D7 (pollable via read()) but report no IRQ edge to the host.
     phonemeRemainingCycles_ = 0;
-    if (!irqEnabled()) return false;
     if (aRequest_) return false;   // already requesting; no new edge
     aRequest_ = true;
-    return true;
+    return irqEnabled();
 }
 
 // ─── Audio render — PCM phoneme lookup + linear resample ─────────────────

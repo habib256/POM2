@@ -76,7 +76,7 @@ uint8_t SlotBus::deviceSelectRead(uint16_t addr)
     const int slot = (addr - 0xC080) >> 4;
     const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
     if (auto* p = slots[slot].get()) return p->deviceSelectRead(low4);
-    return 0;     // empty slot — Apple II floats the bus low here
+    return 0xFF;  // open bus on empty slot — matches slotRomRead/expansionRomRead
 }
 
 void SlotBus::deviceSelectWrite(uint16_t addr, uint8_t v)

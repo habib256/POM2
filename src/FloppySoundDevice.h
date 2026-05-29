@@ -78,7 +78,7 @@ public:
     /// gracefully (missing samples just go silent).
     bool loadSamples(const std::string& dir,
                      FormFactor ff = FormFactor::FF525);
-    bool isLoaded() const { return samplesLoaded_; }
+    bool isLoaded() const { return samplesLoaded_.load(std::memory_order_acquire); }
     FormFactor formFactor() const { return formFactor_; }
 
     /// Configure output sample rate. Resamples are computed on the fly
@@ -149,7 +149,11 @@ private:
         double nominalMs = 0.0;
     };
     std::array<Sample, SAMPLE_COUNT> samples_{};
-    bool       samplesLoaded_ = false;
+    // Atomic: written once by loadSamples() on the main thread, but the audio
+    // callback thread is already live (addSource happens before loadSamples),
+    // so a release-store here pairs with the callback's acquire-loads to
+    // guarantee the samples_ vectors are fully published before the flag flips.
+    std::atomic<bool> samplesLoaded_{false};
     FormFactor formFactor_    = FormFactor::FF525;
 
     // ─── Command queue (CPU → audio) ────────────────────────────────────

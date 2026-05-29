@@ -177,13 +177,17 @@ void testIrqDisabledMode()
     assert(chip.currentMode() == Ssi263::MODE_IRQ_DISABLED);
     assert(!chip.irqEnabled());
 
-    // Phoneme runs to completion; A/!R never goes high (mode 00 has
-    // A/!R inactive per the datasheet — phoneme repeats silently).
+    // Phoneme runs to completion. Per AppleWin (SSI263.cpp ~line 724) the
+    // A/!R pin (D7) is asserted on completion regardless of DR1:0 mode, so
+    // aRequest()/read() see it — but MODE_IRQ_DISABLED (00) suppresses the
+    // host IRQ, so advance() reports no IRQ edge. Polling drivers that select
+    // mode 00 and watch D7 for phoneme completion rely on this.
     const bool edge = chip.advance(chip.phonemeRemainingCycles() + 10);
-    assert(!edge);
-    assert(!chip.aRequest());
+    assert(!edge);                 // no host IRQ edge in mode 00
+    assert(chip.aRequest());       // ...but D7 (A/!R) is set
+    assert(chip.read(0) == 0x80);  // ...and pollable via a status read
 
-    std::printf("  ok: MODE_IRQ_DISABLED suppresses A/!R edge\n");
+    std::printf("  ok: MODE_IRQ_DISABLED suppresses host IRQ but still sets A/!R (D7)\n");
 }
 
 // Audio render — with the AppleWin-ported phoneme PCM blob now linked

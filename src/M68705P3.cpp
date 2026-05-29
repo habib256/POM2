@@ -306,9 +306,16 @@ void M68705P3::timerWriteTcr(uint8_t v)
     // not wired on the mouse card.
     if (v & 0x08) timer.prescale = 0;     // TCR_PSC: prescaler clear
     timer.tcr = static_cast<uint8_t>((timer.tcr & (v & 0x80)) | (v & ~(0x80 | 0x08)));
-    // TIM bit gates the timer interrupt request.
+    // TIM bit gates the timer interrupt request. MAME models this as a
+    // LEVEL-sensitive line: tcr_w calls set_input_line(M6805_INT_TIMER,
+    // (m_tcr & TCR_TIR) && !(m_tcr & TCR_TIM)), which both asserts AND
+    // de-asserts. So a TCR write that masks (TIM=1) or acknowledges (TIR=0)
+    // the request must immediately drop the pending bit — otherwise a
+    // request latched while I was set re-enters the ISR spuriously.
     if ((timer.tcr & 0x80) && !(timer.tcr & 0x40)) {
         pending_interrupts |= (1u << 1);     // bit 1 = TIMER
+    } else {
+        pending_interrupts &= ~(1u << 1);
     }
 }
 

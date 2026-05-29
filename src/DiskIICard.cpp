@@ -274,6 +274,14 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
             "13-sector disk mounted but the 341-0009 boot PROM "
             "(roms/disk2_13.rom) is missing — it won't boot");
     if (serving13_) useBitLss = true;
+    // Re-anchor the bit-level LSS clock to "now". If the controller was
+    // already spinning (active != MODE_IDLE) over an empty drive, lssCycle
+    // has been frozen — lssStart()/lssSync() only run with a disk present —
+    // while cpuCycleTotal kept growing. Without this resync the first $C0EC
+    // read after insertion runs the lssSync catch-up `while (lssCycle <
+    // cyclesLimit)` loop for millions of PROM-lookup iterations, freezing
+    // the emulator for seconds. Mirrors what lssStart() does on motor-on.
+    if (active != MODE_IDLE) lssCycle = cpuCycleTotal * 2;
     // No click here — fires at user-initiated insert via UI / CLI only.
     // Auto-restore of the previous-session disk path calls insertDisk
     // during MainWindow construction; firing the click there would

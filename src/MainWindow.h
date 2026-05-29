@@ -386,7 +386,20 @@ private:
     // through `applyProfile()` which keeps this in sync.
     pom2::SystemProfile activeProfile;
 
+    // Slot Config panel working-copy sync flag. Reset to false by
+    // applyProfile()/restartEmulationFromSettings() so the next render
+    // re-seeds the draft from the freshly-rebuilt slotCards[]; otherwise the
+    // panel shows — and Apply persists — the previous profile's stale slots.
+    bool slotDraftInited_ = false;
+
     bool showAbout = false;
+    // Apple ][+ photo shown in the About dialog. Loaded lazily on first
+    // open via stb_image; texture freed in ~MainWindow. `tried_` blocks
+    // repeated reload attempts if the file is missing.
+    unsigned aboutImageTex_ = 0;
+    int      aboutImageW_   = 0;
+    int      aboutImageH_   = 0;
+    bool     aboutImageTried_ = false;
 
     // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
     // screen, full-viewport, with no menu bar / toolbar / panels.
@@ -537,6 +550,10 @@ private:
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
+    /// Lazy-loads `pic/Apple_II_plus.jpg` into `aboutImageTex_` on the
+    /// first About-dialog open. Silent no-op if the asset can't be
+    /// resolved via ResourcePaths (kiosk builds, missing pic/ folder).
+    void ensureAboutImageLoaded();
     /// Slot Configuration panel (two columns): left = per-slot card
     /// assignment (built-ins greyed), right = internal disks + mountable
     /// ports of plugged storage cards. Implemented in MainWindow_Slots.cpp.

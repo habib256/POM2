@@ -457,6 +457,10 @@ install(TARGETS ${PROJECT_NAME}
 install(FILES fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf
         DESTINATION "${POM2_DATADIR}/fonts")
 
+# Apple ][+ photo shown in Help → About POM2. Resolved at runtime via
+# ResourcePaths → `<share/POM2>/pic/Apple_II_plus.jpg`.
+install(FILES pic/Apple_II_plus.jpg DESTINATION "${POM2_DATADIR}/pic")
+
 # MAME floppy mechanical samples (BSD-3-Clause — roms/floppy_samples/
 # README.txt). Optional: only when present in the source tree.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms/floppy_samples")

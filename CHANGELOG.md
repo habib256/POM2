@@ -6,6 +6,83 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-29
+
+- **Audit multi-agents : 25 bugs corrigés (1 critical, 1 high, 8 medium,
+  15 low)**. Audit systématique des 32 sous-systèmes (un agent par
+  domaine) suivi d'une vérification adversariale de chaque finding
+  (8 faux positifs écartés — comportements corrects/intentionnels laissés
+  intacts). Build propre, **99/99 tests verts**.
+
+  **🔴 Critical — freeze à 1 clic.** `File → Reload ROM` se
+  self-deadlockait : le handler appelait `hardReset()` *à l'intérieur* du
+  `lock_guard(stateMutex)`, or `hardReset()` re-verrouille ce même mutex
+  non-récursif (UB → deadlock du thread UI puis du worker CPU). Fix :
+  fermer le scope du lock avant `hardReset()`, comme tous les autres
+  sites reset/boot du fichier. `MainWindow.cpp`.
+
+  **🟠 High — détection fin-de-phonème SSI263.** En `MODE_IRQ_DISABLED`
+  (DR1:0=00), `Ssi263::advance()` ne posait jamais A/!R (D7) : il
+  `return`ait avant. Or AppleWin (source de vérité — MAME n'a pas de
+  SSI263) lève D7 à la complétion **quel que soit le mode** ; seul l'IRQ
+  *hôte* est gated. Les drivers qui scrutent D7 en mode 00 voyaient le bit
+  bloqué à 0 + la machine d'état figée (≠ « répétition silencieuse » que
+  prétendait le commentaire). Fix : `aRequest_=true` inconditionnel,
+  `return irqEnabled()` (ne gate que l'IRQ). `ssi263_smoke`
+  (`testIrqDisabledMode`), l'enum `Ssi263.h` et `DEV.md` mis à jour — ils
+  épinglaient/décrivaient l'ancien comportement bugué.
+
+  **🟡 Medium.**
+  - **Disk II — boucle LSS non bornée** : insérer une disquette pendant
+    que le moteur tourne à vide (LSS bit-level actif) laissait `lssCycle`
+    figé tandis que `cpuCycleTotal` montait → le 1er `$C0EC` après
+    insertion faisait un catch-up de millions d'itérations PROM (freeze
+    multi-s). `insertDisk` resync désormais `lssCycle` comme `lssStart`.
+  - **M68705 (souris) — IRQ timer** modélisé en latch set-only au lieu de
+    la ligne level-sensitive de MAME : masquer (TIM=1) ou acquitter
+    (TIR=0) le TCR ne dé-assertait pas le bit pending → ré-entrée parasite
+    de l'ISR. Ajout du `else` qui dé-asserte.
+  - **Floppy Emu — `goUp()`** sautait à la racine depuis tout
+    sous-dossier dès que le SD root finissait par `/` (séparateur final →
+    composant vide en fin d'itération de `lexically_normal`). Strip du
+    séparateur dans `setSdRoot`.
+  - **FloppySound — data race** : `samplesLoaded_` (bool non-atomique)
+    publié par `loadSamples()` alors que le callback audio tourne déjà →
+    lecture OOB possible sur ARM. Rendu `std::atomic` (release/acquire),
+    pinné par static_assert.
+  - **Slot Config — draft périmé** : `draftInited` (static jamais remis à
+    false) conservait les assignations de l'ancien profil après un
+    changement de machine, et **Apply les persistait**. Promu en membre
+    `slotDraftInited_`, réinitialisé par `applyProfile` /
+    `restartEmulationFromSettings`.
+  - **Phasor — /RESET natif** routé via le chip-select au lieu de resetter
+    la paire AY inconditionnellement (MAME `via_out_b` traite /RESET hors
+    `chip_sel`). /RESET déplacé avant le decode chip-select.
+  - **Sony 3.5" — over-read 1 octet** dans `nibblesFromCells` quand
+    l'alignement wrap tombait sur une queue toute-à-zéro (`cells[n]`).
+    Garde `if (pos==n) return` ajoutée (le chemin `goto found` l'avait
+    déjà).
+  - **Sony 3.5" — perte de données** : l'eject déclenché par le firmware
+    (strobe IWM 0x7) ne flushait pas les blocs write-back. `saveDirty()`
+    avant `eject()`, comme le chemin UI.
+
+  **🟢 Low** — races bénignes/latentes & inexactitudes matérielles :
+  cassette `playbackActive` atomique ; garde de taille `--load`/`--paste`
+  + try/catch sur le thread CLI différé (un `/dev/zero` faisait
+  `std::terminate`) ; flag V binaire en ADC décimal **CMOS** (carry-in
+  capturé avant écrasement par le carry BCD) ; longueurs des NOP CMOS non
+  documentés au désassembleur ($44/$54/$5C/$DC/$FC/$x2…) ; strobe CA2 en
+  lecture port-A (MC6821) ; single-step perdu sur race `requestStep`
+  (récupération auto) ; budget par frame en `int64` (overflow si
+  `--speed`≈INT_MAX) ; échappement `\s`/`\t` des espaces de bord dans
+  Settings (round-trip des chemins) ; écriture paddle sous `stateMutex` ;
+  lecture `keyReady` $C010 réutilise `kbLatch` (déjà sous lock) ; reload
+  T1 continu borné en arithmétique (Via6522) ;
+  `glBindAttribLocation(aPos→0)` avant link, + ajout de l'entrée au loader
+  GL maison ; `std::call_once` pour l'init des LUTs AppleWin NTSC ;
+  open-bus à `0xFF` sur device-select de slot vide (SlotBus, cohérent avec
+  slot/expansion ROM).
+
 ## 2026-05-28
 
 - **Audit markadev/AppleII-RevEng : 3 nouvelles cartes + correction de

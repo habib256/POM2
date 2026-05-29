@@ -222,7 +222,11 @@ private:
     bool     loadedTapeReady   = false;
     bool     playbackArmed     = false;
     uint64_t lastTapeInputCycle = 0;
-    bool     playbackActive    = false;
+    // Atomic: in AudioStream mode the audio-callback thread reads AND writes
+    // this (fillAudioBuffer), while advancePlayback() on the CPU thread and
+    // playTape/stopTape/etc. on the UI thread touch it under stateMutex only —
+    // the two lock domains don't serialise, so a plain bool is a data race.
+    std::atomic<bool> playbackActive{false};
     uint64_t cyclesUntilInputToggle = 0;
     size_t   playbackIndex     = 0;
     bool     rewinding         = false;
