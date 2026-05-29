@@ -101,6 +101,7 @@ set(SOURCES
     src/NoSlotClock.cpp
     src/GrapplerCard.cpp
     src/NtscPostProcessor.cpp
+    src/CrtEffectStack.cpp
     src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp

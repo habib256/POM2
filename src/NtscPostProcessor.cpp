@@ -121,40 +121,32 @@ void main() {
 }
 )GLSL";
 
-// Fragment shader: NTSC composite decode + post-effects.
+// Fragment shader: NTSC composite DEMODULATION only (Phase 4 final).
+//
+// This pass now recovers colour from the composite signal and nothing
+// else — barrel geometry, brightness/contrast/saturation, phosphor
+// persistence, scanlines and the shadow mask all moved to the shared
+// CrtEffectStack so OE and every other colour mode go through ONE effects
+// implementation. MainWindow chains this demod into CrtEffectStack.
 //
 // Pipeline per output fragment:
-//   1. Optional barrel distortion of the UV (curved-CRT look).
-//   2. For Y/I/Q demodulation we sample N+1 taps around the current
-//      column in the signal texture. Each tap contributes Y directly
-//      (gaussian-weighted, narrow sigma → sharp luma); for chroma we
-//      multiply by sin/cos of the 4×fsc subcarrier phase at the tap's
-//      x position (phase = π/2 per dot — the Apple II's pixel clock IS
-//      the colorburst clock) and accumulate with a WIDER gaussian
-//      (sharpness slider controls the chroma bandwidth).
-//   3. Standard NTSC YIQ→RGB matrix, then hue rotation in IQ plane.
-//   4. Brightness (additive), contrast (scale around 0.5), saturation
-//      (lerp toward luma).
-//   5. Persistence blend with the previous frame's output (max-style
-//      so bright pixels glow instead of greying).
-//   6. Scanlines via a multiplicative darkening of odd output rows.
+//   1. Sample N taps around the current column of the signal texture.
+//      Y is a narrow-gaussian sum (sharp luma); chroma multiplies each
+//      tap by sin/cos of the 4×fsc subcarrier phase (π/2 per dot — the
+//      Apple II pixel clock IS the colorburst) under a WIDER gaussian
+//      whose width the sharpness slider sets (chroma bandwidth).
+//   2. Hue rotation in the I/Q plane, then the standard NTSC YIQ→RGB
+//      matrix. PAL line-phase alternation flips the Q sign on odd lines.
+//   3. Output the demodulated RGB (clamped). Grading + CRT glass happen
+//      downstream in CrtEffectStack. Output is 1× (no scanline doubling).
 const char* kFragmentShader = R"GLSL(
 in vec2 vUv;
 out vec4 fragColor;
 
 uniform sampler2D uSignal;
-uniform sampler2D uPrev;
 uniform vec2  uSignalSize;     // (width, height) of the signal texture
-uniform float uBrightness;
-uniform float uContrast;
-uniform float uSaturation;
 uniform float uHue;
 uniform float uSharpness;
-uniform float uPersistence;
-uniform float uScanlines;
-uniform float uBarrel;
-uniform int   uShadowMask;     // 0=off, 1=triad, 2=aperture grille, 3=dot
-uniform float uShadowStrength; // 0..1
 uniform int   uPalMode;        // 0=NTSC, 1=PAL (line-phase alternation)
 
 const float PI = 3.14159265358979;
@@ -167,23 +159,10 @@ float sampleSignal(float x, float y)
 
 void main()
 {
-    // ── Barrel distortion ─────────────────────────────────────────
-    vec2 cuv = vUv * 2.0 - 1.0;
-    float r2 = dot(cuv, cuv);
-    vec2 buv = cuv * (1.0 + uBarrel * r2);
-    vec2 uv  = buv * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
-
-    float sigX = uv.x * uSignalSize.x;
-    float sigY = uv.y * uSignalSize.y;
+    float sigX = vUv.x * uSignalSize.x;
+    float sigY = vUv.y * uSignalSize.y;
 
     // ── PAL line-phase alternation ────────────────────────────────
-    // PAL inverts the Q chroma component every other scanline. We
-    // simulate that by flipping the Q-tap sign when the source line is
-    // odd. Implemented as a Q-multiplier (±1) that NTSC keeps at +1.
     float palQSign = 1.0;
     if (uPalMode == 1) {
         float lineIdx = floor(sigY);
@@ -191,10 +170,6 @@ void main()
     }
 
     // ── Y / I / Q accumulation over a small kernel ────────────────
-    // sigmaY narrow → sharp luminance.
-    // sigmaC controlled by sharpness: high sharpness → narrow chroma
-    // filter → ringy / sharp colour; low sharpness → wide filter →
-    // soft pastel (the OE "TV" look).
     float sigmaY = 0.8;
     float sigmaC = mix(2.5, 1.0, clamp(uSharpness, 0.0, 1.0));
 
@@ -208,9 +183,7 @@ void main()
         float wY = exp(-0.5 * dy * dy / (sigmaY * sigmaY));
         float wC = exp(-0.5 * dy * dy / (sigmaC * sigmaC));
 
-        // 4×-fsc phase: one full subcarrier cycle every 4 dots.
-        float phase = PI * 0.5 * fx;
-
+        float phase = PI * 0.5 * fx;   // 4×-fsc: one cycle per 4 dots
         Y   += s * wY;
         I   += s * sin(phase) * wC * 2.0;
         Q   += s * cos(phase) * wC * 2.0 * palQSign;
@@ -233,54 +206,7 @@ void main()
         Y - 0.272 * Ir - 0.647 * Qr,
         Y - 1.106 * Ir + 1.703 * Qr
     );
-
-    // ── Brightness / contrast / saturation ────────────────────────
-    rgb = (rgb - 0.5) * uContrast + 0.5 + uBrightness;
-    float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
-    rgb = mix(vec3(luma), rgb, clamp(uSaturation, 0.0, 4.0));
     rgb = clamp(rgb, 0.0, 1.0);
-
-    // ── Persistence (CRT phosphor decay) ──────────────────────────
-    vec3 prev = texture(uPrev, vUv).rgb;
-    rgb = max(rgb, prev * clamp(uPersistence, 0.0, 0.98));
-
-    // ── Scanlines (post) ──────────────────────────────────────────
-    // Output texture is 2× vertical of signal, so signal-row parity ≠
-    // output-row parity. Darken odd output rows (works at 2× vertical).
-    float outRow = uv.y * (uSignalSize.y * 2.0);
-    float scan = 1.0 - uScanlines * fract(outRow * 0.5) * 2.0;
-    if (mod(floor(outRow), 2.0) < 1.0) scan = 1.0;
-    rgb *= scan;
-
-    // ── Shadow mask (post) ────────────────────────────────────────
-    // Procedural mask in output-pixel space. Approximates the
-    // multiplicative attenuation of off-channels in each CRT cell —
-    // not the additive luminance/halation that a real mask also
-    // imparts (a future per-channel glow pass could handle that).
-    //   Triad         — 3-pixel-wide RGB stripes, no vertical offset.
-    //   ApertureGrille — same stripes, no inter-line gap (Trinitron).
-    //   Dot           — same RGB rotation but each row shifts by 1
-    //                    triplet width, giving a quincunx pattern.
-    if (uShadowMask != 0 && uShadowStrength > 0.0) {
-        float ox = uv.x * (uSignalSize.x * 2.0); // output X in pixels
-        if (uShadowMask == 3) {
-            ox += (mod(floor(outRow * 0.5), 2.0) < 1.0) ? 0.0 : 1.5;
-        }
-        int phase = int(mod(floor(ox), 3.0));
-        vec3 maskColor = vec3(0.0);
-        if      (phase == 0) maskColor = vec3(1.0, 0.0, 0.0);
-        else if (phase == 1) maskColor = vec3(0.0, 1.0, 0.0);
-        else                 maskColor = vec3(0.0, 0.0, 1.0);
-        vec3 atten = mix(vec3(1.0), maskColor, uShadowStrength);
-        // Triad has horizontal gaps between cell rows; aperture grille
-        // does not. We darken every 3rd output row for Triad/Dot.
-        if (uShadowMask == 1 || uShadowMask == 3) {
-            float vrow = mod(floor(outRow), 3.0);
-            if (vrow < 1.0) atten *= mix(1.0, 0.6, uShadowStrength);
-        }
-        rgb *= atten;
-    }
-
     fragColor = vec4(rgb, 1.0);
 }
 )GLSL";
@@ -306,18 +232,9 @@ bool NtscPostProcessor::initialize()
     if (!program) return false;
 
     uSignal      = glGetUniformLocation(program, "uSignal");
-    uPrevFrame   = glGetUniformLocation(program, "uPrev");
-    uBrightness  = glGetUniformLocation(program, "uBrightness");
-    uContrast    = glGetUniformLocation(program, "uContrast");
-    uSaturation  = glGetUniformLocation(program, "uSaturation");
+    uSignalSize  = glGetUniformLocation(program, "uSignalSize");
     uHue         = glGetUniformLocation(program, "uHue");
     uSharpness   = glGetUniformLocation(program, "uSharpness");
-    uPersistence = glGetUniformLocation(program, "uPersistence");
-    uScanlines   = glGetUniformLocation(program, "uScanlines");
-    uBarrel      = glGetUniformLocation(program, "uBarrel");
-    uSignalSize  = glGetUniformLocation(program, "uSignalSize");
-    uShadowMask  = glGetUniformLocation(program, "uShadowMask");
-    uShadowStr   = glGetUniformLocation(program, "uShadowStrength");
     uPalMode     = glGetUniformLocation(program, "uPalMode");
 
     // Fullscreen quad: two triangles covering NDC [-1..1].
@@ -348,7 +265,7 @@ bool NtscPostProcessor::createTextures(int sw, int sh)
     signalW = sw;
     signalH = sh;
     outW    = sw;          // keep horizontal sample rate
-    outH    = sh * 2;      // 2× vertical for scanlines
+    outH    = sh;          // demod-only is 1×; CrtEffectStack does the 2×
 
     // Signal texture (R8) — one byte per 4×fsc sample.
     glGenTextures(1, &signalTex);
@@ -363,32 +280,29 @@ bool NtscPostProcessor::createTextures(int sw, int sh)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, sw, sh, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
 #endif
 
-    // Two output textures + matching FBOs for persistence ping-pong.
-    glGenFramebuffers(2, fbo);
-    glGenTextures(2, outputTex);
-    for (int i = 0; i < 2; ++i) {
-        glBindTexture(GL_TEXTURE_2D, outputTex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, outW, outH, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, outputTex[i], 0);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            errorMsg = "FBO incomplete";
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            // Release everything we allocated so a retry doesn't leak.
-            glDeleteFramebuffers(2, fbo);
-            glDeleteTextures(2, outputTex);
-            glDeleteTextures(1, &signalTex);
-            fbo[0] = fbo[1] = 0;
-            outputTex[0] = outputTex[1] = 0;
-            signalTex = 0;
-            return false;
-        }
+    // Single demod output texture + FBO. NEAREST: this is the demod
+    // intermediate that CrtEffectStack samples; nearest keeps its texels
+    // clean (the effect pass does its own filtering / 2× scanline expansion).
+    glGenFramebuffers(1, &fbo);
+    glGenTextures(1, &outputTex);
+    glBindTexture(GL_TEXTURE_2D, outputTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, outW, outH, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, outputTex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        errorMsg = "FBO incomplete";
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &outputTex);
+        glDeleteTextures(1, &signalTex);
+        fbo = 0; outputTex = 0; signalTex = 0;
+        return false;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return true;
@@ -424,12 +338,10 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
         signalW = sw;
         signalH = sh;
         outW = sw;
-        outH = sh * 2;
-        for (int i = 0; i < 2; ++i) {
-            glBindTexture(GL_TEXTURE_2D, outputTex[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, outW, outH, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        }
+        outH = sh;
+        glBindTexture(GL_TEXTURE_2D, outputTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, outW, outH, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     }
 
     // Upload the new signal frame.
@@ -447,11 +359,7 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     const GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
     const GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
 
-    const int writeIdx = pingPongIdx;
-    const int readIdx  = 1 - pingPongIdx;
-    pingPongIdx = readIdx;
-
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo[writeIdx]);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, outW, outH);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
@@ -461,32 +369,18 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, signalTex);
     glUniform1i(uSignal, 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, firstFrame ? signalTex : outputTex[readIdx]);
-    glUniform1i(uPrevFrame, 1);
 
-    if (uSignalSize  >= 0) glUniform2f(uSignalSize, float(sw), float(sh));
-    if (uBrightness  >= 0) glUniform1f(uBrightness,  params.brightness);
-    if (uContrast    >= 0) glUniform1f(uContrast,    params.contrast);
-    if (uSaturation  >= 0) glUniform1f(uSaturation,  params.saturation);
-    if (uHue         >= 0) glUniform1f(uHue,         params.hue);
-    if (uSharpness   >= 0) glUniform1f(uSharpness,   params.sharpness);
-    if (uPersistence >= 0) glUniform1f(uPersistence, params.persistence);
-    if (uScanlines   >= 0) glUniform1f(uScanlines,   params.scanlines);
-    if (uBarrel      >= 0) glUniform1f(uBarrel,      params.barrel);
-    if (uShadowMask  >= 0) glUniform1i(uShadowMask,  static_cast<int>(params.shadowMask));
-    if (uShadowStr   >= 0) glUniform1f(uShadowStr,   params.shadowMaskStrength);
-    if (uPalMode     >= 0) glUniform1i(uPalMode,     params.palMode ? 1 : 0);
+    // Demod-only uniforms (CRT glass lives in CrtEffectStack now).
+    if (uSignalSize >= 0) glUniform2f(uSignalSize, float(sw), float(sh));
+    if (uHue        >= 0) glUniform1f(uHue,       params.hue);
+    if (uSharpness  >= 0) glUniform1f(uSharpness, params.sharpness);
+    if (uPalMode    >= 0) glUniform1i(uPalMode,   params.palMode ? 1 : 0);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 
-    // Leave neither texture unit holding one of our private textures —
-    // the next caller (ImGui or anyone else) shouldn't be able to see
-    // them through a stale binding.
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // Leave no private texture bound on unit 0.
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -498,8 +392,7 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (prevCull)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
 
-    firstFrame = false;
-    return outputTex[writeIdx];
+    return outputTex;
 }
 
 } // namespace pom2

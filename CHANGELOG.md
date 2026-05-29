@@ -8,6 +8,122 @@ courante → `DEV.md`.
 
 ## 2026-05-29
 
+- **Affichage — réorganisation en couches (Phase 0 + 1a).** Préparation du
+  passage à une architecture d'affichage en couches (décodage couleur /
+  démodulation composite / **effets CRT activables indépendamment du mode**),
+  aujourd'hui bloquée parce que `HiResMode` mélange trois axes orthogonaux
+  (algorithme de décodage, phosphore mono, et effets — ces derniers
+  verrouillés au seul chemin `ColorCompositeOE`). Deux étapes sans aucun
+  changement de rendu :
+
+  **Phase 0 — filet de non-régression.** Nouveau `test_display_golden`
+  (`display_golden_hash`) : fige un hash FNV-1a du framebuffer pour le
+  produit croisé {8 scènes //e + 3 ][+} × {7 pipelines couleur entiers} +
+  le générateur de signal composite (88 chemins épinglés). Couvre les
+  décodeurs déterministes-entiers ; `ColorAppleWin` exclu du golden (LUT
+  bâtie en flottant → quantif. dépendante de l'hôte, déjà couvert par
+  `applewin_ntsc_smoke` + son signal d'entrée golden-hashé ici). Régénérable
+  via `POM2_GOLDEN_RECORD=1`. *Piège trouvé en l'écrivant* : sur //e les
+  soft-switches de pagination `$C00C/$C00D` (80COL) ne répondent qu'aux
+  **écritures** (`Memory.cpp:892`) — un `memRead` laisse `eightyCol` à 0 et
+  les scènes 80-col/DHGR retombent silencieusement sur le chemin 40-col/HGR.
+
+  **Phase 1a — extraction des primitives de décodage NTSC.** Le cœur porté
+  de MAME (bit doubler, `kArtifactColorLut`, `rotl4b`, `buildHgrWordRow`,
+  `buildBitStream`, `avgRgb`) sort de l'anonymous-namespace de
+  `Apple2Display.cpp` vers `Apple2VideoDecode.h` (`namespace pom2::a2v`,
+  header-only `inline constexpr` — évite de câbler un nouveau .cpp dans les
+  ~12 cibles qui compilent `Apple2Display.cpp`). Partagé verbatim par HGR /
+  DHGR / générateur de signal. Golden + 6 tests d'affichage verts, GUI build
+  OK. Doc périmée corrigée au passage (`signal()`/`signalProduced()` :
+  le lo-res EST sérialisé ; `kChatMauveHGR` : la DHGR Chat Mauve EST
+  modélisée, dans `renderDhgr`).
+
+  **Phase 1b — unification des glyphes texte.** Les 6 copies de la logique
+  glyphe→masque-7-bits (renderText, renderText80, renderTextChatMauveFgBg,
+  + paintText40/80 du générateur de signal) fusionnées dans un unique
+  `glyphRows7()`. Oracle renforcé avant la chirurgie : nouvelle scène
+  `textcolorcm` qui couvre le chemin texte couleur Chat Mauve fg/bg
+  (96 chemins épinglés au total). Byte-for-byte identique.
+
+  **Phase 2 (lite) — découplage du phosphore.** `kPhosphors[(int)mode]`
+  (indexé par la valeur entière de l'énum `HiResMode`, d'où l'obligation
+  d'ajouter tout nouvel enumerator en fin de liste) remplacé par un
+  `phosphorFor(mode)` à switch explicite + constantes nommées. Amorce de
+  l'axe « teinte » indépendant du décodeur couleur. Identique.
+
+  **Phase 3 — pile d'effets CRT universelle (la fonctionnalité phare).**
+  Nouveau `CrtEffectStack` (`.h/.cpp`) : passe GLSL RGBA→RGBA qui applique
+  scanlines / masque d'ombre / barrel / persistance / brightness-contrast-
+  saturation sur le framebuffer de **n'importe quel** mode couleur (Color
+  NTSC MAME, mono, Chat Mauve, AppleWin) — plus seulement le chemin OE qui
+  cuisait ses effets dans son shader de démodulation. Réutilise `NtscParams`
+  (un seul panneau « CRT Settings » pilote les deux). Câblé dans
+  `drawScreenImage` pour les modes non-OE, **opt-in** (menu Display → « CRT
+  effects on all modes », persistant `crt_effects_all_modes`) et
+  passthrough-safe (échec d'init du shader → framebuffer brut, aucun
+  plantage). **Vérifié au runtime** : GUI lancée sous X, shader compilé
+  (`[INFO] CRT: Universal CRT effect stack ready`), rendu correct en
+  ColorNTSC, zéro erreur GL.
+
+  **Phase 4 — suppression du double-rendu AppleWin + unification OE.** Deux
+  volets :
+
+  *(a) Double-rendu AppleWin.* En `ColorAppleWin`, `render()` appelait
+  `renderInternal()` (colorisation LUT complète de frame80) PUIS
+  `AppleWinNtsc::renderFrame` qui réécrivait intégralement frame80 → 1ʳᵉ passe
+  100 % jetée. `render()` saute désormais `renderInternal` pour AppleWin
+  (fallback défensif conservé). `++frameCounter` déplacé vers `render()` pour
+  que FLASH continue d'avancer malgré le skip. Golden byte-identique
+  (non-AppleWin) ; AppleWin vérifié au runtime.
+
+  *(b) Unification OE dans la pile d'effets partagée.* `NtscPostProcessor`
+  devient **démod-pur** (récupération couleur Y/I/Q + sharpness + hue + PAL,
+  sortie 1×, texture unique sans ping-pong) ; tout le « verre CRT »
+  (scanlines / masque / barrel / persistance / BCS) est retiré du shader OE et
+  vit désormais UNIQUEMENT dans `CrtEffectStack`. `drawScreenImage` chaîne
+  `démod → CrtEffectStack` pour OE (toujours actif, pour préserver le look),
+  exactement comme les autres modes — **une seule implémentation d'effets**,
+  fin de la triple-persistance / double-scanlines.
+
+  *Preuve d'équivalence* (nouvel outil GL hors-ctest `ntsc_oe_ab`,
+  `glReadPixels` A/B avant/après sur le serveur GL) : démod pur **max 1 LSB**,
+  scanlines **max 1 LSB**, BCS **≤10 LSB** (ordre clamp-vs-grade dû à
+  l'intermédiaire 8-bit), barrel re-situé au stade image (visuellement
+  équivalent ; les deux configs barrel=0 restent ≤10 LSB → l'écart de la config
+  « full » est purement la dé-superposition pixel du barrel). OE **vérifié au
+  runtime** (les deux shaders compilent, rendu correct, zéro erreur GL).
+
+  **Phase 5 — aplatissement de `renderInternal`.** L'arbre de décision (≈7
+  sorties anticipées) mêlant mode vidéo / machine / carte / mode couleur est
+  réorganisé : les deux branches Chat-Mauve-HGR quasi-identiques (Duochrome vs
+  décode 6-couleurs, qui ne différaient que par le renderer du haut) fusionnées
+  en un seul bloc ; DHGR mixed/plein replié sur l'idiome `hiResEnd =
+  mixed ? 160 : 192` ; sections nommées (RGB-card HGR / colour-text / IIe
+  80-col / legacy 280) qui se lisent de haut en bas. Chaque branche reste 1:1
+  avec l'originale → golden **byte-identique** (les chemins chatmauve hgr /
+  hgrmixed / dhgr / textcolorcm de l'oracle couvrent la fusion).
+
+  **Phase 6 — aspect du pixel / présentation.** Le pixel Apple II n'est pas
+  carré (la zone active 280×192 remplissait un écran 4:3). `drawScreenImage`
+  propose désormais trois modes de présentation (menu *Display → Aspect
+  ratio*, persistant `aspect_mode`) : **Square** (1:1 logique ≈ 1.46, défaut
+  net), **4:3 (CRT)** (étire à la forme d'un vrai moniteur), **Integer**
+  (carré mais multiple entier, sans scintillement de mise à l'échelle
+  fractionnaire). Le calcul travaille en dimensions logiques, donc indépendant
+  de la texture présentée (280 / 560 / 2× OE). Vérifié au runtime (les trois
+  modes rendent correctement, aucune erreur GL).
+
+  **Refactor d'affichage en couches : Phases 0→6 livrées.** L'objectif initial
+  — *des couches d'effets CRT activables, en aval de n'importe quel mode
+  couleur* — est atteint : un seul étage `CrtEffectStack` partagé par OE,
+  AppleWin et tous les décodeurs CPU. **Reste optionnel** (changement UX, pas
+  mécanique) : scinder le `HiResMode` public en `ColorPipeline` +
+  `CompositeBackend` + `EffectParams` et refondre le menu Display en groupes
+  pipeline/backend/effets avec shim de migration `settings.json` — à faire
+  avec une validation de la disposition du menu (le modèle plat actuel +
+  panneau CRT Settings reste pleinement fonctionnel).
+
 - **Audit multi-agents : 25 bugs corrigés (1 critical, 1 high, 8 medium,
   15 low)**. Audit systématique des 32 sous-systèmes (un agent par
   domaine) suivi d'une vérification adversariale de chaque finding

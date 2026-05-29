@@ -122,37 +122,30 @@ private:
     std::string errorMsg;
 
     // GL objects (declared unsigned int to keep this header GL-include
-    // free; the cpp casts as needed).
-    unsigned int program      = 0;
-    unsigned int signalTex    = 0;
-    unsigned int outputTex[2] = {0, 0};   // ping-pong for persistence
-    unsigned int fbo[2]       = {0, 0};
-    unsigned int vao          = 0;
-    unsigned int vbo          = 0;
+    // free; the cpp casts as needed). Demod-only since Phase 4: a single
+    // output texture (no persistence ping-pong — persistence moved to
+    // CrtEffectStack downstream).
+    unsigned int program   = 0;
+    unsigned int signalTex = 0;
+    unsigned int outputTex = 0;
+    unsigned int fbo       = 0;
+    unsigned int vao       = 0;
+    unsigned int vbo       = 0;
 
-    // Uniform locations resolved at link time. -1 if absent (driver
-    // optimised the uniform out — value writes become no-ops).
-    int uSignal      = -1;
-    int uPrevFrame   = -1;
-    int uBrightness  = -1;
-    int uContrast    = -1;
-    int uSaturation  = -1;
-    int uHue         = -1;
-    int uSharpness   = -1;
-    int uPersistence = -1;
-    int uScanlines   = -1;
-    int uBarrel      = -1;
-    int uSignalSize  = -1;
-    int uShadowMask  = -1;
-    int uShadowStr   = -1;
-    int uPalMode     = -1;
+    // Uniform locations resolved at link time. -1 if absent. Only the
+    // colour-recovery knobs remain; the CRT-glass uniforms (brightness,
+    // contrast, saturation, persistence, scanlines, barrel, shadow mask)
+    // moved to CrtEffectStack.
+    int uSignal     = -1;
+    int uSignalSize = -1;
+    int uHue        = -1;
+    int uSharpness  = -1;
+    int uPalMode    = -1;
 
     int outW    = 0;
     int outH    = 0;
     int signalW = 0;
     int signalH = 0;
-    int pingPongIdx = 0;
-    bool firstFrame = true;
 
     NtscParams params{};
 

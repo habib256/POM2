@@ -52,6 +52,7 @@ namespace pom2 {
     class CassetteDeck_ImGui;
     class Disk35Controller_ImGui;
     class NtscPostProcessor;
+    class CrtEffectStack;
     struct NtscParams;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
@@ -229,7 +230,21 @@ private:
     // stays alive across mode toggles so persistence state isn't lost
     // when the user briefly flips to another mode and back.
     std::unique_ptr<pom2::NtscPostProcessor> ntscFx;
+    // Universal CRT effect stack (Phase 3): applies the same scanline /
+    // shadow-mask / barrel / persistence / BCS layers to the framebuffer of
+    // ANY colour mode (not just ColorCompositeOE). Opt-in via the menu;
+    // shares the NtscParams driven by the CRT Settings panel. Lazily
+    // initialised. Default OFF so existing behaviour is untouched.
+    std::unique_ptr<pom2::CrtEffectStack> crtFx;
+    bool         crtEffectsAllModes = false;
     bool         showNtscSettings = false;
+
+    // Presentation aspect (Phase 6). The Apple II's 280×192 active area was
+    // shown on a 4:3 CRT → its pixels are NOT square. Square = 1:1 logical
+    // pixels (crisp emulator default); Crt43 = true 4:3 monitor shape;
+    // Integer = square snapped to an integer multiple (no scaling shimmer).
+    enum class AspectMode { Square, Crt43, Integer };
+    AspectMode   aspectMode = AspectMode::Square;
     float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map

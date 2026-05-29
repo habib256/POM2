@@ -1739,6 +1739,34 @@ endif()
 add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
 set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Display golden-hash oracle (Phase 0 refactor net) ────────────────────
+# Freezes the byte-for-byte output of every CPU decode path (scene × colour
+# pipeline) + the composite signal generator, so the display layering
+# refactor can prove behaviour-preservation. Regenerate goldens with
+# POM2_GOLDEN_RECORD=1. See display_golden_hash_test.cpp header.
+add_executable(test_display_golden
+    display_golden_hash_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_display_golden PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_display_golden PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_display_golden PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_display_golden PRIVATE winmm)
+endif()
+
+add_test(NAME display_golden_hash COMMAND test_display_golden)
+set_tests_properties(display_golden_hash PROPERTIES TIMEOUT 10)
+
 # Video-7 / Le Chat Mauve RGB parity (4 rgbmodes + fg/bg colored text)
 # against a self-contained MAME apple2video.cpp dhgr_update() oracle.
 add_executable(test_video7_parity
@@ -2781,4 +2809,52 @@ if(APPLE)
 endif()
 if(WIN32)
     target_link_libraries(hero_probe PRIVATE winmm)
+endif()
+
+# ─── Phase-4-final OE A/B verification tool (GL, EXCLUDE_FROM_ALL) ─────────
+# Proves the demod-only + CrtEffectStack split is equivalent to the current
+# single-pass OE shader. Needs a real GL context — NOT a ctest. Build with
+#   make ntsc_oe_ab
+# then: POM2_BASELINE=1 ./tests/ntsc_oe_ab   (capture), refactor, ./tests/ntsc_oe_ab
+add_executable(ntsc_oe_ab EXCLUDE_FROM_ALL
+    ntsc_oe_ab_tool.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/NtscPostProcessor.cpp
+    ${CMAKE_SOURCE_DIR}/src/CrtEffectStack.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpenGLShader.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(ntsc_oe_ab PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(ntsc_oe_ab PRIVATE ${GLFW_TARGET} ${OPENGL_LIBRARIES})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(ntsc_oe_ab PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(ntsc_oe_ab PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(ntsc_oe_ab PRIVATE winmm)
+endif()
+
+# ─── Artifact-colour phase probe (diagnostic, EXCLUDE_FROM_ALL, no GL) ─────
+add_executable(artifact_probe EXCLUDE_FROM_ALL
+    artifact_phase_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(artifact_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(artifact_probe PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(artifact_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(artifact_probe PRIVATE winmm)
 endif()

@@ -134,19 +134,21 @@ public:
     /// 192 scanlines, one byte per sample = 0 or 255). The MainWindow
     /// uploads this as an R8 texture and feeds it to a GLSL shader that
     /// demodulates the NTSC subcarrier. The buffer is filled by render()
-    /// whenever ColorCompositeOE is selected AND the current Apple II
-    /// video mode is one we can serialise (HGR / DHGR / 40-col text).
-    /// Lo-res cells require a per-line 4-dot pattern table we haven't
-    /// ported yet, so signalProduced() will return false in that case
-    /// and MainWindow will draw the regular RGB framebuffer instead.
+    /// whenever ColorCompositeOE (or ColorAppleWin) is selected, for every
+    /// Apple II video mode: HGR, DHGR, 40/80-col text AND lo-res (lo-res
+    /// emits each 4-bit colour nibble as its repeating 4×-fsc bit pattern —
+    /// see fillCompositeSignal's paintLoRes40). fillCompositeSignal currently
+    /// produces a signal for all supported modes, so signalProduced() is
+    /// true whenever one of those two modes is active.
     static constexpr int kSignalWidth  = kWidth80;   // 560
     static constexpr int kSignalHeight = kHeight;    // 192
     const uint8_t* signal() const { return signalBuf.data(); }
     int signalWidth () const { return kSignalWidth;  }
     int signalHeight() const { return kSignalHeight; }
     /// True when the last render() filled signalBuf with a valid composite
-    /// waveform. False in lo-res (not yet implemented) and when the
-    /// selected hi-res mode is not ColorCompositeOE.
+    /// waveform — i.e. whenever the selected mode is ColorCompositeOE or
+    /// ColorAppleWin (all video modes serialise, lo-res included). False for
+    /// every other hi-res mode.
     bool signalProduced() const { return signalProducedFlag; }
 
 private:
