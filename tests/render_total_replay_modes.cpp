@@ -13,6 +13,7 @@
 // NTSC LUT fallback by design).
 
 #include "Apple2Display.h"
+#include "AppleWinNtsc.h"
 #include "LeChatMauveCard.h"
 #include "M6502.h"
 #include "Memory.h"
@@ -66,7 +67,7 @@ void writePpm(const std::string& path, int w, int h, const uint32_t* rgba)
 // of contrast/saturation so the captured screenshot matches the
 // "factory default" look users see on first launch.
 void renderCompositeShader(const uint8_t* signal, int sw, int sh,
-                           uint32_t* outRgba)
+                           uint32_t* outRgba, float phaseShift = 0.0f)
 {
     const int ow = sw;
     const int oh = sh * 2;
@@ -117,7 +118,7 @@ void renderCompositeShader(const uint8_t* signal, int sw, int sh,
                 float dy = static_cast<float>(i);
                 float wY = std::exp(-0.5f * dy*dy / (sigmaY*sigmaY));
                 float wC = std::exp(-0.5f * dy*dy / (sigmaC*sigmaC));
-                float phase = PI * 0.5f * fx;
+                float phase = PI * 0.5f * fx + phaseShift;
                 Y   += s * wY;
                 I   += s * std::sin(phase) * wC * 2.0f;
                 Q   += s * std::cos(phase) * wC * 2.0f;
@@ -275,13 +276,49 @@ int main(int argc, char** argv)
             && display.signalProduced()) {
             const int sw = display.signalWidth();
             const int sh = display.signalHeight();
+            // Dump the raw composite signal so a GL harness can feed it to
+            // the REAL NtscPostProcessor shader (not this CPU port).
+            {
+                std::ofstream sf(outDir + "/oe_signal.bin", std::ios::binary);
+                sf.write(reinterpret_cast<const char*>(display.signal()),
+                         static_cast<std::streamsize>(sw) * sh);
+            }
             std::vector<uint32_t> shaderOut(sw * sh * 2);
-            renderCompositeShader(display.signal(), sw, sh, shaderOut.data());
-            const std::string sppm = outDir + "/total_replay_"
-                                    + e.tag + "_shader.ppm";
-            writePpm(sppm, sw, sh * 2, shaderOut.data());
-            std::fprintf(stderr, "  wrote %s (%dx%d, CPU shader)\n",
-                         sppm.c_str(), sw, sh * 2);
+            // Sweep demod phase shifts to find the one matching the NTSC LUT
+            // reference (the artifact-colour-phase calibration).
+            const float PIf = 3.14159265358979f;
+            const struct { float sh; const char* tag; } phases[] = {
+                {0.0f, "_p000"}, {PIf*0.5f, "_p090"},
+                {PIf, "_p180"}, {PIf*1.5f, "_p270"},
+            };
+            for (const auto& ph : phases) {
+                renderCompositeShader(display.signal(), sw, sh, shaderOut.data(), ph.sh);
+                const std::string sppm = outDir + "/total_replay_"
+                                        + e.tag + "_shader" + ph.tag + ".ppm";
+                writePpm(sppm, sw, sh * 2, shaderOut.data());
+                std::fprintf(stderr, "  wrote %s\n", sppm.c_str());
+            }
+        }
+    }
+
+    // ── AppleWin demod phase sweep ───────────────────────────────────────
+    // Rebuild the AppleWin chroma LUT at each subcarrier phase and re-render
+    // (the signal is already captured — no reboot). Pick the PPM whose
+    // artifact hues match the NTSC reference.
+    {
+        display.setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        display.setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+        const float PIf = 3.14159265358979f;
+        const struct { float sh; const char* tag; } aw[] = {
+            {0.0f, "p000"}, {PIf*0.5f, "p090"}, {PIf, "p180"}, {PIf*1.5f, "p270"},
+        };
+        for (const auto& a : aw) {
+            pom2::AppleWinNtsc::rebuildForPhase(a.sh);
+            display.render(mem);
+            const std::string p = outDir + "/total_replay_AppleWin_sweep_"
+                                 + a.tag + ".ppm";
+            writePpm(p, display.width(), display.height(), display.pixels());
+            std::fprintf(stderr, "  wrote %s\n", p.c_str());
         }
     }
     return 0;

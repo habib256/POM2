@@ -289,6 +289,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         else if (mode == "ColorComp4Bit")   display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
         else if (mode == "ChatMauveRGB")    display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
         else if (mode == "ColorCompositeOE") display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+        else if (mode == "ColorCompositeOECpu") display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
         else if (mode == "MonoWhite")       display->setHiResMode(Apple2Display::HiResMode::MonoWhite);
         else if (mode == "MonoGreen")       display->setHiResMode(Apple2Display::HiResMode::MonoGreen);
         else if (mode == "MonoAmber")       display->setHiResMode(Apple2Display::HiResMode::MonoAmber);
@@ -660,6 +661,7 @@ MainWindow::~MainWindow()
             case Apple2Display::HiResMode::ColorComp4Bit:    return "ColorComp4Bit";
             case Apple2Display::HiResMode::ChatMauveRGB:     return "ChatMauveRGB";
             case Apple2Display::HiResMode::ColorCompositeOE: return "ColorCompositeOE";
+            case Apple2Display::HiResMode::ColorCompositeOECpu: return "ColorCompositeOECpu";
             case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
             case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
             case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
@@ -1899,9 +1901,14 @@ void MainWindow::renderMenuBar()
         pipeItem("NTSC (MAME) — 4-bit square",
                  "composite_color_mode 2: each 4-dot nibble → palette index, sharp edges.",
                  Apple2Display::HiResMode::ColorComp4Bit);
-        pipeItem("Composite NTSC (OpenEmulator)",
+        pipeItem("Composite (OpenEmulator, GPU)",
                  "True subcarrier demodulation in a GLSL shader (presets under Effect layers).",
                  Apple2Display::HiResMode::ColorCompositeOE);
+        pipeItem("Composite (OpenEmulator, CPU)",
+                 "Same OpenEmulator demodulation computed on the CPU into the\n"
+                 "framebuffer — no GLSL shader. Works without a GL shader path\n"
+                 "and lets you A/B the two. CRT effect layers still apply.",
+                 Apple2Display::HiResMode::ColorCompositeOECpu);
 
         // AppleWin NTSC + its sharp/TV/idealized sub-modes, as a submenu so
         // the flat list stays short. Picking a sub-mode also selects the

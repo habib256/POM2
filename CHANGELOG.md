@@ -6,6 +6,54 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-30
+
+- **OpenEmulator composite accessible en CPU *et* GPU dans l'UI.** Nouveau
+  mode `ColorCompositeOECpu` : la même démodulation Y/I/Q OpenEmulator,
+  calculée **sur le CPU** dans le framebuffer (comme AppleWin) au lieu du
+  shader GLSL — disponible sans chemin shader et pour comparer les deux.
+  Menu *Display → Color pipeline* : « Composite (OpenEmulator, GPU) » et
+  « … CPU ». `render()` démodule `signalBuf` → frame80 (`renderCompositeOeCpu`,
+  poids gaussiens + 4 phases sous-porteuse pré-calculés → pas de trig dans la
+  boucle pixel) ; MainWindow le présente comme un framebuffer normal (la pile
+  `CrtEffectStack` s'applique toujours si « CRT effects on all modes »).
+  Même phase +1.5π que le GPU → couleurs identiques. Vérifié au runtime sur
+  le vrai shader GLSL (outil `oe_signal_view` : démod du signal TR réel =
+  herbe verte / maisons magenta, conforme NTSC).
+
+- **Inversion des couleurs d'artefact NTSC corrigée (4-bit, OpenEmulator,
+  AppleWin).** Retour utilisateur : « NTSC (MAME) et NTSC medium parfaits,
+  les autres ont une inversion d'artefact NTSC ». Diagnostic : seuls les
+  modes couleur **non-LUT** étaient affectés ; oracle = `ColorNTSC`
+  (palette MAME, confirmée correcte). Vérifié visuellement en rendant le
+  splash HGR de Total Replay dans chaque mode (`render_total_replay_modes`,
+  comparaison à la référence NTSC : herbe verte / maisons magenta).
+
+  - **4-bit square (`ColorComp4Bit`)** — la rotation de phase était `absX-1`
+    (HGR) / `absX` (DHGR) au lieu de `absX` / `absX+1` (= la rotation du
+    chemin LUT mode 0, la référence). Erreur d'1 dot/90° : le violet de
+    `$01` sortait orange. Dérivé à la main puis confirmé contre MAME
+    `apple2video.cpp` (`rotl4(w & 0x0f, x + is_80_column - 1)` : le `-1`
+    de MAME compense sa propre origine de fenêtre `w&0x0f`, alors que la
+    fenêtre POM2 porte `kContextBits` de contexte gauche → l'extraction
+    `(w>>kContextBits)&0x0f` était correcte, c'était la rotation qui devait
+    suivre mode 0). Épinglé : 5 entrées 4-bit de `display_golden_hash`
+    re-baseline.
+  - **OpenEmulator (`ColorCompositeOE`)** — la démodulation Y/I/Q avait sa
+    phase de sous-porteuse décalée de 90° (herbe→bleu, magenta→orange).
+    Ajout de **+270°** (`phase = π/2·fx + 1.5π`) dans le shader de démod.
+    Calibré par balayage 0/90/180/270 sur le splash TR (p270 = match NTSC).
+  - **AppleWin (`ColorAppleWin`)** — décodeur IIR-LUT séparé, décalé
+    différemment (herbe→jaune, magenta→bleu). Ajout de **+90°** (`g_phaseShift`
+    dans `buildChromaLut`/`buildIdealizedLut`). Les deux décodeurs diffèrent
+    de 180° à cause du centrage de fenêtre. Hook diagnostic
+    `AppleWinNtsc::rebuildForPhase()` + balayage dans le render tool.
+
+  **Pas une régression du refactor d'affichage** : golden + A/B prouvaient le
+  comportement préservé — ces bugs de phase étaient pré-existants, révélés en
+  testant les modes. Outils de diag ajoutés (EXCLUDE_FROM_ALL, hors ctest) :
+  `artifact_probe`, sweep de phase dans `render_total_replay_modes`.
+
 ## 2026-05-29
 
 - **Affichage — réorganisation en couches (Phase 0 + 1a).** Préparation du

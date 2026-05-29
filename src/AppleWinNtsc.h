@@ -48,6 +48,12 @@ struct AppleWinNtsc
     // are written once and read-only after).
     static void ensureInitialized();
 
+    // Diagnostic/calibration only: force a rebuild of both LUTs with a
+    // specific demod subcarrier phase offset (radians). Used by the render
+    // tool's AppleWin phase sweep to pick the value that matches the MAME
+    // LUT reference. NOT thread-safe; call before any concurrent render.
+    static void rebuildForPhase(float phaseShiftRadians);
+
     // Render one scanline of width `w` samples (`w` is typically 560)
     // from the 1-bit luminance signal `src` into RGBA destination `dst`.
     // `prevLine` is only consulted when `mode == Tv` and `prevValid` is

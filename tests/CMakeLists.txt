@@ -2858,3 +2858,23 @@ endif()
 if(WIN32)
     target_link_libraries(artifact_probe PRIVATE winmm)
 endif()
+
+# ─── Real-GLSL OE signal viewer (diagnostic, EXCLUDE_FROM_ALL, GL) ─────────
+add_executable(oe_signal_view EXCLUDE_FROM_ALL
+    oe_signal_view.cpp
+    ${CMAKE_SOURCE_DIR}/src/NtscPostProcessor.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpenGLShader.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(oe_signal_view PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(oe_signal_view PRIVATE ${GLFW_TARGET} ${OPENGL_LIBRARIES})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(oe_signal_view PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(oe_signal_view PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(oe_signal_view PRIVATE winmm)
+endif()

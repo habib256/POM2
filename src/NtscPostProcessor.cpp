@@ -183,7 +183,12 @@ void main()
         float wY = exp(-0.5 * dy * dy / (sigmaY * sigmaY));
         float wC = exp(-0.5 * dy * dy / (sigmaC * sigmaC));
 
-        float phase = PI * 0.5 * fx;   // 4×-fsc: one cycle per 4 dots
+        // 4×-fsc: one subcarrier cycle per 4 dots. The +1.5π (≡ −90°)
+        // term aligns the demodulated I/Q axes with the Apple II colorburst
+        // phase so artifact hues match the MAME LUT reference (ColorNTSC):
+        // without it the wheel was rotated 90° (green→blue, magenta→orange).
+        // Calibrated against the Total Replay HGR splash across 0/90/180/270.
+        float phase = PI * 0.5 * fx + PI * 1.5;
         Y   += s * wY;
         I   += s * sin(phase) * wC * 2.0;
         Q   += s * cos(phase) * wC * 2.0 * palQSign;

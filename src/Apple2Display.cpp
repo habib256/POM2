@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 
 // NTSC artifact-decode primitives (bit doubler, artifact LUT, rotl4b, word /
@@ -209,16 +210,26 @@ void Apple2Display::render(Memory& mem)
     // "double render" Phase 4 removes. (Falls through to renderInternal only if
     // the signal somehow can't be produced, so we never present stale pixels.)
     const bool appleWin   = (hiResMode == HiResMode::ColorAppleWin);
-    const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || appleWin;
+    const bool oeCpu      = (hiResMode == HiResMode::ColorCompositeOECpu);
+    // CPU demods (AppleWin, OE-CPU) overwrite the whole 560-wide frame80 from
+    // the composite signal, so renderInternal's framebuffer colourization is
+    // discarded for them — skip it (the Phase-4 "double render" removal).
+    const bool cpuDemod   = appleWin || oeCpu;
+    const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || cpuDemod;
 
-    if (!appleWin) renderInternal(mem);
+    if (!cpuDemod) renderInternal(mem);
 
     signalProducedFlag = needSignal ? fillCompositeSignal(mem) : false;
 
-    if (appleWin && !signalProducedFlag) {
+    if (cpuDemod && !signalProducedFlag) {
         // Defensive fallback: no signal → render the normal framebuffer so
-        // the screen isn't left showing the previous frame's AppleWin output.
+        // the screen isn't left showing the previous frame's demod output.
         renderInternal(mem);
+    }
+
+    if (oeCpu && signalProducedFlag) {
+        renderCompositeOeCpu();   // demodulate signalBuf → frame80
+        useFrame80 = true;
     }
 
     if (appleWin && signalProducedFlag) {
@@ -245,6 +256,66 @@ void Apple2Display::render(Memory& mem)
         // The output IS native 560-wide regardless of the Apple II's
         // soft-switch state, so route the UI to frame80.
         useFrame80 = true;
+    }
+}
+
+// CPU port of the OpenEmulator demod shader (NtscPostProcessor's demod-only
+// fragment shader). Same Y/I/Q recovery + NTSC YIQ→RGB + the +1.5π subcarrier
+// phase as the GPU path, run on the CPU into frame80. Fixed sharpness 0.5
+// (sigmaC = mix(2.5,1.0,0.5) = 1.75); CRT glass (scanlines / mask / barrel /
+// persistence) is layered on afterward by CrtEffectStack when enabled.
+//
+// Optimised: the gaussian tap weights depend only on the tap offset i, and
+// the subcarrier sin/cos depend only on (x+i) mod 4 — both hoisted out of the
+// per-pixel loop, so the inner loop is mul/add only (no trig per pixel).
+void Apple2Display::renderCompositeOeCpu()
+{
+    constexpr float kPi = 3.14159265358979f;
+    constexpr int   N = 8;
+    const float sigmaY = 0.8f;
+    const float sigmaC = 1.75f;
+    const int   sw = kSignalWidth, sh = kSignalHeight;   // 560 × 192
+    const uint8_t* sig = signalBuf.data();
+
+    float wY[2 * N + 1], wC[2 * N + 1], wYtot = 0.0f, wCtot = 0.0f;
+    for (int i = -N; i <= N; ++i) {
+        const float d = static_cast<float>(i);
+        wY[i + N] = std::exp(-0.5f * d * d / (sigmaY * sigmaY));
+        wC[i + N] = std::exp(-0.5f * d * d / (sigmaC * sigmaC));
+        wYtot += wY[i + N];
+        wCtot += wC[i + N];
+    }
+    float sinP[4], cosP[4];
+    for (int k = 0; k < 4; ++k) {
+        const float ph = kPi * 0.5f * static_cast<float>(k) + kPi * 1.5f;
+        sinP[k] = std::sin(ph);
+        cosP[k] = std::cos(ph);
+    }
+
+    for (int y = 0; y < sh; ++y) {
+        const uint8_t* row = sig + static_cast<size_t>(y) * sw;
+        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
+        for (int x = 0; x < sw; ++x) {
+            float Y = 0.0f, I = 0.0f, Q = 0.0f;
+            for (int i = -N; i <= N; ++i) {
+                const int xi = x + i;
+                if (xi < 0 || xi >= sw) continue;
+                const float s = row[xi] ? 1.0f : 0.0f;
+                const int   k = xi & 3;
+                Y += s * wY[i + N];
+                I += s * sinP[k] * wC[i + N] * 2.0f;
+                Q += s * cosP[k] * wC[i + N] * 2.0f;
+            }
+            Y /= wYtot; I /= wCtot; Q /= wCtot;
+            float r = Y + 0.956f * I + 0.621f * Q;
+            float g = Y - 0.272f * I - 0.647f * Q;
+            float b = Y - 1.106f * I + 1.703f * Q;
+            auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+            const uint32_t R = static_cast<uint32_t>(cl(r) * 255.0f + 0.5f);
+            const uint32_t G = static_cast<uint32_t>(cl(g) * 255.0f + 0.5f);
+            const uint32_t B = static_cast<uint32_t>(cl(b) * 255.0f + 0.5f);
+            outRow[x] = (static_cast<uint32_t>(0xFF) << 24) | (B << 16) | (G << 8) | R;
+        }
     }
 }
 
@@ -1028,16 +1099,19 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
                     const int absX = col * 14 + b;
                     unsigned loresIdx;
                     if (squareFilter) {
-                        // 4-bit square filter. MAME apple2video.cpp:
-                        //   rotl4(w & 0x0f, x + is_80_column - 1)
-                        // with rotl4(n,c) = rotl4b(n*0x11, c). Take the LOW
-                        // 4 bits of the window (NOT w>>kContextBits — that
-                        // shifted the nibble 3 dots = a 270° hue rotation,
-                        // the artifact-colour-inversion bug). is_80_column=0
-                        // for HGR → rotate by absX-1.
-                        const unsigned nibble = w & 0x0Fu;
+                        // 4-bit square filter (MAME composite_color_mode 2:
+                        // rotl4(w & 0x0f, x + is_80_column - 1)). POM2's
+                        // window carries kContextBits of LEFT context, so the
+                        // current 4 dots are (w >> kContextBits) and the phase
+                        // rotation is absX — identical to the mode-0 LUT path,
+                        // which is the known-good reference. (MAME's literal
+                        // "-1" offsets its own w&0x0f origin; folding it into
+                        // POM2's window origin gives the same colour. The old
+                        // absX-1 here was a 1-dot/90° artifact-hue rotation —
+                        // it turned $01's purple into orange.)
+                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
                         loresIdx = rotl4b(static_cast<uint8_t>(nibble | (nibble << 4)),
-                                          static_cast<unsigned>(absX - 1));
+                                          static_cast<unsigned>(absX));
                     } else {
                         const uint8_t lutEntry = kArtifactColorLut[lutRow][w & 0x7Fu];
                         loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
@@ -1372,15 +1446,14 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                     const int absX = col * 14 + b;
                     unsigned loresIdx;
                     if (squareFilter) {
-                        // Mode 2: each 4-dot block → palette index directly.
-                        // MAME: rotl4(w & 0x0f, x + is_80_column - 1), with
-                        // rotl4(n,c)=rotl4b(n*0x11,c). LOW 4 bits of the
-                        // window (was w>>kContextBits — a 3-dot/270° phase
-                        // error). is_80_column=1 for DHGR → rotation by absX.
-                        const unsigned nibble = w & 0x0Fu;
+                        // Mode 2 (square): current 4 dots = (w>>kContextBits),
+                        // phase rotation = the mode-0 DHGR rotation absX+1
+                        // (is_80_column=1). Matches the LUT path's hue; the old
+                        // absX (no +1) was a 1-dot artifact-hue rotation.
+                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
                         loresIdx = rotl4b(
                             static_cast<uint8_t>(nibble | (nibble << 4)),
-                            static_cast<unsigned>(absX));
+                            static_cast<unsigned>(absX + 1));
                     } else {
                         const uint8_t lutEntry =
                             kArtifactColorLut[lutRow][w & 0x7Fu];

@@ -23,6 +23,15 @@ constexpr int kHistBits = 12;    // 12-bit sample history
 constexpr int kHistSize = 1 << kHistBits;  // 4096
 constexpr float kPi = 3.14159265358979323846f;
 
+// Demod subcarrier phase offset (radians) added to every I/Q angle, to
+// align the artifact hues with the MAME LUT reference (ColorNTSC). Without
+// it the AppleWin wheel was rotated (green→yellow, magenta→blue). Calibrated
+// against the Total Replay HGR splash phase sweep (render tool): +90° makes
+// grass green / houses magenta, matching NTSC. (OE needs +270° — the two
+// decoders' window centring differs by half a subcarrier cycle.) See
+// rebuildForPhase().
+float g_phaseShift = 3.14159265358979323846f * 0.5f;   // +90°
+
 // Pre-computed LUT: chromaLut[phase][history12] -> RGBA8 packed
 // (0xAABBGGRR — same convention as Apple2Display::frame).
 uint32_t g_chromaLut[kPhases][kHistSize];
@@ -122,7 +131,8 @@ void buildChromaLut()
                 const float dx = static_cast<float>(offset);
                 const float w  = std::exp(-0.5f * dx * dx / (sigmaC * sigmaC));
                 const float ang = 0.5f * kPi
-                                * static_cast<float>(phase + offset);
+                                * static_cast<float>(phase + offset)
+                                + g_phaseShift;
                 const float ac = raw[k] - Y;
                 iSum  += ac * std::sin(ang) * w;
                 qSum  += ac * std::cos(ang) * w;
@@ -172,7 +182,8 @@ void buildIdealizedLut()
                 // bit 0 = newest (centre+2), bit 3 = oldest (centre-1).
                 const int offset = k - 2;
                 const float ang = 0.5f * kPi
-                                * static_cast<float>(phase + offset);
+                                * static_cast<float>(phase + offset)
+                                + g_phaseShift;
                 const float ac  = s[k] - Y;
                 iSum += ac * std::sin(ang);
                 qSum += ac * std::cos(ang);
@@ -203,6 +214,14 @@ void AppleWinNtsc::ensureInitialized()
         buildIdealizedLut();
         g_initDone.store(true, std::memory_order_release);
     });
+}
+
+void AppleWinNtsc::rebuildForPhase(float phaseShiftRadians)
+{
+    g_phaseShift = phaseShiftRadians;
+    buildChromaLut();
+    buildIdealizedLut();
+    g_initDone.store(true, std::memory_order_release);
 }
 
 void AppleWinNtsc::renderLine(const uint8_t* src,

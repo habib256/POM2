@@ -67,6 +67,14 @@ public:
         // Falls back to ColorNTSC framebuffer when the signal can't be
         // produced (lo-res mode, no GL context, etc.).
         ColorCompositeOE,
+        // Same OpenEmulator composite demodulation, but run on the CPU into
+        // the RGBA framebuffer (no GLSL) — selectable so the composite look
+        // is available without a GL shader path and so users can compare the
+        // two. render() demodulates signalBuf into frame80 here, exactly like
+        // ColorAppleWin; MainWindow then presents it as a normal framebuffer
+        // (the shared CrtEffectStack still applies if "CRT effects on all
+        // modes" is on). Phase matches the GPU shader (+1.5π).
+        ColorCompositeOECpu,
         MonoWhite,
         MonoGreen,
         MonoAmber,
@@ -241,6 +249,11 @@ private:
     // current Apple II video mode has no signal generator yet (lo-res).
     // Always called from render() when hiResMode == ColorCompositeOE.
     bool fillCompositeSignal(Memory& mem);
+
+    // CPU OpenEmulator demod: demodulate signalBuf (560×192 R8) into frame80
+    // (560×192 RGBA) — the same Y/I/Q math as the GLSL demod shader, run on
+    // the CPU. Used by HiResMode::ColorCompositeOECpu.
+    void renderCompositeOeCpu();
 
     // The actual frame dispatch (text / hires / dhgr / mixed). render()
     // is a thin wrapper that calls this then optionally fills signalBuf.
