@@ -407,7 +407,11 @@ static void resolveGlyph(uint8_t screenByte, uint8_t out[8],
     // Lowercase fallback to uppercase while no character ROM is loaded.
     if (ascii >= 0x61 && ascii <= 0x7A) ascii = static_cast<uint8_t>(ascii - 0x20);
 
-    if (ascii >= 0x20 && ascii <= 0x60) {
+    // kAscii5x7 spans 0x20-0x7F (96 entries). Entries 0x61-0x7F are
+    // zero-filled today (lowercase + a few punct glyphs not authored
+    // yet); rendering them as blank cells is still preferable to the
+    // box placeholder for chars that real Apple II text would draw.
+    if (ascii >= 0x20 && ascii <= 0x7F) {
         std::memcpy(out, &kAscii5x7[(ascii - 0x20) * 8], 8);
     } else {
         const uint8_t box[8] = { 0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F, 0 };

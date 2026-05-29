@@ -380,6 +380,13 @@ bool NtscPostProcessor::createTextures(int sw, int sh)
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             errorMsg = "FBO incomplete";
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            // Release everything we allocated so a retry doesn't leak.
+            glDeleteFramebuffers(2, fbo);
+            glDeleteTextures(2, outputTex);
+            glDeleteTextures(1, &signalTex);
+            fbo[0] = fbo[1] = 0;
+            outputTex[0] = outputTex[1] = 0;
+            signalTex = 0;
             return false;
         }
     }
@@ -431,11 +438,14 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sw, sh,
                     GL_RED, GL_UNSIGNED_BYTE, signal);
 
-    // Save current FBO + viewport so we don't disturb ImGui.
+    // Save current FBO + viewport + enables so we don't disturb ImGui.
     int prevFbo = 0;
     int prevViewport[4] = {0};
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
     glGetIntegerv(GL_VIEWPORT, prevViewport);
+    const GLboolean prevBlend = glIsEnabled(GL_BLEND);
+    const GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
 
     const int writeIdx = pingPongIdx;
     const int readIdx  = 1 - pingPongIdx;
@@ -472,15 +482,21 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 
-    // ImGui's renderer expects texture-unit 0 left in a known state;
-    // restore that. (imgui_impl_opengl3 also resets, but being polite
-    // is cheap.)
+    // Leave neither texture unit holding one of our private textures —
+    // the next caller (ImGui or anyone else) shouldn't be able to see
+    // them through a stale binding.
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Restore previous FBO + viewport.
+    // Restore previous FBO + viewport + enables.
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<unsigned int>(prevFbo));
     glViewport(prevViewport[0], prevViewport[1],
                prevViewport[2], prevViewport[3]);
+    if (prevBlend) glEnable(GL_BLEND);      else glDisable(GL_BLEND);
+    if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prevCull)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
 
     firstFrame = false;
     return outputTex[writeIdx];
