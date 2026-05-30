@@ -188,6 +188,19 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 
 ### [UI/UX]
 
+- 🟠 **Rewind façon MicroM8** — enregistrement continu d'état +
+  scrub/step-back/rewind-live. **Phases 0+1 faites** (2026-05-31,
+  `CHANGELOG.md`) : backend mémoire `SnapshotIO`, `MachineSnapshot`
+  partagé, `RewindBuffer` (ring de snapshots pleins) + capture au frame
+  boundary du `workerLoop`. Épinglés `snapshot_memory_roundtrip` +
+  `rewind_roundtrip`. **Reste** : *(P2)* codec delta XOR+RLE + keyframes
+  pour réduire ~175 Ko/frame ; *(P3)* UI `Rewind_ImGui` (timeline +
+  transport + rewind-live clavier) + restore servi sur le thread worker
+  (façon `requestStep`) ; *(P4)* hook `SlotPeripheral::*SnapshotState` +
+  état lecteur `DiskIICard` (rewind correct pendant I/O disque) + capture
+  chips audio ; *(P5)* gating RamWorks / dirty-page, flush audio, câblage
+  WASM (`tickFrame`) ; *(P6, option)* journal COW disque + « redo ».
+  Détail archi → `DEV.md` § Rewind / time-travel. *P2≈1 j, P3≈2 j, P4≈2 j.*
 - 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
   `SetNextWindowPos` cascade adaptative.
 - 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la

@@ -6,6 +6,42 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-31 (Rewind — fondations, phases 0+1)
+
+- **Rewind façon MicroM8 — socle capture/restore d'état (sans UI).**
+  - **Pourquoi** : enregistrer l'état machine en continu pour permettre
+    un retour arrière dans le temps (scrub/step-back). Choix d'archi :
+    ring-buffer de snapshots d'état (façon RetroArch) plutôt que rejeu
+    déterministe des entrées — découplé du hot-path CPU, robuste, et
+    réutilise `SnapshotIO` tel quel. Le delta/keyframe (pour réduire le
+    coût ~175 Ko/frame) est la phase 2 ; ici on stocke des snapshots
+    pleins pour valider la boucle capture→restore bit-à-bit.
+  - **Phase 0 — `SnapshotIO` backend mémoire** : `SnapshotWriter(vector&)`
+    / `SnapshotReader(ptr,len)` à côté du backend fichier existant, via un
+    `std::stringstream` lié à un membre `std::ostream&`/`std::istream&`
+    (toute la logique sections/longueurs réutilisée). Format binaire
+    identique entre les deux backends. Épinglé : `snapshot_memory_roundtrip`
+    (round-trip + parité octet-pour-octet vs le writer fichier).
+  - **`MachineSnapshot.{h,cpp}`** : extraction de la séquence canonique
+    `CPU`/`MEM`/`MEX` hors d'`AiControlServer` (qui maigrit de ~63 lignes).
+    Source unique de vérité partagée par l'API AI-control ET le rewind, donc
+    plus de divergence possible. Le durcissement sécurité reste : gate de
+    longueur 16 o sur la section CPU (over-read d'un blob forgé, « round 10
+    #3 ») + cap MEX 16 Mio → `RestoreResult{false,…}` (l'API renvoie
+    toujours 400). Couvert par `ai_control_server_smoke` (aucune régression).
+  - **Phase 1 — `RewindBuffer.{h,cpp}`** : ring `std::deque` de snapshots
+    pleins, éviction oldest-first au-delà de `maxFrames` (défaut 1800 ≈ 30 s
+    @ 60 Hz), `restore(i)` / `restoreToCycle(cycle)`. Capture branchée à la
+    frontière de frame quiescente du `workerLoop` (après budget CPU + tick
+    IWM), gardée par `enabled()` avant la prise de `stateMtx` → coût nul
+    quand désactivé (défaut). Épinglé : `rewind_roundtrip` (round-trip
+    bit-à-bit + éviction + seek `restoreToCycle`).
+  - **Gaps assumés cette phase** : état cartes/disque hors snapshot (rewind
+    pendant I/O disque laisse la tête où le sim live l'a posée → phase 4 :
+    hook `SlotPeripheral` + état lecteur `DiskIICard`) ; chips audio
+    désync ; pas d'UI (phase 3) ; WASM non câblé (phase 5). Détail →
+    `DEV.md` § Rewind / time-travel.
+
 ## 2026-05-30 (DHGR parity)
 
 - **DHGR phase + beam-racing + goldens DLGR.**

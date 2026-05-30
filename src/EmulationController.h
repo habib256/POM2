@@ -16,6 +16,7 @@
 #include "M6502.h"
 #include "Memory.h"
 #include "NoSlotClock.h"
+#include "RewindBuffer.h"
 #include "SmartPortHub.h"
 #include "Sony35Drive.h"
 #include "SpeakerDevice.h"
@@ -37,6 +38,12 @@ public:
 
     Memory&         memory()   { return mem; }
     M6502&          cpu()      { return processor; }
+
+    /// Continuous state-recording ring buffer behind the rewind feature.
+    /// Disabled by default (zero overhead); enable via
+    /// rewind().setEnabled(true). The worker thread captures one frame at
+    /// each 60 Hz boundary while enabled — see workerLoop().
+    pom2::RewindBuffer& rewind() { return rewind_; }
     CassetteDevice&    cassette()    { return *tape; }
     SpeakerDevice&     speaker()     { return *spk; }
     /// 5.25" Disk II mechanical sounds (head step / motor / click).
@@ -142,6 +149,30 @@ public:
     void setMode(Mode m);
     Mode getMode() const { return mode.load(); }
 
+    // ─── Rewind transport (UI-facing) ────────────────────────────────────
+    // Coordinate the rewind ring buffer with the worker thread. While
+    // "scrubbing", the worker is parked (Stopped) so the UI can freely
+    // restore historical frames without the in-flight frame overrunning
+    // them. All of these take stateMutex internally — call from the UI
+    // thread, not the worker.
+
+    /// Park the worker so historical frames can be restored, then report
+    /// whether there is anything to scrub (rewind enabled + ≥ 1 frame).
+    bool   rewindBeginScrub();
+    /// Restore frame `index` (clamped to the ring). Caller must have begun
+    /// scrubbing. Returns the clamped index, or RewindBuffer::kNoFrame if
+    /// the ring is empty.
+    size_t rewindSeek(size_t index);
+    /// Restore the newest frame whose cycle stamp is <= `cycle`.
+    size_t rewindSeekToCycle(uint64_t cycle);
+    /// Leave scrub: discard the abandoned future after `index` and resume
+    /// live execution from there.
+    void   rewindEndAndResume(size_t index);
+    /// Leave scrub but stay paused at the current frame (keeps the ring).
+    void   rewindEndPaused();
+    /// True once the worker has parked at the Stopped idle wait (test hook).
+    bool   rewindIsParked() const { return workerParked_.load(); }
+
     // 6502 cycles per ImGui frame (CPU-pacing budget). Default = ~17 045
     // cycles/frame = 1.0227 MHz emulated. Setting it higher than the real
     // clock turbo-runs the CPU; UI uses this for the "MAX" button.
@@ -169,16 +200,24 @@ private:
     std::unique_ptr<pom2::SmartPortHub> hub;
     std::unique_ptr<pom2::NoSlotClock>  noSlotClock_;
 
+    pom2::RewindBuffer rewind_;
+
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};
     std::atomic<int>  stepsPending{0};   // queued single-step count (Step mode)
     std::atomic<bool> exitRequested{false};
+    // True while the worker is idling in the Stopped CV wait. The rewind
+    // transport waits on this so a UI-thread restore can't be overrun by an
+    // in-flight Running frame (the Running branch finishes its whole budget
+    // before re-checking `mode`).
+    std::atomic<bool> workerParked_{false};
 
     std::mutex              stateMtx;
     std::condition_variable wakeCv;
     std::thread             worker;
 
     void workerLoop();
+    void waitUntilParked();   // block (bounded) until workerParked_ is set
 };
 
 #endif // POM2_EMULATION_CONTROLLER_H

@@ -58,6 +58,8 @@ set(SOURCES
     src/M6502.cpp
     src/Memory.cpp
     src/MemoryProfile_IIcClass.cpp
+    src/MachineSnapshot.cpp
+    src/RewindBuffer.cpp
     src/AiControlServer.cpp
     src/Apple2Display.cpp
     src/AppleWinNtsc.cpp
@@ -105,6 +107,7 @@ set(SOURCES
     src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp
+    src/Rewind_ImGui.cpp
     src/Ssi263.cpp
     src/Ssi263PhonemeData.cpp
     src/Block512Backing.cpp
@@ -134,6 +137,8 @@ set(HEADERS
     src/Memory.h
     src/MemoryProfile.h
     src/MemoryProfile_IIcClass.h
+    src/MachineSnapshot.h
+    src/RewindBuffer.h
     src/AiControlServer.h
     src/Apple2Display.h
     src/AppleWinNtsc.h
@@ -178,6 +183,7 @@ set(HEADERS
     src/GrapplerCard.h
     src/PhasorCard.h
     src/PrinterCard.h
+    src/Rewind_ImGui.h
     src/Ssi263.h
     src/Ssi263PhonemeData.h
     src/Via6522.h
@@ -380,11 +386,13 @@ add_executable(pom2_headless
     src/Sony35Drive.cpp
     src/LeChatMauveCard.cpp
     src/M6502.cpp
+    src/MachineSnapshot.cpp
     src/Memory.cpp
     src/MemoryProfile_IIcClass.cpp
     src/Mockingboard.cpp
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp
+    src/RewindBuffer.cpp
     src/RomLoader.cpp
     src/SlotBus.cpp
     src/SnapshotIO.cpp

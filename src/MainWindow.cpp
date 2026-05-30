@@ -9,6 +9,7 @@
 #include "AiControlServer.h"
 #include "Apple2Display.h"
 #include "CassetteDeck_ImGui.h"
+#include "Rewind_ImGui.h"
 #include "CassetteDevice.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
@@ -114,6 +115,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       memViewer      (std::make_unique<MemoryViewer_ImGui>(&controller->memory())),
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
+      rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
@@ -346,6 +348,7 @@ MainWindow::MainWindow(bool forceIIPlus)
             floppyEmu->setSdRoot(sd);
         }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
+        showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
@@ -720,6 +723,7 @@ MainWindow::~MainWindow()
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
+    settings->setBool  ("show_rewind",     showRewindBar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
@@ -1818,6 +1822,7 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Floppy Emu (BMOW)",             nullptr, &showFloppyEmu);
         ImGui::Separator();
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
+        ImGui::MenuItem("Rewind (time-travel)",          nullptr, &showRewindBar);
         ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
         {
             // Mirror the panel's dynamic title — slot N on //e with a
@@ -5915,6 +5920,16 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
     }
 }
 
+void MainWindow::renderRewindWindow(float deltaSeconds)
+{
+    if (!showRewindBar) return;
+    auto result = rewindPanel_->render("Rewind", showRewindBar, *controller, deltaSeconds);
+    if (!result.statusMessage.empty()) {
+        tapeStatusMessage = std::move(result.statusMessage);
+        tapeStatusUntil   = lastFrameTime + 3.0;
+    }
+}
+
 void MainWindow::renderTapeFileDialogs()
 {
     auto pathInput = [](const char* label) {
@@ -6017,6 +6032,18 @@ void MainWindow::render()
     lastFrameTime = now;
 
     pollJoystickAndPushToMemory();
+
+    // F6 = hold-to-rewind (the MicroM8 gesture): while held, the machine
+    // replays backwards a frame at a time; releasing resumes live from the
+    // rewound point. Works whether or not the Rewind bar is open. No-op when
+    // rewind recording is disabled (holdRewind/beginScrub bail out), so it
+    // never surprises a user who isn't using the feature.
+    {
+        const bool f6 = ImGui::IsKeyDown(ImGuiKey_F6);
+        if (f6)                 rewindPanel_->holdRewind(*controller, 1);
+        else if (rewindKeyHeld_) rewindPanel_->releaseHold(*controller);
+        rewindKeyHeld_ = f6;
+    }
 
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).
@@ -6158,6 +6185,7 @@ void MainWindow::render()
     if (showMemoryBarH) renderMemoryBarHorizontalWindow();
     if (showMemoryGrid) renderMemoryGridWindow();
     renderCassetteDeckWindow(deltaSeconds);
+    if (showRewindBar) renderRewindWindow(deltaSeconds);
     renderTapeFileDialogs();
     renderPasteFileDialog();
     renderHdvFileDialog();

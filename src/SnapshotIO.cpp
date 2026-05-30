@@ -13,7 +13,7 @@
 namespace pom2 {
 namespace {
 
-void writeFixedName(std::ofstream& out, std::string_view name)
+void writeFixedName(std::ostream& out, std::string_view name)
 {
     char buf[kSectionNameLen]{};
     const std::size_t copy = std::min(name.size(), kSectionNameLen);
@@ -21,7 +21,7 @@ void writeFixedName(std::ofstream& out, std::string_view name)
     out.write(buf, kSectionNameLen);
 }
 
-std::string readFixedName(std::ifstream& in)
+std::string readFixedName(std::istream& in)
 {
     char buf[kSectionNameLen]{};
     in.read(buf, kSectionNameLen);
@@ -33,10 +33,36 @@ std::string readFixedName(std::ifstream& in)
 } // namespace
 
 // ─── Writer ───────────────────────────────────────────────────────────────
+// Both ctors bind the `out` reference to the live backing stream, then emit
+// the shared header. The ofstream/stringstream members are declared before
+// `out`, so the reference is always bound to a fully-constructed object.
 SnapshotWriter::SnapshotWriter(const std::string& path)
-    : out(path, std::ios::binary | std::ios::trunc)
+    : fileStream_(path, std::ios::binary | std::ios::trunc)
+    , out(fileStream_)
 {
     if (!out.good()) return;
+    emitHeader();
+}
+
+SnapshotWriter::SnapshotWriter(std::vector<uint8_t>& sink)
+    : sink_(&sink)
+    , out(memStream_)
+{
+    emitHeader();
+}
+
+SnapshotWriter::~SnapshotWriter()
+{
+    // Memory backend: flush the accumulated bytes into the caller's vector.
+    if (sink_) {
+        const std::string s = memStream_.str();
+        sink_->assign(reinterpret_cast<const uint8_t*>(s.data()),
+                      reinterpret_cast<const uint8_t*>(s.data()) + s.size());
+    }
+}
+
+void SnapshotWriter::emitHeader()
+{
     out.write(kSnapshotMagic, sizeof(kSnapshotMagic));
     writeU32(kSnapshotVersion);
     writeU32(0);  // flags reserved
@@ -100,7 +126,8 @@ void SnapshotWriter::writeSection(std::string_view name,
 
 // ─── Reader ───────────────────────────────────────────────────────────────
 SnapshotReader::SnapshotReader(const std::string& path)
-    : in(path, std::ios::binary)
+    : fileStream_(path, std::ios::binary)
+    , in(fileStream_)
 {
     if (!in.good()) {
         errorMsg = "cannot open snapshot file: " + path;
@@ -114,6 +141,23 @@ SnapshotReader::SnapshotReader(const std::string& path)
     fileSize_ = in.tellg();
     in.seekg(0, std::ios::beg);
 
+    parseHeader();
+}
+
+SnapshotReader::SnapshotReader(const uint8_t* data, std::size_t length)
+    : memStream_(length ? std::string(reinterpret_cast<const char*>(data), length)
+                        : std::string(),
+                 std::ios::in | std::ios::binary)
+    , in(memStream_)
+{
+    // The whole blob is already resident, so the EOF bound nextSection()
+    // enforces is simply its length.
+    fileSize_ = static_cast<std::streamoff>(length);
+    parseHeader();
+}
+
+void SnapshotReader::parseHeader()
+{
     char magic[sizeof(kSnapshotMagic)]{};
     in.read(magic, sizeof(kSnapshotMagic));
     if (!in.good() ||

@@ -50,6 +50,7 @@ class SuperSerialCard;
 namespace pom2 {
     class AiControlServer;
     class CassetteDeck_ImGui;
+    class Rewind_ImGui;
     class Disk35Controller_ImGui;
     class NtscPostProcessor;
     class CrtEffectStack;
@@ -165,6 +166,7 @@ private:
     std::unique_ptr<MemoryViewer_ImGui>           memViewer;
     std::unique_ptr<pom2::Settings>               settings;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
+    std::unique_ptr<pom2::Rewind_ImGui>           rewindPanel_;
     // One Disk II controller-panel per plugged DiskIICard (option C
     // 2026-05-15: DiskII can now appear in multiple slots, so the user
     // can wire DiskII slot 6 + DiskII slot 4 = 4 drives 5.25"). The
@@ -265,6 +267,8 @@ private:
     // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
+    bool         showRewindBar    = false;
+    bool         rewindKeyHeld_   = false;   // F6 hold-to-rewind edge tracker
     // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
     // default since 2026-05-15 — the unified `Disk Library` panel
     // covers the 1-click insert+boot path for all three formats with
@@ -546,6 +550,7 @@ private:
     void renderMemoryBarHorizontalWindow();
     void renderMemoryGridWindow();
     void renderCassetteDeckWindow(float deltaSeconds);
+    void renderRewindWindow(float deltaSeconds);
     void renderTapeFileDialogs();
     void renderPasteFileDialog();
     void updateAutoTurbo();

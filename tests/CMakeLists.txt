@@ -331,6 +331,102 @@ add_test(NAME snapshot_io_smoke COMMAND test_snapshot_io)
 set_tests_properties(snapshot_io_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Snapshot in-memory backend round-trip (rewind Phase 0) ───────────────
+# Pins SnapshotIO's std::vector backend: byte-for-byte parity with the file
+# writer and faithful read-back. Pure unit test — SnapshotIO only. This is
+# the storage primitive the rewind ring buffer is built on.
+add_executable(test_snapshot_memory
+    snapshot_memory_roundtrip_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
+)
+target_include_directories(test_snapshot_memory PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME snapshot_memory_roundtrip COMMAND test_snapshot_memory)
+set_tests_properties(snapshot_memory_roundtrip PROPERTIES TIMEOUT 5)
+
+
+# ─── Rewind ring buffer round-trip (rewind Phase 1) ───────────────────────
+# Drives Memory + M6502 directly: capture→restore bit-for-bit, oldest-first
+# eviction, and restoreToCycle() seek. Gate for RewindBuffer and the shared
+# MachineSnapshot capture/restore sequence it rides on. (SnapshotIO.cpp,
+# M6502.cpp, Memory.cpp come in via POM2_TEST_CORE_SOURCES — don't re-add.)
+add_executable(test_rewind
+    rewind_roundtrip_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind PRIVATE winmm)
+endif()
+add_test(NAME rewind_roundtrip COMMAND test_rewind)
+set_tests_properties(rewind_roundtrip PROPERTIES TIMEOUT 5)
+
+
+# ─── Rewind delta codec + keyframes (rewind Phase 2) ──────────────────────
+# Forces a small keyframe interval so reconstruction crosses keyframe
+# boundaries; pins bit-exact restore of every frame, memory shrink vs
+# all-keyframes, eviction-with-rebase, and truncateAfter().
+add_executable(test_rewind_delta
+    rewind_delta_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind_delta PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind_delta PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind_delta PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind_delta PRIVATE winmm)
+endif()
+add_test(NAME rewind_delta COMMAND test_rewind_delta)
+set_tests_properties(rewind_delta PROPERTIES TIMEOUT 5)
+
+
+# ─── Rewind transport (rewind Phase 3, controller integration) ────────────
+# Drives EmulationController's rewind transport against a real worker thread:
+# begin-scrub parks the worker, parked = no new captures, seek restores exact
+# state, seekToCycle lands right, resume truncates the future and runs on.
+add_executable(test_rewind_transport
+    rewind_transport_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind_transport PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind_transport PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind_transport PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind_transport PRIVATE winmm)
+endif()
+add_test(NAME rewind_transport COMMAND test_rewind_transport)
+set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
+
+
 # ─── Slot bus dispatch smoke test ─────────────────────────────────────────
 # Self-contained: SlotBus + a fake SlotPeripheral. Asserts the active-
 # expansion-slot latching, $CFFF disable, and empty-slot open-bus reads.
@@ -2825,6 +2921,8 @@ set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
     ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp

@@ -1259,6 +1259,60 @@ with POM1. Captures CPU + RAM + soft-switch display state. **Disk II
 deliberately excluded** — would need mounted-image identity + head
 position + dirty bits per track.
 
+Two backends share one wire format: the original file backend
+(`SnapshotWriter(path)` / `SnapshotReader(path)`) and an in-memory
+backend (`SnapshotWriter(std::vector<uint8_t>&)` /
+`SnapshotReader(const uint8_t*, size_t)`). The memory backend bumps
+the bytes through an internal `std::stringstream` bound to a
+`std::ostream&`/`std::istream&` member, so all the section/length
+logic is reused verbatim; the writer flushes into the caller's vector
+on destruction. `snapshot_memory_roundtrip` pins byte-parity between
+the two backends.
+
+`MachineSnapshot.{h,cpp}` is the single source of truth for *what a
+state snapshot contains*: `captureMachineState(w, cpu, mem)` writes
+the `CPU`/`MEM`/`MEX` sections, `restoreMachineState(r, cpu, mem)`
+applies them. Both the AI-control `/snapshot/save|load` handlers and
+the rewind ring buffer call it, so the two can never drift. The
+restore keeps the security hardening that used to live inline in
+`AiControlServer`: the 16-byte CPU-section length gate (crafted-blob
+over-read) and the 16 MiB MEX cap (→ `RestoreResult{false,…}` so the
+HTTP path still returns 400).
+
+### Rewind / time-travel
+
+`RewindBuffer.{h,cpp}` — storage layer of the MicroM8-style rewind
+(continuous state recording + scrub/step back). It's a ring of
+per-frame machine snapshots, indexed by `emuCycles`.
+
+**Phase 1 (current)**: each frame is a *full* `MachineSnapshot` blob
+(~175 KB on stock IIe) serialized into RAM via the SnapshotIO memory
+backend, held in a `std::deque<Frame>` that evicts oldest-first past
+`maxFrames` (default 1800 ≈ 30 s @ 60 Hz). `restore(i)` /
+`restoreToCycle(cycle)` re-inject a chosen frame. Delta/keyframe
+compression to shrink the per-frame cost is **Phase 2** and slots in
+behind this same API.
+
+**Capture point**: `EmulationController::workerLoop()`, at the
+quiescent frame boundary *after* the CPU budget is spent and the IWM
+is ticked (nothing else mutates CPU/Memory until the next frame).
+`rewind_.enabled()` is checked before taking `stateMtx`, so a disabled
+ring is zero-overhead; when enabled, capture runs under the lock for a
+consistent view vs. any UI-thread write.
+
+**Threading**: `enabled()` is atomic (toggle from any thread); every
+other `RewindBuffer` method touches `frames_` and must run with
+exclusive access to cpu+mem (worker thread, or another thread holding
+`stateMtx` with the worker parked). The buffer locks nothing itself.
+UI-driven restore (Phase 3) will be serviced on the worker thread like
+`requestStep`, keeping `frames_` single-threaded.
+
+**Known gaps (by design, this phase)**: slot/disk-card state isn't in
+the snapshot, so a rewind during disk I/O leaves the drive head where
+the live sim left it (Phase 4 adds a `SlotPeripheral` serialize hook +
+`DiskIICard` drive state); audio chips desync until then; no UI yet
+(Phase 3). Pinned by `rewind_roundtrip`.
+
 ## IWM (//c+ on-board)
 
 `IWMDevice.{h,cpp}` — verbatim MAME `machine/iwm.{h,cpp}`. Full state

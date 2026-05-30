@@ -8,6 +8,7 @@
 #include "EmulationController.h"
 #include "Logger.h"
 #include "M6502.h"
+#include "MachineSnapshot.h"
 #include "Memory.h"
 #include "MouseCard.h"
 #include "SlotBus.h"
@@ -1058,30 +1059,10 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
     SnapshotWriter w(*safe);
     if (!w.good()) { sendJsonError(fd, 400, "cannot open " + *safe); return; }
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-    // Minimal payload: CPU regs (compact) + 64 KiB main RAM. Matches the
-    // existing SnapshotIO section roster from the header docstring — disk
-    // state is deliberately excluded per CLAUDE.md.
-    M6502& cpu = ctrl_->cpu();
-    {
-        SnapshotWriter::SectionHandle h = w.beginSection("CPU");
-        w.writeU16(cpu.getProgramCounter());
-        w.writeU8 (cpu.getAccumulator());
-        w.writeU8 (cpu.getXRegister());
-        w.writeU8 (cpu.getYRegister());
-        w.writeU8 (cpu.getStatusRegister());
-        w.writeU8 (cpu.getStackPointer());
-        w.writeU8 (cpu.getCpuMode() == M6502::CpuMode::CMOS ? 1 : 0);
-        w.writeU64(ctrl_->memory().getCycleCounter());
-        w.endSection(h);
-    }
-    w.writeSection("MEM", ctrl_->memory().data(), 0x10000);
-    // MEX (v2): aux RAM + Language-Card RAM + RamWorks banks + paging
-    // soft-switches + DisplayState — everything the MEM main-64K misses.
-    {
-        std::vector<uint8_t> mex;
-        ctrl_->memory().appendSnapshotState(mex);
-        w.writeSection("MEX", mex.data(), mex.size());
-    }
+    // CPU regs (compact) + 64 KiB main RAM + MEX extended state. Disk state
+    // is deliberately excluded per CLAUDE.md. See MachineSnapshot for the
+    // exact section roster (shared with the rewind ring buffer).
+    pom2::captureMachineState(w, ctrl_->cpu(), ctrl_->memory());
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
@@ -1101,55 +1082,11 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     SnapshotReader r(*safe);
     if (!r.good()) { sendJsonError(fd, 400, "cannot read " + *safe + ": " + r.error()); return; }
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-    M6502& cpu = ctrl_->cpu();
-    Memory& mem = ctrl_->memory();
-    std::string name;
-    uint32_t len = 0;
-    while (r.nextSection(name, len)) {
-        // Require the FULL 16-byte CPU section (PC2 + a/x/y/p/sp/cpuMode = 6 +
-        // cycles8). The reader below consumes 16 bytes unconditionally; a gate
-        // of `>= 9` let a crafted/truncated section (9..15 B) through, reading
-        // up to 7 bytes past it (into the next section) → garbage cycle counter
-        // / CPU mode (round 10 #3). A normal save always writes exactly 16.
-        if (name == "CPU" && len >= 16) {
-            const uint16_t pc = r.readU16();
-            const uint8_t  a  = r.readU8();
-            const uint8_t  x  = r.readU8();
-            const uint8_t  y  = r.readU8();
-            const uint8_t  p  = r.readU8();
-            const uint8_t  sp = r.readU8();
-            const uint8_t  cpuMode = r.readU8();
-            const uint64_t cycles  = r.readU64();
-            cpu.setProgramCounter(pc);
-            cpu.setCpuMode(cpuMode ? M6502::CpuMode::CMOS : M6502::CpuMode::NMOS);
-            cpu.setAccumulator(a);
-            cpu.setXRegister(x);
-            cpu.setYRegister(y);
-            cpu.setStatusRegister(p);
-            cpu.setStackPointer(sp);
-            mem.setCycleCounter(cycles);
-        } else if (name == "MEM" && len == 0x10000) {
-            // Restore the main 64 KB through writable[] so the ROM mirror in
-            // $C000-$FFFF isn't clobbered (LC RAM is restored via MEX).
-            std::vector<uint8_t> buf(0x10000);
-            r.readBytes(buf.data(), buf.size());
-            mem.restoreMainRam(buf.data(), buf.size());
-        } else if (name == "MEX") {
-            // Bound the allocation. nextSection() already rejects len > file
-            // size; cap here too (a legit MEX is ≤ ~11 MB: aux + LC + 128
-            // RamWorks banks) so even a large crafted file can't OOM us.
-            constexpr uint32_t kMaxMexBytes = 16u * 1024u * 1024u;
-            if (len > kMaxMexBytes) {
-                sendJsonError(fd, 400, "snapshot MEX section too large");
-                return;
-            }
-            std::vector<uint8_t> buf(len);
-            if (len) r.readBytes(buf.data(), len);
-            mem.loadSnapshotState(buf.data(), len);
-        } else {
-            r.skipCurrentSection();
-        }
-    }
+    // Shared with the rewind ring buffer. Preserves the CPU-section length
+    // gate (crafted-snapshot over-read hardening) and the MEX size cap; an
+    // oversized MEX aborts the restore with a 400.
+    const auto res = pom2::restoreMachineState(r, ctrl_->cpu(), ctrl_->memory());
+    if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 

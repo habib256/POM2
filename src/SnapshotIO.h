@@ -31,6 +31,13 @@
 // No compression, no checksum (yet — could be a v2 sweetener). The file
 // is small (~64 KB + slot payloads) and the use case is "snapshot now,
 // reload now" rather than archival cold storage.
+//
+// Both classes have a file backend (the original) AND an in-memory backend:
+//   SnapshotWriter(std::vector<uint8_t>&)  — accumulate the blob in RAM
+//   SnapshotReader(const uint8_t*, size_t) — parse a blob already in RAM
+// The memory backend is what the rewind ring buffer (RewindBuffer) uses to
+// serialize/restore machine state at 60 Hz without touching the filesystem.
+// The wire format is byte-identical between the two backends.
 
 #ifndef POM2_SNAPSHOT_IO_H
 #define POM2_SNAPSHOT_IO_H
@@ -38,8 +45,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pom2 {
 
@@ -53,8 +62,14 @@ inline constexpr std::size_t kSectionNameLen = 8;
 class SnapshotWriter
 {
 public:
+    /// File-backed: writes the snapshot straight to `path` (truncating any
+    /// existing file). `good()` is false if the file could not be opened.
     explicit SnapshotWriter(const std::string& path);
-    ~SnapshotWriter() = default;
+    /// Memory-backed: accumulates the snapshot in `sink`, which is filled
+    /// when the writer is destroyed (flush-on-close). `sink` must outlive
+    /// the writer. Always `good()`.
+    explicit SnapshotWriter(std::vector<uint8_t>& sink);
+    ~SnapshotWriter();
 
     bool good() const { return out.good(); }
 
@@ -78,13 +93,23 @@ public:
     void writeSection(std::string_view name, const void* data, std::size_t length);
 
 private:
-    std::ofstream out;
+    void emitHeader();   // magic + version + flags
+
+    std::ofstream         fileStream_;       // engaged for the file ctor
+    std::stringstream     memStream_;        // engaged for the memory ctor
+    std::vector<uint8_t>* sink_ = nullptr;   // non-null ⟺ memory-backed
+    std::ostream&         out;               // bound to whichever is live
 };
 
 class SnapshotReader
 {
 public:
+    /// File-backed: opens and parses the snapshot at `path`.
     explicit SnapshotReader(const std::string& path);
+    /// Memory-backed: parses a snapshot already resident in RAM. The bytes
+    /// are copied in, so `data` need not outlive the reader. `length == 0`
+    /// (or `data == nullptr`) yields a non-good reader (no valid header).
+    SnapshotReader(const uint8_t* data, std::size_t length);
     ~SnapshotReader() = default;
 
     /// True iff construction parsed a valid POM2 snapshot header AND no
@@ -110,7 +135,11 @@ public:
     bool atSectionBoundary() const { return cursor == sectionEnd; }
 
 private:
-    std::ifstream  in;
+    void parseHeader();   // validate magic/version, prime cursor
+
+    std::ifstream     fileStream_;   // engaged for the file ctor
+    std::stringstream memStream_;    // engaged for the memory ctor
+    std::istream&  in;               // bound to whichever is live
     bool           ok = false;
     uint32_t       ver = 0;
     std::string    errorMsg;

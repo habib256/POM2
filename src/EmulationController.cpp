@@ -333,6 +333,7 @@ void EmulationController::coldBoot()
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
     processor.hardReset();
+    rewind_.clear();   // RAM wiped → the recorded timeline is a different machine
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
 
@@ -437,6 +438,64 @@ void EmulationController::setMode(Mode m)
     wakeCv.notify_all();
 }
 
+// ─── Rewind transport ──────────────────────────────────────────────────────
+void EmulationController::waitUntilParked()
+{
+    // No worker thread (e.g. headless construction without start()) → nothing
+    // can run the CPU, so a restore is already safe.
+    if (!worker.joinable()) return;
+    // The worker parks within one frame (≤ ~16 ms at 60 Hz; sooner under
+    // turbo). Bounded spin so a stuck worker can't hang the UI thread.
+    for (int i = 0; i < 200 && !workerParked_.load(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+bool EmulationController::rewindBeginScrub()
+{
+    if (!rewind_.enabled()) return false;
+    setMode(Mode::Stopped);
+    waitUntilParked();
+    std::lock_guard<std::mutex> lk(stateMtx);
+    return !rewind_.empty();
+}
+
+size_t EmulationController::rewindSeek(size_t index)
+{
+    std::lock_guard<std::mutex> lk(stateMtx);
+    if (rewind_.empty()) return pom2::RewindBuffer::kNoFrame;
+    const size_t clamped = std::min(index, rewind_.size() - 1);
+    rewind_.restore(clamped, processor, mem);
+    return clamped;
+}
+
+size_t EmulationController::rewindSeekToCycle(uint64_t cycle)
+{
+    std::lock_guard<std::mutex> lk(stateMtx);
+    return rewind_.restoreToCycle(cycle, processor, mem);
+}
+
+void EmulationController::rewindEndAndResume(size_t index)
+{
+    {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        if (index < rewind_.size()) {
+            // Make the live machine exactly the cursor frame, then drop the
+            // abandoned future so new captures append from here.
+            rewind_.restore(index, processor, mem);
+            rewind_.truncateAfter(index);
+        }
+    }
+    setMode(Mode::Running);
+}
+
+void EmulationController::rewindEndPaused()
+{
+    // Stay Stopped at the current frame; nothing to do but keep the worker
+    // parked. Provided as a named counterpart to rewindEndAndResume so the
+    // UI's intent is explicit.
+    setMode(Mode::Stopped);
+}
+
 #ifndef __EMSCRIPTEN__
 void EmulationController::workerLoop()
 {
@@ -534,9 +593,13 @@ void EmulationController::workerLoop()
 
     while (!exitRequested.load()) {
         const Mode m = mode.load();
+        if (m != Mode::Stopped) workerParked_.store(false);
 
         if (m == Mode::Stopped) {
             // Idle wait. Wake on any state change so toggling Run is snappy.
+            // Mark parked so the rewind transport knows no Running frame is
+            // in flight and a restore won't be overrun.
+            workerParked_.store(true);
             std::unique_lock<std::mutex> lk(stateMtx);
             wakeCv.wait_for(lk, std::chrono::milliseconds(50),
                 [this]{ return exitRequested.load() ||
@@ -624,6 +687,16 @@ void EmulationController::workerLoop()
         if (iwmDev) {
             std::lock_guard<std::mutex> lk(stateMtx);
             iwmDev->tick(mem.getCycleCounter());
+        }
+
+        // Rewind: capture a full machine snapshot at this quiescent frame
+        // boundary (CPU budget spent, IWM ticked — nothing else mutates
+        // CPU/Memory until the next frame). enabled() is checked before the
+        // lock so a disabled ring costs nothing; held under stateMtx for a
+        // consistent view vs. any UI-thread memory write.
+        if (rewind_.enabled()) {
+            std::lock_guard<std::mutex> lk(stateMtx);
+            rewind_.capture(processor, mem);
         }
 
         // Hang detector: sample end-of-frame PC; if every sample over the
