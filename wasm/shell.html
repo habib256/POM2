@@ -20,6 +20,11 @@
               vertical-align: middle; margin-left: 6px; }
   #progress > div { background: #5aa8ff; height: 100%; width: 0%;
                     transition: width 0.1s linear; }
+  #bootSplash { position: fixed; inset: 0; display: grid; place-items: center;
+                background: #000; color: #f0f0f0; z-index: 5;
+                font: 700 clamp(28px, 7vw, 72px) ui-monospace, monospace;
+                letter-spacing: 0.08em; text-align: center; }
+  #bootSplash.hidden { display: none; }
   canvas    { --pom2-aspect: 1.3636363636; position: fixed; inset: 0;
               display: block; width: min(100vw, calc(100vh * var(--pom2-aspect)));
               height: min(100vh, calc(100vw / var(--pom2-aspect)));
@@ -40,6 +45,7 @@
   <span id="progress"><div></div></span>
 </div>
 <div id="err"></div>
+<div id="bootSplash">PLEASE WAIT</div>
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <script>
   // Single-threaded WASM by design — no SharedArrayBuffer / COOP/COEP
@@ -55,6 +61,7 @@
     progressEl.style.width = Math.min(100, (100 * num / total)) + '%';
   }
   window.pom2FirstFrameReady = function() {
+    document.getElementById('bootSplash').classList.add('hidden');
     setProgress(1, 1);
     setStatus("POM2 ready.");
     setTimeout(() => {
