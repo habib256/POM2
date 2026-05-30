@@ -380,6 +380,43 @@ void Memory::advanceCycles(int cycles)
     vblWasActive = nowActive;
 }
 
+void Memory::beginVideoEventFrame()
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    displayAtFrameStart_ = display;
+    videoEvents_.clear();
+    videoEventFrameOpen_ = true;
+}
+
+std::vector<Memory::VideoEvent> Memory::takeVideoEvents()
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    videoEventFrameOpen_ = false;
+    return std::move(videoEvents_);
+}
+
+void Memory::recordVideoEvent(VideoEventKind kind, bool value)
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    if (!videoEventFrameOpen_) return;
+    pushVideoEventLocked(kind, value);
+}
+
+void Memory::pushVideoEventLocked(VideoEventKind kind, bool value)
+{
+    if (!videoEventFrameOpen_) return;
+    constexpr uint64_t kCyclesPerScanline = 65;
+    constexpr uint64_t kScanlinesPerFrame = 262;
+    constexpr uint64_t kVisibleScanlines  = 192;
+    const uint64_t now = cycleCounter +
+        (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+    const uint64_t rawLine = (now / kCyclesPerScanline) % kScanlinesPerFrame;
+    const uint16_t scanline = static_cast<uint16_t>(
+        rawLine < kVisibleScanlines ? rawLine : kVisibleScanlines - 1);
+
+    videoEvents_.push_back({now, scanline, kind, value});
+}
+
 void Memory::resetSoftSwitchesWarm()
 {
     // II/II+ machine_reset (apple2.cpp:325-331) only clears the cnxx
@@ -887,6 +924,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
                 std::lock_guard<std::mutex> lk(stateMutex);
                 display.eightyCol = (low == 0x0D);
             }
+            recordVideoEvent(VideoEventKind::EightyCol, low == 0x0D);
             slots.broadcastVideoSwitch(addr);
         }
         if (isWrite && iieMode) {
@@ -1035,6 +1073,16 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             case 0x56: display.hiRes     = false; break;
             case 0x57: display.hiRes     = true;  break;
         }
+        switch (low) {
+            case 0x50: pushVideoEventLocked(VideoEventKind::TextMode,  false); break;
+            case 0x51: pushVideoEventLocked(VideoEventKind::TextMode,  true);  break;
+            case 0x52: pushVideoEventLocked(VideoEventKind::MixedMode, false); break;
+            case 0x53: pushVideoEventLocked(VideoEventKind::MixedMode, true);  break;
+            case 0x54: pushVideoEventLocked(VideoEventKind::Page2,     false); break;
+            case 0x55: pushVideoEventLocked(VideoEventKind::Page2,     true);  break;
+            case 0x56: pushVideoEventLocked(VideoEventKind::HiRes,      false); break;
+            case 0x57: pushVideoEventLocked(VideoEventKind::HiRes,      true);  break;
+        }
         if (iieRebootTraceEnabled()) {
             static const char* dnames[8] = {
                 "TEXT=off(gfx)", "TEXT=on", "MIXED=off", "MIXED=on",
@@ -1065,6 +1113,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         {
             std::lock_guard<std::mutex> lk(stateMutex);
             display.eightyCol = (low == 0x0D);
+            pushVideoEventLocked(VideoEventKind::EightyCol, low == 0x0D);
         }
         slots.broadcastVideoSwitch(addr);
         return isWrite ? 0 : floatingBus();
@@ -1085,6 +1134,8 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             std::lock_guard<std::mutex> lk(stateMutex);
             display.an3 = (low == 0x5F);
             if (iieMode) display.dhgr = (low == 0x5E);
+            pushVideoEventLocked(VideoEventKind::An3, low == 0x5F);
+            if (iieMode) pushVideoEventLocked(VideoEventKind::Dhgr, low == 0x5E);
         }
         slots.broadcastVideoSwitch(addr);
         return isWrite ? 0 : floatingBus();
@@ -1265,6 +1316,12 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
         display.eightyStore = (iieMemMode & MF_80STORE) != 0;
         display.eightyCol   = (iieMemMode & MF_80COL)   != 0;
         display.altChar     = (iieMemMode & MF_ALTCHAR) != 0;
+        if (flag == MF_80COL)
+            pushVideoEventLocked(VideoEventKind::EightyCol, on);
+        if (flag == MF_80STORE)
+            pushVideoEventLocked(VideoEventKind::EightyStore, on);
+        if (flag == MF_ALTCHAR)
+            pushVideoEventLocked(VideoEventKind::AltChar, on);
     }
     // Le Chat Mauve / Video-7 RGB FIFO clocking — for the 80COL pair
     // ($C00C/D) we need to forward the data-bit edge to plugged video

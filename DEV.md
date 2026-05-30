@@ -159,12 +159,13 @@ stays high until `$C010`.
 - **`resetSoftSwitches()`** — full reset: display state, LC flags,
   `iieMemMode`, `intC8Rom`, `iicRomBank`, IOUDIS=true, RamWorks
   bank 0. Forces `MF_INTCXROM` when `isIIcClass`. Called by
-  `coldBoot()`, `hardReset()`, `applyProfile` step 4, and
+  `coldBoot()`, `applyProfile` step 4, and
   `resetSoftSwitchesWarm()` when `iieMode` is on.
-- **`resetSoftSwitchesWarm()`** — Ctrl-Reset only. On `iieMode`
-  delegates to full reset (MAME `apple2e.cpp:1453-1508 reset_w`
-  wipes everything every time). On II/II+ does only keyboard-strobe
-  clear (MAME `apple2.cpp:325-331`).
+- **`resetSoftSwitchesWarm()`** — Ctrl-Reset / F12 on II/II+; F11/F12
+  on IIe. On `iieMode` delegates to full reset (MAME `apple2e.cpp:1453-
+  1508`). On II/II+ does only keyboard-strobe clear — **LC + display
+  switches survive** (MAME `apple2.cpp:325-331`). `hardReset()` uses
+  this path too (only CPU A/X/Y are zeroed).
 
 CPU side: `M6502::hardReset()` doesn't wipe stack `$0100-$01FF`
 (MAME `reset_w` doesn't touch RAM); `M6502::softReset()` decrements
@@ -235,8 +236,27 @@ fg/bg from aux at same text address (hi nibble = fg, lo = bg);
 7-bit glyph doubled to 14 dots. Port of MAME `text_update`
 (`:788-791`) + `render_line_color_array` (`:571-583`).
 
-Pinned: `dhgr_render_smoke_test`, `video7_parity_smoke_test`
-(all 4 rgbmodes + fg/bg vs self-contained MAME oracle).
+Pinned: `dhgr_render_smoke_test`, `video7_parity_smoke_test`,
+`dhgr_phase_signal_test` (OE CPU/GPU + AppleWin subcarrier +1 vs MAME
+`rotl4(absX+1)`), `dlgr_render_smoke_test`.
+
+### DLGR (IIe, `eightyCol && !hiRes && dhgr && !textMode`)
+
+`renderLoResDouble` — 80 cells, aux nibble `rotl4(NIBBLE(aux),1)` +
+main nibble, 560-wide frame80. Mixed = DLGR top 40 block-rows + 80-col
+text bottom 4 rows. Pinned: `dlgr_render_smoke`, goldens
+`iie/dlgr` + `iie/dlgrmixed` in `display_golden_hash_test`.
+
+### Beam-racing (mid-scanline soft switches)
+
+`Memory` logs display soft-switch edges (`$C050-$C057`, `$C05E/$C05F`,
+IIe `$C00C/$C00D` 80COL, `$C000/$C001` 80STORE, `$C00E/$C00F` ALTCHAR)
+with CPU-cycle timestamps during each emulated
+frame (`beginVideoEventFrame` at the start of the worker's 60 Hz budget).
+`Apple2Display::render()` replays events per scanline band via
+`renderInternalBand` when the log is non-empty; otherwise the fast
+single-`getDisplayState()` path is unchanged. Logging is gated on an
+open frame so headless tests that poke switches during setup are unaffected.
 
 ### 80-col text
 
@@ -249,13 +269,18 @@ fallback.
 
 OpenEmulator-inspired GPU pass: instead of decoding to RGB on the
 CPU, `Apple2Display::fillCompositeSignal()` serialises the active
-video mode (HGR / DHGR / 40-col text / 80-col text / 40-col lo-res)
+video mode (HGR / DHGR / 40-col text / 80-col text / 40-col lo-res /
+DLGR double lo-res)
 into a 1-bit 14.318 MHz luminance waveform — 560 samples × 192
 lines, one byte per sample (`signalBuf`). HGR reuses the existing
 `buildBitStream()` so the per-byte half-dot delay is preserved.
-Lo-res emits `(nibble >> (absX & 3)) & 1` at every sample, letting
-the shader's NTSC demodulator recover the 16 colours from the same
+Lo-res emits `(nibble >> (absX & 3)) & 1` at every sample; DLGR
+interleaves aux (rotl4 nibble) and main halves like `renderLoResDouble`.
+The shader's NTSC demodulator recovers the 16 colours from the same
 spectral mechanism a real CRT uses (no palette lookup).
+
+GPU demod phase must match `renderCompositeOeCpu()` — see
+`docs/oe_gpu_cpu_parity.md` and `oe_demod_gpu_cpu_parity` test.
 
 `MainWindow::drawScreenImage()` uploads `signalBuf` to an `R8` GL
 texture and runs `NtscPostProcessor::process()`. The fragment shader
@@ -272,14 +297,17 @@ texture and runs `NtscPostProcessor::process()`. The fragment shader
      1.64 MHz), killing the dot-crawl the old gaussian (sigmaY 0.8,
      `|H(0.25)|` ≈ 0.46) produced.
    - **Chroma** (sum 2 = the ×2 demod gain): the **Sharpness** knob blends
-     the OE-faithful soft kernel (0.6 MHz — *exactly* OE at Sharpness 0)
-     ↔ a sharp 2.0 MHz kernel. Both reject fs/4 (`|H(0.25)|` ≈ 0.0004 /
-     0.004), so every blend keeps DC = 2 and stays subcarrier-clean.
+     the OE-faithful soft kernel (0.6 MHz) ↔ a sharp 2.0 MHz kernel. At
+     **Sharpness 0.5** (default) the GPU uses the soft kernel only — same
+     as the CPU path and OE-faithful demod (avoids hue-ringed edges at
+     transitions while solid fills stay correct).
    The CPU path (`Apple2Display::renderCompositeOeCpu`) mirrors `lumaK`
    and uses the OE-faithful 0.6 MHz chroma (no Sharpness param there).
 3. Chroma is recovered by multiplying each tap with
-   `sin(π/2 · x)` and `cos(π/2 · x)` — Apple II's 4× subcarrier
-   alignment means phase is just the dot index.
+   `sin(π/2 · (x + phaseOffset))` and `cos(π/2 · (x + phaseOffset))` —
+   Apple II's 4× subcarrier alignment. **`phaseOffset = 1` in DHGR**
+   (HGR/text = 0) so OE GPU/CPU and ColorAppleWin match MAME
+   `rotl4b(lutEntry, absX+1)`.
 4. YIQ → RGB via the standard NTSC matrix, then **hue** rotates the
    IQ vector, **brightness**/**contrast**/**saturation** apply
    in RGB space.

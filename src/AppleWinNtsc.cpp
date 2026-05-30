@@ -224,7 +224,8 @@ void AppleWinNtsc::renderLine(const uint8_t* src,
                               int            w,
                               SubMode        mode,
                               const uint32_t* prevLine,
-                              bool           prevValid)
+                              bool           prevValid,
+                              int            phaseOffset)
 {
     ensureInitialized();
 
@@ -233,15 +234,11 @@ void AppleWinNtsc::renderLine(const uint8_t* src,
         (mode == SubMode::Idealized) ? g_hueIdealized
                                      : g_hueMonitor;
 
-    // Causal 12-bit shift register — newest sample is bit 0, oldest bit 11
-    // (0x800), exactly matching AppleWin's runtime getScanlineColor()
-    // (NTSC.cpp:331) and the bit order the LUT was built for. No look-ahead /
-    // window-centring: the filter group delay shifts the picture a few dots,
-    // which the phase alignment compensates — same as the real decoder.
+    const int phase = phaseOffset & 3;
     uint32_t hist = 0;
     for (int x = 0; x < w; ++x) {
         hist = ((hist << 1) | (src[x] ? 1u : 0u)) & 0x0FFFu;
-        dst[x] = lut[x & 3][hist];
+        dst[x] = lut[(x + phase) & 3][hist];
     }
 
     // Tv sub-mode: 50% blend with the previous frame's same scanline, layered
@@ -269,7 +266,8 @@ void AppleWinNtsc::renderFrame(const uint8_t* src,
                                uint32_t*      dst,
                                int            w, int h,
                                SubMode        mode,
-                               const uint32_t* prevFrame)
+                               const uint32_t* prevFrame,
+                               int            phaseOffset)
 {
     const bool tv = (mode == SubMode::Tv) && (prevFrame != nullptr);
     for (int y = 0; y < h; ++y) {
@@ -277,7 +275,7 @@ void AppleWinNtsc::renderFrame(const uint8_t* src,
         uint32_t*      dl = dst + static_cast<size_t>(y) * w;
         const uint32_t* pl = tv ? prevFrame + static_cast<size_t>(y) * w
                                 : nullptr;
-        renderLine(sl, dl, w, mode, pl, tv);
+        renderLine(sl, dl, w, mode, pl, tv, phaseOffset);
     }
 }
 

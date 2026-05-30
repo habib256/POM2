@@ -148,6 +148,7 @@ uniform vec2  uSignalSize;     // (width, height) of the signal texture
 uniform float uHue;
 uniform float uSharpness;
 uniform int   uPalMode;        // 0=NTSC, 1=PAL (line-phase alternation)
+uniform int   uPhaseOffset;  // 0=HGR/text, 1=DHGR (MAME rotl4 absX+1)
 
 const float PI = 3.14159265358979;
 
@@ -192,16 +193,19 @@ void main()
     //   lumaK  : sum 1, NOTCHES the fs/4 colour subcarrier (|H(0.25)| ≈ 0.002,
     //            -3 dB ≈ 1.64 MHz) — kills the dot-crawl the old gaussian
     //            (sigmaY=0.8, |H(0.25)| ≈ 0.46) produced.
-    //   chroma : sum 2 (the ×2 demod gain). Sharpness blends the OE-faithful
-    //            soft kernel (0.6 MHz, exact OE at sharpness 0) ↔ a sharp
-    //            2.0 MHz kernel; both reject fs/4, so any blend keeps DC = 2.
+    //   chroma : sum 2 (the ×2 demod gain). Sharpness is neutral at 0.5,
+    //            matching the CPU path / OE-faithful 0.6 MHz kernel. Only
+    //            the upper half of the slider blends toward a sharper 2.0 MHz
+    //            kernel; using that kernel at the default caused hue-ringed
+    //            edges (green/orange, blue/violet swaps) while solid fills
+    //            stayed correct.
     float lumaK[9] = float[](0.27941, 0.23593, 0.13462, 0.03665, -0.01538,
                              -0.02210, -0.00999, -0.00072, 0.00130);
     float chromaSoft[9] = float[](0.26030, 0.24788, 0.21373, 0.16602, 0.11509,
                                   0.07008, 0.03648, 0.01543, 0.00515);
     float chromaSharp[9] = float[](0.55882, 0.47185, 0.26923, 0.07331, -0.03077,
                                    -0.04421, -0.01999, -0.00144, 0.00259);
-    float sharp = clamp(uSharpness, 0.0, 1.0);
+    float sharp = clamp((uSharpness - 0.5) * 2.0, 0.0, 1.0);
 
     const int N = 8;
     float Y = 0.0, U = 0.0, V = 0.0;
@@ -210,7 +214,13 @@ void main()
         float s  = sampleSignal(fx, sigY);
         int   a  = i < 0 ? -i : i;
         float wc = mix(chromaSoft[a], chromaSharp[a], sharp);
-        float phase = PI * 0.5 * floor(fx);   // 4×-fsc; phase at integer sample
+        // Match renderCompositeOeCpu(): k = (xi+po)&3, phase = π/2·((k+po)&3).
+        // The old formula π/2·(floor(fx)+po) diverges in DHGR (+90°) and is
+        // why GPU colours looked wrong vs the excellent CPU demod path.
+        int xi = int(floor(fx));
+        int k  = (xi + uPhaseOffset) & 3;
+        int phaseIdx = (k + uPhaseOffset) & 3;
+        float phase = PI * 0.5 * float(phaseIdx);
         Y += s * lumaK[a];                     // FIR luma (sum=1, notches fs/4)
         U += s * sin(phase) * wc;              // FIR chroma (sum=2 → ×2 gain)
         V += s * cos(phase) * wc * palQSign;
@@ -258,6 +268,7 @@ bool NtscPostProcessor::initialize()
     uHue         = glGetUniformLocation(program, "uHue");
     uSharpness   = glGetUniformLocation(program, "uSharpness");
     uPalMode     = glGetUniformLocation(program, "uPalMode");
+    uPhaseOffset = glGetUniformLocation(program, "uPhaseOffset");
 
     // Fullscreen quad: two triangles covering NDC [-1..1].
     const float verts[] = {
@@ -339,7 +350,8 @@ void NtscPostProcessor::destroyGL()
 }
 
 unsigned int NtscPostProcessor::process(const uint8_t* signal,
-                                        int sw, int sh)
+                                        int sw, int sh,
+                                        int phaseOffset)
 {
     if (!ready) return 0;
 
@@ -396,7 +408,8 @@ unsigned int NtscPostProcessor::process(const uint8_t* signal,
     if (uSignalSize >= 0) glUniform2f(uSignalSize, float(sw), float(sh));
     if (uHue        >= 0) glUniform1f(uHue,       params.hue);
     if (uSharpness  >= 0) glUniform1f(uSharpness, params.sharpness);
-    if (uPalMode    >= 0) glUniform1i(uPalMode,   params.palMode ? 1 : 0);
+    if (uPalMode       >= 0) glUniform1i(uPalMode,       params.palMode ? 1 : 0);
+    if (uPhaseOffset   >= 0) glUniform1i(uPhaseOffset,   phaseOffset & 3);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);

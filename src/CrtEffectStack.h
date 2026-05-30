@@ -80,6 +80,7 @@ private:
     int uSrc         = -1;
     int uPrevFrame   = -1;
     int uSrcSize     = -1;
+    int uOutSize     = -1;
     int uBrightness  = -1;
     int uContrast    = -1;
     int uSaturation  = -1;

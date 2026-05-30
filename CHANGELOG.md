@@ -6,6 +6,58 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-30 (DHGR parity)
+
+- **DHGR phase + beam-racing + goldens DLGR.**
+  - **Phase DHGR signal** : `signalPhaseOffset()` (= 1 en DHGR HGR, 0 sinon)
+    appliqué au démod OE GPU (`uPhaseOffset`), OE CPU (`renderCompositeOeCpu`)
+    et AppleWin (`renderLine`/`renderFrame`). Aligné sur MAME
+    `rotl4b(_, absX+1)`. Épinglé par `dhgr_phase_signal`.
+  - **Beam-racing** : journal d'événements vidéo horodatés dans `Memory`
+    (`VideoEvent`, `$C050-$C057` / `$C05E-$C05F` / 80COL), snapshot par frame
+    (`beginVideoEventFrame` dans `EmulationController`), rendu par bandes
+    (`renderInternalBand` + fallback rapide si log vide). Logging actif
+    seulement pendant une frame émulée (tests headless non affectés).
+  - **Goldens DLGR** : scènes `iie/dlgr` et `iie/dlgrmixed` dans
+    `display_golden_hash_test`.
+  - **Docs** : `DEV.md`, `docs/video_parity_audit_2026-05-30.md`,
+    `docs/graphics_modes_comparison.md` — DLGR implémenté, sharpness neutre
+    à 0.5, phase DHGR corrigée.
+
+- **Routage affichage — DLGR signal + beam-racing paging.**
+  - **`fillCompositeSignal::paintLoResDouble`** : le signal composite
+    interleave aux/main (rotl4) comme `renderLoResDouble` — corrige DLGR
+    en ColorCompositeOE / AppleWin / OE-CPU (auparavant main-only via
+    `paintLoRes40`). Goldens `iie/dlgr/signal` et `iie/dlgrmixed/signal`
+    mis à jour ; `dlgr_render_smoke` vérifie la parité signal.
+  - **Beam-racing** : événements `EightyStore` et `AltChar` journalisés sur
+    `$C000-$C00F` pour que le replay mid-frame respecte PAGE2 sous 80STORE
+    et le jeu de caractères 80-col.
+  - **`paintHgr`** : masque MSB fixe `0xFF` (HGR standard) — le bit DHIRES
+    ne doit pas masquer bit 7 hors mode DHGR affiché.
+
+- **Parité couleur OE GPU ↔ CPU (agent `docs/oe_gpu_cpu_parity.md`).**
+  - **Phase shader GPU** alignée sur `renderCompositeOeCpu()` (formule
+    `(k+po)&3`, pas `floor(fx)+po`) — corrige les teintes DHGR/HGR erronées
+    en mode `ColorCompositeOE`.
+  - **MainWindow** : branche CRT unifiée `oeFamily` (GPU + CPU) avec hue/sharp
+    neutralisés post-démod.
+  - **Test** : `oe_demod_gpu_cpu_parity` (ΔRGB ≤ 1, HGR + DHGR, sans GL).
+  - **`oe_signal_view`** : référence CPU gaussienne remplacée par FIR YUV
+    (`renderCompositeOeCpu`), `phaseOffset` CLI, stats max/mean Δ vs readback GL.
+
+- **Reset II/II+ : affichage préservé sur F12.**
+  - `hardReset()` appelait `resetSoftSwitches()` (TEXT forcé, plus d'artefacts
+    NTSC) au lieu du chemin warm MAME. Corrigé : F11 et F12 utilisent
+    `resetSoftSwitchesWarm()` sur II/II+ ; seuls cold boot / changement de
+    profil réinitialisent TEXT. Pin : `system_profile_smoke`.
+
+- **TEXT sans NTSC en ColorCompositeOECpu (et AppleWin).**
+  - Le mode texte passait par `fillCompositeSignal` + démod CPU → franges
+    colorées au boot. Désormais `renderInternal` (mono net) pour TEXT plein
+    écran ; démod réservée au graphique (+ `patchMixedTextBand` en mixed).
+    Pin : `text_oecpu_crisp`.
+
 ## 2026-05-30
 
 - **Parité OpenEmulator : filtres de démodulation exacts + reliquats du

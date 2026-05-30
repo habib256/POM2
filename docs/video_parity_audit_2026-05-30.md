@@ -308,11 +308,10 @@ Tous les findings sont `confirmed` en sévérité **LOW** ; aucun bug de math co
 
 Tous les findings `confirmed`, sévérité **LOW** — couche de base critique commune à OE + AppleWin, essentiellement à parité. Un seul point matériel (decode-side) ressort.
 
-#### Le decode OE/AppleWin utilise une origine de phase absolue unique (dot 0 = phase 0) pour TOUS les modes, alors que le chemin MAME-LUT tourne DHGR de +1 dot  *(LOW — quality-gap, sévérité ajustée de medium)*
+#### ~~Le decode OE/AppleWin utilise une origine de phase absolue unique~~ **RÉSOLU (2026-05-30)** — `signalPhaseOffset` DHGR +1
 
-- **POM2 vs origine** : le shader (`phase=π/2·floor(fx)`), le demod CPU-OE (`k=xi&3`) et la LUT AppleWin (`lut[x&3]`) référencent la phase au sample absolu avec offset 0, pour tous les modes. Mais les renderers MAME-LUT de POM2 utilisent offset 0 pour HGR (`rotl4b(lutEntry,absX)`) et +1 pour DHGR (`rotl4b(lutEntry,absX+1)`). MAME affirme que la phase chroma correcte de DHGR est tournée de 90° vs HGR. Donc les couleurs DHGR via shader/AppleWin peuvent être à 90° des couleurs DHGR via ColorNTSC.
-- **Preuve** : `NtscPostProcessor.cpp:200`, `Apple2Display.cpp:306, 1463-1465` ; `AppleWinNtsc.h:74-78` (aucun param isDhgr). Incohérence interne **inférée du code**, sans capture couleur démontrant un défaut visible.
-- **Recommandation** : **vérifier d'abord par capture**, puis optionnellement ajouter un offset d'origine de phase par mode : membre `signalPhaseOffset_ = isDhgr?1:0` ajouté dans `NtscPostProcessor` (`floor(fx)+uPhaseOffset`) et `renderCompositeOeCpu` (`k=(xi+phaseOffset)&3`). Ne pas forcer +1 en aveugle (pourrait mal tourner si l'origine absolue tombe déjà juste pour DHGR).
+- **Correctif** : `Apple2Display::signalPhaseOffset()` (= 1 quand IIe + 80COL + HIRES + DHGR) propagé au shader OE (`uPhaseOffset`), au demod CPU (`renderCompositeOeCpu`) et à AppleWin (`renderLine`/`renderFrame`). Épinglé par `dhgr_phase_signal`.
+- **Preuve** : `NtscPostProcessor.cpp` (`floor(fx)+uPhaseOffset`), `Apple2Display.cpp` (`signalPhaseOffset_`), `AppleWinNtsc.cpp` (`(x+phase)&3`).
 
 #### Sérialisation HGR (bit-doubling + half-dot delay) bit-pour-bit fidèle à MAME/AppleWin  *(LOW — ok-intentional)*
 
@@ -354,11 +353,9 @@ Tous les findings `confirmed`, sévérité **LOW** — couche de base critique c
 - **Preuve** : `Apple2Display.h:198`, `Apple2Display.cpp:656` vs MAME `apple2video.cpp:1050` + AppleWin `NTSC.cpp:372-373`.
 - **Recommandation** : changer `kFlashHalfPeriodFrames` de 15 à 16 dans `Apple2Display.h:198` (aligne exactement MAME-IIe + AppleWin). Mettre à jour le commentaire `:653-655` (demi-période 16, cycle 32 frames, ~1.87 Hz) qui sinon reste mensonger. Correctif trivial, ~6,7 % trop rapide aujourd'hui.
 
-#### Double Lo-Res (80-col lo-res, lecture aux RAM) non implémenté  *(LOW — missing-feature, sévérité ajustée de medium)*
+#### ~~Double Lo-Res (80-col lo-res) non implémenté~~ **RÉSOLU (2026-05-30)** — `renderLoResDouble` + goldens
 
-- **POM2 vs origine** : toutes les branches lo-res appellent `renderLoRes` sans jamais tester `state.dhgr` ; `renderLoRes` lit uniquement la main RAM en 40 colonnes, même quand DHIRES(AN3)+80COL sont actifs. Aucun chemin DLGR (`grep` = 0). MAME a `lores_update<Double>` (lit l'aux, 80 cellules, `rotl4(NIBBLE(aux),1)`).
-- **Preuve** : `Apple2Display.cpp:189-191, 807` vs MAME `apple2video.cpp:585-665, 1074-1077`. DLGR est un mode marginal (rares démos/utilitaires //e), n'empêche aucun titre courant ; le mode retombe proprement sur un lo-res 40-col plausible.
-- **Recommandation** : ajouter `renderLoResDouble` sous `iie80` quand `!textMode && !state.hiRes && state.dhgr` : 7 dots `palette[rotl4(NIBBLE(aux[col]),1)]` puis 7 dots `palette[NIBBLE(main[col])]` dans frame80 (560-large), réutilisant `kLoResPalette`. Pinner par un smoke test DLGR. **Priorité basse.**
+- **Correctif** : `renderLoResDouble` sous `iie80 && !hiRes && dhgr`, smoke `dlgr_render_smoke`, goldens `iie/dlgr` / `iie/dlgrmixed`.
 
 #### Flash II/II+ piloté par compteur de frames au lieu de l'horloge murale (555)  *(LOW — ok-intentional)*
 
@@ -431,7 +428,7 @@ Triées par rapport impact/effort pour la parité maximale.
 | 7 | **Normaliser le decay de persistance + plancher de bruit** | `src/CrtEffectStack.cpp:257` + C++ | `level = p/(1/60+p)` côté C++ ; shader `max(rgb, prev*uPersistence - 0.5/256.0)`. | Effets CRT | Faible | Faible-Moyen (constante de temps physique OE) |
 | 8 | **Mettre à jour `graphics_modes_comparison.md`** | `docs/graphics_modes_comparison.md:61,105-117,139,379-380` | Corriger la formule square-filter (post-#1), les ancres périmées (→ 739-756/779-796/940-951), passer aux ancres symboliques. | Doc / palettes / MAME LUT | Faible | Faible (confiance/maintenabilité) |
 | 9 | **Commenter la polarité AN3 (MAME vs AppleWin)** | `src/LeChatMauveCard.cpp:53-57` | Ajouter le commentaire `// MAME clocks 80COL directly; AppleWin clocks !80COL — we follow MAME, mode numbers bit-inverse.` | Le Chat Mauve | Trivial | Faible (évite confusion future en trace AppleWin) |
-| 10 | **Implémenter Double Lo-Res (DLGR)** | `src/Apple2Display.cpp` (`renderInternal` sous iie80) | Nouvelle fonction `renderLoResDouble` : `rotl4(NIBBLE(aux),1)` + `NIBBLE(main)` en frame80 ; pin smoke test. | Lo-res / texte | Moyen | Faible (mode marginal mais comble un trou de fonctionnalité) |
+| ~~10~~ | ~~**Implémenter Double Lo-Res (DLGR)**~~ **FAIT** | `renderLoResDouble` + `dlgr_render_smoke` + goldens | — | Lo-res / texte | — | — |
 
 ---
 

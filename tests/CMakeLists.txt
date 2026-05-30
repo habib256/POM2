@@ -1739,6 +1739,77 @@ endif()
 add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
 set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# DHGR NTSC phase offset — OE CPU demod vs MAME LUT anchor.
+add_executable(test_dhgr_phase_signal
+    dhgr_phase_signal_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dhgr_phase_signal PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dhgr_phase_signal PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dhgr_phase_signal PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dhgr_phase_signal PRIVATE winmm)
+endif()
+
+add_test(NAME dhgr_phase_signal COMMAND test_dhgr_phase_signal)
+set_tests_properties(dhgr_phase_signal PROPERTIES TIMEOUT 5)
+
+# OE demod parity — GPU shader formula must match renderCompositeOeCpu().
+add_executable(test_oe_demod_gpu_cpu_parity
+    oe_demod_gpu_cpu_parity_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_oe_demod_gpu_cpu_parity PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_oe_demod_gpu_cpu_parity PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_oe_demod_gpu_cpu_parity PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_oe_demod_gpu_cpu_parity PRIVATE winmm)
+endif()
+
+add_test(NAME oe_demod_gpu_cpu_parity COMMAND test_oe_demod_gpu_cpu_parity)
+set_tests_properties(oe_demod_gpu_cpu_parity PROPERTIES TIMEOUT 5)
+
+add_executable(test_text_oecpu_crisp
+    text_oecpu_crisp_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_text_oecpu_crisp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_text_oecpu_crisp PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_text_oecpu_crisp PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_text_oecpu_crisp PRIVATE winmm)
+endif()
+
+add_test(NAME text_oecpu_crisp COMMAND test_text_oecpu_crisp)
+set_tests_properties(text_oecpu_crisp PROPERTIES TIMEOUT 5)
+
 # Double Lo-Res (DLGR) — 80-col lo-res, aux+main with rotl4 on the aux nibble.
 add_executable(test_dlgr_render
     dlgr_render_smoke_test.cpp

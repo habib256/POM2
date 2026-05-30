@@ -252,6 +252,40 @@ public:
         return display;
     }
 
+    /// Beam-racing: video soft-switch edges logged with CPU-cycle timestamps
+    /// during each emulated frame. Apple2Display replays them per scanline
+    /// when non-empty; otherwise the fast single-snapshot path is used.
+    enum class VideoEventKind : uint8_t {
+        TextMode,
+        MixedMode,
+        Page2,
+        HiRes,
+        EightyCol,
+        Dhgr,
+        An3,
+        EightyStore,
+        AltChar,
+    };
+    struct VideoEvent {
+        uint64_t       emuCycle = 0;
+        uint16_t       scanline = 0;   // 0..191 visible band
+        VideoEventKind kind     = VideoEventKind::TextMode;
+        bool           value    = false;
+    };
+
+    /// Called once per emulated frame (before the CPU budget runs) to
+    /// snapshot display state at scanline 0 and clear the event log.
+    void beginVideoEventFrame();
+
+    /// Display soft-switch state at the start of the current frame.
+    DisplayState getDisplayStateAtFrameStart() const {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        return displayAtFrameStart_;
+    }
+
+    /// Move the accumulated video events out (UI thread consumes after render).
+    std::vector<VideoEvent> takeVideoEvents();
+
     // Keyboard bridge — UI thread enqueues keys, CPU thread reads them
     // via $C000 / clears the strobe via $C010.
     void queueKey(uint8_t ascii);       // 7-bit ASCII (upper or lower case)
@@ -276,7 +310,7 @@ public:
     size_t pasteRawKeys(const char* data, size_t length);
 
     /// How many bytes are still waiting in the paste queue. UI shows this
-    /// in the Emulation panel + Edit menu so the user knows the paste is
+    /// in the Edit menu so the user knows the paste is
     /// in flight.
     size_t pendingPasteSize() const;
     void   cancelPaste();
@@ -306,12 +340,11 @@ public:
     void setSolidAppleKey (bool down) { solidAppleKey = down; }
     void setShiftKey      (bool down) { shiftKey      = down; }
 
-    // Reset — clears the keyboard strobe, returns to text/page 1 mode.
-    // Does NOT touch RAM (matches Apple II reset behaviour: RESET only
-    // jumps through ($FFFC) without zeroing memory). Used by power-on
-    // (`coldBoot`) and F12 (`hardReset`) to flush the entire MMU/IOU/LC
-    // state on all profiles — matches MAME `apple2.cpp:325-331` for
-    // II/II+ plus the full IIe-style init for IIe/IIc/IIc+.
+    // Reset — returns LC/MMU/IOU/video switches to cold-boot defaults.
+    // Does NOT touch RAM. Used by power-on (`coldBoot`), profile apply,
+    // and IIe-class warm reset. II/II+ warm/hard reset use
+    // `resetSoftSwitchesWarm()` instead so LC + display switches survive
+    // (MAME `apple2.cpp:325-331` machine_reset).
     void resetSoftSwitches();
 
     // Warm reset (Ctrl-Reset / F11). Mirrors MAME's split between
@@ -458,6 +491,13 @@ private:
     // are infrequent (once per frame, in render()).
     mutable std::mutex stateMutex;
     DisplayState display;
+    DisplayState displayAtFrameStart_;
+    std::vector<VideoEvent> videoEvents_;
+    bool videoEventFrameOpen_ = false;
+
+    void recordVideoEvent(VideoEventKind kind, bool value);
+    /// Same as recordVideoEvent but caller already holds stateMutex.
+    void pushVideoEventLocked(VideoEventKind kind, bool value);
 
     // Keyboard.
     mutable std::mutex kbMutex;

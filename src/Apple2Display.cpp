@@ -97,89 +97,128 @@ static bool videoHgrPage2(const Memory::DisplayState& s)
     return s.page2 && !(s.eightyStore && s.hiRes);
 }
 
+void Apple2Display::applyVideoEvent(Memory::DisplayState& state,
+                                    Memory::VideoEventKind kind, bool value)
+{
+    switch (kind) {
+        case Memory::VideoEventKind::TextMode:  state.textMode  = value; break;
+        case Memory::VideoEventKind::MixedMode: state.mixedMode = value; break;
+        case Memory::VideoEventKind::Page2:     state.page2     = value; break;
+        case Memory::VideoEventKind::HiRes:     state.hiRes     = value; break;
+        case Memory::VideoEventKind::EightyCol: state.eightyCol = value; break;
+        case Memory::VideoEventKind::Dhgr:      state.dhgr      = value; break;
+        case Memory::VideoEventKind::An3:       state.an3       = value; break;
+        case Memory::VideoEventKind::EightyStore: state.eightyStore = value; break;
+        case Memory::VideoEventKind::AltChar:   state.altChar   = value; break;
+    }
+}
+
+namespace {
+
+int bandRows(int scanY0, int scanY1, int rowLo, int rowHi, int* outLo, int* outHi)
+{
+    const int lo = std::max(rowLo, (scanY0 + 7) / 8);
+    const int hi = std::min(rowHi, scanY1 / 8);
+    *outLo = lo;
+    *outHi = hi;
+    return lo < hi ? 1 : 0;
+}
+
+int bandScanlines(int scanY0, int scanY1, int lineLo, int lineHi, int* outLo, int* outHi)
+{
+    const int lo = std::max(lineLo, scanY0);
+    const int hi = std::min(lineHi, scanY1);
+    *outLo = lo;
+    *outHi = hi;
+    return lo < hi ? 1 : 0;
+}
+
+} // namespace
+
 void Apple2Display::renderInternal(Memory& mem)
 {
-    const auto state = mem.getDisplayState();
+    renderInternalBand(mem, mem.getDisplayState(), 0, kHeight);
+}
+
+void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& state,
+                                       int scanY0, int scanY1)
+{
+    if (scanY0 >= scanY1) return;
+
     const bool iie80 = mem.isIIE() && state.eightyCol;
-    const int  hiResEnd = state.mixedMode ? 160 : 192;   // graphics band height
+    const int  hiResEnd = state.mixedMode ? 160 : 192;
+    int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
 
     // ── Le Chat Mauve / Video-7 RGB-card HGR paths (native 560-dot) ─────
-    // Standard HGR (non-DHGR) with the RGB card plugged renders at the
-    // card's full 14 MHz dot density into frame80 — the 280-wide `frame`
-    // buffer would throw away the sharp byte-boundary edges + TTL-clean
-    // colour the card exists to produce. Two sub-variants share the same
-    // framing, differing only in the top renderer:
-    //   • Eve "HGR Duochrome" — fg/bg colour from aux at the matching HGR
-    //     offset (armed by $C0BB, needs aux RAM).
-    //   • plain 6-colour MSB-bank decode otherwise.
     const bool chatMauveHGR =
         state.hiRes && !state.textMode && !state.dhgr &&
         hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
     if (chatMauveHGR) {
-        if (chatMauve->hgrDuochromeEnabled() && auxRam != nullptr)
-            renderHgrDuochrome(mem, 0, hiResEnd);
-        else
-            renderHiResChatMauve80(mem, 0, hiResEnd);
-        if (state.mixedMode) {
+        if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi)) {
+            if (chatMauve->hgrDuochromeEnabled() && auxRam != nullptr)
+                renderHgrDuochrome(mem, gLo, gHi);
+            else
+                renderHiResChatMauve80(mem, gLo, gHi);
+        }
+        if (state.mixedMode && bandScanlines(scanY0, scanY1, 160, 192, &gLo, &gHi)) {
             if (iie80) {
-                renderText80(mem, 20, 24, state.altChar);
+                if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+                    renderText80(mem, tLo, tHi, state.altChar);
             } else {
-                // 40-col text into `frame`, pixel-doubled up into frame80
-                // (text is the band the card never touches).
-                renderText(mem, 20, 24);
-                upscaleFrameToFrame80(160, 192);
+                if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+                    renderText(mem, tLo, tHi);
+                upscaleFrameToFrame80(gLo, gHi);
             }
         }
         useFrame80 = true;
         return;
     }
 
-    // Le Chat Mauve / Video-7 foreground-background colored TEXT mode:
-    // 40-col text while the DHGR (AN3) soft-switch is on, with the RGB card
-    // plugged. Char from main RAM, per-cell fg/bg colours from aux. Renders
-    // straight into frame80 at 560 wide. (MAME text_update :788-791.)
-    // Eve $C0B9 master enable gates this; default = enabled, so AppleWin /
-    // Video-7 compatibility is preserved (a $C0B8 strobe disables it and
-    // the renderer falls back to the legacy monochrome IIe text path).
     const bool chatMauveText =
         mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
         hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
         auxRam != nullptr && chatMauve->colorTextEnabled();
     if (chatMauveText) {
-        renderTextChatMauveFgBg(mem, 0, 24);
+        if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
+            renderTextChatMauveFgBg(mem, tLo, tHi);
         useFrame80 = true;
         return;
     }
 
     // ── IIe 80-column native paths (560-wide frame80) ───────────────────
-    // 80COL only changes the framebuffer width for modes that read the text
-    // page: full 80-col text, DHGR, and the 4-row text band of mixed mode.
-    // Full-screen single-HGR / lo-res with 80COL on don't touch the text
-    // page, so the column count is irrelevant — they fall through to the
-    // legacy 280-wide path below.
     if (iie80) {
-        if (state.textMode) {                      // full-screen 80-col text
-            renderText80(mem, 0, 24, state.altChar);
+        if (state.textMode) {
+            if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
+                renderText80(mem, tLo, tHi, state.altChar);
             useFrame80 = true;
             return;
         }
-        if (state.hiRes && state.dhgr) {           // DHGR (full or mixed+text)
-            renderDhgr(mem, 0, hiResEnd);
-            if (state.mixedMode) renderText80(mem, 20, 24, state.altChar);
+        if (state.hiRes && state.dhgr) {
+            if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi))
+                renderDhgr(mem, gLo, gHi);
+            if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+                renderText80(mem, tLo, tHi, state.altChar);
             useFrame80 = true;
             return;
         }
-        if (!state.hiRes && state.dhgr) {          // Double lo-res (DLGR)
-            renderLoResDouble(mem, 0, state.mixedMode ? 40 : 48);
-            if (state.mixedMode) renderText80(mem, 20, 24, state.altChar);
+        if (!state.hiRes && state.dhgr) {
+            const int blockEnd = state.mixedMode ? 40 : 48;
+            if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &gLo, &gHi))
+                renderLoResDouble(mem, gLo / 4, (gHi + 3) / 4);
+            if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+                renderText80(mem, tLo, tHi, state.altChar);
             useFrame80 = true;
             return;
         }
-        if (state.mixedMode) {                     // mixed HGR/lo-res top + 80-col text
-            if (state.hiRes) renderHiRes(mem, 0, 160);
-            else             renderLoRes(mem, 0, 40);   // 20 text rows × 2 lo-res rows
-            upscaleFrameToFrame80(0, 160);
-            renderText80(mem, 20, 24, state.altChar);
+        if (state.mixedMode) {
+            if (state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
+                renderHiRes(mem, gLo, gHi);
+            else if (!state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
+                renderLoRes(mem, gLo / 4, (gHi + 3) / 4);
+            if (gLo < gHi)
+                upscaleFrameToFrame80(gLo, gHi);
+            if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+                renderText80(mem, tLo, tHi, state.altChar);
             useFrame80 = true;
             return;
         }
@@ -188,13 +227,53 @@ void Apple2Display::renderInternal(Memory& mem)
     // ── Legacy 280-wide path (frame) ────────────────────────────────────
     useFrame80 = false;
     if (state.textMode) {
-        renderText(mem, 0, 24);
+        if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi);
     } else if (state.hiRes) {
-        renderHiRes(mem, 0, 192);
-        if (state.mixedMode) renderText(mem, 20, 24);  // last 4 rows = text
+        if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
+            renderHiRes(mem, gLo, gHi);
+        if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi);
     } else {
-        renderLoRes(mem, 0, 48);
-        if (state.mixedMode) renderText(mem, 20, 24);
+        if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
+            renderLoRes(mem, gLo / 4, (gHi + 3) / 4);
+        if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi);
+    }
+}
+
+void Apple2Display::renderBeamRacing(Memory& mem,
+                                     std::vector<Memory::VideoEvent> events)
+{
+    std::sort(events.begin(), events.end(),
+              [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
+                  return a.scanline < b.scanline;
+              });
+
+    Memory::DisplayState cur = mem.getDisplayStateAtFrameStart();
+    useFrame80 = false;
+    int y0 = 0;
+    for (const auto& ev : events) {
+        const int y = std::min(static_cast<int>(ev.scanline), kHeight);
+        if (y > y0)
+            renderInternalBand(mem, cur, y0, y);
+        applyVideoEvent(cur, ev.kind, ev.value);
+        y0 = y;
+    }
+    if (y0 < kHeight)
+        renderInternalBand(mem, cur, y0, kHeight);
+}
+
+void Apple2Display::patchMixedTextBand(Memory& mem)
+{
+    const auto state = mem.getDisplayState();
+    if (!state.mixedMode || state.textMode) return;
+
+    if (mem.isIIE() && state.eightyCol)
+        renderText80(mem, 20, 24, state.altChar);
+    else {
+        renderText(mem, 20, 24);
+        upscaleFrameToFrame80(kMixedTextFirstScanline, kHeight);
     }
 }
 
@@ -205,6 +284,10 @@ void Apple2Display::render(Memory& mem)
     // skips renderInternal yet still needs the flash phase to tick for the
     // text it serialises into the composite signal.
     ++frameCounter;
+    mixedCompositeUsesFb_ = false;
+
+    const auto state = mem.getDisplayState();
+    const bool mixedGfx = state.mixedMode && !state.textMode;
 
     // Both ColorCompositeOE and ColorAppleWin consume the same 14.318 MHz
     // composite bitstream. ColorCompositeOE hands it to MainWindow's GLSL
@@ -217,28 +300,46 @@ void Apple2Display::render(Memory& mem)
     // the signal somehow can't be produced, so we never present stale pixels.)
     const bool appleWin   = (hiResMode == HiResMode::ColorAppleWin);
     const bool oeCpu      = (hiResMode == HiResMode::ColorCompositeOECpu);
-    // CPU demods (AppleWin, OE-CPU) overwrite the whole 560-wide frame80 from
-    // the composite signal, so renderInternal's framebuffer colourization is
-    // discarded for them — skip it (the Phase-4 "double render" removal).
-    const bool cpuDemod   = appleWin || oeCpu;
+    // CPU demods (AppleWin, OE-CPU) overwrite frame80 from the composite
+    // signal for graphics only. Full-screen TEXT uses renderInternal (crisp
+    // mono) — same as MAME/LUT paths and the GPU textSharp bypass; demod
+    // would falsely colour the glyph edges.
+    const bool cpuDemod    = appleWin || oeCpu;
+    const bool cpuDemodGfx = cpuDemod && !state.textMode;
     const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || cpuDemod;
 
-    if (!cpuDemod) renderInternal(mem);
+    if (!cpuDemodGfx) {
+        auto events = mem.takeVideoEvents();
+        if (events.empty())
+            renderInternal(mem);
+        else
+            renderBeamRacing(mem, std::move(events));
+    }
 
     signalProducedFlag = needSignal ? fillCompositeSignal(mem) : false;
 
-    if (cpuDemod && !signalProducedFlag) {
+    if (cpuDemodGfx && !signalProducedFlag) {
         // Defensive fallback: no signal → render the normal framebuffer so
         // the screen isn't left showing the previous frame's demod output.
         renderInternal(mem);
     }
 
-    if (oeCpu && signalProducedFlag) {
+    if (oeCpu && signalProducedFlag && !state.textMode) {
         renderCompositeOeCpu();   // demodulate signalBuf → frame80
         useFrame80 = true;
+        if (mixedGfx)
+            patchMixedTextBand(mem);
     }
 
-    if (appleWin && signalProducedFlag) {
+    if ((mixedGfx && hiResMode == HiResMode::ColorCompositeOE)
+        && signalProducedFlag) {
+        renderCompositeOeCpu();   // demodulate signalBuf → frame80
+        useFrame80 = true;
+        patchMixedTextBand(mem);
+        mixedCompositeUsesFb_ = true;
+    }
+
+    if (appleWin && signalProducedFlag && !state.textMode) {
         // Map our public sub-mode enum onto the pom2::AppleWinNtsc::SubMode
         // values 1-for-1 — they're declared as separate types only so
         // the public Apple2Display API doesn't drag AppleWinNtsc.h into
@@ -255,21 +356,25 @@ void Apple2Display::render(Memory& mem)
                                   frame80.data(),
                                   w, h,
                                   sub,
-                                  appleWinPrev80.data());
+                                  appleWinPrev80.data(),
+                                  signalPhaseOffset_);
         // Stash this frame for next call's Tv blur.
         std::memcpy(appleWinPrev80.data(), frame80.data(),
                     static_cast<size_t>(w) * h * sizeof(uint32_t));
         // The output IS native 560-wide regardless of the Apple II's
         // soft-switch state, so route the UI to frame80.
         useFrame80 = true;
+        if (mixedGfx)
+            patchMixedTextBand(mem);
     }
 }
 
 // CPU port of the OpenEmulator demod shader (NtscPostProcessor's demod-only
 // fragment shader). Same Y/I/Q recovery + NTSC YIQ→RGB + the +1.5π subcarrier
-// phase as the GPU path, run on the CPU into frame80. Fixed sharpness 0.5
-// (sigmaC = mix(2.5,1.0,0.5) = 1.75); CRT glass (scanlines / mask / barrel /
-// persistence) is layered on afterward by CrtEffectStack when enabled.
+// phase as the GPU path, run on the CPU into frame80. Fixed neutral sharpness
+// (OE-faithful soft chroma kernel, matching the GPU at slider value 0.5);
+// CRT glass (scanlines / mask / barrel / persistence) is layered on afterward
+// by CrtEffectStack when enabled.
 //
 // Optimised: the gaussian tap weights depend only on the tap offset i, and
 // the subcarrier sin/cos depend only on (x+i) mod 4 — both hoisted out of the
@@ -286,7 +391,8 @@ void Apple2Display::renderCompositeOeCpu()
     // libemulation provenance). lumaK: 2.0 MHz, sum 1, notches fs/4
     // (|H(0.25)| ≈ 0.002). chromaK: OE-faithful 0.6 MHz, sum 2 (the ×2 demod
     // gain). This CPU fallback has no Sharpness param, so it uses OE's exact
-    // chroma bandwidth (= the GPU path at Sharpness 0). Symmetric, [0]=centre.
+    // chroma bandwidth (= the GPU path at neutral Sharpness 0.5). Symmetric,
+    // [0]=centre.
     static const float lumaK[N + 1] = {
         0.27941f, 0.23593f, 0.13462f, 0.03665f, -0.01538f,
         -0.02210f, -0.00999f, -0.00072f, 0.00130f
@@ -299,7 +405,7 @@ void Apple2Display::renderCompositeOeCpu()
     // offset 0 (probe-calibrated against the MAME LUT). YUV→RGB matrix below.
     float sinP[4], cosP[4];
     for (int k = 0; k < 4; ++k) {
-        const float ph = kPi * 0.5f * static_cast<float>(k);
+        const float ph = kPi * 0.5f * static_cast<float>((k + signalPhaseOffset_) & 3);
         sinP[k] = std::sin(ph);
         cosP[k] = std::cos(ph);
     }
@@ -313,7 +419,7 @@ void Apple2Display::renderCompositeOeCpu()
                 const int xi = x + i;
                 if (xi < 0 || xi >= sw) continue;
                 const float s = row[xi] ? 1.0f : 0.0f;
-                const int   k = xi & 3;
+                const int   k = (xi + signalPhaseOffset_) & 3;
                 const int   a = i < 0 ? -i : i;
                 Y += s * lumaK[a];                // FIR luma (sum=1, notches fs/4)
                 U += s * sinP[k] * chromaK[a];    // FIR chroma (sum=2 → ×2 gain)
@@ -1641,13 +1747,12 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
 // the 4×-subcarrier rate — the same width DHGR already uses natively —
 // so HGR (with its half-dot delay), DHGR, and text all naturally fit.
 //
-// We only generate the signal for HGR, DHGR, and 40/80-column text in
-// v1; lo-res cells require a per-line 4-dot palette pattern table we
-// haven't ported yet, so the function returns false and MainWindow's
-// shader path falls back to drawing the regular RGB framebuffer.
+// We only generate the signal for HGR, DHGR, DLGR, and 40/80-column text;
+// lo-res GR uses paintLoRes40, DLGR uses paintLoResDouble (aux+main).
 bool Apple2Display::fillCompositeSignal(Memory& mem)
 {
     const auto state = mem.getDisplayState();
+    signalPhaseOffset_ = 0;
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
@@ -1708,7 +1813,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
     // bit stream builder (which already applies the per-byte half-dot
     // delay from bit 7).
     auto paintHgr = [&](int first, int last) {
-        const uint8_t bit7Mask = state.dhgr ? uint8_t{0x7F} : uint8_t{0xFF};
+        const uint8_t bit7Mask = uint8_t{0xFF};
         uint8_t stream[kStreamLen];
         for (int y = first; y < last; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
@@ -1774,6 +1879,45 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
         }
     };
 
+    // DLGR: aux nibble (rotl4) on even 7-dot half, main on odd — MAME
+    // lores_update<Double>; mirrors renderLoResDouble().
+    auto paintLoResDouble = [&](int firstBlockRow, int lastBlockRow) {
+        auto rotl4 = [](uint8_t n) -> uint8_t {
+            return static_cast<uint8_t>(((n << 1) | (n >> 3)) & 0x0F);
+        };
+        for (int blockRow = firstBlockRow; blockRow < lastBlockRow; ++blockRow) {
+            const int  textRow   = blockRow / 2;
+            const bool upperHalf = (blockRow % 2 == 0);
+            const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
+            for (int col = 0; col < 40; ++col) {
+                const uint8_t mb = ram[rowAddr + col];
+                const uint8_t ab = aux[rowAddr + col];
+                const uint8_t mNib = upperHalf
+                    ? static_cast<uint8_t>(mb & 0x0Fu)
+                    : static_cast<uint8_t>((mb >> 4) & 0x0Fu);
+                const uint8_t aNib = upperHalf
+                    ? static_cast<uint8_t>(ab & 0x0Fu)
+                    : static_cast<uint8_t>((ab >> 4) & 0x0Fu);
+                const uint8_t auxPat  = rotl4(aNib);
+                const uint8_t mainPat = mNib;
+                for (int dy = 0; dy < 4; ++dy) {
+                    const int y = blockRow * 4 + dy;
+                    uint8_t* dst = signalBuf.data()
+                                 + static_cast<size_t>(y) * kSignalWidth
+                                 + col * 14;
+                    for (int dx = 0; dx < 7; ++dx) {
+                        const uint8_t bit = (auxPat >> (dx & 3)) & 1u;
+                        dst[dx] = bit ? 0xFFu : 0x00u;
+                    }
+                    for (int dx = 0; dx < 7; ++dx) {
+                        const uint8_t bit = (mainPat >> (dx & 3)) & 1u;
+                        dst[7 + dx] = bit ? 0xFFu : 0x00u;
+                    }
+                }
+            }
+        }
+    };
+
     // Top-level dispatch by current video soft-switches. Mirrors
     // renderInternal()'s decision tree, but writing into signalBuf
     // instead of frame / frame80.
@@ -1784,23 +1928,27 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
     }
 
     if (!state.hiRes) {
-        // Lo-res: 48 block-rows full-screen, or 40 + 4 text rows mixed.
+        const bool isDlgr = mem.isIIE() && state.eightyCol && state.dhgr;
         if (state.mixedMode) {
-            paintLoRes40(0, 40);
-            if (mem.isIIE() && state.eightyCol) paintText80(20, 24);
-            else                                paintText40(20, 24);
+            if (isDlgr) paintLoResDouble(0, 40);
+            else        paintLoRes40(0, 40);
+            // Text band stays black in the signal — crisp mono text is
+            // composited after demod (patchMixedTextBand), same as HGR mixed.
         } else {
-            paintLoRes40(0, 48);
+            if (isDlgr) paintLoResDouble(0, 48);
+            else        paintLoRes40(0, 48);
         }
         return true;
     }
 
     // Hi-res — DHGR variant when on IIe with 80COL + DHIRES, else HGR.
-    const bool isDhgr = mem.isIIE() && state.eightyCol && state.dhgr;
+    const bool isDhgr = mem.isIIE() && state.eightyCol && state.dhgr && state.hiRes;
+    signalPhaseOffset_ = isDhgr ? 1 : 0;
     if (state.mixedMode) {
         if (isDhgr) paintDhgr(0, 160); else paintHgr(0, 160);
-        if (mem.isIIE() && state.eightyCol) paintText80(20, 24);
-        else                                paintText40(20, 24);
+        // Mixed-mode text is not part of the composite waveform — on real
+        // hardware the bottom 4 rows are the text generator (white/black),
+        // not NTSC-artifact colour.
     } else {
         if (isDhgr) paintDhgr(0, 192); else paintHgr(0, 192);
     }

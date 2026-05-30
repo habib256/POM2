@@ -30,8 +30,9 @@ struct NtscParams
     float saturation  = 1.0f;   //  0..2 chroma multiplier
     float hue         = 0.0f;   // -0.5..+0.5, full I/Q rotation at ±0.5
 
-    // Sharpness controls the chroma low-pass bandwidth: 0 = blurry
-    // bandwidth-limited TV, 1 = sharp composite monitor (RGB-ish).
+    // Sharpness controls the chroma low-pass bandwidth. 0.5 is neutral and
+    // matches the OE-faithful CPU path; higher values sharpen the chroma
+    // bandwidth, while lower values stay on the safe soft kernel.
     float sharpness   = 0.5f;
 
     // Phosphor persistence: 0 = no afterglow, 1 = infinite. Reasonable
@@ -117,7 +118,8 @@ public:
     // name holding the RGBA output (the caller draws it via ImGui).
     // Returns 0 if the postprocessor isn't `available()`.
     unsigned int process(const uint8_t* signal,
-                         int signalWidth, int signalHeight);
+                         int signalWidth, int signalHeight,
+                         int phaseOffset = 0);
 
     // Dimensions of the texture returned by process(). The output is
     // upscaled vertically by 2 so scanline darkening at every other
@@ -154,6 +156,7 @@ private:
     int uHue        = -1;
     int uSharpness  = -1;
     int uPalMode    = -1;
+    int uPhaseOffset = -1;
 
     int outW    = 0;
     int outH    = 0;

@@ -284,7 +284,11 @@ void EmulationController::hardReset()
 {
     std::lock_guard<std::mutex> lk(stateMtx);
     mem.setIicSmartPortArmed(false);   // reboot → //c sees its real $C500 firmware
-    mem.resetSoftSwitches();
+    // Same soft-switch policy as softReset (MAME reset_w / machine_reset):
+    // II/II+ preserve LC + display switches; IIe-class wipes MMU/IOU/LC.
+    // Pre-fix hardReset called resetSoftSwitches() unconditionally, which
+    // forced TEXT+no NTSC on every F12 even on II/II+.
+    mem.resetSoftSwitchesWarm();
     mem.slotBus().reset();
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
@@ -576,6 +580,14 @@ void EmulationController::workerLoop()
         // Running: execute one frame's worth of cycles, then sleep until
         // the next 60 Hz boundary. Using steady_clock keeps wallclock pace
         // without drifting on busy machines.
+        //
+        // Snapshot display state + clear the video-event log before the
+        // CPU budget runs so Apple2Display can beam-race mid-frame soft
+        // switches when events are present.
+        {
+            std::lock_guard<std::mutex> lk(stateMtx);
+            mem.beginVideoEventFrame();
+        }
         //
         // We chunk the budget into small pieces and release `stateMtx`
         // between each — the UI thread takes that mutex many times per

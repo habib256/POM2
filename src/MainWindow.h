@@ -301,7 +301,6 @@ private:
     // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
     // that used to live in the Status panel. Persisted as `show_mixer`.
     bool         showAudioMixer     = false;
-    bool         showEmulationPanel = false;
     // Mouse Inspector — live readout of host cursor position, Apple II
     // Screen widget rect, MouseCard 8-bit counter + sub-pixel accumulator,
     // AppleWin HLE firmware state (iX/iY/clamps/mode), and the firmware
@@ -530,7 +529,6 @@ private:
     /// Kiosk render path: a single borderless full-viewport window showing
     /// only the screen. No menu bar / toolbar / panels.
     void renderKiosk();
-    void renderControlsWindow();
     void renderMemoryViewerWindow();
     // Memory map visualisations — implemented in MainWindow_MemoryMaps.cpp.
     std::vector<MemRegion> buildMemoryRegions();

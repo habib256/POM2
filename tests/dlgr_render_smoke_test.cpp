@@ -76,6 +76,19 @@ int main()
     const uint32_t main1 = px(14 + 10, 0);
     assert(aux1 != main1 && "col1 aux/main differ");
 
+    // Composite signal path must interleave aux+main like the framebuffer
+    // (fillCompositeSignal::paintLoResDouble), not fall back to main-only GR.
+    disp.setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+    disp.render(mem);
+    assert(disp.signalProduced());
+    const uint8_t* sig = disp.signal();
+    // Scanline 0, column 0: samples 0..6 = aux half, 7..13 = main half.
+    bool halvesDiffer = false;
+    for (int i = 0; i < 7; ++i) {
+        if (sig[i] != sig[7 + i]) { halvesDiffer = true; break; }
+    }
+    assert(halvesDiffer && "DLGR signal must rotl4 the aux nibble");
+
     std::printf("dlgr_render_smoke OK\n");
     return 0;
 }

@@ -531,6 +531,45 @@ void testSoftResetPreservesLcOnII()
     assert((mem2.iieModeFlags() & 0x01) == 0);
 }
 
+// F11/F12 on II/II+ must preserve display soft switches (TEXT/GRAPHICS,
+// HIRES, …) so HGR/DHGR + NTSC artifacts survive a warm reset. Only
+// coldBoot / profile apply re-init to TEXT (power-on default).
+void testResetPreservesDisplayOnIIPlus()
+{
+    Memory mem;
+    mem.setIIEMode(false);
+    mem.resetSoftSwitches();
+    assert(mem.getDisplayState().textMode && "cold init = TEXT");
+
+    mem.memRead(0xC050);   // TEXT off → graphics
+    mem.memRead(0xC057);   // HIRES on
+    {
+        const auto ds = mem.getDisplayState();
+        assert(!ds.textMode && ds.hiRes);
+    }
+
+    mem.resetSoftSwitchesWarm();   // F11 path
+    {
+        const auto ds = mem.getDisplayState();
+        assert(!ds.textMode && ds.hiRes && "soft reset must keep display");
+    }
+
+    mem.resetSoftSwitchesWarm();   // F12 path (hard reset uses same MMU policy)
+    {
+        const auto ds = mem.getDisplayState();
+        assert(!ds.textMode && ds.hiRes && "hard reset must keep display on II+");
+    }
+
+    // IIe warm reset wipes display (MAME reset_w full list).
+    Memory mem2;
+    mem2.setIIEMode(true);
+    mem2.resetSoftSwitches();
+    mem2.memRead(0xC050);
+    mem2.memRead(0xC057);
+    mem2.resetSoftSwitchesWarm();
+    assert(mem2.getDisplayState().textMode && "IIe reset returns to TEXT");
+}
+
 // Theme 7 (hardReset no stack wipe): MAME `apple2.cpp:325-331` doesn't
 // touch RAM on reset. Verify F12 leaves the stack page intact.
 void testHardResetPreservesStack()
@@ -646,6 +685,7 @@ int main()
     std::printf("  ok: clearRam fills with 00/FF alternating (MAME parity)\n");
 
     testSoftResetPreservesLcOnII();
+    testResetPreservesDisplayOnIIPlus();
     std::printf("  ok: softReset preserves LC bank state on II/II+ (B-3-1)\n");
 
     testHardResetPreservesStack();

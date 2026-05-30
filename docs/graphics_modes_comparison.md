@@ -198,8 +198,9 @@ OpenEmulator copié, POM2 reste sous sa licence.
    - Distorsion barrel optionnelle des UVs.
    - 17 taps gaussiens autour de la colonne courante.
    - Y : sigma étroit (0.8) → luma nette.
-   - I/Q : sigma large (1.5-2.5 selon sharpness slider) ; démod
-     `sin/cos(π/2·x)` (Apple II's 4× subcarrier = π/2 par dot).
+   - I/Q : FIR chroma OE (soft 0.6 MHz à Sharpness **0.5** = neutre, identique
+     au chemin CPU) ; démod `sin/cos(π/2·(x+phaseOffset))` — **DHGR :
+     `phaseOffset=1`** (MAME `rotl4(absX+1)`), HGR/texte = 0.
    - Rotation hue dans le plan IQ.
    - YIQ → RGB (matrice NTSC FCC standard).
    - B/C/S/H en RGB.

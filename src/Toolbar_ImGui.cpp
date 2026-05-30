@@ -131,7 +131,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // ── Speed selector ───────────────────────────────────────────────
     // Combo: 1× / 2× / 4× / MAX. The current speed sticks to whichever
     // bucket the cyclesPerFrame value rounds into; off-bucket values
-    // (the user typed a custom one in the Emulation panel) read as
+    // (the user typed a custom speed) read as
     // "custom" with no checkmark.
     static constexpr int kSpeed1x  = 17045;
     static constexpr int kSpeed2x  = 17045 * 2;

@@ -65,17 +65,20 @@ struct AppleWinNtsc
                            int            w,
                            SubMode        mode,
                            const uint32_t* prevLine = nullptr,
-                           bool           prevValid = false);
+                           bool           prevValid = false,
+                           int            phaseOffset = 0);
 
     // Convenience entry point: render the whole signal buffer (h
     // scanlines of `w` samples each) into `dst`. `prevFrame` is the
     // RGBA buffer holding last frame's output for the Tv sub-mode;
     // pass nullptr if not in Tv mode or for the very first frame.
+    // `phaseOffset` is 1 for DHGR (MAME rotl4 absX+1), else 0.
     static void renderFrame(const uint8_t* src,
                             uint32_t*      dst,
                             int            w, int h,
                             SubMode        mode,
-                            const uint32_t* prevFrame = nullptr);
+                            const uint32_t* prevFrame = nullptr,
+                            int            phaseOffset = 0);
 };
 
 } // namespace pom2

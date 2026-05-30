@@ -132,6 +132,7 @@ out vec4 fragColor;
 uniform sampler2D uSrc;        // RGBA Apple II framebuffer
 uniform sampler2D uPrev;       // previous output (persistence)
 uniform vec2  uSrcSize;        // (width, height) of uSrc
+uniform vec2  uOutSize;        // (width, height) of this pass output
 uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
@@ -144,6 +145,41 @@ uniform int   uShadowMask;     // 0=off,1=triad,2=aperture grille,3=dot
 uniform float uShadowStrength; // 0..1
 uniform float uLuminanceGain;  // post-glass re-brighten, 1.0 = neutral
 uniform float uCenterLighting; // vignette: 1.0 = flat (off), <1 darkens edges
+
+// Catmull-Rom cubic weight (4-tap per axis). Used when the CRT pass upscales
+// the low-res Apple II framebuffer so scanlines/mask sit on smooth colour
+// instead of NEAREST blocks.
+float cubicWeight(float x)
+{
+    x = abs(x);
+    if (x < 1.0) return x * x * (1.5 * x - 2.5) + 1.0;
+    if (x < 2.0) return x * (x * (-0.5 * x + 2.5) - 4.0) + 2.0;
+    return 0.0;
+}
+
+vec3 sampleSrc(vec2 uv)
+{
+    uv = clamp(uv, 0.0, 1.0);
+    float mag = max(uOutSize.x / uSrcSize.x, uOutSize.y / uSrcSize.y);
+    if (mag <= 1.25)
+        return texture(uSrc, uv).rgb;
+
+    vec2 coord = uv * uSrcSize - 0.5;
+    vec2 f = fract(coord);
+    coord = floor(coord);
+    vec3 col = vec3(0.0);
+    float wsum = 0.0;
+    for (int j = -1; j <= 2; ++j) {
+        for (int i = -1; i <= 2; ++i) {
+            vec2 offs = vec2(float(i), float(j));
+            vec2 samp = (coord + offs + 0.5) / uSrcSize;
+            float w = cubicWeight(offs.x - f.x) * cubicWeight(offs.y - f.y);
+            col += texture(uSrc, clamp(samp, 0.0, 1.0)).rgb * w;
+            wsum += w;
+        }
+    }
+    return col / max(wsum, 1e-4);
+}
 
 void main()
 {
@@ -158,7 +194,7 @@ void main()
     vec2  edge     = min(uv, 1.0 - uv);
     vec2  edgeFw   = max(fwidth(uv), vec2(1e-4));
     float edgeMask = clamp(min(edge.x / edgeFw.x, edge.y / edgeFw.y), 0.0, 1.0);
-    vec3 rgb = texture(uSrc, clamp(uv, 0.0, 1.0)).rgb;
+    vec3 rgb = sampleSrc(uv);
 
     // ── Sharpness (unsharp mask / soften, centre-neutral at 0.5) ──
     // The source is already-decoded RGB (any pipeline), so the OE shader's
@@ -172,10 +208,10 @@ void main()
         if (amt != 0.0) {
             vec2 t = 1.0 / uSrcSize;
             vec3 blur = (
-                texture(uSrc, clamp(uv + vec2(-t.x, 0.0), 0.0, 1.0)).rgb +
-                texture(uSrc, clamp(uv + vec2( t.x, 0.0), 0.0, 1.0)).rgb +
-                texture(uSrc, clamp(uv + vec2(0.0, -t.y), 0.0, 1.0)).rgb +
-                texture(uSrc, clamp(uv + vec2(0.0,  t.y), 0.0, 1.0)).rgb) * 0.25;
+                sampleSrc(uv + vec2(-t.x, 0.0)) +
+                sampleSrc(uv + vec2( t.x, 0.0)) +
+                sampleSrc(uv + vec2(0.0, -t.y)) +
+                sampleSrc(uv + vec2(0.0,  t.y))) * 0.25;
             rgb = clamp(rgb + amt * (rgb - blur), 0.0, 1.0);
         }
     }
@@ -307,6 +343,7 @@ bool CrtEffectStack::initialize()
     uSrc         = glGetUniformLocation(program, "uSrc");
     uPrevFrame   = glGetUniformLocation(program, "uPrev");
     uSrcSize     = glGetUniformLocation(program, "uSrcSize");
+    uOutSize     = glGetUniformLocation(program, "uOutSize");
     uBrightness  = glGetUniformLocation(program, "uBrightness");
     uContrast    = glGetUniformLocation(program, "uContrast");
     uSaturation  = glGetUniformLocation(program, "uSaturation");
@@ -421,6 +458,18 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
+    // The UI uploads screenTexture / OE demod with GL_NEAREST for crisp 1:1
+    // integer scaling when CRT is off. For the effect pass we temporarily
+    // switch to LINEAR so magnification is bilinear-smooth; the shader's
+    // sampleSrc() adds bicubic when upscaling further.
+    GLint prevMinFilter = GL_NEAREST;
+    GLint prevMagFilter = GL_NEAREST;
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &prevMinFilter);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &prevMagFilter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
     glUseProgram(program);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, srcTex);
@@ -430,6 +479,7 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     glUniform1i(uPrevFrame, 1);
 
     if (uSrcSize     >= 0) glUniform2f(uSrcSize, float(srcW), float(srcH));
+    if (uOutSize     >= 0) glUniform2f(uOutSize, float(outW), float(outH));
     if (uBrightness  >= 0) glUniform1f(uBrightness,  params.brightness);
     if (uContrast    >= 0) glUniform1f(uContrast,    params.contrast);
     if (uSaturation  >= 0) glUniform1f(uSaturation,  params.saturation);
@@ -446,6 +496,11 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+
+    // Restore the caller's NEAREST filter (integer-scale path without CRT).
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, prevMinFilter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, prevMagFilter);
 
     // Don't leave our private textures bound on any unit.
     glActiveTexture(GL_TEXTURE1);

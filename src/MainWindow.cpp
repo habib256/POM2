@@ -1937,7 +1937,6 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
         ImGui::Separator();
         ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
@@ -2083,14 +2082,20 @@ void MainWindow::drawScreenImage()
     unsigned int presentTex = screenTexture;
     // Sharp-text override: when the user wants legible text under the
     // composite mode, skip the shader for TEXT scanlines and let the
-    // crisp RGB framebuffer go straight to ImGui. The Apple II's text
-    // mode is full-screen — never mixed with HGR — so we either run the
-    // shader on the whole frame or not at all.
+    // crisp RGB framebuffer go straight to ImGui. Full-screen text uses
+    // textSharp; mixed HGR/lo-res/DHGR keeps the demod on the graphics
+    // band only — the bottom 4 text rows are patched in frame80 as
+    // white/black after demod (mixedCompositeUsesFramebuffer).
     const auto displayState = controller->memory().getDisplayState();
-    const bool oeMode = display->getHiResMode()
-                      == Apple2Display::HiResMode::ColorCompositeOE;
+    const bool oeGpuMode = display->getHiResMode()
+                         == Apple2Display::HiResMode::ColorCompositeOE;
+    const bool oeCpuMode = display->getHiResMode()
+                         == Apple2Display::HiResMode::ColorCompositeOECpu;
+    const bool oeMode    = oeGpuMode;
+    const bool oeFamily  = oeGpuMode || oeCpuMode;
     const bool wantSharpText = ntscFx && ntscFx->getParams().textSharp
                             && displayState.textMode;
+    const bool mixedFbPresent = display->mixedCompositeUsesFramebuffer();
 
     // Compute the on-screen target size up-front so the CRT effect pass can
     // render at native output resolution. That is what lets the scanline /
@@ -2124,7 +2129,7 @@ void MainWindow::drawScreenImage()
     const int dstW = std::max(1, static_cast<int>(size.x + 0.5f));
     const int dstH = std::max(1, static_cast<int>(size.y + 0.5f));
 
-    if (oeMode && display->signalProduced() && !wantSharpText) {
+    if (oeMode && display->signalProduced() && !wantSharpText && !mixedFbPresent) {
         if (!ntscFx) ntscFx = std::make_unique<pom2::NtscPostProcessor>();
         if (!ntscFx->available() && !ntscFx->initialize()) {
             // initialize() already logged the failure. Stop trying so
@@ -2140,7 +2145,8 @@ void MainWindow::drawScreenImage()
             const unsigned int demod = ntscFx->process(
                 display->signal(),
                 display->signalWidth(),
-                display->signalHeight());
+                display->signalHeight(),
+                display->signalPhaseOffset());
             if (demod != 0) {
                 presentTex = demod;
                 // CRT glass only when the master toggle is on (top of the CRT
@@ -2167,15 +2173,28 @@ void MainWindow::drawScreenImage()
         }
     }
 
+    // OE CPU demod writes frame80 → screenTexture; apply the same CRT glass
+    // branch as GPU OE (neutral hue/sharpness — CPU demod has no hue knob).
+    if (oeCpuMode && crtEffectsEnabled && !mixedFbPresent) {
+        if (!crtFx) crtFx = std::make_unique<pom2::CrtEffectStack>();
+        if (!crtFx->available()) crtFx->initialize();
+        if (crtFx->available()) {
+            pom2::NtscParams crtP = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
+            crtP.hue       = 0.0f;
+            crtP.sharpness = 0.5f;
+            crtFx->setParams(crtP);
+            const unsigned int out = crtFx->process(
+                presentTex, display->width(), display->height(), dstW, dstH);
+            if (out != 0) presentTex = out;
+        }
+    }
+
     // Universal CRT effect stack (Phase 3): for every NON-OE colour mode,
     // run the framebuffer through the shared scanline / mask / barrel /
     // persistence / BCS pass so those effects work on Color NTSC, Mono,
-    // Chat Mauve and AppleWin too — not just the OE composite path (which
-    // already bakes its own effects in its demod shader). Gated by the master
-    // CRT-effects toggle (top of the CRT Settings window); passthrough-safe:
-    // if disabled or the shader fails to initialise, presentTex stays the raw
-    // framebuffer.
-    if (!oeMode && crtEffectsEnabled) {
+    // Chat Mauve and AppleWin too. OE GPU and OE CPU share one CRT branch
+    // (demod hue/sharpness already applied on GPU only — neutralise here).
+    if (!oeFamily && crtEffectsEnabled) {
         if (!crtFx) crtFx = std::make_unique<pom2::CrtEffectStack>();
         if (!crtFx->available()) crtFx->initialize();
         if (crtFx->available()) {
@@ -2397,76 +2416,6 @@ void MainWindow::onMouseButton(int button, int action)
         mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
     if (mouseAwCard)
         mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
-}
-
-void MainWindow::renderControlsWindow()
-{
-    if (!showEmulationPanel) return;
-    ImGui::SetNextWindowPos (ImVec2(1095, 780), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(330,  210), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Emulation", &showEmulationPanel)) {
-        // CPU speed control.
-        int cycPerFrame = controller->getCyclesPerFrame();
-        const int oneX  = 17045;
-        const int twoX  = 34091;
-        const int maxX  = 1'000'000;
-        ImGui::Text("Speed: %d cycles/frame (~%.2f MHz)",
-                    cycPerFrame, cycPerFrame * 60.0 / 1e6);
-        if (ImGui::Button("1x"))  {
-            controller->setCyclesPerFrame(oneX);
-            if (diskTurboActive) diskSavedCyclesPerFrame = oneX;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("2x"))  {
-            controller->setCyclesPerFrame(twoX);
-            if (diskTurboActive) diskSavedCyclesPerFrame = twoX;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("MAX")) {
-            controller->setCyclesPerFrame(maxX);
-            if (diskTurboActive) diskSavedCyclesPerFrame = maxX;
-        }
-
-        ImGui::Separator();
-        // Snapshot live CPU/Memory state under stateMutex — the worker thread
-        // writes these (PC/regs every instruction, cycle counter via
-        // advanceCycles) so reading them unlocked from the UI thread was a data
-        // race. Copy under the lock, then format from the locals (don't hold the
-        // lock across ImGui calls), matching the other UI snapshot sites.
-        uint16_t pc; uint8_t a, x, y, sp; uint64_t cyc, spkToggles;
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            pc  = controller->cpu().getProgramCounter();
-            a   = controller->cpu().getAccumulator();
-            x   = controller->cpu().getXRegister();
-            y   = controller->cpu().getYRegister();
-            sp  = controller->cpu().getStackPointer();
-            cyc = controller->memory().getCycleCounter();
-            spkToggles = controller->memory().getSpeakerToggleCount();
-        }
-        ImGui::Text("PC=$%04X A=$%02X X=$%02X Y=$%02X SP=$%02X", pc, a, x, y, sp);
-        ImGui::Text("Cycles: %llu", (unsigned long long)cyc);
-        ImGui::Text("Speaker toggles: %llu", (unsigned long long)spkToggles);
-
-        // Audio mixing controls moved to the dedicated Audio Mixer panel
-        // (View → Audio Mixer). Keep a one-liner so users notice the
-        // shortcut.
-        ImGui::TextDisabled("Audio: see View → Audio Mixer");
-
-        ImGui::Separator();
-        const size_t pendingPaste = controller->memory().pendingPasteSize();
-        if (pendingPaste > 0) {
-            ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.15f, 1.0f),
-                               "Paste in flight: %zu chars", pendingPaste);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Cancel##paste")) {
-                controller->memory().cancelPaste();
-            }
-        }
-        ImGui::TextWrapped("ROM: %s", romStatus.c_str());
-        if (!hdvStatus.empty()) ImGui::TextWrapped("HDV: %s", hdvStatus.c_str());
-    }
-    ImGui::End();
 }
 
 void MainWindow::bootHdvImage()
@@ -6090,7 +6039,6 @@ void MainWindow::render()
         }
     }
     renderScreenWindow();
-    renderControlsWindow();
     renderMemoryViewerWindow();
     if (showMemoryBar)  renderMemoryBarWindow();
     if (showMemoryBarH) renderMemoryBarHorizontalWindow();

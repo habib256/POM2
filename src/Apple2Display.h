@@ -25,11 +25,12 @@
 #ifndef POM2_APPLE2_DISPLAY_H
 #define POM2_APPLE2_DISPLAY_H
 
+#include "Memory.h"
+
 #include <array>
 #include <cstdint>
 #include <vector>
 
-class Memory;
 class LeChatMauveCard;
 
 class Apple2Display
@@ -144,8 +145,8 @@ public:
     /// demodulates the NTSC subcarrier. The buffer is filled by render()
     /// whenever ColorCompositeOE (or ColorAppleWin) is selected, for every
     /// Apple II video mode: HGR, DHGR, 40/80-col text AND lo-res (lo-res
-    /// emits each 4-bit colour nibble as its repeating 4×-fsc bit pattern —
-    /// see fillCompositeSignal's paintLoRes40). fillCompositeSignal currently
+    /// emits each 4-bit colour nibble as its repeating 4×-fsc bit pattern
+    /// (paintLoRes40 for GR, paintLoResDouble for DLGR). fillCompositeSignal
     /// produces a signal for all supported modes, so signalProduced() is
     /// true whenever one of those two modes is active.
     static constexpr int kSignalWidth  = kWidth80;   // 560
@@ -158,6 +159,13 @@ public:
     /// ColorAppleWin (all video modes serialise, lo-res included). False for
     /// every other hi-res mode.
     bool signalProduced() const { return signalProducedFlag; }
+    /// NTSC subcarrier phase offset (0 = HGR/text, 1 = DHGR) applied by
+    /// OE CPU/GPU demod and ColorAppleWin — matches MAME rotl4(absX+1).
+    int signalPhaseOffset() const { return signalPhaseOffset_; }
+    /// True when mixed-mode composite output was assembled in frame80
+    /// (demod top + crisp text band) — MainWindow should present
+    /// screenTexture instead of the GPU demod texture.
+    bool mixedCompositeUsesFramebuffer() const { return mixedCompositeUsesFb_; }
 
 private:
     std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
@@ -187,6 +195,11 @@ private:
     // when `signalProducedFlag` is true.
     std::vector<uint8_t> signalBuf;
     bool signalProducedFlag = false;
+    int  signalPhaseOffset_ = 0;
+    bool mixedCompositeUsesFb_ = false;
+    static constexpr int kMixedTextFirstScanline = 160;
+
+    void patchMixedTextBand(Memory& mem);
     // Frame counter — drives the FLASH attribute animation for screen
     // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
     // and inverse-blinking spaces). Wraps freely; only the parity of
@@ -260,6 +273,12 @@ private:
     // The actual frame dispatch (text / hires / dhgr / mixed). render()
     // is a thin wrapper that calls this then optionally fills signalBuf.
     void renderInternal(Memory& mem);
+    void renderInternalBand(Memory& mem, const Memory::DisplayState& state,
+                            int scanY0, int scanY1);
+    void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);
+
+    static void applyVideoEvent(Memory::DisplayState& state, Memory::VideoEventKind kind,
+                                bool value);
 
     // Address of the first byte of text/lo-res row `y` in the active page.
     static uint16_t textRowAddress(int y, bool page2);

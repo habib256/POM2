@@ -160,6 +160,16 @@ void sDhgrMixed(Memory& m) {
     fillMain(m, 0x2000, 0x4000, 4); fillAux(m, 0x2000, 0x4000, 5);
     fillMain(m, 0x0400, 0x0800, 1); fillAux(m, 0x0400, 0x0800, 2);
 }
+void sDlgr(Memory& m) {
+    baseline(m); m.memWrite(IIE_80COL_ON, 0); m.memRead(DHIRES_ON);
+    fillMain(m, 0x0400, 0x0800, 6); fillAux(m, 0x0400, 0x0800, 7);
+}
+void sDlgrMixed(Memory& m) {
+    baseline(m); m.memWrite(IIE_80COL_ON, 0); m.memRead(DHIRES_ON);
+    m.memRead(SET_MIXED);
+    fillMain(m, 0x0400, 0x0800, 6); fillAux(m, 0x0400, 0x0800, 7);
+    fillMain(m, 0x0400, 0x0800, 1); fillAux(m, 0x0400, 0x0800, 2);
+}
 
 const Scene kScenes[] = {
     { "iie/text40",     true,  sText40    },
@@ -171,6 +181,8 @@ const Scene kScenes[] = {
     { "iie/hgrmixed",   true,  sHgrMixed  },
     { "iie/dhgr",       true,  sDhgr      },
     { "iie/dhgrmixed",  true,  sDhgrMixed },
+    { "iie/dlgr",       true,  sDlgr      },
+    { "iie/dlgrmixed",  true,  sDlgrMixed },
     { "ii+/text40",     false, sText40    },
     { "ii+/lores",      false, sLoRes     },
     { "ii+/hgr",        false, sHgr       },
@@ -232,7 +244,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/loresmixed/monowhite", 0xf0c84732083b795cULL },
     { "iie/loresmixed/monogreen", 0xf0c84732083b795cULL },
     { "iie/loresmixed/monoamber", 0xf0c84732083b795cULL },
-    { "iie/loresmixed/signal", 0x82d923b6da184023ULL },
+    { "iie/loresmixed/signal", 0x9e7ae7f3c797af03ULL },
     { "iie/hgr/ntsc", 0xac4e9dd561ff842eULL },
     { "iie/hgr/medium", 0xde163ccdc0549453ULL },
     { "iie/hgr/4bit", 0xdaa49b394af842f7ULL },   // square filter = MAME mode-2 oracle (nibble>>kCtx-1, rot absX-1)
@@ -248,7 +260,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/hgrmixed/monowhite", 0x6fff8607d7464a83ULL },
     { "iie/hgrmixed/monogreen", 0x9708b82fdbd6a383ULL },
     { "iie/hgrmixed/monoamber", 0xa0b07365162b7393ULL },
-    { "iie/hgrmixed/signal", 0x56d42a6c8d5a1883ULL },
+    { "iie/hgrmixed/signal", 0x30803956f9e395a3ULL },
     { "iie/dhgr/ntsc", 0xe15f3fd7367fd274ULL },
     { "iie/dhgr/medium", 0x809d733fa27113acULL },
     { "iie/dhgr/4bit", 0xcb30bb5f5eb7741cULL },
@@ -264,7 +276,23 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/dhgrmixed/monowhite", 0x6ca429b254b1395cULL },
     { "iie/dhgrmixed/monogreen", 0x05a0b21eb511375cULL },
     { "iie/dhgrmixed/monoamber", 0x4a271d50037a474cULL },
-    { "iie/dhgrmixed/signal", 0x6326572f3aa44adcULL },
+    { "iie/dhgrmixed/signal", 0x3fadd93b236ac7fcULL },
+    { "iie/dlgr/ntsc", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/medium", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/4bit", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/chatmauve", 0x7164f3f70211f603ULL },
+    { "iie/dlgr/monowhite", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/monogreen", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/monoamber", 0xaeca3b338c835183ULL },
+    { "iie/dlgr/signal", 0xbf78f65deadbf583ULL },
+    { "iie/dlgrmixed/ntsc", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/medium", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/4bit", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/chatmauve", 0x839d81e227e6fd83ULL },
+    { "iie/dlgrmixed/monowhite", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/monogreen", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/monoamber", 0xdc9faf1f29833983ULL },
+    { "iie/dlgrmixed/signal", 0x4ea937a79cf2ae83ULL },
     { "ii+/text40/ntsc", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/medium", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/4bit", 0x64b9ef4cc731c75cULL },
