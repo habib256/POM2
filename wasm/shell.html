@@ -54,6 +54,13 @@
     if (!progressEl || !total) return;
     progressEl.style.width = Math.min(100, (100 * num / total)) + '%';
   }
+  window.pom2FirstFrameReady = function() {
+    setProgress(1, 1);
+    setStatus("POM2 ready.");
+    setTimeout(() => {
+      document.getElementById('status').classList.add('hidden');
+    }, 250);
+  };
 
   // Default WASM experience: //c profile auto-booting Total Replay from
   // the bundled floppyemu/. Both knobs are URL-overridable so a deeplink
@@ -100,7 +107,10 @@
     printErr:(text) => { console.warn(text); },
     setStatus: (text) => {
       // Emscripten posts "Downloading data... (n/total)" — parse it.
-      if (!text) { document.getElementById('status').classList.add('hidden'); return; }
+      if (!text) {
+        setStatus("Loading POM2: initializing the emulator…");
+        return;
+      }
       const m = text.match(/\((\d+)\/(\d+)\)/);
       if (m) {
         setProgress(parseInt(m[1]), parseInt(m[2]));
@@ -111,11 +121,8 @@
     },
     monitorRunDependencies: function(left) {
       if (left === 0) {
-        // All async deps resolved. Hide the banner shortly after the
-        // first frame runs.
-        setTimeout(() => {
-          document.getElementById('status').classList.add('hidden');
-        }, 400);
+        setProgress(1, 1);
+        setStatus("Loading POM2: assets loaded, initializing the emulator…");
       }
     },
     onAbort: function(reason) {

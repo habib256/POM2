@@ -540,9 +540,15 @@ int main(int argc, char* argv[])
         int                 cliBootCountdown;
         std::atomic<bool>*  autoBootRequested;
         std::atomic<bool>*  autoQuitRequested;
+#ifdef __EMSCRIPTEN__
+        bool                firstFrameReadySignaled;
+#endif
     } frameCtx{
         window, &mainWindow, plan->bootDiskPath, cliBootCountdown,
         &autoBootRequested, &autoQuitRequested
+#ifdef __EMSCRIPTEN__
+        , false
+#endif
     };
     auto iterate = [](void* userdata) {
         auto& c = *static_cast<FrameCtx*>(userdata);
@@ -585,6 +591,14 @@ int main(int argc, char* argv[])
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(c.window);
+#ifdef __EMSCRIPTEN__
+        if (!c.firstFrameReadySignaled) {
+            c.firstFrameReadySignaled = true;
+            emscripten_run_script(
+                "if (globalThis.pom2FirstFrameReady) "
+                "globalThis.pom2FirstFrameReady();");
+        }
+#endif
     };
 
 #ifdef __EMSCRIPTEN__
