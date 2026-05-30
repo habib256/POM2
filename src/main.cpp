@@ -151,14 +151,18 @@ int main(int argc, char* argv[])
 #endif
 #endif
 
-    // 1568×850 matches the curated default layout (2026-05-15):
-    // Apple II Screen on the left ~1115 px, unified Disk Library
-    // (5.25 / 3.5 / HDV tabs) on the right ~435 px. Per-card panels
-    // (Disk II / HDV / Disk 3.5") stay hidden by default — the user
-    // opens them on demand via Devices menu / Slot Configuration.
-    // The `FirstUseEver` pos/size calls in MainWindow rely on roughly
-    // this canvas.
+    // Native keeps the curated desktop layout: Apple II Screen on the
+    // left plus room for the unified Disk Library on the right. WASM
+    // starts chrome-light, so its canvas width tracks the Apple II Screen
+    // window instead of reserving an empty side column.
     const char* kWindowTitle = "POM2 v0.6 - Apple II Emulator";
+    constexpr int kDefaultWindowWidth =
+#ifdef __EMSCRIPTEN__
+        1125;
+#else
+        1568;
+#endif
+    constexpr int kDefaultWindowHeight = 850;
     GLFWwindow* window = nullptr;
     if (plan->kiosk) {
         // Exclusive full-screen on the primary monitor at its current
@@ -185,7 +189,8 @@ int main(int argc, char* argv[])
         }
     }
     if (!window) {
-        window = glfwCreateWindow(1568, 850, kWindowTitle, nullptr, nullptr);
+        window = glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight,
+                                  kWindowTitle, nullptr, nullptr);
     }
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
@@ -208,9 +213,13 @@ int main(int argc, char* argv[])
     // right column). Subsequent launches restore whatever the user
     // dragged into place. Falls back to the cwd `imgui.ini` if $HOME
     // isn't set (matches Settings's fallback path).
-    if (plan->kiosk) {
-        // Kiosk has no movable windows, and we don't want it to overwrite
-        // the GUI layout the user curated — disable .ini persistence.
+    bool disableImguiIni = plan->kiosk;
+#ifdef __EMSCRIPTEN__
+    disableImguiIni = true;
+#endif
+    if (disableImguiIni) {
+        // Kiosk and WASM use deterministic startup layouts and should not
+        // restore/overwrite the user's desktop GUI window placement.
         io.IniFilename = nullptr;
     } else {
         static std::string iniPath;

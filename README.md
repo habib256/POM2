@@ -1,6 +1,6 @@
 # POM2
 
-![Disk II closeup](pic/diskii_closeup.webp)
+![Apple II Plus](pic/Apple_II_plus.jpg)
 
 **A modern Apple II emulator with the knobs exposed.**
 
@@ -169,9 +169,9 @@ Live build: [https://habib256.github.io/POM2/wasm/](https://habib256.github.io/P
 ./build_wasm.sh --with-data
 ```
 
-The browser build preloads `roms/`, `fonts/`, and `floppyemu/`, but user
-Apple ROMs are still required. Telnet and the AI-control HTTP server are
-compiled out under WASM.
+The browser build preloads `roms/`, `fonts/`, `pic/`, and `floppyemu/`,
+but user Apple ROMs are still required. Telnet and the AI-control HTTP
+server are compiled out under WASM.
 
 ## Releases
 

@@ -393,6 +393,21 @@ MainWindow::MainWindow(bool forceIIPlus)
         if      (asp == "crt43")   aspectMode = AspectMode::Crt43;
         else if (asp == "integer") aspectMode = AspectMode::Integer;
         else if (asp == "square")  aspectMode = AspectMode::Square;
+#ifdef __EMSCRIPTEN__
+        // Browser startup is intentionally chrome-light: keep only the menu,
+        // toolbar, Apple II Screen window, and bottom status bar. Users can
+        // still open panels from the menus after boot.
+        display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+        lastColorHiResMode_ = Apple2Display::HiResMode::ColorCompMedium;
+        showDiskPanel = showDisk35Panel = showDiskLibrary = false;
+        showHdvPanel = showSmartPortPanel = showSlotConfigPanel = false;
+        showFloppyEmu = showCassetteDeck = showJoystickPanel = false;
+        showMouseInspector = showChatMauvePanel = false;
+        showMockingboardPanel = showPhasorPanel = showEchoPlusPanel = false;
+        showAudioMixer = showSscPanel = showPrinterPanel = false;
+        showNoSlotClockPanel = showNtscSettings = showAiControlPanel = false;
+        showMemViewer = showMemoryBar = showMemoryBarH = showMemoryGrid = false;
+#endif
     }
 
     // ── Restore Disk II state per-slot ────────────────────────────────

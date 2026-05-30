@@ -17,7 +17,7 @@
               vertical-align: middle; margin-left: 6px; }
   #progress > div { background: #5aa8ff; height: 100%; width: 0%;
                     transition: width 0.1s linear; }
-  canvas    { --pom2-aspect: 1.8447058824; position: fixed; inset: 0;
+  canvas    { --pom2-aspect: 1.3235294118; position: fixed; inset: 0;
               display: block; width: min(100vw, calc(100vh * var(--pom2-aspect)));
               height: min(100vh, calc(100vw / var(--pom2-aspect)));
               margin: auto; background: #000; cursor: default; outline: none; }
@@ -70,7 +70,7 @@
     canvas: (function() {
       const c = document.getElementById('canvas');
       const fitCanvas = () => {
-        const w = c.width || 1568;
+        const w = c.width || 1125;
         const h = c.height || 850;
         if (w > 0 && h > 0) c.style.setProperty('--pom2-aspect', w / h);
       };

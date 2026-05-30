@@ -280,7 +280,8 @@ if(EMSCRIPTEN)
     # (same constraint as native); we just guarantee the folder ships
     # inside POM2.data when it exists.
     #
-    # Default extras: fonts (~1 MB) + floppyemu/ (curated BMOW SD images).
+    # Default extras: fonts (~1 MB), pic/ artwork, and floppyemu/
+    # (curated BMOW SD images).
     # `disks_5.4/` (hundreds of MB of 5.25" library) and `hdv/` (hundreds of
     # MB of ProDOS hard-disk images) are NEVER bundled under WASM — they'd
     # blow past GitHub Pages' per-file limits and choke browser preload.
@@ -288,7 +289,7 @@ if(EMSCRIPTEN)
     #
     # --preload-file: pass src+dst as ONE token via SHELL: so CMake
     # doesn't try to interpret the bare `@` as a response-file marker.
-    set(POM2_WASM_BUNDLE "fonts;floppyemu" CACHE STRING
+    set(POM2_WASM_BUNDLE "fonts;pic;floppyemu" CACHE STRING
         "Extra asset folders to preload into POM2.data (semicolon-separated). roms/ is always included.")
     option(POM2_WASM_BUNDLE_DISKS
         "Include disks_3.5 in the WASM bundle (disks_5.4 + hdv are excluded — too large)" OFF)
