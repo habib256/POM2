@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -61,6 +62,22 @@ int main(int argc, char** argv)
     std::vector<uint8_t> rgba(static_cast<size_t>(ow)*oh*4);
     glPixelStorei(GL_PACK_ALIGNMENT,1);
     glReadPixels(0,0,ow,oh,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+
+    // Compare CPU demod (known-correct) vs the GLSL readback per band.
+    auto cpuDemod=[&](int line,int X,int&R_,int&G_,int&B_){
+        const float PI=3.14159265358979f; const float sgY=0.8f,sgC=1.75f; const int N=8;
+        auto Sg=[&](int x){return (x<0||x>=sw)?0.0f:sig[line*sw+x]/255.0f;};
+        float Y=0,U=0,V=0,wY=0,wC=0;
+        for(int i=-N;i<=N;++i){ float s=Sg(X+i),d=float(i);
+            float gy=std::exp(-0.5f*d*d/(sgY*sgY)),gc=std::exp(-0.5f*d*d/(sgC*sgC)); float ph=PI*0.5f*(X+i);
+            Y+=s*gy;U+=s*std::sin(ph)*gc*2.0f;V+=s*std::cos(ph)*gc*2.0f;wY+=gy;wC+=gc;}
+        Y/=wY;U/=wC;V/=wC; auto cl=[](float v){return v<0?0.f:(v>1?1.f:v);};
+        R_=int(cl(Y+1.139883f*V)*255);G_=int(cl(Y-0.394642f*U-0.580622f*V)*255);B_=int(cl(Y+2.032062f*U)*255); };
+    const int bandRow[4]={24,72,120,168}; const char* bn[4]={"violet","green ","blue  ","orange"};
+    std::fprintf(stderr,"band     CPU demod        GLSL readback\n");
+    for(int f=0;f<4;++f){ int cr,cg,cb; cpuDemod(bandRow[f],280,cr,cg,cb);
+        const uint8_t* px=&rgba[((size_t)bandRow[f]*ow+280)*4];
+        std::fprintf(stderr,"  %s (%3d,%3d,%3d)   (%3d,%3d,%3d)\n",bn[f],cr,cg,cb,px[0],px[1],px[2]); }
 
     std::ofstream o(outPath, std::ios::binary);
     o << "P6\n" << ow << " " << oh << "\n255\n";

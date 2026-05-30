@@ -285,9 +285,11 @@ void Apple2Display::renderCompositeOeCpu()
         wYtot += wY[i + N];
         wCtot += wC[i + N];
     }
+    // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; phase
+    // offset 0 (probe-calibrated against the MAME LUT). YUV→RGB matrix below.
     float sinP[4], cosP[4];
     for (int k = 0; k < 4; ++k) {
-        const float ph = kPi * 0.5f * static_cast<float>(k) + kPi * 1.5f;
+        const float ph = kPi * 0.5f * static_cast<float>(k);
         sinP[k] = std::sin(ph);
         cosP[k] = std::cos(ph);
     }
@@ -296,20 +298,21 @@ void Apple2Display::renderCompositeOeCpu()
         const uint8_t* row = sig + static_cast<size_t>(y) * sw;
         uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
         for (int x = 0; x < sw; ++x) {
-            float Y = 0.0f, I = 0.0f, Q = 0.0f;
+            float Y = 0.0f, U = 0.0f, V = 0.0f;
             for (int i = -N; i <= N; ++i) {
                 const int xi = x + i;
                 if (xi < 0 || xi >= sw) continue;
                 const float s = row[xi] ? 1.0f : 0.0f;
                 const int   k = xi & 3;
                 Y += s * wY[i + N];
-                I += s * sinP[k] * wC[i + N] * 2.0f;
-                Q += s * cosP[k] * wC[i + N] * 2.0f;
+                U += s * sinP[k] * wC[i + N] * 2.0f;
+                V += s * cosP[k] * wC[i + N] * 2.0f;
             }
-            Y /= wYtot; I /= wCtot; Q /= wCtot;
-            float r = Y + 0.956f * I + 0.621f * Q;
-            float g = Y - 0.272f * I - 0.647f * Q;
-            float b = Y - 1.106f * I + 1.703f * Q;
+            Y /= wYtot; U /= wCtot; V /= wCtot;
+            // YUV → RGB (OpenEmulator libemulation OpenGLCanvas.cpp).
+            float r = Y                 + 1.139883f * V;
+            float g = Y - 0.394642f * U - 0.580622f * V;
+            float b = Y + 2.032062f * U;
             auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
             const uint32_t R = static_cast<uint32_t>(cl(r) * 255.0f + 0.5f);
             const uint32_t G = static_cast<uint32_t>(cl(g) * 255.0f + 0.5f);

@@ -40,9 +40,10 @@ uint32_t g_chromaLut[kPhases][kHistSize];
 uint32_t g_idealizedLut[kPhases][16];
 std::atomic<bool> g_initDone{false};
 
-// Standard NTSC YIQ → RGB (FCC §73.682), matching what NtscPostProcessor
-// uses on the GPU side. Identical floats to ensure the two POM2 NTSC
-// implementations sit in the same colour space.
+// NTSC YIQ → RGB. AppleWin's decoder (12-bit history shift register,
+// centred window, ×10 chroma sat) is structurally different from the
+// OpenEmulator demod; empirically the YUV matrix doesn't suit it (no phase
+// recovers violet/green), whereas YIQ + the calibrated phase below does.
 inline void yiqToRgb(float y, float i, float q,
                      uint8_t& r, uint8_t& g, uint8_t& b)
 {

@@ -159,6 +159,13 @@ float sampleSignal(float x, float y)
 
 void main()
 {
+    // Fragment centres land at px+0.5, so vUv.x*size = px+0.5: sampling
+    // texture((px+0.5+i)/size) hits the CENTRE of texel px+i (correct
+    // NEAREST sampling). But the subcarrier PHASE must be referenced to the
+    // integer sample index px+i, not px+0.5+i — otherwise it carries a half-
+    // sample = 45° offset that rotates the artifact wheel (blue/orange wrong).
+    // So: keep sigX for sampling, floor(fx) for the phase. The CPU demod uses
+    // integer x and is correct; this aligns the GPU shader to it.
     float sigX = vUv.x * uSignalSize.x;
     float sigY = vUv.y * uSignalSize.y;
 
@@ -169,12 +176,19 @@ void main()
         palQSign = (mod(lineIdx, 2.0) < 1.0) ? 1.0 : -1.0;
     }
 
-    // ── Y / I / Q accumulation over a small kernel ────────────────
+    // ── Y / U / V accumulation over a small kernel ────────────────
+    // OpenEmulator-faithful decode (libemulation OpenGLCanvas.cpp):
+    // chroma = composite·(sin φ, cos φ) → U,V, then a YUV→RGB decoder
+    // matrix. The earlier code demodulated the same sin/cos but fed a YIQ
+    // matrix (axes rotated ~33° from YUV) — that mis-rotated the wheel:
+    // it could be coaxed to get green/violet right via a phase hack but
+    // never blue/orange (blue rendered orange). Probe-calibrated against
+    // the MAME LUT: with the YUV matrix the correct phase offset is 0.
     float sigmaY = 0.8;
     float sigmaC = mix(2.5, 1.0, clamp(uSharpness, 0.0, 1.0));
 
     const int N = 8;
-    float Y = 0.0, I = 0.0, Q = 0.0;
+    float Y = 0.0, U = 0.0, V = 0.0;
     float wYs = 0.0, wCs = 0.0;
     for (int i = -N; i <= N; ++i) {
         float fx = sigX + float(i);
@@ -183,33 +197,28 @@ void main()
         float wY = exp(-0.5 * dy * dy / (sigmaY * sigmaY));
         float wC = exp(-0.5 * dy * dy / (sigmaC * sigmaC));
 
-        // 4×-fsc: one subcarrier cycle per 4 dots. The +1.5π (≡ −90°)
-        // term aligns the demodulated I/Q axes with the Apple II colorburst
-        // phase so artifact hues match the MAME LUT reference (ColorNTSC):
-        // without it the wheel was rotated 90° (green→blue, magenta→orange).
-        // Calibrated against the Total Replay HGR splash across 0/90/180/270.
-        float phase = PI * 0.5 * fx + PI * 1.5;
+        float phase = PI * 0.5 * floor(fx);   // 4×-fsc; phase at integer sample
         Y   += s * wY;
-        I   += s * sin(phase) * wC * 2.0;
-        Q   += s * cos(phase) * wC * 2.0 * palQSign;
+        U   += s * sin(phase) * wC * 2.0;
+        V   += s * cos(phase) * wC * 2.0 * palQSign;
         wYs += wY;
         wCs += wC;
     }
     Y /= wYs;
-    I /= wCs;
-    Q /= wCs;
+    U /= wCs;
+    V /= wCs;
 
-    // ── Hue rotation (IQ plane) ───────────────────────────────────
+    // ── Optional hue rotation in the U/V plane (user knob) ─────────
     float h = uHue * PI;
     float cs = cos(h), sn = sin(h);
-    float Ir = I * cs - Q * sn;
-    float Qr = I * sn + Q * cs;
+    float Ur = U * cs - V * sn;
+    float Vr = U * sn + V * cs;
 
-    // ── YIQ → RGB (NTSC matrix) ───────────────────────────────────
+    // ── YUV → RGB (OpenEmulator decoder matrix) ───────────────────
     vec3 rgb = vec3(
-        Y + 0.956 * Ir + 0.621 * Qr,
-        Y - 0.272 * Ir - 0.647 * Qr,
-        Y - 1.106 * Ir + 1.703 * Qr
+        Y                 + 1.139883 * Vr,
+        Y - 0.394642 * Ur - 0.580622 * Vr,
+        Y + 2.032062 * Ur
     );
     rgb = clamp(rgb, 0.0, 1.0);
     fragColor = vec4(rgb, 1.0);

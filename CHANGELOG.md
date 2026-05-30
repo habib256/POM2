@@ -39,20 +39,38 @@ courante → `DEV.md`.
     `(w>>kContextBits)&0x0f` était correcte, c'était la rotation qui devait
     suivre mode 0). Épinglé : 5 entrées 4-bit de `display_golden_hash`
     re-baseline.
-  - **OpenEmulator (`ColorCompositeOE`)** — la démodulation Y/I/Q avait sa
-    phase de sous-porteuse décalée de 90° (herbe→bleu, magenta→orange).
-    Ajout de **+270°** (`phase = π/2·fx + 1.5π`) dans le shader de démod.
-    Calibré par balayage 0/90/180/270 sur le splash TR (p270 = match NTSC).
-  - **AppleWin (`ColorAppleWin`)** — décodeur IIR-LUT séparé, décalé
-    différemment (herbe→jaune, magenta→bleu). Ajout de **+90°** (`g_phaseShift`
-    dans `buildChromaLut`/`buildIdealizedLut`). Les deux décodeurs diffèrent
-    de 180° à cause du centrage de fenêtre. Hook diagnostic
-    `AppleWinNtsc::rebuildForPhase()` + balayage dans le render tool.
+  - **OpenEmulator (`ColorCompositeOE` GPU + `ColorCompositeOECpu`)** — la
+    cause racine était la **mauvaise matrice de décodage** : le shader
+    démodulait U/V (chroma·sin, chroma·cos, comme OpenEmulator) mais les
+    passait à une matrice **YIQ** (axes tournés ~33° par rapport à YUV) → roue
+    des teintes mal orientée. Un offset de phase pouvait rattraper vert/violet
+    mais **jamais** bleu/orange (le bleu sortait orange). Source de vérité :
+    OpenEmulator `libemulation/.../OpenGLCanvas.cpp` — chroma =
+    composite·(sin φ, cos φ) puis matrice **YUV→RGB**
+    `R=Y+1.139883·V ; G=Y−0.394642·U−0.580622·V ; B=Y+2.032062·U`. Adoptée
+    verbatim, offset de phase **0** (calibré par balayage : les 4 couleurs
+    matchent la LUT MAME à ±10 RGB — VIOLET (233,28,255)≈(230,40,255),
+    BLUE (18,150,255)≈(25,144,255), etc.). **Deuxième bug, GPU uniquement** :
+    le shader échantillonnait au centre du texel (`vUv.x·size = px+0.5`) mais
+    référençait la **phase** de la sous-porteuse à `px+0.5` au lieu de l'indice
+    entier `px` → décalage d'un demi-échantillon = 45°, qui re-tournait la roue
+    (bleu→vert, orange→magenta) côté GPU alors que le CPU était correct. Fix :
+    `phase = π/2·floor(fx)` (échantillonnage au centre conservé, phase à
+    l'entier). Vérifié sur le **vrai shader GLSL** (`oe_signal_view`,
+    readback glReadPixels = démod CPU à ≤1 LSB) : bandes violet/vert/bleu/orange
+    correctes.
+  - **AppleWin (`ColorAppleWin`)** — décodeur IIR-LUT séparé (registre 12-bit,
+    fenêtre centrée, sat ×10) : la matrice YUV ne lui convient pas (aucune
+    phase ne récupère vert/violet). Laissé en YIQ + `g_phaseShift` **+90°**
+    (`buildChromaLut`/`buildIdealizedLut`) qui redresse vert/violet sur contenu
+    réel ; bleu/orange restent approximatifs (mode « scaffold » documenté).
+    Hook diagnostic `AppleWinNtsc::rebuildForPhase()`.
 
   **Pas une régression du refactor d'affichage** : golden + A/B prouvaient le
-  comportement préservé — ces bugs de phase étaient pré-existants, révélés en
-  testant les modes. Outils de diag ajoutés (EXCLUDE_FROM_ALL, hors ctest) :
-  `artifact_probe`, sweep de phase dans `render_total_replay_modes`.
+  comportement préservé — ces bugs étaient pré-existants, révélés en testant
+  les modes. Outils de diag ajoutés (EXCLUDE_FROM_ALL, hors ctest) :
+  `artifact_probe` (sweep phase × matrice vs LUT NTSC), `oe_signal_view`
+  (vrai GLSL sur signal dumpé), sweep dans `render_total_replay_modes`.
 
 ## 2026-05-29
 
