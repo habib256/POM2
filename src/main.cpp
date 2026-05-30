@@ -365,6 +365,9 @@ int main(int argc, char* argv[])
     // valid handle even when --preset triggers the switch.
     mainWindow.setGlfwWindow(window);
     mainWindow.setKioskMode(plan->kiosk);
+#ifdef __EMSCRIPTEN__
+    mainWindow.setBrowserResetBootImage(plan->bootDiskPath);
+#endif
     // CLI --preset selection (must come AFTER MainWindow's legacy boot so
     // it overrides via the full cold-reset path applyProfile uses).
     if (plan->preset != pom2::CliPreset::Default) {

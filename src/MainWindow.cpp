@@ -2066,8 +2066,14 @@ void MainWindow::renderScreenWindow()
             const bool overTitleBar =
                 (m.x >= wp.x && m.x <= wp.x + ws.x &&
                  m.y >= wp.y && m.y <= wp.y + th);
-            if (overTitleBar && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-                             && !ImGui::IsAnyItemActive()) {
+            // Do not start dragging when another foreground window covers
+            // this title-bar rectangle. ImGui's normal move handling already
+            // gives that front window priority; the Apple II Screen's manual
+            // title drag must obey the same z-order rule.
+            const bool screenWindowHovered = ImGui::IsWindowHovered();
+            if (screenWindowHovered && overTitleBar &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                !ImGui::IsAnyItemActive()) {
                 screenDraggingByTitleBar = true;
             }
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -5982,8 +5988,32 @@ void MainWindow::render()
         tb.displayIsMono      = isMonoHiRes(display->getHiResMode());
 
         const auto tr = toolbar->render(ImGui::GetFrameHeight(), tb);
-        if (tr.requestColdBoot)        controller->coldBoot();
-        if (tr.requestSoftReset)       controller->softReset();
+#ifdef __EMSCRIPTEN__
+        auto browserResetBoot = [&]() -> bool {
+            if (browserResetBootImage_.empty()) return false;
+            std::string err;
+            if (insertAndBootImage(browserResetBootImage_, err)) {
+                tapeStatusMessage = "Boot: " + browserResetBootImage_;
+                tapeStatusUntil = lastFrameTime + 3.0;
+            } else {
+                tapeStatusMessage = "Boot failed: " + err;
+                tapeStatusUntil = lastFrameTime + 5.0;
+            }
+            return true;
+        };
+#endif
+        if (tr.requestColdBoot) {
+#ifdef __EMSCRIPTEN__
+            if (!browserResetBoot())
+#endif
+            controller->coldBoot();
+        }
+        if (tr.requestSoftReset) {
+#ifdef __EMSCRIPTEN__
+            if (!browserResetBoot())
+#endif
+            controller->softReset();
+        }
         if (tr.requestHardReset)       controller->hardReset();
         if (tr.requestPauseToggle) {
             controller->setMode(tb.isRunning

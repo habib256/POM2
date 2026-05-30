@@ -133,6 +133,12 @@ public:
     /// internally between frames).
     bool insertAndBootImage(const std::string& path, std::string& errOut);
 
+#ifdef __EMSCRIPTEN__
+    /// Browser UX: toolbar reset should relaunch the boot image that was
+    /// passed in through the WASM page arguments (Total Replay by default).
+    void setBrowserResetBootImage(const std::string& path) { browserResetBootImage_ = path; }
+#endif
+
     /// Kiosk mode: chrome-free full-screen — render() draws only the Apple
     /// II screen (no menu bar, toolbar, panels or dialogs). Set by main()
     /// from the `--kiosk` CLI flag before the first render.
@@ -424,6 +430,10 @@ private:
     // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so
     // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.
     int autoProvisionedHdvSlot_ = -1;
+
+#ifdef __EMSCRIPTEN__
+    std::string browserResetBootImage_;
+#endif
 
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
     // Apple II Screen widget rect, window-relative. Updated every
