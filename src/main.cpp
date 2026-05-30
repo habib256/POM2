@@ -162,7 +162,12 @@ int main(int argc, char* argv[])
 #else
         1568;
 #endif
-    constexpr int kDefaultWindowHeight = 850;
+    constexpr int kDefaultWindowHeight =
+#ifdef __EMSCRIPTEN__
+        825;
+#else
+        850;
+#endif
     GLFWwindow* window = nullptr;
     if (plan->kiosk) {
         // Exclusive full-screen on the primary monitor at its current

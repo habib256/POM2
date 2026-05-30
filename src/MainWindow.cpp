@@ -384,6 +384,9 @@ MainWindow::MainWindow(bool forceIIPlus)
                 std::clamp(sm, 0, 3));
             p.palMode    = settings->getBool("ntsc_pal",        p.palMode);
             p.textSharp  = settings->getBool("ntsc_text_sharp", p.textSharp);
+#ifdef __EMSCRIPTEN__
+            p.barrel = std::min(p.barrel, 0.03f);
+#endif
             ntscFx = std::make_unique<pom2::NtscPostProcessor>();
             ntscFx->setParams(p);
         }
@@ -2025,15 +2028,17 @@ void MainWindow::renderStatusBar()
 
 void MainWindow::renderScreenWindow()
 {
-    // Default startup layout (2026-05-15 canonical): Apple II Screen
-    // anchors the left column, unified Disk Library on the right. Y
-    // starts at 90 to clear the menu bar (~28) + toolbar (~32) + a
-    // small breathing margin. Window is ~1568×850 (see main.cpp),
-    // leaving room for the 435 px Disk Library on the right.
+    // Default startup layout. Native keeps room for the Disk Library column;
+    // WASM starts with only menu + toolbar + Apple II Screen + status bar.
     // `FirstUseEver` only applies on a fresh install — once the user
     // moves / resizes the window their imgui.ini takes over.
+#ifdef __EMSCRIPTEN__
+    ImGui::SetNextWindowPos (ImVec2(5,    56),  ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1115, 760), ImGuiCond_FirstUseEver);
+#else
     ImGui::SetNextWindowPos (ImVec2(5,    90),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1115, 745), ImGuiCond_FirstUseEver);
+#endif
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
     // `NoMove` so ImGui's default "drag-from-anywhere" doesn't eat

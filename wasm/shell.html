@@ -8,16 +8,19 @@
   html, body { margin: 0; padding: 0; background: #181820; color: #ddd;
                font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
                overflow: hidden; height: 100%; }
-  #status   { position: fixed; top: 8px; left: 8px; right: 8px;
-              font-size: 13px; line-height: 1.4; pointer-events: none;
-              text-shadow: 0 0 4px rgba(0,0,0,0.9); z-index: 10; }
+  #status   { position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+              max-width: min(640px, calc(100vw - 32px)); padding: 12px 16px;
+              background: rgba(12,12,18,0.92); border: 1px solid #3a3a48;
+              border-radius: 8px; font-size: 14px; line-height: 1.4;
+              pointer-events: none; box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+              z-index: 10; }
   #status.hidden { display: none; }
   #progress { display: inline-block; width: 220px; height: 6px;
               background: #2a2a36; border-radius: 3px; overflow: hidden;
               vertical-align: middle; margin-left: 6px; }
   #progress > div { background: #5aa8ff; height: 100%; width: 0%;
                     transition: width 0.1s linear; }
-  canvas    { --pom2-aspect: 1.3235294118; position: fixed; inset: 0;
+  canvas    { --pom2-aspect: 1.3636363636; position: fixed; inset: 0;
               display: block; width: min(100vw, calc(100vh * var(--pom2-aspect)));
               height: min(100vh, calc(100vw / var(--pom2-aspect)));
               margin: auto; background: #000; cursor: default; outline: none; }
@@ -33,7 +36,7 @@
 <body>
 <div id="status">
   <span class="pill">POM2 WASM</span>
-  <span id="statusMsg">Downloading…</span>
+  <span id="statusMsg">Loading POM2: downloading assets and initializing the emulator…</span>
   <span id="progress"><div></div></span>
 </div>
 <div id="err"></div>
@@ -66,12 +69,17 @@
   if (_disk) _args.push(_disk);
 
   var Module = {
+    // The app reads assets from MEMFS itself. Do not let Emscripten's
+    // preload plugins ask the browser to decode bundled images/audio during
+    // startup, because a decoder failure aborts the whole .data load.
+    noImageDecoding: true,
+    noAudioDecoding: true,
     arguments: _args,
     canvas: (function() {
       const c = document.getElementById('canvas');
       const fitCanvas = () => {
         const w = c.width || 1125;
-        const h = c.height || 850;
+        const h = c.height || 825;
         if (w > 0 && h > 0) c.style.setProperty('--pom2-aspect', w / h);
       };
       fitCanvas();
@@ -96,9 +104,9 @@
       const m = text.match(/\((\d+)\/(\d+)\)/);
       if (m) {
         setProgress(parseInt(m[1]), parseInt(m[2]));
-        setStatus("Downloading assets… " + m[1] + " / " + m[2]);
+        setStatus("Loading POM2: downloading assets… " + m[1] + " / " + m[2]);
       } else {
-        setStatus(text);
+        setStatus("Loading POM2: " + text);
       }
     },
     monitorRunDependencies: function(left) {
@@ -112,9 +120,14 @@
     },
     onAbort: function(reason) {
       errEl.style.display = 'block';
-      errEl.textContent = "POM2 aborted: " + reason;
+      errEl.textContent = "POM2 failed while loading or initializing:\n" + reason;
     },
   };
+  window.addEventListener('unhandledrejection', event => {
+    errEl.style.display = 'block';
+    errEl.textContent = "POM2 failed while loading or initializing:\n" +
+      (event.reason && (event.reason.stack || event.reason.message || event.reason));
+  });
   // Persistent settings: mount IndexedDB at /persistent so a future
   // ResourcePaths/Settings tweak can write state.cfg / imgui.ini there.
   // Not consumed yet — left in so the FS hierarchy is ready.
