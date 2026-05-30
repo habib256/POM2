@@ -169,6 +169,12 @@ void Apple2Display::renderInternal(Memory& mem)
             useFrame80 = true;
             return;
         }
+        if (!state.hiRes && state.dhgr) {          // Double lo-res (DLGR)
+            renderLoResDouble(mem, 0, state.mixedMode ? 40 : 48);
+            if (state.mixedMode) renderText80(mem, 20, 24, state.altChar);
+            useFrame80 = true;
+            return;
+        }
         if (state.mixedMode) {                     // mixed HGR/lo-res top + 80-col text
             if (state.hiRes) renderHiRes(mem, 0, 160);
             else             renderLoRes(mem, 0, 40);   // 20 text rows × 2 lo-res rows
@@ -272,26 +278,23 @@ void Apple2Display::renderCompositeOeCpu()
 {
     constexpr float kPi = 3.14159265358979f;
     constexpr int   N = 8;
-    const float sigmaC = 1.75f;
     const int   sw = kSignalWidth, sh = kSignalHeight;   // 560 × 192
     const uint8_t* sig = signalBuf.data();
 
-    // Luma low-pass: OpenEmulator-style 17-tap FIR (Dolph-Chebyshev(50 dB)
-    // window × sinc lowpass @ 2.0 MHz) — notches the fs/4 colour subcarrier
-    // out of luma (|H(0.25)| ≈ 0.05) where the old gaussian (sigmaY=0.8) leaked
-    // ~46% → dot-crawl. Symmetric, lumaK[0]=centre … lumaK[8]=edge, sum = 1
-    // (must match the GPU shader in NtscPostProcessor.cpp). Chroma stays
-    // gaussian (already rejects fs/4 at |H(0.25)| ≈ 0.02).
+    // OpenEmulator-exact 17-tap FIR kernels (Dolph-Chebyshev(50 dB) × sinc,
+    // realIDFT recipe — see NtscPostProcessor.cpp for the GPU twin and the
+    // libemulation provenance). lumaK: 2.0 MHz, sum 1, notches fs/4
+    // (|H(0.25)| ≈ 0.002). chromaK: OE-faithful 0.6 MHz, sum 2 (the ×2 demod
+    // gain). This CPU fallback has no Sharpness param, so it uses OE's exact
+    // chroma bandwidth (= the GPU path at Sharpness 0). Symmetric, [0]=centre.
     static const float lumaK[N + 1] = {
-        0.26779f, 0.21724f, 0.10738f, 0.02026f, -0.00156f,
-        0.01667f, 0.02520f, 0.00487f, -0.02397f
+        0.27941f, 0.23593f, 0.13462f, 0.03665f, -0.01538f,
+        -0.02210f, -0.00999f, -0.00072f, 0.00130f
     };
-    float wC[2 * N + 1], wCtot = 0.0f;
-    for (int i = -N; i <= N; ++i) {
-        const float d = static_cast<float>(i);
-        wC[i + N] = std::exp(-0.5f * d * d / (sigmaC * sigmaC));
-        wCtot += wC[i + N];
-    }
+    static const float chromaK[N + 1] = {
+        0.26030f, 0.24788f, 0.21373f, 0.16602f, 0.11509f,
+        0.07008f, 0.03648f, 0.01543f, 0.00515f
+    };
     // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; phase
     // offset 0 (probe-calibrated against the MAME LUT). YUV→RGB matrix below.
     float sinP[4], cosP[4];
@@ -311,11 +314,11 @@ void Apple2Display::renderCompositeOeCpu()
                 if (xi < 0 || xi >= sw) continue;
                 const float s = row[xi] ? 1.0f : 0.0f;
                 const int   k = xi & 3;
-                Y += s * lumaK[i < 0 ? -i : i];   // FIR luma (sum=1, notches fs/4)
-                U += s * sinP[k] * wC[i + N] * 2.0f;
-                V += s * cosP[k] * wC[i + N] * 2.0f;
+                const int   a = i < 0 ? -i : i;
+                Y += s * lumaK[a];                // FIR luma (sum=1, notches fs/4)
+                U += s * sinP[k] * chromaK[a];    // FIR chroma (sum=2 → ×2 gain)
+                V += s * cosP[k] * chromaK[a];
             }
-            U /= wCtot; V /= wCtot;
             // YUV → RGB (OpenEmulator libemulation OpenGLCanvas.cpp).
             float r = Y                 + 1.139883f * V;
             float g = Y - 0.394642f * U - 0.580622f * V;
@@ -835,6 +838,47 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
             for (int dy = 0; dy < 4; ++dy)
                 for (int dx = 0; dx < 7; ++dx)
                     frame[(y0 + dy) * kWidth + (x0 + dx)] = rgb;
+        }
+    }
+}
+
+// ─── Double lo-res (DLGR) ─────────────────────────────────────────────────
+//
+// 80-column lo-res: aux RAM supplies the EVEN 7-dot half of each column (its
+// nibble rotated left 1) and main RAM the ODD half — MAME apple2video.cpp
+// `lores_update<Double>` (`rotl4(NIBBLE(aux),1)` then `NIBBLE(main)`). Output
+// is the 560-wide frame80. Marginal //e mode (rare demos/utilities); without
+// this the //e fell back to a plausible 40-col lo-res from main RAM only.
+void Apple2Display::renderLoResDouble(Memory& mem, int firstRow, int lastRow)
+{
+    const auto state = mem.getDisplayState();
+    const uint8_t* ram = mem.data();
+    const uint8_t* aux = auxRam ? auxRam : ram;   // fall back to main if no aux
+    const bool useChatMauve = (hiResMode == HiResMode::ChatMauveRGB) && (chatMauve != nullptr);
+    const uint32_t* palette = useChatMauve ? kChatMauveLoResPalette : kLoResPalette;
+    auto rotl4 = [](uint8_t n) -> uint8_t {
+        return static_cast<uint8_t>(((n << 1) | (n >> 3)) & 0x0F);
+    };
+
+    for (int blockRow = firstRow; blockRow < lastRow; ++blockRow) {
+        const int  textRow   = blockRow / 2;
+        const bool upperHalf = (blockRow % 2 == 0);
+        const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
+        for (int col = 0; col < 40; ++col) {
+            const uint8_t mb = ram[rowAddr + col];
+            const uint8_t ab = aux[rowAddr + col];
+            const uint8_t mNib = upperHalf ? (mb & 0x0F) : (mb >> 4);
+            const uint8_t aNib = upperHalf ? (ab & 0x0F) : (ab >> 4);
+            const uint32_t auxRgb  = palette[rotl4(aNib)];
+            const uint32_t mainRgb = palette[mNib];
+            const int x0 = col * 14;
+            const int y0 = blockRow * 4;
+            for (int dy = 0; dy < 4; ++dy) {
+                uint32_t* row = frame80.data()
+                              + static_cast<size_t>(y0 + dy) * kWidth80 + x0;
+                for (int dx = 0; dx < 7; ++dx) row[dx]     = auxRgb;
+                for (int dx = 0; dx < 7; ++dx) row[7 + dx] = mainRgb;
+            }
         }
     }
 }

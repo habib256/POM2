@@ -200,6 +200,7 @@ private:
 
     void renderText  (Memory& mem, int firstRow, int lastRow);
     void renderLoRes (Memory& mem, int firstRow, int lastRow);
+    void renderLoResDouble(Memory& mem, int firstRow, int lastRow);  // DLGR (80-col)
     void renderHiRes (Memory& mem, int firstScanline, int lastScanline);
     // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
     // resolution. Same decode algorithm as the Chat Mauve branch of

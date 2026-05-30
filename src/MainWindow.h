@@ -327,12 +327,9 @@ private:
     bool         floppyEmuFavActive_ = false;
     std::string  floppyEmuStatus;
     bool         showAiControlPanel  = false;
-    // Toolbar pinned just below the menu bar. On by default — toggled
-    // via Window → Toolbar; persisted as `show_toolbar`.
-    bool         showToolbar         = true;
     // Unified disk browser (3-tab panel: 5.25/3.5/HDV). On by default
     // since 2026-05-15 — replaces the per-card library lists as the
-    // primary way to browse + mount images. Toggled from Devices menu.
+    // primary way to browse + mount images. Toggled from File menu.
     // Persisted as `show_disk_library`.
     bool         showDiskLibrary     = true;
     // Initialised in the constructor body from SuperSerialCard::kDefaultPort

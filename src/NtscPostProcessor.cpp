@@ -184,35 +184,37 @@ void main()
     // it could be coaxed to get green/violet right via a phase hack but
     // never blue/orange (blue rendered orange). Probe-calibrated against
     // the MAME LUT: with the YUV matrix the correct phase offset is 0.
-    // Luma low-pass: OpenEmulator-style 17-tap FIR — a Dolph-Chebyshev(50 dB)
-    // window × sinc lowpass at fc = 2.0 MHz (0.1397 cyc/sample). The old narrow
-    // gaussian (sigmaY=0.8) passed |H(fs/4)| ≈ 0.46 of the colour subcarrier
-    // straight into luma → dot-crawl / luma-chroma crosstalk. This FIR NOTCHES
-    // fs/4 (|H(0.25)| ≈ 0.05, DC = 1.000). Symmetric coeffs, lumaK[0]=centre …
-    // lumaK[8]=edge, pre-normalised to sum 1 (recipe: chebyshev(17,50)·sinc).
-    float lumaK[9] = float[](0.26779, 0.21724, 0.10738, 0.02026, -0.00156,
-                             0.01667, 0.02520, 0.00487, -0.02397);
-    // Chroma stays a gaussian: it already rejects fs/4 well (|H(0.25)| ≈ 0.02),
-    // whereas a 17-tap windowed-sinc at OE's 0.6 MHz chroma cutoff can't match
-    // that stopband. Sharpness narrows/widens the chroma passband.
-    float sigmaC = mix(2.5, 1.0, clamp(uSharpness, 0.0, 1.0));
+    // OpenEmulator-exact 17-tap FIR kernels: a Dolph-Chebyshev(50 dB) window ×
+    // sinc lowpass, built with libemulation's own realIDFT recipe (OEVector.cpp
+    // chebyshevWindow/lanczosWindow + OpenGLCanvas.cpp) at the AppleColor
+    // Composite Monitor IIe config — luma 2.0 MHz, chroma 0.6 MHz, Y'UV. Coeffs
+    // are symmetric, [0]=centre … [8]=edge.
+    //   lumaK  : sum 1, NOTCHES the fs/4 colour subcarrier (|H(0.25)| ≈ 0.002,
+    //            -3 dB ≈ 1.64 MHz) — kills the dot-crawl the old gaussian
+    //            (sigmaY=0.8, |H(0.25)| ≈ 0.46) produced.
+    //   chroma : sum 2 (the ×2 demod gain). Sharpness blends the OE-faithful
+    //            soft kernel (0.6 MHz, exact OE at sharpness 0) ↔ a sharp
+    //            2.0 MHz kernel; both reject fs/4, so any blend keeps DC = 2.
+    float lumaK[9] = float[](0.27941, 0.23593, 0.13462, 0.03665, -0.01538,
+                             -0.02210, -0.00999, -0.00072, 0.00130);
+    float chromaSoft[9] = float[](0.26030, 0.24788, 0.21373, 0.16602, 0.11509,
+                                  0.07008, 0.03648, 0.01543, 0.00515);
+    float chromaSharp[9] = float[](0.55882, 0.47185, 0.26923, 0.07331, -0.03077,
+                                   -0.04421, -0.01999, -0.00144, 0.00259);
+    float sharp = clamp(uSharpness, 0.0, 1.0);
 
     const int N = 8;
     float Y = 0.0, U = 0.0, V = 0.0;
-    float wCs = 0.0;
     for (int i = -N; i <= N; ++i) {
         float fx = sigX + float(i);
         float s  = sampleSignal(fx, sigY);
-        float dy = float(i);
-        float wC = exp(-0.5 * dy * dy / (sigmaC * sigmaC));
+        int   a  = i < 0 ? -i : i;
+        float wc = mix(chromaSoft[a], chromaSharp[a], sharp);
         float phase = PI * 0.5 * floor(fx);   // 4×-fsc; phase at integer sample
-        Y   += s * lumaK[i < 0 ? -i : i];     // FIR luma (sum=1, notches fs/4)
-        U   += s * sin(phase) * wC * 2.0;
-        V   += s * cos(phase) * wC * 2.0 * palQSign;
-        wCs += wC;
+        Y += s * lumaK[a];                     // FIR luma (sum=1, notches fs/4)
+        U += s * sin(phase) * wc;              // FIR chroma (sum=2 → ×2 gain)
+        V += s * cos(phase) * wc * palQSign;
     }
-    U /= wCs;
-    V /= wCs;
 
     // ── Optional hue rotation in the U/V plane (user knob) ─────────
     float h = uHue * PI;

@@ -334,7 +334,6 @@ MainWindow::MainWindow(bool forceIIPlus)
             floppyEmu->setSdRoot(sd);
         }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
-        showToolbar        = settings->getBool ("show_toolbar",    showToolbar);
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
@@ -377,6 +376,8 @@ MainWindow::MainWindow(bool forceIIPlus)
                 "ntsc_shadow_strength", p.shadowMaskStrength);
             p.luminanceGain = settings->getFloat(
                 "ntsc_luminance_gain", p.luminanceGain);
+            p.centerLighting = settings->getFloat(
+                "ntsc_center_lighting", p.centerLighting);
             const int sm = settings->getInt("ntsc_shadow_mask",
                                             static_cast<int>(p.shadowMask));
             p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
@@ -689,7 +690,6 @@ MainWindow::~MainWindow()
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
-    settings->setBool  ("show_toolbar",    showToolbar);
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
@@ -714,6 +714,7 @@ MainWindow::~MainWindow()
         settings->setFloat("ntsc_barrel",      p.barrel);
         settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
         settings->setFloat("ntsc_luminance_gain", p.luminanceGain);
+        settings->setFloat("ntsc_center_lighting", p.centerLighting);
         settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
         settings->setBool ("ntsc_pal",         p.palMode);
         settings->setBool ("ntsc_text_sharp",  p.textSharp);
@@ -1583,6 +1584,8 @@ void MainWindow::renderMenuBar()
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
+        ImGui::MenuItem("Disk Library (all formats)", nullptr, &showDiskLibrary);
+        ImGui::Separator();
         // Disk II (slot 6) — frequent action, lifted out of the old
         // Hardware kitchen-sink. Panel still exposes its own insert/eject
         // buttons; this is the keyboard-friendly path.
@@ -1767,7 +1770,6 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Devices")) {
-        ImGui::MenuItem("Disk Library (all formats)",    nullptr, &showDiskLibrary);
         ImGui::MenuItem("Floppy Emu (BMOW)",             nullptr, &showFloppyEmu);
         ImGui::Separator();
         ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
@@ -1935,7 +1937,6 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("Toolbar",                     nullptr, &showToolbar);
         ImGui::MenuItem("Emulation panel",             nullptr, &showEmulationPanel);
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
         ImGui::Separator();
@@ -2963,6 +2964,9 @@ void MainWindow::renderNtscSettingsWindow()
     ImGui::EndDisabled();
     // Post-glass re-brighten — compensates the dimming from scanlines + mask.
     changed |= ImGui::SliderFloat("Luminance gain", &p.luminanceGain, 1.0f, 2.0f);
+    // Vignette / center-lighting — 1.0 = flat (OpenEmulator default), lower
+    // darkens the edges.
+    changed |= ImGui::SliderFloat("Center lighting", &p.centerLighting, 0.5f, 1.0f);
 
     ImGui::Separator();
     // PAL composite — line-phase alternation. Off by default (POM2
@@ -5991,7 +5995,7 @@ void MainWindow::render()
     // (`ImGui::GetFrameHeight()` reflects the menu bar font size +
     // padding). It's positioned just below — pinned, can't be moved
     // or resized.
-    if (showToolbar) {
+    {
         pom2::Toolbar_ImGui::Snapshot tb;
         const auto mode = controller->getMode();
         tb.isRunning          = (mode == EmulationController::Mode::Running);
@@ -6008,8 +6012,7 @@ void MainWindow::render()
         };
         tb.displayIsMono      = isMonoHiRes(display->getHiResMode());
 
-        const auto tr = toolbar->render(showToolbar,
-                                        ImGui::GetFrameHeight(), tb);
+        const auto tr = toolbar->render(ImGui::GetFrameHeight(), tb);
         if (tr.requestColdBoot)        controller->coldBoot();
         if (tr.requestSoftReset)       controller->softReset();
         if (tr.requestHardReset)       controller->hardReset();

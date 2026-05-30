@@ -143,6 +143,7 @@ uniform float uBarrel;
 uniform int   uShadowMask;     // 0=off,1=triad,2=aperture grille,3=dot
 uniform float uShadowStrength; // 0..1
 uniform float uLuminanceGain;  // post-glass re-brighten, 1.0 = neutral
+uniform float uCenterLighting; // vignette: 1.0 = flat (off), <1 darkens edges
 
 void main()
 {
@@ -251,6 +252,14 @@ void main()
         rgb *= atten;
     }
 
+    // ── Center lighting / vignette (OpenEmulator order: after mask) ───
+    // lighting = cuv·(1/cl − 1); rgb *= exp(−dot(lighting)). cl = 1.0 → 0 →
+    // exp(0) = 1 (flat, the OE Apple II default); lower cl darkens the edges.
+    {
+        vec2 lighting = cuv * (1.0 / uCenterLighting - 1.0);
+        rgb *= exp(-dot(lighting, lighting));
+    }
+
     // ── Luminance gain (post-glass) ───────────────────────────────
     // Re-brighten what scanlines/mask dimmed (OpenEmulator's luminanceGain).
     rgb *= uLuminanceGain;
@@ -309,6 +318,7 @@ bool CrtEffectStack::initialize()
     uShadowMask  = glGetUniformLocation(program, "uShadowMask");
     uShadowStr   = glGetUniformLocation(program, "uShadowStrength");
     uLuminanceGain = glGetUniformLocation(program, "uLuminanceGain");
+    uCenterLighting = glGetUniformLocation(program, "uCenterLighting");
 
     const float verts[] = {
         -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
@@ -431,6 +441,7 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     if (uShadowMask  >= 0) glUniform1i(uShadowMask,  static_cast<int>(params.shadowMask));
     if (uShadowStr   >= 0) glUniform1f(uShadowStr,   params.shadowMaskStrength);
     if (uLuminanceGain >= 0) glUniform1f(uLuminanceGain, params.luminanceGain);
+    if (uCenterLighting >= 0) glUniform1f(uCenterLighting, params.centerLighting);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);

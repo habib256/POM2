@@ -262,16 +262,21 @@ texture and runs `NtscPostProcessor::process()`. The fragment shader
 (`NtscPostProcessor.cpp` `kFragmentShader`):
 
 1. Optional barrel distortion of UVs.
-2. For each output fragment, 17-tap accumulation of signal taps.
-   **Luma** uses an OpenEmulator-style FIR — a Dolph-Chebyshev(50 dB)
-   window × sinc lowpass at fc = 2.0 MHz, hard-coded as 9 symmetric
-   coeffs (`lumaK`) — which **notches the fs/4 colour subcarrier**
-   (`|H(0.25)|` ≈ 0.05) instead of leaking ~46 % of it into luma as the
-   old narrow gaussian did (dot-crawl). **Chroma** stays a gaussian
-   (already rejects fs/4 at `|H(0.25)|` ≈ 0.02; a 17-tap windowed-sinc at
-   OE's 0.6 MHz chroma cutoff can't match that stopband), its width set
-   by the **sharpness** knob. Same `lumaK` is mirrored in the CPU path
-   (`Apple2Display::renderCompositeOeCpu`).
+2. For each output fragment, 17-tap accumulation of signal taps through
+   **OpenEmulator-exact FIR kernels** — a Dolph-Chebyshev(50 dB) window ×
+   sinc lowpass, reproduced with libemulation's own realIDFT recipe
+   (`OEVector::chebyshevWindow`/`lanczosWindow` + `OpenGLCanvas.cpp`) at
+   the *AppleColor Composite Monitor IIe* config (luma 2.0 MHz, chroma
+   0.6 MHz, Y'UV). Hard-coded as 9 symmetric coeffs each:
+   - **`lumaK`** (sum 1) **notches fs/4** (`|H(0.25)|` ≈ 0.002, −3 dB ≈
+     1.64 MHz), killing the dot-crawl the old gaussian (sigmaY 0.8,
+     `|H(0.25)|` ≈ 0.46) produced.
+   - **Chroma** (sum 2 = the ×2 demod gain): the **Sharpness** knob blends
+     the OE-faithful soft kernel (0.6 MHz — *exactly* OE at Sharpness 0)
+     ↔ a sharp 2.0 MHz kernel. Both reject fs/4 (`|H(0.25)|` ≈ 0.0004 /
+     0.004), so every blend keeps DC = 2 and stays subcarrier-clean.
+   The CPU path (`Apple2Display::renderCompositeOeCpu`) mirrors `lumaK`
+   and uses the OE-faithful 0.6 MHz chroma (no Sharpness param there).
 3. Chroma is recovered by multiplying each tap with
    `sin(π/2 · x)` and `cos(π/2 · x)` — Apple II's 4× subcarrier
    alignment means phase is just the dot index.
@@ -332,8 +337,10 @@ from `ColorNTSC` until the GL state catches up.
 framebuffer (MAME LUT, Chat Mauve, mono, AppleWin) — gated by "CRT effects
 on all modes" — and is the single effect implementation OE also chains into.
 Effect order in the fragment shader: barrel → hue → BCS → scanlines →
-shadow mask → luminance gain → edge-mask → persistence (ping-pong FBO, applied
-last so the afterglow isn't re-attenuated by the glass each frame).
+shadow mask → center-lighting (vignette) → luminance gain → edge-mask →
+persistence (ping-pong FBO, applied last so the afterglow isn't re-attenuated
+by the glass each frame). The scanline→mask→lighting→luminanceGain ordering
+matches OpenEmulator's display shader (`OpenGLCanvas.cpp:117-126`).
 
 **Glass details (2026-05 parity pass).**
 - **Hue** is applied here (RGB→YUV BT.601, rotate U/V by `hue·π`, YUV→RGB) so
@@ -345,6 +352,16 @@ last so the afterglow isn't re-attenuated by the glass each frame).
 - **Luminance gain** (`luminanceGain`, default 1.0) re-brightens post-mask,
   mirroring OpenEmulator's stage — pairs with scanlines/mask to recover
   brightness.
+- **Center lighting / vignette** (`centerLighting`, default 1.0 = flat, OE's
+  Apple II default): `lighting = cuv·(1/cl − 1); rgb *= exp(−dot(lighting))`,
+  verbatim OpenEmulator. Lower values darken the edges.
+- **Persistence** carries a `−0.5/256` noise floor (OpenEmulator) so faint
+  trails decay fully to black instead of lingering at the quantization step;
+  the slider stays a per-frame retention factor (POM2's documented model,
+  not OE's seconds time-constant).
+- **Not ported (intentional):** OpenEmulator and POM2 both run the glass in
+  gamma space, so crt-lottes-style linear-light is a *beyond-OE* option, not a
+  parity gap — left out.
 - **Defaults are deliberately punchier than OpenEmulator** (`scanlines 0.25`,
   `shadowMaskStrength 0.5`, `persistence 0.4` vs OE's ~0.05/0.05/0). This is an
   intentional product choice (a visible CRT look out of the box), not an

@@ -60,10 +60,9 @@ const char* shortLocaleLabel(CharRomLocale l) {
 } // anon namespace
 
 Toolbar_ImGui::Result Toolbar_ImGui::render(
-    bool& open, float /*unused*/, const Snapshot& snap)
+    float /*unused*/, const Snapshot& snap)
 {
     Result r;
-    if (!open) return r;
 
     // Pin to the top-left, flush against the menu bar. `WorkPos`
     // already excludes the main menu bar (it's the top-left of the
@@ -278,7 +277,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         }
         if (snap.memoryGridVisible) ImGui::PopStyleColor();
     }
-    ImGui::SameLine();
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
     if (iconButton({ ICON_FA_CIRCLE_INFO, "About",
                      "About POM2" })) {
         r.requestAbout = true;

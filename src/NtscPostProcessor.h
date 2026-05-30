@@ -64,6 +64,12 @@ struct NtscParams
     // CrtEffectStack glass pass.
     float luminanceGain = 1.0f;  // 1.0..2.0
 
+    // Center lighting (vignette), OpenEmulator-faithful: the shader computes
+    // `lighting = cuv·(1/centerLighting − 1); rgb *= exp(−dot(lighting))`, so
+    // 1.0 = perfectly flat (OE's Apple II default — vignette off) and lower
+    // values darken the edges. CrtEffectStack glass pass only.
+    float centerLighting = 1.0f;  // 0.5..1.0 (1.0 = flat)
+
     // PAL composite mode: alternates the Q-subcarrier sign every other
     // scanline (line-phase alternation). On a real PAL TV this cancels
     // hue errors at the cost of vertical chroma resolution; here it

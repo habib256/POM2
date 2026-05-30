@@ -1739,6 +1739,30 @@ endif()
 add_test(NAME dhgr_render_smoke COMMAND test_dhgr_render)
 set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 
+# Double Lo-Res (DLGR) — 80-col lo-res, aux+main with rotl4 on the aux nibble.
+add_executable(test_dlgr_render
+    dlgr_render_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dlgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dlgr_render PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dlgr_render PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dlgr_render PRIVATE winmm)
+endif()
+
+add_test(NAME dlgr_render_smoke COMMAND test_dlgr_render)
+set_tests_properties(dlgr_render_smoke PROPERTIES TIMEOUT 5)
+
 # ─── Display golden-hash oracle (Phase 0 refactor net) ────────────────────
 # Freezes the byte-for-byte output of every CPU decode path (scene × colour
 # pipeline) + the composite signal generator, so the display layering

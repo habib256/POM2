@@ -14,8 +14,7 @@
 // Layout: tightly packed icon buttons, one row, Font Awesome glyphs when
 // `fa-solid-900.ttf` is loaded (text fallback otherwise). Anchored via
 // `SetNextWindowPos` at `(0, menuBarHeight)` with NoTitleBar / NoMove /
-// NoResize so it can't be dragged out of the way; the user toggles
-// visibility from `Window → Toolbar`.
+// NoResize so it can't be dragged out of the way; always visible.
 
 #ifndef POM2_TOOLBAR_IMGUI_H
 #define POM2_TOOLBAR_IMGUI_H
@@ -72,8 +71,8 @@ public:
 
     /// Render the toolbar. `menuBarHeight` positions the window just
     /// below the main menu bar (`ImGui::GetFrameHeight()` at the call
-    /// site). `open` mirrors the user's Window menu toggle.
-    Result render(bool& open, float menuBarHeight, const Snapshot& snap);
+    /// site).
+    Result render(float menuBarHeight, const Snapshot& snap);
 };
 
 } // namespace pom2

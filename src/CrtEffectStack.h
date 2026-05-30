@@ -91,6 +91,7 @@ private:
     int uShadowMask  = -1;
     int uShadowStr   = -1;
     int uLuminanceGain = -1;
+    int uCenterLighting = -1;
 
     int  outW = 0, outH = 0;
     int  srcW_ = 0, srcH_ = 0;

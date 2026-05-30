@@ -8,6 +8,27 @@ courante → `DEV.md`.
 
 ## 2026-05-30
 
+- **Parité OpenEmulator : filtres de démodulation exacts + reliquats du
+  rapport.** Source OE récupérée via scrapling (le cœur `libemulation` est un
+  sous-module séparé `openemulator/libemulation`).
+  - **Filtres FIR OE exacts** (`NtscPostProcessor.cpp` + `Apple2Display.cpp`).
+    Portage des fonctions `OEVector::chebyshevWindow`/`lanczosWindow` (méthode
+    realIDFT) au config *AppleColor Composite Monitor IIe* (luma 2.0 MHz,
+    chroma 0.6 MHz, Y'UV). **Luma** : notch fs/4 `|H(0.25)|` = **0.002**, −3 dB
+    **1.64 MHz** (= OE). **Chroma** : kernel OE exact (`|H(0.25)|` = 0.0004,
+    −3 dB 0.64 MHz) ; le curseur Sharpness mélange désormais soft-OE (0.6 MHz,
+    parité exacte à 0) ↔ net (2.0 MHz). Remplace les gaussiennes approximatives.
+  - **Vignette / center-lighting** (`centerLighting`, défaut 1.0 = plat) :
+    formule OE `exp(−dot(cuv·(1/cl−1)))`, nouveau slider.
+  - **Plancher de bruit persistance** (`−0.5/256`, OE) : les traînées faibles
+    s'éteignent jusqu'au noir au lieu de stagner.
+  - **Double Lo-Res (DLGR)** : nouveau `renderLoResDouble` (80 cellules,
+    aux+main, `rotl4(NIBBLE(aux),1)` — MAME `lores_update<Double>`). Épinglé
+    par `dlgr_render_smoke`.
+  - **Polarité AN3 commentée** (`LeChatMauveCard.cpp`) : MAME clocke 80COL,
+    AppleWin !80COL → numéros de mode bit-inverses (attendu, documenté).
+  - *Non porté (volontaire)* : linear-light (OE est aussi en gamma → hors
+    parité) ; teintes phosphores mono (choix esthétiques assumés).
 - **Audit de parité vidéo (MAME/AppleWin/OpenEmulator) + correctifs.** Audit
   multi-agents de 9 sous-systèmes vidéo/couleur/effets (rapport :
   `docs/video_parity_audit_2026-05-30.md`). Correctifs appliqués :
