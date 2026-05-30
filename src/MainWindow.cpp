@@ -262,10 +262,22 @@ MainWindow::MainWindow(bool forceIIPlus)
         // 3.5" surprise.
         const float vol525 = settings->getFloat("floppy_sound_volume", 0.6f);
         const bool  mute525 = settings->getBool ("floppy_sound_muted",  false);
-        controller->floppySound525().setVolume(vol525);
+        const float vol35   = settings->getFloat("floppy_sound_volume_35", vol525);
+        // WASM default boots from an HDV ("hard disk"), and the disk-drive
+        // mechanical sounds carry loud over the browser's Web Audio path.
+        // Quarter the disk channels in the browser build. (HDV access itself
+        // is silent — the 5.25"/3.5" floppy channels are the only disk sounds,
+        // so they are what the "HD noise" actually is.) The factor scales the
+        // restored value, so a user who lowers the mixer slider further still
+        // sticks (the mixer reads the live device volume, not settings).
+#ifdef __EMSCRIPTEN__
+        constexpr float kWasmDiskGain = 0.25f;
+#else
+        constexpr float kWasmDiskGain = 1.0f;
+#endif
+        controller->floppySound525().setVolume(vol525 * kWasmDiskGain);
         controller->floppySound525().setMuted (mute525);
-        controller->floppySound35().setVolume(
-            settings->getFloat("floppy_sound_volume_35", vol525));
+        controller->floppySound35().setVolume(vol35 * kWasmDiskGain);
         controller->floppySound35().setMuted(
             settings->getBool ("floppy_sound_muted_35",  mute525));
         // Audio master (mixer panel). Default 1.0 / unmuted to preserve
@@ -1643,6 +1655,11 @@ void MainWindow::renderMenuBar()
             bootHdvImage();
         }
         ImGui::EndDisabled();
+#ifndef __EMSCRIPTEN__
+        // Reload ROM re-reads the ROM file from disk. Useful on native (swap
+        // a roms/ file, reload without restarting); pointless under WASM,
+        // where the ROM is baked into POM2.data and cannot be replaced — so
+        // it is hidden in the browser build.
         ImGui::Separator();
         if (ImGui::MenuItem("Reload ROM")) {
             bool ok = false;
@@ -1665,18 +1682,28 @@ void MainWindow::renderMenuBar()
                 romStatus = err;
             }
         }
+        // Quit is a no-op in the browser: the frame loop is driven by
+        // emscripten_set_main_loop_arg (main.cpp), which ignores
+        // glfwWindowShouldClose, and a canvas cannot close its own tab.
+        // Hide the entry under WASM so the menu stays honest.
         ImGui::Separator();
         if (ImGui::MenuItem("Quit")) {
             if (window) glfwSetWindowShouldClose(window, 1);
         }
+#endif
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Paste from clipboard", "Ctrl+V"))
             pasteFromClipboard();
+#ifndef __EMSCRIPTEN__
+        // "Paste from file" reads a host text file; the browser build has no
+        // host filesystem (only the read-only bundled MEMFS), and nothing
+        // pasteable ships in it. Clipboard paste above still works in WASM.
         if (ImGui::MenuItem("Paste from file..."))
             showPasteFileDialog = true;
+#endif
         ImGui::Separator();
         const size_t pending = controller->memory().pendingPasteSize();
         ImGui::BeginDisabled(pending == 0);
@@ -1963,10 +1990,16 @@ void MainWindow::renderMenuBar()
         ImGui::EndMenu();
     }
 
+#ifndef __EMSCRIPTEN__
+    // The AI Control HTTP server is compiled out under WASM
+    // (AiControlServer::start() returns false — no listening socket in the
+    // browser sandbox). It is the only Tools entry, so the whole menu is
+    // hidden rather than left holding a dead item.
     if (ImGui::BeginMenu("Tools")) {
         ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
         ImGui::EndMenu();
     }
+#endif
 
     if (ImGui::BeginMenu("Help")) {
         if (ImGui::MenuItem("About POM2")) showAbout = true;
@@ -2550,6 +2583,22 @@ void MainWindow::renderSscPanelWindow()
 
         ImGui::Separator();
         ImGui::PushID(slot);
+#ifdef __EMSCRIPTEN__
+        // The host telnet bridge is compiled out under WASM
+        // (SuperSerialCard::startListening() is a no-op — no TCP sockets in
+        // the browser sandbox, see SuperSerialCard.cpp). The ACIA itself is
+        // still emulated, so PR#n output still flows into the TX counter /
+        // recent traffic below. Grey out the listener controls rather than
+        // hide them, so the panel reads honestly.
+        (void)listening; (void)connected;
+        ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(120);
+        ImGui::InputInt("TCP port", &portDraft, 0, 0);
+        ImGui::SameLine();
+        ImGui::Button("Start listener");
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Telnet bridge unavailable in the browser build.");
+#else
         ImGui::SetNextItemWidth(120);
         ImGui::InputInt("TCP port", &portDraft, 0, 0);
         if (portDraft < 1)     portDraft = 1;
@@ -2578,6 +2627,7 @@ void MainWindow::renderSscPanelWindow()
                                 "bridge I/O between your host shell and "
                                 "the Apple II.");
         }
+#endif
 
         ImGui::Separator();
         bool raw = ssc->rawMode();
@@ -2667,6 +2717,19 @@ void MainWindow::renderPrinterPanelWindow()
 
     char buf[512];
     std::snprintf(buf, sizeof(buf), "%s", printerSavePath.c_str());
+#ifdef __EMSCRIPTEN__
+    // No persistent host filesystem in the browser build: a "Save as .txt"
+    // would land in MEMFS and vanish on reload, with no download path. Grey
+    // the controls out — the live spool preview below still works (PR#n
+    // output is captured), and "Clear spool" still resets the buffer.
+    ImGui::BeginDisabled();
+    ImGui::SetNextItemWidth(-110);
+    ImGui::InputText("##printerPath", buf, sizeof(buf));
+    ImGui::SameLine();
+    ImGui::Button("Save as .txt", ImVec2(100, 0));
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Saving to a file is unavailable in the browser build.");
+#else
     ImGui::SetNextItemWidth(-110);
     if (ImGui::InputText("##printerPath", buf, sizeof(buf))) {
         printerSavePath = buf;
@@ -2693,6 +2756,7 @@ void MainWindow::renderPrinterPanelWindow()
     if (!printerLastSaveStatus.empty()) {
         ImGui::TextDisabled("%s", printerLastSaveStatus.c_str());
     }
+#endif
 
     if (ImGui::Button("Clear spool")) {
         printerCard->clearSpool();
