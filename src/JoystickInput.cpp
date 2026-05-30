@@ -3,7 +3,11 @@
 
 #include "JoystickInput.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/html5.h>
+#else
 #include <GLFW/glfw3.h>
+#endif
 
 #include <cmath>
 
@@ -25,6 +29,35 @@ uint8_t JoystickInput::axisToPaddle(float axis, float deadzone, bool invert)
 
 void JoystickInput::poll()
 {
+#ifdef __EMSCRIPTEN__
+    emscripten_sample_gamepad_data();
+    const int browserPads = emscripten_get_num_gamepads();
+    for (int h = 0; h < kHostCount; ++h) {
+        DeviceState& d = devices[h];
+        d.present = false;
+        d.name.clear();
+        d.axis.fill(0.0f);
+        d.buttons.fill(false);
+
+        if (browserPads <= 0 || h >= browserPads) continue;
+
+        EmscriptenGamepadEvent gp{};
+        if (emscripten_get_gamepad_status(h, &gp) != EMSCRIPTEN_RESULT_SUCCESS ||
+            !gp.connected) {
+            continue;
+        }
+
+        d.present = true;
+        d.name = gp.id[0] ? gp.id : "Browser Gamepad";
+        for (int i = 0; i < kAxes; ++i) {
+            d.axis[i] = (i < gp.numAxes) ? static_cast<float>(gp.axis[i]) : 0.0f;
+        }
+        for (int i = 0; i < kButtons; ++i) {
+            d.buttons[i] = (i < gp.numButtons) &&
+                           (gp.digitalButton[i] || gp.analogButton[i] >= 0.5);
+        }
+    }
+#else
     for (int h = 0; h < kHostCount; ++h) {
         const int jid = GLFW_JOYSTICK_1 + h;
         DeviceState& d = devices[h];
@@ -51,16 +84,35 @@ void JoystickInput::poll()
             d.buttons[i] = (btns && i < btnCount && btns[i] == GLFW_PRESS);
         }
     }
+#endif
 }
 
 void JoystickInput::autoBindIfUnconfigured()
 {
+#ifdef __EMSCRIPTEN__
+    if (active.hostIdx >= 0 && active.hostIdx < kHostCount &&
+        devices[active.hostIdx].present) {
+        return;
+    }
+    for (int h = 0; h < kHostCount; ++h) {
+        if (devices[h].present) {
+            active.hostIdx = h;
+            autoBindDone = true;
+            return;
+        }
+    }
+    active.hostIdx = -1;
+#else
     if (autoBindDone) return;
-    autoBindDone = true;
     if (active.hostIdx >= 0) return;
     for (int h = 0; h < kHostCount; ++h) {
-        if (devices[h].present) { active.hostIdx = h; return; }
+        if (devices[h].present) {
+            active.hostIdx = h;
+            autoBindDone = true;
+            return;
+        }
     }
+#endif
 }
 
 uint8_t JoystickInput::paddleValue(int paddleIdx) const
