@@ -71,8 +71,11 @@
 
   // Default WASM experience: //c profile auto-booting Total Replay from
   // the bundled floppyemu/. Both knobs are URL-overridable so a deeplink
-  // can pick a different profile or disk without rebuilding:
-  //   ?preset=iie&disk=floppyemu/A2DeskTop-1.5-en_800k.2mg
+  // can pick a different profile or disk without rebuilding. The disk path
+  // must resolve inside POM2.data — only roms/, fonts/, pic/ and floppyemu/
+  // ship by default; disks_3.5/ is bundled only when built with --with-data
+  // (-DPOM2_WASM_BUNDLE_DISKS=ON):
+  //   ?preset=iie&disk=disks_3.5/A2DeskTop-1.5-en_800k.2mg   (needs --with-data)
   //   ?preset=ii+        (no auto-boot — drops to the BASIC prompt)
   //   ?nodisk=1          (keep the preset, skip the disk arg)
   const _qs = new URLSearchParams(window.location.search);
