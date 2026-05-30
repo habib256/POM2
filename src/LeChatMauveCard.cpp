@@ -33,6 +33,11 @@ void LeChatMauveCard::onVideoSoftSwitch(uint16_t addr)
     // many — that matches the Arlequin reference sequence which alternates
     // STA $C05E ; STA $C05F for every bit.
     if (addr == 0xC05F) {
+        // We clock 80COL *directly* into the FIFO — MAME's convention. AppleWin
+        // clocks the INVERSE (!80COL), so the same software ends up selecting
+        // the bit-inverse RenderMode there. POM2 follows MAME, so the mode
+        // numbering here is the bit-inverse of AppleWin's when tracing the same
+        // STA $C05E/$C05F bit sequence — expected, not a bug.
         if (!an3Prev) clockFifo(eightyColLatched);
         an3Prev = true;
         return;

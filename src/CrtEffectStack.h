@@ -13,8 +13,11 @@
 // effects stop being welded to the OE shader.
 //
 // It reuses pom2::NtscParams so the one "CRT Settings" panel drives both the
-// OE demod path and this universal stack (the demod-only knobs — sharpness,
-// hue, palMode, textSharp — are simply ignored here).
+// OE demod path and this universal stack. Hue is applied here too (a chroma
+// rotation works fine on already-decoded RGB). Sharpness is honoured as a
+// spatial unsharp-mask/soften (centre-neutral at 0.5) since the demod-stage
+// chroma-bandwidth meaning has none on an RGB framebuffer; only palMode and
+// textSharp are genuinely demod-only and stay ignored here.
 //
 // Safety: opt-in. MainWindow only routes the framebuffer through this when
 // the user enables "CRT effects on all modes"; if the shader fails to
@@ -50,10 +53,14 @@ public:
     const NtscParams& getParams() const { return params; }
 
     // Apply the enabled effect layers to RGBA source texture `srcTex`
-    // (srcW × srcH). Returns a GL texture name holding the RGBA result
-    // (srcW × srcH*2 — 2× vertical so per-line scanline darkening stays
-    // crisp). Returns 0 when not available().
-    unsigned int process(unsigned int srcTex, int srcW, int srcH);
+    // (logical size srcW × srcH — drives the scanline/mask frequency), and
+    // render the result at the on-screen target size dstW × dstH. Rendering
+    // at native output resolution lets the scanline/mask patterns be
+    // analytically anti-aliased (no barrel moiré) and lets ImGui blit the
+    // result 1:1 (no resample beat). Returns a GL texture name (dstW × dstH),
+    // or 0 when not available().
+    unsigned int process(unsigned int srcTex, int srcW, int srcH,
+                         int dstW, int dstH);
 
     int outputWidth () const { return outW; }
     int outputHeight() const { return outH; }
@@ -76,11 +83,14 @@ private:
     int uBrightness  = -1;
     int uContrast    = -1;
     int uSaturation  = -1;
+    int uHue         = -1;
+    int uSharpness   = -1;
     int uPersistence = -1;
     int uScanlines   = -1;
     int uBarrel      = -1;
     int uShadowMask  = -1;
     int uShadowStr   = -1;
+    int uLuminanceGain = -1;
 
     int  outW = 0, outH = 0;
     int  srcW_ = 0, srcH_ = 0;

@@ -142,6 +142,25 @@ int main()
         assert(out2[1 * kW + x] == out2[2 * kW + x]);
     }
 
+    // ── 7. Solid artifact pattern ($2A) decodes to SATURATED colour ──────
+    //    Regression guard for the "almost no colour" bug. The previous
+    //    gaussian decoder let the luma estimate absorb the subcarrier and
+    //    then subtracted it back out, cancelling chroma inside steady colour
+    //    fills (avgSat ~ 0, only edge fringes). The faithful AppleWin IIR
+    //    pipeline band-passes the chroma separately, so a solid $2A fill must
+    //    show strong chroma right across the line, not just at transitions.
+    fillSignalFromByte(signal.data(), kW, 0x2A);
+    AppleWinNtsc::renderLine(signal.data(), out.data(), kW,
+                             AppleWinNtsc::SubMode::Monitor);
+    long sumSat = 0; int nSat = 0, maxSat = 0;
+    for (int x = 100; x < kW - 100; ++x) {
+        const int sat = std::max({int(r8(out[x])), int(g8(out[x])), int(b8(out[x]))})
+                      - std::min({int(r8(out[x])), int(g8(out[x])), int(b8(out[x]))});
+        sumSat += sat; ++nSat; maxSat = std::max(maxSat, sat);
+    }
+    assert(int(sumSat / nSat) > 40 && "ColorAppleWin $2A fill must be saturated, not gray");
+    assert(maxSat > 120 && "ColorAppleWin $2A must reach high chroma somewhere");
+
     std::printf("applewin_ntsc_smoke OK\n");
     return 0;
 }

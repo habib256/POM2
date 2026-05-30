@@ -102,17 +102,24 @@ identique à `ColorNTSC` sauf `lutRow = 1`.
 chaque nibble 4-dot comme index palette. Bords nets, aucun fringing
 inter-octet.
 
-**Algorithme POM2** ([`Apple2Display.cpp:1030-1037`](../src/Apple2Display.cpp)) :
+**Algorithme POM2** ([`Apple2Display.cpp:1104-1117`](../src/Apple2Display.cpp) HGR,
+[`:1451-1459`](../src/Apple2Display.cpp) DHGR) :
 
 ```
-nibble = (window >> 3) & 0x0F
-palette_idx = rotl4b(nibble | (nibble << 4), absX - 1)
-pixel = kLoResPalette[palette_idx]
+nibble = (window >> (kContextBits - 1)) & 0x0F   // kContextBits = 3
+palette_idx = rotl4b(nibble | (nibble << 4), absX + is_80_column - 1)
+pixel = kLoResPalette[palette_idx]               // is_80_column = 0 HGR, 1 DHGR
 ```
 
-**Déviations** : aucune. Port littéral de MAME `:486-493`.
+**Déviations** : aucune. Port littéral de MAME `rotl4(w & 0x0f,
+x + is_80_column - 1)` (`apple2video.cpp:487-494`). ⚠️ Corrigé en 2026-05 :
+l'ancienne formule (`window >> 3`, rotation `absX`) divergeait de MAME sur
+~50 % des dots intérieurs ; vérifié bit-exact contre un oracle MAME
+(0/2,2 M dots) après correction couplée de l'origine de nibble **et** de la
+phase. Voir `docs/video_parity_audit_2026-05-30.md`.
 
-**Tests** : couvert par `dhgr_render_smoke` (4-dot nibble decode).
+**Tests** : `dhgr_render_smoke` + les hashes `*/4bit` de `display_golden_hash`
+(régénérés sur la sortie MAME-correcte → pin de non-régression).
 
 ![ColorComp4Bit](img/total_replay_03_ColorComp4Bit.png)
 
@@ -291,61 +298,64 @@ pour ne pas mélanger HGR et DHGR.
 
 ## 9. ColorAppleWin
 
-**Source** : **AppleWin** `source/NTSC.cpp` (Sheldon Simms,
-Tom Charlesworth, Michael Pohoreski — GPL v2+). Algorithme original
-décrit par Bill Buck. POM2 **réimplémente** depuis la description
-publique de l'algorithme — aucun code AppleWin copié, POM2 reste sous
-sa licence d'origine.
+**Source** : **AppleWin** `source/NTSC.cpp::initChromaPhaseTables`
+(Sheldon Simms, Tom Charlesworth, Michael Pohoreski — GPL v2+).
+Algorithme original décrit par Bill Buck. POM2 fait un **port fidèle** :
+algorithme, coefficients des filtres IIR (`NTSC.cpp:115-132`), matrice
+YIQ→RGB et cas spéciaux blanc/noir/gris sont portés ligne-à-ligne et
+cités en commentaire (AppleWin = source de vérité pour ces modes).
 
 **Algorithme POM2** ([`AppleWinNtsc.cpp`](../src/AppleWinNtsc.cpp)) :
 
-1. **Pré-calcul** au premier `ensureInitialized()` : table 4 phases × 4096
-   historiques 12-bit → RGBA8. Pour chaque entrée :
-   - Décoder les 12 bits → 12 samples binaires.
-   - Y = moyenne gaussienne (sigma=1.5) centrée sur la sample courante.
-   - I/Q = moyenne gaussienne (sigma=3.0) centrée, DC retiré
-     (`s - Y`), démod `sin/cos(π/2 · (phase + offset))`.
-   - Saturation chroma × 10.0 (compense l'atténuation gaussienne).
-   - YIQ → RGB matrice NTSC standard.
-2. **Rendu** : fenêtre 12-tap *centrée* (delay de 6 samples pour
-   half-window). Pour chaque sample x du signal 560-wide,
-   `out[x] = chromaLut[x & 3][hist12]`.
+1. **Pré-calcul** au premier `ensureInitialized()` : tables 4 phases ×
+   4096 historiques 12-bit → RGBA8. Pour chaque entrée :
+   - Parcourir les 12 bits *du plus ancien d'abord*, **sur-échantillonnés
+     ×2** (`phi += 45°` par demi-pas = 90°/dot, alignement 4× sous-porteuse).
+   - Trois filtres IIR 2-pôles en cascade : `initFilterSignal` (passe-bas
+     d'entrée), `initFilterChroma` (**passe-bande @ fs/4** — le zéro `x[0]`
+     inversé est ce qui isole la chroma), `initFilterLuma0/1` (passe-bas
+     luma).
+   - Démodulation en quadrature (cos→I, sin→Q, lissage 1-pôle `/8`).
+   - YIQ → RGB matrice FCC. `y0` → table Monitor ; `y1` (luma de
+     *signal − chroma*, un comb) → table Color-TV.
+2. **Rendu** : registre à décalage 12-bit **causal** (`hist = ((hist<<1)
+   | bit) & 0xFFF`), un lookup par dot du signal 560-wide :
+   `out[x] = lut[x & 3][hist12]`.
 3. **Trois sous-modes** (`AppleWinNtsc::SubMode`) :
-   - `Monitor` : LUT IIR directe, scanlines nettes.
-   - `Tv` : Monitor + blend 50% avec la frame précédente (`appleWinPrev80`
-     dans `Apple2Display`). Simule la persistance du tube + comb filter
-     d'un récepteur TV.
-   - `Idealized` : skip la LUT IIR, palette plus simple 4-phase × 16
-     nibbles, chroma boost ×8 — pour écrans plats modernes sans
-     attendre la "vraie" simulation NTSC.
+   - `Monitor` : table luma `y0`, scanlines nettes, artefacts complets.
+   - `Tv` : table comb `y1` + blend 50% avec la frame précédente
+     (`appleWinPrev80`). Persistance du tube + comb filter d'un récepteur.
+   - `Idealized` : spécifique POM2 (pas d'équivalent AppleWin) — luma
+     Monitor + boost chroma ×1.6 pour écrans plats modernes.
+
+`CYCLESTART = 45°` aligne les teintes sur la référence MAME sans
+calibration supplémentaire.
 
 **Différences fondamentales avec MAME / OpenEmulator** :
 
 | Aspect | POM2 ColorAppleWin | POM2 ColorNTSC (MAME) | POM2 ColorCompositeOE (OE) |
 |---|---|---|---|
-| Approche | LUT pré-calculée 4-phase × 4096 hist (CPU) | LUT statique 128 entrées 7-bit window (CPU) | Démod 17 taps GPU shader |
-| Coût frame | ~1 lookup/dot + 6-sample delay ≈ 0.5 ms | LUT lookup direct ≈ 0.3 ms | GPU pass ≈ 0.05 ms |
-| Demi-dot delay | Dans le signal (via `buildBitStream`) | Pré-stream (`buildHgrWordRow`) | Implicite (timing du bitstream) |
-| Bande chroma | Gaussienne (sigma=3) post DC-removal | Implicite dans la LUT | Gaussienne (sigma=1.5-2.5) |
-| Couleurs typiques | Bleu / jaune dominants pour ARCHON | Magenta / cyan dominants | Magenta / cyan / bleu |
+| Approche | LUT pré-calculée 4-phase × 4096 hist, IIR 2-pôles (CPU) | LUT statique 128 entrées 7-bit window (CPU) | Démod 17 taps GPU shader |
+| Coût frame | ~1 lookup/dot ≈ 0.3 ms | LUT lookup direct ≈ 0.3 ms | GPU pass ≈ 0.05 ms |
+| Séparation chroma | Passe-bande IIR dédié @ fs/4 | Implicite dans la LUT | Gaussienne (sigma=1.5-2.5) |
+| Couleurs typiques | Vert / magenta / bleu (≈ MAME) | Magenta / cyan / vert | Magenta / cyan / bleu |
 
-**Déviations vs AppleWin** :
-
-| Déviation | Détail |
-|---|---|
-| Coefficients IIR remplacés | AppleWin utilise un IIR 2nd-ordre cascadé (chroma g=7.438, luma g=13.71, signal g=7.614). POM2 collapse en gaussienne pondérée + DC removal — résultat visuel équivalent, math plus simple. |
-| Pas de `Color (Composite)` séparé | AppleWin différencie Color TV vs Color Monitor par la palette ; POM2 partage la même LUT et différencie par le blend 50% post-render. |
-| Sortie native 560 | POM2 écrit 560 wide direct (pas de up-sample 280→560 d'AppleWin). |
+**Note historique** : avant 2026-05 ce mode utilisait une approximation
+gaussienne (luma σ=1.5, chroma σ=3 + DC-removal, boost ×10) qui laissait
+la luma absorber la sous-porteuse puis l'annulait via `signal − luma` —
+d'où l'absence quasi-totale de couleur dans les aplats (seules les
+transitions étaient teintées). Le passe-bande IIR fidèle d'AppleWin
+corrige le défaut.
 
 **Tests** : `applewin_ntsc_smoke` —
 [`tests/applewin_ntsc_smoke_test.cpp`](../tests/applewin_ntsc_smoke_test.cpp).
 Pin sur :
 - LUT idempotente.
-- All-black signal → all-black RGB.
-- All-white signal → RGB > 200 (chroma se cancel correctement).
-- `$7F` répété → près-neutre haute luma, pas de cast couleur dominant.
-- Idealized `$01` → couleur non-noire (artefact bien généré).
-- Tv mode converge vers Monitor avec signal stable.
+- All-black signal → all-black RGB ; all-white → RGB > 200 (white-ringing).
+- `$7F` répété → près-neutre haute luma, pas de cast couleur.
+- **`$2A` aplat plein → chroma saturée** (avgSat > 40) — garde anti-régression
+  du bug « presque pas de couleur ».
+- Idealized `$01` → couleur non-noire ; Tv converge vers Monitor.
 - `renderFrame` itère correctement sur h scanlines.
 
 **Captures** :

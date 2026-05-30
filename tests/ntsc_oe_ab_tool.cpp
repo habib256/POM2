@@ -156,7 +156,10 @@ int main()
         int outW = ntsc.outputWidth(), outH = ntsc.outputHeight();
 #if AB_SPLIT_PIPELINE
         crt.setParams(cfg.p);
-        tex = crt.process(tex, ntsc.outputWidth(), ntsc.outputHeight());
+        // Effect pass now renders at an explicit target size; keep the A/B
+        // tool's historical 2×-vertical output so its baselines still line up.
+        tex = crt.process(tex, ntsc.outputWidth(), ntsc.outputHeight(),
+                          ntsc.outputWidth(), ntsc.outputHeight() * 2);
         outW = crt.outputWidth(); outH = crt.outputHeight();
 #endif
         if (tex == 0) { std::fprintf(stderr, "process returned 0\n"); return 1; }

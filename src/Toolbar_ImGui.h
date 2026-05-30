@@ -34,7 +34,7 @@ public:
         bool          isRunning          = false;
         bool          isStopped          = false;   // CPU paused (vs single-step ready)
         int           cyclesPerFrame     = 17045;
-        bool          memViewerVisible   = false;
+        bool          memoryGridVisible  = false;
         SystemProfile activeProfile      = SystemProfile::AppleIIPlus;
         // Enable / disable hint for the disk button(s).
         bool          hasPrimaryDiskCard = false;
@@ -56,7 +56,8 @@ public:
         bool requestStep             = false;   // single-instruction step
         bool requestScreenshot       = false;
         bool requestInsertDisk       = false;   // open Insert-disk popup
-        bool requestMemViewerToggle  = false;
+        bool requestMemoryGridToggle = false;
+        bool requestAbout            = false;   // open the About dialog
         bool requestMonoColorToggle  = false;   // flip color ↔ monochrome
         // -1 = no change. Set to the new cyclesPerFrame on speed dropdown
         // click; the host applies it via `EmulationController::setCyclesPerFrame`.

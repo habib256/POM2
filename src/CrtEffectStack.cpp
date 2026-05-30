@@ -5,6 +5,7 @@
 #include "OpenGLShader.h"
 #include "Logger.h"
 
+#include <algorithm>
 #include <string>
 
 #if defined(__EMSCRIPTEN__)
@@ -122,7 +123,8 @@ void main() {
 // Effect-only fragment shader. Input is an already-decoded RGBA framebuffer
 // (any colour pipeline); we apply the same post-effects the OE shader does,
 // in the same order, so the look is consistent whichever path produced the
-// pixels. The demod-specific knobs (sharpness/hue/PAL) don't appear here.
+// pixels. Hue is applied here too (chroma rotation on RGB); only the genuine
+// demod-stage knobs (sharpness/PAL) don't appear here.
 const char* kFragmentShader = R"GLSL(
 in vec2 vUv;
 out vec4 fragColor;
@@ -133,11 +135,14 @@ uniform vec2  uSrcSize;        // (width, height) of uSrc
 uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
+uniform float uHue;            // -0.5..+0.5 → ±π chroma rotation
+uniform float uSharpness;      // 0.5 = neutral; >0.5 sharpen, <0.5 soften
 uniform float uPersistence;
 uniform float uScanlines;
 uniform float uBarrel;
 uniform int   uShadowMask;     // 0=off,1=triad,2=aperture grille,3=dot
 uniform float uShadowStrength; // 0..1
+uniform float uLuminanceGain;  // post-glass re-brighten, 1.0 = neutral
 
 void main()
 {
@@ -146,12 +151,51 @@ void main()
     float r2 = dot(cuv, cuv);
     vec2 buv = cuv * (1.0 + uBarrel * r2);
     vec2 uv  = buv * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
+    // Soft, analytic-AA border: fade to black across one output pixel at the
+    // warped edge instead of a hard 1-pixel cutoff (which goes jaggy under
+    // curvature). edgeMask is 1 inside, ramps to 0 right at the border.
+    vec2  edge     = min(uv, 1.0 - uv);
+    vec2  edgeFw   = max(fwidth(uv), vec2(1e-4));
+    float edgeMask = clamp(min(edge.x / edgeFw.x, edge.y / edgeFw.y), 0.0, 1.0);
+    vec3 rgb = texture(uSrc, clamp(uv, 0.0, 1.0)).rgb;
+
+    // ── Sharpness (unsharp mask / soften, centre-neutral at 0.5) ──
+    // The source is already-decoded RGB (any pipeline), so the OE shader's
+    // chroma-bandwidth notion of "sharpness" has no meaning here; instead we
+    // give the same knob a spatial meaning that works on ANY framebuffer:
+    // 0.5 = passthrough, >0.5 sharpens (unsharp mask against a 4-tap cross
+    // blur), <0.5 softens (blends toward that blur). The OE path forces this
+    // neutral (its demod stage already did the chroma-bandwidth sharpness).
+    {
+        float amt = (uSharpness - 0.5) * 2.0;   // -1 (soft) .. +1 (sharp)
+        if (amt != 0.0) {
+            vec2 t = 1.0 / uSrcSize;
+            vec3 blur = (
+                texture(uSrc, clamp(uv + vec2(-t.x, 0.0), 0.0, 1.0)).rgb +
+                texture(uSrc, clamp(uv + vec2( t.x, 0.0), 0.0, 1.0)).rgb +
+                texture(uSrc, clamp(uv + vec2(0.0, -t.y), 0.0, 1.0)).rgb +
+                texture(uSrc, clamp(uv + vec2(0.0,  t.y), 0.0, 1.0)).rgb) * 0.25;
+            rgb = clamp(rgb + amt * (rgb - blur), 0.0, 1.0);
+        }
     }
 
-    vec3 rgb = texture(uSrc, uv).rgb;
+    // ── Hue rotation ──────────────────────────────────────────────
+    // The source is already RGB (any colour pipeline), so we rotate the
+    // chroma the same way the OE demod does: RGB→YUV (BT.601), spin U/V by
+    // uHue·π, YUV→RGB with the OpenEmulator decoder matrix. Same convention
+    // as NtscPostProcessor so the knob behaves identically across modes.
+    if (uHue != 0.0) {
+        float Y = dot(rgb, vec3( 0.299,    0.587,    0.114));
+        float U = dot(rgb, vec3(-0.14713, -0.28886,  0.436));
+        float V = dot(rgb, vec3( 0.615,   -0.51499, -0.10001));
+        float a  = uHue * 3.14159265;
+        float cs = cos(a), sn = sin(a);
+        float Ur = U * cs - V * sn;
+        float Vr = U * sn + V * cs;
+        rgb = vec3(Y                 + 1.139883 * Vr,
+                   Y - 0.394642 * Ur - 0.580622 * Vr,
+                   Y + 2.032062 * Ur);
+    }
 
     // ── Brightness / contrast / saturation ────────────────────────
     rgb = (rgb - 0.5) * uContrast + 0.5 + uBrightness;
@@ -159,34 +203,73 @@ void main()
     rgb = mix(vec3(luma), rgb, clamp(uSaturation, 0.0, 4.0));
     rgb = clamp(rgb, 0.0, 1.0);
 
-    // ── Persistence (CRT phosphor decay) ──────────────────────────
-    vec3 prev = texture(uPrev, vUv).rgb;
-    rgb = max(rgb, prev * clamp(uPersistence, 0.0, 0.98));
-
-    // ── Scanlines (output is 2× vertical of source) ───────────────
+    // ── Scanlines (smooth beam, analytic anti-alias) ──────────────
+    // Logical scanline coordinate: 2 units per source row. fwidth() is how
+    // many scanline-units one OUTPUT pixel spans. Where the barrel warp
+    // compresses the picture (the curved edges) that rises past ~1 and a
+    // hard scanline pattern would alias into moiré, so we fade the
+    // modulation out exactly there. Because the pass now renders at the
+    // native on-screen resolution (see CrtEffectStack::process), this
+    // derivative is screen-pixel accurate — no resample beat downstream.
     float outRow = uv.y * (uSrcSize.y * 2.0);
-    float scan = 1.0 - uScanlines * fract(outRow * 0.5) * 2.0;
-    if (mod(floor(outRow), 2.0) < 1.0) scan = 1.0;
-    rgb *= scan;
+    float rowFw  = max(fwidth(outRow), 1e-4);
+    float scanAA = clamp(1.0 - (rowFw - 0.5) / 0.5, 0.0, 1.0); // 1 crisp → 0 alias
+    float beam   = 0.5 + 0.5 * cos(3.14159265 * outRow);       // period 2, smooth
+    rgb *= 1.0 - uScanlines * (1.0 - beam) * scanAA;
 
-    // ── Shadow mask (procedural, output-pixel space) ──────────────
+    // ── Shadow mask (procedural, analytic anti-alias) ─────────────
     if (uShadowMask != 0 && uShadowStrength > 0.0) {
-        float ox = uv.x * (uSrcSize.x * 2.0);
+        float oxBase = uv.x * (uSrcSize.x * 2.0);
+        // Triad period is 3 units; as one output pixel approaches a whole
+        // triad the mask is undersampled and would moiré, so fade it to
+        // neutral there. Keeps the mask crisp where the picture has room.
+        // Derivative taken on the base coord (before the dot-mask vertical
+        // stagger) so a row-boundary jump doesn't spike fwidth.
+        float maskFw   = max(fwidth(oxBase), 1e-4);
+        float maskAA   = clamp(1.0 - (maskFw - 1.0) / 2.0, 0.0, 1.0);
+        float ox = oxBase;
         if (uShadowMask == 3) {
             ox += (mod(floor(outRow * 0.5), 2.0) < 1.0) ? 0.0 : 1.5;
         }
+        float strength = uShadowStrength * maskAA;
         int phase = int(mod(floor(ox), 3.0));
-        vec3 maskColor = vec3(0.0);
-        if      (phase == 0) maskColor = vec3(1.0, 0.0, 0.0);
-        else if (phase == 1) maskColor = vec3(0.0, 1.0, 0.0);
-        else                 maskColor = vec3(0.0, 0.0, 1.0);
-        vec3 atten = mix(vec3(1.0), maskColor, uShadowStrength);
+        // Lottes dark/light triplet (lottes.glsl): the lit channel is boosted
+        // to maskLight and the two off-channels dimmed to maskDark, so the
+        // triad preserves average luminance instead of crushing 2/3 channels
+        // to black (the old pure-primary mask over-saturated and darkened).
+        const float maskDark = 0.5, maskLight = 1.5;
+        vec3 mask = vec3(maskDark);
+        if      (phase == 0) mask.r = maskLight;
+        else if (phase == 1) mask.g = maskLight;
+        else                 mask.b = maskLight;
+        vec3 atten = mix(vec3(1.0), mask, strength);
         if (uShadowMask == 1 || uShadowMask == 3) {
+            // Triad/dot also gap horizontally — dim one row in three, gently.
             float vrow = mod(floor(outRow), 3.0);
-            if (vrow < 1.0) atten *= mix(1.0, 0.6, uShadowStrength);
+            if (vrow < 1.0) atten *= mix(1.0, 0.7, strength);
         }
         rgb *= atten;
     }
+
+    // ── Luminance gain (post-glass) ───────────────────────────────
+    // Re-brighten what scanlines/mask dimmed (OpenEmulator's luminanceGain).
+    rgb *= uLuminanceGain;
+
+    rgb *= edgeMask;
+
+    // ── Persistence (CRT phosphor decay) ──────────────────────────
+    // Applied LAST, on the final glass-corrected colour, feeding back the
+    // final colour. When persistence ran before the scanline/mask multiply
+    // (and fed back the post-glass output) the trail was re-attenuated by
+    // the glass every frame, crushing the afterglow to near-invisible.
+    // Decaying the displayed colour instead gives a clean exponential
+    // afterglow that the slider visibly controls in every mode.
+    // The -0.5/256 floor (OpenEmulator) drags faint trails all the way to
+    // black in finite time instead of lingering forever at the quantization
+    // step. (Slider stays a per-frame retention factor — POM2's documented
+    // punchy model — rather than OE's seconds time-constant.)
+    vec3 prev = texture(uPrev, vUv).rgb;
+    rgb = max(rgb, prev * clamp(uPersistence, 0.0, 0.98) - 0.5 / 256.0);
 
     fragColor = vec4(rgb, 1.0);
 }
@@ -218,11 +301,14 @@ bool CrtEffectStack::initialize()
     uBrightness  = glGetUniformLocation(program, "uBrightness");
     uContrast    = glGetUniformLocation(program, "uContrast");
     uSaturation  = glGetUniformLocation(program, "uSaturation");
+    uHue         = glGetUniformLocation(program, "uHue");
+    uSharpness   = glGetUniformLocation(program, "uSharpness");
     uPersistence = glGetUniformLocation(program, "uPersistence");
     uScanlines   = glGetUniformLocation(program, "uScanlines");
     uBarrel      = glGetUniformLocation(program, "uBarrel");
     uShadowMask  = glGetUniformLocation(program, "uShadowMask");
     uShadowStr   = glGetUniformLocation(program, "uShadowStrength");
+    uLuminanceGain = glGetUniformLocation(program, "uLuminanceGain");
 
     const float verts[] = {
         -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
@@ -244,10 +330,13 @@ bool CrtEffectStack::initialize()
 
 bool CrtEffectStack::createTextures(int w, int h)
 {
-    srcW_ = w;
-    srcH_ = h;
-    outW  = w;
-    outH  = h * 2;   // 2× vertical for scanlines
+    // w,h are the OUTPUT (on-screen) dimensions. Rendering the effect pass at
+    // native screen resolution is what lets the scanline / shadow-mask
+    // patterns be sampled finely enough to be analytically anti-aliased
+    // (fwidth in the shader) instead of moiréing — and avoids a second
+    // resample when ImGui blits the result 1:1.
+    outW = w;
+    outH = h;
 
     glGenFramebuffers(2, fbo);
     glGenTextures(2, outputTex);
@@ -277,15 +366,25 @@ bool CrtEffectStack::createTextures(int w, int h)
     return true;
 }
 
-unsigned int CrtEffectStack::process(unsigned int srcTex, int w, int h)
+unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
+                                     int dstW, int dstH)
 {
     if (!ready || srcTex == 0) return 0;
 
+    dstW = std::max(1, dstW);
+    dstH = std::max(1, dstH);
+
+    // srcW_/srcH_ are the LOGICAL source dimensions (drive uSrcSize, i.e. the
+    // scanline/mask frequency tied to source rows); outW/outH are the output
+    // FBO size = the on-screen target. They are now decoupled.
+    srcW_ = srcW;
+    srcH_ = srcH;
+
     if (outputTex[0] == 0) {
-        if (!createTextures(w, h)) { ready = false; return 0; }
-    } else if (w != srcW_ || h != srcH_) {
-        // 80-col toggled the framebuffer width — resize the ping-pong pair.
-        srcW_ = w; srcH_ = h; outW = w; outH = h * 2;
+        if (!createTextures(dstW, dstH)) { ready = false; return 0; }
+    } else if (dstW != outW || dstH != outH) {
+        // Window/zoom changed (or 80-col toggled) — resize the ping-pong pair.
+        outW = dstW; outH = dstH;
         for (int i = 0; i < 2; ++i) {
             glBindTexture(GL_TEXTURE_2D, outputTex[i]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, outW, outH, 0,
@@ -320,15 +419,18 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int w, int h)
     glBindTexture(GL_TEXTURE_2D, firstFrame ? srcTex : outputTex[readIdx]);
     glUniform1i(uPrevFrame, 1);
 
-    if (uSrcSize     >= 0) glUniform2f(uSrcSize, float(w), float(h));
+    if (uSrcSize     >= 0) glUniform2f(uSrcSize, float(srcW), float(srcH));
     if (uBrightness  >= 0) glUniform1f(uBrightness,  params.brightness);
     if (uContrast    >= 0) glUniform1f(uContrast,    params.contrast);
     if (uSaturation  >= 0) glUniform1f(uSaturation,  params.saturation);
+    if (uHue         >= 0) glUniform1f(uHue,         params.hue);
+    if (uSharpness   >= 0) glUniform1f(uSharpness,   params.sharpness);
     if (uPersistence >= 0) glUniform1f(uPersistence, params.persistence);
     if (uScanlines   >= 0) glUniform1f(uScanlines,   params.scanlines);
     if (uBarrel      >= 0) glUniform1f(uBarrel,      params.barrel);
     if (uShadowMask  >= 0) glUniform1i(uShadowMask,  static_cast<int>(params.shadowMask));
     if (uShadowStr   >= 0) glUniform1f(uShadowStr,   params.shadowMaskStrength);
+    if (uLuminanceGain >= 0) glUniform1f(uLuminanceGain, params.luminanceGain);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);

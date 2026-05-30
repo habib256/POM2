@@ -234,10 +234,15 @@ private:
     // shadow-mask / barrel / persistence / BCS layers to the framebuffer of
     // ANY colour mode (not just ColorCompositeOE). Opt-in via the menu;
     // shares the NtscParams driven by the CRT Settings panel. Lazily
-    // initialised. Default OFF so existing behaviour is untouched.
+    // initialised. Always runs for non-OE pipelines (OE bakes its own
+    // effects in its demod shader).
     std::unique_ptr<pom2::CrtEffectStack> crtFx;
-    bool         crtEffectsAllModes = false;
     bool         showNtscSettings = false;
+    // Master ON/OFF for the whole CRT effect stack (the button at the top of
+    // the CRT Settings window). When off, every pipeline presents its raw
+    // framebuffer — the colour demod still runs, only the CRT glass is
+    // bypassed. Persisted under `crt_effects_enabled`.
+    bool         crtEffectsEnabled = true;
 
     // Presentation aspect (Phase 6). The Apple II's 280×192 active area was
     // shown on a 4:3 CRT → its pixels are NOT square. Square = 1:1 logical
@@ -245,7 +250,6 @@ private:
     // Integer = square snapped to an integer multiple (no scaling shimmer).
     enum class AspectMode { Square, Crt43, Integer };
     AspectMode   aspectMode = AspectMode::Square;
-    float        pixelScale    = 2.0f;
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
     bool         showMemoryBarH     = false;   // wide-short horizontal variant
@@ -519,6 +523,7 @@ private:
     int  ensureHdvCardForBoot();
 
     void renderMenuBar();
+    void renderStatusBar();
     void renderScreenWindow();
     /// Draw the Apple II framebuffer texture into the current ImGui
     /// window's content region, scaled + centred (letterboxed) to preserve

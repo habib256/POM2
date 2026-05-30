@@ -184,27 +184,33 @@ void main()
     // it could be coaxed to get green/violet right via a phase hack but
     // never blue/orange (blue rendered orange). Probe-calibrated against
     // the MAME LUT: with the YUV matrix the correct phase offset is 0.
-    float sigmaY = 0.8;
+    // Luma low-pass: OpenEmulator-style 17-tap FIR — a Dolph-Chebyshev(50 dB)
+    // window × sinc lowpass at fc = 2.0 MHz (0.1397 cyc/sample). The old narrow
+    // gaussian (sigmaY=0.8) passed |H(fs/4)| ≈ 0.46 of the colour subcarrier
+    // straight into luma → dot-crawl / luma-chroma crosstalk. This FIR NOTCHES
+    // fs/4 (|H(0.25)| ≈ 0.05, DC = 1.000). Symmetric coeffs, lumaK[0]=centre …
+    // lumaK[8]=edge, pre-normalised to sum 1 (recipe: chebyshev(17,50)·sinc).
+    float lumaK[9] = float[](0.26779, 0.21724, 0.10738, 0.02026, -0.00156,
+                             0.01667, 0.02520, 0.00487, -0.02397);
+    // Chroma stays a gaussian: it already rejects fs/4 well (|H(0.25)| ≈ 0.02),
+    // whereas a 17-tap windowed-sinc at OE's 0.6 MHz chroma cutoff can't match
+    // that stopband. Sharpness narrows/widens the chroma passband.
     float sigmaC = mix(2.5, 1.0, clamp(uSharpness, 0.0, 1.0));
 
     const int N = 8;
     float Y = 0.0, U = 0.0, V = 0.0;
-    float wYs = 0.0, wCs = 0.0;
+    float wCs = 0.0;
     for (int i = -N; i <= N; ++i) {
         float fx = sigX + float(i);
         float s  = sampleSignal(fx, sigY);
         float dy = float(i);
-        float wY = exp(-0.5 * dy * dy / (sigmaY * sigmaY));
         float wC = exp(-0.5 * dy * dy / (sigmaC * sigmaC));
-
         float phase = PI * 0.5 * floor(fx);   // 4×-fsc; phase at integer sample
-        Y   += s * wY;
+        Y   += s * lumaK[i < 0 ? -i : i];     // FIR luma (sum=1, notches fs/4)
         U   += s * sin(phase) * wC * 2.0;
         V   += s * cos(phase) * wC * 2.0 * palQSign;
-        wYs += wY;
         wCs += wC;
     }
-    Y /= wYs;
     U /= wCs;
     V /= wCs;
 

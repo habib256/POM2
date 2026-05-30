@@ -2878,3 +2878,22 @@ endif()
 if(WIN32)
     target_link_libraries(oe_signal_view PRIVATE winmm)
 endif()
+
+# ─── CRT barrel/scanline moiré viewer (diagnostic, EXCLUDE_FROM_ALL, GL) ───
+# Compiles the CrtEffectStack shader offscreen and renders a barrel + scanline
+# + shadow-mask test (optional PPM source via argv[1]) → /tmp/crt_barrel_*.ppm.
+# Used to confirm the analytic-AA fix kills barrel moiré. No CI hash (the GL
+# path is FP/driver-dependent); inspect the PPMs by eye.
+add_executable(crt_barrel_view EXCLUDE_FROM_ALL
+    crt_barrel_view.cpp
+    ${CMAKE_SOURCE_DIR}/src/CrtEffectStack.cpp
+    ${CMAKE_SOURCE_DIR}/src/OpenGLShader.cpp
+)
+target_include_directories(crt_barrel_view PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(crt_barrel_view PRIVATE ${GLFW_TARGET} ${OPENGL_LIBRARIES})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(crt_barrel_view PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    target_link_libraries(crt_barrel_view PRIVATE winmm)
+endif()

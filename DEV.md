@@ -262,9 +262,16 @@ texture and runs `NtscPostProcessor::process()`. The fragment shader
 (`NtscPostProcessor.cpp` `kFragmentShader`):
 
 1. Optional barrel distortion of UVs.
-2. For each output fragment, gaussian-weighted accumulation of 17
-   signal taps. Luma uses a narrow sigma (~0.8 samples); chroma uses
-   a wide sigma controlled by the **sharpness** knob.
+2. For each output fragment, 17-tap accumulation of signal taps.
+   **Luma** uses an OpenEmulator-style FIR — a Dolph-Chebyshev(50 dB)
+   window × sinc lowpass at fc = 2.0 MHz, hard-coded as 9 symmetric
+   coeffs (`lumaK`) — which **notches the fs/4 colour subcarrier**
+   (`|H(0.25)|` ≈ 0.05) instead of leaking ~46 % of it into luma as the
+   old narrow gaussian did (dot-crawl). **Chroma** stays a gaussian
+   (already rejects fs/4 at `|H(0.25)|` ≈ 0.02; a 17-tap windowed-sinc at
+   OE's 0.6 MHz chroma cutoff can't match that stopband), its width set
+   by the **sharpness** knob. Same `lumaK` is mirrored in the CPU path
+   (`Apple2Display::renderCompositeOeCpu`).
 3. Chroma is recovered by multiplying each tap with
    `sin(π/2 · x)` and `cos(π/2 · x)` — Apple II's 4× subcarrier
    alignment means phase is just the dot index.
@@ -314,42 +321,107 @@ falls back to the regular `ColorNTSC` LUT framebuffer for the mode —
 the menu entry stays usable but the result is indistinguishable
 from `ColorNTSC` until the GL state catches up.
 
+> **Note:** since the Phase-4 split, `NtscPostProcessor` is **demod-only**
+> (steps 2–4, 8 above). The CRT *glass* — barrel geometry (step 1),
+> persistence (5), scanlines (6) and shadow mask (7) — moved to the shared
+> `CrtEffectStack` (below), so OE chains into it like every other mode.
+
+### Universal CRT effect stack (`CrtEffectStack`)
+
+`src/CrtEffectStack.{h,cpp}` applies the CRT glass on top of *any* RGBA
+framebuffer (MAME LUT, Chat Mauve, mono, AppleWin) — gated by "CRT effects
+on all modes" — and is the single effect implementation OE also chains into.
+Effect order in the fragment shader: barrel → hue → BCS → scanlines →
+shadow mask → luminance gain → edge-mask → persistence (ping-pong FBO, applied
+last so the afterglow isn't re-attenuated by the glass each frame).
+
+**Glass details (2026-05 parity pass).**
+- **Hue** is applied here (RGB→YUV BT.601, rotate U/V by `hue·π`, YUV→RGB) so
+  the knob works on every mode, not just OE. The OE demod already rotates hue,
+  so MainWindow passes `hue = 0` to the stack on the OE path (no double spin).
+- **Shadow mask** uses the Lottes dark/light triplet (off-channels → 0.5, lit
+  channel → 1.5) so the triad preserves average luminance, instead of the old
+  pure-primary `(1,0,0)` mask that crushed 2/3 channels and over-darkened.
+- **Luminance gain** (`luminanceGain`, default 1.0) re-brightens post-mask,
+  mirroring OpenEmulator's stage — pairs with scanlines/mask to recover
+  brightness.
+- **Defaults are deliberately punchier than OpenEmulator** (`scanlines 0.25`,
+  `shadowMaskStrength 0.5`, `persistence 0.4` vs OE's ~0.05/0.05/0). This is an
+  intentional product choice (a visible CRT look out of the box), not an
+  oversight; the dark/light mask keeps strength 0.5 tasteful. OE-faithful 0.05
+  values remain available via the sliders.
+
+**Anti-moiré (2026-05).** Barrel distortion warps the UVs non-linearly; the
+scanline (period = 2 source-rows) and shadow-mask (period = 3 units) patterns
+are high-frequency, so where the warp compresses the picture they exceed the
+output Nyquist and alias into moiré "lines". Two-part fix:
+
+- `MainWindow::drawScreenImage()` computes the on-screen target size **up
+  front** and passes it to `CrtEffectStack::process(src, srcW, srcH, dstW,
+  dstH)`, which renders the pass at **native output resolution** (decoupled
+  from the source dims, which now only drive the pattern *frequency* via
+  `uSrcSize`). ImGui then blits the result 1:1 — no second resample beat.
+- The shader **analytically anti-aliases** the patterns: `fwidth()` of the
+  scanline/mask coordinate measures how many pattern-units one output pixel
+  spans; as that approaches Nyquist (which is exactly where the warp
+  compresses) the modulation fades smoothly to neutral instead of moiréing.
+  Scanlines also use a smooth `cos` beam rather than a hard `fract` edge, and
+  the curved barrel border is a soft `fwidth`-based edge mask (no jaggies).
+
+Inspect via the offscreen diagnostic `tests/crt_barrel_view`
+(`EXCLUDE_FROM_ALL`): renders a barrel + scanline + mask test (optional PPM
+source) to `/tmp/crt_barrel_{on,off}.ppm`. No CI hash — the GL path is
+FP/driver-dependent, so it's eyeballed, not pinned.
+
 ### AppleWin NTSC (`ColorAppleWin`)
 
-Re-implementation of AppleWin's CPU-side NTSC composite simulation
-(`source/NTSC.cpp` by Sheldon Simms / Tom Charlesworth / Michael
-Pohoreski — GPL v2+). POM2 rewrites the algorithm from the public
-description; no AppleWin source is copied, POM2 keeps its license.
+**Faithful port** of AppleWin's CPU-side NTSC composite simulation
+(`source/NTSC.cpp::initChromaPhaseTables`, by Sheldon Simms / Tom
+Charlesworth / Michael Pohoreski — GPL v2+). Per the project convention
+(AppleWin = source of truth) the algorithm, IIR filter coefficients
+(`NTSC.cpp:115-132`), YIQ→RGB matrix and white/black/grey special-casing
+are ported line-for-line and cited inline in `src/AppleWinNtsc.cpp`.
 
 Consumes the same 14.318 MHz luminance bitstream `fillCompositeSignal`
-generates for `ColorCompositeOE`. Decoding happens through a static
-`chromaLut[4][4096]` (~64 KB) built once at first use by
-`AppleWinNtsc::ensureInitialized()` (`src/AppleWinNtsc.cpp`):
+generates for `ColorCompositeOE`. Decoding happens through static
+`[4][4096]` phase tables built once at first use by
+`AppleWinNtsc::ensureInitialized()`:
 
-- Walk the 12-bit history sample by sample. The window is *centred* on
-  the output pixel (`kCenterDelay = 6`, mirror-padded at the line
-  edges) so chroma extraction sees both past and future context.
-- Per (phase, 12-bit history): compute luma as a narrow gaussian
-  average (sigma 1.5) and chroma I/Q by DC-removed wide gaussian
-  (sigma 3.0) projected onto sin/cos at the local subcarrier phase
-  (π/2 per dot — Apple II's 4× alignment). Saturation boost ×10
-  compensates the broad filter's attenuation.
-- YIQ → RGB via the standard FCC matrix (same one
-  `NtscPostProcessor.cpp` uses on the GPU side), packed RGBA.
+- For each (colour phase 0..3, 12-bit signal history): walk the 12 bits
+  *oldest first*, **2× oversampled** (`phi += 45°` per half-step, 90°
+  per dot — Apple II's 4× subcarrier alignment), through three cascaded
+  2-pole IIR filters: `initFilterSignal` (input low-pass),
+  `initFilterChroma` (band-pass @ fs/4 — the inverted-`x[0]` zero is what
+  actually isolates chroma), `initFilterLuma0/1` (luma low-pass).
+- Quadrature-demodulate chroma (cos→I, sin→Q, single-pole `/8`
+  smoothing), then YIQ→RGB (FCC matrix). `y0` → Monitor table; `y1`
+  (luma of *signal − chroma*, a comb) → Color-TV table.
+- Runtime is a pure causal 12-bit shift register + one LUT lookup per
+  dot (`NTSC.cpp:331`), no window-centring.
+
+> **Why the rewrite (2026-05):** the prior gaussian-moving-average
+> approximation computed luma with a window too narrow to notch the
+> subcarrier, so luma absorbed the subcarrier and `signal − luma`
+> cancelled chroma inside steady colour fills — the "almost no colour"
+> bug (only edge fringes survived). The dedicated band-pass fixes it.
 
 Three sub-modes via `Apple2Display::AppleWinSubMode`:
 
-- **Monitor** — straight LUT lookup. Sharp, full composite artifacts.
-- **TV** — Monitor + 50% blend with the previous frame's same scanline
-  (`appleWinPrev80` buffer in `Apple2Display`). Approximates the
-  vertical phosphor persistence + comb-filter blur of a consumer TV.
-- **Idealized** — bypass the IIR LUT entirely, use a 4-phase × 16
-  nibble palette table (`idealizedLut`) with chroma boost ×8. No
-  transient ringing, no chroma roll-off — modern flat-panel-friendly.
+- **Monitor** — `g_hueMonitor` (luma y0). Sharp, full composite artifacts.
+- **TV** — `g_hueColorTV` (comb luma y1) + 50% blend with the previous
+  frame's same scanline (`appleWinPrev80`), approximating phosphor
+  persistence + comb-filter blur of a consumer TV.
+- **Idealized** — POM2-only (no AppleWin equivalent): Monitor luma with
+  chroma boost ×1.6 for a punchy flat-panel look.
+
+`CYCLESTART = 45°` aligns hues to the MAME reference out of the box (no
+extra phase calibration); `rebuildForPhase()` adds an offset for the
+render tool's sweep.
 
 Pinned by `applewin_ntsc_smoke` (idempotent init, all-black/all-white
-sanity, $7F neutral luma, Idealized artifact non-black, Tv convergence
-toward Monitor, multi-line wrapping).
+sanity, $7F neutral luma, **$2A solid-fill saturation guard** — the
+regression test for the no-colour bug, Idealized artifact non-black, Tv
+convergence, multi-line wrapping).
 
 Full mode-by-mode comparison vs MAME / OpenEmulator / hardware lives
 in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).

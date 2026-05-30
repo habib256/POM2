@@ -8,6 +8,73 @@ courante → `DEV.md`.
 
 ## 2026-05-30
 
+- **Audit de parité vidéo (MAME/AppleWin/OpenEmulator) + correctifs.** Audit
+  multi-agents de 9 sous-systèmes vidéo/couleur/effets (rapport :
+  `docs/video_parity_audit_2026-05-30.md`). Correctifs appliqués :
+  - **🔴 Bug `ColorComp4Bit` (square filter) corrigé** — l'origine de nibble
+    (`>>kContextBits` au lieu de `>>kContextBits-1`) et la rotation de phase
+    (`absX`/`absX+1` au lieu de `absX-1`/`absX`) divergeaient de MAME sur
+    ~50 % des dots. Correction couplée → **bit-exact contre un oracle MAME**
+    (0/2,2 M dots), confirmée visuellement (teintes alignées sur ColorNTSC).
+    Hashes `*/4bit` du golden régénérés. (`Apple2Display.cpp:1104,1451`.)
+  - **OE composite : notch de sous-porteuse en luma.** Le passe-bas luma OE
+    passe d'une gaussienne (qui laissait fuir ~46 % de la sous-porteuse fs/4 →
+    dot-crawl) à un **FIR 17-taps Dolph-Chebyshev(50 dB)×sinc @ 2 MHz** qui
+    notche fs/4 (`|H(0.25)|` 0.46→0.05). Chroma reste gaussienne (rejet fs/4
+    déjà bon). Appliqué shader GPU + chemin CPU. (`NtscPostProcessor.cpp`,
+    `Apple2Display.cpp`.)
+  - **Shadow-mask dark/light (Lottes)** : triplet 0.5/1.5 qui préserve la
+    luminance moyenne au lieu d'écraser 2/3 canaux à 0 (sur-assombrissement).
+  - **Gain de luminance post-glass** (`luminanceGain`, nouveau slider, défaut
+    1.0) pour re-éclairer sous scanlines/masque. Défauts CRT volontairement
+    punchy assumés et documentés (DEV.md).
+  - **Cadence de flash 15→16 frames** (`Apple2Display.h`) — aligne exactement
+    MAME-IIe `& 0x10` + AppleWin (était ~6,7 % trop rapide).
+- **Curseur Hue fonctionnel sur tous les modes (plus seulement OpenEmulator).**
+  La teinte n'était appliquée que dans le shader de démodulation OE ; pour les
+  autres modes (AppleWin, ColorNTSC, Chat Mauve…) le framebuffer est déjà en
+  RGB et passe par `CrtEffectStack`, qui **ignorait** le knob hue → curseur
+  sans effet. Ajout d'une rotation de chroma dans `CrtEffectStack` (RGB→YUV
+  BT.601, rotation U/V de `hue·π`, YUV→RGB matrice OpenEmulator — même
+  convention que `NtscPostProcessor`, donc comportement identique partout).
+  En mode OE la teinte reste appliquée au démodulateur ; le hue passé à
+  `CrtEffectStack` est mis à 0 pour éviter une double rotation. Bannière du
+  panneau « CRT Settings » corrigée (elle prétendait à tort que les knobs
+  n'agissaient que sur OE). Sharpness et PAL restent OE-only (étapes de
+  démodulation, sans objet sur du RGB). (`src/CrtEffectStack.{h,cpp}`,
+  `src/MainWindow.cpp`.)
+- **Effet barrel : fin des moirées / lignes parasites.** La distorsion barrel
+  déforme les UV de façon non-linéaire ; les motifs haute-fréquence (scanlines
+  période 2 lignes-source, masque d'ombre période 3) dépassaient alors le
+  Nyquist de la cible aux endroits où la courbure compresse l'image → aliasing
+  en bandes de moiré. Correction en deux temps dans `CrtEffectStack` :
+  (1) la passe d'effets est désormais rendue à la **résolution écran native**
+  — `MainWindow::drawScreenImage()` calcule la taille cible en amont et la
+  passe à `process(src, srcW, srcH, dstW, dstH)` (les dims source ne servent
+  plus qu'à la *fréquence* des motifs via `uSrcSize`) ; ImGui blitte ensuite
+  1:1, sans second ré-échantillonnage ; (2) le shader **anti-aliase
+  analytiquement** scanlines et masque via `fwidth()` — là où la courbure
+  comprime (donc là où ça moirerait), la modulation se fond doucement vers le
+  neutre. Scanlines en faisceau `cos` lisse (au lieu d'un `fract` dur) et bord
+  barrel adouci par un masque `fwidth`. Diagnostic : `tests/crt_barrel_view`.
+  (`src/CrtEffectStack.{h,cpp}`, `src/MainWindow.cpp`.)
+- **`ColorAppleWin` : couleur restaurée — port fidèle de `NTSC.cpp`.** Le
+  mode AppleWin NTSC ne sortait quasiment **aucune couleur** (aplats en
+  damier noir/blanc, teinte seulement sur les bords). Cause : l'ancienne
+  approximation gaussienne calculait la luma avec une fenêtre trop étroite
+  (σ=1.5) pour notcher la sous-porteuse fs/4 ; la luma absorbait donc la
+  sous-porteuse, et la démod `signal − luma` annulait la chroma à
+  l'intérieur des aplats stables — seuls les transitoires de bord
+  survivaient. Remplacé par un **port ligne-à-ligne** de
+  `AppleWin source/NTSC.cpp::initChromaPhaseTables` : trois filtres IIR
+  2-pôles (signal passe-bas, chroma **passe-bande @ fs/4**, luma passe-bas),
+  sur-échantillonnage ×2, démod en quadrature `/8`, matrice FCC, cas
+  spéciaux blanc/noir/gris. Coefficients et matrice cités depuis
+  `NTSC.cpp:115-132 / 833-841`. `CYCLESTART = 45°` aligne les teintes sur
+  la référence MAME sans calibration. Tables séparées Monitor (luma y0) /
+  Color-TV (comb y1). Garde anti-régression : `$2A` plein doit être saturé
+  (`applewin_ntsc_smoke`). Captures `docs/img/total_replay_09/10/11`
+  régénérées. (`src/AppleWinNtsc.{h,cpp}`.)
 - **OpenEmulator composite accessible en CPU *et* GPU dans l'UI.** Nouveau
   mode `ColorCompositeOECpu` : la même démodulation Y/I/Q OpenEmulator,
   calculée **sur le CPU** dans le framebuffer (comme AppleWin) au lieu du

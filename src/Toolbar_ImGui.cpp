@@ -263,20 +263,25 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     }
     ImGui::SameLine();
     {
-        // Memory viewer is a toggle — render the icon with a light tint
-        // when the viewer is currently visible so the state is obvious
+        // Memory Map Grid is a toggle — render the icon with a light tint
+        // when the grid is currently visible so the state is obvious
         // at a glance.
-        if (snap.memViewerVisible) {
+        if (snap.memoryGridVisible) {
             ImGui::PushStyleColor(ImGuiCol_Button,
                 ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
         }
-        if (iconButton({ ICON_FA_MEMORY,   "MemViewer",
-                         snap.memViewerVisible
-                             ? "Memory viewer (visible — click to hide)"
-                             : "Memory viewer (click to show)" })) {
-            r.requestMemViewerToggle = true;
+        if (iconButton({ ICON_FA_BORDER_ALL, "MemGrid",
+                         snap.memoryGridVisible
+                             ? "MemoryGrid viewer (visible — click to hide)"
+                             : "MemoryGrid viewer (click to show)" })) {
+            r.requestMemoryGridToggle = true;
         }
-        if (snap.memViewerVisible) ImGui::PopStyleColor();
+        if (snap.memoryGridVisible) ImGui::PopStyleColor();
+    }
+    ImGui::SameLine();
+    if (iconButton({ ICON_FA_CIRCLE_INFO, "About",
+                     "About POM2" })) {
+        r.requestAbout = true;
     }
 
     ImGui::End();

@@ -272,17 +272,24 @@ void Apple2Display::renderCompositeOeCpu()
 {
     constexpr float kPi = 3.14159265358979f;
     constexpr int   N = 8;
-    const float sigmaY = 0.8f;
     const float sigmaC = 1.75f;
     const int   sw = kSignalWidth, sh = kSignalHeight;   // 560 × 192
     const uint8_t* sig = signalBuf.data();
 
-    float wY[2 * N + 1], wC[2 * N + 1], wYtot = 0.0f, wCtot = 0.0f;
+    // Luma low-pass: OpenEmulator-style 17-tap FIR (Dolph-Chebyshev(50 dB)
+    // window × sinc lowpass @ 2.0 MHz) — notches the fs/4 colour subcarrier
+    // out of luma (|H(0.25)| ≈ 0.05) where the old gaussian (sigmaY=0.8) leaked
+    // ~46% → dot-crawl. Symmetric, lumaK[0]=centre … lumaK[8]=edge, sum = 1
+    // (must match the GPU shader in NtscPostProcessor.cpp). Chroma stays
+    // gaussian (already rejects fs/4 at |H(0.25)| ≈ 0.02).
+    static const float lumaK[N + 1] = {
+        0.26779f, 0.21724f, 0.10738f, 0.02026f, -0.00156f,
+        0.01667f, 0.02520f, 0.00487f, -0.02397f
+    };
+    float wC[2 * N + 1], wCtot = 0.0f;
     for (int i = -N; i <= N; ++i) {
         const float d = static_cast<float>(i);
-        wY[i + N] = std::exp(-0.5f * d * d / (sigmaY * sigmaY));
         wC[i + N] = std::exp(-0.5f * d * d / (sigmaC * sigmaC));
-        wYtot += wY[i + N];
         wCtot += wC[i + N];
     }
     // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; phase
@@ -304,11 +311,11 @@ void Apple2Display::renderCompositeOeCpu()
                 if (xi < 0 || xi >= sw) continue;
                 const float s = row[xi] ? 1.0f : 0.0f;
                 const int   k = xi & 3;
-                Y += s * wY[i + N];
+                Y += s * lumaK[i < 0 ? -i : i];   // FIR luma (sum=1, notches fs/4)
                 U += s * sinP[k] * wC[i + N] * 2.0f;
                 V += s * cosP[k] * wC[i + N] * 2.0f;
             }
-            Y /= wYtot; U /= wCtot; V /= wCtot;
+            U /= wCtot; V /= wCtot;
             // YUV → RGB (OpenEmulator libemulation OpenGLCanvas.cpp).
             float r = Y                 + 1.139883f * V;
             float g = Y - 0.394642f * U - 0.580622f * V;
@@ -650,9 +657,9 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
     const uint8_t* ram = mem.data();
 
     // Flash phase: 0 = invert as-stored, 1 = flip back to normal. Toggles
-    // every kFlashHalfPeriodFrames frames. Half-period = 15 frames @ 60 Hz
-    // → 2 Hz cycle, matching MAME's `screen.frame_number() & 0x10` (II/II+
-    // 555-timer approximation).
+    // every kFlashHalfPeriodFrames (16) frames → 32-frame cycle ≈ 1.875 Hz,
+    // matching MAME IIe's `frame_number() & 0x10` and AppleWin's
+    // `(++counter & 0xF)==0`.
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
 
     // Char ROM path: when a real character ROM is loaded, render each
@@ -1102,19 +1109,20 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
                     const int absX = col * 14 + b;
                     unsigned loresIdx;
                     if (squareFilter) {
-                        // 4-bit square filter (MAME composite_color_mode 2:
-                        // rotl4(w & 0x0f, x + is_80_column - 1)). POM2's
-                        // window carries kContextBits of LEFT context, so the
-                        // current 4 dots are (w >> kContextBits) and the phase
-                        // rotation is absX — identical to the mode-0 LUT path,
-                        // which is the known-good reference. (MAME's literal
-                        // "-1" offsets its own w&0x0f origin; folding it into
-                        // POM2's window origin gives the same colour. The old
-                        // absX-1 here was a 1-dot/90° artifact-hue rotation —
-                        // it turned $01's purple into orange.)
-                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
+                        // 4-bit square filter — literal port of MAME
+                        // composite_color_mode 2: rotl4(w & 0x0f,
+                        // x + is_80_column - 1) (apple2video.cpp:487-494).
+                        // is_80_column = 0 for HGR, so the rotation is
+                        // absX - 1. POM2's window carries kContextBits of LEFT
+                        // context; MAME's current 4 dots sit one bit lower than
+                        // the LUT window, so the nibble is (w >> kContextBits-1)
+                        // — NOT (w >> kContextBits). The two corrections must go
+                        // together: matched against a MAME oracle this is
+                        // bit-exact (0/2.2M dots), whereas (>>kContextBits,absX)
+                        // diverged on ~50% of interior dots.
+                        const unsigned nibble = (w >> (kContextBits - 1)) & 0x0Fu;
                         loresIdx = rotl4b(static_cast<uint8_t>(nibble | (nibble << 4)),
-                                          static_cast<unsigned>(absX));
+                                          static_cast<unsigned>(absX - 1));
                     } else {
                         const uint8_t lutEntry = kArtifactColorLut[lutRow][w & 0x7Fu];
                         loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
@@ -1449,14 +1457,16 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
                     const int absX = col * 14 + b;
                     unsigned loresIdx;
                     if (squareFilter) {
-                        // Mode 2 (square): current 4 dots = (w>>kContextBits),
-                        // phase rotation = the mode-0 DHGR rotation absX+1
-                        // (is_80_column=1). Matches the LUT path's hue; the old
-                        // absX (no +1) was a 1-dot artifact-hue rotation.
-                        const unsigned nibble = (w >> kContextBits) & 0x0Fu;
+                        // Mode 2 (square) — literal MAME rotl4(w & 0x0f,
+                        // x + is_80_column - 1) with is_80_column = 1 for DHGR,
+                        // so the rotation is absX (= absX + 1 - 1). The nibble
+                        // origin is (w >> kContextBits-1), one bit below the LUT
+                        // window — same coupled correction as the HGR path.
+                        // MAME-oracle bit-exact (0/2.2M dots).
+                        const unsigned nibble = (w >> (kContextBits - 1)) & 0x0Fu;
                         loresIdx = rotl4b(
                             static_cast<uint8_t>(nibble | (nibble << 4)),
-                            static_cast<unsigned>(absX + 1));
+                            static_cast<unsigned>(absX));
                     } else {
                         const uint8_t lutEntry =
                             kArtifactColorLut[lutRow][w & 0x7Fu];

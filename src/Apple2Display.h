@@ -165,7 +165,7 @@ private:
     bool useFrame80     = false;     // true for the current frame when 80-col
     const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
     HiResMode hiResMode = HiResMode::ColorNTSC;
-    AppleWinSubMode appleWinSubMode = AppleWinSubMode::Monitor;
+    AppleWinSubMode appleWinSubMode = AppleWinSubMode::Tv;
     LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
     // Previous-frame RGBA buffer used by ColorAppleWin's Tv sub-mode for
     // its 50% line-blur. Same dimensions as `frame` / `frame80`; one set
@@ -192,10 +192,11 @@ private:
     // and inverse-blinking spaces). Wraps freely; only the parity of
     // (frameCounter / kFlashHalfPeriodFrames) is read.
     uint32_t frameCounter = 0;
-    // Half-period of the inverse-flashing animation. 15 frames @ 60 Hz =
-    // 250 ms → 2 Hz cycle, matching MAME's `screen.frame_number() & 0x10`
-    // model (Apple II/II+ 555-timer).
-    static constexpr uint32_t kFlashHalfPeriodFrames = 15;
+    // Half-period of the inverse-flashing animation. 16 frames @ 60 Hz →
+    // 32-frame cycle ≈ 1.875 Hz, matching MAME IIe's `frame_number() & 0x10`
+    // (toggles every 16 frames) and AppleWin's `(++counter & 0xF)==0`. (Was 15
+    // — ~6.7% too fast and inconsistent with the cited & 0x10 model.)
+    static constexpr uint32_t kFlashHalfPeriodFrames = 16;
 
     void renderText  (Memory& mem, int firstRow, int lastRow);
     void renderLoRes (Memory& mem, int firstRow, int lastRow);

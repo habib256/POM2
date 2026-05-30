@@ -57,6 +57,13 @@ struct NtscParams
     ShadowMask shadowMask         = ShadowMask::Off;
     float      shadowMaskStrength = 0.5f;  // 0..1
 
+    // Post-glass luminance gain (multiplicative, applied after the shadow
+    // mask). Re-brightens the picture that scanlines + mask necessarily dim,
+    // mirroring OpenEmulator's `luminanceGain` stage. 1.0 = neutral; raise
+    // toward ~1.5 to compensate heavy scanlines/mask. Only used by the
+    // CrtEffectStack glass pass.
+    float luminanceGain = 1.0f;  // 1.0..2.0
+
     // PAL composite mode: alternates the Q-subcarrier sign every other
     // scanline (line-phase alternation). On a real PAL TV this cancels
     // hue errors at the cost of vertical chroma resolution; here it

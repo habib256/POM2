@@ -1,10 +1,36 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
-// AppleWin-style NTSC simulation. See AppleWinNtsc.h for the algorithm
-// summary and credits — this file holds the implementation. All filter
-// coefficients are standard 2nd-order IIR values from any DSP textbook;
-// no AppleWin source code is copied.
+// AppleWin-style NTSC composite simulation (CPU-only). Faithful port of
+// AppleWin `source/NTSC.cpp::initChromaPhaseTables()` (Sheldon Simms /
+// Tom Charlesworth / Michael Pohoreski — GPL v2+). Per the project
+// convention (CLAUDE.md: "MAME = source of truth … cite the file + line
+// range"), AppleWin is THE reference for the ColorAppleWin modes: the
+// algorithm, the three IIR filters, their coefficients and the YIQ→RGB
+// matrix below are ported line-for-line and cited inline.
+//
+// Why this replaced the previous gaussian-moving-average approximation:
+// the old code computed luma as a narrow gaussian (sigma 1.5) that did
+// NOT notch the fs/4 colour subcarrier, so the luma estimate absorbed
+// the subcarrier; demodulating `signal - luma` then cancelled the chroma
+// inside steady colour fills, leaving only edge fringing (the "almost no
+// colour" bug). AppleWin instead band-passes the chroma with a dedicated
+// 2-pole IIR and low-passes the luma with a separate one — proper
+// luma/chroma separation, which is what actually produces saturated
+// artifact colour.
+//
+// Pipeline (NTSC.cpp:781-907). For each (colour phase 0..3, 12-bit signal
+// history 0..4095):
+//   walk the 12 history bits (oldest first), 2× oversampled, through
+//   three cascaded 2-pole IIR filters —
+//     initFilterSignal  input low-pass              (NTSC.cpp:974-981)
+//     initFilterChroma  band-pass @ fs/4 subcarrier (NTSC.cpp:941-948)
+//     initFilterLuma0/1 luma low-pass               (NTSC.cpp:952-970)
+//   quadrature-demodulate the chroma (cos→I, sin→Q, single-pole /8
+//   smoothing), then YIQ→RGB via the FCC matrix. y0 → "Color Monitor"
+//   table, y1 (= luma of signal-minus-chroma, a comb) → "Color TV" table.
+// Result: two LUTs `[4 phases][4096]` of packed RGBA — one lookup per
+// output dot at runtime, comparable cost to the MAME LUT path.
 
 #include "AppleWinNtsc.h"
 
@@ -18,44 +44,86 @@ namespace pom2 {
 
 namespace {
 
-constexpr int kPhases = 4;       // 4× subcarrier alignment
-constexpr int kHistBits = 12;    // 12-bit sample history
-constexpr int kHistSize = 1 << kHistBits;  // 4096
-constexpr float kPi = 3.14159265358979323846f;
+constexpr int kPhases   = 4;            // NTSC_NUM_PHASES        (NTSC.cpp:104)
+constexpr int kSeqBits  = 12;           // 12-bit signal history
+constexpr int kSeqCount = 1 << kSeqBits; // NTSC_NUM_SEQUENCES 4096 (NTSC.cpp:105)
 
-// Demod subcarrier phase offset (radians) added to every I/Q angle, to
-// align the artifact hues with the MAME LUT reference (ColorNTSC). Without
-// it the AppleWin wheel was rotated (green→yellow, magenta→blue). Calibrated
-// against the Total Replay HGR splash phase sweep (render tool): +90° makes
-// grass green / houses magenta, matching NTSC. (OE needs +270° — the two
-// decoders' window centring differs by half a subcarrier cycle.) See
-// rebuildForPhase().
-float g_phaseShift = 3.14159265358979323846f * 0.5f;   // +90°
+// Angles — NTSC.cpp:45-52.
+constexpr double kPi         = 3.14159265358979323846;
+constexpr double kRad45      = kPi * 0.25;   // RAD_45
+constexpr double kRad90      = kPi * 0.5;    // RAD_90
+constexpr double kCycleStart = kPi * 0.25;   // CYCLESTART = DEG_TO_RAD(45)
 
-// Pre-computed LUT: chromaLut[phase][history12] -> RGBA8 packed
-// (0xAABBGGRR — same convention as Apple2Display::frame).
-uint32_t g_chromaLut[kPhases][kHistSize];
-// Smaller "Idealized" palette: bypasses the IIR transient. Indexed by
-// the 4-bit nibble that fills the current dot's 4-sample window.
-uint32_t g_idealizedLut[kPhases][16];
+// 2-pole IIR filter coefficients — verbatim AppleWin NTSC.cpp:115-132.
+// GAINs are chosen so the low-pass DC gain is unity (4/(gain*(1-a0-a1)) == 1)
+// and the chroma band-pass blocks DC.
+constexpr double kChromaGain = 7.438011255;   // CHROMA_GAIN
+constexpr double kChroma0    = -0.7318893645; // CHROMA_0
+constexpr double kChroma1    =  1.2336442711; // CHROMA_1
+constexpr double kLumaGain   = 13.71331570;   // LUMA_GAIN
+constexpr double kLuma0      = -0.3961075449; // LUMA_0
+constexpr double kLuma1      =  1.1044202472; // LUMA_1
+constexpr double kSignalGain = 7.614490548;   // SIGNAL_GAIN
+constexpr double kSignal0    = -0.2718798058; // SIGNAL_0
+constexpr double kSignal1    =  0.7465656072; // SIGNAL_1
+
+// POM2-specific "Idealized" chroma boost — AppleWin has no such mode; this
+// reuses the Monitor luma (y0) with the demodulated chroma amplified for a
+// punchy, flat-panel-friendly look. Not part of the AppleWin port.
+constexpr double kIdealChromaBoost = 1.6;
+
+// Three output LUTs: [phase][history12] → packed RGBA (0xAABBGGRR, same
+// convention as Apple2Display::frame).
+uint32_t g_hueMonitor [kPhases][kSeqCount];  // y0 luma — sharp "Color Monitor"
+uint32_t g_hueColorTV [kPhases][kSeqCount];  // y1 luma — comb  "Color TV"
+uint32_t g_hueIdealized[kPhases][kSeqCount]; // POM2 saturated variant
 std::atomic<bool> g_initDone{false};
 
-// NTSC YIQ → RGB. AppleWin's decoder (12-bit history shift register,
-// centred window, ×10 chroma sat) is structurally different from the
-// OpenEmulator demod; empirically the YUV matrix doesn't suit it (no phase
-// recovers violet/green), whereas YIQ + the calibrated phase below does.
-inline void yiqToRgb(float y, float i, float q,
+// Calibration knob: extra phase added to CYCLESTART, set by rebuildForPhase()
+// so the render tool's phase sweep can pin the column→hue alignment. 0 = the
+// faithful AppleWin value. NOT thread-safe; set before concurrent render.
+double g_cycleStartOffset = 0.0;
+
+// AppleWin's filter functions keep their x[]/y[] taps in `static` locals,
+// i.e. the filter state is NOT reset between the 4096 sequences nor the 4
+// phases — it streams continuously through the whole table build. We mirror
+// that quirk faithfully by holding one instance of each filter across the
+// entire buildPhaseTables() pass (fresh, zero-initialised, per rebuild — the
+// canonical "first call" state). NTSC.cpp:941-981.
+struct Iir2
+{
+    double x0 = 0, x1 = 0, x2 = 0, y0 = 0, y1 = 0, y2 = 0;
+
+    // Low-pass: numerator (x0 + 2*x1 + x2). initFilterSignal / Luma0 / Luma1.
+    double lowpass(double z, double gain, double a0, double a1)
+    {
+        x0 = x1; x1 = x2; x2 = z / gain;
+        y0 = y1; y1 = y2; y2 = x0 + x2 + 2.0 * x1 + a0 * y0 + a1 * y1;
+        return y2;
+    }
+    // Band-pass: numerator (-x0 + x2) — the inverted x0 zero makes it a
+    // band-pass centred on fs/4. initFilterChroma (NTSC.cpp:946).
+    double bandpass(double z, double gain, double a0, double a1)
+    {
+        x0 = x1; x1 = x2; x2 = z / gain;
+        y0 = y1; y1 = y2; y2 = -x0 + x2 + a0 * y0 + a1 * y1;
+        return y2;
+    }
+};
+
+inline double clamp01(double x) { return x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x); }
+
+// YIQ → RGB, FCC NTSC matrix — NTSC.cpp:833-841. (AppleWin labels the
+// chroma axes I/Q but uses the standard coefficients.)
+inline void yiqToRgb(double y, double i, double q,
                      uint8_t& r, uint8_t& g, uint8_t& b)
 {
-    float fr = y + 0.956f * i + 0.621f * q;
-    float fg = y - 0.272f * i - 0.647f * q;
-    float fb = y - 1.106f * i + 1.703f * q;
-    fr = std::clamp(fr, 0.0f, 1.0f);
-    fg = std::clamp(fg, 0.0f, 1.0f);
-    fb = std::clamp(fb, 0.0f, 1.0f);
-    r = static_cast<uint8_t>(fr * 255.0f);
-    g = static_cast<uint8_t>(fg * 255.0f);
-    b = static_cast<uint8_t>(fb * 255.0f);
+    const double fr = clamp01(y + 0.956 * i + 0.621 * q);
+    const double fg = clamp01(y - 0.272 * i - 0.647 * q);
+    const double fb = clamp01(y - 1.105 * i + 1.702 * q);
+    r = static_cast<uint8_t>(fr * 255.0);
+    g = static_cast<uint8_t>(fg * 255.0);
+    b = static_cast<uint8_t>(fb * 255.0);
 }
 
 inline uint32_t packRGBA(uint8_t r, uint8_t g, uint8_t b)
@@ -66,138 +134,65 @@ inline uint32_t packRGBA(uint8_t r, uint8_t g, uint8_t b)
          |  static_cast<uint32_t>(r);
 }
 
-// Build chromaLut[phase][history12].
-//
-// For each (phase, history) pair we:
-//   1. Decode the 12 bits back into a sample window (oldest → newest).
-//   2. Pass the window through the signal-shaping IIR.
-//   3. The OUTPUT of the filter at the "current" sample (rightmost) is
-//      the composite voltage Y_t. We also pull I/Q at this sample by
-//      multiplying the previous N samples with sin/cos at the local
-//      subcarrier phase and averaging.
-//   4. Convert YIQ → RGB and pack.
-void buildChromaLut()
+// Build all three phase tables in one pass, mirroring AppleWin's loop
+// nesting and continuous filter state — NTSC.cpp:781-907.
+void buildPhaseTables()
 {
-    // Window length used for I/Q averaging — same order of magnitude
-    // as the existing OpenEmulator shader (8 taps each side). 12 bits
-    // of history naturally caps us at 12 samples here.
-    constexpr int N = 12;
+    // One filter set, streamed across the whole build (see Iir2 note).
+    Iir2 fSignal, fChroma, fLuma0, fLuma1;
 
-    // Two filters extract Y and chroma from the same 12-sample window
-    // with different bandwidths — close to what AppleWin's separate
-    // luma/chroma IIRs do, but expressed as gaussian-weighted moving
-    // averages because that's what fits cleanly into a static LUT.
-    //
-    //   - Luma:   narrow gaussian (sigmaY = 1.5) — sharp, high contrast.
-    //   - Chroma: wide gaussian (sigmaC = 3.0) and DC removal so a
-    //             constant input produces zero I/Q. Wider window =
-    //             cleaner subcarrier extraction.
-    //
-    // The "current" sample is k = N-1 (offset 0); the chroma weights
-    // sit symmetrically around it by treating k = N-1 as the centre
-    // of a virtual 2N-tap kernel — we only have 12 past samples so we
-    // mirror the past taps into the future, a standard trick when the
-    // forward window is unavailable in real-time decoding.
-    // Bit-ordering convention (must match renderLine):
-    //   hist bit 0 = NEWEST sample (= the dot just shifted in)
-    //   hist bit N-1 = OLDEST sample.
-    // Centred-window post-processing means the "current" output pixel
-    // sits at offset N/2 from the newest sample — i.e. the chroma
-    // phase reference is the centre, not the trailing edge.
-    constexpr int kCentre = N / 2;   // 6
     for (int phase = 0; phase < kPhases; ++phase) {
-        for (int hist = 0; hist < kHistSize; ++hist) {
-            float raw[N];
-            for (int k = 0; k < N; ++k) {
-                raw[k] = (hist >> k) & 1u ? 1.0f : 0.0f;
+        // phi is seeded once per phase and accumulates across all 4096
+        // sequences (NTSC.cpp:791). Each sequence advances phi by 24*45° =
+        // 1080° ≡ 0° (mod 360°), so every sequence starts at the same
+        // effective angle; we keep accumulating to match AppleWin exactly.
+        double phi = phase * kRad90 + kCycleStart + g_cycleStartOffset;
+
+        for (int s = 0; s < kSeqCount; ++s) {
+            int    t  = s;
+            double y0 = 0, y1 = 0, c = 0, I = 0, Q = 0, z = 0;
+
+            for (int n = 0; n < 12; ++n) {
+                z = (t & 0x800) ? 1.0 : 0.0;   // oldest history bit first
+                t <<= 1;
+                for (int k = 0; k < 2; ++k) {  // 2× oversample
+                    const double zz = fSignal.lowpass(z, kSignalGain, kSignal0, kSignal1);
+                    c  = fChroma.bandpass(zz,        kChromaGain, kChroma0, kChroma1);
+                    y0 = fLuma0.lowpass(zz,          kLumaGain,   kLuma0,   kLuma1);
+                    y1 = fLuma1.lowpass(zz - c,      kLumaGain,   kLuma0,   kLuma1);
+                    c *= 2.0;
+                    I += (c * std::cos(phi) - I) / 8.0;
+                    Q += (c * std::sin(phi) - Q) / 8.0;
+                    phi += kRad45;
+                }
             }
 
-            // Luma — narrow gaussian centred on kCentre.
-            const float sigmaY = 1.5f;
-            float ySum = 0.0f, wYsum = 0.0f;
-            for (int k = 0; k < N; ++k) {
-                const float dx = static_cast<float>(k - kCentre);
-                const float w  = std::exp(-0.5f * dx * dx / (sigmaY * sigmaY));
-                ySum  += raw[k] * w;
-                wYsum += w;
-            }
-            const float Y = ySum / wYsum;
-
-            // Chroma — wider window, DC removed, subcarrier angle
-            // referenced to the centre sample's absolute phase.
-            const float sigmaC = 3.0f;
-            float iSum = 0.0f, qSum = 0.0f, wCsum = 0.0f;
-            for (int k = 0; k < N; ++k) {
-                const int offset = k - kCentre;  // -kCentre .. +(N-1-kCentre)
-                const float dx = static_cast<float>(offset);
-                const float w  = std::exp(-0.5f * dx * dx / (sigmaC * sigmaC));
-                const float ang = 0.5f * kPi
-                                * static_cast<float>(phase + offset)
-                                + g_phaseShift;
-                const float ac = raw[k] - Y;
-                iSum  += ac * std::sin(ang) * w;
-                qSum  += ac * std::cos(ang) * w;
-                wCsum += w;
-            }
-            // Chroma saturation: amplify the AC content to compensate
-            // for the broad filter's natural attenuation. Tuned by eye
-            // against known artifact-colour patterns ($55 → purple,
-            // $2A → green) — matches the visual signature of AppleWin's
-            // "Color Monitor (NTSC)" output.
-            constexpr float kChromaSat = 10.0f;
-            const float I = (iSum / wCsum) * kChromaSat;
-            const float Q = (qSum / wCsum) * kChromaSat;
-
-            // Mild contrast boost — keeps blacks black and whites near 1.
-            const float Yc = std::clamp((Y - 0.5f) * 1.15f + 0.5f,
-                                        0.0f, 1.0f);
-
+            const int color = s & 15;
             uint8_t r, g, b;
-            yiqToRgb(Yc, I, Q, r, g, b);
-            g_chromaLut[phase][hist] = packRGBA(r, g, b);
-        }
-    }
-}
 
-// Build idealizedLut[phase][nibble]. The Idealized path skips the IIR
-// transient and feeds a clean 4-bit pattern through the same YIQ
-// demodulation, producing saturated artifact colours without the
-// roll-off / ringing of the Monitor sub-mode.
-void buildIdealizedLut()
-{
-    // Same bit-ordering convention as chromaLut: nib bit 0 = NEWEST
-    // sample, bit 3 = oldest. We DC-remove the 4-sample mean before
-    // demod so a constant pattern (0x0 or 0xF) produces zero chroma.
-    for (int phase = 0; phase < kPhases; ++phase) {
-        for (int nib = 0; nib < 16; ++nib) {
-            float s[4];
-            float Y = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                s[k] = (nib >> k) & 1u ? 1.0f : 0.0f;
-                Y   += s[k];
-            }
-            Y *= 0.25f;
-            float iSum = 0.0f, qSum = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                // Centre the 4-sample window around the output pixel:
-                // bit 0 = newest (centre+2), bit 3 = oldest (centre-1).
-                const int offset = k - 2;
-                const float ang = 0.5f * kPi
-                                * static_cast<float>(phase + offset)
-                                + g_phaseShift;
-                const float ac  = s[k] - Y;
-                iSum += ac * std::sin(ang);
-                qSum += ac * std::cos(ang);
-            }
-            // Idealized's whole point is saturated, punchy artifact
-            // colours that pop on a modern flat panel — boost chroma
-            // hard, no low-pass attenuation to fight.
-            constexpr float kIdealSat = 8.0f;
-            const float I = iSum * 0.25f * kIdealSat;
-            const float Q = qSum * 0.25f * kIdealSat;
-            uint8_t r, g, b;
-            yiqToRgb(Y, I, Q, r, g, b);
-            g_idealizedLut[phase][nib] = packRGBA(r, g, b);
+            // ── Color Monitor (luma y0) — NTSC.cpp:839-881 ─────────────────
+            yiqToRgb(y0, I, Q, r, g, b);
+            // NTSC_REMOVE_WHITE_RINGING / BLACK_GHOSTING / GRAY_CHROMA all =1
+            // (NTSC.cpp:30-32). White (15) → pure white; black (0) → pure
+            // black; the two greys (5,10) → fixed neutrals (NTSC.cpp:862-876).
+            if      (color == 15) { r = g = b = 255; }
+            else if (color == 0)  { r = g = b = 0;   }
+            else if (color == 5)  { r = g = b = 0x83; }
+            else if (color == 10) { r = g = b = 0x78; }
+            g_hueMonitor[phase][s] = packRGBA(r, g, b);
+
+            // ── Color TV (luma y1, comb) — NTSC.cpp:882-907 ────────────────
+            // The TV table applies only white/black removal, not grey.
+            yiqToRgb(y1, I, Q, r, g, b);
+            if      (color == 15) { r = g = b = 255; }
+            else if (color == 0)  { r = g = b = 0;   }
+            g_hueColorTV[phase][s] = packRGBA(r, g, b);
+
+            // ── Idealized (POM2-only): Monitor luma, boosted chroma ────────
+            yiqToRgb(y0, I * kIdealChromaBoost, Q * kIdealChromaBoost, r, g, b);
+            if      (color == 15) { r = g = b = 255; }
+            else if (color == 0)  { r = g = b = 0;   }
+            g_hueIdealized[phase][s] = packRGBA(r, g, b);
         }
     }
 }
@@ -206,22 +201,21 @@ void buildIdealizedLut()
 
 void AppleWinNtsc::ensureInitialized()
 {
-    // std::call_once makes the header's "safe to call from any thread"
-    // guarantee actually hold: the old check-then-act let two concurrent
-    // first-callers both run the build* writers and race on the shared LUTs.
     static std::once_flag initFlag;
     std::call_once(initFlag, [] {
-        buildChromaLut();
-        buildIdealizedLut();
+        buildPhaseTables();
         g_initDone.store(true, std::memory_order_release);
     });
 }
 
 void AppleWinNtsc::rebuildForPhase(float phaseShiftRadians)
 {
-    g_phaseShift = phaseShiftRadians;
-    buildChromaLut();
-    buildIdealizedLut();
+    // Reinterpreted for the faithful port: the argument is now an additive
+    // offset to CYCLESTART used to pin the column→hue alignment, replacing
+    // the old gaussian decoder's free-floating demod phase. The render
+    // tool's sweep finds the value that matches the MAME reference hues.
+    g_cycleStartOffset = static_cast<double>(phaseShiftRadians);
+    buildPhaseTables();
     g_initDone.store(true, std::memory_order_release);
 }
 
@@ -234,45 +228,25 @@ void AppleWinNtsc::renderLine(const uint8_t* src,
 {
     ensureInitialized();
 
-    // 12-bit shift register over the signal stream. The chroma kernel
-    // is centred on the output pixel — when we've shifted 12 fresh
-    // samples in, the OUTPUT pixel for column (x - 6) sits in the
-    // middle of the window. Half-window delay = kCenterDelay; we mirror
-    // the left edge to avoid black-ramp transients, and run an extra
-    // kCenterDelay samples past the right edge by sustaining the last
-    // signal value, so the rightmost pixels still see a populated
-    // window.
-    constexpr int kCenterDelay = 6;
-    uint32_t hist = src[0] ? 0x0FFFu : 0u;
+    const uint32_t (*lut)[kSeqCount] =
+        (mode == SubMode::Tv)        ? g_hueColorTV  :
+        (mode == SubMode::Idealized) ? g_hueIdealized
+                                     : g_hueMonitor;
 
-    if (mode == SubMode::Idealized) {
-        for (int x = 0; x < w; ++x) {
-            hist = (hist << 1) & 0x0FFFu;
-            if (src[x]) hist |= 1u;
-            const unsigned nib = (hist >> 0) & 0x0Fu;
-            dst[x] = g_idealizedLut[x & 3][nib];
-        }
-        return;
-    }
-
-    // Prime the window with the first kCenterDelay samples so the very
-    // first output pixel already has populated future context.
-    for (int k = 0; k < kCenterDelay && k < w; ++k) {
-        hist = (hist << 1) & 0x0FFFu;
-        if (src[k]) hist |= 1u;
-    }
+    // Causal 12-bit shift register — newest sample is bit 0, oldest bit 11
+    // (0x800), exactly matching AppleWin's runtime getScanlineColor()
+    // (NTSC.cpp:331) and the bit order the LUT was built for. No look-ahead /
+    // window-centring: the filter group delay shifts the picture a few dots,
+    // which the phase alignment compensates — same as the real decoder.
+    uint32_t hist = 0;
     for (int x = 0; x < w; ++x) {
-        const int readAhead = x + kCenterDelay;
-        const uint8_t s = (readAhead < w) ? src[readAhead]
-                                          : src[w - 1];
-        hist = (hist << 1) & 0x0FFFu;
-        if (s) hist |= 1u;
-        dst[x] = g_chromaLut[x & 3][hist];
+        hist = ((hist << 1) | (src[x] ? 1u : 0u)) & 0x0FFFu;
+        dst[x] = lut[x & 3][hist];
     }
 
-    // Tv sub-mode: 50% blend with the previous frame's same scanline.
-    // The dst we just wrote is the "current monitor frame"; before it
-    // ships out, fold half of the previous one in. Done in-place.
+    // Tv sub-mode: 50% blend with the previous frame's same scanline, layered
+    // on top of the authentic comb-luma table to approximate phosphor
+    // persistence. Done in-place.
     if (mode == SubMode::Tv && prevLine != nullptr && prevValid) {
         for (int x = 0; x < w; ++x) {
             const uint32_t cur = dst[x];
