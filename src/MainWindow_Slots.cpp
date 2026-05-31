@@ -724,6 +724,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
         romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
+        romLoaded_ = true;
         // ROM identity check (Theme 9, gaps B-4-1 / B-4-2): the generic
         // "apple2.rom" fallback was originally added for legacy POM2
         // installs but it silently misroutes — a user running the II
@@ -741,6 +742,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     } else {
         romStatus = std::string("NO ROM (") + cfg.romProbeOrder.front() +
                     " not found) — $D000-$FFFF stub only";
+        romLoaded_ = false;
         pom2::log().warn("Profile", romStatus);
     }
 

@@ -124,6 +124,12 @@ public:
     void onMouseMove  (double x, double y);
     void onMouseButton(int button, int action);
 
+    /// GLFW file-drop callback (installed by main.cpp). Routes the first
+    /// recognised disk image among `paths` through `insertAndBootImage`
+    /// (auto-routes Disk II / SmartPort 3.5" / ProDOS HDV). Unrecognised
+    /// or extra files are ignored; a status-bar message reports the result.
+    void onFileDrop(int count, const char** paths);
+
     // HDV helper — cold-boot through the slot-5 ProDOS block-device ROM.
     // Public so main() can drive it from `POM2_AUTO_BOOT_HDV` for headless
     // trace capture without going through the File menu.
@@ -430,6 +436,13 @@ private:
     bool slotDraftInited_ = false;
 
     bool showAbout = false;
+    // Welcome / Quick Start panel. Opened from Help → Welcome, and
+    // auto-opened on first launch when no main ROM was found so a
+    // newcomer sees where to drop firmware/disks instead of a bare
+    // "NO ROM" screen. `romLoaded_` mirrors the last ROM-load result so
+    // the panel can show the no-ROM guidance prominently.
+    bool showWelcomePanel = false;
+    bool romLoaded_       = false;
     // Apple ][+ photo shown in the About dialog. Loaded lazily on first
     // open via stb_image; texture freed in ~MainWindow. `tried_` blocks
     // repeated reload attempts if the file is missing.
@@ -596,6 +609,7 @@ private:
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();
+    void renderWelcomePanelWindow();
     /// Lazy-loads `pic/Apple_II_plus.jpg` into `aboutImageTex_` on the
     /// first About-dialog open. Silent no-op if the asset can't be
     /// resolved via ResourcePaths (kiosk builds, missing pic/ folder).

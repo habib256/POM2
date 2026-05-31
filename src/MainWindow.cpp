@@ -234,9 +234,15 @@ MainWindow::MainWindow(bool forceIIPlus)
 
     if (controller->memory().loadAppleIIRom(romPath.c_str())) {
         romStatus = std::string(iiePresent ? "IIe (128K): " : "loaded: ") + romPath;
+        romLoaded_ = true;
     } else {
         romStatus = std::string("NO ROM (") + romPath +
                     ") — only $D000-$FFFF stub is active";
+        romLoaded_ = false;
+        // First-launch newcomer with no firmware: greet them with the
+        // Welcome panel (folders + expected filenames + Reload button)
+        // instead of leaving them staring at a bare "NO ROM" screen.
+        showWelcomePanel = true;
     }
     controller->memory().loadCharRom(charRomPath.c_str());
 
@@ -1716,8 +1722,10 @@ void MainWindow::renderMenuBar()
             if (ok) {
                 controller->hardReset();
                 romStatus = std::string("loaded: ") + romPath;
+                romLoaded_ = true;
             } else {
                 romStatus = err;
+                romLoaded_ = false;
             }
         }
         // Quit is a no-op in the browser: the frame loop is driven by
@@ -1853,57 +1861,76 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Devices")) {
-        ImGui::MenuItem("Floppy Emu (BMOW)",             nullptr, &showFloppyEmu);
-        ImGui::Separator();
-        ImGui::MenuItem("Cassette deck",                 nullptr, &showCassetteDeck);
-        ImGui::MenuItem("Rewind (time-travel)",          nullptr, &showRewindBar);
-        ImGui::MenuItem("Disk II (slot 6)",              nullptr, &showDiskPanel);
+        // One flat 17-item list became hard to scan (audit 2026-05-31), so
+        // it is grouped under SeparatorText headers and every row carries a
+        // hover tooltip explaining what the panel does. `devItem` keeps the
+        // boilerplate (optional grey-out + tooltip) in one place; disabled
+        // rows still show their tip via AllowWhenDisabled so the user learns
+        // what a card *would* do before plugging it in Slot Config.
+        auto devItem = [](const char* label, bool* flag, const char* tip,
+                          bool enabled = true) {
+            if (!enabled) ImGui::BeginDisabled();
+            ImGui::MenuItem(label, nullptr, flag);
+            if (!enabled) ImGui::EndDisabled();
+            if (tip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", tip);
+        };
+
+        ImGui::SeparatorText("Storage");
+        devItem("Floppy Emu (BMOW)", &showFloppyEmu,
+                "BMOW Floppy Emu: SD-card image browser + OLED, emulated.");
+        devItem("Cassette deck", &showCassetteDeck,
+                "Load/save tape images (.wav) on II/II+/IIe.");
+        devItem("Disk II (slot 6)", &showDiskPanel,
+                "5.25\" drive panel: insert / eject / write-protect, drive LEDs.");
         {
             // Mirror the panel's dynamic title — slot N on //e with a
             // Liron-class card, "//c+ on-board" on //c+.
-            std::string lbl;
-            if (smartPortCard) {
-                lbl = "Disk 3.5\" (slot " +
-                    std::to_string(smartPortCard->getSlot()) + ")";
-            } else {
-                lbl = "Disk 3.5\" (//c+ on-board)";
-            }
-            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showDisk35Panel);
+            std::string lbl = smartPortCard
+                ? "Disk 3.5\" (slot " + std::to_string(smartPortCard->getSlot()) + ")"
+                : std::string("Disk 3.5\" (//c+ on-board)");
+            devItem(lbl.c_str(), &showDisk35Panel,
+                    "800K 3.5\" drive (SmartPort / //c+ on-board IWM).");
         }
         {
-            const std::string label = "HDV (slot " +
+            const std::string lbl = "HDV (slot " +
                 std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
-            ImGui::MenuItem(label.c_str(),               nullptr, &showHdvPanel);
+            devItem(lbl.c_str(), &showHdvPanel,
+                    "ProDOS hard-disk image (.hdv/.2mg): mount / eject / boot.");
         }
-        if (smartPortCard) {
-            const std::string label = "SmartPort Configuration (slot " +
-                std::to_string(smartPortCard->getSlot()) + ")";
-            ImGui::MenuItem(label.c_str(),               nullptr, &showSmartPortPanel);
-        } else {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem("SmartPort Configuration (no card plugged)",
-                            nullptr, &showSmartPortPanel);
-            ImGui::EndDisabled();
+        {
+            const std::string lbl = smartPortCard
+                ? "SmartPort Configuration (slot " +
+                      std::to_string(smartPortCard->getSlot()) + ")"
+                : std::string("SmartPort Configuration (no card plugged)");
+            devItem(lbl.c_str(), &showSmartPortPanel,
+                    "SmartPort units behind a Liron-class card (3.5\" + HDV volumes).",
+                    smartPortCard != nullptr);
         }
-        ImGui::MenuItem("Mockingboard (VIA + AY state)", nullptr, &showMockingboardPanel);
-        if (phasorCard) {
-            const std::string lbl = "Phasor (slot " +
-                std::to_string(phasorCard->getSlot()) + ")";
-            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showPhasorPanel);
-        } else {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem("Phasor (no card plugged)",  nullptr, &showPhasorPanel);
-            ImGui::EndDisabled();
+
+        ImGui::SeparatorText("Sound");
+        devItem("Mockingboard (VIA + AY state)", &showMockingboardPanel,
+                "Mockingboard A/C: live 6522 VIA + AY-3-8910 PSG register view.");
+        {
+            const std::string lbl = phasorCard
+                ? "Phasor (slot " + std::to_string(phasorCard->getSlot()) + ")"
+                : std::string("Phasor (no card plugged)");
+            devItem(lbl.c_str(), &showPhasorPanel,
+                    "Applied Engineering Phasor: 2× VIA, 4× AY, mode soft-switch.",
+                    phasorCard != nullptr);
         }
-        if (echoPlusCard) {
-            const std::string lbl = "Echo+ (slot " +
-                std::to_string(echoPlusCard->getSlot()) + ")";
-            ImGui::MenuItem(lbl.c_str(),                 nullptr, &showEchoPlusPanel);
-        } else {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem("Echo+ (no card plugged)",   nullptr, &showEchoPlusPanel);
-            ImGui::EndDisabled();
+        {
+            const std::string lbl = echoPlusCard
+                ? "Echo+ (slot " + std::to_string(echoPlusCard->getSlot()) + ")"
+                : std::string("Echo+ (no card plugged)");
+            devItem(lbl.c_str(), &showEchoPlusPanel,
+                    "Echo/Cricket SSI263 speech chip state.",
+                    echoPlusCard != nullptr);
         }
+        devItem("Audio Mixer", &showAudioMixer,
+                "Per-source volume: speaker, Mockingboard/Phasor, speech, floppy.");
+
+        ImGui::SeparatorText("Ports & cards");
         // Super Serial — //c ships TWO (printer + modem), other profiles
         // have at most one. Label shows actual slot(s) so the user knows
         // which entry opens which port.
@@ -1911,13 +1938,9 @@ void MainWindow::renderMenuBar()
             std::string lbl;
             if (sscCards.empty()) {
                 lbl = "Super Serial (no card plugged)";
-                ImGui::BeginDisabled();
-                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
-                ImGui::EndDisabled();
             } else if (sscCards.size() == 1) {
                 lbl = "Super Serial (slot " +
                       std::to_string(sscCards[0]->getSlot()) + ")";
-                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
             } else {
                 lbl = "Super Serial (slots";
                 for (size_t i = 0; i < sscCards.size(); ++i) {
@@ -1925,25 +1948,32 @@ void MainWindow::renderMenuBar()
                     lbl += std::to_string(sscCards[i]->getSlot());
                 }
                 lbl += ")";
-                ImGui::MenuItem(lbl.c_str(), nullptr, &showSscPanel);
             }
+            devItem(lbl.c_str(), &showSscPanel,
+                    "6551 ACIA serial port + telnet bridge (modem / printer).",
+                    !sscCards.empty());
         }
-        if (printerCard) {
-            const std::string label = "Printer (slot " +
-                std::to_string(printerCard->getSlot()) + ")";
-            ImGui::MenuItem(label.c_str(),               nullptr, &showPrinterPanel);
-        } else {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem("Printer (no card plugged)", nullptr, &showPrinterPanel);
-            ImGui::EndDisabled();
+        {
+            const std::string lbl = printerCard
+                ? "Printer (slot " + std::to_string(printerCard->getSlot()) + ")"
+                : std::string("Printer (no card plugged)");
+            devItem(lbl.c_str(), &showPrinterPanel,
+                    "Parallel printer card → text spool (.txt).",
+                    printerCard != nullptr);
         }
-        ImGui::MenuItem("Le Chat Mauve (slot 7)",        nullptr, &showChatMauvePanel);
-        ImGui::MenuItem("Joystick",                      nullptr, &showJoystickPanel);
-        ImGui::MenuItem("Mouse Inspector",               nullptr, &showMouseInspector);
-        ImGui::MenuItem("No-Slot Clock (DS1216E under Monitor ROM)",
-                        nullptr, &showNoSlotClockPanel);
-        ImGui::Separator();
-        ImGui::MenuItem("Audio Mixer",                   nullptr, &showAudioMixer);
+        devItem("Le Chat Mauve (slot 7)", &showChatMauvePanel,
+                "Le Chat Mauve RGB / Eve video card controls.");
+        devItem("Joystick", &showJoystickPanel,
+                "Analog paddles / joystick mapping + push-buttons.");
+
+        ImGui::SeparatorText("Inspectors & tools");
+        ImGui::MenuItem("Rewind (time-travel)", "F6", &showRewindBar);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Scrub back through machine state. Hold F6 to rewind live.");
+        devItem("Mouse Inspector", &showMouseInspector,
+                "Apple II Mouse Card state + host-cursor sync diagnostics.");
+        devItem("No-Slot Clock (DS1216E)", &showNoSlotClockPanel,
+                "Dallas DS1216E real-time clock hidden under the Monitor ROM.");
         ImGui::EndMenu();
     }
 
@@ -1967,12 +1997,20 @@ void MainWindow::renderMenuBar()
         // sharpness / BCS). The shared effect stack runs on every pipeline,
         // so this one panel governs the CRT look across all modes.
         ImGui::MenuItem("CRT Settings (sliders)...", nullptr, &showNtscSettings);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Scanlines, shadow mask, barrel, phosphor curve,\n"
+                              "persistence, brightness/contrast/saturation.");
 
         // 3D voxel view (MicroM8 "Voxel Cube"): rebuild the screen as an
         // upright 4:3 slab of equal-depth cubes; left-drag orbits, middle-drag
         // pans, wheel zooms. Works on any colour mode.
         ImGui::MenuItem("3D voxel view", nullptr, &show3dVoxel_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("MicroM8-style cube renderer.\n"
+                              "Left-drag orbits, middle-drag pans, wheel zooms.");
         ImGui::MenuItem("3D voxel settings...", nullptr, &showVoxelSettings_);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Depth, colour pop, fill, anti-alias, mono, per-colour depth.");
 
         // ── Color pipeline ──────────────────────────────────────────────
         // How the Apple II bit stream becomes colour. One pick; the CRT
@@ -2047,6 +2085,10 @@ void MainWindow::renderMenuBar()
 #endif
 
     if (ImGui::BeginMenu("Help")) {
+        ImGui::MenuItem("Welcome / Quick Start", nullptr, &showWelcomePanel);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Where to put ROMs/disks, keys, and signature features.");
+        ImGui::Separator();
         if (ImGui::MenuItem("About POM2")) showAbout = true;
         ImGui::EndMenu();
     }
@@ -5978,6 +6020,146 @@ void MainWindow::ensureAboutImageLoaded()
     aboutImageH_   = h;
 }
 
+void MainWindow::onFileDrop(int count, const char** paths)
+{
+    if (count <= 0 || !paths) return;
+    // Boot the first image whose extension/size we recognise; skip the
+    // rest (a single Apple II has one boot path). insertAndBootImage takes
+    // the state lock itself and must run on the UI thread — the GLFW drop
+    // callback fires inside glfwPollEvents(), which the render loop drives,
+    // so we are on that thread here.
+    for (int i = 0; i < count; ++i) {
+        if (!paths[i]) continue;
+        const std::string path = paths[i];
+        if (classifyDiskForSlot(path) == DiskSlotClass::Unknown) continue;
+        std::string err;
+        if (insertAndBootImage(path, err)) {
+            tapeStatusMessage = "Dropped + booted: " +
+                std::filesystem::path(path).filename().string();
+            pom2::log().info("Drop", "booted dropped image: " + path);
+        } else {
+            tapeStatusMessage = "Drop failed: " + err;
+            pom2::log().warn("Drop", "dropped image rejected: " + err);
+        }
+        tapeStatusUntil = lastFrameTime + 4.0;
+        return;
+    }
+    // Nothing usable in the drop — tell the user rather than silently
+    // ignoring it (the most common case is dropping a ROM or a .zip).
+    tapeStatusMessage =
+        "Dropped file not a disk image (.dsk/.do/.po/.nib/.woz/.hdv/.2mg)";
+    tapeStatusUntil = lastFrameTime + 4.0;
+}
+
+void MainWindow::renderWelcomePanelWindow()
+{
+    if (!showWelcomePanel) return;
+    ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Welcome to POM2###welcomePanel", &showWelcomePanel,
+                      ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 580.0f);
+
+    // ── No-ROM banner ────────────────────────────────────────────────
+    // The single biggest newcomer trip-up: ROMs are user-provided and the
+    // machine shows a bare "NO ROM" screen without them. Surface the fix
+    // first, in red, only while no ROM is loaded.
+    if (!romLoaded_) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+        ImGui::TextWrapped("No Apple II ROM is loaded yet.");
+        ImGui::PopStyleColor();
+        ImGui::TextWrapped(
+            "Apple II firmware is copyrighted, so POM2 does not ship it. "
+            "Drop your firmware dump into a \"roms/\" folder next to POM2, "
+            "then use File → Reload ROM (or relaunch).");
+        ImGui::Spacing();
+
+        // Which file the *active* profile wants, and where POM2 looks.
+        const auto& cfg = pom2::profileConfig(activeProfile);
+        if (!cfg.romProbeOrder.empty()) {
+            ImGui::Text("Expected ROM for %.*s:",
+                        static_cast<int>(cfg.displayName.size()),
+                        cfg.displayName.data());
+            for (const auto& cand : cfg.romProbeOrder)
+                ImGui::BulletText("%s", cand.c_str());
+        }
+        ImGui::Spacing();
+        ImGui::TextUnformatted("POM2 searches these folders (first hit wins):");
+        for (const auto& dir : pom2::resourceSearchDirs())
+            ImGui::BulletText("%s", dir.string().c_str());
+
+        ImGui::Spacing();
+#ifndef __EMSCRIPTEN__
+        if (ImGui::Button("Reload ROM (re-probe folders)")) {
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                // Re-resolve from the active profile so dropping the
+                // profile-specific dump in is picked up without a relaunch.
+                std::string newRom;
+                for (const auto& cand : pom2::profileConfig(activeProfile).romProbeOrder) {
+                    std::string r = pom2::findResource(cand);
+                    if (!r.empty()) { newRom = r; break; }
+                }
+                if (newRom.empty()) newRom = romPath;  // last-known path
+                ok = controller->memory().loadAppleIIRom(newRom.c_str());
+                if (ok) romPath = newRom;
+            }
+            if (ok) {
+                controller->hardReset();
+                romStatus  = std::string("loaded: ") + romPath;
+                romLoaded_ = true;
+            }
+        }
+        ImGui::SameLine();
+#endif
+        ImGui::TextDisabled("(%s)", romStatus.c_str());
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
+    // ── Loading software ─────────────────────────────────────────────
+    ImGui::SeparatorText("Loading a disk");
+    ImGui::BulletText("Drag a .woz / .dsk / .po / .nib / .hdv / .2mg onto this window.");
+    ImGui::BulletText("Or File → Disk Library to browse bundled images.");
+    ImGui::BulletText("Or launch from a terminal: POM2 path/to/game.woz");
+    ImGui::TextDisabled("POM2 auto-routes each image to Disk II, SmartPort 3.5\" or ProDOS HDV.");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Suggested media folders");
+    ImGui::BulletText("roms/        Apple II firmware dumps");
+    ImGui::BulletText("disks_5.4/   5.25\" disk images (.dsk/.woz/.nib)");
+    ImGui::BulletText("disks_3.5/   3.5\" disk images (800K)");
+    ImGui::BulletText("hdv/         ProDOS hard-disk images (.hdv/.2mg)");
+
+    // ── Keys & signature features ────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::SeparatorText("Keys");
+    ImGui::BulletText("F11  Reset (Ctrl-Reset)        F12  Hard reset");
+    ImGui::BulletText("F9   Screenshot                F6   Hold to rewind");
+    ImGui::BulletText("Left Alt = Open-Apple          Right Alt = Solid-Apple");
+    ImGui::BulletText("Ctrl+V pastes clipboard text as keystrokes");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Try these");
+    ImGui::BulletText("Display → 3D voxel view  — MicroM8-style cube renderer.");
+    ImGui::BulletText("Devices → Rewind (F6)    — scrub back through machine state.");
+    ImGui::BulletText("Display → CRT Settings   — scanlines, phosphor, NTSC look.");
+    ImGui::BulletText("Machine → Profile        — switch between ][ / ][+ / //e / //c / //c+.");
+
+    ImGui::PopTextWrapPos();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Close")) showWelcomePanel = false;
+    ImGui::SameLine();
+    if (ImGui::Button("About POM2...")) { showAbout = true; }
+    ImGui::End();
+}
+
 void MainWindow::renderAboutDialog()
 {
     if (!showAbout) return;
@@ -6410,6 +6592,7 @@ void MainWindow::render()
     renderSlotConfigPanel();
     renderFloppyEmuWindow();
     renderAboutDialog();
+    renderWelcomePanelWindow();
     renderStatusBar();
 
     // Hide the host OS cursor whenever the AppleWin HLE firmware is

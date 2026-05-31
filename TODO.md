@@ -50,6 +50,8 @@ Ordre conseillé d'attaque — items à fort ratio impact/effort.
 | 2 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
 | 3 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
+| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | 113 tests dormants — plus fort ROI ⭐    |
+| 6 | ~~Desktop drag-drop disque (`glfwSetDropCallback`)~~ ✅ FAIT | — | promesse README tenue (voir [UI/UX]) |
 
 ## Backlog
 
@@ -199,6 +201,26 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 
 ### [UI/UX]
 
+- ✅ **Desktop drag & drop disque** — FAIT (2026-05-31). `glfwSetDropCallback`
+  câblé dans `main.cpp` (`glfw_drop_callback` → `MainWindow::onFileDrop`), qui
+  route le premier fichier reconnu via `insertAndBootImage` (auto-route Disk II /
+  SmartPort 3.5" / ProDOS HDV) et affiche le résultat dans la status bar. Les
+  extensions non reconnues sont signalées plutôt qu'ignorées en silence. La
+  promesse README « drop a `.woz`/`.dsk` on the window » est désormais tenue.
+- ✅ **Onboarding : panneau Welcome / no-ROM** — FAIT (2026-05-31).
+  `renderWelcomePanelWindow` : bannière no-ROM (rouge) avec les dossiers sondés
+  (`resourceSearchDirs`), le nom de ROM attendu pour le profil actif, un bouton
+  « Reload ROM (re-probe) », plus quick-start (chargement disque, dossiers média,
+  touches F6/F9/F11/F12/Open-Apple, fonctions phares). Auto-ouvert au premier
+  lancement sans ROM (`romLoaded_`) ; aussi accessible via `Help → Welcome /
+  Quick Start`. **Reste** *(🟢)* : tutoriels guidés plus poussés.
+- ✅ **Densité UI / découvrabilité** — FAIT (2026-05-31). Menu `Devices`
+  regroupé sous en-têtes `SeparatorText` (Storage / Sound / Ports & cards /
+  Inspectors & tools) via le helper `devItem` qui ajoute un tooltip à *chaque*
+  entrée (y compris les cartes non branchées, `AllowWhenDisabled`). Raccourci
+  `F6` affiché sur Rewind ; tooltips ajoutés sur 3D voxel view / settings et CRT
+  Settings (menu Display) ; `Help → Welcome` tooltip. ~25 tooltips ajoutés.
+  **Reste** *(🟢)* : layout par défaut plus aéré (item dédié plus bas).
 - 🟢 **Rewind façon MicroM8** — enregistrement continu d'état +
   scrub/step-back/rewind-live. **Phases 0→5 faites** (2026-05-31,
   `CHANGELOG.md`) : backend mémoire `SnapshotIO`, `MachineSnapshot`
@@ -260,9 +282,29 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 - 🟢 **Audio worklet tuning** — miniaudio Web Audio fonctionne mais
   latence ~150 ms audible sur speaker click. Explorer
   `AudioWorkletNode` custom ou réduire le buffer.
+- 🟡 **Démo « zéro friction » web** *(audit commercial 2026-05-31)* — le levier
+  WASM est bridé : ROMs user-provided + aucun disque bundlé → la démo navigateur
+  ne démarre pas clé en main comme POM1, ce qui tue la conversion instantanée et
+  le partage viral (voxel 3D / rewind). Bundler des **disques de démo libres de
+  droits** (sans toucher aux ROMs propriétaires) jouables côté WASM. Prérequis
+  marketing avant de pousser sur r/apple2 + Hacker News ; viser en parallèle une
+  **1.0 stable** (finir le boot //c+/IWM, cf. dashboard parité). *1-2 j hors
+  sourcing média.*
 
 ### [Arch] refactor & tooling
 
+- 🟠 **CI GitHub Actions absente** *(audit 2026-05-31)* — `.github/workflows/`
+  n'existe pas : les **113 tests `ctest`** (Klaus 6502+65C02, `cpu_cycle_count`,
+  golden-hash display, boot traces) ne tournent jamais en automatique. C'est le
+  dépôt qui a le plus à perdre de cette absence. Workflow sur la cible
+  `pom2_headless` (sans GLFW/audio) + build de vérification WASM
+  (`build_wasm.sh`) + gel des golden-hash comme garde-fou. **Plus fort ROI.**
+  *2-4 h.* ⭐ quick win
+- 🟠 **`MainWindow.cpp` god-object (6439 l.)** *(audit 2026-05-31)* — plus gros
+  fichier propre du dépôt, UI monolithique malgré les splits `_Slots`/
+  `_MemoryMaps`/`_ImGui`. Alourdit recompilations + lisibilité. Extraire les
+  groupes de fenêtres de périphériques en TUs dédiés (viser < 3000 l./fichier,
+  comme la discipline `MainWindow_*` de POM1). *3-5 j.*
 - 🟡 **Config éclatée** — env vars `POM2_*` + CLI flags + `Settings`
   à centraliser dans un `Config` (env → CLI → Settings → defaults),
   lister env vars dans `--help`. *1 j.*

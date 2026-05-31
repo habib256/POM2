@@ -97,6 +97,16 @@ static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, in
     }
 }
 
+static void glfw_drop_callback(GLFWwindow* w, int count, const char** paths)
+{
+    // Honour the README's "drop a .woz/.dsk on the window" promise: route
+    // the dropped image(s) through MainWindow, which classifies each one
+    // (Disk II / SmartPort 3.5" / ProDOS HDV) and boots it.
+    if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
+        mw->onFileDrop(count, paths);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     pom2::log().info("POM2", "v0.6 - Apple II Emulator (Dear ImGui)");
@@ -410,6 +420,7 @@ int main(int argc, char* argv[])
     glfwSetKeyCallback (window, glfw_key_callback);
     glfwSetCursorPosCallback  (window, glfw_cursor_pos_callback);
     glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
+    glfwSetDropCallback       (window, glfw_drop_callback);
 
     // ─── Phase B: apply boot-time overrides on the live emulator ─────────
     if (plan->cpuMax) {
