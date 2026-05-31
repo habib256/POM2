@@ -204,16 +204,24 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   (`wozRaw` est un store distinct ; originaux WOZ généralement write-protected)
   ; « redo » (re-jouer un futur annulé) non implémenté. Détail → `DEV.md`
   § Rewind / time-travel.
-- 🟡 **Vue 3D voxel façon MicroM8** — écran extrudé en cubes (hauteur =
-  luminance), caméra orbitale. **Phases 0+1 faites** (2026-05-31,
+- 🟡 **Vue 3D voxel façon MicroM8 (« Voxel Cube »)** — écran **dressé**
+  (moniteur, plan XY) en dalle 4:3 de cubes de profondeur **uniforme** +
+  relief « pop » par couleur, caméra orbitale. NB : l'extrusion par luminance
+  initiale donnait des stalactites à plat — corrigé après scraping MicroM8
+  (cf. `CHANGELOG.md` + `DEV.md` § 3D voxel view). **Phases 0→3 faites** (2026-05-31,
   `CHANGELOG.md`) : `Mat4.h` (Vec3+Mat4+OrbitCamera, épinglé `voxel3d_math`),
-  `Voxel3DRenderer` (cubes instanciés, FBO+depth, hauteur/couleur par vertex
-  texture-fetch, ombrage par dérivées), toggle View ▸ « 3D voxel view ».
-  Vue orthogonale (pas un `HiResMode`) branchée dans `drawScreenImage`.
-  **Reste** : *(P2)* orbite à la souris + zoom molette ; *(P3)* panneau de
-  réglages (hauteur/densité/éclairage/fond) ; *(P4)* paliers de résolution /
-  heightfield mesh + garde-fou perf WASM ; *(P5)* tie-in rewind « figer +
-  orbiter ». Détail archi → `DEV.md` § 3D voxel view. *P2≈1 j, P3≈1 j.*
+  `Voxel3DRenderer` (cubes instanciés, FBO+depth, couleur par vertex
+  texture-fetch, ombrage par dérivées, **supersampling anti-moiré** +
+  `cubeFill=1` contigu), **résolution native** (1 voxel/pixel, 280|560×192),
+  tap **avant** `CrtEffectStack` (indépendant des effets CRT), *(P2)* orbite
+  glisser-gauche + **pan** bouton-milieu + zoom molette, *(P3)* panneau
+  View ▸ « 3D voxel settings… » (depth/pop/fill/AA/ambient, persistés
+  `voxel_*`). **Compile aussi en WASM/WebGL2.** **Reste** : *(P4)* garde-fou
+  perf WASM (560×192 × SSAA 3× = lourd navigateur, non profilé) + mode
+  heightfield-mesh alternatif ; *(P5)* tie-in rewind « figer + orbiter une
+  frame rembobinée » ; *(bonus)* mode « Voxel Cube Mono » + Z-offset par
+  **index** de couleur (au lieu de la luminance). Détail → `DEV.md` § 3D voxel
+  view. *P4≈1 j, P5≈0.5 j.*
 - 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
   `SetNextWindowPos` cascade adaptative.
 - 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la
