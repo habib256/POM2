@@ -204,6 +204,16 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   (`wozRaw` est un store distinct ; originaux WOZ généralement write-protected)
   ; « redo » (re-jouer un futur annulé) non implémenté. Détail → `DEV.md`
   § Rewind / time-travel.
+- 🟡 **Vue 3D voxel façon MicroM8** — écran extrudé en cubes (hauteur =
+  luminance), caméra orbitale. **Phases 0+1 faites** (2026-05-31,
+  `CHANGELOG.md`) : `Mat4.h` (Vec3+Mat4+OrbitCamera, épinglé `voxel3d_math`),
+  `Voxel3DRenderer` (cubes instanciés, FBO+depth, hauteur/couleur par vertex
+  texture-fetch, ombrage par dérivées), toggle View ▸ « 3D voxel view ».
+  Vue orthogonale (pas un `HiResMode`) branchée dans `drawScreenImage`.
+  **Reste** : *(P2)* orbite à la souris + zoom molette ; *(P3)* panneau de
+  réglages (hauteur/densité/éclairage/fond) ; *(P4)* paliers de résolution /
+  heightfield mesh + garde-fou perf WASM ; *(P5)* tie-in rewind « figer +
+  orbiter ». Détail archi → `DEV.md` § 3D voxel view. *P2≈1 j, P3≈1 j.*
 - 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
   `SetNextWindowPos` cascade adaptative.
 - 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la

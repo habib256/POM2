@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 #include "NoSlotClock.h"
 
 #include <ctime>

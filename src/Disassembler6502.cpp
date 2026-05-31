@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 // Copyright (C) 2000-2026 Verhille Arnaud
 

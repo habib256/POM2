@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 //
@@ -45,6 +47,10 @@ public:
         // charRomFitsProfile) — switching is hot, no cold reset needed
         // because Apple2Display re-reads `mem.charRom()` every frame.
         CharRomLocale charRomLocale      = CharRomLocale::ProfileDefault;
+        // Rewind hold-button state: enabled (greyed otherwise) only when
+        // recording is on AND there is history to scrub.
+        bool          rewindEnabled       = false;
+        bool          rewindHasFrames     = false;
     };
 
     struct Result {
@@ -52,6 +58,7 @@ public:
         bool requestSoftReset        = false;   // F11 / Ctrl-Reset
         bool requestHardReset        = false;   // F12
         bool requestPauseToggle      = false;   // Run ↔ Stopped
+        bool requestRewindHeld       = false;   // hold-to-rewind button held this frame
         bool requestStep             = false;   // single-instruction step
         bool requestScreenshot       = false;
         bool requestInsertDisk       = false;   // open Insert-disk popup

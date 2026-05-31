@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 
@@ -109,6 +111,25 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     ImGui::SameLine();
 
     // ── Run group ─────────────────────────────────────────────────────
+    // Rewind sits on the opposite side of Pause from Step: hold it to replay
+    // backwards (same gesture as F6 / the Devices ▸ Rewind bar). Enabled only
+    // when there's recorded history; iconButton can't report "held", so it's
+    // drawn inline to read IsItemActive().
+    {
+        const bool canRewind = snap.rewindEnabled && snap.rewindHasFrames;
+        ImGui::BeginDisabled(!canRewind);
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), "%s##RewindHold", ICON_FA_BACKWARD_FAST);
+        ImGui::Button(lbl);
+        if (ImGui::IsItemActive()) r.requestRewindHeld = true;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", canRewind
+                ? "Hold to rewind (live) — also F6, or Devices \xe2\x96\xb8 Rewind"
+                : "Rewind: turn on recording in Devices \xe2\x96\xb8 Rewind");
+        ImGui::SameLine();
+    }
+
     const char* runIcon = snap.isRunning
         ? ICON_FA_CIRCLE_PAUSE : ICON_FA_CIRCLE_PLAY;
     const char* runTip  = snap.isRunning

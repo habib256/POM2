@@ -6,6 +6,80 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-31 (Vue 3D voxel — phases 0+1 ; bouton rewind toolbar)
+
+- **Vue 3D voxel — refonte « Voxel Cube » fidèle à MicroM8 (correctif).**
+  La première version extrudait **hauteur = luminance** sur un écran posé
+  **à plat** (plan XZ) : pixels brillants transformés en stalactites, angle
+  catastrophique, voxels difformes. Scrapé MicroM8 (`paleotronic.com` Quick
+  Start + Features) : le mode « Voxel Cube Color » dresse l'écran **debout**
+  (moniteur, plan XY) et donne à **chaque pixel un cube de même épaisseur**
+  extrudé vers le spectateur sur **+Z** (« Voxel Depth »). La hauteur n'est
+  **jamais** liée à la luminance ; le relief par couleur (`colorShift`,
+  « Z-axis 3D offset ») est une **option** (défaut 0 → dalle plate qu'on
+  tourne pour voir l'épaisseur).
+  - **Géométrie** : cube footprint XY + profondeur Z ; colonne→X, ligne→Y
+    (ligne 0 = haut) ; plan **4:3 réel** (2.0 × 1.5) pour garder la forme des
+    pixels Apple II. `heightScale`→`voxelDepth` (0.06), `+colorShift`.
+  - **Caméra** : défauts quasi de face + léger 3/4 (azimut 0.32 / élévation
+    0.20 / distance 2.8 / fovY ~40°), cible recentrée à l'origine. **Orbite
+    au glisser-gauche + zoom molette** (dans `drawScreenImage`, mute
+    `voxelCam_`). `voxel3d_math` reste vert (la math caméra est inchangée).
+  - **Suite (même jour)** : (1) **haut/bas inversés** — la présentation
+    FBO→`ImGui::Image` est un miroir vertical (comme les passes NTSC 2D) ;
+    pré-flip de `gl_Position.y` dans le vertex shader. (2) **Résolution
+    native** — `gridW/gridH` pilotés par `display->width()/height()`
+    (280/560 × 192) → un voxel par pixel Apple II (avant : 140×96, moitié de
+    l'info perdue) ; `voxelDepth`/`colorShift` passés en **unités de cellule**
+    pour rester constants entre 280 et 560 de large. (3) **Relief par couleur
+    activé** (`colorShift` 8 cellules, pondéré luminance) → « pop » pin-art
+    demandé. (4) **Indépendant du CRT** — le voxel tappe l'image couleur
+    **avant** `CrtEffectStack` via un handle `voxelSrcTex` séparé (sinon
+    scanlines/masque/barrel se retrouvaient cuits dans les 50k cubes).
+    (5) **Pan/strafe au bouton du milieu** — `OrbitCamera::pan` glisse la
+    cible dans le plan droite/haut de la caméra, échelle en unités-monde/pixel
+    pour un suivi 1:1 (orbite = glisser-gauche, zoom = molette). (6) **Moiré
+    supprimé** — cubes **jointifs** (`cubeFill` 0.9→1.0 : un aplat redevient
+    une dalle continue, fin de la grille d'interstices) **+ supersampling**
+    (`superSample` 2× : FBO rendu à 2×, mip-chain, minify trilinéaire par
+    ImGui → anti-aliasing sans resolve MSAA).
+  - **Phase 3 — panneau de réglage** (`renderVoxelSettingsWindow`, View ▸
+    « 3D voxel settings… ») : sliders live `voxelDepth` / `colorShift` /
+    `cubeFill` / `superSample` (poussé à **3×** par défaut) / `ambient`, +
+    boutons Reset view / Reset settings. Le renderer est **possédé dès le
+    chargement des settings** (ctor sans GL) pour que le panneau et les clés
+    `voxel_*` (persistées) se branchent directement sur `voxel3d_`, même avant
+    d'activer la vue 3D. La résolution de grille reste auto (= écran).
+
+- **Bouton rewind dans la toolbar** (à gauche de Pause, en miroir de Step à
+  droite) : `ICON_FA_BACKWARD_FAST`, **maintenir = rewind-live** (même geste
+  que `F6` / la barre Devices ▸ Rewind). Grisé tant qu'il n'y a pas d'historique.
+  `F6` et le bouton partagent un seul edge-tracker (`driveRewindHold`).
+
+- **Vue 3D voxel façon MicroM8 — fondations (phases 0+1).**
+  - **Pourquoi / archi** : extruder l'écran en cubes (hauteur = luminance du
+    pixel) avec caméra orbitale. Choix clé : c'est un **axe de vue orthogonal**,
+    pas un `HiResMode` — un render-pass qui consomme la **texture RGBA déjà
+    décodée** (n'importe quel mode couleur + NTSC/CRT), exactement comme
+    `CrtEffectStack`. Universel, gratuit pour tous les modes.
+  - **Phase 0 — `Mat4.h`** : Vec3 + Mat4 column-major (perspective/lookAt/
+    multiply) + `OrbitCamera` (azimut/élévation/distance → view-proj). Aucune
+    dépendance (pas de glm). Épinglé `voxel3d_math` (entrées perspective, base
+    orthonormée lookAt, projection de la cible au centre).
+  - **Phase 1 — `Voxel3DRenderer.{h,cpp}`** : cubes **instanciés**
+    (`glDrawElementsInstanced`, ~13 k pour 140×96), hauteur+couleur par
+    **vertex texture-fetch** de la framebuffer, ombrage par **dérivées
+    d'écran** (pas d'attribut normal → reste sur le seul `aPos` lié par le
+    helper shader partagé). FBO **avec depth** (les passes 2D n'en ont pas).
+    Même pattern lazy-init + sauvegarde/restore d'état GL que `NtscPostProcessor` ;
+    compatible WebGL2/GLES3 (instancing + VTF + dérivées, pas de geometry
+    shader). Toggle **View ▸ « 3D voxel view »** (persisté `show_3d_voxel`),
+    branché dans `drawScreenImage` avant le blit final.
+  - **À suivre** : caméra orbitale au drag souris + zoom (P2), panneau de
+    réglages + éclairage (P3), paliers de résolution / heightfield (P4), tie-in
+    rewind « figer + orbiter » (P5). Le rendu GL se vérifie en lançant l'app
+    (pas de hash golden — la math caméra est, elle, testée).
+
 ## 2026-05-31 (Rewind — codec delta, UI, état disque, cas lourds : phases 2→5)
 
 - **Rewind façon MicroM8 complété (phases 2 à 5).** Le socle (phases 0+1,

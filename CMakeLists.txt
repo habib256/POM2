@@ -104,6 +104,7 @@ set(SOURCES
     src/GrapplerCard.cpp
     src/NtscPostProcessor.cpp
     src/CrtEffectStack.cpp
+    src/Voxel3DRenderer.cpp
     src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp
@@ -178,6 +179,8 @@ set(HEADERS
     src/MouseCard.h
     src/MouseCardAppleWin.h
     src/NtscPostProcessor.h
+    src/Voxel3DRenderer.h
+    src/Mat4.h
     src/OpenGLShader.h
     src/MountableMediaCard.h
     src/Ay3_8910.h

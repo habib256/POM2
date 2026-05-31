@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 #pragma once
 
 // NoSlotClock — Dallas DS1216E "SmartWatch" emulation.

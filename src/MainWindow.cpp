@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 
@@ -36,6 +38,7 @@
 #include "MouseCardAppleWin.h"
 #include "NtscPostProcessor.h"
 #include "CrtEffectStack.h"
+#include "Voxel3DRenderer.h"
 #include "CffaCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ProDOSVolume.h"
@@ -408,6 +411,18 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
         crtEffectsEnabled = settings->getBool("crt_effects_enabled",
                                               crtEffectsEnabled);
+        show3dVoxel_      = settings->getBool("show_3d_voxel", show3dVoxel_);
+        showVoxelSettings_ = settings->getBool("show_voxel_settings",
+                                               showVoxelSettings_);
+        // Own the renderer up-front (ctor is GL-free; initialize() stays lazy)
+        // so the settings panel and persistence can bind to its tunables even
+        // before the 3D view is first toggled on.
+        if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
+        voxel3d_->voxelDepth  = settings->getFloat("voxel_depth",      voxel3d_->voxelDepth);
+        voxel3d_->colorShift  = settings->getFloat("voxel_colorshift", voxel3d_->colorShift);
+        voxel3d_->cubeFill    = settings->getFloat("voxel_fill",       voxel3d_->cubeFill);
+        voxel3d_->ambient     = settings->getFloat("voxel_ambient",    voxel3d_->ambient);
+        voxel3d_->superSample = settings->getInt  ("voxel_supersample", voxel3d_->superSample);
         const std::string asp = settings->getString("aspect_mode", "");
         if      (asp == "crt43")   aspectMode = AspectMode::Crt43;
         else if (asp == "integer") aspectMode = AspectMode::Integer;
@@ -425,6 +440,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showMockingboardPanel = showPhasorPanel = showEchoPlusPanel = false;
         showAudioMixer = showSscPanel = showPrinterPanel = false;
         showNoSlotClockPanel = showNtscSettings = showAiControlPanel = false;
+        showVoxelSettings_ = false;
         showMemViewer = showMemoryBar = showMemoryBarH = showMemoryGrid = false;
 #endif
     }
@@ -756,6 +772,15 @@ MainWindow::~MainWindow()
         settings->setBool ("ntsc_text_sharp",  p.textSharp);
     }
     settings->setBool  ("crt_effects_enabled", crtEffectsEnabled);
+    settings->setBool  ("show_3d_voxel", show3dVoxel_);
+    settings->setBool  ("show_voxel_settings", showVoxelSettings_);
+    if (voxel3d_) {
+        settings->setFloat("voxel_depth",       voxel3d_->voxelDepth);
+        settings->setFloat("voxel_colorshift",  voxel3d_->colorShift);
+        settings->setFloat("voxel_fill",        voxel3d_->cubeFill);
+        settings->setFloat("voxel_ambient",     voxel3d_->ambient);
+        settings->setInt  ("voxel_supersample", voxel3d_->superSample);
+    }
     settings->setString("aspect_mode",
         aspectMode == AspectMode::Crt43   ? "crt43" :
         aspectMode == AspectMode::Integer ? "integer" : "square");
@@ -1936,6 +1961,12 @@ void MainWindow::renderMenuBar()
         // so this one panel governs the CRT look across all modes.
         ImGui::MenuItem("CRT Settings (sliders)...", nullptr, &showNtscSettings);
 
+        // 3D voxel view (MicroM8 "Voxel Cube"): rebuild the screen as an
+        // upright 4:3 slab of equal-depth cubes; left-drag orbits, middle-drag
+        // pans, wheel zooms. Works on any colour mode.
+        ImGui::MenuItem("3D voxel view", nullptr, &show3dVoxel_);
+        ImGui::MenuItem("3D voxel settings...", nullptr, &showVoxelSettings_);
+
         // ── Color pipeline ──────────────────────────────────────────────
         // How the Apple II bit stream becomes colour. One pick; the CRT
         // glass below is an independent, composable layer (Phase 3/4 — one
@@ -2146,6 +2177,13 @@ void MainWindow::drawScreenImage()
     // we fall back to the regular `screenTexture` for the rest of the
     // session — no crashes, no flicker, just the existing LUT view.
     unsigned int presentTex = screenTexture;
+    // The 3D voxel view must sample the decoded COLOUR image, NEVER the CRT
+    // glass — scanlines / shadow-mask / barrel warp would bake into the cube
+    // grid. Track that tap point separately: it follows the colour pipeline
+    // (NTSC demod, OE or otherwise) but stops *before* CrtEffectStack. For all
+    // non-OE-GPU modes the colour image already lives in `screenTexture`; the
+    // OE-GPU branch below redirects it to the demod output.
+    unsigned int voxelSrcTex = screenTexture;
     // Sharp-text override: when the user wants legible text under the
     // composite mode, skip the shader for TEXT scanlines and let the
     // crisp RGB framebuffer go straight to ImGui. Full-screen text uses
@@ -2215,6 +2253,7 @@ void MainWindow::drawScreenImage()
                 display->signalPhaseOffset());
             if (demod != 0) {
                 presentTex = demod;
+                voxelSrcTex = demod;   // colour image, pre-CRT-glass (3D tap)
                 // CRT glass only when the master toggle is on (top of the CRT
                 // Settings window); otherwise present the raw demod output.
                 if (crtEffectsEnabled) {
@@ -2274,6 +2313,27 @@ void MainWindow::drawScreenImage()
         }
     }
 
+    // 3D voxel view: rebuild the decoded COLOUR image (`voxelSrcTex`, the tap
+    // taken before CrtEffectStack — so the cubes never inherit scanlines / mask
+    // / barrel) as an upright 4:3 slab of equal-depth cubes (MicroM8 "Voxel
+    // Cube"), viewed by the orbit camera. Renders at the on-screen size so the
+    // aspect is exact; replaces the flat blit (CRT glass computed above is
+    // discarded when the 3D view wins). Falls back to the flat texture if the
+    // GL renderer can't initialise.
+    if (show3dVoxel_) {
+        if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
+        // One voxel per live Apple II pixel (280 or 560 × 192) so the cube grid
+        // captures the full image — half-res sampling visibly lost detail.
+        voxel3d_->gridW = std::max(1, display->width());
+        voxel3d_->gridH = std::max(1, display->height());
+        const int vw = std::max(16, static_cast<int>(size.x));
+        const int vh = std::max(16, static_cast<int>(size.y));
+        const float aspect = static_cast<float>(vw) / static_cast<float>(vh);
+        const unsigned int out =
+            voxel3d_->process(voxelSrcTex, vw, vh, voxelCam_.viewProj(aspect));
+        if (out != 0) presentTex = out;
+    }
+
     // Scale to the content region, then centre (letterbox on a wider/taller
     // region, e.g. a kiosk viewport). `avail` / `size` were computed up-front
     // (above) so the CRT effect pass could render at this exact resolution.
@@ -2295,6 +2355,36 @@ void MainWindow::drawScreenImage()
     // screen to the Mouse Card.
     screenRectMin = ImGui::GetItemRectMin();
     screenRectMax = ImGui::GetItemRectMax();
+
+    // 3D voxel view camera: left-drag orbits, middle-drag strafes (pan),
+    // wheel zooms (MicroM8-style). All reference the Image item above
+    // (IsItemHovered), so this must stay right after it. Mutates the
+    // persistent `voxelCam_` the renderer reads.
+    if (show3dVoxel_ && ImGui::IsItemHovered()) {
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+            voxelCam_.azimuth   += d.x * 0.008f;
+            voxelCam_.elevation += d.y * 0.008f;
+            const float lim = 1.5f;   // ~86°: stay off the lookAt up-vector poles
+            voxelCam_.elevation = std::clamp(voxelCam_.elevation, -lim, lim);
+        }
+        // Middle-drag = pan/strafe. Scale to world-units-per-pixel at the
+        // target plane so the grab tracks the cursor 1:1, and grab the scene
+        // (drag right → scene follows right → camera slides left).
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
+            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Middle, 0.0f);
+            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Middle);
+            const float k = 2.0f * voxelCam_.distance *
+                            std::tan(voxelCam_.fovY * 0.5f) /
+                            std::max(1.0f, size.y);
+            voxelCam_.pan(-d.x * k, d.y * k);
+        }
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f)
+            voxelCam_.distance =
+                std::clamp(voxelCam_.distance * std::pow(0.9f, wheel), 0.6f, 20.0f);
+    }
 }
 
 void MainWindow::renderKiosk()
@@ -2915,6 +3005,72 @@ void MainWindow::renderNoSlotClockPanelWindow()
         "leave this enabled for ProDOS 2.0.3+/GS-OS auto-detection "
         "on any profile (incl. //c, where no slot card can exist).");
 
+    ImGui::End();
+}
+
+// ─── 3D voxel view settings (MicroM8 "Voxel Cube") ───────────────────────
+//
+// Live sliders for the geometry knobs the Voxel3DRenderer exposes: cube
+// thickness, the per-colour forward "pop", footprint fill, supersample
+// (anti-alias) factor and the ambient floor. The grid resolution is NOT a
+// knob — it always tracks the live display (one voxel per Apple II pixel).
+// Values persist under the `voxel_*` keys; they bind straight to `voxel3d_`
+// (owned up-front at settings-load, so the panel works before the view is on).
+void MainWindow::renderVoxelSettingsWindow()
+{
+    if (!showVoxelSettings_) return;
+    if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
+
+    ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("3D Voxel View", &showVoxelSettings_)) {
+        ImGui::End();
+        return;
+    }
+
+    // Quick enable toggle, mirroring the View-menu item so the panel is usable
+    // stand-alone. Greys out the knobs while the 3D view is off.
+    ImGui::Checkbox("Enable 3D voxel view", &show3dVoxel_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(left-drag orbit · middle-drag pan · wheel zoom)");
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(!show3dVoxel_);
+
+    pom2::Voxel3DRenderer& v = *voxel3d_;
+    ImGui::SliderFloat("Voxel depth",  &v.voxelDepth, 0.0f, 12.0f, "%.1f cells");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Uniform Z-thickness of every cube (in pixel units).");
+    ImGui::SliderFloat("Colour pop",   &v.colorShift, 0.0f, 24.0f, "%.1f cells");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("MicroM8 'Z-axis 3D offset': brighter pixels push\n"
+                          "toward the viewer for pin-art relief. 0 = flat slab.");
+    ImGui::SliderFloat("Cube fill",    &v.cubeFill,   0.2f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Footprint as a fraction of the cell. 1.0 = contiguous\n"
+                          "(no gap grid — best against moiré); lower = visible gaps.");
+    ImGui::SliderInt  ("Anti-alias",   &v.superSample, 1, 4, "%dx supersample");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("FBO render scale, minify-downsampled. Higher = smoother\n"
+                          "edges (kills moiré) but more GPU. 1 = off.");
+    ImGui::SliderFloat("Ambient",      &v.ambient,    0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lighting floor so no cube face goes pure black.");
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset view")) {
+        voxelCam_ = pom2::OrbitCamera{};
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset settings")) {
+        pom2::Voxel3DRenderer def;
+        v.voxelDepth  = def.voxelDepth;
+        v.colorShift  = def.colorShift;
+        v.cubeFill    = def.cubeFill;
+        v.superSample = def.superSample;
+        v.ambient     = def.ambient;
+    }
+
+    ImGui::EndDisabled();
     ImGui::End();
 }
 
@@ -5922,6 +6078,16 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
     }
 }
 
+void MainWindow::driveRewindHold(bool held)
+{
+    // Edge-detect: hold → step the machine backwards one frame; release →
+    // resume live from the rewound point. No-op when recording is off
+    // (holdRewind/beginScrub bail out), so it never surprises a non-user.
+    if (held)                  rewindPanel_->holdRewind(*controller, 1);
+    else if (rewindHeldPrev_)  rewindPanel_->releaseHold(*controller);
+    rewindHeldPrev_ = held;
+}
+
 void MainWindow::renderRewindWindow(float deltaSeconds)
 {
     if (!showRewindBar) return;
@@ -6035,25 +6201,15 @@ void MainWindow::render()
 
     pollJoystickAndPushToMemory();
 
-    // F6 = hold-to-rewind (the MicroM8 gesture): while held, the machine
-    // replays backwards a frame at a time; releasing resumes live from the
-    // rewound point. Works whether or not the Rewind bar is open. No-op when
-    // rewind recording is disabled (holdRewind/beginScrub bail out), so it
-    // never surprises a user who isn't using the feature.
-    {
-        const bool f6 = ImGui::IsKeyDown(ImGuiKey_F6);
-        if (f6)                 rewindPanel_->holdRewind(*controller, 1);
-        else if (rewindKeyHeld_) rewindPanel_->releaseHold(*controller);
-        rewindKeyHeld_ = f6;
-    }
-
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).
     updateAutoTurbo();
 
     // Kiosk: only the screen, no chrome. Joystick + auto-turbo above still
     // run so the machine behaves identically; everything else is skipped.
+    // F6 hold-to-rewind still works (no toolbar button in kiosk).
     if (kiosk_) {
+        driveRewindHold(ImGui::IsKeyDown(ImGuiKey_F6));
         renderKiosk();
         return;
     }
@@ -6079,6 +6235,11 @@ void MainWindow::render()
                    m == Apple2Display::HiResMode::MonoAmber;
         };
         tb.displayIsMono      = isMonoHiRes(display->getHiResMode());
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            tb.rewindEnabled   = controller->rewind().enabled();
+            tb.rewindHasFrames = !controller->rewind().empty();
+        }
 
         const auto tr = toolbar->render(ImGui::GetFrameHeight(), tb);
 #ifdef __EMSCRIPTEN__
@@ -6180,6 +6341,10 @@ void MainWindow::render()
                     (newPath.empty() ? "(no path)" : newPath));
             }
         }
+
+        // Hold-to-rewind from either input source: F6 (works everywhere) or
+        // the toolbar's rewind button (held this frame). One edge-tracker.
+        driveRewindHold(ImGui::IsKeyDown(ImGuiKey_F6) || tr.requestRewindHeld);
     }
     renderScreenWindow();
     renderMemoryViewerWindow();
@@ -6209,6 +6374,7 @@ void MainWindow::render()
     renderMouseInspectorWindow();
     renderAudioMixerWindow();
     renderNtscSettingsWindow();
+    renderVoxelSettingsWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
     renderFloppyEmuWindow();

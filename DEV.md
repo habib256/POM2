@@ -1373,6 +1373,88 @@ authoritative bits in `wozRaw` (a different store from the nibble
 buffers), and WOZ originals are typically write-protected anyway. A
 clean follow-up if a writable-WOZ workflow needs it.
 
+### 3D voxel view
+
+`Voxel3DRenderer.{h,cpp}` + `Mat4.h` — MicroM8's **"Voxel Cube"** view:
+the screen rebuilt as an **upright 4:3 slab** of cubes, orbited by a
+camera. Toggle: **View ▸ "3D voxel view"** (persisted `show_3d_voxel`).
+Pinned by `voxel3d_math`.
+
+**The model (MicroM8-faithful, fixed 2026-05-31)**: each pixel → one
+cube of the **same** base thickness extruded toward the viewer on +Z
+("Voxel Depth"). Height is **NOT** luminance — that earlier height-field
+gave a spiky horror (bright pixels speared into stalactites) and laid
+the screen flat on the floor at a catastrophic angle. `colorShift`
+(MicroM8's per-colour "Z-axis 3D offset", luminance-weighted, **on by
+default**) pops brighter pixels forward for pin-art relief. Column→world
+X, row→world Y (row 0 = top), plane a true 4:3 (width 2.0 × height 1.5)
+so voxels keep the Apple II pixel shape.
+
+**Two gotchas** worth pinning here:
+- **Resolution = native.** `MainWindow` sets `gridW/gridH` from the live
+  `display->width()/height()` (280 or 560 × 192) → one voxel per Apple II
+  pixel; the old 140×96 visibly threw away half the image. `voxelDepth`
+  / `colorShift` are therefore in **cell-height units** (not world), so
+  the look is constant whether the source is 280- or 560-wide.
+- **Present flip.** `colorTex_` is shown by `ImGui::Image` with v=0 at the
+  top, but GL renders y-up → a vertical mirror, same as the 2D NTSC passes.
+  The vertex shader pre-flips `gl_Position.y` so the screen reads upright
+  (forgetting this inverted top/bottom).
+- **Moiré / anti-alias.** Two sources: a `cubeFill < 1` gap leaves a regular
+  dark grid that beats against the pixels, and 50k hard cube edges alias with
+  no AA. Fix = **contiguous cubes** (`cubeFill = 1.0`, so flat colour fields
+  are one continuous slab) **+ supersampling** (`superSample`, default 2):
+  render the FBO `ss`× the on-screen size, build a mip chain, and let ImGui's
+  `LINEAR_MIPMAP_LINEAR` minify box-average it down. No MSAA resolve needed.
+
+**Camera.** Left-drag orbits, **middle-drag strafes** (`OrbitCamera::pan`
+slides the target across the camera's right/up plane, scaled to world-units-
+per-pixel so the grab tracks 1:1), wheel zooms. Defaults frame the slab
+nearly head-on (azimuth 0.32 / elevation 0.20 / distance 2.8 / fovY ~40°).
+
+**It's a view-geometry layer, NOT a `HiResMode`.** It consumes the
+decoded **colour** framebuffer (any HiResMode / NTSC demod) and
+re-presents it as geometry. **It deliberately taps the pipeline *before*
+the CrtEffectStack** — `MainWindow` keeps a separate `voxelSrcTex` handle
+(= `screenTexture`, or the OE demod output) so the cubes never inherit
+scanlines / shadow-mask / barrel warp; CRT glass on a flat screen and CRT
+glass smeared over 50k cubes look nothing alike. So the 3D view composes
+with every colour mode but is **independent of the CRT effects**. Wired in
+`MainWindow::drawScreenImage` just before the final `ImGui::Image`: when
+on, `voxel3d_->process(voxelSrcTex, …, viewProj)` replaces the flat blit
+(the CRT pass still runs for the flat fallback, then is discarded).
+
+**Renderer** (follows the `NtscPostProcessor` pattern — lazy entry-
+point loader, FBO + GL-state save/restore — plus a **depth**
+attachment the 2D passes lack): a unit cube drawn `gridW*gridH` times
+via `glDrawElementsInstanced`. The vertex shader derives each instance's
+cell from `gl_InstanceID`, **samples the framebuffer in the vertex
+stage** (vertex texture fetch) for colour, and places the equal-depth
+cube; the fragment shader shades per-face via **screen-space
+derivatives** (`cross(dFdx,dFdy)`) so no normal attribute is needed
+(stays on the single location-0 `aPos` the shared shader helper binds).
+WebGL2/GLES3-safe: instancing + VTF + derivatives are core there, no
+geometry shader.
+
+**Camera** (`Mat4.h`, header-only, no glm): column-major Mat4
+(perspective / lookAt / multiply) + `OrbitCamera` (azimuth / elevation
+/ distance → view-projection). Pure CPU, so it's unit-tested
+(`voxel3d_math`) — the matrix layout is the classic source of a
+black/garbled 3D view, caught off-GPU. The GL rendering itself is
+verified by running the app (no golden hash).
+
+Camera interaction is wired in `drawScreenImage` right after the
+`ImGui::Image` (the drag/wheel reference that item), mutating `voxelCam_`;
+orbit elevation is clamped to ±1.5 rad off the lookAt poles.
+
+**Phase 3 panel** (`renderVoxelSettingsWindow`, View ▸ "3D voxel
+settings…") — live sliders for `voxelDepth` / `colorShift` / `cubeFill` /
+`superSample` / `ambient`, plus Reset view / Reset settings. The renderer is
+owned up-front at settings-load (its ctor is GL-free) so the panel and the
+`voxel_*` persistence keys bind straight to `voxel3d_`, even before the view
+is first enabled; grid resolution stays auto (display-driven, not a knob).
+Next: a rewind tie-in "freeze + orbit a rewound frame" (P5).
+
 ## IWM (//c+ on-board)
 
 `IWMDevice.{h,cpp}` — verbatim MAME `machine/iwm.{h,cpp}`. Full state

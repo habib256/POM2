@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 
@@ -17,6 +19,7 @@
 
 #include "M6502.h"
 #include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
+#include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
@@ -54,6 +57,7 @@ namespace pom2 {
     class Disk35Controller_ImGui;
     class NtscPostProcessor;
     class CrtEffectStack;
+    class Voxel3DRenderer;
     struct NtscParams;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
@@ -245,6 +249,14 @@ private:
     // initialised. Always runs for non-OE pipelines (OE bakes its own
     // effects in its demod shader).
     std::unique_ptr<pom2::CrtEffectStack> crtFx;
+    // 3D voxel view (MicroM8 "Voxel Cube"): rebuilds the presented framebuffer
+    // as an upright 4:3 slab of equal-depth instanced cubes, viewed by an orbit
+    // camera (left-drag / wheel). Orthogonal to the colour pipeline — works on
+    // any HiResMode. Lazily initialised; off (persisted under `show_3d_voxel`).
+    std::unique_ptr<pom2::Voxel3DRenderer> voxel3d_;
+    pom2::OrbitCamera voxelCam_;
+    bool         show3dVoxel_ = false;
+    bool         showVoxelSettings_ = false;
     bool         showNtscSettings = false;
     // Master ON/OFF for the whole CRT effect stack (the button at the top of
     // the CRT Settings window). When off, every pipeline presents its raw
@@ -268,7 +280,7 @@ private:
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
     bool         showRewindBar    = false;
-    bool         rewindKeyHeld_   = false;   // F6 hold-to-rewind edge tracker
+    bool         rewindHeldPrev_  = false;   // hold-to-rewind edge tracker (F6 + toolbar)
     // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
     // default since 2026-05-15 — the unified `Disk Library` panel
     // covers the 1-click insert+boot path for all three formats with
@@ -551,6 +563,9 @@ private:
     void renderMemoryGridWindow();
     void renderCassetteDeckWindow(float deltaSeconds);
     void renderRewindWindow(float deltaSeconds);
+    // Drive hold-to-rewind from the combined input sources (F6 key + toolbar
+    // button). Edge-detected against rewindHeldPrev_ — call once per frame.
+    void driveRewindHold(bool held);
     void renderTapeFileDialogs();
     void renderPasteFileDialog();
     void updateAutoTurbo();
@@ -577,6 +592,7 @@ private:
     void renderMouseInspectorWindow();
     void renderAudioMixerWindow();
     void renderNtscSettingsWindow();
+    void renderVoxelSettingsWindow();
     void renderAiControlPanelWindow();
     void pollJoystickAndPushToMemory();
     void renderAboutDialog();

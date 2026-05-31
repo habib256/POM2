@@ -516,6 +516,16 @@ add_test(NAME rewind_disk_write COMMAND test_rewind_disk_write)
 set_tests_properties(rewind_disk_write PROPERTIES TIMEOUT 10)
 
 
+# ─── 3D voxel view — camera math (Phase 0) ────────────────────────────────
+# Pins the column-major Mat4 (perspective/lookAt/multiply) + OrbitCamera that
+# back the 3D voxel render. Pure CPU — the GL renderer itself is verified by
+# running the app.
+add_executable(test_voxel3d_math voxel3d_math_test.cpp)
+target_include_directories(test_voxel3d_math PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME voxel3d_math COMMAND test_voxel3d_math)
+set_tests_properties(voxel3d_math PROPERTIES TIMEOUT 5)
+
+
 # ─── Slot bus dispatch smoke test ─────────────────────────────────────────
 # Self-contained: SlotBus + a fake SlotPeripheral. Asserts the active-
 # expansion-slot latching, $CFFF disable, and empty-slot open-bus reads.

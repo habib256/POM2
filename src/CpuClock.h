@@ -1,3 +1,5 @@
+// VERHILLE Arnaud 2026
+
 // POM2 Apple II Emulator
 //
 // 6502 clock: 1.0227 MHz. The Apple II master oscillator runs at
