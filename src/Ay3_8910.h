@@ -29,8 +29,12 @@
 #ifndef POM2_AY3_8910_H
 #define POM2_AY3_8910_H
 
+#include "ByteIO.h"
+
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace pom2 {
 
@@ -66,6 +70,28 @@ struct Ay3_8910
         std::memset(regs, 0, 14);
         latchedAddr = 0;
         prevCommand = 0;
+    }
+
+    // ─── Snapshot (rewind) ───────────────────────────────────────────────
+    // The whole audible state of this register-model AY is its 16 registers
+    // plus the control-bus latch, so a snapshot restores the chip exactly.
+    static constexpr std::size_t kSnapshotBytes = kAyNumRegs + 2 + 16;
+    inline void appendSnapshot(std::vector<uint8_t>& o) const
+    {
+        for (int i = 0; i < kAyNumRegs; ++i) byteio::putU8(o, regs[i]);
+        byteio::putU8(o, latchedAddr);
+        byteio::putU8(o, prevCommand);
+        byteio::putU32(o, latchCount);       byteio::putU32(o, writeStrobeCount);
+        byteio::putU32(o, readStrobeCount);  byteio::putU32(o, inactiveCount);
+    }
+    inline void loadSnapshot(const uint8_t* d)   // caller ensures >= kSnapshotBytes
+    {
+        byteio::Reader r(d, kSnapshotBytes);
+        for (int i = 0; i < kAyNumRegs; ++i) regs[i] = r.u8();
+        latchedAddr      = r.u8();
+        prevCommand      = r.u8();
+        latchCount       = r.u32(); writeStrobeCount = r.u32();
+        readStrobeCount  = r.u32(); inactiveCount    = r.u32();
     }
 
     enum ApplyResult { NoChange, ResetOnly, Wrote };

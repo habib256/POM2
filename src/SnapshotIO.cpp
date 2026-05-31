@@ -9,9 +9,90 @@
 
 #include <algorithm>
 #include <cstring>
+#include <ios>
 
 namespace pom2 {
 namespace {
+
+// Output streambuf that writes straight into a caller-owned vector — no
+// intermediate string/stringstream copy (the memory writer runs 60×/s under
+// rewind). Random-access seek supports the section-length back-patch.
+class VectorOutBuf final : public std::streambuf
+{
+public:
+    explicit VectorOutBuf(std::vector<uint8_t>& v) : vec_(v) {}
+
+protected:
+    std::streamsize xsputn(const char* s, std::streamsize n) override
+    {
+        if (n <= 0) return 0;
+        const std::size_t end = pos_ + static_cast<std::size_t>(n);
+        if (end > vec_.size()) vec_.resize(end);
+        std::memcpy(vec_.data() + pos_, s, static_cast<std::size_t>(n));
+        pos_ = end;
+        return n;
+    }
+    int_type overflow(int_type ch) override
+    {
+        if (traits_type::eq_int_type(ch, traits_type::eof())) return ch;
+        if (pos_ + 1 > vec_.size()) vec_.resize(pos_ + 1);
+        vec_[pos_++] = static_cast<uint8_t>(traits_type::to_char_type(ch));
+        return ch;
+    }
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir,
+                     std::ios_base::openmode /*which*/) override
+    {
+        std::streamoff base =
+            dir == std::ios_base::beg ? 0
+          : dir == std::ios_base::cur ? static_cast<std::streamoff>(pos_)
+          :                             static_cast<std::streamoff>(vec_.size());
+        const std::streamoff np = base + off;
+        if (np < 0) return pos_type(off_type(-1));
+        pos_ = static_cast<std::size_t>(np);
+        return pos_type(np);
+    }
+    pos_type seekpos(pos_type sp, std::ios_base::openmode which) override
+    {
+        return seekoff(static_cast<off_type>(sp), std::ios_base::beg, which);
+    }
+
+private:
+    std::vector<uint8_t>& vec_;
+    std::size_t           pos_ = 0;
+};
+
+// Input streambuf over a const buffer — zero-copy (the get area IS the
+// caller's bytes). Random-access seek supports nextSection's seekg.
+class ArrayInBuf final : public std::streambuf
+{
+public:
+    ArrayInBuf(const uint8_t* data, std::size_t len)
+    {
+        if (data && len) {
+            char* p = const_cast<char*>(reinterpret_cast<const char*>(data));
+            setg(p, p, p + len);   // we never write through it
+        }
+    }
+
+protected:
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir,
+                     std::ios_base::openmode /*which*/) override
+    {
+        const std::streamoff size = egptr() - eback();
+        std::streamoff base =
+            dir == std::ios_base::beg ? 0
+          : dir == std::ios_base::cur ? (gptr() - eback())
+          :                             size;
+        const std::streamoff np = base + off;
+        if (np < 0 || np > size) return pos_type(off_type(-1));
+        setg(eback(), eback() + np, egptr());
+        return pos_type(np);
+    }
+    pos_type seekpos(pos_type sp, std::ios_base::openmode which) override
+    {
+        return seekoff(static_cast<off_type>(sp), std::ios_base::beg, which);
+    }
+};
 
 void writeFixedName(std::ostream& out, std::string_view name)
 {
@@ -33,32 +114,24 @@ std::string readFixedName(std::istream& in)
 } // namespace
 
 // ─── Writer ───────────────────────────────────────────────────────────────
-// Both ctors bind the `out` reference to the live backing stream, then emit
-// the shared header. The ofstream/stringstream members are declared before
-// `out`, so the reference is always bound to a fully-constructed object.
+// Both ctors bind `out` to the live backing buffer (file rdbuf or the
+// vector streambuf), then emit the shared header. The backend members are
+// declared before `out`, so its buffer is fully constructed first.
 SnapshotWriter::SnapshotWriter(const std::string& path)
     : fileStream_(path, std::ios::binary | std::ios::trunc)
-    , out(fileStream_)
+    , out(fileStream_.rdbuf())
 {
-    if (!out.good()) return;
+    // `out` over a failed-open filebuf still starts good(); surface the open
+    // failure so good() reports it (callers gate on it).
+    if (!fileStream_.good()) { out.setstate(std::ios::badbit); return; }
     emitHeader();
 }
 
 SnapshotWriter::SnapshotWriter(std::vector<uint8_t>& sink)
-    : sink_(&sink)
-    , out(memStream_)
+    : memBuf_(std::make_unique<VectorOutBuf>(sink))
+    , out(memBuf_.get())
 {
     emitHeader();
-}
-
-SnapshotWriter::~SnapshotWriter()
-{
-    // Memory backend: flush the accumulated bytes into the caller's vector.
-    if (sink_) {
-        const std::string s = memStream_.str();
-        sink_->assign(reinterpret_cast<const uint8_t*>(s.data()),
-                      reinterpret_cast<const uint8_t*>(s.data()) + s.size());
-    }
 }
 
 void SnapshotWriter::emitHeader()
@@ -127,9 +200,9 @@ void SnapshotWriter::writeSection(std::string_view name,
 // ─── Reader ───────────────────────────────────────────────────────────────
 SnapshotReader::SnapshotReader(const std::string& path)
     : fileStream_(path, std::ios::binary)
-    , in(fileStream_)
+    , in(fileStream_.rdbuf())
 {
-    if (!in.good()) {
+    if (!fileStream_.good()) {
         errorMsg = "cannot open snapshot file: " + path;
         return;
     }
@@ -145,13 +218,11 @@ SnapshotReader::SnapshotReader(const std::string& path)
 }
 
 SnapshotReader::SnapshotReader(const uint8_t* data, std::size_t length)
-    : memStream_(length ? std::string(reinterpret_cast<const char*>(data), length)
-                        : std::string(),
-                 std::ios::in | std::ios::binary)
-    , in(memStream_)
+    : memBuf_(std::make_unique<ArrayInBuf>(data, length))
+    , in(memBuf_.get())
 {
-    // The whole blob is already resident, so the EOF bound nextSection()
-    // enforces is simply its length.
+    // The whole blob is already resident (referenced in place), so the EOF
+    // bound nextSection() enforces is simply its length.
     fileSize_ = static_cast<std::streamoff>(length);
     parseHeader();
 }

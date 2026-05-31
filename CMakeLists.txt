@@ -134,6 +134,7 @@ set(SOURCES
 
 set(HEADERS
     src/M6502.h
+    src/ByteIO.h
     src/Memory.h
     src/MemoryProfile.h
     src/MemoryProfile_IIcClass.h

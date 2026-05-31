@@ -122,6 +122,31 @@ int main()
     assert(waitForFrames(ctrl, afterResume + 3, 2000) && "capture did not resume");
 
     ctrl.stop();   // dtor also joins, but be explicit
-    std::printf("Rewind transport: OK (park + frozen + seek + seekToCycle + resume)\n");
+
+    // ── WASM path: tickFrame() captures too (no worker thread) ─────────────
+    // The browser build drives the CPU via tickFrame() from the render loop
+    // instead of the worker. Verify the same frame-boundary capture fires.
+    {
+        EmulationController wasm;
+        {
+            std::lock_guard<std::mutex> lk(wasm.stateMutex());
+            Memory& mem = wasm.memory();
+            mem.memWrite(0x0800, 0x4C);
+            mem.memWrite(0x0801, 0x00);
+            mem.memWrite(0x0802, 0x08);
+            wasm.cpu().setProgramCounter(0x0800);
+        }
+        wasm.rewind().setEnabled(true);
+        wasm.setMode(EmulationController::Mode::Running);
+        for (int i = 0; i < 25; ++i) wasm.tickFrame();   // no start(); manual frames
+        assert(ringSize(wasm) >= 20 && "tickFrame did not capture rewind frames");
+        // And those frames restore.
+        const size_t last = ringSize(wasm) - 1;
+        const uint64_t c = frameCycle(wasm, last);
+        assert(wasm.rewindSeek(last) == last);
+        assert(liveCycle(wasm) == c);
+    }
+
+    std::printf("Rewind transport: OK (park + frozen + seek + seekToCycle + resume + tickFrame)\n");
     return 0;
 }

@@ -25,8 +25,10 @@
 #ifndef POM2_SLOT_PERIPHERAL_H
 #define POM2_SLOT_PERIPHERAL_H
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 class SlotBus;
 
@@ -69,6 +71,20 @@ public:
     virtual void onPlug()   {}
     virtual void onUnplug() {}
     virtual void onReset()  {}
+
+    /// Rewind / snapshot hooks. `appendSnapshotState` serializes the card's
+    /// volatile runtime state — NOT its ROMs or mounted media — by appending
+    /// to `out`; `loadSnapshotState` restores from a blob a previous
+    /// `appendSnapshotState` produced. Cards with no rewindable state keep
+    /// the default no-ops (and write no per-slot section). A card MUST tag
+    /// its blob with its own magic/version and ignore foreign/old data on
+    /// load, because the slot it lands in might hold a different card than
+    /// when the snapshot was taken. The rewind ring buffer and the
+    /// AI-control /snapshot API drive these via per-slot "SLOTn" sections
+    /// (see MachineSnapshot). Restoring drive position keeps an in-progress
+    /// disk read from corrupting after a rewind.
+    virtual void appendSnapshotState(std::vector<uint8_t>& /*out*/) const {}
+    virtual void loadSnapshotState(const uint8_t* /*data*/, std::size_t /*len*/) {}
 
     /// Cycle pacing — for cycle-driven peripherals (Disk II's stepper, a
     /// future serial card's UART, …). Forwarded by SlotBus from

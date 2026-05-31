@@ -451,6 +451,137 @@ void DiskIICard::pushIwmFloppy()
     iwm_->setFloppy(img, headQuarterTrack[activeDrive]);
 }
 
+// ─── Rewind / snapshot ──────────────────────────────────────────────────────
+// Serialize the controller's volatile runtime state: the head position and
+// motion magnets, the motor, the selected drive, the LSS sequencer + data
+// register, and the rotational timing anchors. The PROMs are excluded (same
+// on the restored machine), as is the mid-write splice buffer.
+//
+// v2 also appends the writable media (nibble track buffers) for loaded,
+// non-write-protected, non-WOZ disks, so disk WRITES are undone on a rewind.
+// Read-only / WOZ / empty drives cost one flag byte; the rewind delta codec
+// keeps the media near-zero until a track is actually written. Blob is
+// self-describing (magic + version) so a foreign card on this slot ignores it.
+namespace { constexpr uint8_t kDiskIISnapVersion = 2; }
+
+void DiskIICard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    auto u8  = [&](uint8_t v)  { out.push_back(v); };
+    auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i))); };
+    auto u64 = [&](uint64_t v) { for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i))); };
+
+    u8('D'); u8('2'); u8('S'); u8('1'); u8(kDiskIISnapVersion);  // 'D2S1' magic + ver
+    u32(static_cast<uint32_t>(activeDrive));
+    u8(static_cast<uint8_t>(active));
+    u8(motorOn ? 1 : 0);
+    u32(static_cast<uint32_t>(motorOffDelay));
+    u8(writeMode ? 1 : 0);
+    u8(loadMode ? 1 : 0);
+    u8(iwmMode);
+    u8(iwmWhd);
+    u8(writeBackEnabled ? 1 : 0);
+    u8(writeLatch);
+    for (bool ph : phaseOn) u8(ph ? 1 : 0);
+    for (int d = 0; d < kDriveCount; ++d) u32(static_cast<uint32_t>(headQuarterTrack[d]));
+    for (int d = 0; d < kDriveCount; ++d) u32(static_cast<uint32_t>(trackPos[d]));
+    u32(static_cast<uint32_t>(cycleAccum));
+    u8(dataLatch);
+    u8(byteReady ? 1 : 0);
+    u8(serving13_ ? 1 : 0);
+    u8(useBitLss ? 1 : 0);
+    u8(address);
+    u8(lssData);
+    u64(lssCycle);
+    u64(cpuCycleTotal);
+    for (int d = 0; d < kDriveCount; ++d) u64(static_cast<uint64_t>(revolutionStartLssCycle[d]));
+
+    // v2: writable media — undoes disk writes on a rewind. Gated so read-only
+    // / WOZ / empty drives append only the 1-byte present flag.
+    for (int d = 0; d < kDriveCount; ++d) {
+        // Physical WP (not the write-back toggle) is what inhibits the
+        // in-memory track write — capture whenever the medium can actually be
+        // mutated at runtime. WOZ keeps its writes in a different store.
+        const bool cap = images[d].isLoaded() &&
+                         !images[d].isFileWriteProtected() && !images[d].isWoz();
+        u8(cap ? 1 : 0);
+        if (cap) images[d].appendMediaSnapshot(out);
+    }
+}
+
+void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    // Fixed layout, so a single up-front length check guards every read.
+    constexpr std::size_t kBody =
+        4 + 1 +                 // activeDrive + active
+        1 + 4 +                 // motorOn + motorOffDelay
+        1 + 1 +                 // writeMode + loadMode
+        1 + 1 +                 // iwmMode + iwmWhd
+        1 + 1 +                 // writeBackEnabled + writeLatch
+        4 +                     // phaseOn[4]
+        kDriveCount * 4 +       // headQuarterTrack
+        kDriveCount * 4 +       // trackPos
+        4 +                     // cycleAccum
+        1 + 1 +                 // dataLatch + byteReady
+        1 + 1 +                 // serving13_ + useBitLss
+        1 + 1 +                 // address + lssData
+        8 + 8 +                 // lssCycle + cpuCycleTotal
+        kDriveCount * 8;        // revolutionStartLssCycle
+    constexpr std::size_t kTotal = 5 + kBody;   // + magic(4) + version(1)
+    if (len < kTotal) return;
+    if (data[0] != 'D' || data[1] != '2' || data[2] != 'S' || data[3] != '1') return;
+    const uint8_t version = data[4];
+    if (version < 1 || version > kDiskIISnapVersion) return;
+
+    std::size_t p = 5;
+    auto g8  = [&]() -> uint8_t  { return data[p++]; };
+    auto g32 = [&]() -> uint32_t { uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[p++]) << (8 * i); return v; };
+    auto g64 = [&]() -> uint64_t { uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(data[p++]) << (8 * i); return v; };
+
+    activeDrive   = static_cast<int>(g32());
+    if (activeDrive < 0 || activeDrive >= kDriveCount) activeDrive = 0;  // index guard
+    active        = static_cast<ActiveMode>(g8());
+    motorOn       = g8() != 0;
+    motorOffDelay = static_cast<int>(g32());
+    writeMode     = g8() != 0;
+    loadMode      = g8() != 0;
+    iwmMode       = g8();
+    iwmWhd        = g8();
+    writeBackEnabled = g8() != 0;
+    writeLatch    = g8();
+    for (auto& ph : phaseOn) ph = g8() != 0;
+    for (int d = 0; d < kDriveCount; ++d) headQuarterTrack[d] = static_cast<int>(g32());
+    for (int d = 0; d < kDriveCount; ++d) trackPos[d] = static_cast<int>(g32());
+    cycleAccum    = static_cast<int>(g32());
+    dataLatch     = g8();
+    byteReady     = g8() != 0;
+    serving13_    = g8() != 0;
+    useBitLss     = g8() != 0;
+    address       = g8();
+    lssData       = g8();
+    lssCycle      = g64();
+    cpuCycleTotal = g64();
+    for (int d = 0; d < kDriveCount; ++d) revolutionStartLssCycle[d] = static_cast<int64_t>(g64());
+
+    // v2: per-drive writable media (present-flag byte, then the track buffers
+    // when set). Only applied if the live drive actually holds a disk.
+    if (version >= 2) {
+        for (int d = 0; d < kDriveCount; ++d) {
+            if (p >= len) break;
+            const uint8_t cap = g8();
+            if (cap) {
+                if (p + DiskImage::kMediaSnapshotBytes > len) break;
+                if (images[d].isLoaded())
+                    images[d].loadMediaSnapshot(data + p, DiskImage::kMediaSnapshotBytes);
+                p += DiskImage::kMediaSnapshotBytes;
+            }
+        }
+    }
+
+    // Re-point the IWM at the restored head position so the //c+ data path
+    // and the restored LSS agree on the current track.
+    pushIwmFloppy();
+}
+
 void DiskIICard::advanceCycles(int cycles)
 {
     cpuCycleTotal += static_cast<uint64_t>(cycles);

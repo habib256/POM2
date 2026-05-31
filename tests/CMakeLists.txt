@@ -427,6 +427,95 @@ add_test(NAME rewind_transport COMMAND test_rewind_transport)
 set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
 
 
+# ─── Rewind slot-card state (rewind Phase 4) ──────────────────────────────
+# Pins DiskIICard snapshot serialization + the MachineSnapshot SLOTn wiring:
+# a driven Disk II's head/LSS state round-trips through a full-machine
+# snapshot bit-exact, and foreign/short blobs are ignored.
+add_executable(test_rewind_slot_state
+    rewind_slot_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind_slot_state PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind_slot_state PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind_slot_state PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind_slot_state PRIVATE winmm)
+endif()
+add_test(NAME rewind_slot_state COMMAND test_rewind_slot_state)
+set_tests_properties(rewind_slot_state PROPERTIES TIMEOUT 10)
+
+
+# ─── Rewind audio-chip state (rewind Phase 4, audio) ──────────────────────
+# Pins Mockingboard (6522 VIA + AY-3-8910) snapshot serialization through the
+# SlotPeripheral hook: a driven card's chip state round-trips through a full
+# machine snapshot bit-exact (so music survives a rewind), foreign blobs are
+# ignored. Via6522/Ay3_8910 serialize is shared with PhasorCard.
+add_executable(test_rewind_audio_state
+    rewind_audio_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind_audio_state PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for the audio core
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind_audio_state PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind_audio_state PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind_audio_state PRIVATE winmm)
+endif()
+add_test(NAME rewind_audio_state COMMAND test_rewind_audio_state)
+set_tests_properties(rewind_audio_state PROPERTIES TIMEOUT 10)
+
+
+# ─── Rewind disk-write undo (rewind Phase 6) ──────────────────────────────
+# Pins that a disk write is reverted on a rewind: DiskImage media COW, and
+# end-to-end through DiskIICard v2 + MachineSnapshot (write via the card, then
+# restoring an earlier snapshot undoes it).
+add_executable(test_rewind_disk_write
+    rewind_disk_write_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_rewind_disk_write PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rewind_disk_write PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_rewind_disk_write PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_rewind_disk_write PRIVATE winmm)
+endif()
+add_test(NAME rewind_disk_write COMMAND test_rewind_disk_write)
+set_tests_properties(rewind_disk_write PROPERTIES TIMEOUT 10)
+
+
 # ─── Slot bus dispatch smoke test ─────────────────────────────────────────
 # Self-contained: SlotBus + a fake SlotPeripheral. Asserts the active-
 # expansion-slot latching, $CFFF disable, and empty-slot open-bus reads.

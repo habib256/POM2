@@ -9,15 +9,24 @@
 // (RewindBuffer) need, so the two never drift. The byte layout is the
 // SnapshotIO section roster (see SnapshotIO.h):
 //
-//   CPU  16 bytes  PC A X Y P SP cpuMode + cycle counter
-//   MEM  64 KiB    main RAM (restored through Memory::restoreMainRam, ROM
-//                  mirror preserved)
-//   MEX  v2 blob   aux RAM + Language-Card RAM + RamWorks banks + paging
-//                  soft-switches + DisplayState
+//   CPU   16 bytes  PC A X Y P SP cpuMode + cycle counter
+//   MEM   64 KiB    main RAM (restored through Memory::restoreMainRam, ROM
+//                   mirror preserved)
+//   MEX   v2 blob   aux RAM + Language-Card RAM + RamWorks banks + paging
+//                   soft-switches + DisplayState
+//   SLOTn optional  per-card volatile state (e.g. DiskIICard head/LSS) —
+//                   written ONLY when captureMachineState(includeSlots=true).
 //
-// Disk / slot-card state is deliberately excluded (per CLAUDE.md). The
-// functions take a SnapshotWriter/Reader so the caller chooses the backend
-// (file for /snapshot, in-memory vector for rewind).
+// `includeSlots` is the dividing line: the rewind ring buffer passes true so
+// a rewind during disk I/O restores the drive head (the media itself is never
+// captured — it doesn't change within a rewind window). The AI-control
+// `/snapshot` path passes false, keeping its documented "disk/slot state
+// deliberately excluded" (CLAUDE.md) file contract — an archival snapshot
+// can outlive a media swap, where a stale head position would mismatch.
+// restoreMachineState always applies any SLOTn sections it finds (none in an
+// AI-control file), so a rewind blob and a file blob load through one path.
+// The functions take a SnapshotWriter/Reader so the caller chooses the
+// backend (file for /snapshot, in-memory vector for rewind).
 
 #ifndef POM2_MACHINE_SNAPSHOT_H
 #define POM2_MACHINE_SNAPSHOT_H
@@ -32,8 +41,10 @@ namespace pom2 {
 class SnapshotWriter;
 class SnapshotReader;
 
-/// Serialize the full rewindable machine state into `w` (CPU + MEM + MEX).
-void captureMachineState(SnapshotWriter& w, M6502& cpu, Memory& mem);
+/// Serialize the machine state into `w` (CPU + MEM + MEX, and per-slot
+/// SLOTn sections when `includeSlots` is true — see the header note).
+void captureMachineState(SnapshotWriter& w, M6502& cpu, Memory& mem,
+                         bool includeSlots = false);
 
 struct RestoreResult {
     bool        ok = true;

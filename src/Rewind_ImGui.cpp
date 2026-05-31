@@ -57,16 +57,17 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
 
     // Read ring stats once, under the lock.
     bool     enabled = false;
-    size_t   count = 0, bytes = 0;
+    size_t   count = 0, bytes = 0, maxFrames = 0;
     uint64_t oldest = 0, newest = 0, cursorCycle = 0;
     {
         std::lock_guard<std::mutex> lk(ctrl.stateMutex());
         RewindBuffer& rb = ctrl.rewind();
-        enabled = rb.enabled();
-        count   = rb.size();
-        bytes   = rb.bytes();
-        oldest  = rb.oldestCycle();
-        newest  = rb.newestCycle();
+        enabled   = rb.enabled();
+        count     = rb.size();
+        bytes     = rb.bytes();
+        maxFrames = rb.maxFrames();
+        oldest    = rb.oldestCycle();
+        newest    = rb.newestCycle();
         if (scrubbing_ && cursor_ < count) cursorCycle = rb.infoAt(cursor_).cycle;
     }
     if (scrubbing_ && count == 0) scrubbing_ = false;   // ring was cleared
@@ -92,6 +93,19 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
     const double spanSec = newest >= oldest ? (newest - oldest) / kCpuHz : 0.0;
     ImGui::Text("%zu frames  ·  %.1f s  ·  %.1f MB",
                 count, spanSec, static_cast<double>(bytes) / (1024.0 * 1024.0));
+    ImGui::SameLine();
+    // History length (max retained seconds @ 60 Hz). Takes effect immediately;
+    // shrinking evicts the oldest frames. Disabled while scrubbing because
+    // front-eviction would shift every frame index and desync `cursor_`.
+    int histSec = static_cast<int>(maxFrames / 60);
+    if (histSec < 1) histSec = 1;
+    ImGui::SetNextItemWidth(150.0f);
+    ImGui::BeginDisabled(scrubbing_);
+    if (ImGui::SliderInt("history (s)", &histSec, 5, 120)) {
+        std::lock_guard<std::mutex> lk(ctrl.stateMutex());
+        ctrl.rewind().setMaxFrames(static_cast<size_t>(histSec) * 60);
+    }
+    ImGui::EndDisabled();
     if (!enabled && !haveFrames)
         ImGui::TextDisabled("Enable Record, run for a moment, then scrub the timeline below.");
 

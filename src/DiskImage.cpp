@@ -1151,6 +1151,33 @@ void DiskImage::writeNibbleAt(int track, int index, uint8_t value)
     }
 }
 
+// ── Media snapshot (rewind) ──────────────────────────────────────────────
+void DiskImage::appendMediaSnapshot(std::vector<uint8_t>& out) const
+{
+    out.reserve(out.size() + kMediaSnapshotBytes);
+    for (int t = 0; t < kTracks; ++t)
+        out.insert(out.end(), tracks[t].begin(), tracks[t].end());
+    for (int t = 0; t < kTracks; ++t)
+        out.push_back(static_cast<uint8_t>(dirty[t] ? 1 : 0));
+}
+
+void DiskImage::loadMediaSnapshot(const uint8_t* data, std::size_t len)
+{
+    if (len < kMediaSnapshotBytes) return;
+    std::size_t p = 0;
+    for (int t = 0; t < kTracks; ++t) {
+        std::memcpy(tracks[t].data(), data + p, kNibblesPerTrack);
+        p += kNibblesPerTrack;
+    }
+    anyDirty = false;
+    for (int t = 0; t < kTracks; ++t) {
+        dirty[t] = data[p++] != 0;
+        if (dirty[t]) anyDirty = true;
+    }
+    // Reads re-derive the bit/flux streams from the restored nibble buffers.
+    invalidateAllBitStreams();
+}
+
 // ── LSS bit-cell stream expansion ────────────────────────────────────────
 //
 // Walks the 6656-byte nibble buffer once and emits the LSS-shaped bit

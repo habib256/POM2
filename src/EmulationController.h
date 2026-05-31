@@ -217,7 +217,8 @@ private:
     std::thread             worker;
 
     void workerLoop();
-    void waitUntilParked();   // block (bounded) until workerParked_ is set
+    void waitUntilParked();      // block (bounded) until workerParked_ is set
+    void flushAudioForRewind();  // silence the speaker after a time jump
 };
 
 #endif // POM2_EMULATION_CONTROLLER_H

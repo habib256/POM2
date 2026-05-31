@@ -59,10 +59,13 @@
 #ifndef POM2_SSI263_H
 #define POM2_SSI263_H
 
+#include "ByteIO.h"
 #include "CpuClock.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace pom2 {
 
@@ -147,6 +150,39 @@ public:
 
     /// Direct peek into a register (no A/!R overlay) — for the UI panel.
     uint8_t peekRegister(uint8_t reg) const;
+
+    // ─── Snapshot (rewind) ───────────────────────────────────────────────
+    // The 5 latched registers + the phoneme playback cursor/timing. The
+    // 62-phoneme PCM blob is static data, not state. Restores speech to its
+    // exact mid-utterance position so a rewind doesn't blip.
+    static constexpr std::size_t kSnapshotBytes = 30;
+    void appendSnapshot(std::vector<uint8_t>& o) const
+    {
+        byteio::putU8(o, durPhon_); byteio::putU8(o, inflect_);
+        byteio::putU8(o, rateInf_); byteio::putU8(o, cttrAmp_);
+        byteio::putU8(o, filFreq_);
+        byteio::putU32(o, static_cast<uint32_t>(phonemeRemainingCycles_));
+        byteio::putU8(o, aRequest_ ? 1 : 0);
+        byteio::putU32(o, phonemeWriteCount_);
+        byteio::putU32(o, static_cast<uint32_t>(playbackPhoneme_));
+        byteio::putU64(o, static_cast<uint64_t>(playbackOffset_));
+        uint32_t accumBits = 0;
+        std::memcpy(&accumBits, &resampleAccum_, sizeof(accumBits));
+        byteio::putU32(o, accumBits);
+    }
+    void loadSnapshot(const uint8_t* d)   // caller ensures >= kSnapshotBytes
+    {
+        byteio::Reader r(d, kSnapshotBytes);
+        durPhon_ = r.u8(); inflect_ = r.u8(); rateInf_ = r.u8();
+        cttrAmp_ = r.u8(); filFreq_ = r.u8();
+        phonemeRemainingCycles_ = static_cast<int>(r.u32());
+        aRequest_ = r.u8() != 0;
+        phonemeWriteCount_ = r.u32();
+        playbackPhoneme_ = static_cast<int>(r.u32());
+        playbackOffset_ = static_cast<std::size_t>(r.u64());
+        const uint32_t accumBits = r.u32();
+        std::memcpy(&resampleAccum_, &accumBits, sizeof(accumBits));
+    }
 
     /// Total number of phonemes accepted via writes to $00 since reset.
     /// Surfaces in the UI panel as a heartbeat for "the speech driver

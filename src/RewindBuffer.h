@@ -47,6 +47,11 @@ public:
 
     /// ~30 s at 60 Hz. Tunable via setMaxFrames / a UI setting.
     static constexpr size_t kDefaultMaxFrames = 1800;
+    /// Hard cap on retained payload (256 MiB). The frame count alone doesn't
+    /// bound memory once RamWorks blows the per-frame blob up to ~10 MB, so a
+    /// byte budget keeps the footprint sane — RamWorks just buys fewer frames
+    /// of history. Whichever cap (frames or bytes) binds first wins.
+    static constexpr size_t kDefaultMaxBytes = static_cast<size_t>(256) * 1024 * 1024;
     /// One full keyframe every 2 s @ 60 Hz — bounds random-seek cost to
     /// ≤ this many delta applies while keeping keyframe overhead small.
     static constexpr size_t kDefaultKeyframeInterval = 120;
@@ -61,6 +66,12 @@ public:
     /// Cap on retained frames. Shrinking drops the oldest immediately.
     void   setMaxFrames(size_t n);
     size_t maxFrames() const { return maxFrames_; }
+
+    /// Cap on retained payload bytes (0 = unlimited). Shrinking evicts the
+    /// oldest immediately. At least one frame is always kept, even if a lone
+    /// keyframe exceeds the budget.
+    void   setMaxBytes(size_t n);
+    size_t maxBytes() const { return maxBytes_; }
 
     /// Frames between full keyframes (>= 1). Lower = faster random seek,
     /// more memory. Takes effect from the next capture.
@@ -116,6 +127,7 @@ private:
 
     std::deque<Frame> frames_;
     size_t            maxFrames_;
+    size_t            maxBytes_ = kDefaultMaxBytes;
     size_t            keyframeInterval_ = kDefaultKeyframeInterval;
     size_t            sinceKeyframe_ = 0;   ///< delta frames since last keyframe (tail)
     size_t            totalBytes_ = 0;

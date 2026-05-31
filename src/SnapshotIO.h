@@ -45,7 +45,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <sstream>
+#include <istream>
+#include <memory>
+#include <ostream>
+#include <streambuf>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,11 +68,11 @@ public:
     /// File-backed: writes the snapshot straight to `path` (truncating any
     /// existing file). `good()` is false if the file could not be opened.
     explicit SnapshotWriter(const std::string& path);
-    /// Memory-backed: accumulates the snapshot in `sink`, which is filled
-    /// when the writer is destroyed (flush-on-close). `sink` must outlive
-    /// the writer. Always `good()`.
+    /// Memory-backed: appends the snapshot straight into `sink` as it is
+    /// written (no intermediate copy). `sink` must outlive the writer.
+    /// Always `good()`.
     explicit SnapshotWriter(std::vector<uint8_t>& sink);
-    ~SnapshotWriter();
+    ~SnapshotWriter() = default;
 
     bool good() const { return out.good(); }
 
@@ -95,10 +98,9 @@ public:
 private:
     void emitHeader();   // magic + version + flags
 
-    std::ofstream         fileStream_;       // engaged for the file ctor
-    std::stringstream     memStream_;        // engaged for the memory ctor
-    std::vector<uint8_t>* sink_ = nullptr;   // non-null ⟺ memory-backed
-    std::ostream&         out;               // bound to whichever is live
+    std::ofstream                   fileStream_;   // engaged for the file ctor
+    std::unique_ptr<std::streambuf> memBuf_;       // engaged for the memory ctor
+    std::ostream                    out;           // bound to the live buffer
 };
 
 class SnapshotReader
@@ -107,8 +109,9 @@ public:
     /// File-backed: opens and parses the snapshot at `path`.
     explicit SnapshotReader(const std::string& path);
     /// Memory-backed: parses a snapshot already resident in RAM. The bytes
-    /// are copied in, so `data` need not outlive the reader. `length == 0`
-    /// (or `data == nullptr`) yields a non-good reader (no valid header).
+    /// are referenced in place (zero-copy), so `data` MUST outlive the
+    /// reader. `length == 0` (or `data == nullptr`) yields a non-good reader
+    /// (no valid header).
     SnapshotReader(const uint8_t* data, std::size_t length);
     ~SnapshotReader() = default;
 
@@ -137,9 +140,9 @@ public:
 private:
     void parseHeader();   // validate magic/version, prime cursor
 
-    std::ifstream     fileStream_;   // engaged for the file ctor
-    std::stringstream memStream_;    // engaged for the memory ctor
-    std::istream&  in;               // bound to whichever is live
+    std::ifstream                   fileStream_;   // engaged for the file ctor
+    std::unique_ptr<std::streambuf> memBuf_;       // engaged for the memory ctor
+    std::istream   in;               // bound to whichever buffer is live
     bool           ok = false;
     uint32_t       ver = 0;
     std::string    errorMsg;

@@ -174,6 +174,45 @@ int main()
         checkState(cpu, mem, tagOf(0), cycOf(0));
     }
 
-    std::printf("Rewind delta codec: OK (keyframe/delta exact + evict + truncate)\n");
+    // ── (5) Byte budget bounds memory (the RamWorks degradation path) ──────
+    {
+        pom2::RewindBuffer rb(100000);        // frame cap effectively unlimited
+        rb.setEnabled(true);
+        rb.setKeyframeInterval(4);
+
+        // Prime one frame to learn the keyframe size, then budget for ~3.
+        setState(cpu, mem, 1, 1000);
+        rb.capture(cpu, mem);
+        const size_t keyframeBytes = rb.bytes();
+        assert(keyframeBytes > 0);
+        const size_t budget = keyframeBytes * 3;
+        rb.setMaxBytes(budget);
+
+        for (int k = 1; k < 200; ++k) {
+            setState(cpu, mem, tagOf(k), cycOf(k));
+            rb.capture(cpu, mem);
+        }
+        // Memory stays bounded (a lone oversized keyframe is the only allowed
+        // exception, and our keyframes are < budget here).
+        assert(rb.bytes() <= budget);
+        assert(rb.size() >= 1);
+        assert(rb.infoAt(0).keyframe);        // front is restorable
+
+        // Whatever survived must still restore exactly.
+        const uint64_t oldestCyc = rb.oldestCycle();
+        const uint8_t  oldestTag = static_cast<uint8_t>(oldestCyc / 1000);
+        scramble(cpu, mem);
+        assert(rb.restore(0, cpu, mem));
+        checkState(cpu, mem, oldestTag, oldestCyc);
+
+        // Raising the byte cap doesn't retro-actively recover evicted frames,
+        // but lowering it evicts immediately.
+        const size_t before = rb.size();
+        rb.setMaxBytes(keyframeBytes);        // room for ~1 keyframe
+        assert(rb.size() <= before);
+        assert(rb.bytes() <= keyframeBytes || rb.size() == 1);
+    }
+
+    std::printf("Rewind delta codec: OK (keyframe/delta exact + evict + truncate + budget)\n");
     return 0;
 }

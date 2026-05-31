@@ -188,19 +188,22 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 
 ### [UI/UX]
 
-- 🟠 **Rewind façon MicroM8** — enregistrement continu d'état +
-  scrub/step-back/rewind-live. **Phases 0+1 faites** (2026-05-31,
+- 🟢 **Rewind façon MicroM8** — enregistrement continu d'état +
+  scrub/step-back/rewind-live. **Phases 0→5 faites** (2026-05-31,
   `CHANGELOG.md`) : backend mémoire `SnapshotIO`, `MachineSnapshot`
-  partagé, `RewindBuffer` (ring de snapshots pleins) + capture au frame
-  boundary du `workerLoop`. Épinglés `snapshot_memory_roundtrip` +
-  `rewind_roundtrip`. **Reste** : *(P2)* codec delta XOR+RLE + keyframes
-  pour réduire ~175 Ko/frame ; *(P3)* UI `Rewind_ImGui` (timeline +
-  transport + rewind-live clavier) + restore servi sur le thread worker
-  (façon `requestStep`) ; *(P4)* hook `SlotPeripheral::*SnapshotState` +
-  état lecteur `DiskIICard` (rewind correct pendant I/O disque) + capture
-  chips audio ; *(P5)* gating RamWorks / dirty-page, flush audio, câblage
-  WASM (`tickFrame`) ; *(P6, option)* journal COW disque + « redo ».
-  Détail archi → `DEV.md` § Rewind / time-travel. *P2≈1 j, P3≈2 j, P4≈2 j.*
+  partagé, `RewindBuffer` (keyframes + deltas XOR, budget mémoire),
+  capture au frame boundary (`workerLoop` + `tickFrame` WASM), transport
+  worker-parké + UI `Rewind_ImGui` (timeline / transport / `F6` rewind-live),
+  état lecteur `DiskIICard` via `SlotPeripheral::*SnapshotState`, flush
+  audio au restore. Épinglés `snapshot_memory_roundtrip`,
+  `rewind_roundtrip`, `rewind_delta`, `rewind_transport`,
+  `rewind_slot_state`, `rewind_audio_state` (Mockingboard/Phasor VIA+AY+SSI263
+  → musique **et** parole survivent au rewind), `rewind_disk_write` (snapshot
+  DiskIICard v2 = buffers de pistes nibble → les écritures disque sont
+  annulées au rewind). **Reste** : écritures sur WOZ inscriptible non annulées
+  (`wozRaw` est un store distinct ; originaux WOZ généralement write-protected)
+  ; « redo » (re-jouer un futur annulé) non implémenté. Détail → `DEV.md`
+  § Rewind / time-travel.
 - 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
   `SetNextWindowPos` cascade adaptative.
 - 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la

@@ -141,6 +141,10 @@ public:
     void    advanceCycles(int cycles) override;
     void    onReset() override;
     void    onUnplug() override;
+    // Rewind/snapshot: VIA + AY register/timer state (the audible music
+    // state). SSI263 speech state is NOT captured (rare during a rewind).
+    void    appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void    loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
     // ─── Test hooks ──────────────────────────────────────────────────────
     /// Direct read of an AY register (peeks the latched register bank).

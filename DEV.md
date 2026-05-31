@@ -1281,37 +1281,97 @@ HTTP path still returns 400).
 
 ### Rewind / time-travel
 
-`RewindBuffer.{h,cpp}` — storage layer of the MicroM8-style rewind
-(continuous state recording + scrub/step back). It's a ring of
-per-frame machine snapshots, indexed by `emuCycles`.
+`RewindBuffer.{h,cpp}` (storage) + `Rewind_ImGui.{h,cpp}` (UI) +
+`EmulationController` transport — the MicroM8-style rewind: continuous
+state recording with scrub / step-back / hold-to-rewind-live. The ring
+is a `std::deque<Frame>` indexed by `emuCycles`. Pinned by
+`rewind_roundtrip`, `rewind_delta`, `rewind_transport`,
+`rewind_slot_state`.
 
-**Phase 1 (current)**: each frame is a *full* `MachineSnapshot` blob
-(~175 KB on stock IIe) serialized into RAM via the SnapshotIO memory
-backend, held in a `std::deque<Frame>` that evicts oldest-first past
-`maxFrames` (default 1800 ≈ 30 s @ 60 Hz). `restore(i)` /
-`restoreToCycle(cycle)` re-inject a chosen frame. Delta/keyframe
-compression to shrink the per-frame cost is **Phase 2** and slots in
-behind this same API.
+**Storage — keyframes + XOR deltas** (`rewind_delta`): a full
+`MachineSnapshot` blob is ~175 KB on stock IIe, so storing one per
+frame is wasteful. Instead every `keyframeInterval_` (default 120 ≈
+2 s) frame is a full *keyframe* and the rest are XOR *deltas* vs the
+previous frame — only the changed byte spans, coalesced across gaps
+< 16 B. A 30 s ring drops from ~315 MB to ~10 MB. `reconstruct(i)`
+copies the nearest keyframe ≤ i and XORs the intervening deltas
+forward. XOR is its own inverse, so the same delta serves either
+scrub direction. A blob size change (RamWorks bank count) forces a
+keyframe — deltas need equal-length neighbours.
 
-**Capture point**: `EmulationController::workerLoop()`, at the
-quiescent frame boundary *after* the CPU budget is spent and the IWM
-is ticked (nothing else mutates CPU/Memory until the next frame).
+**Eviction — rebase-on-evict**: the front is always a keyframe, so the
+chain never dangles. Dropping it first promotes the next delta to a
+keyframe (`applyXorDelta(front, next)`). Two caps bind, whichever
+first: `maxFrames_` (default 1800) and `maxBytes_` (default 256 MiB) —
+the byte budget is what keeps RamWorks (~10 MB/frame keyframes)
+bounded; it just buys fewer frames of history. One frame is always
+kept.
+
+**Capture point**: `EmulationController::workerLoop()` (threaded) and
+`tickFrame()` (WASM single-thread), both at the quiescent frame
+boundary *after* the CPU budget is spent and the IWM is ticked.
 `rewind_.enabled()` is checked before taking `stateMtx`, so a disabled
-ring is zero-overhead; when enabled, capture runs under the lock for a
-consistent view vs. any UI-thread write.
+ring is zero-overhead.
 
-**Threading**: `enabled()` is atomic (toggle from any thread); every
-other `RewindBuffer` method touches `frames_` and must run with
-exclusive access to cpu+mem (worker thread, or another thread holding
-`stateMtx` with the worker parked). The buffer locks nothing itself.
-UI-driven restore (Phase 3) will be serviced on the worker thread like
-`requestStep`, keeping `frames_` single-threaded.
+**Transport / threading**: `enabled()` is atomic; every other
+`RewindBuffer` method touches `frames_` and needs exclusive cpu+mem
+access. The UI restores while the worker is *parked*: the controller's
+`rewindBeginScrub()` sets `Mode::Stopped` then `waitUntilParked()`
+spins (bounded) on `workerParked_` — set in the worker's Stopped CV
+wait — so a restore can't be overrun by the in-flight Running frame
+(the Running branch finishes its whole budget before re-checking
+mode). `rewindSeek` / `rewindSeekToCycle` restore under the lock;
+`rewindEndAndResume(i)` restores i, `truncateAfter(i)` to drop the
+abandoned future, then resumes. Every restore calls
+`flushAudioForRewind()` (speaker reset) so a time-jump is silent
+instead of popping. `rewind_transport` pins all of this against a real
+worker thread *and* the `tickFrame` path. The ring is cleared on
+`coldBoot` (RAM wipe ⇒ a different machine).
 
-**Known gaps (by design, this phase)**: slot/disk-card state isn't in
-the snapshot, so a rewind during disk I/O leaves the drive head where
-the live sim left it (Phase 4 adds a `SlotPeripheral` serialize hook +
-`DiskIICard` drive state); audio chips desync until then; no UI yet
-(Phase 3). Pinned by `rewind_roundtrip`.
+**UI** (`Rewind_ImGui`): Devices ▸ "Rewind". Record toggle, a timeline
+slider, |< / << hold / <| / |> / resume transport, history-length
+slider, and `F6` = hold-to-rewind-live from anywhere (polled in
+`MainWindow::render`, survives ImGui capture, no-op when recording is
+off). Cursor + scrub flag are the panel's only state; the ring and
+machine live in the controller.
+
+**Slot/disk state** (`rewind_slot_state`): `SlotPeripheral` gained
+`append/loadSnapshotState`; `DiskIICard` serializes its mechanical +
+LSS runtime state (head quarter-track, motor, phase magnets, data
+register, sequencer, rotational timing — NOT the media or PROMs), so a
+rewind during disk I/O doesn't leave an in-progress read on the wrong
+nibble. `MachineSnapshot` writes these as per-slot `SLOTn` sections **only when
+`captureMachineState(includeSlots=true)`** — the rewind path opts in;
+the AI-control `/snapshot` file path keeps its documented "disk/slot
+excluded" contract (an archival file can outlive a media swap). Restore
+routes each section to the card in that slot (a card ignores a
+foreign/old blob via its own magic+version) and always tolerates their
+absence. On load `DiskIICard` clamps `activeDrive` and re-points the IWM
+at the restored head.
+
+**Sound chips** (`rewind_audio_state`): `MockingboardCard` and
+`PhasorCard` serialize their `Via6522` + `Ay3_8910` (+ `Ssi263` on the
+Sound II variant) register/timer state through the same `SlotPeripheral`
+hook — `Via6522::append/loadSnapshot` (24 B), `Ay3_8910` (34 B),
+`Ssi263` (30 B: 5 registers + phoneme playback cursor) — shared across
+cards, with LE packing in `ByteIO.h`. So music *and* speech survive a
+rewind, not just the speaker flush. The AY/SSI here are register/cursor
+models (synthesis derives from them), so restoring the state restores
+the sound exactly.
+
+**Disk writes** (`rewind_disk_write`): DiskIICard's snapshot is v2 —
+it also carries the writable nibble track buffers
+(`DiskImage::append/loadMediaSnapshot`, gated on a loaded,
+physically-writable, non-WOZ disk) so a disk WRITE is undone on a
+rewind. The rewind delta codec keeps this near-zero until a track is
+actually written; the read caches re-derive from the restored nibbles
+(`invalidateAllBitStreams`). Read-only / WOZ / empty drives cost one
+flag byte.
+
+**Known gap**: writable-WOZ writes aren't undone — WOZ keeps its
+authoritative bits in `wozRaw` (a different store from the nibble
+buffers), and WOZ originals are typically write-protected anyway. A
+clean follow-up if a writable-WOZ workflow needs it.
 
 ## IWM (//c+ on-board)
 

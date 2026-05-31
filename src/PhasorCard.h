@@ -138,6 +138,9 @@ public:
     void    advanceCycles(int cycles) override;
     void    onReset()  override;
     void    onUnplug() override;
+    // Rewind/snapshot: the 2 VIAs + 4 AYs register/timer state.
+    void    appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void    loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
     // ─── Test hooks ──────────────────────────────────────────────────────
     /// Current Phasor mode (see Mode enum).

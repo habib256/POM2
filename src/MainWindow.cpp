@@ -349,6 +349,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
         showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
+        controller->rewind().setEnabled(settings->getBool("rewind_enabled", false));
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
@@ -724,6 +725,7 @@ MainWindow::~MainWindow()
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
     settings->setBool  ("show_rewind",     showRewindBar);
+    settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);

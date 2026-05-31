@@ -101,6 +101,12 @@ void RewindBuffer::setMaxFrames(size_t n)
     evictToCap();
 }
 
+void RewindBuffer::setMaxBytes(size_t n)
+{
+    maxBytes_ = n;
+    evictToCap();
+}
+
 void RewindBuffer::clear()
 {
     frames_.clear();
@@ -117,7 +123,7 @@ void RewindBuffer::capture(M6502& cpu, Memory& mem)
     // assigns the blob on scope exit).
     {
         SnapshotWriter w(captureScratch_);
-        captureMachineState(w, cpu, mem);
+        captureMachineState(w, cpu, mem, /*includeSlots=*/true);
     }
 
     Frame f;
@@ -148,7 +154,14 @@ void RewindBuffer::capture(M6502& cpu, Memory& mem)
 
 void RewindBuffer::evictToCap()
 {
-    while (frames_.size() > maxFrames_) {
+    // Evict while either cap is exceeded, but never below one frame (a lone
+    // keyframe larger than the byte budget — e.g. a 10 MB RamWorks snapshot —
+    // is still kept so there's always something to restore).
+    auto overCap = [this]() {
+        return frames_.size() > maxFrames_ ||
+               (maxBytes_ != 0 && totalBytes_ > maxBytes_ && frames_.size() > 1);
+    };
+    while (overCap()) {
         // Invariant: the front is always a keyframe. Before dropping it, if
         // the next frame is a delta it must be promoted to a keyframe so the
         // chain doesn't dangle.

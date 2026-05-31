@@ -5,6 +5,7 @@
 
 #include "PhasorCard.h"
 
+#include "ByteIO.h"
 #include "CpuClock.h"
 #include "M6502.h"
 
@@ -289,6 +290,51 @@ PhasorCard::~PhasorCard() = default;
 void PhasorCard::onUnplug()
 {
     // SlotBus auto-releases pending IRQ on detach.
+}
+
+// ─── Rewind / snapshot ──────────────────────────────────────────────────────
+// The 2 VIAs + 4 AYs register/timer state plus the Phasor mode soft-switch
+// (it changes address decode + AY clock scale). Self-describing blob.
+void PhasorCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    using namespace pom2::byteio;
+    std::lock_guard<std::mutex> lk(mtx_);
+    putU8(out, 'P'); putU8(out, 'H'); putU8(out, 'S'); putU8(out, 1);  // magic + ver
+    putU8(out, static_cast<uint8_t>(mode_));
+    uint8_t present = 0;
+    if (via_[0]) present |= 0x01;
+    if (via_[1]) present |= 0x02;
+    for (int i = 0; i < 4; ++i) if (ay_[i]) present |= static_cast<uint8_t>(0x04 << i);
+    putU8(out, present);
+    if (via_[0]) via_[0]->appendSnapshot(out);
+    if (via_[1]) via_[1]->appendSnapshot(out);
+    for (int i = 0; i < 4; ++i) if (ay_[i]) ay_[i]->appendSnapshot(out);
+}
+
+void PhasorCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    pom2::byteio::Reader r(data, len);
+    if (!r.has(6)) return;
+    if (r.u8() != 'P' || r.u8() != 'H' || r.u8() != 'S' || r.u8() != 1) return;
+    mode_ = static_cast<Mode>(r.u8());
+    const uint8_t present = r.u8();
+    auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
+        if (!r.has(pom2::Via6522::kSnapshotBytes)) return false;
+        if (v) v->loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Via6522::kSnapshotBytes;
+        return true;
+    };
+    auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
+        if (!r.has(pom2::Ay3_8910::kSnapshotBytes)) return false;
+        if (a) a->loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Ay3_8910::kSnapshotBytes;
+        return true;
+    };
+    if ((present & 0x01) && !loadVia(via_[0])) return;
+    if ((present & 0x02) && !loadVia(via_[1])) return;
+    for (int i = 0; i < 4; ++i)
+        if ((present & (0x04 << i)) && !loadAy(ay_[i])) return;
 }
 
 void PhasorCard::onReset()

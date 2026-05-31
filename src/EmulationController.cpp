@@ -273,6 +273,13 @@ void EmulationController::tickFrame()
         std::lock_guard<std::mutex> lk(stateMtx);
         iwmDev->tick(mem.getCycleCounter());
     }
+    // Rewind capture for the single-threaded (WASM) path — same quiescent
+    // frame-boundary hook as the worker loop. Gated on enabled() so a
+    // disabled ring costs nothing.
+    if (rewind_.enabled()) {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        rewind_.capture(processor, mem);
+    }
 }
 
 void EmulationController::stop()
@@ -434,6 +441,14 @@ void EmulationController::requestStep(int n)
 
 void EmulationController::setMode(Mode m)
 {
+    // Clear the parked flag the instant we leave Stopped, on the *setter*
+    // thread — not later on the worker. Otherwise a resume→rescrub burst
+    // (rewindEndAndResume → rewindBeginScrub) could read a stale `true` left
+    // over from the previous park, before the worker has observed the new
+    // Running mode and cleared it itself, and waitUntilParked() would return
+    // while a Running frame is still about to run. Only the worker ever sets
+    // it back to true, and only once it genuinely re-enters the Stopped wait.
+    if (m != Mode::Stopped) workerParked_.store(false);
     mode.store(m);
     wakeCv.notify_all();
 }
@@ -465,13 +480,16 @@ size_t EmulationController::rewindSeek(size_t index)
     if (rewind_.empty()) return pom2::RewindBuffer::kNoFrame;
     const size_t clamped = std::min(index, rewind_.size() - 1);
     rewind_.restore(clamped, processor, mem);
+    flushAudioForRewind();
     return clamped;
 }
 
 size_t EmulationController::rewindSeekToCycle(uint64_t cycle)
 {
     std::lock_guard<std::mutex> lk(stateMtx);
-    return rewind_.restoreToCycle(cycle, processor, mem);
+    const size_t got = rewind_.restoreToCycle(cycle, processor, mem);
+    if (got != pom2::RewindBuffer::kNoFrame) flushAudioForRewind();
+    return got;
 }
 
 void EmulationController::rewindEndAndResume(size_t index)
@@ -483,9 +501,21 @@ void EmulationController::rewindEndAndResume(size_t index)
             // abandoned future so new captures append from here.
             rewind_.restore(index, processor, mem);
             rewind_.truncateAfter(index);
+            flushAudioForRewind();
         }
     }
     setMode(Mode::Running);
+}
+
+void EmulationController::flushAudioForRewind()
+{
+    // Caller holds stateMtx. Jumping the CPU/RAM back in time leaves the
+    // speaker's 1-bit reconstruction holding samples from a future that no
+    // longer happens; reset it so a scrub/rewind is silent instead of
+    // popping, and the resumed timeline starts clean. (Deeper sound-chip
+    // continuity — Mockingboard AY/VIA mid-note — is a separate follow-up;
+    // those cards don't yet serialize their state.)
+    if (spk) spk->reset();
 }
 
 void EmulationController::rewindEndPaused()

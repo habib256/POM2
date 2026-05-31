@@ -218,6 +218,14 @@ public:
     void    advanceCycles(int cycles) override;
     void    onReset() override;
 
+    // Rewind/snapshot: serialize the mechanical + LSS runtime state (head
+    // position, motor, phase magnets, data register, sequencer, timing) so a
+    // rewind doesn't leave an in-progress read on the wrong nibble. The
+    // mounted media and the boot/P6 PROMs are NOT captured — they're
+    // reconstructed identically on the restored machine. See DiskIICard.cpp.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
 private:
     int slot_;
     /// Optional CPU pointer for sub-instruction cycle resolution at MMIO

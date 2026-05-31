@@ -132,6 +132,19 @@ public:
     /// No-op when no image is loaded or the track is out of range.
     void writeNibbleAt(int track, int index, uint8_t value);
 
+    // ── Media snapshot (rewind) ─────────────────────────────────────────
+    // The full nibble track buffers + dirty flags — what writeNibbleAt
+    // mutates and reads derive from. Captured (by DiskIICard) only for
+    // loaded, NON-write-protected, NON-WOZ images, so disk writes are undone
+    // on a rewind. WOZ keeps its authoritative bit-stream in `wozRaw`, a
+    // different store, so it is excluded (write-protected originals don't
+    // need it anyway). The rewind delta codec keeps the cost near-zero until
+    // a track is actually written.
+    static constexpr std::size_t kMediaSnapshotBytes =
+        static_cast<std::size_t>(kTracks) * kNibblesPerTrack + kTracks;
+    void appendMediaSnapshot(std::vector<uint8_t>& out) const;
+    void loadMediaSnapshot(const uint8_t* data, std::size_t len);
+
     // ── LSS bit-cell stream ─────────────────────────────────────────────
     //
     // The Disk II's Logic State Sequencer reads bit cells, not nibbles —

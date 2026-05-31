@@ -23,7 +23,11 @@
 #ifndef POM2_VIA6522_H
 #define POM2_VIA6522_H
 
+#include "ByteIO.h"
+
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace pom2 {
 
@@ -94,6 +98,35 @@ struct Via6522
         t2Active   = false;
         ifr = 0;
         ier = 0;
+    }
+
+    // ─── Snapshot (rewind) ───────────────────────────────────────────────
+    // Fixed 24-byte layout of the full register/timer state. Lazily-synced
+    // counters are captured as-is (the next syncToCpuCycle re-advances them,
+    // exactly as it would have on the live machine).
+    static constexpr std::size_t kSnapshotBytes = 24;
+    inline void appendSnapshot(std::vector<uint8_t>& o) const
+    {
+        byteio::putU8(o, portAOut); byteio::putU8(o, portBOut);
+        byteio::putU8(o, ddrA);     byteio::putU8(o, ddrB);
+        byteio::putU8(o, acr);      byteio::putU8(o, pcr); byteio::putU8(o, sr);
+        byteio::putU16(o, t1Latch); byteio::putU32(o, static_cast<uint32_t>(t1Counter));
+        byteio::putU8(o, t1FireArmed ? 1 : 0);
+        byteio::putU8(o, t2ll);     byteio::putU16(o, t2Latch);
+        byteio::putU32(o, static_cast<uint32_t>(t2Counter));
+        byteio::putU8(o, t2Active ? 1 : 0);
+        byteio::putU8(o, ifr);      byteio::putU8(o, ier);
+    }
+    inline void loadSnapshot(const uint8_t* d)   // caller ensures >= kSnapshotBytes
+    {
+        byteio::Reader r(d, kSnapshotBytes);
+        portAOut = r.u8(); portBOut = r.u8(); ddrA = r.u8(); ddrB = r.u8();
+        acr = r.u8(); pcr = r.u8(); sr = r.u8();
+        t1Latch = r.u16(); t1Counter = static_cast<int32_t>(r.u32());
+        t1FireArmed = r.u8() != 0;
+        t2ll = r.u8(); t2Latch = r.u16(); t2Counter = static_cast<int32_t>(r.u32());
+        t2Active = r.u8() != 0;
+        ifr = r.u8(); ier = r.u8();
     }
 
     // Composed Port reads: input pins (DDR=0) pulled high (Mockingboard /

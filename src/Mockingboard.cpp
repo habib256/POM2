@@ -3,6 +3,7 @@
 
 #include "Mockingboard.h"
 
+#include "ByteIO.h"
 #include "CpuClock.h"
 #include "M6502.h"
 
@@ -426,6 +427,66 @@ void MockingboardCard::onUnplug()
 {
     // SlotBus::detachFromBus() auto-releases any pending IRQ line bit
     // before letting us go, so no explicit assertIrq(false) here.
+}
+
+// ─── Rewind / snapshot ──────────────────────────────────────────────────────
+// VIA + AY register/timer state — the audible music state of the card. The
+// SSI263 speech chip's phoneme-playback position is NOT captured (speech
+// across a rewind is rare; its A/!R→VIA1.CA1 IRQ latch IS restored via the
+// VIA's ifr). Blob is self-describing (magic + version + present mask) so a
+// foreign card on this slot ignores it. Both Mockingboard and Phasor reuse
+// Via6522/Ay3_8910::append/loadSnapshot.
+void MockingboardCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    using namespace pom2::byteio;
+    std::lock_guard<std::mutex> lk(mtx);
+    putU8(out, 'M'); putU8(out, 'B'); putU8(out, 'S'); putU8(out, 1);  // magic + ver
+    putU8(out, static_cast<uint8_t>(variant_));
+    uint8_t present = 0;
+    if (via_[0]) present |= 0x01;
+    if (via_[1]) present |= 0x02;
+    if (ay_[0])  present |= 0x04;
+    if (ay_[1])  present |= 0x08;
+    if (ssi_)    present |= 0x10;
+    putU8(out, present);
+    if (via_[0]) via_[0]->appendSnapshot(out);
+    if (via_[1]) via_[1]->appendSnapshot(out);
+    if (ay_[0])  ay_[0]->appendSnapshot(out);
+    if (ay_[1])  ay_[1]->appendSnapshot(out);
+    if (ssi_)    ssi_->appendSnapshot(out);
+}
+
+void MockingboardCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    std::lock_guard<std::mutex> lk(mtx);
+    pom2::byteio::Reader r(data, len);
+    if (!r.has(6)) return;
+    if (r.u8() != 'M' || r.u8() != 'B' || r.u8() != 'S' || r.u8() != 1) return;
+    (void)r.u8();                       // variant — informational
+    const uint8_t present = r.u8();
+    auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
+        if (!r.has(pom2::Via6522::kSnapshotBytes)) return false;
+        if (v) v->loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Via6522::kSnapshotBytes;
+        return true;
+    };
+    auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
+        if (!r.has(pom2::Ay3_8910::kSnapshotBytes)) return false;
+        if (a) a->loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Ay3_8910::kSnapshotBytes;
+        return true;
+    };
+    auto loadSsi = [&]() -> bool {
+        if (!r.has(pom2::Ssi263::kSnapshotBytes)) return false;
+        if (ssi_) ssi_->loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Ssi263::kSnapshotBytes;
+        return true;
+    };
+    if ((present & 0x01) && !loadVia(via_[0])) return;
+    if ((present & 0x02) && !loadVia(via_[1])) return;
+    if ((present & 0x04) && !loadAy(ay_[0]))   return;
+    if ((present & 0x08) && !loadAy(ay_[1]))   return;
+    if ((present & 0x10) && !loadSsi())        return;
 }
 
 void MockingboardCard::onReset()

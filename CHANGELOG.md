@@ -6,6 +6,80 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-31 (Rewind — codec delta, UI, état disque, cas lourds : phases 2→5)
+
+- **Rewind façon MicroM8 complété (phases 2 à 5).** Le socle (phases 0+1,
+  ci-dessous) stockait des snapshots pleins ; ces phases le rendent
+  utilisable en vrai. Tout épinglé : `rewind_delta`, `rewind_transport`,
+  `rewind_slot_state` (+ `rewind_roundtrip` inchangé = filet de régression
+  de l'API).
+  - **Phase 2 — codec delta XOR + keyframes** (`RewindBuffer`) : une keyframe
+    pleine tous les `keyframeInterval` frames (défaut 120 ≈ 2 s), deltas XOR
+    entre (uniquement les spans modifiés, coalescés sur gaps < 16 o). 30 s
+    passent de ~315 Mo à ~10 Mo. Reconstruction = keyframe la plus proche ≤ i
+    + XOR des deltas. Éviction **rebase-on-evict** : le front reste toujours
+    une keyframe (le delta suivant est promu avant de drop). API publique
+    inchangée → `rewind_roundtrip` (phase 1) passe tel quel = preuve de
+    non-régression. *Pourquoi keyframes+delta plutôt que reverse-delta seul :
+    XOR est sa propre inverse, donc un seul sens de delta sert le scrub
+    bidirectionnel, et les keyframes bornent le coût de seek aléatoire.*
+  - **Phase 3 — UI + transport + rewind-live** : `Rewind_ImGui` (Devices ▸
+    Rewind) — toggle Record, timeline, transport |< / << (hold) / <| / |> /
+    resume, slider de durée d'historique ; `F6` = hold-to-rewind-live partout
+    (gesture MicroM8). Restore servi **worker parké** : `rewindBeginScrub()`
+    met Stopped puis `waitUntilParked()` attend `workerParked_` (posé dans
+    l'attente CV Stopped du worker) → un restore UI ne peut pas être écrasé
+    par la frame Running en vol (la branche Running épuise tout son budget
+    avant de re-checker le mode). `rewindEndAndResume` restaure + `truncateAfter`
+    (jette le futur abandonné) + relance. Ring vidé au `coldBoot`.
+  - **Phase 4 — état cartes slot** : `SlotPeripheral::append/loadSnapshotState`
+    (no-op par défaut) ; `DiskIICard` sérialise son état mécanique + LSS
+    (quarter-track tête, moteur, aimants de phase, registre data, séquenceur,
+    timing rotationnel — **pas** le média ni les PROMs). `MachineSnapshot`
+    écrit des sections `SLOTn` **uniquement si `includeSlots=true`** (le
+    rewind opt-in ; l'API AI-control `/snapshot` garde son contrat « disque
+    exclu » — un fichier d'archive peut survivre à un changement de média).
+    Le restore route vers la carte du slot (magic+version → une carte
+    étrangère ignore un blob qui n'est pas le sien) et tolère leur absence. Un
+    rewind pendant une I/O disque ne laisse plus la tête sur le mauvais
+    nibble. Round-trip machine complète bit-à-bit (incl. SLOT6) épinglé.
+  - **Durcissement post-revue** (revue multi-agents) : (a) course du handshake
+    de park corrigée — `setMode(non-Stopped)` efface `workerParked_` côté
+    setter, sinon un resume→rescrub rapide lisait un flag périmé ; (b)
+    `DiskIICard::loadSnapshotState` borne `activeDrive` (garde d'index) ; (c)
+    slider d'historique désactivé pendant le scrub (l'éviction décalerait les
+    index) ; (d) backend mémoire `SnapshotIO` réécrit en streambuf zéro-copie
+    (`VectorOutBuf`/`ArrayInBuf`) — supprime le double-copy via `stringstream`
+    à chaque capture (~21 Mo/s sur IIe, bien plus avec RamWorks).
+  - **Phase 5 — cas lourds** : budget mémoire `maxBytes_` (défaut 256 Mio) en
+    plus du cap de frames → RamWorks (~10 Mo/keyframe) borné (moins d'historique
+    plutôt que RAM qui explose). `flushAudioForRewind()` (reset speaker) à
+    chaque restore → un saut temporel est silencieux, pas un « pop ». Capture
+    branchée aussi dans `tickFrame()` (chemin mono-thread WASM).
+  - **Chips audio sérialisés** (clôture du gap audio) : `MockingboardCard` et
+    `PhasorCard` sérialisent l'état registre/timer de leurs `Via6522` (24 o) +
+    `Ay3_8910` (34 o) via le hook `SlotPeripheral` — helpers `append/loadSnapshot`
+    partagés par les deux cartes, packing LE mutualisé dans `ByteIO.h`. La
+    musique survit donc à un rewind (pas seulement le flush speaker). L'AY est
+    un modèle-registres (la synthèse dérive des 16 registres) → restaurer les
+    registres restaure le son exactement. Épinglé `rewind_audio_state`
+    (round-trip machine complète bit-à-bit incl. Mockingboard).
+  - **Parole SSI263 sérialisée** : `Ssi263::append/loadSnapshot` (30 o : 5
+    registres + curseur de lecture des phonèmes), câblé dans la variante Sound II
+    de `MockingboardCard` → la parole survit aussi au rewind. Couvert par
+    `rewind_audio_state` (bloc Sound II).
+  - **Écritures disque annulées au rewind** (Phase 6) : snapshot DiskIICard
+    passé en v2 — il embarque les buffers de pistes nibble pour les disques
+    chargés, physiquement inscriptibles et non-WOZ
+    (`DiskImage::append/loadMediaSnapshot`), donc une écriture disque est
+    annulée par un rewind. Le codec delta garde le coût ~nul tant qu'aucune
+    piste n'est écrite ; les caches de lecture se redérivent des nibbles
+    restaurés. Disques read-only / WOZ / vides = 1 octet de flag. Épinglé
+    `rewind_disk_write` (COW média + écriture-via-carte annulée bout-en-bout).
+  - **Gap restant** : écritures sur WOZ inscriptible non annulées (WOZ stocke
+    ses bits dans `wozRaw`, store distinct ; les originaux WOZ sont en général
+    write-protected). Suivi propre si besoin. Détail → `DEV.md` § Rewind.
+
 ## 2026-05-31 (Rewind — fondations, phases 0+1)
 
 - **Rewind façon MicroM8 — socle capture/restore d'état (sans UI).**
