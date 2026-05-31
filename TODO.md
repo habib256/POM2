@@ -215,13 +215,16 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   `cubeFill=1` contigu), **résolution native** (1 voxel/pixel, 280|560×192),
   tap **avant** `CrtEffectStack` (indépendant des effets CRT), *(P2)* orbite
   glisser-gauche + **pan** bouton-milieu + zoom molette, *(P3)* panneau
-  View ▸ « 3D voxel settings… » (depth/pop/fill/AA/ambient, persistés
-  `voxel_*`). **Compile aussi en WASM/WebGL2.** **Reste** : *(P4)* garde-fou
-  perf WASM (560×192 × SSAA 3× = lourd navigateur, non profilé) + mode
-  heightfield-mesh alternatif ; *(P5)* tie-in rewind « figer + orbiter une
-  frame rembobinée » ; *(bonus)* mode « Voxel Cube Mono » + Z-offset par
-  **index** de couleur (au lieu de la luminance). Détail → `DEV.md` § 3D voxel
-  view. *P4≈1 j, P5≈0.5 j.*
+  View ▸ « 3D voxel settings… » (depth/pop/fill/AA/ambient/mono/per-colour,
+  persistés `voxel_*`), *(P4)* **garde-fou perf WASM** (`ss≤2`+FBO≤2048²+
+  `gridW≤280` sous Emscripten), *(bonus)* **mode Mono** + **profondeur par
+  index de couleur** (snap palette lo-res `kVoxelPalette`). **Build WASM OK**
+  (+ fix molette navigateur : `emscripten_set_wheel_callback` → `io.MouseWheel`,
+  cf. `main.cpp`). **Reste** : *(P5, différé sur demande)* tie-in rewind
+  « figer + orbiter une frame rembobinée » — marche déjà gratuitement (la vue
+  échantillonne la framebuffer live que le restore rewind met à jour), donc
+  doc + polish plutôt que plomberie ; *(option)* mode heightfield-mesh
+  alternatif. Détail → `DEV.md` § 3D voxel view. *P5≈0.5 j.*
 - 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
   `SetNextWindowPos` cascade adaptative.
 - 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la

@@ -54,6 +54,8 @@ public:
     float voxelDepth  = 2.5f;   // base Z-thickness, in cell-height units
     float cubeFill    = 1.0f;   // cell fraction; 1.0 = contiguous (no gap grid)
     float colorShift  = 8.0f;   // per-colour forward pop, in cell-height units
+    bool  mono        = false;  // "Voxel Cube Mono" — grey output, relief kept
+    bool  perColorDepth = false;// depth from nearest palette index (vs luminance)
     float ambient     = 0.5f;   // lighting floor so no face is pure black
     int   superSample = 3;      // FBO render scale; minify-downsampled (anti-alias)
     float bg[3]       = { 0.05f, 0.05f, 0.08f };  // clear colour
@@ -69,8 +71,8 @@ private:
     int texW_ = 0, texH_ = 0;
 
     int uViewProj_ = -1, uTex_ = -1, uGrid_ = -1, uCell_ = -1,
-        uDepth_ = -1, uFill_ = -1, uColorShift_ = -1, uLightDir_ = -1,
-        uAmbient_ = -1;
+        uDepth_ = -1, uFill_ = -1, uColorShift_ = -1, uMono_ = -1,
+        uDepthMode_ = -1, uPalette_ = -1, uLightDir_ = -1, uAmbient_ = -1;
 };
 
 }  // namespace pom2

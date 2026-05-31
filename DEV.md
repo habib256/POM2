@@ -1403,9 +1403,20 @@ so voxels keep the Apple II pixel shape.
 - **Moiré / anti-alias.** Two sources: a `cubeFill < 1` gap leaves a regular
   dark grid that beats against the pixels, and 50k hard cube edges alias with
   no AA. Fix = **contiguous cubes** (`cubeFill = 1.0`, so flat colour fields
-  are one continuous slab) **+ supersampling** (`superSample`, default 2):
+  are one continuous slab) **+ supersampling** (`superSample`, default 3):
   render the FBO `ss`× the on-screen size, build a mip chain, and let ImGui's
   `LINEAR_MIPMAP_LINEAR` minify box-average it down. No MSAA resolve needed.
+- **WASM perf guard.** That supersampled FBO + 100k instanced cubes is brutal
+  on browser/mobile GPUs, so under `__EMSCRIPTEN__` `process()` caps `ss ≤ 2`
+  and the FBO ≤ 2048² (it drops the factor until it fits), and `MainWindow`
+  caps `gridW ≤ 280` (halves 560-wide DHGR geometry). Native: `ss ≤ 4`, 8192².
+- **Mono + per-colour depth** (MicroM8 fidelity). `mono` greys the output
+  ("Voxel Cube Mono") while keeping relief. `perColorDepth` swaps the smooth
+  luminance depth for a **palette snap**: each pixel picks the nearest of the
+  16 lo-res colours (`kVoxelPalette`, a verbatim copy of the private
+  `Apple2Display::kLoResPalette`) and takes that colour's brightness → discrete,
+  blocky per-colour relief, closer to MicroM8's per-index Z table. The nearest
+  search is a 16-iter loop in the vertex shader (per instance, not per pixel).
 
 **Camera.** Left-drag orbits, **middle-drag strafes** (`OrbitCamera::pan`
 slides the target across the camera's right/up plane, scaled to world-units-
@@ -1448,12 +1459,15 @@ Camera interaction is wired in `drawScreenImage` right after the
 orbit elevation is clamped to ±1.5 rad off the lookAt poles.
 
 **Phase 3 panel** (`renderVoxelSettingsWindow`, View ▸ "3D voxel
-settings…") — live sliders for `voxelDepth` / `colorShift` / `cubeFill` /
-`superSample` / `ambient`, plus Reset view / Reset settings. The renderer is
-owned up-front at settings-load (its ctor is GL-free) so the panel and the
-`voxel_*` persistence keys bind straight to `voxel3d_`, even before the view
-is first enabled; grid resolution stays auto (display-driven, not a knob).
-Next: a rewind tie-in "freeze + orbit a rewound frame" (P5).
+settings…") — live controls for `voxelDepth` / `colorShift` / `cubeFill` /
+`superSample` / `ambient` + `mono` / `perColorDepth` checkboxes, plus Reset
+view / Reset settings. The renderer is owned up-front at settings-load (its
+ctor is GL-free) so the panel and the `voxel_*` persistence keys bind straight
+to `voxel3d_`, even before the view is first enabled; grid resolution stays
+auto (display-driven, not a knob). Next (P5, **deferred**): a rewind tie-in
+"freeze + orbit a rewound frame" — note this already works for free (the view
+samples the live framebuffer, which the rewind restore updates), so it's
+documentation + polish rather than new plumbing.
 
 ## IWM (//c+ on-board)
 

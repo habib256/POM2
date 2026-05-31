@@ -423,6 +423,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         voxel3d_->cubeFill    = settings->getFloat("voxel_fill",       voxel3d_->cubeFill);
         voxel3d_->ambient     = settings->getFloat("voxel_ambient",    voxel3d_->ambient);
         voxel3d_->superSample = settings->getInt  ("voxel_supersample", voxel3d_->superSample);
+        voxel3d_->mono          = settings->getBool("voxel_mono",          voxel3d_->mono);
+        voxel3d_->perColorDepth = settings->getBool("voxel_percolor_depth", voxel3d_->perColorDepth);
         const std::string asp = settings->getString("aspect_mode", "");
         if      (asp == "crt43")   aspectMode = AspectMode::Crt43;
         else if (asp == "integer") aspectMode = AspectMode::Integer;
@@ -780,6 +782,8 @@ MainWindow::~MainWindow()
         settings->setFloat("voxel_fill",        voxel3d_->cubeFill);
         settings->setFloat("voxel_ambient",     voxel3d_->ambient);
         settings->setInt  ("voxel_supersample", voxel3d_->superSample);
+        settings->setBool ("voxel_mono",           voxel3d_->mono);
+        settings->setBool ("voxel_percolor_depth", voxel3d_->perColorDepth);
     }
     settings->setString("aspect_mode",
         aspectMode == AspectMode::Crt43   ? "crt43" :
@@ -2326,6 +2330,12 @@ void MainWindow::drawScreenImage()
         // captures the full image — half-res sampling visibly lost detail.
         voxel3d_->gridW = std::max(1, display->width());
         voxel3d_->gridH = std::max(1, display->height());
+#if defined(__EMSCRIPTEN__)
+        // Perf guard: halve the 560-wide DHGR/80-col geometry on the browser so
+        // the cube count stays near the comfortable HGR 280×192 (~54k); the FBO
+        // supersample is likewise capped in Voxel3DRenderer::process.
+        if (voxel3d_->gridW > 280) voxel3d_->gridW = 280;
+#endif
         const int vw = std::max(16, static_cast<int>(size.x));
         const int vh = std::max(16, static_cast<int>(size.y));
         const float aspect = static_cast<float>(vw) / static_cast<float>(vh);
@@ -3056,6 +3066,16 @@ void MainWindow::renderVoxelSettingsWindow()
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Lighting floor so no cube face goes pure black.");
 
+    ImGui::Checkbox("Mono", &v.mono);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("MicroM8 'Voxel Cube Mono' — grey output, relief kept.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Per-colour depth", &v.perColorDepth);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Snap each pixel to the nearest lo-res palette colour and\n"
+                          "drive 'Colour pop' from that — discrete, blocky relief\n"
+                          "(MicroM8 per-index Z) instead of the smooth luminance field.");
+
     ImGui::Separator();
     if (ImGui::Button("Reset view")) {
         voxelCam_ = pom2::OrbitCamera{};
@@ -3063,11 +3083,13 @@ void MainWindow::renderVoxelSettingsWindow()
     ImGui::SameLine();
     if (ImGui::Button("Reset settings")) {
         pom2::Voxel3DRenderer def;
-        v.voxelDepth  = def.voxelDepth;
-        v.colorShift  = def.colorShift;
-        v.cubeFill    = def.cubeFill;
-        v.superSample = def.superSample;
-        v.ambient     = def.ambient;
+        v.voxelDepth    = def.voxelDepth;
+        v.colorShift    = def.colorShift;
+        v.cubeFill      = def.cubeFill;
+        v.superSample   = def.superSample;
+        v.ambient       = def.ambient;
+        v.mono          = def.mono;
+        v.perColorDepth = def.perColorDepth;
     }
 
     ImGui::EndDisabled();

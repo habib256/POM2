@@ -50,6 +50,24 @@ courante → `DEV.md`.
     chargement des settings** (ctor sans GL) pour que le panneau et les clés
     `voxel_*` (persistées) se branchent directement sur `voxel3d_`, même avant
     d'activer la vue 3D. La résolution de grille reste auto (= écran).
+  - **P4 — garde-fou perf WASM** : sous `__EMSCRIPTEN__`, `process()` plafonne
+    `superSample ≤ 2` + FBO ≤ 2048² (réduit le facteur jusqu'à tenir) et
+    `MainWindow` plafonne `gridW ≤ 280` (divise par 2 la géométrie DHGR 560).
+    Natif inchangé (`ss ≤ 4`, 8192²). Compile WASM/WebGL2 revérifiée.
+  - **Bonus fidélité — Mono + profondeur par index de couleur** : case `mono`
+    (« Voxel Cube Mono », sortie grise, relief conservé) et `perColorDepth`
+    (snap au plus proche des 16 couleurs lo-res `kVoxelPalette` → relief
+    discret par couleur au lieu de la luminance continue). Boucle de recherche
+    16-itérations dans le vertex shader (par instance, pas par pixel) ;
+    `glUniform3fv` ajouté au loader. Persistés `voxel_mono` /
+    `voxel_percolor_depth`. P5 (tie-in rewind) **différé** sur demande.
+  - **Fix molette en WASM** : le port GLFW d'Emscripten ne livre pas les
+    events `wheel` à ImGui (`io.MouseWheel` restait à 0 → zoom 3D inopérant
+    dans le navigateur). Ajout d'un `emscripten_set_wheel_callback("#canvas")`
+    dans `main.cpp` qui alimente `io.AddMouseWheelEvent` (même échelle que le
+    backend ImGui) — choix chirurgical pour ne pas toucher au sizing canvas du
+    shell (vs `ImGui_ImplGlfw_InstallEmscriptenCallbacks` qui hooke aussi le
+    resize/fullscreen).
 
 - **Bouton rewind dans la toolbar** (à gauche de Pause, en miroir de Step à
   droite) : `ICON_FA_BACKWARD_FAST`, **maintenir = rewind-live** (même geste

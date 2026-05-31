@@ -32,6 +32,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <emscripten/html5.h>   // emscripten_set_wheel_callback (browser zoom)
 #endif
 
 static void glfw_error_callback(int error, const char* description)
@@ -356,6 +357,24 @@ int main(int argc, char* argv[])
     }
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
+#ifdef __EMSCRIPTEN__
+    // The Emscripten GLFW port doesn't feed wheel events to ImGui, so
+    // io.MouseWheel stayed 0 in the browser (3D voxel zoom did nothing).
+    // Register a DOM wheel handler that feeds ImGui directly, with the same
+    // delta scaling as ImGui's own backend handler. We do this surgically
+    // rather than ImGui_ImplGlfw_InstallEmscriptenCallbacks() so its canvas-
+    // resize / fullscreen hooks don't fight wasm/shell.html's own sizing.
+    emscripten_set_wheel_callback("#canvas", nullptr, false,
+        [](int, const EmscriptenWheelEvent* e, void*) -> EM_BOOL {
+            const float m = (e->deltaMode == DOM_DELTA_PIXEL) ? 1.0f / 100.0f
+                          : (e->deltaMode == DOM_DELTA_LINE)  ? 1.0f / 3.0f
+                          : 80.0f;
+            ImGui::GetIO().AddMouseWheelEvent(
+                static_cast<float>(e->deltaX) * -m,
+                static_cast<float>(e->deltaY) * -m);
+            return EM_TRUE;
+        });
+#endif
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     MainWindow mainWindow(plan->forceIIPlus);

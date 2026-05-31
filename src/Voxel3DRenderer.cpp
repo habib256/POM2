@@ -51,6 +51,7 @@ PFNGLUNIFORM1FPROC               glUniform1f_               = nullptr;
 PFNGLUNIFORM2FPROC               glUniform2f_               = nullptr;
 PFNGLUNIFORM2IPROC               glUniform2i_               = nullptr;
 PFNGLUNIFORM3FPROC               glUniform3f_               = nullptr;
+PFNGLUNIFORM3FVPROC              glUniform3fv_              = nullptr;
 PFNGLUNIFORMMATRIX4FVPROC        glUniformMatrix4fv_        = nullptr;
 PFNGLACTIVETEXTUREPROC           glActiveTexture_           = nullptr;
 PFNGLDRAWELEMENTSINSTANCEDPROC   glDrawElementsInstanced_   = nullptr;
@@ -87,6 +88,7 @@ bool loadEntryPoints()
     LOAD(PFNGLUNIFORM2FPROC,               glUniform2f_,               "glUniform2f");
     LOAD(PFNGLUNIFORM2IPROC,               glUniform2i_,               "glUniform2i");
     LOAD(PFNGLUNIFORM3FPROC,               glUniform3f_,               "glUniform3f");
+    LOAD(PFNGLUNIFORM3FVPROC,              glUniform3fv_,              "glUniform3fv");
     LOAD(PFNGLUNIFORMMATRIX4FVPROC,        glUniformMatrix4fv_,        "glUniformMatrix4fv");
     LOAD(PFNGLACTIVETEXTUREPROC,           glActiveTexture_,           "glActiveTexture");
     LOAD(PFNGLDRAWELEMENTSINSTANCEDPROC,   glDrawElementsInstanced_,   "glDrawElementsInstanced");
@@ -102,7 +104,7 @@ bool loadEntryPoints()
         glEnableVertexAttribArray_ && glVertexAttribPointer_ &&
         glUseProgram_ && glGetUniformLocation_ &&
         glUniform1i_ && glUniform1f_ && glUniform2f_ && glUniform2i_ &&
-        glUniform3f_ && glUniformMatrix4fv_ && glActiveTexture_ &&
+        glUniform3f_ && glUniform3fv_ && glUniformMatrix4fv_ && glActiveTexture_ &&
         glDrawElementsInstanced_ && glGenerateMipmap_;
     return entryPointsLoaded_;
 }
@@ -133,6 +135,7 @@ bool loadEntryPoints()
 #  define glUniform2f               glUniform2f_
 #  define glUniform2i               glUniform2i_
 #  define glUniform3f               glUniform3f_
+#  define glUniform3fv              glUniform3fv_
 #  define glUniformMatrix4fv        glUniformMatrix4fv_
 #  define glActiveTexture           glActiveTexture_
 #  define glDrawElementsInstanced   glDrawElementsInstanced_
@@ -165,6 +168,9 @@ uniform vec2  uCell;       // world cell size (x, y) — sets the 4:3 plane
 uniform float uDepth;      // base voxel Z-thickness, in cell-height units
 uniform float uFill;       // cube footprint as a fraction of the cell
 uniform float uColorShift; // per-colour forward push, in cell-height units (×lum)
+uniform int   uMono;       // 1 = grey output ("Voxel Cube Mono")
+uniform int   uDepthMode;  // 0 = luminance, 1 = per-colour-index palette snap
+uniform vec3  uPalette[16];// lo-res palette for the per-colour-index mode
 out vec3 vWorld;
 out vec3 vColor;
 void main() {
@@ -173,19 +179,32 @@ void main() {
     int cy = id / uGrid.x;
     vec2 uv = (vec2(float(cx) + 0.5, float(cy) + 0.5)) / vec2(uGrid);
     vec4 c = texture(uTex, uv);
-    vColor = c.rgb;
+    float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+
+    // "Voxel Cube Mono": collapse colour to grey but keep the relief.
+    vColor = (uMono == 1) ? vec3(lum) : c.rgb;
 
     // Upright screen, centred on the origin. Source v=0 is the screen top, so
     // row 0 → world +Y (the gl_Position.y flip below keeps it on-screen-up).
     float wx = (float(cx) + 0.5 - float(uGrid.x) * 0.5) * uCell.x;
     float wy = (float(uGrid.y) * 0.5 - (float(cy) + 0.5)) * uCell.y;
 
-    // Depth + colour push are expressed in CELL units so they stay constant in
-    // appearance across resolutions (280 vs 560 wide) instead of turning the
-    // voxels into needles. zoff = MicroM8's per-colour "Z-axis 3D offset".
-    float lum    = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+    // Depth push (MicroM8 "Z-axis 3D offset"), in CELL units so it looks the
+    // same at 280 vs 560 wide. Two flavours: continuous luminance, or snap to
+    // the nearest lo-res palette entry and use THAT colour's brightness →
+    // discrete, blocky per-colour relief (closer to MicroM8's per-index table).
+    float weight = lum;
+    if (uDepthMode == 1) {
+        int best = 0; float bestD = 1e9;
+        for (int i = 0; i < 16; ++i) {
+            vec3 dlt = c.rgb - uPalette[i];
+            float dd = dot(dlt, dlt);
+            if (dd < bestD) { bestD = dd; best = i; }
+        }
+        weight = dot(uPalette[best], vec3(0.299, 0.587, 0.114));
+    }
     float depthW = uDepth * uCell.y;
-    float zoff   = uColorShift * uCell.y * lum;
+    float zoff   = uColorShift * uCell.y * weight;
 
     vec3 world = vec3(wx + aPos.x * uCell.x * uFill,
                       wy + aPos.y * uCell.y * uFill,
@@ -217,6 +236,29 @@ void main() {
     fragColor = vec4(vColor * shade, 1.0);
 }
 )GLSL";
+
+// Apple II lo-res palette (16 colours, RGB 0–1) — a verbatim copy of
+// Apple2Display::kLoResPalette (which is private; the 3D view stays a self-
+// contained layer rather than reach into the display). Used only as the
+// snap targets for the per-colour-index depth mode.
+const float kVoxelPalette[48] = {
+    0.000f, 0.000f, 0.000f,   //  0 black
+    0.655f, 0.043f, 0.251f,   //  1 dark red
+    0.251f, 0.110f, 0.969f,   //  2 dark blue
+    0.902f, 0.157f, 1.000f,   //  3 purple
+    0.000f, 0.455f, 0.251f,   //  4 dark green
+    0.502f, 0.502f, 0.502f,   //  5 dark grey
+    0.098f, 0.565f, 1.000f,   //  6 medium blue
+    0.749f, 0.612f, 1.000f,   //  7 light blue
+    0.251f, 0.388f, 0.000f,   //  8 brown
+    0.902f, 0.435f, 0.000f,   //  9 orange
+    0.502f, 0.502f, 0.502f,   // 10 light grey
+    1.000f, 0.545f, 0.749f,   // 11 pink
+    0.098f, 0.843f, 0.000f,   // 12 light green
+    0.749f, 0.890f, 0.031f,   // 13 yellow
+    0.345f, 0.957f, 0.749f,   // 14 aquamarine
+    1.000f, 1.000f, 1.000f,   // 15 white
+};
 
 }  // namespace
 
@@ -254,6 +296,9 @@ bool Voxel3DRenderer::initialize()
     uDepth_      = glGetUniformLocation(program_, "uDepth");
     uFill_       = glGetUniformLocation(program_, "uFill");
     uColorShift_ = glGetUniformLocation(program_, "uColorShift");
+    uMono_       = glGetUniformLocation(program_, "uMono");
+    uDepthMode_  = glGetUniformLocation(program_, "uDepthMode");
+    uPalette_    = glGetUniformLocation(program_, "uPalette");
     uLightDir_   = glGetUniformLocation(program_, "uLightDir");
     uAmbient_    = glGetUniformLocation(program_, "uAmbient");
 
@@ -332,10 +377,23 @@ unsigned int Voxel3DRenderer::process(unsigned int srcTex, int dstW, int dstH,
     // Supersample: render the cube grid into an FBO `ss`× the on-screen size,
     // then let ImGui's minify filter (trilinear, below) box-average it back
     // down — anti-aliases the cube edges and dissolves the moiré without an
-    // MSAA resolve. Cap the FBO so a huge window can't blow up VRAM.
-    const int ss  = (superSample < 1) ? 1 : (superSample > 4 ? 4 : superSample);
-    const int fbW = std::min(dstW * ss, 8192);
-    const int fbH = std::min(dstH * ss, 8192);
+    // MSAA resolve. Keep the fragment budget in check: a browser/mobile GPU
+    // chokes on a 3× blow-up of a full-window FBO plus 100k instanced cubes,
+    // so cap the factor and the absolute FBO size harder under Emscripten.
+#if defined(__EMSCRIPTEN__)
+    const int kMaxSs = 2, kMaxFbDim = 2048;
+#else
+    const int kMaxSs = 4, kMaxFbDim = 8192;
+#endif
+    int ss  = superSample < 1 ? 1 : (superSample > kMaxSs ? kMaxSs : superSample);
+    int fbW = dstW * ss, fbH = dstH * ss;
+    // Drop the factor (never below 1×) until the FBO fits the platform budget;
+    // a final clamp covers a huge 1× window (accepting a soft upscale).
+    while (ss > 1 && (fbW > kMaxFbDim || fbH > kMaxFbDim)) {
+        --ss; fbW = dstW * ss; fbH = dstH * ss;
+    }
+    fbW = std::min(fbW, kMaxFbDim);
+    fbH = std::min(fbH, kMaxFbDim);
     if (!createTargets(fbW, fbH)) return 0;
 
     // Save GL state we touch (mirrors NtscPostProcessor's dance, + depth).
@@ -368,6 +426,9 @@ unsigned int Voxel3DRenderer::process(unsigned int srcTex, int dstW, int dstH,
     glUniform1f(uDepth_, voxelDepth);
     glUniform1f(uFill_, cubeFill);
     glUniform1f(uColorShift_, colorShift);
+    glUniform1i(uMono_, mono ? 1 : 0);
+    glUniform1i(uDepthMode_, perColorDepth ? 1 : 0);
+    if (perColorDepth) glUniform3fv(uPalette_, 16, kVoxelPalette);
     glUniform3f(uLightDir_, 0.35f, 0.5f, 0.8f);   // upper-front key light
     glUniform1f(uAmbient_, ambient);
 
