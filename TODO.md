@@ -47,10 +47,9 @@ Ordre conseillé d'attaque — items à fort ratio impact/effort.
 | # | Item                                    | Effort  | Pourquoi                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
 | 1 | WASM IDBFS settings persistence         | 2-4 h   | utilisateur web n'a pas de state        |
-| 2 | Shader CRT post-process                 | 1-2 j   | polish visuel récurrent (V2/OE/μM8)     |
-| 3 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
-| 4 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
-| 5 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
+| 2 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
+| 3 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
+| 4 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
 
 ## Backlog
 
@@ -73,16 +72,28 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 
 ### [Display] HGR / DHGR / 80-col
 
-- 🟠 **Shader CRT post-process** — scanlines / phosphor glow / barrel
-  curvature, fragment GLSL sur backbuffer `Apple2Display`, toggle UI.
-  Présent dans Virtual ][, OpenEmulator, microM8, MAME. *1-2 j.*
-- 🟡 **Pipeline NTSC analogique signal-level** — vs LUT actuelle.
-  Composite YIQ, démodulation, courbe phosphore, bandwidth Y/I/Q.
-  Référence académique OpenEmulator (cf. Zellyn Hunter explainer).
-  Toggle UI vs LUT rapide. *5-10 j.*
-- 🟡 **Beam-racing per-scanline composite** — recomposer le framebuffer
-  scanline par scanline (mid-scanline mode switches). Per-scanline DHGR
-  switch déjà côté code. Refs μM8 + OE. *3-5 j.*
+- ✅ **Shader CRT post-process** — FAIT. `CrtEffectStack` applique
+  barrel → hue → BCS → **phosphor curve** → scanlines → shadow mask →
+  vignette → luminance gain → edge-mask → persistence sur *n'importe quel*
+  framebuffer, panneau « CRT Settings (sliders) », toggle `crt_effects_enabled`.
+  Détail → `DEV.md` § CrtEffectStack.
+- ✅ **Pipeline NTSC analogique signal-level** — FAIT. La démod
+  signal-level existait déjà (`ColorCompositeOE` GPU + `ColorCompositeOECpu` :
+  waveform 14.318 MHz → FIR Y@2.0 MHz / chroma@0.6 MHz → YUV→RGB, PAL
+  line-phase). Ajout 2026-05-31 de la **courbe phosphore** manquante
+  (`phosphorGamma`, power-law par canal dans `CrtEffectStack`, défaut 1.0 =
+  identité, slider « Phosphor curve (gamma) », clé `ntsc_phosphor_gamma`).
+  **Reste** *(🟢 différé, academic)* : pipeline signal-level *analogique pur*
+  (IIR sur le signal lui-même avant démod) vs l'actuel signal 1-bit + FIR,
+  *5-10 j*.
+- ✅ **Beam-racing per-scanline composite** — FAIT (2026-05-31).
+  `fillCompositeSignal(mem, events)` rejoue le log d'évènements bande par
+  bande (zéro `signalBuf` → état frame-start → `paintSignalBand`), donc les
+  switches mid-scanline atteignent les modes composite (OE GPU/CPU, AppleWin),
+  plus seulement les modes LUT. Épinglé `beam_race_composite`. Détail →
+  `DEV.md` § Beam-racing. **Reste** *(🟢)* : `signalPhaseOffset_` reste une
+  constante par-frame (split HGR↔DHGR mid-frame approximé) ; lo-res clip au
+  block-row (4 lignes), comme le path RGBA.
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur

@@ -258,6 +258,24 @@ frame (`beginVideoEventFrame` at the start of the worker's 60 Hz budget).
 single-`getDisplayState()` path is unchanged. Logging is gated on an
 open frame so headless tests that poke switches during setup are unaffected.
 
+**Composite signal also beam-races.** `render()` now takes the event log
+*once* and hands it to `fillCompositeSignal(mem, events)` as well as the RGBA
+path, so mid-scanline switches land in the 14.318 MHz waveform the composite
+modes (`ColorCompositeOE` GPU, `ColorCompositeOECpu`, `ColorAppleWin`)
+consume — not just the LUT framebuffer. `fillCompositeSignal` mirrors
+`renderBeamRacing`: it zeroes `signalBuf`, starts from
+`getDisplayStateAtFrameStart()`, and walks the (scanline-sorted) events
+through a `paintSignalBand(y0, y1)` lambda that reuses the same
+`bandRows`/`bandScanlines` clipping as `renderInternalBand`. The painted
+`state` is a mutable local so the per-mode paint helpers (capturing it by
+reference) see each band's switches. Empty log → `paintSignalBand(0, 192)`,
+byte-identical to the old whole-frame dispatch (the OE GPU/CPU parity goldens
+are unchanged). Caveat: `signalPhaseOffset_` stays one per-frame demod
+constant (last graphics band wins), so a mid-frame HGR↔DHGR phase split is a
+documented approximation; lo-res bands clip at block-row (4-scanline)
+granularity, same as the RGBA path. Pinned by `beam_race_composite` (TEXT top
+band + HGR bottom band from a frame that flips mode at scanline 96).
+
 ### 80-col text
 
 Aux RAM (cells 0,2,…) interleaved with main (1,3,…) into 560-wide
@@ -345,7 +363,8 @@ All knobs persist under settings.json keys `ntsc_brightness`,
 `ntsc_contrast`, `ntsc_saturation`, `ntsc_hue`, `ntsc_sharpness`,
 `ntsc_persistence`, `ntsc_scanlines`, `ntsc_barrel`,
 `ntsc_shadow_mask` (int 0..3), `ntsc_shadow_strength`, `ntsc_pal`,
-`ntsc_text_sharp`. The CRT Settings panel (View → CRT Settings)
+`ntsc_text_sharp`, `ntsc_luminance_gain`, `ntsc_center_lighting`,
+`ntsc_phosphor_gamma`. The CRT Settings panel (View → CRT Settings)
 drives them live.
 
 If shader compilation fails (driver too old, GLES2-only context,
@@ -364,11 +383,12 @@ from `ColorNTSC` until the GL state catches up.
 `src/CrtEffectStack.{h,cpp}` applies the CRT glass on top of *any* RGBA
 framebuffer (MAME LUT, Chat Mauve, mono, AppleWin) — gated by "CRT effects
 on all modes" — and is the single effect implementation OE also chains into.
-Effect order in the fragment shader: barrel → hue → BCS → scanlines →
-shadow mask → center-lighting (vignette) → luminance gain → edge-mask →
-persistence (ping-pong FBO, applied last so the afterglow isn't re-attenuated
-by the glass each frame). The scanline→mask→lighting→luminanceGain ordering
-matches OpenEmulator's display shader (`OpenGLCanvas.cpp:117-126`).
+Effect order in the fragment shader: barrel → hue → BCS → phosphor curve →
+scanlines → shadow mask → center-lighting (vignette) → luminance gain →
+edge-mask → persistence (ping-pong FBO, applied last so the afterglow isn't
+re-attenuated by the glass each frame). The scanline→mask→lighting→
+luminanceGain ordering matches OpenEmulator's display shader
+(`OpenGLCanvas.cpp:117-126`).
 
 **Glass details (2026-05 parity pass).**
 - **Hue** is applied here (RGB→YUV BT.601, rotate U/V by `hue·π`, YUV→RGB) so
@@ -377,6 +397,14 @@ matches OpenEmulator's display shader (`OpenGLCanvas.cpp:117-126`).
 - **Shadow mask** uses the Lottes dark/light triplet (off-channels → 0.5, lit
   channel → 1.5) so the triad preserves average luminance, instead of the old
   pure-primary `(1,0,0)` mask that crushed 2/3 channels and over-darkened.
+- **Phosphor curve** (`phosphorGamma`, default 1.0 = identity) is a
+  per-channel power law `rgb = rgb^γ` on the beam intensity → emitted light,
+  applied after BCS and before the spatial scanline/mask modulation (which
+  attenuates the light the phosphor already produced). It is the *luminance*
+  half of the CRT phosphor model; `persistence` is the *temporal* half. γ > 1
+  deepens shadows for more CRT-like contrast, γ < 1 lifts them. Default
+  identity keeps every existing golden/parity test untouched. Slider range
+  0.6–2.6, persisted `ntsc_phosphor_gamma`.
 - **Luminance gain** (`luminanceGain`, default 1.0) re-brightens post-mask,
   mirroring OpenEmulator's stage — pairs with scanlines/mask to recover
   brightness.

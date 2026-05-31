@@ -397,6 +397,8 @@ MainWindow::MainWindow(bool forceIIPlus)
                 "ntsc_luminance_gain", p.luminanceGain);
             p.centerLighting = settings->getFloat(
                 "ntsc_center_lighting", p.centerLighting);
+            p.phosphorGamma = settings->getFloat(
+                "ntsc_phosphor_gamma", p.phosphorGamma);
             const int sm = settings->getInt("ntsc_shadow_mask",
                                             static_cast<int>(p.shadowMask));
             p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
@@ -769,6 +771,7 @@ MainWindow::~MainWindow()
         settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
         settings->setFloat("ntsc_luminance_gain", p.luminanceGain);
         settings->setFloat("ntsc_center_lighting", p.centerLighting);
+        settings->setFloat("ntsc_phosphor_gamma", p.phosphorGamma);
         settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
         settings->setBool ("ntsc_pal",         p.palMode);
         settings->setBool ("ntsc_text_sharp",  p.textSharp);
@@ -3191,6 +3194,12 @@ void MainWindow::renderNtscSettingsWindow()
     // Vignette / center-lighting — 1.0 = flat (OpenEmulator default), lower
     // darkens the edges.
     changed |= ImGui::SliderFloat("Center lighting", &p.centerLighting, 0.5f, 1.0f);
+    // Phosphor response curve (CRT gamma) — 1.0 = flat (off), >1 deepens
+    // shadows, <1 lifts them. Pairs with Persistence (the temporal half of the
+    // phosphor model). Applies to every mode when "CRT effects on all modes"
+    // is on, and always in the OE composite path.
+    changed |= ImGui::SliderFloat("Phosphor curve (gamma)",
+                                  &p.phosphorGamma, 0.6f, 2.6f);
 
     ImGui::Separator();
     // PAL composite — line-phase alternation. Off by default (POM2

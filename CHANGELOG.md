@@ -6,6 +6,39 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-05-31 (Composite : beam-racing du signal + courbe phosphore)
+
+- **Beam-racing du signal composite.** `fillCompositeSignal` lisait *un seul*
+  `getDisplayState()` de fin de frame : les switches d'affichage mid-scanline
+  (text↔graphics, page flip, DHGR on/off) étaient invisibles dans **tous** les
+  modes composite (`ColorCompositeOE` GPU, `ColorCompositeOECpu`,
+  `ColorAppleWin`) — seuls les modes LUT bénéficiaient du beam-racing
+  (`renderBeamRacing` côté RGBA). **Pourquoi ça comptait** : une démo qui passe
+  du texte au HGR à mi-écran s'affichait entièrement en HGR sous OE/AppleWin.
+  **Fix** : `render()` prend le log d'évènements **une seule fois** et le passe
+  aux deux consommateurs ; `fillCompositeSignal(mem, events)` rejoue le log
+  bande par bande (zéro `signalBuf` → `getDisplayStateAtFrameStart()` →
+  `paintSignalBand(y0,y1)` qui réutilise le même clipping `bandRows`/
+  `bandScanlines` que `renderInternalBand`). Le `state` peint est un local
+  *mutable* pour que les helpers (capturés par référence) voient chaque switch.
+  Log vide → `paintSignalBand(0,192)` = octet-pour-octet l'ancien dispatch
+  (goldens OE GPU/CPU inchangés). **Pièges** : `signalPhaseOffset_` reste une
+  constante par-frame (dernière bande graphique gagne → split HGR↔DHGR
+  mid-frame approximé) ; lo-res clip au block-row (4 lignes), comme le path
+  RGBA. Épinglé `beam_race_composite` (frame text→HGR à la scanline 96 :
+  bande haute = waveform texte, bande basse = waveform HGR, et **pas** HGR en
+  haut comme le bug pré-fix).
+- **Courbe phosphore (CRT gamma).** Le pipeline NTSC signal-level (déjà
+  complet : FIR Y@2.0 MHz / chroma@0.6 MHz, YUV→RGB, PAL line-phase) n'avait
+  pas de réponse phosphore. Ajout d'un `phosphorGamma` (power-law par canal
+  `rgb^γ`) dans `CrtEffectStack`, **après** BCS et **avant** scanlines/mask
+  (le masque atténue la lumière que le phosphore a déjà produite). γ = 1.0 =
+  identité → **aucun golden/parité touché** ; γ > 1 creuse les ombres, γ < 1
+  les relève. C'est la moitié *luminance* du modèle phosphore ; `persistence`
+  est la moitié *temporelle*. Slider « Phosphor curve (gamma) » 0.6–2.6,
+  persisté `ntsc_phosphor_gamma`. NB : effet *glass*, donc actif sous OE en
+  permanence et sous les autres modes quand « CRT effects on all modes » est on.
+
 ## 2026-05-31 (Vue 3D voxel — phases 0+1 ; bouton rewind toolbar)
 
 - **Vue 3D voxel — refonte « Voxel Cube » fidèle à MicroM8 (correctif).**

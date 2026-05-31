@@ -1958,6 +1958,29 @@ endif()
 add_test(NAME dhgr_phase_signal COMMAND test_dhgr_phase_signal)
 set_tests_properties(dhgr_phase_signal PROPERTIES TIMEOUT 5)
 
+add_executable(test_beam_race_composite
+    beam_race_composite_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_beam_race_composite PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_beam_race_composite PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_beam_race_composite PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_beam_race_composite PRIVATE winmm)
+endif()
+
+add_test(NAME beam_race_composite COMMAND test_beam_race_composite)
+set_tests_properties(beam_race_composite PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp

@@ -73,6 +73,15 @@ struct NtscParams
     // values darken the edges. CrtEffectStack glass pass only.
     float centerLighting = 1.0f;  // 0.5..1.0 (1.0 = flat)
 
+    // Phosphor response curve: a per-channel power law applied to the beam
+    // intensity → emitted light, modelling the CRT's gamma. `rgb = rgb^γ`,
+    // applied after BCS and before the spatial scanline/mask modulation.
+    // 1.0 = identity (off — preserves every existing golden/parity test);
+    // γ > 1 deepens shadows for more CRT-like contrast, γ < 1 lifts them.
+    // CrtEffectStack glass pass only (pairs with `persistence`, the temporal
+    // half of the phosphor model).
+    float phosphorGamma = 1.0f;  // 0.6..2.6 (1.0 = flat)
+
     // PAL composite mode: alternates the Q-subcarrier sign every other
     // scanline (line-phase alternation). On a real PAL TV this cancels
     // hue errors at the cost of vertical chroma resolution; here it

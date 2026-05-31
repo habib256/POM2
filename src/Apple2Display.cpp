@@ -310,15 +310,21 @@ void Apple2Display::render(Memory& mem)
     const bool cpuDemodGfx = cpuDemod && !state.textMode;
     const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || cpuDemod;
 
+    // Take the mid-frame video soft-switch log ONCE. Both consumers need it:
+    // the RGBA beam-racing path (the fallback framebuffer) AND the composite
+    // signal builder, so mid-scanline mode switches (text↔graphics splits,
+    // page flips, DHGR toggles) show up in the OE/AppleWin composite picture
+    // too — not just the LUT modes. `events` survives the renderBeamRacing
+    // copy and is handed to fillCompositeSignal below.
+    auto events = mem.takeVideoEvents();
     if (!cpuDemodGfx) {
-        auto events = mem.takeVideoEvents();
         if (events.empty())
             renderInternal(mem);
         else
-            renderBeamRacing(mem, std::move(events));
+            renderBeamRacing(mem, events);
     }
 
-    signalProducedFlag = needSignal ? fillCompositeSignal(mem) : false;
+    signalProducedFlag = needSignal ? fillCompositeSignal(mem, events) : false;
 
     if (cpuDemodGfx && !signalProducedFlag) {
         // Defensive fallback: no signal → render the normal framebuffer so
@@ -1751,10 +1757,22 @@ void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
 //
 // We only generate the signal for HGR, DHGR, DLGR, and 40/80-column text;
 // lo-res GR uses paintLoRes40, DLGR uses paintLoResDouble (aux+main).
-bool Apple2Display::fillCompositeSignal(Memory& mem)
+bool Apple2Display::fillCompositeSignal(Memory& mem,
+                                        const std::vector<Memory::VideoEvent>& events)
 {
-    const auto state = mem.getDisplayState();
+    // Beam-racing: when the frame logged mid-scanline display soft-switch
+    // edges we recompose the signal band-by-band, starting from the
+    // frame-start state and applying each event at its scanline boundary —
+    // mirroring renderBeamRacing()'s replay, but writing the 14.318 MHz
+    // waveform instead of the RGBA framebuffer. `state` is mutable so the
+    // paint helpers (capturing it by reference) see the per-band switches.
+    const bool beamRace = !events.empty();
+    Memory::DisplayState state = beamRace ? mem.getDisplayStateAtFrameStart()
+                                          : mem.getDisplayState();
     signalPhaseOffset_ = 0;
+    // Zero first so bands a given mode leaves unpainted (mixed-mode text band,
+    // a text→graphics split's empty rows) read as black instead of stale.
+    std::fill(signalBuf.begin(), signalBuf.end(), 0);
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
@@ -1920,39 +1938,68 @@ bool Apple2Display::fillCompositeSignal(Memory& mem)
         }
     };
 
-    // Top-level dispatch by current video soft-switches. Mirrors
-    // renderInternal()'s decision tree, but writing into signalBuf
-    // instead of frame / frame80.
-    if (state.textMode) {
-        if (mem.isIIE() && state.eightyCol) paintText80(0, 24);
-        else                                paintText40(0, 24);
-        return true;
-    }
-
-    if (!state.hiRes) {
-        const bool isDlgr = mem.isIIE() && state.eightyCol && state.dhgr;
-        if (state.mixedMode) {
-            if (isDlgr) paintLoResDouble(0, 40);
-            else        paintLoRes40(0, 40);
-            // Text band stays black in the signal — crisp mono text is
-            // composited after demod (patchMixedTextBand), same as HGR mixed.
-        } else {
-            if (isDlgr) paintLoResDouble(0, 48);
-            else        paintLoRes40(0, 48);
+    // Paint one scanline band [scanY0, scanY1) according to the CURRENT
+    // `state` (mutated between bands by beam-racing). Mirrors
+    // renderInternalBand()'s decision tree — same bandRows/bandScanlines
+    // clipping — but writes into signalBuf instead of frame / frame80.
+    auto paintSignalBand = [&](int scanY0, int scanY1) {
+        int lo = 0, hi = 0;
+        if (state.textMode) {
+            if (bandRows(scanY0, scanY1, 0, 24, &lo, &hi)) {
+                if (mem.isIIE() && state.eightyCol) paintText80(lo, hi);
+                else                                paintText40(lo, hi);
+            }
+            return;
         }
+        if (!state.hiRes) {
+            // Lo-res / DLGR: each block-row is 4 signal scanlines.
+            const bool isDlgr   = mem.isIIE() && state.eightyCol && state.dhgr;
+            const int  blockEnd = state.mixedMode ? 40 : 48;  // block-rows
+            if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &lo, &hi)) {
+                const int brLo = lo / 4;
+                const int brHi = (hi + 3) / 4;
+                if (isDlgr) paintLoResDouble(brLo, brHi);
+                else        paintLoRes40(brLo, brHi);
+            }
+            // Mixed-mode text band stays black — crisp mono text is composited
+            // after demod (patchMixedTextBand), same as HGR mixed.
+            return;
+        }
+        // Hi-res — DHGR variant when on IIe with 80COL + DHIRES, else HGR.
+        // signalPhaseOffset_ is a single per-frame demod constant; the last
+        // graphics band painted wins (matches the uniform-frame fast path —
+        // a mid-frame HGR↔DHGR phase split is a documented approximation).
+        const bool isDhgr = mem.isIIE() && state.eightyCol && state.dhgr && state.hiRes;
+        signalPhaseOffset_ = isDhgr ? 1 : 0;
+        const int hiResEnd = state.mixedMode ? 160 : 192;
+        if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &lo, &hi)) {
+            if (isDhgr) paintDhgr(lo, hi); else paintHgr(lo, hi);
+        }
+        // Mixed-mode text band: see lo-res note above — left black here.
+    };
+
+    if (!beamRace) {
+        paintSignalBand(0, kSignalHeight);
         return true;
     }
 
-    // Hi-res — DHGR variant when on IIe with 80COL + DHIRES, else HGR.
-    const bool isDhgr = mem.isIIE() && state.eightyCol && state.dhgr && state.hiRes;
-    signalPhaseOffset_ = isDhgr ? 1 : 0;
-    if (state.mixedMode) {
-        if (isDhgr) paintDhgr(0, 160); else paintHgr(0, 160);
-        // Mixed-mode text is not part of the composite waveform — on real
-        // hardware the bottom 4 rows are the text generator (white/black),
-        // not NTSC-artifact colour.
-    } else {
-        if (isDhgr) paintDhgr(0, 192); else paintHgr(0, 192);
+    // Beam-racing: replay the event log band-by-band (same order as
+    // renderBeamRacing). Events arrive in cycle order; sort a local copy by
+    // scanline so out-of-order writes within a frame still tile cleanly.
+    std::vector<Memory::VideoEvent> evs(events);
+    std::sort(evs.begin(), evs.end(),
+              [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
+                  return a.scanline < b.scanline;
+              });
+    int y0 = 0;
+    for (const auto& ev : evs) {
+        const int y = std::min(static_cast<int>(ev.scanline), kSignalHeight);
+        if (y > y0)
+            paintSignalBand(y0, y);
+        applyVideoEvent(state, ev.kind, ev.value);
+        y0 = y;
     }
+    if (y0 < kSignalHeight)
+        paintSignalBand(y0, kSignalHeight);
     return true;
 }

@@ -262,10 +262,14 @@ private:
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);
 
     // Populate signalBuf from RAM for the active display state. Returns
-    // true on success (HGR / DHGR / 40-col text) and false when the
-    // current Apple II video mode has no signal generator yet (lo-res).
+    // true on success (HGR / DHGR / 40-col text / lo-res / DLGR).
     // Always called from render() when hiResMode == ColorCompositeOE.
-    bool fillCompositeSignal(Memory& mem);
+    // `events` is the mid-frame video soft-switch log: when non-empty the
+    // signal is recomposed band-by-band (beam-racing) so mid-scanline mode
+    // switches land in the composite waveform; when empty the whole frame is
+    // painted from the single end-of-frame display state (fast path).
+    bool fillCompositeSignal(Memory& mem,
+                             const std::vector<Memory::VideoEvent>& events);
 
     // CPU OpenEmulator demod: demodulate signalBuf (560×192 R8) into frame80
     // (560×192 RGBA) — the same Y/I/Q math as the GLSL demod shader, run on

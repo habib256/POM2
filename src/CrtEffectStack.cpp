@@ -147,6 +147,7 @@ uniform int   uShadowMask;     // 0=off,1=triad,2=aperture grille,3=dot
 uniform float uShadowStrength; // 0..1
 uniform float uLuminanceGain;  // post-glass re-brighten, 1.0 = neutral
 uniform float uCenterLighting; // vignette: 1.0 = flat (off), <1 darkens edges
+uniform float uPhosphorGamma;  // CRT phosphor response γ: 1.0 = flat (off)
 
 // Catmull-Rom cubic weight (4-tap per axis). Used when the CRT pass upscales
 // the low-res Apple II framebuffer so scanlines/mask sit on smooth colour
@@ -241,6 +242,15 @@ void main()
     float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
     rgb = mix(vec3(luma), rgb, clamp(uSaturation, 0.0, 4.0));
     rgb = clamp(rgb, 0.0, 1.0);
+
+    // ── Phosphor response curve (CRT gamma) ───────────────────────
+    // Per-channel power law on the beam intensity → emitted light, applied
+    // before the spatial scanline/mask modulation (which attenuates the light
+    // the phosphor already produced). γ = 1.0 is identity, so the default
+    // leaves every existing golden untouched; γ > 1 deepens shadows.
+    if (uPhosphorGamma != 1.0) {
+        rgb = pow(max(rgb, vec3(0.0)), vec3(uPhosphorGamma));
+    }
 
     // ── Scanlines (smooth beam, analytic anti-alias) ──────────────
     // Logical scanline coordinate: 2 units per source row. fwidth() is how
@@ -358,6 +368,7 @@ bool CrtEffectStack::initialize()
     uShadowStr   = glGetUniformLocation(program, "uShadowStrength");
     uLuminanceGain = glGetUniformLocation(program, "uLuminanceGain");
     uCenterLighting = glGetUniformLocation(program, "uCenterLighting");
+    uPhosphorGamma = glGetUniformLocation(program, "uPhosphorGamma");
 
     const float verts[] = {
         -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
@@ -494,6 +505,7 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     if (uShadowStr   >= 0) glUniform1f(uShadowStr,   params.shadowMaskStrength);
     if (uLuminanceGain >= 0) glUniform1f(uLuminanceGain, params.luminanceGain);
     if (uCenterLighting >= 0) glUniform1f(uCenterLighting, params.centerLighting);
+    if (uPhosphorGamma >= 0) glUniform1f(uPhosphorGamma, params.phosphorGamma);
 
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
