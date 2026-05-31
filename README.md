@@ -1,27 +1,97 @@
-# POM2
+<div align="center">
+
+# 🍏 POM2 v0.6 — Apple II Emulator
+
+### *Six machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
+
+🎂 **Celebrating 50 years of Apple (1976 → 2026)** with a cycle-accurate Apple II family emulator: **6 one-click machine presets** (][ · ][+ · //e · //e enhanced · //c · //c+), MAME-faithful CPU and hardware ports, OpenEmulator-grade composite NTSC, a MicroM8-style **3D voxel view**, **time-travel rewind**, mechanical floppy sounds, and a stack of expansion cards from Mockingboard to Phasor — all running in the browser too.
+
+Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
+
+[![▶ Play in browser (no install)](https://img.shields.io/badge/▶%20Play%20in%20browser-WebAssembly-blueviolet?style=for-the-badge)](https://habib256.github.io/POM2/wasm/)
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Linux%20•%20macOS%20•%20Windows%20•%20Web-lightgrey.svg)](#-quick-start)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-orange.svg)](#)
+[![6 machines](https://img.shields.io/badge/Machines-6-success.svg)](#-machine-profiles)
+[![MAME-parity](https://img.shields.io/badge/Hardware-MAME--faithful-yellowgreen.svg)](DEV.md)
 
 ![Apple II Plus](pic/Apple_II_plus.jpg)
 
-**A modern Apple II emulator with the knobs exposed.**
+</div>
 
-POM2 emulates the Apple ][, ][+, //e, //c, and //c+ with Dear ImGui,
-authentic video modes, expansion cards, floppy sounds, snapshots, disk
-libraries, kiosk booting, and a browser build.
+---
 
-**Try it in your browser:** [https://habib256.github.io/POM2/wasm/](https://habib256.github.io/POM2/wasm/)
+## 🌟 Why POM2?
 
-## Quick Start
+> *Most Apple II emulators give you a screen and a disk drive. POM2 gives you the bus, the beam, the phosphor — and a time machine.*
+
+- 🎞️ **Beam-raced to the scanline.** Soft-switch flips mid-frame land on the exact scanline the CPU touched them — split-screen demos, hi-res/text mode swaps and AN3 DHGR toggles render correctly. The composite NTSC path beam-races too, so artifact colour follows the same event log the RGBA path does.
+- 🧊 **Tilt the screen into 3D.** A MicroM8-style **voxel view** lifts the Apple II framebuffer off the glass into an orbiting 3D scene — pixels become extruded voxels you can fly around with a real camera.
+- ⏪ **Rewind time.** A snapshot ring buffer records the machine as it runs; scrub backwards through your last seconds of execution and resume from any point. Same serializer feeds the AI-control HTTP `/snapshot` endpoints, so they can never drift.
+- 📺 **CRT you can dial in.** OpenEmulator-style composite NTSC shader *and* AppleWin's CPU IIR-LUT NTSC, plus mono phosphor with an adjustable **phosphor curve** (luminance γ) and **persistence** (temporal glow), barrel distortion, hue/BCS — the full *View → CRT Settings* panel.
+- 💾 **Disks that sound right.** Cycle-stamped mechanical floppy samples: the Disk II head step and the Sony 3.5" drive whir, timed off the CPU clock — disk-turbo collapses wall-clock gaps but the nibble stream stays cycle-correct via an event-driven LSS.
+- 🎵 **A whole sound-card era.** Speaker, cassette, Mockingboard A/C, Mockingboard C **Sound II** with SSI263 speech, the Applied Engineering **Phasor** (2×VIA / 4×AY), and the Cricket / Echo SSI263 line.
+- 🔬 **MAME is the source of truth.** Every hardware port cites the MAME file + line range in a comment and is pinned with a smoke test under `tests/`. CPU → audio/UI events carry a CPU-cycle stamp, never wall-clock.
+- 🌐 **Runs in your browser.** The full emulator builds to WebAssembly — [play it now](https://habib256.github.io/POM2/wasm/), no install.
+
+---
+
+## ⚡ 60-second tour
+
+Five things to try **right after first boot**:
+
+1. **Boot a disk in one drag** → drop a `.woz`/`.dsk` on the window, or `POM2 path/to/game.woz`. POM2 routes it to Disk II, SmartPort or ProDOS HDV automatically.
+2. **Switch machines live** → `Machine → Profile` (or `--preset iie`). Each switch is a clean cold reset that re-plugs built-in cards and re-mounts your disks.
+3. **Tilt into 3D** → open the **3D voxel view** and orbit the running framebuffer with the camera. Lo-res, hi-res and text all extrude into voxels.
+4. **Rewind** → let something run, then scrub the rewind ring backwards and resume from an earlier instant (`--rewind` on the CLI).
+5. **Tune the CRT** → `View → CRT Settings`: swap composite NTSC ↔ mono phosphor, push the phosphor curve and persistence, add scanline glow and barrel.
+
+---
+
+## 🚀 Quick Start
+
+### 🐧 Linux / 🍏 macOS
 
 ```bash
-./setup_imgui.sh
+git clone https://github.com/habib256/POM2.git
+cd POM2
+./setup_imgui.sh                    # fetch Dear ImGui + install deps (one-time)
 cd build && cmake .. && make -j
-./run_emulator.sh
+cd .. && ./run_emulator.sh          # cwd = repo root so roms/ probes resolve
 ```
 
-`setup_imgui.sh` supports macOS, Debian/Ubuntu, Fedora, and Arch. On
-Windows, install GLFW through vcpkg and run CMake manually.
+`setup_imgui.sh` covers macOS, Debian/Ubuntu, Fedora and Arch.
 
-Apple ROMs are not bundled. Put files here:
+### 🪟 Windows
+
+Prereqs: [Visual Studio](https://visualstudio.microsoft.com/) (C++ workload), [CMake](https://cmake.org/download/), [Git](https://git-scm.com/download/win), [vcpkg](https://vcpkg.io/).
+
+```batch
+git clone https://github.com/habib256/POM2.git
+cd POM2
+vcpkg install glfw3:x64-windows
+cd build && cmake .. && cmake --build . --config Release
+```
+
+### 🌐 WebAssembly
+
+**Play directly:** [POM2 in your browser](https://habib256.github.io/POM2/wasm/)
+
+<details><summary>Build it yourself</summary>
+
+```bash
+./build_wasm.sh                     # build
+./build_wasm.sh --serve             # build + local server
+./build_wasm.sh --with-data         # bundle roms/ fonts/ pic/ floppyemu/
+```
+
+The browser build preloads `roms/`, `fonts/`, `pic/` and `floppyemu/`, but **user Apple ROMs are still required**. Telnet and the AI-control HTTP server are compiled out under WASM.
+</details>
+
+### 💿 Drop in ROMs and media
+
+Apple ROMs are **user-provided** — POM2 bundles none. Drop your files here:
 
 ```text
 roms/         Apple II firmware dumps
@@ -31,172 +101,180 @@ hdv/          ProDOS hard-disk images
 floppyemu/    Floppy Emu / BMOW media
 ```
 
-Boot a disk directly:
-
 ```bash
-POM2 path/to/game.woz
-POM2 --kiosk path/to/game.dsk
+POM2 path/to/game.woz               # mount + cold-boot
+POM2 --kiosk path/to/game.dsk       # exclusive full-screen, chrome-free
 ```
 
-POM2 routes supported images to Disk II, SmartPort, or ProDOS HDV using
-your saved profile and slot configuration.
+---
 
-## Screenshots
+## ⌨️ Keyboard Shortcuts
 
-| Disk II                                                        | Apple at Work                          |
-| -------------------------------------------------------------- | -------------------------------------- |
-| ![Disk II drive](pic/Apple-Disk-II-Drive-525-Floppy-5-1-4.webp) | ![Apple at work](pic/Appleatwork.webp) |
+| Host | Apple II | Host | Apple II |
+|------|----------|------|----------|
+| Enter | Return | Left Alt | Open-Apple (`$C061`) |
+| Backspace | Left arrow | Right Alt | Solid-Apple (`$C062`) |
+| Arrows | Apple II arrows | `Ctrl-A..Z` | `$01..$1A` |
+| Esc | ESC | F9 | Screenshot → `screenshot_NNN.ppm` |
+| F11 | Soft reset / Ctrl-Reset | F12 | Hard reset / power-cycle |
 
-## Features
+F9 / F11 / F12 and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
 
-| Area            | Highlights                                                                                                                          |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **Machines**    | Apple ][, ][+, //e unenhanced, //e enhanced, //c, //c+.                                                                             |
-| **CPU/Memory**  | NMOS 6502, 65C02, Rockwell/WDC opcodes, IIe paging, Language Card, aux LC, RamWorks III up to 8 MB.                                |
-| **Video**       | Text, lo-res, hi-res, double hi-res, 80-column, composite NTSC, mono phosphor, Video-7 RGB, Le Chat Mauve RGB.                     |
-| **Audio**       | Speaker, cassette, Mockingboard A/C, Mockingboard C Sound II, Phasor, SSI263 speech, Disk II / Sony 3.5" mechanical sounds.        |
-| **Storage**     | `.dsk`, `.do`, `.po`, `.nib`, `.2mg`, `.woz`, `.hdv`, DOS 3.x, ProDOS, SmartPort, CFFA 2.0.                                       |
-| **Peripherals** | Super Serial, printer spool, Grappler+, ProDOS Clock, Mouse Card, joystick, Floppy Emu, built-in //c devices.                      |
-| **Tools**       | Disk Library, Slot Configuration, screenshots, memory viewer, snapshots, CLI, kiosk mode, AI-control HTTP server.                  |
+---
 
-## Machines
+## 🖥️ Machine Profiles
 
-| Profile                     | CPU   | Main ROM probes                        |
-| --------------------------- | ----- | -------------------------------------- |
-| Apple ][ Original (1977)    | NMOS  | `apple2o.rom`, `apple2.rom`            |
-| Apple ][+ (1979)            | NMOS  | `apple2p.rom`, `apple2.rom`            |
-| Apple //e Unenhanced (1983) | NMOS  | `apple2e_unenh.rom`, `apple2e.rom`     |
-| Apple //e Enhanced (1985)   | 65C02 | `apple2e.rom`                          |
-| Apple //c (1984)            | 65C02 | `apple2c-32Kv0.rom`, `apple2c-16K.rom` |
-| Apple //c+ (1988)           | 65C02 | `apple2cp.rom`, `apple2c-plus.rom`     |
+Six one-click machines spanning the line. Switch from `Machine → Profile` or `--preset`. Each switch is a full cold reset that re-plugs built-in cards and re-mounts inserted disks where possible.
 
-Switch machines from `Machine -> Profile` or with:
+| Profile | CPU | Mode | Main ROM probes | Built-in slots (locked) |
+|---|---|---|---|---|
+| **Apple ][ Original** (1977) | NMOS 6502 | — | `apple2o.rom`, `apple2.rom` | — |
+| **Apple ][+** (1979) | NMOS 6502 | — | `apple2p.rom`, `apple2.rom` | — |
+| **Apple //e Unenhanced** (1983) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `apple2e.rom` | AUX = ext80 |
+| **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = ext80 |
+| **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort · sl6 Disk II |
+| **Apple //c+** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort 3.5" · sl6 Disk II |
 
-```bash
-POM2 --preset iie
-POM2 --preset iic+
-```
+Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`.
 
-Switching profiles performs a cold reset, re-plugs built-in cards, and
-re-mounts inserted disks where possible.
+> **ROM identity check** — when the generic `apple2.rom` fallback resolves (no profile-specific dump present), the loader warns that the ROM may not match the selected machine.
 
-## ROMs And Media
+---
 
-Accepted main ROM sizes include 12 KB, 16 KB, 20 KB system packs with 4
-KB filler, and 32 KB system+video ROMs.
+## ✨ Hardware
 
-| File                                 | Role                                       |
-| ------------------------------------ | ------------------------------------------ |
-| `apple2e.rom`                        | //e firmware plus optional charset         |
-| `apple2cp.rom`                       | //c+ banks 0 + 1                           |
-| `apple2_char.rom`                    | Character ROM                              |
-| `disk2.rom` / `disk2_13.rom`         | Disk II boot PROMs                         |
-| `diskii_p6.rom`                      | Disk II P6 LSS sequencer, required for WOZ |
-| `cffa20ee02.bin` / `cffa20eec02.bin` | CFFA 2.0 firmware                          |
-| `mouse_341-0270-c.bin`               | Mouse Card slot ROM                        |
-| `mouse_341-0269.bin`                 | Mouse Card 68705 MCU mask ROM              |
-| `roms/floppy_samples/*.wav`          | Mechanical drive samples                   |
+**Core** — MAME-faithful **6502 / 65C02 / Rockwell / WDC** CPU; full IIe paging, Language Card + aux LC, and **RamWorks III up to 8 MB**; running at `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14), 17045 cycles/frame (//c+ defaults to 4× for its Zip-style accelerator).
 
-Supported disk formats: `.dsk`, `.do`, `.po`, `.nib`, `.2mg`, `.2img`,
-`.woz`, and `.hdv`. Detection is content-driven; MacBinary wrappers,
-DOS/ProDOS skew, and WOZ/2IMG write-protect flags are handled.
+| Subsystem | Highlights |
+|---|---|
+| 📺 **Video** | Text · lo-res · hi-res · double hi-res · 80-column. **Beam-raced** mid-scanline soft switches. Composite NTSC (OpenEmulator-style shader) · AppleWin NTSC (CPU IIR-LUT) · mono phosphor with adjustable curve + persistence · Video-7 RGB · Le Chat Mauve RGB. |
+| 🧊 **3D voxel view** | MicroM8-style — framebuffer extruded into orbiting voxels with a real camera (`Voxel3DRenderer` + `Mat4`). |
+| ⏪ **Rewind** | MicroM8-style snapshot ring buffer; scrub back and resume. Shares its serializer with the AI-control `/snapshot` endpoints. |
+| 🔊 **Audio** | Speaker · cassette · Mockingboard A/C · Mockingboard C **Sound II** (SSI263 speech) · Applied Engineering **Phasor** (2×VIA / 4×AY) · Cricket / Echo SSI263 · Echo+ TMS5220 scaffold · cycle-stamped Disk II + Sony 3.5" mechanical sounds. |
+| 💾 **Storage** | `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv` · DOS 3.x · ProDOS · SmartPort · CFFA 2.0. WOZ uses the real Disk II P6 LSS sequencer; detection is content-driven (MacBinary, DOS/ProDOS skew, WOZ/2IMG write-protect handled). |
+| 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
+| 🛠️ **Tools** | Disk Library · Slot Configuration · screenshots · memory viewer · snapshots · kiosk mode · CLI · AI-control HTTP server. |
 
-## Expansion Cards
+---
 
-Use `Machine -> Slot Configuration` to assign cards, mount media, eject,
-or boot.
+## 🃏 Expansion Cards
 
-| Key                 | Card                                      |
-| ------------------- | ----------------------------------------- |
-| `diskii`            | Disk II                                   |
-| `hdv`               | ProDOS HDV                                |
-| `cffa`              | CFFA 2.0 IDE                              |
-| `smartport35`       | SmartPort 3.5"                            |
-| `ssc`               | Super Serial Card                         |
-| `printer`           | Parallel printer with host spool          |
-| `grappler`          | Orange Micro Grappler+                    |
-| `clock`             | ProDOS Clock / ThunderClock+              |
-| `chatmauve`         | Le Chat Mauve RGB                         |
-| `mouse` / `mouseaw` | Mouse Card                                |
-| `mockingboard`      | Mockingboard A/C                          |
-| `mockingboard_c`    | Mockingboard C Sound II with SSI263       |
-| `phasor`            | Applied Engineering Phasor                |
-| `echoplus`          | Cricket / Echo SSI263 line                |
-| `echoplus_tms`      | Echo+ TMS5220 + 2x AY scaffold            |
+Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. A typical II / II+ / //e setup: **sl2** Super Serial · **sl4** Mockingboard/Phasor · **sl5** HDV or SmartPort · **sl6** Disk II · **sl7** Le Chat Mauve RGB. On //c and //c+ the built-in slots are locked.
 
-Typical II / II+ / //e setup: slot 2 Super Serial, slot 4
-Mockingboard/Phasor, slot 5 HDV or SmartPort, slot 6 Disk II, slot 7 Le
-Chat Mauve RGB. On //c and //c+, built-in slots are locked.
+| Key | Card | Key | Card |
+|---|---|---|---|
+| `diskii` | Disk II | `clock` | ProDOS Clock / ThunderClock+ |
+| `hdv` | ProDOS HDV | `chatmauve` | Le Chat Mauve RGB |
+| `cffa` | CFFA 2.0 IDE | `mouse` / `mouseaw` | Mouse Card (MAME / AppleWin HLE) |
+| `smartport35` | SmartPort 3.5" | `mockingboard` | Mockingboard A/C |
+| `ssc` | Super Serial Card | `mockingboard_c` | Mockingboard C Sound II + SSI263 |
+| `printer` | Parallel printer (host spool) | `phasor` | Applied Engineering Phasor |
+| `grappler` | Orange Micro Grappler+ | `echoplus` | Cricket / Echo SSI263 |
+| | | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 
-## Keyboard And Joystick
+---
 
-| Host      | Apple II                        |
-| --------- | ------------------------------- |
-| Enter     | Return                          |
-| Backspace | Left arrow                      |
-| Arrows    | Apple II arrows                 |
-| Esc       | ESC                             |
-| Ctrl-A..Z | `$01..$1A`                      |
-| Left Alt  | Open-Apple, `$C061`             |
-| Right Alt | Solid-Apple, `$C062`            |
-| F9        | Screenshot, `screenshot_NNN.ppm` |
-| F11       | Soft reset / Ctrl-Reset         |
-| F12       | Hard reset / power-cycle        |
+## 📺 Video — beam, NTSC, phosphor & 3D
 
-GLFW gamepads are hot-plugged and auto-bound.
+POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carry a CPU-cycle stamp; the display reconstructs the frame from that event log, so mid-scanline mode changes (TEXT-over-HGR splits, page flips, AN3 DHGR pulses through the Le Chat Mauve FIFO) land on the right scanline. The composite signal beam-races on the same log — pinned by `beam_race_composite`.
 
-## CLI
+- **Composite NTSC** — OpenEmulator-style fragment shader (`NtscPostProcessor` / `OpenGLShader`): barrel → hue → BCS → phosphor curve → glow.
+- **AppleWin NTSC** — the alternative CPU-side IIR-LUT colour path (`AppleWinNtsc`).
+- **Mono phosphor** — adjustable **phosphor curve** (`ntsc_phosphor_gamma`, luminance half of the CRT model) and **persistence** (temporal half), tunable in *View → CRT Settings*.
+- **RGB cards** — Video-7 and Le Chat Mauve for IIe-class machines.
+- **3D voxel view** — lift the whole framebuffer into an orbiting voxel scene.
+
+---
+
+## 🔊 Audio — speaker to Phasor
+
+Every audio event is cycle-stamped, so tempo follows emulation speed, not wall-clock — disk-turbo's ~60× collapse of wall-clock gaps stays inaudible. The bus carries the **Speaker** and **Cassette**, plus a full card stack: **Mockingboard A/C** (6522 VIA + AY-3-8910), **Mockingboard C Sound II** with the **SSI263** speech chip, the **Phasor** (2 VIAs driving 4 AYs), and the **Cricket / Echo** SSI263 line. Mechanical **floppy sounds** (`FloppySoundDevice`) consume the cycle stamp emitted by `DiskIICard::seekPhaseW`, so head-steps and drive whir line up with the LSS nibble stream.
+
+---
+
+## 💾 Storage — disks, SmartPort, CFFA
+
+Supported images: `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv`. Detection is **content-driven** — MacBinary wrappers, DOS/ProDOS sector skew and WOZ/2IMG write-protect flags are all handled. WOZ playback runs the genuine Disk II **P6 LSS sequencer** (`diskii_p6.rom` required). ProDOS block devices back the HDV / CFFA 2.0 / SmartPort paths.
+
+Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), and 32 KB system+video ROMs.
+
+| File | Role |
+|---|---|
+| `apple2e.rom` | //e firmware (+ optional charset) |
+| `apple2cp.rom` | //c+ banks 0 + 1 |
+| `apple2_char.rom` | Character ROM |
+| `disk2.rom` / `disk2_13.rom` | Disk II boot PROMs |
+| `diskii_p6.rom` | Disk II P6 LSS sequencer (required for WOZ) |
+| `cffa20ee02.bin` / `cffa20eec02.bin` | CFFA 2.0 firmware |
+| `mouse_341-0270-c.bin` / `mouse_341-0269.bin` | Mouse Card slot ROM / 68705 MCU mask ROM |
+| `roms/floppy_samples/*.wav` | Mechanical drive samples |
+
+---
+
+## 🎛️ Command line
 
 ```bash
-POM2 <disk-image>
-POM2 --kiosk <disk-image>
+POM2 <disk-image>                   # mount into the right slot + cold-boot
+POM2 --kiosk <disk-image>           # exclusive full-screen, chrome-free, read-only
 POM2 --preset ii|ii+|iie-u|iie|iic|iic+
 POM2 --snapshot-save out.pom2snap
 POM2 --snapshot-load in.pom2snap
 ```
 
-Other useful flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`,
-`--35-disk2`, `--load`, `--run`, `--step`, `--paste`, `--play`, `--rec`,
-and `--rewind`.
+More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--step`, `--paste`, `--play`, `--rec`, `--rewind`. Full architecture → [`CLAUDE.md`](CLAUDE.md).
 
-## WebAssembly
+---
 
-Live build: [https://habib256.github.io/POM2/wasm/](https://habib256.github.io/POM2/wasm/)
+## 📦 Releases
 
 ```bash
-./build_wasm.sh
-./build_wasm.sh --serve
-./build_wasm.sh --with-data
+./build_dist.sh                     # relocatable tarball + .deb (+ AppImage if linuxdeploy present)
+./build_dist.sh --tests             # build + run the pinned smoke tests
 ```
 
-The browser build preloads `roms/`, `fonts/`, `pic/`, and `floppyemu/`,
-but user Apple ROMs are still required. Telnet and the AI-control HTTP
-server are compiled out under WASM.
+Apple ROMs are **never** bundled in any artifact.
 
-## Releases
+---
 
-```bash
-./build_dist.sh
-./build_dist.sh --tests
-```
-
-Linux packaging produces a relocatable tarball, a Debian package, and,
-when `linuxdeploy` is available, an AppImage. Apple ROMs are never
-bundled.
-
-## Known Limitations
+## ⚠️ Known Limitations
 
 - Mouse absolute position can drift under A2Desktop / MGTK.
-- Some anti-//e games refuse to boot on //e/c/c+ hardware.
-- //c+ Sony 3.5" boot uses the built-in slot-5 SmartPort path; the full
-  IWM bit-shift state machine is not yet modeled.
+- Some anti-//e copy-protected titles refuse to boot on //e/c/c+ hardware.
+- //c+ Sony 3.5" boot uses the built-in slot-5 SmartPort path; the full IWM bit-shift state machine is not yet modeled.
 
-## Developer Notes
+---
 
-- [`DEV.md`](DEV.md) documents implementation details and parity notes.
-- [`TODO.md`](TODO.md) tracks the active backlog.
-- [`CHANGELOG.md`](CHANGELOG.md) explains resolved changes.
+## 🛠️ Developer Notes
 
-## License
+- [`CLAUDE.md`](CLAUDE.md) — always-loaded orientation index (build, memory map, profiles, reset architecture, CLI).
+- [`DEV.md`](DEV.md) — implementation deep-dives, MAME-parity ports, internals, gotchas, pinned tests.
+- [`TODO.md`](TODO.md) — active backlog + MAME ↔ POM2 parity dashboard.
+- [`CHANGELOG.md`](CHANGELOG.md) — resolved items and the **why** behind non-obvious fixes.
 
-GPL-3.0.
+**Conventions**: one concern per `.cpp/.h` pair · MAME = source of truth (cite the file + line range, pin a smoke test under `tests/`) · `emuCycles` everywhere — CPU → audio/UI events carry a cycle stamp, never wall-clock.
+
+---
+
+## 👏 Credits
+
+- **Arnaud Verhille** — POM2 emulator & Dear ImGui port.
+- **The MAME team** — the hardware reference POM2 ports cite line-by-line.
+- **AppleWin**, **OpenEmulator** and **MicroM8** — NTSC colour models, LSS sequencing, and the 3D-voxel / rewind inspiration.
+- **Steve Wozniak & Steve Jobs** — for creating the Apple II 🍎
+
+## 🔗 Resources
+
+- [POM2 in your browser](https://habib256.github.io/POM2/wasm/) — WebAssembly build.
+- Architecture → [CLAUDE.md](CLAUDE.md) · Internals → [DEV.md](DEV.md) · Backlog → [TODO.md](TODO.md).
+
+---
+
+## 📄 License
+
+GPL-3.0 — see [LICENSE](LICENSE).
+
+<div align="center">
+
+*Made with ❤️ for the Apple II community*
+
+</div>
