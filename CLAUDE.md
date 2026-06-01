@@ -141,7 +141,7 @@ Built-in slots force their listed card onto the SlotBus on profile load (overrid
 
 Default `cyclesPerFrame` = 17045 for II/II+/IIe/IIc; **//c+ defaults to 68180 (4×)** for its on-board Zip-style accelerator. `$C036` 1 MHz fall-back during disk I/O not modelled (event-driven disk LSS keeps nibbles cycle-correct anyway). `cpu_mode_override = auto|nmos|65c02` (Machine → CPU menu).
 
-**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. POM2 implements enough for cold boot (banner + 5.25" auto-boot); the full IWM bit-shift state machine is **not** modelled, so the firmware's IWM/Sony 3.5" boot path never reaches a bootable disk. → [DEV](DEV.md#profile-switching-internals).
+**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. POM2 implements enough for cold boot (banner + 5.25" auto-boot); the full IWM bit-shift state machine is **not** modelled, so the firmware's IWM/Sony 3.5" boot path never reaches a bootable disk. This is owned, not a TODO: a cycle-faithful 3.5"/SmartPort boot would additionally need the Liron-class SmartPort controller ROM, **which has never been publicly dumped** (MAME lists it *WANTED*), so it cannot be implemented regardless of effort. The supported path is the host-served SmartPort block device at built-in slot 5, which boots 3.5"/HDV on all //c-class machines. → [DEV](DEV.md#profile-switching-internals).
 
 **//c-class on-board SmartPort (3.5" + HDV boot)**: real IWM/Sony GCR boot is unmodelled, and MAME doesn't emulate 3.5"/SmartPort on the plain //c. POM2 boots 3.5" and HDV on //c/+/c+ through a host-served SmartPort block device at built-in slot 5. `Memory::memRead` punches a hole at `$C500-$C5FF` for the SmartPort firmware iff the slot is **armed** + holds media. `bootFromSlot` arms it; every reset disarms it, so the //c ROM's autostart always sees its real `$C500` firmware (avoids the "garbled //c banner" bug). Pinned by `iic_onboard_smartport_test`. → [DEV § Storage](DEV.md#c-class-on-board-smartport-35--hdv-boot).
 
@@ -176,10 +176,17 @@ Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `
 
 ## Version string locations
 
-Current release: **v0.6**. Bump in:
+Current release: **v0.7**. **Single source of truth = `CMakeLists.txt`
+`project(pom2_imgui VERSION x.y ...)`.** A `configure_file` expands it into
+`build/generated/Version.h` (from `src/Version.h.in`); all C++ pulls the
+version from there (`POM2_VERSION` / `POM2_VERSION_STRING` macros + `pom2::
+kVersion[String]`). Consumers — `main.cpp` (banner + window title),
+`MainWindow_Slots.cpp` (runtime title), `MainWindow.cpp` (About) — no longer
+hard-code it. Bumping `project(VERSION)` re-runs CMake and rebuilds them.
 
-- `main.cpp` (initial window title + console banner)
-- `MainWindow_Slots.cpp` (runtime title — overrides main.cpp's once the profile resolves)
-- `MainWindow.cpp` (About dialog)
-- `CMakeLists.txt` (`project(... VERSION x.y ...)`)
-- `README.md` (status section)
+To bump a release, edit **`CMakeLists.txt`** then the two prose-only docs that
+cannot `#include` the header:
+
+- `CMakeLists.txt` (`project(... VERSION x.y ...)`) — **drives all code**
+- `README.md` (title) — manual
+- `CLAUDE.md` (this line) — manual

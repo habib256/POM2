@@ -10,6 +10,7 @@
 // file that includes MainWindow.h.
 #include "AiControlServer.h"
 #include "Apple2Display.h"
+#include "Version.h"
 #include "CassetteDeck_ImGui.h"
 #include "Rewind_ImGui.h"
 #include "CassetteDevice.h"
@@ -6187,7 +6188,7 @@ void MainWindow::renderAboutDialog()
         const float textColumnW = 380.0f;
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textColumnW);
 
-        ImGui::Text("POM2 v0.6");
+        ImGui::Text("POM2 " POM2_VERSION_STRING);
         ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator");
         ImGui::Text("MOS 6502 / 65C02 / Rockwell / WDC, Dear ImGui frontend");
         ImGui::Spacing();

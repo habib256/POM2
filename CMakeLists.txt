@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pom2_imgui VERSION 0.6 LANGUAGES CXX)
+project(pom2_imgui VERSION 0.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +54,18 @@ file(GLOB IMGUI_SOURCES
 # All first-party C++ lives under src/. The prefix is spelled here once per
 # file so set_source_files_properties() below still gets a clean key.
 set(POM2_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ─── Generated version header ────────────────────────────────────────────
+# Single source of truth for the version string = project(... VERSION ...)
+# above. configure_file() expands @PROJECT_VERSION@ into the build tree, and
+# re-runs whenever CMakeLists.txt changes, so a version bump rebuilds every
+# consumer (main.cpp banner/title, MainWindow About + runtime title).
+set(POM2_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+configure_file(
+    ${POM2_SRC_DIR}/Version.h.in
+    ${POM2_GENERATED_DIR}/Version.h
+    @ONLY)
+
 set(SOURCES
     src/M6502.cpp
     src/Memory.cpp
@@ -243,6 +255,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${POM2_SRC_DIR}
+    ${POM2_GENERATED_DIR}   # generated Version.h
 )
 
 # ─── Platform deps ───────────────────────────────────────────────────────
@@ -408,6 +421,7 @@ add_executable(pom2_headless
 )
 target_include_directories(pom2_headless PRIVATE
     ${POM2_SRC_DIR}
+    ${POM2_GENERATED_DIR}   # generated Version.h
     ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
 )
 if(UNIX AND NOT APPLE)

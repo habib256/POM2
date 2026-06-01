@@ -7,6 +7,7 @@
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
 #include "MainWindow.h"
+#include "Version.h"
 // MainWindow.h now forward-declares EmulationController and Apple2Display
 // to keep its include cone lean. main.cpp dereferences both via
 // MainWindow::emul() / displayRef() so it needs the full types.
@@ -109,7 +110,7 @@ static void glfw_drop_callback(GLFWwindow* w, int count, const char** paths)
 
 int main(int argc, char* argv[])
 {
-    pom2::log().info("POM2", "v0.6 - Apple II Emulator (Dear ImGui)");
+    pom2::log().info("POM2", POM2_VERSION_STRING " - Apple II Emulator (Dear ImGui)");
 
     bool helpRequested = false;
     auto plan = pom2::parseCli(argc, argv, helpRequested);
@@ -168,7 +169,7 @@ int main(int argc, char* argv[])
     // left plus room for the unified Disk Library on the right. WASM
     // starts chrome-light, so its canvas width tracks the Apple II Screen
     // window instead of reserving an empty side column.
-    const char* kWindowTitle = "POM2 v0.6 - Apple II Emulator";
+    const char* kWindowTitle = "POM2 " POM2_VERSION_STRING " - Apple II Emulator";
     constexpr int kDefaultWindowWidth =
 #ifdef __EMSCRIPTEN__
         1125;

@@ -6,6 +6,21 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-01 (Release v0.7)
+
+- **Bump de version v0.6 → v0.7.** Mise à jour de la chaîne de version dans
+  les **5 emplacements canoniques** recensés par `CLAUDE.md` § Version string
+  locations : `CMakeLists.txt` (`project(... VERSION 0.7 ...)`, qui pilote aussi
+  `CPACK_PACKAGE_VERSION` + le nom de l'archive `build_dist.sh`), `src/main.cpp`
+  (bannière console + titre de fenêtre initial), `src/MainWindow_Slots.cpp`
+  (titre runtime qui écrase celui de `main.cpp` une fois le profil résolu — au
+  constructeur **et** au switch de profil), `src/MainWindow.cpp` (dialogue
+  *About*), et `README.md` (titre). `CLAUDE.md` lui-même mis à jour
+  (`Current release: **v0.7**`). **Pourquoi le noter** : la version vit dans
+  des chaînes dupliquées non dérivées d'une source unique, donc tout bump doit
+  toucher ces points en bloc sous peine de dérive (titre fenêtre vs About vs
+  paquet). Source unique CMake → header générée = item de backlog séparé.
+
 ## 2026-05-31 (Composite : beam-racing du signal + courbe phosphore)
 
 - **Beam-racing du signal composite.** `fillCompositeSignal` lisait *un seul*
