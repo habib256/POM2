@@ -240,7 +240,7 @@ Apple ROMs are **never** bundled in any artifact.
 
 - Mouse absolute position can drift under A2Desktop / MGTK.
 - Some anti-//e copy-protected titles refuse to boot on //e/c/c+ hardware.
-- //c+ Sony 3.5" boot uses the built-in slot-5 SmartPort path; the full IWM bit-shift state machine is not yet modeled.
+- **//c+ 3.5"/SmartPort boot is host-served, not cycle-faithful — by necessity.** POM2 boots 3.5" and HDV images on the //c+ through a host-served SmartPort block device at the built-in slot 5, and that path works. What is *not* modeled is the cycle-faithful on-board IWM/Sony GCR boot: the //c+ firmware's IWM bit-shift state machine is unimplemented, and a faithful path would additionally require the Liron-class SmartPort controller ROM — **which has never been publicly dumped** (MAME lists it as *WANTED*). This is a hardware-preservation gap outside POM2's control, not a planned feature being withheld; the host-served substitute is the deliberate, supported boot path for //c-class 3.5"/HDV.
 
 ---
 
