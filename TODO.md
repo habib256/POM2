@@ -169,6 +169,20 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
 - 🟢 **[P3] Apple II SCSI / High-Speed SCSI + CHD** — MAME
   `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Gros lift pour
   besoin niche (CFFA suffit). *~30-50 h.*
+- 🟢 **Apple II VGA / Second Sight (carte vidéo VGA)** — carte slot qui
+  shadow le framebuffer Apple II et sort un signal VGA propre (mode
+  scanline + modes texte/HGR/DHGR/lo-res). Deux incarnations : le projet
+  open-hardware **markadev/AppleII-VGA** (RP2040, firmware + KiCad libres,
+  donc registres et timing documentés) et la commerciale **Second Sight**
+  (reactivemicro, manuel Brutal Deluxe). POM2 a déjà tout le décodage
+  vidéo (`Apple2Display`) ; l'intérêt serait surtout de modéliser les
+  soft-switches/registres de la carte pour la détection logicielle et une
+  sortie « VGA-clean » optionnelle. Refs code + doc :
+  - <https://github.com/markadev/AppleII-VGA> (firmware RP2040 + KiCad)
+  - <https://www.brutaldeluxe.fr/documentation/secondsight/secondsight_manual.pdf> (manuel Second Sight)
+  - <https://downloads.reactivemicro.com/Apple%20II%20Items/Hardware/SecondSite_VGA/> (dumps/ROMs ReactiveMicro)
+  - <https://www.apple2history.org/history/ah13/#05> (contexte historique)
+  *~5-10 j (sourcing registres + mode d'intégration à décider).*
 - 🟢 **UDC (Apple 1991)** — 4 baies hétérogènes (3.5"/5.25"/HDV).
 - 🟢 **Slinky / RamFAST RAM disk** — utilité limitée vs RamWorks III.
 - 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice attaché
