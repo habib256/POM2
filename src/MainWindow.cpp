@@ -6187,7 +6187,7 @@ void MainWindow::renderAboutDialog()
         const float textColumnW = 380.0f;
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textColumnW);
 
-        ImGui::Text("POM2 v0.6");
+        ImGui::Text("POM2 v0.7");
         ImGui::Text("Apple II / II+ / //e / //c / //c+ emulator");
         ImGui::Text("MOS 6502 / 65C02 / Rockwell / WDC, Dear ImGui frontend");
         ImGui::Spacing();

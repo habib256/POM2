@@ -176,7 +176,7 @@ Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `
 
 ## Version string locations
 
-Current release: **v0.6**. Bump in:
+Current release: **v0.7**. Bump in:
 
 - `main.cpp` (initial window title + console banner)
 - `MainWindow_Slots.cpp` (runtime title — overrides main.cpp's once the profile resolves)

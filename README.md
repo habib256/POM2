@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍏 POM2 v0.6 — Apple II Emulator
+# 🍏 POM2 v0.7 — Apple II Emulator
 
 ### *Six machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
 
