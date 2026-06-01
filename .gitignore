@@ -13,6 +13,10 @@ compile_commands.json
 *.swp
 .DS_Store
 
+# Debug captures / screenshots (F9 → screenshot_NNN.ppm, X11 xwd dumps)
+*.xwd
+screenshot_*.ppm
+
 # CMake droppings if someone runs `cmake .` instead of `cmake -B build`
 /CMakeFiles/
 /CMakeCache.txt
