@@ -176,10 +176,17 @@ Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `
 
 ## Version string locations
 
-Current release: **v0.7**. Bump in:
+Current release: **v0.7**. **Single source of truth = `CMakeLists.txt`
+`project(pom2_imgui VERSION x.y ...)`.** A `configure_file` expands it into
+`build/generated/Version.h` (from `src/Version.h.in`); all C++ pulls the
+version from there (`POM2_VERSION` / `POM2_VERSION_STRING` macros + `pom2::
+kVersion[String]`). Consumers — `main.cpp` (banner + window title),
+`MainWindow_Slots.cpp` (runtime title), `MainWindow.cpp` (About) — no longer
+hard-code it. Bumping `project(VERSION)` re-runs CMake and rebuilds them.
 
-- `main.cpp` (initial window title + console banner)
-- `MainWindow_Slots.cpp` (runtime title — overrides main.cpp's once the profile resolves)
-- `MainWindow.cpp` (About dialog)
-- `CMakeLists.txt` (`project(... VERSION x.y ...)`)
-- `README.md` (status section)
+To bump a release, edit **`CMakeLists.txt`** then the two prose-only docs that
+cannot `#include` the header:
+
+- `CMakeLists.txt` (`project(... VERSION x.y ...)`) — **drives all code**
+- `README.md` (title) — manual
+- `CLAUDE.md` (this line) — manual

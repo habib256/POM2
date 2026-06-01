@@ -29,6 +29,7 @@
 // forward-declares the controller / cards / panels.
 #include "AiControlServer.h"
 #include "Apple2Display.h"
+#include "Version.h"
 #include "CffaCard.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
@@ -558,7 +559,7 @@ void MainWindow::setGlfwWindow(GLFWwindow* w)
     // reflect the active machine otherwise.
     if (window) {
         const auto& cfg = pom2::profileConfig(activeProfile);
-        std::string title = "POM2 v0.7 — ";
+        std::string title = "POM2 " POM2_VERSION_STRING " — ";
         title.append(cfg.displayName);
         glfwSetWindowTitle(window, title.c_str());
     }
@@ -838,7 +839,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //     Skipped when called from the constructor (window not yet set
     //     by main.cpp's setGlfwWindow).
     if (window) {
-        std::string title = "POM2 v0.7 — ";
+        std::string title = "POM2 " POM2_VERSION_STRING " — ";
         title.append(cfg.displayName);
         glfwSetWindowTitle(window, title.c_str());
     }
