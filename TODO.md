@@ -333,6 +333,20 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   pas de notification quand SlotBus replug. Observer pattern ou
   `controller.slotBus().peripheral(N)`.
 
+## Corpus de test « cas limites »
+
+Backlog de **tests manuels / d'intégration** avec des logiciels réels qui
+torturent les recoins (synchro CPU↔vidéo au cycle, flux WOZ protégé, IRQ
+VIA) — au-delà des `ctest` unitaires. Liste curée + statut POM2 + renvois
+aux `Gap connus` du dashboard : **[`docs/test_corpus.md`](docs/test_corpus.md)**.
+
+- 🟡 **Vapor lock end-to-end** — `floatingBus()` est verbatim MAME mais le
+  lock n'est pas prouvé sur une vraie megademo deater. → `Gap #3`.
+- 🟡 **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*)
+  — bascules intra-ligne pas toutes honorées. → `Gap #3`.
+- 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — suivi
+  spiral + weak bits à valider sur images WOZ réelles. → `Gap #9/#10`.
+
 ## Skips délibérés (documentés inline)
 
 Divergences MAME conscientes, justifiées dans le code à l'endroit
