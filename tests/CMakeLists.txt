@@ -2006,6 +2006,56 @@ endif()
 add_test(NAME horizontal_split COMMAND test_horizontal_split)
 set_tests_properties(horizontal_split PROPERTIES TIMEOUT 5)
 
+# Same horizontal split, but pinned in the composite signal (fillCompositeSignal)
+# — left window HGR waveform, right window TEXT waveform on the same line.
+add_executable(test_horizontal_split_composite
+    horizontal_split_composite_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_horizontal_split_composite PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_horizontal_split_composite PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_horizontal_split_composite PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_horizontal_split_composite PRIVATE winmm)
+endif()
+
+add_test(NAME horizontal_split_composite COMMAND test_horizontal_split_composite)
+set_tests_properties(horizontal_split_composite PROPERTIES TIMEOUT 5)
+
+# Horizontal split across the 560-wide IIe path (frame80): DHGR left, 80-col
+# text right on the same line, via renderInternalSegment's save/restore window.
+add_executable(test_horizontal_split_560
+    horizontal_split_560_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_horizontal_split_560 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_horizontal_split_560 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_horizontal_split_560 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_horizontal_split_560 PRIVATE winmm)
+endif()
+
+add_test(NAME horizontal_split_560 COMMAND test_horizontal_split_560)
+set_tests_properties(horizontal_split_560 PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp

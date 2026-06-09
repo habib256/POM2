@@ -262,48 +262,70 @@ open frame so headless tests that poke switches during setup are unaffected.
 *once* and hands it to `fillCompositeSignal(mem, events)` as well as the RGBA
 path, so mid-scanline switches land in the 14.318 MHz waveform the composite
 modes (`ColorCompositeOE` GPU, `ColorCompositeOECpu`, `ColorAppleWin`)
-consume — not just the LUT framebuffer. `fillCompositeSignal` mirrors
-`renderBeamRacing`: it zeroes `signalBuf`, starts from
-`getDisplayStateAtFrameStart()`, and walks the (scanline-sorted) events
-through a `paintSignalBand(y0, y1)` lambda that reuses the same
-`bandRows`/`bandScanlines` clipping as `renderInternalBand`. The painted
-`state` is a mutable local so the per-mode paint helpers (capturing it by
-reference) see each band's switches. Empty log → `paintSignalBand(0, 192)`,
-byte-identical to the old whole-frame dispatch (the OE GPU/CPU parity goldens
-are unchanged). Caveat: `signalPhaseOffset_` stays one per-frame demod
-constant (last graphics band wins), so a mid-frame HGR↔DHGR phase split is a
-documented approximation; lo-res bands clip at block-row (4-scanline)
-granularity, same as the RGBA path. Pinned by `beam_race_composite` (TEXT top
-band + HGR bottom band from a frame that flips mode at scanline 96).
+consume — not just the LUT framebuffer. `fillCompositeSignal` drives the SAME
+`forEachBeamSegment` decomposition the RGBA path uses (see below): it zeroes
+`signalBuf`, starts from `getDisplayStateAtFrameStart()`, and for each band ×
+column segment sets the mutable local `state` (the per-mode paint helpers
+capture it by reference) and calls `paintSignalBand(y0, y1, col0, col1)`,
+reusing the same `bandRows`/`bandScanlines` clipping as `renderInternalBand`.
+Empty log → `paintSignalBand(0, 192, 0, 40)`, byte-identical to the old
+whole-frame dispatch (the OE GPU/CPU parity goldens are unchanged). Caveat:
+`signalPhaseOffset_` stays one per-frame demod constant (last graphics band
+wins), so a mid-frame HGR↔DHGR phase split is a documented approximation;
+lo-res bands clip at block-row (4-scanline) granularity, same as the RGBA path.
+Pinned by `beam_race_composite` (vertical TEXT/HGR split at scanline 96) and
+`horizontal_split_composite` (per-scanline column strip → HGR waveform left,
+TEXT waveform right, same line).
 
-**Horizontal (mid-scanline-column) splits** *(RGBA legacy path, done
-2026-06-09)*. The composite replay above is still **scanline-quantized**, but
-the RGBA `renderBeamRacing` now resolves switches **per byte column**.
+**Horizontal (mid-scanline-column) splits** *(RGBA done 2026-06-09; composite
+done 2026-06-09)*. Both replays now resolve switches **per byte column**.
 `VideoEvent.emuCycle` (`Memory.h:272`) already carries the CPU cycle — only the
 horizontal position was discarded — so `Apple2Display::frameCycleToPos(emuCycle)`
 maps it to `{scanline, byteCol}` with `byteCol = clamp((emuCycle % 65) − 25, 0,
-40)` (the 40-byte visible window opens at horizontal cycle 25). `renderBeamRacing`
-builds, per visible scanline, the ordered list of column segments `[col0, col1)`
-+ the display state across each (an event subdivides its line at `byteCol`; the
-end-of-line state carries down), then **merges vertically-adjacent scanlines with
-identical segmentation into a band** and paints each band's segments via
-`renderInternalSegment(state, y0, y1, col0, col1)`. The merge is what lets the
-common case — a program re-flipping `$C050/$C051` every scanline to hold a
-vertical strip — render whole text/lo-res rows cleanly (a lone 1-scanline
-segment would quantize away under `bandRows`). `render{Text,HiRes,LoRes}` gained
-optional `col0,col1` params (default `0,40` = byte-identical to before): text /
-lo-res bound their column loop; hi-res decodes the whole scanline (the NTSC
-artifact sliding window keeps its neighbour-byte context) and clips only the
-write-back + mono persistence. An event-free run of scanlines collapses to one
-full-width `renderInternalBand` — so existing demos do not regress
-(`display_golden_hash`, `beam_race_composite` unchanged). Pinned by
-`horizontal_split` (lower band re-flips every scanline → left window == HGR
-reference, right window == TEXT reference on the same line). **Scope-outs:**
-80-col / DHGR / Le Chat Mauve (560-wide) segments paint full width
-(`usesLegacyPath()` gates this); the composite signal path
-(`fillCompositeSignal`) stays scanline-quantized = increment 2; the exact
-transition cycle within a character clock is a later refinement. Full plan →
-`TODO.md` § [Display] *Split horizontal mid-scanline*.
+40)` (the 40-byte visible window opens at horizontal cycle 25). The shared
+`forEachBeamSegment(frameStart, events, paint)` builds, per visible scanline, the
+ordered list of column segments `[col0, col1)` + the display state across each
+(an event subdivides its line at `byteCol`; the end-of-line state carries down),
+**merges vertically-adjacent scanlines with identical segmentation into a band**,
+and invokes `paint(state, y0, y1, col0, col1)` per band × segment. The RGBA path
+paints through `renderInternalSegment`; the composite path through
+`paintSignalBand` — one decomposition, so the two can never diverge. The merge is
+what lets the common case — a program re-flipping `$C050/$C051` every scanline to
+hold a vertical strip — render whole text/lo-res rows cleanly (a lone 1-scanline
+segment would quantize away under `bandRows`). `render{Text,HiRes,LoRes}` and the
+composite `paintText40`/`paintHgr`/`paintLoRes40` painters gained `col0,col1`
+bounds (default full = byte-identical to before): text / lo-res bound their column
+loop; hi-res decodes the whole scanline (the NTSC artifact sliding window keeps
+its neighbour-byte context) and clips only the write-back + mono persistence. An
+event-free run of scanlines collapses to one full-width paint — so existing demos
+do not regress (`display_golden_hash`, `beam_race_composite`, OE parity goldens
+unchanged). Pinned by `horizontal_split` (RGBA) and `horizontal_split_composite`
+(signal): lower band re-flips every scanline → left window == HGR reference,
+right window == TEXT reference on the same line.
+
+The **560-wide IIe / Le Chat Mauve modes** (80-col text, DHGR, DLGR, Chat Mauve)
+also split mid-line, in both outputs:
+- **RGBA** (`frame80`): the LUT painters (`renderDhgr` etc.) carry cross-column
+  context across several sub-paths, so threading `[col0,col1)` through each would
+  be brittle. Instead `renderInternalSegment`, for a non-legacy segment,
+  snapshots the band of `frame80` (+ the `persistenceL80` mono history), paints
+  it **full width** through `renderInternalBand`, then restores the columns
+  OUTSIDE the `[col0·14, col1·14)` window. This composes correctly across several
+  560-wide segments on one line — each restores what it does not own, so a
+  column's final value is whatever its owning segment painted — and keeps each
+  painter's full neighbour context.
+- **Composite signal** (`signalBuf`): the signal builders (`paintText80`,
+  `paintDhgr`, `paintLoResDouble`) are simple per-column bit emitters (no NTSC
+  artifact window — the shader demodulates downstream), so they take `[col0,col1)`
+  bounds **directly**, and the split lands in the OE/AppleWin demod picture too.
+
+Pinned by `horizontal_split_560`, which checks the IIe "DHGR left, 80-col text
+right, same line" split in *both* the RGBA framebuffer and the composite signal.
+**Scope-out:** a split that MIXES a 40-col (280, `frame`) and an 80-col (560,
+`frame80`) segment on one scanline targets different buffers and is undefined
+(the last segment's `useFrame80` wins); and the exact transition cycle within a
+character clock is a later refinement. Full plan → `TODO.md` § [Display] *Split
+horizontal mid-scanline*.
 
 ### 80-col text
 

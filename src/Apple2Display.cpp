@@ -298,13 +298,52 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
 {
     if (scanY0 >= scanY1 || col0 >= col1) return;
 
-    // Full width, or a 560-wide mode → defer to the column-agnostic band
-    // painter. (A genuine mid-line split into an 80-col / DHGR / Chat Mauve
-    // segment is a documented v1 scope-out: it paints full width, so the last
-    // such segment on the band would win — never happens for the II/II+
-    // legacy demos this targets.)
-    if ((col0 == 0 && col1 == 40) || !usesLegacyPath(mem, state)) {
+    // Full width → straight to the column-agnostic band painter.
+    if (col0 == 0 && col1 == 40) {
         renderInternalBand(mem, state, scanY0, scanY1);
+        return;
+    }
+
+    // ── 560-wide IIe / Le Chat Mauve mode, column-bounded by save/restore ──
+    // The 560-dot painters (renderText80 / renderDhgr / renderLoResDouble /
+    // the Chat Mauve renders / the mixed-HGR upscale) have cross-column
+    // context and several sub-paths. Rather than thread [col0,col1) through
+    // each, paint the band full width into frame80 but preserve the columns
+    // OUTSIDE the [px0,px1) window — snapshot them first, restore after. This
+    // composes correctly across several 560-wide segments on one line (each
+    // restores what it does not own; final value of a column is whatever its
+    // owning segment painted). One byte column = 14 frame80 dots.
+    // Assumption: the whole scanline is 560-domain — a split that MIXES a
+    // 40-col (280, `frame`) and an 80-col (560, `frame80`) segment is
+    // undefined (different target buffers) and stays a v1 scope-out.
+    if (!usesLegacyPath(mem, state)) {
+        const int px0 = col0 * 14;
+        const int px1 = col1 * 14;
+        const size_t rowLen = static_cast<size_t>(kWidth80);
+        const size_t nRows  = static_cast<size_t>(scanY1 - scanY0);
+        std::vector<uint32_t> savedFb(nRows * rowLen);
+        std::vector<uint8_t>  savedPe(nRows * rowLen);
+        std::memcpy(savedFb.data(), frame80.data() + scanY0 * rowLen,
+                    savedFb.size() * sizeof(uint32_t));
+        std::memcpy(savedPe.data(), persistenceL80.data() + scanY0 * rowLen,
+                    savedPe.size());
+        renderInternalBand(mem, state, scanY0, scanY1);   // sets useFrame80
+        for (size_t r = 0; r < nRows; ++r) {
+            uint32_t* fbRow = frame80.data()        + (scanY0 + r) * rowLen;
+            uint8_t*  peRow = persistenceL80.data() + (scanY0 + r) * rowLen;
+            const uint32_t* sFb = savedFb.data() + r * rowLen;
+            const uint8_t*  sPe = savedPe.data() + r * rowLen;
+            if (px0 > 0) {
+                std::memcpy(fbRow, sFb, static_cast<size_t>(px0) * sizeof(uint32_t));
+                std::memcpy(peRow, sPe, static_cast<size_t>(px0));
+            }
+            if (px1 < kWidth80) {
+                std::memcpy(fbRow + px1, sFb + px1,
+                            static_cast<size_t>(kWidth80 - px1) * sizeof(uint32_t));
+                std::memcpy(peRow + px1, sPe + px1,
+                            static_cast<size_t>(kWidth80 - px1));
+            }
+        }
         return;
     }
 
@@ -329,8 +368,10 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
     }
 }
 
-void Apple2Display::renderBeamRacing(Memory& mem,
-                                     std::vector<Memory::VideoEvent> events)
+void Apple2Display::forEachBeamSegment(
+    const Memory::DisplayState& frameStart,
+    std::vector<Memory::VideoEvent> events,
+    const std::function<void(const Memory::DisplayState&, int, int, int, int)>& paint)
 {
     // Raster order: scanline ascending, then byte column within the line.
     // (Stable so two switches at the same beam position keep push order.)
@@ -341,8 +382,6 @@ void Apple2Display::renderBeamRacing(Memory& mem,
                  < frameCycleToPos(b.emuCycle).byteCol;
         });
 
-    useFrame80 = false;
-
     // Per visible scanline, the ordered list of column segments [prevEnd,
     // colEnd) and the display state active across each. Events on a scanline
     // subdivide it at their byteCol; the end-of-line state carries into the
@@ -351,7 +390,7 @@ void Apple2Display::renderBeamRacing(Memory& mem,
     struct Seg { int colEnd; Memory::DisplayState st; };
     std::array<std::vector<Seg>, kHeight> perLine;
 
-    Memory::DisplayState cur = mem.getDisplayStateAtFrameStart();
+    Memory::DisplayState cur = frameStart;
     size_t ei = 0;
     for (int y = 0; y < kHeight; ++y) {
         std::vector<Seg> segs;
@@ -368,9 +407,9 @@ void Apple2Display::renderBeamRacing(Memory& mem,
 
     // Merge vertically-adjacent scanlines with identical segmentation into one
     // band, then paint each band's column segments. A run of event-free lines
-    // collapses to a single full-width renderInternalBand — byte-identical to
-    // the pre-horizontal-split behaviour (so existing demos do not regress),
-    // and text / lo-res whose row spans the band still render whole rows.
+    // collapses to a single full-width paint — byte-identical to the
+    // pre-horizontal-split behaviour (so existing demos do not regress), and
+    // text / lo-res whose character row spans the band still paint whole rows.
     auto sameState = [](const Memory::DisplayState& x, const Memory::DisplayState& z) {
         return x.textMode == z.textMode && x.mixedMode == z.mixedMode &&
                x.page2 == z.page2 && x.hiRes == z.hiRes &&
@@ -390,12 +429,22 @@ void Apple2Display::renderBeamRacing(Memory& mem,
         if (y == kHeight || !sameSegs(perLine[y], perLine[bandY0])) {
             int col0 = 0;
             for (const auto& s : perLine[bandY0]) {
-                renderInternalSegment(mem, s.st, bandY0, y, col0, s.colEnd);
+                paint(s.st, bandY0, y, col0, s.colEnd);
                 col0 = s.colEnd;
             }
             bandY0 = y;
         }
     }
+}
+
+void Apple2Display::renderBeamRacing(Memory& mem,
+                                     std::vector<Memory::VideoEvent> events)
+{
+    useFrame80 = false;
+    forEachBeamSegment(mem.getDisplayStateAtFrameStart(), std::move(events),
+        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
+            renderInternalSegment(mem, st, y0, y1, col0, col1);
+        });
 }
 
 void Apple2Display::patchMixedTextBand(Memory& mem)
@@ -1933,10 +1982,10 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
 
     // Helper: paint one text row (40 cols × 8 scanlines = 7×8 dots per cell,
     // each dot doubled to 2 signal samples → 14 samples per cell, 560/line).
-    auto paintText40 = [&](int firstRow, int lastRow) {
+    auto paintText40 = [&](int firstRow, int lastRow, int col0, int col1) {
         for (int row = firstRow; row < lastRow; ++row) {
             const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
-            for (int col = 0; col < 40; ++col) {
+            for (int col = col0; col < col1; ++col) {
                 const uint8_t src = ram[rowAddr + col];
                 const auto bytes = glyphRows7(src, charRom.data(), charRom.size(),
                                               useCharRom, altCharSet, flashPhase);
@@ -1956,10 +2005,11 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     };
 
     // Helper: paint one 80-col text row (80 cols × 8 dots × 7 pixels = 560).
-    auto paintText80 = [&](int firstRow, int lastRow) {
+    // col0/col1 are byte columns (0..40); each maps to two 80-col cells.
+    auto paintText80 = [&](int firstRow, int lastRow, int col0, int col1) {
         for (int row = firstRow; row < lastRow; ++row) {
             const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
-            for (int col = 0; col < 80; ++col) {
+            for (int col = col0 * 2; col < col1 * 2; ++col) {
                 // Aux RAM holds even columns, main RAM odd columns
                 // (AppleWin scanner convention).
                 const uint8_t src = (col & 1) ? ram[rowAddr + (col >> 1)]
@@ -1983,15 +2033,20 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // 2 = 560 signal samples per line. Uses the existing 560-sub-pixel
     // bit stream builder (which already applies the per-byte half-dot
     // delay from bit 7).
-    auto paintHgr = [&](int first, int last) {
+    auto paintHgr = [&](int first, int last, int col0, int col1) {
         const uint8_t bit7Mask = uint8_t{0xFF};
         uint8_t stream[kStreamLen];
+        // Each byte column is 14 signal samples (40 × 14 = 560). The stream is
+        // built for the WHOLE scanline (so the half-dot delay / byte-boundary
+        // fringing keeps its neighbour context) and only [col0,col1) written.
+        const int s0 = col0 * 14;
+        const int s1 = col1 * 14;
         for (int y = first; y < last; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
             buildBitStream(ram, rowAddr, stream, bit7Mask);
             uint8_t* dst = signalBuf.data()
                          + static_cast<size_t>(y) * kSignalWidth;
-            for (int x = 0; x < kStreamLen; ++x) {
+            for (int x = s0; x < s1; ++x) {
                 dst[x] = stream[x] ? 0xFFu : 0x00u;
             }
         }
@@ -2000,12 +2055,12 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // Helper: paint a band of DHGR scanlines [first, last). DHGR
     // interleaves aux+main HGR memory at 7 bits each — 14 dots per byte
     // pair, 40 byte pairs per line = 560 dots = 560 signal samples.
-    auto paintDhgr = [&](int first, int last) {
+    auto paintDhgr = [&](int first, int last, int col0, int col1) {
         for (int y = first; y < last; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
             uint8_t* dst = signalBuf.data()
                          + static_cast<size_t>(y) * kSignalWidth;
-            for (int c = 0; c < 40; ++c) {
+            for (int c = col0; c < col1; ++c) {
                 const uint8_t auxB  = aux[rowAddr + c] & 0x7Fu;
                 const uint8_t mainB = ram[rowAddr + c] & 0x7Fu;
                 const int base = c * 14;
@@ -2025,12 +2080,12 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // patterns. We just emit `(nibble >> (x mod 4)) & 1` at every
     // sample; the shader's Y/I/Q demodulator then recovers the colour
     // from the pattern's spectral content, same path HGR uses.
-    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow) {
+    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow, int col0, int col1) {
         for (int blockRow = firstBlockRow; blockRow < lastBlockRow; ++blockRow) {
             const int textRow = blockRow / 2;
             const bool upperHalf = (blockRow % 2 == 0);
             const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
-            for (int col = 0; col < 40; ++col) {
+            for (int col = col0; col < col1; ++col) {
                 const uint8_t b = ram[rowAddr + col];
                 const uint8_t nibble = upperHalf
                     ? static_cast<uint8_t>(b & 0x0Fu)
@@ -2052,7 +2107,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
 
     // DLGR: aux nibble (rotl4) on even 7-dot half, main on odd — MAME
     // lores_update<Double>; mirrors renderLoResDouble().
-    auto paintLoResDouble = [&](int firstBlockRow, int lastBlockRow) {
+    auto paintLoResDouble = [&](int firstBlockRow, int lastBlockRow, int col0, int col1) {
         auto rotl4 = [](uint8_t n) -> uint8_t {
             return static_cast<uint8_t>(((n << 1) | (n >> 3)) & 0x0F);
         };
@@ -2060,7 +2115,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
             const int  textRow   = blockRow / 2;
             const bool upperHalf = (blockRow % 2 == 0);
             const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
-            for (int col = 0; col < 40; ++col) {
+            for (int col = col0; col < col1; ++col) {
                 const uint8_t mb = ram[rowAddr + col];
                 const uint8_t ab = aux[rowAddr + col];
                 const uint8_t mNib = upperHalf
@@ -2089,16 +2144,21 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
         }
     };
 
-    // Paint one scanline band [scanY0, scanY1) according to the CURRENT
-    // `state` (mutated between bands by beam-racing). Mirrors
-    // renderInternalBand()'s decision tree — same bandRows/bandScanlines
-    // clipping — but writes into signalBuf instead of frame / frame80.
-    auto paintSignalBand = [&](int scanY0, int scanY1) {
+    // Paint one band × column segment [scanY0, scanY1) × byte columns
+    // [col0, col1) according to the CURRENT `state` (set per segment by the
+    // beam-race replay below). Mirrors renderInternalBand()'s decision tree —
+    // same bandRows/bandScanlines clipping — but writes into signalBuf instead
+    // of frame / frame80. Every painter (280-wide AND the 560-wide IIe modes)
+    // honours [col0, col1) — the signal builders are simple per-column bit
+    // emitters (no NTSC artifact window: the shader demodulates downstream), so
+    // the horizontal mid-scanline split lands in the OE/AppleWin demod picture
+    // too, not just the RGBA framebuffer.
+    auto paintSignalBand = [&](int scanY0, int scanY1, int col0, int col1) {
         int lo = 0, hi = 0;
         if (state.textMode) {
             if (bandRows(scanY0, scanY1, 0, 24, &lo, &hi)) {
-                if (mem.isIIE() && state.eightyCol) paintText80(lo, hi);
-                else                                paintText40(lo, hi);
+                if (mem.isIIE() && state.eightyCol) paintText80(lo, hi, col0, col1);
+                else                                paintText40(lo, hi, col0, col1);
             }
             return;
         }
@@ -2109,8 +2169,8 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
             if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &lo, &hi)) {
                 const int brLo = lo / 4;
                 const int brHi = (hi + 3) / 4;
-                if (isDlgr) paintLoResDouble(brLo, brHi);
-                else        paintLoRes40(brLo, brHi);
+                if (isDlgr) paintLoResDouble(brLo, brHi, col0, col1);
+                else        paintLoRes40(brLo, brHi, col0, col1);
             }
             // Mixed-mode text band stays black — crisp mono text is composited
             // after demod (patchMixedTextBand), same as HGR mixed.
@@ -2124,33 +2184,24 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
         signalPhaseOffset_ = isDhgr ? 1 : 0;
         const int hiResEnd = state.mixedMode ? 160 : 192;
         if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &lo, &hi)) {
-            if (isDhgr) paintDhgr(lo, hi); else paintHgr(lo, hi);
+            if (isDhgr) paintDhgr(lo, hi, col0, col1); else paintHgr(lo, hi, col0, col1);
         }
         // Mixed-mode text band: see lo-res note above — left black here.
     };
 
     if (!beamRace) {
-        paintSignalBand(0, kSignalHeight);
+        paintSignalBand(0, kSignalHeight, 0, 40);
         return true;
     }
 
-    // Beam-racing: replay the event log band-by-band (same order as
-    // renderBeamRacing). Events arrive in cycle order; sort a local copy by
-    // scanline so out-of-order writes within a frame still tile cleanly.
-    std::vector<Memory::VideoEvent> evs(events);
-    std::sort(evs.begin(), evs.end(),
-              [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
-                  return a.scanline < b.scanline;
-              });
-    int y0 = 0;
-    for (const auto& ev : evs) {
-        const int y = std::min(static_cast<int>(ev.scanline), kSignalHeight);
-        if (y > y0)
-            paintSignalBand(y0, y);
-        applyVideoEvent(state, ev.kind, ev.value);
-        y0 = y;
-    }
-    if (y0 < kSignalHeight)
-        paintSignalBand(y0, kSignalHeight);
+    // Beam-racing: replay the event log through the SAME band × column-segment
+    // decomposition the RGBA path uses (forEachBeamSegment), painting each
+    // segment into signalBuf. `state` is the mutable local the paint helpers
+    // capture by reference, so set it per segment before painting.
+    forEachBeamSegment(mem.getDisplayStateAtFrameStart(), events,
+        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
+            state = st;
+            paintSignalBand(y0, y1, col0, col1);
+        });
     return true;
 }

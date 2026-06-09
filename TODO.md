@@ -97,8 +97,9 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   constante par-frame (split HGR↔DHGR mid-frame approximé) ; lo-res clip au
   block-row (4 lignes), comme le path RGBA.
 - ✅ **Split horizontal mid-scanline (granularité par octet)** — FAIT
-  (2026-06-09, *legacy 280-large RGBA*). Le beam-racing n'est plus
-  scanline-quantizé : `renderBeamRacing` (`Apple2Display.cpp:~336`) reconstruit
+  (2026-06-09, *280-large + signal composite + 560-large IIe/Chat Mauve*). Le
+  beam-racing n'est plus scanline-quantizé : `renderBeamRacing`
+  (`Apple2Display.cpp:~336`) reconstruit
   pour chaque scanline la liste des **segments de colonnes** `[col0,col1)` (un
   event la subdivise à son `byteCol`, l'état de fin de ligne se propage),
   fusionne les scanlines à segmentation identique en bandes, puis peint via
@@ -117,13 +118,27 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   4. test `horizontal_split` (`tests/horizontal_split_smoke.cpp`) : bande basse
      re-flippe `$C050/$C051` chaque scanline → gauche (HGR) == réf HGR, droite
      (TEXT) == réf TEXT **sur la même ligne**, et inversement ≠.
-  **Reste** *(🟢 différé)* : splits mid-ligne en **80-col / DHGR / Le Chat
-  Mauve** (560-large, aux-RAM — peints pleine largeur, scope-out v1) ; **chemin
-  composite** (`fillCompositeSignal`) toujours scanline-quantizé = incrément 2 ;
-  *cycle de transition exact au character-clock = raffinement ultérieur (v1 «
-  visuellement correct aux frontières de colonnes »).* **Back-port POM1 ensuite**
-  (gated : rendu LORES+TEXT sur la GEN2 — HGR seul aujourd'hui — + flag HBLANK
-  Phase 2 spec Bernie). Détail → `DEV.md` § Beam-racing.
+  **Incrément composite — FAIT** (2026-06-09) : la décomposition par
+  bande × segment est factorisée dans `Apple2Display::forEachBeamSegment` (RGBA
+  *et* signal la partagent, zéro divergence) ; `fillCompositeSignal` peint chaque
+  segment via `paintSignalBand(y0,y1,col0,col1)` (painters 280-large
+  `paintText40/paintHgr/paintLoRes40` bornés, 560-large pleine largeur). Le split
+  mid-ligne est donc visible en **ColorCompositeOE GPU/CPU + AppleWin**, pas
+  seulement LUT. Pinné `horizontal_split_composite`
+  (`tests/horizontal_split_composite_test.cpp`).
+  **Incrément 560-large — FAIT** (2026-06-09) : splits mid-ligne en **80-col /
+  DHGR / DLGR / Le Chat Mauve**. RGBA (`frame80`) : `renderInternalSegment`
+  peint pleine largeur puis *save/restore* des colonnes hors fenêtre
+  `[col0·14,col1·14)` (compose correctement plusieurs segments 560 sur une
+  ligne, garde le contexte voisin des painters à fenêtre glissante). Signal
+  composite : `paintText80/paintDhgr/paintLoResDouble` bornés en colonnes
+  directement (émetteurs de bits simples). Pinné `horizontal_split_560`
+  (DHGR gauche / texte 80-col droite, vérifié sur frame80 *et* signalBuf).
+  **Reste** *(🟢 différé)* : mélange **40-col (280) + 80-col (560) sur la même
+  ligne** = indéfini (buffers `frame`/`frame80` distincts, scope-out) ; *cycle de
+  transition exact au character-clock = raffinement ultérieur.* **Back-port POM1
+  ensuite** (gated : rendu LORES+TEXT sur la GEN2 — HGR seul aujourd'hui — + flag
+  HBLANK Phase 2 spec Bernie). Détail → `DEV.md` § Beam-racing.
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur

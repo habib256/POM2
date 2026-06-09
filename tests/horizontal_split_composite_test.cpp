@@ -1,0 +1,140 @@
+// Horizontal (mid-scanline, per-byte-column) beam-racing in the COMPOSITE
+// signal path. The RGBA split is pinned by horizontal_split_smoke; this pins
+// the same split in fillCompositeSignal() — the 14.318 MHz waveform the OE /
+// AppleWin demod modes consume. A frame whose lower band re-flips $C050/$C051
+// every scanline (graphics from byte column 0, text from byte column 20) must
+// produce, ON THE SAME LINE, the HGR waveform in the left 280 samples and the
+// TEXT waveform in the right 280 samples of signalBuf.
+//
+// Plan: TODO.md [Display] "Split horizontal mid-scanline", composite increment.
+
+#include "Apple2Display.h"
+#include "Memory.h"
+
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+namespace {
+
+constexpr uint16_t SET_TEXT  = 0xC051;
+constexpr uint16_t CLR_TEXT  = 0xC050;
+constexpr uint16_t SET_HIRES = 0xC057;
+constexpr uint16_t SET_PAGE1 = 0xC054;
+
+constexpr int W            = 560;          // composite signal width
+constexpr int kSplitCol    = 20;           // byte column where text takes over
+constexpr int kSplitSample = kSplitCol * 14;   // 280
+constexpr int kBandTop     = 96;           // row-aligned (12 * 8)
+
+uint16_t textRowAddr(int row)
+{
+    return static_cast<uint16_t>(0x0400 + 0x80 * (row & 7) + 0x28 * (row >> 3));
+}
+
+uint16_t hgrAddr(int y)
+{
+    return static_cast<uint16_t>(0x2000
+        + 0x400 * (y & 7)
+        + 0x80  * ((y >> 3) & 7)
+        + 0x28  * (y >> 6));
+}
+
+void populate(Memory& mem)
+{
+    for (int row = 0; row < 24; ++row) {
+        const uint16_t a = textRowAddr(row);
+        for (int col = 0; col < 40; ++col)
+            mem.memWrite(a + col, static_cast<uint8_t>(0xC1 + ((row * 5 + col) & 0x1F)));
+    }
+    for (int y = 0; y < 192; ++y) {
+        const uint16_t a = hgrAddr(y);
+        for (int col = 0; col < 40; ++col)
+            mem.memWrite(a + col, static_cast<uint8_t>(0x55 ^ ((y + col * 3) & 0x7F)));
+    }
+}
+
+// Capture the 560×192 composite signal for `mem` in ColorCompositeOECpu mode
+// (needSignal → fillCompositeSignal runs).
+std::vector<uint8_t> signalOf(Memory& mem)
+{
+    Apple2Display d;
+    d.setAuxMemory(mem.auxData());
+    d.setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
+    d.render(mem);
+    assert(d.signalProduced());
+    const uint8_t* s = d.signal();
+    return std::vector<uint8_t>(s, s + static_cast<size_t>(d.signalWidth()) * d.signalHeight());
+}
+
+// memcmp a horizontal sample span [x0, x1) of scanline `y` between two signals.
+bool spanEqual(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b,
+               int y, int x0, int x1)
+{
+    return std::memcmp(a.data() + static_cast<size_t>(y) * W + x0,
+                       b.data() + static_cast<size_t>(y) * W + x0,
+                       static_cast<size_t>(x1 - x0)) == 0;
+}
+
+} // namespace
+
+int main()
+{
+    // ── Reference 1: pure graphics+HIRES. ────────────────────────────────
+    Memory hgrRef;
+    populate(hgrRef);
+    hgrRef.memRead(CLR_TEXT);
+    hgrRef.memRead(SET_HIRES);
+    hgrRef.memRead(SET_PAGE1);
+    const auto sHgr = signalOf(hgrRef);
+
+    // ── Reference 2: pure TEXT. ──────────────────────────────────────────
+    Memory textRef;
+    populate(textRef);
+    textRef.memRead(SET_TEXT);
+    textRef.memRead(SET_PAGE1);
+    const auto sText = signalOf(textRef);
+
+    // Sanity: the two waveforms differ in both windows on the probed rows.
+    for (int y : {100, 150}) {
+        assert(!spanEqual(sHgr, sText, y, 0, kSplitSample));
+        assert(!spanEqual(sHgr, sText, y, kSplitSample, W));
+    }
+
+    // ── Beam-raced frame: top half HGR, lower band a per-scanline strip ──
+    Memory beam;
+    populate(beam);
+    beam.memRead(CLR_TEXT);     // frame-start = graphics + HIRES
+    beam.memRead(SET_HIRES);
+    beam.memRead(SET_PAGE1);
+    beam.setCycleCounter(0);
+    beam.beginVideoEventFrame();
+    for (int y = kBandTop; y < 192; ++y) {
+        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 5);   // HBL → col 0
+        beam.memRead(CLR_TEXT);              // graphics from column 0
+        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 20
+        beam.memRead(SET_TEXT);              // text from column 20
+    }
+    const auto sBeam = signalOf(beam);
+
+    // Top band: full-width HGR waveform.
+    for (int y : {8, 40, 88})
+        assert(spanEqual(sBeam, sHgr, y, 0, W) && "top band must be HGR");
+
+    // Split band: LEFT 280 samples HGR, RIGHT 280 samples TEXT — same line.
+    for (int y : {kBandTop, 104, 150, 191}) {
+        assert(spanEqual(sBeam, sHgr, y, 0, kSplitSample)
+               && "split line: left window must match the HGR signal");
+        assert(spanEqual(sBeam, sText, y, kSplitSample, W)
+               && "split line: right window must match the TEXT signal");
+        assert(!spanEqual(sBeam, sText, y, 0, kSplitSample)
+               && "split line: left window must NOT be TEXT");
+        assert(!spanEqual(sBeam, sHgr, y, kSplitSample, W)
+               && "split line: right window must NOT be HGR");
+    }
+
+    std::printf("horizontal_split_composite OK\n");
+    return 0;
+}

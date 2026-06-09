@@ -31,6 +31,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 class LeChatMauveCard;
@@ -298,17 +299,30 @@ private:
     void renderInternalBand(Memory& mem, const Memory::DisplayState& state,
                             int scanY0, int scanY1);
     // Column-bounded variant of renderInternalBand: paints the rectangle
-    // [scanY0, scanY1) × [col0, col1). Only the legacy 280-wide path
-    // (text / hi-res / lo-res) is column-aware; for full width (col0==0 &&
-    // col1==40) or any state that needs the 80-col / DHGR / Le Chat Mauve
-    // path it falls back to the full-width renderInternalBand (those
-    // 560-wide modes are a documented v1 horizontal-split scope-out).
+    // [scanY0, scanY1) × [col0, col1). The legacy 280-wide path (text /
+    // hi-res / lo-res) threads the column window into its painters; the
+    // 560-wide IIe / Le Chat Mauve modes (80-col, DHGR, DLGR, Chat Mauve)
+    // paint full width into frame80 then save/restore the columns outside the
+    // window (their painters carry cross-column context). Mixing a 280-wide
+    // and a 560-wide segment on one scanline targets different buffers and is
+    // a documented v1 scope-out.
     void renderInternalSegment(Memory& mem, const Memory::DisplayState& state,
                                int scanY0, int scanY1, int col0, int col1);
     // True when `state` renders through the legacy 280-wide path (so a
     // mid-scanline column split is meaningful). Mirrors the branch
     // conditions at the top of renderInternalBand.
     bool usesLegacyPath(Memory& mem, const Memory::DisplayState& state) const;
+    // Shared beam-race decomposition: sorts `events` into raster order, builds
+    // per-scanline column segments [col0, col1), merges vertically-identical
+    // scanlines into bands, and invokes `paint(state, y0, y1, col0, col1)` for
+    // each band × column segment. Both renderBeamRacing (RGBA) and
+    // fillCompositeSignal (composite signal) drive their painters through it,
+    // so the two horizontal-split replays can never diverge.
+    static void forEachBeamSegment(
+        const Memory::DisplayState& frameStart,
+        std::vector<Memory::VideoEvent> events,
+        const std::function<void(const Memory::DisplayState&,
+                                 int y0, int y1, int col0, int col1)>& paint);
     void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);
 
     static void applyVideoEvent(Memory::DisplayState& state, Memory::VideoEventKind kind,
