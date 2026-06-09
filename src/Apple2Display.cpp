@@ -244,13 +244,16 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     }
 }
 
-Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle)
+Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle,
+                                                       VideoStandard std)
 {
     // Mirror Memory::pushVideoEventLocked's scanline derivation so this maps
     // a VideoEvent's emuCycle back to the exact (scanline, byteCol) the
     // recorder stamped — only the horizontal component was discarded before.
-    constexpr uint64_t kCyclesPerScanline = 65;
-    constexpr uint64_t kScanlinesPerFrame = 262;
+    // PAL = 312 lines/frame, NTSC = 262; the 65-cycle line is the same.
+    const VideoTiming& t = pom2VideoTiming(std);
+    const uint64_t kCyclesPerScanline = static_cast<uint64_t>(t.cyclesPerScanline);
+    const uint64_t kScanlinesPerFrame = static_cast<uint64_t>(t.scanlinesPerFrame);
     const uint64_t rawLine = (emuCycle / kCyclesPerScanline) % kScanlinesPerFrame;
     const int scanline = rawLine < static_cast<uint64_t>(kHeight)
                              ? static_cast<int>(rawLine)
@@ -371,15 +374,16 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
 void Apple2Display::forEachBeamSegment(
     const Memory::DisplayState& frameStart,
     std::vector<Memory::VideoEvent> events,
+    VideoStandard std,
     const std::function<void(const Memory::DisplayState&, int, int, int, int)>& paint)
 {
     // Raster order: scanline ascending, then byte column within the line.
     // (Stable so two switches at the same beam position keep push order.)
     std::stable_sort(events.begin(), events.end(),
-        [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
+        [std](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
             if (a.scanline != b.scanline) return a.scanline < b.scanline;
-            return frameCycleToPos(a.emuCycle).byteCol
-                 < frameCycleToPos(b.emuCycle).byteCol;
+            return frameCycleToPos(a.emuCycle, std).byteCol
+                 < frameCycleToPos(b.emuCycle, std).byteCol;
         });
 
     // Per visible scanline, the ordered list of column segments [prevEnd,
@@ -396,7 +400,7 @@ void Apple2Display::forEachBeamSegment(
         std::vector<Seg> segs;
         int prevCol = 0;
         while (ei < events.size() && events[ei].scanline == y) {
-            const int col = frameCycleToPos(events[ei].emuCycle).byteCol;
+            const int col = frameCycleToPos(events[ei].emuCycle, std).byteCol;
             if (col > prevCol) { segs.push_back({col, cur}); prevCol = col; }
             applyVideoEvent(cur, events[ei].kind, events[ei].value);
             ++ei;
@@ -442,6 +446,7 @@ void Apple2Display::renderBeamRacing(Memory& mem,
 {
     useFrame80 = false;
     forEachBeamSegment(mem.getDisplayStateAtFrameStart(), std::move(events),
+        mem.videoStandard(),
         [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
             renderInternalSegment(mem, st, y0, y1, col0, col1);
         });
@@ -2197,6 +2202,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // segment into signalBuf. `state` is the mutable local the paint helpers
     // capture by reference, so set it per segment before painting.
     forEachBeamSegment(mem.getDisplayStateAtFrameStart(), events,
+        mem.videoStandard(),
         [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
             state = st;
             paintSignalBand(y0, y1, col0, col1);

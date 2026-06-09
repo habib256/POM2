@@ -12,6 +12,16 @@
 #include <cstdio>
 #include <cstdlib>
 
+void EmulationController::setVideoStandard(VideoStandard s)
+{
+    videoStandard_.store(s);
+    frameIntervalUs.store(1'000'000 / pom2VideoTiming(s).refreshHz);
+    // Geometry propagates to Memory so pushVideoEventLocked stamps the right
+    // scanline. Called from applyProfile with the worker stopped, so the
+    // plain Memory member is set without a concurrent reader.
+    mem.setVideoStandard(s);
+}
+
 EmulationController::EmulationController()
     : processor(&mem)
 {
@@ -764,7 +774,7 @@ void EmulationController::workerLoop()
             }
         }
 
-        nextTick += std::chrono::microseconds(1'000'000 / 60);
+        nextTick += std::chrono::microseconds(frameIntervalUs.load());
         const auto now = clock::now();
         if (now < nextTick) {
             std::this_thread::sleep_for(nextTick - now);

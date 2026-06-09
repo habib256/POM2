@@ -58,6 +58,8 @@ enum class CliPreset {
     AppleIIe,           // → pom2::SystemProfile::AppleIIe
     AppleIIc,       // → pom2::SystemProfile::AppleIIc
     AppleIIcPlus,   // → pom2::SystemProfile::AppleIIcPlus
+    AppleIIePAL,    // → pom2::SystemProfile::AppleIIePAL (50 Hz)
+    AppleIIcPAL,    // → pom2::SystemProfile::AppleIIcPAL (Le Chat Mauve)
 };
 
 /// One deferred action consumed in Phase C, in CLI order.

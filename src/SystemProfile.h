@@ -23,6 +23,7 @@
 #define POM2_SYSTEM_PROFILE_H
 
 #include "M6502.h"
+#include "CpuClock.h"
 
 #include <array>
 #include <cstdint>
@@ -51,6 +52,12 @@ enum class SystemProfile {
     AppleIIe,            // Apple //e Enhanced (1985), 65C02, mousetext char ROM
     AppleIIc,            // Apple //c (1984), 65C02, IIe-class soft switches
     AppleIIcPlus,        // Apple //c Plus (1988), 65C02 @ 4 MHz, built-in SmartPort
+    // European PAL variants (50 Hz, 312 lines): same ROMs/CPU as their NTSC
+    // siblings, but PAL machine timing. The //c PAL is the machine that took
+    // the Le Chat Mauve RGB Péritel adapter on its DB-15 port; //e PAL is the
+    // French Touch / DIX target. See CpuClock.h VideoStandard.
+    AppleIIePAL,         // Apple //e Enhanced PAL (65C02, 312 lines, 50 Hz)
+    AppleIIcPAL,         // Apple //c PAL (Le Chat Mauve RGB adapter machine)
 };
 
 struct ProfileConfig {
@@ -73,6 +80,10 @@ struct ProfileConfig {
     // real hardware, so POM2 force-empties any non-builtIn slot at
     // profile-apply time and locks the Slot Config picker greyed out.
     bool                   noPhysicalSlots = false;
+    // Machine video standard. NTSC (262 lines, 60 Hz) for US machines; PAL
+    // (312 lines, ~50 Hz) for the European //e PAL / //c PAL. Appended last
+    // and defaulted so existing positional initializers stay valid.
+    VideoStandard          videoStandard = VideoStandard::NTSC;
 };
 
 /// Resolve a profile enum to its full configuration. The probe orders
@@ -93,7 +104,7 @@ SystemProfile profileFromKey(std::string_view key);
 std::string_view profileKey(SystemProfile p);
 
 /// All profiles in display order. Used by the Presets menu loop.
-const std::array<SystemProfile, 6>& allProfiles();
+const std::array<SystemProfile, 8>& allProfiles();
 
 }  // namespace pom2
 

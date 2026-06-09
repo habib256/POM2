@@ -31,6 +31,7 @@
 
 #include "SlotBus.h"
 #include "MemoryProfile.h"
+#include "CpuClock.h"
 
 #include <array>
 #include <atomic>
@@ -275,6 +276,12 @@ public:
         bool           value    = false;
     };
 
+    /// Video standard (NTSC 262 lines / PAL 312 lines). Set on profile load.
+    /// Used by pushVideoEventLocked to stamp each soft-switch edge with the
+    /// correct scanline geometry, so beam-racing positions PAL effects right.
+    void          setVideoStandard(VideoStandard s) { videoStandard_.store(s); }
+    VideoStandard videoStandard() const { return videoStandard_.load(); }
+
     /// Called once per emulated frame (before the CPU budget runs) to
     /// snapshot display state at scanline 0 and clear the event log.
     void beginVideoEventFrame();
@@ -496,6 +503,7 @@ private:
     DisplayState displayAtFrameStart_;
     std::vector<VideoEvent> videoEvents_;
     bool videoEventFrameOpen_ = false;
+    std::atomic<VideoStandard> videoStandard_{VideoStandard::NTSC};
 
     void recordVideoEvent(VideoEventKind kind, bool value);
     /// Same as recordVideoEvent but caller already holds stateMutex.

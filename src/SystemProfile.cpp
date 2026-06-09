@@ -210,6 +210,38 @@ const ProfileConfig& cfgAppleIIcPlus()
     return cfg;
 }
 
+// European PAL variants. Same ROMs / CPU / slot layout as their NTSC siblings
+// — only the machine timing differs (312 lines, ~50 Hz, 20313 cyc/frame). We
+// derive them by copying the NTSC config and overriding the timing fields, so
+// the (long) //c slot table is never duplicated.
+const ProfileConfig& cfgAppleIIePAL()
+{
+    static const ProfileConfig cfg = [] {
+        ProfileConfig c = cfgAppleIIe();
+        c.profile              = SystemProfile::AppleIIePAL;
+        c.key                  = "iie-pal";
+        c.displayName          = "Apple //e Enhanced PAL (50 Hz)";
+        c.defaultCyclesPerFrame = 20313;
+        c.videoStandard        = VideoStandard::PAL;
+        return c;
+    }();
+    return cfg;
+}
+
+const ProfileConfig& cfgAppleIIcPAL()
+{
+    static const ProfileConfig cfg = [] {
+        ProfileConfig c = cfgAppleIIc();
+        c.profile              = SystemProfile::AppleIIcPAL;
+        c.key                  = "iic-pal";
+        c.displayName          = "Apple //c PAL (Le Chat Mauve)";
+        c.defaultCyclesPerFrame = 20313;
+        c.videoStandard        = VideoStandard::PAL;
+        return c;
+    }();
+    return cfg;
+}
+
 }  // namespace
 
 const ProfileConfig& profileConfig(SystemProfile p)
@@ -221,6 +253,8 @@ const ProfileConfig& profileConfig(SystemProfile p)
         case SystemProfile::AppleIIe:           return cfgAppleIIe();
         case SystemProfile::AppleIIc:           return cfgAppleIIc();
         case SystemProfile::AppleIIcPlus:       return cfgAppleIIcPlus();
+        case SystemProfile::AppleIIePAL:        return cfgAppleIIePAL();
+        case SystemProfile::AppleIIcPAL:        return cfgAppleIIcPAL();
     }
     return cfgAppleIIPlus();   // unreachable, silences compiler
 }
@@ -240,6 +274,10 @@ SystemProfile profileFromKey(std::string_view key)
     if (key == "iic+" || key == "iicplus" || key == "apple2cplus"
         || key == "apple2cp" || key == "//c+"
         || key == "appleiicplus")                                   return SystemProfile::AppleIIcPlus;
+    if (key == "iie-pal" || key == "iiepal" || key == "apple2e-pal"
+        || key == "//e-pal")                                        return SystemProfile::AppleIIePAL;
+    if (key == "iic-pal" || key == "iicpal" || key == "apple2c-pal"
+        || key == "//c-pal" || key == "chatmauve")                  return SystemProfile::AppleIIcPAL;
     return SystemProfile::AppleIIPlus;
 }
 
@@ -248,15 +286,17 @@ std::string_view profileKey(SystemProfile p)
     return profileConfig(p).key;
 }
 
-const std::array<SystemProfile, 6>& allProfiles()
+const std::array<SystemProfile, 8>& allProfiles()
 {
-    static const std::array<SystemProfile, 6> all = {
+    static const std::array<SystemProfile, 8> all = {
         SystemProfile::AppleII,
         SystemProfile::AppleIIPlus,
         SystemProfile::AppleIIeUnenhanced,
         SystemProfile::AppleIIe,
         SystemProfile::AppleIIc,
         SystemProfile::AppleIIcPlus,
+        SystemProfile::AppleIIePAL,
+        SystemProfile::AppleIIcPAL,
     };
     return all;
 }

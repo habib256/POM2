@@ -35,6 +35,8 @@ const char* profileShortLabel(SystemProfile p) {
         case SystemProfile::AppleIIe:            return "//e";
         case SystemProfile::AppleIIc:            return "//c";
         case SystemProfile::AppleIIcPlus:        return "//c+";
+        case SystemProfile::AppleIIePAL:         return "//e PAL";
+        case SystemProfile::AppleIIcPAL:         return "//c PAL";
     }
     return "??";
 }

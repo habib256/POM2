@@ -121,7 +121,8 @@ public:
     /// horizontal mid-scanline split). Public + static so it can be unit
     /// tested in isolation.
     struct RasterPos { int scanline; int byteCol; };
-    static RasterPos frameCycleToPos(uint64_t emuCycle);
+    static RasterPos frameCycleToPos(uint64_t emuCycle,
+                                     VideoStandard std = VideoStandard::NTSC);
 
     /// Auxiliary 64 KB RAM pointer for IIe 80-column rendering. Set by
     /// MainWindow once the IIe ROM is detected and Memory::setIIEMode(true)
@@ -327,6 +328,7 @@ private:
     static void forEachBeamSegment(
         const Memory::DisplayState& frameStart,
         std::vector<Memory::VideoEvent> events,
+        VideoStandard std,
         const std::function<void(const Memory::DisplayState&,
                                  int y0, int y1, int col0, int col1)>& paint);
     void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);

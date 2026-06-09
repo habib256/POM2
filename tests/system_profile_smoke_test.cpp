@@ -36,13 +36,32 @@ namespace {
 void testAllProfilesEnumerated()
 {
     const auto& all = pom2::allProfiles();
-    assert(all.size() == 6);
+    assert(all.size() == 8);
     assert(all[0] == pom2::SystemProfile::AppleII);
     assert(all[1] == pom2::SystemProfile::AppleIIPlus);
     assert(all[2] == pom2::SystemProfile::AppleIIeUnenhanced);
     assert(all[3] == pom2::SystemProfile::AppleIIe);
     assert(all[4] == pom2::SystemProfile::AppleIIc);
     assert(all[5] == pom2::SystemProfile::AppleIIcPlus);
+    assert(all[6] == pom2::SystemProfile::AppleIIePAL);
+    assert(all[7] == pom2::SystemProfile::AppleIIcPAL);
+
+    // NTSC profiles are 262-line/60 Hz (17045 cyc/frame); the two PAL
+    // profiles are 312-line/50 Hz (20313). PAL profiles otherwise inherit
+    // their NTSC sibling's CPU/iieMode/slots.
+    for (auto p : { pom2::SystemProfile::AppleIIePAL,
+                    pom2::SystemProfile::AppleIIcPAL }) {
+        const auto& c = pom2::profileConfig(p);
+        assert(c.videoStandard == VideoStandard::PAL);
+        assert(c.defaultCyclesPerFrame == 20313);
+        assert(c.iieMode);                              // both are IIe-class
+        assert(c.defaultCpu == M6502::CpuMode::CMOS);   // 65C02
+    }
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIe).videoStandard
+           == VideoStandard::NTSC);
+    // //c PAL inherits the //c's on-board slot lock (SmartPort at sl5, etc.).
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIcPAL)
+               .builtInSlots[5].has_value());
 }
 
 void testProfileDefaults()
@@ -652,7 +671,7 @@ void testIoudisStateMachine()
 int main()
 {
     testAllProfilesEnumerated();
-    std::printf("  ok: all 5 profiles enumerated\n");
+    std::printf("  ok: all 8 profiles enumerated (+ //e PAL, //c PAL)\n");
 
     testProfileDefaults();
     std::printf("  ok: profile CPU/iieMode defaults match expectations\n");

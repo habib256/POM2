@@ -407,9 +407,13 @@ void Memory::recordVideoEvent(VideoEventKind kind, bool value)
 void Memory::pushVideoEventLocked(VideoEventKind kind, bool value)
 {
     if (!videoEventFrameOpen_) return;
-    constexpr uint64_t kCyclesPerScanline = 65;
-    constexpr uint64_t kScanlinesPerFrame = 262;
-    constexpr uint64_t kVisibleScanlines  = 192;
+    // PAL frames are 312 scanlines (vs 262 NTSC); the horizontal 65-cycle line
+    // and 192 visible lines are the same. Using the active standard's geometry
+    // keeps mid-frame soft-switch edges on the right scanline for beam-racing.
+    const VideoTiming& t = pom2VideoTiming(videoStandard_.load());
+    const uint64_t kCyclesPerScanline = static_cast<uint64_t>(t.cyclesPerScanline);
+    const uint64_t kScanlinesPerFrame = static_cast<uint64_t>(t.scanlinesPerFrame);
+    const uint64_t kVisibleScanlines  = static_cast<uint64_t>(t.visibleScanlines);
     const uint64_t now = cycleCounter +
         (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
     const uint64_t rawLine = (now / kCyclesPerScanline) % kScanlinesPerFrame;

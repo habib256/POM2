@@ -181,6 +181,15 @@ public:
     void setCyclesPerFrame(int n) { cyclesPerFrame.store(n); }
     int  getCyclesPerFrame() const { return cyclesPerFrame.load(); }
 
+    // Machine video standard (NTSC 60 Hz / PAL 50 Hz). Sets the worker's
+    // frame-pacing interval and propagates the 262/312-line geometry to
+    // Memory (for beam-racing). The CPU budget per frame (cyclesPerFrame) is
+    // set separately from the active profile's defaultCyclesPerFrame, so the
+    // effective clock = cyclesPerFrame × refreshHz works out to ~1.0227 MHz
+    // (NTSC) / ~1.0156 MHz (PAL).
+    void          setVideoStandard(VideoStandard s);
+    VideoStandard getVideoStandard() const { return videoStandard_.load(); }
+
     // Block for up to `timeoutMs` until the CPU is paused at an
     // instruction boundary. Cheap: the worker holds `stateMutex` only
     // while running a slice, releases it on every iteration.
@@ -206,6 +215,10 @@ private:
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};
+    // Worker frame-pacing interval (µs) and the active video standard. PAL
+    // paces at 50 Hz (20000 µs), NTSC at 60 Hz (~16667 µs).
+    std::atomic<int>  frameIntervalUs{1'000'000 / 60};
+    std::atomic<VideoStandard> videoStandard_{VideoStandard::NTSC};
     std::atomic<int>  stepsPending{0};   // queued single-step count (Step mode)
     std::atomic<bool> exitRequested{false};
     // True while the worker is idling in the Stopped CV wait. The rewind

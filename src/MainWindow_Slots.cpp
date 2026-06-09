@@ -544,6 +544,7 @@ float MainWindow::floppyMotorPitchForProfile(pom2::SystemProfile p)
     switch (p) {
         case pom2::SystemProfile::AppleIIc:
         case pom2::SystemProfile::AppleIIcPlus:
+        case pom2::SystemProfile::AppleIIcPAL:
             return 1.4f;       // Sony internal drive ≈ 40% faster spin-up
         default:
             return 1.0f;       // original Disk II Shugart — native rate
@@ -700,7 +701,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // Default 1 = no RamWorks. The setIIEMode(false) branch already
         // cleared backing storage.
         if (p == pom2::SystemProfile::AppleIIe ||
-            p == pom2::SystemProfile::AppleIIeUnenhanced) {
+            p == pom2::SystemProfile::AppleIIeUnenhanced ||
+            p == pom2::SystemProfile::AppleIIePAL) {
             const int banks = settings->getInt("ramworks_banks", 1);
             controller->memory().setRamWorksBanks(
                 static_cast<uint32_t>(banks > 0 ? banks : 1));
@@ -719,7 +721,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    loader which way to slice based on the active profile.
     const bool pickLowerHalf =
         (p == pom2::SystemProfile::AppleIIc ||
-         p == pom2::SystemProfile::AppleIIcPlus);
+         p == pom2::SystemProfile::AppleIIcPlus ||
+         p == pom2::SystemProfile::AppleIIcPAL);
     const std::string newRomPath = firstExistingPath(cfg.romProbeOrder);
     if (!newRomPath.empty()
         && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
@@ -820,8 +823,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         controller->cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
     }
 
-    // 10. Default CPU pacing.
+    // 10. Default CPU pacing + video standard (NTSC 60 Hz / PAL 50 Hz). The
+    //     profile's defaultCyclesPerFrame already carries the per-standard
+    //     budget (17045 NTSC / 20313 PAL); setVideoStandard sets the worker's
+    //     50/60 Hz pacing and propagates the 262/312-line geometry to Memory.
     controller->setCyclesPerFrame(cfg.defaultCyclesPerFrame);
+    controller->setVideoStandard(cfg.videoStandard);
 
     // 11. Final hard reset — CPU re-fetches PC from the new ROM's reset
     //     vector at $FFFC/$FFFD.

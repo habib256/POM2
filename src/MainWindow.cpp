@@ -4522,7 +4522,8 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
     // SmartPort unit. See project_iic_smartport_boot.
     const bool iicClass =
         (activeProfile == pom2::SystemProfile::AppleIIc ||
-         activeProfile == pom2::SystemProfile::AppleIIcPlus);
+         activeProfile == pom2::SystemProfile::AppleIIcPlus ||
+         activeProfile == pom2::SystemProfile::AppleIIcPAL);
     // Prefer a dedicated HDV-class card — the MAME-faithful CffaCard if
     // plugged, else the synthetic ProDOSHardDiskCard; else route to a
     // SmartPort card's unit 0 (auto-creating a SmartPortHdvUnit). Promoted
@@ -4609,7 +4610,8 @@ int MainWindow::ensureHdvCardForBoot()
     // prefer the SmartPort and never plug a (dead) ProDOSHardDiskCard here.
     // See project_iic_smartport_boot.
     if (activeProfile == pom2::SystemProfile::AppleIIc ||
-        activeProfile == pom2::SystemProfile::AppleIIcPlus) {
+        activeProfile == pom2::SystemProfile::AppleIIcPlus ||
+        activeProfile == pom2::SystemProfile::AppleIIcPAL) {
         if (smartPortCard) return smartPortCard->getSlot();
     }
     if (cffaCard)      return cffaCard->getSlot();

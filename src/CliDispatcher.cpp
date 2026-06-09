@@ -100,6 +100,10 @@ bool parsePresetName(const std::string& raw, CliPreset& out)
     if (s == "iic+" || s == "iicplus" || s == "apple2cplus" ||
         s == "apple2cp" || s == "appleiicplus" ||
         s == "//c+")                        { out = CliPreset::AppleIIcPlus; return true; }
+    if (s == "iie-pal" || s == "iiepal" || s == "apple2e-pal" ||
+        s == "//e-pal")                     { out = CliPreset::AppleIIePAL; return true; }
+    if (s == "iic-pal" || s == "iicpal" || s == "apple2c-pal" ||
+        s == "//c-pal" || s == "chatmauve") { out = CliPreset::AppleIIcPAL; return true; }
     return false;
 }
 

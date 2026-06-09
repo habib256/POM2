@@ -2082,6 +2082,31 @@ endif()
 add_test(NAME dix_modpage_split COMMAND test_dix_modpage_split)
 set_tests_properties(dix_modpage_split PROPERTIES TIMEOUT 5)
 
+# PAL 50 Hz machine timing: VideoTiming table + frameCycleToPos 262↔312 geometry
+# + Memory scanline stamping under the active standard.
+add_executable(test_pal_timing
+    pal_timing_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_pal_timing PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_pal_timing PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_pal_timing PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_pal_timing PRIVATE winmm)
+endif()
+
+add_test(NAME pal_timing COMMAND test_pal_timing)
+set_tests_properties(pal_timing PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp

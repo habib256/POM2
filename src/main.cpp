@@ -412,6 +412,8 @@ int main(int argc, char* argv[])
             case pom2::CliPreset::AppleIIe:     sp = pom2::SystemProfile::AppleIIe;     break;
             case pom2::CliPreset::AppleIIc:     sp = pom2::SystemProfile::AppleIIc;     break;
             case pom2::CliPreset::AppleIIcPlus: sp = pom2::SystemProfile::AppleIIcPlus; break;
+            case pom2::CliPreset::AppleIIePAL:  sp = pom2::SystemProfile::AppleIIePAL;  break;
+            case pom2::CliPreset::AppleIIcPAL:  sp = pom2::SystemProfile::AppleIIcPAL;  break;
             case pom2::CliPreset::Default: break;
         }
         mainWindow.applyProfile(sp);
