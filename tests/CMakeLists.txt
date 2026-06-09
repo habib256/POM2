@@ -2056,6 +2056,32 @@ endif()
 add_test(NAME horizontal_split_560 COMMAND test_horizontal_split_560)
 set_tests_properties(horizontal_split_560 PROPERTIES TIMEOUT 5)
 
+# DIX "MODPAGE" technique probe: per-scanline mid-line $C054/$C055 page flip →
+# HGR page 1 left, HGR page 2 right on the same line (the French Touch DIX
+# beam-raced effect). Validates the *rendering* half of DIX validation.
+add_executable(test_dix_modpage_split
+    dix_modpage_split_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dix_modpage_split PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dix_modpage_split PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dix_modpage_split PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dix_modpage_split PRIVATE winmm)
+endif()
+
+add_test(NAME dix_modpage_split COMMAND test_dix_modpage_split)
+set_tests_properties(dix_modpage_split PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp
