@@ -265,7 +265,8 @@ Apple ROMs are **never** bundled in any artifact.
 ## 🔗 Resources
 
 - [POM2 in your browser](https://habib256.github.io/POM2/wasm/) — WebAssembly build.
-- Architecture → [CLAUDE.md](CLAUDE.md) · Internals → [DEV.md](DEV.md) · Backlog → [TODO.md](TODO.md).
+- **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — French Touch demo anthology (29+ min, GPLv3 sources). The **gold-standard integration test** for cycle-accurate Apple II emulation: vapor lock, mid-scanline video, Mockingboard, 128 KB aux, SmartPort/Unidisk. If DIX runs clean, you're there.
+- Architecture → [CLAUDE.md](CLAUDE.md) · Internals → [DEV.md](DEV.md) · Backlog → [TODO.md](TODO.md) · Edge-case test corpus → [`docs/test_corpus.md`](docs/test_corpus.md).
 
 ---
 

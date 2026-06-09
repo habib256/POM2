@@ -14,6 +14,15 @@
 > (comme les ROMs). Ce document ne référence aucun binaire ; il décrit *quoi
 > tester et pourquoi c'est dur*.
 
+> **⭐ Référence prioritaire — [DIX](https://github.com/Fr3nchT0uch/DIX/)**
+> (anthologie French Touch, 29+ min de démos Apple II 2014–2024, sources GPLv3).
+> C'est le **banc d'essai le plus complet** pour viser la perfection de
+> l'émulation : vapor lock / bus flottant, bascules vidéo mid-scanline,
+> Mockingboard + IRQ VIA, 128 KB aux, SmartPort/Liron + Unidisk 800 KB, cadence
+> PAL 50 Hz. Si DIX tourne sans glitch, l'émulateur est au niveau « démo
+> cycle-exacte » ; si DIX casse, le corpus ci-dessous indique *quel* sous-système
+> creuser.
+
 ## Sommaire
 
 - [1. Précision CPU↔vidéo (synchro au cycle)](#1-précision-cpuvidéo-synchro-au-cycle)
@@ -36,7 +45,8 @@ posé par le scanner vidéo (effet capacitif TTL). Voir
 | Programme | Ce qu'il torture | Pourquoi c'est un cas limite | Statut POM2 |
 |---|---|---|---|
 | **deater — « megademos »** (Vince « deater » Weaver, `deater.net/weave/vmwprod`) | Vapor lock : détecte le VBL en bouclant sur une lecture `$C0xx` non pilotée jusqu'à lire un octet repère écrit en RAM vidéo. | Si la vidéo est un framebuffer rendu de façon asynchrone en fin de frame au lieu d'entrelacer lectures CPU et scanner au cycle, la boucle ne « verrouille » jamais → écran figé / glitché. | ✅ Base solide : `Memory::floatingBus()` est un **port verbatim** de MAME `apple2video.cpp:124-201 scanner_address`, indexé sur le `cycleCounter` global → l'adresse scanner suit le faisceau au cycle. Pinné par `floatingbus_page2_smoke_test` + `beam_race_composite_test`. À valider sur une vraie megademo. |
-| **Productions « French Touch »** (ex. *Mad Effect*, *Plasmagical*, *Wave*) | Changements de **mode vidéo en milieu de scanline** (mid-scanline : TEXT↔HGR, PAGE1↔2, lo↔hi-res entre deux cycles d'une même ligne). | Exige un 6502 découpé en **vrais sous-cycles d'accès** : un opcode exécuté atomiquement (effets appliqués en un bloc) décale le commutateur de 1-2 cycles → bandes de couleur mal placées. | 🟡 Cible le `Gap #3` *« per-scanline DHGR switch »*. POM2 applique les soft-switches d'affichage par accès mais le rendu reste majoritairement par-ligne/par-frame ; les bascules **intra-ligne** ne sont pas toutes honorées. Sondes : `dhgr_phase_signal_test`, `artifact_phase_probe`. |
+| **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch (29+ min, //e / //c PAL, sources GPLv3) | **Suite d'intégration tout-en-un** : vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, Unidisk 800 KB via Liron/SmartPort. Regroupe *Mad Effect*, *Plasmagical*, *Wave* et les autres prods FT récentes. | Un seul disque qui enchaîne les cas limites des §1–4 ; la référence à viser avant de déclarer l'émulation « parfaite ». Requiert PAL 50 Hz (pas NTSC). | 🟡 **Priorité #1** pour validation manuelle. Couvre surtout `Gap #3` (mid-scanline) + `#6`/`#8` (Mockingboard IRQ) + `#12`/`#13` (SmartPort/Unidisk). Sondes unitaires : `dhgr_phase_signal_test`, `artifact_phase_probe`, `floatingbus_page2_smoke_test`. |
+| **Productions « French Touch »** (ex. *Mad Effect*, *Plasmagical*, *Wave* — incluses dans DIX) | Changements de **mode vidéo en milieu de scanline** (mid-scanline : TEXT↔HGR, PAGE1↔2, lo↔hi-res entre deux cycles d'une même ligne). | Exige un 6502 découpé en **vrais sous-cycles d'accès** : un opcode exécuté atomiquement (effets appliqués en un bloc) décale le commutateur de 1-2 cycles → bandes de couleur mal placées. | 🟡 Cible le `Gap #3` *« per-scanline DHGR switch »*. POM2 applique les soft-switches d'affichage par accès mais le rendu reste majoritairement par-ligne/par-frame ; les bascules **intra-ligne** ne sont pas toutes honorées. Sondes : `dhgr_phase_signal_test`, `artifact_phase_probe`. |
 | **Démos DHGR / `dapple`-like + tests d'artefact NTSC** | Ordre d'évaluation des soft-switches DHGR (`80STORE`/`PAGE2`/`HIRES`/`AN3`) et frangeage couleur (artifacting NTSC par entrelacement de signaux). | Valide l'ordre exact des switches Le Chat Mauve (FIFO AN3 → `$C05E/F`) et la démodulation composite. | ✅/🟡 Pipeline NTSC composite (`NtscPostProcessor`, `AppleWinNtsc`) + chemins CPU/GPU. Couvert par `dhgr_render_smoke_test`, `oe_demod_gpu_cpu_parity_test`, `display_golden_hash_test`. Gap résiduel : mono DHGR 1-px, floating-TTL (`#3`). |
 
 ---

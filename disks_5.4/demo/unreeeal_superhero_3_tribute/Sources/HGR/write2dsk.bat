@@ -1,0 +1,1 @@
+%A2SDK%\BIN\insertBIN.py ..\DSK\test.dsk 6 0 2000 1.bin,2.bin >log.txt

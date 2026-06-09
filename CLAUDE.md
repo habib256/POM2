@@ -5,6 +5,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `README.md` — user walkthrough (build, profiles, ROM/disk placement, keys, CLI).
 - `DEV.md` — implementation deep-dives (MAME-parity ports, internals, gotchas, pinned tests).
 - `TODO.md` — active backlog + MAME↔POM2 parity dashboard.
+- `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `CHANGELOG.md` — resolved items + the **why** behind non-obvious fixes.
 
 **Conventions**:
