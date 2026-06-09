@@ -96,6 +96,38 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   `DEV.md` § Beam-racing. **Reste** *(🟢)* : `signalPhaseOffset_` reste une
   constante par-frame (split HGR↔DHGR mid-frame approximé) ; lo-res clip au
   block-row (4 lignes), comme le path RGBA.
+- 🟠 **Split horizontal mid-scanline (granularité par octet)** — *NOUVEAU,
+  voulu (collab POM1 / carte GEN2 release d'Uncle Bernie, juin 2026).* Le
+  beam-racing actuel est **scanline-quantizé** : `renderBeamRacing`
+  (`Apple2Display.cpp:247`) trie par `ev.scanline` et rend des bandes pleine
+  largeur (`renderInternalBand` → `renderText/HiRes/LoRes`, colonnes 0..39) →
+  splits **verticaux seulement**. Objectif : changement de mode **en milieu de
+  scanline** — colonnes TEXT alternant avec colonnes LORES *sur la même ligne*
+  (feature phare de la GEN2 release : « color peg » Codebreaker). **Bonne
+  nouvelle** : `VideoEvent.emuCycle` (`Memory.h:272`, rempli `Memory.cpp:419`)
+  **stocke déjà le cycle CPU** — POM2 le jette juste au rendu. **Aucune
+  dépendance externe** (timing Apple II mid-scanline = MAME-documenté). Plan
+  (chemin *legacy 280-large* d'abord) :
+  1. helper `frameCycleToPos(emuCycle) → {scanline, byteCol}` avec
+     `byteCol = clamp((emuCycle % 65) − 25, 0, 40)` (fenêtre active h 25..64 =
+     40 octets/ligne) ;
+  2. primitives bornées en colonnes : `renderTextSegment(row, col0, col1)`,
+     `renderHiResSegment(scanline, col0, col1)`, `renderLoResSegment(row, col0,
+     col1)` — corps existants (`renderText/HiRes/LoRes`) restreints à `[col0,col1)` ;
+  3. `renderInternalSegment(state, y0, y1, col0, col1)` + **réécriture
+     `renderBeamRacing`** : curseur `(curLine, curCol)`, rendre les segments
+     entre events au cycle près, `applyVideoEvent`, **fast-path zéro-event =
+     `renderInternalBand` plein écran (régression zéro** sur démos existantes) ;
+  4. test `horizontal_split_smoke` (style `beam_race_composite_test.cpp`) : flip
+     `$C051` à une frontière de colonne, scanline ~96 → hash pixels gauche (HGR)
+     ≠ droite (TEXT) **sur la même ligne**.
+  *Hors v1* : splits mid-ligne en **80-col / DHGR / Le Chat Mauve** (560-large,
+  aux-RAM) ; **chemin composite** (`fillCompositeSignal`, `Apple2Display.cpp:~1761`)
+  = incrément 2. *Cycle de transition exact = raffinement ultérieur (v1 «
+  visuellement correct aux frontières de colonnes » ; pipeline ~1 cycle au
+  character-clock).* **Back-port POM1 ensuite** (gated : rendu LORES+TEXT sur la
+  GEN2 — HGR seul aujourd'hui — + flag HBLANK Phase 2 spec Bernie). *Effort M-L,
+  ~200-400 LOC + test.* Détail → `DEV.md` § Beam-racing.
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur
@@ -340,10 +372,14 @@ torturent les recoins (synchro CPU↔vidéo au cycle, flux WOZ protégé, IRQ
 VIA) — au-delà des `ctest` unitaires. Liste curée + statut POM2 + renvois
 aux `Gap connus` du dashboard : **[`docs/test_corpus.md`](docs/test_corpus.md)**.
 
+- 🟠 **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch
+  (29+ min, sources GPLv3). **Référence prioritaire** pour la perfection
+  d'émulation : enchaîne vapor lock, mid-scanline, Mockingboard, 128 KB aux,
+  Unidisk/Liron. Valider DIX en premier avant tout autre titre du corpus.
 - 🟡 **Vapor lock end-to-end** — `floatingBus()` est verbatim MAME mais le
   lock n'est pas prouvé sur une vraie megademo deater. → `Gap #3`.
-- 🟡 **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*)
-  — bascules intra-ligne pas toutes honorées. → `Gap #3`.
+- 🟡 **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*,
+  inclus dans DIX) — bascules intra-ligne pas toutes honorées. → `Gap #3`.
 - 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — suivi
   spiral + weak bits à valider sur images WOZ réelles. → `Gap #9/#10`.
 

@@ -276,6 +276,21 @@ documented approximation; lo-res bands clip at block-row (4-scanline)
 granularity, same as the RGBA path. Pinned by `beam_race_composite` (TEXT top
 band + HGR bottom band from a frame that flips mode at scanline 96).
 
+**Planned: horizontal (mid-scanline-column) splits.** The replay above is
+**scanline-quantized** — events are sorted by `scanline` and `renderInternalBand`
+paints full-width rows, so a soft switch *mid-scanline* only takes effect on the
+next line (vertical splits only). `VideoEvent.emuCycle` (`Memory.h:272`) already
+carries the CPU cycle — only the horizontal position is discarded at replay — so
+the per-byte extension needs **no data change**: derive
+`byteCol = clamp((emuCycle % 65) − 25, 0, 40)`, add column-bounded
+`render{Text,HiRes,LoRes}Segment` + `renderInternalSegment(state, y0, y1, col0,
+col1)`, and walk events by cycle (not scanline) in `renderBeamRacing` with a
+`(curLine, curCol)` cursor. Empty-log fast-path stays a single full-frame
+`renderInternalBand`. Wanted for the Uncle Bernie GEN2 card back-port (POM1):
+legacy 280-wide path first, composite (`fillCompositeSignal`) + 80-col/DHGR
+later; exact transition cycle is a later refinement. Full plan → `TODO.md`
+§ [Display] *Split horizontal mid-scanline*.
+
 ### 80-col text
 
 Aux RAM (cells 0,2,…) interleaved with main (1,3,…) into 560-wide
