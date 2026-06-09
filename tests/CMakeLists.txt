@@ -1981,6 +1981,31 @@ endif()
 add_test(NAME beam_race_composite COMMAND test_beam_race_composite)
 set_tests_properties(beam_race_composite PROPERTIES TIMEOUT 5)
 
+# Horizontal (mid-scanline, per-byte-column) beam-racing split — left window
+# HGR, right window TEXT on the same line.
+add_executable(test_horizontal_split
+    horizontal_split_smoke.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_horizontal_split PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_horizontal_split PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_horizontal_split PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_horizontal_split PRIVATE winmm)
+endif()
+
+add_test(NAME horizontal_split COMMAND test_horizontal_split)
+set_tests_properties(horizontal_split PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp

@@ -113,6 +113,15 @@ public:
     int             width()  const { return useFrame80 ? kWidth80 : kWidth; }
     int             height() const { return kHeight; }
 
+    /// Raster position (visible scanline + 40-byte column index) of a CPU
+    /// cycle within the current frame. Used by the beam-racing replay to map
+    /// a video soft-switch's `VideoEvent::emuCycle` to *where on the screen*
+    /// the beam was — `scanline` (vertical band) and `byteCol` (the new
+    /// horizontal mid-scanline split). Public + static so it can be unit
+    /// tested in isolation.
+    struct RasterPos { int scanline; int byteCol; };
+    static RasterPos frameCycleToPos(uint64_t emuCycle);
+
     /// Auxiliary 64 KB RAM pointer for IIe 80-column rendering. Set by
     /// MainWindow once the IIe ROM is detected and Memory::setIIEMode(true)
     /// has been called. Pointer is non-owning. May be nullptr; the 80-col
@@ -213,10 +222,17 @@ private:
     // — ~6.7% too fast and inconsistent with the cited & 0x10 model.)
     static constexpr uint32_t kFlashHalfPeriodFrames = 16;
 
-    void renderText  (Memory& mem, int firstRow, int lastRow);
-    void renderLoRes (Memory& mem, int firstRow, int lastRow);
+    // `col0`/`col1` bound rendering to the 40-byte column window [col0, col1)
+    // for the beam-racing horizontal (mid-scanline) split; default (0, 40) is
+    // the full width and leaves every existing caller byte-identical. text/
+    // lo-res restrict their per-column write loop; hi-res still decodes the
+    // whole scanline (so the NTSC artifact window keeps its neighbour context)
+    // and only the write-back + persistence update are clipped to the window.
+    void renderText  (Memory& mem, int firstRow, int lastRow, int col0 = 0, int col1 = 40);
+    void renderLoRes (Memory& mem, int firstRow, int lastRow, int col0 = 0, int col1 = 40);
     void renderLoResDouble(Memory& mem, int firstRow, int lastRow);  // DLGR (80-col)
-    void renderHiRes (Memory& mem, int firstScanline, int lastScanline);
+    void renderHiRes (Memory& mem, int firstScanline, int lastScanline,
+                      int col0 = 0, int col1 = 40);
     // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
     // resolution. Same decode algorithm as the Chat Mauve branch of
     // `renderHiRes`, but writes into `frame80` so screen captures and
@@ -281,6 +297,18 @@ private:
     void renderInternal(Memory& mem);
     void renderInternalBand(Memory& mem, const Memory::DisplayState& state,
                             int scanY0, int scanY1);
+    // Column-bounded variant of renderInternalBand: paints the rectangle
+    // [scanY0, scanY1) × [col0, col1). Only the legacy 280-wide path
+    // (text / hi-res / lo-res) is column-aware; for full width (col0==0 &&
+    // col1==40) or any state that needs the 80-col / DHGR / Le Chat Mauve
+    // path it falls back to the full-width renderInternalBand (those
+    // 560-wide modes are a documented v1 horizontal-split scope-out).
+    void renderInternalSegment(Memory& mem, const Memory::DisplayState& state,
+                               int scanY0, int scanY1, int col0, int col1);
+    // True when `state` renders through the legacy 280-wide path (so a
+    // mid-scanline column split is meaningful). Mirrors the branch
+    // conditions at the top of renderInternalBand.
+    bool usesLegacyPath(Memory& mem, const Memory::DisplayState& state) const;
     void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);
 
     static void applyVideoEvent(Memory::DisplayState& state, Memory::VideoEventKind kind,

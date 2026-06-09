@@ -276,20 +276,34 @@ documented approximation; lo-res bands clip at block-row (4-scanline)
 granularity, same as the RGBA path. Pinned by `beam_race_composite` (TEXT top
 band + HGR bottom band from a frame that flips mode at scanline 96).
 
-**Planned: horizontal (mid-scanline-column) splits.** The replay above is
-**scanline-quantized** — events are sorted by `scanline` and `renderInternalBand`
-paints full-width rows, so a soft switch *mid-scanline* only takes effect on the
-next line (vertical splits only). `VideoEvent.emuCycle` (`Memory.h:272`) already
-carries the CPU cycle — only the horizontal position is discarded at replay — so
-the per-byte extension needs **no data change**: derive
-`byteCol = clamp((emuCycle % 65) − 25, 0, 40)`, add column-bounded
-`render{Text,HiRes,LoRes}Segment` + `renderInternalSegment(state, y0, y1, col0,
-col1)`, and walk events by cycle (not scanline) in `renderBeamRacing` with a
-`(curLine, curCol)` cursor. Empty-log fast-path stays a single full-frame
-`renderInternalBand`. Wanted for the Uncle Bernie GEN2 card back-port (POM1):
-legacy 280-wide path first, composite (`fillCompositeSignal`) + 80-col/DHGR
-later; exact transition cycle is a later refinement. Full plan → `TODO.md`
-§ [Display] *Split horizontal mid-scanline*.
+**Horizontal (mid-scanline-column) splits** *(RGBA legacy path, done
+2026-06-09)*. The composite replay above is still **scanline-quantized**, but
+the RGBA `renderBeamRacing` now resolves switches **per byte column**.
+`VideoEvent.emuCycle` (`Memory.h:272`) already carries the CPU cycle — only the
+horizontal position was discarded — so `Apple2Display::frameCycleToPos(emuCycle)`
+maps it to `{scanline, byteCol}` with `byteCol = clamp((emuCycle % 65) − 25, 0,
+40)` (the 40-byte visible window opens at horizontal cycle 25). `renderBeamRacing`
+builds, per visible scanline, the ordered list of column segments `[col0, col1)`
++ the display state across each (an event subdivides its line at `byteCol`; the
+end-of-line state carries down), then **merges vertically-adjacent scanlines with
+identical segmentation into a band** and paints each band's segments via
+`renderInternalSegment(state, y0, y1, col0, col1)`. The merge is what lets the
+common case — a program re-flipping `$C050/$C051` every scanline to hold a
+vertical strip — render whole text/lo-res rows cleanly (a lone 1-scanline
+segment would quantize away under `bandRows`). `render{Text,HiRes,LoRes}` gained
+optional `col0,col1` params (default `0,40` = byte-identical to before): text /
+lo-res bound their column loop; hi-res decodes the whole scanline (the NTSC
+artifact sliding window keeps its neighbour-byte context) and clips only the
+write-back + mono persistence. An event-free run of scanlines collapses to one
+full-width `renderInternalBand` — so existing demos do not regress
+(`display_golden_hash`, `beam_race_composite` unchanged). Pinned by
+`horizontal_split` (lower band re-flips every scanline → left window == HGR
+reference, right window == TEXT reference on the same line). **Scope-outs:**
+80-col / DHGR / Le Chat Mauve (560-wide) segments paint full width
+(`usesLegacyPath()` gates this); the composite signal path
+(`fillCompositeSignal`) stays scanline-quantized = increment 2; the exact
+transition cycle within a character clock is a later refinement. Full plan →
+`TODO.md` § [Display] *Split horizontal mid-scanline*.
 
 ### 80-col text
 

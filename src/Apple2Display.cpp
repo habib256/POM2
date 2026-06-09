@@ -244,26 +244,158 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     }
 }
 
+Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle)
+{
+    // Mirror Memory::pushVideoEventLocked's scanline derivation so this maps
+    // a VideoEvent's emuCycle back to the exact (scanline, byteCol) the
+    // recorder stamped — only the horizontal component was discarded before.
+    constexpr uint64_t kCyclesPerScanline = 65;
+    constexpr uint64_t kScanlinesPerFrame = 262;
+    const uint64_t rawLine = (emuCycle / kCyclesPerScanline) % kScanlinesPerFrame;
+    const int scanline = rawLine < static_cast<uint64_t>(kHeight)
+                             ? static_cast<int>(rawLine)
+                             : kHeight - 1;
+    // The 40-byte visible window opens at horizontal cycle 25 (the first 25
+    // cycles of each scanline are horizontal blanking). A switch thrown in
+    // HBL (hpos < 25) lands at byteCol 0 → it governs the whole upcoming line;
+    // a switch inside the window splits the line at that byte boundary. The
+    // exact transition cycle within a character clock is a later refinement;
+    // v1 is "visually correct at the column boundary".
+    const int hpos    = static_cast<int>(emuCycle % kCyclesPerScanline);
+    const int byteCol = std::clamp(hpos - 25, 0, 40);
+    return {scanline, byteCol};
+}
+
+bool Apple2Display::usesLegacyPath(Memory& mem, const Memory::DisplayState& state) const
+{
+    // Mirror the early-return branches at the top of renderInternalBand: a
+    // mid-scanline column split is only meaningful on the legacy 280-wide
+    // text / hi-res / lo-res path. The 560-wide Chat Mauve and IIe 80-col /
+    // DHGR modes paint full width (v1 horizontal-split scope-out).
+    const bool chatMauveHGR =
+        state.hiRes && !state.textMode && !state.dhgr &&
+        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+    if (chatMauveHGR) return false;
+
+    const bool chatMauveText =
+        mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
+        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
+        auxRam != nullptr && chatMauve->colorTextEnabled();
+    if (chatMauveText) return false;
+
+    // The IIe 80-col block returns (non-legacy) for every sub-state except
+    // its fall-through: !textMode && !dhgr && !mixedMode (plain 40-col HGR /
+    // lo-res, which drops to the legacy path even with 80COL latched on).
+    if (mem.isIIE() && state.eightyCol &&
+        (state.textMode || state.dhgr || state.mixedMode))
+        return false;
+
+    return true;
+}
+
+void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayState& state,
+                                          int scanY0, int scanY1, int col0, int col1)
+{
+    if (scanY0 >= scanY1 || col0 >= col1) return;
+
+    // Full width, or a 560-wide mode → defer to the column-agnostic band
+    // painter. (A genuine mid-line split into an 80-col / DHGR / Chat Mauve
+    // segment is a documented v1 scope-out: it paints full width, so the last
+    // such segment on the band would win — never happens for the II/II+
+    // legacy demos this targets.)
+    if ((col0 == 0 && col1 == 40) || !usesLegacyPath(mem, state)) {
+        renderInternalBand(mem, state, scanY0, scanY1);
+        return;
+    }
+
+    // ── Legacy 280-wide path, clipped to byte columns [col0, col1) ──────
+    // Same decision tree (and bandRows / bandScanlines clipping) as the
+    // legacy tail of renderInternalBand, with the column window threaded in.
+    useFrame80 = false;
+    int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
+    if (state.textMode) {
+        if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi, col0, col1);
+    } else if (state.hiRes) {
+        if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
+            renderHiRes(mem, gLo, gHi, col0, col1);
+        if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi, col0, col1);
+    } else {
+        if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
+            renderLoRes(mem, gLo / 4, (gHi + 3) / 4, col0, col1);
+        if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
+            renderText(mem, tLo, tHi, col0, col1);
+    }
+}
+
 void Apple2Display::renderBeamRacing(Memory& mem,
                                      std::vector<Memory::VideoEvent> events)
 {
-    std::sort(events.begin(), events.end(),
-              [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
-                  return a.scanline < b.scanline;
-              });
+    // Raster order: scanline ascending, then byte column within the line.
+    // (Stable so two switches at the same beam position keep push order.)
+    std::stable_sort(events.begin(), events.end(),
+        [](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
+            if (a.scanline != b.scanline) return a.scanline < b.scanline;
+            return frameCycleToPos(a.emuCycle).byteCol
+                 < frameCycleToPos(b.emuCycle).byteCol;
+        });
+
+    useFrame80 = false;
+
+    // Per visible scanline, the ordered list of column segments [prevEnd,
+    // colEnd) and the display state active across each. Events on a scanline
+    // subdivide it at their byteCol; the end-of-line state carries into the
+    // next line. A scanline with no events is a single full-width [0, 40)
+    // segment — the common case.
+    struct Seg { int colEnd; Memory::DisplayState st; };
+    std::array<std::vector<Seg>, kHeight> perLine;
 
     Memory::DisplayState cur = mem.getDisplayStateAtFrameStart();
-    useFrame80 = false;
-    int y0 = 0;
-    for (const auto& ev : events) {
-        const int y = std::min(static_cast<int>(ev.scanline), kHeight);
-        if (y > y0)
-            renderInternalBand(mem, cur, y0, y);
-        applyVideoEvent(cur, ev.kind, ev.value);
-        y0 = y;
+    size_t ei = 0;
+    for (int y = 0; y < kHeight; ++y) {
+        std::vector<Seg> segs;
+        int prevCol = 0;
+        while (ei < events.size() && events[ei].scanline == y) {
+            const int col = frameCycleToPos(events[ei].emuCycle).byteCol;
+            if (col > prevCol) { segs.push_back({col, cur}); prevCol = col; }
+            applyVideoEvent(cur, events[ei].kind, events[ei].value);
+            ++ei;
+        }
+        segs.push_back({40, cur});
+        perLine[y] = std::move(segs);
     }
-    if (y0 < kHeight)
-        renderInternalBand(mem, cur, y0, kHeight);
+
+    // Merge vertically-adjacent scanlines with identical segmentation into one
+    // band, then paint each band's column segments. A run of event-free lines
+    // collapses to a single full-width renderInternalBand — byte-identical to
+    // the pre-horizontal-split behaviour (so existing demos do not regress),
+    // and text / lo-res whose row spans the band still render whole rows.
+    auto sameState = [](const Memory::DisplayState& x, const Memory::DisplayState& z) {
+        return x.textMode == z.textMode && x.mixedMode == z.mixedMode &&
+               x.page2 == z.page2 && x.hiRes == z.hiRes &&
+               x.eightyCol == z.eightyCol && x.altChar == z.altChar &&
+               x.dhgr == z.dhgr && x.eightyStore == z.eightyStore;
+    };
+    auto sameSegs = [&](const std::vector<Seg>& a, const std::vector<Seg>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i].colEnd != b[i].colEnd || !sameState(a[i].st, b[i].st))
+                return false;
+        return true;
+    };
+
+    int bandY0 = 0;
+    for (int y = 1; y <= kHeight; ++y) {
+        if (y == kHeight || !sameSegs(perLine[y], perLine[bandY0])) {
+            int col0 = 0;
+            for (const auto& s : perLine[bandY0]) {
+                renderInternalSegment(mem, s.st, bandY0, y, col0, s.colEnd);
+                col0 = s.colEnd;
+            }
+            bandY0 = y;
+        }
+    }
 }
 
 void Apple2Display::patchMixedTextBand(Memory& mem)
@@ -760,8 +892,12 @@ static std::array<uint8_t, 8> glyphRows7(uint8_t screenByte,
     return rows;
 }
 
-void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
+void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow,
+                               int col0, int col1)
 {
+    col0 = std::max(0, col0);
+    col1 = std::min(40, col1);
+    if (col0 >= col1) return;
     const auto state = mem.getDisplayState();
     // IIe scanner routing for text/lo-res page 1 ($0400-$07FF): when
     // 40-column text always displays MAIN page 1; the //e video scanner only
@@ -789,7 +925,7 @@ void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow)
 
     for (int row = firstRow; row < lastRow; ++row) {
         const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
-        for (int col = 0; col < 40; ++col) {
+        for (int col = col0; col < col1; ++col) {
             const uint8_t src = ram[rowAddr + col];
             const int cellX = col * 7;
             const int cellY = row * 8;
@@ -919,8 +1055,12 @@ const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
     0xFFFFFFFF, // 15 White
 };
 
-void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
+void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow,
+                                int col0, int col1)
 {
+    col0 = std::max(0, col0);
+    col1 = std::min(40, col1);
+    if (col0 >= col1) return;
     // Lo-res draws 40 columns × 48 rows of 7×4 colour blocks. Each text
     // byte stores TWO blocks: low nibble is the upper block, high nibble
     // the lower one.
@@ -943,7 +1083,7 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow)
         const int textRow = blockRow / 2;
         const bool upperHalf = (blockRow % 2 == 0);
         const uint16_t rowAddr = textRowAddress(textRow, videoTextPage2(state));
-        for (int col = 0; col < 40; ++col) {
+        for (int col = col0; col < col1; ++col) {
             const uint8_t b = ram[rowAddr + col];
             const uint8_t nibble = upperHalf ? (b & 0x0F) : (b >> 4);
             const uint32_t rgb = palette[nibble];
@@ -1117,8 +1257,17 @@ constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
 
 } // namespace
 
-void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline)
+void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline,
+                                int writeCol0, int writeCol1)
 {
+    // Column window in 280-wide framebuffer pixels (each byte = 7 px). The
+    // scanline is always decoded in full so the NTSC artifact sliding window
+    // keeps its neighbour-byte context across the split; only the write-back
+    // (and the mono persistence history) is clipped to [px0, px1). Default
+    // (0, 40) → px0=0, px1=280, byte-identical to the pre-split behaviour.
+    const int px0 = std::clamp(writeCol0, 0, 40) * 7;
+    const int px1 = std::clamp(writeCol1, 0, 40) * 7;
+    if (px0 >= px1) return;
     const auto state = mem.getDisplayState();
     // Single hi-res always displays MAIN page 1. Aux HGR ($2000-$3FFF) is
     // only shown via DHGR (80COL+DHIRES, renderDhgr) — with 80COL off the
@@ -1294,12 +1443,13 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
             // pair averaging. This is the optical chroma-bandwidth-limit
             // a real CRT applies — without it, the 14 MHz bit pattern
             // would alias against the 7 MHz pixel grid.
-            for (int x = 0; x < kWidth; ++x) {
+            for (int x = px0; x < px1; ++x) {
                 raw[x] = avgRgb(subPixels[2 * x], subPixels[2 * x + 1]);
             }
 
             uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
-            std::memcpy(outRow, raw.data(), sizeof(raw));
+            std::memcpy(outRow + px0, raw.data() + px0,
+                        static_cast<size_t>(px1 - px0) * sizeof(uint32_t));
         }
         return;
     }
@@ -1319,7 +1469,7 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         buildBitStream(ram, rowAddr, stream, bit7Mask);
 
         uint8_t* histRow = persistenceL.data() + static_cast<size_t>(y) * kWidth;
-        for (int x = 0; x < kWidth; ++x) {
+        for (int x = px0; x < px1; ++x) {
             const int sub = x * 2;
             const int lit = stream[sub] + stream[sub + 1];   // 0..2
             const int target = (lit * 255) / 2;
@@ -1334,7 +1484,8 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
         }
 
         uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
-        std::memcpy(outRow, raw.data(), sizeof(raw));
+        std::memcpy(outRow + px0, raw.data() + px0,
+                    static_cast<size_t>(px1 - px0) * sizeof(uint32_t));
     }
 }
 
