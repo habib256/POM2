@@ -1058,13 +1058,12 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     }
 
     // $C040 utility strobe — MAME `apple2e.cpp:1711-1716` pulses the
-    // game I/O connector's STRB pin (high → low → high) on every
-    // access. The only consumer on a real Apple II is a paddle-style
-    // peripheral with its own latch, none of which POM2 currently
-    // emulates. We swallow the access so the read doesn't fall
-    // through to floating bus (which would also be fine, but the
-    // explicit return makes intent clear).
-    if (low == 0x40) return 0;
+    // game I/O connector's STRB pin (high → low → high) on every access.
+    // No POM2 peripheral consumes the strobe, but the address is UNDRIVEN,
+    // so a read returns the floating bus like every other undriven $C0xx —
+    // matching real hardware (a vapor-lock loop polling $C040 must see the
+    // scanner byte, not a hard 0). Writes don't drive the bus.
+    if (low == 0x40) return isWrite ? 0 : floatingBus();
 
     // Display soft switches.
     if (low >= 0x50 && low <= 0x57) {
@@ -1487,6 +1486,15 @@ uint8_t Memory::languageCardSwitchAccess(uint16_t addr, bool isWrite)
 
 uint8_t Memory::floatingBus() const
 {
+    // CPU read path: the data fetch happens at the in-flight instruction's
+    // access cycle (last cycle for LDA/CMP/BIT $C0xx), so sample the scanner
+    // there — consistent with pushVideoEventLocked's timestamp.
+    return floatingBus(cycleCounter +
+        (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0));
+}
+
+uint8_t Memory::floatingBus(uint64_t absCycle) const
+{
     // Verbatim port of MAME `apple2video.cpp:124-201 scanner_address`.
     // Input: h_clock [0..64] (active video from 25), v_clock [0..261]
     // (active video from 0). Output: 16-bit DRAM address the video
@@ -1501,12 +1509,19 @@ uint8_t Memory::floatingBus() const
     // active video but diverged during HBL (where MAME's `addend0=0x0D
     // + h-carries` produces the "$1000 phantom row" effect) and on
     // page-2 HGR (m_hgr2 base differs).
+    // Scanner geometry follows the active video standard: 262 lines NTSC,
+    // 312 lines PAL (same 65-cycle line). A vapor-locking demo polls this
+    // until the beam reaches its marker, so under PAL the scanner MUST sweep
+    // a 312-line / 20280-cycle frame — a hardcoded 262 would make the lock
+    // recur every 17030 cycles instead, drifting the per-frame sync of French
+    // Touch / DIX. (cyclesPerScanline=65 both; only the line count differs.)
     constexpr uint64_t kCyclesPerLine  = 65;
-    constexpr uint64_t kLinesPerFrame  = 262;
-    constexpr uint64_t kCyclesPerFrame = kCyclesPerLine * kLinesPerFrame;
+    const uint64_t kLinesPerFrame =
+        static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+    const uint64_t kCyclesPerFrame = kCyclesPerLine * kLinesPerFrame;
 
-    const uint64_t cyc     = cycleCounter % kCyclesPerFrame;
-    const int      v_clock = static_cast<int>(cyc / kCyclesPerLine);  // 0..261
+    const uint64_t cyc     = absCycle % kCyclesPerFrame;
+    const int      v_clock = static_cast<int>(cyc / kCyclesPerLine);  // 0..311
     const int      h_clock = static_cast<int>(cyc % kCyclesPerLine);  // 0..64
 
     DisplayState ds;

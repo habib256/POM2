@@ -287,6 +287,22 @@ void SmartPortCard::buildRom()
     rom_[0xFE] = 0x13;                          // read+write+status, 2 units
     rom_[0xFF] = kDriverOff;
 
+    // ── Real-hardware driver entry at $Cn0A ────────────────────────────
+    // The Apple Disk 3.5 / Liron ("Unidisk") firmware exposes its block
+    // driver at a FIXED $Cn0A, and software that talks to it directly —
+    // rather than via the ProDOS $CnFF indirection — hardcodes `JSR $Cn0A`
+    // (e.g. French Touch DIX `boot_unidisk.a`: `modread JSR $C50A`, with the
+    // ProDOS-style ZP param block at $42-$47). POM2 synthesises its dispatch
+    // at $Cn50 instead, so a bare `JSR $Cn0A` used to land on an unimplemented
+    // $00 = BRK → the caller (with LC RAM read enabled) stormed the BRK vector
+    // out of cold Language-Card RAM. Redirect $Cn0A → the existing $Cn50
+    // dispatch; the $42-$47 calling convention is identical, so block reads/
+    // writes/status all work unchanged. ($CnFF stays $Cn50 so the //e/c boot
+    // and the ProDOS tests are untouched.)
+    rom_[0x0A] = 0x4C;                           // JMP $Cn50
+    rom_[0x0B] = kDriverOff;
+    rom_[0x0C] = kSlotRomHi;
+
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
     uint8_t pc = kBootOff;
     emit(rom_, pc, {

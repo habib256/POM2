@@ -246,9 +246,18 @@ struct Via6522
             break;
         case VIA_T2CH:
             // Latch high, transfer {t2lh:t2ll} into counter, clear IFR.T2,
-            // arm T2 (MAME `6522via.cpp:767-782`).
+            // arm T2 (MAME `6522via.cpp:946-960`).
             t2Latch    = static_cast<uint16_t>((static_cast<uint16_t>(v) << 8) | t2ll);
-            t2Counter  = t2Latch;
+            // MAME schedules the underflow IRQ at `TIMER2_VALUE + IFR_DELAY`
+            // (`:959`), with IFR_DELAY = 3 (latch-copy + IRQ-latch settle —
+            // same constant T1 uses above). POM2's `advance()` fires when the
+            // counter crosses < 0, i.e. one tick AFTER it reaches 0, so a raw
+            // `t2Counter = N` would fire at N+1 — two cycles EARLY. Pre-bias by
+            // (IFR_DELAY - 1) = 2 so the one-shot fires at exactly N+3, matching
+            // real hardware. This is what lets a Timer-2-synced beam-racer
+            // (French Touch DIX: `T2 = 7512 - latency`) land its effect on the
+            // intended scanline instead of two bytes early.
+            t2Counter  = static_cast<int32_t>(t2Latch) + 2;
             ifr       &= ~IFR_T2;
             t2Active   = true;
             break;

@@ -19,7 +19,7 @@ Référence canonique de ce qui est porté et avec quel niveau. Les
 | 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`                         | 🟢 mono DHGR 1-px, floating-TTL (mid-scanline + PAL 50 Hz : faits)                       |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
 | 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                        |
-| 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309`                              | 🟢 Port A read mask par DDR ; 6522 subset (T2/SR/PCR)                                    |
+| 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` ; `6522via.cpp:959`          | 🟢 Port A read mask par DDR ; 6522 subset (SR/PCR ; T2 one-shot fait, IRQ N+3 MAME)      |
 | 6b | Mockingboard "C" Sound II      | POM2 + AppleWin  | `Mockingboard.h/.cpp` + `Via6522::setCa1NegativeEdge`                    | — (SSI263 à `$Cs40-$Cs44`, A/!R → VIA1.CA1)                                              |
 | 7  | FloppySoundDevice              | Verbatim         | `floppy.cpp:1532-1620`, `:2925-3020`                                     | —                                                                                        |
 | 8  | SlotBus + IRQ wire-OR          | POM2-original    | Pattern MAME slot bus                                                    | —                                                                                        |
@@ -402,8 +402,15 @@ aux `Gap connus` du dashboard : **[`docs/test_corpus.md`](docs/test_corpus.md)**
   (29+ min, sources GPLv3). **Référence prioritaire** pour la perfection
   d'émulation : enchaîne vapor lock, mid-scanline, Mockingboard, 128 KB aux,
   Unidisk/Liron. Valider DIX en premier avant tout autre titre du corpus.
-- 🟡 **Vapor lock end-to-end** — `floatingBus()` est verbatim MAME mais le
-  lock n'est pas prouvé sur une vraie megademo deater. → `Gap #3`.
+- ✅ **Vapor lock** — FAIT/prouvé (2026-06-09). Test `vapor_lock` : une vraie
+  boucle 6502 `LDA $C058 / CMP marqueur / BNE` **verrouille** sur le marqueur en
+  RAM vidéo ; `floatingBus()` suit le faisceau au cycle. La géométrie scanner
+  est désormais **PAL-aware** (262/312 lignes selon `VideoStandard`) — était
+  hardcodée 262, faisait dériver le lock PAL. **Précision sous-instruction
+  corrigée** : lecture `$C0xx` échantillonnée au cycle d'accès
+  (`cycleCounter + getCurrentInstructionCycles()`, cohérent avec le log
+  d'events) ; **`$C040`** renvoie le bus (était 0). *(Reste 🟢 : accès
+  non-dernier-cycle type RMW — hors vapor lock.)*
 - 🟡 **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*,
   inclus dans DIX) — bascules intra-ligne pas toutes honorées. → `Gap #3`.
 - 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — suivi

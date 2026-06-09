@@ -144,9 +144,10 @@ public:
     bool isTestMode() const        { return testMode; }
 
     /// Test/debug accessor for the current floating-bus byte (the value an
-    /// undriven soft-switch read returns). Wraps the private floatingBus()
-    /// so unit tests can pin the video-scanner address logic.
-    uint8_t peekFloatingBus() const { return floatingBus(); }
+    /// undriven soft-switch read returns) at EXACTLY `cycleCounter` — no
+    /// in-instruction offset, so a test that sets the cycle gets a
+    /// deterministic byte. (The CPU read path uses the access-cycle variant.)
+    uint8_t peekFloatingBus() const { return floatingBus(cycleCounter); }
 
     /// Read a byte from MAIN-bank RAM directly, bypassing IIe aux paging
     /// (80STORE/RAMRD/PAGE2/ALTZP) and the soft-switch / slot-bus / ROM
@@ -665,7 +666,15 @@ private:
     /// don't otherwise return state). Approximates the address by
     /// converting `cycleCounter` into a (line, column) pair and applying
     /// the standard text/HGR row-interleave formulas.
+    /// Floating bus at the CURRENT CPU read access cycle: `cycleCounter +
+    /// the in-flight instruction's cycle count`. For an LDA/CMP/BIT $C0xx the
+    /// data fetch is the instruction's last cycle, so this lands the scanner
+    /// on the byte the read actually samples — and matches the event log's
+    /// `cycleCounter + getCurrentInstructionCycles()` stamp (vs the old
+    /// instruction-START byte, ±a few cycles off).
     uint8_t floatingBus() const;
+    /// Floating bus at an explicit absolute cycle (the scanner address math).
+    uint8_t floatingBus(uint64_t absCycle) const;
 
     // IIe-only routing helpers. Selected per address range based on the
     // current iieMemMode + DisplayState; see the table at the top of the

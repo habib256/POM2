@@ -2107,6 +2107,33 @@ endif()
 add_test(NAME pal_timing COMMAND test_pal_timing)
 set_tests_properties(pal_timing PROPERTIES TIMEOUT 5)
 
+# Vapor lock: floating-bus scanner tracks the beam, a real 6502 poll loop locks,
+# and the geometry follows the PAL/NTSC video standard (312 vs 262 lines).
+add_executable(test_vapor_lock
+    vapor_lock_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_vapor_lock PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_vapor_lock PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_vapor_lock PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_vapor_lock PRIVATE winmm)
+endif()
+add_test(NAME vapor_lock COMMAND test_vapor_lock)
+set_tests_properties(vapor_lock PROPERTIES TIMEOUT 10)
+
+# 6522 Timer-2 one-shot underflow timing (MAME TIMER2_VALUE + IFR_DELAY = N+3):
+# the Mockingboard-T2 frame sync French Touch / DIX use for beam-raced effects.
+add_executable(test_via_t2_timing via_t2_timing_test.cpp)
+target_include_directories(test_via_t2_timing PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME via_t2_timing COMMAND test_via_t2_timing)
+set_tests_properties(via_t2_timing PROPERTIES TIMEOUT 5)
+
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp
@@ -2419,6 +2446,34 @@ if(WIN32)
 endif()
 add_test(NAME smartport_write_dispatch COMMAND test_smartport_write_dispatch)
 set_tests_properties(smartport_write_dispatch PROPERTIES TIMEOUT 10)
+
+# ─── SmartPort $Cn0A Unidisk/Liron real-hardware driver entry ──────────────
+# Software (French Touch DIX) hardcodes JSR $Cn0A; verify it reaches the block
+# dispatch and reads (the entry used to be $00 = BRK → DIX froze after boot).
+add_executable(test_smartport_unidisk_entry
+    smartport_unidisk_entry_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_smartport_unidisk_entry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_unidisk_entry PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_unidisk_entry PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_unidisk_entry PRIVATE winmm)
+endif()
+add_test(NAME smartport_unidisk_entry COMMAND test_smartport_unidisk_entry)
+set_tests_properties(smartport_unidisk_entry PROPERTIES TIMEOUT 10)
 
 # ─── SmartPort I/O-error reporting (out-of-range read/write → carry-set) ───
 add_executable(test_smartport_io_error

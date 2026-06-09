@@ -595,11 +595,17 @@ emit PB = `$07 → $04 → $06 → $04`. PB2 stays high; `/RESET` only on
 PB=`$00`.
 
 **6522 subset**: A/B + DDR, T1 (latch + counter, one-shot +
-continuous), IFR/IER (T1 bits 6/7; bit 7 dynamic from `ifr & ier &
-0x7F`). T1CL read clears `IFR.T1`. T1L-H ($07) does NOT clear
+continuous), **T2 (one-shot, timed phase-2)**, IFR/IER (T1/T2 bits
+6/5; bit 7 dynamic from `ifr & ier & 0x7F`). T1CL read clears
+`IFR.T1`, T2CL read clears `IFR.T2`. T1L-H ($07) does NOT clear
 `IFR.T1` (real 6522 only T1C-L or T1C-H do). IER bit 7 set-vs-
-clear (`$C0` enables, `$40` disables). T2/SR/PCR/CA1/CB1 not
-modelled (music drivers use T1 only).
+clear (`$C0` enables, `$40` disables). SR/PCR/CB1 + T2 PB6-count
+mode not modelled. **T2 underflow IRQ fires at `TIMER2_VALUE +
+IFR_DELAY` (= N+3)** matching MAME `6522via.cpp:959` (POM2's
+`advance()` crosses < 0 at N+1, so T2CH pre-biases the counter by
+`IFR_DELAY-1 = 2`). This is the per-frame sync French Touch / DIX
+drive: `T2 = 7512 − latency`, IRQ → mid-scanline beam-race. Pinned
+by `via_t2_timing`.
 
 **AY-3-8910 synthesis** runs on audio thread inside inner
 `AudioSrc`. CPU updates regs under `mtx`; callback snapshots both
@@ -1217,6 +1223,7 @@ $Cn07     $3C                    SmartPort signature (note: see //c
                                   on-board variant below — $01 there)
 $CnFE     $13                    features/units mask (2 units)
 $CnFF     $50                    driver entry offset
+$Cn0A     JMP $Cn50              (real-HW driver entry, see below)
 $Cn20-..  boot (load blk 0 of drv 1 → $0800)
 $Cn50-..  ProDOS driver
 $CnE0-..  error halt
@@ -1225,6 +1232,19 @@ $CnE0-..  error halt
 Driver examines ProDOS `$43` unit byte: bit 7 = drive (0 → drv 1, 1 →
 drv 2). Write probes `$C0n4` bit 6 first; returns `$2B` (WP) without
 touching memory if WP.
+
+**`$Cn0A` real-hardware entry.** The Apple Disk 3.5 / Liron firmware exposes
+its block driver at a *fixed* `$Cn0A`; software that bypasses the `$CnFF`
+indirection hardcodes `JSR $Cn0A` with the same `$42-$47` ZP params. French
+Touch **DIX** (`boot_unidisk.a`: `modread JSR $C50A`) does exactly this to
+stream its menu/demos into Language-Card RAM. POM2 synthesises its dispatch at
+`$Cn50`, so a bare `JSR $Cn0A` used to hit an unimplemented `$00` = BRK — and
+because DIX has just enabled LC RAM read (`LDA $C083 ×2`), the BRK vector was
+fetched from cold LC RAM → permanent storm (banner shown, then freeze). Fix: a
+`JMP $Cn50` at `$Cn0A` (additive; `$CnFF` stays `$50`, so the //e/c boot and
+ProDOS tests are untouched). The `$42-$47` convention is identical, so reads/
+writes/status all work. Pinned by `smartport_unidisk_entry`. With this, DIX
+boots past its banner, loads its menu into `$D000` LC RAM, and runs.
 
 **Per-unit storage**: each `SmartPortUnit` owns its bytes. The
 HDV-flavoured `SmartPortHdvUnit` wraps `Block512Backing` (2IMG/dirty/
