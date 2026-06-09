@@ -229,11 +229,17 @@ private:
     // lo-res restrict their per-column write loop; hi-res still decodes the
     // whole scanline (so the NTSC artifact window keeps its neighbour context)
     // and only the write-back + persistence update are clipped to the window.
-    void renderText  (Memory& mem, int firstRow, int lastRow, int col0 = 0, int col1 = 40);
-    void renderLoRes (Memory& mem, int firstRow, int lastRow, int col0 = 0, int col1 = 40);
+    // `state` is passed in (not re-read from mem) so beam-raced bands paint
+    // with the display state active for THAT band — page select (PAGE1/PAGE2),
+    // 80STORE base and ALTCHAR all switch mid-frame, not just the mode. The
+    // full-frame path passes mem.getDisplayState(), so it is unchanged.
+    void renderText  (Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40);
+    void renderLoRes (Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40);
     void renderLoResDouble(Memory& mem, int firstRow, int lastRow);  // DLGR (80-col)
-    void renderHiRes (Memory& mem, int firstScanline, int lastScanline,
-                      int col0 = 0, int col1 = 40);
+    void renderHiRes (Memory& mem, const Memory::DisplayState& state,
+                      int firstScanline, int lastScanline, int col0 = 0, int col1 = 40);
     // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
     // resolution. Same decode algorithm as the Chat Mauve branch of
     // `renderHiRes`, but writes into `frame80` so screen captures and

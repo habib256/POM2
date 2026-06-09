@@ -16,7 +16,7 @@ Référence canonique de ce qui est porté et avec quel niveau. Les
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`                                              | 🟢 $5C 8-cyc résiduel ; style hérité                                                     |
 | 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs à extraire)                                         |
-| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`                         | 🟢 mono DHGR 1-px, floating-TTL, per-scanline DHGR switch                                |
+| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`                         | 🟢 mono DHGR 1-px, floating-TTL ; 🟠 timing PAL 50 Hz absent (≠ rendu mid-scanline, fait) |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
 | 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                        |
 | 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309`                              | 🟢 Port A read mask par DDR ; 6522 subset (T2/SR/PCR)                                    |
@@ -139,6 +139,18 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   transition exact au character-clock = raffinement ultérieur.* **Back-port POM1
   ensuite** (gated : rendu LORES+TEXT sur la GEN2 — HGR seul aujourd'hui — + flag
   HBLANK Phase 2 spec Bernie). Détail → `DEV.md` § Beam-racing.
+- 🟠 **Timing machine PAL 50 Hz** — *(bloqueur #1 validation DIX, analyse
+  source 2026-06-09 → `docs/test_corpus.md`).* POM2 est **NTSC seul**
+  (`kScanlinesPerFrame = 262`, `cyclesPerFrame = 17045`, refresh 60 Hz ; le
+  « PAL » du `NtscPostProcessor` n'est qu'un mode couleur shader). Les démos
+  French Touch / DIX sont **PAL 50 Hz** (`DEFAULT_SYNC_TIMER = 7479`, géométrie
+  312 lignes) : sur 262 lignes NTSC le rendu mid-scanline (déjà correct) est mal
+  positionné verticalement / roule, et la musique tourne ~20 % trop vite.
+  Modéliser un mode PAL : **312 lignes/frame, ~1.0157 MHz, refresh 50 Hz**,
+  sélectionnable par profil (toggle NTSC/PAL). Toucher `Apple2Display`
+  (`kScanlinesPerFrame`, `frameCycleToPos`), `EmulationController`
+  (`cyclesPerFrame`), `Memory::pushVideoEventLocked`, et le cadencement audio.
+  *Pré-requis pour valider DIX bout-en-bout. ~3-5 j.*
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur

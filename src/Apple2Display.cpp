@@ -168,7 +168,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                     renderText80(mem, tLo, tHi, state.altChar);
             } else {
                 if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                    renderText(mem, tLo, tHi);
+                    renderText(mem, state, tLo, tHi);
                 upscaleFrameToFrame80(gLo, gHi);
             }
         }
@@ -214,9 +214,9 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         }
         if (state.mixedMode) {
             if (state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
-                renderHiRes(mem, gLo, gHi);
+                renderHiRes(mem, state, gLo, gHi);
             else if (!state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
-                renderLoRes(mem, gLo / 4, (gHi + 3) / 4);
+                renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4);
             if (gLo < gHi)
                 upscaleFrameToFrame80(gLo, gHi);
             if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
@@ -230,17 +230,17 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     useFrame80 = false;
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi);
+            renderText(mem, state, tLo, tHi);
     } else if (state.hiRes) {
         if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
-            renderHiRes(mem, gLo, gHi);
+            renderHiRes(mem, state, gLo, gHi);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi);
+            renderText(mem, state, tLo, tHi);
     } else {
         if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
-            renderLoRes(mem, gLo / 4, (gHi + 3) / 4);
+            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi);
+            renderText(mem, state, tLo, tHi);
     }
 }
 
@@ -354,17 +354,17 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
     int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1);
     } else if (state.hiRes) {
         if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
-            renderHiRes(mem, gLo, gHi, col0, col1);
+            renderHiRes(mem, state, gLo, gHi, col0, col1);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1);
     } else {
         if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
-            renderLoRes(mem, gLo / 4, (gHi + 3) / 4, col0, col1);
+            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4, col0, col1);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1);
     }
 }
 
@@ -455,7 +455,7 @@ void Apple2Display::patchMixedTextBand(Memory& mem)
     if (mem.isIIE() && state.eightyCol)
         renderText80(mem, 20, 24, state.altChar);
     else {
-        renderText(mem, 20, 24);
+        renderText(mem, state, 20, 24);
         upscaleFrameToFrame80(kMixedTextFirstScanline, kHeight);
     }
 }
@@ -941,13 +941,12 @@ static std::array<uint8_t, 8> glyphRows7(uint8_t screenByte,
     return rows;
 }
 
-void Apple2Display::renderText(Memory& mem, int firstRow, int lastRow,
-                               int col0, int col1)
+void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
+                               int firstRow, int lastRow, int col0, int col1)
 {
     col0 = std::max(0, col0);
     col1 = std::min(40, col1);
     if (col0 >= col1) return;
-    const auto state = mem.getDisplayState();
     // IIe scanner routing for text/lo-res page 1 ($0400-$07FF): when
     // 40-column text always displays MAIN page 1; the //e video scanner only
     // multiplexes aux RAM in 80-column mode (renderText80) — NOT here. The
@@ -1104,8 +1103,8 @@ const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
     0xFFFFFFFF, // 15 White
 };
 
-void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow,
-                                int col0, int col1)
+void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
+                                int firstRow, int lastRow, int col0, int col1)
 {
     col0 = std::max(0, col0);
     col1 = std::min(40, col1);
@@ -1113,7 +1112,6 @@ void Apple2Display::renderLoRes(Memory& mem, int firstRow, int lastRow,
     // Lo-res draws 40 columns × 48 rows of 7×4 colour blocks. Each text
     // byte stores TWO blocks: low nibble is the upper block, high nibble
     // the lower one.
-    const auto state = mem.getDisplayState();
     // Lo-res always displays MAIN page 1 — the scanner only reads aux in
     // 80-column/double modes (see renderText). page2 base via
     // videoTextPage2(). (Reading aux under 80STORE+PAGE2 was a bug.)
@@ -1306,7 +1304,8 @@ constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
 
 } // namespace
 
-void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline,
+void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
+                                int firstScanline, int lastScanline,
                                 int writeCol0, int writeCol1)
 {
     // Column window in 280-wide framebuffer pixels (each byte = 7 px). The
@@ -1317,7 +1316,6 @@ void Apple2Display::renderHiRes(Memory& mem, int firstScanline, int lastScanline
     const int px0 = std::clamp(writeCol0, 0, 40) * 7;
     const int px1 = std::clamp(writeCol1, 0, 40) * 7;
     if (px0 >= px1) return;
-    const auto state = mem.getDisplayState();
     // Single hi-res always displays MAIN page 1. Aux HGR ($2000-$3FFF) is
     // only shown via DHGR (80COL+DHIRES, renderDhgr) — with 80COL off the
     // scanner never reads aux, so reading it under 80STORE+HIRES+PAGE2 was a

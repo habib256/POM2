@@ -45,9 +45,50 @@ posé par le scanner vidéo (effet capacitif TTL). Voir
 | Programme | Ce qu'il torture | Pourquoi c'est un cas limite | Statut POM2 |
 |---|---|---|---|
 | **deater — « megademos »** (Vince « deater » Weaver, `deater.net/weave/vmwprod`) | Vapor lock : détecte le VBL en bouclant sur une lecture `$C0xx` non pilotée jusqu'à lire un octet repère écrit en RAM vidéo. | Si la vidéo est un framebuffer rendu de façon asynchrone en fin de frame au lieu d'entrelacer lectures CPU et scanner au cycle, la boucle ne « verrouille » jamais → écran figé / glitché. | ✅ Base solide : `Memory::floatingBus()` est un **port verbatim** de MAME `apple2video.cpp:124-201 scanner_address`, indexé sur le `cycleCounter` global → l'adresse scanner suit le faisceau au cycle. Pinné par `floatingbus_page2_smoke_test` + `beam_race_composite_test`. À valider sur une vraie megademo. |
-| **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch (29+ min, //e / //c PAL, sources GPLv3) | **Suite d'intégration tout-en-un** : vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, Unidisk 800 KB via Liron/SmartPort. Regroupe *Mad Effect*, *Plasmagical*, *Wave* et les autres prods FT récentes. | Un seul disque qui enchaîne les cas limites des §1–4 ; la référence à viser avant de déclarer l'émulation « parfaite ». Requiert PAL 50 Hz (pas NTSC). | 🟡 **Priorité #1** pour validation manuelle. Couvre surtout `Gap #3` (mid-scanline) + `#6`/`#8` (Mockingboard IRQ) + `#12`/`#13` (SmartPort/Unidisk). Sondes unitaires : `dhgr_phase_signal_test`, `artifact_phase_probe`, `floatingbus_page2_smoke_test`. |
-| **Productions « French Touch »** (ex. *Mad Effect*, *Plasmagical*, *Wave* — incluses dans DIX) | Changements de **mode vidéo en milieu de scanline** (mid-scanline : TEXT↔HGR, PAGE1↔2, lo↔hi-res entre deux cycles d'une même ligne). | Exige un 6502 découpé en **vrais sous-cycles d'accès** : un opcode exécuté atomiquement (effets appliqués en un bloc) décale le commutateur de 1-2 cycles → bandes de couleur mal placées. | 🟡 Cible le `Gap #3` *« per-scanline DHGR switch »*. POM2 applique les soft-switches d'affichage par accès mais le rendu reste majoritairement par-ligne/par-frame ; les bascules **intra-ligne** ne sont pas toutes honorées. Sondes : `dhgr_phase_signal_test`, `artifact_phase_probe`. |
+| **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch (29+ min, //e / //c PAL, sources GPLv3) | **Suite d'intégration tout-en-un** : vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, Unidisk 800 KB via Liron/SmartPort. Regroupe *Mad Effect*, *Plasmagical*, *Wave* et les autres prods FT récentes. | Un seul disque qui enchaîne les cas limites des §1–4 ; la référence à viser avant de déclarer l'émulation « parfaite ». **Requiert PAL 50 Hz (pas NTSC).** | 🟡 **Priorité #1**. Rendu mid-scanline ✅ (cf. ligne suivante). **Bloqueur #1 = timing PAL 50 Hz absent** (voir analyse datée ci-dessous). Sondes : `dix_modpage_split`, `horizontal_split*`, `dhgr_phase_signal`, `floatingbus_page2_smoke`. |
+| **Productions « French Touch »** (ex. *Mad Effect*, *Plasmagical*, *Wave* — incluses dans DIX) | Changements de **mode vidéo en milieu de scanline** (mid-scanline : TEXT↔HGR, PAGE1↔2, lo↔hi-res entre deux cycles d'une même ligne). | Exige un 6502 découpé en **vrais sous-cycles d'accès** : un opcode exécuté atomiquement (effets appliqués en un bloc) décale le commutateur de 1-2 cycles → bandes de couleur mal placées. | ✅ **Rendu intra-ligne fait (2026-06-09)** : `Apple2Display::renderBeamRacing` rejoue le log d'events au **byte-column** près (`frameCycleToPos`), splits horizontaux TEXT/HGR/LORES/DHGR/80-col **et** PAGE1↔2 / ALTCHAR sur la même ligne, en RGBA *et* signal composite. Sondes : `horizontal_split`, `horizontal_split_composite`, `horizontal_split_560`, `dix_modpage_split`, `dhgr_phase_signal`, `artifact_phase_probe`. *Le cycle de transition exact au character-clock reste un raffinement.* Détail → `DEV.md` § Beam-racing. |
 | **Démos DHGR / `dapple`-like + tests d'artefact NTSC** | Ordre d'évaluation des soft-switches DHGR (`80STORE`/`PAGE2`/`HIRES`/`AN3`) et frangeage couleur (artifacting NTSC par entrelacement de signaux). | Valide l'ordre exact des switches Le Chat Mauve (FIFO AN3 → `$C05E/F`) et la démodulation composite. | ✅/🟡 Pipeline NTSC composite (`NtscPostProcessor`, `AppleWinNtsc`) + chemins CPU/GPU. Couvert par `dhgr_render_smoke_test`, `oe_demod_gpu_cpu_parity_test`, `display_golden_hash_test`. Gap résiduel : mono DHGR 1-px, floating-TTL (`#3`). |
+
+### Analyse DIX au niveau source — 2026-06-09
+
+Lecture de la source GPLv3 ([Fr3nchT0uch/DIX](https://github.com/Fr3nchT0uch/DIX/),
+ex. `MADEF2/main.a`) pour cadrer la validation. La boucle phare (`INT_ROUT1`,
+page-alignée, jouée sur la dernière ligne VBL) fait, **chaque scanline de
+65 cycles** et sur 6 lignes :
+
+```asm
+MODPAGE0  LDA $C054,X          ; PAGE1/PAGE2 mid-ligne (X = offset de scroll)
+MODLINE0  LDA $C056 (×11)      ; HIRES mid-ligne, ~44 cycles
+```
+
+Elle est **synchronisée par une IRQ Timer-2 du Mockingboard** :
+`DEFAULT_SYNC_TIMER = 7479 ; IRL machines PAL`.
+
+Conséquences pour POM2, séparées proprement :
+
+1. **Rendu mid-scanline (PAGE/HIRES/mode) — ✅ FAIT.** Le beam-racing par
+   byte-column rejoue ces bascules à la bonne colonne. **Bug trouvé + corrigé
+   en cours de validation** : les painters RGBA (`renderText/HiRes/LoRes`)
+   relisaient `mem.getDisplayState()` en interne → la sélection **PAGE2** (et
+   `ALTCHAR`) utilisait l'état de *fin de frame*, pas celui de la bande. Corrigé
+   en passant le `state` par bande aux painters (le chemin composite le faisait
+   déjà). Pinné par `dix_modpage_split` (la technique MODPAGE exacte : page 1 à
+   gauche, page 2 à droite, même ligne).
+2. **IRQ Timer-2 Mockingboard — ✅ supporté** (`Via6522` T2 one-shot phase-2,
+   `IFR_T2`/`t2Counter`). L'IRQ de sync *se déclenche*.
+3. **Timing machine PAL 50 Hz — ❌ BLOQUEUR #1.** POM2 est **NTSC seul**
+   (`kScanlinesPerFrame = 262`, 17045 cyc/frame ; le « PAL » du
+   `NtscPostProcessor` n'est qu'un mode couleur shader, pas le timing machine).
+   `DEFAULT_SYNC_TIMER=7479` et la géométrie 312 lignes PAL placent l'effet
+   verticalement et cadencent la musique pour 50 Hz ; sur 262 lignes NTSC,
+   l'effet est mal positionné / roule et le tempo est ~20 % trop rapide. **C'est
+   le pré-requis pour une vraie validation DIX bout-en-bout** (à ajouter au
+   backlog comme machine-timing PAL : 312 lignes, 1.0157 MHz, refresh 50 Hz).
+
+Boot : DIX boote en **800 KB ProDOS via Unidisk/SmartPort** (`boot_unidisk.a`) ;
+le SmartPort host-served de POM2 (slot 5 sur //e/c) couvre ce chemin. *(Test
+visuel en direct non réalisable dans l'environnement agent headless — pas
+d'affichage GLFW ; validation faite au niveau source + sondes unitaires.)*
 
 ---
 
