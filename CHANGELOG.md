@@ -30,6 +30,10 @@ courante → `DEV.md`.
   (c'est un adaptateur vidéo, pas une carte de slot périphérique). Le panneau Slot
   Config offre un combo **{(vide), Le Chat Mauve RGB (rear connector)}** sur //c/+
   (rien d'autre n'est branchable ; le check de doublon limite à un adaptateur).
+  **Le profil « Apple //c PAL (Le Chat Mauve) » câble désormais la carte en dur**
+  (built-in **sl7** = « Adaptateur IIc ») — il portait le nom sans brancher la
+  carte. Sur ce profil le combo des autres slots est grisé (un seul adaptateur),
+  et un `chatmauve` user redondant ailleurs est ignoré (pas de double carte).
 - **Config slots écrasée à la sortie sur //c.** `persistSettings` sauvait le
   mapping **live** `slotCards`, donc quitter sur //c écrivait les built-ins forcés
   (`mouseaw`…) par-dessus le choix utilisateur (`slot_4_card=mockingboard` perdu

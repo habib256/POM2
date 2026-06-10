@@ -915,6 +915,14 @@ void MainWindow::plugSlotsFromSettings()
     // ignored for this run.
     {
         const auto& cfg = pom2::profileConfig(activeProfile);
+        // Does the profile already carry a built-in Le Chat Mauve (//c PAL)?
+        // If so, a user-configured chatmauve elsewhere must NOT plug a second
+        // card — the rear connector is already taken by the on-board adapter.
+        bool builtinRgb = false;
+        for (int s = 1; s <= 7; ++s)
+            if (cfg.builtInSlots[s].has_value() &&
+                cfg.builtInSlots[s]->cardKey == "chatmauve")
+                builtinRgb = true;
         for (int s = 1; s <= 7; ++s) {
             if (cfg.builtInSlots[s].has_value()) {
                 const std::string& forced = cfg.builtInSlots[s]->cardKey;
@@ -932,8 +940,9 @@ void MainWindow::plugSlotsFromSettings()
                 // plugs into the rear DB-15 video-expansion connector, which
                 // the //c/+ DOES have. So honour a user-configured `chatmauve`
                 // even on a no-physical-slots model (the European //c is the
-                // very machine that took this adapter — see § System profiles).
-                if (slotCards[s] == "chatmauve") {
+                // very machine that took this adapter — see § System profiles)
+                // — unless the profile already wires one on-board (//c PAL).
+                if (slotCards[s] == "chatmauve" && !builtinRgb) {
                     pom2::log().info("Slots",
                         "Slot " + std::to_string(s) + " = Le Chat Mauve RGB "
                         "(rear video-connector adapter) on " +

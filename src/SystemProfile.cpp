@@ -237,6 +237,14 @@ const ProfileConfig& cfgAppleIIcPAL()
         c.displayName          = "Apple //c PAL (Le Chat Mauve)";
         c.defaultCyclesPerFrame = 20313;
         c.videoStandard        = VideoStandard::PAL;
+        // This profile IS the European //c fitted with the Le Chat Mauve RGB
+        // "Adaptateur IIc" on its DB-15 video-expansion connector — the card
+        // that gives it Péritel RGB output (the whole reason the profile
+        // exists). Wire it as an on-board fixture at sl7 (the canonical Chat
+        // Mauve slot) so the adapter is always present, like the //c's other
+        // built-ins. Plain //c (NTSC) leaves it user-pluggable instead.
+        c.builtInSlots[7] = BuiltInSlot{
+            "chatmauve", "built-in Le Chat Mauve RGB (Adaptateur IIc)"};
         return c;
     }();
     return cfg;

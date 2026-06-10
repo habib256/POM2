@@ -170,6 +170,15 @@ void MainWindow::renderSlotConfigPanel()
             return false;
         };
 
+        // Does the profile already ship a Le Chat Mauve as an on-board fixture
+        // (//c PAL = "Adaptateur IIc")? If so, the rear-connector adapter is
+        // taken — don't let the no-physical-slots rows offer a second one.
+        bool builtinRgb = false;
+        for (int s = 1; s <= 7; ++s)
+            if (profileCfg.builtInSlots[s].has_value() &&
+                profileCfg.builtInSlots[s]->cardKey == "chatmauve")
+                builtinRgb = true;
+
         bool anyDuplicate = false;
         for (int s = 1; s <= 7; ++s) {
             char label[32];
@@ -202,6 +211,16 @@ void MainWindow::renderSlotConfigPanel()
             // and nothing else; the duplicate check keeps it to one adapter.
             if (profileCfg.noPhysicalSlots) {
                 if (draft[s] != "chatmauve") draft[s] = "";
+                // RGB adapter already on-board (//c PAL) → this slot is just
+                // a non-existent connector; grey it out like the others.
+                if (builtinRgb) {
+                    draft[s] = "";
+                    ImGui::BeginDisabled(true);
+                    ImGui::LabelText(label, "(no physical slot on %s)",
+                                     std::string(profileCfg.displayName).c_str());
+                    ImGui::EndDisabled();
+                    continue;
+                }
                 const char* preview = (draft[s] == "chatmauve")
                     ? "Le Chat Mauve RGB (rear connector)" : "(empty)";
                 if (ImGui::BeginCombo(label, preview)) {
