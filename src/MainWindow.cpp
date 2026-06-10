@@ -1819,8 +1819,12 @@ void MainWindow::renderMenuBar()
         const std::string curOverride = settings->getString("cpu_mode_override", "auto");
         if (ImGui::BeginMenu("CPU")) {
             const auto& cfg = pom2::profileConfig(activeProfile);
-            const char* profileLabel =
-                (cfg.defaultCpu == M6502::CpuMode::CMOS) ? "65C02" : "NMOS 6502";
+            // CMOS-only machines (//c, //c+, enhanced //e, PAL variants) have
+            // a 65C02 soldered in — an NMOS override is physically impossible
+            // AND freezes their 65C02 ROMs (KIL opcodes). resolveCpuMode()
+            // clamps it; mirror that here so the menu can't re-arm the freeze.
+            const bool cmosOnly = (cfg.defaultCpu == M6502::CpuMode::CMOS);
+            const char* profileLabel = cmosOnly ? "65C02" : "NMOS 6502";
             char autoLabel[64];
             std::snprintf(autoLabel, sizeof(autoLabel),
                 "Auto (profile default: %s)", profileLabel);
@@ -1830,15 +1834,20 @@ void MainWindow::renderMenuBar()
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
                 controller->cpu().setCpuMode(cfg.defaultCpu);
             }
+            ImGui::BeginDisabled(cmosOnly);
+            // On a CMOS-only profile the NMOS override is inert (clamped), so
+            // never show it checked there — the running CPU is 65C02.
             if (ImGui::MenuItem("NMOS 6502", nullptr,
-                                curOverride == "nmos" ||
-                                (curOverride == "auto" && curCpu == M6502::CpuMode::NMOS
-                                 && curOverride != "65c02"))) {
+                                !cmosOnly &&
+                                (curOverride == "nmos" ||
+                                 (curOverride == "auto" && curCpu == M6502::CpuMode::NMOS
+                                  && curOverride != "65c02")))) {
                 settings->setString("cpu_mode_override", "nmos");
                 settings->save();
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
                 controller->cpu().setCpuMode(M6502::CpuMode::NMOS);
             }
+            ImGui::EndDisabled();
             if (ImGui::MenuItem("65C02 (CMOS)", nullptr,
                                 curOverride == "65c02" ||
                                 (curOverride == "auto" && curCpu == M6502::CpuMode::CMOS
@@ -1853,7 +1862,8 @@ void MainWindow::renderMenuBar()
             ImGui::TextDisabled("STZ/BRA/PHX/etc. and SMB/RMB/");
             ImGui::TextDisabled("BBR/BBS extensions.");
             ImGui::TextDisabled("Override persists across profile");
-            ImGui::TextDisabled("switches.");
+            ImGui::TextDisabled("switches (NMOS ignored on 65C02-");
+            ImGui::TextDisabled("only models: //c, //c+, enh. //e).");
             ImGui::EndMenu();
         }
         ImGui::Separator();

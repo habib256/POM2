@@ -534,9 +534,21 @@ std::string MainWindow::firstExistingPath(const std::vector<std::string>& candid
 M6502::CpuMode MainWindow::resolveCpuMode(M6502::CpuMode profileDefault) const
 {
     const std::string override = settings->getString("cpu_mode_override", "auto");
-    if (override == "nmos")  return M6502::CpuMode::NMOS;
+    // A 65C02 is a strict superset of the NMOS 6502, so forcing CMOS is
+    // always physically plausible (it was a real socket-upgrade on II/II+).
     if (override == "65c02") return M6502::CpuMode::CMOS;
-    return profileDefault;     // "auto" (default) — follow the profile
+    // Forcing NMOS only makes sense on a machine that actually shipped an
+    // NMOS 6502 (II / II+ / //e-unenhanced → profileDefault == NMOS). The
+    // //c, //c+, enhanced //e and the PAL variants have a 65C02 SOLDERED in
+    // — they cannot run NMOS, and their ROMs use 65C02-only opcodes (e.g.
+    // LDA (zp) = $B2) that DECODE AS KIL on an NMOS core and freeze the CPU.
+    // That was the "//c hangs / POM2 freezes when I switch to it via the
+    // menu" bug: a sticky `cpu_mode_override=nmos` (set once on a II+) was
+    // dragged onto the //c. So an NMOS override is honoured only where the
+    // machine supports it; on a CMOS-only profile the profile default wins.
+    if (override == "nmos" && profileDefault == M6502::CpuMode::NMOS)
+        return M6502::CpuMode::NMOS;
+    return profileDefault;     // "auto", or NMOS-override on a CMOS-only machine
 }
 
 float MainWindow::floppyMotorPitchForProfile(pom2::SystemProfile p)
