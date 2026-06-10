@@ -829,6 +829,23 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // slotCards[] on its next render (stale-draft-after-profile-switch fix).
     slotDraftInited_ = false;
 
+    // 7b. A profile that ships an on-board Le Chat Mauve (//c PAL = the
+    //     Adaptateur IIc machine) defaults its display to ChatMauveRGB — the
+    //     whole point of that profile is the RGB output, so a fresh user sees
+    //     it without hunting through the View → Hi-res menu. The card was just
+    //     plugged above, so the mode is immediately meaningful. The user can
+    //     still pick another mode afterwards (it persists until the next load
+    //     of this profile). Other profiles leave the display mode untouched.
+    {
+        bool builtinRgb = false;
+        for (int s = 1; s <= 7; ++s)
+            if (cfg.builtInSlots[s].has_value() &&
+                cfg.builtInSlots[s]->cardKey == "chatmauve")
+                builtinRgb = true;
+        if (builtinRgb && chatMauveCard)
+            display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+    }
+
     // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
     //    and look up its slot in the snapshot — empty entries mean no
     //    disk was mounted there at the profile-switch time.
