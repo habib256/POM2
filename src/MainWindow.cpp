@@ -709,10 +709,23 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_ai_control",   showAiControlPanel);
 
     // Persist the per-slot card mapping so changes via the Slot
-    // Configuration panel survive a restart.
-    for (int s = 1; s <= 7; ++s) {
-        if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug; leave saved config intact
-        settings->setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
+    // Configuration panel survive a restart. Slots the ACTIVE profile forces
+    // (//c/+ on-board SSC/Mouse/SmartPort/Disk II, and the empty virtual slots
+    // on a no-physical-slots model) are NOT persisted — `slotCards` holds the
+    // forced built-in there, and writing it would clobber the user's real
+    // choice (e.g. quitting on //c would overwrite slot_4_card=mockingboard
+    // with the //c's on-board "mouseaw", losing it when they go back to //e).
+    // The Le Chat Mauve rear-connector adapter IS user-controllable on //c, so
+    // it persists. (Mirrors the "saved key left untouched" contract in
+    // plugSlotsFromSettings.)
+    {
+        const auto& cfg = pom2::profileConfig(activeProfile);
+        for (int s = 1; s <= 7; ++s) {
+            if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug
+            if (cfg.builtInSlots[s].has_value()) continue;   // profile-forced built-in
+            if (cfg.noPhysicalSlots && slotCards[s] != "chatmauve") continue;
+            settings->setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
+        }
     }
 
     auto modeName = [](Apple2Display::HiResMode m) -> const char* {

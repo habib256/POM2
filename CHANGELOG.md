@@ -6,6 +6,39 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-10 (//c : gel CPU NMOS, Chat Mauve arrière, config slots préservée)
+
+- **« POM2 plante quand je sélectionne le profil Apple //c (1984) »** — c'était
+  un **gel CPU**, pas un segfault. Diagnostic : la config de l'utilisateur avait
+  `cpu_mode_override=nmos` (réglage collant, posé une fois sur un II+).
+  `resolveCpuMode` renvoyait donc **toujours NMOS**, y compris pour le //c — qui
+  a un **65C02 soudé**. La ROM //c exécute des opcodes 65C02 (`LDA (zp)`=$B2…)
+  qui **décodent en KIL sur NMOS** (`M6502::Hang` = `PC--` → boucle infinie) →
+  CPU figé → écran mort = « planté ». (Non reproductible en headless car le
+  symptôme est l'émulation figée, pas un crash process ; isolé en analysant
+  `M6502.cpp` + repro de la bascule mid-frame.) **Fix** : `resolveCpuMode`
+  n'honore un override **NMOS** que si le profil est NMOS par défaut
+  (II/II+///e-unenh) ; les machines **65C02-only** (//c, //c+, //e enhanced,
+  variantes PAL) tournent toujours en CMOS. Le menu Machine→CPU **grise** « NMOS
+  6502 » sur ces profils. Répond aussi à « le CPU doit basculer NMOS↔65C02 selon
+  le profil //e/enhanced ». Vérifié : //c résout `CPU = 65C02` malgré
+  l'override.
+- **Le Chat Mauve sur //c (connecteur arrière).** Le //c prenait l'**« Adaptateur
+  IIc »** Le Chat Mauve sur son port vidéo DB-15 (cf. fenarinarsa.com/?p=1370 +
+  CLAUDE.md § profils). POM2 ignorait toute carte sur un profil `noPhysicalSlots`.
+  **Fix** : exception pour `chatmauve` — la carte RVB se branche sur les //c-class
+  (c'est un adaptateur vidéo, pas une carte de slot périphérique). Le panneau Slot
+  Config offre un combo **{(vide), Le Chat Mauve RGB (rear connector)}** sur //c/+
+  (rien d'autre n'est branchable ; le check de doublon limite à un adaptateur).
+- **Config slots écrasée à la sortie sur //c.** `persistSettings` sauvait le
+  mapping **live** `slotCards`, donc quitter sur //c écrivait les built-ins forcés
+  (`mouseaw`…) par-dessus le choix utilisateur (`slot_4_card=mockingboard` perdu
+  au retour sur //e). **Fix** : ne pas persister les slots forcés par le profil
+  (built-ins + slots vidés par `noPhysicalSlots`, sauf le Chat Mauve
+  user-contrôlable) — le réglage utilisateur reste intact. Même classe que
+  [[pom2-cffa-profile-switch-drop]]. Vérifié : `slot_4_card=mockingboard`
+  préservé après sortie propre sur //c.
+
 ## 2026-06-10 (DROL cut-scene : lectures $C050-$C057 → bus flottant)
 
 - **Hang de la cut-scene DROL.** Scan de l'image disque : les overlays de
