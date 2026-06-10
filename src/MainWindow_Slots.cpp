@@ -194,15 +194,30 @@ void MainWindow::renderSlotConfigPanel()
                 continue;
             }
 
-            // Profile has no physical expansion bus (//c / //c+): even the
-            // "empty" virtual slots aren't pluggable on real hardware. Show
-            // the row greyed-out so the user understands why.
+            // Profile has no physical expansion BUS (//c / //c+) — peripheral
+            // cards can't be plugged. The ONE exception is the Le Chat Mauve
+            // RGB card: on a //c it's the "Adaptateur IIc" that goes on the
+            // rear DB-15 video-expansion connector (which the //c does have).
+            // So offer a {empty, Le Chat Mauve} toggle on each virtual slot
+            // and nothing else; the duplicate check keeps it to one adapter.
             if (profileCfg.noPhysicalSlots) {
-                draft[s] = "";
-                ImGui::BeginDisabled(true);
-                ImGui::LabelText(label, "(no physical slot on %s)",
-                                 std::string(profileCfg.displayName).c_str());
-                ImGui::EndDisabled();
+                if (draft[s] != "chatmauve") draft[s] = "";
+                const char* preview = (draft[s] == "chatmauve")
+                    ? "Le Chat Mauve RGB (rear connector)" : "(empty)";
+                if (ImGui::BeginCombo(label, preview)) {
+                    if (ImGui::Selectable("(empty)", draft[s].empty()))
+                        draft[s] = "";
+                    if (ImGui::Selectable("Le Chat Mauve RGB (rear connector)",
+                                          draft[s] == "chatmauve"))
+                        draft[s] = "chatmauve";
+                    ImGui::EndCombo();
+                }
+                if (draft[s] == "chatmauve" && isDuplicate(s)) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       "(one adapter only)");
+                    anyDuplicate = true;
+                }
                 continue;
             }
 

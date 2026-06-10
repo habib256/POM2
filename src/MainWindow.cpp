@@ -914,12 +914,25 @@ void MainWindow::plugSlotsFromSettings()
                     slotCards[s] = forced;
                 }
             } else if (cfg.noPhysicalSlots && !slotCards[s].empty()) {
-                pom2::log().info("Slots",
-                    "Slot " + std::to_string(s) + " left empty on " +
-                    std::string(cfg.displayName) +
-                    " (no physical slot connector on this model); "
-                    "user setting '" + slotCards[s] + "' ignored");
-                slotCards[s] = "";
+                // Exception: the Le Chat Mauve RGB card is NOT a peripheral-
+                // slot card — on a //c it ships as the "Adaptateur IIc" that
+                // plugs into the rear DB-15 video-expansion connector, which
+                // the //c/+ DOES have. So honour a user-configured `chatmauve`
+                // even on a no-physical-slots model (the European //c is the
+                // very machine that took this adapter — see § System profiles).
+                if (slotCards[s] == "chatmauve") {
+                    pom2::log().info("Slots",
+                        "Slot " + std::to_string(s) + " = Le Chat Mauve RGB "
+                        "(rear video-connector adapter) on " +
+                        std::string(cfg.displayName));
+                } else {
+                    pom2::log().info("Slots",
+                        "Slot " + std::to_string(s) + " left empty on " +
+                        std::string(cfg.displayName) +
+                        " (no physical slot connector on this model); "
+                        "user setting '" + slotCards[s] + "' ignored");
+                    slotCards[s] = "";
+                }
             }
         }
     }
