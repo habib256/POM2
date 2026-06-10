@@ -9,6 +9,7 @@
 
 #include "Apple2Display.h"
 #include "CpuClock.h"
+#include "M6502.h"
 #include "Memory.h"
 
 #include <cassert>
@@ -71,6 +72,30 @@ int main()
     // PAL 300%312=300→clamp 191. Proves the geometry is genuinely 312 for PAL.
     assert(recordedScanline(VideoStandard::NTSC, 300) == 38);
     assert(recordedScanline(VideoStandard::PAL,  300) == 191);
+
+    // ── 4. $C019 VBL frame period follows the standard. ──────────────────
+    // A loader that measures the VBL period to detect PAL vs NTSC must see a
+    // 20280-cycle frame under PAL (312×65), not 17030: lines 262..311 exist
+    // only on PAL — under NTSC the same absolute cycle has already wrapped
+    // into the next frame's active video. Bit 7 of $C019 = active video
+    // (IIe RDVBLBAR convention, see Memory::softSwitchAccess).
+    auto vblActiveAt = [](VideoStandard std, uint64_t absLine) {
+        Memory mem;
+        M6502  cpu(&mem);
+        mem.setCpu(&cpu);
+        mem.setIIEMode(true);
+        mem.setVideoStandard(std);
+        mem.setCycleCounter(absLine * 65);
+        return (mem.memRead(0xC019) & 0x80) != 0;
+    };
+    assert(vblActiveAt(VideoStandard::NTSC, 191) == true);
+    assert(vblActiveAt(VideoStandard::NTSC, 192) == false);  // VBL entry
+    assert(vblActiveAt(VideoStandard::NTSC, 261) == false);  // VBL tail
+    assert(vblActiveAt(VideoStandard::NTSC, 262) == true);   // frame wrapped
+    assert(vblActiveAt(VideoStandard::PAL,  192) == false);
+    assert(vblActiveAt(VideoStandard::PAL,  262) == false);  // still VBL on PAL
+    assert(vblActiveAt(VideoStandard::PAL,  311) == false);  // VBL tail
+    assert(vblActiveAt(VideoStandard::PAL,  312) == true);   // 20280 → wrap
 
     std::printf("pal_timing OK\n");
     return 0;

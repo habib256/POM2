@@ -683,16 +683,15 @@ void EmulationController::workerLoop()
         }
 
         // Running: execute one frame's worth of cycles, then sleep until
-        // the next 60 Hz boundary. Using steady_clock keeps wallclock pace
-        // without drifting on busy machines.
+        // the next 50/60 Hz boundary (frameIntervalUs follows the video
+        // standard). Using steady_clock keeps wallclock pace without
+        // drifting on busy machines.
         //
-        // Snapshot display state + clear the video-event log before the
-        // CPU budget runs so Apple2Display can beam-race mid-frame soft
-        // switches when events are present.
-        {
-            std::lock_guard<std::mutex> lk(stateMtx);
-            mem.beginVideoEventFrame();
-        }
+        // The beam-racing video-event log is NOT bracketed here: recording
+        // is continuous and Memory::advanceCycles publishes the completed
+        // frame at each video-frame boundary (65 × 262/312 cycles). The old
+        // per-tick bracket let the 60 Hz UI steal a half-recorded tick and
+        // drop the rest — fatal for PAL (50 Hz worker) mid-scanline demos.
         //
         // We chunk the budget into small pieces and release `stateMtx`
         // between each — the UI thread takes that mutex many times per

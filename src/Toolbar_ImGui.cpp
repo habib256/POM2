@@ -155,11 +155,16 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // Combo: 1× / 2× / 4× / MAX. The current speed sticks to whichever
     // bucket the cyclesPerFrame value rounds into; off-bucket values
     // (the user typed a custom speed) read as
-    // "custom" with no checkmark.
-    static constexpr int kSpeed1x  = 17045;
-    static constexpr int kSpeed2x  = 17045 * 2;
-    static constexpr int kSpeed4x  = 17045 * 4;
+    // "custom" with no checkmark. The buckets follow the active video
+    // standard (1× = 17045 @60 Hz NTSC, 20313 @50 Hz PAL) so "1×" is the
+    // machine's real clock on both.
+    const VideoTiming& vt = pom2VideoTiming(snap.videoStandard);
+    const int kSpeed1x  = vt.cyclesPerFrame;
+    const int kSpeed2x  = kSpeed1x * 2;
+    const int kSpeed4x  = kSpeed1x * 4;
     static constexpr int kSpeedMax = 1'000'000;
+    const double mhz1x =
+        static_cast<double>(kSpeed1x) * vt.refreshHz / 1e6;
     const char* speedLabel = "Speed";
     if      (snap.cyclesPerFrame == kSpeed1x)  speedLabel = ICON_FA_GAUGE_SIMPLE " 1×";
     else if (snap.cyclesPerFrame == kSpeed2x)  speedLabel = ICON_FA_GAUGE      " 2×";
@@ -168,14 +173,18 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     else                                        speedLabel = ICON_FA_GAUGE      " …";
     ImGui::SetNextItemWidth(90.0f);
     if (ImGui::BeginCombo("##POM2ToolbarSpeed", speedLabel)) {
-        if (ImGui::Selectable(ICON_FA_GAUGE_SIMPLE " 1× (1.02 MHz)",
-                              snap.cyclesPerFrame == kSpeed1x))
+        char lbl[64];
+        std::snprintf(lbl, sizeof lbl,
+                      ICON_FA_GAUGE_SIMPLE " 1× (%.2f MHz)", mhz1x);
+        if (ImGui::Selectable(lbl, snap.cyclesPerFrame == kSpeed1x))
             r.setCyclesPerFrame = kSpeed1x;
-        if (ImGui::Selectable(ICON_FA_GAUGE      " 2× (2.05 MHz)",
-                              snap.cyclesPerFrame == kSpeed2x))
+        std::snprintf(lbl, sizeof lbl,
+                      ICON_FA_GAUGE       " 2× (%.2f MHz)", mhz1x * 2);
+        if (ImGui::Selectable(lbl, snap.cyclesPerFrame == kSpeed2x))
             r.setCyclesPerFrame = kSpeed2x;
-        if (ImGui::Selectable(ICON_FA_GAUGE_HIGH " 4× (4.09 MHz)",
-                              snap.cyclesPerFrame == kSpeed4x))
+        std::snprintf(lbl, sizeof lbl,
+                      ICON_FA_GAUGE_HIGH  " 4× (%.2f MHz)", mhz1x * 4);
+        if (ImGui::Selectable(lbl, snap.cyclesPerFrame == kSpeed4x))
             r.setCyclesPerFrame = kSpeed4x;
         if (ImGui::Selectable(ICON_FA_BOLT       " MAX (uncapped)",
                               snap.cyclesPerFrame == kSpeedMax))

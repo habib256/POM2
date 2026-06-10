@@ -496,12 +496,14 @@ void Apple2Display::render(Memory& mem)
     const bool cpuDemodGfx = cpuDemod && !state.textMode;
     const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || cpuDemod;
 
-    // Take the mid-frame video soft-switch log ONCE. Both consumers need it:
-    // the RGBA beam-racing path (the fallback framebuffer) AND the composite
-    // signal builder, so mid-scanline mode switches (text↔graphics splits,
-    // page flips, DHGR toggles) show up in the OE/AppleWin composite picture
-    // too — not just the LUT modes. `events` survives the renderBeamRacing
-    // copy and is handed to fillCompositeSignal below.
+    // Fetch the last PUBLISHED video frame's soft-switch log ONCE (a copy —
+    // Memory republishes at each video-frame boundary, so re-rendering the
+    // same frame at 60 Hz over 50 Hz PAL content is safe). Both consumers
+    // need it: the RGBA beam-racing path (the fallback framebuffer) AND the
+    // composite signal builder, so mid-scanline mode switches (text↔graphics
+    // splits, page flips, DHGR toggles) show up in the OE/AppleWin composite
+    // picture too — not just the LUT modes. `events` survives the
+    // renderBeamRacing copy and is handed to fillCompositeSignal below.
     auto events = mem.takeVideoEvents();
     if (!cpuDemodGfx) {
         if (events.empty())

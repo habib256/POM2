@@ -1112,8 +1112,12 @@ void AiControlServer::handleSpeed(int fd, const Request& req)
         ctrl_->setCyclesPerFrame(static_cast<int>(cpf));
     } else {
         const std::string preset = jsonGetString(req.body, "preset");
-        if      (preset == "1x")  ctrl_->setCyclesPerFrame(17045);
-        else if (preset == "2x")  ctrl_->setCyclesPerFrame(34090);
+        // 1× follows the active video standard (17045 NTSC / 20313 PAL) —
+        // same rule as the toolbar buckets.
+        const int base =
+            pom2VideoTiming(ctrl_->getVideoStandard()).cyclesPerFrame;
+        if      (preset == "1x")  ctrl_->setCyclesPerFrame(base);
+        else if (preset == "2x")  ctrl_->setCyclesPerFrame(base * 2);
         else if (preset == "max") ctrl_->setCyclesPerFrame(1000000);
         else { sendJsonError(fd, 400, "supply cycles_per_frame or preset 1x|2x|max"); return; }
     }

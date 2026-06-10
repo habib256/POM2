@@ -283,17 +283,26 @@ public:
     void          setVideoStandard(VideoStandard s) { videoStandard_.store(s); }
     VideoStandard videoStandard() const { return videoStandard_.load(); }
 
-    /// Called once per emulated frame (before the CPU budget runs) to
-    /// snapshot display state at scanline 0 and clear the event log.
+    /// LEGACY synchronous bracket (tests only): snapshot display state and
+    /// clear the event log; the matching takeVideoEvents() closes the bracket
+    /// and moves the log out. The app does NOT use this — recording is
+    /// continuous and advanceCycles() publishes the completed frame at each
+    /// video-frame boundary (65 × 262/312 cycles), so a 60 Hz UI consuming
+    /// 50 Hz PAL content never steals a half-recorded frame nor drops the
+    /// events recorded between its take and the next worker tick.
     void beginVideoEventFrame();
 
-    /// Display soft-switch state at the start of the current frame.
+    /// Display soft-switch state at the start of the last published frame
+    /// (or of the legacy bracket when one is open — tests).
     DisplayState getDisplayStateAtFrameStart() const {
         std::lock_guard<std::mutex> lk(stateMutex);
-        return displayAtFrameStart_;
+        return legacyEventBracket_ ? displayAtFrameStart_ : publishedFrameStart_;
     }
 
-    /// Move the accumulated video events out (UI thread consumes after render).
+    /// Video events of the last published frame, as a COPY — the UI may
+    /// re-render the same frame several times (60 Hz vsync over 50 Hz PAL
+    /// content). In legacy-bracket mode: closes the bracket and moves the
+    /// recording out (the pre-publication contract the tests pin).
     std::vector<VideoEvent> takeVideoEvents();
 
     // Keyboard bridge — UI thread enqueues keys, CPU thread reads them
@@ -501,9 +510,18 @@ private:
     // are infrequent (once per frame, in render()).
     mutable std::mutex stateMutex;
     DisplayState display;
-    DisplayState displayAtFrameStart_;
-    std::vector<VideoEvent> videoEvents_;
-    bool videoEventFrameOpen_ = false;
+    // Beam-racing event log. Recording is continuous (videoEventFrameOpen_
+    // starts true); advanceCycles() publishes {frame-start state, events}
+    // into the published_* pair at each video-frame boundary. The legacy
+    // synchronous bracket (tests) flips legacyEventBracket_ and gates
+    // recording with videoEventFrameOpen_ exactly as before publication.
+    DisplayState displayAtFrameStart_;            // recording frame
+    std::vector<VideoEvent> videoEvents_;         // recording frame
+    DisplayState publishedFrameStart_;            // last completed frame
+    std::vector<VideoEvent> publishedEvents_;     // last completed frame
+    bool videoEventFrameOpen_ = true;
+    bool legacyEventBracket_  = false;
+    uint64_t lastVideoFrameIndex_ = 0;
     std::atomic<VideoStandard> videoStandard_{VideoStandard::NTSC};
 
     void recordVideoEvent(VideoEventKind kind, bool value);

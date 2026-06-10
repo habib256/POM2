@@ -2107,6 +2107,29 @@ endif()
 add_test(NAME pal_timing COMMAND test_pal_timing)
 set_tests_properties(pal_timing PROPERTIES TIMEOUT 5)
 
+# Per-video-frame publication of the beam-racing event log (the 50 Hz worker /
+# 60 Hz UI handoff): events surface only at video-frame boundaries, published
+# frames are re-consumable copies, resets purge the logs, legacy bracket kept.
+add_executable(test_video_event_publish
+    video_event_publish_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_video_event_publish PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_video_event_publish PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_video_event_publish PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_video_event_publish PRIVATE winmm)
+endif()
+
+add_test(NAME video_event_publish COMMAND test_video_event_publish)
+set_tests_properties(video_event_publish PROPERTIES TIMEOUT 5)
+
 # Vapor lock: floating-bus scanner tracks the beam, a real 6502 poll loop locks,
 # and the geometry follows the PAL/NTSC video standard (312 vs 262 lines).
 add_executable(test_vapor_lock

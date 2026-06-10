@@ -154,6 +154,12 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   pas encore basculé 50 Hz ; toggle NTSC/PAL manuel + auto-PAL quand carte Chat
   Mauve branchée (les profils PAL couvrent déjà le cas d'usage). Détail →
   `CLAUDE.md` § System profiles + `docs/test_corpus.md` § DIX.
+  **Suite (2026-06-10)** : hand-off worker 50 Hz / UI 60 Hz corrigé — le log
+  d'events vidéo est publié **par frame vidéo** dans `Memory::advanceCycles`
+  et consommé en copie (l'ancien bracket par tick perdait des events → flicker
+  10 Hz des splits PAL ; pinné `video_event_publish`) ; `$C019`/edge VBL suit
+  la géométrie 312 lignes (pinné `pal_timing` § 4) ; vitesses 1×/2×/4×
+  (toolbar, AI server, turbo disque) dérivées du standard (17045→20313 en PAL).
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur

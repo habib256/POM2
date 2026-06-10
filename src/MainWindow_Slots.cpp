@@ -829,6 +829,10 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //     50/60 Hz pacing and propagates the 262/312-line geometry to Memory.
     controller->setCyclesPerFrame(cfg.defaultCyclesPerFrame);
     controller->setVideoStandard(cfg.videoStandard);
+    // Re-seed the disk-turbo restore value: it defaults to the NTSC 17045 at
+    // construction, and restoring that onto a PAL (or //c+ 4×) profile after
+    // a turbo burst would silently underclock the machine.
+    diskSavedCyclesPerFrame = cfg.defaultCyclesPerFrame;
 
     // 11. Final hard reset — CPU re-fetches PC from the new ROM's reset
     //     vector at $FFFC/$FFFD.

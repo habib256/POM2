@@ -35,6 +35,10 @@ public:
         bool          isRunning          = false;
         bool          isStopped          = false;   // CPU paused (vs single-step ready)
         int           cyclesPerFrame     = 17045;
+        // Active video standard: the 1×/2×/4× buckets derive from its
+        // cyclesPerFrame (17045 NTSC / 20313 PAL) — a hardcoded 17045 made
+        // "1×" run a PAL machine at 852 kHz (−16 %).
+        VideoStandard videoStandard      = VideoStandard::NTSC;
         bool          memoryGridVisible  = false;
         SystemProfile activeProfile      = SystemProfile::AppleIIPlus;
         // Enable / disable hint for the disk button(s).

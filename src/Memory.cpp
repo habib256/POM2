@@ -356,11 +356,14 @@ void Memory::advanceCycles(int cycles)
     slots.advanceCycles(cycles);
 
     // Scanline-accurate VBL transition detection. Apple II video timing:
-    // 262 NTSC scanlines × 65 CPU cycles each. Visible: 0..191. VBL:
-    // 192..261. The "long cycle" every line (1 extra cycle every 65) is
-    // not modelled; the nominal 65 cycles/line is close enough.
+    // 65 CPU cycles/line; 262 lines NTSC / 312 PAL. Visible: 0..191. VBL is
+    // 192..261 (NTSC) / 192..311 (PAL) → the VBL/frame period must follow the
+    // standard, or a French Touch demo that measures the VBL frame length to
+    // detect PAL vs NTSC sees the wrong machine. The "long cycle" (1 extra
+    // every 65) isn't modelled; nominal 65/line is close enough.
     constexpr uint64_t kCyclesPerScanline = 65;
-    constexpr uint64_t kScanlinesPerFrame = 262;
+    const uint64_t kScanlinesPerFrame =
+        static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
     constexpr uint64_t kVisibleScanlines  = 192;
     const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
     const bool nowActive = scanline < kVisibleScanlines;
@@ -380,11 +383,36 @@ void Memory::advanceCycles(int cycles)
         }
     }
     vblWasActive = nowActive;
+
+    // ── Per-video-frame publication of the beam-racing event log ────────
+    // The recording frame closes at each video-frame boundary (65 × 262/312
+    // cycles) and becomes the published frame the UI renders from. Decoupled
+    // from both the worker's CPU budget tick (17045/20313 ≠ one video frame)
+    // and the UI's vsync: a 60 Hz UI over 50 Hz PAL content re-renders the
+    // same published frame instead of stealing a half-recorded one — the
+    // old tick-bracket model dropped every event recorded between the UI's
+    // take and the next tick (~1 empty take in 6 under PAL → mid-scanline
+    // effects like French Touch *Mad Effect* flickered at ~10 Hz).
+    // Legacy mode: tests bracket synchronously via beginVideoEventFrame().
+    const uint64_t frameIndex =
+        cycleCounter / (kCyclesPerScanline * kScanlinesPerFrame);
+    if (!legacyEventBracket_ && frameIndex != lastVideoFrameIndex_) {
+        lastVideoFrameIndex_ = frameIndex;
+        std::lock_guard<std::mutex> lk(stateMutex);
+        publishedFrameStart_ = displayAtFrameStart_;
+        publishedEvents_     = std::move(videoEvents_);
+        videoEvents_.clear();
+        displayAtFrameStart_ = display;   // state at scanline 0 of the new frame
+    }
 }
 
 void Memory::beginVideoEventFrame()
 {
+    // Legacy synchronous bracket (tests): from here on, recording is gated
+    // by the open flag and takeVideoEvents() moves the log out directly —
+    // the per-video-frame publication in advanceCycles() stands down.
     std::lock_guard<std::mutex> lk(stateMutex);
+    legacyEventBracket_  = true;
     displayAtFrameStart_ = display;
     videoEvents_.clear();
     videoEventFrameOpen_ = true;
@@ -393,8 +421,13 @@ void Memory::beginVideoEventFrame()
 std::vector<Memory::VideoEvent> Memory::takeVideoEvents()
 {
     std::lock_guard<std::mutex> lk(stateMutex);
-    videoEventFrameOpen_ = false;
-    return std::move(videoEvents_);
+    if (legacyEventBracket_) {
+        videoEventFrameOpen_ = false;
+        return std::move(videoEvents_);
+    }
+    // Published mode: COPY, not move — the UI re-renders the same frame
+    // when no new one has been published (60 Hz vsync over 50 Hz content).
+    return publishedEvents_;
 }
 
 void Memory::recordVideoEvent(VideoEventKind kind, bool value)
@@ -445,6 +478,14 @@ void Memory::resetSoftSwitches()
 {
     std::lock_guard<std::mutex> lk(stateMutex);
     display = DisplayState{};
+    // Beam-racing log: a reset wipes the soft-switch timeline. Replaying
+    // pre-reset events (or a stale published frame) against the wiped state
+    // would paint ghost segments for up to one frame — drop both and resync
+    // the frame-start snapshots to the fresh state.
+    videoEvents_.clear();
+    publishedEvents_.clear();
+    displayAtFrameStart_ = display;
+    publishedFrameStart_ = display;
     lcReadRam     = false;
     // Sather "Understanding the Apple //e" Fig 5.13: post-reset LC state is
     // read ROM / write RAM enabled / bank 2 selected / no pre-write. MAME
@@ -1001,7 +1042,8 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // read, contradicting Tech Note #9.
     if (iieMode && low == 0x19) {
         constexpr uint64_t kCyclesPerScanline = 65;
-        constexpr uint64_t kScanlinesPerFrame = 262;
+        const uint64_t kScanlinesPerFrame =
+            static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
         constexpr uint64_t kVisibleScanlines  = 192;
         const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
         const bool nowActive = scanline < kVisibleScanlines;

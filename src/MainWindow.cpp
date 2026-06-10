@@ -6441,6 +6441,7 @@ void MainWindow::render()
         tb.isRunning          = (mode == EmulationController::Mode::Running);
         tb.isStopped          = (mode == EmulationController::Mode::Stopped);
         tb.cyclesPerFrame     = controller->getCyclesPerFrame();
+        tb.videoStandard      = controller->getVideoStandard();
         tb.memoryGridVisible  = showMemoryGrid;
         tb.activeProfile      = activeProfile;
         tb.hasPrimaryDiskCard = (diskCard != nullptr);

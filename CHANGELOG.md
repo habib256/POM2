@@ -6,6 +6,42 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-10 (Beam-racing PAL : publication par frame vidéo + vitesses 1× par standard)
+
+- **Publication du log d'évènements vidéo par frame vidéo** (le hand-off
+  50/60 Hz). L'ancien modèle ouvrait le log à chaque tick CPU du worker
+  (`beginVideoEventFrame`) et l'UI le **volait** au vsync (`takeVideoEvents`
+  fermait le bracket) ; tout évènement enregistré entre le take UI et le tick
+  suivant était **silencieusement perdu** (`recordVideoEvent` no-op bracket
+  fermé). **Pourquoi ça comptait** : en PAL le worker tourne à 50 Hz et l'UI à
+  60 Hz → battement systématique à 10 Hz : ~1 rendu UI sur 6 retombait dans le
+  même tick et recevait un log *vide* (→ `renderInternal`, zéro split), les
+  autres un log *partiel* — les effets mid-scanline French Touch (*Mad
+  Effect*, DIX) clignotaient et perdaient des bandes. Aucun test ne le voyait
+  (ils bracketent de façon synchrone). **Fix** : enregistrement continu ;
+  `Memory::advanceCycles` **publie** `{état de début de frame, events}` au
+  franchissement de chaque frontière de frame vidéo (65 × 262 NTSC / 312 PAL
+  cycles — aligné sur la géométrie du scanner, pas sur le budget 17045/20313
+  du worker) ; `takeVideoEvents` renvoie une **copie** de la dernière frame
+  publiée, re-rendable à volonté par l'UI 60 Hz. Le bracket synchrone reste
+  disponible pour les tests (`legacyEventBracket_`). Un reset purge les deux
+  logs (sinon replay fantôme contre l'état essuyé). Bonus : le chemin WASM
+  (qui n'appelait jamais `beginVideoEventFrame`) gagne le beam-racing.
+  Pinné `video_event_publish`.
+- **`$C019`/VBL suit le standard vidéo** : la détection d'edge VBL
+  (`advanceCycles`) et la lecture `$C019` utilisaient un 262 lignes codé en
+  dur ; une démo PAL qui mesure la période VBL voyait une frame de 17030
+  cycles pendant que le bus flottant balayait 20280 — deux machines
+  contradictoires. Pinné par l'extension de `pal_timing` (§ 4 : lignes
+  262–311 = VBL sous PAL, wrap à 312).
+- **Vitesse 1×/2×/4× dérivée du standard actif** (toolbar, preset `/speed`
+  de l'AI server, restauration du turbo disque re-seedée par `applyProfile`).
+  **Pourquoi** : les 17045 codés en dur faisaient tourner une machine PAL à
+  17045 × 50 Hz = 852 kHz (−16 %) au premier clic « 1× » — effets qui roulent,
+  musique Mockingboard molle. Reste assumé : `MouseCardAppleWin::kCyclesPerVbl`
+  = 17045 (pacing VBL de la HLE souris à 60 Hz même en PAL — sans effet sur
+  les démos, à retraiter avec le port //c).
+
 ## 2026-06-01 (Release v0.7)
 
 - **Bump de version v0.6 → v0.7.** Mise à jour de la chaîne de version dans
