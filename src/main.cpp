@@ -621,6 +621,21 @@ int main(int argc, char* argv[])
 
         c.mainWindow->render();
 
+        // [TEMP REPRO] POM2_REPRO_PROFILE=<key> → after 120 frames, switch
+        // profile MID-FRAME (right here, between NewFrame and Render — exactly
+        // where the Machine→Profile menu item calls applyProfile). Reproduces
+        // a runtime menu profile switch headlessly. Remove after debugging.
+        {
+            static const char* reproKey = std::getenv("POM2_REPRO_PROFILE");
+            static int reproFrames = 0;
+            if (reproKey && reproFrames >= 0 && ++reproFrames == 120) {
+                pom2::log().warn("REPRO", std::string("mid-frame applyProfile -> ") + reproKey);
+                c.mainWindow->applyProfile(pom2::profileFromKey(reproKey));
+                pom2::log().warn("REPRO", "applyProfile returned (no crash in switch itself)");
+                reproFrames = -1;  // once
+            }
+        }
+
         ImGui::Render();
         int dw, dh;
         glfwGetFramebufferSize(c.window, &dw, &dh);
