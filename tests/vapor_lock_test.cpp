@@ -101,6 +101,47 @@ int main()
     std::printf("  NTSC frame=%ld cyc (262 lines), PAL frame=%ld cyc (312 lines): "
                 "geometry follows the standard\n", kNtscFrame, kPalFrame);
 
+    // ── (d) DROL cut-scene: a $C050 READ flips the mode AND returns the
+    // floating bus. Drol.dsk (offsets 0x14359 / 0x143d5 / 0x14be0) syncs its
+    // cut-scenes with
+    //     LDX #$02 / l: LDA $C050 / CMP #$80 / BNE l / DEX / BPL l
+    // — three consecutive scanner reads of $80 from a display soft switch.
+    // POM2 used to return a hard 0 for $C050-$C057 reads → the loop span
+    // forever (same hang LinApple had; AppleWin fixed it in 1.13.0 with the
+    // floating bus). The HGR page is filled with $80 (black-with-palette-bit,
+    // DROL's cleared background), so once the loop's own $C050 access has
+    // dropped TEXT the scanner serves $80 and the lock must take.
+    mem.setVideoStandard(VideoStandard::NTSC);
+    mem.resetSoftSwitches();
+    (void)mem.memRead(0xC051);                                  // TEXT on
+    (void)mem.memRead(0xC057);                                  // HIRES armed
+    for (uint32_t a = 0x2000; a < 0x4000; ++a)
+        mem.memWrite(static_cast<uint16_t>(a), 0x80);
+    const uint8_t cut[] = {
+        0xA2, 0x02,         //       LDX #$02
+        0xAD, 0x50, 0xC0,   // l:    LDA $C050   (gfx on + floating bus)
+        0xC9, 0x80,         //       CMP #$80
+        0xD0, 0xF9,         //       BNE l
+        0xCA,               //       DEX
+        0x10, 0xF6,         //       BPL l
+        0xA9, 0x01,         //       LDA #$01
+        0x85, 0x00,         //       STA $00     ; "locked"
+        0x4C, 0x10, 0x03,   //       JMP * (park)
+    };
+    for (size_t i = 0; i < sizeof(cut); ++i)
+        mem.memWrite(static_cast<uint16_t>(0x0300 + i), cut[i]);
+    mem.memWrite(0x0000, 0x00);
+    mem.setCycleCounter(0);
+    cpu.setProgramCounter(0x0300);
+    cpu.run(kNtscFrame * 2);
+    assert(mem.memRead(0x0000) == 0x01 &&
+           "DROL cut-scene loop never locked — $C050 read must return the "
+           "floating bus, not 0");
+    assert(!mem.getDisplayState().textMode &&
+           "$C050 read lost its display side effect");
+    std::printf("  DROL cut-scene $C050 poll loop LOCKED (read = floating bus"
+                " + mode flip)\n");
+
     std::printf("OK vapor_lock\n");
     return 0;
 }

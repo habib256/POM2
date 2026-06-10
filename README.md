@@ -176,7 +176,7 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 
 ## 📺 Video — beam, NTSC, phosphor & 3D
 
-POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carry a CPU-cycle stamp; the display reconstructs the frame from that event log, so mid-scanline mode changes (TEXT-over-HGR splits, page flips, AN3 DHGR pulses through the Le Chat Mauve FIFO) land on the right scanline. The composite signal beam-races on the same log — pinned by `beam_race_composite`.
+POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carry a CPU-cycle stamp; the display reconstructs the frame from that event log, so mid-scanline mode changes (TEXT-over-HGR splits, beam-raced page splits, AN3 DHGR pulses through the Le Chat Mauve FIFO) land on the right scanline. The log is published once per *video* frame, so a 60 Hz window showing 50 Hz PAL content never drops a frame's worth of switches. Unsynced double-buffer page flips (DROL-style) are told apart from beam-raced page splits and shown tear-free. The composite signal beam-races on the same log — pinned by `beam_race_composite`.
 
 - **Composite NTSC** — OpenEmulator-style fragment shader (`NtscPostProcessor` / `OpenGLShader`): barrel → hue → BCS → phosphor curve → glow.
 - **AppleWin NTSC** — the alternative CPU-side IIR-LUT colour path (`AppleWinNtsc`).

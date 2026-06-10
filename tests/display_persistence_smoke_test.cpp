@@ -170,19 +170,21 @@ void testHgrChatMauve560()
     disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
 
     // Pattern: lay down a single byte at the leftmost column of HGR row 0
-    // with bits = 0b0010_0011 = $23. The Chat Mauve algorithm groups
-    // pixels into pairs:
-    //   pixel 0 = 1, pixel 1 = 1 → pair code 0b11 = 3
-    //   pixel 2 = 0, pixel 3 = 0 → pair code 0b00 = 0 (black)
-    //   pixel 4 = 0, pixel 5 = 1 → pair code 0b10 = 2
-    //   pixel 6 = 0           (last pixel — odd, pair 6 picks up pixel 7
-    //                          from next byte = 0 → pair code 0b00 = 0)
-    // MSB of byte = 0, so kChatMauveHGR[0][...] table lookup applies.
-    // We don't pin the exact palette entry — that's covered by the
-    // existing renderHiRes Chat Mauve coverage. What this test pins is:
+    // with bits = 0b0010_0011 = $23 → pixels (bit 0 leftmost):
+    //   1,1,0,0,0,1,0
+    // The AppleWin-style RGB decode (RGBMonitor.cpp UpdateHiResRGBCell)
+    // judges each pixel against its neighbours: only the lone patterns
+    // 010 / 101 take the colour of their even-aligned pair; anything else
+    // is plain black/white from the pixel's own bit. Here:
+    //   pixels 0,1 (a run of set bits)    → WHITE at full resolution
+    //   pixels 2,3,4 and 6 (clear)        → BLACK
+    //   pixel 5 (0,1,0 = lone bit)        → COLOUR kChatMauveHGR[0][2]
+    // MSB of byte = 0, so the [0][...] palette bank applies. What this
+    // test pins:
     //   * width() reports 560 (we routed through frame80)
-    //   * each input pair occupies 4 contiguous output dots (the doubling)
-    //   * the BLACK pair at pixels 2..3 → output dots 4..7 all equal
+    //   * each input pixel occupies 2 contiguous output dots (the doubling)
+    //   * white runs stay white, clear pixels stay black, the lone bit
+    //     takes its pair colour
     {
         mem.memWrite(hgrAddr(0), 0x23);
     }
@@ -191,32 +193,32 @@ void testHgrChatMauve560()
     assert(disp.height() == 192);
 
     const uint32_t* pix = disp.pixels();
-    // Row 0, first 4 output dots = pair 0 (pixels 0+1 = 0b11) → some
-    // non-black palette entry; all 4 dots identical (the doubling
-    // contract).
+    // Pixels 0,1 form a set-bit run → WHITE, each doubled to 2 dots
+    // (dots 0..3).
     const uint32_t c0 = pix[0 * 560 + 0];
     assert(pix[0 * 560 + 1] == c0);
     assert(pix[0 * 560 + 2] == c0);
     assert(pix[0 * 560 + 3] == c0);
-    assert(alpha(c0) == 0xFF);
+    assert(c0 == 0xFFFFFFFFu && "set-bit run must render white");
 
-    // Row 0, dots 4..7 = pair 1 (pixels 2+3 = 0b00) → kChatMauveHGR[0][0]
-    // which the original palette table sets to black. Pin the doubling
-    // there too.
+    // Pixels 2..4 are clear with no 101 neighbourhood → BLACK (dots 4..9).
     const uint32_t c1 = pix[0 * 560 + 4];
     assert(pix[0 * 560 + 5] == c1);
     assert(pix[0 * 560 + 6] == c1);
     assert(pix[0 * 560 + 7] == c1);
-    assert(c1 == 0xFF000000u && "Chat Mauve BLACK pair didn't expand to 4 dots");
+    assert(pix[0 * 560 + 8] == c1);
+    assert(pix[0 * 560 + 9] == c1);
+    assert(c1 == 0xFF000000u && "clear pixels must render black");
 
-    // Row 0, dots 8..11 = pair 2 (pixels 4+5 = 0b10) → another palette
-    // entry, distinct from c0 (since the pair codes differ) and from
-    // black. Doubling contract again.
-    const uint32_t c2 = pix[0 * 560 + 8];
-    assert(pix[0 * 560 + 9]  == c2);
-    assert(pix[0 * 560 + 10] == c2);
+    // Pixel 5 is a lone bit (0,1,0) → colour of its pair (pixels 4+5 =
+    // 0b10 → kChatMauveHGR[0][2]), doubled to dots 10..11; pixel 6 clear
+    // → black dots 12..13.
+    const uint32_t c2 = pix[0 * 560 + 10];
     assert(pix[0 * 560 + 11] == c2);
-    assert(c2 != c0 && c2 != 0xFF000000u);
+    assert(c2 != 0xFF000000u && c2 != 0xFFFFFFFFu
+           && "lone bit must take its pair colour");
+    assert(pix[0 * 560 + 12] == 0xFF000000u);
+    assert(pix[0 * 560 + 13] == 0xFF000000u);
 
     // BW560 mode: each input dot → 2 identical output dots. Plant a
     // simple alternating pattern and check.

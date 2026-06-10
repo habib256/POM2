@@ -158,14 +158,14 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     if (chatMauveHGR) {
         if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi)) {
             if (chatMauve->hgrDuochromeEnabled() && auxRam != nullptr)
-                renderHgrDuochrome(mem, gLo, gHi);
+                renderHgrDuochrome(mem, state, gLo, gHi);
             else
-                renderHiResChatMauve80(mem, gLo, gHi);
+                renderHiResChatMauve80(mem, state, gLo, gHi);
         }
         if (state.mixedMode && bandScanlines(scanY0, scanY1, 160, 192, &gLo, &gHi)) {
             if (iie80) {
                 if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                    renderText80(mem, tLo, tHi, state.altChar);
+                    renderText80(mem, state, tLo, tHi);
             } else {
                 if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
                     renderText(mem, state, tLo, tHi);
@@ -182,7 +182,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         auxRam != nullptr && chatMauve->colorTextEnabled();
     if (chatMauveText) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderTextChatMauveFgBg(mem, tLo, tHi);
+            renderTextChatMauveFgBg(mem, state, tLo, tHi);
         useFrame80 = true;
         return;
     }
@@ -191,24 +191,24 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     if (iie80) {
         if (state.textMode) {
             if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-                renderText80(mem, tLo, tHi, state.altChar);
+                renderText80(mem, state, tLo, tHi);
             useFrame80 = true;
             return;
         }
         if (state.hiRes && state.dhgr) {
             if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi))
-                renderDhgr(mem, gLo, gHi);
+                renderDhgr(mem, state, gLo, gHi);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, tLo, tHi, state.altChar);
+                renderText80(mem, state, tLo, tHi);
             useFrame80 = true;
             return;
         }
         if (!state.hiRes && state.dhgr) {
             const int blockEnd = state.mixedMode ? 40 : 48;
             if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &gLo, &gHi))
-                renderLoResDouble(mem, gLo / 4, (gHi + 3) / 4);
+                renderLoResDouble(mem, state, gLo / 4, (gHi + 3) / 4);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, tLo, tHi, state.altChar);
+                renderText80(mem, state, tLo, tHi);
             useFrame80 = true;
             return;
         }
@@ -220,7 +220,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
             if (gLo < gHi)
                 upscaleFrameToFrame80(gLo, gHi);
             if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, tLo, tHi, state.altChar);
+                renderText80(mem, state, tLo, tHi);
             useFrame80 = true;
             return;
         }
@@ -377,6 +377,31 @@ void Apple2Display::forEachBeamSegment(
     VideoStandard std,
     const std::function<void(const Memory::DisplayState&, int, int, int, int)>& paint)
 {
+    // ── Double-buffer page flips (DROL-class) vs beam-raced page splits ──
+    // A frame whose PAGE2 events all go ONE direction is a buffer flip, not
+    // beam racing: the game flips, then spends the next frames redrawing the
+    // page it just hid. Replaying that flip at its raster position would
+    // paint the band ABOVE it from the now-hidden page — but we read RAM at
+    // render time, not at beam time, so that band shows the page MID-REDRAW
+    // (half-erased sprites → strong flicker; the real beam saw it pristine).
+    // Apply the final page frame-wide instead: the page displayed at frame
+    // end is the freshly completed buffer, which is exactly what RAM holds.
+    // Real beam-raced effects (DIX MODPAGE: page 1 left, page 2 right of the
+    // SAME line) flip BOTH directions within a frame and keep exact replay.
+    bool pageOn = false, pageOff = false;
+    for (const auto& e : events)
+        if (e.kind == Memory::VideoEventKind::Page2)
+            (e.value ? pageOn : pageOff) = true;
+    Memory::DisplayState start = frameStart;
+    if (pageOn != pageOff) {
+        start.page2 = pageOn;
+        events.erase(std::remove_if(events.begin(), events.end(),
+                         [](const Memory::VideoEvent& e) {
+                             return e.kind == Memory::VideoEventKind::Page2;
+                         }),
+                     events.end());
+    }
+
     // Raster order: scanline ascending, then byte column within the line.
     // (Stable so two switches at the same beam position keep push order.)
     std::stable_sort(events.begin(), events.end(),
@@ -394,7 +419,7 @@ void Apple2Display::forEachBeamSegment(
     struct Seg { int colEnd; Memory::DisplayState st; };
     std::array<std::vector<Seg>, kHeight> perLine;
 
-    Memory::DisplayState cur = frameStart;
+    Memory::DisplayState cur = start;
     size_t ei = 0;
     for (int y = 0; y < kHeight; ++y) {
         std::vector<Seg> segs;
@@ -458,7 +483,7 @@ void Apple2Display::patchMixedTextBand(Memory& mem)
     if (!state.mixedMode || state.textMode) return;
 
     if (mem.isIIE() && state.eightyCol)
-        renderText80(mem, 20, 24, state.altChar);
+        renderText80(mem, state, 20, 24);
     else {
         renderText(mem, state, 20, 24);
         upscaleFrameToFrame80(kMixedTextFirstScanline, kHeight);
@@ -1004,9 +1029,10 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
 // is doubled to 14 dots; a set dot picks the aux byte's high nibble
 // (foreground), a clear dot the low nibble (background) — both lo-res
 // palette indices.
-void Apple2Display::renderTextChatMauveFgBg(Memory& mem, int firstRow, int lastRow)
+void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
+                                            const Memory::DisplayState& state,
+                                            int firstRow, int lastRow)
 {
-    const auto state = mem.getDisplayState();
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
@@ -1157,9 +1183,10 @@ void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
 // `lores_update<Double>` (`rotl4(NIBBLE(aux),1)` then `NIBBLE(main)`). Output
 // is the 560-wide frame80. Marginal //e mode (rare demos/utilities); without
 // this the //e fell back to a plausible 40-col lo-res from main RAM only.
-void Apple2Display::renderLoResDouble(Memory& mem, int firstRow, int lastRow)
+void Apple2Display::renderLoResDouble(Memory& mem,
+                                      const Memory::DisplayState& state,
+                                      int firstRow, int lastRow)
 {
-    const auto state = mem.getDisplayState();
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;   // fall back to main if no aux
     const bool useChatMauve = (hiResMode == HiResMode::ChatMauveRGB) && (chatMauve != nullptr);
@@ -1561,10 +1588,10 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
 // charset ROM (`roms/apple2_char.rom`), the built-in 5×7 fallback covers
 // the printable range; ALTCHAR is then a no-op.
 
-void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
-                                 bool altCharSet)
+void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
+                                 int firstRow, int lastRow)
 {
-    const auto state = mem.getDisplayState();
+    const bool altCharSet = state.altChar;
     const uint8_t* main_ = mem.data();
     const uint8_t* aux_  = auxRam ? auxRam : mem.data();
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
@@ -1610,10 +1637,10 @@ void Apple2Display::renderText80(Memory& mem, int firstRow, int lastRow,
 // output dots (2 pixels × 2 dot-doubling). For BW560, each HGR pixel
 // becomes 2 identical dots.
 void Apple2Display::renderHiResChatMauve80(Memory& mem,
+                                           const Memory::DisplayState& state,
                                            int firstScanline,
                                            int lastScanline)
 {
-    const auto state = mem.getDisplayState();
     // Single hi-res (Chat Mauve 80-col-text-window variant) displays MAIN
     // page 1; aux HGR is only shown via DHGR. (Reading aux under
     // 80STORE+PAGE2 was a bug — see renderHiRes.)
@@ -1650,17 +1677,30 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
                 outRow[x * 2 + 1] = c;
             }
         } else {
-            for (int p = 0; p < kWidth; p += 2) {
-                const unsigned code = pixels[p] | (pixels[p + 1] << 1);
-                const int      byteIdx = p / 7;
-                const uint32_t rgb = kChatMauveHGR[msbHigh[byteIdx]][code];
-                // One palette entry across 4 output dots (2 HGR pixels ×
-                // 2 dot-doubling). Mirrors what the card emits on its
-                // 14 MHz dot clock when fed an aligned pair.
-                outRow[p * 2 + 0] = rgb;
-                outRow[p * 2 + 1] = rgb;
-                outRow[p * 2 + 2] = rgb;
-                outRow[p * 2 + 3] = rgb;
+            // RGB-card HGR decode — port of AppleWin `RGBMonitor.cpp`
+            // `UpdateHiResRGBCell`: each pixel is judged against its two
+            // neighbours. Only the lone patterns 010 / 101 take the colour
+            // of their (even-aligned) pixel PAIR; every other pattern is
+            // pure black/white from the pixel's own bit. Runs of set bits
+            // therefore render WHITE at full 280-pixel sharpness (the
+            // earlier aligned-pair-only decode flattened everything to
+            // 140 colour blocks — visibly soft text/sprites). Palette bank
+            // = bit 7 of the byte containing THIS pixel.
+            for (int i = 0; i < kWidth; ++i) {
+                const int l = (i > 0)          ? pixels[i - 1] : 0;
+                const int ctr = pixels[i];
+                const int r = (i < kWidth - 1) ? pixels[i + 1] : 0;
+                uint32_t rgb;
+                if ((ctr && !l && !r) || (!ctr && l && r)) {
+                    const int      pair = i & ~1;
+                    const unsigned code =
+                        pixels[pair] | (pixels[pair + 1] << 1);
+                    rgb = kChatMauveHGR[msbHigh[i / 7]][code];
+                } else {
+                    rgb = ctr ? 0xFFFFFFFFu : 0xFF000000u;
+                }
+                outRow[i * 2 + 0] = rgb;
+                outRow[i * 2 + 1] = rgb;
             }
         }
     }
@@ -1675,9 +1715,10 @@ void Apple2Display::renderHiResChatMauve80(Memory& mem,
 //
 // Output: 560-wide `frame80`, each HGR pixel becomes 2 identical dots
 // (matching renderHiResChatMauve80's BW560 sub-path).
-void Apple2Display::renderHgrDuochrome(Memory& mem, int firstScanline, int lastScanline)
+void Apple2Display::renderHgrDuochrome(Memory& mem,
+                                       const Memory::DisplayState& state,
+                                       int firstScanline, int lastScanline)
 {
-    const auto state = mem.getDisplayState();
     const uint8_t* main_ = mem.data();
     const uint8_t* aux_  = auxRam ? auxRam : main_;
 
@@ -1759,9 +1800,9 @@ void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
 //                 buffer (560×192) so amber afterglow persists in DHGR
 //                 just like it does in HGR via `persistenceL`.
 
-void Apple2Display::renderDhgr(Memory& mem, int firstScanline, int lastScanline)
+void Apple2Display::renderDhgr(Memory& mem, const Memory::DisplayState& state,
+                               int firstScanline, int lastScanline)
 {
-    const auto state = mem.getDisplayState();
     const uint8_t* main_ = mem.data();
     const uint8_t* aux_  = auxRam ? auxRam : main_;
 

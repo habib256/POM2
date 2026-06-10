@@ -24,6 +24,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [Profile switching internals](#profile-switching-internals)
 - [CLI (CliDispatcher)](#cli-clidispatcher)
 - [Clock & threading](#clock--threading)
+- [WebAssembly (browser build)](#webassembly-browser-build)
 
 ## CPU
 
@@ -115,11 +116,17 @@ backing. Wired in `applyProfile` between `setIIEMode(true)` and
 
 ### Soft switches
 
-Read OR write triggers. `$C030` toggles speaker on every access in
-`$C030-$C03F`. `$C061-$C067` are paddles + buttons on II/II+ —
-NOT cassette aliases (only `$C020`/`$C060` are). Reads of
-`$C050-$C05F` return `floatingBus()`, not 0 (some RNG / anti-copy
-code samples those).
+Read OR write triggers. `$C030-$C03F` (speaker), `$C050-$C057`
+(display modes) and `$C040` (game-port STRB) all do their side effect
+on a READ **and** return `floatingBus()` — every undriven `$C0xx`
+read must hand back the video-scanner byte, like real hardware (MAME
+`apple2.cpp do_io`). A hard 0 here hangs vapor-lock poll loops: DROL's
+cut-scene spins on `LDA $C050 / CMP #$80` (three consecutive scanner
+reads via a display soft switch) and never unlocked while `$C050-$C057`
+returned 0 — the same hang LinApple had, fixed in AppleWin 1.13.0 with
+the floating bus, fixed here 2026-06-10 (pinned `vapor_lock` §(d)).
+`$C061-$C067` are paddles + buttons on II/II+ — NOT cassette aliases
+(only `$C020`/`$C060` are).
 
 **Open-Apple/Solid-Apple** OR'd into $C061/$C062 bit 7 alongside
 joystick buttons (MAME `apple2e.cpp:2157-2169`); wired to host
@@ -200,7 +207,7 @@ Nine `HiResMode`:
 
 The deep per-mode comparison with each origin source — algorithm
 provenance, deviations, pinned tests and side-by-side captures —
-lives in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
+lives in [`docs/graphics_modes_comparison.md`](docs/graphics_modes_comparison.md).
 
 ### DHGR (IIe, `eightyCol && hiRes && dhgr && !textMode`)
 
@@ -251,12 +258,41 @@ text bottom 4 rows. Pinned: `dlgr_render_smoke`, goldens
 
 `Memory` logs display soft-switch edges (`$C050-$C057`, `$C05E/$C05F`,
 IIe `$C00C/$C00D` 80COL, `$C000/$C001` 80STORE, `$C00E/$C00F` ALTCHAR)
-with CPU-cycle timestamps during each emulated
-frame (`beginVideoEventFrame` at the start of the worker's 60 Hz budget).
-`Apple2Display::render()` replays events per scanline band via
-`renderInternalBand` when the log is non-empty; otherwise the fast
-single-`getDisplayState()` path is unchanged. Logging is gated on an
-open frame so headless tests that poke switches during setup are unaffected.
+with CPU-cycle timestamps. `Apple2Display::render()` replays events per
+scanline band via `renderInternalBand` when the log is non-empty;
+otherwise the fast single-`getDisplayState()` path is unchanged.
+
+**Per-video-frame publication (not per-tick)** *(2026-06-10)*. Recording is
+continuous: `Memory::advanceCycles` **publishes** the completed
+`{frameStartState, events}` pair at each video-frame boundary (65 × 262 NTSC /
+312 PAL cycles), and `takeVideoEvents()` returns a *copy* of the last published
+frame. This replaced an earlier model that opened the log per worker CPU tick
+(`beginVideoEventFrame`) and let the UI *steal* it at vsync — under PAL the
+worker runs 50 Hz and the UI 60 Hz, so ~1 UI render in 6 fell twice inside one
+tick and saw an **empty** log (→ `renderInternal`, no splits) → mid-scanline
+effects (French Touch *Mad Effect*) flickered at the 50/60 beat. Publishing on
+the video-frame boundary decouples the log from both the worker's CPU budget
+(17045/20313 ≠ one video frame) and the UI's vsync; the UI re-renders the same
+published frame when no new one exists (replay is deterministic + idempotent). A
+reset purges both logs (no ghost replay against the wiped state). The legacy
+synchronous bracket (`beginVideoEventFrame` + `takeVideoEvents` *moves* the log,
+gated by `legacyEventBracket_`) is kept for the headless render tests. Pinned by
+`video_event_publish`.
+
+**Double-buffer page flips vs beam-raced page splits** *(2026-06-10)*. Replay
+reads RAM at *render* time, not *beam* time — correct only while RAM is static
+across the frame. Double-buffer games (DROL flips `$C054/$C055` every ~4 frames,
+unsynced, drifting through the visible band) break that: the band above a
+mid-frame flip would render from the page the game is **already redrawing**
+(half-erased sprites → strong flicker, worse than real hardware's subtle tear).
+`forEachBeamSegment` detects this — a frame whose PAGE2 events all go ONE
+direction is a buffer flip → apply the final page **frame-wide** (the displayed
+page at frame end is the freshly completed buffer, exactly what RAM holds) and
+drop the events; a frame that flips BOTH directions (DIX MODPAGE: page 1 left,
+page 2 right of the same line) keeps the exact replay. Pinned by
+`drol_pageflip_render`; `dix_modpage_split` unchanged. Known trade-off *(🟢)*: a
+single intentional one-direction mid-frame page split renders full-page — the
+real fix is MAME-style incremental scanline rendering.
 
 **Composite signal also beam-races.** `render()` now takes the event log
 *once* and hands it to `fillCompositeSignal(mem, events)` as well as the RGBA
@@ -349,7 +385,8 @@ The shader's NTSC demodulator recovers the 16 colours from the same
 spectral mechanism a real CRT uses (no palette lookup).
 
 GPU demod phase must match `renderCompositeOeCpu()` — see
-`docs/oe_gpu_cpu_parity.md` and `oe_demod_gpu_cpu_parity` test.
+`docs/archive/oe_gpu_cpu_parity.md` (historical) and the
+`oe_demod_gpu_cpu_parity` test.
 
 `MainWindow::drawScreenImage()` uploads `signalBuf` to an `R8` GL
 texture and runs `NtscPostProcessor::process()`. The fragment shader
@@ -548,7 +585,7 @@ regression test for the no-colour bug, Idealized artifact non-black, Tv
 convergence, multi-line wrapping).
 
 Full mode-by-mode comparison vs MAME / OpenEmulator / hardware lives
-in [`docs/graphics_modes_comparison.md`](../docs/graphics_modes_comparison.md).
+in [`docs/graphics_modes_comparison.md`](docs/graphics_modes_comparison.md).
 
 ### Test framework gotcha
 

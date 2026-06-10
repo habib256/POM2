@@ -135,44 +135,48 @@ int main()
         assert(raw->currentMode() == LeChatMauveCard::RenderMode::COL140);
 
         // Chat Mauve HGR now renders into frame80 natively (560-wide),
-        // so each HGR pair (2 HGR pixels → 1 palette entry) lands as 4
-        // contiguous output dots. The decoded colours are unchanged —
-        // only the dot-grid stride is doubled. (`width()` only flips to
-        // 560 after the first render, so we check it post-render below.)
+        // so the dot-grid stride is doubled. The decode follows AppleWin
+        // RGBMonitor.cpp UpdateHiResRGBCell: a pixel is COLOUR only when
+        // it forms a lone 010 / 101 pattern with its neighbours (taking
+        // its even-aligned pair's palette entry, 2 output dots); any
+        // other pattern is plain black/white at full pixel resolution.
+        // (`width()` only flips to 560 after the first render, so we
+        // check it post-render below.)
 
-        // $01 at col 0: pair (bit0=1, bit1=0) at MSB=0 → violet on both
-        // pixels (the Chat Mauve renderer paints both pixels of the pair
-        // with the same colour, no half-dot delay).
+        // $01 at col 0: lone bit 0 (pattern 010) → pair code 01 at MSB=0
+        // → magenta on ITS 2 output dots; neighbour pixels are black.
         clearHgrLine(mem, 0);
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
         assert(display.width() == 560);
-        // Pair (0,1): bits = 01 → kChatMauveHGR[0][1] = Feline MAGENTA
-        // rgb(0xaa, 0x1a, 0xd1) — 4 output dots wide.
+        // kChatMauveHGR[0][1] = Feline MAGENTA rgb(0xaa, 0x1a, 0xd1).
         const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == magenta);
-        // The rest of the row: pairs 00 → black.
-        for (int x = 4; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 0) == magenta);
+        // The rest of the row: clear pixels → black.
+        for (int x = 2; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
 
-        // $02 at col 0: pair (bit0=0, bit1=1) → green (bank 0, code 10).
+        // $02 at col 0: lone bit 1 (010) → green (bank 0, code 10) on
+        // dots 2..3; pixel 0 stays black.
         clearHgrLine(mem, 1);
         writeHgrByte(mem, 1, 0, 0x02);
         display.render(mem);
         // kChatMauveHGR[0][2] = Feline GREEN rgb(0x6f, 0xe6, 0x2c).
         const uint32_t green = pack(0x6F, 0xE6, 0x2C);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 1) == green);
+        assert(*pixelAt(display, 0, 1) == kBlack);
+        assert(*pixelAt(display, 1, 1) == kBlack);
+        for (int x = 2; x < 4; ++x) assert(*pixelAt(display, x, 1) == green);
 
-        // $81 at col 0: bit0=1 only, MSB=1 → bank 1 → blue. No half-dot
-        // delay (that's NTSC-only) — pair 0 should be the bank-1 01
-        // colour (blue) across all 4 output dots, NOT shifted.
+        // $81 at col 0: bit0=1 only, MSB=1 → bank 1 → blue on dots 0..1.
+        // No half-dot delay (that's NTSC-only), no fringing.
         clearHgrLine(mem, 2);
         writeHgrByte(mem, 2, 0, 0x81);
         display.render(mem);
         // kChatMauveHGR[1][1] = Feline BLUE rgb(0x00, 0x8a, 0xb5).
         const uint32_t blue = pack(0x00, 0x8A, 0xB5);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 2) == blue);
-        // Critically, dots 4+ should be BLACK (no fringing — NTSC would
+        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 2) == blue);
+        // Critically, dots 2+ should be BLACK (no fringing — NTSC would
         // smear here because of the half-dot phase shift).
+        assert(*pixelAt(display, 2, 2) == kBlack);
         assert(*pixelAt(display, 4, 2) == kBlack);
 
         // $7F full row: every pair = 11 → white.
@@ -282,7 +286,8 @@ int main()
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
         const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == magenta);
+        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 0) == magenta);
+        assert(*pixelAt(display, 2, 0) == kBlack);
 
         // Flip the toggle. Same $01 byte now decodes as if MSB were 1,
         // so bank 1 code 01 = Feline BLUE. Bits 0..6 unchanged.
@@ -292,13 +297,13 @@ int main()
         writeHgrByte(mem, 1, 0, 0x01);
         display.render(mem);
         const uint32_t blue = pack(0x00, 0x8A, 0xB5);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 1) == blue);
+        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 1) == blue);
 
         // Inverse: $81 (MSB=1) with toggle on → decodes as MSB=0 → magenta.
         clearHgrLine(mem, 2);
         writeHgrByte(mem, 2, 0, 0x81);
         display.render(mem);
-        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 2) == magenta);
+        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 2) == magenta);
 
         raw->setInvertBit7(false);
     }

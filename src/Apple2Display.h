@@ -238,7 +238,8 @@ private:
                       int firstRow, int lastRow, int col0 = 0, int col1 = 40);
     void renderLoRes (Memory& mem, const Memory::DisplayState& state,
                       int firstRow, int lastRow, int col0 = 0, int col1 = 40);
-    void renderLoResDouble(Memory& mem, int firstRow, int lastRow);  // DLGR (80-col)
+    void renderLoResDouble(Memory& mem, const Memory::DisplayState& state,
+                           int firstRow, int lastRow);  // DLGR (80-col)
     void renderHiRes (Memory& mem, const Memory::DisplayState& state,
                       int firstScanline, int lastScanline, int col0 = 0, int col1 = 40);
     // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
@@ -249,7 +250,8 @@ private:
     // dot → 2 identical output dots. (The on-screen output of GL
     // upscaling is identical to the 280-wide path in the current model;
     // the gain is in the framebuffer fidelity itself.)
-    void renderHiResChatMauve80(Memory& mem, int firstScanline, int lastScanline);
+    void renderHiResChatMauve80(Memory& mem, const Memory::DisplayState& state,
+                                int firstScanline, int lastScanline);
     // Le Chat Mauve Eve "HGR Duochrome". Single-HGR resolution image
     // bitmap lives in MAIN $2000-$3FFF (one bit per pixel as usual);
     // at the matching offset in AUX, each byte holds a per-7-pixel-block
@@ -257,12 +259,14 @@ private:
     // nibble = background). Each HGR pixel becomes 2 dots in frame80.
     // Renders into `frame80` (560 wide); the gate at the top of render()
     // requires `auxRam != nullptr` so this path can read the aux bytes.
-    void renderHgrDuochrome(Memory& mem, int firstScanline, int lastScanline);
+    void renderHgrDuochrome(Memory& mem, const Memory::DisplayState& state,
+                            int firstScanline, int lastScanline);
     // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
     // 560×192. Reads aux RAM for even columns and main RAM for odd
     // columns (per AppleWin's scanner). `altCharSet` toggles flashing
     // inverse vs. mousetext+non-flashing inverse (the IIe ALTCHAR switch).
-    void renderText80(Memory& mem, int firstRow, int lastRow, bool altCharSet);
+    void renderText80(Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow);
     // IIe-only. Renders DHGR scanlines [firstScanline, lastScanline) into
     // `frame80`. Reads main + aux HGR pages: aux byte at offset c
     // contributes 7 bits to dots [c*14 .. c*14+6], main byte contributes
@@ -270,7 +274,8 @@ private:
     // 4-bit lo-res palette index (560 dots → 140 color cells per line).
     // Monochrome HiResModes render dot-by-dot luminance through the
     // selected phosphor.
-    void renderDhgr  (Memory& mem, int firstScanline, int lastScanline);
+    void renderDhgr  (Memory& mem, const Memory::DisplayState& state,
+                      int firstScanline, int lastScanline);
     // Le Chat Mauve / Video-7 "foreground-background" colored TEXT mode.
     // Active on a IIe-class machine with the RGB card in 40-col text while
     // the DHGR (AN3) soft-switch is on. Char code comes from main RAM; the
@@ -280,7 +285,8 @@ private:
     // Renders rows [firstRow, lastRow) into `frame80` at 560 wide. Port of
     // MAME `apple2video.cpp` text_update (:788-791) + render_line_color_array
     // (:571-583).
-    void renderTextChatMauveFgBg(Memory& mem, int firstRow, int lastRow);
+    void renderTextChatMauveFgBg(Memory& mem, const Memory::DisplayState& state,
+                                 int firstRow, int lastRow);
     // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
     // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);

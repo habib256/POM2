@@ -46,7 +46,7 @@ raffiné par [PR #10792](https://github.com/mamedev/mame/pull/10792)
 [PR #10835](https://github.com/mamedev/mame/pull/10835) (extraction
 `composite_color_mode` 0/1/2). Composite *color mode 0*.
 
-**Algorithme POM2** ([`Apple2Display.cpp:1002-1080`](../src/Apple2Display.cpp)) :
+**Algorithme POM2** ([`Apple2Display.cpp::renderHiRes`](../src/Apple2Display.cpp), chemin `kArtifactColorLut`) :
 
 1. Sérialiser chaque scanline HGR en 560 sous-pixels via `buildHgrWordRow`
    (`kBitDoubler[128]` double chaque bit ; MSB applique un décalage
@@ -68,7 +68,7 @@ raffiné par [PR #10792](https://github.com/mamedev/mame/pull/10792)
 |---|---|
 | « 39 seam fix-ups » | MAME applique 39 corrections de couleur aux frontières d'octets quand certaines combinaisons MSB déclenchent du noir parasite. POM2 ne porte pas ces fix-ups — peu visible en pratique. |
 | Glow / bloom | MAME peut optionnellement ajouter un halo Gaussien CPU. POM2 délègue tout effet « CRT glow » au mode `ColorCompositeOE` (shader). |
-| MSB rev-0 mask | DHGR avec `dhgr=1` masque bit 7 (`bit7Mask=0x7F`) pour émuler une rev-0 — `Apple2Display.cpp:929`. MAME idem. |
+| MSB rev-0 mask | DHGR avec `dhgr=1` masque bit 7 (`bit7Mask=0x7F`) pour émuler une rev-0 — `Apple2Display.cpp::renderHiRes`. MAME idem. |
 
 **Tests** : `hgr_render_smoke` (LUT corners, $7F→blanc, MSB shift),
 `dhgr_render_smoke` (interleave aux/main, deux gris distincts).
@@ -84,7 +84,7 @@ de `kArtifactColorLut` — 8 entrées sur 128 diffèrent de la row 0,
 biaisées « 4n medium colors » qui rendent les runs de couleur 4-dots
 mieux mais le texte 40-col plus moche.
 
-**Algorithme POM2** ([`Apple2Display.cpp:1015`](../src/Apple2Display.cpp)) :
+**Algorithme POM2** ([`Apple2Display.cpp::renderHiRes`](../src/Apple2Display.cpp), `composite_color_mode = 1`) :
 identique à `ColorNTSC` sauf `lutRow = 1`.
 
 **Déviations** : aucune.
@@ -102,8 +102,8 @@ identique à `ColorNTSC` sauf `lutRow = 1`.
 chaque nibble 4-dot comme index palette. Bords nets, aucun fringing
 inter-octet.
 
-**Algorithme POM2** ([`Apple2Display.cpp:1104-1117`](../src/Apple2Display.cpp) HGR,
-[`:1451-1459`](../src/Apple2Display.cpp) DHGR) :
+**Algorithme POM2** ([`Apple2Display.cpp::renderHiRes`](../src/Apple2Display.cpp), branche
+`composite_color_mode = 2`, HGR + DHGR) :
 
 ```
 nibble = (window >> (kContextBits - 1)) & 0x0F   // kContextBits = 3
@@ -116,7 +116,7 @@ x + is_80_column - 1)` (`apple2video.cpp:487-494`). ⚠️ Corrigé en 2026-05 :
 l'ancienne formule (`window >> 3`, rotation `absX`) divergeait de MAME sur
 ~50 % des dots intérieurs ; vérifié bit-exact contre un oracle MAME
 (0/2,2 M dots) après correction couplée de l'origine de nibble **et** de la
-phase. Voir `docs/video_parity_audit_2026-05-30.md`.
+phase. Voir `docs/archive/video_parity_audit_2026-05-30.md` (historique).
 
 **Tests** : `dhgr_render_smoke` + les hashes `*/4bit` de `display_golden_hash`
 (régénérés sur la sortie MAME-correcte → pin de non-régression).
@@ -136,16 +136,20 @@ carte réelle). Variante MAME : `apple2video.cpp:896-977` (4 rgbmodes
 DHGR).
 
 **Algorithme POM2** ([`LeChatMauveCard.h`](../src/LeChatMauveCard.h),
-[`Apple2Display.cpp:948-993`](../src/Apple2Display.cpp) pour HGR,
-[`:1437-1510`](../src/Apple2Display.cpp) pour DHGR).
+[`Apple2Display.cpp::renderHiResChatMauve80`](../src/Apple2Display.cpp) + table
+`kChatMauveHGR` pour HGR, [`::renderDhgr`](../src/Apple2Display.cpp) pour DHGR).
 
 La carte capte le flux digital pré-modulation au connecteur de slot :
 
-- **HGR** : décodage byte-par-byte du flux 7-bit. Bit 7 = banque de palette
-  (PAS demi-dot delay, comme sur composite). 140 paires de pixels → 1
-  entrée palette dans `kChatMauveHGR[2][4]` ([`:897-908`](../src/Apple2Display.cpp)).
-  Sortie native à 560 dots via `renderHiResChatMauve80` (4 dots identiques
-  par couleur — gain en fidélité framebuffer).
+- **HGR** : décodage byte-par-byte du flux 7-bit, **par pixel** (port de
+  l'algo AppleWin `RGBMonitor.cpp UpdateHiResRGBCell`, MAJ 2026-06-10). Bit 7 =
+  banque de palette (PAS demi-dot delay, comme sur composite). Chaque pixel est
+  jugé contre ses **deux voisins** : seul un motif isolé `010`/`101` prend la
+  couleur de sa paire alignée (`kChatMauveHGR[2][4]`) ; tout autre motif est
+  **noir/blanc à pleine résolution 280 px** (les runs de bits → blanc net). La
+  variante antérieure forçait tout en blocs de paires (1 couleur / 4 dots = 140
+  px effectifs → image molle, texte/contours flous). Sortie native 560 dots via
+  `renderHiResChatMauve80` (chaque pixel doublé en 2 dots).
 - **DHGR** : 4 sous-modes pilotés par le FIFO AN3 (soft-switches
   `$C00C/$C00D` data + `$C05E/$C05F` clock) :
   - `BW560` — strict mono 560×192.
@@ -169,6 +173,7 @@ La carte capte le flux digital pré-modulation au connecteur de slot :
 | Indices 5 ≠ 10 | POM2 garde les deux gris distincts de la palette Feline (AppleWin). MAME collapse les deux à `0xFF808080`. Choix intentionnel (la marque Chat Mauve). |
 | Dragon Wars bit-7 toggle | `LeChatMauveCard::invertBit7()` — switch inversion de la banque palette pour Dragon Wars qui définit le MSB à l'inverse. Pas dans MAME, ni AppleWin (issue connue chez les deux). |
 | Sortie native 560 | `renderHiResChatMauve80` écrit directement dans `frame80`, plutôt que `frame` 280×2 upscaled. Gain en fidélité framebuffer (screenshot net), identique visuellement à l'écran. |
+| Décodage HGR par pixel | POM2 suit AppleWin `UpdateHiResRGBCell` (motif 010/101 → couleur, sinon B/N pleine résolution), pas le décodage par paires : restitue le piqué de la vraie carte RVB sur le texte et les sprites. |
 
 **Tests** : `le_chat_mauve_smoke` (FIFO clocking, COL140 vs BW560,
 indices palette 5 et 10 distincts, fallback NTSC sans carte),
@@ -234,7 +239,7 @@ sert d'oracle hors-ligne pour les captures.
 RGB exacte : empirique (mesure visuelle, pas de chromaticité CIE
 publique).
 
-**Algorithme POM2** ([`Apple2Display.cpp:1087-1117`](../src/Apple2Display.cpp)) :
+**Algorithme POM2** ([`Apple2Display.cpp::renderHiRes`](../src/Apple2Display.cpp), branche `monochrome`) :
 
 1. Bit stream brut (pas de LUT, pas de fenêtre artifact).
 2. Pour chaque pixel 280-wide : sample 2 bits du stream 560 → luminance
@@ -384,8 +389,8 @@ POM2 expose **deux palettes 16 couleurs** distinctes :
 | 10 | `0xFF808080` (gris neutre — idem 5) | `0xFF7F6878` (mauve) | distinct ! |
 | autres | IIGS-corrigé | Feline empirique | similaire |
 
-Source : [`Apple2Display.cpp:611-628`](../src/Apple2Display.cpp) et
-[`:651-668`](../src/Apple2Display.cpp).
+Source : tables `kLoResPalette` et `kChatMauveLoResPalette`
+([`Apple2Display.cpp`](../src/Apple2Display.cpp)).
 
 ### Demi-dot delay (MSB)
 

@@ -2130,6 +2130,53 @@ endif()
 add_test(NAME video_event_publish COMMAND test_video_event_publish)
 set_tests_properties(video_event_publish PROPERTIES TIMEOUT 5)
 
+# Double-buffer page-flip heuristic: a lone-direction PAGE2 flip applies
+# frame-wide (no tear against mid-redraw RAM); two-direction frames keep the
+# exact beam-raced replay.
+add_executable(test_drol_pageflip_render
+    drol_pageflip_render_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_drol_pageflip_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_drol_pageflip_render PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_drol_pageflip_render PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_drol_pageflip_render PRIVATE winmm)
+endif()
+
+add_test(NAME drol_pageflip_render COMMAND test_drol_pageflip_render)
+set_tests_properties(drol_pageflip_render PROPERTIES TIMEOUT 5)
+
+# DROL page-flip probe (diagnostic executable, no add_test): boots the real
+# Drol.dsk and reports where its $C054/$C055 flips land in the video frame.
+add_executable(test_drol_probe
+    drol_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_drol_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_drol_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_drol_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_drol_probe PRIVATE winmm)
+endif()
+
 # Vapor lock: floating-bus scanner tracks the beam, a real 6502 poll loop locks,
 # and the geometry follows the PAL/NTSC video standard (312 vs 262 lines).
 add_executable(test_vapor_lock

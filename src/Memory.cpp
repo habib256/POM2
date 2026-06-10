@@ -1107,46 +1107,56 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // scanner byte, not a hard 0). Writes don't drive the bus.
     if (low == 0x40) return isWrite ? 0 : floatingBus();
 
-    // Display soft switches.
+    // Display soft switches. They don't drive the data bus either: a READ
+    // flips the mode AND returns the floating bus (video scanner byte) —
+    // MAME `apple2.cpp do_io` returns `read_floatingbus()` for $C050-$C057.
+    // DROL's cut-scene depends on this: it vapor-locks with
+    //     LDX #$02 / LDA $C050 / CMP #$80 / BNE / DEX / BPL
+    // (three consecutive scanner reads of $80) — a hard 0 here spins it
+    // forever (the same hang LinApple had; AppleWin fixed it in 1.13.0 by
+    // implementing the floating bus). NB: floatingBus() takes stateMutex,
+    // so the switch work is scoped before the return.
     if (low >= 0x50 && low <= 0x57) {
-        std::lock_guard<std::mutex> lk(stateMutex);
-        switch (low) {
-            case 0x50: display.textMode  = false; break;
-            case 0x51: display.textMode  = true;  break;
-            case 0x52: display.mixedMode = false; break;
-            case 0x53: display.mixedMode = true;  break;
-            case 0x54: display.page2     = false; break;
-            case 0x55: display.page2     = true;  break;
-            case 0x56: display.hiRes     = false; break;
-            case 0x57: display.hiRes     = true;  break;
+        {
+            std::lock_guard<std::mutex> lk(stateMutex);
+            switch (low) {
+                case 0x50: display.textMode  = false; break;
+                case 0x51: display.textMode  = true;  break;
+                case 0x52: display.mixedMode = false; break;
+                case 0x53: display.mixedMode = true;  break;
+                case 0x54: display.page2     = false; break;
+                case 0x55: display.page2     = true;  break;
+                case 0x56: display.hiRes     = false; break;
+                case 0x57: display.hiRes     = true;  break;
+            }
+            switch (low) {
+                case 0x50: pushVideoEventLocked(VideoEventKind::TextMode,  false); break;
+                case 0x51: pushVideoEventLocked(VideoEventKind::TextMode,  true);  break;
+                case 0x52: pushVideoEventLocked(VideoEventKind::MixedMode, false); break;
+                case 0x53: pushVideoEventLocked(VideoEventKind::MixedMode, true);  break;
+                case 0x54: pushVideoEventLocked(VideoEventKind::Page2,     false); break;
+                case 0x55: pushVideoEventLocked(VideoEventKind::Page2,     true);  break;
+                case 0x56: pushVideoEventLocked(VideoEventKind::HiRes,      false); break;
+                case 0x57: pushVideoEventLocked(VideoEventKind::HiRes,      true);  break;
+            }
+            if (iieRebootTraceEnabled()) {
+                static const char* dnames[8] = {
+                    "TEXT=off(gfx)", "TEXT=on", "MIXED=off", "MIXED=on",
+                    "PAGE2=off",     "PAGE2=on","HIRES=off(lo)","HIRES=on"
+                };
+                std::ostringstream oss;
+                oss << std::hex << std::uppercase << std::setfill('0');
+                oss << "display $" << std::setw(4) << static_cast<int>(addr)
+                    << " " << dnames[low - 0x50]
+                    << " text=" << display.textMode
+                    << " mixed=" << display.mixedMode
+                    << " page2=" << display.page2
+                    << " hires=" << display.hiRes
+                    << " cyc=" << std::dec << cycleCounter;
+                pom2::log().warn("IIE", oss.str());
+            }
         }
-        switch (low) {
-            case 0x50: pushVideoEventLocked(VideoEventKind::TextMode,  false); break;
-            case 0x51: pushVideoEventLocked(VideoEventKind::TextMode,  true);  break;
-            case 0x52: pushVideoEventLocked(VideoEventKind::MixedMode, false); break;
-            case 0x53: pushVideoEventLocked(VideoEventKind::MixedMode, true);  break;
-            case 0x54: pushVideoEventLocked(VideoEventKind::Page2,     false); break;
-            case 0x55: pushVideoEventLocked(VideoEventKind::Page2,     true);  break;
-            case 0x56: pushVideoEventLocked(VideoEventKind::HiRes,      false); break;
-            case 0x57: pushVideoEventLocked(VideoEventKind::HiRes,      true);  break;
-        }
-        if (iieRebootTraceEnabled()) {
-            static const char* dnames[8] = {
-                "TEXT=off(gfx)", "TEXT=on", "MIXED=off", "MIXED=on",
-                "PAGE2=off",     "PAGE2=on","HIRES=off(lo)","HIRES=on"
-            };
-            std::ostringstream oss;
-            oss << std::hex << std::uppercase << std::setfill('0');
-            oss << "display $" << std::setw(4) << static_cast<int>(addr)
-                << " " << dnames[low - 0x50]
-                << " text=" << display.textMode
-                << " mixed=" << display.mixedMode
-                << " page2=" << display.page2
-                << " hires=" << display.hiRes
-                << " cyc=" << std::dec << cycleCounter;
-            pom2::log().warn("IIE", oss.str());
-        }
-        return 0;
+        return isWrite ? 0 : floatingBus();
     }
 
     // 80COL ($C00C off / $C00D on). On a II/II+ this is purely a
@@ -1200,7 +1210,9 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
                 (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
             speaker->recordToggle(now);
         }
-        return 0;
+        // The speaker latch doesn't drive the bus — a READ clicks AND
+        // returns the floating bus (same rule as $C040/$C05x).
+        return isWrite ? 0 : floatingBus();
     }
 
     // Apple //c ROMBANK ($C020-$C02F): on every //c-class machine the

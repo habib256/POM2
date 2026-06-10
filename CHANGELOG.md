@@ -6,6 +6,57 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-10 (DROL cut-scene : lectures $C050-$C057 → bus flottant)
+
+- **Hang de la cut-scene DROL.** Scan de l'image disque : les overlays de
+  cut-scene (offsets 0x14359/0x143d5/0x14be0 de `Drol.dsk`) se synchronisent
+  par `LDX #$02 / LDA $C050 / CMP #$80 / BNE / DEX / BPL` — trois lectures
+  consécutives du **scanner vidéo** via un soft-switch d'affichage. POM2
+  renvoyait un 0 dur sur les lectures `$C050-$C057` → boucle infinie (le hang
+  historique de LinApple ; AppleWin l'a corrigé en 1.13.0 en implémentant le
+  bus flottant). **Fix** : une lecture `$C050-$C057` bascule le mode ET
+  renvoie `floatingBus()` (MAME `apple2.cpp do_io` fait pareil) ; idem pour le
+  speaker `$C030-$C03F` (latch non pilotée). **Piège évité** : le bloc tenait
+  `stateMutex` et `floatingBus()` le reprend — travail scopé avant le return.
+  Pinné par la section (d) de `vapor_lock` (la boucle exacte du jeu verrouille
+  sur une page HGR remplie de $80, et l'effet de bord TEXT-off est préservé).
+
+## 2026-06-10 (DROL : flips double-buffer vs beam-racing ; Chat Mauve : décodage AppleWin)
+
+- **Flicker DROL (page-flips non synchronisés)** — tous modes d'affichage,
+  NTSC comme PAL. Diagnostic par sonde sur le vrai disque
+  (`tests/drol_probe.cpp`, WOZ) : DROL flippe `$C054/$C055` toutes les
+  ~4 frames à des positions **dérivantes** (23/31 flips en zone visible) — du
+  double-buffering libre, PAS du beam-racing (son flipper est auto-modifiant
+  en `$6138` ; le bus flottant de DROL ne sert qu'à la cut-scene, cf. AppleWin
+  1.13.0 « fixed the hang at Drol's cut-scene »). **Pourquoi ça clignotait** :
+  le replay beam-racé peint la bande au-dessus du flip depuis la page que le
+  jeu **redessine déjà** — POM2 lit la RAM au rendu, pas au passage du
+  faisceau → sprites à moitié effacés. (Le vrai faisceau lisait la page
+  encore intacte ; avant la publication par frame, ces events étaient souvent
+  perdus → rendu pleine-page « propre » par accident.) **Fix** : dans
+  `forEachBeamSegment`, une frame dont les events PAGE2 vont tous dans le
+  MÊME sens = flip de buffer → page finale appliquée à toute la frame (= la
+  RAM réellement affichable) ; une frame qui flippe dans les DEUX sens (DIX
+  MODPAGE : page 1 à gauche, page 2 à droite de la même ligne) garde le
+  replay exact. Pinné `drol_pageflip_render` ; `dix_modpage_split` inchangé.
+- **Les 6 painters 560-wide relisaient l'état live** (`renderText80`,
+  `renderDhgr`, `renderLoResDouble`, `renderTextChatMauveFgBg`,
+  `renderHgrDuochrome`, `renderHiResChatMauve80` → `mem.getDisplayState()`
+  interne au lieu du `state` de bande) — même classe de bug que celle déjà
+  corrigée sur les painters legacy : les splits mid-frame PAGE2/ALTCHAR
+  étaient ignorés en 560 (c'est pour ça que « Chat Mauve ne clignotait
+  pas » : il masquait les flips). Signatures threadées, état passé partout.
+- **Résolution HGR Chat Mauve** : le décodage couleur écrasait TOUT en blocs
+  de paires alignées (1 couleur / 4 dots = 140 effectif → image « molle »).
+  Porté l'algo AppleWin `RGBMonitor.cpp UpdateHiResRGBCell` : un pixel n'est
+  COULEUR que s'il forme un motif isolé 010/101 avec ses voisins (couleur de
+  sa paire alignée, 2 dots) ; tout le reste est noir/blanc **à la pleine
+  résolution 280 px** — les runs blancs (texte, contours de sprites)
+  retrouvent leur piqué, fidèle à la vraie carte RVB. Goldens `*/hgr*/
+  chatmauve` régénérés ; sémantique pinnée par `le_chat_mauve_smoke` +
+  `display_persistence_smoke` mis à jour.
+
 ## 2026-06-10 (Beam-racing PAL : publication par frame vidéo + vitesses 1× par standard)
 
 - **Publication du log d'évènements vidéo par frame vidéo** (le hand-off
@@ -306,7 +357,7 @@ courante → `DEV.md`.
     seulement pendant une frame émulée (tests headless non affectés).
   - **Goldens DLGR** : scènes `iie/dlgr` et `iie/dlgrmixed` dans
     `display_golden_hash_test`.
-  - **Docs** : `DEV.md`, `docs/video_parity_audit_2026-05-30.md`,
+  - **Docs** : `DEV.md`, `docs/archive/video_parity_audit_2026-05-30.md`,
     `docs/graphics_modes_comparison.md` — DLGR implémenté, sharpness neutre
     à 0.5, phase DHGR corrigée.
 
@@ -322,7 +373,7 @@ courante → `DEV.md`.
   - **`paintHgr`** : masque MSB fixe `0xFF` (HGR standard) — le bit DHIRES
     ne doit pas masquer bit 7 hors mode DHGR affiché.
 
-- **Parité couleur OE GPU ↔ CPU (agent `docs/oe_gpu_cpu_parity.md`).**
+- **Parité couleur OE GPU ↔ CPU (agent `docs/archive/oe_gpu_cpu_parity.md`).**
   - **Phase shader GPU** alignée sur `renderCompositeOeCpu()` (formule
     `(k+po)&3`, pas `floor(fx)+po`) — corrige les teintes DHGR/HGR erronées
     en mode `ColorCompositeOE`.
@@ -369,7 +420,7 @@ courante → `DEV.md`.
     parité) ; teintes phosphores mono (choix esthétiques assumés).
 - **Audit de parité vidéo (MAME/AppleWin/OpenEmulator) + correctifs.** Audit
   multi-agents de 9 sous-systèmes vidéo/couleur/effets (rapport :
-  `docs/video_parity_audit_2026-05-30.md`). Correctifs appliqués :
+  `docs/archive/video_parity_audit_2026-05-30.md`). Correctifs appliqués :
   - **🔴 Bug `ColorComp4Bit` (square filter) corrigé** — l'origine de nibble
     (`>>kContextBits` au lieu de `>>kContextBits-1`) et la rotation de phase
     (`absX`/`absX+1` au lieu de `absX-1`/`absX`) divergeaient de MAME sur

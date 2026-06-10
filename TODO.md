@@ -16,7 +16,7 @@ Référence canonique de ce qui est porté et avec quel niveau. Les
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`                                              | 🟢 $5C 8-cyc résiduel ; style hérité                                                     |
 | 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs à extraire)                                         |
-| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`                         | 🟢 mono DHGR 1-px, floating-TTL (mid-scanline + PAL 50 Hz : faits)                       |
+| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` ; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, bus flottant `$C05x`, page-flip DROL, RVB Chat Mauve : faits) |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
 | 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                        |
 | 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` ; `6522via.cpp:959`          | 🟢 Port A read mask par DDR ; 6522 subset (SR/PCR ; T2 one-shot fait, IRQ N+3 MAME)      |
@@ -160,12 +160,59 @@ Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'
   10 Hz des splits PAL ; pinné `video_event_publish`) ; `$C019`/edge VBL suit
   la géométrie 312 lignes (pinné `pal_timing` § 4) ; vitesses 1×/2×/4×
   (toolbar, AI server, turbo disque) dérivées du standard (17045→20313 en PAL).
+- ✅ **DROL — flicker page-flip + hang cut-scene** — FAIT (2026-06-10). Trois
+  bugs trouvés en bootant le vrai `Drol.woz`/`.dsk` (sonde `tests/drol_probe.cpp`).
+  1. **Flicker (tous modes)** : DROL flippe `$C054/$C055` toutes les ~4 frames
+     à des positions **dérivantes** (double-buffer non-synchronisé, flipper
+     auto-modifiant `$6138`), pas du beam-racing. Le replay peignait la bande
+     au-dessus du flip depuis la page en cours de redessin (POM2 lit la RAM au
+     rendu, pas au faisceau) → sprites à moitié effacés. **Fix** :
+     `forEachBeamSegment` détecte les events PAGE2 **unidirectionnels** dans une
+     frame = flip de buffer → page finale pleine-frame ; bidirectionnels (DIX
+     MODPAGE) = replay exact conservé. Pinné `drol_pageflip_render`.
+  2. **Hang cut-scene** : la cut-scene vapor-locke par `LDA $C050 / CMP #$80`
+     (lecture du scanner via soft-switch d'affichage — offsets disque
+     0x14359/0x143d5/0x14be0). POM2 renvoyait **0 dur** sur les lectures
+     `$C050-$C057` → spin infini (hang historique LinApple, corrigé AppleWin
+     1.13.0). **Fix** : lecture `$C05x`/`$C030-3F` bascule le mode/click ET
+     renvoie `floatingBus()` (MAME `apple2.cpp do_io`). Pinné `vapor_lock` §(d).
+  3. **6 painters 560-large relisaient l'état live** (`renderText80/Dhgr/
+     LoResDouble/TextChatMauveFgBg/HgrDuochrome/HiResChatMauve80`) au lieu de
+     l'état de bande → splits mid-frame ignorés en 80-col/DHGR/Chat Mauve
+     (masquait le flicker DROL sous Chat Mauve). État threadé partout.
+  Détail → `DEV.md` § Beam-racing + `CHANGELOG.md`. **Limite assumée** *(🟢)* :
+  un split de page mid-frame intentionnel **unidirectionnel** rendrait
+  pleine-page (le vrai remède = rendu incrémental par scanline façon MAME).
+- ✅ **Résolution HGR Le Chat Mauve (décodage AppleWin RVB)** — FAIT
+  (2026-06-10). `renderHiResChatMauve80` écrasait tout en blocs de paires
+  alignées (1 couleur / 4 dots = 140 px effectif, image « molle »). Porté
+  l'algo AppleWin `RGBMonitor.cpp UpdateHiResRGBCell` : un pixel n'est COULEUR
+  que s'il forme un motif isolé 010/101 avec ses voisins (couleur de sa paire,
+  2 dots) ; sinon noir/blanc **à pleine résolution 280 px** — les runs blancs
+  (texte, contours) retrouvent leur piqué. Goldens `*/hgr*/chatmauve` régénérés ;
+  pinné `le_chat_mauve_smoke` + `display_persistence_smoke`.
 - 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
   par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
 - 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur
   HGR/DHGR, toggle UI. Inspiré microM8. *2 j.*
 - 🟢 **DHGR mono 1-px alignment + floating-TTL `empty_words` +
   per-scanline mode switch** — cosmétique / hors-bounds.
+- 🟢 **Raffinements parité CRT vs OpenEmulator** — résidus basse-priorité de
+  l'audit vidéo 2026-05-30 (fiches d'implémentation détaillées →
+  `docs/archive/video_parity_revalidation_2026-05-30.md` §4) :
+  - **F4** défauts CRT POM2 0.25/0.5/0.4 (scanlines/mask/persistence) vs OE
+    ~0.05/0.05/0 — *plus gros gain visuel*, OU assumer le choix « punchy » et
+    le documenter (`NtscPostProcessor.h`).
+  - **F3** vignette center-lighting ~4× trop forte (`cuv = 2×qc` d'OE,
+    `CrtEffectStack.cpp`).
+  - **F2** scanline cosinus → **sin²** OE (garder le terme `scanAA` anti-moiré).
+  - **F7** HGR mono : moyenne 280 px / 3 niveaux → **560 binaire** (copie de la
+    boucle DHGR-mono déjà livrée).
+  - **F6** masque row-dim ×0.7 ⚠ (rendre neutre en luminance, pas retirer sec).
+  - **DLGR non câblé** à `fillCompositeSignal` (émet encore lo-res 40-col
+    main-only sous OE/AppleWin).
+  - *(Non-items, documentés : F1 clamp double > float AppleWin ; F8/F9 teintes
+    amber/green assumées — preset « AppleWin-faithful » optionnel.)*
 - 🟢 **Le Chat Mauve EVE** (64 KB ext RAM + SPEC1/SPEC2/DASH/COL280),
   **Video-7 AppleColor RGB**, **Color killer Rev 1**,
   **Strapping RAM 4K→48K**.
@@ -408,17 +455,23 @@ aux `Gap connus` du dashboard : **[`docs/test_corpus.md`](docs/test_corpus.md)**
   (29+ min, sources GPLv3). **Référence prioritaire** pour la perfection
   d'émulation : enchaîne vapor lock, mid-scanline, Mockingboard, 128 KB aux,
   Unidisk/Liron. Valider DIX en premier avant tout autre titre du corpus.
-- ✅ **Vapor lock** — FAIT/prouvé (2026-06-09). Test `vapor_lock` : une vraie
-  boucle 6502 `LDA $C058 / CMP marqueur / BNE` **verrouille** sur le marqueur en
-  RAM vidéo ; `floatingBus()` suit le faisceau au cycle. La géométrie scanner
-  est désormais **PAL-aware** (262/312 lignes selon `VideoStandard`) — était
-  hardcodée 262, faisait dériver le lock PAL. **Précision sous-instruction
-  corrigée** : lecture `$C0xx` échantillonnée au cycle d'accès
-  (`cycleCounter + getCurrentInstructionCycles()`, cohérent avec le log
-  d'events) ; **`$C040`** renvoie le bus (était 0). *(Reste 🟢 : accès
-  non-dernier-cycle type RMW — hors vapor lock.)*
-- 🟡 **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*,
-  inclus dans DIX) — bascules intra-ligne pas toutes honorées. → `Gap #3`.
+- ✅ **Vapor lock** — FAIT/prouvé (2026-06-09, étendu 2026-06-10). Test
+  `vapor_lock` : une vraie boucle 6502 `LDA $C058 / CMP marqueur / BNE`
+  **verrouille** sur le marqueur en RAM vidéo ; `floatingBus()` suit le faisceau
+  au cycle. La géométrie scanner est désormais **PAL-aware** (262/312 lignes
+  selon `VideoStandard`) — était hardcodée 262, faisait dériver le lock PAL.
+  **Précision sous-instruction corrigée** : lecture `$C0xx` échantillonnée au
+  cycle d'accès (`cycleCounter + getCurrentInstructionCycles()`, cohérent avec
+  le log d'events). **Toutes les lectures `$C0xx` non pilotées renvoient le
+  bus** : `$C040`, **`$C050-$C057`** (cut-scene DROL — section (d) du test) et
+  `$C030-$C03F` étaient à 0. *(Reste 🟢 : accès non-dernier-cycle type RMW —
+  hors vapor lock.)*
+- ✅ **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*,
+  inclus dans DIX) — FAIT (rendu intra-ligne par byte-column, RGBA + composite +
+  560-large ; cf. [Display]). **Distinction beam-racing vs double-buffer** : un
+  flip de page unidirectionnel = buffer (rendu pleine-frame, anti-flicker DROL),
+  bidirectionnel = beam-racing exact. → `Gap #3` (résiduel : cycle de transition
+  exact au character-clock, mélange 40/80-col même ligne).
 - 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — suivi
   spiral + weak bits à valider sur images WOZ réelles. → `Gap #9/#10`.
 
