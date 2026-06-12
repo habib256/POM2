@@ -83,11 +83,25 @@ int main()
     assert(disp.signalProduced());
     const uint8_t* sig = disp.signal();
     // Scanline 0, column 0: samples 0..6 = aux half, 7..13 = main half.
-    bool halvesDiffer = false;
-    for (int i = 0; i < 7; ++i) {
-        if (sig[i] != sig[7 + i]) { halvesDiffer = true; break; }
+    //
+    // Exact-sample pin (rotl4 + absolute phase together). Aux nibble 1 is
+    // emitted as rotl4(1,1) = 2; both halves are phase-locked to the
+    // ABSOLUTE sample counter: sample x = (pattern >> (x & 3)) & 1.
+    // NOTE: the value sequences of the two halves coincide here — nibble 2
+    // from x=0 and nibble 1 from x=7 (7 ≡ 3 mod 4) are the same bit train —
+    // but at different absolute subcarrier phases, i.e. different hues.
+    // A naive sig[i] != sig[7+i] comparison is therefore NOT a valid pin;
+    // only the absolute-phase sample identities below are.
+    for (int x = 0; x < 7; ++x) {
+        const bool want = ((0x2u >> (x & 3)) & 1) != 0;   // aux: rotl4(1) = 2
+        assert((sig[x] != 0) == want &&
+               "DLGR aux half: rotl4 nibble at absolute phase");
     }
-    assert(halvesDiffer && "DLGR signal must rotl4 the aux nibble");
+    for (int x = 7; x < 14; ++x) {
+        const bool want = ((0x1u >> (x & 3)) & 1) != 0;   // main: nibble 1
+        assert((sig[x] != 0) == want &&
+               "DLGR main half: nibble at absolute phase");
+    }
 
     // ── Phase pin: the nibble pattern is locked to the ABSOLUTE 14.318 MHz
     // sample counter, like paintLoRes40's `(nibble >> (absX & 3))` — NOT

@@ -215,7 +215,13 @@ void IWMDevice::flushWrite(uint64_t when)
             std::vector<int64_t> fluxes;
             fluxes.reserve(fluxWriteCount_);
             for (uint32_t i = 0; i < fluxWriteCount_; ++i) {
-                fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]));
+                // ×2: convert this device's CPU-cycle timestamps to the
+                // LSS domain at the API boundary — the exact mirror of
+                // the READ path (`nextTransition`: `fromLss = from * 2;
+                // … return t / 2`). DiskImage::writeFlux reduces angular
+                // position in LSS cycles; feeding CPU cycles in spliced
+                // at half scale, where the read path would never look.
+                fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]) * 2);
             }
             // No revolution anchor (default -1) — deliberately matching
             // this device's 5.25" READ path (`nextTransition` calls
@@ -224,8 +230,8 @@ void IWMDevice::flushWrite(uint64_t when)
             // position identically. The authoritative 5.25" path
             // (DiskIICard) passes its per-drive anchor on both sides.
             disk_->writeFlux(qt_,
-                             static_cast<int64_t>(fluxWriteStart_),
-                             static_cast<int64_t>(when),
+                             static_cast<int64_t>(fluxWriteStart_) * 2,
+                             static_cast<int64_t>(when) * 2,
                              static_cast<int>(fluxes.size()),
                              fluxes.empty() ? nullptr : fluxes.data());
         }

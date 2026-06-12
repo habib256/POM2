@@ -297,20 +297,36 @@ void EmulationController::tickFrame()
 void EmulationController::stop()
 {
     setMode(Mode::Stopped);
-    // Block (bounded) until the worker has actually parked. stop()'s
-    // callers — applyProfile / restartEmulationFromSettings / ~MainWindow —
-    // proceed to tear down slot cards, reload ROMs and re-plug the SlotBus
-    // largely OUTSIDE stateMutex; without this wait a Running frame still
-    // in flight (the old contract let the worker finish its whole budget)
-    // would touch CPU/Memory/SlotBus concurrently with that rebuild.
+    // Block until the worker has ACTUALLY parked — this is a hard
+    // guarantee, not best-effort. stop()'s callers — applyProfile /
+    // restartEmulationFromSettings / ~MainWindow — proceed to tear down
+    // slot cards, reload ROMs and re-plug the SlotBus largely OUTSIDE
+    // stateMutex; if this returned with the worker still in flight (as
+    // the earlier bounded 200 ms poll could on a loaded host or behind a
+    // long-held stateMutex), the rebuild would race processor.run() —
+    // use-after-free on the SlotBus. waitUntilParked()'s bounded poll is
+    // kept for the rewind scrub path, where overrunning is recoverable
+    // and UI responsiveness wins.
+    //
+    // Termination: the worker re-checks `mode` between 4096-cycle chunks
+    // (see workerLoop) and the per-frame budget is capped (CLI --speed
+    // and AI /speed both clamp to 2 M cycles), so parking is bounded in
+    // practice; the warn below fires only if something is genuinely
+    // wedged — better a diagnosed hang than silent memory corruption.
     //
     // Deadlock-safety: the caller must NOT hold stateMutex() here (no
     // current caller does) — the worker needs that lock to finish its
-    // current 4096-cycle chunk. The worker also re-checks `mode` between
-    // chunks (see workerLoop), so it parks within ~one chunk even under a
-    // huge turbo budget, and waitUntilParked() itself is a bounded poll
-    // (~200 ms worst case) rather than an unbounded wait.
-    waitUntilParked();
+    // current chunk.
+    if (!worker.joinable()) return;
+    int waitedMs = 0;
+    while (!workerParked_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (++waitedMs % 1000 == 0) {
+            pom2::log().warn("Emul",
+                "stop(): worker not parked after " +
+                std::to_string(waitedMs) + " ms — still waiting");
+        }
+    }
 }
 
 void EmulationController::hardReset()

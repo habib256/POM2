@@ -105,18 +105,20 @@ public:
     /// the same logic.
     void tickFrame();
 
-    /// Park the worker: sets Mode::Stopped, wakes it, then blocks (bounded,
-    /// ~200 ms worst case) until the worker has actually parked at the
-    /// Stopped idle wait. After stop() returns, no Running/Step frame is in
-    /// flight, so callers (applyProfile / restartEmulationFromSettings /
-    /// shutdown) may rebuild ROMs/SlotBus even outside stateMutex(). The
-    /// worker re-checks the mode between its 4096-cycle chunks, so parking
-    /// is prompt even under a turbo cyclesPerFrame budget.
+    /// Park the worker: sets Mode::Stopped, wakes it, then blocks UNTIL the
+    /// worker has actually parked at the Stopped idle wait — a hard
+    /// guarantee (unbounded wait with a periodic warn log), because after
+    /// stop() returns callers (applyProfile / restartEmulationFromSettings /
+    /// shutdown) rebuild ROMs/SlotBus outside stateMutex(); a best-effort
+    /// timeout returning early would hand them a use-after-free. The worker
+    /// re-checks the mode between its 4096-cycle chunks and the per-frame
+    /// budget is capped (CLI/AI clamp at 2 M cycles), so parking is prompt
+    /// in practice.
     ///
     /// MUST NOT be called while holding stateMutex(): the worker needs that
-    /// lock to finish its current chunk before it can park (the wait is
-    /// bounded, so a violation degrades to the old racy behaviour rather
-    /// than deadlocking — but don't).
+    /// lock to finish its current chunk before it can park — a violation
+    /// now DEADLOCKS (loudly, with the warn log) instead of silently
+    /// degrading to a race.
     void stop();
 
     // Reset API — POM2 exposes 4 verbs. The MAME equivalents are only 2

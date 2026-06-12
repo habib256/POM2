@@ -622,6 +622,29 @@ void testSoftResetSpDecrement()
     assert(cpu.getStackPointer() == 0xF9);
 }
 
+// slotKeyIsUserChoice — the shared persistence guard. Pins both clobber
+// protections AND the chatmauve removal path: on a noPhysicalSlots //c,
+// writing "" over a saved "chatmauve" IS a user choice (the adapter was
+// unplugged; without the savedKey clause the stale settings key
+// resurrected the adapter on every launch), while "" over a //e-era card
+// key stays skipped.
+void testSlotKeyIsUserChoice()
+{
+    const auto& iie = pom2::profileConfig(pom2::SystemProfile::AppleIIe);
+    const auto& iic = pom2::profileConfig(pom2::SystemProfile::AppleIIc);
+    // //e: every slot is the user's.
+    assert(pom2::slotKeyIsUserChoice(iie, 4, "mockingboard", ""));
+    assert(pom2::slotKeyIsUserChoice(iie, 4, "", "mockingboard"));
+    // //c built-in slots (sl6 Disk II): never persisted.
+    assert(!pom2::slotKeyIsUserChoice(iic, 6, "diskii", ""));
+    // //c virtual connector: chatmauve persists in BOTH directions…
+    assert(pom2::slotKeyIsUserChoice(iic, 3, "chatmauve", ""));
+    assert(pom2::slotKeyIsUserChoice(iic, 3, "", "chatmauve"));
+    // …but the force-emptied "" never clobbers a saved //e card.
+    assert(!pom2::slotKeyIsUserChoice(iic, 3, "", "mockingboard"));
+    assert(!pom2::slotKeyIsUserChoice(iic, 3, "", ""));
+}
+
 // Theme 12 (IOUDIS): MAME `apple2e.cpp:1224` initialises to true; on
 // IIc/IIc+ $C07E (SET) / $C07F (CLR) flip it; read of $C07E returns
 // bit 7 = ioudis. IIe ignores the writes but the read still works.
@@ -715,6 +738,9 @@ int main()
 
     testIoudisStateMachine();
     std::printf("  ok: IOUDIS init=true, SET/CLR on //c, $C07E read (Theme 12)\n");
+
+    testSlotKeyIsUserChoice();
+    std::printf("  ok: slotKeyIsUserChoice (chatmauve removal persists)\n");
 
     std::printf("OK system_profile_smoke\n");
     return 0;

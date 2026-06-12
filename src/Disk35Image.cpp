@@ -15,6 +15,7 @@
 
 #include "Disk35Image.h"
 #include "Logger.h"
+#include "TwoImg.h"
 
 #include <algorithm>
 #include <cstring>
@@ -120,14 +121,9 @@ bool Disk35Image::loadFile(const std::string& imgPath)
                                  buf.end());
         blocks_.assign(buf.begin() + dataOff,
                        buf.begin() + dataOff + dataLen);
-        // 2IMG "locked" (write-protect) flag is bit 31 (CiderPress
-        // kFlagLocked = 0x80000000; AppleWin agrees) — bits 0-7 are the
-        // volume number (valid iff bit 8), so testing bit 0 misread
-        // every odd volume number as write-protected. Bit 0 is kept as
-        // a lenient extra WP signal ONLY when no volume field is
-        // declared (covers malformed images that put the lock there).
-        fileWriteProtected_ = (flags & (1u << 31)) != 0 ||
-                              ((flags & 1u) != 0 && (flags & (1u << 8)) == 0);
+        // Flags-word semantics live in TwoImg.h (shared with DiskImage
+        // and Block512Backing).
+        fileWriteProtected_ = pom2::twoImgWriteProtected(flags);
         kind_   = ImageKind::TwoImg800k;
         loaded_ = true;
         dirty_  = false;

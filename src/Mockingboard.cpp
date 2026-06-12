@@ -111,6 +111,12 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     std::atomic<float>    volume     { 0.5f };       // pre-mix gain
     std::atomic<bool>     muted      { false };
 
+    // SSI263 mix scratch — member, not a per-callback local: this runs on
+    // the realtime audio thread, where a heap allocation per buffer tick
+    // is the canonical source of underruns/clicks. Grown once, only
+    // touched by the audio thread (fillAudioBuffer is single-consumer).
+    std::vector<float> speechScratch;
+
     /// RateAware override — auto-config when AudioDevice::addSource picks
     /// this AudioSrc up (see MainWindow plugMockingboard).
     void setSampleRate(uint32_t hz) override
@@ -246,13 +252,15 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // stays inside Ssi263::fillAudio. Before 2026-06-12 nothing
         // called fillAudio here at all, so Sound II speech was silent
         // despite the register/IRQ emulation being complete.
-        std::vector<float> speech;
+        const float* speechBuf = nullptr;
         if (parent->ssi_) {
-            speech.assign(static_cast<size_t>(frameCount), 0.0f);
+            if (speechScratch.size() < static_cast<size_t>(frameCount))
+                speechScratch.resize(static_cast<size_t>(frameCount));
+            std::fill_n(speechScratch.begin(), frameCount, 0.0f);
             std::lock_guard<std::mutex> lk(parent->mtx);
-            parent->ssi_->fillAudio(speech.data(), frameCount, sr);
+            parent->ssi_->fillAudio(speechScratch.data(), frameCount, sr);
+            speechBuf = speechScratch.data();
         }
-        const float* speechBuf = speech.empty() ? nullptr : speech.data();
 
         for (int i = 0; i < frameCount; ++i) {
             float sample = 0.0f;
@@ -628,23 +636,19 @@ uint8_t MockingboardCard::slotRomRead(uint8_t low8)
     // Address decode:
     //   Variant::AC      — bit 7 selects VIA, bits 0..3 select register,
     //                      bits 4..6 are partial-decode mirrors.
-    //   Variant::SoundII — same, EXCEPT $40-$4F is the SSI263 (regs 0-7
-    //                      decoded from the low 3 bits, so $48-$4F mirror
-    //                      $40-$47), overriding what would otherwise be a
-    //                      VIA1 mirror at those addresses. MAME
-    //                      `a2mockingboard.cpp:346-349` documents the real
-    //                      wiring: "Cn40 will write to both the VIA and the
-    //                      first SSI-263 ... Reads only select the VIA"
-    //                      (AppleWin Mockingboard.cpp agrees: CS = address
-    //                      bit 6, confirmed on real Phasor hardware). POM2
-    //                      simplifies to an exclusive $40-$4F window — the
-    //                      SSI263 answers reads here (drivers may poll A/!R
-    //                      via D7) and writes do NOT shadow into VIA1.
+    //   Variant::SoundII — READS are identical to AC: "Reads only select
+    //                      the VIA" (MAME `a2mockingboard.cpp:346-349`;
+    //                      the base `a2bus_ayboard_device::read_cnxx`
+    //                      routes the whole $00-$7F page to VIA1). The
+    //                      SSI263 is write-only on the bus — a driver
+    //                      polling VIA1 IFR through a $4x partial-decode
+    //                      mirror (LDA $Cs4D) must reach the VIA, not the
+    //                      speech chip. An earlier revision routed $40-$4F
+    //                      reads to the SSI263, breaking exactly that
+    //                      idiom. Writes shadow into BOTH chips — see
+    //                      slotRomWrite.
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // make T1/T2/IFR cycle-accurate at "now"
-    if (ssi_ && (low8 & 0xF0) == 0x40) {
-        return ssi_->read(low8 & 0x07);
-    }
     const int chip = (low8 & 0x80) ? 1 : 0;
     const uint8_t out = via_[chip]->read(low8 & 0x0F);
     updateIrq();          // T1CL clears IFR.T1, may drop IRQ
@@ -656,14 +660,15 @@ void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // T1 counters reflect "now" before T1CH reload
     if (ssi_ && (low8 & 0xF0) == 0x40) {
-        // SSI263 register write ($40-$4F — see decode note in
-        // slotRomRead). The chip's own write() acks A/!R internally for
+        // SSI263 register write ($40-$4F, regs 0-7 from the low 3 bits).
+        // Per MAME `a2mockingboard.cpp:346-349` "Cn40 will write to both
+        // the VIA and the first SSI-263" — the write SHADOWS into VIA1's
+        // reg 0-15 mirror as well (fall through below), it does not
+        // replace it. The chip's own write() acks A/!R internally for
         // $00..$02 — the host CPU clears the VIA's IFR.CA1 separately
         // (typical Mockingboard Sound II driver writes the CA1 bit to
         // IFR after each phoneme).
         ssi_->write(low8 & 0x07, v);
-        updateIrq();
-        return;
     }
     const int chip = (low8 & 0x80) ? 1 : 0;
     ++viaWriteCount_[chip];

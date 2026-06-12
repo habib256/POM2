@@ -295,7 +295,7 @@ std::string_view profileKey(SystemProfile p)
 }
 
 bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
-                         std::string_view cardKey)
+                         std::string_view cardKey, std::string_view savedKey)
 {
     if (slot < 1 || slot > 7) return false;
     // Profile-forced built-in (//c/+ on-board SSC / Mouse / SmartPort /
@@ -305,8 +305,14 @@ bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
     // No-physical-slots machine (//c, //c+): the non-built-in connectors
     // don't exist, so the live map is force-emptied at profile-apply time.
     // The ONE user-controllable peripheral there is the Le Chat Mauve rear
-    // DB-15 adapter — that choice does persist.
-    if (cfg.noPhysicalSlots && cardKey != "chatmauve") return false;
+    // DB-15 adapter — that choice persists in BOTH directions: writing
+    // "chatmauve", and writing "" over a previously-saved "chatmauve"
+    // (= the user removed the adapter; without the savedKey clause the
+    // removal could never stick and the stale key resurrected the adapter
+    // on every launch). An "" over anything else stays skipped so the
+    // force-emptied virtual slots never clobber a //e card layout.
+    if (cfg.noPhysicalSlots && cardKey != "chatmauve" &&
+        savedKey != "chatmauve") return false;
     return true;
 }
 

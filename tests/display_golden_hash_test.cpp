@@ -284,7 +284,10 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/dlgr/monowhite", 0xaeca3b338c835183ULL },
     { "iie/dlgr/monogreen", 0xaeca3b338c835183ULL },
     { "iie/dlgr/monoamber", 0xaeca3b338c835183ULL },
-    { "iie/dlgr/signal", 0xbf78f65deadbf583ULL },
+    // dlgr*/signal rebaselined 2026-06: paintLoResDouble now emits nibble
+    // patterns at ABSOLUTE beam phase (like paintLoRes40), not restarted
+    // per 7-dot half-cell — see dlgr_render_smoke_test.cpp's exact pin.
+    { "iie/dlgr/signal", 0x37a24ac400b99a83ULL },
     { "iie/dlgrmixed/ntsc", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/medium", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/4bit", 0xdc9faf1f29833983ULL },
@@ -292,7 +295,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/dlgrmixed/monowhite", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/monogreen", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/monoamber", 0xdc9faf1f29833983ULL },
-    { "iie/dlgrmixed/signal", 0x4ea937a79cf2ae83ULL },
+    { "iie/dlgrmixed/signal", 0x24f6912007743983ULL },
     { "ii+/text40/ntsc", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/medium", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/4bit", 0x64b9ef4cc731c75cULL },

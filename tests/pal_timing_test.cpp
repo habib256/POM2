@@ -41,7 +41,8 @@ int main()
     auto ntsc = Apple2Display::frameCycleToPos(cyc280, VideoStandard::NTSC);
     auto pal  = Apple2Display::frameCycleToPos(cyc280, VideoStandard::PAL);
     assert(ntsc.scanline == 18  && "NTSC: line 280 wraps to 18");
-    assert(pal.scanline  == 191 && "PAL: line 280 is past visible → clamp 191");
+    assert(pal.scanline  == 192 && "PAL: line 280 is VBL → frame-end stamp 192 "
+                                   "(mirrors pushVideoEventLocked)");
     assert(ntsc.byteCol == 20 && pal.byteCol == 20 && "byteCol independent of standard");
 
     // A visible-region line is identical under both standards (no regression).
@@ -64,14 +65,17 @@ int main()
         assert(evs.size() == 1);
         return static_cast<int>(evs[0].scanline);
     };
+    // VBL lines stamp as 192 ("frame end" — excluded from the visible
+    // replay; see Memory::pushVideoEventLocked). They used to clamp to
+    // 191, painting a spurious split on the last visible line.
     assert(recordedScanline(VideoStandard::NTSC, 280) == 18);   // 280 % 262
-    assert(recordedScanline(VideoStandard::PAL,  280) == 191);  // 280 % 312, clamped
+    assert(recordedScanline(VideoStandard::PAL,  280) == 192);  // 280 % 312 → VBL
     assert(recordedScanline(VideoStandard::NTSC, 100) == 100);
     assert(recordedScanline(VideoStandard::PAL,  100) == 100);
     // A line that only "wraps" under NTSC: absolute 300 → NTSC 300%262=38,
-    // PAL 300%312=300→clamp 191. Proves the geometry is genuinely 312 for PAL.
+    // PAL 300%312=300 → VBL stamp 192. Proves the geometry is 312 for PAL.
     assert(recordedScanline(VideoStandard::NTSC, 300) == 38);
-    assert(recordedScanline(VideoStandard::PAL,  300) == 191);
+    assert(recordedScanline(VideoStandard::PAL,  300) == 192);
 
     // ── 4. $C019 VBL frame period follows the standard. ──────────────────
     // A loader that measures the VBL period to detect PAL vs NTSC must see a

@@ -5,6 +5,7 @@
 
 #include "SuperSerialCard.h"
 #include "Logger.h"
+#include "SocketUtil.h"
 #include "M6502.h"
 
 #include <cerrno>
@@ -264,39 +265,17 @@ void SuperSerialCard::closeClient()
 void SuperSerialCard::runWorker()
 {
     while (!stopRequested) {
-        // Poll the listen fd with a short timeout instead of blocking in
-        // accept(). `shutdown(listenFd, SHUT_RDWR)` wakes accept() on Linux
-        // but NOT on macOS/BSD — there the worker stays parked in accept()
-        // forever and stopListening() hangs in worker.join(). Since the SSC
-        // destructor runs under stateMutex during profile switches, that
-        // was a UI-thread deadlock on macOS. Same pattern (and rationale)
-        // as AiControlServer::runWorker.
-        {
-            struct pollfd pfd{};
-            pfd.fd     = listenFd.load();
-            if (pfd.fd < 0) break;
-            pfd.events = POLLIN;
-            const int pr = ::poll(&pfd, 1, 200);
-            if (pr < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            if (pr == 0) continue;   // timeout → re-check stopRequested
-            // Listen fd invalidated under us (stopListening's shutdown).
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
-        }
-
+        // poll-then-accept via SocketUtil — the macOS shutdown-vs-accept
+        // deadlock rationale lives there (this destructor runs under
+        // stateMutex during profile switches, so a parked accept() was a
+        // UI-thread hang).
         sockaddr_in peer{};
-        socklen_t peerLen = sizeof(peer);
-        const int fd = ::accept(listenFd,
-                                reinterpret_cast<sockaddr*>(&peer), &peerLen);
-        if (fd < 0) {
-            if (stopRequested) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;
-            // Listening socket closed under us — bail.
-            break;
-        }
+        int fd = -1;
+        const auto pa = pom2::pollAcceptOnce(listenFd.load(), 200, fd, peer);
+        if (pa == pom2::PollAccept::Retry)    continue;
+        if (pa == pom2::PollAccept::Shutdown) break;
+        if (stopRequested) { ::close(fd); break; }
+        pom2::disableSigpipe(fd);
         // Disable Nagle so single-character writes from the Apple II
         // appear at the telnet client immediately.
         int yes = 1;
@@ -418,11 +397,11 @@ void SuperSerialCard::runWorker()
                 lastDrainTime_ = now;
             }
             if (!pendingOut.empty() && clientFd >= 0) {
-                // MSG_NOSIGNAL: a peer that vanished mid-send must surface
-                // as EPIPE, not a SIGPIPE that kills the whole process
-                // (repo pattern: AiControlServer's sendAll()).
-                const ssize_t sent = ::send(clientFd, pendingOut.data(),
-                                            pendingOut.size(), MSG_NOSIGNAL);
+                // SIGPIPE-proof send (SocketUtil rule 2): a peer that
+                // vanished mid-send must surface as EPIPE, not a signal
+                // that kills the whole process.
+                const ssize_t sent = pom2::sendNoSignal(
+                    clientFd, pendingOut.data(), pendingOut.size());
                 if (sent > 0) {
                     pendingOut.erase(pendingOut.begin(),
                                      pendingOut.begin() + sent);

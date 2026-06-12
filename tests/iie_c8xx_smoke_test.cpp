@@ -117,6 +117,44 @@ void testIntcxromSoftSwitchUnchanged()
            "$C015 must reflect the software MF_INTCXROM, not the auto flip-flop");
 }
 
+void testIntcxromOnStillArmsIntC8Rom()
+{
+    Memory mem;
+    mem.setIIEMode(true);
+    poison(mem);
+    // INTC8ROM latches on $C3xx access regardless of INTCXROM (UTAIIe
+    // 5-28; MAME: the $C300 page of the INTCXROM-on view still runs
+    // c300_int_r, whose only condition is !m_slotc3rom). Sequence that
+    // used to break: read $C3xx with INTCXROM on, drop INTCXROM, then
+    // read $C8xx — must still be internal ROM, not slot bus.
+    mem.memWrite(0xC007, 0);          // INTCXROM on
+    (void)mem.memRead(0xC300);
+    mem.memWrite(0xC006, 0);          // INTCXROM off
+    assert(mem.memRead(0xC9AB) == 0x77 &&
+           "C3xx under INTCXROM=on must still arm INTC8ROM");
+}
+
+void testWritePathMirrorsReadSide()
+{
+    Memory mem;
+    mem.setIIEMode(true);
+    poison(mem);
+    // A WRITE to $C3xx with SLOTC3ROM=off is claimed by the motherboard
+    // (slot 3's I/O SELECT never asserts) and arms INTC8ROM exactly like
+    // a read — MAME's write view runs the same c300 internal handler.
+    mem.memWrite(0xC3C0, 0x00);
+    assert(mem.memRead(0xC800) == 0x42 &&
+           "C3xx WRITE must arm INTC8ROM (motherboard claims the page)");
+    // While INTC8ROM owns $C800-$CFFF, writes there are absorbed by ROM
+    // (must not crash / must not reach a slot card) and a $CFFF WRITE
+    // releases the window like the read side.
+    mem.memWrite(0xC9AB, 0x13);
+    assert(mem.memRead(0xC9AB) == 0x77 && "C8xx write absorbed by ROM");
+    mem.memWrite(0xCFFF, 0x00);
+    assert(mem.memRead(0xC9AB) != 0x77 &&
+           "CFFF WRITE must clear INTC8ROM (address decides, not direction)");
+}
+
 }  // namespace
 
 int main()
@@ -126,6 +164,8 @@ int main()
     testCfffClearsIntC8Rom();
     testSlotC3RomDisablesAutoEnable();
     testIntcxromSoftSwitchUnchanged();
+    testIntcxromOnStillArmsIntC8Rom();
+    testWritePathMirrorsReadSide();
     std::printf("iie_c8xx_smoke OK\n");
     return 0;
 }

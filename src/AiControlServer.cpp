@@ -6,12 +6,14 @@
 #include "AiControlServer.h"
 
 #include "Apple2Display.h"
+#include "CpuClock.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
 #include "Logger.h"
 #include "M6502.h"
 #include "MachineSnapshot.h"
 #include "Memory.h"
+#include "SocketUtil.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
 #include "SlotBus.h"
@@ -315,7 +317,7 @@ void applyRecvTimeout(int fd, int timeoutMs)
 bool sendAll(int fd, const char* buf, size_t n)
 {
     while (n > 0) {
-        const ssize_t s = ::send(fd, buf, n, MSG_NOSIGNAL);
+        const ssize_t s = pom2::sendNoSignal(fd, buf, n);
         if (s <= 0) {
             if (s < 0 && errno == EINTR) continue;
             return false;
@@ -463,38 +465,18 @@ void AiControlServer::stop()
 void AiControlServer::runWorker()
 {
     while (!stopRequested_) {
-        const int listenFd = listenFd_.load(std::memory_order_acquire);
-        if (listenFd < 0) break;
-
-        // Poll the listen fd with a short timeout instead of blocking inside
-        // accept(). `shutdown(listen_fd, SHUT_RDWR)` wakes accept() on Linux
-        // but NOT on macOS/BSD — there the worker stays parked in accept()
-        // forever and stop() hangs in worker_.join() (reproduced as the
-        // ai_control_server_smoke ctest timeout: the binary completes every
-        // assertion, then dies in stop()). Polling caps stop() latency to
-        // one poll interval without burning CPU between requests (the kernel
-        // sleeps in poll() exactly the same as it would in accept()).
-        struct pollfd pfd{};
-        pfd.fd     = listenFd;
-        pfd.events = POLLIN;
-        const int pr = ::poll(&pfd, 1, 200);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (pr == 0) continue;   // timeout → re-check stopRequested_
-        // listen fd invalidated under us (stop() shutdown / close).
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
-
+        // poll-then-accept via SocketUtil (the macOS shutdown-vs-accept
+        // deadlock rationale lives there; it was first reproduced here as
+        // the ai_control_server_smoke ctest timeout — every assertion
+        // passed, then the binary died in stop()'s worker_.join()).
         sockaddr_in peer{};
-        socklen_t peerLen = sizeof(peer);
-        const int fd = ::accept(listenFd,
-                                reinterpret_cast<sockaddr*>(&peer), &peerLen);
-        if (fd < 0) {
-            if (stopRequested_) break;
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            break;
-        }
+        int fd = -1;
+        const auto pa = pom2::pollAcceptOnce(
+            listenFd_.load(std::memory_order_acquire), 200, fd, peer);
+        if (pa == pom2::PollAccept::Retry)    continue;
+        if (pa == pom2::PollAccept::Shutdown) break;
+        if (stopRequested_) { ::close(fd); break; }
+        pom2::disableSigpipe(fd);
         int yes = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
         {
@@ -1123,10 +1105,11 @@ void AiControlServer::handleSpeed(int fd, const Request& req)
         // The value becomes the per-"frame" worker cycle budget. An
         // unbounded value freezes the UI (billions of cycles per frame
         // holding the state lock), and values whose low 32 bits are ≤0
-        // truncate to a dead/negative budget when cast to int. Bound it to
-        // ~117× realtime (the "max" preset's order of magnitude) and reject
-        // anything outside [1, kMaxCpf] instead of silently casting.
-        constexpr long kMaxCpf = 2'000'000;
+        // truncate to a dead/negative budget when cast to int. Bound it
+        // to the shared POM2_MAX_CYCLES_PER_FRAME ceiling (CpuClock.h —
+        // the same constant the CLI --speed clamp uses) and reject
+        // anything outside [1, max] instead of silently casting.
+        constexpr long kMaxCpf = POM2_MAX_CYCLES_PER_FRAME;
         if (cpf <= 0 || cpf > kMaxCpf) {
             sendJsonError(fd, 400,
                 "cycles_per_frame out of range (1.." + std::to_string(kMaxCpf) + ")");

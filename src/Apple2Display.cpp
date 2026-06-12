@@ -262,9 +262,15 @@ Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle,
     const uint64_t kCyclesPerScanline = static_cast<uint64_t>(t.cyclesPerScanline);
     const uint64_t kScanlinesPerFrame = static_cast<uint64_t>(t.scanlinesPerFrame);
     const uint64_t rawLine = (emuCycle / kCyclesPerScanline) % kScanlinesPerFrame;
+    // VBL lines collapse to kHeight (192) — the SAME "frame end, not
+    // visible" stamp Memory::pushVideoEventLocked records, so this really
+    // is the recorder's inverse. (It briefly clamped to 191 instead; any
+    // consumer re-deriving an event's line from emuCycle would have
+    // resurrected the spurious line-191 split the 192 stamp eliminated.)
+    // The visible replay consumes only byteCol from this function.
     const int scanline = rawLine < static_cast<uint64_t>(kHeight)
                              ? static_cast<int>(rawLine)
-                             : kHeight - 1;
+                             : kHeight;
     // The 40-byte visible window opens at horizontal cycle 25 (the first 25
     // cycles of each scanline are horizontal blanking). A switch thrown in
     // HBL (hpos < 25) lands at byteCol 0 → it governs the whole upcoming line;

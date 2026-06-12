@@ -33,6 +33,14 @@ void AtaBlockDevice::reset()
     sectorsLeft_ = 0;
     wordIdx_     = 0;
     wordBuf_.fill(0);
+    // Power-on default translation geometry. POM2's reset() models the
+    // power-on path (the machine constructs/resets the card with it), so
+    // an odd geometry latched by a previous guest's INITIALIZE DEVICE
+    // PARAMETERS ($91) must not poison the next boot's CHS decode. (On
+    // real drives $91 survives a SOFT reset — ATA-2 §9.16 — but POM2 has
+    // no separate soft-reset entry for the card.)
+    numSectors_ = 63;
+    numHeads_   = 16;
 }
 
 uint32_t AtaBlockDevice::currentLba() const
@@ -50,10 +58,17 @@ uint32_t AtaBlockDevice::currentLba() const
                 static_cast<uint32_t>(lba0_);
     }
     // CHS: lba2/lba1 = cylinder high/low, lba0 = 1-based sector number.
+    // Sector number 0 is illegal in CHS (ATA-2 §8: sectors are 1-based,
+    // and 0 is the power-on register value): `+ 0 - 1` underflowed to
+    // 0xFFFFFFFF, which the backing bounds-check silently turned into a
+    // zero-filled read / dropped write with SUCCESS status. Map it to
+    // block 0 of the cylinder/head instead — out-of-range commands still
+    // fail the backing bounds check downstream.
+    const uint32_t sec1 = (lba0_ != 0) ? static_cast<uint32_t>(lba0_) - 1 : 0;
     return ((((static_cast<uint32_t>(lba2_) << 8) |
                static_cast<uint32_t>(lba1_)) * numHeads_ +
              (devHead_ & 0x0F)) * numSectors_) +
-           static_cast<uint32_t>(lba0_) - 1;
+           sec1;
 }
 
 void AtaBlockDevice::loadSectorToBuffer()

@@ -180,7 +180,9 @@ void testModeSoftSwitch()
     // → low4 = 0xF → clear + OR 7 → PH_EchoPlus.
     const uint8_t status = card.deviceSelectRead(0xF);
     assert(card.mode() == PhasorCard::PH_EchoPlus);
-    assert(status == PhasorCard::PH_EchoPlus);
+    // MAME read_c0nx returns $FF (open bus) — the mode is NOT readable
+    // on real hardware, only settable by the address bits.
+    assert(status == 0xFF);
 
     // Read $C0(8+s)0 (no bit3, no OR) keeps current mode unchanged.
     (void)card.deviceSelectRead(0x0);

@@ -15,18 +15,35 @@ inline constexpr int POM2_CPU_CLOCK_HZ = 1022727;
 inline constexpr int POM2_CPU_CYCLES_PER_FRAME_60HZ = (POM2_CPU_CLOCK_HZ + 30) / 60;
 inline constexpr int POM2_CPU_CYCLES_PER_MILLISECOND = (POM2_CPU_CLOCK_HZ + 500) / 1000;
 
+// Hard ceiling for the per-frame worker cycle budget (turbo). ONE constant
+// shared by the CLI `--speed` clamp and the AI server's POST /speed so the
+// two knobs cannot drift apart (the invariant used to be enforced by prose
+// pointing from one literal at the other). ~2 M ≈ 117× realtime covers every
+// legitimate turbo use; an unbounded budget freezes the UI for seconds per
+// frame while the worker holds the state lock, and stop()'s park guarantee
+// relies on frames staying bounded.
+inline constexpr int POM2_MAX_CYCLES_PER_FRAME = 2'000'000;
+
 // ── Video standard (machine timing) ─────────────────────────────────────
 //
 // NTSC and PAL Apple IIs differ in the *whole machine clock*, not just the
 // colour encoding. The European/French machines (and the Apple //c that took
-// the Le Chat Mauve RGB adapter on its DB-15 port) run PAL: a 14.250 MHz
-// master oscillator → 15625 Hz line rate → 65 cycles/line × 312 lines/frame →
-// ~50.08 Hz field rate and a ~1.0156 MHz CPU. French Touch / DIX productions
-// are timed to this 50 Hz / 312-line geometry, so beam-raced effects and the
-// Mockingboard-T2 frame sync only land correctly under PAL timing.
+// the Le Chat Mauve RGB adapter on its DB-15 port) run PAL: a 14.25045 MHz
+// master oscillator, 65 cycles/line × 312 lines/frame. French Touch / DIX
+// productions are timed to this 50 Hz / 312-line geometry, so beam-raced
+// effects and the Mockingboard-T2 frame sync only land correctly under PAL.
 //
 //   NTSC: 14.31818 MHz / 14 = 1 022 727 Hz, 262 lines, 60 Hz
-//   PAL : 14.250    MHz / 14 ≈ 1 015 625 Hz, 312 lines, ~50 Hz
+//   PAL : 1 015 625 Hz (= 15 625 Hz broadcast line rate × 65), 312 lines, 50 Hz
+//
+// PAL clock provenance (deliberate deviation, do not "fix" silently): the
+// nominal divider would give 14.25045/14 = 1 017 889 Hz, and MAME uses the
+// long-cycle-averaged 1 016 966 Hz (`apple2e.cpp` accel_update_speed
+// `m_pal ? 1016966 : 1021800`). POM2 instead locks the PAL clock to the
+// broadcast line rate (15 625 Hz × 65) so the worker's exact 50.00 Hz
+// wall-clock pacing × 20 313 cycles/frame reproduces the machine clock with
+// zero drift. The 0.13 % gap to MAME (0.22 % to nominal) is the same order
+// as the already-owned "device clocks stay NTSC" audio-pitch approximation.
 //
 // `cyclesPerFrame` mirrors the NTSC convention (round(clock / refresh)); it is
 // the CPU budget the worker runs per UI tick and is intentionally decoupled

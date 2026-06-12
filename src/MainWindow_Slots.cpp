@@ -302,9 +302,11 @@ void MainWindow::renderSlotConfigPanel()
             // clicked on a //c-class profile. Same guard as the
             // ~MainWindow shutdown persist path.
             for (int s = 1; s <= 7; ++s) {
-                if (!pom2::slotKeyIsUserChoice(profileCfg, s, draft[s]))
+                const std::string key = "slot_" + std::to_string(s) + "_card";
+                if (!pom2::slotKeyIsUserChoice(profileCfg, s, draft[s],
+                                               settings->getString(key, "")))
                     continue;
-                settings->setString("slot_" + std::to_string(s) + "_card", draft[s]);
+                settings->setString(key, draft[s]);
             }
             settings->save();
             restartEmulationFromSettings();

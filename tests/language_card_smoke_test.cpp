@@ -1,9 +1,17 @@
-// Language Card smoke test — pins the Apple II/II+ 16 KB RAM expansion:
+// Language Card smoke test — pins the 16 KB LC state machine ($C080-$C08F):
 //   * ROM is visible by default
 //   * $C080/$C088 read-enable RAM bank 2/1 in write-protected mode
 //   * $C083/$C08B require the two-access prewrite latch before writes stick
 //   * $C081 can write RAM while ROM stays visible
 //   * $E000-$FFFF is shared between the two $D000-$DFFF banks
+//
+// Runs in IIe mode: the $C011 (RDBNK2) / $C012 (RDLCRAM) status registers
+// used here to observe the state machine exist only on the IIe MMU. On a
+// real II/II+ the whole $C010-$C01F page is the keyboard-strobe-clear
+// mirror (MAME `apple2.cpp:548` maps $C010 with `.mirror(0xf)`) — POM2
+// previously answered $C011/$C012 with IIe-style LC status on II+ too,
+// which this test used to pin. The $C08x state machine itself is identical
+// on both machine classes (same MAME `lc_update` port).
 
 #include "Memory.h"
 
@@ -13,6 +21,7 @@
 int main()
 {
     Memory mem;
+    mem.setIIEMode(true);
     const uint8_t romBytes[] = { 0xD0, 0xE0 };
     assert(mem.loadRomBytes(&romBytes[0], 1, 0xD000));
     assert(mem.loadRomBytes(&romBytes[1], 1, 0xE000));
@@ -64,6 +73,34 @@ int main()
     mem.memWrite(0xD000, 0x99);
     (void)mem.memRead(0xC080);
     assert(mem.memRead(0xD000) == 0x44);
+
+    // ── II+ machine class: same $C08x state machine, observed through
+    // ROM/RAM visibility only — $C011/$C012 are the keyboard-strobe
+    // mirror on II/II+, so the IIe status registers used above don't
+    // exist there. Keeps the II+ LC path pinned end-to-end (the IIe-mode
+    // switch above would otherwise leave it covered by zero tests).
+    {
+        Memory m2;   // default = II/II+ mode
+        const uint8_t romBytes2[] = { 0xD0, 0xE0 };
+        assert(m2.loadRomBytes(&romBytes2[0], 1, 0xD000));
+        assert(m2.loadRomBytes(&romBytes2[1], 1, 0xE000));
+        assert(m2.memRead(0xD000) == 0xD0);   // ROM by default
+        (void)m2.memRead(0xC083);             // 1st: read-RAM bank 2, no write
+        m2.memWrite(0xD000, 0x22);
+        assert(m2.memRead(0xD000) == 0x00);   // prewrite not armed
+        (void)m2.memRead(0xC083);             // 2nd consecutive: writes armed
+        m2.memWrite(0xD000, 0x22);
+        assert(m2.memRead(0xD000) == 0x22);
+        (void)m2.memRead(0xC08B);             // bank 1, double access
+        (void)m2.memRead(0xC08B);
+        m2.memWrite(0xD000, 0x11);
+        assert(m2.memRead(0xD000) == 0x11);   // bank 1 is a separate window
+        (void)m2.memRead(0xC083);
+        assert(m2.memRead(0xD000) == 0x22);   // bank 2 contents retained
+        (void)m2.memRead(0xC082);
+        assert(m2.memRead(0xD000) == 0xD0);   // ROM-only protects again
+        std::printf("Language Card II+ machine class: OK\n");
+    }
 
     std::printf("Language Card smoke: OK\n");
     return 0;

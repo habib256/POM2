@@ -191,19 +191,37 @@ struct Via6522
             return readPortA();
         case VIA_DDRB:   return ddrB;
         case VIA_DDRA:   return ddrA;
+        // Counter read-back: while a timer is ARMED the live counter
+        // carries the +2 IRQ pre-bias (see T1CH/T2CH write cases), which
+        // must NOT be visible to the guest — MAME's get_counter1_value()
+        // returns `remaining - IFR_DELAY` while active (6522via.cpp:
+        // ~518-530), i.e. our `counter - 2`. After underflow (one-shot
+        // disarmed) MAME switches to the free-running 0xFFFF-elapsed
+        // epoch, which the raw wrapped counter already equals (fire at
+        // counter == -1 → 0xFFFF). A bare read of the biased counter
+        // returned N+2 right after a T1CH write — absolute-value
+        // detectors (write $12xx, read back expecting $12) saw $13.
         case VIA_T1CL: {
             ifr &= ~IFR_T1;
-            return static_cast<uint8_t>(t1Counter & 0xFF);
+            const int32_t rb = t1FireArmed ? t1Counter - 2 : t1Counter;
+            return static_cast<uint8_t>(rb & 0xFF);
         }
-        case VIA_T1CH:   return static_cast<uint8_t>((t1Counter >> 8) & 0xFF);
+        case VIA_T1CH: {
+            const int32_t rb = t1FireArmed ? t1Counter - 2 : t1Counter;
+            return static_cast<uint8_t>((rb >> 8) & 0xFF);
+        }
         case VIA_T1LL:   return static_cast<uint8_t>(t1Latch & 0xFF);
         case VIA_T1LH:   return static_cast<uint8_t>((t1Latch >> 8) & 0xFF);
         case VIA_T2CL: {
             // T2CL read clears IFR.T2 (MAME `6522via.cpp:590-594`).
             ifr &= ~IFR_T2;
-            return static_cast<uint8_t>(t2Counter & 0xFF);
+            const int32_t rb = t2Active ? t2Counter - 2 : t2Counter;
+            return static_cast<uint8_t>(rb & 0xFF);
         }
-        case VIA_T2CH:   return static_cast<uint8_t>((t2Counter >> 8) & 0xFF);
+        case VIA_T2CH: {
+            const int32_t rb = t2Active ? t2Counter - 2 : t2Counter;
+            return static_cast<uint8_t>((rb >> 8) & 0xFF);
+        }
         case VIA_SR:     return sr;
         case VIA_ACR:    return acr;
         case VIA_PCR:    return pcr;

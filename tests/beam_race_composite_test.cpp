@@ -231,6 +231,30 @@ int main()
                   "block painted from the split, no text overdraw)");
     }
 
+    // ── Switch thrown during VBL: NO visible split this frame ─────────────
+    // Flipping modes inside VBL (scanline >= 192) is the canonical
+    // tear-free idiom — the beam already painted the whole picture in the
+    // pre-switch state. The event used to be clamped to scanline 191 with
+    // an arbitrary byteCol, painting a spurious post-switch tail on the
+    // last visible line; it is now stamped as scanline 192 ("frame end")
+    // and skipped by the visible replay.
+    {
+        Memory beamVbl;
+        populate(beamVbl);
+        beamVbl.memRead(SET_TEXT);
+        beamVbl.memRead(SET_PAGE1);
+        beamVbl.memRead(CLR_HIRES);
+        beamVbl.setCycleCounter(0);
+        beamVbl.beginVideoEventFrame();
+        beamVbl.setCycleCounter(230 * 65);   // scanline 230 — inside VBL
+        beamVbl.memRead(CLR_TEXT);
+        beamVbl.memRead(SET_HIRES);
+        const auto sigVbl = signalOf(beamVbl);
+        assert(bandEqual(sigVbl, sigText, 0, 192)
+               && "a VBL-thrown switch must not alter ANY visible scanline "
+                  "(old clamp split line 191)");
+    }
+
     std::printf("beam_race_composite OK\n");
     return 0;
 }

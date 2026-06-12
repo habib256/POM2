@@ -9,6 +9,7 @@
 
 #include "CliDispatcher.h"
 
+#include "CpuClock.h"
 #include "Logger.h"
 
 #include <cctype>
@@ -222,19 +223,16 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
                 pom2::log().error("CLI", std::string("invalid --speed: ") + v);
                 return std::nullopt;
             }
-            // Same ceiling as the AI server's POST /speed (kMaxCpf in
-            // AiControlServer.cpp): the value is the worker's per-frame
-            // cycle budget, so an unbounded --speed produced multi-second
-            // frames (UI frozen, stop() latency huge). ~2M ≈ 117× realtime
-            // covers every legitimate turbo use. Clamp + warn rather than
-            // reject so existing scripted launches keep working.
-            constexpr int kMaxCyclesPerFrame = 2'000'000;
-            if (n > kMaxCyclesPerFrame) {
+            // Shared ceiling with the AI server's POST /speed —
+            // POM2_MAX_CYCLES_PER_FRAME in CpuClock.h (rationale there).
+            // Clamp + warn rather than reject so existing scripted
+            // launches keep working.
+            if (n > POM2_MAX_CYCLES_PER_FRAME) {
                 pom2::log().warn("CLI",
                     "--speed " + std::to_string(n) + " exceeds the " +
-                    std::to_string(kMaxCyclesPerFrame) +
+                    std::to_string(POM2_MAX_CYCLES_PER_FRAME) +
                     " cycles/frame ceiling — clamped");
-                n = kMaxCyclesPerFrame;
+                n = POM2_MAX_CYCLES_PER_FRAME;
             }
             plan.executionSpeed = n;
         }

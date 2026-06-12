@@ -450,8 +450,16 @@ void Memory::pushVideoEventLocked(VideoEventKind kind, bool value)
     const uint64_t now = cycleCounter +
         (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
     const uint64_t rawLine = (now / kCyclesPerScanline) % kScanlinesPerFrame;
+    // A switch thrown during VBL (rawLine >= 192) must NOT be replayed
+    // inside the visible frame: the beam already finished the picture in
+    // the pre-switch state (throwing mode switches in VBL is the canonical
+    // tear-free idiom). Stamp it as scanline 192 — Apple2Display's replay
+    // loops only consume scanlines 0..191, so the event sorts after every
+    // visible position and is skipped; its effect reaches the NEXT frame
+    // through displayAtFrameStart_. (Clamping to 191, as previously done,
+    // painted a spurious post-switch split on the last visible line.)
     const uint16_t scanline = static_cast<uint16_t>(
-        rawLine < kVisibleScanlines ? rawLine : kVisibleScanlines - 1);
+        rawLine < kVisibleScanlines ? rawLine : kVisibleScanlines);
 
     videoEvents_.push_back({now, scanline, kind, value});
 }
@@ -979,7 +987,28 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         }
         return kbLatch;
     }
-    // Keyboard strobe clear — read or write.
+    // Keyboard strobe clear.
+    //
+    // II/II+: $C010 is mirrored across the whole $C010-$C01F page — MAME
+    // `apple2.cpp:548` `map(0xc010,0xc010).mirror(0xf)` routes both reads
+    // and writes of any $C01x to the strobe clear. The II decodes only
+    // A4-A7 here; there are no IIe status registers to shadow. (POM2
+    // previously answered $C011/$C012 with IIe-style LC status on II+ —
+    // a deliberate convenience that diverged from hardware; software
+    // acking a key via `STA $C01x` (x≠0) never saw its strobe clear.)
+    if (!iieMode && low >= 0x10 && low <= 0x1F) {
+        clearKeyStrobe();
+        return kbLatch & 0x7F;
+    }
+    // IIe: any WRITE in $C010-$C01F clears the strobe (MAME `apple2e.cpp`
+    // c000_w: `if ((offset & 0xf0) == 0x10) { m_strobe = 0; ... }` — only
+    // $C010 additionally pings the keyboard MCU). Reads of $C011-$C01F
+    // are status-only and fall through to the handlers below.
+    if (iieMode && isWrite && low >= 0x10 && low <= 0x1F) {
+        clearKeyStrobe();
+        return kbLatch & 0x7F;   // store: return value unused
+    }
+    // IIe keyboard strobe read — clear + AKD approximation.
     if (low == 0x10) {
         // IIe: bit 7 reflects "any key down" (MAME `apple2e.cpp:1833`:
         // `m_transchar | (m_anykeydown ? 0x80 : 0x00)`). POM2 doesn't
@@ -999,10 +1028,10 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         }
         return kbLatch & 0x7F;
     }
-    // Language Card status mirrors (Apple IIe-compatible; harmless on II+).
-    // In iieMode the low 7 bits carry m_transchar (last keyboard char)
-    // per MAME `apple2e.cpp:1842-1871`. On II+ they're zero (real II+
-    // would return the floating bus; not modelled here).
+    // IIe Language Card status reads RDBNK2/RDLCRAM (only reachable in
+    // iieMode: II+ $C01x is the strobe mirror handled above). Low 7 bits
+    // carry m_transchar (last keyboard char) per MAME
+    // `apple2e.cpp:1842-1871`.
     if (low == 0x11 || low == 0x12) {
         const bool on = (low == 0x11) ? lcBank2Active : lcReadRam;
         uint8_t low7 = 0;
@@ -1018,10 +1047,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // addresses don't accidentally flip paging bits.)
 
     // IIe status reads at $C013-$C018 + $C01E-$C01F (high bit reflects
-    // the matching MF_* / DisplayState bit).
+    // the matching MF_* / DisplayState bit). Out-of-band "handled" flag:
+    // an in-band sentinel byte is unusable here because every status
+    // value `0x80 | transchar` is legitimate — with lastKey = $7E ('~')
+    // an ON switch reads back exactly $FE, and a sentinel collision sent
+    // RDRAMRD-class polls to the floating bus (reporting OFF while ON).
     if (iieMode && low >= 0x13 && low <= 0x1F) {
-        const uint8_t s = iieReadStatus(addr);
-        if (s != 0xFE) return s;  // 0xFE = sentinel for "not handled here"
+        uint8_t s = 0;
+        if (iieReadStatus(addr, s)) return s;
     }
     // VBL (vertical blank) strobe — IIe-only register. Scanline-accurate
     // Apple II frame: 262 scanlines × 65 cycles. Visible video =
@@ -1159,22 +1192,9 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         return isWrite ? 0 : floatingBus();
     }
 
-    // 80COL ($C00C off / $C00D on). On a II/II+ this is purely a
-    // hook for Le Chat Mauve / Video-7 RGB cards co-opting it as the
-    // data line of their 2-bit FIFO mode register (AN3 = clock).
-    // On a IIe `iieHandleSoftSwitch` (called above for `low <= 0x0F`)
-    // already updated MF_80COL + display.eightyCol AND ran
-    // broadcastVideoSwitch for us, so we MUST NOT re-fire here — that
-    // would double-clock the FIFO. Gate on !iieMode.
-    if (!iieMode && (low == 0x0C || low == 0x0D)) {
-        {
-            std::lock_guard<std::mutex> lk(stateMutex);
-            display.eightyCol = (low == 0x0D);
-            pushVideoEventLocked(VideoEventKind::EightyCol, low == 0x0D);
-        }
-        slots.broadcastVideoSwitch(addr);
-        return isWrite ? 0 : floatingBus();
-    }
+    // (The II/II+ 80COL / Le Chat Mauve FIFO hook for $C00C/$C00D lives
+    // in the `low <= 0x0F` block at the top of this function — that block
+    // returns unconditionally, so no $C00x can reach this point.)
 
     // AN3 annunciator ($C05E off / $C05F on). Used as the FIFO clock by
     // Le Chat Mauve — every $C05E→$C05F rising edge pushes the current
@@ -1393,7 +1413,7 @@ void Memory::iieHandleSoftSwitch(uint16_t addr)
     }
 }
 
-uint8_t Memory::iieReadStatus(uint16_t addr) const
+bool Memory::iieReadStatus(uint16_t addr, uint8_t& out) const
 {
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
     DisplayState ds;
@@ -1416,20 +1436,20 @@ uint8_t Memory::iieReadStatus(uint16_t addr) const
         return static_cast<uint8_t>((on ? 0x80 : 0x00) | transchar);
     };
     switch (low) {
-        case 0x13: return bit((iieMemMode & MF_RAMRD)     != 0);  // RDRAMRD
-        case 0x14: return bit((iieMemMode & MF_RAMWRT)    != 0);  // RDRAMWRT
-        case 0x15: return bit((iieMemMode & MF_INTCXROM)  != 0);  // RDCXROM
-        case 0x16: return bit((iieMemMode & MF_ALTZP)     != 0);  // RDALTZP
-        case 0x17: return bit((iieMemMode & MF_SLOTC3ROM) != 0);  // RDC3ROM
-        case 0x18: return bit((iieMemMode & MF_80STORE)   != 0);  // RD80STORE
-        case 0x1A: return bit(ds.textMode);                       // RDTEXT
-        case 0x1B: return bit(ds.mixedMode);                      // RDMIXED
-        case 0x1C: return bit(ds.page2);                          // RDPAGE2
-        case 0x1D: return bit(ds.hiRes);                          // RDHIRES
-        case 0x1E: return bit((iieMemMode & MF_ALTCHAR)   != 0);  // RDALTCHAR
-        case 0x1F: return bit((iieMemMode & MF_80COL)     != 0);  // RD80COL
+        case 0x13: out = bit((iieMemMode & MF_RAMRD)     != 0); return true; // RDRAMRD
+        case 0x14: out = bit((iieMemMode & MF_RAMWRT)    != 0); return true; // RDRAMWRT
+        case 0x15: out = bit((iieMemMode & MF_INTCXROM)  != 0); return true; // RDCXROM
+        case 0x16: out = bit((iieMemMode & MF_ALTZP)     != 0); return true; // RDALTZP
+        case 0x17: out = bit((iieMemMode & MF_SLOTC3ROM) != 0); return true; // RDC3ROM
+        case 0x18: out = bit((iieMemMode & MF_80STORE)   != 0); return true; // RD80STORE
+        case 0x1A: out = bit(ds.textMode);                      return true; // RDTEXT
+        case 0x1B: out = bit(ds.mixedMode);                     return true; // RDMIXED
+        case 0x1C: out = bit(ds.page2);                         return true; // RDPAGE2
+        case 0x1D: out = bit(ds.hiRes);                         return true; // RDHIRES
+        case 0x1E: out = bit((iieMemMode & MF_ALTCHAR)   != 0); return true; // RDALTCHAR
+        case 0x1F: out = bit((iieMemMode & MF_80COL)     != 0); return true; // RD80COL
     }
-    return 0xFE;  // not a status read — let the caller continue
+    return false;  // not a status read ($C019 VBL etc.) — caller continues
 }
 
 uint8_t Memory::iieMemRead(uint16_t addr)
@@ -1843,6 +1863,17 @@ uint8_t Memory::memRead(uint16_t addr)
                 intC8Rom = false;
                 slots.deactivateExpansion();
             }
+            // INTC8ROM latches on ANY $C3xx access while SLOTC3ROM=off —
+            // INTCXROM state does not gate it (UTAIIe 5-28; MAME
+            // `apple2e.cpp` `c300_int_r`: the $C300 page of the
+            // INTCXROM-on view still runs c300_int_r, whose only
+            // condition is `!m_slotc3rom`). Missing this: read $C3xx
+            // with INTCXROM on, drop INTCXROM, then JMP into
+            // $C800-$CFFF — must still see internal ROM, not slot bus.
+            if (addr >= 0xC300 && addr <= 0xC3FF &&
+                !(iieMemMode & MF_SLOTC3ROM)) {
+                intC8Rom = true;
+            }
             // //c-class override: //c+ MIG windows ($CC00/$CE00 in bank 1)
             // or alt-firmware bank-1 bytes (plain //c rev-0/3/4 + //c+
             // outside the MIG windows). Bank 0 — and plain //e INTCXROM —
@@ -2032,6 +2063,7 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // bus regardless so cards that decode their own $C800-$CFFF
     // window (rare on a IIe) still see it.
     if (iieMode && addr == 0xCFFF) {
+        intC8Rom = false;   // same flip-flop reset as the read side
         slots.deactivateExpansion();
     }
     // Mirror the memRead INTCXROM override for //c: when internal ROM
@@ -2048,6 +2080,18 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         if (iicProfile_) iicProfile_->internalRomWrite(addr, value);
         return;
     }
+    // IIe $C300-$C3FF with SLOTC3ROM=off: the motherboard claims the
+    // page — slot 3's I/O SELECT never asserts, so the write must NOT
+    // reach the slot bus (slotRomWrite would both poke a deselected
+    // card and latch slot 3 as the $C800 expansion-ROM owner, stealing
+    // the window from the rightful card). The access still arms
+    // INTC8ROM, mirroring the read side (UTAIIe 5-28: any $C3xx access;
+    // MAME `apple2e.cpp` write view runs the same c300 internal handler).
+    if (iieMode && addr >= 0xC300 && addr <= 0xC3FF &&
+        !(iieMemMode & MF_SLOTC3ROM)) {
+        intC8Rom = true;
+        return;
+    }
     if (addr <= 0xC7FF) {
         // Slot ROM is read-only on most cards, but a handful (Mockingboard
         // in particular) decode 6522 VIA MMIO inside the $CnXX window.
@@ -2056,6 +2100,12 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         // window), so cards that genuinely have read-only ROM still see
         // their slot select on writes.
         slots.slotRomWrite(addr, value);
+        return;
+    }
+    // $C800-$CFFF with INTC8ROM set: internal ROM owns the window —
+    // the write is absorbed by ROM, never forwarded to a slot card
+    // (the $CFFF deactivate already ran above). Mirrors the read side.
+    if (iieMode && intC8Rom) {
         return;
     }
     // $C800-$CFFF — expansion ROM, conventionally read-only. Forward

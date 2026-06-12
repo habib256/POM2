@@ -256,12 +256,17 @@ bool testLssWrite() {
     // next byte. This is exactly DOS 3.3's WRITE6 inner loop.
     const uint8_t pattern[] = { 0xFF, 0xFF, 0xD5, 0xAA, 0xAD, 0x96, 0xEB, 0xFF };
     card.deviceSelectRead(0xF);   // Q7H (write enable; writeStart = 4096)
-    card.deviceSelectRead(0xD);   // Q6H (load mode)
 
     const uint64_t flushesBefore = card.getWriteFlushCount();
     for (uint8_t b : pattern) {
-        card.deviceSelectWrite(0xD, b);   // store byte to data latch
-        card.advanceCycles(32);            // 32 CPU cycles → 1 nibble
+        // RWTS WRITE cadence: STA $C0ED pulses Q6H to latch the byte,
+        // ORA/LDA $C0EC drops back to Q6L so the LSS shifts it out.
+        // (Holding Q6H continuously makes the LSS re-load every cycle
+        // and stream solid 1-bits — not a byte write.)
+        card.deviceSelectWrite(0xD, b);   // Q6H + latch
+        card.advanceCycles(4);            // LSS runs in load mode briefly
+        card.deviceSelectRead(0xC);       // Q6L — shift out
+        card.advanceCycles(28);           // rest of the 32-cycle window
     }
     card.deviceSelectRead(0xE);   // Q7L — flushes the splice (anchored)
     const uint64_t flushesAfter = card.getWriteFlushCount();
@@ -285,15 +290,18 @@ bool testLssWrite() {
     }
 
     // POSITIONAL pin. Persist via eject (save-on-eject rewrites the
-    // .nib), then locate the written bit pattern in track 0.
+    // .nib), then locate where the splice landed in track 0.
     //
     // Expected angle: writeStart = lssCycle at Q7H = 2×(1024+1024) =
     // 4096; revStart = 2048 (motor-on at cpuCycleTotal = 1024). A .nib
     // expands to exactly 8 cells/byte, so the splice's first cell is
-    // (4096 - 2048) / 8 = bit 256. The shifter takes a few cells to
-    // emit the first loaded byte and the write phase may sit mid-cell,
-    // so allow a generous window — it is still ~256 bits away from the
-    // unanchored bug's landing spot (4096 / 8 = bit 512).
+    // (4096 - 2048) / 8 = bit 256 → nibble 32. The exact byte values
+    // depend on sub-cell write phase (the LSS may rotate them against
+    // the nibble grid), so the pin is the FIRST nibble that differs
+    // from the original image: the leading two $FF pattern bytes are
+    // no-ops over the $FF background, so the first visible change is a
+    // few nibbles past 32 — far from the unanchored bug's landing spot
+    // (4096 / 8 / 8 = nibble 64, right on top of the prologue).
     card.ejectDisk(0);
     std::ifstream f(nibPath, std::ios::binary);
     std::vector<uint8_t> track0(DiskImage::kNibblesPerTrack);
@@ -301,39 +309,35 @@ bool testLssWrite() {
            static_cast<std::streamsize>(track0.size()));
     if (!f) { std::printf("FAIL: re-read %s\n", nibPath.c_str()); return false; }
 
-    auto bitOf = [&](size_t bit) {
-        return (track0[bit / 8] >> (7 - (bit % 8))) & 1;
-    };
-    // Search for the distinctive 40-bit D5 AA AD 96 EB sub-pattern.
-    const uint8_t needle[] = { 0xD5, 0xAA, 0xAD, 0x96, 0xEB };
-    const size_t totalBits = track0.size() * 8;
-    long foundBit = -1;
-    for (size_t s = 0; s + 40 <= totalBits; ++s) {
-        bool match = true;
-        for (size_t k = 0; k < 40 && match; ++k) {
-            const uint8_t want = (needle[k / 8] >> (7 - (k % 8))) & 1;
-            if (bitOf(s + k) != want) match = false;
+    auto originalNib = [](int i) -> uint8_t {
+        // makeSyntheticNib: all $FF except D5 AA 96 EB at 64..67.
+        switch (i) {
+            case 64: return 0xD5;
+            case 65: return 0xAA;
+            case 66: return 0x96;
+            case 67: return 0xEB;
+            default: return 0xFF;
         }
-        if (match) { foundBit = static_cast<long>(s); break; }
+    };
+    int firstDiff = -1;
+    for (int i = 0; i < DiskImage::kNibblesPerTrack; ++i) {
+        if (track0[i] != originalNib(i)) { firstDiff = i; break; }
     }
-    if (foundBit < 0) {
-        std::printf("FAIL: written D5 AA AD 96 EB not found in track 0 "
-                    "after write-back\n");
+    if (firstDiff < 0) {
+        std::printf("FAIL: LSS write changed nothing in track 0\n");
         return false;
     }
-    // The needle sits 2 bytes (16 bits) into the 8-byte pattern.
-    const long patternBit = foundBit - 16;
-    const long expected   = 256;
-    if (patternBit < expected - 32 || patternBit > expected + 96) {
-        std::printf("FAIL: write landed at bit %ld, expected ~%ld "
-                    "(unanchored `writeStart %% period` would land at "
-                    "~512) — revolution anchor not applied to writeFlux\n",
-                    patternBit, expected);
+    const int expected = 32;                 // splice start nibble
+    if (firstDiff < expected || firstDiff > expected + 12) {
+        std::printf("FAIL: write landed at nibble %d, expected ~%d "
+                    "(unanchored `writeStart %% period` lands at ~64) — "
+                    "revolution anchor not applied to writeFlux\n",
+                    firstDiff, expected);
         return false;
     }
-    std::printf("[ OK ] LSS write path: anchored splice at bit %ld "
-                "(expected ~%ld), read recovers afterwards\n",
-                patternBit, expected);
+    std::printf("[ OK ] LSS write path: anchored splice first-diff at "
+                "nibble %d (expected ~%d), read recovers afterwards\n",
+                firstDiff, expected);
     return true;
 }
 

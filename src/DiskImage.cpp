@@ -5,6 +5,7 @@
 
 #include "DiskImage.h"
 #include "Logger.h"
+#include "TwoImg.h"
 
 #include <algorithm>
 #include <cctype>
@@ -221,23 +222,11 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
             return r;
         }
 
-        // Volume number: spec is "if bit 8 of flags is set, the low 8 bits
-        // of flags hold the DOS 3.3 volume number" — bit 8 ONLY. Bit 31
-        // is the "locked" (write-protect) flag (CiderPress
-        // `kFlagLocked = 0x80000000`; AppleWin agrees), NOT a second
-        // volume-valid marker: a locked image with no volume field must
-        // still default to volume 254, and treating bit 31 as
-        // volume-valid made every locked image mount as volume 0.
-        const uint8_t vol =
-            (flags & (1u << 8))
-                ? static_cast<uint8_t>(flags & 0xFF)
-                : 254;
-        // Write-protect = bit 31 per the 2IMG spec. Bit 0 is kept as a
-        // lenient extra WP signal for the rare malformed images that set
-        // it instead — but only when no volume field is declared, since
-        // with bit 8 set bit 0 is just an odd volume number's low bit.
-        const bool wp = (flags & (1u << 31)) != 0 ||
-                        ((flags & 1u) != 0 && (flags & (1u << 8)) == 0);
+        // Flags-word semantics live in TwoImg.h (shared with Disk35Image
+        // and Block512Backing — the lock bit was misread identically in
+        // all three loaders once; one definition now).
+        const uint8_t vol = pom2::twoImgVolume(flags);
+        const bool    wp  = pom2::twoImgWriteProtected(flags);
 
         ImageKind kind = ImageKind::Unknown;
         SectorOrder order = SectorOrder::Dos33;
@@ -1209,6 +1198,42 @@ void DiskImage::loadMediaSnapshot(const uint8_t* data, std::size_t len)
 // per byte so the byte boundary drifts +2 bits across each gap — that's
 // the timing artefact real Disk II software uses to recover sync after
 // the head crosses a track boundary or the controller drops alignment.
+void DiskImage::computeCellWidths(int track, uint8_t* widths) const
+{
+    std::fill_n(widths, kNibblesPerTrack, uint8_t{8});
+    if (nibFormat) return;          // .nib: raw nibbles, no sync semantics
+    const auto& buf = tracks[track];
+
+    // Circular maximal-run scan: walk once from just past a non-$FF
+    // anchor; every maximal $FF run is then seen contiguously (including
+    // the one wrapping the index seam), and members of runs ≥ kSyncMinRun
+    // get the 10-cell width.
+    int anchor = -1;
+    for (int i = 0; i < kNibblesPerTrack; ++i) {
+        if (buf[i] != 0xFF) { anchor = i; break; }
+    }
+    if (anchor < 0) {               // whole track is one giant sync run
+        std::fill_n(widths, kNibblesPerTrack, uint8_t{10});
+        return;
+    }
+    int runLen = 0, runBegin = 0;
+    for (int k = 1; k <= kNibblesPerTrack; ++k) {
+        const int idx = (anchor + k) % kNibblesPerTrack;
+        if (buf[idx] == 0xFF) {
+            if (runLen == 0) runBegin = idx;
+            ++runLen;
+        } else {
+            if (runLen >= kSyncMinRun) {
+                for (int j = 0; j < runLen; ++j)
+                    widths[(runBegin + j) % kNibblesPerTrack] = 10;
+            }
+            runLen = 0;
+        }
+    }
+    // The walk ends back on the non-$FF anchor, so the last run (if any)
+    // was flushed by the loop's else branch.
+}
+
 void DiskImage::expandTrackBits(int qt) const
 {
     if (qt < 0 || qt >= kQuarterTracks) return;
@@ -1232,7 +1257,6 @@ void DiskImage::expandTrackBits(int qt) const
         return;
     }
     const auto& buf = tracks[wholeTrack];
-    const bool noSyncPad = nibFormat;   // .nib has no sync semantics
 
     // Detect whether nibble[i] is part of a SYNC GAP $FF run vs an
     // in-field $FF that happens to be encoded as the on-disk byte $FF.
@@ -1248,27 +1272,12 @@ void DiskImage::expandTrackBits(int qt) const
     //
     // `nibblizeTrack` always lays down ≥5-byte $FF gaps (5 between
     // address/data fields, 14 between sectors, and a long $FF tail
-    // that wraps into the next-revolution leader). Pick a threshold
-    // tight against the encoder so naturally occurring 2-3 byte in-
-    // field $FF runs don't get treated as sync.
-    constexpr int kSyncMinRun = 5;
-    auto isInFFRun = [&](int i) {
-        if (noSyncPad) return false;
-        if (buf[i] != 0xFF) return false;
-        int countLeft = 0;
-        for (int j = 1; j < kSyncMinRun; ++j) {
-            const int idx = (i - j + kNibblesPerTrack) % kNibblesPerTrack;
-            if (buf[idx] != 0xFF) break;
-            ++countLeft;
-        }
-        int countRight = 0;
-        for (int j = 1; j < kSyncMinRun; ++j) {
-            const int idx = (i + j) % kNibblesPerTrack;
-            if (buf[idx] != 0xFF) break;
-            ++countRight;
-        }
-        return (1 + countLeft + countRight) >= kSyncMinRun;
-    };
+    // that wraps into the next-revolution leader). The run rule itself
+    // (kSyncMinRun, tight against the encoder so naturally occurring
+    // 2-3 byte in-field $FF runs don't get treated as sync) lives in
+    // computeCellWidths — the SAME timeline writeFlux re-packs against.
+    uint8_t widths[kNibblesPerTrack];
+    computeCellWidths(wholeTrack, widths);
 
     for (int i = 0; i < kNibblesPerTrack; ++i) {
         const uint8_t b = buf[i];
@@ -1277,7 +1286,7 @@ void DiskImage::expandTrackBits(int qt) const
             bits.push_back(static_cast<uint8_t>((b >> bit) & 1));
         }
         // Sync padding: 2 trailing zero cells for $FF in a run.
-        if (isInFFRun(i)) {
+        if (widths[i] == 10) {
             bits.push_back(0);
             bits.push_back(0);
         }
@@ -1556,6 +1565,17 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
         const int bitCount = static_cast<int>(wozQtBitCount[qt]);
         bool changed = false;
         for (int c = 0; c < spanCells; ++c) {
+            // Seam rule: the window's first/last cells may be only
+            // PARTIALLY covered (startMod/endMod mid-cell) — routine
+            // when DiskIICard flushes a long write in ~30-transition
+            // chunks. A captured transition in a partial cell is
+            // authoritative (sets the bit); the absence of one is NOT
+            // (the adjacent chunk owns the rest of that cell) — clearing
+            // here would erase the bit the previous chunk just spliced.
+            const bool partial =
+                (c == 0 && (startMod % cyc) != 0) ||
+                (c == spanCells - 1 && (endMod % cyc) != 0);
+            if (partial && !newBits[c]) continue;
             const int dst = ((firstCell + c) % bitCount + bitCount) % bitCount;
             const uint8_t v = newBits[c] ? 1 : 0;
             if (bits[dst] != v) { bits[dst] = v; changed = true; }
@@ -1640,50 +1660,48 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     // nibble owning cell C is NOT `C / 8`: on a stock 16-sector .dsk
     // each sector's gaps carry ~19 sync $FFs, so a naïve `/ 8` pack
     // drifted ~4.75 nibbles per sector and splices landed on the
-    // neighbouring address field. Only nibbles whose 8 data cells are
-    // FULLY inside the window are rewritten (partial nibbles at either
-    // edge are dropped — the LSS only ever flushes complete shifter
-    // contents, which is also why MAME's wspan splice can be replayed
-    // in ≥1-byte chunks). MAME itself stores flux natively
-    // (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has no
-    // re-pack step; this mapping is POM2's nibble-store equivalent.
+    // neighbouring address field.
+    //
+    // Nibbles STRADDLING the window edge are MERGED, not dropped: bits
+    // for cells inside the window come from `newBits`, bits outside keep
+    // the old nibble value. This matters because DiskIICard flushes a
+    // long write in ~30-transition chunks (≈4 nibbles), so nearly every
+    // flush boundary lands mid-nibble — dropping the straddler silently
+    // discarded its transitions and left a stale nibble mid-data-field
+    // (GCR checksum error on read-back). MAME itself stores flux
+    // natively (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has
+    // no re-pack step; this mapping is POM2's nibble-store equivalent.
     auto& buf = tracks[track];
 
     // Snapshot the per-nibble sync widths BEFORE applying any write —
     // mutating buf mid-walk would change FF-run membership and shift
-    // the timeline under our feet. Mirrors expandTrackBits' isInFFRun.
-    const bool noSyncPad = nibFormat;
-    constexpr int kSyncMinRun = 5;
-    auto isInFFRun = [&](int i) {
-        if (noSyncPad) return false;
-        if (buf[i] != 0xFF) return false;
-        int countLeft = 0;
-        for (int j = 1; j < kSyncMinRun; ++j) {
-            const int idx = (i - j + kNibblesPerTrack) % kNibblesPerTrack;
-            if (buf[idx] != 0xFF) break;
-            ++countLeft;
-        }
-        int countRight = 0;
-        for (int j = 1; j < kSyncMinRun; ++j) {
-            const int idx = (i + j) % kNibblesPerTrack;
-            if (buf[idx] != 0xFF) break;
-            ++countRight;
-        }
-        return (1 + countLeft + countRight) >= kSyncMinRun;
-    };
-    std::vector<uint8_t> cellWidth(kNibblesPerTrack, 8);
-    for (int n = 0; n < kNibblesPerTrack; ++n) {
-        if (isInFFRun(n)) cellWidth[n] = 10;
-    }
+    // the timeline under our feet. computeCellWidths is the SAME rule
+    // expandTrackBits expanded with (one definition; O(N), no alloc —
+    // this runs on every ~30-transition LSS flush under stateMutex).
+    uint8_t cellWidth[kNibblesPerTrack];
+    computeCellWidths(track, cellWidth);
 
-    const int spanCells = static_cast<int>(newBits.size());
+    // Per-cell authority (same seam rule as the WOZ branch): a cell fully
+    // inside the window is authoritative (set or clear); the window's
+    // partially-covered first/last cell may only SET a bit — the adjacent
+    // flush chunk owns the rest of that cell, and clearing here would
+    // erase the bit it spliced. Cells outside the window keep old bits.
+    auto mergedBit = [&](int cell, bool oldBit) -> bool {
+        if (cell < firstCell || cell >= lastCell) return oldBit;
+        const bool nb = newBits[static_cast<size_t>(cell - firstCell)];
+        const bool partial =
+            (cell == firstCell    && (startMod % cyc) != 0) ||
+            (cell == lastCell - 1 && (endMod   % cyc) != 0);
+        return partial ? (nb || oldBit) : nb;
+    };
     bool changed = false;
     int cellStart = 0;                     // timeline cell of nibble n's MSB
     for (int n = 0; n < kNibblesPerTrack && cellStart < lastCell; ++n) {
-        if (cellStart >= firstCell && cellStart + 8 <= firstCell + spanCells) {
+        if (cellStart + 8 > firstCell) {   // nibble's data cells overlap window
             uint8_t v = 0;
             for (int b = 0; b < 8; ++b) {
-                if (newBits[cellStart + b - firstCell]) {
+                const bool oldBit = (buf[n] & (0x80 >> b)) != 0;
+                if (mergedBit(cellStart + b, oldBit)) {
                     v |= static_cast<uint8_t>(0x80 >> b);
                 }
             }
