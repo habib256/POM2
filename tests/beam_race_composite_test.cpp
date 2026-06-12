@@ -126,6 +126,111 @@ int main()
     assert(!bandEqual(sigBeam, sigHgr, 0, kSplitScanline)
            && "top band must NOT be HGR — that is the pre-beam-race bug");
 
+    // ── Non-row-aligned split: TEXT → HGR @ scanline 100 (12×8 + 4) ───────
+    // Text row 12 straddles the split. The old inward bandRows rounding
+    // painted that row in NEITHER band (text band stopped at scanline 96,
+    // leaving 96-99 stale); the outward-rounding + per-scanline clip policy
+    // paints scanlines 96-99 as text and 100-103 as HGR — every scanline
+    // exactly once, from the state the beam saw.
+    {
+        constexpr int kSplit = 100;
+        Memory beam2;
+        populate(beam2);
+        beam2.memRead(SET_TEXT);
+        beam2.memRead(SET_PAGE1);
+        beam2.memRead(CLR_HIRES);
+        beam2.setCycleCounter(0);
+        beam2.beginVideoEventFrame();
+        beam2.setCycleCounter(static_cast<uint64_t>(kSplit) * 65);
+        beam2.memRead(CLR_TEXT);
+        beam2.memRead(SET_HIRES);
+        const auto sig2 = signalOf(beam2);
+
+        assert(bandEqual(sig2, sigText, 0, kSplit)
+               && "non-row-aligned split: scanlines [0,100) must be TEXT — "
+                  "a straddled text row must be painted up to the exact split");
+        assert(bandEqual(sig2, sigHgr, kSplit, 192)
+               && "non-row-aligned split: scanlines [100,192) must be HGR");
+    }
+
+    // ── Non-block-aligned split: LO-RES → TEXT @ scanline 50 ──────────────
+    // Lo-res block row 12 (scanlines 48-51) straddles the split. Outward
+    // block rounding + clip must paint 48-49 as lo-res and 50-51 as text —
+    // the old gLo/4 floor overdrew the neighbour band's scanlines, and the
+    // text band's inward row rounding skipped its straddled row 6.
+    {
+        constexpr int kSplit = 50;
+        Memory loRef;
+        populate(loRef);
+        loRef.memRead(CLR_TEXT);     // graphics + lo-res
+        loRef.memRead(CLR_HIRES);
+        loRef.memRead(SET_PAGE1);
+        const auto sigLo = signalOf(loRef);
+        assert(!bandEqual(sigLo, sigText, 0, kSplit));
+
+        Memory beam3;
+        populate(beam3);
+        beam3.memRead(CLR_TEXT);     // frame-start = lo-res graphics
+        beam3.memRead(CLR_HIRES);
+        beam3.memRead(SET_PAGE1);
+        beam3.setCycleCounter(0);
+        beam3.beginVideoEventFrame();
+        beam3.setCycleCounter(static_cast<uint64_t>(kSplit) * 65);
+        beam3.memRead(SET_TEXT);
+        const auto sig3 = signalOf(beam3);
+
+        assert(bandEqual(sig3, sigLo, 0, kSplit)
+               && "lo-res band must stop at the exact split scanline "
+                  "(no block overdraw into the text band)");
+        assert(bandEqual(sig3, sigText, kSplit, 192)
+               && "text band must start at the exact split scanline "
+                  "(straddled row painted, clipped to the band)");
+    }
+
+    // ── Same non-row-aligned split through the RGBA framebuffer path ──────
+    // renderBeamRacing shares forEachBeamSegment with the signal builder but
+    // paints through renderInternalBand/Segment — pin the band-rounding fix
+    // there too (TEXT → LO-RES @ scanline 50, legacy 280-wide path).
+    {
+        constexpr int kSplit = 50;
+        auto frameOf = [](Memory& mem) {
+            Apple2Display d;
+            d.setAuxMemory(mem.auxData());
+            d.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+            d.render(mem);
+            assert(d.width() == 280);
+            const uint32_t* p = d.pixels();
+            return std::vector<uint32_t>(p, p + 280 * 192);
+        };
+        Memory textRef2; populate(textRef2);
+        textRef2.memRead(SET_TEXT); textRef2.memRead(SET_PAGE1);
+        const auto fbText = frameOf(textRef2);
+        Memory loRef2; populate(loRef2);
+        loRef2.memRead(CLR_TEXT); loRef2.memRead(CLR_HIRES); loRef2.memRead(SET_PAGE1);
+        const auto fbLo = frameOf(loRef2);
+
+        Memory beam4;
+        populate(beam4);
+        beam4.memRead(SET_TEXT);
+        beam4.memRead(SET_PAGE1);
+        beam4.memRead(CLR_HIRES);
+        beam4.setCycleCounter(0);
+        beam4.beginVideoEventFrame();
+        beam4.setCycleCounter(static_cast<uint64_t>(kSplit) * 65);
+        beam4.memRead(CLR_TEXT);
+        const auto fbBeam = frameOf(beam4);
+
+        assert(std::memcmp(fbBeam.data(), fbText.data(),
+                           static_cast<size_t>(kSplit) * 280 * sizeof(uint32_t)) == 0
+               && "RGBA beam path: rows [0,50) must be TEXT (straddled text "
+                  "row painted up to the split, no stale pixels)");
+        assert(std::memcmp(fbBeam.data() + kSplit * 280,
+                           fbLo.data() + kSplit * 280,
+                           static_cast<size_t>(192 - kSplit) * 280 * sizeof(uint32_t)) == 0
+               && "RGBA beam path: rows [50,192) must be LO-RES (straddled "
+                  "block painted from the split, no text overdraw)");
+    }
+
     std::printf("beam_race_composite OK\n");
     return 0;
 }

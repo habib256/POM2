@@ -22,6 +22,7 @@
 #include "Disk35Image.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
+#include "SmartPortHdvUnit.h"
 
 #include <cassert>
 #include <cstdint>
@@ -226,6 +227,64 @@ bool testWriteBackRoundtrip()
     return true;
 }
 
+// STATUS block-count registers ($C0n5/$C0n6) for an exactly-32 MiB
+// (65536-block) HDV unit must clamp to $FFFF, not truncate to 0 —
+// Block512Backing::kMaxBlocks deliberately admits 65536 blocks (block
+// INDEXES stay 16-bit) and a 0-block STATUS makes ProDOS treat the
+// volume as empty/offline. Also pins the exact pass-through for an
+// 800 K unit (1600 = $0640).
+bool testBlockCountClamp()
+{
+    // Sparse 32 MiB .hdv (only the logical size matters; reads as zeros).
+    const auto p = fs::temp_directory_path() / "pom2_spcard_32mib.hdv";
+    {
+        std::ofstream f(p, std::ios::binary);
+        assert(f && "open temp .hdv");
+        f.seekp(static_cast<std::streamoff>(65536ull * kBlockBytes) - 1);
+        const char z = 0;
+        f.write(&z, 1);
+        assert(f.good());
+    }
+
+    pom2::SmartPortCard card(5);
+    auto hdv = std::make_unique<pom2::SmartPortHdvUnit>();
+    if (!hdv->loadImage(p.string())) {
+        std::printf("FAIL: load 32 MiB hdv: %s\n", hdv->lastError().c_str());
+        return false;
+    }
+    if (hdv->blockCount() != 65536u) {
+        std::printf("FAIL: 32 MiB unit blockCount = %u\n", hdv->blockCount());
+        return false;
+    }
+    card.setUnit(0, std::move(hdv));
+
+    auto u35 = std::make_unique<pom2::SmartPort35Unit>();
+    if (!u35->loadImage(writeSyntheticPo("clamp35", 0x10))) {
+        std::printf("FAIL: load 800K unit\n"); return false;
+    }
+    card.setUnit(1, std::move(u35));
+
+    writeReg(card, 0x0, 0);                  // select the 32 MiB unit
+    const uint8_t lo = readReg(card, 0x5);
+    const uint8_t hi = readReg(card, 0x6);
+    if (lo != 0xFF || hi != 0xFF) {
+        std::printf("FAIL: 65536-block STATUS count = %02X%02X, want FFFF "
+                    "(truncated to 0?)\n", hi, lo);
+        return false;
+    }
+
+    writeReg(card, 0x0, 1);                  // 800 K unit: exact count
+    const uint8_t lo35 = readReg(card, 0x5);
+    const uint8_t hi35 = readReg(card, 0x6);
+    if (lo35 != 0x40 || hi35 != 0x06) {
+        std::printf("FAIL: 800K STATUS count = %02X%02X, want 0640\n",
+                    hi35, lo35);
+        return false;
+    }
+    std::printf("OK : STATUS block count (clamp at $FFFF + exact 800K)\n");
+    return true;
+}
+
 bool testRomSignature()
 {
     pom2::SmartPortCard card(5);
@@ -247,5 +306,6 @@ int main() {
     ok &= testDriveSelectAndRead();
     ok &= testStatusByte();
     ok &= testWriteBackRoundtrip();
+    ok &= testBlockCountClamp();
     return ok ? 0 : 1;
 }

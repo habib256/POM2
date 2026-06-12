@@ -14,9 +14,12 @@
 //     a known pattern in the synthetic NIB case, or the dos33_master
 //     boot signature in the DOS/ProDOS cases)
 //
-// The test also pins the write-protect flag bit and the bit-31 volume
-// number override so a future write-back commit doesn't accidentally
-// drop them.
+// The test also pins the flag-word semantics: bit 31 = locked /
+// write-protect (CiderPress kFlagLocked = 0x80000000; AppleWin agrees),
+// bit 8 = volume-number-valid (bits 0-7 = volume, default 254 when
+// absent). A regression here used to test bit 0 for WP and bit 31 for
+// volume-valid, so locked images mounted as "volume 0" and odd volume
+// numbers read back write-protected.
 
 #include "DiskImage.h"
 
@@ -58,7 +61,7 @@ std::vector<uint8_t> makeTwoImg(const std::vector<uint8_t>& payload,
     writeLe16(out, 10, 1);               // version
     writeLe32(out, 12, format);          // 0/1/2
     uint32_t flags = 0;
-    if (writeProtect)  flags |= 1u;
+    if (writeProtect)  flags |= (1u << 31);   // "locked" — spec bit 31
     if (volumeNumber != 254) {
         flags |= (1u << 8);              // mark vol# present (spec bit 8)
         flags |= static_cast<uint32_t>(volumeNumber);
@@ -154,10 +157,71 @@ bool runProDosCase()
             "ProDOS case: sector order should be ProDOS after 2IMG format=1\n");
         return false;
     }
-    if (!img.isWriteProtected()) {
+    if (!img.isFileWriteProtected()) {
         std::fprintf(stderr,
-            "ProDOS case: write-protect flag from 2IMG flags bit 0 was lost\n");
+            "ProDOS case: write-protect flag from 2IMG flags bit 31 was lost\n");
         return false;
+    }
+    return true;
+}
+
+// Pin the flag-word semantics directly: bit 31 = locked (WP), bit 8 =
+// volume-valid, bits 0-7 = volume. The volume number is observable
+// through the nibblized address field of track 0 / physical sector 0:
+// 14 sync $FFs, D5 AA 96, then the volume in 4-and-4 encoding at
+// nibble offsets 17/18 (a = (vol >> 1) | $AA, b = vol | $AA).
+bool runFlagSemantics()
+{
+    std::vector<uint8_t> payload(143360, 0);
+
+    struct Case {
+        uint32_t    flags;
+        bool        wantWp;
+        uint8_t     wantVol;
+        const char* what;
+    } cases[] = {
+        // Locked bit alone: WP yes, volume defaults to 254 (the old
+        // bit-31-as-volume-valid bug decoded this as volume 0).
+        { 0x80000000u, true,  254, "bit31 locked, no volume" },
+        // Volume-valid + odd volume: NOT write-protected (the old
+        // bit-0-as-WP bug locked every odd volume number).
+        { (1u << 8) | 201u, false, 201, "bit8 + volume 201" },
+        // Legacy lenient path: bit 0 with no volume field still reads
+        // as WP (older POM2-written / malformed images).
+        { 1u, true, 254, "legacy bit0 lock" },
+    };
+
+    for (const Case& c : cases) {
+        auto bytes = makeTwoImg(payload, /*format=*/0,
+                                /*wp=*/false, /*vol=*/254);
+        writeLe32(bytes, 16, c.flags);            // override the flag word
+        const std::string path = "twoimg_flags.2mg";
+        if (!writeTempFile(path, bytes)) return false;
+        DiskImage img;
+        const bool ok = img.loadFile(path);
+        std::remove(path.c_str());
+        if (!ok) {
+            std::fprintf(stderr, "flags case '%s': %s\n", c.what,
+                         img.getLastError().c_str());
+            return false;
+        }
+        if (img.isFileWriteProtected() != c.wantWp) {
+            std::fprintf(stderr,
+                "flags case '%s': WP = %d, want %d (flags=0x%08X)\n",
+                c.what, img.isFileWriteProtected() ? 1 : 0,
+                c.wantWp ? 1 : 0, c.flags);
+            return false;
+        }
+        const uint8_t volA = static_cast<uint8_t>((c.wantVol >> 1) | 0xAA);
+        const uint8_t volB = static_cast<uint8_t>(c.wantVol | 0xAA);
+        if (img.nibbleAt(0, 17) != volA || img.nibbleAt(0, 18) != volB) {
+            std::fprintf(stderr,
+                "flags case '%s': address-field volume nibbles %02X %02X, "
+                "want %02X %02X (volume %u)\n",
+                c.what, img.nibbleAt(0, 17), img.nibbleAt(0, 18),
+                volA, volB, c.wantVol);
+            return false;
+        }
     }
     return true;
 }
@@ -228,7 +292,8 @@ int main()
     ok &= runProDosCase();
     ok &= runNibCase();
     ok &= runRefusedFormatByte();
+    ok &= runFlagSemantics();
     if (!ok) return 1;
-    std::printf("disk_2mg_smoke OK: DOS + ProDOS + NIB + bad-format\n");
+    std::printf("disk_2mg_smoke OK: DOS + ProDOS + NIB + bad-format + flags\n");
     return 0;
 }

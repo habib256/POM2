@@ -217,6 +217,12 @@ void IWMDevice::flushWrite(uint64_t when)
             for (uint32_t i = 0; i < fluxWriteCount_; ++i) {
                 fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]));
             }
+            // No revolution anchor (default -1) — deliberately matching
+            // this device's 5.25" READ path (`nextTransition` calls
+            // `getNextTransition(qt_, fromLss)` with the same default),
+            // so reads and writes through the IWM shadow reduce angular
+            // position identically. The authoritative 5.25" path
+            // (DiskIICard) passes its per-drive anchor on both sides.
             disk_->writeFlux(qt_,
                              static_cast<int64_t>(fluxWriteStart_),
                              static_cast<int64_t>(when),

@@ -117,10 +117,17 @@ void Apple2Display::applyVideoEvent(Memory::DisplayState& state,
 
 namespace {
 
+// Text rows [rowLo, rowHi) whose 8-scanline cells INTERSECT the band
+// [scanY0, scanY1) — rounded OUTWARD, so a row straddling a beam-split is
+// returned for both bands. Each band's painter then clips its writes to its
+// own scanline window (the clipY0/clipY1 painter args), so the straddled
+// row is painted twice but each scanline exactly once, with the display
+// state active for ITS band. (The old inward rounding returned straddled
+// rows to NEITHER band → stale pixels at non-row-aligned splits.)
 int bandRows(int scanY0, int scanY1, int rowLo, int rowHi, int* outLo, int* outHi)
 {
-    const int lo = std::max(rowLo, (scanY0 + 7) / 8);
-    const int hi = std::min(rowHi, scanY1 / 8);
+    const int lo = std::max(rowLo, scanY0 / 8);
+    const int hi = std::min(rowHi, (scanY1 + 7) / 8);
     *outLo = lo;
     *outHi = hi;
     return lo < hi ? 1 : 0;
@@ -165,10 +172,10 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         if (state.mixedMode && bandScanlines(scanY0, scanY1, 160, 192, &gLo, &gHi)) {
             if (iie80) {
                 if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                    renderText80(mem, state, tLo, tHi);
+                    renderText80(mem, state, tLo, tHi, scanY0, scanY1);
             } else {
                 if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                    renderText(mem, state, tLo, tHi);
+                    renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
                 upscaleFrameToFrame80(gLo, gHi);
             }
         }
@@ -182,7 +189,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         auxRam != nullptr && chatMauve->colorTextEnabled();
     if (chatMauveText) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderTextChatMauveFgBg(mem, state, tLo, tHi);
+            renderTextChatMauveFgBg(mem, state, tLo, tHi, scanY0, scanY1);
         useFrame80 = true;
         return;
     }
@@ -191,7 +198,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     if (iie80) {
         if (state.textMode) {
             if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-                renderText80(mem, state, tLo, tHi);
+                renderText80(mem, state, tLo, tHi, scanY0, scanY1);
             useFrame80 = true;
             return;
         }
@@ -199,16 +206,16 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
             if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi))
                 renderDhgr(mem, state, gLo, gHi);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, state, tLo, tHi);
+                renderText80(mem, state, tLo, tHi, scanY0, scanY1);
             useFrame80 = true;
             return;
         }
         if (!state.hiRes && state.dhgr) {
             const int blockEnd = state.mixedMode ? 40 : 48;
             if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &gLo, &gHi))
-                renderLoResDouble(mem, state, gLo / 4, (gHi + 3) / 4);
+                renderLoResDouble(mem, state, gLo / 4, (gHi + 3) / 4, gLo, gHi);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, state, tLo, tHi);
+                renderText80(mem, state, tLo, tHi, scanY0, scanY1);
             useFrame80 = true;
             return;
         }
@@ -216,11 +223,11 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
             if (state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
                 renderHiRes(mem, state, gLo, gHi);
             else if (!state.hiRes && bandScanlines(scanY0, scanY1, 0, 160, &gLo, &gHi))
-                renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4);
+                renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4, 0, 40, gLo, gHi);
             if (gLo < gHi)
                 upscaleFrameToFrame80(gLo, gHi);
             if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-                renderText80(mem, state, tLo, tHi);
+                renderText80(mem, state, tLo, tHi, scanY0, scanY1);
             useFrame80 = true;
             return;
         }
@@ -230,17 +237,17 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     useFrame80 = false;
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi);
+            renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
     } else if (state.hiRes) {
         if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
             renderHiRes(mem, state, gLo, gHi);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi);
+            renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
     } else {
         if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
-            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4);
+            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4, 0, 40, gLo, gHi);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi);
+            renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
     }
 }
 
@@ -357,17 +364,17 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
     int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1, scanY0, scanY1);
     } else if (state.hiRes) {
         if (bandScanlines(scanY0, scanY1, 0, 192, &gLo, &gHi))
             renderHiRes(mem, state, gLo, gHi, col0, col1);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1, scanY0, scanY1);
     } else {
         if (bandScanlines(scanY0, scanY1, 0, 48 * 4, &gLo, &gHi))
-            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4, col0, col1);
+            renderLoRes(mem, state, gLo / 4, (gHi + 3) / 4, col0, col1, gLo, gHi);
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
-            renderText(mem, state, tLo, tHi, col0, col1);
+            renderText(mem, state, tLo, tHi, col0, col1, scanY0, scanY1);
     }
 }
 
@@ -622,11 +629,19 @@ void Apple2Display::renderCompositeOeCpu()
         0.26030f, 0.24788f, 0.21373f, 0.16602f, 0.11509f,
         0.07008f, 0.03648f, 0.01543f, 0.00515f
     };
-    // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; phase
-    // offset 0 (probe-calibrated against the MAME LUT). YUV→RGB matrix below.
+    // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; YUV→RGB
+    // matrix below. The subcarrier table is built at the four raw phases
+    // π/2·k; signalPhaseOffset_ enters ONCE, at the index `k = (xi+po)&3`
+    // below — matching MAME's rotl4(absX + offset) (apple2video.cpp DHGR
+    // is_80_column → absX+1) and the AppleWin LUT path
+    // (AppleWinNtsc.cpp renderLine: `lut[(x + phase) & 3]`). Baking the
+    // offset into the table AND the index applied it twice (2·po) and
+    // rotated every DHGR hue by 90° (N=1 demodulated green, not the MAME
+    // dark blue). Probe-verified against the MAME-LUT render for the four
+    // aligned nibble patterns (see dhgr_phase_signal_test).
     float sinP[4], cosP[4];
     for (int k = 0; k < 4; ++k) {
-        const float ph = kPi * 0.5f * static_cast<float>((k + signalPhaseOffset_) & 3);
+        const float ph = kPi * 0.5f * static_cast<float>(k);
         sinP[k] = std::sin(ph);
         cosP[k] = std::cos(ph);
     }
@@ -662,7 +677,10 @@ void Apple2Display::renderCompositeOeCpu()
 // ─── Text mode ────────────────────────────────────────────────────────────
 
 // Built-in 5×7 monospaced ASCII font, packed as 8 bytes per glyph (top→bottom).
-// Bits 0-4 = pixel pattern; bit 0 is the leftmost dot. Only the printable
+// Bits 0-4 = pixel pattern, MSB-left: bit 4 is the leftmost dot, bit 0 the
+// rightmost (glyphRows7's fallback reads `(row8 >> (5 - gx)) & 1`, and the
+// glyph data is authored that way — e.g. '/' has 0x01 on its TOP row, the
+// top-right dot). Only the printable
 // range ($20-$7F) is fleshed out — control codes render as a checker pattern.
 // Characters not commonly used by Apple II text output (lowercase) inherit
 // from their uppercase counterparts; original Apple II only had uppercase
@@ -974,7 +992,8 @@ static std::array<uint8_t, 8> glyphRows7(uint8_t screenByte,
 }
 
 void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
-                               int firstRow, int lastRow, int col0, int col1)
+                               int firstRow, int lastRow, int col0, int col1,
+                               int clipY0, int clipY1)
 {
     col0 = std::max(0, col0);
     col1 = std::min(40, col1);
@@ -1012,10 +1031,13 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
 
             const auto rows = glyphRows7(src, charRom.data(), charRom.size(),
                                          useCharRom, altCharSet, flashPhase);
-            for (int gy = 0; gy < 8; ++gy)
+            for (int gy = 0; gy < 8; ++gy) {
+                const int y = cellY + gy;
+                if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                 for (int gx = 0; gx < 7; ++gx)
-                    frame[(cellY + gy) * kWidth + (cellX + gx)] =
+                    frame[y * kWidth + (cellX + gx)] =
                         ((rows[gy] >> gx) & 1u) ? 0xFFFFFFFFu : 0xFF000000u;
+            }
         }
     }
 }
@@ -1031,7 +1053,8 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
 // palette indices.
 void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
                                             const Memory::DisplayState& state,
-                                            int firstRow, int lastRow)
+                                            int firstRow, int lastRow,
+                                            int clipY0, int clipY1)
 {
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
@@ -1060,9 +1083,11 @@ void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
                                               useCharRom, altCharSet, flashPhase);
 
             for (int gy = 0; gy < 8; ++gy) {
+                const int y = cellY + gy;
+                if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                 const uint8_t bits = glyphRows[gy];
                 uint32_t* outRow = frame80.data()
-                    + static_cast<size_t>(cellY + gy) * kWidth80;
+                    + static_cast<size_t>(y) * kWidth80;
                 // Double each glyph pixel to two dots (MAME double_7_bits).
                 for (int d = 0; d < 14; ++d)
                     outRow[col * 14 + d] = ((bits >> (d >> 1)) & 1u) ? fg : bg;
@@ -1137,7 +1162,8 @@ const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
 };
 
 void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
-                                int firstRow, int lastRow, int col0, int col1)
+                                int firstRow, int lastRow, int col0, int col1,
+                                int clipY0, int clipY1)
 {
     col0 = std::max(0, col0);
     col1 = std::min(40, col1);
@@ -1169,9 +1195,12 @@ void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
             const uint32_t rgb = palette[nibble];
             const int x0 = col * 7;
             const int y0 = blockRow * 4;
-            for (int dy = 0; dy < 4; ++dy)
+            for (int dy = 0; dy < 4; ++dy) {
+                const int y = y0 + dy;
+                if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                 for (int dx = 0; dx < 7; ++dx)
-                    frame[(y0 + dy) * kWidth + (x0 + dx)] = rgb;
+                    frame[y * kWidth + (x0 + dx)] = rgb;
+            }
         }
     }
 }
@@ -1185,7 +1214,8 @@ void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
 // this the //e fell back to a plausible 40-col lo-res from main RAM only.
 void Apple2Display::renderLoResDouble(Memory& mem,
                                       const Memory::DisplayState& state,
-                                      int firstRow, int lastRow)
+                                      int firstRow, int lastRow,
+                                      int clipY0, int clipY1)
 {
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;   // fall back to main if no aux
@@ -1209,8 +1239,10 @@ void Apple2Display::renderLoResDouble(Memory& mem,
             const int x0 = col * 14;
             const int y0 = blockRow * 4;
             for (int dy = 0; dy < 4; ++dy) {
+                const int y = y0 + dy;
+                if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                 uint32_t* row = frame80.data()
-                              + static_cast<size_t>(y0 + dy) * kWidth80 + x0;
+                              + static_cast<size_t>(y) * kWidth80 + x0;
                 for (int dx = 0; dx < 7; ++dx) row[dx]     = auxRgb;
                 for (int dx = 0; dx < 7; ++dx) row[7 + dx] = mainRgb;
             }
@@ -1589,7 +1621,8 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
 // the printable range; ALTCHAR is then a no-op.
 
 void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
-                                 int firstRow, int lastRow)
+                                 int firstRow, int lastRow,
+                                 int clipY0, int clipY1)
 {
     const bool altCharSet = state.altChar;
     const uint8_t* main_ = mem.data();
@@ -1615,10 +1648,13 @@ void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
 
                 const auto rows = glyphRows7(src, charRom.data(), charRom.size(),
                                              useCharRom, altCharSet, flashPhase);
-                for (int gy = 0; gy < 8; ++gy)
+                for (int gy = 0; gy < 8; ++gy) {
+                    const int y = cellY + gy;
+                    if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                     for (int gx = 0; gx < 7; ++gx)
-                        frame80[(cellY + gy) * kWidth80 + (cellX + gx)] =
+                        frame80[y * kWidth80 + (cellX + gx)] =
                             ((rows[gy] >> gx) & 1u) ? 0xFFFFFFFFu : 0xFF000000u;
+                }
             }
         }
     }
@@ -2024,19 +2060,26 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
     const auto& charRom    = mem.charRom();
     const bool  useCharRom = charRom.size() >= 2048;
-    const bool  altCharSet = state.altChar;
+    // NOTE: ALTCHAR is read as `state.altChar` inside each paint helper, not
+    // hoisted here — `state` is reassigned per beam-race segment below, so a
+    // mid-frame $C00E/$C00F flip must reach the glyph lookup (the RGBA path
+    // already passes per-band state.altChar through renderText/renderText80).
 
     // Helper: paint one text row (40 cols × 8 scanlines = 7×8 dots per cell,
     // each dot doubled to 2 signal samples → 14 samples per cell, 560/line).
-    auto paintText40 = [&](int firstRow, int lastRow, int col0, int col1) {
+    // clipY0/clipY1 bound the written scanlines for non-row-aligned beam
+    // splits (bandRows hands a straddled row to both bands — see bandRows).
+    auto paintText40 = [&](int firstRow, int lastRow, int col0, int col1,
+                           int clipY0, int clipY1) {
         for (int row = firstRow; row < lastRow; ++row) {
             const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
             for (int col = col0; col < col1; ++col) {
                 const uint8_t src = ram[rowAddr + col];
                 const auto bytes = glyphRows7(src, charRom.data(), charRom.size(),
-                                              useCharRom, altCharSet, flashPhase);
+                                              useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;
+                    if (y < clipY0 || y >= clipY1) continue;
                     uint8_t* dst = signalBuf.data()
                                  + static_cast<size_t>(y) * kSignalWidth
                                  + col * 14;
@@ -2052,7 +2095,8 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
 
     // Helper: paint one 80-col text row (80 cols × 8 dots × 7 pixels = 560).
     // col0/col1 are byte columns (0..40); each maps to two 80-col cells.
-    auto paintText80 = [&](int firstRow, int lastRow, int col0, int col1) {
+    auto paintText80 = [&](int firstRow, int lastRow, int col0, int col1,
+                           int clipY0, int clipY1) {
         for (int row = firstRow; row < lastRow; ++row) {
             const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
             for (int col = col0 * 2; col < col1 * 2; ++col) {
@@ -2061,9 +2105,10 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
                 const uint8_t src = (col & 1) ? ram[rowAddr + (col >> 1)]
                                               : aux[rowAddr + (col >> 1)];
                 const auto bytes = glyphRows7(src, charRom.data(), charRom.size(),
-                                              useCharRom, altCharSet, flashPhase);
+                                              useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;
+                    if (y < clipY0 || y >= clipY1) continue;
                     uint8_t* dst = signalBuf.data()
                                  + static_cast<size_t>(y) * kSignalWidth
                                  + col * 7;
@@ -2126,7 +2171,8 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // patterns. We just emit `(nibble >> (x mod 4)) & 1` at every
     // sample; the shader's Y/I/Q demodulator then recovers the colour
     // from the pattern's spectral content, same path HGR uses.
-    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow, int col0, int col1) {
+    auto paintLoRes40 = [&](int firstBlockRow, int lastBlockRow, int col0, int col1,
+                            int clipY0, int clipY1) {
         for (int blockRow = firstBlockRow; blockRow < lastBlockRow; ++blockRow) {
             const int textRow = blockRow / 2;
             const bool upperHalf = (blockRow % 2 == 0);
@@ -2138,6 +2184,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
                     : static_cast<uint8_t>((b >> 4) & 0x0Fu);
                 for (int dy = 0; dy < 4; ++dy) {
                     const int y = blockRow * 4 + dy;
+                    if (y < clipY0 || y >= clipY1) continue;
                     uint8_t* dst = signalBuf.data()
                                  + static_cast<size_t>(y) * kSignalWidth
                                  + col * 14;
@@ -2153,7 +2200,8 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
 
     // DLGR: aux nibble (rotl4) on even 7-dot half, main on odd — MAME
     // lores_update<Double>; mirrors renderLoResDouble().
-    auto paintLoResDouble = [&](int firstBlockRow, int lastBlockRow, int col0, int col1) {
+    auto paintLoResDouble = [&](int firstBlockRow, int lastBlockRow, int col0, int col1,
+                                int clipY0, int clipY1) {
         auto rotl4 = [](uint8_t n) -> uint8_t {
             return static_cast<uint8_t>(((n << 1) | (n >> 3)) & 0x0F);
         };
@@ -2174,15 +2222,24 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
                 const uint8_t mainPat = mNib;
                 for (int dy = 0; dy < 4; ++dy) {
                     const int y = blockRow * 4 + dy;
+                    if (y < clipY0 || y >= clipY1) continue;
                     uint8_t* dst = signalBuf.data()
                                  + static_cast<size_t>(y) * kSignalWidth
                                  + col * 14;
+                    // The nibble pattern is emitted at the ABSOLUTE
+                    // 14.318 MHz sample index (col*14+dx), same as
+                    // paintLoRes40's `(nibble >> (absX & 3))` — the real
+                    // hardware's pattern generator is locked to the colour
+                    // subcarrier, not restarted per 7-dot half-cell.
+                    // Indexing by `dx & 3` rotated the hue by (2·col) mod 4
+                    // per column (14 ≡ 2 mod 4), making a uniform DLGR fill
+                    // demodulate to alternating colours.
                     for (int dx = 0; dx < 7; ++dx) {
-                        const uint8_t bit = (auxPat >> (dx & 3)) & 1u;
+                        const uint8_t bit = (auxPat >> ((col * 14 + dx) & 3)) & 1u;
                         dst[dx] = bit ? 0xFFu : 0x00u;
                     }
                     for (int dx = 0; dx < 7; ++dx) {
-                        const uint8_t bit = (mainPat >> (dx & 3)) & 1u;
+                        const uint8_t bit = (mainPat >> ((col * 14 + 7 + dx) & 3)) & 1u;
                         dst[7 + dx] = bit ? 0xFFu : 0x00u;
                     }
                 }
@@ -2203,20 +2260,25 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
         int lo = 0, hi = 0;
         if (state.textMode) {
             if (bandRows(scanY0, scanY1, 0, 24, &lo, &hi)) {
-                if (mem.isIIE() && state.eightyCol) paintText80(lo, hi, col0, col1);
-                else                                paintText40(lo, hi, col0, col1);
+                if (mem.isIIE() && state.eightyCol)
+                    paintText80(lo, hi, col0, col1, scanY0, scanY1);
+                else
+                    paintText40(lo, hi, col0, col1, scanY0, scanY1);
             }
             return;
         }
         if (!state.hiRes) {
-            // Lo-res / DLGR: each block-row is 4 signal scanlines.
+            // Lo-res / DLGR: each block-row is 4 signal scanlines. Block
+            // rows are rounded outward and the painters clip to [lo, hi),
+            // so a block straddling a beam split is painted by both bands,
+            // each within its own scanlines (same policy as bandRows).
             const bool isDlgr   = mem.isIIE() && state.eightyCol && state.dhgr;
             const int  blockEnd = state.mixedMode ? 40 : 48;  // block-rows
             if (bandScanlines(scanY0, scanY1, 0, blockEnd * 4, &lo, &hi)) {
                 const int brLo = lo / 4;
                 const int brHi = (hi + 3) / 4;
-                if (isDlgr) paintLoResDouble(brLo, brHi, col0, col1);
-                else        paintLoRes40(brLo, brHi, col0, col1);
+                if (isDlgr) paintLoResDouble(brLo, brHi, col0, col1, lo, hi);
+                else        paintLoRes40(brLo, brHi, col0, col1, lo, hi);
             }
             // Mixed-mode text band stays black — crisp mono text is composited
             // after demod (patchMixedTextBand), same as HGR mixed.

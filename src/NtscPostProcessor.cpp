@@ -216,12 +216,15 @@ void main()
         float s  = sampleSignal(fx, sigY);
         int   a  = i < 0 ? -i : i;
         float wc = mix(chromaSoft[a], chromaSharp[a], sharp);
-        // Match renderCompositeOeCpu(): k = (xi+po)&3, phase = π/2·((k+po)&3).
-        // The old formula π/2·(floor(fx)+po) diverges in DHGR (+90°) and is
-        // why GPU colours looked wrong vs the excellent CPU demod path.
-        int xi = int(floor(fx));
-        int k  = (xi + uPhaseOffset) & 3;
-        int phaseIdx = (k + uPhaseOffset) & 3;
+        // Subcarrier phase: π/2·((floor(fx) + po) & 3) — the offset applied
+        // exactly ONCE, matching MAME rotl4(absX+1) and the AppleWin LUT
+        // (AppleWinNtsc.cpp renderLine `lut[(x + phase) & 3]`). History
+        // note: this single application was the original GPU formula; the
+        // CPU demod (renderCompositeOeCpu) used to apply the offset twice
+        // (in its sin/cos table AND its index), and a previous "fix"
+        // wrongly concluded the GPU diverged +90° and doubled it here too.
+        // The CPU was the wrong one — both now apply it once.
+        int phaseIdx = (int(floor(fx)) + uPhaseOffset) & 3;
         float phase = PI * 0.5 * float(phaseIdx);
         Y += s * lumaK[a];                     // FIR luma (sum=1, notches fs/4)
         U += s * sin(phase) * wc;              // FIR chroma (sum=2 → ×2 gain)

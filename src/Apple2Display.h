@@ -87,10 +87,12 @@ public:
         // Distinct from MAME's static 7-bit-window LUT and from
         // OpenEmulator's full subcarrier shader — see DEV.md § AppleWin
         // NTSC. Three sub-modes selected via setAppleWinSubMode():
-        // Monitor (sharp), Tv (50% scanline blur), Idealized (no IIR).
-        // Inserted at the END of the enum on purpose — the kPhosphors
-        // table (Apple2Display.cpp:850-859) is indexed by enum value, so
-        // appending keeps the existing mono indexes stable.
+        // Monitor (sharp), Tv (Monitor's comb luma + 50% frame blend),
+        // Idealized (Monitor luma WITH the IIR filters, chroma boosted
+        // 1.6× — POM2-only, see AppleWinNtsc.cpp buildPhaseTables).
+        // Enum order no longer matters: the mono phosphor tint is picked
+        // by an explicit switch (phosphorFor() in Apple2Display.cpp),
+        // not by indexing a table with the enum value.
         ColorAppleWin,
     };
 
@@ -98,9 +100,10 @@ public:
     // VT_COLOR_MONITOR_NTSC / VT_COLOR_TV / VT_COLOR_IDEALIZED entries.
     enum class AppleWinSubMode {
         Monitor,        // sharp, IIR-filtered NTSC artifact decode
-        Tv,             // Monitor + 50% line-blur to mimic a TV receiver
-        Idealized,      // no IIR — saturated artifact palette, modern
-                        //          flat-panel-friendly look
+        Tv,             // comb luma + 50% previous-frame blend (TV receiver)
+        Idealized,      // Monitor luma (same IIR filters) with 1.6× boosted
+                        // chroma — saturated, flat-panel-friendly look
+                        // (POM2-only; see AppleWinNtsc.cpp:193-197)
     };
 
     Apple2Display();
@@ -234,12 +237,21 @@ private:
     // with the display state active for THAT band — page select (PAGE1/PAGE2),
     // 80STORE base and ALTCHAR all switch mid-frame, not just the mode. The
     // full-frame path passes mem.getDisplayState(), so it is unchanged.
+    //
+    // `clipY0`/`clipY1` clip the row/block painters to exact scanlines for
+    // non-row-aligned beam splits: bandRows() hands a straddled text row (or
+    // lo-res block row) to BOTH adjacent bands, and each band paints only the
+    // scanlines inside its own [clipY0, clipY1) window. Defaults cover the
+    // full frame, leaving every existing caller byte-identical.
     void renderText  (Memory& mem, const Memory::DisplayState& state,
-                      int firstRow, int lastRow, int col0 = 0, int col1 = 40);
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40,
+                      int clipY0 = 0, int clipY1 = kHeight);
     void renderLoRes (Memory& mem, const Memory::DisplayState& state,
-                      int firstRow, int lastRow, int col0 = 0, int col1 = 40);
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40,
+                      int clipY0 = 0, int clipY1 = kHeight);
     void renderLoResDouble(Memory& mem, const Memory::DisplayState& state,
-                           int firstRow, int lastRow);  // DLGR (80-col)
+                           int firstRow, int lastRow,           // DLGR (80-col)
+                           int clipY0 = 0, int clipY1 = kHeight);
     void renderHiRes (Memory& mem, const Memory::DisplayState& state,
                       int firstScanline, int lastScanline, int col0 = 0, int col1 = 40);
     // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
@@ -266,7 +278,8 @@ private:
     // columns (per AppleWin's scanner). `altCharSet` toggles flashing
     // inverse vs. mousetext+non-flashing inverse (the IIe ALTCHAR switch).
     void renderText80(Memory& mem, const Memory::DisplayState& state,
-                      int firstRow, int lastRow);
+                      int firstRow, int lastRow,
+                      int clipY0 = 0, int clipY1 = kHeight);
     // IIe-only. Renders DHGR scanlines [firstScanline, lastScanline) into
     // `frame80`. Reads main + aux HGR pages: aux byte at offset c
     // contributes 7 bits to dots [c*14 .. c*14+6], main byte contributes
@@ -286,7 +299,8 @@ private:
     // MAME `apple2video.cpp` text_update (:788-791) + render_line_color_array
     // (:571-583).
     void renderTextChatMauveFgBg(Memory& mem, const Memory::DisplayState& state,
-                                 int firstRow, int lastRow);
+                                 int firstRow, int lastRow,
+                                 int clipY0 = 0, int clipY1 = kHeight);
     // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
     // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);

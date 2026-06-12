@@ -103,6 +103,18 @@ SystemProfile profileFromKey(std::string_view key);
 /// Forward — get the persistence key for a profile.
 std::string_view profileKey(SystemProfile p);
 
+/// Should `slot_N_card` be persisted for `slot` holding `cardKey` under
+/// this profile? False for profile-forced slots: built-in cards, and —
+/// except for the user-pluggable "chatmauve" rear-connector adapter — the
+/// force-emptied virtual connectors of a `noPhysicalSlots` machine. On
+/// those slots the live mapping carries the PROFILE's value, and writing
+/// it back would clobber the user's real saved choice (e.g. quitting on
+/// //c used to overwrite slot_4_card=mockingboard with the on-board
+/// "mouseaw"). Shared by the ~MainWindow persist loop and the Slot Config
+/// panel's Apply button so both sites apply the identical guard.
+bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
+                         std::string_view cardKey);
+
 /// All profiles in display order. Used by the Presets menu loop.
 const std::array<SystemProfile, 8>& allProfiles();
 

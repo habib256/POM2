@@ -13,6 +13,7 @@
 #include "MachineSnapshot.h"
 #include "Memory.h"
 #include "MouseCard.h"
+#include "MouseCardAppleWin.h"
 #include "SlotBus.h"
 #include "SnapshotIO.h"
 
@@ -833,10 +834,15 @@ void AiControlServer::handleCpuSet(int fd, const Request& req)
     M6502& cpu = ctrl_->cpu();
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
     long v = 0;
+    // Full register set — the setters exist on M6502 (M6502.h:133-137,
+    // added for snapshot restore), so the documented POST /cpu API accepts
+    // every register, not just PC.
     if (jsonGetInt(req.body, "pc", v)) cpu.setProgramCounter(static_cast<uint16_t>(v & 0xFFFF));
-    // A/X/Y/P/SP setters are not currently exposed on M6502 — only PC has
-    // an accessor (used by the Klaus harness). Punt on the rest for now;
-    // PC alone covers the "jump to a routine" use case agents need most.
+    if (jsonGetInt(req.body, "a",  v)) cpu.setAccumulator   (static_cast<uint8_t>(v & 0xFF));
+    if (jsonGetInt(req.body, "x",  v)) cpu.setXRegister     (static_cast<uint8_t>(v & 0xFF));
+    if (jsonGetInt(req.body, "y",  v)) cpu.setYRegister     (static_cast<uint8_t>(v & 0xFF));
+    if (jsonGetInt(req.body, "p",  v)) cpu.setStatusRegister(static_cast<uint8_t>(v & 0xFF));
+    if (jsonGetInt(req.body, "sp", v)) cpu.setStackPointer  (static_cast<uint8_t>(v & 0xFF));
     sendJsonOk(fd, "{}");
 }
 
@@ -944,11 +950,27 @@ void AiControlServer::handleMouse(int fd, const Request& req)
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         SlotBus& bus = ctrl_->memory().slotBus();
-        MouseCard* mouse = nullptr;
-        for (int s = 1; s <= 7 && !mouse; ++s)
-            mouse = dynamic_cast<MouseCard*>(bus.peripheral(s));
-        if (!mouse) { sendJsonError(fd, 503, "no Mouse Card plugged"); return; }
-        slot = mouse->getSlot();
+        // Two interchangeable mouse cards exist: the MAME-LLE MouseCard
+        // (MC68705 mask ROM) and the AppleWin-HLE MouseCardAppleWin — a
+        // SIBLING class, not a subclass, and the default built-in mouse on
+        // every //c profile, so probing for MouseCard alone left /mouse
+        // returning 503 on the //c family. The HLE variant is identified
+        // by its name tag + static_cast rather than dynamic_cast so this
+        // TU doesn't pull MouseCardAppleWin.o's typeinfo into headless
+        // binaries (its setHostMouse/getSlot are header-inline).
+        MouseCard*         mouseLle = nullptr;
+        MouseCardAppleWin* mouseHle = nullptr;
+        for (int s = 1; s <= 7 && !mouseLle && !mouseHle; ++s) {
+            SlotPeripheral* p = bus.peripheral(s);
+            if (!p) continue;
+            mouseLle = dynamic_cast<MouseCard*>(p);
+            if (!mouseLle && p->name() == MouseCardAppleWin::kCardName)
+                mouseHle = static_cast<MouseCardAppleWin*>(p);
+        }
+        if (!mouseLle && !mouseHle) {
+            sendJsonError(fd, 503, "no Mouse Card plugged"); return;
+        }
+        slot = mouseLle ? mouseLle->getSlot() : mouseHle->getSlot();
 
         if (rst) { mouseAccumX_ = 0; mouseAccumY_ = 0; }
 
@@ -958,7 +980,8 @@ void AiControlServer::handleMouse(int fd, const Request& req)
         else if (haveDy) mouseAccumY_ = static_cast<uint8_t>(mouseAccumY_ + clamp127(dy));
         if (haveBtn)     mouseBtn_ = (btn != 0);
 
-        mouse->setHostMouse(mouseAccumX_, mouseAccumY_, mouseBtn_);
+        if (mouseLle) mouseLle->setHostMouse(mouseAccumX_, mouseAccumY_, mouseBtn_);
+        else          mouseHle->setHostMouse(mouseAccumX_, mouseAccumY_, mouseBtn_);
         outX = mouseAccumX_; outY = mouseAccumY_; outBtn = mouseBtn_;
     }
 

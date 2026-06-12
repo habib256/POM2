@@ -1,11 +1,20 @@
-// DHGR NTSC phase-offset smoke test — pins signalPhaseOffset() and verifies
-// ColorCompositeOECpu applies the +1 subcarrier shift (MAME rotl4 absX+1).
+// DHGR NTSC phase-offset test — pins signalPhaseOffset() (DHGR = +1, HGR = 0,
+// MAME apple2video.cpp rotl4(absX + is_80_column) with is_80_column = 1) and
+// verifies the ColorCompositeOECpu demod reproduces the MAME-LUT hues.
+//
+// The expectation is derived INDEPENDENTLY of the demod implementation: for
+// each of the four aligned repeating nibble patterns N ∈ {1,2,4,8} (the pure
+// subcarrier phases), the OE CPU demod's output hue must match the hue the
+// MAME-LUT path (ColorNTSC → renderDhgr) paints for the same memory contents.
+// A previous version of this test re-implemented the demod formula as its
+// anchor, which pinned the then-current double application of the phase
+// offset TAUTOLOGICALLY (every hue rotated 90°: N=1 demodulated green where
+// MAME renders dark blue).
 
 #include "Apple2Display.h"
 #include "Memory.h"
 
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
 
@@ -24,86 +33,113 @@ uint16_t hgrAddr(int y)
         + 0x28  * (y >> 6));
 }
 
-uint32_t px(const Apple2Display& d, int x, int y)
+// MAME apple2video.cpp::apple2_palette[] — the reference the LUT path paints
+// with (mirror of Apple2Display::kLoResPalette, ABGR-in-uint32, R lowest).
+const uint32_t kPal[16] = {
+    0xFF000000, 0xFF400BA7, 0xFFF71C40, 0xFFFF28E6, 0xFF407400, 0xFF808080,
+    0xFFFF9019, 0xFFFF9CBF, 0xFF006340, 0xFF006FE6, 0xFF808080, 0xFFBF8BFF,
+    0xFF00D719, 0xFF08E3BF, 0xFFBFF458, 0xFFFFFFFF,
+};
+
+// Nearest reference palette entry (RGB distance). The demod output is an
+// analog YUV→RGB recovery, so it lands NEAR a palette entry, not on it.
+int nearestPal(uint32_t abgr)
 {
-    const uint32_t* fb = d.pixels();
-    return fb[y * d.width() + x] & 0x00FFFFFFu;
+    const int r = abgr & 0xFF, g = (abgr >> 8) & 0xFF, b = (abgr >> 16) & 0xFF;
+    int best = -1;
+    long bestD = 1L << 60;
+    for (int i = 0; i < 16; ++i) {
+        const int pr = kPal[i] & 0xFF, pg = (kPal[i] >> 8) & 0xFF,
+                  pb = (kPal[i] >> 16) & 0xFF;
+        const long d = static_cast<long>(r - pr) * (r - pr)
+                     + static_cast<long>(g - pg) * (g - pg)
+                     + static_cast<long>(b - pb) * (b - pb);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
 }
 
-uint32_t demodAnchor(const uint8_t* row, int x, int phaseOffset)
-{
-    constexpr float kPi = 3.14159265358979f;
-    constexpr int   N = 8;
-    static const float lumaK[N + 1] = {
-        0.27941f, 0.23593f, 0.13462f, 0.03665f, -0.01538f,
-        -0.02210f, -0.00999f, -0.00072f, 0.00130f
-    };
-    static const float chromaK[N + 1] = {
-        0.26030f, 0.24788f, 0.21373f, 0.16602f, 0.11509f,
-        0.07008f, 0.03648f, 0.01543f, 0.00515f
-    };
-    float sinP[4], cosP[4];
-    for (int k = 0; k < 4; ++k) {
-        const float ph = kPi * 0.5f * static_cast<float>((k + phaseOffset) & 3);
-        sinP[k] = std::sin(ph);
-        cosP[k] = std::cos(ph);
-    }
-    float Y = 0.0f, U = 0.0f, V = 0.0f;
-    for (int i = -N; i <= N; ++i) {
-        const int xi = x + i;
-        if (xi < 0 || xi >= 560) continue;
-        const float s = row[xi] ? 1.0f : 0.0f;
-        const int   k = (xi + phaseOffset) & 3;
-        const int   a = i < 0 ? -i : i;
-        Y += s * lumaK[a];
-        U += s * sinP[k] * chromaK[a];
-        V += s * cosP[k] * chromaK[a];
-    }
-    float r = Y + 1.139883f * V;
-    float g = Y - 0.394642f * U - 0.580622f * V;
-    float b = Y + 2.032062f * U;
-    auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
-    const uint32_t R = static_cast<uint32_t>(cl(r) * 255.0f + 0.5f);
-    const uint32_t G = static_cast<uint32_t>(cl(g) * 255.0f + 0.5f);
-    const uint32_t B = static_cast<uint32_t>(cl(b) * 255.0f + 0.5f);
-    return (R << 0) | (G << 8) | (B << 16);
-}
-
-void setupDhgrPattern(Memory& mem)
+void dhgrSwitches(Memory& mem)
 {
     mem.memRead(CLR_TEXT);
     mem.memWrite(IIE_80COL_ON, 0);
     mem.memRead(SET_HIRES);
     mem.memRead(DHIRES_ON);
+}
 
-    const uint16_t row = hgrAddr(0);
-    mem.memWrite(row, 0x55);
-    mem.auxDataMutable()[row] = 0x2A;
+// Fill DHGR memory so the 560-dot stream is the aligned repeating nibble
+// pattern: bit(absX) = (N >> (absX & 3)) & 1, locked to the absolute
+// 14.318 MHz sample counter. Aux byte supplies dots [c*14 .. c*14+6], main
+// byte dots [c*14+7 .. c*14+13].
+void fillDhgrNibble(Memory& mem, int N)
+{
+    uint8_t* aux = mem.auxDataMutable();
+    for (int y = 0; y < 192; ++y) {
+        const uint16_t row = hgrAddr(y);
+        for (int c = 0; c < 40; ++c) {
+            uint8_t a = 0, m = 0;
+            for (int i = 0; i < 7; ++i) {
+                if ((N >> ((c * 14 + i) & 3)) & 1)     a |= static_cast<uint8_t>(1u << i);
+                if ((N >> ((c * 14 + 7 + i) & 3)) & 1) m |= static_cast<uint8_t>(1u << i);
+            }
+            mem.memWrite(row + c, m);
+            aux[row + c] = a;
+        }
+    }
+}
+
+uint32_t px(const Apple2Display& d, int x, int y)
+{
+    return d.pixels()[y * d.width() + x];
 }
 
 } // namespace
 
 int main()
 {
-    Memory mem;
-    mem.setIIEMode(true);
-    setupDhgrPattern(mem);
+    // ── OE CPU demod hue == MAME-LUT hue for the four pure phases ─────────
+    // Aligned nibble N renders (per MAME's DHGR rotl4(absX+1)) as lo-res
+    // palette index rotl4(N,1): 1→2 dark blue, 2→4 dark green, 4→8 brown,
+    // 8→1 dark red.
+    const int kExpected[4][2] = { {1, 2}, {2, 4}, {4, 8}, {8, 1} };
+    int prevHue = -1;
+    for (const auto& e : kExpected) {
+        const int N = e[0];
 
-    Apple2Display oe;
-    oe.setAuxMemory(mem.auxData());
-    oe.setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
-    oe.render(mem);
-    assert(oe.signalPhaseOffset() == 1 && "DHGR must use +1 NTSC phase offset");
-    assert(oe.signalProduced());
+        Memory memL;
+        memL.setIIEMode(true);
+        dhgrSwitches(memL);
+        fillDhgrNibble(memL, N);
+        Apple2Display lut;
+        lut.setAuxMemory(memL.auxData());
+        lut.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+        lut.render(memL);
+        assert(lut.width() == 560);
+        const int lutHue = nearestPal(px(lut, 280, 96));
+        assert(lutHue == e[1] && "MAME-LUT must paint rotl4(N,1) for aligned nibble N");
 
-    const uint32_t oePx = px(oe, 14, 0);
-    const uint8_t* sigRow = oe.signal();
-    const uint32_t ph0 = demodAnchor(sigRow, 14, 0);
-    const uint32_t ph1 = demodAnchor(sigRow, 14, 1);
-    assert(ph0 != ph1 && "phase offset must change the demodulated colour");
-    assert(oePx == ph1 && "OE CPU path must demod with DHGR phase offset +1");
-    assert(oePx != ph0 && "OE CPU must not use HGR phase on a DHGR signal");
+        Memory memO;
+        memO.setIIEMode(true);
+        dhgrSwitches(memO);
+        fillDhgrNibble(memO, N);
+        Apple2Display oe;
+        oe.setAuxMemory(memO.auxData());
+        oe.setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
+        oe.render(memO);
+        assert(oe.signalProduced());
+        assert(oe.signalPhaseOffset() == 1 && "DHGR must use +1 NTSC phase offset");
+        const int oeHue = nearestPal(px(oe, 280, 96));
 
+        std::printf("N=%d  LUT hue=%d  OE demod hue=%d\n", N, lutHue, oeHue);
+        assert(oeHue == lutHue
+               && "OE CPU demod hue must match the MAME-LUT render "
+                  "(a mismatch of one wheel position = phase offset applied "
+                  "twice, the double-application bug)");
+        assert(oeHue != prevHue && "the four phases must demodulate distinct hues");
+        prevHue = oeHue;
+    }
+
+    // ── HGR must NOT apply the DHGR phase offset ──────────────────────────
     Memory memHgr;
     memHgr.setIIEMode(true);
     memHgr.memRead(CLR_TEXT);

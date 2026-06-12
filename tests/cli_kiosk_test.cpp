@@ -203,6 +203,24 @@ void testIntArgOverflowRejected()
     assert(parse({"POM2", "--step",  "100"}, help).has_value());
 }
 
+void testSpeedClampedToAiServerCeiling()
+{
+    bool help = false;
+    // --speed is the worker's per-frame cycle budget; values past the AI
+    // server's 2M ceiling (AiControlServer kMaxCpf) produced multi-second
+    // uninterruptible frames. They are CLAMPED (with a warning), not
+    // rejected, so scripted launches keep working.
+    auto p = parse({"POM2", "--speed", "2000000000"}, help);
+    assert(p.has_value());
+    assert(p->executionSpeed.has_value());
+    assert(*p->executionSpeed == 2'000'000);
+    // The boundary and in-range values pass through unchanged.
+    p = parse({"POM2", "--speed", "2000000"}, help);
+    assert(p.has_value() && *p->executionSpeed == 2'000'000);
+    p = parse({"POM2", "--speed", "17045"}, help);
+    assert(p.has_value() && *p->executionSpeed == 17045);
+}
+
 }  // namespace
 
 int main()
@@ -229,6 +247,8 @@ int main()
     std::printf("parseCli --preset iie-u family: OK\n");
     testIntArgOverflowRejected();
     std::printf("parseCli rejects --speed/--step int overflow: OK\n");
+    testSpeedClampedToAiServerCeiling();
+    std::printf("parseCli clamps --speed to the 2M cycles/frame ceiling: OK\n");
     testClassifier();
     std::printf("classifyDiskForSlot 5.25/3.5/HDV/unknown: OK\n");
 

@@ -118,11 +118,24 @@ uint8_t ProDOSHardDiskCard::deviceSelectRead(uint8_t low4)
         // Status byte. Preserves the original encoding for backward compat:
         //   bit-7 = 0 when image loaded, 1 when missing (legacy).
         //   bit-6 = 1 when write-protected (new — used by the write driver
-        //           in $Cn88 to gate ProDOS WRITE_BLOCK and return $2B
+        //           in the ROM to gate ProDOS WRITE_BLOCK and return $2B
         //           without touching the in-memory image).
         uint8_t s = backing_.isLoaded() ? 0x00 : 0x80;
         if (backing_.isWriteProtected()) s |= 0x40;
         return s;
+    }
+    if (low4 == 0x4 || low4 == 0x5) {
+        // STATUS block count, low ($C0n4) / high ($C0n5). The ProDOS
+        // STATUS driver call (cmd $00) must return the device's total
+        // block count in X (low) / Y (high); the ROM STATUS routine
+        // reads it from this register pair — same scheme (and same
+        // BITSY-crash lesson) as SmartPortCard::blockCountByte. Counts
+        // above $FFFF clamp (an exactly-65536-block 32 MiB image must
+        // report $FFFF, not truncate to 0 = "empty volume").
+        size_t blocks = backing_.isLoaded() ? backing_.blockCount() : 0u;
+        if (blocks > 0xFFFFu) blocks = 0xFFFFu;
+        return static_cast<uint8_t>(
+            (blocks >> (low4 == 0x5 ? 8 : 0)) & 0xFF);
     }
     return 0xFF;
 }
@@ -216,38 +229,70 @@ void ProDOSHardDiskCard::buildRom()
     rom[0xE2] = kSlotRomHi;
 
     // Driver dispatch table (22 bytes), commands:
-    //   $00 status → A=0, CLC, RTS (success, no error)
-    //   $01 read   → branches to read block (34 bytes)
+    //   $00 status → JMP $CnC0 (returns block count in X/Y — see below)
+    //   $01 read   → branches to read block (43 bytes)
     //   $02 write  → branches to write block (47 bytes)
     //   any other  → A=$01 (bad command), SEC, RTS
+    // Read block first probes $C0D3 bit-7: if set (no image mounted),
+    // return $28 (NO DEVICE CONNECTED) with carry set instead of CLC
+    // "success" over a $FF stream — real ProDOS drivers never report a
+    // successful read from absent media.
     // Write block first probes $C0D3 bit-6: if set (image is WP), return
     // $2B (write-protected) without touching memory.
     //
     // Layout when emitted at $C550 ($Cn50):
     //   $C550..$C565  dispatch (22 B)
-    //   $C566..$C587  read block (34 B)
-    //   $C588..$C5B6  write block (47 B)
+    //   $C566..$C590  read block (43 B)
+    //   $C591..$C5BF  write block (47 B)
+    //   $C5C0..$C5C9  STATUS routine (10 B)
     pc = kDriverOff;
     emit(rom, pc, {
         0xA5, 0x42,       // LDA $42         ; command
         0xC9, 0x01,       // CMP #$01
         0xF0, 0x10,       // BEQ read    (+16 → $C566)
         0xC9, 0x02,       // CMP #$02
-        0xF0, 0x2E,       // BEQ write   (+46 → $C588)
+        0xF0, 0x37,       // BEQ write   (+55 → $C591: read grew 9 B for
+                          //              the no-media probe — pinned by
+                          //              tests/hdv_status_driver_test.cpp)
         0xC9, 0x00,       // CMP #$00
         0xF0, 0x04,       // BEQ status  (+4  → $C562)
         0xA9, 0x01,       // LDA #$01    ; bad-command error
         0x38,             // SEC
         0x60,             // RTS
-        0xA9, 0x00,       // status: LDA #$00
-        0x18,             // CLC
-        0x60              // RTS
+        // status: jump to the full STATUS routine at $CnC0 (returns the
+        // block count in X/Y). Kept 4 bytes (JMP + NOP pad) so the BEQ
+        // read/write offsets above stay valid — mirrors the identical
+        // arrangement (and the BITSY crash it fixed) in
+        // SmartPortCard::buildRom.
+        0x4C, 0xC0, kSlotRomHi, // status: JMP $CnC0
+        0xEA                    // pad
     });
+
+    // ── STATUS routine ($CnC0) ─────────────────────────────────────────
+    // ProDOS STATUS (cmd $00) must return total blocks in X (low) /
+    // Y (high) so a volume scanner (BITSY, ProDOS ONLINE) can size the
+    // device. The count comes from $C0n4/$C0n5 (deviceSelectRead 0x4/0x5,
+    // clamped to $FFFF).
+    {
+        uint8_t sp = 0xC0;
+        emit(rom, sp, {
+            0xAE, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDX $C0n4
+            0xAC, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDY $C0n5
+            0xA9, 0x00,        // LDA #$00
+            0x18,              // CLC
+            0x60               // RTS
+        });
+    }
 
     const uint8_t dataReg = static_cast<uint8_t>(kDeviceBase + 0x02);
     const uint8_t statReg = static_cast<uint8_t>(kDeviceBase + 0x03);
     emit(rom, pc, {
-        0xA5, 0x46,       // read: LDA $46   ; block low
+        0xAD, statReg, 0xC0, // read: LDA $C0D3 ; status
+        0x10, 0x04,       // BPL ok          ; bit-7 set = no image
+        0xA9, 0x28,       // LDA #$28        ; NO DEVICE CONNECTED
+        0x38,             // SEC
+        0x60,             // RTS
+        0xA5, 0x46,       // ok: LDA $46     ; block low
         0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
         0xA5, 0x47,       // LDA $47         ; block high
         0x8D, static_cast<uint8_t>(kDeviceBase + 0x01), 0xC0,

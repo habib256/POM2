@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -101,6 +102,21 @@ size_t SuperSerialCard::normalizeLineEndings(uint8_t* data, size_t n)
     return w;
 }
 
+// Telnet TX escaping (RFC 854). Two transformations, applied byte-by-byte
+// as the worker drains txBuf in telnet text mode (raw mode sends verbatim —
+// same flag that gates the RX-side IAC/CR filters):
+//   * $FF → IAC IAC ($FF $FF). A literal data $FF would otherwise start an
+//     IAC command sequence at the peer and corrupt the stream.
+//   * bare CR → CR NUL. RFC 854 requires a carriage return that is not part
+//     of CR LF to be transmitted as the two-byte sequence CR NUL; the Apple
+//     II's newline is a bare CR, so every CR it emits gets the NUL.
+void SuperSerialCard::appendTelnetTxEscaped(std::vector<uint8_t>& out, uint8_t b)
+{
+    out.push_back(b);
+    if (b == 0xFF)      out.push_back(0xFF);    // IAC IAC
+    else if (b == '\r') out.push_back(0x00);    // CR NUL
+}
+
 size_t SuperSerialCard::processTelnetRx(uint8_t* data, size_t n)
 {
     size_t w = 0;
@@ -158,10 +174,14 @@ bool SuperSerialCard::startListening(uint16_t newPort)
     pom2::log().info("SSC", "telnet listener disabled in WASM build");
     return false;
 #else
-    if (listening) {
-        if (newPort == port) return true;
-        stopListening();
-    }
+    if (listening && newPort == port && worker.joinable()) return true;
+    // Tear down any previous listener. This also covers a worker that
+    // exited on its own (listen-socket error): the worker clears
+    // `listening` on its way out, but the dead std::thread must still be
+    // join()ed here — assigning a new thread over a joinable member calls
+    // std::terminate — and the stale listenFd must be closed before we
+    // bind a fresh one. stopListening() is a no-op when nothing is live.
+    stopListening();
     port = newPort;
     listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd < 0) {
@@ -244,13 +264,36 @@ void SuperSerialCard::closeClient()
 void SuperSerialCard::runWorker()
 {
     while (!stopRequested) {
+        // Poll the listen fd with a short timeout instead of blocking in
+        // accept(). `shutdown(listenFd, SHUT_RDWR)` wakes accept() on Linux
+        // but NOT on macOS/BSD — there the worker stays parked in accept()
+        // forever and stopListening() hangs in worker.join(). Since the SSC
+        // destructor runs under stateMutex during profile switches, that
+        // was a UI-thread deadlock on macOS. Same pattern (and rationale)
+        // as AiControlServer::runWorker.
+        {
+            struct pollfd pfd{};
+            pfd.fd     = listenFd.load();
+            if (pfd.fd < 0) break;
+            pfd.events = POLLIN;
+            const int pr = ::poll(&pfd, 1, 200);
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (pr == 0) continue;   // timeout → re-check stopRequested
+            // Listen fd invalidated under us (stopListening's shutdown).
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+        }
+
         sockaddr_in peer{};
         socklen_t peerLen = sizeof(peer);
         const int fd = ::accept(listenFd,
                                 reinterpret_cast<sockaddr*>(&peer), &peerLen);
         if (fd < 0) {
             if (stopRequested) break;
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
             // Listening socket closed under us — bail.
             break;
         }
@@ -274,33 +317,54 @@ void SuperSerialCard::runWorker()
         // Bridge loop: pull bytes from socket → rxBuf, push txBuf → socket.
         // Sleep briefly between iterations to avoid a hot spin when both
         // queues are idle.
+        //
+        // `pendingOut` holds bytes already popped from txBuf (and telnet-
+        // escaped) but not yet accepted by the kernel. The client socket is
+        // O_NONBLOCK, so a full TCP send window returns EAGAIN or a short
+        // send — the remainder stays queued here and is retried on the next
+        // iteration instead of being silently dropped (or, worse, the
+        // EAGAIN being treated as a fatal error and disconnecting).
+        std::vector<uint8_t> pendingOut;
         uint8_t scratch[256];
         while (!stopRequested && clientFd >= 0) {
+            // Raw mode gates BOTH directions of telnet processing; sample
+            // once per iteration so RX filtering, sink forwarding, and TX
+            // escaping agree within the iteration.
+            const bool raw = rawMode_.load(std::memory_order_relaxed);
             const ssize_t got = ::recv(clientFd, scratch, sizeof(scratch), 0);
             if (got > 0) {
                 size_t n = static_cast<size_t>(got);
                 // Raw mode: skip both filters so XMODEM/Kermit/ADTPro
                 // see every byte (including $FF and bare LFs).
-                if (!rawMode_.load(std::memory_order_relaxed)) {
+                if (!raw) {
                     n = processTelnetRx(scratch, n);
                     n = normalizeLineEndings(scratch, n);
                 }
                 if (n > 0) {
                     deliverRxBytes(scratch, n);
-                    // Snapshot the keyboard sink under the same lock the
-                    // queues use, then drop the lock before calling out —
-                    // `Memory::queueKey` takes its own mutex and we MUST
-                    // NOT hold ours during that.
-                    std::function<void(uint8_t)> sink;
-                    {
-                        std::lock_guard<std::mutex> lk(bufferMtx);
-                        sink = keyboardSink;
-                    }
-                    if (sink) {
-                        // Line endings already normalised above — just
-                        // forward each byte to the Apple II keyboard latch.
-                        for (size_t i = 0; i < n; ++i) {
-                            sink(scratch[i]);
+                    // Keyboard-sink forwarding is a TEXT-mode convenience
+                    // (telnet session typing straight into BASIC). In raw
+                    // mode the stream is 8-bit binary (XMODEM / ADTPro
+                    // payload) — spraying it into the keyboard paste queue
+                    // would type garbage, so the ACIA RX queue above is
+                    // the only consumer then.
+                    if (!raw) {
+                        // Snapshot the keyboard sink under the same lock
+                        // the queues use, then drop the lock before calling
+                        // out — `Memory::queueKey` takes its own mutex and
+                        // we MUST NOT hold ours during that.
+                        std::function<void(uint8_t)> sink;
+                        {
+                            std::lock_guard<std::mutex> lk(bufferMtx);
+                            sink = keyboardSink;
+                        }
+                        if (sink) {
+                            // The RX filters above normalised line endings
+                            // for this (non-raw) path — forward each byte
+                            // to the Apple II keyboard latch.
+                            for (size_t i = 0; i < n; ++i) {
+                                sink(scratch[i]);
+                            }
                         }
                     }
                 }
@@ -314,10 +378,12 @@ void SuperSerialCard::runWorker()
                 break;
             }
 
-            // Drain TX buffer to socket. Rate-limited if a baud-rate
-            // divider has been programmed; otherwise dumped wholesale.
-            std::vector<uint8_t> outChunk;
-            {
+            // Drain TX buffer into pendingOut. Rate-limited if a baud-rate
+            // divider has been programmed; otherwise taken wholesale. Only
+            // refill once the previous chunk has fully left — keeps memory
+            // bounded and the pacing budget honest (the budget is charged
+            // per GUEST byte at pop time, before telnet escaping).
+            if (pendingOut.empty()) {
                 std::lock_guard<std::mutex> lk(bufferMtx);
                 const auto now = std::chrono::steady_clock::now();
                 if (bytesPerSecond_ > 0.0) {
@@ -333,24 +399,42 @@ void SuperSerialCard::runWorker()
                     const size_t take = static_cast<size_t>(sendBudget_);
                     size_t n = 0;
                     while (n < take && !txBuf.empty()) {
-                        outChunk.push_back(txBuf.front());
+                        const uint8_t b = txBuf.front();
                         txBuf.pop_front();
+                        if (raw) pendingOut.push_back(b);
+                        else     appendTelnetTxEscaped(pendingOut, b);
                         ++n;
                     }
                     sendBudget_ -= static_cast<double>(n);
                 } else if (!txBuf.empty()) {
-                    outChunk.reserve(txBuf.size());
+                    pendingOut.reserve(txBuf.size());
                     while (!txBuf.empty()) {
-                        outChunk.push_back(txBuf.front());
+                        const uint8_t b = txBuf.front();
                         txBuf.pop_front();
+                        if (raw) pendingOut.push_back(b);
+                        else     appendTelnetTxEscaped(pendingOut, b);
                     }
                 }
                 lastDrainTime_ = now;
             }
-            if (!outChunk.empty() && clientFd >= 0) {
-                const ssize_t sent = ::send(clientFd, outChunk.data(),
-                                            outChunk.size(), 0);
-                if (sent < 0) {
+            if (!pendingOut.empty() && clientFd >= 0) {
+                // MSG_NOSIGNAL: a peer that vanished mid-send must surface
+                // as EPIPE, not a SIGPIPE that kills the whole process
+                // (repo pattern: AiControlServer's sendAll()).
+                const ssize_t sent = ::send(clientFd, pendingOut.data(),
+                                            pendingOut.size(), MSG_NOSIGNAL);
+                if (sent > 0) {
+                    pendingOut.erase(pendingOut.begin(),
+                                     pendingOut.begin() + sent);
+                } else if (sent < 0 && (errno == EAGAIN ||
+                                        errno == EWOULDBLOCK ||
+                                        errno == EINTR)) {
+                    // Transient: TCP window full / interrupted — keep the
+                    // bytes queued in pendingOut and retry after the idle
+                    // backoff below. NOT a disconnect.
+                } else {
+                    // Real socket error (EPIPE / ECONNRESET / …) → drop the
+                    // client. (send() == 0 can't happen for n > 0.)
                     pom2::log().info("SSC",
                         std::string("send error: ") + std::strerror(errno));
                     break;
@@ -364,6 +448,11 @@ void SuperSerialCard::runWorker()
         closeClient();
         onConnectionEdge(false);
     }
+    // The worker can exit on its own (listen-socket error) — reflect that
+    // in `listening` so the UI/status shows the truth and a subsequent
+    // startListening() re-arms instead of claiming success against a dead
+    // thread. stopListening() still join()s us via worker.joinable().
+    listening = false;
 }
 #endif // !__EMSCRIPTEN__
 

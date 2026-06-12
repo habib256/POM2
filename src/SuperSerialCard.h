@@ -32,9 +32,12 @@
 //
 // TCP bridge: a worker thread listens on 127.0.0.1:`port` (default 6502)
 // and accepts at most one client at a time. Bytes flow through two
-// 4 KB ring buffers under a mutex. Newlines are passed through verbatim;
-// telnet IAC negotiation is silently dropped so a vanilla `telnet`
-// binary connects cleanly without hand-shaking.
+// 4 KB ring buffers under a mutex. Inbound telnet IAC negotiation is
+// silently dropped and line endings normalised so a vanilla `telnet`
+// binary connects cleanly without hand-shaking; outbound data is
+// telnet-escaped per RFC 854 ($FF → IAC IAC, bare CR → CR NUL). Raw mode
+// (`ssc_raw_mode`) bypasses all of that in both directions for 8-bit
+// binary protocols.
 
 #ifndef POM2_SUPER_SERIAL_CARD_H
 #define POM2_SUPER_SERIAL_CARD_H
@@ -51,6 +54,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 class SuperSerialCard : public SlotPeripheral
 {
@@ -77,7 +81,9 @@ public:
     void stopListening();
 
     /// Optional "telnet → keyboard" bridge. When set, every byte the
-    /// SSC receives over TCP is *also* forwarded to this sink (typically
+    /// SSC receives over TCP in telnet TEXT mode is *also* forwarded to
+    /// this sink (raw mode suppresses the forwarding — binary protocol
+    /// payloads must not be typed into the paste queue) (typically
     /// `Memory::queueKey`). That makes the SSC a self-testing console:
     /// the host can telnet in, type `PR#2 / IN#2` directly into BASIC
     /// (no chicken-and-egg of needing IN#N before the keyboard listens
@@ -127,6 +133,13 @@ public:
     /// at the start of each connection.
     size_t processTelnetRx(uint8_t* data, size_t n);
     void   resetTelnet() { telnetState_ = TelnetState::Text; }
+
+    /// Telnet TX escaping (RFC 854): append `b` to `out`, doubling $FF
+    /// (IAC IAC) and following a bare CR with NUL (the Apple II's newline
+    /// is a lone CR, which telnet transmits as CR NUL). Applied by the TX
+    /// drain only in telnet text mode — raw mode sends bytes verbatim.
+    /// Public + static for unit testing.
+    static void appendTelnetTxEscaped(std::vector<uint8_t>& out, uint8_t b);
 
     // Test/debug introspection — read-only reflection of the decoded
     // command/control register state.

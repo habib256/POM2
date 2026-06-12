@@ -52,8 +52,10 @@ constexpr uint8_t MODE_INT_BUTTON   = 1 << 2;
 constexpr uint8_t MODE_INT_VBL      = 1 << 3;
 constexpr uint8_t MODE_INT_ALL      = STAT_INT_ALL;
 
-// 1.022727 MHz / 60 Hz ≈ 17045 cycles per VBL.
-constexpr int kCyclesPerVbl = 17045;
+// VBL period now lives in the member `vblCycles_` (default 17045 =
+// 1.022727 MHz / 60 Hz NTSC; PAL profiles plumb 20313 ≈ 50 Hz through
+// setVblCycles at plug time) — a hard-wired NTSC constant desynced
+// MODE_INT_VBL from the 50 Hz frame on the PAL profiles.
 
 }  // namespace
 
@@ -96,12 +98,8 @@ bool MouseCardAppleWin::loadRom(const std::string& slotRomPath)
     return true;
 }
 
-void MouseCardAppleWin::setHostMouse(uint8_t rawX, uint8_t rawY, bool button)
-{
-    hostX.store(rawX, std::memory_order_relaxed);
-    hostY.store(rawY, std::memory_order_relaxed);
-    hostButton.store(button, std::memory_order_relaxed);
-}
+// setHostMouse is header-inline — see MouseCardAppleWin.h (the AI control
+// server drives it without linking this TU).
 
 MouseCardAppleWin::DebugSnapshot MouseCardAppleWin::debugSnapshot() const
 {
@@ -154,8 +152,8 @@ void MouseCardAppleWin::advanceCycles(int cycles)
     pollHostInput();
 
     vblCycleAccum += cycles;
-    while (vblCycleAccum >= kCyclesPerVbl) {
-        vblCycleAccum -= kCyclesPerVbl;
+    while (vblCycleAccum >= vblCycles_) {
+        vblCycleAccum -= vblCycles_;
         onMouseEvent(/*vbl=*/true);
     }
 }

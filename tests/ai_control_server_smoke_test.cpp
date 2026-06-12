@@ -438,6 +438,44 @@ void testSnapshotCpuSectionGate(EmulationController& /*ctrl*/, pom2::AiControlSe
     std::puts("  snapshot CPU-section gate: OK");
 }
 
+// POST /cpu must honour a/x/y/p/sp as well as pc — the M6502 setters exist
+// (M6502.h:133-137, added for snapshot restore) but the endpoint used to
+// silently ignore everything except pc.
+void testCpuRegisterSet(EmulationController& /*ctrl*/, pom2::AiControlServer& /*srv*/)
+{
+    auto post = [](const std::string& target, const std::string& body) {
+        char req[1024];
+        std::snprintf(req, sizeof(req),
+            "POST %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+            target.c_str(), body.size(), body.c_str());
+        return oneShot(kTestPort, req);
+    };
+
+    HttpResponse r = post("/cpu",
+        "{\"pc\":4096,\"a\":17,\"x\":34,\"y\":51,\"p\":52,\"sp\":253}");
+    assert(r.status == 200);
+
+    r = oneShot(kTestPort, "GET /cpu HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    assert(r.status == 200);
+    assert(contains(r.body, "\"pc\":4096"));
+    assert(contains(r.body, "\"a\":17"));
+    assert(contains(r.body, "\"x\":34"));
+    assert(contains(r.body, "\"y\":51"));
+    assert(contains(r.body, "\"p\":52"));
+    assert(contains(r.body, "\"sp\":253"));
+
+    // Partial update: only the supplied keys change.
+    r = post("/cpu", "{\"a\":255}");
+    assert(r.status == 200);
+    r = oneShot(kTestPort, "GET /cpu HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    assert(contains(r.body, "\"a\":255"));
+    assert(contains(r.body, "\"x\":34"));
+    assert(contains(r.body, "\"sp\":253"));
+
+    std::puts("  cpu register set: OK");
+}
+
 // Pins the POST /mouse endpoint: card lookup via the SlotBus, the 8-bit
 // running counter (mirrors MainWindow::onMouseMove), ±127 per-call clamp,
 // absolute set, reset, and the 503/405 error shapes. This is the headless
@@ -514,6 +552,7 @@ int main()
     testSpeed            (ctrl, srv);
     testSnapshotPathSafety(ctrl, srv);
     testSnapshotCpuSectionGate(ctrl, srv);
+    testCpuRegisterSet   (ctrl, srv);
     testNotFoundAndMethod(ctrl, srv);
     testMouseEndpoint    (ctrl, srv);
     testStartResumesMode (ctrl);   // last: it spawns the CPU worker thread

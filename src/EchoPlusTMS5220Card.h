@@ -26,9 +26,12 @@
 //   * Stub register decode at the documented $Cs00-$Cs0F window so
 //     software that probes for the card finds something coherent (vs
 //     open-bus everywhere). Writes are accepted and silently dropped;
-//     reads return a status byte with the TMS5220 BL ("buffer low") flag
-//     pinned to 0 so naive probes see "speech in progress, please poll"
-//     and back off cleanly.
+//     status reads return the real chip's idle byte: TS=0, BL=1, BE=1
+//     = $60 (MAME `tms5220.cpp:894-907` status_read; `:1771` reset sets
+//     buffer_empty = buffer_low = true). Probe loops therefore see
+//     "not talking, FIFO ready for data" and proceed — a driver gating
+//     its FIFO writes on BL=1 would hang forever against the earlier
+//     BE-only ($20) scaffold value.
 //
 // Address map (slot s)
 // --------------------
@@ -82,11 +85,11 @@ private:
     int slot_;
     mutable std::mutex mtx_;
 
-    // TMS5220 scaffold — status byte exposed at $Cs00 read with the BL
-    // (buffer low) flag held low so an idle card looks "not ready to
-    // accept the next FIFO byte yet", letting probe loops poll forever
-    // without our card claiming it has anything to say.
-    uint8_t tmsStatus_    = 0x00;
+    // TMS5220 scaffold — status byte exposed at $Cs00 read. Idle/reset
+    // value is $60 (BL|BE set, TS clear), matching MAME tms5220.cpp's
+    // status_read packing + reset state (see onReset()). onReset()
+    // (re)initialises it before any read can observe this default.
+    uint8_t tmsStatus_    = 0x60;
     uint8_t tmsLastWrite_ = 0x00;
 
     // Two AY-3-8913 register banks — synthesis core deferred to the

@@ -51,7 +51,9 @@ bool Block512Backing::loadImage(const std::string& path)
     // Spec: https://apple2.org.za/gswv/a2zine/Docs/DiskImage_2MG_Info.txt
     //   bytes  0..3  magic "2IMG"
     //   bytes 12..15 image format (LE u32) — 0=DOS 3.3 sector, 1=ProDOS, 2=NIB
-    //   bytes 16..19 flags         (LE u32) — bit 0 = write-protected
+    //   bytes 16..19 flags         (LE u32) — bit 31 = locked/write-protect
+    //                (CiderPress kFlagLocked = 0x80000000), bit 8 =
+    //                volume-number-valid, bits 0-7 = volume number
     //   bytes 24..27 data offset   (LE u32) — typically 64
     //   bytes 28..31 data length   (LE u32) — bytes of block data following
     size_t parsedOffset = 0;
@@ -84,7 +86,11 @@ bool Block512Backing::loadImage(const std::string& path)
         }
         parsedOffset = off;
         parsedLength = len;
-        parsedWp     = (flags & 1u) != 0;
+        // WP = bit 31 ("locked"). Bit 0 stays a lenient WP signal only
+        // when no volume field is declared (bit 8 clear) — with bit 8
+        // set, bit 0 is the low bit of the volume number, not a lock.
+        parsedWp     = (flags & (1u << 31)) != 0 ||
+                       ((flags & 1u) != 0 && (flags & (1u << 8)) == 0);
     }
 
     if ((parsedLength % kBlockBytes) != 0) {

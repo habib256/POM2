@@ -136,6 +136,51 @@ bool checkRoundTrip(uint8_t obt, int targetCell) {
     return true;
 }
 
+// Anchored splice into the WOZ branch. MAME write_flux maps the window
+// through find_position anchored on m_revolution_start_time
+// (imagedev/floppy.cpp ~:1050-1125); writeFlux's `revolutionStart`
+// parameter is the same anchor. A non-period-multiple anchor several
+// revolutions in must still land the transition in `targetCell` — the
+// old raw `start % period` reduction parked it `anchor % period` cells
+// away.
+bool checkAnchoredSplice(uint8_t obt, int targetCell) {
+    const uint32_t bitCount = 200;
+    const auto woz  = buildWoz2(obt, bitCount);
+    const auto path = writeTemp(woz, "anchored");
+
+    DiskImage img;
+    if (!img.loadFile(path)) {
+        std::printf("FAIL: load anchored: %s\n", img.getLastError().c_str());
+        return false;
+    }
+    const int     cyc    = obt / 4;
+    const int     period = img.trackPeriod(0);
+    const int64_t anchor = 98'765;                  // not a period multiple
+    assert(anchor % period != 0);
+    const int64_t base   = anchor + int64_t{5} * period;
+
+    const int64_t ts = base + static_cast<int64_t>(targetCell) * cyc + cyc / 2;
+    int64_t transitions[1] = { ts };
+    img.writeFlux(0, base, base + period, 1, transitions, anchor);
+
+    const auto& flux = img.fluxEvents(0);
+    const int expected = targetCell * cyc + cyc / 2;
+    if (flux.size() != 1 || flux[0] != expected) {
+        std::printf("FAIL: anchored obt=%u cell=%d → flux.size=%zu flux[0]=%d "
+                    "(expected exactly {%d}; anchor%%period would park it at "
+                    "cell %lld)\n",
+                    static_cast<unsigned>(obt), targetCell, flux.size(),
+                    flux.empty() ? -1 : flux[0], expected,
+                    static_cast<long long>(((targetCell * cyc + anchor % period)
+                                            % period) / cyc));
+        return false;
+    }
+    std::printf("OK : anchored obt=%u cell %d splices through anchor %lld\n",
+                static_cast<unsigned>(obt), targetCell,
+                static_cast<long long>(anchor));
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -143,6 +188,7 @@ int main() {
     ok &= checkRoundTrip(32, 100);   // control: default timing (cyc=8)
     ok &= checkRoundTrip(40, 100);   // the regression: cyc=10 (was /8 → cell 125)
     ok &= checkRoundTrip(28, 100);   // faster master: cyc=7
+    ok &= checkAnchoredSplice(32, 100);  // MAME find_position anchor (WOZ branch)
     if (ok) std::printf("OK woz_writeflux_smoke\n");
     return ok ? 0 : 1;
 }

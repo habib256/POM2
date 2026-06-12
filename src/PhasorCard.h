@@ -14,12 +14,21 @@
 //   * 4 × AY-3-8913 PSGs (vs Mockingboard's 2)
 //   * Mode register (3 bits) driven by reads/writes to $C0(8+s)X
 //
-// Address map (s = slot number):
+// Address map (s = slot number) — MAME `a2bus_phasor_device::read_cnxx`
+// / `write_cnxx` (`a2mockingboard.cpp:312-337` / `:365-390`): the decode
+// is gated to offsets $00-$1F and $80-$9F in BOTH modes; the VIA select
+// depends on the mode (see PhasorCard::viaSelect):
 //
-//   $Cs00..$Cs0F     VIA1   (drives AY1 / AY2)
-//   $Cs10..$Cs7F     VIA1   mirrors (partial decode)
-//   $Cs80..$Cs8F     VIA2   (drives AY3 / AY4)
-//   $Cs90..$CsFF     VIA2   mirrors
+//   Mockingboard-compat mode:
+//     $Cs00..$Cs1F   VIA1   (reg = low 4 bits; $10-$1F mirror)
+//     $Cs80..$Cs9F   VIA2   (reg = low 4 bits; $90-$9F mirror)
+//   Phasor-native mode (via_sel = ((off & $80) >> 6) | ((off & $10) >> 4)):
+//     $Cs00..$Cs0F   no VIA (undecoded)
+//     $Cs10..$Cs1F   VIA1
+//     $Cs80..$Cs8F   VIA2
+//     $Cs90..$Cs9F   BOTH   (write broadcast; read = OR of both bytes)
+//   Everything else ($20-$7F, $A0-$FF): undecoded — writes dropped,
+//   reads return 0 (MAME parity).
 //   $C0(8+s)0..F     Mode soft-switch (see below)
 //
 // 6522 → AY wiring (per VIA, same as Mockingboard):
@@ -199,6 +208,11 @@ private:
     uint32_t ayEnvWriteCount_[4] = {0, 0, 0, 0};
 
     mutable std::mutex mtx_;
+
+    // MAME-parity slot-ROM VIA select: bit 0 = VIA1, bit 1 = VIA2, 0 =
+    // undecoded. See the comment block above the definition for the
+    // exact MAME `via_sel` + range-gate semantics. Caller holds mtx_.
+    int viaSelect(uint8_t low8) const;
 
     // Dispatch a VIA Port B change to the AY pair attached to that VIA,
     // honouring the current mode + chip-select decode.

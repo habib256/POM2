@@ -175,6 +175,51 @@ void test_command_handshake_reaches_oncommand()
     std::remove(slotPath.c_str());
 }
 
+// MODE_INT_VBL pacing follows the profile-plumbed cycles-per-frame
+// (setVblCycles): default 17045 (NTSC 60 Hz); PAL profiles pass 20313
+// (50 Hz). Regression: the period was a hard-wired NTSC constant, so on
+// PAL profiles the VBL interrupt drifted against the 50 Hz frame.
+void test_vbl_pacing_follows_set_cycles()
+{
+    std::vector<uint8_t> rom(0x800, 0x00);
+    const auto slotPath = writeTempBlob(rom, "vbl_slot.bin");
+
+    auto runCase = [&](bool usePal) {
+        Memory mem;
+        auto card = std::make_unique<MouseCardAppleWin>(4);
+        assert(card->loadRom(slotPath));
+        MouseCardAppleWin* raw = card.get();
+        mem.slotBus().plug(4, std::move(card));
+        raw->onReset();
+        assert(raw->vblCycles() == 17045);          // NTSC default
+        const int period = usePal ? 20313 : 17045;
+        if (usePal) raw->setVblCycles(period);
+        assert(raw->vblCycles() == period);
+
+        const uint16_t devBase = 0xC0C0;            // slot 4
+        primePiaForOutput(mem, devBase);
+        // MOUSE_SET ($0n) with MODE_INT_VBL (bit 3) in the low nibble.
+        pulseCommand(mem, devBase, 0x08);
+
+        // One cycle short of a frame → no VBL IRQ yet.
+        raw->advanceCycles(period - 1);
+        assert(!raw->slotIrqAsserted());
+        // Crossing the frame boundary raises the VBL interrupt.
+        raw->advanceCycles(1);
+        assert(raw->slotIrqAsserted());
+    };
+    runCase(/*usePal=*/false);
+    runCase(/*usePal=*/true);
+
+    // Bogus values are ignored (period must stay positive).
+    MouseCardAppleWin guard(4);
+    guard.setVblCycles(0);
+    guard.setVblCycles(-5);
+    assert(guard.vblCycles() == 17045);
+
+    std::remove(slotPath.c_str());
+}
+
 }  // namespace
 
 int main()
@@ -183,6 +228,7 @@ int main()
     test_size_mismatch_refuses_to_load();
     test_slot_rom_bank_select();
     test_command_handshake_reaches_oncommand();
+    test_vbl_pacing_follows_set_cycles();
 
     std::printf("OK mouse_card_applewin_smoke\n");
     return 0;

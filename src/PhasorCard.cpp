@@ -222,8 +222,11 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
                         cs.envAccum     = 0;
                         cs.lastShape    = shape;
                     }
-                    const int envPer = (r[11] | (r[12] << 8))
-                                       ? (r[11] | (r[12] << 8)) : 1;
+                    // No period-0 clamp: envelope "period = 0 is half as
+                    // period = 1" (MAME `ay8910.cpp:89-91`; pre-increment
+                    // compare at `:1119-1122` — see the matching note in
+                    // MockingboardCard::AudioSrc).
+                    const int envPer = r[11] | (r[12] << 8);
                     const uint32_t threshold =
                         static_cast<uint32_t>(envPer) * 2u;
                     cs.envAccum += toneStepPerSample;
@@ -406,11 +409,48 @@ void PhasorCard::syncToCpuCycleAt(uint64_t now)
         lastSyncCycle_ = now;
         return;
     }
-    const int delta = static_cast<int>(now - lastSyncCycle_);
-    via_[0]->advance(delta);
-    via_[1]->advance(delta);
+    const uint64_t delta = now - lastSyncCycle_;
+    // The VIAs' `advance()` takes an int; clamp to a sane upper bound
+    // (a single CPU run-slice is ~17 045 cycles, so anything beyond a
+    // few million here means our sync clock got desynchronised). Same
+    // defensive clamp as MockingboardCard::syncToCpuCycleAt — without
+    // it a desync would truncate/overflow the int cast.
+    const int step = (delta > 0x7FFFFFFFu) ? 0x7FFFFFFF
+                                           : static_cast<int>(delta);
+    via_[0]->advance(step);
+    via_[1]->advance(step);
     lastSyncCycle_ = now;
     updateIrq();
+}
+
+// ─── VIA select decode — MAME a2bus_phasor_device parity ─────────────────
+//
+// MAME `a2mockingboard.cpp:312-337` (read_cnxx) / `:365-390` (write_cnxx):
+//
+//   if (m_native)
+//       via_sel = ((offset & 0x80) >> 6) | ((offset & 0x10) >> 4);
+//   else
+//       via_sel = (offset & 0x80) ? 2 : 1;
+//   if ((offset < 0x20) || (offset >= 0x80 && offset < 0xa0)) { ... }
+//
+// bit 0 of via_sel selects VIA1, bit 1 selects VIA2; reads OR the selected
+// VIAs' bytes together, writes broadcast to every selected VIA. The range
+// gate applies in BOTH modes, so:
+//
+//   Mockingboard mode:  $00-$1F → VIA1, $80-$9F → VIA2, rest → none.
+//   Native mode:        $00-$0F → none, $10-$1F → VIA1,
+//                       $80-$8F → VIA2, $90-$9F → BOTH (broadcast).
+//
+// MAME's `m_native` flag is set by any $C0(8+s)X access with address bit 0
+// high; POM2's richer mode_ soft-switch reaches PH_Phasor (5) / PH_EchoPlus
+// (7) the same way — both have bit 0 set — so "native" maps to
+// `mode_ != PH_Mockingboard`, consistent with the AY routing decode.
+// Caller must hold mtx_.
+int PhasorCard::viaSelect(uint8_t low8) const
+{
+    if (!(low8 < 0x20 || (low8 >= 0x80 && low8 < 0xA0))) return 0;
+    if (mode_ == PH_Mockingboard) return (low8 & 0x80) ? 0x2 : 0x1;
+    return ((low8 & 0x80) >> 6) | ((low8 & 0x10) >> 4);
 }
 
 // ─── Slot ROM ($Cs00-$CsFF) — dual VIA decode ────────────────────────────
@@ -419,9 +459,13 @@ uint8_t PhasorCard::slotRomRead(uint8_t low8)
 {
     std::lock_guard<std::mutex> lk(mtx_);
     syncToCpuCycle();
-    // VIA1 at $00-$7F (mirrors of $00-$0F), VIA2 at $80-$FF.
-    const int chip = (low8 & 0x80) ? 1 : 0;
-    const uint8_t out = via_[chip]->read(low8 & 0x0F);
+    // MAME read_cnxx: OR together every selected VIA's byte; an
+    // undecoded offset returns 0 (`a2mockingboard.cpp:312-337` — `ret`
+    // starts at 0 and the range gate skips the reads entirely).
+    const int viaSel = viaSelect(low8);
+    uint8_t out = 0;
+    if (viaSel & 0x1) out |= via_[0]->read(low8 & 0x0F);
+    if (viaSel & 0x2) out |= via_[1]->read(low8 & 0x0F);
     updateIrq();
     return out;
 }
@@ -430,11 +474,16 @@ void PhasorCard::slotRomWrite(uint8_t low8, uint8_t v)
 {
     std::lock_guard<std::mutex> lk(mtx_);
     syncToCpuCycle();
-    const int chip = (low8 & 0x80) ? 1 : 0;
-    const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
-    ++viaWriteCount_[chip];
-    // Port A / Port B output change triggers AY routing.
-    if (events & 0x03) onViaPortBChange(chip);
+    // MAME write_cnxx: broadcast to every selected VIA; undecoded
+    // offsets are dropped (`a2mockingboard.cpp:365-390`).
+    const int viaSel = viaSelect(low8);
+    for (int chip = 0; chip < 2; ++chip) {
+        if (!(viaSel & (1 << chip))) continue;
+        const uint8_t events = via_[chip]->write(low8 & 0x0F, v);
+        ++viaWriteCount_[chip];
+        // Port A / Port B output change triggers AY routing.
+        if (events & 0x03) onViaPortBChange(chip);
+    }
     updateIrq();
 }
 

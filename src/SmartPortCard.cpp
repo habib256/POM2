@@ -136,7 +136,13 @@ uint8_t SmartPortCard::blockCountByte(int which) const
     // SmartPort" garble (see project_iic_smartport_boot).
     const SmartPortUnit* u =
         (activeUnit_ < kMaxUnits) ? units_[activeUnit_].get() : nullptr;
-    const uint32_t blocks = (u && u->isLoaded()) ? u->blockCount() : 0u;
+    uint32_t blocks = (u && u->isLoaded()) ? u->blockCount() : 0u;
+    // ProDOS STATUS returns a 16-bit count: an exactly-32 MiB volume
+    // (65536 blocks — Block512Backing::kMaxBlocks deliberately admits
+    // it, since block INDEXES stay 16-bit) must clamp to $FFFF, not
+    // truncate to 0 — a 0-block STATUS makes ProDOS treat the volume
+    // as empty/offline.
+    if (blocks > 0xFFFFu) blocks = 0xFFFFu;
     return static_cast<uint8_t>((blocks >> (which ? 8 : 0)) & 0xFF);
 }
 

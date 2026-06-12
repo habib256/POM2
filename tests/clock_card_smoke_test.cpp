@@ -409,6 +409,54 @@ void testInterruptAssertedFlagBit5()
     assert((card->deviceSelectRead(0) & 0x20) == 0);
 }
 
+// RESET must NOT lose a user-set time: the uPD1990AC on the ThunderClock+
+// is battery-backed (on-board NiCd; the chip's time counter keeps ticking
+// across power-off — uPD1990AC datasheet V_BATT operation, and MAME
+// `upd1990a.cpp` device_reset never touches the time counter). Only the
+// interrupt hardware and TP timer react to a bus RESET (manual 5-2).
+// Regression: onReset used to zero userOffsetActive/userOffsetSeconds, so
+// every Ctrl-Reset forgot a TIME_SET.
+void testResetPreservesSetTime()
+{
+    auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
+
+    // Clock in a set time of 1995-12-31 23:58:59 (same target byte layout
+    // as testTimeSetRoundTrip) and commit via STB in MODE_TIME_SET.
+    const uint8_t target[6] = { 0x59, 0x58, 0x23, 0x31, 0xC0, 0x95 };
+    constexpr uint8_t kModeShiftShifted   = 0x01 << 3;
+    constexpr uint8_t kModeTimeSetShifted = 0x02 << 3;
+    card->deviceSelectWrite(0, kModeShiftShifted);
+    for (int k = 0; k < 48; ++k) {
+        const uint8_t bit = (target[k / 8] >> (k % 8)) & 1;
+        const uint8_t baseline =
+            static_cast<uint8_t>(kModeShiftShifted | (bit ? kBitDataIn : 0));
+        card->deviceSelectWrite(0, baseline);
+        card->deviceSelectWrite(0, baseline | kBitClk);
+        card->deviceSelectWrite(0, baseline);
+    }
+    card->deviceSelectWrite(0, kModeTimeSetShifted);
+    card->deviceSelectWrite(0, kModeTimeSetShifted | kBitStb);
+    card->deviceSelectWrite(0, kModeTimeSetShifted);
+
+    // Bus RESET (Ctrl-Reset / profile switch).
+    card->onReset();
+
+    // Read back through the normal TIME_READ path — the set time survives.
+    card->deviceSelectWrite(0, kModeTimeReadShifted);
+    card->deviceSelectWrite(0, kModeTimeReadShifted | kBitStb);
+    const uint8_t baseline = kModeTimeReadShifted;
+    card->deviceSelectWrite(0, baseline);
+    const uint8_t sec = readByteLsbFirst(*card, baseline);
+    const uint8_t min = readByteLsbFirst(*card, baseline);
+    assert(sec == 0x59);
+    assert(min == 0x58);
+    // Skip hour/day, check year (DST-immune like testTimeSetRoundTrip).
+    (void)readByteLsbFirst(*card, baseline);    // hour
+    (void)readByteLsbFirst(*card, baseline);    // day
+    (void)readByteLsbFirst(*card, baseline);    // month/dow
+    assert(readByteLsbFirst(*card, baseline) == 0x95);
+}
+
 // RESET disables interrupts and stops the TP timer (manual 5-2 point 2).
 void testResetStopsTpAndIrq()
 {
@@ -461,6 +509,9 @@ int main()
 
     testInterruptAssertedFlagBit5();
     std::printf("Read $C0n0 bit 5 interrupt-asserted flag + clear: OK\n");
+
+    testResetPreservesSetTime();
+    std::printf("RESET preserves battery-backed set time: OK\n");
 
     testResetStopsTpAndIrq();
     std::printf("RESET stops TP timer + disables interrupts: OK\n");

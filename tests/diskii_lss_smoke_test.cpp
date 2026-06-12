@@ -25,7 +25,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -209,8 +211,16 @@ bool testAddressMarkRecovery() {
 // Test 4: LSS write path. Drive Q7H + Q6H stores at 32-CPU-cycle
 // pacing (matches DOS 3.3 RWTS WRITE6 cadence) and assert the LSS
 // shifter assembles complete nibbles into the track buffer at the
-// expected positions. Mirrors disk_write_controller_smoke_test but
-// goes through the bit-level LSS instead of the legacy 32-cycle gate.
+// ANGULAR position the revolution anchor predicts. Mirrors
+// disk_write_controller_smoke_test but goes through the bit-level LSS
+// instead of the legacy 32-cycle gate.
+//
+// The positional assertion pins the MAME write_flux ↔ find_position
+// anchor parity (imagedev/floppy.cpp ~:1050-1125): the motor spins up
+// at a non-zero lssCycle, so the drive's revolution anchor is non-zero,
+// and the written bits must land at `(writeStart - revStart) mod
+// period` — NOT at `writeStart mod period`, which is one full anchor
+// offset away.
 bool testLssWrite() {
     const std::string lssPath = findFirst({
         "../roms/diskii_p6.rom", "roms/diskii_p6.rom",
@@ -227,22 +237,25 @@ bool testLssWrite() {
         std::printf("FAIL: insertDisk: %s\n", card.getLastError().c_str());
         return false;
     }
-    card.setWriteBackEnabled(false);  // don't write to /tmp file
-    // Allow nibble buffer mutation in-memory only (writeBackEnabled=false
-    // skips file I/O; LSS still writes to image's internal track buffer).
+    // Write-back ON so the LSS splices land in the image and eject
+    // persists them to the temp .nib (which makeSyntheticNib regenerates
+    // for every test, so this can't leak into the other cases).
+    card.setWriteBackEnabled(true);
 
-    // Spin up: motor on, Q7L (read) momentarily so the LSS settles, then
-    // switch to Q7H (write).
-    card.deviceSelectRead(0x9);   // motor on
+    // Run the controller for a while with the motor OFF, so the
+    // spin-up below anchors the revolution at a NON-zero lssCycle —
+    // the unanchored-write regression is invisible at revStart = 0.
+    card.advanceCycles(1024);     // cpuCycleTotal = 1024 → revStart = 2048
+    card.deviceSelectRead(0x9);   // motor on (lssStart: revStart = 2048)
     card.deviceSelectRead(0xE);   // Q7L
     card.deviceSelectRead(0xC);   // Q6L (read shift)
-    card.advanceCycles(1024);     // let the LSS run a bit
+    card.advanceCycles(1024);     // let the LSS run; lssCycle → 4096
 
     // Switch to write mode. CPU loads byte via $C0ED store (Q6H+Q7H),
     // then waits ~32 cycles for the LSS to shift it out, then loads the
     // next byte. This is exactly DOS 3.3's WRITE6 inner loop.
     const uint8_t pattern[] = { 0xFF, 0xFF, 0xD5, 0xAA, 0xAD, 0x96, 0xEB, 0xFF };
-    card.deviceSelectRead(0xF);   // Q7H (write enable)
+    card.deviceSelectRead(0xF);   // Q7H (write enable; writeStart = 4096)
     card.deviceSelectRead(0xD);   // Q6H (load mode)
 
     const uint64_t flushesBefore = card.getWriteFlushCount();
@@ -250,20 +263,16 @@ bool testLssWrite() {
         card.deviceSelectWrite(0xD, b);   // store byte to data latch
         card.advanceCycles(32);            // 32 CPU cycles → 1 nibble
     }
+    card.deviceSelectRead(0xE);   // Q7L — flushes the splice (anchored)
     const uint64_t flushesAfter = card.getWriteFlushCount();
-    // writeBackEnabled is false so writeFlushCount stays at 0 — the
-    // image.writeNibbleAt path is gated on it. The write SHIFTER did
-    // run though. A weaker sanity check: with writeBackEnabled true,
-    // we'd see 8 flushes (one per byte). Skip the strict assertion;
-    // the more important pin is that LSS write doesn't *crash* and
-    // doesn't disrupt subsequent read-side state.
-    (void)flushesBefore; (void)flushesAfter;
+    if (flushesAfter == flushesBefore) {
+        std::printf("FAIL: LSS write produced no writeFlux flush\n");
+        return false;
+    }
 
-    // Switch back to read mode and verify the controller still reads
-    // valid GCR nibbles afterwards (= LSS state recovers cleanly from
-    // the write→read transition).
+    // Verify the controller still reads valid GCR nibbles afterwards
+    // (= LSS state recovers cleanly from the write→read transition).
     card.deviceSelectRead(0xC);   // Q6L
-    card.deviceSelectRead(0xE);   // Q7L
     const auto bytes = spinAndCollect(card, 500'000, 32);
     bool foundD5 = false;
     for (const auto b : bytes) {
@@ -274,7 +283,57 @@ bool testLssWrite() {
                     bytes.size());
         return false;
     }
-    std::printf("[ OK ] LSS write path runs + read recovers afterwards\n");
+
+    // POSITIONAL pin. Persist via eject (save-on-eject rewrites the
+    // .nib), then locate the written bit pattern in track 0.
+    //
+    // Expected angle: writeStart = lssCycle at Q7H = 2×(1024+1024) =
+    // 4096; revStart = 2048 (motor-on at cpuCycleTotal = 1024). A .nib
+    // expands to exactly 8 cells/byte, so the splice's first cell is
+    // (4096 - 2048) / 8 = bit 256. The shifter takes a few cells to
+    // emit the first loaded byte and the write phase may sit mid-cell,
+    // so allow a generous window — it is still ~256 bits away from the
+    // unanchored bug's landing spot (4096 / 8 = bit 512).
+    card.ejectDisk(0);
+    std::ifstream f(nibPath, std::ios::binary);
+    std::vector<uint8_t> track0(DiskImage::kNibblesPerTrack);
+    f.read(reinterpret_cast<char*>(track0.data()),
+           static_cast<std::streamsize>(track0.size()));
+    if (!f) { std::printf("FAIL: re-read %s\n", nibPath.c_str()); return false; }
+
+    auto bitOf = [&](size_t bit) {
+        return (track0[bit / 8] >> (7 - (bit % 8))) & 1;
+    };
+    // Search for the distinctive 40-bit D5 AA AD 96 EB sub-pattern.
+    const uint8_t needle[] = { 0xD5, 0xAA, 0xAD, 0x96, 0xEB };
+    const size_t totalBits = track0.size() * 8;
+    long foundBit = -1;
+    for (size_t s = 0; s + 40 <= totalBits; ++s) {
+        bool match = true;
+        for (size_t k = 0; k < 40 && match; ++k) {
+            const uint8_t want = (needle[k / 8] >> (7 - (k % 8))) & 1;
+            if (bitOf(s + k) != want) match = false;
+        }
+        if (match) { foundBit = static_cast<long>(s); break; }
+    }
+    if (foundBit < 0) {
+        std::printf("FAIL: written D5 AA AD 96 EB not found in track 0 "
+                    "after write-back\n");
+        return false;
+    }
+    // The needle sits 2 bytes (16 bits) into the 8-byte pattern.
+    const long patternBit = foundBit - 16;
+    const long expected   = 256;
+    if (patternBit < expected - 32 || patternBit > expected + 96) {
+        std::printf("FAIL: write landed at bit %ld, expected ~%ld "
+                    "(unanchored `writeStart %% period` would land at "
+                    "~512) — revolution anchor not applied to writeFlux\n",
+                    patternBit, expected);
+        return false;
+    }
+    std::printf("[ OK ] LSS write path: anchored splice at bit %ld "
+                "(expected ~%ld), read recovers afterwards\n",
+                patternBit, expected);
     return true;
 }
 
@@ -538,6 +597,69 @@ bool testSpinDownNoDisk() {
     return true;
 }
 
+// Test: snapshot restore keeps the card's write-back flag and the
+// per-drive DiskImages in lock-step. loadSnapshotState used to restore
+// the raw `writeBackEnabled` member WITHOUT the setWriteBackEnabled
+// fan-out, so the images kept their pre-restore setting: a snapshot
+// taken with write-back ON restored into a session that started with
+// it OFF left every image's isWriteProtected() true (RWTS saw a WP
+// disk) and saveDirty() refusing to persist. Pin via save-on-eject:
+// after the restore, a legacy-gate write must reach the host file.
+bool testSnapshotWriteBackPropagation() {
+    // Source card: disk + write-back ON → snapshot.
+    DiskIICard cardA;
+    if (!cardA.insertDisk(makeSyntheticNib())) {
+        std::printf("FAIL: insertDisk (A): %s\n", cardA.getLastError().c_str());
+        return false;
+    }
+    cardA.setWriteBackEnabled(true);
+    std::vector<uint8_t> snap;
+    cardA.appendSnapshotState(snap);
+
+    // Target card: same media, write-back OFF (the default), restore.
+    DiskIICard cardB;
+    const std::string nibPath = makeSyntheticNib();
+    if (!cardB.insertDisk(nibPath)) {
+        std::printf("FAIL: insertDisk (B): %s\n", cardB.getLastError().c_str());
+        return false;
+    }
+    cardB.loadSnapshotState(snap.data(), snap.size());
+    if (!cardB.isWriteBackEnabled()) {
+        std::printf("FAIL: card write-back flag not restored\n");
+        return false;
+    }
+
+    // Write one distinctive nibble through the legacy gate…
+    cardB.deviceSelectRead(0x9);          // motor on
+    cardB.deviceSelectRead(0xF);          // Q7H (write mode)
+    cardB.deviceSelectRead(0xD);          // Q6H (load)
+    cardB.deviceSelectWrite(0xD, 0xD7);   // latch nibble $D7
+    cardB.advanceCycles(64);              // ≥ 1 nibble period
+    if (!cardB.hasUnsavedChanges(0)) {
+        std::printf("FAIL: legacy-gate write didn't dirty the image\n");
+        return false;
+    }
+    // …and eject: save-on-eject goes through DiskImage::saveDirty, which
+    // gates on the IMAGE's writeBackEnabled — the flag the restore used
+    // to leave stale.
+    cardB.ejectDisk(0);
+    std::ifstream f(nibPath, std::ios::binary);
+    std::vector<uint8_t> track0(DiskImage::kNibblesPerTrack);
+    f.read(reinterpret_cast<char*>(track0.data()),
+           static_cast<std::streamsize>(track0.size()));
+    if (!f) { std::printf("FAIL: re-read %s\n", nibPath.c_str()); return false; }
+    bool found = false;
+    for (uint8_t b : track0) if (b == 0xD7) { found = true; break; }
+    if (!found) {
+        std::printf("FAIL: $D7 write not persisted on eject — snapshot "
+                    "restore left the DiskImage write-back flag stale\n");
+        return false;
+    }
+    std::printf("[ OK ] snapshot restore propagates write-back to the "
+                "per-drive images\n");
+    return true;
+}
+
 int main() {
     bool ok = true;
     ok &= testRomLoad();
@@ -548,6 +670,7 @@ int main() {
     ok &= testFullSectorReadback();
     ok &= testSubInstructionCycleAccuracyNoOpWithZero();
     ok &= testSpinDownNoDisk();
+    ok &= testSnapshotWriteBackPropagation();
     if (ok) {
         std::printf("diskii_lss_smoke OK\n");
         return 0;

@@ -118,6 +118,16 @@ bool Ssi263::write(uint8_t reg, uint8_t val)
             phonemeRemainingCycles_ = computePhonemeDurationCycles();
             // Power-up doesn't itself bump phonemeWriteCount_ — only
             // an explicit DURPHON write does.
+            //
+            // AppleWin SSI263.cpp:200-209 — the CTL H→L branch runs
+            // `Play(m_durationPhoneme & PHONEME_MASK)`, which rewinds
+            // the PCM playback cursor to the start of the LATCHED
+            // phoneme (not just the IRQ countdown above). Without this
+            // the audio side resumed mid-sample at whatever cursor the
+            // pre-power-down phoneme left behind.
+            playbackPhoneme_ = currentPhoneme();
+            playbackOffset_  = 0;
+            resampleAccum_   = 0.0f;
         }
         // CTL L→H (0→1): power-down silences audio + clears A/!R + drops
         // any pending IRQ (AppleWin SSI263.cpp ~line 165).

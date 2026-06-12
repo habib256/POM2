@@ -47,16 +47,16 @@
 // returns `true` — the host card then takes the appropriate IRQ
 // action (CA1 strobe vs direct slot IRQ).
 //
-// Audio status (v1 limitation)
-// ----------------------------
-// The chip ships **without phoneme PCM data** in this commit. The
-// register state machine + IRQ timing are complete and pinned by
-// tests, so games detect the chip and run their speech drivers
-// correctly — they just don't make audible speech. The 62-phoneme
-// PCM blob (~313 KB) lives in a separate commit so the user can
-// explicitly decide whether to import AppleWin's data (LGPL — POM2
-// currently has no LICENSE file, importing would effectively force
-// LGPL on POM2 binaries) or regenerate via espeak.
+// Audio status
+// ------------
+// The 62-phoneme PCM blob (ported from AppleWin) is linked in via
+// `Ssi263PhonemeData.cpp`; `fillAudio()` renders audible speech by
+// resampling the 22050 Hz source to the host rate, scaled by the AMP
+// register. (An earlier revision shipped without the PCM data — the
+// register/IRQ machine alone — which is why some host-card comments
+// still referenced "silent v1" speech.) Host cards mix it in their
+// AudioSrc: EchoPlusCard and MockingboardCard (Sound II) both call
+// fillAudio() under their card mutex.
 
 #ifndef POM2_SSI263_H
 #define POM2_SSI263_H

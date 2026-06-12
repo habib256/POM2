@@ -89,6 +89,60 @@ int main()
     }
     assert(halvesDiffer && "DLGR signal must rotl4 the aux nibble");
 
+    // ── Phase pin: the nibble pattern is locked to the ABSOLUTE 14.318 MHz
+    // sample counter, like paintLoRes40's `(nibble >> (absX & 3))` — NOT
+    // restarted per 7-dot half-cell. With a uniform fill (main = aux =
+    // nibble 1 everywhere) every sample must equal the absolute-phase
+    // reference; the old per-half-cell `dx & 3` indexing rotated the hue by
+    // (2·col) mod 4 per column (14 ≡ 2 mod 4), i.e. the pattern phase
+    // alternated column to column.
+    {
+        Memory uni;
+        uni.setIIEMode(true);
+        uni.memRead(CLR_TEXT);
+        uni.memRead(CLR_HIRES);
+        uni.memRead(SET_PAGE1);
+        uni.memWrite(IIE_80COL_ON, 0);
+        uni.memRead(DHIRES_ON);
+        uint8_t* uaux = uni.auxDataMutable();
+        for (uint32_t a = 0x0400; a < 0x0800; ++a) {
+            uni.memWrite(static_cast<uint16_t>(a), 0x11);   // both nibbles = 1
+            uaux[a] = 0x11;
+        }
+
+        Apple2Display d;
+        d.setAuxMemory(uni.auxData());
+        d.setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+        d.render(uni);
+        assert(d.signalProduced());
+        const uint8_t* s = d.signal();
+        const uint8_t auxPat = 0x02;   // rotl4(1, 1)
+        const uint8_t mainPat = 0x01;
+        for (int y = 0; y < 192; y += 37) {            // sample a few lines
+            for (int x = 0; x < 560; ++x) {
+                const uint8_t pat = (x % 14) < 7 ? auxPat : mainPat;
+                const uint8_t want = ((pat >> (x & 3)) & 1u) ? 0xFFu : 0x00u;
+                assert(s[y * 560 + x] == want
+                       && "DLGR signal must emit the nibble at absolute beam phase");
+            }
+        }
+
+        // And the OE CPU demod of that signal must be column-uniform: same
+        // RGBA at x and x+28 (the signal's exact period, lcm(14,4)) across
+        // the interior. The phase bug made the colour alternate per column.
+        Apple2Display oe;
+        oe.setAuxMemory(uni.auxData());
+        oe.setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
+        oe.render(uni);
+        const uint32_t* ofb = oe.pixels();
+        assert(oe.width() == 560);
+        for (int x = 28; x < 560 - 36; ++x) {          // clear of FIR edge taps
+            assert(ofb[96 * 560 + x] == ofb[96 * 560 + x + 28]
+                   && "uniform DLGR fill must demodulate column-uniform "
+                      "(period-28 exact)");
+        }
+    }
+
     std::printf("dlgr_render_smoke OK\n");
     return 0;
 }

@@ -1,8 +1,7 @@
 // Ssi263 chip-model smoke test — pins the register state machine and
 // IRQ timing that every SSI263 host card (Mockingboard C, Echo+,
-// Phasor speech) depends on. The audio render is silent in v1 (no
-// phoneme PCM data yet — see Ssi263.h header notes), so this test
-// covers the MMIO + IRQ surface only.
+// Phasor speech) depends on, plus the PCM audio render (phoneme blob
+// in Ssi263PhonemeData.cpp) and its playback-cursor protocol.
 
 #include "Ssi263.h"
 
@@ -167,6 +166,65 @@ void testCtlPowerDownAndRestart()
     std::printf("  ok: CTL L→H restarts loaded phoneme; H→L silences + clears\n");
 }
 
+// Decode the audio playback cursor out of the (stable, little-endian)
+// snapshot blob — appendSnapshot layout per Ssi263.h: 5 register bytes,
+// u32 phonemeRemainingCycles, u8 aRequest, u32 phonemeWriteCount, then
+// u32 playbackPhoneme @14, u64 playbackOffset @18, u32 resampleAccum
+// bits @26.
+struct PlaybackCursor { uint32_t phoneme; uint64_t offset; uint32_t accumBits; };
+PlaybackCursor snapshotCursor(const Ssi263& chip)
+{
+    std::vector<uint8_t> b;
+    chip.appendSnapshot(b);
+    assert(b.size() == Ssi263::kSnapshotBytes);
+    auto u32 = [&](size_t at) {
+        return static_cast<uint32_t>(b[at]) |
+               (static_cast<uint32_t>(b[at + 1]) << 8) |
+               (static_cast<uint32_t>(b[at + 2]) << 16) |
+               (static_cast<uint32_t>(b[at + 3]) << 24);
+    };
+    PlaybackCursor c{};
+    c.phoneme   = u32(14);
+    c.offset    = u32(18) | (static_cast<uint64_t>(u32(22)) << 32);
+    c.accumBits = u32(26);
+    return c;
+}
+
+// CTL 1→0 (power-down exit) must restart AUDIO playback at the latched
+// phoneme, not only the IRQ countdown. AppleWin SSI263.cpp:200-209 runs
+// `Play(m_durationPhoneme & PHONEME_MASK)` on the H→L edge, which
+// rewinds the PCM cursor; pre-fix POM2 only re-armed
+// phonemeRemainingCycles_ and resumed mid-sample at the stale cursor.
+void testCtlRestartRewindsPlaybackCursor()
+{
+    Ssi263 chip;
+    chip.reset();
+    chip.write(Ssi263::REG_CTTRAMP, 0x0F);          // power up, amp=15
+    chip.write(Ssi263::REG_RATEINF, 0x00);          // rate=0 (slow)
+    chip.write(Ssi263::REG_DURPHON, 0x80 | 0x05);   // mode=10, phoneme $05
+
+    // Render some audio so the playback cursor advances mid-phoneme.
+    std::vector<float> buf(600, 0.0f);
+    chip.fillAudio(buf.data(), static_cast<int>(buf.size()), 44100);
+    const PlaybackCursor mid = snapshotCursor(chip);
+    assert(mid.phoneme == 0x05);
+    assert(mid.offset > 0 && "fillAudio should have advanced the cursor");
+
+    // Power down (CTL 0→1), then exit power-down (CTL 1→0).
+    chip.write(Ssi263::REG_CTTRAMP, 0x80 | 0x0F);
+    chip.write(Ssi263::REG_CTTRAMP, 0x0F);
+    const PlaybackCursor restarted = snapshotCursor(chip);
+    assert(restarted.phoneme == 0x05 &&
+           "CTL H→L must (re)latch the playback phoneme");
+    assert(restarted.offset == 0 &&
+           "CTL H→L must rewind the playback cursor to the phoneme start");
+    assert(restarted.accumBits == 0 &&
+           "CTL H→L must clear the resampler accumulator");
+    assert(chip.phonemeRemainingCycles() > 0);
+
+    std::printf("  ok: CTL 1→0 rewinds the PCM playback cursor (AppleWin Play())\n");
+}
+
 void testIrqDisabledMode()
 {
     Ssi263 chip;
@@ -279,6 +337,7 @@ int main()
     testPhonemePlaysAndIrqs();
     testAckClearsRequest();
     testCtlPowerDownAndRestart();
+    testCtlRestartRewindsPlaybackCursor();
     testIrqDisabledMode();
     testAudioRenderNonSilent();
     testDurationFormulaBounds();
