@@ -1296,6 +1296,9 @@ void M6502::setCpuMode(CpuMode mode)
     opcodeTable[0x7C] = u3; // JMP (abs,X)
     opcodeTable[0x9C] = u3; // STZ abs
     opcodeTable[0x9E] = u3; // STZ abs,X
+    // $5C: the 65C02 8-cycle oddball is CMOS-only; on NMOS it is a plain
+    // undocumented NOP abs,X (3 bytes, 4 cycles — MAME om6502.lst).
+    opcodeTable[0x5C] = OpcodeEntry{&M6502::UnoffAbs4, nullptr};
 
     // Rockwell SMBn / RMBn (2-byte) and BBRn / BBSn (3-byte).
     for (int n = 0; n < 8; ++n) {
@@ -1377,6 +1380,14 @@ void M6502::UnoffAbs4(void)  // 3 bytes, 4 cycles: NOP abs/abs,X ($DC/$FC, NMOS 
 {
     programCounter += 2;
     cycles += 3;
+}
+void M6502::Unoff5C(void)    // 3 bytes, 8 cycles: the 65C02 oddball $5C
+{
+    // $5C on the 65C02 fetches its operand, then burns 5 more cycles
+    // reading $FFxx (MAME `ow65c02.lst` nop_5c — 8 cycles total). The
+    // dummy bus reads are not replayed; only the length/timing matter.
+    programCounter += 2;
+    cycles += 7;
 }
 
 void M6502::Hang(void)
@@ -1488,7 +1499,7 @@ const M6502::OpcodeEntry M6502::kCmosTable[256] = {
     /* 0x59 */ {&M6502::AbsY,      &M6502::EOR},
     /* 0x5A */ {&M6502::Imp,       &M6502::PHY},     // 65C02 PHY
     /* 0x5B */ {&M6502::Unoff,     nullptr},
-    /* 0x5C */ {&M6502::Unoff3,    nullptr},
+    /* 0x5C */ {&M6502::Unoff5C,   nullptr},          // 65C02 oddball: 3 bytes, 8 cyc
     /* 0x5D */ {&M6502::AbsX,      &M6502::EOR},
     /* 0x5E */ {&M6502::RmwAbsX,   &M6502::LSR},
     /* 0x5F */ {&M6502::BBRn<5>,   nullptr},

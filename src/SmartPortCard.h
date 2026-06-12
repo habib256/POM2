@@ -45,7 +45,8 @@
 //   $Cn01 = $20     (ProDOS signature)
 //   $Cn03 = $00
 //   $Cn05 = $03
-//   $Cn07 = $3C     (SmartPort signature — non-zero, identifies as block dev)
+//   $Cn07 = $01     (ProDOS block device — see buildRom's rationale; the
+//                    $3C "full SmartPort" signature broke //c-class boot)
 //   $CnFE = $13     (read+write+status, 2 logical units)
 //   $CnFF = $50     (driver entry at $Cn50)
 //

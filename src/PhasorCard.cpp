@@ -493,9 +493,13 @@ uint8_t PhasorCard::deviceSelectRead(uint8_t low4)
 {
     // Real Phasor mode-switch responds to BOTH reads and writes, with
     // identical bit decoding (the address — not the data — drives the
-    // mode). Status read returns the current mode for inspection.
+    // mode). The read returns $FF (open bus) — MAME `a2mockingboard.cpp`
+    // `a2bus_phasor_device::read_c0nx`: `m_native = BIT(offset,0);
+    // set_clocks(); return 0xff;`. Returning the mode value (as POM2
+    // once did) gave detection routines a readable register real
+    // hardware doesn't have.
     applyModeSwitch(low4);
-    return static_cast<uint8_t>(mode_);
+    return 0xFF;
 }
 
 void PhasorCard::deviceSelectWrite(uint8_t low4, uint8_t /*v*/)

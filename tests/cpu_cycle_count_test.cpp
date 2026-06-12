@@ -143,7 +143,7 @@ int main()
     // The generic Unoff2/Unoff3 handlers charged 3/5 cycles; real 65C02
     // undoc-NOP timings vary by form. Byte counts were already right (no
     // desync) — this pins the cycle totals (imm=2, zp,X=4, abs,X=4; zp=3
-    // control). $5C (8 cyc) is left as a documented residual (mode-divergent).
+    // control; $5C oddball=8 on CMOS, plain NOP abs,X=4 on NMOS).
     {
         M6502 ccpu(&mem);
         ccpu.setCpuMode(M6502::CpuMode::CMOS);
@@ -152,14 +152,22 @@ int main()
         const int nopZpX  = oneInstr(ccpu, mem, {0x54, 0x40},       0x0200);
         const int nopAbsX = oneInstr(ccpu, mem, {0xDC, 0x00, 0x03}, 0x0200);
         const int nopZp   = oneInstr(ccpu, mem, {0x44, 0x40},       0x0200);
-        if (nopImm != 2 || nopZpX != 4 || nopAbsX != 4 || nopZp != 3) {
+        const int nop5c   = oneInstr(ccpu, mem, {0x5C, 0x00, 0x03}, 0x0200);
+        M6502 n2cpu(&mem);
+        n2cpu.setCpuMode(M6502::CpuMode::NMOS);
+        n2cpu.hardReset();
+        const int nop5cN  = oneInstr(n2cpu, mem, {0x5C, 0x00, 0x03}, 0x0200);
+        if (nopImm != 2 || nopZpX != 4 || nopAbsX != 4 || nopZp != 3 ||
+            nop5c != 8 || nop5cN != 4) {
             std::printf("FAIL undoc NOP cycles: #imm=%d(want 2) zp,X=%d(want 4) "
-                        "abs,X=%d(want 4) zp=%d(want 3)\n",
-                        nopImm, nopZpX, nopAbsX, nopZp);
-            assert(nopImm == 2 && nopZpX == 4 && nopAbsX == 4 && nopZp == 3);
+                        "abs,X=%d(want 4) zp=%d(want 3) $5C=%d(want 8) "
+                        "$5C-NMOS=%d(want 4)\n",
+                        nopImm, nopZpX, nopAbsX, nopZp, nop5c, nop5cN);
+            assert(nopImm == 2 && nopZpX == 4 && nopAbsX == 4 && nopZp == 3 &&
+                   nop5c == 8 && nop5cN == 4);
         }
-        std::printf("undoc NOP cycles: #imm=%d zp,X=%d abs,X=%d zp=%d: OK\n",
-                    nopImm, nopZpX, nopAbsX, nopZp);
+        std::printf("undoc NOP cycles: #imm=%d zp,X=%d abs,X=%d zp=%d $5C=%d/%d: OK\n",
+                    nopImm, nopZpX, nopAbsX, nopZp, nop5c, nop5cN);
     }
 
     // ── NMOS undoc 2-byte ops consume their operand (no PC desync) ────────
