@@ -3463,3 +3463,89 @@ endif()
 if(WIN32)
     target_link_libraries(crt_barrel_view PRIVATE winmm)
 endif()
+
+# ─── writeFlux revolution-anchor + padded re-pack regression ──────────────
+# Pins the MAME write_flux semantics (anchored find_position) and the
+# padded cell-timeline re-pack. See disk_writeflux_anchor_test.cpp.
+add_executable(test_disk_writeflux_anchor
+    disk_writeflux_anchor_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_disk_writeflux_anchor PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_disk_writeflux_anchor PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_disk_writeflux_anchor PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_disk_writeflux_anchor PRIVATE winmm)
+endif()
+add_test(NAME disk_writeflux_anchor COMMAND test_disk_writeflux_anchor)
+set_tests_properties(disk_writeflux_anchor PROPERTIES TIMEOUT 10)
+
+# ─── ProDOSHardDiskCard slot-ROM STATUS X/Y + no-media read ───────────────
+# Executes the real slot ROM on a 6502: STATUS returns block count in X/Y
+# (clamped to $FFFF), READ with no media returns C=1/A=$28.
+# See hdv_status_driver_test.cpp.
+add_executable(test_hdv_status_driver
+    hdv_status_driver_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_hdv_status_driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_hdv_status_driver PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_hdv_status_driver PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_hdv_status_driver PRIVATE winmm)
+endif()
+add_test(NAME hdv_status_driver COMMAND test_hdv_status_driver)
+set_tests_properties(hdv_status_driver PROPERTIES TIMEOUT 10)
+
+# ─── AI /mouse endpoint vs the AppleWin-HLE mouse card ────────────────────
+# Split from ai_control_server_smoke: needs MouseCardAppleWin (+ MC6821).
+# See ai_mouse_hle_probe_test.cpp.
+add_executable(test_ai_mouse_hle_probe
+    ai_mouse_hle_probe_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
+    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_ai_mouse_hle_probe PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR}     # miniaudio.h location for FloppySoundDevice
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ai_mouse_hle_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_ai_mouse_hle_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_ai_mouse_hle_probe PRIVATE winmm)
+endif()
+add_test(NAME ai_mouse_hle_probe COMMAND test_ai_mouse_hle_probe)
+set_tests_properties(ai_mouse_hle_probe PROPERTIES TIMEOUT 15)
