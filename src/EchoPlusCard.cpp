@@ -24,6 +24,11 @@ struct EchoPlusCard::AudioSrc : public AudioSource, public RateAware
     std::atomic<float>    volume     { 0.7f };
     std::atomic<bool>     muted      { false };
 
+    // Render scratch — member, not a per-callback local: this runs on the
+    // realtime audio thread, where a heap allocation per buffer tick is
+    // the canonical source of underruns. Audio-thread-only.
+    std::vector<float> scratch;
+
     void setSampleRate(uint32_t hz) override
     {
         if (hz == 0) hz = AudioDevice::kSampleRate;
@@ -42,12 +47,14 @@ struct EchoPlusCard::AudioSrc : public AudioSource, public RateAware
         // temp buffer + scale by master volume so the chip's own
         // amplitude register stays in `Ssi263::fillAudio` (single
         // source of truth for chip-side scaling).
-        std::vector<float> tmp(static_cast<size_t>(frameCount), 0.0f);
+        if (scratch.size() < static_cast<size_t>(frameCount))
+            scratch.resize(static_cast<size_t>(frameCount));
+        std::fill_n(scratch.begin(), frameCount, 0.0f);
         {
             std::lock_guard<std::mutex> lk(parent->mtx_);
-            parent->ssi_.fillAudio(tmp.data(), frameCount, sr);
+            parent->ssi_.fillAudio(scratch.data(), frameCount, sr);
         }
-        for (int i = 0; i < frameCount; ++i) output[i] = tmp[i] * vol;
+        for (int i = 0; i < frameCount; ++i) output[i] = scratch[i] * vol;
     }
 };
 

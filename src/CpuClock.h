@@ -15,6 +15,15 @@ inline constexpr int POM2_CPU_CLOCK_HZ = 1022727;
 inline constexpr int POM2_CPU_CYCLES_PER_FRAME_60HZ = (POM2_CPU_CLOCK_HZ + 30) / 60;
 inline constexpr int POM2_CPU_CYCLES_PER_MILLISECOND = (POM2_CPU_CLOCK_HZ + 500) / 1000;
 
+// Hard ceiling for the per-frame worker cycle budget (turbo). ONE constant
+// shared by the CLI `--speed` clamp and the AI server's POST /speed so the
+// two knobs cannot drift apart (the invariant used to be enforced by prose
+// pointing from one literal at the other). ~2 M ≈ 117× realtime covers every
+// legitimate turbo use; an unbounded budget freezes the UI for seconds per
+// frame while the worker holds the state lock, and stop()'s park guarantee
+// relies on frames staying bounded.
+inline constexpr int POM2_MAX_CYCLES_PER_FRAME = 2'000'000;
+
 // ── Video standard (machine timing) ─────────────────────────────────────
 //
 // NTSC and PAL Apple IIs differ in the *whole machine clock*, not just the

@@ -5,6 +5,7 @@
 
 #include "Block512Backing.h"
 #include "Logger.h"
+#include "TwoImg.h"
 #include "ProDOSVolume.h"
 
 #include <algorithm>
@@ -86,11 +87,9 @@ bool Block512Backing::loadImage(const std::string& path)
         }
         parsedOffset = off;
         parsedLength = len;
-        // WP = bit 31 ("locked"). Bit 0 stays a lenient WP signal only
-        // when no volume field is declared (bit 8 clear) — with bit 8
-        // set, bit 0 is the low bit of the volume number, not a lock.
-        parsedWp     = (flags & (1u << 31)) != 0 ||
-                       ((flags & 1u) != 0 && (flags & (1u << 8)) == 0);
+        // Flags-word semantics live in TwoImg.h (shared with DiskImage
+        // and Disk35Image).
+        parsedWp     = pom2::twoImgWriteProtected(flags);
     }
 
     if ((parsedLength % kBlockBytes) != 0) {

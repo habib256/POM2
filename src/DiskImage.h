@@ -285,6 +285,21 @@ public:
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:
+    /// Sync-gap rule shared by expandTrackBits (cell-timeline expansion)
+    /// and writeFlux (re-pack): a $FF inside a run of ≥ kSyncMinRun is a
+    /// 10-cell self-sync nibble, everything else is 8 cells. ONE
+    /// definition — the splice drifts silently if expander and writer
+    /// ever disagree on the padded timeline.
+    static constexpr int kSyncMinRun = 5;
+
+    /// Fill `widths[kNibblesPerTrack]` with the per-nibble cell widths of
+    /// `track`'s nibble buffer (8 or 10 per the kSyncMinRun rule above).
+    /// Linear circular run-length scan — writeFlux runs this on every
+    /// ~30-transition LSS flush under stateMutex, so it must stay O(N)
+    /// and allocation-free (the old per-nibble ±4 neighbour probe was
+    /// O(9N) plus a heap vector per flush).
+    void computeCellWidths(int track, uint8_t* widths) const;
+
     bool loaded = false;
     SectorOrder sectorOrder = SectorOrder::Dos33;
     int         sectorsPerTrack_ = kSectorsPerTrack;   // 16, or 13 for DOS 3.x

@@ -74,6 +74,34 @@ int main()
     (void)mem.memRead(0xC080);
     assert(mem.memRead(0xD000) == 0x44);
 
+    // ── II+ machine class: same $C08x state machine, observed through
+    // ROM/RAM visibility only — $C011/$C012 are the keyboard-strobe
+    // mirror on II/II+, so the IIe status registers used above don't
+    // exist there. Keeps the II+ LC path pinned end-to-end (the IIe-mode
+    // switch above would otherwise leave it covered by zero tests).
+    {
+        Memory m2;   // default = II/II+ mode
+        const uint8_t romBytes2[] = { 0xD0, 0xE0 };
+        assert(m2.loadRomBytes(&romBytes2[0], 1, 0xD000));
+        assert(m2.loadRomBytes(&romBytes2[1], 1, 0xE000));
+        assert(m2.memRead(0xD000) == 0xD0);   // ROM by default
+        (void)m2.memRead(0xC083);             // 1st: read-RAM bank 2, no write
+        m2.memWrite(0xD000, 0x22);
+        assert(m2.memRead(0xD000) == 0x00);   // prewrite not armed
+        (void)m2.memRead(0xC083);             // 2nd consecutive: writes armed
+        m2.memWrite(0xD000, 0x22);
+        assert(m2.memRead(0xD000) == 0x22);
+        (void)m2.memRead(0xC08B);             // bank 1, double access
+        (void)m2.memRead(0xC08B);
+        m2.memWrite(0xD000, 0x11);
+        assert(m2.memRead(0xD000) == 0x11);   // bank 1 is a separate window
+        (void)m2.memRead(0xC083);
+        assert(m2.memRead(0xD000) == 0x22);   // bank 2 contents retained
+        (void)m2.memRead(0xC082);
+        assert(m2.memRead(0xD000) == 0xD0);   // ROM-only protects again
+        std::printf("Language Card II+ machine class: OK\n");
+    }
+
     std::printf("Language Card smoke: OK\n");
     return 0;
 }

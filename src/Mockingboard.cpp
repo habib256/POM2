@@ -111,6 +111,12 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     std::atomic<float>    volume     { 0.5f };       // pre-mix gain
     std::atomic<bool>     muted      { false };
 
+    // SSI263 mix scratch — member, not a per-callback local: this runs on
+    // the realtime audio thread, where a heap allocation per buffer tick
+    // is the canonical source of underruns/clicks. Grown once, only
+    // touched by the audio thread (fillAudioBuffer is single-consumer).
+    std::vector<float> speechScratch;
+
     /// RateAware override — auto-config when AudioDevice::addSource picks
     /// this AudioSrc up (see MainWindow plugMockingboard).
     void setSampleRate(uint32_t hz) override
@@ -246,13 +252,15 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // stays inside Ssi263::fillAudio. Before 2026-06-12 nothing
         // called fillAudio here at all, so Sound II speech was silent
         // despite the register/IRQ emulation being complete.
-        std::vector<float> speech;
+        const float* speechBuf = nullptr;
         if (parent->ssi_) {
-            speech.assign(static_cast<size_t>(frameCount), 0.0f);
+            if (speechScratch.size() < static_cast<size_t>(frameCount))
+                speechScratch.resize(static_cast<size_t>(frameCount));
+            std::fill_n(speechScratch.begin(), frameCount, 0.0f);
             std::lock_guard<std::mutex> lk(parent->mtx);
-            parent->ssi_->fillAudio(speech.data(), frameCount, sr);
+            parent->ssi_->fillAudio(speechScratch.data(), frameCount, sr);
+            speechBuf = speechScratch.data();
         }
-        const float* speechBuf = speech.empty() ? nullptr : speech.data();
 
         for (int i = 0; i < frameCount; ++i) {
             float sample = 0.0f;
