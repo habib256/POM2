@@ -75,7 +75,27 @@ public:
     /// running 8-bit counters (the screen-hole closed-loop in MainWindow
     /// drives this). Internally we compute signed 8-bit deltas with wrap
     /// correction and apply them via the firmware's absolute clamp window.
-    void setHostMouse(uint8_t rawX, uint8_t rawY, bool button);
+    /// Header-inline on purpose: AiControlServer's /mouse endpoint drives
+    /// this card without linking MouseCardAppleWin.o (see kCardName below),
+    /// so the call must not need a symbol from this TU.
+    void setHostMouse(uint8_t rawX, uint8_t rawY, bool button)
+    {
+        hostX.store(rawX, std::memory_order_relaxed);
+        hostY.store(rawY, std::memory_order_relaxed);
+        hostButton.store(button, std::memory_order_relaxed);
+    }
+
+    /// VBL pacing in CPU cycles between MODE_INT_VBL events. Defaults to
+    /// the NTSC frame (17045 cycles ≈ 60 Hz); PAL profiles pass their 50 Hz
+    /// frame budget (20313) at plug time so MODE_INT_VBL stays locked to
+    /// the machine's actual frame rate instead of drifting against the
+    /// 312-line beam. Mirrors AppleWin, which fires its VBL hook from the
+    /// host frame loop rather than a hard-wired constant.
+    void setVblCycles(int cycles)
+    {
+        if (cycles > 0) vblCycles_ = cycles;
+    }
+    int  vblCycles() const { return vblCycles_; }
 
     /// Snapshot of internal mouse-firmware state for the Mouse Inspector
     /// panel. Not part of the AppleWin protocol — POM2-only diagnostic
@@ -102,8 +122,17 @@ public:
     };
     DebugSnapshot debugSnapshot() const;
 
+    /// Stable identity tag, also returned by name(). AiControlServer's
+    /// /mouse endpoint identifies this card by comparing name() against
+    /// kCardName and then static_cast'ing, instead of dynamic_cast — a
+    /// dynamic_cast would reference this class's typeinfo (emitted in
+    /// MouseCardAppleWin.o) and force every headless binary that links
+    /// AiControlServer.cpp to link this TU too. Keep name() returning
+    /// exactly this constant.
+    static constexpr std::string_view kCardName{"Mouse (AppleWin HLE)"};
+
     // ─── SlotPeripheral overrides ──────────────────────────────────────
-    std::string_view name() const override { return "Mouse (AppleWin HLE)"; }
+    std::string_view name() const override { return kCardName; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead(uint8_t low8) override;
@@ -149,8 +178,10 @@ private:
     bool     lastHostButton = false;
     bool     hostPrimed = false;
 
-    // ── VBL pacing (~17030 cycles/frame at 1 MHz). ───────────────────
-    int      vblCycleAccum = 0;
+    // ── VBL pacing. Cycles per MODE_INT_VBL event; profile-plumbed via
+    //    setVblCycles (17045 NTSC default / 20313 PAL). ─────────────────
+    int      vblCycles_     = 17045;
+    int      vblCycleAccum  = 0;
 
     // ── Internal hooks (AppleWin parity) ─────────────────────────────
     void onPiaPortAOut(uint8_t v);    // = On6821_A

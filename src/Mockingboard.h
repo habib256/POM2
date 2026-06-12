@@ -56,15 +56,18 @@
 //
 // What's NOT modelled (deliberate, scope-bounded omissions):
 //
-//   * 6522 timer 2 (T2). Some demos use it for one-shot timing; Mocking-
-//     board music drivers don't.
 //   * 6522 shift register (SR). No software in the wild uses it on a
 //     Mockingboard.
-//   * 6522 CA1/CA2/CB1/CB2 control bits in PCR. Forwarded as-is on
-//     read/write; their handshake side-effects are not modelled.
+//   * 6522 CA2/CB1/CB2 outputs + handshake/pulse modes. CA1 *input*
+//     edges (Sound II SSI263 A/!R wiring) and the MAME reg-1/ORA
+//     IFR-clear rule ARE modelled — see Via6522::clearPaInt().
 //   * AY-3-8910 I/O ports A/B (R14/R15). Mockingboard wires them as
 //     unused; some Phasor / SuperMusicSynth boards use them for
 //     channel routing but those are out of scope here.
+//
+// (T2 one-shot phase-2 mode IS modelled since the Via6522 extraction —
+// see Via6522.h; Echo+/Ultima IV speech drivers and French Touch demos
+// rely on it.)
 
 #ifndef POM2_MOCKINGBOARD_H
 #define POM2_MOCKINGBOARD_H
@@ -92,7 +95,7 @@ public:
     ///             speech). Slot ROM is just the two VIAs with partial
     ///             address decode mirroring.
     ///   SoundII = Mockingboard "C" / Sound II — adds an SSI263A speech
-    ///             synth at $C(s)40-$C(s)44. The SSI263's A/!R signal
+    ///             synth at $C(s)40-$C(s)4F. The SSI263's A/!R signal
     ///             wires (inverted) to VIA1.CA1, so a phoneme-end edge
     ///             latches IFR.CA1 in VIA1 and (if IER.CA1 is enabled by
     ///             the host) drives the slot IRQ. Stock Sound II software
@@ -211,7 +214,10 @@ private:
     std::unique_ptr<pom2::Via6522>  via_[2];
     std::unique_ptr<pom2::Ay3_8910> ay_[2];
     // Optional SSI263 speech synth — non-null only on Variant::SoundII.
-    // Lives at slot ROM offsets $40-$4F (5 SSI263 regs + 11 mirrors).
+    // Lives at slot ROM offsets $40-$4F: register = low 3 address bits
+    // (regs 0-7; 5 real + 3 unmapped), so $48-$4F mirror $40-$47. See
+    // the decode note in MockingboardCard::slotRomRead for the
+    // MAME/AppleWin wiring this simplifies.
     std::unique_ptr<pom2::Ssi263>   ssi_;
     std::unique_ptr<AudioSrc>       audio_;
 

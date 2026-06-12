@@ -722,8 +722,10 @@ MainWindow::~MainWindow()
         const auto& cfg = pom2::profileConfig(activeProfile);
         for (int s = 1; s <= 7; ++s) {
             if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug
-            if (cfg.builtInSlots[s].has_value()) continue;   // profile-forced built-in
-            if (cfg.noPhysicalSlots && slotCards[s] != "chatmauve") continue;
+            // Profile-forced slots (built-ins / noPhysicalSlots) hold the
+            // profile's value, not the user's — shared guard with the Slot
+            // Config Apply button (pom2::slotKeyIsUserChoice).
+            if (!pom2::slotKeyIsUserChoice(cfg, s, slotCards[s])) continue;
             settings->setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
         }
     }
@@ -1453,6 +1455,13 @@ void MainWindow::plugSlotsFromSettings()
                 plugMouse(s);
                 continue;
             }
+            // MODE_INT_VBL pacing follows the machine's video standard
+            // (17045 cycles ≈ 60 Hz NTSC, 20313 ≈ 50 Hz PAL) — NOT the
+            // profile's defaultCyclesPerFrame, which on the //c+ carries
+            // the 4× accelerator CPU budget while the video beam (and so
+            // the VBL interrupt) still runs at 60 Hz.
+            card->setVblCycles(pom2VideoTiming(
+                pom2::profileConfig(activeProfile).videoStandard).cyclesPerFrame);
             mouseAwCard = card.get();
             controller->memory().slotBus().plug(s, std::move(card));
         }

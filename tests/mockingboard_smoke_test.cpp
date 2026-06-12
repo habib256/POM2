@@ -406,6 +406,61 @@ void testSoundIIVariantSSI263()
     std::printf("Sound II variant ...... OK\n");
 }
 
+// Sound II SSI263 audio render — the card's AudioSrc must mix
+// Ssi263::fillAudio() into its output (same pattern as
+// EchoPlusCard::AudioSrc). Pre-fix, fillAudioBuffer synthesised only the
+// two AYs and Sound II speech was silent despite the register/IRQ
+// emulation being complete and the phoneme PCM blob being linked in.
+void testSoundIISpeechAudio()
+{
+    MockingboardCard mb(4, MockingboardCard::Variant::SoundII);
+    mb.setSampleRate(44100);
+    mb.setVolume(1.0f);
+    mb.setMuted(false);
+
+    // Trigger a phoneme: power up with amp=15, slow rate, phoneme $05.
+    mb.slotRomWrite(0x43, 0x0F);          // CTTRAMP: CTL=0, amp=15
+    mb.slotRomWrite(0x42, 0x00);          // RATEINF: rate=0 (slow)
+    mb.slotRomWrite(0x40, 0x80 | 0x05);   // DURPHON: mode=10, phoneme $05
+
+    constexpr int N = 4096;
+    std::vector<float> buf(N, 0.0f);
+    AudioSource* src = mb.audioSource();
+    assert(src);
+    src->fillAudioBuffer(buf.data(), N);
+
+    double sumSq = 0.0;
+    for (float s : buf) sumSq += static_cast<double>(s) * s;
+    const double rms = std::sqrt(sumSq / N);
+    std::printf("  Sound II speech rms=%.4f (AYs silent, SSI263 speaking)\n",
+                rms);
+    assert(rms > 0.005 &&
+           "Sound II AudioSrc must mix SSI263 speech into its output");
+
+    // Mute still silences everything (speech included).
+    mb.setMuted(true);
+    src->fillAudioBuffer(buf.data(), N);
+    sumSq = 0.0;
+    for (float s : buf) sumSq += static_cast<double>(s) * s;
+    assert(sumSq == 0.0);
+
+    // Control: the same writes on a vanilla AC card (no SSI263) keep the
+    // output silent — the $40-$4F window is VIA territory there and no AY
+    // strobe sequence ran.
+    MockingboardCard ac(4, MockingboardCard::Variant::AC);
+    ac.setSampleRate(44100);
+    ac.setVolume(1.0f);
+    ac.setMuted(false);
+    ac.slotRomWrite(0x43, 0x0F);
+    ac.slotRomWrite(0x42, 0x00);
+    ac.slotRomWrite(0x40, 0x80 | 0x05);
+    std::fill(buf.begin(), buf.end(), 1.0f);
+    ac.audioSource()->fillAudioBuffer(buf.data(), N);
+    sumSq = 0.0;
+    for (float s : buf) sumSq += static_cast<double>(s) * s;
+    assert(sumSq == 0.0);
+}
+
 int main()
 {
     testAddressDecode();        std::printf("address decode ........ OK\n");
@@ -418,6 +473,7 @@ int main()
                                 std::printf("envelope retrigger .... OK\n");
     testReset();                std::printf("reset ................. OK\n");
     testSoundIIVariantSSI263();
+    testSoundIISpeechAudio();   std::printf("Sound II speech audio . OK\n");
     std::printf("Mockingboard smoke test passed.\n");
     return 0;
 }

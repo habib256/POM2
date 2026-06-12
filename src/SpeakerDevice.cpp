@@ -121,7 +121,18 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
         const uint64_t snapTo = latest -
             static_cast<uint64_t>(kCatchUpSecs * kCpuClockHz);
         std::lock_guard<std::mutex> lk(eventMutex);
-        while (!events.empty() && events.front() < snapTo) events.pop_front();
+        // Each toggle is a parity flip, not an absolute level —
+        // recordToggle's overflow trim preserves parity by dropping in
+        // PAIRS (see above). Mirror the invariant here: when this purge
+        // skips an odd number of toggles, flip currentLevel so the
+        // reconstructed level of every surviving toggle stays correct
+        // (an odd silent drop would invert all later samples).
+        size_t dropped = 0;
+        while (!events.empty() && events.front() < snapTo) {
+            events.pop_front();
+            ++dropped;
+        }
+        if (dropped & 1u) currentLevel = !currentLevel;
         audioCpuCursor = snapTo;
         subSampleAccum = 0.0;
         lastUpdateFrac = 0.0;
@@ -134,9 +145,15 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
             static_cast<uint64_t>(frameCount * cyclesPerSubSample *
                                   kRateMultiplier) + 2;
         std::lock_guard<std::mutex> lk(eventMutex);
+        // Stale-event purge (timestamps already behind the cursor) —
+        // same parity rule as the catch-up purge above: flip the level
+        // when an odd count is silently dropped.
+        size_t dropped = 0;
         while (!events.empty() && events.front() < audioCpuCursor) {
             events.pop_front();
+            ++dropped;
         }
+        if (dropped & 1u) currentLevel = !currentLevel;
         while (!events.empty() && events.front() <= windowEndApprox) {
             windowEvents.push_back(events.front());
             events.pop_front();

@@ -195,6 +195,47 @@ int main() {
         std::filesystem::remove(p);
     }
 
+    // ── CHS addressing (devHead bit 6 clear) ──────────────────────────────
+    // MAME `ata_mass_storage_device_base::lba_address()` (atastorage.cpp:
+    // 44-53): with IDE_DEVICE_HEAD_L (0x40) clear, the taskfile decodes as
+    // cylinder/head/sector through the latched geometry — POM2 used to
+    // decode the same registers as a raw LBA28 and read the wrong block.
+    {
+        AtaBlockDevice a;
+        assert(a.backing().loadFromBytes(makeImage(1200), "chs", ""));
+
+        // Default geometry = IDENTIFY page: 16 heads × 63 sectors.
+        // C/H/S 1/2/5 → LBA (1×16 + 2)×63 + 5 − 1 = 1138.
+        a.cs0_w(2, 1);            // sector count
+        a.cs0_w(3, 5);            // sector number (1-based)
+        a.cs0_w(4, 1);            // cylinder low
+        a.cs0_w(5, 0);            // cylinder high
+        a.cs0_w(6, 0xA0 | 2);     // head 2, bit 6 CLEAR = CHS
+        a.cs0_w(7, AtaBlockDevice::kCmdRead);
+        assert(a.cs0_r(7) & AtaBlockDevice::kStDRQ);
+        uint8_t buf[kBlk];
+        readSector(a, buf);
+        for (size_t i = 0; i < kBlk; ++i) assert(buf[i] == pat(1138, i));
+
+        // INITIALIZE DEVICE PARAMETERS ($91) re-latches the geometry
+        // (MAME set_geometry, atastorage.cpp:267-269): 32 spt, 8 heads.
+        // C/H/S 2/3/9 → LBA (2×8 + 3)×32 + 9 − 1 = 616.
+        a.cs0_w(2, 32);           // sectors per track
+        a.cs0_w(6, 0xA0 | 7);     // heads = (devHead & 0x0F) + 1 = 8
+        a.cs0_w(7, AtaBlockDevice::kCmdInitParams);
+        assert((a.cs0_r(7) & AtaBlockDevice::kStERR) == 0);
+
+        a.cs0_w(2, 1);
+        a.cs0_w(3, 9);
+        a.cs0_w(4, 2);
+        a.cs0_w(5, 0);
+        a.cs0_w(6, 0xA0 | 3);
+        a.cs0_w(7, AtaBlockDevice::kCmdRead);
+        assert(a.cs0_r(7) & AtaBlockDevice::kStDRQ);
+        readSector(a, buf);
+        for (size_t i = 0; i < kBlk; ++i) assert(buf[i] == pat(616, i));
+    }
+
     std::printf("ata_block_device_test: OK\n");
     return 0;
 }

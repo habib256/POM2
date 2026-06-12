@@ -22,8 +22,12 @@
 //   reg 6  Drive/Head: bits0-3 LBA24..27, bit4 drive, bit6 LBA, bits5,7 obsolete
 //   reg 7  Status (R) / Command (W)
 //
-// NOT modelled: DMA, interrupts, CHS addressing for I/O (IDENTIFY still reports
-// a plausible CHS geometry), security/SMART. CHD backing is P1-phase-2.
+// CHS addressing for I/O follows MAME `ata_mass_storage_device_base::
+// lba_address()` (atastorage.cpp:44-53): devHead bit 6 picks LBA28, else the
+// cyl/head/sector registers translate through the latched geometry (default
+// 16 heads × 63 sectors = the IDENTIFY page; INITIALIZE DEVICE PARAMETERS $91
+// re-latches it). NOT modelled: DMA, interrupts, security/SMART. CHD backing
+// is P1-phase-2.
 
 #ifndef POM2_ATA_BLOCK_DEVICE_H
 #define POM2_ATA_BLOCK_DEVICE_H
@@ -56,6 +60,9 @@ public:
     static constexpr uint8_t kCmdWrite      = 0x30;
     static constexpr uint8_t kCmdWriteMulti = 0xC5;
     static constexpr uint8_t kCmdIdentify   = 0xEC;
+    // INITIALIZE DEVICE PARAMETERS — latches the CHS translation geometry
+    // (MAME `IDE_COMMAND_SET_CONFIG`, atahle.h:143 / atastorage.cpp:267-269).
+    static constexpr uint8_t kCmdInitParams = 0x91;
 
     /// The backing this device serves. CffaCard mounts images through it.
     Block512Backing&       backing()       { return backing_; }
@@ -101,6 +108,15 @@ private:
     uint16_t sectorsLeft_ = 0;   // sectors remaining in the current transfer
     size_t   wordIdx_     = 0;   // current word within wordBuf_ (0..256)
     std::array<uint16_t, 256> wordBuf_{}; // one 512-byte sector as 256 LE words
+
+    // CHS translation geometry, used when devHead_ bit 6 (LBA select) is
+    // CLEAR — MAME `ata_mass_storage_device_base::lba_address()`
+    // (atastorage.cpp:44-53) falls back to standard CHS with
+    // m_num_heads/m_num_sectors. Defaults match the IDENTIFY geometry
+    // (16 heads × 63 sectors); INITIALIZE DEVICE PARAMETERS ($91)
+    // re-latches them like MAME's set_geometry (atastorage.cpp:267-269).
+    uint8_t numSectors_ = 63;
+    uint8_t numHeads_   = 16;
 };
 
 } // namespace pom2

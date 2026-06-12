@@ -181,8 +181,8 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
     //   bytes  8..9   header length (u16 LE — usually 64)
     //   bytes 10..11  version
     //   bytes 12..15  image format (u32 LE — 0=DOS, 1=ProDOS, 2=NIB)
-    //   bytes 16..19  flags (u32 LE — bit 0 = write-protect,
-    //                  bit 8 high-bit then low 8 bits = vol# if bit31 set)
+    //   bytes 16..19  flags (u32 LE — bit 31 = locked/write-protect,
+    //                  bit 8 = volume-number-valid, bits 0-7 = vol#)
     //   bytes 20..23  num blocks (ProDOS only — ignored here)
     //   bytes 24..27  data offset (u32 LE — usually 64)
     //   bytes 28..31  data length (u32 LE)
@@ -222,14 +222,22 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         }
 
         // Volume number: spec is "if bit 8 of flags is set, the low 8 bits
-        // of flags hold the DOS 3.3 volume number". Real-world 2IMG files
-        // also encode bit 31 in the same role for ProDOS-bound dumps; we
-        // accept either to maximise compatibility.
+        // of flags hold the DOS 3.3 volume number" — bit 8 ONLY. Bit 31
+        // is the "locked" (write-protect) flag (CiderPress
+        // `kFlagLocked = 0x80000000`; AppleWin agrees), NOT a second
+        // volume-valid marker: a locked image with no volume field must
+        // still default to volume 254, and treating bit 31 as
+        // volume-valid made every locked image mount as volume 0.
         const uint8_t vol =
-            (flags & (1u << 8)) || (flags & (1u << 31))
+            (flags & (1u << 8))
                 ? static_cast<uint8_t>(flags & 0xFF)
                 : 254;
-        const bool wp = (flags & 1u) != 0;
+        // Write-protect = bit 31 per the 2IMG spec. Bit 0 is kept as a
+        // lenient extra WP signal for the rare malformed images that set
+        // it instead — but only when no volume field is declared, since
+        // with bit 8 set bit 0 is just an odd volume number's low bit.
+        const bool wp = (flags & (1u << 31)) != 0 ||
+                        ((flags & 1u) != 0 && (flags & (1u << 8)) == 0);
 
         ImageKind kind = ImageKind::Unknown;
         SectorOrder order = SectorOrder::Dos33;
@@ -974,9 +982,14 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             totalTicks += buf[dataOff + i];
         if (totalTicks == 0) return false;
 
-        // 1 LSS cycle = 4 ticks. Cells are 8 LSS cycles each.
+        // 1 LSS cycle = 4 ticks. Synthetic cells follow the image's
+        // nominal cell width (`lssCyclesPerCell()`, honouring INFO+39
+        // optimal_bit_timing) so the bit-cell view stays aligned with
+        // bit-cell TRKS tracks of the same image.
+        const int      cyc       = lssCyclesPerCell();
         const uint64_t periodLss = (totalTicks + 3) / 4;
-        const size_t   cellCount = static_cast<size_t>((periodLss + 7) / 8);
+        const size_t   cellCount =
+            static_cast<size_t>((periodLss + cyc - 1) / cyc);
         if (cellCount == 0) return false;
 
         auto& bits = bitStream[qt];
@@ -992,12 +1005,21 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             if (step != 0xFF && i != trackSize - 1) {
                 const int64_t lssCycle = static_cast<int64_t>(cpos / 4);
                 flux.push_back(static_cast<int>(lssCycle));
-                const size_t cell = static_cast<size_t>(lssCycle / 8);
+                const size_t cell = static_cast<size_t>(lssCycle / cyc);
                 if (cell < bits.size()) bits[cell] = 1;
             }
         }
         bitStreamValid[qt]  = true;
         fluxStreamValid[qt] = true;        // populated directly, skip expand
+        // Record the TRUE revolution period — the tick-delta sum, the
+        // same total MAME accumulates for a flux track (`as_dsk.cpp:
+        // 61-81`). `trackPeriod` must serve this rather than
+        // `cellCount × cyc`: the ceil-rounded synthetic cell count
+        // multiplied back out overshoots by up to `cyc-1` LSS cycles,
+        // and for optimal_bit_timing ≠ 32 the old 8-cycle hard-coding
+        // was off by the whole obt/32 ratio — either way the flux
+        // timeline slipped against the angular wrap every revolution.
+        fluxQtPeriodLss[qt] = static_cast<int>(periodLss);
         return true;
     };
 
@@ -1332,6 +1354,12 @@ void DiskImage::expandTrackFlux(int qt) const
 
 int DiskImage::trackPeriod(int qt) const
 {
+    if (qt >= 0 && qt < kQuarterTracks) {
+        // WOZ FLUX-chunk quarter-tracks carry their true (tick-sum)
+        // period; the synthetic bit-cell product below would overshoot.
+        const int fluxPeriod = fluxQtPeriodLss[qtSlot(qt)];
+        if (fluxPeriod > 0) return fluxPeriod;
+    }
     return trackBitLength(qt) * lssCyclesPerCell();
 }
 
@@ -1428,14 +1456,27 @@ int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle,
 //      the next splice — which mirrors how the LSS write side flushes in
 //      32-event chunks (≥ ~1 byte each).
 //
-// The bit→nibble re-pack assumes 8 cells per byte (no sync padding) for
-// the written region. That matches what the LSS actually writes: it
-// shifts 8 bits per byte regardless of WP run. Subsequent reads of the
-// re-packed nibble buffer will re-introduce sync padding for any $FF
-// nibble that ends up in a 2+ run, which is exactly what real Disk II
-// hardware does on read-back.
+// The cell→nibble re-pack maps written cells onto nibbles through the
+// PADDED cell timeline of the existing track (8 data cells per nibble,
+// +2 trailing zero cells per sync $FF — the exact expansion
+// `expandTrackBits` used to build the flux view whose angular positions
+// the incoming transitions are expressed in). Sync $FFs written by DOS
+// at 40-cycle pacing therefore land on 10-cell-wide gap slots and data
+// nibbles written at 32-cycle pacing land on 8-cell-wide field slots,
+// both staying in lock-step with the surface layout.
+//
+// `revolutionStart` mirrors MAME: `floppy_image_device::write_flux`
+// maps start / end / every transition through `find_position(base,
+// when)`, anchored on `m_revolution_start_time` (MAME
+// `imagedev/floppy.cpp` write_flux ~:1050-1095, find_position
+// ~:1100-1125) — the same anchor `get_next_transition` uses on the read
+// side. The angular reduction here must subtract the same anchor before
+// the modulo, or a drive whose revolution anchor isn't a multiple of
+// the period writes at an angular offset the read path will never
+// report (`< 0` = unanchored fallback, matching getNextTransition).
 void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
-                          int count, const int64_t* transitions)
+                          int count, const int64_t* transitions,
+                          int64_t revolutionStart)
 {
     if (!loaded || qt < 0 || qt >= kQuarterTracks) return;
     if (endLssCycle <= startLssCycle) return;
@@ -1457,10 +1498,18 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
         const int period = trackPeriod(qt);
         if (period <= 0) return;
 
+        // Reduce to angular offset through the revolution anchor —
+        // MAME `find_position`: `(when - m_revolution_start_time) mod
+        // m_rev_time`. The read path (`getNextTransition`) applies the
+        // identical reduction, so spliced cells land where reads will
+        // look for them.
+        const int64_t origin = (revolutionStart >= 0) ? revolutionStart
+                                                      : int64_t{0};
+        int64_t startMod = (((startLssCycle - origin) % period) + period)
+                           % period;
+        int64_t endMod   = startMod + (endLssCycle - startLssCycle);
         // Handle revolution wrap by recursing on the two halves —
         // mirrors the non-WOZ split below.
-        int64_t startMod = ((startLssCycle % period) + period) % period;
-        int64_t endMod   = startMod + (endLssCycle - startLssCycle);
         if (endMod > period) {
             std::vector<int64_t> firstHalf, secondHalf;
             firstHalf.reserve(count);
@@ -1472,9 +1521,11 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
                 else                          secondHalf.push_back(transitions[i]);
             }
             writeFlux(qt, startLssCycle, splitAt,
-                      static_cast<int>(firstHalf.size()), firstHalf.data());
+                      static_cast<int>(firstHalf.size()), firstHalf.data(),
+                      revolutionStart);
             writeFlux(qt, splitAt, endLssCycle,
-                      static_cast<int>(secondHalf.size()), secondHalf.data());
+                      static_cast<int>(secondHalf.size()), secondHalf.data(),
+                      revolutionStart);
             return;
         }
 
@@ -1529,9 +1580,12 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     const int period = trackPeriod(qt);
     if (period <= 0) return;
 
-    // Reduce both endpoints into [0, period). If the window wraps the
-    // revolution boundary, recurse on the two halves.
-    int64_t startMod = ((startLssCycle % period) + period) % period;
+    // Reduce both endpoints into [0, period) THROUGH the revolution
+    // anchor (MAME `find_position`, see header comment). If the window
+    // wraps the revolution boundary, recurse on the two halves.
+    const int64_t origin = (revolutionStart >= 0) ? revolutionStart
+                                                  : int64_t{0};
+    int64_t startMod = (((startLssCycle - origin) % period) + period) % period;
     int64_t endMod   = startMod + (endLssCycle - startLssCycle);
     if (endMod > period) {
         // Split: [startMod, period) and [0, endMod - period).
@@ -1545,9 +1599,11 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
             else                          secondHalf.push_back(transitions[i]);
         }
         writeFlux(qt, startLssCycle, splitAt,
-                  static_cast<int>(firstHalf.size()), firstHalf.data());
+                  static_cast<int>(firstHalf.size()), firstHalf.data(),
+                  revolutionStart);
         writeFlux(qt, splitAt, endLssCycle,
-                  static_cast<int>(secondHalf.size()), secondHalf.data());
+                  static_cast<int>(secondHalf.size()), secondHalf.data(),
+                  revolutionStart);
         return;
     }
 
@@ -1575,28 +1631,68 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
         }
     }
 
-    // Pack 8 cells per byte starting at the first complete byte boundary
-    // inside [firstCell, lastCell). Partial bytes at the leading or
-    // trailing edge are dropped — the LSS naturally flushes only complete
-    // shifter contents (8 cells = 1 nibble), so writing a half-cell-aligned
-    // region during a splice would only happen on a write that didn't
-    // complete a full byte, which DOS / RWTS never does.
+    // Re-pack the written cells into nibbles by walking the PADDED cell
+    // timeline of the existing track — the same expansion
+    // `expandTrackBits` performs (8 data cells per nibble; +2 trailing
+    // zero cells for each $FF inside a sync run of ≥ kSyncMinRun). The
+    // angular cell indices above were computed against that padded
+    // timeline (it is what `trackPeriod` / `fluxEvents` expose), so the
+    // nibble owning cell C is NOT `C / 8`: on a stock 16-sector .dsk
+    // each sector's gaps carry ~19 sync $FFs, so a naïve `/ 8` pack
+    // drifted ~4.75 nibbles per sector and splices landed on the
+    // neighbouring address field. Only nibbles whose 8 data cells are
+    // FULLY inside the window are rewritten (partial nibbles at either
+    // edge are dropped — the LSS only ever flushes complete shifter
+    // contents, which is also why MAME's wspan splice can be replayed
+    // in ≥1-byte chunks). MAME itself stores flux natively
+    // (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has no
+    // re-pack step; this mapping is POM2's nibble-store equivalent.
     auto& buf = tracks[track];
+
+    // Snapshot the per-nibble sync widths BEFORE applying any write —
+    // mutating buf mid-walk would change FF-run membership and shift
+    // the timeline under our feet. Mirrors expandTrackBits' isInFFRun.
+    const bool noSyncPad = nibFormat;
+    constexpr int kSyncMinRun = 5;
+    auto isInFFRun = [&](int i) {
+        if (noSyncPad) return false;
+        if (buf[i] != 0xFF) return false;
+        int countLeft = 0;
+        for (int j = 1; j < kSyncMinRun; ++j) {
+            const int idx = (i - j + kNibblesPerTrack) % kNibblesPerTrack;
+            if (buf[idx] != 0xFF) break;
+            ++countLeft;
+        }
+        int countRight = 0;
+        for (int j = 1; j < kSyncMinRun; ++j) {
+            const int idx = (i + j) % kNibblesPerTrack;
+            if (buf[idx] != 0xFF) break;
+            ++countRight;
+        }
+        return (1 + countLeft + countRight) >= kSyncMinRun;
+    };
+    std::vector<uint8_t> cellWidth(kNibblesPerTrack, 8);
+    for (int n = 0; n < kNibblesPerTrack; ++n) {
+        if (isInFFRun(n)) cellWidth[n] = 10;
+    }
+
+    const int spanCells = static_cast<int>(newBits.size());
     bool changed = false;
-    for (int byteIdx = (firstCell + 7) / 8; byteIdx * 8 + 8 <= firstCell + static_cast<int>(newBits.size()); ++byteIdx) {
-        uint8_t v = 0;
-        for (int b = 0; b < 8; ++b) {
-            const int cellWithinSpan = byteIdx * 8 + b - firstCell;
-            if (cellWithinSpan >= 0 && cellWithinSpan < static_cast<int>(newBits.size())
-                && newBits[cellWithinSpan]) {
-                v |= static_cast<uint8_t>(0x80 >> b);
+    int cellStart = 0;                     // timeline cell of nibble n's MSB
+    for (int n = 0; n < kNibblesPerTrack && cellStart < lastCell; ++n) {
+        if (cellStart >= firstCell && cellStart + 8 <= firstCell + spanCells) {
+            uint8_t v = 0;
+            for (int b = 0; b < 8; ++b) {
+                if (newBits[cellStart + b - firstCell]) {
+                    v |= static_cast<uint8_t>(0x80 >> b);
+                }
+            }
+            if (buf[n] != v) {
+                buf[n] = v;
+                changed = true;
             }
         }
-        const int n = ((byteIdx % kNibblesPerTrack) + kNibblesPerTrack) % kNibblesPerTrack;
-        if (buf[n] != v) {
-            buf[n] = v;
-            changed = true;
-        }
+        cellStart += cellWidth[n];
     }
     if (changed) {
         dirty[track]    = true;

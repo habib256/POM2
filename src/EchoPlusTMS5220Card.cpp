@@ -19,13 +19,18 @@ EchoPlusTMS5220Card::EchoPlusTMS5220Card(int slot) : slot_(slot)
 void EchoPlusTMS5220Card::onReset()
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    // TMS5220 power-on status (rough approximation):
-    //   bit 7 = TS (talking status) — 0 idle
-    //   bit 6 = BL (buffer low)     — 0 idle, set by speech FIFO drain
-    //   bit 5 = BE (buffer empty)   — 1 idle (FIFO empty on cold start)
-    // Drivers that poll `LDA $Cs00 / BMI ...` see "not talking" and
-    // proceed past the wait loop cleanly.
-    tmsStatus_    = 0x20;          // BE=1, others 0
+    // TMS5220 power-on / reset status. MAME `tms5220.cpp:894-907`
+    // (status_read): status byte = TS<<7 | BL<<6 | BE<<5 (low 5 bits
+    // open bus). Reset sets `m_buffer_empty = m_buffer_low = true`
+    // (`tms5220.cpp:1771`), and the flag logic agrees: BL is active
+    // whenever fifo_count <= 8 and BE whenever fifo_count == 0
+    // (`update_fifo_status_and_ints`, `tms5220.cpp:754-790`) — an empty
+    // FIFO is by definition also "low". So idle = TS=0, BL=1, BE=1 =
+    // 0x60. (An earlier scaffold reported BE-only 0x20; a driver
+    // FIFO-pacing on BL=1 "ready for the next byte" would then poll
+    // $Cs00 forever.) Drivers that poll `LDA $Cs00 / BMI ...` still see
+    // "not talking" (TS=0) and fall through their wait loops.
+    tmsStatus_    = 0x60;          // BL=1 | BE=1, TS=0
     tmsLastWrite_ = 0x00;
     for (int i = 0; i < 2; ++i) {
         ay_[i].reset();
@@ -63,7 +68,8 @@ void EchoPlusTMS5220Card::slotRomWrite(uint8_t low8, uint8_t v)
         tmsLastWrite_ = v;
         break;
     case 0x01:                      // TMS5220 reset / stop
-        tmsStatus_ = 0x20;          // back to "idle, FIFO empty"
+        tmsStatus_ = 0x60;          // back to idle: BL|BE set, TS clear
+                                    // (MAME tms5220.cpp:1771 reset state)
         break;
     case 0x04:                      // AY-3-8913 #1 address latch (low nibble)
         aySelected_[0] = v & 0x0F;

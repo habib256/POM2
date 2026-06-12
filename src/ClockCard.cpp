@@ -88,8 +88,13 @@ void ClockCard::onReset()
     shiftReg.fill(0);
     prevWrite          = 0;
     lastMode           = kModeRegisterHold;
-    userOffsetActive   = false;
-    userOffsetSeconds  = 0;
+    // userOffsetActive / userOffsetSeconds deliberately SURVIVE a bus
+    // RESET: the uPD1990AC on the ThunderClock+ is battery-backed (the
+    // card carries an on-board NiCd; the chip's time counter keeps
+    // ticking with the machine powered off — uPD1990AC datasheet, V_BATT
+    // operation; mirrored by MAME `upd1990a.cpp` whose device_reset never
+    // touches the time counter). Wiping the user-set time here made every
+    // Ctrl-Reset / profile switch forget a TIME_SET.
     // RESET disables interrupts (manual 5-2 point 2) and stops the TP
     // timer — the real chip doesn't program m_timer_tp until an STB
     // latches a TP/REGISTER_HOLD mode.

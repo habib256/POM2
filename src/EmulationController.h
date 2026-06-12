@@ -105,12 +105,18 @@ public:
     /// the same logic.
     void tickFrame();
 
-    /// Request the worker to park (sets Mode::Stopped + wakes it). NOTE: this
-    /// does NOT block until the worker actually stops — it may still be mid-step
-    /// for up to one budget chunk. Callers that need exclusive access to CPU /
-    /// Memory after stop() (e.g. applyProfile's card teardown) MUST take
-    /// stateMutex(): the worker only touches CPU/Memory under that lock, so the
-    /// lock — not stop() — is what serialises against an in-flight step.
+    /// Park the worker: sets Mode::Stopped, wakes it, then blocks (bounded,
+    /// ~200 ms worst case) until the worker has actually parked at the
+    /// Stopped idle wait. After stop() returns, no Running/Step frame is in
+    /// flight, so callers (applyProfile / restartEmulationFromSettings /
+    /// shutdown) may rebuild ROMs/SlotBus even outside stateMutex(). The
+    /// worker re-checks the mode between its 4096-cycle chunks, so parking
+    /// is prompt even under a turbo cyclesPerFrame budget.
+    ///
+    /// MUST NOT be called while holding stateMutex(): the worker needs that
+    /// lock to finish its current chunk before it can park (the wait is
+    /// bounded, so a violation degrades to the old racy behaviour rather
+    /// than deadlocking — but don't).
     void stop();
 
     // Reset API — POM2 exposes 4 verbs. The MAME equivalents are only 2
@@ -222,9 +228,10 @@ private:
     std::atomic<int>  stepsPending{0};   // queued single-step count (Step mode)
     std::atomic<bool> exitRequested{false};
     // True while the worker is idling in the Stopped CV wait. The rewind
-    // transport waits on this so a UI-thread restore can't be overrun by an
-    // in-flight Running frame (the Running branch finishes its whole budget
-    // before re-checking `mode`).
+    // transport and stop() wait on this so a UI-thread restore / profile
+    // rebuild can't be overrun by an in-flight Running frame. The Running
+    // branch re-checks `mode` between 4096-cycle chunks, so the worker
+    // parks within ~one chunk of a Stopped request.
     std::atomic<bool> workerParked_{false};
 
     std::mutex              stateMtx;

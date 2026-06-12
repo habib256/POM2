@@ -234,11 +234,22 @@ public:
     /// MAME `floppy_image_device::write_flux(start, end, count, transitions)`
     /// — splice a window of flux events into quarter-track `qt`. For
     /// non-WOZ formats this re-derives the nibble buffer at the whole
-    /// track containing `qt` (cell-windowed flux→bit conversion). For
-    /// WOZ formats it is a no-op today: WOZ images are read-only until
-    /// the Applesauce WRIT / FLUX write path lands.
+    /// track containing `qt` (cell-windowed flux→bit conversion); for
+    /// WOZ formats it splices straight into `bitStream[qt]`.
+    ///
+    /// `revolutionStart` is the SAME angular anchor `getNextTransition`
+    /// takes: MAME's write_flux maps start / end / every transition
+    /// through `find_position(base, when)`, which is anchored on
+    /// `m_revolution_start_time` (MAME `imagedev/floppy.cpp`
+    /// write_flux ~:1050-1095 + find_position ~:1100-1125). Pass the
+    /// drive's revolution anchor here so the spliced window lands at
+    /// the angular position the read path would report for the same
+    /// LSS cycle; `< 0` keeps the legacy unanchored reduction
+    /// (`startLssCycle mod track_period`), matching getNextTransition's
+    /// `revolutionStart < 0` fallback.
     void writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
-                   int count, const int64_t* transitions);
+                   int count, const int64_t* transitions,
+                   int64_t revolutionStart = -1);
 
     /// MAME `floppy_image_device::set_write_splice(when)` — informational
     /// hook for the upcoming IWM port; currently a no-op for the Disk II
@@ -361,6 +372,15 @@ private:
     // in LSS cycles rather than 200M-position units.
     mutable std::array<std::vector<int>, kQuarterTracks> fluxStream;
     mutable std::array<bool, kQuarterTracks>             fluxStreamValid{};
+    /// True revolution period (LSS cycles) for quarter-tracks populated
+    /// from a WOZ FLUX delta stream; 0 everywhere else. A flux capture's
+    /// period is the SUM of its tick deltas (MAME `as_dsk.cpp:61-81`
+    /// accumulates the same stream into the track's total time) — it is
+    /// NOT `bit_count × optimal_bit_timing`, so `trackPeriod` must
+    /// return this instead of the synthetic-bitstream-derived product
+    /// or every revolution wraps short/long and the flux timeline
+    /// desynchronises a little more per revolution.
+    mutable std::array<int, kQuarterTracks>              fluxQtPeriodLss{};
     void expandTrackFlux(int qt) const;
     /// LSS cycles per bit cell, derived from `optimalBitTiming`. Default
     /// 8 (= 4 µs / 0.5 µs per LSS cycle). WOZ2 honours INFO+39; WOZ1 and
@@ -393,6 +413,7 @@ private:
         fluxStreamValid.fill(false);
         for (auto& bs : bitStream)  bs.clear();
         for (auto& fs : fluxStream) fs.clear();
+        fluxQtPeriodLss.fill(0);
     }
 
     void nibblizeTrack(int track, const uint8_t* sectors, uint8_t volume,
@@ -421,7 +442,7 @@ private:
         std::size_t payloadLen    = 0;
         SectorOrder order         = SectorOrder::Dos33;
         uint8_t     volumeNumber  = 254;
-        bool        writeProtect  = false;  // 2IMG flags bit 0
+        bool        writeProtect  = false;  // 2IMG flags bit 31 (locked)
         // Set when the source is wrapped in a 2IMG / .2mg envelope.
         // `twoImgHeaderEnd` is the offset of the first payload byte —
         // every byte before it is part of the header (which includes

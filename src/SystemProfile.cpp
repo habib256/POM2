@@ -294,6 +294,22 @@ std::string_view profileKey(SystemProfile p)
     return profileConfig(p).key;
 }
 
+bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
+                         std::string_view cardKey)
+{
+    if (slot < 1 || slot > 7) return false;
+    // Profile-forced built-in (//c/+ on-board SSC / Mouse / SmartPort /
+    // Disk II, //c PAL's on-board Le Chat Mauve): the live slot map holds
+    // the PROFILE's card, not the user's saved choice.
+    if (cfg.builtInSlots[static_cast<size_t>(slot)].has_value()) return false;
+    // No-physical-slots machine (//c, //c+): the non-built-in connectors
+    // don't exist, so the live map is force-emptied at profile-apply time.
+    // The ONE user-controllable peripheral there is the Le Chat Mauve rear
+    // DB-15 adapter — that choice does persist.
+    if (cfg.noPhysicalSlots && cardKey != "chatmauve") return false;
+    return true;
+}
+
 const std::array<SystemProfile, 8>& allProfiles()
 {
     static const std::array<SystemProfile, 8> all = {

@@ -1,9 +1,14 @@
-// PhasorCard smoke test — pins the four observable surfaces of the
+// PhasorCard smoke test — pins the observable surfaces of the
 // dual-mode Phasor card:
 //
-//   1. VIA register layout — both VIAs respond at their decoded ranges
-//      ($Cs00-$Cs0F + mirrors, $Cs80-$Cs8F + mirrors). Writing T1CH
-//      then reading T1CL roundtrips with cycle-accounting decremented.
+//   1. VIA address decode — MAME `a2bus_phasor_device::read_cnxx` /
+//      `write_cnxx` (`a2mockingboard.cpp:312-337` / `:365-390`): decode
+//      is gated to $00-$1F and $80-$9F in BOTH modes. Mockingboard mode
+//      selects VIA1 below $80 and VIA2 above; Phasor-native mode uses
+//      `via_sel = ((off & 0x80) >> 6) | ((off & 0x10) >> 4)` so
+//      $00-$0F → none, $10-$1F → VIA1, $80-$8F → VIA2, $90-$9F → BOTH
+//      (write broadcast; read ORs the two bytes). Undecoded reads
+//      return 0.
 //   2. Mode soft-switch ($C0(8+s)X) — boots in PH_Mockingboard, a
 //      device-select read/write at $C0(8+s)D transitions to PH_Phasor
 //      (mode=5), $C0(8+s)8 clears back to PH_Mockingboard (mode=0).
@@ -16,7 +21,8 @@
 //      decode `chip_sel = (~(pb >> 3)) & 3` honours PB3 (primary) and
 //      PB4 (secondary): primary-only writes hit AY0 (not AY1);
 //      secondary-only hit AY1 (not AY0); broadcast hits both. VIA2's
-//      strobes land on the AY2/AY3 pair.
+//      strobes land on the AY2/AY3 pair. (Strobed through the VIA1
+//      window at $10-$1F per the native decode above.)
 
 #include "AudioDevice.h"
 #include "M6502.h"
@@ -48,13 +54,23 @@ uint8_t makePb(bool bc1, bool bdir, bool selPrimary, bool selSecondary)
     return pb;
 }
 
+// Slot-ROM window that reaches `viaIdx` EXCLUSIVELY under the current
+// mode (MAME decode): VIA1 = $00 in MB-compat mode but $10 in native
+// mode ($00-$0F is undecoded there); VIA2 = $80 in both ($90-$9F would
+// broadcast to BOTH VIAs in native mode).
+uint8_t viaBase(const PhasorCard& card, int viaIdx)
+{
+    if (viaIdx != 0) return 0x80;
+    return (card.mode() == PhasorCard::PH_Mockingboard) ? 0x00 : 0x10;
+}
+
 // Drive one LATCH+WRITE strobe through `viaIdx`: latch AY register
 // `regAddr`, then write `data`. Both AYs in the pair will receive
 // these depending on the mode + chip-select bits in `pb`.
 void doLatchWrite(PhasorCard& card, int viaIdx, uint8_t pb,
                   uint8_t regAddr, uint8_t data)
 {
-    const uint8_t base = (viaIdx == 0) ? 0x00 : 0x80;
+    const uint8_t base = viaBase(card, viaIdx);
     // DDRA = all output, DDRB = all output.
     card.slotRomWrite(base + pom2::Via6522::VIA_DDRA, 0xFF);
     card.slotRomWrite(base + pom2::Via6522::VIA_DDRB, 0xFF);
@@ -77,9 +93,11 @@ void doLatchWrite(PhasorCard& card, int viaIdx, uint8_t pb,
 void testViaLayout()
 {
     PhasorCard card(4);
-    // VIA1 lives at slot ROM low8 = 0x00..0x7F (mirrors of 0x00..0x0F).
-    // VIA2 lives at low8 = 0x80..0xFF.
-    // Distinct T1 latches written to VIA1 vs VIA2 must come back separate.
+    // MB-compat mode (power-up). MAME decode (`a2mockingboard.cpp:
+    // 312-337`): VIA1 at $00-$1F (reg = low4, $10-$1F mirror), VIA2 at
+    // $80-$9F, everything else ($20-$7F, $A0-$FF) undecoded in BOTH
+    // modes. Distinct T1 latches written to VIA1 vs VIA2 must come
+    // back separate.
     card.slotRomWrite(pom2::Via6522::VIA_T1LL,        0x34);
     card.slotRomWrite(pom2::Via6522::VIA_T1LH,        0x12);
     card.slotRomWrite(0x80 + pom2::Via6522::VIA_T1LL, 0x78);
@@ -88,11 +106,56 @@ void testViaLayout()
     assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LH) == 0x12);
     assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0x78);
     assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LH) == 0x56);
-    // Mirror: low8 = 0x40 should also reach VIA1 (high bit clear).
-    card.slotRomWrite(0x40 + pom2::Via6522::VIA_T1LL, 0xAB);
+    // In-range mirror: low8 = $16 reaches VIA1 T1LL ($10-$1F window).
+    card.slotRomWrite(0x10 + pom2::Via6522::VIA_T1LL, 0xAB);
     assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0xAB);
+    // $90-$9F mirrors VIA2 in MB mode.
+    card.slotRomWrite(0x90 + pom2::Via6522::VIA_T1LL, 0xCD);
+    assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0xCD);
+    // OUT of range: $40-$4F was a VIA1 mirror in the pre-MAME-parity
+    // decode — MAME gates it off. Write dropped, read returns 0.
+    card.slotRomWrite(0x40 + pom2::Via6522::VIA_T1LL, 0x99);
+    assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0xAB);
+    assert(card.slotRomRead(0x40 + pom2::Via6522::VIA_T1LL) == 0x00);
+    assert(card.slotRomRead(0xA0 + pom2::Via6522::VIA_T1LL) == 0x00);
 
-    std::printf("  ok: dual-VIA register layout + mirror decode\n");
+    std::printf("  ok: dual-VIA register layout + MAME range-gated decode\n");
+}
+
+void testNativeViaDecode()
+{
+    PhasorCard card(4);
+    card.deviceSelectWrite(0xD, 0);    // → PH_Phasor (native)
+    assert(card.mode() == PhasorCard::PH_Phasor);
+
+    // Native via_sel = ((off & 0x80) >> 6) | ((off & 0x10) >> 4)
+    // (MAME `a2mockingboard.cpp:319,373`):
+    //   $00-$0F → no VIA. Write dropped, read 0.
+    card.slotRomWrite(0x00 + pom2::Via6522::VIA_T1LL, 0x11);
+    assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0xFF);
+    assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0xFF);
+    assert(card.slotRomRead(0x00 + pom2::Via6522::VIA_T1LL) == 0x00);
+
+    //   $10-$1F → VIA1 only.
+    card.slotRomWrite(0x10 + pom2::Via6522::VIA_T1LL, 0x22);
+    assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0x22);
+    assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0xFF);
+
+    //   $80-$8F → VIA2 only.
+    card.slotRomWrite(0x80 + pom2::Via6522::VIA_T1LL, 0x44);
+    assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0x22);
+    assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0x44);
+
+    //   $90-$9F → BOTH: write broadcasts...
+    card.slotRomWrite(0x90 + pom2::Via6522::VIA_T1LL, 0x55);
+    assert(card.peekViaRegister(0, pom2::Via6522::VIA_T1LL) == 0x55);
+    assert(card.peekViaRegister(1, pom2::Via6522::VIA_T1LL) == 0x55);
+    //   ...and read ORs the two bytes (MAME `ret |= via->read(...)`).
+    card.slotRomWrite(0x10 + pom2::Via6522::VIA_T1LL, 0x0F);
+    card.slotRomWrite(0x80 + pom2::Via6522::VIA_T1LL, 0xF0);
+    assert(card.slotRomRead(0x90 + pom2::Via6522::VIA_T1LL) == 0xFF);
+
+    std::printf("  ok: native-mode MAME via_sel decode (none/VIA1/VIA2/both)\n");
 }
 
 void testModeSoftSwitch()
@@ -420,6 +483,7 @@ int main()
 {
     std::printf("PhasorCard smoke test\n");
     testViaLayout();
+    testNativeViaDecode();
     testModeSoftSwitch();
     testMockingboardCompatRouting();
     testPhasorNativeRouting();

@@ -316,6 +316,27 @@ void testTelnetIacFsm()
     std::printf("  ok: telnet IAC FSM (SB / WILL / IAC-IAC / split chunk)\n");
 }
 
+void testTelnetTxEscaping()
+{
+    // appendTelnetTxEscaped — RFC 854 conformance on the OUTBOUND leg
+    // (applied by the TX drain in telnet text mode; raw mode bypasses):
+    //   * data $FF doubles to IAC IAC, otherwise the peer parses it as the
+    //     start of a command sequence;
+    //   * a bare CR (the Apple II newline) transmits as CR NUL.
+    auto esc = [](std::vector<uint8_t> in) {
+        std::vector<uint8_t> out;
+        for (uint8_t b : in) SuperSerialCard::appendTelnetTxEscaped(out, b);
+        return out;
+    };
+    assert((esc({0xFF})           == std::vector<uint8_t>{0xFF, 0xFF}));
+    assert((esc({0xFF, 0xFF})     == std::vector<uint8_t>{0xFF, 0xFF, 0xFF, 0xFF}));
+    assert((esc({0x0D})           == std::vector<uint8_t>{0x0D, 0x00}));
+    assert((esc({'H', 'i', 0x0D}) == std::vector<uint8_t>{'H', 'i', 0x0D, 0x00}));
+    assert((esc({0x0A})           == std::vector<uint8_t>{0x0A}));      // LF untouched
+    assert((esc({'A', 'Z', 0x00}) == std::vector<uint8_t>{'A', 'Z', 0x00}));
+    std::printf("  ok: telnet TX escaping (IAC IAC / CR NUL)\n");
+}
+
 void testStatusReadDcdDsr()
 {
     SuperSerialCard ssc(2);
@@ -388,6 +409,7 @@ int main()
     testCommandRegWriteClearsPendingRxIrq();
     testTelnetLineEndingNormalisation();
     testTelnetIacFsm();
+    testTelnetTxEscaping();
     testStatusReadDcdDsr();
     testRawModeFlag();
     testPascalIdBlock();

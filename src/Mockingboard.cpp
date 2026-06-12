@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -235,6 +236,24 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             return;
         }
 
+        // ── SSI263 speech (Sound II variant only) ─────────────────────
+        // Render the speech chip's PCM into a temp buffer under the
+        // parent mutex (fillAudio advances the chip's playback cursor,
+        // which the CPU thread also touches on DURPHON writes) — same
+        // pattern as EchoPlusCard::AudioSrc::fillAudioBuffer. Mixed into
+        // the output below at unity (pre-volume) gain, matching the
+        // EchoPlus loudness; the chip's own amplitude register scaling
+        // stays inside Ssi263::fillAudio. Before 2026-06-12 nothing
+        // called fillAudio here at all, so Sound II speech was silent
+        // despite the register/IRQ emulation being complete.
+        std::vector<float> speech;
+        if (parent->ssi_) {
+            speech.assign(static_cast<size_t>(frameCount), 0.0f);
+            std::lock_guard<std::mutex> lk(parent->mtx);
+            parent->ssi_->fillAudio(speech.data(), frameCount, sr);
+        }
+        const float* speechBuf = speech.empty() ? nullptr : speech.data();
+
         for (int i = 0; i < frameCount; ++i) {
             float sample = 0.0f;
             for (int ci = 0; ci < 2; ++ci) {
@@ -331,9 +350,18 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                         cs.envAccum     = 0;
                         cs.lastShape    = shape;
                     }
-                    const int envPer = (r[11] | (r[12] << 8))
-                                       ? (r[11] | (r[12] << 8)) : 1;
-                    // MAME `ay8910.cpp:994`: `period = envelope->period * m_step`
+                    // NO period-0 clamp for the envelope: unlike tone/noise,
+                    // "period = 0 is half as period = 1" (MAME `ay8910.cpp:
+                    // 89-91`). MAME's step test is `(++count) >= period`
+                    // (`ay8910.cpp:1119-1122`) with the raw register value
+                    // (`envelope_t::set_period`, ay8910.h — no clamp), so
+                    // EP=0 (threshold 0) steps every base tick while EP=1
+                    // (threshold 2) steps every other tick — exactly double
+                    // rate. POM2's `++envCounter < threshold` below has the
+                    // same pre-increment shape, so passing 0 through
+                    // reproduces MAME bit-for-bit.
+                    const int envPer = r[11] | (r[12] << 8);
+                    // MAME `ay8910.cpp:1119`: `period = envelope->period * m_step`
                     // where `m_step = 2` for AY-3-8910. Each envelope
                     // step takes `envPer * 2` base ticks; the base
                     // rate is the same clock/8 we step the tone with.
@@ -402,7 +430,9 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             // Each AY peaks at ~3.0 (3 channels × 1.0). Two AYs sum to
             // 6.0. Pre-divide by 6 so a maxed-out signal sits at 1.0
             // before the volume knob; mixer clamp stops anything past.
-            output[i] = (sample / 6.0f) * vol;
+            // The SSI263 (already ≤ 1.0 peak) rides on top, post-divide.
+            const float ssi = speechBuf ? speechBuf[i] : 0.0f;
+            output[i] = (sample / 6.0f + ssi) * vol;
         }
     }
 };
@@ -433,10 +463,10 @@ void MockingboardCard::onUnplug()
 
 // ─── Rewind / snapshot ──────────────────────────────────────────────────────
 // VIA + AY register/timer state — the audible music state of the card. The
-// SSI263 speech chip's phoneme-playback position is NOT captured (speech
-// across a rewind is rare; its A/!R→VIA1.CA1 IRQ latch IS restored via the
-// VIA's ifr). Blob is self-describing (magic + version + present mask) so a
-// foreign card on this slot ignores it. Both Mockingboard and Phasor reuse
+// SSI263 (Sound II) is captured too, including its phoneme playback cursor
+// (Ssi263::appendSnapshot), and its A/!R→VIA1.CA1 IRQ latch is restored via
+// the VIA's ifr. Blob is self-describing (magic + version + present mask) so
+// a foreign card on this slot ignores it. Both Mockingboard and Phasor reuse
 // Via6522/Ay3_8910::append/loadSnapshot.
 void MockingboardCard::appendSnapshotState(std::vector<uint8_t>& out) const
 {
@@ -598,12 +628,21 @@ uint8_t MockingboardCard::slotRomRead(uint8_t low8)
     // Address decode:
     //   Variant::AC      — bit 7 selects VIA, bits 0..3 select register,
     //                      bits 4..6 are partial-decode mirrors.
-    //   Variant::SoundII — same, EXCEPT $40-$4F is the SSI263 (5 regs +
-    //                      mirrors) overriding what would otherwise be
-    //                      a VIA1 mirror at those addresses.
+    //   Variant::SoundII — same, EXCEPT $40-$4F is the SSI263 (regs 0-7
+    //                      decoded from the low 3 bits, so $48-$4F mirror
+    //                      $40-$47), overriding what would otherwise be a
+    //                      VIA1 mirror at those addresses. MAME
+    //                      `a2mockingboard.cpp:346-349` documents the real
+    //                      wiring: "Cn40 will write to both the VIA and the
+    //                      first SSI-263 ... Reads only select the VIA"
+    //                      (AppleWin Mockingboard.cpp agrees: CS = address
+    //                      bit 6, confirmed on real Phasor hardware). POM2
+    //                      simplifies to an exclusive $40-$4F window — the
+    //                      SSI263 answers reads here (drivers may poll A/!R
+    //                      via D7) and writes do NOT shadow into VIA1.
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // make T1/T2/IFR cycle-accurate at "now"
-    if (ssi_ && (low8 & 0xF8) == 0x40) {
+    if (ssi_ && (low8 & 0xF0) == 0x40) {
         return ssi_->read(low8 & 0x07);
     }
     const int chip = (low8 & 0x80) ? 1 : 0;
@@ -616,11 +655,12 @@ void MockingboardCard::slotRomWrite(uint8_t low8, uint8_t v)
 {
     std::lock_guard<std::mutex> lk(mtx);
     syncToCpuCycle();     // T1 counters reflect "now" before T1CH reload
-    if (ssi_ && (low8 & 0xF8) == 0x40) {
-        // SSI263 register write. The chip's own write() acks A/!R
-        // internally for $00..$02 — the host CPU clears the VIA's
-        // IFR.CA1 separately (typical Mockingboard Sound II driver
-        // writes the CA1 bit to IFR after each phoneme).
+    if (ssi_ && (low8 & 0xF0) == 0x40) {
+        // SSI263 register write ($40-$4F — see decode note in
+        // slotRomRead). The chip's own write() acks A/!R internally for
+        // $00..$02 — the host CPU clears the VIA's IFR.CA1 separately
+        // (typical Mockingboard Sound II driver writes the CA1 bit to
+        // IFR after each phoneme).
         ssi_->write(low8 & 0x07, v);
         updateIrq();
         return;

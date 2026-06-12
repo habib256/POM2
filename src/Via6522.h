@@ -10,9 +10,13 @@
 // duplicating the timer / IFR / Port-A/B logic.
 //
 // Scope: T1 (both modes), T2 (one-shot phase-2), IFR/IER, Port A/B
-// output latches + DDR. NOT modelled (matching the original MB scope):
-// SR shift register, CA1/CA2/CB1/CB2 handshake, PB6 pulse counting for
-// T2 (acknowledged but never ticks — no POM2 card wires PB6 externally).
+// output latches + DDR, CA1 input edge (setCa1NegativeEdge — Sound II
+// SSI263 A/!R wiring) and the MAME `CLR_PA_INT()` rule (any reg-1/ORA
+// access clears IFR.CA1 + IFR.CA2-unless-independent; reg $F/ORANH is
+// side-effect-free). NOT modelled (matching the original MB scope):
+// SR shift register, CA2/CB1/CB2 outputs + handshake/pulse modes, PB6
+// pulse counting for T2 (acknowledged but never ticks — no POM2 card
+// wires PB6 externally).
 //
 // Header-only: every method is `inline`, no `Via6522.cpp` to link.
 // Cards include this header, instantiate via `std::make_unique<Via6522>`,
@@ -56,6 +60,7 @@ struct Via6522
     };
 
     // IFR / IER bit positions.
+    static constexpr uint8_t IFR_CA2 = 0x01;
     static constexpr uint8_t IFR_CA1 = 0x02;
     static constexpr uint8_t IFR_T2  = 0x20;
     static constexpr uint8_t IFR_T1  = 0x40;
@@ -146,6 +151,23 @@ struct Via6522
 
     inline bool irqOut() const { return (ifr & ier & 0x7F) != 0; }
 
+    /// MAME 6522via.cpp:99 — `CLR_PA_INT()` = `clear_int(INT_CA1 |
+    /// ((!CA2_IND_IRQ(m_pcr)) ? INT_CA2 : 0))`, executed on EVERY read or
+    /// write of register 1 (ORA, the handshake port). `CA2_IND_IRQ(c)` =
+    /// `((c & 0x0a) == 0x02)` (6522via.cpp:51) — when CA2 is configured as
+    /// an "independent interrupt" input, an ORA access leaves IFR.CA2 set.
+    /// IFR.CA1 is always cleared. Register $F (ORANH, "no handshake") has
+    /// no such side effect (6522via.cpp:690-700 read, :888-896 write).
+    /// Needed since setCa1NegativeEdge() can latch IFR.CA1 (Sound II
+    /// SSI263 wiring) — a driver acking via the standard ORA access would
+    /// otherwise see a stuck IRQ.
+    inline void clearPaInt()
+    {
+        uint8_t mask = IFR_CA1;
+        if ((pcr & 0x0A) != 0x02) mask |= IFR_CA2;   // CA2 not independent
+        ifr &= ~mask;
+    }
+
     inline uint8_t computedIfr() const
     {
         return static_cast<uint8_t>(
@@ -161,9 +183,12 @@ struct Via6522
     {
         switch (reg & 0x0F) {
         case VIA_ORB:    return readPortB();
-        case VIA_ORA:    // reading ORA also clears handshake on real HW;
-                         // we don't model handshake.
-                         return readPortA();
+        case VIA_ORA:
+            // Reading ORA clears IFR.CA1 (+ CA2 unless independent) —
+            // MAME 6522via.cpp:662-688 (CLR_PA_INT() at :676). CA2
+            // pulse/handshake *output* modes stay unmodelled.
+            clearPaInt();
+            return readPortA();
         case VIA_DDRB:   return ddrB;
         case VIA_DDRA:   return ddrA;
         case VIA_T1CL: {
@@ -205,6 +230,9 @@ struct Via6522
         case VIA_ORA: {
             const uint8_t prev = portAOut;
             portAOut = v;
+            // Writing ORA clears IFR.CA1 (+ CA2 unless independent) —
+            // MAME 6522via.cpp:866-886 (CLR_PA_INT() at :875).
+            clearPaInt();
             if ((prev & ddrA) != (v & ddrA)) events |= 0x02;
             break;
         }
@@ -228,7 +256,19 @@ struct Via6522
             // Latch high, transfer latches into counter, start timer,
             // clear IFR.T1.
             t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
-            t1Counter = t1Latch;
+            // MAME schedules the FIRST T1 shot at `TIMER1_VALUE + IFR_DELAY`
+            // (`6522via.cpp:927-943`, adjust at :941; IFR_DELAY = 3 at :102)
+            // — same constant the continuous reload uses (t1_tick,
+            // `6522via.cpp:536-543`). POM2's `advance()` fires when the
+            // counter crosses < 0, i.e. one tick AFTER it reaches 0, so a
+            // raw `t1Counter = N` would fire at N+1 — two cycles EARLY.
+            // Pre-bias by (IFR_DELAY - 1) = 2 so the first shot lands at
+            // exactly N+3, matching both hardware and the continuous
+            // reload below (which already adds latch+3 per period). Same
+            // pre-bias protocol as the T2CH case — see the DIX beam-racing
+            // rationale there. Counter readback DELTAS are unaffected
+            // (pinned by mockingboard_4am_detect).
+            t1Counter = static_cast<int32_t>(t1Latch) + 2;
             t1FireArmed = true;
             ifr &= ~IFR_T1;
             break;

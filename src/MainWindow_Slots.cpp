@@ -294,8 +294,18 @@ void MainWindow::renderSlotConfigPanel()
         }
         ImGui::BeginDisabled(anyDuplicate);
         if (ImGui::Button("Apply (restarts emulator)")) {
-            for (int s = 1; s <= 7; ++s)
+            // Persist ONLY user-editable slots. The panel force-feeds the
+            // draft with the profile's built-in cards and force-empties the
+            // non-existent connectors on a noPhysicalSlots machine (see the
+            // rows above), so persisting all seven here clobbered the
+            // user's saved //e-era slot_N_card keys whenever Apply was
+            // clicked on a //c-class profile. Same guard as the
+            // ~MainWindow shutdown persist path.
+            for (int s = 1; s <= 7; ++s) {
+                if (!pom2::slotKeyIsUserChoice(profileCfg, s, draft[s]))
+                    continue;
                 settings->setString("slot_" + std::to_string(s) + "_card", draft[s]);
+            }
             settings->save();
             restartEmulationFromSettings();
             for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];

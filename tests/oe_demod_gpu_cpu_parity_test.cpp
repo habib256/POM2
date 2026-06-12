@@ -33,7 +33,11 @@ uint32_t packRgb(float r, float g, float b)
     return 0xFF000000u | (B << 16) | (G << 8) | R;
 }
 
-// GPU shader demod (post-fix): same phase lookup as renderCompositeOeCpu().
+// GPU shader demod: same phase lookup as renderCompositeOeCpu() — the
+// offset enters the subcarrier phase exactly ONCE, π/2·((xi + po) & 3),
+// matching MAME rotl4(absX+1) / AppleWin lut[(x + phase) & 3]. (An earlier
+// revision applied it twice here AND in the shader, replicating the CPU
+// path's double-application bug instead of pinning the correct phase.)
 uint32_t demodGpuStyle(const uint8_t* row, int x, int phaseOffset)
 {
     float Y = 0.0f, U = 0.0f, V = 0.0f;
@@ -45,8 +49,7 @@ uint32_t demodGpuStyle(const uint8_t* row, int x, int phaseOffset)
         if (xi >= 0 && xi < 560)
             s = row[xi] ? 1.0f : 0.0f;
         const int a = i < 0 ? -i : i;
-        const int k = (xi + phaseOffset) & 3;
-        const int phaseIdx = (k + phaseOffset) & 3;
+        const int phaseIdx = (xi + phaseOffset) & 3;
         const float phase = kPi * 0.5f * static_cast<float>(phaseIdx);
         Y += s * kLumaK[a];
         U += s * std::sin(phase) * kChromaSoft[a];

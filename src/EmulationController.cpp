@@ -297,6 +297,20 @@ void EmulationController::tickFrame()
 void EmulationController::stop()
 {
     setMode(Mode::Stopped);
+    // Block (bounded) until the worker has actually parked. stop()'s
+    // callers — applyProfile / restartEmulationFromSettings / ~MainWindow —
+    // proceed to tear down slot cards, reload ROMs and re-plug the SlotBus
+    // largely OUTSIDE stateMutex; without this wait a Running frame still
+    // in flight (the old contract let the worker finish its whole budget)
+    // would touch CPU/Memory/SlotBus concurrently with that rebuild.
+    //
+    // Deadlock-safety: the caller must NOT hold stateMutex() here (no
+    // current caller does) — the worker needs that lock to finish its
+    // current 4096-cycle chunk. The worker also re-checks `mode` between
+    // chunks (see workerLoop), so it parks within ~one chunk even under a
+    // huge turbo budget, and waitUntilParked() itself is a bounded poll
+    // (~200 ms worst case) rather than an unbounded wait.
+    waitUntilParked();
 }
 
 void EmulationController::hardReset()
@@ -713,12 +727,32 @@ void EmulationController::workerLoop()
         // could overflow (signed UB) near the ceiling. int64 makes the loop
         // bound safe without restricting the accepted --speed range.
         const int64_t budget = cyclesPerFrame.load();
+        bool interrupted = false;
         for (int64_t done = 0; done < budget; ) {
+            // Re-check the mode between chunks so a stop()/park request
+            // (profile switch, rewind scrub, shutdown) interrupts the frame
+            // within ~one chunk instead of after the full budget — under a
+            // turbo budget (up to 2M cycles via --speed / the AI /speed
+            // endpoint) finishing the frame first kept the requester
+            // waiting for whole seconds, and the old stop() contract let
+            // teardown proceed while this loop was still mutating
+            // CPU/Memory.
+            if (exitRequested.load() || mode.load() != Mode::Running) {
+                interrupted = true;
+                break;
+            }
             const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
             std::lock_guard<std::mutex> lk(stateMtx);
             const int actually = processor.run(chunk);
             done += (actually > 0 ? actually : chunk);
             // No mem.advanceCycles here — see Step branch above.
+        }
+        if (interrupted) {
+            // Skip the frame-boundary housekeeping (IWM pulse, rewind
+            // capture, hang sampling) and especially the pacing sleep:
+            // re-dispatch on the new mode immediately — stop() is blocked
+            // in waitUntilParked() until we reach the Stopped branch.
+            continue;
         }
         // Pulse the IWM once per frame so its 1-emulated-second
         // drive-disable timer (MAME `iwm.cpp:70-84 update_timer_tick`)

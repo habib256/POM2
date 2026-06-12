@@ -37,10 +37,23 @@ void AtaBlockDevice::reset()
 
 uint32_t AtaBlockDevice::currentLba() const
 {
-    return (static_cast<uint32_t>(devHead_ & 0x0F) << 24) |
-           (static_cast<uint32_t>(lba2_) << 16) |
-           (static_cast<uint32_t>(lba1_) << 8) |
-            static_cast<uint32_t>(lba0_);
+    // MAME `ata_mass_storage_device_base::lba_address()`
+    // (atastorage.cpp:44-53): devHead bit 6 (IDE_DEVICE_HEAD_L) selects
+    // LBA28 direct; clear = standard CHS through the latched geometry.
+    // The CFFA firmware always runs LBA, but legacy callers (and the
+    // power-on devHead_ = $A0 default) are CHS — decoding their
+    // cyl/head/sector registers as a raw LBA28 read the wrong block.
+    if (devHead_ & 0x40) {
+        return (static_cast<uint32_t>(devHead_ & 0x0F) << 24) |
+               (static_cast<uint32_t>(lba2_) << 16) |
+               (static_cast<uint32_t>(lba1_) << 8) |
+                static_cast<uint32_t>(lba0_);
+    }
+    // CHS: lba2/lba1 = cylinder high/low, lba0 = 1-based sector number.
+    return ((((static_cast<uint32_t>(lba2_) << 8) |
+               static_cast<uint32_t>(lba1_)) * numHeads_ +
+             (devHead_ & 0x0F)) * numSectors_) +
+           static_cast<uint32_t>(lba0_) - 1;
 }
 
 void AtaBlockDevice::loadSectorToBuffer()
@@ -163,8 +176,19 @@ void AtaBlockDevice::startCommand(uint8_t cmd)
             break;
         }
 
+        case kCmdInitParams:
+            // INITIALIZE DEVICE PARAMETERS: latch the CHS translation
+            // geometry from sector-count / devHead, exactly MAME's
+            // `set_geometry(m_sector_count, (m_device_head &
+            // IDE_DEVICE_HEAD_HS) + 1)` (atastorage.cpp:267-269).
+            if (sectorCount_ != 0) numSectors_ = sectorCount_;
+            numHeads_ = static_cast<uint8_t>((devHead_ & 0x0F) + 1);
+            phase_  = Phase::Idle;
+            status_ = kStDRDY | kStDSC;
+            break;
+
         default:
-            // Init-params / set-features / flush / standby / etc. — accept and
+            // Set-features / flush / standby / etc. — accept and
             // complete with no data phase.
             phase_  = Phase::Idle;
             status_ = kStDRDY | kStDSC;

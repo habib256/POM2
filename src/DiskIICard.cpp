@@ -548,7 +548,14 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     loadMode      = g8() != 0;
     iwmMode       = g8();
     iwmWhd        = g8();
-    writeBackEnabled = g8() != 0;
+    // Propagate through setWriteBackEnabled so the per-drive DiskImages
+    // stay in lock-step with the card flag (their isWriteProtected()
+    // folds the toggle into the WP sense the LSS feeds RWTS, and
+    // saveDirty() gates on it). A raw member restore left the images on
+    // their pre-restore setting — e.g. a snapshot taken with write-back
+    // ON restored into a session that started with it OFF made every
+    // disk read back write-protected until the user re-toggled.
+    setWriteBackEnabled(g8() != 0);
     writeLatch    = g8();
     for (auto& ph : phaseOn) ph = g8() != 0;
     for (int d = 0; d < kDriveCount; ++d) headQuarterTrack[d] = static_cast<int>(g32());
@@ -812,8 +819,14 @@ void DiskIICard::lssSync(uint64_t extraCycles)
                 } else if (writePosition >= 30) {
                     const int64_t now = static_cast<int64_t>(lssCycle);
                     if (writeBackEnabled) {
+                        // Pass the drive's revolution anchor — MAME's
+                        // write_flux maps the window through the same
+                        // find_position(m_revolution_start_time) the
+                        // read side uses (floppy.cpp ~:1050-1125), so
+                        // the splice must share getNextTransition's
+                        // anchor or it lands at the wrong angle.
                         img.writeFlux(qt, writeStartTime, now,
-                                      writePosition, writeBuffer);
+                                      writePosition, writeBuffer, revStart);
                         ++writeFlushCount;
                     }
                     writeStartTime = now;
@@ -919,10 +932,13 @@ void DiskIICard::selectDrive(int newDrive)
         DiskImage& oldImg = images[oldDrive];
         if (writeMode && oldImg.isLoaded() && writeBackEnabled
             && writePosition > 0) {
+            // Anchored on the OLD drive's revolution start (read before
+            // it's reset to kNeverRev below) — same anchor its reads used.
             oldImg.writeFlux(headQuarterTrack[oldDrive],
                              writeStartTime,
                              static_cast<int64_t>(lssCycle),
-                             writePosition, writeBuffer);
+                             writePosition, writeBuffer,
+                             revolutionStartLssCycle[oldDrive]);
             ++writeFlushCount;
         }
         writePosition   = 0;
@@ -1043,10 +1059,13 @@ void DiskIICard::control(int offset)
                 DiskImage& img = images[activeDrive];
                 if (img.isLoaded() && writeBackEnabled
                     && writePosition > 0) {
+                    // Same revolution anchor as the read path (MAME
+                    // write_flux → find_position, floppy.cpp ~:1050-1125).
                     img.writeFlux(headQuarterTrack[activeDrive],
                                   writeStartTime,
                                   static_cast<int64_t>(lssCycle),
-                                  writePosition, writeBuffer);
+                                  writePosition, writeBuffer,
+                                  revolutionStartLssCycle[activeDrive]);
                     ++writeFlushCount;
                 }
                 writePosition = 0;
