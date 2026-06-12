@@ -6,6 +6,96 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-12 (chasse aux bugs : audit complet validé sur l'oracle MAME)
+
+Audit systématique des sous-systèmes (CPU/mémoire, vidéo, audio, stockage,
+threading/cartes), chaque correctif validé contre les sources MAME (citations
+fichier+ligne en commentaire) et épinglé par un test. Suite : 127/127.
+
+- **Écritures disque LSS mal positionnées angulairement** (la plus grave —
+  corruption silencieuse en config par défaut). `DiskImage::writeFlux`
+  réduisait la fenêtre de splice avec un `startLssCycle % period` brut, alors
+  que la lecture (`getNextTransition`) est ancrée sur `revolutionStart` (port
+  de MAME `find_position`). L'ancre étant arbitraire (2×cpuCycleTotal au
+  motor-on), chaque écriture bit-level atterrissait à `revStart mod period`
+  cellules de là où le contrôleur venait de lire l'adresse — le champ data
+  écrasait une autre zone de la piste. **Piège n°2 du même chemin** : le
+  re-pack cellules→nibbles supposait 8 cellules/octet, mais la timeline de
+  `expandTrackBits` ajoute +2 cellules de padding par $FF de sync — dérive
+  ~4,75 nibbles/secteur sur une .dsk standard. Pourquoi aucun test ne le
+  voyait : `diskii_lss_smoke_test::testLssWrite` **sautait explicitement
+  l'assertion positionnelle**. `writeFlux` prend désormais l'ancre (même
+  convention que la lecture), le re-pack marche la timeline paddée, et le pin
+  positionnel est actif (`disk_writeflux_anchor` + LSS test renforcé).
+- **DHGR : teintes tournées de 90° dans les démods composites OE (CPU+GPU).**
+  Le déphasage sous-porteuse était appliqué **deux fois** (construction des
+  tables sin/cos avec `(k+po)&3` ET indexation avec `(xi+po)&3`). Le
+  commentaire du shader GLSL documentait la mauvaise conclusion : l'ancienne
+  formule GPU (application simple) était la bonne, elle « divergeait » parce
+  que le CPU était faux. HGR (po=0) n'était pas affecté — d'où une calibration
+  « excellente » qui masquait le bug. Piège : `dhgr_phase_signal_test` épinglait
+  le bug **tautologiquement** (son ancre répliquait la formule buggée) — le
+  test dérive maintenant son attendu du chemin LUT MAME indépendant.
+- **DLGR : motif nibble redémarré par demi-cellule de 7 points** au lieu de la
+  phase absolue 14,318 MHz (`paintLoRes40` faisait déjà bien) — couleurs
+  alternées par colonne. Pin : échantillons exacts en phase absolue (le test
+  naïf `sig[i]!=sig[7+i]` est invalide : aux rotl4(1)=2 depuis x=0 et main 1
+  depuis x=7 ≡ 3 (mod 4) donnent la **même séquence** à des phases différentes).
+- **Sound II muet** : l'émulation SSI263 (registres+IRQ) était complète mais
+  `fillAudioBuffer` ne mixait jamais `ssi_->fillAudio()` (seul EchoPlusCard le
+  faisait). **VIA 6522** : l'accès ORA (reg 1) ne clearait pas IFR.CA1 (MAME
+  `CLR_PA_INT()`) → IRQ speech coincée pour les drivers utilisant l'idiome
+  standard ; premier coup de T1 à N+1 au lieu de N+3 (le biais +2 existait déjà
+  pour T2, même rationale DIX). **Phasor natif** : décodage VIA MAME
+  (`$Cs10`→VIA1, `$Cs80`→VIA2, `$Cs90`→broadcast les deux, rien à `$Cs00`).
+  **AY** : enveloppe période 0 = double vitesse (MAME ne clamp pas à 1).
+- **SSC/telnet** : `send()` sans `MSG_NOSIGNAL` → un pair qui coupe salement
+  **tuait le process** (SIGPIPE) ; EAGAIN traité comme fatal + envois partiels
+  silencieusement perdus (casse ADTPro/XMODEM) ; `accept()` bloquant non
+  réveillé par `shutdown()` sur macOS/BSD (le même bug déjà documenté+corrigé
+  dans AiControlServer — porté le pattern `poll()`).
+- **« Apply » de Slot Config écrasait la config slots sur //c** — exactement le
+  bug corrigé à la sortie le 2026-06-10, mais le chemin Apply n'avait pas la
+  garde `builtInSlots`. **`applyProfile` sans verrou** : `stop()` n'attendait
+  pas le parking du worker et la boucle de frame ne re-vérifiait pas `mode` →
+  ROM/SlotBus/disques reconstruits pendant qu'une frame turbo tournait encore
+  (UB). Le worker re-vérifie entre chunks de 4096 cycles et le switch attend
+  `workerParked_`. `--speed` CLI clampé à 2 M comme l'AI server.
+- **2IMG : bit verrou = bit 31** (spec/CiderPress/AppleWin), pas bit 0 — les
+  images verrouillées étaient inscriptibles ; le volume DOS lisait 0 au lieu
+  de 254 sur dump verrouillé sans bit 8. Le test épinglait l'interprétation
+  fausse (écrit d'après le code, pas d'après la spec — piège classique).
+- **CPU NMOS : opcodes non documentés multi-octets** ($x3, $4B/$6B/$8B/$AB/$CB,
+  $1B..$FB) dispatchés comme NOP 1 octet → désync du flux d'instructions (la
+  classe exacte déjà corrigée pour $0B/$2B/$EB) ; $CB/$DB étaient remappés
+  « WAI/STP indéfinis sur NMOS » alors que NMOS y met SBX #imm (2o) et DCP
+  abs,Y (3o). NOP 1 octet : 1 cycle sur 65C02 (fetch seul, MAME ow65c02) vs
+  2 sur NMOS ; WAI/STP 3 cycles. SBC décimal NMOS : V déterministe (différence
+  binaire, MAME `do_sbc_d`) — l'ADC décimal le faisait déjà, V restait
+  périmé côté SBC.
+- **Mémoire IIe/II+** : $C010-$C01F est le miroir strobe clavier sur II/II+
+  (MAME `.mirror(0xf)`, lecture OU écriture — `STA $C01x` ne clearait jamais) ;
+  sur IIe toute écriture $C01x cleare (les lectures $C011-$C01F restent
+  status-only). **Sentinelle $FE** : `iieReadStatus` renvoyait $FE pour « pas
+  un status » — mais `0x80|transchar($7E '~')` == $FE est une lecture légitime
+  → polls RDRAMRD envoyés au floating bus (OFF lu pendant ON). Signal hors
+  bande désormais. **INTC8ROM** : s'arme sur tout accès $C3xx avec
+  SLOTC3ROM=off **y compris sous INTCXROM=on** (UTAIIe 5-28) et sur le chemin
+  écriture ; une écriture $C3xx ne vole plus la fenêtre $C800 à la carte
+  légitime. **Événements vidéo en VBL** : estampillés ligne 192 (« fin de
+  frame ») au lieu d'être clampés à 191 — un switch de mode jeté en VBL (la
+  pratique canonique anti-tearing) ne peint plus de split parasite sur la
+  dernière ligne visible.
+- **Divers validés** : STATUS du HDV renvoie le compte de blocs en X/Y (le
+  crash BITSY déjà corrigé côté SmartPortCard) ; volume 32 Mio exactement
+  65 536 blocs clampé $FFFF (lu 0 avant) ; `writeBackEnabled` propagé aux
+  images au restore de snapshot ; ClockCard ne perd plus l'heure au Ctrl-Reset
+  (uPD1990AC sur pile) ; `/mouse` de l'AI server reconnaît la souris HLE
+  AppleWin (défaut //c) ; VBL souris en cycles profil (PAL 20313) ; horloge
+  PAL : provenance documentée honnêtement (verrouillée ligne 15625×65 par
+  conception ; MAME = 1 016 966 — écart 0,13 % assumé, même classe que
+  l'approximation « device clocks stay NTSC »).
+
 ## 2026-06-10 (//c : gel CPU NMOS, Chat Mauve arrière, config slots préservée)
 
 - **« POM2 plante quand je sélectionne le profil Apple //c (1984) »** — c'était
