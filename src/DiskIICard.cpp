@@ -620,6 +620,27 @@ void DiskIICard::advanceCycles(int cycles)
             motorOn       = false;
             if (active == MODE_DELAY) {
                 active = MODE_IDLE;
+                // Commit any in-flight write splice BEFORE invalidating
+                // the revolution anchor: the transitions in writeBuffer
+                // were captured under THIS spin's timeline, so they must
+                // be reduced with THIS spin's anchor (MAME mon_w(true)
+                // keeps writes and m_revolution_start_time coherent).
+                // Deferring to the eventual Q7L flush would pair the
+                // old-timeline buffer with kNeverRev — the exact
+                // mixed-anchor corruption the writeFlux anchor exists
+                // to eliminate.
+                DiskImage& img = images[activeDrive];
+                if (writeMode && writeBackEnabled && img.isLoaded()
+                    && writePosition > 0) {
+                    img.writeFlux(headQuarterTrack[activeDrive],
+                                  writeStartTime,
+                                  static_cast<int64_t>(lssCycle),
+                                  writePosition, writeBuffer,
+                                  revolutionStartLssCycle[activeDrive]);
+                    ++writeFlushCount;
+                    writePosition  = 0;
+                    writeStartTime = static_cast<int64_t>(lssCycle);
+                }
                 // MAME `floppy_image_device::mon_w(true)`: when the
                 // controller actually stops driving the spindle, the
                 // drive's revolution timestamp becomes `attotime::never`.

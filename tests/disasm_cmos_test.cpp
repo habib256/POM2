@@ -27,12 +27,16 @@ int main()
     // BRA $0312: rel, 2 bytes, target = 0x0302 + 0x10.
     put(0x0300, {0x80, 0x10});
     assert(dis(0x0300, true, len) == "BRA $0312" && len == 2);
-    assert(dis(0x0300, false, len) == "???" && len == 1);   // NMOS: no BRA
+    // NMOS $80 = undocumented DOP #imm — 2 bytes, matching M6502's NMOS
+    // UnoffImm placeholder (a 1-byte "???" desynced the debugger walk
+    // from the actual PC advance).
+    assert(dis(0x0300, false, len) == "??? #$10" && len == 2);
 
-    // The desync trap: BBR3 $44,$030A — zp + relative, MUST be 3 bytes.
+    // BBR3 $44,$030A — zp + relative, MUST be 3 bytes on CMOS.
     put(0x0300, {0x3F, 0x44, 0x07});   // 0x3F = BBR3; target = 0x0303 + 0x07 = 0x030A
     assert(dis(0x0300, true, len) == "BBR3 $44,$030A" && len == 3);
-    assert(dis(0x0300, false, len) == "???" && len == 1);   // NMOS would desync here
+    // NMOS $3F = RLA abs,X — 3 bytes (canonical NMOS $xF column).
+    assert(dis(0x0300, false, len) == "??? $0744,X" && len == 3);
 
     // BBS7 $10,$02FE — backward relative ($FB = -5): 0x0303 - 5 = 0x02FE.
     put(0x0300, {0xFF, 0x10, 0xFB});

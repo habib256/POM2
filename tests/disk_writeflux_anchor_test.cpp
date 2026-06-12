@@ -104,7 +104,15 @@ std::vector<int> cellStarts(const std::vector<uint8_t>& trk)
 // writeFlux AND baked into the absolute timestamps (`revAnchor +
 // revolutions*period + angular`); `revAnchor < 0` exercises the
 // unanchored fallback (timestamps are then plain angular offsets).
-bool runSplice(int64_t revAnchor, int revolutions, const char* label)
+// `chunkSize > 0` replays DiskIICard::lssSync's flush cadence: the
+// transition list is committed in windows of ~chunkSize transitions,
+// each window starting where the previous ended — so nearly every
+// boundary lands mid-nibble (and mid-cell). Pins the straddling-nibble
+// MERGE rule: a nibble cut by a window edge must combine the previous
+// chunk's cells with this one's instead of being dropped (the drop left
+// one stale nibble per flush mid-data-field → GCR checksum error).
+bool runSplice(int64_t revAnchor, int revolutions, const char* label,
+               int chunkSize = 0)
 {
     DiskImage img;
     const std::string dsk = writeZeroDsk();
@@ -179,11 +187,30 @@ bool runSplice(int64_t revAnchor, int revolutions, const char* label)
             }
         }
     }
-    img.writeFlux(0,
-                  base + static_cast<int64_t>(firstCell) * 8,
-                  base + static_cast<int64_t>(lastCell) * 8,
-                  static_cast<int>(transitions.size()), transitions.data(),
-                  revAnchor);
+    if (chunkSize <= 0) {
+        img.writeFlux(0,
+                      base + static_cast<int64_t>(firstCell) * 8,
+                      base + static_cast<int64_t>(lastCell) * 8,
+                      static_cast<int>(transitions.size()),
+                      transitions.data(), revAnchor);
+    } else {
+        // DiskIICard cadence: window N+1 starts where window N ended;
+        // the end of an intermediate window is just past its last
+        // transition (mid-nibble in general).
+        int64_t wstart = base + static_cast<int64_t>(firstCell) * 8;
+        size_t  i      = 0;
+        while (i < transitions.size()) {
+            const size_t j = std::min(i + static_cast<size_t>(chunkSize),
+                                      transitions.size());
+            const int64_t wend = (j < transitions.size())
+                ? transitions[j - 1] + 1
+                : base + static_cast<int64_t>(lastCell) * 8;
+            img.writeFlux(0, wstart, wend, static_cast<int>(j - i),
+                          &transitions[i], revAnchor);
+            wstart = wend;
+            i = j;
+        }
+    }
 
     if (!img.hasUnsavedChanges()) {
         std::printf("FAIL[%s]: writeFlux changed nothing\n", label);
@@ -233,6 +260,11 @@ int main()
     // Unanchored fallback (revolutionStart = -1, angular timestamps):
     // the legacy convention must keep working for the IWM shadow path.
     ok &= runSplice(/*revAnchor=*/-1, /*revolutions=*/0, "unanchored");
+    // DiskIICard flush cadence: ~30-transition chunks, boundaries
+    // mid-nibble — pins the straddling-nibble merge (one stale nibble
+    // per flush before the fix).
+    ok &= runSplice(/*revAnchor=*/1'234'567, /*revolutions=*/3,
+                    "anchored-chunked", /*chunkSize=*/30);
     if (ok) {
         std::printf("disk_writeflux_anchor OK\n");
         return 0;

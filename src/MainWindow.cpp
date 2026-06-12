@@ -725,8 +725,11 @@ MainWindow::~MainWindow()
             // Profile-forced slots (built-ins / noPhysicalSlots) hold the
             // profile's value, not the user's — shared guard with the Slot
             // Config Apply button (pom2::slotKeyIsUserChoice).
-            if (!pom2::slotKeyIsUserChoice(cfg, s, slotCards[s])) continue;
-            settings->setString("slot_" + std::to_string(s) + "_card", slotCards[s]);
+            const std::string key = "slot_" + std::to_string(s) + "_card";
+            if (!pom2::slotKeyIsUserChoice(cfg, s, slotCards[s],
+                                           settings->getString(key, "")))
+                continue;
+            settings->setString(key, slotCards[s]);
         }
     }
 

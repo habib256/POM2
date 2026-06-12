@@ -41,7 +41,8 @@ int main()
     auto ntsc = Apple2Display::frameCycleToPos(cyc280, VideoStandard::NTSC);
     auto pal  = Apple2Display::frameCycleToPos(cyc280, VideoStandard::PAL);
     assert(ntsc.scanline == 18  && "NTSC: line 280 wraps to 18");
-    assert(pal.scanline  == 191 && "PAL: line 280 is past visible → clamp 191");
+    assert(pal.scanline  == 192 && "PAL: line 280 is VBL → frame-end stamp 192 "
+                                   "(mirrors pushVideoEventLocked)");
     assert(ntsc.byteCol == 20 && pal.byteCol == 20 && "byteCol independent of standard");
 
     // A visible-region line is identical under both standards (no regression).

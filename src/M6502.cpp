@@ -1769,10 +1769,18 @@ void M6502::executeOpcode(void)
         static const bool kTraceIllegal =
             std::getenv("POM2_TRACE_ILLEGAL") != nullptr;
         if (kTraceIllegal &&
-            (entry.addrMode == &M6502::Unoff  ||
-             entry.addrMode == &M6502::Unoff1 ||
-             entry.addrMode == &M6502::Unoff2 ||
-             entry.addrMode == &M6502::Unoff3 ||
+            (entry.addrMode == &M6502::Unoff     ||
+             entry.addrMode == &M6502::Unoff1    ||
+             entry.addrMode == &M6502::Unoff2    ||
+             entry.addrMode == &M6502::Unoff3    ||
+             // Cycle/length-accurate placeholder variants — the NMOS
+             // remap routes the loader-relevant illegals (ANC/ALR/ARR/
+             // LAX/SBX #imm, $5C, $DC/$FC) through these; omitting them
+             // made the detector blind to exactly those opcodes.
+             entry.addrMode == &M6502::UnoffImm  ||
+             entry.addrMode == &M6502::UnoffZpX  ||
+             entry.addrMode == &M6502::UnoffAbs4 ||
+             entry.addrMode == &M6502::Unoff5C   ||
              entry.addrMode == &M6502::Hang)) {
             char buf[64];
             std::snprintf(buf, sizeof(buf),

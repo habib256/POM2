@@ -1556,6 +1556,17 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
         const int bitCount = static_cast<int>(wozQtBitCount[qt]);
         bool changed = false;
         for (int c = 0; c < spanCells; ++c) {
+            // Seam rule: the window's first/last cells may be only
+            // PARTIALLY covered (startMod/endMod mid-cell) — routine
+            // when DiskIICard flushes a long write in ~30-transition
+            // chunks. A captured transition in a partial cell is
+            // authoritative (sets the bit); the absence of one is NOT
+            // (the adjacent chunk owns the rest of that cell) — clearing
+            // here would erase the bit the previous chunk just spliced.
+            const bool partial =
+                (c == 0 && (startMod % cyc) != 0) ||
+                (c == spanCells - 1 && (endMod % cyc) != 0);
+            if (partial && !newBits[c]) continue;
             const int dst = ((firstCell + c) % bitCount + bitCount) % bitCount;
             const uint8_t v = newBits[c] ? 1 : 0;
             if (bits[dst] != v) { bits[dst] = v; changed = true; }
@@ -1640,13 +1651,17 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     // nibble owning cell C is NOT `C / 8`: on a stock 16-sector .dsk
     // each sector's gaps carry ~19 sync $FFs, so a naïve `/ 8` pack
     // drifted ~4.75 nibbles per sector and splices landed on the
-    // neighbouring address field. Only nibbles whose 8 data cells are
-    // FULLY inside the window are rewritten (partial nibbles at either
-    // edge are dropped — the LSS only ever flushes complete shifter
-    // contents, which is also why MAME's wspan splice can be replayed
-    // in ≥1-byte chunks). MAME itself stores flux natively
-    // (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has no
-    // re-pack step; this mapping is POM2's nibble-store equivalent.
+    // neighbouring address field.
+    //
+    // Nibbles STRADDLING the window edge are MERGED, not dropped: bits
+    // for cells inside the window come from `newBits`, bits outside keep
+    // the old nibble value. This matters because DiskIICard flushes a
+    // long write in ~30-transition chunks (≈4 nibbles), so nearly every
+    // flush boundary lands mid-nibble — dropping the straddler silently
+    // discarded its transitions and left a stale nibble mid-data-field
+    // (GCR checksum error on read-back). MAME itself stores flux
+    // natively (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has
+    // no re-pack step; this mapping is POM2's nibble-store equivalent.
     auto& buf = tracks[track];
 
     // Snapshot the per-nibble sync widths BEFORE applying any write —
@@ -1676,14 +1691,27 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
         if (isInFFRun(n)) cellWidth[n] = 10;
     }
 
-    const int spanCells = static_cast<int>(newBits.size());
+    // Per-cell authority (same seam rule as the WOZ branch): a cell fully
+    // inside the window is authoritative (set or clear); the window's
+    // partially-covered first/last cell may only SET a bit — the adjacent
+    // flush chunk owns the rest of that cell, and clearing here would
+    // erase the bit it spliced. Cells outside the window keep old bits.
+    auto mergedBit = [&](int cell, bool oldBit) -> bool {
+        if (cell < firstCell || cell >= lastCell) return oldBit;
+        const bool nb = newBits[static_cast<size_t>(cell - firstCell)];
+        const bool partial =
+            (cell == firstCell    && (startMod % cyc) != 0) ||
+            (cell == lastCell - 1 && (endMod   % cyc) != 0);
+        return partial ? (nb || oldBit) : nb;
+    };
     bool changed = false;
     int cellStart = 0;                     // timeline cell of nibble n's MSB
     for (int n = 0; n < kNibblesPerTrack && cellStart < lastCell; ++n) {
-        if (cellStart >= firstCell && cellStart + 8 <= firstCell + spanCells) {
+        if (cellStart + 8 > firstCell) {   // nibble's data cells overlap window
             uint8_t v = 0;
             for (int b = 0; b < 8; ++b) {
-                if (newBits[cellStart + b - firstCell]) {
+                const bool oldBit = (buf[n] & (0x80 >> b)) != 0;
+                if (mergedBit(cellStart + b, oldBit)) {
                     v |= static_cast<uint8_t>(0x80 >> b);
                 }
             }
