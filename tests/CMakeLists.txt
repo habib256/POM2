@@ -2927,6 +2927,7 @@ set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_grappler_card
     grappler_card_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/GrapplerCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp     # SlotPeripheral::assertIrq (IRQ decode)
 )
 target_include_directories(test_grappler_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)

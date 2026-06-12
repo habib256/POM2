@@ -11,11 +11,18 @@
 //   The first 256 B sit at $CnXX (slot ROM); the full 4 KB is mirrored
 //   into the shared expansion-ROM window at $C800-$CFFF so Grappler-aware
 //   software detects the card via its ROM fingerprint.
-// * A spool-only data port at $C0(8+s)1 — same host-side semantics as
-//   `PrinterCard` (every byte is enqueued into a host buffer, no BUSY/STB
-//   modelling). Bytes Grappler firmware emits for its graphic-dump
-//   commands (^I G / ^I H) are captured verbatim into the spool exactly
-//   as a real Epson-class printer would have seen them.
+// * MAME-faithful $C0(8+s)X register decode (`a2bus_grapplerplus_device`,
+//   MAME `bus/a2bus/grappler.cpp`): data latch + strobe on offsets with
+//   `!(offset & 3)` ($0/$4/$8/$C — spooled to the host buffer), A0 selects
+//   the high 2 KB ROM bank at $C800, A1/A2 disable/enable the ACK IRQ.
+//   Status reads return IRQ|DIP|BUSY|PE|SELECT|ACK — the synthetic printer
+//   is always ready (BUSY=0, PE=0, SELECT=1) and ACKs instantly. Bytes the
+//   Grappler firmware emits for its graphic-dump commands (^I G / ^I H)
+//   are captured verbatim into the spool exactly as a real Epson-class
+//   printer would have seen them. (An earlier revision spooled offset 1
+//   only — on real hardware that's the BANK SELECT, so the genuine
+//   firmware's `STA $C0n0` output was silently dropped and its status
+//   polls read $FF = busy + paper out.)
 // * Catalog key `"grappler"`. Defaults to slot 1 (the DOS / ProDOS
 //   printer-scan slot).
 //
@@ -63,7 +70,7 @@ public:
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead     (uint8_t low8) override;
     uint8_t expansionRomRead(uint16_t offset) override;
-    void    onReset() override {}
+    void    onReset() override;
 
     // ─── Spool access (shared shape with PrinterCard for UI reuse) ───────
     std::vector<uint8_t> spoolBytes() const;
@@ -80,6 +87,14 @@ private:
 
     mutable std::mutex   bufferMtx_;
     std::vector<uint8_t> spool_;
+
+    // ─── MAME a2bus_grapplerplus register state (grappler.cpp) ──────────
+    bool romBankHigh_ = false;  // A0 write sets; any $CnXX read clears
+    bool ackLatch_    = true;   // reset = 1 (MAME m_ack_latch); instant ACK
+    bool irqDisable_  = true;   // A1 disables / A2 enables the ACK IRQ
+    bool irqAsserted_ = false;
+
+    void updateIrq();
 
     void buildStubRom();
 };

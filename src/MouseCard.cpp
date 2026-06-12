@@ -229,7 +229,14 @@ void MouseCard::onReset()
     romBank = 0;
     portAtoMcu = 0xFF;     // PIA Port A pulled up (MAME pull-ups present)
     portCtoMcu = 0x00;     // PIA PB4-7 / MCU PC0-3 NOT pulled up (MAME tspb=0)
-    lastAxis[0] = lastAxis[1] = 0;
+    // Seed the per-axis delta trackers from the CURRENT host counters,
+    // not zero: MAME initialises m_last/m_count once in device_start, not
+    // per reset. Zeroing here made the first post-reset mcuPortBRead see
+    // diff = host - 0 (wrap-clamped to ±128) and fabricate up to 128
+    // quadrature steps per axis — a visible cursor jump after every
+    // Ctrl-Reset / profile switch.
+    lastAxis[0] = hostX.load(std::memory_order_relaxed);
+    lastAxis[1] = hostY.load(std::memory_order_relaxed);
     countAxis[0] = countAxis[1] = 0;
     portBState = 0xFF;
     assertIrq(false);

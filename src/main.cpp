@@ -540,19 +540,36 @@ int main(int argc, char* argv[])
     std::atomic<bool> autoQuitRequested{false};
 #ifndef __EMSCRIPTEN__
     std::thread       autoBootThread;
+    std::atomic<bool> autoBootCancelled{false};
     {
         const char* abEnv = std::getenv("POM2_AUTO_BOOT_HDV");
         const char* aqEnv = std::getenv("POM2_AUTO_QUIT");
         if (abEnv || aqEnv) {
             const int abDelay = abEnv ? std::max(0, std::atoi(abEnv)) : -1;
             const int aqDelay = aqEnv ? std::max(0, std::atoi(aqEnv)) : -1;
+            // Both delays count from PROGRAM START — the documented
+            // contract is "after N seconds", so the quit timer waits the
+            // REMAINDER after the boot timer fired, not aqDelay on top of
+            // it. Sliced 100 ms sleeps + a cancel flag (same pattern as
+            // deferredThread) so closing the window early doesn't stall
+            // shutdown in join() for the rest of the delays.
             autoBootThread = std::thread([&, abDelay, aqDelay]() {
+                auto sleepSeconds = [&](int sec) {
+                    for (int t = 0; t < sec * 10 && !autoBootCancelled; ++t)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(100));
+                };
+                int elapsed = 0;
                 if (abDelay >= 0) {
-                    std::this_thread::sleep_for(std::chrono::seconds(abDelay > 0 ? abDelay : 1));
+                    const int d = abDelay > 0 ? abDelay : 1;
+                    sleepSeconds(d);
+                    if (autoBootCancelled) return;
                     autoBootRequested.store(true);
+                    elapsed = d;
                 }
                 if (aqDelay >= 0) {
-                    std::this_thread::sleep_for(std::chrono::seconds(aqDelay));
+                    if (aqDelay > elapsed) sleepSeconds(aqDelay - elapsed);
+                    if (autoBootCancelled) return;
                     autoQuitRequested.store(true);
                 }
             });
@@ -658,6 +675,7 @@ int main(int argc, char* argv[])
     // destroyed emulator.
     deferredCancelled.store(true, std::memory_order_release);
 #ifndef __EMSCRIPTEN__
+    autoBootCancelled.store(true, std::memory_order_release);
     if (deferredThread.joinable()) deferredThread.join();
     if (autoBootThread.joinable()) autoBootThread.join();
 #endif
