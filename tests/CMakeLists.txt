@@ -3549,3 +3549,25 @@ if(WIN32)
 endif()
 add_test(NAME ai_mouse_hle_probe COMMAND test_ai_mouse_hle_probe)
 set_tests_properties(ai_mouse_hle_probe PROPERTIES TIMEOUT 15)
+
+# ─── Keyboard strobe $C01x mirror decode + IIe status sentinel ────────────
+# II/II+ $C010 .mirror(0xf) per MAME apple2.cpp; IIe write-clears + the
+# out-of-band iieReadStatus flag. See kbd_strobe_mirror_test.cpp.
+add_executable(test_kbd_strobe_mirror
+    kbd_strobe_mirror_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_kbd_strobe_mirror PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_kbd_strobe_mirror PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_kbd_strobe_mirror PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_kbd_strobe_mirror PRIVATE winmm)
+endif()
+add_test(NAME kbd_strobe_mirror COMMAND test_kbd_strobe_mirror)
+set_tests_properties(kbd_strobe_mirror PROPERTIES TIMEOUT 10)

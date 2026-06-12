@@ -185,6 +185,112 @@ int main()
         std::printf("NMOS undoc 2-byte $0B/$2B/$EB consume operand: OK\n");
     }
 
+    // ── NMOS undoc multi-byte lengths: the FULL set, not just $0B/$2B/$EB ──
+    // Same desync class as above (MAME `om6502.lst` implements them all;
+    // POM2 models length-correct NOP placeholders):
+    //   $x3 column (SLO/RLA/SRE/RRA/SAX/LAX/DCP/ISC (zp,X)/(zp),Y) → 2 bytes
+    //   $4B ALR / $6B ARR / $8B XAA / $AB LAX / $CB SBX #imm       → 2 bytes
+    //   $1B..$FB abs,Y forms (SLO/RLA/SRE/RRA/TAS/LAS/DCP/ISC)     → 3 bytes
+    // $CB/$DB regression: a previous revision mapped them to 1-byte NOPs
+    // ("WAI/STP undefined on NMOS") — but on NMOS they are SBX #imm (2) and
+    // DCP abs,Y (3).
+    {
+        M6502 ncpu(&mem);
+        ncpu.setCpuMode(M6502::CpuMode::NMOS);
+        ncpu.hardReset();
+        const uint8_t two[]   = {0x03, 0x73, 0xB3, 0xF3,
+                                 0x4B, 0x6B, 0x8B, 0xAB, 0xCB};
+        const uint8_t three[] = {0x1B, 0x3B, 0x5B, 0x7B,
+                                 0x9B, 0xBB, 0xDB, 0xFB};
+        for (uint8_t op : two) {
+            mem.memWrite(0x0200, op);
+            mem.memWrite(0x0201, 0x55);
+            ncpu.setProgramCounter(0x0200);
+            (void)ncpu.run(1);
+            if (ncpu.getProgramCounter() != 0x0202) {
+                std::printf("FAIL NMOS undoc $%02X: PC=$%04X (want $0202)\n",
+                            op, ncpu.getProgramCounter());
+                assert(ncpu.getProgramCounter() == 0x0202);
+            }
+        }
+        for (uint8_t op : three) {
+            mem.memWrite(0x0200, op);
+            mem.memWrite(0x0201, 0x55);
+            mem.memWrite(0x0202, 0x02);   // abs,Y target page $02xx (RAM)
+            ncpu.setProgramCounter(0x0200);
+            (void)ncpu.run(1);
+            if (ncpu.getProgramCounter() != 0x0203) {
+                std::printf("FAIL NMOS undoc $%02X: PC=$%04X (want $0203)\n",
+                            op, ncpu.getProgramCounter());
+                assert(ncpu.getProgramCounter() == 0x0203);
+            }
+        }
+        std::printf("NMOS undoc $x3/$xB column byte lengths: OK\n");
+    }
+
+    // ── 1-byte NOP cycle split: 65C02 reserved = 1 cyc, NMOS undoc = 2 ────
+    // MAME `ow65c02.lst` (fetch-only `nop_c_imp`) vs `om6502.lst` `nop_imp`.
+    // Plus WAI/STP = 3 cycles (not 4) on the 65C02 (`ow65c02.lst`).
+    {
+        M6502 ccpu(&mem);
+        ccpu.setCpuMode(M6502::CpuMode::CMOS);
+        ccpu.hardReset();
+        const int c03 = oneInstr(ccpu, mem, {0x03}, 0x0200); // reserved $x3
+        const int c0b = oneInstr(ccpu, mem, {0x0B}, 0x0200); // reserved $xB
+        const int wai = oneInstr(ccpu, mem, {0xCB}, 0x0200); // WAI (no IRQ)
+        const int stp = oneInstr(ccpu, mem, {0xDB}, 0x0200); // STP (halts)
+        ccpu.hardReset();                                    // clear STP halt
+        M6502 ncpu(&mem);
+        ncpu.setCpuMode(M6502::CpuMode::NMOS);
+        ncpu.hardReset();
+        const int n1a = oneInstr(ncpu, mem, {0x1A}, 0x0200); // NMOS NOP imp
+        if (c03 != 1 || c0b != 1 || wai != 3 || stp != 3 || n1a != 2) {
+            std::printf("FAIL 1-byte NOP/WAI/STP cycles: $03=%d $0B=%d (want 1), "
+                        "WAI=%d STP=%d (want 3), NMOS $1A=%d (want 2)\n",
+                        c03, c0b, wai, stp, n1a);
+            assert(c03 == 1 && c0b == 1 && wai == 3 && stp == 3 && n1a == 2);
+        }
+        std::printf("1-byte NOP cycles (C02=1, NMOS=2) + WAI/STP=3: OK\n");
+    }
+
+    // ── NMOS decimal-mode SBC: V is deterministic (binary difference) ─────
+    // MAME `m6502.cpp` `do_sbc_d` sets F_V from `(A^val)&(A^diff)&0x80`
+    // unconditionally — "undefined" is documentation-speak, not silicon.
+    // Regression: POM2's NMOS decimal SBC left V STALE from the previous
+    // instruction (the decimal ADC branch set it correctly all along).
+    {
+        M6502 ncpu(&mem);
+        ncpu.setCpuMode(M6502::CpuMode::NMOS);
+        ncpu.hardReset();
+        // Set V first (binary $7F+$01 overflows), then SED/SEC + SBC #$01
+        // with A=$00: binary diff $FF → V must come out CLEAR, proving SBC
+        // wrote the flag instead of inheriting the stale 1.
+        const uint8_t prog1[] = {0xD8, 0x18, 0xA9, 0x7F, 0x69, 0x01,  // CLD CLC LDA ADC → V=1
+                                 0xF8, 0x38, 0xA9, 0x00, 0xE9, 0x01}; // SED SEC LDA SBC
+        uint16_t a = 0x0200;
+        for (uint8_t b : prog1) mem.memWrite(a++, b);
+        ncpu.setProgramCounter(0x0200);
+        for (int i = 0; i < 4; ++i) (void)ncpu.run(1);   // CLD CLC LDA ADC
+        const bool vAfterAdc = (ncpu.getStatusRegister() & 0x40) != 0;
+        for (int i = 0; i < 4; ++i) (void)ncpu.run(1);   // SED SEC LDA SBC
+        const bool vClear = (ncpu.getStatusRegister() & 0x40) == 0;
+        // And the V-set case: A=$80 − $01 (C=1) → binary diff $7F → V=1
+        // (starting from V=0 left by the previous SBC).
+        const uint8_t prog2[] = {0xF8, 0x38, 0xA9, 0x80, 0xE9, 0x01};
+        a = 0x0300;
+        for (uint8_t b : prog2) mem.memWrite(a++, b);
+        ncpu.setProgramCounter(0x0300);
+        for (int i = 0; i < 4; ++i) (void)ncpu.run(1);
+        const bool vSet = (ncpu.getStatusRegister() & 0x40) != 0;
+        if (!vAfterAdc || !vClear || !vSet) {
+            std::printf("FAIL NMOS decimal SBC V: setup V=%d (want 1), "
+                        "$00-$01 V-clear=%d (want 1), $80-$01 V-set=%d (want 1)\n",
+                        vAfterAdc, vClear, vSet);
+            assert(vAfterAdc && vClear && vSet);
+        }
+        std::printf("NMOS decimal SBC V flag (binary-difference rule): OK\n");
+    }
+
     // ── Interrupt-entry cycles (IRQ + NMI) = 7, on both NMOS and CMOS ─────
     // POM2 runs the 7-cycle entry sequence AND the first handler
     // instruction in a single step(), so one step charges 7 + (first

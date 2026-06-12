@@ -499,6 +499,16 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
             cycles++;
         } else {
             setStatusRegisterNZ((uint8_t)tmp);
+            // NMOS decimal SBC: "undefined" V is in fact deterministic —
+            // real silicon derives it from the binary difference, exactly
+            // like binary mode (MAME `m6502.cpp` `do_sbc_d` sets F_V from
+            // `(A^val) & (A^diff) & 0x80` unconditionally). The NMOS
+            // decimal ADC branch above already does this; leaving V stale
+            // here was an oversight, not a modelling choice.
+            if (((Op1 ^ Op2) & (Op1 ^ (uint8_t)tmp)) & 0x80)
+                statusRegister |= M6502::Status::V;
+            else
+                statusRegister &= ~M6502::Status::V;
         }
     }
     else
@@ -1195,7 +1205,10 @@ void M6502::WAI(void)
     // WAI (IRQ+I=1). Software relying on WAI as a "wait here forever"
     // is rare on the Apple II target and would equally well use a
     // BNE-to-self loop.
-    cycles += 3;
+    //
+    // 3 cycles total (MAME `ow65c02.lst` WAI: fetch + 2 internal) — the
+    // fetch already seeded 1.
+    cycles += 2;
 }
 
 void M6502::STP(void)
@@ -1210,12 +1223,16 @@ void M6502::STP(void)
     // `step()` short-circuits to a cycle-consuming no-op while the
     // flag is set, and `softReset()` / `hardReset()` clear it.
     halted = true;
-    cycles += 3;
+    // 3 cycles total for the instruction itself (MAME `ow65c02.lst` STP);
+    // the halt then eats cycles via the `halted` short-circuit in step().
+    cycles += 2;
 }
 
 void M6502::Unoff(void)
 {
-    cycles += 2;
+    // 65C02 1-byte reserved NOPs ($x3 / $xB columns): 1 cycle on real
+    // silicon (MAME `m6502/ow65c02.lst` — `nop_c_imp` is fetch-only).
+    // cycles is seeded to 1 by the fetch, so add nothing.
 }
 
 void M6502::setCpuMode(CpuMode mode)
@@ -1227,7 +1244,7 @@ void M6502::setCpuMode(CpuMode mode)
     // NMOS 6502: replace every 65C02-only addition with a placeholder
     // matching the original NMOS behaviour (NOP of correct byte length,
     // or KIL/Hang for the (zp)-mode opcodes that NMOS halts on).
-    auto u1 = OpcodeEntry{&M6502::Unoff,  nullptr};
+    auto u1 = OpcodeEntry{&M6502::Unoff1, nullptr};   // 1-byte, 2 cyc (NMOS)
     auto u2 = OpcodeEntry{&M6502::Unoff2, nullptr};
     auto u3 = OpcodeEntry{&M6502::Unoff3, nullptr};
     auto kil = OpcodeEntry{&M6502::Hang,  nullptr};
@@ -1287,24 +1304,47 @@ void M6502::setCpuMode(CpuMode mode)
         opcodeTable[0x0F + n * 0x10] = u3; // BBRn zp,offset
         opcodeTable[0x8F + n * 0x10] = u3; // BBSn zp,offset
     }
-    // WDC WAI / STP (1-byte) — undefined on NMOS, treat as 1-byte NOP.
-    opcodeTable[0xCB] = u1;
-    opcodeTable[0xDB] = u1;
-
-    // NMOS undocumented 2-byte immediate ops the 65C02 table left as 1-byte
-    // NOPs: $0B/$2B = ANC #imm, $EB = USBC #imm. They MUST consume the operand
-    // byte or the instruction stream desyncs (the next byte is decoded as an
-    // opcode). Emulate as a 2-byte, 2-cycle NOP — faithful enough; these are
-    // vanishingly rare on the Apple II.
+    // NMOS undocumented multi-byte opcodes. Full semantics (SLO/RLA/SRE/
+    // RRA/SAX/LAX/DCP/ISC, ANC/ALR/ARR/XAA/SBX, TAS/LAS/AHX) are NOT
+    // modelled — MAME `m6502/m6502.cpp` (`om6502.lst`) implements them all;
+    // nothing in the POM2 corpus needs the results yet. What MUST be right
+    // is the byte length, or the instruction stream desyncs (the operand
+    // bytes get decoded as opcodes — cracked NMOS loaders embed these).
+    //
+    //   $x3 column — (zp,X)/(zp),Y RMW combos: all 2-byte on NMOS.
+    //   $xB column — ANC/ALR/ARR/XAA/LAX/SBX #imm: 2-byte;
+    //                SLO/RLA/SRE/RRA/TAS/LAS/DCP/ISC abs,Y: 3-byte.
+    //
+    // Note $CB/$DB: WAI/STP exist only on WDC 65C02; on NMOS these are
+    // SBX #imm (2-byte) and DCP abs,Y (3-byte) — mapping them to 1-byte
+    // NOPs (as a previous revision did) desynced the stream.
     auto uimm = OpcodeEntry{&M6502::UnoffImm, nullptr};
-    opcodeTable[0x0B] = uimm;
-    opcodeTable[0x2B] = uimm;
-    opcodeTable[0xEB] = uimm;
+    for (int hi = 0; hi < 16; ++hi)
+        opcodeTable[hi * 0x10 + 0x03] = u2;                 // $x3: 2-byte
+    opcodeTable[0x0B] = uimm; // ANC #imm
+    opcodeTable[0x2B] = uimm; // ANC #imm
+    opcodeTable[0x4B] = uimm; // ALR #imm
+    opcodeTable[0x6B] = uimm; // ARR #imm
+    opcodeTable[0x8B] = uimm; // XAA #imm
+    opcodeTable[0xAB] = uimm; // LAX #imm
+    opcodeTable[0xCB] = uimm; // SBX #imm (65C02 WAI lives here)
+    opcodeTable[0xEB] = uimm; // USBC #imm
+    opcodeTable[0x1B] = u3;   // SLO abs,Y
+    opcodeTable[0x3B] = u3;   // RLA abs,Y
+    opcodeTable[0x5B] = u3;   // SRE abs,Y
+    opcodeTable[0x7B] = u3;   // RRA abs,Y
+    opcodeTable[0x9B] = u3;   // TAS abs,Y
+    opcodeTable[0xBB] = u3;   // LAS abs,Y
+    opcodeTable[0xDB] = u3;   // DCP abs,Y (65C02 STP lives here)
+    opcodeTable[0xFB] = u3;   // ISC abs,Y
 }
 
 void M6502::Unoff1(void)
 {
-    cycles += 2;
+    // NMOS 1-byte undocumented NOPs ($1A/$3A/$5A/$7A/$DA/$FA): 2 cycles
+    // (MAME `m6502/om6502.lst` `nop_imp`). Distinct from the 65C02
+    // 1-cycle reserved NOPs (Unoff).
+    cycles += 1;
 }
 
 void M6502::Unoff2(void)

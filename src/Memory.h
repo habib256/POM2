@@ -700,7 +700,11 @@ private:
     uint8_t iieMemRead(uint16_t addr);
     void    iieMemWrite(uint16_t addr, uint8_t value);
     void    iieHandleSoftSwitch(uint16_t addr);
-    uint8_t iieReadStatus(uint16_t addr) const;
+    /// IIe $C013-$C01F status reads. Returns true and fills `out` when
+    /// `addr` is a status register; false otherwise (out-of-band on
+    /// purpose — every byte value incl. $FE is a legitimate status, so
+    /// an in-band sentinel collided with `0x80 | transchar($7E)`).
+    bool    iieReadStatus(uint16_t addr, uint8_t& out) const;
 };
 
 #endif // POM2_MEMORY_H
