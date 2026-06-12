@@ -158,3 +158,25 @@ EchoPlusCard::ChipSnap EchoPlusCard::snapshotChip() const
     s.phonemeWriteCount      = ssi_.phonemeWriteCount();
     return s;
 }
+
+void EchoPlusCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    // 3-byte tag + the chip's fixed blob, so a foreign/old blob is
+    // rejected cleanly in load (length + tag gate).
+    out.push_back('E'); out.push_back('P'); out.push_back(1);
+    ssi_.appendSnapshot(out);
+}
+
+void EchoPlusCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (len < 3 + pom2::Ssi263::kSnapshotBytes) return;
+    if (data[0] != 'E' || data[1] != 'P' || data[2] != 1) return;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        ssi_.loadSnapshot(data + 3);
+    }
+    // Re-derive the slot IRQ line from the restored A/!R + enable state
+    // (same post-restore refresh Mockingboard does for its chips).
+    updateIrqFromChip();
+}

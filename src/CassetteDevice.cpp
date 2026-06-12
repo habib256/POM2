@@ -624,6 +624,14 @@ bool CassetteDevice::loadAciTape(const std::string& path)
 {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
+    // Same pre-slurp size gate as loadWavTape.
+    constexpr std::streamoff kMaxTapeBytes = 256ll * 1024 * 1024;
+    file.seekg(0, std::ios::end);
+    if (file.tellg() > kMaxTapeBytes) {
+        lastError = ".aci tape exceeds 256 MiB: " + path;
+        return false;
+    }
+    file.seekg(0, std::ios::beg);
 
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
                                 std::istreambuf_iterator<char>());
@@ -676,6 +684,17 @@ bool CassetteDevice::loadWavTape(const std::string& path)
 {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
+    // Size gate BEFORE slurping (the mp3/ogg/flac path already caps at 30
+    // decoded minutes; PCM WAV was unbounded — a mistakenly passed multi-GB
+    // file allocated its full size plus the ~2x float conversion). 256 MiB
+    // ≈ 25 minutes of 44.1 kHz stereo float32, beyond any real tape.
+    constexpr std::streamoff kMaxTapeBytes = 256ll * 1024 * 1024;
+    file.seekg(0, std::ios::end);
+    if (file.tellg() > kMaxTapeBytes) {
+        lastError = "WAV tape exceeds 256 MiB: " + path;
+        return false;
+    }
+    file.seekg(0, std::ios::beg);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
                                 std::istreambuf_iterator<char>());
     if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||

@@ -63,6 +63,17 @@ public:
     /// readout phase, where D0 carries the next clock bit.
     uint8_t interceptRead(uint16_t addr, uint8_t romByte);
 
+    /// WRITE cycles drive the SAME DS1216E state machine — the key bit
+    /// rides on A0 of the ADDRESS, R/W is irrelevant to the matcher
+    /// (AppleWin `CNoSlotClock::Write(address)` calls the identical
+    /// ClockRead/ClockWrite pair). Some NSC drivers feed the 64-bit key
+    /// with STA; with only the read hook they never unlocked the clock.
+    void interceptWrite(uint16_t addr)
+    {
+        uint8_t discard = 0xFF;
+        (void)interceptRead(addr, discard);
+    }
+
     /// State accessor for UI / tests.
     enum class Phase { Idle, MatchingKey, ReadingClock };
     Phase   phase() const;

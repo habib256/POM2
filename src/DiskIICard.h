@@ -62,6 +62,7 @@
 #include "SlotPeripheral.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -246,7 +247,12 @@ private:
     std::array<uint8_t, 256> bootRom13{};
     bool bootRom13Loaded = false;
 
-    bool motorOn   = false;
+    // Atomic: read by the UI thread (updateAutoTurbo's disk-activity poll)
+    // while the worker writes it from soft-switch handling — same reason
+    // Block512Backing::isBusy is atomic. Relaxed-equivalent plain ops are
+    // fine (a one-frame-late turbo decision is harmless; the flag carries
+    // no dependent data).
+    std::atomic<bool> motorOn { false };
     // MAME `wozfdc_device::active` — MODE_IDLE / MODE_ACTIVE / MODE_DELAY.
     // MODE_DELAY: a motor-off ($C0E8) command does NOT stop the drive
     // immediately; `delay_timer` holds the LSS active for ~1 second of

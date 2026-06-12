@@ -19,7 +19,8 @@
 //     (drive select) — together they address an 8-line "register"
 //     space inside the drive.
 //
-//       Read register select  = { SEL, CA2, CA1, CA0 }
+//       Read register select  = { HDSEL, CA2, CA1, CA0 }  (MAME m_reg —
+//       bit 3 is the head-select LINE via ssW, not the IWM drive select)
 //       Write register select = same bits, latched by an LSTRB pulse
 //
 //     Reads come back on the SENSE line, which the IWM samples on
@@ -202,9 +203,10 @@ private:
     /// expectation; see FloppySoundSink::step).
     uint64_t     lastStrobeCycle_ = 0;
 
-    /// 4-bit register address: { SEL, CA2, CA1, CA0 } as documented in
-    /// *Inside the Apple //gs* Sec. 6 "Sony Drive". Read addresses are
-    /// the same bit pattern as writes but sampled in real time.
+    /// 4-bit register address: { HDSEL, CA2, CA1, CA0 } — MAME
+    /// `mac_floppy_device`: `(phases & 7) | (m_actual_ss ? 8 : 0)`.
+    /// Read addresses are the same bit pattern as writes but sampled in
+    /// real time.
     uint8_t regSelect() const;
 
     /// Strobe a write-register address (called on LSTRB rising edge).

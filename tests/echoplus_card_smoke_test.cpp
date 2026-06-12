@@ -15,6 +15,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -119,6 +120,38 @@ void testReadAcknowledgement()
     std::printf("  ok: reads see A/!R bit but don't ack; onReset clears\n");
 }
 
+void testSnapshotRoundTrip()
+{
+    // The SSI263 carries rewindable state; the card was missing from the
+    // snapshot roster (Mockingboard SoundII captured its identical chip
+    // all along). Pin: registers + mode survive an append/reset/load.
+    EchoPlusCard card(4);
+    card.slotRomWrite(0x03, 0x0F);   // CTTRAMP: CTL=0, amp=15
+    card.slotRomWrite(0x02, 0xF0);   // RATEINF
+    card.slotRomWrite(0x00, 0xC1);   // DURPHON: mode bits + phoneme 1
+    const auto before = card.snapshotChip();
+    std::vector<uint8_t> blob;
+    card.appendSnapshotState(blob);
+
+    EchoPlusCard fresh(4);
+    fresh.loadSnapshotState(blob.data(), blob.size());
+    const auto after = fresh.snapshotChip();
+    for (int r = 0; r < 5; ++r) assert(after.regs[r] == before.regs[r]);
+    assert(after.currentPhoneme == before.currentPhoneme);
+    assert(after.mode           == before.mode);
+    assert(after.powerDown      == before.powerDown);
+
+    // Garbage / truncated blobs are rejected (state untouched).
+    EchoPlusCard untouched(4);
+    const auto base = untouched.snapshotChip();
+    uint8_t junk[4] = { 'X', 'X', 9, 9 };
+    untouched.loadSnapshotState(junk, sizeof(junk));
+    const auto still = untouched.snapshotChip();
+    assert(still.regs[0] == base.regs[0] && still.mode == base.mode);
+
+    std::printf("  ok: SSI263 state snapshot round-trip\n");
+}
+
 } // namespace
 
 int main()
@@ -127,6 +160,7 @@ int main()
     testRegisterDecode();
     testIrqWiring();
     testReadAcknowledgement();
+    testSnapshotRoundTrip();
     std::printf("PASS\n");
     return 0;
 }

@@ -17,6 +17,10 @@ JoystickInput::JoystickInput() = default;
 
 uint8_t JoystickInput::axisToPaddle(float axis, float deadzone, bool invert)
 {
+    // A NaN axis (broken driver / hotplug glitch) slides through every
+    // ordered comparison below and hits static_cast<uint8_t>(NaN) — UB.
+    // Treat it as centered.
+    if (std::isnan(axis)) return 128;
     if (invert) axis = -axis;
     if (std::fabs(axis) < deadzone) axis = 0.0f;
     // Map [-1, +1] → [0, 255]. The +0.5 round-to-nearest puts 0.0 on 128

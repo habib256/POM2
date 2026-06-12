@@ -38,10 +38,11 @@
 //
 // Time model: POM2 measures everything in 1.023 MHz CPU cycles
 // (`POM2_CPU_CLOCK_HZ`). MAME's IWM uses `attotime` plus an optional
-// fast Q3 clock (~1.86 MHz) for synchronous mode. We collapse this
-// into one cycle counter — software relying on sub-CPU-cycle Q3
-// resolution (rare; the MAME `q3_clock` arg is set on Mac/IIgs but
-// not on //c+) would need a follow-up pass.
+// fast Q3 clock (~2 MHz) for synchronous mode. We collapse this into
+// one cycle counter. MAME passes `q3_clock = 1021800*2` to every
+// //c-class IWM (apple2e.cpp) — exactly 2x the CPU clock, so MAME's
+// q3-domain write windows are numerically equal to POM2's scaled
+// constants; sub-CPU-cycle q3 phase is the only thing not modelled.
 
 #ifndef POM2_IWM_DEVICE_H
 #define POM2_IWM_DEVICE_H

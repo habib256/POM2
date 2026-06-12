@@ -153,9 +153,23 @@ void testRomLoadGate()
     // Any $CnXX read resets the bank to 0 (MAME read_cnxx side effect).
     (void)card.slotRomRead(0x00);
     assert(card.expansionRomRead(0x000) == 0x00);
+
+    // Snapshot round-trip: bank / ACK latch / IRQ-enable are guest-visible
+    // state and must survive a rewind (they were absent from the snapshot
+    // when the card first gained them).
+    card.deviceSelectWrite(0x5, 0x00);          // bank high + IRQ enable
+    assert((card.deviceSelectRead(0) & 0x80) != 0);
+    std::vector<uint8_t> blob;
+    card.appendSnapshotState(blob);
+    card.onReset();                             // wipes bank + IRQ enable
+    assert(card.expansionRomRead(0x000) == 0x00);
+    assert((card.deviceSelectRead(0) & 0x80) == 0);
+    card.loadSnapshotState(blob.data(), blob.size());
+    assert(card.expansionRomRead(0x000) == 0x08);          // bank restored
+    assert((card.deviceSelectRead(0) & 0x80) != 0);        // IRQ restored
     std::remove(good.c_str());
 
-    std::printf("  ok: ROM-load size gate + $C800 banking\n");
+    std::printf("  ok: ROM-load size gate + $C800 banking + snapshot\n");
 }
 
 } // namespace

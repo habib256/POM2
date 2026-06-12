@@ -72,6 +72,14 @@ public:
     uint8_t expansionRomRead(uint16_t offset) override;
     void    onReset() override;
 
+    /// Rewind/snapshot hooks — the ROM bank / ACK latch / IRQ-enable
+    /// flip-flops are guest-visible state (a rewound guest mid-print may
+    /// expect the other $C800 bank or a pending ACK IRQ). The host-side
+    /// spool is deliberately NOT rewound (it is an output log, like the
+    /// PrinterCard's).
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
     // ─── Spool access (shared shape with PrinterCard for UI reuse) ───────
     std::vector<uint8_t> spoolBytes() const;
     std::string          spoolText()  const;

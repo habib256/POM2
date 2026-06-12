@@ -6,6 +6,54 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-12 (vague 4 : périphériques restants, UI, snapshot — oracle MAME)
+
+Quatre chasseurs en lecture seule sur les zones jamais auditées (Grappler/
+souris LLE/main, couche UI, pile //c-IWM-Sony, snapshot/rewind/cassette),
+puis fixes vérifiés + pins. Suite : 127/127.
+
+- **Grappler+ : décodage de registres inversé.** Le port de données réel est
+  `!(offset & 3)` ($C0n0/4/8/C) — POM2 spoolait l'offset 1, qui est le
+  **bank select** ROM sur la vraie carte : le firmware 4 Ko authentique
+  imprimait dans le vide, et son poll de statut lisait $FF = « busy + plus
+  de papier » (la pire valeur possible). Réécrit selon MAME grappler.cpp :
+  statut IRQ|DIP|BUSY|PE|SELECT|ACK, bancs $C800 (A0 set / lecture $CnXX
+  reset + astuce A6 de détection d'ACK), IRQ A1/A2 sur le bus. Le stub ROM
+  écrivait aussi via l'offset 1 — d'où des tests verts qui pinaient le stub,
+  jamais le chemin ROM réelle (piège : le test validait l'implémentation
+  contre elle-même).
+- **Sony 3.5" : table de registres alignée sur MAME `mac_floppy_device`.**
+  Bit 3 de l'adresse = ligne HEAD-SELECT (ssW), pas le drive-select IWM ;
+  MotorOff est le strobe 0x6 (0x3 = EjectOff, no-op — l'ancienne table
+  « boot-tuned » y mettait motor-off : un firmware conforme tuait le moteur
+  en croyant annuler une éjection) ; le latch disk-change vit en sense 0x3
+  et se clear par le STROBE DskchgClear (0xC), pas à la lecture ; polarité
+  DIRTN corrigée ; un sense write-protect (0x9) existe enfin — une image
+  3.5" protégée était invisible du firmware (écritures silencieusement
+  perdues). Délai motor-off IWM : 8388608 ticks de l'horloge 7 MHz ≈ 1,17 s
+  (était 1 s CPU, commentaire faux sur l'horloge IWM).
+- **UI : `insertDisk` du panneau Floppy Emu sans `stateMutex`** pendant que
+  le worker streame les nibbles — corruption/UAF potentielle au clic ; tous
+  les chemins voisins verrouillaient. Lectures d'état de Slot Config
+  passées en snapshot-sous-verrou ; `motorOn` du Disk II atomique (lu par
+  l'auto-turbo côté UI) ; PushID par cellule dans le memory viewer (des
+  centaines de cellules « 00 » partageaient le même ID ImGui).
+- **Snapshot : les cartes ayant gagné de l'état n'y participaient pas.**
+  Grappler+ (bancs/ACK/IRQ) et EchoPlus (SSI263 complet — le Mockingboard
+  SoundII capturait la même puce depuis le début) ont maintenant leurs
+  hooks append/load + pins round-trip. `--snapshot-save/load` CLI étaient
+  des **no-ops silencieux** documentés comme fonctionnels — câblés sur la
+  même mécanique que le serveur AI. Doc : la section « CASS » n'a jamais
+  existé.
+- **No-Slot Clock : cycles d'écriture câblés** (parité AppleWin — le bit de
+  clé DS1216E voyage sur A0 de l'ADRESSE, R/W indifférent : les drivers
+  qui nourrissent la clé avec STA ne déverrouillaient jamais l'horloge).
+- **68705 : IRQ timer sensible au niveau** (la prise de vecteur n'efface
+  plus la requête tant que TIR=1/TIM=0 — parité MAME). **Souris LLE** :
+  plus de saut de curseur post-reset (compteurs delta réamorcés depuis
+  l'hôte). Caps de taille sur les .wav/.aci (pré-slurp), garde NaN
+  joystick, timers env `POM2_AUTO_*` corrigés et annulables.
+
 ## 2026-06-12 (chasse aux bugs : audit complet validé sur l'oracle MAME)
 
 Audit systématique des sous-systèmes (CPU/mémoire, vidéo, audio, stockage,

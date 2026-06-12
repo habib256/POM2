@@ -201,3 +201,20 @@ void GrapplerCard::buildStubRom()
     // Output handler: STA $C0(8+s)0 / RTS.
     putAt(0x31, { 0x8D, dataLo, 0xC0, 0x60 });
 }
+
+void GrapplerCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.push_back('G'); out.push_back('P'); out.push_back(1);
+    out.push_back(romBankHigh_ ? 1 : 0);
+    out.push_back(ackLatch_    ? 1 : 0);
+    out.push_back(irqDisable_  ? 1 : 0);
+}
+
+void GrapplerCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (len < 6 || data[0] != 'G' || data[1] != 'P' || data[2] != 1) return;
+    romBankHigh_ = data[3] != 0;
+    ackLatch_    = data[4] != 0;
+    irqDisable_  = data[5] != 0;
+    updateIrq();   // re-derive the slot IRQ line from the restored state
+}

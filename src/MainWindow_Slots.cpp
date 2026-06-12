@@ -357,7 +357,17 @@ void MainWindow::renderSlotConfigPanel()
                 if (nb > 2) nb = 2;
                 bool bootable = false;
                 for (int b = 0; b < nb; ++b) {
-                    const pom2::MediaBayInfo info = media->bayInfo(b);
+                    // Snapshot the bay state under the lock — the worker
+                    // mutates it during block I/O (loaded/dirty flags,
+                    // lastError strings). Same snapshot-under-lock rule as
+                    // the Disk II / HDV panels; the lock is NOT held across
+                    // the rendering below (the Mount/Eject buttons take it
+                    // themselves).
+                    pom2::MediaBayInfo info;
+                    {
+                        std::lock_guard<std::mutex> lk(controller->stateMutex());
+                        info = media->bayInfo(b);
+                    }
                     ImGui::PushID(b);
                     ImGui::Indent();
 
@@ -485,7 +495,16 @@ void MainWindow::renderSlotConfigPanel()
 
                 bool bootable = false;
                 for (int drv = 0; drv < DiskIICard::kDriveCount; ++drv) {
-                    const bool loaded = d2->isDiskLoaded(drv);
+                    // Snapshot under the lock (worker mutates load state /
+                    // path during inserts from other panels); not held
+                    // across rendering — the buttons lock themselves.
+                    bool loaded;
+                    std::string path;
+                    {
+                        std::lock_guard<std::mutex> lk(controller->stateMutex());
+                        loaded = d2->isDiskLoaded(drv);
+                        if (!dPrimed[s][drv]) path = d2->getDiskPath(drv);
+                    }
                     if (drv == 0 && loaded) bootable = true;
                     ImGui::PushID(drv);
                     ImGui::Indent();
@@ -495,7 +514,7 @@ void MainWindow::renderSlotConfigPanel()
                     char* buf = dBuf[s][drv].data();
                     if (!dPrimed[s][drv]) {
                         std::snprintf(buf, dBuf[s][drv].size(), "%s",
-                                      d2->getDiskPath(drv).c_str());
+                                      path.c_str());
                         dPrimed[s][drv] = true;
                     }
                     ImGui::SetNextItemWidth(300);

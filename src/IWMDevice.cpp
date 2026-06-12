@@ -60,12 +60,15 @@
 
 namespace {
 
-// MAME `iwm.cpp:204-206`: 1 << 23 = 8388608 ticks of the IWM's clock
-// (which is the CPU clock for //c / //c+ — no separate Q3 clock), so
-// "≈ 1 emulated second" is the design intent. POM2 ticks IWM time at
-// the CPU clock too, so 1 second = POM2_CPU_CLOCK_HZ cycles.
+// MAME `iwm.cpp:204-206`: 1 << 23 = 8388608 ticks of the IWM's CLOCK —
+// which on //c-class machines is the 7 MHz bus clock (`A2BUS_7M_CLOCK`,
+// MAME apple2e.cpp IWM instantiation), NOT the CPU clock. 8388608 / 7 M
+// ≈ 1.17 s; POM2 ticks IWM time in CPU cycles, so scale by CPU/7M (= 1/7
+// of the 7M tick count). The previous "1 CPU-second" constant ran the
+// spin-down ~15% short (and its comment claimed the IWM clock was the
+// CPU clock, which POM2's own ÷7 window scaling elsewhere contradicts).
 constexpr uint64_t kDriveDisableDelayCycles =
-    static_cast<uint64_t>(POM2_CPU_CLOCK_HZ);
+    (8388608ull * POM2_CPU_CLOCK_HZ) / (7159090ull);
 
 }
 

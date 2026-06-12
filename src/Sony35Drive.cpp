@@ -12,31 +12,32 @@
 // per-track state (write-protect tab, disk-in-drive switch, etc.), POM2
 // queries the attached `Disk35Image`.
 //
-// Register table (read & write both indexed by { SEL, CA2, CA1, CA0 }):
+// Register table — MAME `mac_floppy_device` (imagedev/floppy.cpp), both
+// directions indexed by { HDSEL, CA2, CA1, CA0 } (`m_reg = (phases & 7) |
+// (m_actual_ss ? 8 : 0)` — bit 3 is the HEAD-SELECT line, NOT the IWM
+// drive-select; an earlier POM2 revision wired SEL there and used a
+// boot-tuned register layout that diverged from MAME on several entries):
 //
-//   addr  bits SEL CA2 CA1 CA0   read SENSE        write strobe (LSTRB pulse)
+//   addr  read SENSE (wpt_r)              write strobe (seek_phase_w)
 //   ----  ------------------------------------------------------------
-//   0x0    0   0   0   0         /DIRTN            (direction set inward)
-//   0x1    0   0   0   1         /STEP-in-progress (single step)
-//   0x2    0   0   1   0         /MOTOR-ON         motor on
-//   0x3    0   0   1   1         /TRACK0           motor off
-//   0x4    0   1   0   0         /SWITCHED         (eject — Sony only)
-//   0x5    0   1   0   1         (reserved)        (reserved)
-//   0x6    0   1   1   0         /TACH             (reserved)
-//   0x7    0   1   1   1         (reserved)        (reserved)
-//   0x8    1   0   0   0         /SIDES            (set head 0)
-//   0x9    1   0   0   1         (reserved)        (set head 1)
-//   0xA    1   0   1   0         /READY            (reserved)
-//   0xB    1   0   1   1         /INSERTED         (reserved)
-//   0xC    1   1   0   0         (reserved)        (reserved)
-//   0xD    1   1   0   1         /SEL              (reserved)
-//   0xE    1   1   1   0         (reserved)        (reserved)
-//   0xF    1   1   1   1         /DRVIN            (reserved)
+//   0x0   DIRTN (1 after DirPrev)         DirNext  (dir → cyl+1)
+//   0x1   step done (always 1)            StepOn   (one step)
+//   0x2   /MOTORON (0 = running)          MotorOn
+//   0x3   disk changed since clear        EjectOff (no-op)
+//   0x4   index pulse (MFM only → 0)      DirPrev  (dir → track 0)
+//   0x5   superdrive capable (→ 0)        —
+//   0x6   double-sided (800K → 1)         MotorOff
+//   0x7   "drive exists" (→ 0)            EjectOn
+//   0x8   disk present (1 = NO disk)      —
+//   0x9   /WRTPRT (1 = not protected)     MFMModeOn  (GCR drive: no-op)
+//   0xA   NOT track 0                     —
+//   0xB   tachometer (unmodelled → 1)     —
+//   0xC   index pulse (as 0x4)            DskchgClear
+//   0xD   MFM mode active (→ 0)           GCRModeOn  (already GCR: no-op)
+//   0xE   /READY (0 = ready)              —
+//   0xF   1.4M "new interface" (→ 0)      —
 //
-// Apple's protocol uses ACTIVE-LOW logic on most read lines (the "/"
-// prefix), so a "1" returned to the IWM means the named condition is
-// NOT present. We expose this via `senseR()` returning the *raw* bit
-// (true = HIGH = inactive).
+// `senseR()` returns the raw line level exactly as MAME's wpt_r does.
 
 #include "Sony35Drive.h"
 #include "CpuClock.h"
@@ -745,9 +746,12 @@ void Sony35Drive::setSel(bool sel)
 
 uint8_t Sony35Drive::regSelect() const
 {
-    // { SEL, CA2, CA1, CA0 }
+    // MAME: `m_reg = (phases & 7) | (m_actual_ss ? 8 : 0)` — bit 3 is
+    // the HEAD-SELECT line (ssW / MIG HDSEL), NOT the IWM drive-select.
+    // Wiring SEL here meant the head-1 register bank (disk present, WP,
+    // track 0…) was only addressable while switching the active drive.
     uint8_t r = (phases_ & (kBitCA2 | kBitCA1 | kBitCA0));
-    if (sel_) r |= 0x08;
+    if (side1_) r |= 0x08;
     return r;
 }
 
@@ -775,20 +779,15 @@ void Sony35Drive::emitInsertClick()
 
 void Sony35Drive::strobeWriteRegister(uint8_t reg)
 {
-    // Decode per the table at the top of this file. Effects on POM2's
-    // internal state machine are the minimum needed for the //c+
-    // SmartPort probe; finer-grained behaviour (step debouncing, eject
-    // animation, RPM ramp-up) is deferred.
-    // Direction / eject registers aligned to MAME
-    // `mac_floppy_device::seek_phase_w`: reg 0x0 "DirNext" = step toward
-    // cyl+1 (outward), reg 0x4 "DirPrev" = step toward cyl-1 (track 0),
-    // reg 0x7 "StartEject". POM2 previously mapped 0x0→inward and 0x4→eject
-    // with NO outward path at all, so the head could only ever step toward
-    // track 0 (the cyl+1 branch in case 0x1 was dead). Motor/head registers
-    // keep POM2's boot-tuned mapping (see DEV.md Sony register-table note).
+    // Decode per the MAME `mac_floppy_device::seek_phase_w` table at the
+    // top of this file. An earlier "boot-tuned" mapping put MotorOff on
+    // reg 0x3 (MAME: EjectOff, a no-op — real MotorOff is 0x6) and used
+    // strobes 0x8/0x9 as head select (the head is the ssW LINE, not a
+    // register; MAME 0x9 is MFMModeOn). Firmware strobing the real
+    // registers was silently ignored — or worse, killed the motor.
     switch (reg) {
         case 0x0: directionIn_ = false; break;       // DirNext: step toward cyl+1 (outward)
-        case 0x1: {                                   // step
+        case 0x1: {                                   // StepOn
             bool moved = false;
             if (directionIn_ && track_ > 0)  {
                 --track_; invalidateCache(); moved = true;
@@ -804,20 +803,21 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
             if (moved && sound_) sound_->step(track_, lastStrobeCycle_);
             break;
         }
-        case 0x2:                                     // motor on
+        case 0x2:                                     // MotorOn
             if (!motorOn_ && sound_) {
                 sound_->motor(true, image_ && image_->isLoaded());
             }
             motorOn_ = true;
             break;
-        case 0x3:                                     // motor off
+        case 0x3: break;                              // EjectOff — no-op (MAME)
+        case 0x4: directionIn_ = true;  break;        // DirPrev: step toward cyl-1 (track 0)
+        case 0x6:                                     // MotorOff
             if (motorOn_ && sound_) {
                 sound_->motor(false, image_ && image_->isLoaded());
             }
             motorOn_ = false;
             break;
-        case 0x4: directionIn_ = true;  break;        // DirPrev: step toward cyl-1 (track 0)
-        case 0x7:                                      // StartEject
+        case 0x7:                                      // EjectOn
             if (image_ && image_->isLoaded()) {
                 // Flush guest write-back blocks before dropping the image —
                 // Disk35Image::eject() clears blocks_ + dirty_ with no file
@@ -832,8 +832,9 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
                 pom2::log().info("Sony35", "eject requested by host");
             }
             break;
-        case 0x8: side1_ = false; break;              // head 0
-        case 0x9: side1_ = true;  break;              // head 1
+        case 0x9: break;                              // MFMModeOn — GCR-only drive
+        case 0xC: diskSwitched_ = false; break;       // DskchgClear
+        case 0xD: break;                              // GCRModeOn — already GCR
         default:
             // Unmapped register — MAME logs but does nothing.
             break;
@@ -842,46 +843,47 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
 
 bool Sony35Drive::senseR() const
 {
-    // Active-low logic on the SENSE line. Each register returns 1
-    // (HIGH) for "condition NOT asserted". Lines marked "reserved"
-    // return 1 (MAME also returns the default 1 for those).
-    const uint8_t reg = regSelect();
-    switch (reg) {
-        case 0x0:                                       // /DIRTN
-            return !directionIn_;
-        case 0x1:                                       // /STEP — 1 = step done
+    // MAME `mac_floppy_device::wpt_r` — raw line level per register (see
+    // the table at the top of this file). Notable deltas from the old
+    // boot-tuned map: DIRTN polarity is `m_dir` (1 after DirPrev), the
+    // disk-change latch lives at 0x3 and is cleared by the DskchgClear
+    // STROBE (0xC) — not by reading it — and a write-protect sense (0x9)
+    // exists at all (it used to be missing entirely, so a WP image was
+    // invisible to firmware and writes were silently dropped).
+    switch (regSelect()) {
+        case 0x0:                                       // DIRTN
+            return directionIn_;                        // 1 after DirPrev
+        case 0x1:                                       // step done
             return true;
-        case 0x2:                                       // /MOTOR ON — 0 when on
+        case 0x2:                                       // /MOTORON — 0 = running
             return !motorOn_;
-        case 0x3:                                       // /TRACK0 — 0 at trk 0
-            return track_ != 0;
-        case 0x4:                                       // /SWITCHED — 0 = just switched
-            // Latching flip-flop: stays 0 until read once, then snaps
-            // back to 1. The //c+ firmware uses this to drive its
-            // "media changed" SmartPort status.
-            if (diskSwitched_) {
-                // MAME clears the latch on read; we mirror that. The
-                // const-cast is a controlled exception — `senseR` is
-                // logically a state-changing read on real hardware.
-                const_cast<Sony35Drive*>(this)->diskSwitched_ = false;
-                return false;
-            }
-            return true;
-        case 0x6:                                       // /TACH
-            // Reserved on stock 800K drive; 1 = no tach pulse.
-            return true;
-        case 0x8:                                       // /SIDES — 0 = double-sided
-            return false;                               // 800K Sony is always 2-sided
-        case 0xA:                                       // /READY — 0 = ready
-            return !(image_ && image_->isLoaded() && motorOn_);
-        case 0xB:                                       // /INSERTED — 0 = disk in
+        case 0x3:                                       // disk changed since clear
+            return diskSwitched_;
+        case 0x4:                                       // index pulse (MFM-only)
+        case 0xC:
+            return false;
+        case 0x5:                                       // superdrive capable
+            return false;                               // 800K GCR drive
+        case 0x6:                                       // double-sided
+            return true;                                // 800K = 2 heads
+        case 0x7:                                       // "drive exists" (MAME: false)
+            return false;
+        case 0x8:                                       // disk present — 1 = NO disk
             return !(image_ && image_->isLoaded());
-        case 0xD:                                       // /SEL
-            return !sel_;
-        case 0xF:                                       // /DRVIN — 0 = drive present
-            return false;                               // present
+        case 0x9:                                       // /WRTPRT — 1 = not protected
+            return !(image_ && image_->isWriteProtected());
+        case 0xA:                                       // NOT track 0
+            return track_ != 0;
+        case 0xB:                                       // tachometer — unmodelled
+            return true;
+        case 0xD:                                       // MFM mode active
+            return false;                               // GCR only
+        case 0xE:                                       // /READY — 0 = ready
+            return !(image_ && image_->isLoaded() && motorOn_);
+        case 0xF:                                       // 1.4M "new interface"
+            return false;                               // 800K drive
         default:
-            return true;                                // reserved → high
+            return true;
     }
 }
 

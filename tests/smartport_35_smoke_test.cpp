@@ -96,18 +96,18 @@ void testImageRefusesWrongSize()
 
 void testSony35SenseEmptySlot()
 {
-    // Drive with no image slot — every "is X present" register must
-    // return HIGH (active-low protocol, see Sony35Drive.cpp header).
+    // MAME mac_floppy register map: bit 3 of the register address is the
+    // HEAD-SELECT line (ssW), not the IWM drive select. "Disk present"
+    // is sense reg 0x8 and reads 1 when NO disk is in (wpt_r:
+    // `m_image.get() == nullptr`).
     pom2::Sony35Drive drv;
-    // Address register 0xB (/INSERTED).
-    // To select reg 0xB the IWM drives SEL=1, CA2=0, CA1=1, CA0=1.
-    drv.setSel(true);
-    drv.seekPhaseW(0x03);                      // CA0 | CA1, LSTRB low
-    assert(drv.senseR() == true);              // /INSERTED high → no disk
-    // /DRVIN register 0xF should report drive PRESENT (active-low → low).
-    drv.seekPhaseW(0x07);                      // CA0|CA1|CA2
-    assert(drv.senseR() == false);             // /DRVIN low → drive present
-    std::printf("  ok: Sony35Drive sense — empty slot reports no-disk, drive-present\n");
+    drv.ssW(true);                             // HDSEL=1 → registers 8-15
+    drv.seekPhaseW(0x00);                      // CA=000 → reg 0x8
+    assert(drv.senseR() == true);              // 1 = no disk
+    // Reg 0x9 = /WRTPRT — no disk: reads "not protected" (1).
+    drv.seekPhaseW(0x01);
+    assert(drv.senseR() == true);
+    std::printf("  ok: Sony35Drive sense — empty slot (MAME reg map)\n");
 }
 
 void testSony35SenseWithDisk()
@@ -121,18 +121,30 @@ void testSony35SenseWithDisk()
     drv.notifyMediaChange();
     assert(drv.isInserted());
 
-    // /INSERTED (reg 0xB) → 0 (active-low) because disk is in.
-    drv.setSel(true);
-    drv.seekPhaseW(0x03);
+    // Disk present (reg 0x8) → 0 with a disk in.
+    drv.ssW(true);
+    drv.seekPhaseW(0x00);
     assert(drv.senseR() == false);
 
-    // /TRACK0 (reg 0x3) → 0 (we're at track 0 by reset).
-    drv.setSel(false);
-    drv.seekPhaseW(0x03);                      // CA0|CA1
+    // NOT-track-0 (reg 0xA) → 0 at track 0 (reset position).
+    drv.seekPhaseW(0x02);                      // CA1 → reg 0xA
     assert(drv.senseR() == false);
+
+    // Disk-change latch: sense reg 0x3 reads 1 after a media change and
+    // is cleared by the DskchgClear STROBE (reg 0xC) — NOT by reading.
+    drv.ssW(false);
+    drv.seekPhaseW(0x03);                      // reg 0x3
+    assert(drv.senseR() == true);
+    assert(drv.senseR() == true);              // read does NOT clear
+    drv.ssW(true);
+    drv.seekPhaseW(0x04);                      // CA2 → reg 0xC, LSTRB low
+    drv.seekPhaseW(0x0C);                      // + LSTRB → DskchgClear
+    drv.ssW(false);
+    drv.seekPhaseW(0x03);
+    assert(drv.senseR() == false);             // cleared
 
     fs::remove(p);
-    std::printf("  ok: Sony35Drive sense — disk inserted reports correct INSERTED+TRACK0\n");
+    std::printf("  ok: Sony35Drive sense — MAME map (present/track0/dskchg)\n");
 }
 
 void testSony35MotorStrobe()
@@ -145,17 +157,22 @@ void testSony35MotorStrobe()
     drv.setImage(&img);
     drv.notifyMediaChange();
 
-    // Strobe write-reg 0x2 (motor on): set CA1 (bit 1) high with
-    // LSTRB low, then pulse LSTRB high. Register address = { SEL,
-    // CA2, CA1, CA0 } = { 0, 0, 1, 0 } = 0x2.
-    drv.setSel(false);
+    // Strobe write-reg 0x2 (MotorOn): set CA1 high with LSTRB low, then
+    // pulse LSTRB. Register address = { HDSEL, CA2, CA1, CA0 }.
+    drv.ssW(false);
     drv.seekPhaseW(0x02);                      // CA1, LSTRB low
     drv.seekPhaseW(0x0A);                      // CA1 + LSTRB → rising edge
     assert(drv.isMotorOn());
 
-    // Strobe reg 0x3 (motor off).
-    drv.seekPhaseW(0x03);                      // CA0|CA1, LSTRB low
-    drv.seekPhaseW(0x0B);                      // + LSTRB rising
+    // MAME: reg 0x3 is EjectOff (a no-op) — strobing it must NOT stop
+    // the motor (the old boot-tuned map put MotorOff there).
+    drv.seekPhaseW(0x03);
+    drv.seekPhaseW(0x0B);
+    assert(drv.isMotorOn());
+
+    // Real MotorOff is strobe reg 0x6 (CA1|CA2).
+    drv.seekPhaseW(0x06);
+    drv.seekPhaseW(0x0E);
     assert(!drv.isMotorOn());
 
     fs::remove(p);

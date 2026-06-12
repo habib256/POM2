@@ -5181,6 +5181,10 @@ void MainWindow::renderFloppyEmuWindow()
         return std::string();
     };
     auto insertedLabel = [&](Mode m) -> std::string {
+        // Snapshot-under-lock: load state / paths are worker-mutable
+        // (inserts can come from soft-switch-triggered write-back paths
+        // and other panels). Lock released before any rendering.
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
         switch (m) {
             case Mode::Disk525:
                 return (diskCard && diskCard->isDiskLoaded())
@@ -5210,14 +5214,22 @@ void MainWindow::renderFloppyEmuWindow()
         std::string err;
         int bootSlot = 0;
         switch (m) {
-            case Mode::Disk525:
+            case Mode::Disk525: {
                 if (!diskCard) { floppyEmuStatus = controllerHint(m); break; }
-                if (diskCard->insertDisk(path))
-                    floppyEmuStatus = "Inserted " + baseName(path) +
-                        " — reboot the Apple II to boot it.";
-                else
-                    floppyEmuStatus = "5.25 mount failed: " + baseName(path);
+                // Same lock as ejectCurrent below (and every other insert
+                // path): insertDisk replaces the DiskImage track buffers
+                // the worker's LSS streams from on every CPU tick.
+                bool ok;
+                {
+                    std::lock_guard<std::mutex> lk(controller->stateMutex());
+                    ok = diskCard->insertDisk(path);
+                }
+                floppyEmuStatus = ok
+                    ? ("Inserted " + baseName(path) +
+                       " — reboot the Apple II to boot it.")
+                    : ("5.25 mount failed: " + baseName(path));
                 break;
+            }
             case Mode::Disk35:
             case Mode::Unidisk35:
                 if (!controllerReady(m)) ensureSmartPort();

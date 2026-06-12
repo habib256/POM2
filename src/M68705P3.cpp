@@ -365,7 +365,14 @@ void M68705P3::serviceInterrupt()
         pending_interrupts &= ~(1u << 0);
     } else if (pending_interrupts & (1u << 1)) {
         vec = kTmrVector;
-        pending_interrupts &= ~(1u << 1);
+        // LEVEL-sensitive line (MAME set_input_line in tcr_w/timer
+        // expiry): taking the vector does NOT clear the request — the
+        // line stays asserted while TCR.TIR=1 && TCR.TIM=0, so an ISR
+        // that returns without acknowledging (clearing TIR) re-enters
+        // after RTI, exactly as on real silicon. Dropping the pending
+        // bit here turned the line edge-triggered.
+        if (!((timer.tcr & 0x80) && !(timer.tcr & 0x40)))
+            pending_interrupts &= ~(1u << 1);
     }
     const uint8_t hi = rdmem(vec);
     const uint8_t lo = rdmem(vec + 1);

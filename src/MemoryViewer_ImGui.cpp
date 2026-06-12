@@ -328,6 +328,12 @@ void MemoryViewer_ImGui::renderHexView()
                 } else {
                     char hexStr[4];
                     std::snprintf(hexStr, sizeof(hexStr), "%02X", value);
+                    // Unique ID per CELL, not per label: hundreds of cells
+                    // share the same two-digit text (a zeroed page is all
+                    // "00"), which collides ImGui's active-ID tracking and
+                    // intermittently mis-routes double-click-to-edit. The
+                    // edit InputText already keys itself "##e%04X".
+                    ImGui::PushID(currentAddr);
                     if (ImGui::Selectable(hexStr, false,
                             ImGuiSelectableFlags_AllowDoubleClick,
                             ImVec2(cellW - ImGui::GetStyle().ItemSpacing.x, 0))) {
@@ -337,6 +343,7 @@ void MemoryViewer_ImGui::renderHexView()
                             editFocusSet = false;
                         }
                     }
+                    ImGui::PopID();
                 }
 
                 if (pushed) ImGui::PopStyleColor();

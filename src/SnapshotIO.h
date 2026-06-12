@@ -23,8 +23,10 @@
 //   "MEM"      main 64 KB RAM (restored through writable[] — ROM preserved)
 //   "MEX"      (v2) aux RAM + Language-Card RAM + RamWorks banks + paging
 //              soft-switches (iieMemMode) + LC latch flags + DisplayState
-//   "CASS"     CassetteDevice — loaded path, recorded buffer, position
 //   "SLOT0".."SLOT7"   per-slot peripheral payloads (each card decides)
+//
+// (A "CASS" cassette section was once listed here but never implemented —
+// tape state is deliberately outside the snapshot, like disk media.)
 //
 // Unknown sections are skipped at load time (forward compat). Cards that
 // don't have state to persist write a zero-length section, or simply

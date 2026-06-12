@@ -111,6 +111,14 @@ public:
 
     bool isIrqAsserted() const { return slotIrqAsserted(); }
 
+    /// Rewind/snapshot hooks — the SSI263 carries rewindable state
+    /// (registers, mode, phoneme timer, playback cursor). Without these
+    /// a rewind restored RAM/PC mid-speech while the chip kept its
+    /// post-rewind state (Mockingboard SoundII captured its identical
+    /// chip all along; this card had been forgotten).
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
 private:
     struct AudioSrc;
 

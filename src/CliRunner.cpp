@@ -12,6 +12,8 @@
 #include "CliDispatcher.h"
 
 #include "EmulationController.h"
+#include "MachineSnapshot.h"
+#include "SnapshotIO.h"
 #include "Logger.h"
 
 #include <cstdio>
@@ -129,12 +131,42 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 emu.rewindTape();
                 pom2::log().info("CLI", "--rewind: tape rewound");
                 break;
-            case CliAction::Kind::SnapshotSave:
-                pom2::log().info("CLI", "--snapshot-save: not yet wired in MainWindow");
+            case CliAction::Kind::SnapshotSave: {
+                // Same machinery as the AI server's POST /snapshot/save
+                // (AiControlServer::handleSnapshotSave): CPU + 64 KiB RAM
+                // + MEX, captured under the state lock. These two actions
+                // were parser-accepted and documented in --help but were
+                // silent no-ops for a while ("not yet wired").
+                pom2::SnapshotWriter w(a.pathS);
+                if (!w.good()) {
+                    pom2::log().error("CLI",
+                        "--snapshot-save: cannot open " + a.pathS);
+                    break;
+                }
+                std::lock_guard<std::mutex> lk(emu.stateMutex());
+                pom2::captureMachineState(w, emu.cpu(), emu.memory());
+                pom2::log().info("CLI", "--snapshot-save: wrote " + a.pathS);
                 break;
-            case CliAction::Kind::SnapshotLoad:
-                pom2::log().info("CLI", "--snapshot-load: not yet wired in MainWindow");
+            }
+            case CliAction::Kind::SnapshotLoad: {
+                pom2::SnapshotReader r(a.pathS);
+                if (!r.good()) {
+                    pom2::log().error("CLI",
+                        "--snapshot-load: cannot read " + a.pathS +
+                        ": " + r.error());
+                    break;
+                }
+                std::lock_guard<std::mutex> lk(emu.stateMutex());
+                const auto res =
+                    pom2::restoreMachineState(r, emu.cpu(), emu.memory());
+                if (!res.ok) {
+                    pom2::log().error("CLI", "--snapshot-load: " + res.error);
+                    break;
+                }
+                pom2::log().info("CLI",
+                    "--snapshot-load: restored " + a.pathS);
                 break;
+            }
         }
     }
 }

@@ -2031,6 +2031,16 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
         return;
     }
     if (addr >= 0xD000) {
+        // DS1216E No-Slot Clock, WRITE cycles: AppleWin's
+        // `CNoSlotClock::Write(address)` drives the SAME state machine
+        // as reads (the key bit rides on A0 of the ADDRESS; R/W is
+        // irrelevant to the matcher) — some NSC drivers feed the 64-bit
+        // key with STA and never unlocked the clock with only the read
+        // hook wired. Same gating as the read site (II+ Monitor-ROM
+        // window, LC ROM mapped).
+        if (noSlotClock_ && !iieMode && addr >= 0xF800 && !lcReadRam) {
+            noSlotClock_->interceptWrite(addr);
+        }
         languageCardWrite(addr, value);
         return;
     }
@@ -2073,6 +2083,13 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // card and possibly latch activeExpansionSlot to a stale value.
     if (iieMode && ((iieMemMode & MF_INTCXROM) ||
                     (iicProfile_ && iicProfile_->forcesIntCxRom()))) {
+        // NSC write-cycle hook — same $C300/$C800 windows as the
+        // INTCXROM-forced read intercepts.
+        if (noSlotClock_ &&
+            ((addr >= 0xC300 && addr <= 0xC3FF) ||
+             (addr >= 0xC800 && addr <= 0xC8FF))) {
+            noSlotClock_->interceptWrite(addr);
+        }
         // //c-class internal ROM is read-only: writes are absorbed,
         // except the //c+ MIG windows ($CC00/$CE00 in bank 1) which the
         // profile dispatches (drive enable/disable, IWM reset, MIG RAM —
@@ -2089,6 +2106,8 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // MAME `apple2e.cpp` write view runs the same c300 internal handler).
     if (iieMode && addr >= 0xC300 && addr <= 0xC3FF &&
         !(iieMemMode & MF_SLOTC3ROM)) {
+        // NSC write-cycle hook — same window as the read-side intercept.
+        if (noSlotClock_) noSlotClock_->interceptWrite(addr);
         intC8Rom = true;
         return;
     }
@@ -2106,6 +2125,9 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
     // the write is absorbed by ROM, never forwarded to a slot card
     // (the $CFFF deactivate already ran above). Mirrors the read side.
     if (iieMode && intC8Rom) {
+        // NSC write-cycle hook — same $C800-$C8FF window as reads.
+        if (noSlotClock_ && addr >= 0xC800 && addr <= 0xC8FF)
+            noSlotClock_->interceptWrite(addr);
         return;
     }
     // $C800-$CFFF — expansion ROM, conventionally read-only. Forward
