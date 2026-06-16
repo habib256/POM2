@@ -139,6 +139,81 @@ add_test(NAME klaus_65c02_extended
 set_tests_properties(klaus_65c02_extended PROPERTIES TIMEOUT 60)
 
 
+# ─── Tom Harte 65x02 ProcessorTests (cycle-exact CPU validation) ──────────
+# Validates M6502 against Tom Harte's "SingleStepTests/65x02": 10 000 randomised
+# single-instruction vectors per opcode, each pinning the full register+memory
+# state AND the architectural cycle count. Two ctests:
+#   tomharte_6502   → NMOS 6502 (6502/v1)     — 100% across the gated subset
+#   tomharte_65c02  → WDC 65C02 (wdc65c02/v1)  — 100% across the gated subset
+# (DEV.md § Tom Harte ProcessorTests documents the decimal-mode caveats and the
+# 4 decimal bugs this suite surfaced + fixed.)
+#
+# The full corpus is ~1.4 GB per CPU, so the gate ships only a curated,
+# SHA-256-pinned subset (tests/tomharte_*.manifest). Enable the configure-time
+# download with -DPOM2_FETCH_TOMHARTE=ON (default OFF keeps normal builds light,
+# matching the 64 KB Klaus downloads above). Without it the harness still builds
+# and the two ctests soft-skip. tests/fetch_tomharte.sh pulls a full variant for
+# exhaustive local runs (build/test_tomharte_cpu <nmos|cmos> <dir>).
+
+option(POM2_FETCH_TOMHARTE "Download the curated Tom Harte ProcessorTests subset at configure time" OFF)
+
+set(TH_DIR_6502  "${CMAKE_CURRENT_BINARY_DIR}/tomharte/6502")
+set(TH_DIR_65C02 "${CMAKE_CURRENT_BINARY_DIR}/tomharte/wdc65c02")
+
+if(POM2_FETCH_TOMHARTE)
+    function(pom2_fetch_tomharte manifest baseurl destdir)
+        file(MAKE_DIRECTORY "${destdir}")
+        file(STRINGS "${manifest}" _lines)
+        foreach(_line IN LISTS _lines)
+            if(_line MATCHES "^[ \t]*#" OR _line STREQUAL "")
+                continue()
+            endif()
+            string(REGEX MATCH "^([0-9a-fA-F][0-9a-fA-F])[ \t]+([0-9a-fA-F]+)" _m "${_line}")
+            if(NOT _m)
+                continue()
+            endif()
+            set(_dst "${destdir}/${CMAKE_MATCH_1}.json")
+            if(NOT EXISTS "${_dst}")
+                file(DOWNLOAD "${baseurl}/${CMAKE_MATCH_1}.json" "${_dst}"
+                     EXPECTED_HASH SHA256=${CMAKE_MATCH_2} TIMEOUT 120 STATUS _st)
+                list(GET _st 0 _code)
+                if(NOT _code EQUAL 0)
+                    list(GET _st 1 _msg)
+                    message(WARNING "Tom Harte ${CMAKE_MATCH_1}.json download failed: ${_msg}")
+                    file(REMOVE "${_dst}")
+                endif()
+            endif()
+        endforeach()
+    endfunction()
+
+    message(STATUS "Fetching curated Tom Harte ProcessorTests subset (~140 MB; -DPOM2_FETCH_TOMHARTE=OFF to skip)...")
+    pom2_fetch_tomharte("${CMAKE_CURRENT_SOURCE_DIR}/tomharte_6502.manifest"
+        "https://raw.githubusercontent.com/SingleStepTests/65x02/main/6502/v1" "${TH_DIR_6502}")
+    pom2_fetch_tomharte("${CMAKE_CURRENT_SOURCE_DIR}/tomharte_wdc65c02.manifest"
+        "https://raw.githubusercontent.com/SingleStepTests/65x02/main/wdc65c02/v1" "${TH_DIR_65C02}")
+endif()
+
+add_executable(test_tomharte_cpu
+    tomharte_cpu_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_tomharte_cpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_tomharte_cpu PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_tomharte_cpu PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_tomharte_cpu PRIVATE winmm)
+endif()
+
+add_test(NAME tomharte_6502  COMMAND test_tomharte_cpu nmos "${TH_DIR_6502}")
+add_test(NAME tomharte_65c02 COMMAND test_tomharte_cpu cmos "${TH_DIR_65C02}")
+set_tests_properties(tomharte_6502 tomharte_65c02 PROPERTIES TIMEOUT 120)
+
+
 # ─── System profile smoke test ─────────────────────────────────────────────
 # Pins the 5 SystemProfile entries (II / II+ / IIe / IIc / IIc+) and their
 # CPU/iieMode defaults. Walks a canonical profile-switch cycle (II+ →

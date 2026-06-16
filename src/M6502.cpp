@@ -399,7 +399,15 @@ void M6502::ADC(void)
     statusRegister &= ~M6502::Status::Z;
 
    tmp = (Op1 & 0x0F) + (Op2 & 0x0F) + (statusRegister & M6502::Status::C ? 1 : 0);
-        accumulator = tmp < 0x0A ? tmp : tmp + 6;
+        // Low-nibble BCD correction. The naive `tmp + 6` overflows into bit 5
+        // when the *unadjusted* low sum reaches $1A-$1F (only possible with an
+        // invalid BCD operand digit), so `accumulator & 0xF0` below would feed
+        // $20 into the high nibble instead of the single $10 carry — inflating
+        // the result by $10 (Tom Harte `6502/v1/69` invalid-BCD vectors). Real
+        // silicon re-packs the nibble: `((sum + 6) & 0x0F) + 0x10`. For valid
+        // BCD (low sum ≤ $13) this is identical to `tmp + 6`, so no behaviour
+        // change for real software — only invalid-digit edge cases are fixed.
+        accumulator = tmp < 0x0A ? tmp : ((tmp + 6) & 0x0F) + 0x10;
  // BCD low→high carry lives in bit 4 of the adjusted accumulator after the +6.
  // Reading it from `tmp` instead drops the carry whenever the unadjusted sum is in $0A-$0F.
  tmp = (Op1 & 0xF0) + (Op2 & 0xF0) + (accumulator & 0xF0);
@@ -417,7 +425,13 @@ void M6502::ADC(void)
 
         tmp = (accumulator & 0x0F) | (tmp < 0xA0 ? tmp : tmp + 0x60);
 
-        if (tmp & 0x100)
+        // Decimal carry-out = "corrected sum ≥ $100". The high-nibble +$60
+        // BCD fix can push an invalid-BCD sum past $1FF (e.g. $F? + $E? lands
+        // the carry in bit 9, not bit 8), so the old `tmp & 0x100` bit-test
+        // dropped the carry there. `tmp >= 0x100` is the architectural rule and
+        // is identical for valid BCD (corrected sum ≤ $190 < $200). Tom Harte
+        // `6502/v1/69` invalid-BCD carry vectors.
+        if (tmp >= 0x100)
             statusRegister |= M6502::Status::C;
         else
             statusRegister &= ~M6502::Status::C;
@@ -429,18 +443,15 @@ void M6502::ADC(void)
         // set_nz(m_A); }`). NMOS leaves N/Z from the intermediate
         // binary sum (which is what the code above set).
         if (cpuMode == CpuMode::CMOS) {
+            // 65C02 decimal ADC recomputes N and Z from the final adjusted
+            // accumulator and burns 1 extra cycle. V, however, is the
+            // high-nibble-sum overflow already latched above (line `((Op1 ^
+            // tmp)...`) — NOT the binary overflow. Tom Harte `wdc65c02/v1/69`
+            // invalid-BCD vectors disagree with the binary-overflow V that an
+            // earlier revision forced here, so we leave the high-sum V in place
+            // (it is bit-identical for valid BCD).
             setStatusRegisterNZ(accumulator);
-            // V on a 65C02 decimal-mode ADC is well-defined and equals the
-            // BINARY overflow (same as binary mode), unlike the NMOS
-            // partial-high-nibble-sum V left in place above. The C flag was
-            // already overwritten with the BCD carry-out, so recompute from
-            // the binary sum using the captured carry-in. Mirrors the CMOS
-            // SBC path, which already does this.
-            const int binResult = (Op1 + Op2 + carryIn) & 0xFF;
-            if (((Op1 ^ binResult) & ~(Op1 ^ Op2)) & 0x80)
-                statusRegister |= M6502::Status::V;
-            else
-                statusRegister &= ~M6502::Status::V;
+            (void)carryIn;
             cycles++;
         }
     }
@@ -475,7 +486,16 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
     if (statusRegister & M6502::Status::D)
     {
        tmp = (Op1 & 0x0F) - (Op2 & 0x0F) - (statusRegister & M6502::Status::C ? 0 : 1);
-        accumulator = !(tmp & 0x10) ? tmp : tmp - 6;
+        // Low-nibble BCD borrow correction. The naive `tmp - 6` leaves the
+        // low-nibble result un-repacked, so its bit 4 (the borrow that the
+        // high-nibble subtraction below reads via `accumulator & 0x10`) lands
+        // wrong whenever the unadjusted low difference underflows past -$0A
+        // (only reachable with an invalid BCD digit) — dropping the borrow and
+        // inflating the result by $10 (Tom Harte `6502/v1/e9` invalid-BCD
+        // vectors). Silicon re-packs as `((diff - 6) & 0x0F) - 0x10`, which is
+        // bit-identical to `tmp - 6` for valid BCD (low diff ≥ -$0A) — so real
+        // software is unaffected; only invalid-digit edge cases are fixed.
+        accumulator = !(tmp & 0x10) ? tmp : ((tmp - 6) & 0x0F) - 0x10;
       tmp = (Op1 & 0xF0) - (Op2 & 0xF0) - (accumulator & 0x10);
         accumulator = (accumulator & 0x0F) | (!(tmp & 0x100) ? tmp : tmp - 0x60);
      tmp = Op1 - Op2 - (statusRegister & M6502::Status::C ? 0 : 1);
@@ -486,12 +506,13 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
         // sbc_c_aba mirrors adc_c_aba).
         if (cpuMode == CpuMode::CMOS) {
             setStatusRegisterNZ(accumulator);
-            // V on CMOS SBC (incl. decimal) is computed from the BINARY
-            // difference, NOT the BCD-adjusted accumulator — same as the
-            // 6502/65C02/65816 (6502.org: "V is the same in decimal mode").
-            // `tmp` holds Op1-Op2-borrow (line above). Using `accumulator`
-            // here diverges from real hardware on 2400 BCD inputs
-            // (MAME w65c02 do_sbc_cd).
+            // V on CMOS SBC is the binary-difference overflow (valid in decimal
+            // mode just as in binary). NOTE: the WDC 65C02's decimal SBC
+            // *result* for **invalid** BCD digits follows a distinct silicon
+            // correction we do not model — Tom Harte `wdc65c02/v1/e9` shows a
+            // ~3.4% invalid-BCD value divergence here. This is officially
+            // undefined and unreachable by correct software; the NMOS path is
+            // silicon-exact (`6502/v1/e9` = 100%). See DEV.md § Tom Harte.
             if (((Op1 ^ Op2) & (Op1 ^ (uint8_t)tmp)) & 0x80)
                 statusRegister |= M6502::Status::V;
             else

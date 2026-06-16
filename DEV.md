@@ -39,6 +39,45 @@ abs,X=4, zp=3 ($5C left at 8). Pinned: `cmos_6502_smoke_test`,
 `cpu_cycle_count_test`. `setProgramCounter()` is the Klaus harness
 back-door.
 
+### Tom Harte 65x02 ProcessorTests (cycle-exact gate)
+
+`tomharte_cpu_test <nmos|cmos> <dir>` runs Tom Harte's
+[SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) — 10 000
+randomised single-instruction vectors per opcode, each pinning full
+register+memory state + the architectural cycle count (hand-rolled JSON
+scanner, no vendored lib). The core is **instruction-stepped** (`run(1)` = one
+opcode) and `Memory::memRead/Write` are **non-virtual** (no per-cycle bus
+hook), so we validate **final A/X/Y/SP/PC + RAM + cycle count ==
+`len(cycles[])`** — the 6 architectural P flags only (B/unused are phantom,
+caught indirectly via stack RAM). This is exactly the timing-bug class
+`cpu_cycle_count_test` was built for, generalised to every opcode × 10 000
+states.
+
+- **NMOS 6502** (`6502/v1`): **100%** on the gated 41-opcode set (410 000
+  vectors), incl. decimal ADC/SBC + the NMOS `JMP (ind)` page bug.
+- **WDC 65C02** (`wdc65c02/v1` — the only published variant with Rockwell bit
+  ops AND WAI/STP, = POM2's table): 100% except decimal **SBC on invalid BCD
+  digits** (`e9`, ~3.4%) — the WDC's distinct, officially-undefined silicon
+  correction we don't model (unreachable by correct software). `69` (ADC) is
+  silicon-exact on both CPUs.
+
+Four real decimal bugs the suite surfaced + fixed in `M6502::ADC/SBC` — all
+**provably identical for valid BCD**, only invalid-digit edge cases change
+(cpu_cycle_count_test's decimal-SBC-V pin + Klaus stay green):
+1. ADC low nibble `tmp+6` overflowed bit 5 on invalid digits → high nibble took
+   `$20` not the `$10` carry. Fix `((tmp+6)&0x0F)+0x10`.
+2. ADC decimal carry tested `tmp & 0x100`, but the `+$60` high fix can push the
+   sum to bit 9 (`$240`). Fix `tmp >= 0x100`.
+3. ADC CMOS V was forced to binary-overflow; WDC keeps the high-nibble-sum V.
+4. SBC low nibble `tmp-6` left bit 4 (the borrow the high nibble reads)
+   un-repacked. Fix `((tmp-6)&0x0F)-0x10`.
+
+Gate: curated SHA-256-pinned subset (`tests/tomharte_*.manifest`); the
+configure-time download is gated behind `-DPOM2_FETCH_TOMHARTE=ON` (default OFF
+— full corpus is ~1.4 GB/CPU). `tests/fetch_tomharte.sh <variant> <dir>` pulls
+a full 256-opcode variant for exhaustive runs. Pinned: `tomharte_6502`,
+`tomharte_65c02`.
+
 ## Memory
 
 ### `loadAppleIIRom` dump shapes

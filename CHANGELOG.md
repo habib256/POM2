@@ -6,6 +6,51 @@ exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
 ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
 courante → `DEV.md`.
 
+## 2026-06-16 (Tom Harte 65x02 ProcessorTests — validation cycle-exacte)
+
+Ajout de la suite Tom Harte [`SingleStepTests/65x02`](https://github.com/SingleStepTests/65x02)
+— 10 000 vecteurs aléatoires par opcode pinant l'état complet (registres +
+mémoire) **et** le nombre de cycles. Harness data-driven `tomharte_cpu_test
+<nmos|cmos> <dir>` (scanner JSON maison, aucune lib vendorée), gate ctest
+curé + SHA-pinné (`tomharte_6502` / `tomharte_65c02`), download derrière
+`-DPOM2_FETCH_TOMHARTE=ON` (corpus complet ~1.4 Go/CPU → `tests/fetch_tomharte.sh`
+pour les runs exhaustifs des 256 opcodes).
+
+Résultats : **NMOS 6502 = 100 %** sur 41 opcodes (410 000 vecteurs, décimal
+inclus) ; **WDC 65C02 = 100 %** partout sauf le SBC décimal sur chiffres BCD
+**invalides**.
+
+La suite a débusqué **4 vrais bugs décimaux** dans `M6502::ADC/SBC`, tous
+**prouvablement identiques pour le BCD valide** (seuls les chiffres invalides —
+jamais produits par du logiciel correct — changent), d'où zéro risque de
+régression (`cpu_cycle_count_test` + Klaus restent verts) :
+
+- **ADC nibble bas** : `tmp+6` débordait sur le bit 5 quand la somme du nibble
+  bas atteignait `$1A-$1F` (chiffre BCD invalide) → `accumulator & 0xF0`
+  injectait `$20` au lieu du report unique `$10`, gonflant le résultat de `$10`.
+  Le silicium re-packe : `((tmp+6)&0x0F)+0x10`.
+- **ADC carry décimal** : testait `tmp & 0x100`, mais la correction `+$60` du
+  nibble haut peut pousser une somme BCD-invalide jusqu'au bit 9 (`$240`, bit 8
+  à 0) → carry perdu. Fix `tmp >= 0x100` (identique pour BCD valide ≤ `$190`).
+  Piège : un `int tmp` faisait croire que `& 0x100` suffisait — c'est le report
+  monté en bit 9 qui trahit, visible seulement via instrumentation.
+- **ADC V (CMOS)** : était forcé à l'overflow binaire ; le WDC utilise le V
+  « high-nibble-sum » déjà calculé ligne ~421. Suppression de l'écrasement.
+- **SBC nibble bas** : `tmp-6` laissait le bit 4 (le borrow que le nibble haut
+  lit via `accumulator & 0x10`) non re-packé → borrow perdu, résultat +`$10`.
+  Fix `((tmp-6)&0x0F)-0x10`.
+
+Piège documenté (non corrigé) : le SBC décimal du WDC 65C02 sur BCD **invalide**
+suit une correction silicium *distincte* du NMOS (officiellement indéfinie,
+erreurs ±1 data-dependent) qu'on ne modélise pas — `e9` diverge à ~3.4 % sur
+`wdc65c02/v1`, le NMOS étant exact (`6502/v1/e9` = 100 %). Opcode exclu du gate
+CMOS, tracé dans `tests/tomharte_wdc65c02.manifest`.
+
+Note d'archi : cœur instruction-stepped + `Memory::memRead/Write` non virtuels →
+on valide l'état final + le compte de cycles (pas l'ordre bus par-cycle), ce qui
+couvre exactement la classe de bugs de timing (cf. le sous-comptage RMW
+historique de `cpu_cycle_count_test`).
+
 ## 2026-06-12 (vague 4 : périphériques restants, UI, snapshot — oracle MAME)
 
 Quatre chasseurs en lecture seule sur les zones jamais auditées (Grappler/

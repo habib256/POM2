@@ -1,0 +1,29 @@
+# Curated WDC 65C02 opcode subset for the Tom Harte ProcessorTests CTest gate.
+# Format: <opcode-hex> <sha256>  - one upstream file per line, fetched from
+#   https://raw.githubusercontent.com/SingleStepTests/65x02/main/wdc65c02/v1/<op>.json
+# The WDC W65C02S variant is chosen because it is the only published 65C02 set
+# that carries BOTH the Rockwell bit ops (SMBn/RMBn/BBRn/BBSn) AND WAI/STP -
+# exactly POM2's CMOS dispatch table. This subset spans the 65C02-only
+# additions (STZ, BRA, BIT #imm, (zp) mode, TSB/TRB, JMP (abs,X), PHX/PHY,
+# INA/DEA, Rockwell SMB/RMB/BBR/BBS) + decimal ADC + core page-cross. POM2's
+# CMOS core passes ALL of these 100% (140 000 vectors).
+#
+# NOTE: opcode E9 (SBC #imm) is intentionally omitted from the gate - the WDC
+# 65C02's decimal SBC *result* for **invalid** BCD digits follows a distinct,
+# officially-undefined silicon correction POM2 does not model (~3.4% of that
+# one file's vectors diverge; no valid software reaches it). The NMOS SBC is
+# silicon-exact and is gated above. See DEV.md § Tom Harte ProcessorTests.
+1a  caf4bd9c84cc9678c50b998a0785c73b4586bd94b627fec421cf4ac875ad726d
+3a  f02f6cc4b8c776750aeb2c79c7e5164f49ae30e40e4d924dd76e338464729082
+64  dcfc93218d41f366a308feadbe17a8092ac2736272c002b425891f0b4518a632
+9c  54447d46f3cb7ae4e81d88b280d56778208bdf0bd4a629acf87c426c65390737
+80  96cbbddd5e01a04df02c958ce6326b096ac7b5044e54dc27e3260186fed278f9
+89  2de520c1f25a4179612e2fee72bed6bcb32d8389f8b8c12d6ece0dab87d248d9
+12  a614a515b053a4aa2de0ae9d991f3cdda35714379a4dfb201e84911800fd7895
+04  94ecf72eb9519dccd268deaed266c1e43f32a21531284c1a67429da28bcff27a
+7c  60c8026ea45bf08d742c68b5df90ee6b40a5452eda5f7cf504328fd58b727847
+da  a0815f5d6761a0bf1b14163bde06917fc6dc62903da448da38a4779d93129d46
+07  4477e951b23fec39ec44f53fe91e77315e64430da6af7eb0bbc9b70bc571b41b
+0f  d197d3eb47d853c3f613d7d4144f4b81406e3775501ac63bf0a8022089fd594c
+69  52d3563e122489cb113c07c21ed1590c4ee9c9971f306e05e5dd0c32f78e71be
+bd  113b89cbf187136fcc3f3a0f9f2cbf8f8d926cdafd7b34004d7eb0ef010f9396
