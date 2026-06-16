@@ -1,0 +1,22 @@
+# Curated NMOS 6502 opcode subset for the Tom Harte ProcessorTests CTest gate.
+# Format: <opcode-hex> <sha256>  - one upstream file per line, fetched from
+#   https://raw.githubusercontent.com/SingleStepTests/65x02/main/6502/v1/<op>.json
+# Each file holds 10 000 single-instruction vectors. This subset spans every
+# addressing-mode timing class + the historically fragile paths (RMW, branch
+# page-cross, JMP-indirect NMOS bug, JSR/RTS/BRK/RTI, PLP flag-load, decimal
+# ADC/SBC). POM2's NMOS core passes ALL of these 100% (140 000 vectors).
+# Run the full 256-opcode set with tests/fetch_tomharte.sh for exhaustive runs.
+a9  40ec9bdd6ecd6d37926b3c0256f6ae0071ee126caf82c67909b6489b90c681cd
+a5  b56e9d48efac9a3e210792b2a0fb7bae891f6f35816affacea379f1afdb4407b
+bd  ca39c1aa2a51a07e942528f284e65fda0dcb2497c85643eb06a68af5ec31c99f
+b1  1fe133601c1d2e81b7c03a68aad2819d9118895155ec56b9a953f09b778ce389
+a1  89a2aa0621f461393e77cdf18879d8e64e981febd1fb09d8776a23bbc2453075
+9d  4ca962a72a90dbe01aa9823059cea1261fae699e7c081ee20c5a570489b487b2
+0e  ef69870cb14cb655d4bf39c2f70104ea977d96f978f2d896a4562a9eb0aa4d07
+fe  ab9bed36ae8ba5b3f4738bea6c2fb424304d1dcd2c7131ccab35f5d956bd0716
+6c  49b7891f9b4ae192a289b5dcf4d7fdea2d87a703205673d9411fe8ad2769cbbd
+20  89802c388dffbc9f2b978a4a0526d7b358ca91083045c4c802dd70d96bd15f16
+00  cd255389bacb969ff028c67375e7d0fed4065bb9405a8432de4a7521e69d1024
+40  6d94119e50f14fa56dae56f0a00656cc28c69e8368cfb1299d4289bf9fcbc501
+69  cd05943c2a67e3b38541bdaeca9f64170863fa15da38c2cad21e7039c6bce10b
+e9  ac2d3a110732d1a40036f1cf9d47480237eb1aaac217640c9da42e63486c5752

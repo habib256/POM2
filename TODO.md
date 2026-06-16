@@ -14,7 +14,7 @@ Référence canonique de ce qui est porté et avec quel niveau. Les
 
 | #  | Sous-système                  | Parité           | Refs MAME / AppleWin                                                     | Gaps connus                                                                              |
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`                                              | 🟢 $5C 8-cyc résiduel ; style hérité                                                     |
+| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst` ; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte (décimal inclus) ; 🟡 WDC SBC décimal BCD-invalide non modélisé (`e9`, indéfini) ; 🟢 $5C 8-cyc résiduel |
 | 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs à extraire)                                         |
 | 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` ; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, bus flottant `$C05x`, page-flip DROL, RVB Chat Mauve : faits) |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
