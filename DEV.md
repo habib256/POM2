@@ -90,7 +90,7 @@ a full 256-opcode variant for exhaustive runs. Pinned: `tomharte_6502`,
 - **32 KB** //c/+ dumps: TWO 16 KB banks side-by-side (bank 0 lower
   = cold-reset entry; bank 1 upper = alt firmware via `$C028`
   ROMBANK). `pickLower16KFor32K=true`; upper stashed into
-  `iicAltFirmware`. Both halves carry valid-looking reset vectors —
+  `IIcClassProfile::altFirmware_`. Both halves carry valid-looking reset vectors —
   profile is source of truth.
 
 ### //c-class detection (MAME `apple2e.cpp:1275-1299` content probe)
@@ -101,9 +101,9 @@ a full 256-opcode variant for exhaustive runs. Pinned: `tomharte_6502`,
 - `payload[0x3BBF]==0x05` (after //c match) → `isIIcPlus=true`
   (gates on-board IWM + MIG). Plain //c uses `A2BUS_DISKIING` at
   slot 6 (MAME `apple2c()` `apple2e.cpp:5168-5188`).
-- `iicHasAltBank` is narrower: true only on 32 KB dumps providing
-  an alt-firmware bank. 16 KB rev-255 //c has `isIIcClass=true` but
-  `iicHasAltBank=false`.
+- `IIcClassProfile::hasAltBank_` is narrower: true only on 32 KB dumps
+  providing an alt-firmware bank. 16 KB rev-255 //c has `isIIcClass=true`
+  but `hasAltBank_=false`.
 
 ### MemoryProfile (//c-class strategy)
 
@@ -232,13 +232,15 @@ RGBA. Reads `Memory::getDisplayState()` (mutex copy) + flat RAM.
 UI uploads via `glTex(Sub)Image2D`. Text flash via
 `frame_number() & 0x10` (MAME parity).
 
-Nine `HiResMode`:
+Ten `HiResMode`:
 - `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups,
   glow (MAME `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
 - `ChatMauveRGB` — only with `LeChatMauveCard`.
 - `ColorCompositeOE` — OpenEmulator-style true NTSC simulation
   via GLSL shader (see § Composite NTSC shader below).
+- `ColorCompositeOECpu` — the same OpenEmulator composite demod run
+  on the CPU into the RGBA framebuffer (no GLSL fallback).
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer
   lerp).
 - `ColorAppleWin` — AppleWin-style IIR-based NTSC simulation
@@ -947,8 +949,8 @@ measures gap in emulated CPU cycles (MAME `floppy.cpp:1532-1620`).
 Wall-clock audio frames would be wrong under disk turbo (~60×):
 PROM's full phase sweep lands in one audio buffer → gap=0 → buzz.
 
-- `gap > 100 ms` (`kSeekJoinMs`) → single-step click.
-- `gap ≤ 100 ms` → seek mode: pick seek sample whose nominal cadence
+- `gap > 50 ms` (`kSeekJoinMs`) → single-step click.
+- `gap ≤ 50 ms` → seek mode: pick seek sample whose nominal cadence
   is closest (2/6/12/20 ms), pitch-scale (`pitch = nominal_ms /
   gap_ms`), loop.
 - No step for `kSeekTimeoutMs` → exit, final `step_1_1`.
@@ -1295,8 +1297,9 @@ $Cn00     JMP $Cn20              (boot vector)
 $Cn01     $20                    ProDOS signature byte
 $Cn03     $00
 $Cn05     $03
-$Cn07     $3C                    SmartPort signature (note: see //c
-                                  on-board variant below — $01 there)
+$Cn07     $01                    ProDOS non-removable block device
+                                  (NOT $3C — that is the Disk II marker;
+                                  see "Stub fixes" below)
 $CnFE     $13                    features/units mask (2 units)
 $CnFF     $50                    driver entry offset
 $Cn0A     JMP $Cn50              (real-HW driver entry, see below)
@@ -1397,12 +1400,17 @@ shares samples + volume/mute persistence.
 
 **Cycle stamping**: `seekPhaseW(phases, emuCycles)` takes
 CPU-cycle counter at strobe edge. `SmartPortHub::onIwmPhases`
-forwards `IWMDevice::emuCycles()`. Strobe cases:
+forwards `IWMDevice::emuCycles()`. The LSTRB rising edge fires
+`strobeWriteRegister(regSelect())`; the register cases (Sony GCR
+map, see `Sony35Drive.cpp` header) are:
 ```
-0x1  step       moved && sound_->step(track_, lastStrobeCycle_)
-0x2  motor on   if (!motorOn_) sound_->motor(true,  hasDisk)
-0x3  motor off  if ( motorOn_) sound_->motor(false, hasDisk)
-0x4  eject      image->eject() ; sound_->click()
+0x0  DirNext    directionIn_ = false (step toward cyl+1)
+0x1  StepOn     moved && sound_->step(track_, lastStrobeCycle_)
+0x2  MotorOn    if (!motorOn_) sound_->motor(true,  hasDisk)
+0x3  EjectOff   no-op (MAME)
+0x4  DirPrev    directionIn_ = true (step toward track 0)
+0x6  MotorOff   if ( motorOn_) sound_->motor(false, hasDisk)
+0x7  EjectOn    image->eject() ; sound_->click()
 ```
 `moved` gates so head bumps at track 0 or 79 don't click. Motor
 transitions edge-only.
@@ -1667,9 +1675,10 @@ via `DiskImage::getNextTransition` (5.25") or
    `ejectDisk`/`selectDrive`/`seekPhaseW`. IWM's `nextTransition`
    queries `DiskImage::getNextTransition(qt, from*2) / 2` (flux events
    in LSS-cycle space; IWM in CPU-cycle space).
-4. `EmulationController::tick(cpuCycleTotal)` pulses IWM once per
-   video frame so the 1-emulated-second drive-disable timer drains
-   when //c+ alt firmware stops poking `$C0Ex`.
+4. `EmulationController::tickFrame()` (and the threaded worker loop)
+   calls `IWMDevice::tick(mem.getCycleCounter())` once per video frame
+   so the 1-emulated-second drive-disable timer drains when //c+ alt
+   firmware stops poking `$C0Ex`.
 
 `iwmAuthoritative` toggle (`Memory::setIWMAuthoritative` or
 `POM2_IWM_AUTHORITATIVE=0`) drops data path back to DiskIICard's LSS
@@ -1777,7 +1786,7 @@ convention per real SSC ROM (6502disassembly.com/a2-rom/SSC). Pinned:
 
 TCP listener on `127.0.0.1:port` (default 6502); one client. 4 KB
 rings; telnet IAC (WILL/WONT/DO/DONT + 2-byte + `$FF $FF` literal)
-swallowed by `swallowTelnetIac` so stock `telnet` connects.
+swallowed by `processTelnetRx` so stock `telnet` connects.
 `TCP_NODELAY` on. Auto-plugged at startup; listener starts only when
 `ssc_listening=true`. LF→CR RX symmetric; raw-mode toggle (default
 OFF). Port + state persisted. Pinned: `ssc_acia_smoke`.
@@ -1858,13 +1867,15 @@ $Cn22  85 36      STA CSWL
 $Cn24  A9 ss      LDA #slotHi
 $Cn26  85 37      STA CSWH
 $Cn28  60         RTS
-$Cn31  8D 91 c0   STA $C0(8+s)1        ; data port write
+$Cn31  8D 90 c0   STA $C0(8+s)0        ; data port write
 $Cn34  60         RTS
 ```
 
-Data port at `$C0(8+s)1`: write enqueues the byte verbatim (no high-bit
-strip — the UI/spoolText() does that), read returns $FF (always
-ready). Other device-select offsets read $FF / writes ignored.
+Data port at `$C0(8+s)0` (decoded on `!(low4 & 0x03)` → offsets
+$0/$4/$8/$C): write enqueues the byte verbatim (no high-bit strip —
+the UI/spoolText() does that), read returns $FF (always ready). A
+write with `low4 & 0x01` set also flips `romBankHigh_` (see below).
+Other device-select offsets read $FF / writes ignored.
 
 The full Pascal 1.1 entry block (PINIT/PREAD/PWRITE/PSTATUS at
 $Cn0D-$Cn10) is **not** implemented — BASIC `PR#n` is the only
@@ -1872,16 +1883,14 @@ documented use case for a printer card in the POM2 software corpus,
 and Pascal printer drivers were rare. Signature bytes alone are
 enough to keep ProDOS's device scanner happy.
 
-**Built-in for //c and //c+** (`SystemProfile.cpp:cfgAppleIIc /
-cfgAppleIIcPlus`) at slot 1, free-slot pick on II / II+ / //e via
-the Slot Configuration panel. The //c built-in is a **POM2-original
-substitution** — real //c shipped a *second* SSC at $C100 (firmware
-labelled "printer port" but electrically serial); we substitute the
-synthetic parallel card so PR#1 from BASIC has a useful sink that
-spools to a host file, matching the macOS print-to-PDF affordance.
-Divergent from MAME's `apple2c` (which keeps the serial SSC at $C100)
-but consistent with POM2's earlier //c liberties (Mouse at sl4 where
-MAME has Mockingboard).
+**Free-slot pick on II / II+ / //e** via the Slot Configuration panel.
+It is **not** a //c/+ built-in: those profiles place a real serial
+`ssc` at slot 1 ("printer port") and slot 2 ("modem port"), matching
+the //c hardware (`SystemProfile.cpp:146,200`, `cfgAppleIIc /
+cfgAppleIIcPlus`). POM2 *used to* substitute a synthetic parallel
+PrinterCard at the //c slot-1 built-in, but that diverged from the
+real //c serial printer port (and from MAME's `apple2c`) and was
+reverted — see the comment at `SystemProfile.cpp:127`.
 
 Pinned: `printer_card_smoke` — ROM fingerprint + data-port spool
 semantics + CPU-driven `PR#1` + 3 COUT-style writes flow.
@@ -1901,21 +1910,23 @@ card. Catalog key `"grappler"`, default slot 1. Adds two things over
   warning; the card falls back to a synthetic stub identical in
   shape to `PrinterCard` so `PR#n` still works.
 * **Spool semantics identical to PrinterCard.** Data port at
-  `$C0(8+s)1` enqueues bytes verbatim; the host UI saves the spool
+  `$C0(8+s)0` enqueues bytes verbatim; the host UI saves the spool
   as `.txt`. Grappler-graphic-dump commands (`^I G` / `^I H`) emit
   Epson-style printer escapes — those bytes are spooled too, ready
   for a future "render as raster" mode.
 
-**Bank switching not modelled.** Real Grappler+ exposes the upper
-2 KB of its 4 KB EPROM via a write to a $C0(8+s)X bank-select
-register. POM2 currently only serves the lower 2 KB in the expansion
-window — enough for PR#n detection + the standard graphics-dump
-entry points but not for ROM tools that probe the upper bank. Pin
-to MAME `a2grappler.cpp` on next pass.
+**Bank switching is modelled.** Real Grappler+ exposes the upper
+2 KB of its 4 KB EPROM via a bank-select write. POM2 mirrors this:
+a data-port write with `low4 & 0x01` set raises `romBankHigh_`
+(`GrapplerCard.cpp:78`); the expansion window then serves the upper
+2 KB (`rom_[(offset & 0x7FF) | 0x800]`, `GrapplerCard.cpp:114`).
+Reset / `$Cn00` entry clears it (`:97,121`); the flag round-trips
+through snapshot. `grappler_card_smoke` asserts both banks are
+distinguishable.
 
 Source: markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB
 EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
-+ data-port spool + ROM-load size gate.
++ data-port spool + ROM-load size gate + bank-select round-trip.
 
 ### Mouse Card
 
@@ -2007,7 +2018,7 @@ working mouse.
 
 `JoystickInput` polls all 16 GLFW slots each UI frame (hot-plug).
 One binding drives PADL(0/1) + PB0/1/2. PADL(2/3) read centred
-(127). **Paddle RC** in `Memory::softSwitchAccess`: `$C064-$C067`
+(128). **Paddle RC** in `Memory::softSwitchAccess`: `$C064-$C067`
 returns `0x80` while `(cycleCounter - paddleLatchCycle) <
 paddleValue × 11`. `$C070` arms latch. 11-cycle constant = rough
 Apple II RC step.
@@ -2022,8 +2033,10 @@ panels. Owns the screen GL texture. Auto-plugs Disk II in slot 6 if
 ### MainWindow Pimpl-light
 
 `MainWindow.h` is forward-decl-only for every plugin/panel/controller
-— includes only `M6502.h` and `imgui.h`. 18 owning members behind
-`std::unique_ptr<T>`; ctor/dtor/accessor bodies out-of-line so
+— includes only `M6502.h`, `Apple2Display.h` (HiResMode), `Mat4.h`
+(`OrbitCamera` member) and `imgui.h`. 21 owning members behind
+`std::unique_ptr<T>` (plus a `vector<unique_ptr<>>` of disk panels);
+ctor/dtor/accessor bodies out-of-line so
 unique_ptr destruction sees a complete type. Compile-time: `touch
 CassetteDeck_ImGui.h` → 2 TUs rebuild; `touch MainWindow.h` → 4 TUs.
 
@@ -2151,7 +2164,7 @@ encode firmware in OPPOSITE halves. `loadAppleIIRom` takes a
 - //c / //c+ (`apple2c-32Kv0.rom`, `apple2cp.rom`): TWO 16 KB banks.
   Bank 0 in LOWER half (mapped at reset, cold-start at $FA62), bank 1
   in upper (alt firmware: AppleTalk, MouseText, SmartPort).
-  `pickLower=true`; upper stashed into `iicAltFirmware`.
+  `pickLower=true`; upper stashed into `IIcClassProfile::altFirmware_`.
 
 Both halves can carry valid-looking reset vectors → can't auto-detect
 from bytes. **Profile is source of truth.** When the generic
@@ -2161,7 +2174,7 @@ present, the loader emits a warning.
 **$C028 ROMBANK** (//c-class): MAME `apple2e.cpp:1907-1923` flips
 `m_romswitch` on any `$C02x` access when `m_isiic`. POM2 mirrors via
 `isIIcClass`. Alt-firmware read paths additionally require
-`iicHasAltBank` (32 KB only). `resetSoftSwitches` clears `iicRomBank`
+`IIcClassProfile::hasAltBank_` (32 KB only). `resetSoftSwitches` clears `iicRomBank`
 so cold-boot starts in bank 0. On II/II+/IIe, `$C02x` falls through
 to cassette. Pinned: `system_profile_smoke::testIicRomBankSwitch`.
 
@@ -2311,7 +2324,7 @@ native build: no parallel audio thread, but miniaudio's Web Audio
 backend runs in a browser-managed worklet anyway, so the difference
 is invisible in practice.
 
-**CMake Emscripten branch** at `CMakeLists.txt:212-276`:
+**CMake Emscripten branch** at `CMakeLists.txt:262-326`:
 
 - `-sUSE_GLFW=3 -sUSE_WEBGL2=1 -sFULL_ES3=1` — Emscripten ships
   GLFW3 + WebGL2 ports built-in, so the ImGui GLFW/OpenGL3 backends
@@ -2323,11 +2336,14 @@ is invisible in practice.
   mountable at `/persistent` via `FS.mount(IDBFS, …)` in the shell
   preRun hook (see `wasm/shell.html`). **Not yet wired to
   `Settings.cpp`** — see TODO 🟡 [WASM] IDBFS settings persistence.
-- `--preload-file roms@/roms fonts@/fonts` — baked into `POM2.data`
-  at build time. Disks are opt-in via `-DPOM2_WASM_BUNDLE_DISKS=ON`
-  (folds in `disks/`, `disks35/`, `hdv/`, `floppyemu/`).
+- `--preload-file roms@/roms …` — `roms`, plus the default extras
+  `fonts;pic;floppyemu` (`POM2_WASM_BUNDLE`), baked into `POM2.data`
+  at build time. The 3.5" library is opt-in via
+  `-DPOM2_WASM_BUNDLE_DISKS=ON` (appends `disks_3.5`; `disks_5.4` +
+  `hdv` are excluded — too large).
 - `pom2_headless` target is skipped under EMSCRIPTEN
-  (`CMakeLists.txt:332`) — no TCP listener, no terminal.
+  (`if(NOT EMSCRIPTEN)` at `CMakeLists.txt:390`) — no TCP listener,
+  no terminal.
 
 **Compile-out gates** (sandbox-incompatible POSIX bridges, guarded
 by `#ifdef __EMSCRIPTEN__`):

@@ -96,8 +96,9 @@ $C000-$C00F  IIe paging (80STORE/RAMRD/RAMWRT/INTCXROM/ALTZP/SLOTC3ROM/
 $C010        Clear keyboard strobe
 $C013-$C018  IIe paging status reads (bit 7 = on)
 $C01E/$C01F  IIe RDALTCHAR / RD80COL
-$C028        //c ROMBANK toggle (any //c-class ROM; alt-firmware reads
-             further require `iicHasAltBank`). Cassette on II/II+/IIe.
+$C028        //c ROMBANK toggle (decoded across $C020-$C02F on any
+             //c-class ROM; alt-firmware reads further require
+             `IIcClassProfile::hasAltBank_`). Cassette on II/II+/IIe.
 $C030-$C03F  Speaker toggle (any access)
 $C050-$C057  Display mode pairs (text/gfx, mixed, page 1/2, lo/hi-res)
 $C05E/$C05F  IIe DHGR enable/disable (AN3 pulses → Le Chat Mauve FIFO)
