@@ -2,9 +2,9 @@
 
 # 🍏 POM2 v0.7 — Apple II Emulator
 
-### *Six machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
+### *Eight machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
 
-🎂 **Celebrating 50 years of Apple (1976 → 2026)** with a cycle-accurate Apple II family emulator: **6 one-click machine presets** (][ · ][+ · //e · //e enhanced · //c · //c+), MAME-faithful CPU and hardware ports, OpenEmulator-grade composite NTSC, a MicroM8-style **3D voxel view**, **time-travel rewind**, mechanical floppy sounds, and a stack of expansion cards from Mockingboard to Phasor — all running in the browser too.
+🎂 **Celebrating 50 years of Apple (1976 → 2026)** with a cycle-accurate Apple II family emulator: **8 one-click machine presets** (][ · ][+ · //e · //e enhanced · //c · //c+ · PAL //e · PAL //c Le Chat Mauve), MAME-faithful CPU and hardware ports, OpenEmulator-grade composite NTSC, a MicroM8-style **3D voxel view**, **time-travel rewind**, mechanical floppy sounds, and a stack of expansion cards from Mockingboard to Phasor — all running in the browser too.
 
 Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 
@@ -13,7 +13,7 @@ Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Linux%20•%20macOS%20•%20Windows%20•%20Web-lightgrey.svg)](#-quick-start)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-orange.svg)](#)
-[![6 machines](https://img.shields.io/badge/Machines-6-success.svg)](#-machine-profiles)
+[![8 machines](https://img.shields.io/badge/Machines-8-success.svg)](#-machine-profiles)
 [![MAME-parity](https://img.shields.io/badge/Hardware-MAME--faithful-yellowgreen.svg)](DEV.md)
 
 ![Apple II Plus](pic/Apple_II_plus.jpg)
@@ -124,7 +124,7 @@ F9 / F11 / F12 and both Alt keys are routed unconditionally — even when ImGui 
 
 ## 🖥️ Machine Profiles
 
-Six one-click machines spanning the line. Switch from `Machine → Profile` or `--preset`. Each switch is a full cold reset that re-plugs built-in cards and re-mounts inserted disks where possible.
+Eight one-click machines spanning the line — six NTSC plus two **PAL (50 Hz)** variants. Switch from `Machine → Profile` or `--preset`. Each switch is a full cold reset that re-plugs built-in cards and re-mounts inserted disks where possible.
 
 | Profile | CPU | Mode | Main ROM probes | Built-in slots (locked) |
 |---|---|---|---|---|
@@ -134,8 +134,12 @@ Six one-click machines spanning the line. Switch from `Machine → Profile` or `
 | **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = ext80 |
 | **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort · sl6 Disk II |
 | **Apple //c+** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort 3.5" · sl6 Disk II |
+| **Apple //e Enhanced PAL** (50 Hz) | 65C02 | IIe | `apple2e.rom` | AUX = ext80 · **PAL timing** |
+| **Apple //c PAL** (Le Chat Mauve) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | same as //c **+ sl7 built-in Le Chat Mauve RGB** · **PAL timing** |
 
-Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`.
+Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`, `iie-pal`, `iic-pal`/`chatmauve`.
+
+> The two PAL profiles carry 312-line / ~50 Hz timing — the cadence French Touch / DIX demos and the Le Chat Mauve RGB Péritel adapter were built for.
 
 > **ROM identity check** — when the generic `apple2.rom` fallback resolves (no profile-specific dump present), the loader warns that the ROM may not match the selected machine.
 
@@ -216,7 +220,7 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 ```bash
 POM2 <disk-image>                   # mount into the right slot + cold-boot
 POM2 --kiosk <disk-image>           # exclusive full-screen, chrome-free, read-only
-POM2 --preset ii|ii+|iie-u|iie|iic|iic+
+POM2 --preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal
 POM2 --snapshot-save out.pom2snap
 POM2 --snapshot-load in.pom2snap
 ```

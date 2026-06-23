@@ -1,570 +1,562 @@
 # POM2 — Changelog
 
-Historique des changements notables, organisé du plus récent au plus
-ancien. Le `git log` reste la source canonique pour la mécanique
-exacte ; ce fichier capture les **« pourquoi »** et les pièges qu'on
-ne veut pas re-découvrir. Backlog actif → `TODO.md`. Implémentation
-courante → `DEV.md`.
+Notable changes, ordered most recent to oldest. The `git log` remains the
+canonical source for the exact mechanics; this file captures the **"why"**
+and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
+Current implementation → `DEV.md`.
 
-## 2026-06-16 (Tom Harte 65x02 ProcessorTests — validation cycle-exacte)
+## 2026-06-16 (Tom Harte 65x02 ProcessorTests — cycle-exact validation)
 
-Ajout de la suite Tom Harte [`SingleStepTests/65x02`](https://github.com/SingleStepTests/65x02)
-— 10 000 vecteurs aléatoires par opcode pinant l'état complet (registres +
-mémoire) **et** le nombre de cycles. Harness data-driven `tomharte_cpu_test
-<nmos|cmos> <dir>` (scanner JSON maison, aucune lib vendorée), gate ctest
-curé + SHA-pinné (`tomharte_6502` / `tomharte_65c02`), download derrière
-`-DPOM2_FETCH_TOMHARTE=ON` (corpus complet ~1.4 Go/CPU → `tests/fetch_tomharte.sh`
-pour les runs exhaustifs des 256 opcodes).
+Added the Tom Harte [`SingleStepTests/65x02`](https://github.com/SingleStepTests/65x02)
+suite — 10,000 random vectors per opcode pinning the full state (registers +
+memory) **and** the cycle count. Data-driven harness `tomharte_cpu_test
+<nmos|cmos> <dir>` (in-house JSON scanner, no vendored lib), curated +
+SHA-pinned ctest gate (`tomharte_6502` / `tomharte_65c02`), download behind
+`-DPOM2_FETCH_TOMHARTE=ON` (full corpus ~1.4 GB/CPU → `tests/fetch_tomharte.sh`
+for exhaustive runs of all 256 opcodes).
 
-Résultats : **NMOS 6502 = 100 %** sur 41 opcodes (410 000 vecteurs, décimal
-inclus) ; **WDC 65C02 = 100 %** partout sauf le SBC décimal sur chiffres BCD
-**invalides**.
+Results: **NMOS 6502 = 100%** on 41 opcodes (410,000 vectors, decimal
+included); **WDC 65C02 = 100%** everywhere except decimal SBC on **invalid**
+BCD digits.
 
-La suite a débusqué **4 vrais bugs décimaux** dans `M6502::ADC/SBC`, tous
-**prouvablement identiques pour le BCD valide** (seuls les chiffres invalides —
-jamais produits par du logiciel correct — changent), d'où zéro risque de
-régression (`cpu_cycle_count_test` + Klaus restent verts) :
+The suite flushed out **4 genuine decimal bugs** in `M6502::ADC/SBC`, all
+**provably identical for valid BCD** (only invalid digits — never produced by
+correct software — change), hence zero regression risk (`cpu_cycle_count_test`
++ Klaus stay green):
 
-- **ADC nibble bas** : `tmp+6` débordait sur le bit 5 quand la somme du nibble
-  bas atteignait `$1A-$1F` (chiffre BCD invalide) → `accumulator & 0xF0`
-  injectait `$20` au lieu du report unique `$10`, gonflant le résultat de `$10`.
-  Le silicium re-packe : `((tmp+6)&0x0F)+0x10`.
-- **ADC carry décimal** : testait `tmp & 0x100`, mais la correction `+$60` du
-  nibble haut peut pousser une somme BCD-invalide jusqu'au bit 9 (`$240`, bit 8
-  à 0) → carry perdu. Fix `tmp >= 0x100` (identique pour BCD valide ≤ `$190`).
-  Piège : un `int tmp` faisait croire que `& 0x100` suffisait — c'est le report
-  monté en bit 9 qui trahit, visible seulement via instrumentation.
-- **ADC V (CMOS)** : était forcé à l'overflow binaire ; le WDC utilise le V
-  « high-nibble-sum » déjà calculé ligne ~421. Suppression de l'écrasement.
-- **SBC nibble bas** : `tmp-6` laissait le bit 4 (le borrow que le nibble haut
-  lit via `accumulator & 0x10`) non re-packé → borrow perdu, résultat +`$10`.
+- **ADC low nibble**: `tmp+6` overflowed onto bit 5 when the low-nibble sum
+  reached `$1A-$1F` (invalid BCD digit) → `accumulator & 0xF0` injected `$20`
+  instead of the single `$10` carry, inflating the result by `$10`.
+  The silicon re-packs: `((tmp+6)&0x0F)+0x10`.
+- **ADC decimal carry**: tested `tmp & 0x100`, but the `+$60` high-nibble
+  correction can push an invalid-BCD sum up to bit 9 (`$240`, bit 8 = 0) →
+  lost carry. Fix `tmp >= 0x100` (identical for valid BCD ≤ `$190`).
+  Pitfall: an `int tmp` made it look like `& 0x100` sufficed — it's the carry
+  rising to bit 9 that betrays it, visible only via instrumentation.
+- **ADC V (CMOS)**: was forced to the binary overflow; the WDC uses the
+  "high-nibble-sum" V already computed at line ~421. Removed the overwrite.
+- **SBC low nibble**: `tmp-6` left bit 4 (the borrow the high nibble reads via
+  `accumulator & 0x10`) un-re-packed → lost borrow, result +`$10`.
   Fix `((tmp-6)&0x0F)-0x10`.
 
-Piège documenté (non corrigé) : le SBC décimal du WDC 65C02 sur BCD **invalide**
-suit une correction silicium *distincte* du NMOS (officiellement indéfinie,
-erreurs ±1 data-dependent) qu'on ne modélise pas — `e9` diverge à ~3.4 % sur
-`wdc65c02/v1`, le NMOS étant exact (`6502/v1/e9` = 100 %). Opcode exclu du gate
-CMOS, tracé dans `tests/tomharte_wdc65c02.manifest`.
+Documented pitfall (not fixed): the WDC 65C02 decimal SBC on **invalid** BCD
+follows a silicon correction *distinct* from the NMOS (officially undefined,
+data-dependent ±1 errors) that we don't model — `e9` diverges at ~3.4% on
+`wdc65c02/v1`, the NMOS being exact (`6502/v1/e9` = 100%). Opcode excluded from
+the CMOS gate, tracked in `tests/tomharte_wdc65c02.manifest`.
 
-Note d'archi : cœur instruction-stepped + `Memory::memRead/Write` non virtuels →
-on valide l'état final + le compte de cycles (pas l'ordre bus par-cycle), ce qui
-couvre exactement la classe de bugs de timing (cf. le sous-comptage RMW
-historique de `cpu_cycle_count_test`).
+Architecture note: instruction-stepped core + non-virtual `Memory::memRead/Write`
+→ we validate the final state + the cycle count (not the per-cycle bus order),
+which covers exactly the class of timing bugs (cf. the historical RMW
+under-count of `cpu_cycle_count_test`).
 
-## 2026-06-12 (vague 4 : périphériques restants, UI, snapshot — oracle MAME)
+## 2026-06-12 (wave 4: remaining peripherals, UI, snapshot — MAME oracle)
 
-Quatre chasseurs en lecture seule sur les zones jamais auditées (Grappler/
-souris LLE/main, couche UI, pile //c-IWM-Sony, snapshot/rewind/cassette),
-puis fixes vérifiés + pins. Suite : 127/127.
+Four read-only hunters over the never-audited areas (Grappler / LLE+hand
+mouse, UI layer, //c-IWM-Sony stack, snapshot/rewind/cassette), then verified
+fixes + pins. Suite: 127/127.
 
-- **Grappler+ : décodage de registres inversé.** Le port de données réel est
-  `!(offset & 3)` ($C0n0/4/8/C) — POM2 spoolait l'offset 1, qui est le
-  **bank select** ROM sur la vraie carte : le firmware 4 Ko authentique
-  imprimait dans le vide, et son poll de statut lisait $FF = « busy + plus
-  de papier » (la pire valeur possible). Réécrit selon MAME grappler.cpp :
-  statut IRQ|DIP|BUSY|PE|SELECT|ACK, bancs $C800 (A0 set / lecture $CnXX
-  reset + astuce A6 de détection d'ACK), IRQ A1/A2 sur le bus. Le stub ROM
-  écrivait aussi via l'offset 1 — d'où des tests verts qui pinaient le stub,
-  jamais le chemin ROM réelle (piège : le test validait l'implémentation
-  contre elle-même).
-- **Sony 3.5" : table de registres alignée sur MAME `mac_floppy_device`.**
-  Bit 3 de l'adresse = ligne HEAD-SELECT (ssW), pas le drive-select IWM ;
-  MotorOff est le strobe 0x6 (0x3 = EjectOff, no-op — l'ancienne table
-  « boot-tuned » y mettait motor-off : un firmware conforme tuait le moteur
-  en croyant annuler une éjection) ; le latch disk-change vit en sense 0x3
-  et se clear par le STROBE DskchgClear (0xC), pas à la lecture ; polarité
-  DIRTN corrigée ; un sense write-protect (0x9) existe enfin — une image
-  3.5" protégée était invisible du firmware (écritures silencieusement
-  perdues). Délai motor-off IWM : 8388608 ticks de l'horloge 7 MHz ≈ 1,17 s
-  (était 1 s CPU, commentaire faux sur l'horloge IWM).
-- **UI : `insertDisk` du panneau Floppy Emu sans `stateMutex`** pendant que
-  le worker streame les nibbles — corruption/UAF potentielle au clic ; tous
-  les chemins voisins verrouillaient. Lectures d'état de Slot Config
-  passées en snapshot-sous-verrou ; `motorOn` du Disk II atomique (lu par
-  l'auto-turbo côté UI) ; PushID par cellule dans le memory viewer (des
-  centaines de cellules « 00 » partageaient le même ID ImGui).
-- **Snapshot : les cartes ayant gagné de l'état n'y participaient pas.**
-  Grappler+ (bancs/ACK/IRQ) et EchoPlus (SSI263 complet — le Mockingboard
-  SoundII capturait la même puce depuis le début) ont maintenant leurs
-  hooks append/load + pins round-trip. `--snapshot-save/load` CLI étaient
-  des **no-ops silencieux** documentés comme fonctionnels — câblés sur la
-  même mécanique que le serveur AI. Doc : la section « CASS » n'a jamais
-  existé.
-- **No-Slot Clock : cycles d'écriture câblés** (parité AppleWin — le bit de
-  clé DS1216E voyage sur A0 de l'ADRESSE, R/W indifférent : les drivers
-  qui nourrissent la clé avec STA ne déverrouillaient jamais l'horloge).
-- **68705 : IRQ timer sensible au niveau** (la prise de vecteur n'efface
-  plus la requête tant que TIR=1/TIM=0 — parité MAME). **Souris LLE** :
-  plus de saut de curseur post-reset (compteurs delta réamorcés depuis
-  l'hôte). Caps de taille sur les .wav/.aci (pré-slurp), garde NaN
-  joystick, timers env `POM2_AUTO_*` corrigés et annulables.
+- **Grappler+: inverted register decode.** The real data port is
+  `!(offset & 3)` ($C0n0/4/8/C) — POM2 spooled offset 1, which is the
+  **ROM bank select** on the real card: the authentic 4 KB firmware printed
+  into the void, and its status poll read $FF = "busy + out of paper"
+  (the worst possible value). Rewritten per MAME grappler.cpp:
+  IRQ|DIP|BUSY|PE|SELECT|ACK status, $C800 banks (A0 set / read $CnXX
+  reset + A6 ACK-detection trick), A1/A2 IRQ on the bus. The ROM stub also
+  wrote via offset 1 — hence green tests that pinned the stub, never the real
+  ROM path (pitfall: the test validated the implementation against itself).
+- **Sony 3.5": register table aligned with MAME `mac_floppy_device`.**
+  Address bit 3 = HEAD-SELECT line (ssW), not the IWM drive-select;
+  MotorOff is strobe 0x6 (0x3 = EjectOff, no-op — the old "boot-tuned" table
+  put motor-off there: a conformant firmware killed the motor thinking it was
+  cancelling an eject); the disk-change latch lives in sense 0x3 and clears
+  via the DskchgClear STROBE (0xC), not on read; DIRTN polarity fixed; a
+  write-protect sense (0x9) finally exists — a protected 3.5" image was
+  invisible to the firmware (writes silently lost). IWM motor-off delay:
+  8388608 ticks of the 7 MHz clock ≈ 1.17 s (was 1 s CPU, with a false
+  comment about the IWM clock).
+- **UI: Floppy Emu panel's `insertDisk` without `stateMutex`** while the
+  worker streams nibbles — potential corruption/UAF on click; all neighboring
+  paths locked. Slot Config state reads moved to snapshot-under-lock;
+  Disk II `motorOn` made atomic (read by the UI-side auto-turbo); per-cell
+  PushID in the memory viewer (hundreds of "00" cells shared the same
+  ImGui ID).
+- **Snapshot: cards that gained state didn't participate.**
+  Grappler+ (banks/ACK/IRQ) and EchoPlus (full SSI263 — the Mockingboard
+  SoundII captured the same chip from the start) now have their append/load
+  hooks + round-trip pins. CLI `--snapshot-save/load` were silent **no-ops**
+  documented as functional — wired onto the same mechanics as the AI server.
+  Doc: the "CASS" section never existed.
+- **No-Slot Clock: write cycles wired** (AppleWin parity — the DS1216E key
+  bit travels on A0 of the ADDRESS, R/W indifferent: drivers feeding the key
+  with STA never unlocked the clock).
+- **68705: level-sensitive timer IRQ** (vector pull no longer clears the
+  request while TIR=1/TIM=0 — MAME parity). **LLE mouse**: no more cursor
+  jump after reset (delta counters re-primed from the host). Size caps on
+  the .wav/.aci files (pre-slurp), joystick NaN guard, `POM2_AUTO_*` env
+  timers fixed and cancellable.
 
-## 2026-06-12 (chasse aux bugs : audit complet validé sur l'oracle MAME)
+## 2026-06-12 (bug hunt: full audit validated against the MAME oracle)
 
-Audit systématique des sous-systèmes (CPU/mémoire, vidéo, audio, stockage,
-threading/cartes), chaque correctif validé contre les sources MAME (citations
-fichier+ligne en commentaire) et épinglé par un test. Suite : 127/127.
+Systematic audit of the subsystems (CPU/memory, video, audio, storage,
+threading/cards), each fix validated against the MAME sources (file+line
+citations in comments) and pinned by a test. Suite: 127/127.
 
-- **Écritures disque LSS mal positionnées angulairement** (la plus grave —
-  corruption silencieuse en config par défaut). `DiskImage::writeFlux`
-  réduisait la fenêtre de splice avec un `startLssCycle % period` brut, alors
-  que la lecture (`getNextTransition`) est ancrée sur `revolutionStart` (port
-  de MAME `find_position`). L'ancre étant arbitraire (2×cpuCycleTotal au
-  motor-on), chaque écriture bit-level atterrissait à `revStart mod period`
-  cellules de là où le contrôleur venait de lire l'adresse — le champ data
-  écrasait une autre zone de la piste. **Piège n°2 du même chemin** : le
-  re-pack cellules→nibbles supposait 8 cellules/octet, mais la timeline de
-  `expandTrackBits` ajoute +2 cellules de padding par $FF de sync — dérive
-  ~4,75 nibbles/secteur sur une .dsk standard. Pourquoi aucun test ne le
-  voyait : `diskii_lss_smoke_test::testLssWrite` **sautait explicitement
-  l'assertion positionnelle**. `writeFlux` prend désormais l'ancre (même
-  convention que la lecture), le re-pack marche la timeline paddée, et le pin
-  positionnel est actif (`disk_writeflux_anchor` + LSS test renforcé).
-- **DHGR : teintes tournées de 90° dans les démods composites OE (CPU+GPU).**
-  Le déphasage sous-porteuse était appliqué **deux fois** (construction des
-  tables sin/cos avec `(k+po)&3` ET indexation avec `(xi+po)&3`). Le
-  commentaire du shader GLSL documentait la mauvaise conclusion : l'ancienne
-  formule GPU (application simple) était la bonne, elle « divergeait » parce
-  que le CPU était faux. HGR (po=0) n'était pas affecté — d'où une calibration
-  « excellente » qui masquait le bug. Piège : `dhgr_phase_signal_test` épinglait
-  le bug **tautologiquement** (son ancre répliquait la formule buggée) — le
-  test dérive maintenant son attendu du chemin LUT MAME indépendant.
-- **DLGR : motif nibble redémarré par demi-cellule de 7 points** au lieu de la
-  phase absolue 14,318 MHz (`paintLoRes40` faisait déjà bien) — couleurs
-  alternées par colonne. Pin : échantillons exacts en phase absolue (le test
-  naïf `sig[i]!=sig[7+i]` est invalide : aux rotl4(1)=2 depuis x=0 et main 1
-  depuis x=7 ≡ 3 (mod 4) donnent la **même séquence** à des phases différentes).
-- **Sound II muet** : l'émulation SSI263 (registres+IRQ) était complète mais
-  `fillAudioBuffer` ne mixait jamais `ssi_->fillAudio()` (seul EchoPlusCard le
-  faisait). **VIA 6522** : l'accès ORA (reg 1) ne clearait pas IFR.CA1 (MAME
-  `CLR_PA_INT()`) → IRQ speech coincée pour les drivers utilisant l'idiome
-  standard ; premier coup de T1 à N+1 au lieu de N+3 (le biais +2 existait déjà
-  pour T2, même rationale DIX). **Phasor natif** : décodage VIA MAME
-  (`$Cs10`→VIA1, `$Cs80`→VIA2, `$Cs90`→broadcast les deux, rien à `$Cs00`).
-  **AY** : enveloppe période 0 = double vitesse (MAME ne clamp pas à 1).
-- **SSC/telnet** : `send()` sans `MSG_NOSIGNAL` → un pair qui coupe salement
-  **tuait le process** (SIGPIPE) ; EAGAIN traité comme fatal + envois partiels
-  silencieusement perdus (casse ADTPro/XMODEM) ; `accept()` bloquant non
-  réveillé par `shutdown()` sur macOS/BSD (le même bug déjà documenté+corrigé
-  dans AiControlServer — porté le pattern `poll()`).
-- **« Apply » de Slot Config écrasait la config slots sur //c** — exactement le
-  bug corrigé à la sortie le 2026-06-10, mais le chemin Apply n'avait pas la
-  garde `builtInSlots`. **`applyProfile` sans verrou** : `stop()` n'attendait
-  pas le parking du worker et la boucle de frame ne re-vérifiait pas `mode` →
-  ROM/SlotBus/disques reconstruits pendant qu'une frame turbo tournait encore
-  (UB). Le worker re-vérifie entre chunks de 4096 cycles et le switch attend
-  `workerParked_`. `--speed` CLI clampé à 2 M comme l'AI server.
-- **2IMG : bit verrou = bit 31** (spec/CiderPress/AppleWin), pas bit 0 — les
-  images verrouillées étaient inscriptibles ; le volume DOS lisait 0 au lieu
-  de 254 sur dump verrouillé sans bit 8. Le test épinglait l'interprétation
-  fausse (écrit d'après le code, pas d'après la spec — piège classique).
-- **CPU NMOS : opcodes non documentés multi-octets** ($x3, $4B/$6B/$8B/$AB/$CB,
-  $1B..$FB) dispatchés comme NOP 1 octet → désync du flux d'instructions (la
-  classe exacte déjà corrigée pour $0B/$2B/$EB) ; $CB/$DB étaient remappés
-  « WAI/STP indéfinis sur NMOS » alors que NMOS y met SBX #imm (2o) et DCP
-  abs,Y (3o). NOP 1 octet : 1 cycle sur 65C02 (fetch seul, MAME ow65c02) vs
-  2 sur NMOS ; WAI/STP 3 cycles. SBC décimal NMOS : V déterministe (différence
-  binaire, MAME `do_sbc_d`) — l'ADC décimal le faisait déjà, V restait
-  périmé côté SBC.
-- **Mémoire IIe/II+** : $C010-$C01F est le miroir strobe clavier sur II/II+
-  (MAME `.mirror(0xf)`, lecture OU écriture — `STA $C01x` ne clearait jamais) ;
-  sur IIe toute écriture $C01x cleare (les lectures $C011-$C01F restent
-  status-only). **Sentinelle $FE** : `iieReadStatus` renvoyait $FE pour « pas
-  un status » — mais `0x80|transchar($7E '~')` == $FE est une lecture légitime
-  → polls RDRAMRD envoyés au floating bus (OFF lu pendant ON). Signal hors
-  bande désormais. **INTC8ROM** : s'arme sur tout accès $C3xx avec
-  SLOTC3ROM=off **y compris sous INTCXROM=on** (UTAIIe 5-28) et sur le chemin
-  écriture ; une écriture $C3xx ne vole plus la fenêtre $C800 à la carte
-  légitime. **Événements vidéo en VBL** : estampillés ligne 192 (« fin de
-  frame ») au lieu d'être clampés à 191 — un switch de mode jeté en VBL (la
-  pratique canonique anti-tearing) ne peint plus de split parasite sur la
-  dernière ligne visible.
-- **Divers validés** : STATUS du HDV renvoie le compte de blocs en X/Y (le
-  crash BITSY déjà corrigé côté SmartPortCard) ; volume 32 Mio exactement
-  65 536 blocs clampé $FFFF (lu 0 avant) ; `writeBackEnabled` propagé aux
-  images au restore de snapshot ; ClockCard ne perd plus l'heure au Ctrl-Reset
-  (uPD1990AC sur pile) ; `/mouse` de l'AI server reconnaît la souris HLE
-  AppleWin (défaut //c) ; VBL souris en cycles profil (PAL 20313) ; horloge
-  PAL : provenance documentée honnêtement (verrouillée ligne 15625×65 par
-  conception ; MAME = 1 016 966 — écart 0,13 % assumé, même classe que
-  l'approximation « device clocks stay NTSC »).
+- **LSS disk writes angularly mispositioned** (the worst — silent corruption
+  in the default config). `DiskImage::writeFlux` reduced the splice window
+  with a raw `startLssCycle % period`, while the read (`getNextTransition`)
+  is anchored on `revolutionStart` (port of MAME `find_position`). The anchor
+  being arbitrary (2×cpuCycleTotal at motor-on), every bit-level write landed
+  `revStart mod period` cells away from where the controller had just read the
+  address — the data field overwrote another area of the track. **Pitfall #2
+  on the same path**: the cell→nibble re-pack assumed 8 cells/byte, but the
+  `expandTrackBits` timeline adds +2 cells of padding per sync $FF — drift of
+  ~4.75 nibbles/sector on a standard .dsk. Why no test caught it:
+  `diskii_lss_smoke_test::testLssWrite` **explicitly skipped the positional
+  assertion**. `writeFlux` now takes the anchor (same convention as the read),
+  the re-pack walks the padded timeline, and the positional pin is active
+  (`disk_writeflux_anchor` + strengthened LSS test).
+- **DHGR: hues rotated 90° in the composite OE demods (CPU+GPU).**
+  The subcarrier phase shift was applied **twice** (sin/cos table construction
+  with `(k+po)&3` AND indexing with `(xi+po)&3`). The GLSL shader comment
+  documented the wrong conclusion: the old GPU formula (single application)
+  was the right one, it "diverged" because the CPU was wrong. HGR (po=0) was
+  unaffected — hence an "excellent" calibration that masked the bug. Pitfall:
+  `dhgr_phase_signal_test` pinned the bug **tautologically** (its anchor
+  replicated the buggy formula) — the test now derives its expectation from
+  the independent MAME LUT path.
+- **DLGR: nibble pattern restarted per 7-dot half-cell** instead of the
+  absolute 14.318 MHz phase (`paintLoRes40` already did it right) — colors
+  alternating per column. Pin: exact samples in absolute phase (the naive
+  `sig[i]!=sig[7+i]` test is invalid: at rotl4(1)=2 from x=0 and main 1 from
+  x=7 ≡ 3 (mod 4) yield the **same sequence** at different phases).
+- **Sound II silent**: the SSI263 emulation (registers+IRQ) was complete but
+  `fillAudioBuffer` never mixed `ssi_->fillAudio()` (only EchoPlusCard did).
+  **VIA 6522**: the ORA access (reg 1) didn't clear IFR.CA1 (MAME
+  `CLR_PA_INT()`) → speech IRQ stuck for drivers using the standard idiom;
+  first T1 strike at N+1 instead of N+3 (the +2 bias already existed for T2,
+  same DIX rationale). **Native Phasor**: MAME VIA decode
+  (`$Cs10`→VIA1, `$Cs80`→VIA2, `$Cs90`→broadcast both, nothing at `$Cs00`).
+  **AY**: envelope period 0 = double speed (MAME doesn't clamp to 1).
+- **SSC/telnet**: `send()` without `MSG_NOSIGNAL` → a peer that disconnects
+  rudely **killed the process** (SIGPIPE); EAGAIN treated as fatal + partial
+  sends silently lost (breaks ADTPro/XMODEM); blocking `accept()` not woken by
+  `shutdown()` on macOS/BSD (the same bug already documented+fixed in
+  AiControlServer — ported the `poll()` pattern).
+- **Slot Config "Apply" overwrote the slot config on //c** — exactly the bug
+  fixed at release on 2026-06-10, but the Apply path lacked the `builtInSlots`
+  guard. **`applyProfile` without lock**: `stop()` didn't wait for the worker
+  to park and the frame loop didn't re-check `mode` → ROM/SlotBus/disks
+  rebuilt while a turbo frame was still running (UB). The worker re-checks
+  between 4096-cycle chunks and the switch waits for `workerParked_`.
+  CLI `--speed` clamped to 2 M like the AI server.
+- **2IMG: lock bit = bit 31** (spec/CiderPress/AppleWin), not bit 0 — locked
+  images were writable; the DOS volume read 0 instead of 254 on a locked dump
+  without bit 8. The test pinned the wrong interpretation (written from the
+  code, not from the spec — classic pitfall).
+- **NMOS CPU: undocumented multi-byte opcodes** ($x3, $4B/$6B/$8B/$AB/$CB,
+  $1B..$FB) dispatched as 1-byte NOP → instruction-stream desync (the exact
+  class already fixed for $0B/$2B/$EB); $CB/$DB were remapped
+  "undefined WAI/STP on NMOS" while NMOS puts SBX #imm (2 bytes) and DCP
+  abs,Y (3 bytes) there. 1-byte NOP: 1 cycle on 65C02 (fetch only, MAME
+  ow65c02) vs 2 on NMOS; WAI/STP 3 cycles. NMOS decimal SBC: deterministic V
+  (binary difference, MAME `do_sbc_d`) — decimal ADC already did it, V stayed
+  stale on the SBC side.
+- **IIe/II+ memory**: $C010-$C01F is the keyboard strobe mirror on II/II+
+  (MAME `.mirror(0xf)`, read OR write — `STA $C01x` never cleared it);
+  on IIe any $C01x write clears it (reads $C011-$C01F stay status-only).
+  **$FE sentinel**: `iieReadStatus` returned $FE for "not a status" — but
+  `0x80|transchar($7E '~')` == $FE is a legitimate read → RDRAMRD polls sent
+  to the floating bus (OFF read while ON). Out-of-band signal now. **INTC8ROM**:
+  arms on any $C3xx access with SLOTC3ROM=off **including under INTCXROM=on**
+  (UTAIIe 5-28) and on the write path; a $C3xx write no longer steals the
+  $C800 window from the legitimate card. **Video events in VBL**: stamped at
+  line 192 ("end of frame") instead of being clamped to 191 — a mode switch
+  thrown in VBL (the canonical anti-tearing practice) no longer paints a
+  spurious split on the last visible line.
+- **Misc validated**: HDV STATUS returns the block count in X/Y (the BITSY
+  crash already fixed on the SmartPortCard side); a 32 MiB volume of exactly
+  65,536 blocks clamped to $FFFF (read 0 before); `writeBackEnabled`
+  propagated to images on snapshot restore; ClockCard no longer loses the time
+  on Ctrl-Reset (battery-backed uPD1990AC); the AI server's `/mouse`
+  recognizes the AppleWin HLE mouse (//c default); mouse VBL in profile cycles
+  (PAL 20313); PAL clock: provenance honestly documented (locked at
+  line 15625×65 by design; MAME = 1,016,966 — assumed 0.13% gap, same class
+  as the "device clocks stay NTSC" approximation).
 
-## 2026-06-10 (//c : gel CPU NMOS, Chat Mauve arrière, config slots préservée)
+## 2026-06-10 (//c: NMOS CPU freeze, rear Chat Mauve, slot config preserved)
 
-- **« POM2 plante quand je sélectionne le profil Apple //c (1984) »** — c'était
-  un **gel CPU**, pas un segfault. Diagnostic : la config de l'utilisateur avait
-  `cpu_mode_override=nmos` (réglage collant, posé une fois sur un II+).
-  `resolveCpuMode` renvoyait donc **toujours NMOS**, y compris pour le //c — qui
-  a un **65C02 soudé**. La ROM //c exécute des opcodes 65C02 (`LDA (zp)`=$B2…)
-  qui **décodent en KIL sur NMOS** (`M6502::Hang` = `PC--` → boucle infinie) →
-  CPU figé → écran mort = « planté ». (Non reproductible en headless car le
-  symptôme est l'émulation figée, pas un crash process ; isolé en analysant
-  `M6502.cpp` + repro de la bascule mid-frame.) **Fix** : `resolveCpuMode`
-  n'honore un override **NMOS** que si le profil est NMOS par défaut
-  (II/II+///e-unenh) ; les machines **65C02-only** (//c, //c+, //e enhanced,
-  variantes PAL) tournent toujours en CMOS. Le menu Machine→CPU **grise** « NMOS
-  6502 » sur ces profils. Répond aussi à « le CPU doit basculer NMOS↔65C02 selon
-  le profil //e/enhanced ». Vérifié : //c résout `CPU = 65C02` malgré
-  l'override.
-- **Le Chat Mauve sur //c (connecteur arrière).** Le //c prenait l'**« Adaptateur
-  IIc »** Le Chat Mauve sur son port vidéo DB-15 (cf. fenarinarsa.com/?p=1370 +
-  CLAUDE.md § profils). POM2 ignorait toute carte sur un profil `noPhysicalSlots`.
-  **Fix** : exception pour `chatmauve` — la carte RVB se branche sur les //c-class
-  (c'est un adaptateur vidéo, pas une carte de slot périphérique). Le panneau Slot
-  Config offre un combo **{(vide), Le Chat Mauve RGB (rear connector)}** sur //c/+
-  (rien d'autre n'est branchable ; le check de doublon limite à un adaptateur).
-  **Le profil « Apple //c PAL (Le Chat Mauve) » câble désormais la carte en dur**
-  (built-in **sl7** = « Adaptateur IIc ») — il portait le nom sans brancher la
-  carte. Sur ce profil le combo des autres slots est grisé (un seul adaptateur),
-  et un `chatmauve` user redondant ailleurs est ignoré (pas de double carte).
-- **Config slots écrasée à la sortie sur //c.** `persistSettings` sauvait le
-  mapping **live** `slotCards`, donc quitter sur //c écrivait les built-ins forcés
-  (`mouseaw`…) par-dessus le choix utilisateur (`slot_4_card=mockingboard` perdu
-  au retour sur //e). **Fix** : ne pas persister les slots forcés par le profil
-  (built-ins + slots vidés par `noPhysicalSlots`, sauf le Chat Mauve
-  user-contrôlable) — le réglage utilisateur reste intact. Même classe que
-  [[pom2-cffa-profile-switch-drop]]. Vérifié : `slot_4_card=mockingboard`
-  préservé après sortie propre sur //c.
+- **"POM2 crashes when I select the Apple //c (1984) profile"** — it was a
+  **CPU freeze**, not a segfault. Diagnosis: the user's config had
+  `cpu_mode_override=nmos` (sticky setting, set once on a II+).
+  `resolveCpuMode` therefore returned **always NMOS**, including for the //c —
+  which has a **soldered 65C02**. The //c ROM runs 65C02 opcodes
+  (`LDA (zp)`=$B2…) that **decode as KIL on NMOS** (`M6502::Hang` = `PC--` →
+  infinite loop) → frozen CPU → dead screen = "crashed". (Not reproducible
+  headless because the symptom is frozen emulation, not a process crash;
+  isolated by analyzing `M6502.cpp` + reproducing the mid-frame switch.)
+  **Fix**: `resolveCpuMode` honors an **NMOS** override only if the profile is
+  NMOS by default (II/II+///e-unenh); the **65C02-only** machines (//c, //c+,
+  //e enhanced, PAL variants) always run in CMOS. The Machine→CPU menu
+  **greys out** "NMOS 6502" on these profiles. Also answers "the CPU should
+  switch NMOS↔65C02 per the //e/enhanced profile". Verified: //c resolves
+  `CPU = 65C02` despite the override.
+- **Le Chat Mauve on //c (rear connector).** The //c took the
+  **"IIc Adapter"** Le Chat Mauve on its DB-15 video port (cf.
+  fenarinarsa.com/?p=1370 + CLAUDE.md § profiles). POM2 ignored any card on a
+  `noPhysicalSlots` profile. **Fix**: exception for `chatmauve` — the RGB card
+  plugs into the //c-class machines (it's a video adapter, not a peripheral
+  slot card). The Slot Config panel offers a combo **{(empty), Le Chat Mauve
+  RGB (rear connector)}** on //c/+ (nothing else is pluggable; the duplicate
+  check limits it to one adapter).
+  **The "Apple //c PAL (Le Chat Mauve)" profile now wires the card in hard**
+  (built-in **sl7** = "IIc Adapter") — it carried the name without plugging in
+  the card. On this profile the other slots' combo is greyed out (a single
+  adapter), and a redundant user `chatmauve` elsewhere is ignored (no double
+  card).
+- **Slot config overwritten on exit on //c.** `persistSettings` saved the
+  **live** `slotCards` mapping, so quitting on //c wrote the forced built-ins
+  (`mouseaw`…) over the user choice (`slot_4_card=mockingboard` lost on return
+  to //e). **Fix**: don't persist profile-forced slots (built-ins + slots
+  cleared by `noPhysicalSlots`, except the user-controllable Chat Mauve) — the
+  user setting stays intact. Same class as
+  [[pom2-cffa-profile-switch-drop]]. Verified: `slot_4_card=mockingboard`
+  preserved after a clean exit on //c.
 
-## 2026-06-10 (DROL cut-scene : lectures $C050-$C057 → bus flottant)
+## 2026-06-10 (DROL cut-scene: $C050-$C057 reads → floating bus)
 
-- **Hang de la cut-scene DROL.** Scan de l'image disque : les overlays de
-  cut-scene (offsets 0x14359/0x143d5/0x14be0 de `Drol.dsk`) se synchronisent
-  par `LDX #$02 / LDA $C050 / CMP #$80 / BNE / DEX / BPL` — trois lectures
-  consécutives du **scanner vidéo** via un soft-switch d'affichage. POM2
-  renvoyait un 0 dur sur les lectures `$C050-$C057` → boucle infinie (le hang
-  historique de LinApple ; AppleWin l'a corrigé en 1.13.0 en implémentant le
-  bus flottant). **Fix** : une lecture `$C050-$C057` bascule le mode ET
-  renvoie `floatingBus()` (MAME `apple2.cpp do_io` fait pareil) ; idem pour le
-  speaker `$C030-$C03F` (latch non pilotée). **Piège évité** : le bloc tenait
-  `stateMutex` et `floatingBus()` le reprend — travail scopé avant le return.
-  Pinné par la section (d) de `vapor_lock` (la boucle exacte du jeu verrouille
-  sur une page HGR remplie de $80, et l'effet de bord TEXT-off est préservé).
+- **DROL cut-scene hang.** Disk image scan: the cut-scene overlays
+  (offsets 0x14359/0x143d5/0x14be0 of `Drol.dsk`) sync via
+  `LDX #$02 / LDA $C050 / CMP #$80 / BNE / DEX / BPL` — three consecutive
+  reads of the **video scanner** through a display soft-switch. POM2 returned
+  a hard 0 on `$C050-$C057` reads → infinite loop (LinApple's historical hang;
+  AppleWin fixed it in 1.13.0 by implementing the floating bus). **Fix**: a
+  `$C050-$C057` read toggles the mode AND returns `floatingBus()` (MAME
+  `apple2.cpp do_io` does the same); likewise for the speaker `$C030-$C03F`
+  (latch undriven). **Pitfall avoided**: the block held `stateMutex` and
+  `floatingBus()` re-takes it — work scoped before the return. Pinned by
+  section (d) of `vapor_lock` (the game's exact loop locks on an HGR page
+  filled with $80, and the TEXT-off side effect is preserved).
 
-## 2026-06-10 (DROL : flips double-buffer vs beam-racing ; Chat Mauve : décodage AppleWin)
+## 2026-06-10 (DROL: double-buffer flips vs beam-racing; Chat Mauve: AppleWin decode)
 
-- **Flicker DROL (page-flips non synchronisés)** — tous modes d'affichage,
-  NTSC comme PAL. Diagnostic par sonde sur le vrai disque
-  (`tests/drol_probe.cpp`, WOZ) : DROL flippe `$C054/$C055` toutes les
-  ~4 frames à des positions **dérivantes** (23/31 flips en zone visible) — du
-  double-buffering libre, PAS du beam-racing (son flipper est auto-modifiant
-  en `$6138` ; le bus flottant de DROL ne sert qu'à la cut-scene, cf. AppleWin
-  1.13.0 « fixed the hang at Drol's cut-scene »). **Pourquoi ça clignotait** :
-  le replay beam-racé peint la bande au-dessus du flip depuis la page que le
-  jeu **redessine déjà** — POM2 lit la RAM au rendu, pas au passage du
-  faisceau → sprites à moitié effacés. (Le vrai faisceau lisait la page
-  encore intacte ; avant la publication par frame, ces events étaient souvent
-  perdus → rendu pleine-page « propre » par accident.) **Fix** : dans
-  `forEachBeamSegment`, une frame dont les events PAGE2 vont tous dans le
-  MÊME sens = flip de buffer → page finale appliquée à toute la frame (= la
-  RAM réellement affichable) ; une frame qui flippe dans les DEUX sens (DIX
-  MODPAGE : page 1 à gauche, page 2 à droite de la même ligne) garde le
-  replay exact. Pinné `drol_pageflip_render` ; `dix_modpage_split` inchangé.
-- **Les 6 painters 560-wide relisaient l'état live** (`renderText80`,
+- **DROL flicker (unsynchronized page flips)** — all display modes, NTSC as
+  well as PAL. Diagnosed by probing the real disk (`tests/drol_probe.cpp`,
+  WOZ): DROL flips `$C054/$C055` every ~4 frames at **drifting** positions
+  (23/31 flips in the visible zone) — free double-buffering, NOT beam-racing
+  (its flipper is self-modifying at `$6138`; DROL's floating bus only serves
+  the cut-scene, cf. AppleWin 1.13.0 "fixed the hang at Drol's cut-scene").
+  **Why it flickered**: the beam-raced replay paints the band above the flip
+  from the page the game is **already redrawing** — POM2 reads RAM at render
+  time, not at beam passage → half-erased sprites. (The real beam read the
+  still-intact page; before per-frame publishing, these events were often lost
+  → accidentally "clean" full-page render.) **Fix**: in
+  `forEachBeamSegment`, a frame whose PAGE2 events all go in the SAME
+  direction = buffer flip → final page applied to the whole frame (= the RAM
+  actually displayable); a frame that flips in BOTH directions (DIX MODPAGE:
+  page 1 left, page 2 right of the same line) keeps the exact replay. Pinned
+  `drol_pageflip_render`; `dix_modpage_split` unchanged.
+- **The 6 560-wide painters re-read the live state** (`renderText80`,
   `renderDhgr`, `renderLoResDouble`, `renderTextChatMauveFgBg`,
-  `renderHgrDuochrome`, `renderHiResChatMauve80` → `mem.getDisplayState()`
-  interne au lieu du `state` de bande) — même classe de bug que celle déjà
-  corrigée sur les painters legacy : les splits mid-frame PAGE2/ALTCHAR
-  étaient ignorés en 560 (c'est pour ça que « Chat Mauve ne clignotait
-  pas » : il masquait les flips). Signatures threadées, état passé partout.
-- **Résolution HGR Chat Mauve** : le décodage couleur écrasait TOUT en blocs
-  de paires alignées (1 couleur / 4 dots = 140 effectif → image « molle »).
-  Porté l'algo AppleWin `RGBMonitor.cpp UpdateHiResRGBCell` : un pixel n'est
-  COULEUR que s'il forme un motif isolé 010/101 avec ses voisins (couleur de
-  sa paire alignée, 2 dots) ; tout le reste est noir/blanc **à la pleine
-  résolution 280 px** — les runs blancs (texte, contours de sprites)
-  retrouvent leur piqué, fidèle à la vraie carte RVB. Goldens `*/hgr*/
-  chatmauve` régénérés ; sémantique pinnée par `le_chat_mauve_smoke` +
-  `display_persistence_smoke` mis à jour.
+  `renderHgrDuochrome`, `renderHiResChatMauve80` → internal
+  `mem.getDisplayState()` instead of the band's `state`) — same class of bug
+  as the one already fixed on the legacy painters: PAGE2/ALTCHAR mid-frame
+  splits were ignored in 560 (that's why "Chat Mauve didn't flicker": it
+  masked the flips). Threaded signatures, state passed everywhere.
+- **Chat Mauve HGR resolution**: the color decode overwrote EVERYTHING in
+  aligned-pair blocks (1 color / 4 dots = 140 effective → "soft" image).
+  Ported the AppleWin `RGBMonitor.cpp UpdateHiResRGBCell` algo: a pixel is
+  COLOR only if it forms an isolated 010/101 pattern with its neighbors
+  (its aligned pair's color, 2 dots); everything else is black/white
+  **at the full 280 px resolution** — the white runs (text, sprite outlines)
+  recover their sharpness, faithful to the real RGB card. `*/hgr*/chatmauve`
+  goldens regenerated; semantics pinned by `le_chat_mauve_smoke` +
+  updated `display_persistence_smoke`.
 
-## 2026-06-10 (Beam-racing PAL : publication par frame vidéo + vitesses 1× par standard)
+## 2026-06-10 (PAL beam-racing: per-video-frame publishing + 1× speeds per standard)
 
-- **Publication du log d'évènements vidéo par frame vidéo** (le hand-off
-  50/60 Hz). L'ancien modèle ouvrait le log à chaque tick CPU du worker
-  (`beginVideoEventFrame`) et l'UI le **volait** au vsync (`takeVideoEvents`
-  fermait le bracket) ; tout évènement enregistré entre le take UI et le tick
-  suivant était **silencieusement perdu** (`recordVideoEvent` no-op bracket
-  fermé). **Pourquoi ça comptait** : en PAL le worker tourne à 50 Hz et l'UI à
-  60 Hz → battement systématique à 10 Hz : ~1 rendu UI sur 6 retombait dans le
-  même tick et recevait un log *vide* (→ `renderInternal`, zéro split), les
-  autres un log *partiel* — les effets mid-scanline French Touch (*Mad
-  Effect*, DIX) clignotaient et perdaient des bandes. Aucun test ne le voyait
-  (ils bracketent de façon synchrone). **Fix** : enregistrement continu ;
-  `Memory::advanceCycles` **publie** `{état de début de frame, events}` au
-  franchissement de chaque frontière de frame vidéo (65 × 262 NTSC / 312 PAL
-  cycles — aligné sur la géométrie du scanner, pas sur le budget 17045/20313
-  du worker) ; `takeVideoEvents` renvoie une **copie** de la dernière frame
-  publiée, re-rendable à volonté par l'UI 60 Hz. Le bracket synchrone reste
-  disponible pour les tests (`legacyEventBracket_`). Un reset purge les deux
-  logs (sinon replay fantôme contre l'état essuyé). Bonus : le chemin WASM
-  (qui n'appelait jamais `beginVideoEventFrame`) gagne le beam-racing.
-  Pinné `video_event_publish`.
-- **`$C019`/VBL suit le standard vidéo** : la détection d'edge VBL
-  (`advanceCycles`) et la lecture `$C019` utilisaient un 262 lignes codé en
-  dur ; une démo PAL qui mesure la période VBL voyait une frame de 17030
-  cycles pendant que le bus flottant balayait 20280 — deux machines
-  contradictoires. Pinné par l'extension de `pal_timing` (§ 4 : lignes
-  262–311 = VBL sous PAL, wrap à 312).
-- **Vitesse 1×/2×/4× dérivée du standard actif** (toolbar, preset `/speed`
-  de l'AI server, restauration du turbo disque re-seedée par `applyProfile`).
-  **Pourquoi** : les 17045 codés en dur faisaient tourner une machine PAL à
-  17045 × 50 Hz = 852 kHz (−16 %) au premier clic « 1× » — effets qui roulent,
-  musique Mockingboard molle. Reste assumé : `MouseCardAppleWin::kCyclesPerVbl`
-  = 17045 (pacing VBL de la HLE souris à 60 Hz même en PAL — sans effet sur
-  les démos, à retraiter avec le port //c).
+- **Publishing the video event log per video frame** (the 50/60 Hz hand-off).
+  The old model opened the log on every worker CPU tick
+  (`beginVideoEventFrame`) and the UI **stole** it at vsync (`takeVideoEvents`
+  closed the bracket); any event recorded between the UI take and the next
+  tick was **silently lost** (`recordVideoEvent` no-op with the bracket
+  closed). **Why it mattered**: in PAL the worker runs at 50 Hz and the UI at
+  60 Hz → systematic 10 Hz beat: ~1 UI render in 6 fell in the same tick and
+  received an *empty* log (→ `renderInternal`, zero splits), the others a
+  *partial* log — the French Touch mid-scanline effects (*Mad Effect*, DIX)
+  flickered and lost bands. No test caught it (they bracket synchronously).
+  **Fix**: continuous recording; `Memory::advanceCycles` **publishes**
+  `{frame-start state, events}` at each crossing of a video-frame boundary
+  (65 × 262 NTSC / 312 PAL cycles — aligned on the scanner geometry, not on
+  the worker's 17045/20313 budget); `takeVideoEvents` returns a **copy** of
+  the last published frame, re-renderable at will by the 60 Hz UI. The
+  synchronous bracket remains available for tests (`legacyEventBracket_`). A
+  reset purges both logs (otherwise a phantom replay against the wiped state).
+  Bonus: the WASM path (which never called `beginVideoEventFrame`) gains
+  beam-racing. Pinned `video_event_publish`.
+- **`$C019`/VBL follows the video standard**: the VBL edge detection
+  (`advanceCycles`) and the `$C019` read used a hard-coded 262 lines; a PAL
+  demo that measures the VBL period saw a 17030-cycle frame while the floating
+  bus swept 20280 — two contradictory machines. Pinned by extending
+  `pal_timing` (§ 4: lines 262–311 = VBL under PAL, wrap at 312).
+- **1×/2×/4× speed derived from the active standard** (toolbar, AI server
+  `/speed` preset, disk-turbo restoration re-seeded by `applyProfile`).
+  **Why**: the hard-coded 17045 ran a PAL machine at 17045 × 50 Hz = 852 kHz
+  (−16%) on the first "1×" click — effects that drag, sluggish Mockingboard
+  music. Remaining assumption: `MouseCardAppleWin::kCyclesPerVbl` = 17045
+  (60 Hz VBL pacing of the mouse HLE even under PAL — no effect on the demos,
+  to be reworked with the //c port).
 
 ## 2026-06-01 (Release v0.7)
 
-- **Bump de version v0.6 → v0.7.** Mise à jour de la chaîne de version dans
-  les **5 emplacements canoniques** recensés par `CLAUDE.md` § Version string
-  locations : `CMakeLists.txt` (`project(... VERSION 0.7 ...)`, qui pilote aussi
-  `CPACK_PACKAGE_VERSION` + le nom de l'archive `build_dist.sh`), `src/main.cpp`
-  (bannière console + titre de fenêtre initial), `src/MainWindow_Slots.cpp`
-  (titre runtime qui écrase celui de `main.cpp` une fois le profil résolu — au
-  constructeur **et** au switch de profil), `src/MainWindow.cpp` (dialogue
-  *About*), et `README.md` (titre). `CLAUDE.md` lui-même mis à jour
-  (`Current release: **v0.7**`). **Pourquoi le noter** : la version vit dans
-  des chaînes dupliquées non dérivées d'une source unique, donc tout bump doit
-  toucher ces points en bloc sous peine de dérive (titre fenêtre vs About vs
-  paquet). Source unique CMake → header générée = item de backlog séparé.
+- **Version bump v0.6 → v0.7.** Updated the version string in the
+  **5 canonical locations** listed by `CLAUDE.md` § Version string locations:
+  `CMakeLists.txt` (`project(... VERSION 0.7 ...)`, which also drives
+  `CPACK_PACKAGE_VERSION` + the `build_dist.sh` archive name), `src/main.cpp`
+  (console banner + initial window title), `src/MainWindow_Slots.cpp`
+  (runtime title that overwrites `main.cpp`'s once the profile is resolved — at
+  the constructor **and** at the profile switch), `src/MainWindow.cpp`
+  (*About* dialog), and `README.md` (title). `CLAUDE.md` itself updated
+  (`Current release: **v0.7**`). **Why note it**: the version lives in
+  duplicated strings not derived from a single source, so any bump must touch
+  these points en bloc on pain of drift (window title vs About vs package).
+  Single CMake source → generated header = separate backlog item.
 
-## 2026-05-31 (Composite : beam-racing du signal + courbe phosphore)
+## 2026-05-31 (Composite: signal beam-racing + phosphor curve)
 
-- **Beam-racing du signal composite.** `fillCompositeSignal` lisait *un seul*
-  `getDisplayState()` de fin de frame : les switches d'affichage mid-scanline
-  (text↔graphics, page flip, DHGR on/off) étaient invisibles dans **tous** les
-  modes composite (`ColorCompositeOE` GPU, `ColorCompositeOECpu`,
-  `ColorAppleWin`) — seuls les modes LUT bénéficiaient du beam-racing
-  (`renderBeamRacing` côté RGBA). **Pourquoi ça comptait** : une démo qui passe
-  du texte au HGR à mi-écran s'affichait entièrement en HGR sous OE/AppleWin.
-  **Fix** : `render()` prend le log d'évènements **une seule fois** et le passe
-  aux deux consommateurs ; `fillCompositeSignal(mem, events)` rejoue le log
-  bande par bande (zéro `signalBuf` → `getDisplayStateAtFrameStart()` →
-  `paintSignalBand(y0,y1)` qui réutilise le même clipping `bandRows`/
-  `bandScanlines` que `renderInternalBand`). Le `state` peint est un local
-  *mutable* pour que les helpers (capturés par référence) voient chaque switch.
-  Log vide → `paintSignalBand(0,192)` = octet-pour-octet l'ancien dispatch
-  (goldens OE GPU/CPU inchangés). **Pièges** : `signalPhaseOffset_` reste une
-  constante par-frame (dernière bande graphique gagne → split HGR↔DHGR
-  mid-frame approximé) ; lo-res clip au block-row (4 lignes), comme le path
-  RGBA. Épinglé `beam_race_composite` (frame text→HGR à la scanline 96 :
-  bande haute = waveform texte, bande basse = waveform HGR, et **pas** HGR en
-  haut comme le bug pré-fix).
-- **Courbe phosphore (CRT gamma).** Le pipeline NTSC signal-level (déjà
-  complet : FIR Y@2.0 MHz / chroma@0.6 MHz, YUV→RGB, PAL line-phase) n'avait
-  pas de réponse phosphore. Ajout d'un `phosphorGamma` (power-law par canal
-  `rgb^γ`) dans `CrtEffectStack`, **après** BCS et **avant** scanlines/mask
-  (le masque atténue la lumière que le phosphore a déjà produite). γ = 1.0 =
-  identité → **aucun golden/parité touché** ; γ > 1 creuse les ombres, γ < 1
-  les relève. C'est la moitié *luminance* du modèle phosphore ; `persistence`
-  est la moitié *temporelle*. Slider « Phosphor curve (gamma) » 0.6–2.6,
-  persisté `ntsc_phosphor_gamma`. NB : effet *glass*, donc actif sous OE en
-  permanence et sous les autres modes quand « CRT effects on all modes » est on.
+- **Composite signal beam-racing.** `fillCompositeSignal` read *a single*
+  end-of-frame `getDisplayState()`: the mid-scanline display switches
+  (text↔graphics, page flip, DHGR on/off) were invisible in **all** composite
+  modes (`ColorCompositeOE` GPU, `ColorCompositeOECpu`, `ColorAppleWin`) —
+  only the LUT modes benefited from beam-racing (`renderBeamRacing` on the
+  RGBA side). **Why it mattered**: a demo that goes from text to HGR mid-screen
+  displayed entirely in HGR under OE/AppleWin. **Fix**: `render()` takes the
+  event log **once** and passes it to both consumers;
+  `fillCompositeSignal(mem, events)` replays the log band by band (zero
+  `signalBuf` → `getDisplayStateAtFrameStart()` → `paintSignalBand(y0,y1)`
+  which reuses the same `bandRows`/`bandScanlines` clipping as
+  `renderInternalBand`). The painted `state` is a *mutable* local so the
+  helpers (captured by reference) see each switch. Empty log →
+  `paintSignalBand(0,192)` = byte-for-byte the old dispatch (OE GPU/CPU
+  goldens unchanged). **Pitfalls**: `signalPhaseOffset_` stays a per-frame
+  constant (last graphics band wins → mid-frame HGR↔DHGR split approximated);
+  lo-res clips at the block-row (4 lines), like the RGBA path. Pinned
+  `beam_race_composite` (text→HGR frame at scanline 96: top band = text
+  waveform, bottom band = HGR waveform, and **not** HGR at the top like the
+  pre-fix bug).
+- **Phosphor curve (CRT gamma).** The signal-level NTSC pipeline (already
+  complete: FIR Y@2.0 MHz / chroma@0.6 MHz, YUV→RGB, PAL line-phase) had no
+  phosphor response. Added a `phosphorGamma` (per-channel power-law `rgb^γ`)
+  in `CrtEffectStack`, **after** BCS and **before** scanlines/mask (the mask
+  attenuates the light the phosphor has already produced). γ = 1.0 = identity →
+  **no golden/parity touched**; γ > 1 deepens the shadows, γ < 1 lifts them.
+  It's the *luminance* half of the phosphor model; `persistence` is the
+  *temporal* half. Slider "Phosphor curve (gamma)" 0.6–2.6, persisted
+  `ntsc_phosphor_gamma`. NB: a *glass* effect, hence always active under OE and
+  under the other modes when "CRT effects on all modes" is on.
 
-## 2026-05-31 (Vue 3D voxel — phases 0+1 ; bouton rewind toolbar)
+## 2026-05-31 (3D voxel view — phases 0+1; toolbar rewind button)
 
-- **Vue 3D voxel — refonte « Voxel Cube » fidèle à MicroM8 (correctif).**
-  La première version extrudait **hauteur = luminance** sur un écran posé
-  **à plat** (plan XZ) : pixels brillants transformés en stalactites, angle
-  catastrophique, voxels difformes. Scrapé MicroM8 (`paleotronic.com` Quick
-  Start + Features) : le mode « Voxel Cube Color » dresse l'écran **debout**
-  (moniteur, plan XY) et donne à **chaque pixel un cube de même épaisseur**
-  extrudé vers le spectateur sur **+Z** (« Voxel Depth »). La hauteur n'est
-  **jamais** liée à la luminance ; le relief par couleur (`colorShift`,
-  « Z-axis 3D offset ») est une **option** (défaut 0 → dalle plate qu'on
-  tourne pour voir l'épaisseur).
-  - **Géométrie** : cube footprint XY + profondeur Z ; colonne→X, ligne→Y
-    (ligne 0 = haut) ; plan **4:3 réel** (2.0 × 1.5) pour garder la forme des
-    pixels Apple II. `heightScale`→`voxelDepth` (0.06), `+colorShift`.
-  - **Caméra** : défauts quasi de face + léger 3/4 (azimut 0.32 / élévation
-    0.20 / distance 2.8 / fovY ~40°), cible recentrée à l'origine. **Orbite
-    au glisser-gauche + zoom molette** (dans `drawScreenImage`, mute
-    `voxelCam_`). `voxel3d_math` reste vert (la math caméra est inchangée).
-  - **Suite (même jour)** : (1) **haut/bas inversés** — la présentation
-    FBO→`ImGui::Image` est un miroir vertical (comme les passes NTSC 2D) ;
-    pré-flip de `gl_Position.y` dans le vertex shader. (2) **Résolution
-    native** — `gridW/gridH` pilotés par `display->width()/height()`
-    (280/560 × 192) → un voxel par pixel Apple II (avant : 140×96, moitié de
-    l'info perdue) ; `voxelDepth`/`colorShift` passés en **unités de cellule**
-    pour rester constants entre 280 et 560 de large. (3) **Relief par couleur
-    activé** (`colorShift` 8 cellules, pondéré luminance) → « pop » pin-art
-    demandé. (4) **Indépendant du CRT** — le voxel tappe l'image couleur
-    **avant** `CrtEffectStack` via un handle `voxelSrcTex` séparé (sinon
-    scanlines/masque/barrel se retrouvaient cuits dans les 50k cubes).
-    (5) **Pan/strafe au bouton du milieu** — `OrbitCamera::pan` glisse la
-    cible dans le plan droite/haut de la caméra, échelle en unités-monde/pixel
-    pour un suivi 1:1 (orbite = glisser-gauche, zoom = molette). (6) **Moiré
-    supprimé** — cubes **jointifs** (`cubeFill` 0.9→1.0 : un aplat redevient
-    une dalle continue, fin de la grille d'interstices) **+ supersampling**
-    (`superSample` 2× : FBO rendu à 2×, mip-chain, minify trilinéaire par
-    ImGui → anti-aliasing sans resolve MSAA).
-  - **Phase 3 — panneau de réglage** (`renderVoxelSettingsWindow`, View ▸
-    « 3D voxel settings… ») : sliders live `voxelDepth` / `colorShift` /
-    `cubeFill` / `superSample` (poussé à **3×** par défaut) / `ambient`, +
-    boutons Reset view / Reset settings. Le renderer est **possédé dès le
-    chargement des settings** (ctor sans GL) pour que le panneau et les clés
-    `voxel_*` (persistées) se branchent directement sur `voxel3d_`, même avant
-    d'activer la vue 3D. La résolution de grille reste auto (= écran).
-  - **P4 — garde-fou perf WASM** : sous `__EMSCRIPTEN__`, `process()` plafonne
-    `superSample ≤ 2` + FBO ≤ 2048² (réduit le facteur jusqu'à tenir) et
-    `MainWindow` plafonne `gridW ≤ 280` (divise par 2 la géométrie DHGR 560).
-    Natif inchangé (`ss ≤ 4`, 8192²). Compile WASM/WebGL2 revérifiée.
-  - **Bonus fidélité — Mono + profondeur par index de couleur** : case `mono`
-    (« Voxel Cube Mono », sortie grise, relief conservé) et `perColorDepth`
-    (snap au plus proche des 16 couleurs lo-res `kVoxelPalette` → relief
-    discret par couleur au lieu de la luminance continue). Boucle de recherche
-    16-itérations dans le vertex shader (par instance, pas par pixel) ;
-    `glUniform3fv` ajouté au loader. Persistés `voxel_mono` /
-    `voxel_percolor_depth`. P5 (tie-in rewind) **différé** sur demande.
-  - **Fix molette en WASM** : le port GLFW d'Emscripten ne livre pas les
-    events `wheel` à ImGui (`io.MouseWheel` restait à 0 → zoom 3D inopérant
-    dans le navigateur). Ajout d'un `emscripten_set_wheel_callback("#canvas")`
-    dans `main.cpp` qui alimente `io.AddMouseWheelEvent` (même échelle que le
-    backend ImGui) — choix chirurgical pour ne pas toucher au sizing canvas du
-    shell (vs `ImGui_ImplGlfw_InstallEmscriptenCallbacks` qui hooke aussi le
+- **3D voxel view — "Voxel Cube" rework faithful to MicroM8 (fix).**
+  The first version extruded **height = luminance** on a screen laid **flat**
+  (XZ plane): bright pixels turned into stalactites, catastrophic angle,
+  misshapen voxels. Scraped MicroM8 (`paleotronic.com` Quick Start +
+  Features): the "Voxel Cube Color" mode stands the screen **upright**
+  (monitor, XY plane) and gives **each pixel a cube of the same thickness**
+  extruded toward the viewer on **+Z** ("Voxel Depth"). The height is **never**
+  tied to luminance; the per-color relief (`colorShift`, "Z-axis 3D offset")
+  is an **option** (default 0 → a flat slab you rotate to see the thickness).
+  - **Geometry**: cube footprint XY + depth Z; column→X, row→Y (row 0 = top);
+    **real 4:3** plane (2.0 × 1.5) to keep the shape of Apple II pixels.
+    `heightScale`→`voxelDepth` (0.06), `+colorShift`.
+  - **Camera**: defaults near front-on + slight 3/4 (azimuth 0.32 /
+    elevation 0.20 / distance 2.8 / fovY ~40°), target recentered at the
+    origin. **Orbit on left-drag + wheel zoom** (in `drawScreenImage`, mutate
+    `voxelCam_`). `voxel3d_math` stays green (the camera math is unchanged).
+  - **Follow-up (same day)**: (1) **top/bottom inverted** — the
+    FBO→`ImGui::Image` presentation is a vertical mirror (like the 2D NTSC
+    passes); pre-flip `gl_Position.y` in the vertex shader. (2) **Native
+    resolution** — `gridW/gridH` driven by `display->width()/height()`
+    (280/560 × 192) → one voxel per Apple II pixel (before: 140×96, half the
+    info lost); `voxelDepth`/`colorShift` passed in **cell units** to stay
+    constant between 280 and 560 wide. (3) **Per-color relief enabled**
+    (`colorShift` 8 cells, luminance-weighted) → requested pin-art "pop".
+    (4) **CRT-independent** — the voxel taps the color image **before**
+    `CrtEffectStack` via a separate `voxelSrcTex` handle (otherwise
+    scanlines/mask/barrel ended up baked into the 50k cubes).
+    (5) **Pan/strafe on the middle button** — `OrbitCamera::pan` slides the
+    target in the camera's right/up plane, scaled in world-units/pixel for 1:1
+    tracking (orbit = left-drag, zoom = wheel). (6) **Moiré removed** —
+    **abutting** cubes (`cubeFill` 0.9→1.0: a flat fill becomes a continuous
+    slab again, end of the grid of gaps) **+ supersampling** (`superSample`
+    2×: FBO rendered at 2×, mip-chain, trilinear minify by ImGui →
+    anti-aliasing without MSAA resolve).
+  - **Phase 3 — settings panel** (`renderVoxelSettingsWindow`, View ▸
+    "3D voxel settings…"): live sliders `voxelDepth` / `colorShift` /
+    `cubeFill` / `superSample` (pushed to **3×** by default) / `ambient`, +
+    Reset view / Reset settings buttons. The renderer is **owned from the
+    moment settings load** (ctor without GL) so the panel and the `voxel_*`
+    keys (persisted) wire directly onto `voxel3d_`, even before enabling the
+    3D view. The grid resolution stays auto (= screen).
+  - **P4 — WASM perf guard**: under `__EMSCRIPTEN__`, `process()` caps
+    `superSample ≤ 2` + FBO ≤ 2048² (reduces the factor until it fits) and
+    `MainWindow` caps `gridW ≤ 280` (halves the 560 DHGR geometry).
+    Native unchanged (`ss ≤ 4`, 8192²). WASM/WebGL2 compile re-checked.
+  - **Fidelity bonus — Mono + per-color-index depth**: `mono` checkbox
+    ("Voxel Cube Mono", grey output, relief preserved) and `perColorDepth`
+    (snap to the nearest of the 16 lo-res `kVoxelPalette` colors → discrete
+    per-color relief instead of continuous luminance). 16-iteration search
+    loop in the vertex shader (per instance, not per pixel); `glUniform3fv`
+    added to the loader. Persisted `voxel_mono` / `voxel_percolor_depth`.
+    P5 (rewind tie-in) **deferred** on request.
+  - **Wheel fix in WASM**: Emscripten's GLFW port doesn't deliver `wheel`
+    events to ImGui (`io.MouseWheel` stayed at 0 → 3D zoom inoperative in the
+    browser). Added an `emscripten_set_wheel_callback("#canvas")` in
+    `main.cpp` that feeds `io.AddMouseWheelEvent` (same scale as the ImGui
+    backend) — a surgical choice so as not to touch the shell's canvas sizing
+    (vs `ImGui_ImplGlfw_InstallEmscriptenCallbacks` which also hooks
     resize/fullscreen).
 
-- **Bouton rewind dans la toolbar** (à gauche de Pause, en miroir de Step à
-  droite) : `ICON_FA_BACKWARD_FAST`, **maintenir = rewind-live** (même geste
-  que `F6` / la barre Devices ▸ Rewind). Grisé tant qu'il n'y a pas d'historique.
-  `F6` et le bouton partagent un seul edge-tracker (`driveRewindHold`).
+- **Rewind button in the toolbar** (left of Pause, mirroring Step on the
+  right): `ICON_FA_BACKWARD_FAST`, **hold = live-rewind** (same gesture as
+  `F6` / the Devices ▸ Rewind bar). Greyed out while there's no history.
+  `F6` and the button share a single edge-tracker (`driveRewindHold`).
 
-- **Vue 3D voxel façon MicroM8 — fondations (phases 0+1).**
-  - **Pourquoi / archi** : extruder l'écran en cubes (hauteur = luminance du
-    pixel) avec caméra orbitale. Choix clé : c'est un **axe de vue orthogonal**,
-    pas un `HiResMode` — un render-pass qui consomme la **texture RGBA déjà
-    décodée** (n'importe quel mode couleur + NTSC/CRT), exactement comme
-    `CrtEffectStack`. Universel, gratuit pour tous les modes.
-  - **Phase 0 — `Mat4.h`** : Vec3 + Mat4 column-major (perspective/lookAt/
-    multiply) + `OrbitCamera` (azimut/élévation/distance → view-proj). Aucune
-    dépendance (pas de glm). Épinglé `voxel3d_math` (entrées perspective, base
-    orthonormée lookAt, projection de la cible au centre).
-  - **Phase 1 — `Voxel3DRenderer.{h,cpp}`** : cubes **instanciés**
-    (`glDrawElementsInstanced`, ~13 k pour 140×96), hauteur+couleur par
-    **vertex texture-fetch** de la framebuffer, ombrage par **dérivées
-    d'écran** (pas d'attribut normal → reste sur le seul `aPos` lié par le
-    helper shader partagé). FBO **avec depth** (les passes 2D n'en ont pas).
-    Même pattern lazy-init + sauvegarde/restore d'état GL que `NtscPostProcessor` ;
-    compatible WebGL2/GLES3 (instancing + VTF + dérivées, pas de geometry
-    shader). Toggle **View ▸ « 3D voxel view »** (persisté `show_3d_voxel`),
-    branché dans `drawScreenImage` avant le blit final.
-  - **À suivre** : caméra orbitale au drag souris + zoom (P2), panneau de
-    réglages + éclairage (P3), paliers de résolution / heightfield (P4), tie-in
-    rewind « figer + orbiter » (P5). Le rendu GL se vérifie en lançant l'app
-    (pas de hash golden — la math caméra est, elle, testée).
+- **MicroM8-style 3D voxel view — foundations (phases 0+1).**
+  - **Why / arch**: extrude the screen into cubes (height = pixel luminance)
+    with an orbital camera. Key choice: it's an **orthogonal view axis**, not
+    a `HiResMode` — a render pass that consumes the **already-decoded RGBA
+    texture** (any color mode + NTSC/CRT), exactly like `CrtEffectStack`.
+    Universal, free for all modes.
+  - **Phase 0 — `Mat4.h`**: Vec3 + column-major Mat4 (perspective/lookAt/
+    multiply) + `OrbitCamera` (azimuth/elevation/distance → view-proj). No
+    dependency (no glm). Pinned `voxel3d_math` (perspective entries,
+    orthonormal lookAt basis, projection of the target to the center).
+  - **Phase 1 — `Voxel3DRenderer.{h,cpp}`**: **instanced** cubes
+    (`glDrawElementsInstanced`, ~13k for 140×96), height+color per
+    **vertex texture-fetch** of the framebuffer, shading by **screen
+    derivatives** (no normal attribute → stays on the single `aPos` bound by
+    the shared shader helper). FBO **with depth** (the 2D passes have none).
+    Same lazy-init + GL state save/restore pattern as `NtscPostProcessor`;
+    WebGL2/GLES3 compatible (instancing + VTF + derivatives, no geometry
+    shader). Toggle **View ▸ "3D voxel view"** (persisted `show_3d_voxel`),
+    wired into `drawScreenImage` before the final blit.
+  - **To follow**: orbital camera on mouse drag + zoom (P2), settings panel +
+    lighting (P3), resolution steps / heightfield (P4), rewind tie-in
+    "freeze + orbit" (P5). The GL render is verified by running the app
+    (no golden hash — the camera math, itself, is tested).
 
-## 2026-05-31 (Rewind — codec delta, UI, état disque, cas lourds : phases 2→5)
+## 2026-05-31 (Rewind — delta codec, UI, disk state, heavy cases: phases 2→5)
 
-- **Rewind façon MicroM8 complété (phases 2 à 5).** Le socle (phases 0+1,
-  ci-dessous) stockait des snapshots pleins ; ces phases le rendent
-  utilisable en vrai. Tout épinglé : `rewind_delta`, `rewind_transport`,
-  `rewind_slot_state` (+ `rewind_roundtrip` inchangé = filet de régression
-  de l'API).
-  - **Phase 2 — codec delta XOR + keyframes** (`RewindBuffer`) : une keyframe
-    pleine tous les `keyframeInterval` frames (défaut 120 ≈ 2 s), deltas XOR
-    entre (uniquement les spans modifiés, coalescés sur gaps < 16 o). 30 s
-    passent de ~315 Mo à ~10 Mo. Reconstruction = keyframe la plus proche ≤ i
-    + XOR des deltas. Éviction **rebase-on-evict** : le front reste toujours
-    une keyframe (le delta suivant est promu avant de drop). API publique
-    inchangée → `rewind_roundtrip` (phase 1) passe tel quel = preuve de
-    non-régression. *Pourquoi keyframes+delta plutôt que reverse-delta seul :
-    XOR est sa propre inverse, donc un seul sens de delta sert le scrub
-    bidirectionnel, et les keyframes bornent le coût de seek aléatoire.*
-  - **Phase 3 — UI + transport + rewind-live** : `Rewind_ImGui` (Devices ▸
-    Rewind) — toggle Record, timeline, transport |< / << (hold) / <| / |> /
-    resume, slider de durée d'historique ; `F6` = hold-to-rewind-live partout
-    (gesture MicroM8). Restore servi **worker parké** : `rewindBeginScrub()`
-    met Stopped puis `waitUntilParked()` attend `workerParked_` (posé dans
-    l'attente CV Stopped du worker) → un restore UI ne peut pas être écrasé
-    par la frame Running en vol (la branche Running épuise tout son budget
-    avant de re-checker le mode). `rewindEndAndResume` restaure + `truncateAfter`
-    (jette le futur abandonné) + relance. Ring vidé au `coldBoot`.
-  - **Phase 4 — état cartes slot** : `SlotPeripheral::append/loadSnapshotState`
-    (no-op par défaut) ; `DiskIICard` sérialise son état mécanique + LSS
-    (quarter-track tête, moteur, aimants de phase, registre data, séquenceur,
-    timing rotationnel — **pas** le média ni les PROMs). `MachineSnapshot`
-    écrit des sections `SLOTn` **uniquement si `includeSlots=true`** (le
-    rewind opt-in ; l'API AI-control `/snapshot` garde son contrat « disque
-    exclu » — un fichier d'archive peut survivre à un changement de média).
-    Le restore route vers la carte du slot (magic+version → une carte
-    étrangère ignore un blob qui n'est pas le sien) et tolère leur absence. Un
-    rewind pendant une I/O disque ne laisse plus la tête sur le mauvais
-    nibble. Round-trip machine complète bit-à-bit (incl. SLOT6) épinglé.
-  - **Durcissement post-revue** (revue multi-agents) : (a) course du handshake
-    de park corrigée — `setMode(non-Stopped)` efface `workerParked_` côté
-    setter, sinon un resume→rescrub rapide lisait un flag périmé ; (b)
-    `DiskIICard::loadSnapshotState` borne `activeDrive` (garde d'index) ; (c)
-    slider d'historique désactivé pendant le scrub (l'éviction décalerait les
-    index) ; (d) backend mémoire `SnapshotIO` réécrit en streambuf zéro-copie
-    (`VectorOutBuf`/`ArrayInBuf`) — supprime le double-copy via `stringstream`
-    à chaque capture (~21 Mo/s sur IIe, bien plus avec RamWorks).
-  - **Phase 5 — cas lourds** : budget mémoire `maxBytes_` (défaut 256 Mio) en
-    plus du cap de frames → RamWorks (~10 Mo/keyframe) borné (moins d'historique
-    plutôt que RAM qui explose). `flushAudioForRewind()` (reset speaker) à
-    chaque restore → un saut temporel est silencieux, pas un « pop ». Capture
-    branchée aussi dans `tickFrame()` (chemin mono-thread WASM).
-  - **Chips audio sérialisés** (clôture du gap audio) : `MockingboardCard` et
-    `PhasorCard` sérialisent l'état registre/timer de leurs `Via6522` (24 o) +
-    `Ay3_8910` (34 o) via le hook `SlotPeripheral` — helpers `append/loadSnapshot`
-    partagés par les deux cartes, packing LE mutualisé dans `ByteIO.h`. La
-    musique survit donc à un rewind (pas seulement le flush speaker). L'AY est
-    un modèle-registres (la synthèse dérive des 16 registres) → restaurer les
-    registres restaure le son exactement. Épinglé `rewind_audio_state`
-    (round-trip machine complète bit-à-bit incl. Mockingboard).
-  - **Parole SSI263 sérialisée** : `Ssi263::append/loadSnapshot` (30 o : 5
-    registres + curseur de lecture des phonèmes), câblé dans la variante Sound II
-    de `MockingboardCard` → la parole survit aussi au rewind. Couvert par
-    `rewind_audio_state` (bloc Sound II).
-  - **Écritures disque annulées au rewind** (Phase 6) : snapshot DiskIICard
-    passé en v2 — il embarque les buffers de pistes nibble pour les disques
-    chargés, physiquement inscriptibles et non-WOZ
-    (`DiskImage::append/loadMediaSnapshot`), donc une écriture disque est
-    annulée par un rewind. Le codec delta garde le coût ~nul tant qu'aucune
-    piste n'est écrite ; les caches de lecture se redérivent des nibbles
-    restaurés. Disques read-only / WOZ / vides = 1 octet de flag. Épinglé
-    `rewind_disk_write` (COW média + écriture-via-carte annulée bout-en-bout).
-  - **Gap restant** : écritures sur WOZ inscriptible non annulées (WOZ stocke
-    ses bits dans `wozRaw`, store distinct ; les originaux WOZ sont en général
-    write-protected). Suivi propre si besoin. Détail → `DEV.md` § Rewind.
+- **MicroM8-style rewind completed (phases 2 to 5).** The base (phases 0+1,
+  below) stored full snapshots; these phases make it actually usable.
+  All pinned: `rewind_delta`, `rewind_transport`, `rewind_slot_state` (+
+  `rewind_roundtrip` unchanged = the API's regression safety net).
+  - **Phase 2 — XOR delta + keyframes codec** (`RewindBuffer`): a full
+    keyframe every `keyframeInterval` frames (default 120 ≈ 2 s), XOR deltas
+    between (only the modified spans, coalesced over gaps < 16 bytes). 30 s
+    goes from ~315 MB to ~10 MB. Reconstruction = nearest keyframe ≤ i + XOR
+    of the deltas. **rebase-on-evict** eviction: the front always stays a
+    keyframe (the next delta is promoted before dropping). Public API
+    unchanged → `rewind_roundtrip` (phase 1) passes as-is = proof of
+    non-regression. *Why keyframes+delta rather than reverse-delta alone:
+    XOR is its own inverse, so a single delta direction serves bidirectional
+    scrubbing, and keyframes bound the cost of random seek.*
+  - **Phase 3 — UI + transport + live-rewind**: `Rewind_ImGui` (Devices ▸
+    Rewind) — Record toggle, timeline, transport |< / << (hold) / <| / |> /
+    resume, history-duration slider; `F6` = hold-to-live-rewind everywhere
+    (MicroM8 gesture). Restore served with the **worker parked**:
+    `rewindBeginScrub()` sets Stopped then `waitUntilParked()` waits for
+    `workerParked_` (set in the worker's Stopped CV wait) → a UI restore can't
+    be overwritten by an in-flight Running frame (the Running branch exhausts
+    its whole budget before re-checking the mode). `rewindEndAndResume`
+    restores + `truncateAfter` (discards the abandoned future) + restarts.
+    Ring emptied on `coldBoot`.
+  - **Phase 4 — slot card state**: `SlotPeripheral::append/loadSnapshotState`
+    (no-op by default); `DiskIICard` serializes its mechanical state + LSS
+    (quarter-track head, motor, phase magnets, data register, sequencer,
+    rotational timing — **not** the media or the PROMs). `MachineSnapshot`
+    writes `SLOTn` sections **only if `includeSlots=true`** (rewind opt-in;
+    the AI-control `/snapshot` API keeps its "disk excluded" contract — an
+    archive file may survive a media change). The restore routes to the slot's
+    card (magic+version → a foreign card ignores a blob that isn't its own)
+    and tolerates their absence. A rewind during a disk I/O no longer leaves
+    the head on the wrong nibble. Full bit-for-bit machine round-trip (incl.
+    SLOT6) pinned.
+  - **Post-review hardening** (multi-agent review): (a) the park handshake
+    race fixed — `setMode(non-Stopped)` clears `workerParked_` on the setter
+    side, otherwise a fast resume→rescrub read a stale flag; (b)
+    `DiskIICard::loadSnapshotState` bounds `activeDrive` (index guard); (c)
+    history slider disabled during scrub (eviction would shift the indices);
+    (d) `SnapshotIO` memory backend rewritten as a zero-copy streambuf
+    (`VectorOutBuf`/`ArrayInBuf`) — removes the double-copy via `stringstream`
+    on each capture (~21 MB/s on IIe, much more with RamWorks).
+  - **Phase 5 — heavy cases**: `maxBytes_` memory budget (default 256 MiB) on
+    top of the frame cap → RamWorks (~10 MB/keyframe) bounded (less history
+    rather than RAM that explodes). `flushAudioForRewind()` (speaker reset) on
+    each restore → a time jump is silent, not a "pop". Capture also wired into
+    `tickFrame()` (single-thread WASM path).
+  - **Audio chips serialized** (closing the audio gap): `MockingboardCard` and
+    `PhasorCard` serialize the register/timer state of their `Via6522` (24 b) +
+    `Ay3_8910` (34 b) via the `SlotPeripheral` hook — `append/loadSnapshot`
+    helpers shared by both cards, LE packing pooled in `ByteIO.h`. So the music
+    survives a rewind (not just the speaker flush). The AY is a register model
+    (the synthesis derives from the 16 registers) → restoring the registers
+    restores the sound exactly. Pinned `rewind_audio_state` (full bit-for-bit
+    machine round-trip incl. Mockingboard).
+  - **SSI263 speech serialized**: `Ssi263::append/loadSnapshot` (30 b: 5
+    registers + the phoneme read cursor), wired into the Sound II variant of
+    `MockingboardCard` → speech also survives a rewind. Covered by
+    `rewind_audio_state` (Sound II block).
+  - **Disk writes undone on rewind** (Phase 6): the DiskIICard snapshot bumped
+    to v2 — it carries the nibble track buffers for the loaded disks that are
+    physically writable and non-WOZ
+    (`DiskImage::append/loadMediaSnapshot`), so a disk write is undone by a
+    rewind. The delta codec keeps the cost ~nil as long as no track is
+    written; the read caches re-derive from the restored nibbles. Read-only /
+    WOZ / empty disks = 1 flag byte. Pinned `rewind_disk_write` (media COW +
+    write-via-card undone end-to-end).
+  - **Remaining gap**: writes on a writable WOZ not undone (WOZ stores its bits
+    in `wozRaw`, a distinct store; WOZ originals are generally
+    write-protected). Tracked cleanly if needed. Detail → `DEV.md` § Rewind.
 
-## 2026-05-31 (Rewind — fondations, phases 0+1)
+## 2026-05-31 (Rewind — foundations, phases 0+1)
 
-- **Rewind façon MicroM8 — socle capture/restore d'état (sans UI).**
-  - **Pourquoi** : enregistrer l'état machine en continu pour permettre
-    un retour arrière dans le temps (scrub/step-back). Choix d'archi :
-    ring-buffer de snapshots d'état (façon RetroArch) plutôt que rejeu
-    déterministe des entrées — découplé du hot-path CPU, robuste, et
-    réutilise `SnapshotIO` tel quel. Le delta/keyframe (pour réduire le
-    coût ~175 Ko/frame) est la phase 2 ; ici on stocke des snapshots
-    pleins pour valider la boucle capture→restore bit-à-bit.
-  - **Phase 0 — `SnapshotIO` backend mémoire** : `SnapshotWriter(vector&)`
-    / `SnapshotReader(ptr,len)` à côté du backend fichier existant, via un
-    `std::stringstream` lié à un membre `std::ostream&`/`std::istream&`
-    (toute la logique sections/longueurs réutilisée). Format binaire
-    identique entre les deux backends. Épinglé : `snapshot_memory_roundtrip`
-    (round-trip + parité octet-pour-octet vs le writer fichier).
-  - **`MachineSnapshot.{h,cpp}`** : extraction de la séquence canonique
-    `CPU`/`MEM`/`MEX` hors d'`AiControlServer` (qui maigrit de ~63 lignes).
-    Source unique de vérité partagée par l'API AI-control ET le rewind, donc
-    plus de divergence possible. Le durcissement sécurité reste : gate de
-    longueur 16 o sur la section CPU (over-read d'un blob forgé, « round 10
-    #3 ») + cap MEX 16 Mio → `RestoreResult{false,…}` (l'API renvoie
-    toujours 400). Couvert par `ai_control_server_smoke` (aucune régression).
-  - **Phase 1 — `RewindBuffer.{h,cpp}`** : ring `std::deque` de snapshots
-    pleins, éviction oldest-first au-delà de `maxFrames` (défaut 1800 ≈ 30 s
-    @ 60 Hz), `restore(i)` / `restoreToCycle(cycle)`. Capture branchée à la
-    frontière de frame quiescente du `workerLoop` (après budget CPU + tick
-    IWM), gardée par `enabled()` avant la prise de `stateMtx` → coût nul
-    quand désactivé (défaut). Épinglé : `rewind_roundtrip` (round-trip
-    bit-à-bit + éviction + seek `restoreToCycle`).
-  - **Gaps assumés cette phase** : état cartes/disque hors snapshot (rewind
-    pendant I/O disque laisse la tête où le sim live l'a posée → phase 4 :
-    hook `SlotPeripheral` + état lecteur `DiskIICard`) ; chips audio
-    désync ; pas d'UI (phase 3) ; WASM non câblé (phase 5). Détail →
-    `DEV.md` § Rewind / time-travel.
+- **MicroM8-style rewind — capture/restore state base (no UI).**
+  - **Why**: record the machine state continuously to allow going back in time
+    (scrub/step-back). Architecture choice: a ring-buffer of state snapshots
+    (RetroArch-style) rather than deterministic input replay — decoupled from
+    the CPU hot-path, robust, and reuses `SnapshotIO` as-is. The delta/keyframe
+    (to reduce the ~175 KB/frame cost) is phase 2; here we store full snapshots
+    to validate the capture→restore loop bit-for-bit.
+  - **Phase 0 — `SnapshotIO` memory backend**: `SnapshotWriter(vector&)` /
+    `SnapshotReader(ptr,len)` alongside the existing file backend, via a
+    `std::stringstream` bound to a `std::ostream&`/`std::istream&` member
+    (all the section/length logic reused). Binary format identical between the
+    two backends. Pinned: `snapshot_memory_roundtrip` (round-trip +
+    byte-for-byte parity vs the file writer).
+  - **`MachineSnapshot.{h,cpp}`**: extraction of the canonical
+    `CPU`/`MEM`/`MEX` sequence out of `AiControlServer` (which slims down by
+    ~63 lines). Single source of truth shared by the AI-control API AND the
+    rewind, so no more possible divergence. The security hardening stays: a
+    16-byte length gate on the CPU section (over-read of a forged blob,
+    "round 10 #3") + a 16 MiB MEX cap → `RestoreResult{false,…}` (the API
+    always returns 400). Covered by `ai_control_server_smoke` (no regression).
+  - **Phase 1 — `RewindBuffer.{h,cpp}`**: a `std::deque` ring of full
+    snapshots, oldest-first eviction beyond `maxFrames` (default 1800 ≈ 30 s
+    @ 60 Hz), `restore(i)` / `restoreToCycle(cycle)`. Capture wired at the
+    `workerLoop`'s quiescent frame boundary (after the CPU budget + IWM tick),
+    guarded by `enabled()` before taking `stateMtx` → zero cost when disabled
+    (default). Pinned: `rewind_roundtrip` (bit-for-bit round-trip + eviction +
+    `restoreToCycle` seek).
+  - **Assumed gaps this phase**: card/disk state out of the snapshot (a rewind
+    during disk I/O leaves the head where the live sim put it → phase 4:
+    `SlotPeripheral` hook + `DiskIICard` drive state); audio chips desynced;
+    no UI (phase 3); WASM not wired (phase 5). Detail → `DEV.md` § Rewind /
+    time-travel.
 
-## Antérieur (≤ 2026-05-30) — archivé
+## Earlier (≤ 2026-05-30) — archived
 
-Les entrées du 2026-05-30 jusqu'au 2026-05-14 (pré-v0.7) sont déplacées dans
-[`docs/archive/CHANGELOG-2026-05.md`](docs/archive/CHANGELOG-2026-05.md) pour
-garder ce fichier focalisé sur le cycle courant. Historique complet → `git log`.
+The entries from 2026-05-30 back to 2026-05-14 (pre-v0.7) are moved into
+[`docs/archive/CHANGELOG-2026-05.md`](docs/archive/CHANGELOG-2026-05.md) to
+keep this file focused on the current cycle. Full history → `git log`.
