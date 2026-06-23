@@ -1,510 +1,443 @@
 # POM2 — TODO
 
-État 2026-05-27. Items résolus → `CHANGELOG.md`. Refs MAME → `DEV.md`.
+Status as of 2026-06-16. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
 
-**Format** : `🟠 high · 🟡 medium · 🟢 low` en tête d'item. Effort
-indicatif en *italique*. Fichier/ligne en `backticks`. Lecture rapide :
-[Quick wins](#quick-wins) puis [Backlog par sous-système](#backlog).
+**Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
+effort in *italics*. File/line in `backticks`. Quick read:
+[Quick wins](#quick-wins) then [Backlog by subsystem](#backlog).
 
-## Parité MAME ↔ POM2 (dashboard)
+## MAME ↔ POM2 parity (dashboard)
 
-Référence canonique de ce qui est porté et avec quel niveau. Les
-`Gaps connus` listés ici renvoient à des items détaillés dans le
-[backlog](#backlog).
+Canonical reference for what is ported and at what level. The `Known gaps`
+listed here point to detailed items in the [backlog](#backlog).
 
-| #  | Sous-système                  | Parité           | Refs MAME / AppleWin                                                     | Gaps connus                                                                              |
+| #  | Subsystem                  | Parity           | MAME / AppleWin refs                                                     | Known gaps                                                                              |
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst` ; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte (décimal inclus) ; 🟡 WDC SBC décimal BCD-invalide non modélisé (`e9`, indéfini) ; 🟢 $5C 8-cyc résiduel |
-| 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs à extraire)                                         |
-| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758` ; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, bus flottant `$C05x`, page-flip DROL, RVB Chat Mauve : faits) |
+| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte (decimal included); 🟡 WDC SBC invalid-BCD decimal not modelled (`e9`, undefined); 🟢 $5C 8-cyc residual |
+| 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs to extract)                                         |
+| 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, floating bus `$C05x`, page-flip DROL, Chat Mauve RGB: done) |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
 | 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                        |
-| 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309` ; `6522via.cpp:959`          | 🟢 Port A read mask par DDR ; 6522 subset (SR/PCR ; T2 one-shot fait, IRQ N+3 MAME)      |
-| 6b | Mockingboard "C" Sound II      | POM2 + AppleWin  | `Mockingboard.h/.cpp` + `Via6522::setCa1NegativeEdge`                    | — (SSI263 à `$Cs40-$Cs44`, A/!R → VIA1.CA1)                                              |
+| 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309`; `6522via.cpp:959`          | 🟢 Port A read mask by DDR; 6522 subset (SR/PCR; T2 one-shot done, IRQ N+3 MAME)      |
+| 6b | Mockingboard "C" Sound II      | POM2 + AppleWin  | `Mockingboard.h/.cpp` + `Via6522::setCa1NegativeEdge`                    | — (SSI263 at `$Cs40-$Cs44`, A/!R → VIA1.CA1)                                              |
 | 7  | FloppySoundDevice              | Verbatim         | `floppy.cpp:1532-1620`, `:2925-3020`                                     | —                                                                                        |
-| 8  | SlotBus + IRQ wire-OR          | POM2-original    | Pattern MAME slot bus                                                    | —                                                                                        |
-| 9  | DiskImage                      | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106`                                   | 🟡 WOZ1 splice TRK+6650 ; 🟢 .nib2/.app, half-tracked NIB (88)                           |
-| 10 | DiskIICard                     | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A                         | 🟢 sub-instruction RAII vs per-cycle ; Disk II hors snapshot délibéré                    |
-| 11 | IWMDevice                      | Verbatim         | `machine/iwm.cpp:1-543`                                                  | 🟢 Q3 fast clock (Mac/IIgs only) ; window-size rounding                                  |
-| 12 | SmartPortCard (//e Liron)      | POM2-original    | Spec SmartPort + Apple Tech Note                                         | 🟢 multi-partition ProDOS (CFFA3000)                                                     |
+| 8  | SlotBus + IRQ wire-OR          | POM2-original    | MAME slot bus pattern                                                    | —                                                                                        |
+| 9  | DiskImage                      | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106`                                   | 🟡 WOZ1 splice TRK+6650; 🟢 .nib2/.app, half-tracked NIB (88)                           |
+| 10 | DiskIICard                     | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A                         | 🟢 sub-instruction RAII vs per-cycle; Disk II out of snapshot deliberate                    |
+| 11 | IWMDevice                      | Verbatim         | `machine/iwm.cpp:1-543`                                                  | 🟢 Q3 fast clock (Mac/IIgs only); window-size rounding                                  |
+| 12 | SmartPortCard (//e Liron)      | POM2-original    | SmartPort spec + Apple Tech Note                                         | 🟢 multi-partition ProDOS (CFFA3000)                                                     |
 | 13 | SmartPortHub + Sony35Drive     | Verbatim         | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | —                                                                                        |
-| 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2 ; pas de préservation média au switch de profil                         |
-| 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`                                       | 🟡 MODE_SHIFT lax ; 🟡 DATA_OUT live vs MAME latch ; 🟢 slot ROM mostly NOPs             |
-| 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP non gated                                                          |
-| 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b sans `scheduler.synchronize`                                              |
-| 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM seul, MCU synthétisé)                                                      |
-| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routé comme Phasor natif ; stéréo deferred                         |
-| 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME n'implémente pas)                 | 🟢 formant synth → PCM blob 62 phonèmes (AppleWin LGPL → GPL3)                           |
-| 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (mislabelled "Echo+" historiquement) | 🟢 audit markadev 2026-05-28 : le vrai Echo+ = TMS5220 (cf. ligne 21bis)                |
-| 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode ; cores TMS5220 LPC + AY-3-8913 synth deferred                  |
-| 22 | PrinterCard (parallèle synth)  | POM2-original    | Convention slot 1 Apple II + Pascal 1.1 sig                              | 🟡 export PDF deferred (`.txt` OK)                                                       |
-| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 bank-switch upper 2 KB non modélisé ; stub ROM si dump absent                        |
+| 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2; no media preservation on profile switch                         |
+| 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`                                       | 🟡 MODE_SHIFT lax; 🟡 DATA_OUT live vs MAME latch; 🟢 slot ROM mostly NOPs             |
+| 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
+| 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
+| 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
+| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo deferred                         |
+| 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME does not implement)                 | 🟢 formant synth → PCM blob, 62 phonemes (AppleWin LGPL → GPL3)                           |
+| 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
+| 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
+| 22 | PrinterCard (parallel synth)  | POM2-original    | Apple II slot 1 convention + Pascal 1.1 sig                              | 🟡 PDF export deferred (`.txt` OK)                                                       |
+| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 bank-switch upper 2 KB not modelled; stub ROM if dump absent                        |
 
 ## Quick wins
 
-Ordre conseillé d'attaque — items à fort ratio impact/effort.
+Suggested attack order — items with high impact/effort ratio.
 
-| # | Item                                    | Effort  | Pourquoi                                |
+| # | Item                                    | Effort  | Why                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | WASM IDBFS settings persistence         | 2-4 h   | utilisateur web n'a pas de state        |
-| 2 | WOZ1 splice point TRK+6650              | 1 j     | parité re-master Applesauce             |
-| 3 | Memory god-object split                 | 2 j     | prérequis IIgs + réduit recompilations  |
-| 4 | Debugger runtime glue (BP / watch / step) | 3-5 j | briques 80% là (Disassembler + MemView) |
-| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | 113 tests dormants — plus fort ROI ⭐    |
-| 6 | ~~Desktop drag-drop disque (`glfwSetDropCallback`)~~ ✅ FAIT | — | promesse README tenue (voir [UI/UX]) |
+| 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
+| 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
+| 3 | Memory god-object split                 | 2 d     | prerequisite for IIgs + cuts recompiles  |
+| 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
+| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | the dormant ctest suite (140+ tests) — highest ROI ⭐    |
+| 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
 ## Backlog
 
-Regroupé par sous-système. Sévérité encodée par 🟠/🟡/🟢 en tête d'item.
+Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each item.
 
 ### [Memory] paging & RAM expansion
 
-- 🟠 **God-object split** — extraire `Keyboard` (FIFO + strobe + paste)
-  et `PaddleInputs` (RC + boutons + Open/Solid Apple) de `Memory.cpp`.
-  `IIcPlusBank` déjà fait (`MemoryProfile`/`IIcClassProfile`).
-  *Prérequis IIgs. ~2 j.*
-- 🟡 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB sur LC
-  `$D000-$FFFF`, switches `$C080-$C08F` slot-relatif. Refs MAME
-  `bus/a2bus/a2memexp.cpp`. *2-3 j.*
-- 🟡 **`Memory::memRead` hot path** — cascade `if` 7 niveaux
-  (`Memory.cpp:1309-1437`). Table dispatch 256 entrées par page haute.
-  Prérequis : extraction `IIcPlusBank`.
-- 🟢 **Pascal LC dédiée** — variante 16 KB livrée avec Apple Pascal,
-  différences mineures vs LC IIe (write-protect DIP). *1 j.*
+- 🟠 **God-object split** — extract `Keyboard` (FIFO + strobe + paste)
+  and `PaddleInputs` (RC + buttons + Open/Solid Apple) from `Memory.cpp`.
+  `IIcPlusBank` already done (`MemoryProfile`/`IIcClassProfile`).
+  *Prerequisite for IIgs. ~2 d.*
+- 🟡 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB on LC
+  `$D000-$FFFF`, switches `$C080-$C08F` slot-relative. MAME refs
+  `bus/a2bus/a2memexp.cpp`. *2-3 d.*
+- 🟡 **`Memory::memRead` hot path** — 7-level `if` cascade
+  (`Memory.cpp:1309-1437`). 256-entry dispatch table per high page.
+  Prerequisite: `IIcPlusBank` extraction.
+- 🟢 **Dedicated Pascal LC** — 16 KB variant shipped with Apple Pascal,
+  minor differences vs IIe LC (write-protect DIP). *1 d.*
 
 ### [Display] HGR / DHGR / 80-col
 
-- ✅ **Shader CRT post-process** — FAIT. `CrtEffectStack` applique
-  barrel → hue → BCS → **phosphor curve** → scanlines → shadow mask →
-  vignette → luminance gain → edge-mask → persistence sur *n'importe quel*
-  framebuffer, panneau « CRT Settings (sliders) », toggle `crt_effects_enabled`.
-  Détail → `DEV.md` § CrtEffectStack.
-- ✅ **Pipeline NTSC analogique signal-level** — FAIT. La démod
-  signal-level existait déjà (`ColorCompositeOE` GPU + `ColorCompositeOECpu` :
-  waveform 14.318 MHz → FIR Y@2.0 MHz / chroma@0.6 MHz → YUV→RGB, PAL
-  line-phase). Ajout 2026-05-31 de la **courbe phosphore** manquante
-  (`phosphorGamma`, power-law par canal dans `CrtEffectStack`, défaut 1.0 =
-  identité, slider « Phosphor curve (gamma) », clé `ntsc_phosphor_gamma`).
-  **Reste** *(🟢 différé, academic)* : pipeline signal-level *analogique pur*
-  (IIR sur le signal lui-même avant démod) vs l'actuel signal 1-bit + FIR,
-  *5-10 j*.
-- ✅ **Beam-racing per-scanline composite** — FAIT (2026-05-31).
-  `fillCompositeSignal(mem, events)` rejoue le log d'évènements bande par
-  bande (zéro `signalBuf` → état frame-start → `paintSignalBand`), donc les
-  switches mid-scanline atteignent les modes composite (OE GPU/CPU, AppleWin),
-  plus seulement les modes LUT. Épinglé `beam_race_composite`. Détail →
-  `DEV.md` § Beam-racing. **Reste** *(🟢)* : `signalPhaseOffset_` reste une
-  constante par-frame (split HGR↔DHGR mid-frame approximé) ; lo-res clip au
-  block-row (4 lignes), comme le path RGBA.
-- ✅ **Split horizontal mid-scanline (granularité par octet)** — FAIT
-  (2026-06-09, *280-large + signal composite + 560-large IIe/Chat Mauve*). Le
-  beam-racing n'est plus scanline-quantizé : `renderBeamRacing`
-  (`Apple2Display.cpp:~336`) reconstruit
-  pour chaque scanline la liste des **segments de colonnes** `[col0,col1)` (un
-  event la subdivise à son `byteCol`, l'état de fin de ligne se propage),
-  fusionne les scanlines à segmentation identique en bandes, puis peint via
-  `renderInternalSegment`. Un mode peut donc changer **en milieu de scanline**
-  (TEXT/LORES/HGR sur la même ligne — « color peg » Codebreaker GEN2). Réalisé :
-  1. `Apple2Display::frameCycleToPos(emuCycle) → {scanline, byteCol}` (public,
-     statique, testé), `byteCol = clamp((emuCycle % 65) − 25, 0, 40)` ;
-  2. `renderText/HiRes/LoRes` ont un argument optionnel `col0,col1` (défaut
-     `0,40` = inchangé). text/lo-res bornent leur boucle colonne ; hi-res décode
-     toute la scanline (le fenêtrage artefact NTSC garde son contexte voisin) et
-     ne clippe que l'écriture + la persistance ;
-  3. `renderInternalSegment(state, y0, y1, col0, col1)` (délègue à
-     `renderInternalBand` en pleine largeur ou pour les modes 560-large) +
-     `usesLegacyPath()` ; fast-path zéro-event = bande pleine largeur (régression
-     zéro — `display_golden_hash` + `beam_race_composite` verts) ;
-  4. test `horizontal_split` (`tests/horizontal_split_smoke.cpp`) : bande basse
-     re-flippe `$C050/$C051` chaque scanline → gauche (HGR) == réf HGR, droite
-     (TEXT) == réf TEXT **sur la même ligne**, et inversement ≠.
-  **Incrément composite — FAIT** (2026-06-09) : la décomposition par
-  bande × segment est factorisée dans `Apple2Display::forEachBeamSegment` (RGBA
-  *et* signal la partagent, zéro divergence) ; `fillCompositeSignal` peint chaque
-  segment via `paintSignalBand(y0,y1,col0,col1)` (painters 280-large
-  `paintText40/paintHgr/paintLoRes40` bornés, 560-large pleine largeur). Le split
-  mid-ligne est donc visible en **ColorCompositeOE GPU/CPU + AppleWin**, pas
-  seulement LUT. Pinné `horizontal_split_composite`
-  (`tests/horizontal_split_composite_test.cpp`).
-  **Incrément 560-large — FAIT** (2026-06-09) : splits mid-ligne en **80-col /
-  DHGR / DLGR / Le Chat Mauve**. RGBA (`frame80`) : `renderInternalSegment`
-  peint pleine largeur puis *save/restore* des colonnes hors fenêtre
-  `[col0·14,col1·14)` (compose correctement plusieurs segments 560 sur une
-  ligne, garde le contexte voisin des painters à fenêtre glissante). Signal
-  composite : `paintText80/paintDhgr/paintLoResDouble` bornés en colonnes
-  directement (émetteurs de bits simples). Pinné `horizontal_split_560`
-  (DHGR gauche / texte 80-col droite, vérifié sur frame80 *et* signalBuf).
-  **Reste** *(🟢 différé)* : mélange **40-col (280) + 80-col (560) sur la même
-  ligne** = indéfini (buffers `frame`/`frame80` distincts, scope-out) ; *cycle de
-  transition exact au character-clock = raffinement ultérieur.* **Back-port POM1
-  ensuite** (gated : rendu LORES+TEXT sur la GEN2 — HGR seul aujourd'hui — + flag
-  HBLANK Phase 2 spec Bernie). Détail → `DEV.md` § Beam-racing.
-- ✅ **Timing machine PAL 50 Hz** — FAIT (2026-06-09, machine complète).
-  `enum VideoStandard{NTSC,PAL}` + table `VideoTiming` dans `CpuClock.h`
-  (NTSC 262/60/1.0227 MHz, **PAL 312/~50/1.0156 MHz, 20313 cyc/frame**), threadé
-  dans `Memory::pushVideoEventLocked` + `Apple2Display::frameCycleToPos` (géométrie
-  262↔312) et `EmulationController::setVideoStandard` (pacing 50/60 Hz via
-  `frameIntervalUs` + propage à `Memory`). **Profils PAL** : `Apple //e PAL` et
-  `Apple //c PAL (Le Chat Mauve)` (mêmes ROMs/CPU/slots que NTSC, `videoStandard
-  = PAL`), wirés dans `applyProfile`, menu Presets, et CLI `--preset
-  iie-pal|iic-pal|chatmauve`. Pinné `pal_timing`. Le rendu mid-scanline (déjà
-  fait) se positionne donc correctement et la sync Timer-2 Mockingboard DIX tombe
-  juste. **Reste** *(🟢)* : horloges device (AY/IWM/SSI263) restent au nominal
-  NTSC (delta 0.7 % = pitch audio inaudible, non retimé) ; pacing WASM (RAF 60 Hz)
-  pas encore basculé 50 Hz ; toggle NTSC/PAL manuel + auto-PAL quand carte Chat
-  Mauve branchée (les profils PAL couvrent déjà le cas d'usage). Détail →
-  `CLAUDE.md` § System profiles + `docs/test_corpus.md` § DIX.
-  **Suite (2026-06-10)** : hand-off worker 50 Hz / UI 60 Hz corrigé — le log
-  d'events vidéo est publié **par frame vidéo** dans `Memory::advanceCycles`
-  et consommé en copie (l'ancien bracket par tick perdait des events → flicker
-  10 Hz des splits PAL ; pinné `video_event_publish`) ; `$C019`/edge VBL suit
-  la géométrie 312 lignes (pinné `pal_timing` § 4) ; vitesses 1×/2×/4×
-  (toolbar, AI server, turbo disque) dérivées du standard (17045→20313 en PAL).
-- ✅ **DROL — flicker page-flip + hang cut-scene** — FAIT (2026-06-10). Trois
-  bugs trouvés en bootant le vrai `Drol.woz`/`.dsk` (sonde `tests/drol_probe.cpp`).
-  1. **Flicker (tous modes)** : DROL flippe `$C054/$C055` toutes les ~4 frames
-     à des positions **dérivantes** (double-buffer non-synchronisé, flipper
-     auto-modifiant `$6138`), pas du beam-racing. Le replay peignait la bande
-     au-dessus du flip depuis la page en cours de redessin (POM2 lit la RAM au
-     rendu, pas au faisceau) → sprites à moitié effacés. **Fix** :
-     `forEachBeamSegment` détecte les events PAGE2 **unidirectionnels** dans une
-     frame = flip de buffer → page finale pleine-frame ; bidirectionnels (DIX
-     MODPAGE) = replay exact conservé. Pinné `drol_pageflip_render`.
-  2. **Hang cut-scene** : la cut-scene vapor-locke par `LDA $C050 / CMP #$80`
-     (lecture du scanner via soft-switch d'affichage — offsets disque
-     0x14359/0x143d5/0x14be0). POM2 renvoyait **0 dur** sur les lectures
-     `$C050-$C057` → spin infini (hang historique LinApple, corrigé AppleWin
-     1.13.0). **Fix** : lecture `$C05x`/`$C030-3F` bascule le mode/click ET
-     renvoie `floatingBus()` (MAME `apple2.cpp do_io`). Pinné `vapor_lock` §(d).
-  3. **6 painters 560-large relisaient l'état live** (`renderText80/Dhgr/
-     LoResDouble/TextChatMauveFgBg/HgrDuochrome/HiResChatMauve80`) au lieu de
-     l'état de bande → splits mid-frame ignorés en 80-col/DHGR/Chat Mauve
-     (masquait le flicker DROL sous Chat Mauve). État threadé partout.
-  Détail → `DEV.md` § Beam-racing + `CHANGELOG.md`. **Limite assumée** *(🟢)* :
-  un split de page mid-frame intentionnel **unidirectionnel** rendrait
-  pleine-page (le vrai remède = rendu incrémental par scanline façon MAME).
-- ✅ **Résolution HGR Le Chat Mauve (décodage AppleWin RVB)** — FAIT
-  (2026-06-10). `renderHiResChatMauve80` écrasait tout en blocs de paires
-  alignées (1 couleur / 4 dots = 140 px effectif, image « molle »). Porté
-  l'algo AppleWin `RGBMonitor.cpp UpdateHiResRGBCell` : un pixel n'est COULEUR
-  que s'il forme un motif isolé 010/101 avec ses voisins (couleur de sa paire,
-  2 dots) ; sinon noir/blanc **à pleine résolution 280 px** — les runs blancs
-  (texte, contours) retrouvent leur piqué. Goldens `*/hgr*/chatmauve` régénérés ;
-  pinné `le_chat_mauve_smoke` + `display_persistence_smoke`.
-- 🟡 **Eve Color text mode `$C0B9`** — variante Chat Mauve/Eve, FG/BG
-  par caractère. Stub `LeChatMauve_ImGui.cpp:200`. *2 j.*
-- 🟢 **Mode "smooth" sub-pixel interpolé** — bilinéaire/Lanczos sur
-  HGR/DHGR, toggle UI. Inspiré microM8. *2 j.*
+- ✅ **CRT post-process shader** — DONE. `CrtEffectStack` applies barrel →
+  hue → BCS → phosphor curve → scanlines → shadow mask → vignette → luminance
+  gain → edge-mask → persistence on any framebuffer, with a "CRT Settings
+  (sliders)" panel and `crt_effects_enabled` toggle. Detail → `DEV.md` §
+  CrtEffectStack.
+- ✅ **Signal-level analog NTSC pipeline** — DONE. Signal-level demod
+  (`ColorCompositeOE` GPU + `ColorCompositeOECpu`: 14.318 MHz waveform → FIR
+  Y@2.0 MHz / chroma@0.6 MHz → YUV→RGB, PAL line-phase) plus the phosphor
+  curve added 2026-05-31 (`phosphorGamma`, key `ntsc_phosphor_gamma`). Detail →
+  `CHANGELOG.md` / `DEV.md`.
+  - 🟢 Remaining *(deferred, academic)*: pure-analog signal-level pipeline (IIR
+    on the signal itself before demod) vs the current 1-bit signal + FIR, *5-10 d*.
+- ✅ **Beam-racing per-scanline composite** — DONE (2026-05-31).
+  `fillCompositeSignal(mem, events)` replays the event log band by band so
+  mid-scanline switches reach the composite modes (OE GPU/CPU, AppleWin), not
+  just LUT modes. Pinned `beam_race_composite`. Detail → `DEV.md` § Beam-racing.
+  - 🟢 Remaining: `signalPhaseOffset_` stays a per-frame constant (mid-frame
+    HGR↔DHGR split approximated); lo-res clips at block-row (4 lines), like the
+    RGBA path.
+- ✅ **Horizontal mid-scanline split (per-byte granularity)** — DONE
+  (2026-06-09, 280-wide + composite signal + 560-wide IIe/Chat Mauve).
+  Beam-racing is no longer scanline-quantized: `renderBeamRacing`
+  (`Apple2Display.cpp:~336`) reconstructs per-scanline column segments so a mode
+  can change mid-scanline (TEXT/LORES/HGR on the same line — Codebreaker GEN2
+  "color peg"); split is visible in ColorCompositeOE GPU/CPU + AppleWin and in
+  80-col/DHGR/DLGR/Le Chat Mauve. Pinned `horizontal_split`,
+  `horizontal_split_composite`, `horizontal_split_560`. Detail → `DEV.md` §
+  Beam-racing / `CHANGELOG.md`.
+  - 🟢 Remaining *(deferred)*: 40-col (280) + 80-col (560) mixed on the same line
+    is undefined (separate `frame`/`frame80` buffers, scoped out); exact
+    transition cycle at character-clock = later refinement. **Back-port to POM1**
+    next (gated: LORES+TEXT rendering on GEN2 — HGR-only today — + HBLANK flag
+    Phase 2 per Bernie's spec).
+- ✅ **PAL 50 Hz machine timing** — DONE (2026-06-09, full machine). `enum
+  VideoStandard{NTSC,PAL}` + `VideoTiming` table in `CpuClock.h` (NTSC
+  262/60/1.0227 MHz, PAL 312/~50/1.0156 MHz, 20313 cyc/frame), threaded through
+  `Memory::pushVideoEventLocked`, `Apple2Display::frameCycleToPos` and
+  `EmulationController::setVideoStandard`. PAL profiles `Apple //e PAL` and
+  `Apple //c PAL (Le Chat Mauve)`, wired in `applyProfile`, Presets menu, and CLI
+  `--preset iie-pal|iic-pal|chatmauve`. Pinned `pal_timing`, `video_event_publish`.
+  Detail → `CLAUDE.md` § System profiles + `docs/test_corpus.md` § DIX /
+  `CHANGELOG.md`.
+  - 🟢 Remaining: device clocks (AY/IWM/SSI263) stay at NTSC nominal (0.7 % delta
+    = inaudible audio pitch, not retimed); WASM pacing (RAF 60 Hz) not yet
+    switched to 50 Hz; manual NTSC/PAL toggle + auto-PAL when a Chat Mauve card
+    is plugged (the PAL profiles already cover the use case).
+- ✅ **DROL — page-flip flicker + cut-scene hang** — DONE (2026-06-10). Three
+  bugs found booting the real `Drol.woz`/`.dsk` (probe `tests/drol_probe.cpp`):
+  (1) page-flip flicker — `forEachBeamSegment` now detects unidirectional PAGE2
+  events in a frame as a buffer flip → final full-frame page (bidirectional DIX
+  MODPAGE keeps exact replay); (2) cut-scene hang — `$C05x`/`$C030-3F` reads now
+  toggle the mode/click AND return `floatingBus()` instead of hard 0; (3) the 6
+  560-wide painters now read band state, not live state. Pinned
+  `drol_pageflip_render`, `vapor_lock` §(d). Detail → `DEV.md` § Beam-racing +
+  `CHANGELOG.md`.
+  - 🟢 Assumed limit: an intentional unidirectional mid-frame page split renders
+    full-page (true remedy = incremental per-scanline rendering MAME-style).
+- ✅ **Le Chat Mauve HGR resolution (AppleWin RGB decode)** — DONE
+  (2026-06-10). `renderHiResChatMauve80` ported AppleWin's `RGBMonitor.cpp
+  UpdateHiResRGBCell`: a pixel is COLOR only if it forms an isolated 010/101
+  pattern with its neighbors, otherwise black/white at full 280 px resolution so
+  white runs (text, outlines) regain their sharpness. Pinned `le_chat_mauve_smoke`
+  + `display_persistence_smoke`. Detail → `CHANGELOG.md`.
+- 🟡 **Eve Color text mode `$C0B9`** — Chat Mauve/Eve variant, FG/BG
+  per character. Stub `LeChatMauve_ImGui.cpp:200`. *2 d.*
+- 🟢 **"Smooth" interpolated sub-pixel mode** — bilinear/Lanczos on
+  HGR/DHGR, UI toggle. Inspired by microM8. *2 d.*
 - 🟢 **DHGR mono 1-px alignment + floating-TTL `empty_words` +
-  per-scanline mode switch** — cosmétique / hors-bounds.
-- 🟢 **Raffinements parité CRT vs OpenEmulator** — résidus basse-priorité de
-  l'audit vidéo 2026-05-30 (fiches d'implémentation détaillées →
-  `docs/archive/video_parity_revalidation_2026-05-30.md` §4) :
-  - **F4** défauts CRT POM2 0.25/0.5/0.4 (scanlines/mask/persistence) vs OE
-    ~0.05/0.05/0 — *plus gros gain visuel*, OU assumer le choix « punchy » et
-    le documenter (`NtscPostProcessor.h`).
-  - **F3** vignette center-lighting ~4× trop forte (`cuv = 2×qc` d'OE,
+  per-scanline mode switch** — cosmetic / out-of-bounds.
+- 🟢 **CRT parity refinements vs OpenEmulator** — low-priority residuals from
+  the 2026-05-30 video audit (detailed implementation notes →
+  `docs/archive/video_parity_revalidation_2026-05-30.md` §4):
+  - **F4** POM2 CRT defaults 0.25/0.5/0.4 (scanlines/mask/persistence) vs OE
+    ~0.05/0.05/0 — *biggest visual gain*, OR own the "punchy" choice and
+    document it (`NtscPostProcessor.h`).
+  - **F3** vignette center-lighting ~4× too strong (`cuv = 2×qc` in OE,
     `CrtEffectStack.cpp`).
-  - **F2** scanline cosinus → **sin²** OE (garder le terme `scanAA` anti-moiré).
-  - **F7** HGR mono : moyenne 280 px / 3 niveaux → **560 binaire** (copie de la
-    boucle DHGR-mono déjà livrée).
-  - **F6** masque row-dim ×0.7 ⚠ (rendre neutre en luminance, pas retirer sec).
-  - **DLGR non câblé** à `fillCompositeSignal` (émet encore lo-res 40-col
-    main-only sous OE/AppleWin).
-  - *(Non-items, documentés : F1 clamp double > float AppleWin ; F8/F9 teintes
-    amber/green assumées — preset « AppleWin-faithful » optionnel.)*
+  - **F2** cosine scanline → OE's **sin²** (keep the `scanAA` anti-moiré term).
+  - **F7** HGR mono: 280 px average / 3 levels → **560 binary** (copy of the
+    DHGR-mono loop already shipped).
+  - **F6** row-dim mask ×0.7 ⚠ (make luminance-neutral, don't drop hard).
+  - **DLGR not wired** to `fillCompositeSignal` (still emits lo-res 40-col
+    main-only under OE/AppleWin).
+  - *(Non-items, documented: F1 clamp double > AppleWin float; F8/F9 amber/green
+    tints assumed — optional "AppleWin-faithful" preset.)*
 - 🟢 **Le Chat Mauve EVE** (64 KB ext RAM + SPEC1/SPEC2/DASH/COL280),
   **Video-7 AppleColor RGB**, **Color killer Rev 1**,
   **Strapping RAM 4K→48K**.
 
 ### [Audio]
 
-- 🟢 **8-bit DAC (Marczewski)** — latch slot 8-bit → DAC R-2R. Démos
-  niche (Music Studio, trackers). Refs AppleWin `Card::CT_DX1`. *1 j.*
-- 🟢 **Music Card MIDI Passport** — 6840 + 6850, Master Tracks Pro /
-  Performer. Refs MAME `mc6840.cpp` + `acia6850.cpp`. *3 j.*
-- 🟢 **Phasor stéréo** — mixer POM2 mono-only ; quand stéréo, pan L/R
-  par AY-pair sur Phasor (et SSI263/Echo+).
-- 🟢 **AY Port A read mask par DDR** (R14/R15) — academic.
+- 🟢 **8-bit DAC (Marczewski)** — 8-bit slot latch → R-2R DAC. Niche
+  demos (Music Studio, trackers). AppleWin refs `Card::CT_DX1`. *1 d.*
+- 🟢 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
+  Performer. MAME refs `mc6840.cpp` + `acia6850.cpp`. *3 d.*
+- 🟢 **Phasor stereo** — POM2 mixer is mono-only; when stereo, pan L/R
+  per AY-pair on Phasor (and SSI263/Echo+).
+- 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
-### [Storage] disques & images
+### [Storage] disks & images
 
 - 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::setWriteSplice`
-  est un stub (`DiskImage.cpp:381-398`) ; IWM call site câblé
-  (`iwm.cpp:218-221`). Parité Applesauce re-master. *1 j.*
+  is a stub (`DiskImage.cpp:381-398`); IWM call site wired
+  (`iwm.cpp:218-221`). Applesauce re-master parity. *1 d.*
 - 🟡 **SmartPort ProDOS multi-partition** — 1 image = 1 unit = 1
-  volume aujourd'hui ; multi-volume CFFA3000-style non supporté.
-- 🟢 **UI « Force DOS / Force ProDOS »** — backend prêt
-  (`DiskImage::loadFile(path, SectorOrder)` à `DiskImage.cpp:212`),
-  bouton manquant dans `DiskLibrary_ImGui` / `DiskController_ImGui`.
-  Auto-détect (extension + content sniff vol-dir `0x400`/`0xB00`)
-  couvre déjà 99 % des cas ; override manuel utile pour images
-  ambiguës / non-standard / debug. *~30 min.*
+  volume today; multi-volume CFFA3000-style not supported.
+- 🟢 **UI "Force DOS / Force ProDOS"** — backend ready
+  (`DiskImage::loadFile(path, SectorOrder)` at `DiskImage.cpp:212`),
+  button missing in `DiskLibrary_ImGui` / `DiskController_ImGui`.
+  Auto-detect (extension + vol-dir content sniff `0x400`/`0xB00`)
+  already covers 99 % of cases; manual override useful for ambiguous /
+  non-standard / debug images. *~30 min.*
 - 🟢 **Half-tracked NIB (88)** + **Applesauce `.nib2`/`.app`** +
-  **Disk II dans snapshot** — délibérément hors scope tant que
-  WOZ couvre.
-- 🟢 **Floppy Emu modes Dual-5.25" + Smartport-Unit-2** — hors scope
-  v1 (4 modes principaux couverts).
+  **Disk II in snapshot** — deliberately out of scope as long as
+  WOZ covers it.
+- 🟢 **Floppy Emu Dual-5.25" + Smartport-Unit-2 modes** — out of scope
+  for v1 (4 main modes covered).
 
-### [Cards] cartes slot & périphériques
+### [Cards] slot cards & peripherals
 
-- 🟠 **Z-80 SoftCard + CP/M** — Microsoft SoftCard, Z-80B clipsé sur
-  bus 6502, share RAM via mode-switch. Débloque ludothèque CP/M
-  (BASIC-80, dBase II, Turbo Pascal, WordStar). Refs MAME
-  `a2softcard.cpp` + Z-80 core. *10-15 j.*
-- 🟡 **Grappler+ printer (`GrapplerCard`)** — coquille ROM-gated en
-  place (catalogue `grappler`, dump `roms/grappler_plus.bin` 4 KB
-  attendu). Reste : modéliser le bank-switch du haut des 2 KB
-  ($C0(8+s)X), pinner contre MAME `a2grappler.cpp`, et le rendu raster
-  des dumps HGR vers PDF host-side. *1-2 j.*
-- 🟡 **EchoPlusTMS5220Card (vrai Echo+)** — scaffold catalogue
-  `echoplus_tms` : SlotPeripheral + decode de registre stub à
-  $Cs00-$Cs0F suffisant pour la détection. Reste : décodeur LPC10
-  TMS5220 (chirp ROM + interpolation des paramètres K) et synth audio
-  AY-3-8913 (utilisable une fois le core Mockingboard/Phasor extrait
-  en helper partagé). *~3-5 j.*
-- 🟢 **No-Slot Clock (NSC, DS1216E)** — clock qui se plogue sous une
-  ROM (pattern recognition). Pour machines sans slot libre (//c).
-  ThunderClock+ couvre le cas général. Refs MAME `ds1216.cpp`. *1 j.*
-- 🟢 **SSC IRQ gate SW2:6 DIP** non implémenté (MAME `a2ssc.cpp:373`).
-- 🟢 **ClockCard slot ROM réel** — load path en place
-  (`roms/thunderclock_u9_v1.3.bin`, 256 B ou 2 KB, source
-  markadev/AppleII-RevEng). Reste à fournir le dump par défaut + tester
-  contre des outils DOS 3.3 / Applesoft qui chargent le driver depuis
-  $C800.
-- 🟡 **[P2] Liron / UniDisk 3.5 réelle (IWM en slot)** — stack déjà
-  là (`IWMDevice` verbatim, `Sony35Drive`, GCR zoné, `SmartPortHub`).
-  Reste `LironCard : SlotPeripheral` + ROM 343S0001.
-  **Bloqueur** : aucun dump ROM public (MAME `a2iwm.cpp` *WANTED*).
-  *~8-12 h hors sourcing ROM.*
+- 🟠 **Z-80 SoftCard + CP/M** — Microsoft SoftCard, Z-80B clipped onto
+  the 6502 bus, shares RAM via mode-switch. Unlocks the CP/M library
+  (BASIC-80, dBase II, Turbo Pascal, WordStar). MAME refs
+  `a2softcard.cpp` + Z-80 core. *10-15 d.*
+- 🟡 **Grappler+ printer (`GrapplerCard`)** — ROM-gated shell in
+  place (catalog `grappler`, dump `roms/grappler_plus.bin` 4 KB
+  expected). Remaining: model the upper-2 KB bank-switch
+  ($C0(8+s)X), pin against MAME `a2grappler.cpp`, and host-side raster
+  rendering of HGR dumps to PDF. *1-2 d.*
+- 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
+  `echoplus_tms`: SlotPeripheral + stub register decode at
+  $Cs00-$Cs0F, enough for detection. Remaining: TMS5220 LPC10
+  decoder (chirp ROM + K-parameter interpolation) and AY-3-8913 audio
+  synth (usable once the Mockingboard/Phasor core is extracted into a
+  shared helper). *~3-5 d.*
+- 🟢 **No-Slot Clock (NSC, DS1216E)** — clock that plugs under a
+  ROM (pattern recognition). For machines with no free slot (//c).
+  ThunderClock+ covers the general case. MAME refs `ds1216.cpp`. *1 d.*
+- 🟢 **SSC IRQ gate SW2:6 DIP** not implemented (MAME `a2ssc.cpp:373`).
+- 🟢 **Real ClockCard slot ROM** — load path in place
+  (`roms/thunderclock_u9_v1.3.bin`, 256 B or 2 KB, source
+  markadev/AppleII-RevEng). Remaining: ship the default dump + test
+  against DOS 3.3 / Applesoft tools that load the driver from $C800.
+- 🟡 **[P2] Real Liron / UniDisk 3.5 (IWM in a slot)** — stack already
+  there (`IWMDevice` verbatim, `Sony35Drive`, zoned GCR, `SmartPortHub`).
+  Remaining: `LironCard : SlotPeripheral` + ROM 343S0001.
+  **Blocker**: no public ROM dump (MAME `a2iwm.cpp` *WANTED*).
+  *~8-12 h excluding ROM sourcing.*
 - 🟢 **[P3] Apple II SCSI / High-Speed SCSI + CHD** — MAME
-  `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Gros lift pour
-  besoin niche (CFFA suffit). *~30-50 h.*
-- 🟢 **Apple II VGA / Second Sight (carte vidéo VGA)** — carte slot qui
-  shadow le framebuffer Apple II et sort un signal VGA propre (mode
-  scanline + modes texte/HGR/DHGR/lo-res). Deux incarnations : le projet
-  open-hardware **markadev/AppleII-VGA** (RP2040, firmware + KiCad libres,
-  donc registres et timing documentés) et la commerciale **Second Sight**
-  (reactivemicro, manuel Brutal Deluxe). POM2 a déjà tout le décodage
-  vidéo (`Apple2Display`) ; l'intérêt serait surtout de modéliser les
-  soft-switches/registres de la carte pour la détection logicielle et une
-  sortie « VGA-clean » optionnelle. Refs code + doc :
-  - <https://github.com/markadev/AppleII-VGA> (firmware RP2040 + KiCad)
-  - <https://www.brutaldeluxe.fr/documentation/secondsight/secondsight_manual.pdf> (manuel Second Sight)
-  - <https://downloads.reactivemicro.com/Apple%20II%20Items/Hardware/SecondSite_VGA/> (dumps/ROMs ReactiveMicro)
-  - <https://www.apple2history.org/history/ah13/#05> (contexte historique)
-  *~5-10 j (sourcing registres + mode d'intégration à décider).*
-- 🟢 **UDC (Apple 1991)** — 4 baies hétérogènes (3.5"/5.25"/HDV).
-- 🟢 **Slinky / RamFAST RAM disk** — utilité limitée vs RamWorks III.
-- 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice attaché
-  à un slot card (rare).
+  `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Big lift for a
+  niche need (CFFA suffices). *~30-50 h.*
+- 🟢 **Apple II VGA / Second Sight (VGA video card)** — slot card that
+  shadows the Apple II framebuffer and outputs a clean VGA signal
+  (scanline mode + text/HGR/DHGR/lo-res modes). Two incarnations: the
+  open-hardware project **markadev/AppleII-VGA** (RP2040, free firmware +
+  KiCad, so registers and timing are documented) and the commercial
+  **Second Sight** (reactivemicro, Brutal Deluxe manual). POM2 already has
+  all the video decode (`Apple2Display`); the value would be modelling the
+  card's soft-switches/registers for software detection and an optional
+  "VGA-clean" output. Code + doc refs:
+  - <https://github.com/markadev/AppleII-VGA> (RP2040 firmware + KiCad)
+  - <https://www.brutaldeluxe.fr/documentation/secondsight/secondsight_manual.pdf> (Second Sight manual)
+  - <https://downloads.reactivemicro.com/Apple%20II%20Items/Hardware/SecondSite_VGA/> (ReactiveMicro dumps/ROMs)
+  - <https://www.apple2history.org/history/ah13/#05> (historical context)
+  *~5-10 d (register sourcing + integration mode to be decided).*
+- 🟢 **UDC (Apple 1991)** — 4 heterogeneous bays (3.5"/5.25"/HDV).
+- 🟢 **Slinky / RamFAST RAM disk** — limited utility vs RamWorks III.
+- 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice attached
+  to a slot card (rare).
 
 ### [Cassette]
 
-- 🟢 **WAV record/playback enrichi** — POM2 supporte .wav ; manque
-  filtrage analogique tape (hiss, drop-out), VU-meter, timecode.
-  Refs MAME `apple2.cpp` cassette. *2 j.*
+- 🟢 **Enriched WAV record/playback** — POM2 supports .wav; missing
+  analog tape filtering (hiss, drop-out), VU-meter, timecode.
+  MAME refs `apple2.cpp` cassette. *2 d.*
 
 ### [Network]
 
-- 🟠 **Uthernet I/II Ethernet TCP/IP** — débloque IRC/HTTP/telnet/FTP
-  modernes. I = CS8900A NIC (`uthernet.cpp`) ; II = W5100 hardware
-  stack (`uthernetii.cpp`). Backend host = libslirp ou TAP/TUN.
-  *5-7 j.*
+- 🟠 **Uthernet I/II Ethernet TCP/IP** — unlocks modern
+  IRC/HTTP/telnet/FTP. I = CS8900A NIC (`uthernet.cpp`); II = W5100
+  hardware stack (`uthernetii.cpp`). Host backend = libslirp or TAP/TUN.
+  *5-7 d.*
 
 ### [Printer]
 
-- 🟡 **Export PDF** — `PrinterCard` spool + `.txt` OK ; reste renderer
-  monospace ou libharu.
+- 🟡 **PDF export** — `PrinterCard` spool + `.txt` OK; remaining is a
+  monospace renderer or libharu.
 
 ### [Input] joystick / paddles / mouse
 
-- 🟡 **PADL(2)/PADL(3) binding host** — second stick centré 127
+- 🟡 **PADL(2)/PADL(3) host binding** — second stick centered at 127
   (`JoystickInput.cpp:65-75`).
-- 🟡 **Mapping souris → paddles** — paddle 0/1 sur axes X/Y de la
-  souris host (alternative aux pads).
+- 🟡 **Mouse → paddles mapping** — paddle 0/1 on host mouse X/Y axes
+  (alternative to pads).
 
 ### [UI/UX]
 
-- ✅ **Desktop drag & drop disque** — FAIT (2026-05-31). `glfwSetDropCallback`
-  câblé dans `main.cpp` (`glfw_drop_callback` → `MainWindow::onFileDrop`), qui
-  route le premier fichier reconnu via `insertAndBootImage` (auto-route Disk II /
-  SmartPort 3.5" / ProDOS HDV) et affiche le résultat dans la status bar. Les
-  extensions non reconnues sont signalées plutôt qu'ignorées en silence. La
-  promesse README « drop a `.woz`/`.dsk` on the window » est désormais tenue.
-- ✅ **Onboarding : panneau Welcome / no-ROM** — FAIT (2026-05-31).
-  `renderWelcomePanelWindow` : bannière no-ROM (rouge) avec les dossiers sondés
-  (`resourceSearchDirs`), le nom de ROM attendu pour le profil actif, un bouton
-  « Reload ROM (re-probe) », plus quick-start (chargement disque, dossiers média,
-  touches F6/F9/F11/F12/Open-Apple, fonctions phares). Auto-ouvert au premier
-  lancement sans ROM (`romLoaded_`) ; aussi accessible via `Help → Welcome /
-  Quick Start`. **Reste** *(🟢)* : tutoriels guidés plus poussés.
-- ✅ **Densité UI / découvrabilité** — FAIT (2026-05-31). Menu `Devices`
-  regroupé sous en-têtes `SeparatorText` (Storage / Sound / Ports & cards /
-  Inspectors & tools) via le helper `devItem` qui ajoute un tooltip à *chaque*
-  entrée (y compris les cartes non branchées, `AllowWhenDisabled`). Raccourci
-  `F6` affiché sur Rewind ; tooltips ajoutés sur 3D voxel view / settings et CRT
-  Settings (menu Display) ; `Help → Welcome` tooltip. ~25 tooltips ajoutés.
-  **Reste** *(🟢)* : layout par défaut plus aéré (item dédié plus bas).
-- 🟢 **Rewind façon MicroM8** — enregistrement continu d'état +
-  scrub/step-back/rewind-live. **Phases 0→5 faites** (2026-05-31,
-  `CHANGELOG.md`) : backend mémoire `SnapshotIO`, `MachineSnapshot`
-  partagé, `RewindBuffer` (keyframes + deltas XOR, budget mémoire),
-  capture au frame boundary (`workerLoop` + `tickFrame` WASM), transport
-  worker-parké + UI `Rewind_ImGui` (timeline / transport / `F6` rewind-live),
-  état lecteur `DiskIICard` via `SlotPeripheral::*SnapshotState`, flush
-  audio au restore. Épinglés `snapshot_memory_roundtrip`,
-  `rewind_roundtrip`, `rewind_delta`, `rewind_transport`,
-  `rewind_slot_state`, `rewind_audio_state` (Mockingboard/Phasor VIA+AY+SSI263
-  → musique **et** parole survivent au rewind), `rewind_disk_write` (snapshot
-  DiskIICard v2 = buffers de pistes nibble → les écritures disque sont
-  annulées au rewind). **Reste** : écritures sur WOZ inscriptible non annulées
-  (`wozRaw` est un store distinct ; originaux WOZ généralement write-protected)
-  ; « redo » (re-jouer un futur annulé) non implémenté. Détail → `DEV.md`
+- ✅ **Desktop disk drag & drop** — DONE (2026-05-31). `glfwSetDropCallback`
+  wired in `main.cpp`, routes the first recognized file via `insertAndBootImage`
+  (auto-route Disk II / SmartPort 3.5" / ProDOS HDV) and reports the result in
+  the status bar; unrecognized extensions are flagged. Detail → `CHANGELOG.md`.
+- ✅ **Onboarding: Welcome / no-ROM panel** — DONE (2026-05-31).
+  `renderWelcomePanelWindow`: no-ROM banner with probed dirs, expected ROM name
+  for the active profile, "Reload ROM (re-probe)" button, plus quick-start;
+  auto-opened on first launch without a ROM, also via `Help → Welcome / Quick
+  Start`. Detail → `CHANGELOG.md`.
+  - 🟢 Remaining: deeper guided tutorials.
+- ✅ **UI density / discoverability** — DONE (2026-05-31). `Devices` menu
+  grouped under `SeparatorText` headers via the `devItem` helper that adds a
+  tooltip to every entry; `F6` shown on Rewind, ~25 tooltips added. Detail →
+  `CHANGELOG.md`.
+  - 🟢 Remaining: airier default layout (dedicated item below).
+- 🟢 **MicroM8-style Rewind** — continuous state recording +
+  scrub/step-back/rewind-live. **Phases 0→5 done** (2026-05-31,
+  `CHANGELOG.md`): memory backend `SnapshotIO`, shared `MachineSnapshot`,
+  `RewindBuffer` (keyframes + XOR deltas, memory budget), frame-boundary
+  capture (`workerLoop` + `tickFrame` WASM), parked-worker transport +
+  `Rewind_ImGui` UI (timeline / transport / `F6` rewind-live), `DiskIICard`
+  drive state via `SlotPeripheral::*SnapshotState`, audio flush on restore.
+  Pinned `snapshot_memory_roundtrip`, `rewind_roundtrip`, `rewind_delta`,
+  `rewind_transport`, `rewind_slot_state`, `rewind_audio_state`
+  (Mockingboard/Phasor VIA+AY+SSI263 → music **and** speech survive the rewind),
+  `rewind_disk_write` (DiskIICard snapshot v2 = nibble track buffers → disk
+  writes are undone on rewind). **Remaining**: writes to a writable WOZ not
+  undone (`wozRaw` is a separate store; WOZ originals usually write-protected);
+  "redo" (replay an undone future) not implemented. Detail → `DEV.md`
   § Rewind / time-travel.
-- 🟡 **Vue 3D voxel façon MicroM8 (« Voxel Cube »)** — écran **dressé**
-  (moniteur, plan XY) en dalle 4:3 de cubes de profondeur **uniforme** +
-  relief « pop » par couleur, caméra orbitale. NB : l'extrusion par luminance
-  initiale donnait des stalactites à plat — corrigé après scraping MicroM8
-  (cf. `CHANGELOG.md` + `DEV.md` § 3D voxel view). **Phases 0→3 faites** (2026-05-31,
-  `CHANGELOG.md`) : `Mat4.h` (Vec3+Mat4+OrbitCamera, épinglé `voxel3d_math`),
-  `Voxel3DRenderer` (cubes instanciés, FBO+depth, couleur par vertex
-  texture-fetch, ombrage par dérivées, **supersampling anti-moiré** +
-  `cubeFill=1` contigu), **résolution native** (1 voxel/pixel, 280|560×192),
-  tap **avant** `CrtEffectStack` (indépendant des effets CRT), *(P2)* orbite
-  glisser-gauche + **pan** bouton-milieu + zoom molette, *(P3)* panneau
-  View ▸ « 3D voxel settings… » (depth/pop/fill/AA/ambient/mono/per-colour,
-  persistés `voxel_*`), *(P4)* **garde-fou perf WASM** (`ss≤2`+FBO≤2048²+
-  `gridW≤280` sous Emscripten), *(bonus)* **mode Mono** + **profondeur par
-  index de couleur** (snap palette lo-res `kVoxelPalette`). **Build WASM OK**
-  (+ fix molette navigateur : `emscripten_set_wheel_callback` → `io.MouseWheel`,
-  cf. `main.cpp`). **Reste** : *(P5, différé sur demande)* tie-in rewind
-  « figer + orbiter une frame rembobinée » — marche déjà gratuitement (la vue
-  échantillonne la framebuffer live que le restore rewind met à jour), donc
-  doc + polish plutôt que plomberie ; *(option)* mode heightfield-mesh
-  alternatif. Détail → `DEV.md` § 3D voxel view. *P5≈0.5 j.*
-- 🟢 **Layout par défaut plus aéré** — ImGui Docking ou
-  `SetNextWindowPos` cascade adaptative.
-- 🟢 **`isDuplicate` flagge cffa/smartport35 en double** dans la
-  colonne d'assignation Slot Config — cosmétique.
-- 🟢 **Touchscreen / virtual joystick on-screen** — joystick virtuel
-  ImGui pour build WASM mobile (séparé du routage touch brut). Two
-  thumb-sticks + boutons Open/Solid Apple. Inspiré microM8 / A2TS.
-  *2 j.*
+- 🟡 **MicroM8-style 3D voxel view ("Voxel Cube")** — screen **stood up**
+  (monitor, XY plane) as a 4:3 slab of **uniform-depth** cubes + per-color "pop"
+  relief, orbital camera. NB: the initial luminance extrusion gave flat
+  stalactites — fixed after scraping MicroM8 (cf. `CHANGELOG.md` + `DEV.md` § 3D
+  voxel view). **Phases 0→3 done** (2026-05-31, `CHANGELOG.md`): `Mat4.h`
+  (Vec3+Mat4+OrbitCamera, pinned `voxel3d_math`), `Voxel3DRenderer` (instanced
+  cubes, FBO+depth, per-vertex color texture-fetch, derivative shading,
+  **anti-moiré supersampling** + contiguous `cubeFill=1`), **native resolution**
+  (1 voxel/pixel, 280|560×192), tap **before** `CrtEffectStack` (independent of
+  CRT effects), *(P2)* left-drag orbit + middle-button **pan** + wheel zoom,
+  *(P3)* View ▸ "3D voxel settings…" panel (depth/pop/fill/AA/ambient/mono/
+  per-colour, persisted `voxel_*`), *(P4)* **WASM perf guard** (`ss≤2`+FBO≤2048²+
+  `gridW≤280` under Emscripten), *(bonus)* **Mono mode** + **depth by color
+  index** (snap lo-res palette `kVoxelPalette`). **WASM build OK** (+ browser
+  wheel fix: `emscripten_set_wheel_callback` → `io.MouseWheel`, cf. `main.cpp`).
+  **Remaining**: *(P5, deferred on request)* rewind tie-in "freeze + orbit a
+  rewound frame" — already works for free (the view samples the live framebuffer
+  that rewind restore updates), so doc + polish rather than plumbing; *(option)*
+  alternative heightfield-mesh mode. Detail → `DEV.md` § 3D voxel view. *P5≈0.5 d.*
+- 🟢 **Airier default layout** — ImGui Docking or
+  `SetNextWindowPos` adaptive cascade.
+- 🟢 **`isDuplicate` flags cffa/smartport35 duplicates** in the Slot
+  Config assignment column — cosmetic.
+- 🟢 **On-screen touchscreen / virtual joystick** — ImGui virtual
+  joystick for mobile WASM builds (separate from raw touch routing). Two
+  thumb-sticks + Open/Solid Apple buttons. Inspired by microM8 / A2TS.
+  *2 d.*
 
 ### [WASM]
 
-- 🟡 **IDBFS settings persistence** — `/persistent` monté via IDBFS
-  (`CMakeLists.txt:241`) mais `Settings.cpp` écrit dans `$HOME` ;
-  `state.cfg` + `imgui.ini` ne survivent pas au reload. Router via
-  `ResourcePaths` sous `__EMSCRIPTEN__`. *2-4 h.* ⭐ quick win
-- 🟡 **File picker / drop-zone disks** — bundling build-time
-  uniquement. Drop-zone HTML5 → `FS.writeFile('/uploads/…')` →
-  `DiskIICard::insert`. *~1 j.*
-- 🟢 **Touch input mobile** — GLFW3 sous Emscripten ne map pas
-  touch → mouse hors-canvas. Wrapper JS `touchstart/move/end` →
+- 🟡 **IDBFS settings persistence** — `/persistent` mounted via IDBFS
+  (`CMakeLists.txt:241`) but `Settings.cpp` writes to `$HOME`;
+  `state.cfg` + `imgui.ini` do not survive a reload. Route via
+  `ResourcePaths` under `__EMSCRIPTEN__`. *2-4 h.* ⭐ quick win
+- 🟡 **File picker / drop-zone disks** — build-time bundling
+  only. HTML5 drop-zone → `FS.writeFile('/uploads/…')` →
+  `DiskIICard::insert`. *~1 d.*
+- 🟢 **Mobile touch input** — GLFW3 under Emscripten does not map
+  touch → mouse off-canvas. JS wrapper `touchstart/move/end` →
   `Module._inject_mouse_*`.
-- 🟢 **Audio worklet tuning** — miniaudio Web Audio fonctionne mais
-  latence ~150 ms audible sur speaker click. Explorer
-  `AudioWorkletNode` custom ou réduire le buffer.
-- 🟡 **Démo « zéro friction » web** *(audit commercial 2026-05-31)* — le levier
-  WASM est bridé : ROMs user-provided + aucun disque bundlé → la démo navigateur
-  ne démarre pas clé en main comme POM1, ce qui tue la conversion instantanée et
-  le partage viral (voxel 3D / rewind). Bundler des **disques de démo libres de
-  droits** (sans toucher aux ROMs propriétaires) jouables côté WASM. Prérequis
-  marketing avant de pousser sur r/apple2 + Hacker News ; viser en parallèle une
-  **1.0 stable** (finir le boot //c+/IWM, cf. dashboard parité). *1-2 j hors
-  sourcing média.*
+- 🟢 **Audio worklet tuning** — miniaudio Web Audio works but
+  latency ~150 ms is audible on speaker click. Explore a custom
+  `AudioWorkletNode` or shrink the buffer.
+- 🟡 **"Zero-friction" web demo** *(commercial audit 2026-05-31)* — the WASM
+  lever is throttled: user-provided ROMs + no bundled disk → the browser demo
+  does not start turnkey like POM1, which kills instant conversion and viral
+  sharing (3D voxel / rewind). Bundle **royalty-free demo disks** (without
+  touching proprietary ROMs) playable on the WASM side. A marketing prerequisite
+  before pushing to r/apple2 + Hacker News; aim in parallel for a **stable 1.0**
+  (finish the //c+/IWM boot, cf. parity dashboard). *1-2 d excluding media
+  sourcing.*
 
 ### [Arch] refactor & tooling
 
-- 🟠 **CI GitHub Actions absente** *(audit 2026-05-31)* — `.github/workflows/`
-  n'existe pas : les **113 tests `ctest`** (Klaus 6502+65C02, `cpu_cycle_count`,
-  golden-hash display, boot traces) ne tournent jamais en automatique. C'est le
-  dépôt qui a le plus à perdre de cette absence. Workflow sur la cible
-  `pom2_headless` (sans GLFW/audio) + build de vérification WASM
-  (`build_wasm.sh`) + gel des golden-hash comme garde-fou. **Plus fort ROI.**
+- 🟠 **No CI GitHub Actions** *(audit 2026-05-31)* — `.github/workflows/`
+  does not exist: the dormant ctest suite — 140+ tests (Klaus 6502+65C02,
+  `cpu_cycle_count`, golden-hash display, boot traces) — never runs automatically.
+  This is the repo with the most to lose from that absence. Workflow on the
+  `pom2_headless` target (no GLFW/audio) + WASM verification build
+  (`build_wasm.sh`) + freeze golden-hash as a guardrail. **Highest ROI.**
   *2-4 h.* ⭐ quick win
-- 🟠 **`MainWindow.cpp` god-object (6439 l.)** *(audit 2026-05-31)* — plus gros
-  fichier propre du dépôt, UI monolithique malgré les splits `_Slots`/
-  `_MemoryMaps`/`_ImGui`. Alourdit recompilations + lisibilité. Extraire les
-  groupes de fenêtres de périphériques en TUs dédiés (viser < 3000 l./fichier,
-  comme la discipline `MainWindow_*` de POM1). *3-5 j.*
-- 🟡 **Config éclatée** — env vars `POM2_*` + CLI flags + `Settings`
-  à centraliser dans un `Config` (env → CLI → Settings → defaults),
-  lister env vars dans `--help`. *1 j.*
-- 🟡 **`stateMutex` partagé CPU+UI** (`EmulationController.h:118`) —
-  `MainWindow_Slots` prend ce lock pendant plug/unplug, risque
-  jitter audio. Partitionner long terme.
-- 🟡 **Namespace `pom2::` incohérent** — 54/105 fichiers top-level,
-  `tests/` ne l'utilise pas. Migration mécanique.
-- 🟢 **M6502 style hérité** — commentaires FR/EN, casts C-style,
-  `void(void)`. `clang-format` + `clang-tidy modernize-*` ciblé.
-- 🟢 **`*Card` raw pointers dans MainWindow** (`MainWindow.h:97-103`) —
-  pas de notification quand SlotBus replug. Observer pattern ou
+- 🟠 **`MainWindow.cpp` god-object (6439 lines)** *(audit 2026-05-31)* — biggest
+  single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
+  `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
+  groups into dedicated TUs (aim for < 3000 lines/file, like POM1's `MainWindow_*`
+  discipline). *3-5 d.*
+- 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
+  to centralize into a `Config` (env → CLI → Settings → defaults),
+  list env vars in `--help`. *1 d.*
+- 🟡 **`stateMutex` shared CPU+UI** (`EmulationController.h:118`) —
+  `MainWindow_Slots` takes this lock during plug/unplug, audio jitter
+  risk. Partition long-term.
+- 🟡 **Inconsistent `pom2::` namespace** — 54/105 top-level files,
+  `tests/` does not use it. Mechanical migration.
+- 🟢 **Legacy M6502 style** — FR/EN comments, C-style casts,
+  `void(void)`. Targeted `clang-format` + `clang-tidy modernize-*`.
+- 🟢 **`*Card` raw pointers in MainWindow** (`MainWindow.h:97-103`) —
+  no notification when SlotBus replugs. Observer pattern or
   `controller.slotBus().peripheral(N)`.
 
-## Corpus de test « cas limites »
+## Edge-case test corpus
 
-Backlog de **tests manuels / d'intégration** avec des logiciels réels qui
-torturent les recoins (synchro CPU↔vidéo au cycle, flux WOZ protégé, IRQ
-VIA) — au-delà des `ctest` unitaires. Liste curée + statut POM2 + renvois
-aux `Gap connus` du dashboard : **[`docs/test_corpus.md`](docs/test_corpus.md)**.
+Backlog of **manual / integration tests** with real software that tortures the
+corners (cycle-exact CPU↔video sync, protected WOZ flux, VIA IRQ) — beyond the
+unit `ctest`s. Curated list + POM2 status + cross-refs to the dashboard's
+`Known gaps`: **[`docs/test_corpus.md`](docs/test_corpus.md)**.
 
-- 🟠 **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch
-  (29+ min, sources GPLv3). **Référence prioritaire** pour la perfection
-  d'émulation : enchaîne vapor lock, mid-scanline, Mockingboard, 128 KB aux,
-  Unidisk/Liron. Valider DIX en premier avant tout autre titre du corpus.
-- ✅ **Vapor lock** — FAIT/prouvé (2026-06-09, étendu 2026-06-10). Test
-  `vapor_lock` : une vraie boucle 6502 `LDA $C058 / CMP marqueur / BNE`
-  **verrouille** sur le marqueur en RAM vidéo ; `floatingBus()` suit le faisceau
-  au cycle. La géométrie scanner est désormais **PAL-aware** (262/312 lignes
-  selon `VideoStandard`) — était hardcodée 262, faisait dériver le lock PAL.
-  **Précision sous-instruction corrigée** : lecture `$C0xx` échantillonnée au
-  cycle d'accès (`cycleCounter + getCurrentInstructionCycles()`, cohérent avec
-  le log d'events). **Toutes les lectures `$C0xx` non pilotées renvoient le
-  bus** : `$C040`, **`$C050-$C057`** (cut-scene DROL — section (d) du test) et
-  `$C030-$C03F` étaient à 0. *(Reste 🟢 : accès non-dernier-cycle type RMW —
-  hors vapor lock.)*
-- ✅ **Switch vidéo mid-scanline** (French Touch *Mad Effect*/*Plasmagical*,
-  inclus dans DIX) — FAIT (rendu intra-ligne par byte-column, RGBA + composite +
-  560-large ; cf. [Display]). **Distinction beam-racing vs double-buffer** : un
-  flip de page unidirectionnel = buffer (rendu pleine-frame, anti-flicker DROL),
-  bidirectionnel = beam-racing exact. → `Gap #3` (résiduel : cycle de transition
-  exact au character-clock, mélange 40/80-col même ligne).
-- 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — suivi
-  spiral + weak bits à valider sur images WOZ réelles. → `Gap #9/#10`.
+- 🟠 **[DIX](https://github.com/Fr3nchT0uch/DIX/) — French Touch demo
+  anthology**. **Priority reference** for emulation perfection: chains vapor
+  lock, mid-scanline, Mockingboard, 128 KB aux, Unidisk/Liron. Validate DIX
+  first before any other corpus title. Full description → `docs/test_corpus.md`.
+- ✅ **Vapor lock** — DONE/proven (2026-06-09, extended 2026-06-10). Test
+  `vapor_lock`: a real 6502 `LDA $C058 / CMP marker / BNE` loop locks on the
+  marker in video RAM; `floatingBus()` tracks the beam per cycle. Scanner
+  geometry is now PAL-aware (262/312 lines per `VideoStandard`); sub-instruction
+  precision corrected (`$C0xx` read sampled at the access cycle); all
+  non-driven `$C0xx` reads return the bus (`$C040`, `$C050-$C057`,
+  `$C030-$C03F`). *(🟢 Remaining: non-last-cycle RMW-type accesses — outside
+  vapor lock.)*
+- ✅ **Mid-scanline video switch** (French Touch *Mad Effect*/*Plasmagical*,
+  included in DIX) — DONE (intra-line per-byte-column rendering, RGBA + composite
+  + 560-wide; cf. [Display]). Beam-racing vs double-buffer distinction: a
+  unidirectional page flip = buffer (full-frame render, DROL anti-flicker),
+  bidirectional = exact beam-racing. → `Gap #3` (residual: exact transition cycle
+  at character-clock, 40/80-col mixed on same line).
+- 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — spiral
+  tracking + weak bits to validate on real WOZ images. → `Gap #9/#10`.
 
-## Skips délibérés (documentés inline)
+## Deliberate skips (documented inline)
 
-Divergences MAME conscientes, justifiées dans le code à l'endroit
-concerné. Ne pas re-instruire sans relire le commentaire d'origine.
+Conscious MAME divergences, justified in the code at the relevant spot.
+Do not re-litigate without re-reading the original comment.
 
-- 🟢 **`$C040` STRB pas gated `!//c`** (MAME `apple2e.cpp:1927`) —
-  aucun sink wired.
-- 🟢 **ClockCard DATA_OUT live** vs MAME latch sur CLK edge en
-  MODE_SHIFT (`ClockCard.cpp:193-200`) — strict casserait stock
+- 🟢 **`$C040` STRB not gated `!//c`** (MAME `apple2e.cpp:1927`) —
+  no sink wired.
+- 🟢 **ClockCard DATA_OUT live** vs MAME latch on CLK edge in
+  MODE_SHIFT (`ClockCard.cpp:193-200`) — strict would break stock
   ProDOS.
-- 🟢 **MouseCard PIA out_a/b sans `scheduler.synchronize`** (MAME
-  `mouse.cpp:280-294`) — pas de race firmware-visible.
-- 🟢 **ClockCard offset model vs MAME `set_time`** — équivalent
-  comportementalement tant que `timeFn()` lock-step.
-- 🔁 **MAME path drift refresher** — repasser ~tous les 6 mois pour
-  suivre les renommages upstream (récent : `wozfdc.cpp`
+- 🟢 **MouseCard PIA out_a/b without `scheduler.synchronize`** (MAME
+  `mouse.cpp:280-294`) — no firmware-visible race.
+- 🟢 **ClockCard offset model vs MAME `set_time`** — behaviorally
+  equivalent as long as `timeFn()` is lock-step.
+- 🔁 **MAME path drift refresher** — re-check ~every 6 months to
+  track upstream renames (recent: `wozfdc.cpp`
   `bus/a2bus → machine`).
 
-## Hors scope
+## Out of scope
 
-Choses qu'on ne fera pas, sauf demande explicite + ROI clair.
+Things we will not do unless explicitly requested + clear ROI.
 
-- **Apple IIgs / ProDOS 16** — nouveau projet (Mega II + FPI + GLU +
-  Ensoniq DOC, *30-100 j*).
-- **Apple ///** + SOS — niche, *20-40 j*.
-- **Clones** Franklin / Laser / Pravetz / Basis 108 — *2-5 j/clone*,
-  faible demande.
-- **CFFA CompactFlash** — HDV + host folder suffit ; portage
-  MAME-fidèle déjà couvert par P1 (CFFA fait), P2/P3 ci-dessus.
+- **Apple IIgs / ProDOS 16** — new project (Mega II + FPI + GLU +
+  Ensoniq DOC, *30-100 d*).
+- **Apple ///** + SOS — niche, *20-40 d*.
+- **Clones** Franklin / Laser / Pravetz / Basis 108 — *2-5 d/clone*,
+  low demand.
+- **CFFA CompactFlash** — HDV + host folder suffices; MAME-faithful
+  port already covered by P1 (CFFA done), P2/P3 above.
 
 ## Changelog
 
-Voir [`CHANGELOG.md`](CHANGELOG.md).
+See [`CHANGELOG.md`](CHANGELOG.md).

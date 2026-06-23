@@ -1,15 +1,15 @@
-# Archive — documents de travail historiques
+# Archive — historical working documents
 
-Snapshots ponctuels d'efforts terminés, conservés pour la **provenance** (le
-« pourquoi » d'un correctif, la méthode d'audit). Ils ne sont **pas** maintenus :
-leurs références de lignes peuvent être périmées et leurs conclusions sont déjà
-repliées dans les docs vivants. Ne pas s'y fier comme état courant.
+One-off snapshots of finished efforts, kept for **provenance** (the *why* behind
+a fix, the audit method). They are **not** maintained: their line references may
+be stale and their conclusions are already folded into the living docs. Do not
+treat them as current state. These files are kept in their original French.
 
-| Fichier | Quoi | État → où vit l'info à jour |
+| File | What | Status → where the current info lives |
 |---|---|---|
-| `video_parity_audit_2026-05-30.md` | Audit parité vidéo/couleur/effets (9 findings, TOP-10 actions) | Gaps phares **résolus** (square-filter, OE GPU/CPU). Doc vivant : [`../graphics_modes_comparison.md`](../graphics_modes_comparison.md). Résidus → `TODO.md` § [Display] *Raffinements parité CRT*. |
-| `video_parity_revalidation_2026-05-30.md` | Re-validation post-WIP de l'audit ci-dessus + fiches d'implémentation F0–F9 | Idem. Les fiches F2/F3/F4/F6/F7 encore ouvertes sont listées dans `TODO.md` § [Display]. |
-| `oe_gpu_cpu_parity.md` | Notes d'agent sur le bug couleur OE GPU≠CPU | **Résolu + pinné** `oe_demod_gpu_cpu_parity`. Détail vivant : `DEV.md` § Composite NTSC shader + ce changelog archivé, 2026-05-30. |
-| `CHANGELOG-2026-05.md` | Entrées de changelog pré-v0.7 (2026-05-14 → 2026-05-30) | Sorties du `CHANGELOG.md` vivant pour l'alléger. Changelog courant → [`../../CHANGELOG.md`](../../CHANGELOG.md). |
+| `video_parity_audit_2026-05-30.md` | Video/colour/effects parity audit (9 findings, TOP-10 actions) | Headline gaps **resolved** (square-filter, OE GPU/CPU). Living doc: [`../graphics_modes_comparison.md`](../graphics_modes_comparison.md). Residuals → `TODO.md` § [Display] *CRT parity refinements*. |
+| `video_parity_revalidation_2026-05-30.md` | Post-WIP re-validation of the audit above + F0–F9 implementation cards | Same. The F2/F3/F4/F6/F7 cards still open are listed in `TODO.md` § [Display]. |
+| `oe_gpu_cpu_parity.md` | Agent notes on the OE GPU≠CPU colour bug | **Resolved + pinned** `oe_demod_gpu_cpu_parity`. Living detail: `DEV.md` § Composite NTSC shader + that archived changelog, 2026-05-30. |
+| `CHANGELOG-2026-05.md` | Pre-v0.7 changelog entries (2026-05-14 → 2026-05-30) | Split out of the living `CHANGELOG.md` to keep it light. Current changelog → [`../../CHANGELOG.md`](../../CHANGELOG.md). |
 
-Historique canonique complet → `git log` + [`../../CHANGELOG.md`](../../CHANGELOG.md).
+Full canonical history → `git log` + [`../../CHANGELOG.md`](../../CHANGELOG.md).

@@ -13,6 +13,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - **One concern per file** — each `.cpp/.h` pair owns one subsystem.
 - **MAME = source of truth** — when porting hardware, cite the MAME file + line range in a comment and pin with a smoke test under `tests/`.
 - **`emuCycles` everywhere** — CPU → audio/UI events carry a CPU-cycle stamp, not wall-clock. Disk-turbo (~60×) collapses wall-clock gaps to zero across an audio-buffer tick. Example: `FloppySoundDevice::drainCommands` consumes the stamp from `DiskIICard::seekPhaseW`.
+- **Docs in English** — English is the reference language for all Markdown docs (README, CLAUDE, DEV, TODO, CHANGELOG, `docs/`). Write new docs and edits in English; the historical snapshots under `docs/archive/` are unmaintained and may still be French.
 
 ## Table of contents
 

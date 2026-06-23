@@ -1,209 +1,207 @@
-# Corpus de test « cas limites » — logiciels réels pour valider l'émulation
+# Edge-case test corpus — real software for validating the emulation
 
-> Liste curée de programmes (démos cycle-exactes, disquettes protégées,
-> suites CPU) qui torturent les recoins de l'Apple II : synchro CPU↔vidéo
-> au cycle près, flux magnétique brut, timings 6502 et IRQ. Sert de
-> **backlog de tests manuels / d'intégration** au-delà des `ctest` unitaires.
+> Curated list of programs (cycle-exact demos, copy-protected disks, CPU
+> suites) that torture the corners of the Apple II: cycle-accurate CPU↔video
+> sync, raw magnetic flux, 6502 timing, and IRQs. Serves as the **manual /
+> integration test backlog** beyond the unit `ctest`s.
 >
-> Origine : échange Gemini (2026-06) re-vérifié et croisé avec les
-> sous-systèmes POM2 réels. Quand un programme cible un `Gap connu` du
-> [dashboard de parité](../TODO.md#parité-mame--pom2-dashboard), le numéro `#`
-> est cité. **Statut** = ce que POM2 fait *aujourd'hui*, pas une promesse.
+> Origin: curated research, re-verified and cross-checked against the actual
+> POM2 subsystems. When a program targets a `known gap` from the
+> [parity dashboard](../TODO.md#mame--pom2-parity-dashboard), the `#` number is
+> cited. **Status** = what POM2 does *today*, not a promise.
 >
-> ⚠️ Toutes les images de jeux commerciaux sont **fournies par l'utilisateur**
-> (comme les ROMs). Ce document ne référence aucun binaire ; il décrit *quoi
-> tester et pourquoi c'est dur*.
+> ⚠️ All commercial game images are **user-provided** (like the ROMs). This
+> document references no binary; it describes *what to test and why it's hard*.
 
-> **⭐ Référence prioritaire — [DIX](https://github.com/Fr3nchT0uch/DIX/)**
-> (anthologie French Touch, 29+ min de démos Apple II 2014–2024, sources GPLv3).
-> C'est le **banc d'essai le plus complet** pour viser la perfection de
-> l'émulation : vapor lock / bus flottant, bascules vidéo mid-scanline,
-> Mockingboard + IRQ VIA, 128 KB aux, SmartPort/Liron + Unidisk 800 KB, cadence
-> PAL 50 Hz. Si DIX tourne sans glitch, l'émulateur est au niveau « démo
-> cycle-exacte » ; si DIX casse, le corpus ci-dessous indique *quel* sous-système
-> creuser.
+> **⭐ Priority reference — [DIX](https://github.com/Fr3nchT0uch/DIX/)**
+> (French Touch anthology, 29+ min of Apple II demos 2014–2024, GPLv3 sources).
+> It is the **most complete test bench** for chasing emulation perfection:
+> vapor lock / floating bus, mid-scanline video toggles, Mockingboard + VIA IRQ,
+> 128 KB aux, SmartPort/Liron + 800 KB Unidisk, PAL 50 Hz timing. If DIX runs
+> glitch-free, the emulator is at the "cycle-exact demo" level; if DIX breaks,
+> the corpus below tells you *which* subsystem to dig into.
 
-## Sommaire
+## Contents
 
-- [1. Précision CPU↔vidéo (synchro au cycle)](#1-précision-cpuvidéo-synchro-au-cycle)
-- [2. Enfer du contrôleur Disk II (flux / WOZ)](#2-enfer-du-contrôleur-disk-ii-flux--woz)
-- [3. CPU & quirks matériels](#3-cpu--quirks-matériels)
-- [4. Audio / Mockingboard (IRQ VIA)](#4-audio--mockingboard-irq-via)
-- [Annexe — le Vapor Lock en détail](#annexe--le-vapor-lock-en-détail)
-- [Corrections vs la source d'origine](#corrections-vs-la-source-dorigine)
+- [1. CPU↔video accuracy (cycle-exact sync)](#1-cpuvideo-accuracy-cycle-exact-sync)
+- [2. Disk II controller hell (flux / WOZ)](#2-disk-ii-controller-hell-flux--woz)
+- [3. CPU & hardware quirks](#3-cpu--hardware-quirks)
+- [4. Audio / Mockingboard (VIA IRQ)](#4-audio--mockingboard-via-irq)
+- [Appendix — Vapor Lock in detail](#appendix--vapor-lock-in-detail)
+- [Corrections vs the original source](#corrections-vs-the-original-source)
 
 ---
 
-## 1. Précision CPU↔vidéo (synchro au cycle)
+## 1. CPU↔video accuracy (cycle-exact sync)
 
-L'Apple II n'a **pas de timer vidéo dédié ni d'IRQ VBL** (sur II/II+ ; le //e
-ajoute `$C019` RDVBL en lecture seule). Toute la synchro fine repose sur le
-**bus flottant** : lire une adresse I/O non pilotée renvoie le dernier octet
-posé par le scanner vidéo (effet capacitif TTL). Voir
-[annexe Vapor Lock](#annexe--le-vapor-lock-en-détail).
+The Apple II has **no dedicated video timer and no VBL IRQ** (on II/II+; the //e
+adds read-only `$C019` RDVBL). All fine-grained sync relies on the **floating
+bus**: reading an undriven I/O address returns the last byte placed by the video
+scanner (TTL capacitive effect). See
+[Vapor Lock appendix](#appendix--vapor-lock-in-detail).
 
-| Programme | Ce qu'il torture | Pourquoi c'est un cas limite | Statut POM2 |
+| Program | What it tortures | Why it's an edge case | POM2 status |
 |---|---|---|---|
-| **deater — « megademos »** (Vince « deater » Weaver, `deater.net/weave/vmwprod`) | Vapor lock : détecte le VBL en bouclant sur une lecture `$C0xx` non pilotée jusqu'à lire un octet repère écrit en RAM vidéo. | Si la vidéo est un framebuffer rendu de façon asynchrone en fin de frame au lieu d'entrelacer lectures CPU et scanner au cycle, la boucle ne « verrouille » jamais → écran figé / glitché. | ✅ **Prouvé (2026-06-09)** : `Memory::floatingBus()` = port verbatim MAME `apple2video.cpp:124-201 scanner_address`, indexé sur `cycleCounter`. Le test `vapor_lock` *fait tourner une vraie boucle 6502* (`LDA $C058 / CMP marqueur / BNE`) et **elle verrouille** sur le marqueur posé en RAM vidéo. La géométrie scanner suit maintenant le **standard vidéo** (262 NTSC / **312 PAL**) — c'était codé en dur 262, ce qui faisait dériver le lock par-frame des démos PAL ; corrigé. **Précision sous-instruction corrigée** : la lecture CPU `$C0xx` échantillonne le bus au **cycle d'accès** (`cycleCounter + getCurrentInstructionCycles()` = dernier cycle d'un `LDA`/`CMP`/`BIT`, cohérent avec le timestamp du log d'events) au lieu du cycle de **début** d'instruction. **Toutes les lectures `$C0xx` non pilotées renvoient le bus** : `$C040`, **`$C050-$C057`** (2026-06-10) et `$C030-$C03F` étaient à 0. Pinné `vapor_lock` (§(d) = cut-scene DROL) + `floatingbus_page2_smoke`. *(Reste 🟢 : accès `$C0xx` non-dernier-cycle, ex. RMW — non utilisés pour le vapor lock.)* |
-| **DROL** (Brøderbund 1983 ; `disks_5.4/woz/Drol*.woz`, `disks_5.4/gist/Drol.dsk`) | Jeu réel, double cas limite : (1) **page-flip double-buffer non-synchronisé** (`$C054/$C055` toutes les ~4 frames à positions dérivantes) pour l'animation ; (2) **cut-scene vapor-lock** par `LDA $C050 / CMP #$80`. | (1) Un replay beam-racé naïf peint la bande au-dessus du flip depuis la page **en cours de redessin** (RAM lue au rendu, pas au faisceau) → sprites à moitié effacés. (2) Une lecture `$C050` qui renvoie 0 au lieu du bus → la boucle ne verrouille jamais → freeze (hang historique LinApple). | ✅ **FAIT (2026-06-10)**, diagnostiqué via `tests/drol_probe.cpp` (boot du vrai WOZ). (1) `forEachBeamSegment` distingue flip unidirectionnel (= buffer → page finale pleine-frame, anti-flicker) vs bidirectionnel (= beam-racing exact, DIX MODPAGE). Pinné `drol_pageflip_render`. (2) lecture `$C050-$C057` bascule le mode ET renvoie `floatingBus()`. Pinné `vapor_lock` §(d). Bonus : les 6 painters 560-large prennent désormais l'état de bande (le bug qui masquait le flicker sous Chat Mauve). |
-| **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — anthologie French Touch (29+ min, //e / //c PAL, sources GPLv3) | **Suite d'intégration tout-en-un** : vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, Unidisk 800 KB via Liron/SmartPort. Regroupe *Mad Effect*, *Plasmagical*, *Wave* et les autres prods FT récentes. | Un seul disque qui enchaîne les cas limites des §1–4 ; la référence à viser avant de déclarer l'émulation « parfaite ». **Requiert PAL 50 Hz (pas NTSC).** | 🟡 **Priorité #1**. Rendu mid-scanline ✅ (cf. ligne suivante). Timing PAL 50 Hz ✅ (profils `iie-pal`/`iic-pal`, géométrie 312 lignes partout : scanner, `$C019`, events). **Hand-off 50/60 Hz ✅ (2026-06-10)** : le log d'events est publié **par frame vidéo** (65×312 cycles) et consommé en *copie* par l'UI 60 Hz — l'ancien bracket par tick worker perdait les events entre le take UI et le tick suivant (~1 log vide sur 6 en PAL → flicker 10 Hz des splits ; invisible des tests, qui bracketent en synchrone). Reste : **validation visuelle sur écran réel**. Sondes : `dix_modpage_split`, `horizontal_split*`, `dhgr_phase_signal`, `floatingbus_page2_smoke`, `pal_timing`, `video_event_publish`. |
-| **Productions « French Touch »** (ex. *Mad Effect*, *Plasmagical*, *Wave* — incluses dans DIX) | Changements de **mode vidéo en milieu de scanline** (mid-scanline : TEXT↔HGR, PAGE1↔2, lo↔hi-res entre deux cycles d'une même ligne). | Exige un 6502 découpé en **vrais sous-cycles d'accès** : un opcode exécuté atomiquement (effets appliqués en un bloc) décale le commutateur de 1-2 cycles → bandes de couleur mal placées. | ✅ **Rendu intra-ligne fait (2026-06-09)** : `Apple2Display::renderBeamRacing` rejoue le log d'events au **byte-column** près (`frameCycleToPos`), splits horizontaux TEXT/HGR/LORES/DHGR/80-col **et** PAGE1↔2 / ALTCHAR sur la même ligne, en RGBA *et* signal composite. Sondes : `horizontal_split`, `horizontal_split_composite`, `horizontal_split_560`, `dix_modpage_split`, `dhgr_phase_signal`, `artifact_phase_probe`. *Le cycle de transition exact au character-clock reste un raffinement.* Détail → `DEV.md` § Beam-racing. |
-| **Démos DHGR / `dapple`-like + tests d'artefact NTSC** | Ordre d'évaluation des soft-switches DHGR (`80STORE`/`PAGE2`/`HIRES`/`AN3`) et frangeage couleur (artifacting NTSC par entrelacement de signaux). | Valide l'ordre exact des switches Le Chat Mauve (FIFO AN3 → `$C05E/F`) et la démodulation composite. | ✅/🟡 Pipeline NTSC composite (`NtscPostProcessor`, `AppleWinNtsc`) + chemins CPU/GPU. Couvert par `dhgr_render_smoke_test`, `oe_demod_gpu_cpu_parity_test`, `display_golden_hash_test`. Gap résiduel : mono DHGR 1-px, floating-TTL (`#3`). |
+| **deater — "megademos"** (Vince "deater" Weaver, `deater.net/weave/vmwprod`) | Vapor lock: detects VBL by looping on an undriven `$C0xx` read until it reads a marker byte written into video RAM. | If video is a framebuffer rendered asynchronously at end-of-frame instead of interleaving CPU reads and the scanner cycle-by-cycle, the loop never "locks" → frozen / glitched screen. | ✅ **Proven (2026-06-09)**: `Memory::floatingBus()` = verbatim MAME port of `apple2video.cpp:124-201 scanner_address`, indexed on `cycleCounter`. The `vapor_lock` test *runs a real 6502 loop* (`LDA $C058 / CMP marker / BNE`) and **it locks** onto the marker placed in video RAM. The scanner geometry now follows the **video standard** (262 NTSC / **312 PAL**) — it was hard-coded to 262, which made the per-frame lock of PAL demos drift; fixed. **Sub-instruction accuracy fixed**: the `$C0xx` CPU read samples the bus at the **access cycle** (`cycleCounter + getCurrentInstructionCycles()` = last cycle of an `LDA`/`CMP`/`BIT`, consistent with the event-log timestamp) instead of the **start** cycle of the instruction. **All undriven `$C0xx` reads return the bus**: `$C040`, **`$C050-$C057`** (2026-06-10) and `$C030-$C03F` used to be 0. Pinned `vapor_lock` (§(d) = DROL cut-scene) + `floatingbus_page2_smoke`. *(Still 🟢: non-last-cycle `$C0xx` accesses, e.g. RMW — not used for vapor lock.)* |
+| **DROL** (Brøderbund 1983; `disks_5.4/woz/Drol*.woz`, `disks_5.4/gist/Drol.dsk`) | Real game, double edge case: (1) **unsynchronized double-buffer page-flip** (`$C054/$C055` every ~4 frames at drifting positions) for animation; (2) **vapor-lock cut-scene** via `LDA $C050 / CMP #$80`. | (1) A naive beam-raced replay paints the band above the flip from the page **currently being redrawn** (RAM read at render time, not at the beam) → half-erased sprites. (2) A `$C050` read returning 0 instead of the bus → the loop never locks → freeze (historical LinApple hang). | ✅ **DONE (2026-06-10)**, diagnosed via `tests/drol_probe.cpp` (boots the real WOZ). (1) `forEachBeamSegment` distinguishes unidirectional flip (= buffer → final full-frame page, anti-flicker) vs bidirectional (= exact beam-racing, DIX MODPAGE). Pinned `drol_pageflip_render`. (2) reading `$C050-$C057` toggles the mode AND returns `floatingBus()`. Pinned `vapor_lock` §(d). Bonus: the 6 560-wide painters now take the band state (the bug that masked the flicker under Chat Mauve). |
+| **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — French Touch anthology (29+ min, //e / //c PAL, GPLv3 sources) | **All-in-one integration suite**: vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, 800 KB Unidisk via Liron/SmartPort. Bundles *Mad Effect*, *Plasmagical*, *Wave* and the other recent FT productions. | A single disk that chains the edge cases of §1–4; the reference to hit before declaring the emulation "perfect." **Requires PAL 50 Hz (not NTSC).** | 🟡 **Priority #1**. Mid-scanline rendering ✅ (see next row). PAL 50 Hz timing ✅ (`iie-pal`/`iic-pal` profiles, 312-line geometry everywhere: scanner, `$C019`, events). **50/60 Hz hand-off ✅ (2026-06-10)**: the event log is published **per video frame** (65×312 cycles) and consumed by *copy* by the 60 Hz UI — the old per-worker-tick bracketing lost events between the UI take and the next tick (~1 empty log in 6 under PAL → 10 Hz flicker of the splits; invisible to the tests, which bracket synchronously). Remaining: **visual validation on a real screen**. Probes: `dix_modpage_split`, `horizontal_split*`, `dhgr_phase_signal`, `floatingbus_page2_smoke`, `pal_timing`, `video_event_publish`. |
+| **"French Touch" productions** (e.g. *Mad Effect*, *Plasmagical*, *Wave* — included in DIX) | **Mid-scanline video mode changes** (TEXT↔HGR, PAGE1↔2, lo↔hi-res between two cycles of the same line). | Requires a 6502 split into **real per-access sub-cycles**: an opcode executed atomically (effects applied in one block) shifts the switch by 1-2 cycles → mis-placed color bands. | ✅ **Intra-line rendering done (2026-06-09)**: `Apple2Display::renderBeamRacing` replays the event log at the **byte-column** level (`frameCycleToPos`), horizontal TEXT/HGR/LORES/DHGR/80-col **and** PAGE1↔2 / ALTCHAR splits on the same line, in RGBA *and* composite signal. Probes: `horizontal_split`, `horizontal_split_composite`, `horizontal_split_560`, `dix_modpage_split`, `dhgr_phase_signal`, `artifact_phase_probe`. *The exact transition cycle at the character-clock remains a refinement.* Detail → `DEV.md` § Beam-racing. |
+| **DHGR demos / `dapple`-like + NTSC artifact tests** | DHGR soft-switch evaluation order (`80STORE`/`PAGE2`/`HIRES`/`AN3`) and color fringing (NTSC artifacting via signal interleaving). | Validates the exact Le Chat Mauve switch order (AN3 FIFO → `$C05E/F`) and composite demodulation. | ✅/🟡 Composite NTSC pipeline (`NtscPostProcessor`, `AppleWinNtsc`) + CPU/GPU paths. Covered by `dhgr_render_smoke_test`, `oe_demod_gpu_cpu_parity_test`, `display_golden_hash_test`. Residual gap: 1-px mono DHGR, floating-TTL (`#3`). |
 
-### Analyse DIX au niveau source — 2026-06-09
+### Source-level DIX analysis — 2026-06-09
 
-Lecture de la source GPLv3 ([Fr3nchT0uch/DIX](https://github.com/Fr3nchT0uch/DIX/),
-ex. `MADEF2/main.a`) pour cadrer la validation. La boucle phare (`INT_ROUT1`,
-page-alignée, jouée sur la dernière ligne VBL) fait, **chaque scanline de
-65 cycles** et sur 6 lignes :
+Reading the GPLv3 source ([Fr3nchT0uch/DIX](https://github.com/Fr3nchT0uch/DIX/),
+e.g. `MADEF2/main.a`) to frame the validation. The flagship loop (`INT_ROUT1`,
+page-aligned, run on the last VBL line) does, **every 65-cycle scanline** and
+over 6 lines:
 
 ```asm
-MODPAGE0  LDA $C054,X          ; PAGE1/PAGE2 mid-ligne (X = offset de scroll)
-MODLINE0  LDA $C056 (×11)      ; HIRES mid-ligne, ~44 cycles
+MODPAGE0  LDA $C054,X          ; PAGE1/PAGE2 mid-line (X = scroll offset)
+MODLINE0  LDA $C056 (×11)      ; HIRES mid-line, ~44 cycles
 ```
 
-Elle est **synchronisée par une IRQ Timer-2 du Mockingboard** :
+It is **synchronized by a Mockingboard Timer-2 IRQ**:
 `DEFAULT_SYNC_TIMER = 7479 ; IRL machines PAL`.
 
-Conséquences pour POM2, séparées proprement :
+Consequences for POM2, cleanly separated:
 
-1. **Rendu mid-scanline (PAGE/HIRES/mode) — ✅ FAIT.** Le beam-racing par
-   byte-column rejoue ces bascules à la bonne colonne. **Bug trouvé + corrigé
-   en cours de validation** : les painters RGBA (`renderText/HiRes/LoRes`)
-   relisaient `mem.getDisplayState()` en interne → la sélection **PAGE2** (et
-   `ALTCHAR`) utilisait l'état de *fin de frame*, pas celui de la bande. Corrigé
-   en passant le `state` par bande aux painters (le chemin composite le faisait
-   déjà). Pinné par `dix_modpage_split` (la technique MODPAGE exacte : page 1 à
-   gauche, page 2 à droite, même ligne).
-2. **IRQ Timer-2 Mockingboard — ✅ supporté** (`Via6522` T2 one-shot phase-2,
-   `IFR_T2`/`t2Counter`). L'IRQ de sync *se déclenche*.
-3. **Timing machine PAL 50 Hz — ❌ BLOQUEUR #1.** POM2 est **NTSC seul**
-   (`kScanlinesPerFrame = 262`, 17045 cyc/frame ; le « PAL » du
-   `NtscPostProcessor` n'est qu'un mode couleur shader, pas le timing machine).
-   `DEFAULT_SYNC_TIMER=7479` et la géométrie 312 lignes PAL placent l'effet
-   verticalement et cadencent la musique pour 50 Hz ; sur 262 lignes NTSC,
-   l'effet est mal positionné / roule et le tempo est ~20 % trop rapide. **C'est
-   le pré-requis pour une vraie validation DIX bout-en-bout** (à ajouter au
-   backlog comme machine-timing PAL : 312 lignes, 1.0157 MHz, refresh 50 Hz).
+1. **Mid-scanline rendering (PAGE/HIRES/mode) — ✅ DONE.** Byte-column
+   beam-racing replays these toggles at the right column. **Bug found + fixed
+   during validation**: the RGBA painters (`renderText/HiRes/LoRes`) re-read
+   `mem.getDisplayState()` internally → the **PAGE2** (and `ALTCHAR`) selection
+   used the *end-of-frame* state, not the band's. Fixed by passing the per-band
+   `state` to the painters (the composite path already did so). Pinned by
+   `dix_modpage_split` (the exact MODPAGE technique: page 1 on the left, page 2
+   on the right, same line).
+2. **Mockingboard Timer-2 IRQ — ✅ supported** (`Via6522` T2 one-shot phase-2,
+   `IFR_T2`/`t2Counter`). The sync IRQ *fires*.
+3. **PAL 50 Hz machine timing — ❌ BLOCKER #1.** POM2 is **NTSC only**
+   (`kScanlinesPerFrame = 262`, 17045 cyc/frame; the `NtscPostProcessor`'s "PAL"
+   is only a shader color mode, not machine timing). `DEFAULT_SYNC_TIMER=7479`
+   and the 312-line PAL geometry place the effect vertically and pace the music
+   for 50 Hz; on 262 NTSC lines, the effect is mis-positioned / rolls and the
+   tempo is ~20 % too fast. **This is the prerequisite for true end-to-end DIX
+   validation** (to be added to the backlog as PAL machine timing: 312 lines,
+   1.0157 MHz, 50 Hz refresh).
 
-### Boot DIX sur //e PAL — FAIT (entrée SmartPort `$Cn0A`, 2026-06-09)
+### DIX boot on //e PAL — DONE (SmartPort `$Cn0A` entry, 2026-06-09)
 
-Le profil cible est **`//e PAL` + Mockingboard slot 4 + SmartPort slot 5** (le
-//c n'a pas de slot pour le Mockingboard que DIX exige). Deux bugs trouvés et
-corrigés en pilotant DIX via le serveur AI + lecture mémoire directe :
+The target profile is **`//e PAL` + Mockingboard slot 4 + SmartPort slot 5** (the
+//c has no slot for the Mockingboard that DIX requires). Two bugs found and
+fixed by driving DIX through the AI server + direct memory reads:
 
-1. **Détection Mockingboard ("KO")** — DIX (`boot_unidisk.a` `BADGUY`) écrit
-   `K`,`O` en `$400/$401` si une détection échoue (`STX $403` : A=modèle,
-   C=CPU, **M=Mockingboard**). La détection MB lit le compteur Timer-1 du 6522 à
-   `$CX04` deux fois (8 cycles) et attend `-8`. → passe avec le Mockingboard en
-   slot 4 (le 6522 T1 de POM2 décompte correctement).
-2. **Freeze post-bannière** — DIX charge son menu (8 blocs → `$D000` RAM-LC) via
-   `JSR $C50A`, l'entrée driver **fixe `$Cn0A`** du firmware Liron/Unidisk réel.
-   POM2 synthétisait son dispatch en `$Cn50` → `$Cn0A` = `$00` = **BRK**, et
-   comme DIX venait d'activer la lecture RAM-LC (`LDA $C083 ×2`), le vecteur BRK
-   était lu en RAM-LC froide → tempête permanente. **Corrigé** : `JMP $Cn50` en
-   `$Cn0A` (`SmartPortCard::buildRom`, convention `$42-$47` identique). Pinné
-   `smartport_unidisk_entry`. **Ce n'était PAS la Language Card / aux** (zéro
-   écriture LC, flags MMU à zéro) — diagnostic redressé.
+1. **Mockingboard detection ("KO")** — DIX (`boot_unidisk.a` `BADGUY`) writes
+   `K`,`O` to `$400/$401` if a detection fails (`STX $403`: A=model, C=CPU,
+   **M=Mockingboard**). The MB detection reads the 6522 Timer-1 counter at
+   `$CX04` twice (8 cycles) and expects `-8`. → passes with the Mockingboard in
+   slot 4 (POM2's 6522 T1 counts down correctly).
+2. **Post-banner freeze** — DIX loads its menu (8 blocks → `$D000` RAM-LC) via
+   `JSR $C50A`, the **fixed `$Cn0A`** driver entry of the real Liron/Unidisk
+   firmware. POM2 synthesized its dispatch at `$Cn50` → `$Cn0A` = `$00` =
+   **BRK**, and since DIX had just enabled RAM-LC reads (`LDA $C083 ×2`), the BRK
+   vector was read from cold RAM-LC → permanent storm. **Fixed**: `JMP $Cn50` at
+   `$Cn0A` (`SmartPortCard::buildRom`, same `$42-$47` convention). Pinned
+   `smartport_unidisk_entry`. **This was NOT the Language Card / aux** (zero LC
+   writes, MMU flags at zero) — diagnosis corrected.
 
-**Résultat** : DIX boote, charge sa démo en RAM-LC (`$D000+`) et **tourne** — PC
-dans le code démo (RAM-LC), **les deux pages HGR remplies** (`$2000` + `$4000`,
-page-flip d'animation). Les couches de fidélité sont en place : **PAL 50 Hz** ✅,
-**mid-scanline** ✅ (RGBA + composite + 560), **vapor lock** ✅ (prouvé + PAL-aware
-+ cycle d'accès), **boot SmartPort `$Cn0A`** ✅, **sync Timer-2 Mockingboard** ✅
-(IRQ à `N+IFR_DELAY = N+3`, MAME `6522via.cpp:959` ; pinné `via_t2_timing` — DIX
-règle `T2 = 7512 − latence`), **hand-off log d'events 50/60 Hz** ✅ (2026-06-10 :
-publication par frame vidéo, sinon ~1 frame sur 6 perdait ses splits sous PAL ;
-pinné `video_event_publish`). *(Vérif headless : `/mem` page texte/HGR + `/status`
-PC ; `/screen.ppm` figé sans boucle UI. Reste : observation visuelle en vrai pour
-confirmer le placement fin des effets.)*
+**Result**: DIX boots, loads its demo into RAM-LC (`$D000+`) and **runs** — PC in
+the demo code (RAM-LC), **both HGR pages filled** (`$2000` + `$4000`, animation
+page-flip). The fidelity layers are in place: **PAL 50 Hz** ✅, **mid-scanline**
+✅ (RGBA + composite + 560), **vapor lock** ✅ (proven + PAL-aware + access cycle),
+**SmartPort `$Cn0A` boot** ✅, **Mockingboard Timer-2 sync** ✅ (IRQ at
+`N+IFR_DELAY = N+3`, MAME `6522via.cpp:959`; pinned `via_t2_timing` — DIX sets
+`T2 = 7512 − latency`), **50/60 Hz event-log hand-off** ✅ (2026-06-10: per-
+video-frame publication, otherwise ~1 frame in 6 lost its splits under PAL;
+pinned `video_event_publish`). *(Headless verify: `/mem` text/HGR page +
+`/status` PC; `/screen.ppm` frozen without a UI loop. Remaining: real visual
+observation to confirm the fine placement of the effects.)*
 
 ---
 
-## 2. Enfer du contrôleur Disk II (flux / WOZ)
+## 2. Disk II controller hell (flux / WOZ)
 
-L'émulation **secteur logique** (`.dsk`, `.po`) ne suffit pas : ces titres
-exigent le **flux magnétique brut** (`.woz`) + le comportement du moteur
-pas-à-pas et de la rotation 300 RPM.
+**Logical-sector** emulation (`.dsk`, `.po`) is not enough: these titles require
+the **raw magnetic flux** (`.woz`) + the behavior of the stepper motor and the
+300 RPM rotation.
 
-| Programme | Protection | Pourquoi c'est un cas limite | Statut POM2 |
+| Program | Protection | Why it's an edge case | POM2 status |
 |---|---|---|---|
-| **Captain Goodnight and the Islands of Fear** (Broderbund) | **Spiradisc** : données écrites sur une **spirale continue** (piste `$01`→`$0E`), pas en cercles concentriques. | Le contrôleur doit suivre les déplacements de tête **« à la volée »** pendant que le flux défile ; un LSS qui resynchronise par piste plante au boot. | 🟡 LSS event-driven + WOZ bit-stream présents (`DiskIICard`, `DiskImage`, `#9/#10`). Demi-pistes gérées ; suivi spiral continu **à valider** sur image WOZ réelle. Tests proches : `woz_bit_timing_smoke_test`, `diskii_lss_smoke_test`. |
-| **Prince of Persia** (Broderbund / Roland Gustafsson) | **RWTS18** : quarter-tracks, sync-bytes modifiés, timing-bits / weak bits. | La vitesse de rotation, l'espacement des sync-nibbles et l'interprétation des weak bits doivent être cohérents avec les cycles 6502 → sinon échec de lecture des pistes protégées. | 🟡 WOZ + timing bit-cell event-driven (cf. `CLAUDE.md` *« disk-turbo »* + `emuCycles`). Weak/fake bits dépendent du master WOZ. Pinné côté flux : `woz_writeflux_smoke_test`, `woz_bit_timing_smoke_test`. `Gap #9` : WOZ1 splice TRK+6650. |
-| **Disquettes « bus flottant comme RNG »** (protections Beagle Bros, certaines démos) | Utilisent l'octet du bus flottant comme graine aléatoire. | Exige une réplication **bit-exacte** du compteur scanner (HBL inclus, « $1000 phantom row »). | ✅ Géré par le port verbatim `floatingBus()` (cf. commentaire `Memory.cpp:1486+`). C'est précisément le cas d'usage cité dans le code. |
+| **Captain Goodnight and the Islands of Fear** (Broderbund) | **Spiradisc**: data written on a **continuous spiral** (track `$01`→`$0E`), not in concentric circles. | The controller must follow head moves **"on the fly"** while the flux streams by; an LSS that resyncs per track crashes at boot. | 🟡 Event-driven LSS + WOZ bit-stream present (`DiskIICard`, `DiskImage`, `#9/#10`). Half-tracks handled; continuous spiral tracking **to validate** on a real WOZ image. Nearby tests: `woz_bit_timing_smoke_test`, `diskii_lss_smoke_test`. |
+| **Prince of Persia** (Broderbund / Roland Gustafsson) | **RWTS18**: quarter-tracks, modified sync bytes, timing bits / weak bits. | The rotation speed, the sync-nibble spacing and the weak-bit interpretation must be consistent with the 6502 cycles → otherwise the protected tracks fail to read. | 🟡 WOZ + event-driven bit-cell timing (cf. `CLAUDE.md` *"disk-turbo"* + `emuCycles`). Weak/fake bits depend on the WOZ master. Pinned on the flux side: `woz_writeflux_smoke_test`, `woz_bit_timing_smoke_test`. `Gap #9`: WOZ1 splice TRK+6650. |
+| **"Floating bus as RNG" disks** (Beagle Bros protections, some demos) | Use the floating-bus byte as a random seed. | Requires a **bit-exact** replication of the scanner counter (HBL included, "$1000 phantom row"). | ✅ Handled by the verbatim `floatingBus()` port (cf. comment `Memory.cpp:1486+`). This is precisely the use case cited in the code. |
 
 ---
 
-## 3. CPU & quirks matériels
+## 3. CPU & hardware quirks
 
-Le socle doit être irréprochable **avant** que les démos vidéo ne passent.
+The foundation must be flawless **before** the video demos can pass.
 
-| Programme | Ce qu'il valide | Statut POM2 |
+| Program | What it validates | POM2 status |
 |---|---|---|
-| **Klaus Dormann — `6502_functional_test`** | Juge de paix 6502 : franchissement de page (+1 cycle), flag décimal (D) exact, etc. | ✅ `test_klaus_6502` **PASSE**. Binaire auto-téléchargé + SHA256 vérifié (`tests/CMakeLists.txt`). |
-| **Klaus Dormann — `65C02_extended_opcodes_test`** | Opcodes étendus 65C02 (BBR/BBS/RMB/SMB, `STZ`, `(zp)`, etc.). | ✅ `test_klaus_65c02` **PASSE** @ `$24F1` (cf. `DEV.md` §CPU). |
-| **Suites « illegal opcodes » NMOS** (visual6502-derived) | Comportement des opcodes non documentés du 6502 NMOS. | 🟢 Partiellement — `#1` note un *« $5C 8-cyc résiduel »*. Couvre surtout le sous-ensemble utilisé en pratique. Compléter via `cpu_cycle_count_test`. |
+| **Klaus Dormann — `6502_functional_test`** | 6502 arbiter: page crossing (+1 cycle), exact decimal (D) flag, etc. | ✅ `test_klaus_6502` **PASSES**. Binary auto-downloaded + SHA256 verified (`tests/CMakeLists.txt`). |
+| **Klaus Dormann — `65C02_extended_opcodes_test`** | 65C02 extended opcodes (BBR/BBS/RMB/SMB, `STZ`, `(zp)`, etc.). | ✅ `test_klaus_65c02` **PASSES** @ `$24F1` (cf. `DEV.md` §CPU). |
+| **NMOS "illegal opcodes" suites** (visual6502-derived) | Behavior of the undocumented 6502 NMOS opcodes. | 🟢 Partially — `#1` notes a *"$5C 8-cyc residual"*. Mainly covers the subset used in practice. Complete via `cpu_cycle_count_test`. |
 
-> 113 tests `ctest` au total (Klaus 6502+65C02, `cpu_cycle_count`, disque,
-> vidéo, audio…). Cf. `TODO.md` Quick-win #5 (CI GitHub Actions headless).
+> 113 `ctest`s in total (Klaus 6502+65C02, `cpu_cycle_count`, disk, video,
+> audio…). Cf. `TODO.md` Quick-win #5 (headless CI GitHub Actions).
 
 ---
 
-## 4. Audio / Mockingboard (IRQ VIA)
+## 4. Audio / Mockingboard (VIA IRQ)
 
-Stress-test des **IRQ matérielles** : les timers des VIA 6522 du Mockingboard
-ne doivent ni désynchroniser le bus principal, ni rater leur acquittement.
+Stress-test of the **hardware IRQs**: the Mockingboard's VIA 6522 timers must
+neither desync the main bus nor miss their acknowledgment.
 
-| Programme | Ce qu'il torture | Statut POM2 |
+| Program | What it tortures | POM2 status |
 |---|---|---|
-| **Ultima V: Warriors of Destiny** (Origin) | Musique Mockingboard pilotée par IRQ timer VIA en continu pendant le jeu. | ✅/🟡 Mockingboard A/C (2×VIA + 2×AY) verbatim (`#6`, `ay8910.cpp`, `Via6522`). IRQ wire-OR via `SlotBus` (`#8`). À écouter en conditions réelles. |
-| **Music Construction Set / Willy Byte / Rescue Raiders** (titres Mockingboard confirmés) | Séquençage AY-3-8910 + cadence IRQ. | ✅/🟡 Même chemin que ci-dessus. Bon banc d'essai pour la justesse des timers T1/T2. |
-| **Phasor / SSI263 (parole)** | 2×VIA + 4×AY (Phasor), synthèse formant SSI263. | ✅ `PhasorCard` verbatim (`#19`) ; SSI263 AppleWin-fidèle (`#20`). |
+| **Ultima V: Warriors of Destiny** (Origin) | Mockingboard music driven by VIA timer IRQ continuously during gameplay. | ✅/🟡 Mockingboard A/C (2×VIA + 2×AY) verbatim (`#6`, `ay8910.cpp`, `Via6522`). Wire-OR IRQ via `SlotBus` (`#8`). To be heard in real conditions. |
+| **Music Construction Set / Willy Byte / Rescue Raiders** (confirmed Mockingboard titles) | AY-3-8910 sequencing + IRQ cadence. | ✅/🟡 Same path as above. Good test bench for the accuracy of the T1/T2 timers. |
+| **Phasor / SSI263 (speech)** | 2×VIA + 4×AY (Phasor), SSI263 formant synthesis. | ✅ `PhasorCard` verbatim (`#19`); AppleWin-faithful SSI263 (`#20`). |
 
 ---
 
-## Annexe — le Vapor Lock en détail
+## Appendix — Vapor Lock in detail
 
-Solution **purement logicielle** au manque d'IRQ VBL sur II/II+. Mécanique,
-de la physique au C++ POM2 :
+A **purely software** solution to the lack of a VBL IRQ on II/II+. The
+mechanics, from the physics to the POM2 C++:
 
-1. **Bus partagé (entrelacement Φ0/Φ1).** Pas de VRAM dédiée : CPU (6502) et
-   scanner vidéo partagent la même RAM. Sur un cycle 1 MHz, la **phase basse**
-   sert le scanner (génère les pixels), la **phase haute** sert le CPU. À chaque
-   µs, le bus transporte d'abord une donnée vidéo, puis une donnée CPU.
-2. **Bus flottant (capacitance TTL).** Quand aucun composant ne pilote le bus
-   (lecture d'une I/O vide, ex. mirroirs `$C050-$C05F` pendant le VBL), les
-   lignes conservent ~½ µs par capacité parasite (~50 pF) la **dernière valeur**
-   — celle posée par le scanner juste avant.
-3. **Algorithme.** Le programme écrit un motif repère (p. ex. `$FF` isolé) dans
-   un coin de la RAM vidéo, puis boucle serré sur la lecture du bus flottant.
-   Dès qu'il relit `$FF`, il connaît la **position exacte du faisceau** à ce
-   cycle → synchro « verrouillée ». Le VBL se détecte car le scanner cesse de
-   lire la RAM vidéo structurée.
-4. **Piège émulateur.** Si la durée d'`ExecuteCycle()` n'est pas exacte (cycle
-   pénalité d'un `BCC`/`BCS` franchissant une page oublié, etc.), le CPU dérive
-   face au scanner et le lock lâche après quelques scanlines → glitches/crash.
-   L'alignement doit être **parfait**.
+1. **Shared bus (Φ0/Φ1 interleaving).** No dedicated VRAM: the CPU (6502) and
+   the video scanner share the same RAM. Within a 1 MHz cycle, the **low phase**
+   serves the scanner (generates the pixels), the **high phase** serves the CPU.
+   Each µs, the bus carries first a video datum, then a CPU datum.
+2. **Floating bus (TTL capacitance).** When no component drives the bus (reading
+   an empty I/O, e.g. the `$C050-$C05F` mirrors during VBL), the lines hold the
+   **last value** for ~½ µs via parasitic capacitance (~50 pF) — the one placed
+   by the scanner just before.
+3. **Algorithm.** The program writes a marker pattern (e.g. an isolated `$FF`)
+   into a corner of video RAM, then tight-loops reading the floating bus. As
+   soon as it reads `$FF` back, it knows the **exact beam position** at that
+   cycle → "locked" sync. VBL is detected because the scanner stops reading
+   structured video RAM.
+4. **Emulator trap.** If the duration of `ExecuteCycle()` isn't exact (forgotten
+   penalty cycle of a page-crossing `BCC`/`BCS`, etc.), the CPU drifts against
+   the scanner and the lock slips after a few scanlines → glitches/crash. The
+   alignment must be **perfect**.
 
-**Côté POM2.** `Memory::floatingBus()` (`src/Memory.cpp:1484+`) calcule
-l'adresse scanner à partir du `cycleCounter` global (65 cycles/ligne ×
-262 lignes/frame), port **verbatim** de MAME `apple2video.cpp scanner_address`.
-Les lectures de soft-switches non pilotés (`#define ... floatingBus()` aux
-`Memory.cpp:1053/1121/1143/1262/1270/1481`) renvoient cet octet. C'est la
-fondation qui rend le vapor lock *possible* ; reste à le prouver de bout en
-bout sur une megademo (test d'intégration à ajouter).
+**On the POM2 side.** `Memory::floatingBus()` (`src/Memory.cpp:1484+`) computes
+the scanner address from the global `cycleCounter` (65 cycles/line × 262
+lines/frame), a **verbatim** port of MAME `apple2video.cpp scanner_address`.
+Reads of undriven soft-switches (`#define ... floatingBus()` at
+`Memory.cpp:1053/1121/1143/1262/1270/1481`) return this byte. It is the
+foundation that makes vapor lock *possible*; it remains to prove it end-to-end on
+a megademo (integration test to add).
 
 ---
 
-## Corrections vs la source d'origine
+## Corrections vs the original source
 
-La conversation d'origine contenait quelques imprécisions, corrigées ici :
+The original conversation contained a few inaccuracies, corrected here:
 
-- **« Megademo par Deater (Peter Ferrie) »** → **deater = Vince Weaver**.
-  Peter Ferrie (alias *qkumba*) est une autre personne (cracks/analyses de
-  protections, distinct des megademos deater). Ne pas confondre.
-- **« Skyfox … Mockingboard »** → *Skyfox* (Ariolasoft/EA) sort surtout par le
-  **haut-parleur**, pas le Mockingboard. Remplacé par des titres Mockingboard
-  **confirmés** (Ultima V, Music Construction Set, Rescue Raiders, Willy Byte).
-- **VBL.** L'absence d'IRQ VBL vaut pour **II/II+** ; le **//e** expose `$C019`
-  RDVBL en lecture (toujours pas d'IRQ). Précisé dans §1.
+- **"Megademo by Deater (Peter Ferrie)"** → **deater = Vince Weaver**. Peter
+  Ferrie (aka *qkumba*) is a different person (cracks / protection analyses,
+  distinct from deater's megademos). Do not confuse them.
+- **"Skyfox … Mockingboard"** → *Skyfox* (Ariolasoft/EA) outputs mostly through
+  the **speaker**, not the Mockingboard. Replaced with **confirmed** Mockingboard
+  titles (Ultima V, Music Construction Set, Rescue Raiders, Willy Byte).
+- **VBL.** The absence of a VBL IRQ applies to **II/II+**; the **//e** exposes
+  `$C019` RDVBL on read (still no IRQ). Clarified in §1.
