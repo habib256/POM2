@@ -49,7 +49,7 @@ Suggested attack order — items with high impact/effort ratio.
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | prerequisite for IIgs + cuts recompiles  |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
-| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | the dormant ctest suite (140+ tests) — highest ROI ⭐    |
+| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | the dormant ctest suite (~130 tests) — highest ROI ⭐    |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
 ## Backlog
@@ -174,9 +174,11 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Storage] disks & images
 
-- 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::setWriteSplice`
-  is a stub (`DiskImage.cpp:381-398`); IWM call site wired
-  (`iwm.cpp:218-221`). Applesauce re-master parity. *1 d.*
+- 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::writeFlux` splices
+  bit-cells but the full `set_write_splice` handling (TRK +6650
+  splice_point/nibble/bit_count fields, parsed at `DiskImage.cpp:720`)
+  is ignored; IWM call site wired (`IWMDevice.cpp:235`, see the comment
+  at `IWMDevice.cpp:48`). Applesauce re-master parity. *1 d.*
 - 🟡 **SmartPort ProDOS multi-partition** — 1 image = 1 unit = 1
   volume today; multi-volume CFFA3000-style not supported.
 - 🟢 **UI "Force DOS / Force ProDOS"** — backend ready
@@ -199,18 +201,21 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   `a2softcard.cpp` + Z-80 core. *10-15 d.*
 - 🟡 **Grappler+ printer (`GrapplerCard`)** — ROM-gated shell in
   place (catalog `grappler`, dump `roms/grappler_plus.bin` 4 KB
-  expected). Remaining: model the upper-2 KB bank-switch
-  ($C0(8+s)X), pin against MAME `a2grappler.cpp`, and host-side raster
-  rendering of HGR dumps to PDF. *1-2 d.*
+  expected); the upper-2 KB bank-switch ($C0(8+s)X) is now modelled
+  (`romBankHigh_`, round-tripped through snapshot). Remaining: pin
+  against MAME `a2grappler.cpp`, and host-side raster rendering of
+  HGR dumps to PDF. *1-2 d.*
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection. Remaining: TMS5220 LPC10
   decoder (chirp ROM + K-parameter interpolation) and AY-3-8913 audio
   synth (usable once the Mockingboard/Phasor core is extracted into a
   shared helper). *~3-5 d.*
-- 🟢 **No-Slot Clock (NSC, DS1216E)** — clock that plugs under a
-  ROM (pattern recognition). For machines with no free slot (//c).
-  ThunderClock+ covers the general case. MAME refs `ds1216.cpp`. *1 d.*
+- ✅ **No-Slot Clock (NSC, DS1216E)** — DONE. `src/NoSlotClock.{h,cpp}`
+  is a full DS1216E SmartWatch state machine, hooked into `Memory`
+  read paths (`interceptRead` under the $F800 ROM window) for machines
+  with no free slot (//c). MAME refs `ds1216.cpp`. Pinned by
+  `no_slot_clock_smoke` (`tests/no_slot_clock_test.cpp`).
 - 🟢 **SSC IRQ gate SW2:6 DIP** not implemented (MAME `a2ssc.cpp:373`).
 - 🟢 **Real ClockCard slot ROM** — load path in place
   (`roms/thunderclock_u9_v1.3.bin`, 256 B or 2 KB, source
@@ -355,13 +360,13 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 ### [Arch] refactor & tooling
 
 - 🟠 **No CI GitHub Actions** *(audit 2026-05-31)* — `.github/workflows/`
-  does not exist: the dormant ctest suite — 140+ tests (Klaus 6502+65C02,
+  does not exist: the dormant ctest suite — ~130 registered ctests (Klaus 6502+65C02,
   `cpu_cycle_count`, golden-hash display, boot traces) — never runs automatically.
   This is the repo with the most to lose from that absence. Workflow on the
   `pom2_headless` target (no GLFW/audio) + WASM verification build
   (`build_wasm.sh`) + freeze golden-hash as a guardrail. **Highest ROI.**
   *2-4 h.* ⭐ quick win
-- 🟠 **`MainWindow.cpp` god-object (6439 lines)** *(audit 2026-05-31)* — biggest
+- 🟠 **`MainWindow.cpp` god-object (~6700 lines)** *(audit 2026-05-31)* — biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
   `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
   groups into dedicated TUs (aim for < 3000 lines/file, like POM1's `MainWindow_*`
@@ -372,7 +377,7 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 - 🟡 **`stateMutex` shared CPU+UI** (`EmulationController.h:118`) —
   `MainWindow_Slots` takes this lock during plug/unplug, audio jitter
   risk. Partition long-term.
-- 🟡 **Inconsistent `pom2::` namespace** — 54/105 top-level files,
+- 🟡 **Inconsistent `pom2::` namespace** — 105/167 top-level files,
   `tests/` does not use it. Mechanical migration.
 - 🟢 **Legacy M6502 style** — FR/EN comments, C-style casts,
   `void(void)`. Targeted `clang-format` + `clang-tidy modernize-*`.

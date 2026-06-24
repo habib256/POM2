@@ -44,7 +44,7 @@ Five things to try **right after first boot**:
 1. **Boot a disk in one drag** → drop a `.woz`/`.dsk` on the window, or `POM2 path/to/game.woz`. POM2 routes it to Disk II, SmartPort or ProDOS HDV automatically.
 2. **Switch machines live** → `Machine → Profile` (or `--preset iie`). Each switch is a clean cold reset that re-plugs built-in cards and re-mounts your disks.
 3. **Tilt into 3D** → open the **3D voxel view** and orbit the running framebuffer with the camera. Lo-res, hi-res and text all extrude into voxels.
-4. **Rewind** → let something run, then scrub the rewind ring backwards and resume from an earlier instant (`--rewind` on the CLI).
+4. **Rewind** → let something run, then scrub the rewind ring backwards and resume from an earlier instant (a UI feature — note the CLI `--rewind` is unrelated: it rewinds the cassette tape).
 5. **Tune the CRT** → `View → CRT Settings`: swap composite NTSC ↔ mono phosphor, push the phosphor curve and persistence, add scanline glow and barrel.
 
 ---
@@ -70,9 +70,14 @@ Prereqs: [Visual Studio](https://visualstudio.microsoft.com/) (C++ workload), [C
 ```batch
 git clone https://github.com/habib256/POM2.git
 cd POM2
+git clone --depth 1 https://github.com/ocornut/imgui.git
 vcpkg install glfw3:x64-windows
-cd build && cmake .. && cmake --build . --config Release
+cmake -B build && cmake --build build --config Release
 ```
+
+(`setup_imgui.sh` does the Dear ImGui clone and `build/` creation on
+Linux/macOS; on Windows do them manually as shown — the CMake configure
+hard-fails if `imgui/` is missing.)
 
 ### 🌐 WebAssembly
 
@@ -83,7 +88,7 @@ cd build && cmake .. && cmake --build . --config Release
 ```bash
 ./build_wasm.sh                     # build
 ./build_wasm.sh --serve             # build + local server
-./build_wasm.sh --with-data         # bundle roms/ fonts/ pic/ floppyemu/
+./build_wasm.sh --with-data         # also bundle the disks_3.5/ library
 ```
 
 The browser build preloads `roms/`, `fonts/`, `pic/` and `floppyemu/`, but **user Apple ROMs are still required**. Telnet and the AI-control HTTP server are compiled out under WASM.

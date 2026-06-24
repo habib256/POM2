@@ -128,7 +128,7 @@ the **raw magnetic flux** (`.woz`) + the behavior of the stepper motor and the
 |---|---|---|---|
 | **Captain Goodnight and the Islands of Fear** (Broderbund) | **Spiradisc**: data written on a **continuous spiral** (track `$01`→`$0E`), not in concentric circles. | The controller must follow head moves **"on the fly"** while the flux streams by; an LSS that resyncs per track crashes at boot. | 🟡 Event-driven LSS + WOZ bit-stream present (`DiskIICard`, `DiskImage`, `#9/#10`). Half-tracks handled; continuous spiral tracking **to validate** on a real WOZ image. Nearby tests: `woz_bit_timing_smoke_test`, `diskii_lss_smoke_test`. |
 | **Prince of Persia** (Broderbund / Roland Gustafsson) | **RWTS18**: quarter-tracks, modified sync bytes, timing bits / weak bits. | The rotation speed, the sync-nibble spacing and the weak-bit interpretation must be consistent with the 6502 cycles → otherwise the protected tracks fail to read. | 🟡 WOZ + event-driven bit-cell timing (cf. `CLAUDE.md` *"disk-turbo"* + `emuCycles`). Weak/fake bits depend on the WOZ master. Pinned on the flux side: `woz_writeflux_smoke_test`, `woz_bit_timing_smoke_test`. `Gap #9`: WOZ1 splice TRK+6650. |
-| **"Floating bus as RNG" disks** (Beagle Bros protections, some demos) | Use the floating-bus byte as a random seed. | Requires a **bit-exact** replication of the scanner counter (HBL included, "$1000 phantom row"). | ✅ Handled by the verbatim `floatingBus()` port (cf. comment `Memory.cpp:1486+`). This is precisely the use case cited in the code. |
+| **"Floating bus as RNG" disks** (Beagle Bros protections, some demos) | Use the floating-bus byte as a random seed. | Requires a **bit-exact** replication of the scanner counter (HBL included, "$1000 phantom row"). | ✅ Handled by the verbatim `floatingBus()` port (cf. comment `Memory.cpp:1572`). This is precisely the use case cited in the code. |
 
 ---
 
@@ -142,7 +142,7 @@ The foundation must be flawless **before** the video demos can pass.
 | **Klaus Dormann — `65C02_extended_opcodes_test`** | 65C02 extended opcodes (BBR/BBS/RMB/SMB, `STZ`, `(zp)`, etc.). | ✅ `test_klaus_65c02` **PASSES** @ `$24F1` (cf. `DEV.md` §CPU). |
 | **NMOS "illegal opcodes" suites** (visual6502-derived) | Behavior of the undocumented 6502 NMOS opcodes. | 🟢 Partially — `#1` notes a *"$5C 8-cyc residual"*. Mainly covers the subset used in practice. Complete via `cpu_cycle_count_test`. |
 
-> 113 `ctest`s in total (Klaus 6502+65C02, `cpu_cycle_count`, disk, video,
+> ~130 `ctest`s in total (Klaus 6502+65C02, `cpu_cycle_count`, disk, video,
 > audio…). Cf. `TODO.md` Quick-win #5 (headless CI GitHub Actions).
 
 ---
@@ -183,11 +183,11 @@ mechanics, from the physics to the POM2 C++:
    the scanner and the lock slips after a few scanlines → glitches/crash. The
    alignment must be **perfect**.
 
-**On the POM2 side.** `Memory::floatingBus()` (`src/Memory.cpp:1484+`) computes
+**On the POM2 side.** `Memory::floatingBus()` (`src/Memory.cpp:1561+`) computes
 the scanner address from the global `cycleCounter` (65 cycles/line × 262
 lines/frame), a **verbatim** port of MAME `apple2video.cpp scanner_address`.
-Reads of undriven soft-switches (`#define ... floatingBus()` at
-`Memory.cpp:1053/1121/1143/1262/1270/1481`) return this byte. It is the
+Reads of undriven soft-switches (`floatingBus()` call sites at
+`Memory.cpp:1132/1141/1192/1218/1235/1299/1339/1347`) return this byte. It is the
 foundation that makes vapor lock *possible*; it remains to prove it end-to-end on
 a megademo (integration test to add).
 

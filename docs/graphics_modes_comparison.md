@@ -1,7 +1,7 @@
 # POM2 graphics modes — deep comparison with the original sources
 
-POM2 offers **nine hi-res render modes** (`Apple2Display::HiResMode`,
-[`src/Apple2Display.h:52-86`](../src/Apple2Display.h)). Each mode is
+POM2 offers **ten hi-res render modes** (`Apple2Display::HiResMode`,
+[`src/Apple2Display.h:56-96`](../src/Apple2Display.h)). Each mode is
 ported from a reference emulator (MAME, AppleWin, OpenEmulator) or
 models a hardware behaviour (Le Chat Mauve, monochrome phosphors).
 
@@ -21,7 +21,8 @@ v5.2, 15 M instructions after //e boot) produced by
 | 2 | `ColorCompMedium` | MAME `apple2video.cpp` row 1 | 7-bit LUT | 280×192 | `dhgr_render_smoke` | [↓](#2-colorcompmedium) |
 | 3 | `ColorComp4Bit` | MAME `apple2video.cpp` square filter | nibble→palette | 280×192 | `dhgr_render_smoke` | [↓](#3-colorcomp4bit) |
 | 4 | `ChatMauveRGB` | AppleWin `RGBMonitor.cpp` (PR #837) + Péritel hardware | direct RGB | 560×192 | `le_chat_mauve_smoke`, `video7_parity_smoke` | [↓](#4-chatmauvergb) |
-| 5 | `ColorCompositeOE` | OpenEmulator + apple2shader | GLSL shader (CPU fallback) | 560×384 | (integration via MainWindow) | [↓](#5-colorcompositeoe) |
+| 5 | `ColorCompositeOE` | OpenEmulator + apple2shader | GLSL shader | 560×384 | (integration via MainWindow) | [↓](#5-colorcompositeoe) |
+| 5b | `ColorCompositeOECpu` | OpenEmulator (same demod, on the CPU) | CPU demod → RGBA framebuffer | 560×192 | (integration via MainWindow) | [↓](#5-colorcompositeoe) |
 | 6 | `MonoWhite` | AppleWin VT_MONO_WHITE (empirical palette) | luminance | 280/560×192 | `display_persistence_smoke` | [↓](#6-monowhite) |
 | 7 | `MonoGreen` | AppleWin VT_MONO_GREEN (P31 phosphor) | luminance×tint+decay | 280/560×192 | `display_persistence_smoke` | [↓](#7-monogreen) |
 | 8 | `MonoAmber` | AppleWin VT_MONO_AMBER (long-persistence) | luminance×tint+decay 0.96 | 280/560×192 | `display_persistence_smoke` | [↓](#8-monoamber) |
@@ -171,7 +172,7 @@ The card taps the pre-modulation digital stream at the slot connector:
 | Deviation | Detail |
 |---|---|
 | Indices 5 ≠ 10 | POM2 keeps the two distinct grays of the Feline palette (AppleWin). MAME collapses both to `0xFF808080`. Intentional choice (the Chat Mauve signature). |
-| Dragon Wars bit-7 toggle | `LeChatMauveCard::invertBit7()` — palette-bank inversion switch for Dragon Wars, which sets the MSB the opposite way. Not in MAME nor AppleWin (a known issue in both). |
+| Dragon Wars bit-7 toggle | `LeChatMauveCard::setInvertBit7()` (read back via `invertBit7()`) — palette-bank inversion switch for Dragon Wars, which sets the MSB the opposite way. Not in MAME nor AppleWin (a known issue in both). |
 | Native 560 output | `renderHiResChatMauve80` writes directly into `frame80`, rather than upscaling a 280×2 `frame`. Framebuffer fidelity gain (sharp screenshot), visually identical to the screen. |
 | Per-pixel HGR decode | POM2 follows AppleWin `UpdateHiResRGBCell` (010/101 pattern → color, otherwise full-resolution B/W), not the pair-based decode: restores the sharpness of the real RGB card on text and sprites. |
 
