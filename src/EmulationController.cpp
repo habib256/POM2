@@ -241,6 +241,10 @@ void EmulationController::start()
     // (HOME-never-ran) text page — the "doesn't boot on launch" bug, since
     // a saved non-default profile auto-applies on startup. Keeps stop()/
     // start() symmetric: stop() parks the mode, start() un-parks it.
+    // Same invariant as setMode(): clear workerParked_ on the setter thread
+    // BEFORE mode leaves Stopped, or a later stop()/rewind-scrub can read
+    // the stale `true` left by the previous park and proceed mid-frame.
+    workerParked_.store(false);
     mode.store(Mode::Running);
     wakeCv.notify_all();
 #ifndef __EMSCRIPTEN__
@@ -427,6 +431,7 @@ void EmulationController::bootFromSlot(int slot)
             "the card isn't bootable. Falling back to cold boot so the "
             "F8 ROM can scan for a different bootable slot.");
         processor.hardReset();
+        workerParked_.store(false);  // same setter-thread invariant as setMode()
         mode.store(Mode::Running);
         wakeCv.notify_all();
         return;
@@ -464,6 +469,7 @@ void EmulationController::bootFromSlot(int slot)
     mem.memWrite(0x0039, 0xFD);   // KSWH ┘
     processor.hardReset();
     processor.setProgramCounter(cnxx);
+    workerParked_.store(false);  // same setter-thread invariant as setMode()
     mode.store(Mode::Running);
     wakeCv.notify_all();
     pom2::log().info("Emul",

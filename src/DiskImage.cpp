@@ -434,6 +434,9 @@ bool DiskImage::loadNibFromBuffer(const uint8_t* data, std::size_t len,
         loaded = false;
         return false;
     }
+    // Non-WOZ images always use the standard 4 µs bit cell — clear any
+    // WOZ2 INFO value left by a previous image in this (reused) drive slot.
+    optimalBitTiming = 32;
     for (int t = 0; t < kTracks; ++t) {
         // Copy the source nibbles, then pad the remainder of the
         // 6656-wide track buffer with $FF (sync gap). For the standard
@@ -517,6 +520,9 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
     twoImgHeaderRaw.clear();
     twoImgTrailerRaw.clear();
     fileWriteProtected = false;
+    // Non-WOZ images always use the standard 4 µs bit cell — clear any
+    // WOZ2 INFO value left by a previous image in this (reused) drive slot.
+    optimalBitTiming = 32;
     sectorOrder = order;
     dirty.fill(false);
     anyDirty    = false;
@@ -801,6 +807,10 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // Walk chunks starting at offset 12.
     int      diskType = 1;
     fileWriteProtected = false;
+    // Re-arm the 4 µs default before parsing INFO: this DiskImage object is
+    // reused across disk swaps, so a WOZ1 (or truncated-INFO WOZ2) loaded
+    // after a non-standard-timing WOZ2 must not inherit the old cell width.
+    optimalBitTiming = 32;
     int      infoVersion = isWoz2 ? 2 : 1;
     bool     haveInfo = false;
     bool     haveTmap = false;
@@ -1135,6 +1145,7 @@ void DiskImage::eject()
     twoImgHeaderRaw.clear();
     twoImgTrailerRaw.clear();
     fileWriteProtected = false;
+    optimalBitTiming = 32;   // WOZ2 INFO value must not leak into the next image
     path.clear();
     for (auto& t : tracks) t.fill(0xFF);
     dirty.fill(false);

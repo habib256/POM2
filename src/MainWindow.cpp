@@ -722,6 +722,7 @@ MainWindow::~MainWindow()
         const auto& cfg = pom2::profileConfig(activeProfile);
         for (int s = 1; s <= 7; ++s) {
             if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug
+            if (s == autoProvisionedSmartPortSlot_) continue;   // idem (Floppy Emu)
             // Profile-forced slots (built-ins / noPhysicalSlots) hold the
             // profile's value, not the user's — shared guard with the Slot
             // Config Apply button (pom2::slotKeyIsUserChoice).
@@ -5153,6 +5154,7 @@ void MainWindow::renderFloppyEmuWindow()
         smartPortCard = card.get();
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";
+        autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
         pom2::log().info("FloppyEmu",
             "auto-plugged SmartPort card in slot " + std::to_string(slot));
         return slot;

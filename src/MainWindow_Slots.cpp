@@ -653,6 +653,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // destroyed by the slot rebuild below; clear its marker so a later real
     // HDV in the same slot number isn't wrongly skipped at shutdown.
     autoProvisionedHdvSlot_ = -1;
+    autoProvisionedSmartPortSlot_ = -1;
 
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
@@ -936,8 +937,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // 12. Persist the profile choice for the next launch. (activeProfile was
     //     already committed in step 0 so plugSlotsFromSettings saw the new one.)
     controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(p));
-    settings->setString("system_profile", std::string(cfg.key));
-    settings->save();
+    // Kiosk is read-only: `POM2 --kiosk --preset ...` must not clobber the
+    // user's saved system_profile (or persist anything else) on the way in.
+    if (!kiosk_) {
+        settings->setString("system_profile", std::string(cfg.key));
+        settings->save();
+    }
 
     // 13. Reflect the profile in the window title so the user sees which
     //     machine is active without opening the Machine → Profile menu.
@@ -973,6 +978,7 @@ void MainWindow::restartEmulationFromSettings()
     // clear its marker so a later real HDV in the same slot isn't wrongly
     // skipped at shutdown (the marker is read only in ~MainWindow).
     autoProvisionedHdvSlot_ = -1;
+    autoProvisionedSmartPortSlot_ = -1;
 
     // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
     //    and the HDV/CFFA library mounts update the live cards but NOT the

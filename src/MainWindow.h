@@ -463,6 +463,10 @@ private:
     // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.
     int autoProvisionedHdvSlot_ = -1;
 
+    // Same contract for the SmartPort card auto-plugged by the Floppy Emu
+    // panel's ensureSmartPort (-1 = none): session-local, never persisted.
+    int autoProvisionedSmartPortSlot_ = -1;
+
 #ifdef __EMSCRIPTEN__
     std::string browserResetBootImage_;
 #endif

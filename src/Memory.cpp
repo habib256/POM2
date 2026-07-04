@@ -1251,9 +1251,14 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         // OUTPUT toggle: the Monitor WRITE routine ($FECD) loops on
         // BIT $C020 to drive the head with 770 Hz / 1 kHz / 2 kHz square
         // waves encoding sync, ones and zeroes.
-        if (iicProfile_ && iicProfile_->romBankToggle()) return 0;
+        // $C02x doesn't drive the data bus on any machine (cassette OUT and
+        // ROMBANK are toggles, not registers): a READ returns the floating
+        // bus like $C040/$C050-$C05F above, not a hard 0 — RNG /
+        // copy-protection entropy loops sample this range.
+        if (iicProfile_ && iicProfile_->romBankToggle())
+            return isWrite ? 0 : floatingBus();
         if (cassette) cassette->toggleOutput();
-        return 0;
+        return isWrite ? 0 : floatingBus();
     }
 
     // Cassette INPUT ($C060 only): bit-7 = sign of the audio comparator.
