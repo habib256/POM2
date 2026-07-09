@@ -41,6 +41,7 @@ public:
         int   hostIdx  = -1;
         float deadzone = 0.10f;
         std::array<bool, kAxes> invert{ false, false };
+        bool  squareGate = true;
 
         // Live Apple-II-side values for confirmation.
         std::array<uint8_t, 4> appleIIPaddle{ 127, 127, 127, 127 };
@@ -52,6 +53,7 @@ public:
         int   hostIdx  = -1;
         float deadzone = 0.10f;
         std::array<bool, kAxes> invert{ false, false };
+        bool  squareGate = true;
     };
 
     FrameResult render(const char* title, bool& open, const Snapshot& snap);

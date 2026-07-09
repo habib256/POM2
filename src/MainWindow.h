@@ -458,6 +458,42 @@ private:
     // screen, full-viewport, with no menu bar / toolbar / panels.
     bool kiosk_ = false;
 
+    // ── Kiosk disk selector (gamepad-driven, keyboard-free) ─────────────
+    // In kiosk mode the Start button opens an on-screen list of the disk
+    // images sitting next to the booted disk (e.g. "Side B"); D-pad/stick
+    // navigate, A mounts the highlighted one into the boot Disk II drive
+    // (slot 6, drive 1) without rebooting, B / Start close it. Populated on
+    // open; empty otherwise.
+    // Trailing action rows appended after the disk matches: Reset, Quit.
+    static constexpr int     kKioskMenuActions = 2;
+    bool                     kioskDiskMenuOpen_ = false;
+    std::vector<std::string> kioskDiskMenuPaths_;   // absolute image paths
+    std::vector<std::string> kioskDiskMenuLabels_;  // display file names
+    int                      kioskDiskMenuSel_  = 0;
+    std::string              kioskDiskMenuStatus_;   // last mount result line
+
+    // One-shot dedup for the "pad bound / gamepad-mapped" diagnostic log.
+    int  loggedJoyHost_    = -2;   // -2 = never logged
+    bool loggedJoyGamepad_ = false;
+
+    /// Rebuild kioskDiskMenuPaths_ from the directory of the disk currently
+    /// in the boot Disk II drive and open the selector. No-op if there's no
+    /// Disk II card / no mounted disk to locate a folder from.
+    void openKioskDiskMenu();
+    /// Poll the bound gamepad's UI-nav edges and drive the kiosk selector
+    /// (open / move / mount / close). Called once per frame in kiosk mode.
+    void updateKioskDiskMenu();
+    /// Draw the selector overlay (centered list) when open.
+    void renderKioskDiskMenu();
+    /// Swap the highlighted disk into the boot Disk II drive without reboot.
+    void kioskMountSelected();
+    /// Activate the highlighted row: a disk (mount), or one of the two
+    /// trailing action rows — Reset (reboot on the mounted disk) or Quit.
+    void kioskActivateSelected();
+    /// The Disk II card the kiosk selector targets: slot 6 if present, else
+    /// the primary card. nullptr when the config has no Disk II at all.
+    DiskIICard* kioskBootDiskCard();
+
     // Slot of the HDV card auto-plugged by ensureHdvCardForBoot for a CLI
     // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so
     // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.

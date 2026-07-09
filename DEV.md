@@ -2023,6 +2023,20 @@ returns `0x80` while `(cycleCounter - paddleLatchCycle) <
 paddleValue × 11`. `$C070` arms latch. 11-cycle constant = rough
 Apple II RC step.
 
+**Square gate (`applySquareGate`, default on, key `joystick_square_gate`).**
+A modern analog stick rides in a *round* gate: a full diagonal only reaches
+(~0.707, ~0.707), so both paddles top out near 217/255 at once and the four
+extreme corners are physically unreachable. The original Apple II stick rode a
+*square* gate, so the corners (full X **and** full Y = 255/255) were reachable —
+which some titles need (e.g. Wings of Fury's take-off). `paddleValue()` reads
+the whole X/Y pair (the transform couples the axes), applies a **radial**
+deadzone (a per-axis one would notch the diagonals), then scales the vector out
+along its own ray until its largest component hits the square edge:
+`s = mag / max(|x|,|y|)`. This maps the inscribed circle onto the full square
+(45° → (1,1)) while leaving pure-axis directions untouched (`s = 1`). Toggle in
+the Joystick panel. Pinned by `joystick_square_gate` (pure-math test on
+`applySquareGate` + `axisToPaddle01`).
+
 ## UI (ImGui)
 
 `MainWindow` — menu bar + screen + emulation panel + on-demand
@@ -2283,13 +2297,55 @@ bootDiskPath`; `--kiosk` → `CliPlan::kiosk`. `main.cpp`:
   thread.
 
 - `--kiosk` → exclusive full-screen from primary monitor's video mode
-  (`glfwGetVideoMode` + `glfwCreateWindow(.., monitor, ..)`);
-  `io.IniFilename = nullptr`; `setKioskMode`. `render()`
-  short-circuits to `renderKiosk()` — one borderless full-viewport
-  window (`drawScreenImage()` letterboxed on black), no menu / toolbar
-  / panels / dialogs. Window closes only via the OS.
+  (`glfwGetVideoMode` + `glfwCreateWindow(.., monitor, ..)`, copying the
+  mode's bit depths + refresh into the hints so it's a windowed-fullscreen
+  with no mode switch); `io.IniFilename = nullptr`; `setKioskMode`.
+  No monitor / video mode → warns + falls back to a windowed canvas.
+  `render()` short-circuits to `renderKiosk()` — one borderless
+  full-viewport window (`drawScreenImage()` letterboxed on black), no menu
+  / toolbar / panels / dialogs. **Quit = Alt-F4**, handled explicitly in
+  `glfw_key_callback` (`main.cpp`): `key == GLFW_KEY_F4 && PRESS && (mods &
+  GLFW_MOD_ALT)` → `glfwSetWindowShouldClose`, so it works even in exclusive
+  full-screen where no chrome offers a way out and some WMs don't intercept
+  the combo. Feeds the normal clean-shutdown path (pending saves / tape
+  dumps still run). No Escape-to-quit.
 
-Pinned: `cli_kiosk_test` (parser links against just `DiskImage.cpp`).
+- **What still runs in kiosk**: `render()` calls
+  `pollJoystickAndPushToMemory()` + `updateAutoTurbo()` before the
+  `if (kiosk_)` short-circuit, and the short-circuit itself keeps
+  `driveRewindHold(F6)`, so joystick/paddles, disk auto-turbo, and F6
+  hold-to-rewind behave identically. The unconditional global keys
+  (F11/F12 reset, F9 screenshot, Left/Right Alt = Open/Solid Apple — `main.cpp`
+  `isGlobalKey`, routed even when ImGui has keyboard focus) still reach the
+  guest. Only the chrome (menu/toolbar/panels, and their toolbar-only
+  actions) is gone.
+
+- **`POM2_AUTO_QUIT=<N>`** (env, `main.cpp`) requests
+  `glfwSetWindowShouldClose` after N seconds — a general headless-run /
+  automation self-quit hook (handy for a kiosk window, which has no in-app
+  quit otherwise).
+
+- **Gamepad disk selector** (`updateKioskDiskMenu` / `renderKioskDiskMenu`,
+  MainWindow). Keyboard-free disk flipping: the pad's **Start** (standard GLFW
+  gamepad mapping via `JoystickInput::UiNav`) — or **F10** as a fallback when
+  the pad has no SDL mapping — opens an overlay listing the 5.25" images in the
+  **same folder** as the booted disk, filtered by **name proximity** (longest
+  common prefix ≥ 6 chars and ≥ half the shorter stem) so only the same title's
+  other sides/disks show, not the whole library. D-pad/stick move, **A/Enter**
+  mounts the highlighted disk into the boot Disk II drive (slot 6, drive 1)
+  **in-place, no reboot** (`insertDisk` under `stateMutex`), keeping the menu
+  open so a **Reset** (`bootFromSlot`, reboot on the mounted disk) or **Quit**
+  (`glfwSetWindowShouldClose`) action row can follow; **B/Start/Esc** dismiss.
+  While open, paddles/buttons are fed centred/released so menu navigation never
+  leaks into the running game. The overlay omits `NoBringToFrontOnFocus` and
+  calls `SetNextWindowFocus()` so it sits above the opaque full-viewport kiosk
+  window; text is `SetWindowFontScale(5.0f)` — re-applied inside the list child
+  (a child is a separate ImGui window with its own scale).
+
+Pinned: `cli_kiosk_test` — a **parser-only** smoke test (links against just
+`DiskImage.cpp`): it asserts `parseCli` captures the positional disk +
+`--kiosk` flag and `classifyDiskForSlot` picks the slot; it does not drive
+the full-screen window.
 
 ## Clock & threading
 
