@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Apple II disk-image MIME type used by POM2.desktop (MimeType=...).
+     Installed into share/mime/packages/; `update-mime-database` (run by the
+     .deb postinst / the user's desktop) wires the globs to the type so a
+     double-clicked disk image opens in POM2. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-apple2-disk">
+    <comment>Apple II disk image</comment>
+    <comment xml:lang="fr">Image disque Apple II</comment>
+    <icon name="POM2"/>
+    <generic-icon name="media-floppy"/>
+    <glob pattern="*.dsk"/>
+    <glob pattern="*.do"/>
+    <glob pattern="*.po"/>
+    <glob pattern="*.nib"/>
+    <glob pattern="*.woz"/>
+    <glob pattern="*.d13"/>
+    <glob pattern="*.hdv"/>
+    <glob pattern="*.2mg"/>
+  </mime-type>
+</mime-info>

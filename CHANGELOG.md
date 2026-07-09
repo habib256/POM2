@@ -5,6 +5,29 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-09 (v0.7 — packaging, CI & desktop integration)
+
+First tagged release. Focus on shipping, not the core emulator.
+
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): a `linux` job builds the
+  full tree and runs the ~130-test ctest suite (Klaus 6502/65C02, Tom Harte,
+  cpu_cycle_count, golden-hash display, boot traces) as the non-regression gate,
+  plus a `wasm` Emscripten verification build. The suite was dormant — nothing
+  ran it automatically before.
+- **Fixed a latent packaging blocker**: `packaging/roms_README.txt` was
+  referenced by `install(FILES …)` but never existed, so *every*
+  `cmake --install` / `cpack` / `build_dist.sh` staging aborted. Created it (the
+  ROM drop-here note). Linux install now succeeds end-to-end.
+- **Desktop integration**: an application icon (`packaging/POM2.svg` +
+  rasterised hicolor PNGs), a MIME type `application/x-apple2-disk`
+  (`.dsk/.do/.po/.nib/.woz/.d13/.hdv/.2mg`) so a double-clicked disk opens in
+  POM2, and Debian maintainer scripts that refresh the mime/desktop/icon caches.
+- Metadata fixes: real homepage URL in the package (`github.com/habib256/POM2`)
+  and a `.desktop` keyword typo.
+- **Grappler+**: bundled the 4 KB Orange Micro Grappler+ EPROM dump so the card
+  exposes its full firmware (graphics-dump entry points + ROM fingerprint)
+  instead of the fallback stub.
+
 ## 2026-06-16 (Tom Harte 65x02 ProcessorTests — cycle-exact validation)
 
 Added the Tom Harte [`SingleStepTests/65x02`](https://github.com/SingleStepTests/65x02)

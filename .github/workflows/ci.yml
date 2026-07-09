@@ -1,0 +1,83 @@
+# POM2 continuous integration.
+#
+# Two jobs:
+#   linux  — build the full tree (GUI + pom2_headless + unit tests) and run the
+#            ~130-test ctest suite (Klaus 6502/65C02, Tom Harte curated,
+#            cpu_cycle_count, golden-hash display, boot traces). This is the
+#            non-regression gate: it must stay green on every push / PR.
+#   wasm   — Emscripten verification build (build_wasm.sh) so the browser
+#            target can never silently rot. Build-only; no test run in-browser.
+#
+# The Apple ROMs are user-supplied (copyright) and never checked in, so no test
+# here depends on them — the suite drives the emulator core directly. Dear ImGui
+# is gitignored; both jobs clone it shallowly (same as ./setup_imgui.sh).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux build + ctest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev
+
+      # Dear ImGui is gitignored (setup_imgui.sh normally clones it). A shallow
+      # clone is enough to build the GUI backends.
+      - name: Fetch Dear ImGui
+        run: git clone --depth 1 https://github.com/ocornut/imgui.git
+
+      - name: Configure (Release, tests on)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPOM2_ENABLE_TESTS=ON
+
+      - name: Build everything
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run ctest
+        working-directory: build
+        run: ctest --output-on-failure -j"$(nproc)"
+
+  wasm:
+    name: WASM verification build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Dear ImGui
+        run: git clone --depth 1 https://github.com/ocornut/imgui.git
+
+      - name: Set up Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Build WASM target
+        run: ./build_wasm.sh
+
+      - name: Verify artifacts were produced
+        run: |
+          for f in wasm/index.html wasm/POM2.js wasm/POM2.wasm; do
+            test -s "$f" || { echo "missing/empty artifact: $f" >&2; exit 1; }
+          done
+          echo "WASM artifacts OK:"
+          ls -lh wasm/POM2.wasm wasm/POM2.js wasm/index.html

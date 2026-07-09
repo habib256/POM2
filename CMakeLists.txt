@@ -507,6 +507,22 @@ install(FILES README.md CHANGELOG.md DEV.md TODO.md LICENSE
 install(FILES packaging/POM2.desktop
         DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
 
+# Application icon (hicolor theme): scalable SVG + rasterised PNGs. The
+# .desktop's `Icon=POM2` and the MIME type's <icon> resolve to these; AppImage
+# tooling (linuxdeploy) also picks the icon up from here.
+install(FILES packaging/POM2.svg
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+foreach(_sz 16 32 48 64 128 256)
+    install(FILES "packaging/POM2-${_sz}.png"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_sz}x${_sz}/apps"
+            RENAME POM2.png)
+endforeach()
+
+# Disk-image MIME type (application/x-apple2-disk) referenced by POM2.desktop's
+# MimeType=, so a double-clicked .dsk/.woz/.hdv/.2mg/… opens in POM2.
+install(FILES packaging/pom2-disk.xml
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/mime/packages")
+
 # ─── CPack ─────────────────────────────────────────────────────────────────
 # `cpack -G TGZ` → relocatable POM2-<ver>-Linux.tar.gz (bin/ + share/POM2).
 # `cpack -G DEB` → .deb depending on the system GLFW + OpenGL runtimes.
@@ -516,7 +532,7 @@ set(CPACK_PACKAGE_VENDOR          "POM2")
 set(CPACK_PACKAGE_VERSION         "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "Apple II / II+ / //e / //c / //c+ emulator")
-set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/")
+set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/habib256/POM2")
 set(CPACK_RESOURCE_FILE_LICENSE   "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_CONTACT         "gist974@gmail.com")
 set(CPACK_PACKAGE_FILE_NAME
@@ -527,5 +543,10 @@ set(CPACK_STRIP_FILES             ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS  "libglfw3 (>= 3.3), libgl1")
 set(CPACK_DEBIAN_PACKAGE_SECTION  "otherosfs")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+# Maintainer scripts: refresh the MIME / desktop / icon caches on install &
+# removal so the disk-image association and app icon take effect immediately.
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postinst"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/deb/postrm")
 
 include(CPack)

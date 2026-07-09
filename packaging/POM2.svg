@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- POM2 application icon. Deliberately generic (green apple + "][" for
+     "Apple ]["), avoiding the trademarked six-colour Apple logo. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2a4a"/>
+      <stop offset="1" stop-color="#0d1526"/>
+    </linearGradient>
+    <linearGradient id="apple" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ed957"/>
+      <stop offset="1" stop-color="#3fa34d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square badge -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+
+  <!-- Apple body (two lobes) -->
+  <g transform="translate(128 140)">
+    <path fill="url(#apple)" d="
+      M 0 -46
+      C -30 -70 -78 -58 -78 -14
+      C -78 26 -50 74 -18 74
+      C -8 74 -4 68 0 68
+      C 4 68 8 74 18 74
+      C 50 74 78 26 78 -14
+      C 78 -58 30 -70 0 -46 Z"/>
+    <!-- Leaf -->
+    <path fill="#3fa34d" d="M 6 -54 C 10 -80 34 -88 48 -86 C 46 -66 28 -50 6 -54 Z"/>
+    <!-- Stem -->
+    <rect x="-3" y="-64" width="6" height="16" rx="3" fill="#5a3a1a"/>
+  </g>
+
+  <!-- "][" mark, evoking Apple ]['s bracket logo -->
+  <g fill="#eaf3ff" font-family="monospace" font-weight="bold"
+     font-size="86" text-anchor="middle">
+    <text x="128" y="168">][</text>
+  </g>
+</svg>
