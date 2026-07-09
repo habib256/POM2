@@ -5,6 +5,36 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-10 (kiosk gamepad UX + Apple II square-gate joystick)
+
+Kiosk mode made lean-back / controller-friendly, plus a faithful joystick fix.
+
+- **Square-gate joystick** (`JoystickInput::applySquareGate`, default on, key
+  `joystick_square_gate`). Modern analog sticks ride a *round* gate, so a full
+  diagonal only reaches ~217/217 and the extreme corners are physically
+  unreachable — but the original Apple II stick rode a *square* gate where full
+  X **and** full Y at once (255/255) were reachable, which **Wings of Fury's
+  take-off requires**. `paddleValue()` now processes the X/Y pair together
+  (radial deadzone, not per-axis — a per-axis one notched the diagonals) and
+  expands the inscribed circle to the full square (`s = mag / max(|x|,|y|)`),
+  leaving pure-axis directions untouched. Toggle in the Joystick panel; pinned
+  by the new `joystick_square_gate` test (129 → 130 ctests).
+- **Kiosk gamepad disk selector.** In `--kiosk`, the pad's **Start** (standard
+  GLFW gamepad mapping) — or **F10** when the pad has no SDL mapping — opens an
+  on-screen picker of the 5.25" images sitting **next to** the booted disk,
+  filtered by **name proximity** (longest common prefix) so only the same
+  title's other sides/disks appear (Wings of Fury Side A ↔ Side B), not the
+  whole 700-disk folder. D-pad/stick move, **A** mounts in-place (no reboot,
+  the flip-disk gesture), and trailing **Reset** (reboot on the mounted disk)
+  and **Quit** action rows finish the job — all without a keyboard.
+- Pitfalls captured: the overlay first rendered *behind* the opaque
+  full-viewport kiosk window (fixed by dropping `NoBringToFrontOnFocus` +
+  `SetNextWindowFocus`), and the file list stayed tiny under
+  `SetWindowFontScale` because a `BeginChild` is a separate ImGui window with
+  its own scale (re-applied inside). The Start button silently did nothing on an
+  unmapped pad — hence the F10 fallback + a one-shot `gamepad-mapped=yes/no`
+  diagnostic log.
+
 ## 2026-07-09 (v0.7 — packaging, CI & desktop integration)
 
 First tagged release. Focus on shipping, not the core emulator.

@@ -232,6 +232,22 @@ POM2 --snapshot-load in.pom2snap
 
 More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--step`, `--paste`, `--play`, `--rec`, `--rewind`. Full architecture → [`CLAUDE.md`](CLAUDE.md).
 
+### 🕹️ Kiosk mode
+
+`POM2 --kiosk <disk-image>` turns POM2 into a distraction-free appliance — think arcade cabinet, museum exhibit, or a dedicated retro corner. It:
+
+- Opens **exclusive full-screen** on the primary monitor at its native video mode (falls back to a plain window if there's no monitor to grab).
+- Draws **only the Apple II screen**, centred and letterboxed on black — no menu bar, no toolbar, no panels or dialogs.
+- **Boots the disk image** you pass (5.25" / 3.5" / HDV, slot auto-picked from the file type) under your saved profile — or override with `--preset`, `--display`, `--cpu-max`, …
+- Is **read-only**: it never writes your `state.cfg` settings or `imgui.ini` window layout, so a kiosk session can't disturb your desktop setup. (An HDV with no HDV/SmartPort card in your saved config gets one auto-plugged **for that session only**.)
+
+Everything the machine needs keeps running: keyboard, joystick/paddles, auto-turbo during disk I/O, **F11 / F12** (soft / hard reset), **F9** (screenshot), **Left / Right Alt** (Open / Solid Apple), and **F6** (hold to rewind). There's no menu to quit from — press **Alt-F4** to close it (POM2 handles the combo itself, so it works even in exclusive full-screen).
+
+```bash
+POM2 --kiosk "Lode Runner.dsk"                 # boot a game, full-screen
+POM2 --kiosk --preset iic --cpu-max game.hdv   # //c profile, run flat-out
+```
+
 ---
 
 ## 📦 Releases

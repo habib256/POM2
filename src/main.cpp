@@ -55,6 +55,19 @@ static void glfw_char_callback(GLFWwindow* w, unsigned int codepoint)
 static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mods)
 {
     ImGui_ImplGlfw_KeyCallback(w, key, sc, action, mods);
+
+    // Alt-F4 = quit, handled by POM2 itself rather than relying on the
+    // window manager. This matters in exclusive full-screen kiosk, which
+    // has no menu / toolbar / close button and where some WMs don't
+    // intercept the combo. Requesting close here feeds the normal
+    // clean-shutdown path (the main loop watches glfwWindowShouldClose),
+    // so pending saves / tape dumps still run. Routed before the
+    // MainWindow forward and independent of ImGui keyboard capture.
+    if (key == GLFW_KEY_F4 && action == GLFW_PRESS && (mods & GLFW_MOD_ALT)) {
+        glfwSetWindowShouldClose(w, GLFW_TRUE);
+        return;
+    }
+
     if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
         // F11 (soft reset) and F12 (hard reset) are routed unconditionally
         // so the user can recover even when an ImGui widget has captured

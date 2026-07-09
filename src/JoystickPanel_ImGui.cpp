@@ -72,9 +72,10 @@ JoystickPanel_ImGui::FrameResult JoystickPanel_ImGui::render(
     const char* title, bool& open, const Snapshot& snap)
 {
     FrameResult r;
-    r.hostIdx  = snap.hostIdx;
-    r.deadzone = snap.deadzone;
-    r.invert   = snap.invert;
+    r.hostIdx    = snap.hostIdx;
+    r.deadzone   = snap.deadzone;
+    r.invert     = snap.invert;
+    r.squareGate = snap.squareGate;
 
     if (!open) return r;
 
@@ -147,6 +148,16 @@ JoystickPanel_ImGui::FrameResult JoystickPanel_ImGui::render(
     if (ImGui::Checkbox("Invert X", &r.invert[0])) r.changed = true;
     ImGui::SameLine();
     if (ImGui::Checkbox("Invert Y", &r.invert[1])) r.changed = true;
+
+    if (ImGui::Checkbox("Square gate (Apple II corners)", &r.squareGate))
+        r.changed = true;
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Modern sticks ride a ROUND gate, so a full diagonal only\n"
+            "reaches ~217/217 and the extreme corners are unreachable.\n"
+            "The real Apple II stick rode a SQUARE gate: full X and full Y\n"
+            "at once (255/255). Required to take off in Wings of Fury.");
+    }
 
     // ─── Apple II side mirror ────────────────────────────────────────────
     ImGui::Separator();

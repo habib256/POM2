@@ -361,6 +361,9 @@ MainWindow::MainWindow(bool forceIIPlus)
         showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
         controller->rewind().setEnabled(settings->getBool("rewind_enabled", false));
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
+        joystick->binding().squareGate =
+            settings->getBool("joystick_square_gate",
+                              joystick->binding().squareGate);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
@@ -2524,6 +2527,264 @@ void MainWindow::renderKiosk()
     ImGui::PopStyleVar();
 }
 
+// ─── Kiosk disk selector (gamepad-driven) ───────────────────────────────
+//
+// A keyboard-free way to flip disks in kiosk mode: Start opens a list of the
+// 5.25" images sitting in the same folder as the booted disk (so a game's
+// "Side B" is one press away), D-pad/stick move, A mounts the highlighted one
+// into the boot Disk II drive (slot 6, drive 1) without rebooting — the
+// flip-disk gesture Wings of Fury and friends expect — and B/Start dismiss.
+
+DiskIICard* MainWindow::kioskBootDiskCard()
+{
+    // Prefer the conventional boot slot 6; fall back to the primary card.
+    for (auto* c : diskCards) if (c && c->getSlot() == 6) return c;
+    return diskCard;
+}
+
+void MainWindow::openKioskDiskMenu()
+{
+    kioskDiskMenuPaths_.clear();
+    kioskDiskMenuLabels_.clear();
+    kioskDiskMenuSel_ = 0;
+    kioskDiskMenuStatus_.clear();
+    kioskDiskMenuOpen_ = true;
+
+    DiskIICard* boot = kioskBootDiskCard();
+    if (!boot) { kioskDiskMenuStatus_ = "No Disk II card in this config"; return; }
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string cur = boot->getDiskPath(0);
+    const fs::path dir = cur.empty() ? fs::path{} : fs::path(cur).parent_path();
+    if (dir.empty() || !fs::is_directory(dir, ec)) {
+        kioskDiskMenuStatus_ = "No disk folder to browse";
+        return;
+    }
+
+    // Anchor the name-proximity filter on the current disk's stem (no
+    // extension, lower-cased). A ".woz" Side A and its ".dsk" sibling still
+    // match because we compare stems.
+    auto toLower = [](std::string s) {
+        for (char& c : s) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+        return s;
+    };
+    auto commonPrefix = [](const std::string& a, const std::string& b) {
+        const size_t n = std::min(a.size(), b.size());
+        size_t i = 0;
+        while (i < n && a[i] == b[i]) ++i;
+        return i;
+    };
+    const std::string curName =
+        cur.empty() ? std::string{} : fs::path(cur).filename().string();
+    const std::string curKey =
+        cur.empty() ? std::string{} : toLower(fs::path(cur).stem().string());
+
+    std::vector<fs::path> found;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        // Keep only what the boot Disk II drive can actually mount.
+        if (classifyDiskForSlot(it->path().string()) != DiskSlotClass::Floppy525)
+            continue;
+        // Name proximity: keep siblings whose name shares a long common
+        // prefix with the current disk — i.e. the same title's other
+        // sides/disks ("… (Side A)" ↔ "… (Side B)") — not every 5.25" image
+        // in a big shared folder. The current disk itself always stays (so
+        // the list has context and a highlighted anchor). Requires a real
+        // shared run (≥6 chars) covering ≥half the shorter stem, which the
+        // side/disk suffix naming satisfies while distinct titles don't.
+        if (!curKey.empty()) {
+            const std::string candKey = toLower(it->path().stem().string());
+            if (candKey != curKey) {
+                const size_t pref   = commonPrefix(curKey, candKey);
+                const size_t minLen = std::min(curKey.size(), candKey.size());
+                if (pref < 6 || pref * 2 < minLen) continue;
+            }
+        }
+        found.push_back(it->path());
+    }
+    std::sort(found.begin(), found.end(), [](const fs::path& a, const fs::path& b) {
+        return a.filename().string() < b.filename().string();
+    });
+
+    for (const auto& p : found) {
+        const std::string name = p.filename().string();
+        if (name == curName) kioskDiskMenuSel_ = int(kioskDiskMenuPaths_.size());
+        kioskDiskMenuPaths_.push_back(p.string());
+        kioskDiskMenuLabels_.push_back(name);
+    }
+
+    if (kioskDiskMenuPaths_.empty())
+        kioskDiskMenuStatus_ = "No 5.25\" disks found next to the current image";
+    else if (kioskDiskMenuPaths_.size() == 1)
+        kioskDiskMenuStatus_ = "No other sides/disks with a similar name here";
+
+    pom2::log().info("Kiosk", "disk selector opened: " +
+                     std::to_string(kioskDiskMenuPaths_.size()) +
+                     " match(es) in " + dir.string());
+}
+
+void MainWindow::kioskMountSelected()
+{
+    if (kioskDiskMenuSel_ < 0 ||
+        kioskDiskMenuSel_ >= int(kioskDiskMenuPaths_.size())) return;
+
+    DiskIICard* boot = kioskBootDiskCard();
+    if (!boot) { kioskDiskMenuStatus_ = "No Disk II card in this config"; return; }
+
+    const std::string path  = kioskDiskMenuPaths_[kioskDiskMenuSel_];
+    const std::string label = kioskDiskMenuLabels_[kioskDiskMenuSel_];
+
+    bool ok = false;
+    {
+        // Same lock the CPU worker takes around softSwitchAccess: insertDisk
+        // rebuilds the drive's track buffers, so it must not race the LSS.
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        ok = boot->insertDisk(0, path);   // in-place swap, no cold boot
+    }
+    if (ok) {
+        // Keep the selector open so the user can chain a Reset (reboot on the
+        // just-mounted disk) without reopening; B / Start dismisses it.
+        kioskDiskMenuStatus_ = "Mounted " + label + " — select Reset to reboot";
+    } else {
+        kioskDiskMenuStatus_ = "Mount failed: " + boot->getLastError(0);
+    }
+}
+
+void MainWindow::kioskActivateSelected()
+{
+    const int nDisks = int(kioskDiskMenuPaths_.size());
+
+    if (kioskDiskMenuSel_ < nDisks) {   // a disk row → mount it
+        kioskMountSelected();
+        return;
+    }
+
+    switch (kioskDiskMenuSel_ - nDisks) {
+        case 0: {   // Reset — reboot on whatever disk is now in the drive
+            DiskIICard* boot = kioskBootDiskCard();
+            if (boot) controller->bootFromSlot(boot->getSlot());
+            else      controller->coldBoot();
+            controller->setMode(EmulationController::Mode::Running);
+            kioskDiskMenuOpen_ = false;
+            break;
+        }
+        case 1:     // Quit — feed the normal clean-shutdown path
+            if (window) glfwSetWindowShouldClose(window, 1);
+            kioskDiskMenuOpen_ = false;
+            break;
+    }
+}
+
+void MainWindow::updateKioskDiskMenu()
+{
+    // The pad was already polled this frame (pollJoystickAndPushToMemory).
+    const JoystickInput::UiNav nav = joystick->uiNav();
+
+    // Keyboard fallback: works even when the controller isn't a recognized
+    // GLFW gamepad (so the gamepad-mapped Start/A/B never fire). F10 toggles
+    // the selector, arrows move, Enter mounts, Esc closes. These share the
+    // gamepad actions so either input drives the same menu.
+    const bool kToggle  = ImGui::IsKeyPressed(ImGuiKey_F10,       false);
+    const bool kUp      = ImGui::IsKeyPressed(ImGuiKey_UpArrow,   true);
+    const bool kDown    = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+    const bool kConfirm = ImGui::IsKeyPressed(ImGuiKey_Enter,     false);
+    const bool kCancel  = ImGui::IsKeyPressed(ImGuiKey_Escape,    false);
+
+    if (!kioskDiskMenuOpen_) {
+        if (nav.menu || kToggle) openKioskDiskMenu();
+        return;
+    }
+
+    if (nav.menu || nav.cancel || kToggle || kCancel) {
+        kioskDiskMenuOpen_ = false;
+        return;
+    }
+
+    // Navigable rows = the disk matches plus two trailing action rows
+    // (Reset, Quit), so the list is never empty and both are always reachable.
+    const int total = int(kioskDiskMenuPaths_.size()) + kKioskMenuActions;
+    if (nav.up   || kUp)   kioskDiskMenuSel_ = (kioskDiskMenuSel_ - 1 + total) % total;
+    if (nav.down || kDown) kioskDiskMenuSel_ = (kioskDiskMenuSel_ + 1) % total;
+    if (nav.confirm || kConfirm) kioskActivateSelected();
+}
+
+void MainWindow::renderKioskDiskMenu()
+{
+    if (!kioskDiskMenuOpen_) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(vp->Size.x * 0.8f, vp->Size.y * 0.7f),
+                             ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(12, 12, 18, 245));
+    ImGui::PushStyleColor(ImGuiCol_Border,   IM_COL32(220, 200, 80, 255));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    // NOTE: no NoBringToFrontOnFocus here — the kiosk screen window is a
+    // full-viewport OPAQUE window, so the selector must sit above it or it
+    // renders completely hidden behind the black background. Force it to the
+    // front every frame while open.
+    ImGui::SetNextWindowFocus();
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoNavInputs;
+
+    if (ImGui::Begin("##kioskDiskMenu", nullptr, flags)) {
+        // Kiosk is a lean-back, across-the-room display: blow the text up so
+        // it's readable at a distance (~5x the default UI font). Scales every
+        // widget's text in this window; the help line wraps so it never
+        // clips at that size.
+        ImGui::SetWindowFontScale(5.0f);
+
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "SELECT DISK");
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 150, 255));
+        ImGui::TextWrapped("D-pad/stick: move   A/Enter: select   B/Start: close");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+
+        // One selectable row per matching disk, then the two action rows.
+        // `row` walks the same index space navigation uses, so highlight and
+        // activation stay in lock-step.
+        const int nDisks = int(kioskDiskMenuLabels_.size());
+        auto drawRow = [&](int row, const char* text) {
+            const bool sel = (row == kioskDiskMenuSel_);
+            if (sel) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 230, 120, 255));
+            ImGui::TextWrapped("%s %s", sel ? "\xe2\x96\xb6" : "  ", text);
+            if (sel) {
+                ImGui::PopStyleColor();
+                ImGui::SetScrollHereY(0.5f);
+            }
+        };
+
+        ImGui::BeginChild("##kioskDiskList", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() * 2.0f));
+        // A child is a SEPARATE ImGui window with its own font scale — the
+        // parent's SetWindowFontScale doesn't reach here, so re-apply it or
+        // the file list renders at the tiny default size.
+        ImGui::SetWindowFontScale(5.0f);
+        for (int i = 0; i < nDisks; ++i)
+            drawRow(i, kioskDiskMenuLabels_[i].c_str());
+        if (nDisks == 0)
+            ImGui::TextWrapped("(no matching disks in this folder)");
+
+        ImGui::Separator();
+        drawRow(nDisks + 0, "Reset  (reboot on this disk)");
+        drawRow(nDisks + 1, "Quit emulator");
+        ImGui::EndChild();
+
+        if (!kioskDiskMenuStatus_.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", kioskDiskMenuStatus_.c_str());
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+}
+
 // ─── Mouse Card input routing ───────────────────────────────────────────
 
 void MainWindow::onMouseMove(double x, double y)
@@ -2743,17 +3004,47 @@ void MainWindow::pollJoystickAndPushToMemory()
     joystick->poll();
     joystick->autoBindIfUnconfigured();
 
+    // One-shot diagnostic when the bound pad (or its gamepad-mapping status)
+    // changes: the kiosk Start-menu only works when gamepad-mapped=yes. If a
+    // pad is present but reports "no", GLFW has no standard mapping for it,
+    // so use the F10 keyboard fallback (or add an SDL mapping).
+    {
+        const int  hi = joystick->binding().hostIdx;
+        const bool gp = joystick->activeIsGamepad();
+        if (hi != loggedJoyHost_ || gp != loggedJoyGamepad_) {
+            loggedJoyHost_    = hi;
+            loggedJoyGamepad_ = gp;
+            if (hi >= 0) {
+                pom2::log().info(
+                    "Joystick", "bound #" + std::to_string(hi + 1) + " '" +
+                    joystick->activeName() + "' gamepad-mapped=" +
+                    (gp ? "yes (Start opens kiosk disk menu)"
+                        : "no (use F10 for the kiosk disk menu)"));
+            } else {
+                pom2::log().info("Joystick", "no pad bound");
+            }
+        }
+    }
+
     // Apple II paddles (4) and push buttons (3). The Memory side already
     // handles the $C064-$C067 RC discharge model and $C061-$C063 push
     // buttons; we just hand it fresh values once per frame. Hold stateMutex
     // while writing: the CPU worker reads paddleValue/paddleButton inside
     // softSwitchAccess under the same lock (during processor.run()), so an
     // unlocked write here is a data race on those non-atomic arrays.
+    // While the kiosk disk selector is open the pad drives the menu, not the
+    // game: feed the Apple II centered paddles + released buttons so the A/B
+    // navigation presses (which share physical buttons with PB0/PB1) don't
+    // leak into the running title.
+    const bool menuActive = kioskDiskMenuOpen_;
+
     Memory& mem = controller->memory();
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (int i = 0; i < 4; ++i)  mem.setPaddle(i, joystick->paddleValue(i));
-        for (int i = 0; i < 3; ++i)  mem.setPaddleButton(i, joystick->buttonDown(i));
+        for (int i = 0; i < 4; ++i)
+            mem.setPaddle(i, menuActive ? 128 : joystick->paddleValue(i));
+        for (int i = 0; i < 3; ++i)
+            mem.setPaddleButton(i, menuActive ? false : joystick->buttonDown(i));
     }
 }
 
@@ -3347,18 +3638,21 @@ void MainWindow::renderJoystickPanelWindow()
         snap.hosts.push_back(std::move(hd));
     }
     const auto& cf = joystick->binding();
-    snap.hostIdx  = cf.hostIdx;
-    snap.deadzone = cf.deadzone;
-    snap.invert   = cf.invert;
+    snap.hostIdx    = cf.hostIdx;
+    snap.deadzone   = cf.deadzone;
+    snap.invert     = cf.invert;
+    snap.squareGate = cf.squareGate;
     for (int i = 0; i < 4; ++i) snap.appleIIPaddle[i] = joystick->paddleValue(i);
     for (int i = 0; i < 3; ++i) snap.appleIIButton[i] = joystick->buttonDown(i);
 
     auto result = joystickPanel->render("Joystick", showJoystickPanel, snap);
     if (result.changed) {
         auto& bind = joystick->binding();
-        bind.hostIdx  = result.hostIdx;
-        bind.deadzone = result.deadzone;
-        bind.invert   = result.invert;
+        bind.hostIdx    = result.hostIdx;
+        bind.deadzone   = result.deadzone;
+        bind.invert     = result.invert;
+        bind.squareGate = result.squareGate;
+        if (settings) settings->setBool("joystick_square_gate", bind.squareGate);
     }
 }
 
@@ -6497,7 +6791,9 @@ void MainWindow::render()
     // F6 hold-to-rewind still works (no toolbar button in kiosk).
     if (kiosk_) {
         driveRewindHold(ImGui::IsKeyDown(ImGuiKey_F6));
+        updateKioskDiskMenu();     // Start opens/closes the gamepad disk picker
         renderKiosk();
+        renderKioskDiskMenu();     // overlay drawn on top of the screen
         return;
     }
 

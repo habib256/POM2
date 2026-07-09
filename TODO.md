@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-06-16. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
+Status as of 2026-07-10. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
@@ -37,7 +37,7 @@ listed here point to detailed items in the [backlog](#backlog).
 | 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
 | 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
 | 22 | PrinterCard (parallel synth)  | POM2-original    | Apple II slot 1 convention + Pascal 1.1 sig                              | 🟡 PDF export deferred (`.txt` OK)                                                       |
-| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 bank-switch upper 2 KB not modelled; stub ROM if dump absent                        |
+| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 4 KB EPROM now bundled (`roms/grappler_plus.bin`); upper-2 KB bank-switch modelled; remaining: MAME `a2grappler.cpp` pin + HGR→PDF raster                        |
 
 ## Quick wins
 
@@ -49,7 +49,7 @@ Suggested attack order — items with high impact/effort ratio.
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | prerequisite for IIgs + cuts recompiles  |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
-| 5 | CI GitHub Actions (`ctest` headless)    | 2-4 h   | the dormant ctest suite (~130 tests) — highest ROI ⭐    |
+| 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (~130 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
 ## Backlog
@@ -200,10 +200,11 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   (BASIC-80, dBase II, Turbo Pascal, WordStar). MAME refs
   `a2softcard.cpp` + Z-80 core. *10-15 d.*
 - 🟡 **Grappler+ printer (`GrapplerCard`)** — ROM-gated shell in
-  place (catalog `grappler`, dump `roms/grappler_plus.bin` 4 KB
-  expected); the upper-2 KB bank-switch ($C0(8+s)X) is now modelled
-  (`romBankHigh_`, round-tripped through snapshot). Remaining: pin
-  against MAME `a2grappler.cpp`, and host-side raster rendering of
+  place (catalog `grappler`); the Orange Micro 4 KB EPROM dump is now
+  **bundled** (`roms/grappler_plus.bin`, committed `ffdac5d`) so the card
+  arms without a user-supplied ROM. The upper-2 KB bank-switch ($C0(8+s)X)
+  is modelled (`romBankHigh_`, round-tripped through snapshot). Remaining:
+  pin against MAME `a2grappler.cpp`, and host-side raster rendering of
   HGR dumps to PDF. *1-2 d.*
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
@@ -268,6 +269,15 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Input] joystick / paddles / mouse
 
+- ✅ **Apple II square-gate stick** — DONE (2026-07-10).
+  `JoystickInput::applySquareGate` expands the round modern-stick region to
+  the full square so the corners (255/255) are reachable (Wings of Fury
+  take-off); radial deadzone; toggle + persisted `joystick_square_gate`.
+  Pinned `joystick_square_gate`. Detail → `DEV.md` § Joystick / `CHANGELOG.md`.
+- ✅ **Kiosk gamepad disk selector** — DONE (2026-07-10). Start (or F10) opens
+  a name-proximity-filtered picker of sibling disks; A mounts in-place, with
+  Reset/Quit action rows. Detail → `DEV.md` § Host control (kiosk) /
+  `CHANGELOG.md`.
 - 🟡 **PADL(2)/PADL(3) host binding** — second stick centered at 127
   (`JoystickInput.cpp:65-75`).
 - 🟡 **Mouse → paddles mapping** — paddle 0/1 on host mouse X/Y axes
@@ -359,13 +369,14 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Arch] refactor & tooling
 
-- 🟠 **No CI GitHub Actions** *(audit 2026-05-31)* — `.github/workflows/`
-  does not exist: the dormant ctest suite — ~130 registered ctests (Klaus 6502+65C02,
-  `cpu_cycle_count`, golden-hash display, boot traces) — never runs automatically.
-  This is the repo with the most to lose from that absence. Workflow on the
-  `pom2_headless` target (no GLFW/audio) + WASM verification build
-  (`build_wasm.sh`) + freeze golden-hash as a guardrail. **Highest ROI.**
-  *2-4 h.* ⭐ quick win
+- ✅ **CI GitHub Actions** — DONE (`.github/workflows/ci.yml`). Two jobs on
+  push-to-`main` / PR / manual dispatch, with in-flight cancellation: **linux**
+  builds the full tree (GUI + `pom2_headless` + tests, `POM2_ENABLE_TESTS=ON`)
+  and runs the ~130-test ctest gate (Klaus 6502+65C02, Tom Harte curated,
+  `cpu_cycle_count`, golden-hash display, boot traces); **wasm** is an Emscripten
+  verification build (`build_wasm.sh`) asserting `wasm/POM2.{js,wasm}` +
+  `index.html` are produced. Both jobs shallow-clone Dear ImGui (gitignored); no
+  test depends on the user-supplied ROMs.
 - 🟠 **`MainWindow.cpp` god-object (~6700 lines)** *(audit 2026-05-31)* — biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
   `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window

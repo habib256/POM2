@@ -242,6 +242,25 @@ add_test(NAME system_profile_smoke COMMAND test_system_profile)
 set_tests_properties(system_profile_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Joystick square-gate (Apple II corner reachability) ──────────────────
+# Pins JoystickInput::applySquareGate + axisToPaddle01: a full diagonal must
+# expand to the true corner (255/255) so games like Wings of Fury can take
+# off. Compiling JoystickInput.cpp pulls its GLFW poll() path, so link GLFW
+# (the pure math under test never calls into it).
+add_executable(test_joystick_square_gate
+    joystick_square_gate_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/JoystickInput.cpp
+)
+target_include_directories(test_joystick_square_gate PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_joystick_square_gate PRIVATE ${GLFW_TARGET})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_joystick_square_gate PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME joystick_square_gate COMMAND test_joystick_square_gate)
+set_tests_properties(joystick_square_gate PROPERTIES TIMEOUT 5)
+
+
 # ─── //c+ boot trace (diagnostic, no asserts) ─────────────────────────────
 # Boots the user's apple2cp.rom under the IIcPlus profile-equivalent
 # memory state, runs ~6M cycles and prints PC + text page fingerprint.
