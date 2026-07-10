@@ -137,28 +137,65 @@ void JoystickInput::poll()
                    (!navPrevValid_ || navPrevButtons_[b] == GLFW_RELEASE);
         };
 
-        // Left-stick Y folded into a virtual D-pad (up = negative on the
+        // Left stick folded into a virtual D-pad (up/left = negative on the
         // GLFW/SDL layout), edge-detected against the previous direction so a
         // held stick steps once per push, not once per frame.
         const float sy = gs.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+        const float sx = gs.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
         const int curStickY = sy < -0.5f ? -1 : (sy > 0.5f ? 1 : 0);
-        const bool stickUpEdge   = curStickY == -1 && navPrevStickY_ != -1;
-        const bool stickDownEdge = curStickY ==  1 && navPrevStickY_ !=  1;
+        const int curStickX = sx < -0.5f ? -1 : (sx > 0.5f ? 1 : 0);
+        const bool stickUpEdge    = curStickY == -1 && navPrevStickY_ != -1;
+        const bool stickDownEdge  = curStickY ==  1 && navPrevStickY_ !=  1;
+        const bool stickLeftEdge  = curStickX == -1 && navPrevStickX_ != -1;
+        const bool stickRightEdge = curStickX ==  1 && navPrevStickX_ !=  1;
 
-        nav_.menu    = edge(GLFW_GAMEPAD_BUTTON_START);
-        nav_.confirm = edge(GLFW_GAMEPAD_BUTTON_A);
-        nav_.cancel  = edge(GLFW_GAMEPAD_BUTTON_B);
-        nav_.up      = edge(GLFW_GAMEPAD_BUTTON_DPAD_UP)   || stickUpEdge;
-        nav_.down    = edge(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) || stickDownEdge;
+        // Level (held) state — the D-pad button OR the stick past its gate.
+        auto held = [&](int b) { return gs.buttons[b] == GLFW_PRESS; };
+
+        nav_.menu     = edge(GLFW_GAMEPAD_BUTTON_START);
+        nav_.select   = edge(GLFW_GAMEPAD_BUTTON_BACK);
+        nav_.confirm  = edge(GLFW_GAMEPAD_BUTTON_A);
+        nav_.cancel   = edge(GLFW_GAMEPAD_BUTTON_B);
+        nav_.up       = edge(GLFW_GAMEPAD_BUTTON_DPAD_UP)    || stickUpEdge;
+        nav_.down     = edge(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)  || stickDownEdge;
+        nav_.left     = edge(GLFW_GAMEPAD_BUTTON_DPAD_LEFT)  || stickLeftEdge;
+        nav_.right    = edge(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || stickRightEdge;
+        nav_.pageUp   = edge(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+        nav_.pageDown = edge(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+
+        nav_.upHeld       = held(GLFW_GAMEPAD_BUTTON_DPAD_UP)    || curStickY == -1;
+        nav_.downHeld     = held(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)  || curStickY ==  1;
+        nav_.leftHeld     = held(GLFW_GAMEPAD_BUTTON_DPAD_LEFT)  || curStickX == -1;
+        nav_.rightHeld    = held(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || curStickX ==  1;
+        nav_.pageUpHeld   = held(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+        nav_.pageDownHeld = held(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER);
+
+        // In-game routing (menu-gated by MainWindow). The D-pad here is the
+        // *button* d-pad ONLY — the analog stick stays the Apple II paddles,
+        // so we never fold stickX/Y in as we do for nav_.
+        play_.valid     = true;
+        play_.button0   = held(GLFW_GAMEPAD_BUTTON_B);          // Circle → PB0
+        play_.button1   = held(GLFW_GAMEPAD_BUTTON_A);          // Cross  → PB1
+        play_.dpadUp    = held(GLFW_GAMEPAD_BUTTON_DPAD_UP);
+        play_.dpadDown  = held(GLFW_GAMEPAD_BUTTON_DPAD_DOWN);
+        play_.dpadLeft  = held(GLFW_GAMEPAD_BUTTON_DPAD_LEFT);
+        play_.dpadRight = held(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT);
+        play_.spaceEdge = edge(GLFW_GAMEPAD_BUTTON_X);          // Square   → SPACE
+        play_.enterEdge = edge(GLFW_GAMEPAD_BUTTON_Y);          // Triangle → RETURN
 
         for (int i = 0; i < 15; ++i) navPrevButtons_[i] = gs.buttons[i];
         navPrevStickY_ = curStickY;
+        navPrevStickX_ = curStickX;
         navPrevValid_  = true;
     } else {
         // Not a mapped gamepad (or unbound): drop edge history so a later
-        // re-bind starts clean instead of firing a spurious edge.
+        // re-bind starts clean instead of firing a spurious edge. Raw pads
+        // fall back to buttonDown(0/1/2) → PB0/1/2 (no arrows/keys, since the
+        // physical layout is unknown).
+        play_ = GamepadPlay{};
         navPrevValid_  = false;
         navPrevStickY_ = 0;
+        navPrevStickX_ = 0;
     }
 #endif
 }

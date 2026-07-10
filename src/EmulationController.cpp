@@ -20,6 +20,12 @@ void EmulationController::setVideoStandard(VideoStandard s)
     // scanline. Called from applyProfile with the worker stopped, so the
     // plain Memory member is set without a concurrent reader.
     mem.setVideoStandard(s);
+    // Retune the 1-bit speaker's cycle→sample reconstruction to the standard's
+    // actual CPU clock (PAL ≈ 1.0156 MHz vs NTSC ≈ 1.0227 MHz). Without this
+    // the audio path assumed NTSC under PAL and starved the reconstructor,
+    // glitching continuous speaker music. (AY/SSI263 device clocks stay at the
+    // NTSC nominal by design — their 0.7 % delta is an inaudible pitch approx.)
+    if (spk) spk->setCpuClock(static_cast<double>(pom2VideoTiming(s).cpuClockHz));
 }
 
 EmulationController::EmulationController()

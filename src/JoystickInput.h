@@ -48,11 +48,46 @@ public:
     // the 3 Apple game-port buttons above: Start/A/B/D-pad are *not* wired to
     // the Apple II, so using them for menus never leaks into gameplay.
     struct UiNav {
-        bool menu    = false;   // Start — open/close the selector
-        bool up      = false;   // D-pad up   / left-stick up
-        bool down    = false;   // D-pad down / left-stick down
-        bool confirm = false;   // A — mount the highlighted disk
-        bool cancel  = false;   // B — dismiss the selector
+        // ── Rising-edge pulses (true for exactly one poll) ──────────────
+        bool menu    = false;   // Start — open/close the Start menu
+        bool select  = false;   // Back/Select — open/close the keyboard band
+        bool confirm = false;   // A — validate the focused item
+        bool cancel  = false;   // B — dismiss / go back
+        bool up      = false;   // D-pad up    / left-stick up
+        bool down    = false;   // D-pad down  / left-stick down
+        bool left    = false;   // D-pad left  / left-stick left
+        bool right   = false;   // D-pad right / left-stick right
+        bool pageUp  = false;   // L1 (left bumper)  — fast page jump
+        bool pageDown= false;   // R1 (right bumper) — fast page jump
+        // ── Raw held level (for the menu's temporal auto-repeat) ────────
+        // The paused menu loop runs unthrottled, so a per-frame
+        // counter would scroll hundreds of steps/s. The UI derives a clock-
+        // based 1-step-then-repeat cadence from these level signals instead.
+        bool upHeld    = false;
+        bool downHeld  = false;
+        bool leftHeld  = false;
+        bool rightHeld = false;
+        bool pageUpHeld   = false;
+        bool pageDownHeld = false;
+    };
+
+    // In-game mapping derived from the bound pad's *standard* gamepad layout
+    // (populated only when the pad is gamepad-mapped; `valid` is false for a
+    // raw joystick). Distinct from the analog stick, which stays the Apple II
+    // paddle pair. Cross/Circle are the two game-port fire buttons; the D-pad
+    // and the Square/Triangle face buttons are routed to the Apple II KEYBOARD
+    // (arrows + Space/Return) by MainWindow. Button fields are level (held);
+    // the two key-buttons are rising edges so a press queues exactly one key.
+    struct GamepadPlay {
+        bool valid   = false;
+        bool button0 = false;   // Circle (B)    → PB0
+        bool button1 = false;   // Cross (A)     → PB1
+        bool dpadUp    = false; // D-pad         → arrow keys (held; UI repeats)
+        bool dpadDown  = false;
+        bool dpadLeft  = false;
+        bool dpadRight = false;
+        bool spaceEdge = false; // Square (X)    → SPACE (one per press)
+        bool enterEdge = false; // Triangle (Y)  → RETURN (one per press)
     };
 
     struct Binding {
@@ -96,6 +131,10 @@ public:
     /// 0..2. PB0/PB1/PB2 = bound host buttons 0/1/2.
     bool buttonDown(int buttonIdx) const;
 
+    /// In-game standard-mapping snapshot (D-pad + face buttons). `.valid` is
+    /// false when the bound pad has no gamepad mapping (raw layout unknown).
+    const GamepadPlay& play() const { return play_; }
+
     bool anyPresent() const;
 
     /// UI-navigation edges from the bound pad's standard gamepad mapping,
@@ -134,8 +173,10 @@ private:
     // snapshot (GLFW gamepad layout: 15 buttons) + previous virtual-stick
     // vertical direction (-1/0/+1) so left-stick pushes fire like a D-pad.
     UiNav                       nav_{};
+    GamepadPlay                 play_{};
     std::array<unsigned char, 15> navPrevButtons_{};
     int  navPrevStickY_   = 0;
+    int  navPrevStickX_   = 0;
     bool navPrevValid_    = false;
     bool activeIsGamepad_ = false;   // bound pad has a standard mapping
 };

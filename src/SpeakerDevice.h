@@ -56,6 +56,14 @@ public:
     void setSampleRate(uint32_t hz) override;
     uint32_t getSampleRate() const { return outputSampleRate.load(std::memory_order_relaxed); }
 
+    /// Set the emulated CPU clock (Hz) the cycle→sample reconstruction assumes.
+    /// Defaults to the NTSC nominal; EmulationController::setVideoStandard()
+    /// pushes the PAL clock (1.0156 MHz) when a PAL profile loads. Without this
+    /// the audio path consumed NTSC-many cycles/sec of toggles under PAL — a
+    /// ~0.7 % deficit that starved the reconstructor and glitched continuous
+    /// speaker music (e.g. H.E.R.O. on the //e-PAL profile).
+    void setCpuClock(double hz);
+
     /// Volume in [0, 2]. UI thread sets, audio thread reads.
     void  setVolume(float v);
     float getVolume() const { return volume.load(std::memory_order_relaxed); }
@@ -71,7 +79,9 @@ public:
     size_t   getQueuedEventCount() const;
 
 private:
-    static constexpr float  kCpuClockHz   = static_cast<float>(POM2_CPU_CLOCK_HZ);
+    // CPU clock the reconstruction assumes. Runtime (not constexpr) so PAL
+    // profiles can retune it; audio thread reads, UI/worker thread writes.
+    std::atomic<double>     cpuClockHz_{ static_cast<double>(POM2_CPU_CLOCK_HZ) };
     static constexpr float  kSquareAmp    = 0.18f;     // headroom vs cassette mix
     static constexpr float  kCatchUpSecs  = 0.10f;     // snap forward if behind
     static constexpr size_t kMaxEvents    = 16384;     // ~750 ms at 22 kHz toggles

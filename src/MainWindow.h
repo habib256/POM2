@@ -458,41 +458,94 @@ private:
     // screen, full-viewport, with no menu bar / toolbar / panels.
     bool kiosk_ = false;
 
-    // ── Kiosk disk selector (gamepad-driven, keyboard-free) ─────────────
-    // In kiosk mode the Start button opens an on-screen list of the disk
-    // images sitting next to the booted disk (e.g. "Side B"); D-pad/stick
-    // navigate, A mounts the highlighted one into the boot Disk II drive
-    // (slot 6, drive 1) without rebooting, B / Start close it. Populated on
-    // open; empty otherwise.
-    // Trailing action rows appended after the disk matches: Reset, Quit.
-    static constexpr int     kKioskMenuActions = 2;
-    bool                     kioskDiskMenuOpen_ = false;
-    std::vector<std::string> kioskDiskMenuPaths_;   // absolute image paths
-    std::vector<std::string> kioskDiskMenuLabels_;  // display file names
-    int                      kioskDiskMenuSel_  = 0;
-    std::string              kioskDiskMenuStatus_;   // last mount result line
+    // ── Kiosk in-game menu (gamepad-driven, keyboard-free) ──────────────
+    // An overlay exclusive to kiosk mode. Two entry points:
+    //   • START (or F10) → the two-zone Start menu: a GAMES list (the disk
+    //     images next to the booted disk + any extra ROM folders) and an
+    //     ACTIONS column (Restart / Keyboard / ROM folders / Quit). LEFT/
+    //     RIGHT swaps focus between the two zones, UP/DOWN moves within the
+    //     focused zone, FIRE validates it. The machine is PAUSED while this
+    //     is up (like inserting a disk on a real machine at rest).
+    //   • SELECT (or K) → the Keyboard band: a 2D grid of Apple II keys sent
+    //     live to the running game (NOT paused) via Memory::queueKey.
+    // From the Start menu, "ROM folders" opens a gamepad directory browser
+    // to add/remove extra scan folders (persisted outside state.cfg so the
+    // kiosk's read-only main config is never touched).
+    enum class KioskPage { List, Keys, Quit, Browse, RomDirs };
+    enum class KioskZone { Games, Actions };
+    static constexpr int kKioskActionCount = 4;   // Restart/Keyboard/ROMs/Quit
+
+    bool        kioskMenuOpen_  = false;
+    KioskPage   kioskPage_      = KioskPage::List;
+    KioskZone   kioskZone_      = KioskZone::Games;
+    int         kioskActSel_    = 0;                // 0..kKioskActionCount-1
+    int         kioskKeySel_    = 0;                // key-grid cell
+    int         kioskRomDirSel_ = 0;                // ROM-folders page cursor
+    int         kioskBrowseSel_ = 0;                // directory-browser cursor
+
+    std::vector<std::string> kioskDiskPaths_;   // absolute image paths (games)
+    std::vector<std::string> kioskDiskLabels_;  // display file names
+    int                      kioskDiskSel_ = 0;
+    std::string              kioskStatus_;      // last mount / info line
+    std::string              kioskMountedPath_; // disk in the boot drive (● mark)
+
+    std::vector<std::string> kioskRomDirs_;     // extra scan folders (persisted)
+    bool                     kioskRomDirsLoaded_ = false;  // lazy-load guard
+
+    // Directory browser scratch (populated while KioskPage::Browse is up).
+    std::string              kioskBrowseDir_;
+    std::vector<std::string> kioskBrowseSubdirs_;
+    std::vector<std::string> kioskBrowseShortcutPaths_;
+    std::vector<std::string> kioskBrowseShortcutLabels_;
+
+    // Temporal auto-repeat for held navigation (see JoystickInput::UiNav).
+    bool   kioskNavHeld_ = false;
+    double kioskNavNextT_ = 0.0;   // ImGui::GetTime() of next allowed step
+    // Whether we actively parked the worker (Mode::Stopped) for the menu, so
+    // we only resume (Mode::Running) a machine we paused ourselves.
+    bool   kioskPausedByMenu_ = false;
 
     // One-shot dedup for the "pad bound / gamepad-mapped" diagnostic log.
     int  loggedJoyHost_    = -2;   // -2 = never logged
     bool loggedJoyGamepad_ = false;
 
-    /// Rebuild kioskDiskMenuPaths_ from the directory of the disk currently
-    /// in the boot Disk II drive and open the selector. No-op if there's no
-    /// Disk II card / no mounted disk to locate a folder from.
-    void openKioskDiskMenu();
-    /// Poll the bound gamepad's UI-nav edges and drive the kiosk selector
-    /// (open / move / mount / close). Called once per frame in kiosk mode.
-    void updateKioskDiskMenu();
-    /// Draw the selector overlay (centered list) when open.
-    void renderKioskDiskMenu();
+    // In-game D-pad → Apple II arrow-key auto-repeat (IIe-style: fire on press,
+    // then repeat while held). Index 0..3 = up/down/left/right.
+    bool   padArrowHeld_[4]  = { false, false, false, false };
+    double padArrowNextT_[4] = { 0.0, 0.0, 0.0, 0.0 };
+
+    /// Poll gamepad/keyboard and drive the whole kiosk menu state machine
+    /// (open/close, page/zone navigation, activation). Once per frame in
+    /// kiosk mode. Also keeps the pause state in sync with the active page.
+    void updateKioskMenu();
+    /// Draw the active kiosk page (list / keyboard / quit / browse / romdirs)
+    /// when the menu is open.
+    void renderKioskMenu();
+
+    /// (Re)build kioskDiskPaths_ from the booted disk's folder + extra ROM
+    /// folders, sorted by name-proximity to the mounted disk, and open the
+    /// Start menu on the GAMES zone. No-op-safe with no Disk II / no folder.
+    void openKioskStartMenu();
     /// Swap the highlighted disk into the boot Disk II drive without reboot.
     void kioskMountSelected();
-    /// Activate the highlighted row: a disk (mount), or one of the two
-    /// trailing action rows — Reset (reboot on the mounted disk) or Quit.
-    void kioskActivateSelected();
+    /// Validate the focused zone's item (mount a disk, or run an action).
+    void kioskActivateFocused();
+    /// Send the highlighted key-grid cell to the running machine (live).
+    void kioskInjectSelectedKey();
     /// The Disk II card the kiosk selector targets: slot 6 if present, else
     /// the primary card. nullptr when the config has no Disk II at all.
     DiskIICard* kioskBootDiskCard();
+
+    // Pause helper: park (Mode::Stopped) / resume (Mode::Running) the worker
+    // only when we're the one that paused it. `want==true` → paused.
+    void kioskSetPaused(bool want);
+
+    // ── ROM-folders manager + directory browser helpers ────────────────
+    void kioskScanBrowse(const std::string& dir);     // fill subdirs for `dir`
+    void kioskComputeShortcuts();                      // /, Home, mounts
+    void kioskLoadRomDirs();                            // read persisted list
+    void kioskSaveRomDirs();                            // write persisted list
+    bool kioskPruneRomDirs();                          // drop vanished folders
 
     // Slot of the HDV card auto-plugged by ensureHdvCardForBoot for a CLI
     // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so

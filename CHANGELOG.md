@@ -5,6 +5,79 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-11 (kiosk follow-ups: PAL speaker clock, HDV/3.5 in menu, DS4 in-game mapping)
+
+Fixes + refinements on top of the same-day in-game menu.
+
+- **PAL speaker audio fix (real bug).** The 1-bit speaker's cycle→sample
+  reconstruction hard-coded the NTSC CPU clock (`SpeakerDevice::kCpuClockHz =
+  POM2_CPU_CLOCK_HZ`, 1.0227 MHz) and `setVideoStandard()` never retuned it. On
+  a PAL profile (CPU actually 1.0156 MHz) the audio path consumed ~0.7 % more
+  cycles/sec of toggles than the CPU produced, starving the reconstructor →
+  periodic snap-forward glitches on continuous speaker music. **H.E.R.O. on the
+  //e-PAL profile sounded broken; the same disk under `--preset iie` (NTSC) was
+  clean** — which pinned it. Fix: `kCpuClockHz` → runtime `cpuClockHz_`
+  (`std::atomic<double>`) + `SpeakerDevice::setCpuClock()`, called from
+  `EmulationController::setVideoStandard()` with the standard's real clock
+  (`pom2VideoTiming(s).cpuClockHz`). NTSC numbers unchanged → zero regression.
+  (AY/SSI263 device clocks stay NTSC-nominal by design.) Confirmed by ear.
+- **Kiosk pause no longer swallows audio on resume.** While the menu parked the
+  worker (`Mode::Stopped`), the audio thread kept advancing the speaker cursor
+  over silence, leaving it far ahead of the frozen production; on resume the
+  catch-up purge would eat the game's first sounds for ~the pause duration.
+  `kioskSetPaused(false)` now `speaker().reset()`s on the paused→running edge.
+- **Mounted-disk marker.** The games list prefixes the disk currently in the
+  boot drive with a ● (`ICON_FA_COMPACT_DISC`) and lands the cursor on it.
+- **HDV + 3.5" reachable from the menu.** The scan no longer filters to 5.25"
+  only — it accepts everything `classifyDiskForSlot` recognises (5.25"/3.5"/
+  HDV). 5.25" still hot-swaps in place (flip-disk); 3.5"/HDV route through
+  `insertAndBootImage` (the CLI launcher's path) and boot immediately. The ROM-
+  folders browser reaches `hdv/` and `disks_3.5/` (add once, persisted).
+- **DS4 in-game mapping.** New `JoystickInput::GamepadPlay` (from the standard
+  gamepad layout, `valid` only when gamepad-mapped): the analog stick stays the
+  Apple II paddles; **Cross/Circle → PB0/PB1**; the **D-pad → Apple II arrow
+  keys** (←$08 →$15 ↑$0B ↓$0A) with //e-style auto-repeat (350 ms delay →
+  ~16/s); **Square → SPACE, Triangle → RETURN** (one key per press, via
+  `Memory::queueKey`). Menu-gated (no injection while the overlay is up) and
+  only for gamepad-mapped pads — a raw pad keeps the legacy buttons 0/1/2 →
+  PB0/1/2 fallback. The button D-pad is used here, NOT the stick (the stick is
+  the joystick), so `GamepadPlay` never folds stickX/Y in the way `UiNav` does.
+
+## 2026-07-11 (kiosk in-game menu — two-zone method)
+
+Reworked the kiosk disk picker into a full two-zone in-game menu. Still
+**exclusive to `--kiosk`** — the whole thing lives behind the `if (kiosk_)`
+gate.
+
+- **Two entry points.** **START** (pad, standard GLFW mapping) / **F10** opens
+  the two-zone **Start menu**; **SELECT** (Back button) / **K** opens the
+  **Keyboard band** directly, even mid-game.
+- **Two-zone Start menu** — the headline UX win. A **GAMES** list and an
+  **ACTIONS** column (Restart / Keyboard / ROM folders / Quit) coexist:
+  **◀▶ swaps focus** between the two zones, up/down moves within the focused
+  zone, **A** validates it. No more scrolling past every disk to reach an
+  action. The focused zone is vivid with a green ▶; the other is dimmed.
+- **Machine paused** (`Mode::Stopped`) on every Start-menu page — like
+  inserting a disk on a real machine at rest — but the **Keyboard band leaves
+  the game running** so injected keys land live. `kioskSetPaused()` only
+  resumes a worker it parked itself, so it never fights F6-rewind's mode moves.
+- **Keyboard band** = a 2D grid of Apple II keys; **A** sends one via
+  `Memory::queueKey`. The Apple keyboard is a **latch+strobe**, so a one-shot
+  queue with no key-up bookkeeping is correct.
+- **Temporal auto-repeat** (400 ms delay → 150 ms cadence, clock-based off
+  `ImGui::GetTime()`) for held directions, plus **L1/R1** fast page jump (±10)
+  in the games list — needed because the paused menu loop runs unthrottled and
+  would otherwise scroll unaimably fast.
+- **Proximity SORT, not filter.** The old build *hid* every non-sibling disk;
+  now all mountable 5.25" images are shown, with the mounted title's other
+  sides sorted to the top (selection anchored on the mounted disk).
+- **ROM-folders manager + gamepad directory browser** (`◀▶`/shortcuts to `/`,
+  Home, removable mounts). Extra scan folders persist in a sibling
+  **`kiosk_romdirs.txt`** — deliberately *outside* `state.cfg` so the kiosk's
+  read-only main config is never written (keeps POM2's strict kiosk contract).
+- Plumbing: `JoystickInput::UiNav` gained `left/right/select/pageUp/pageDown`
+  edges + raw `*Held` levels (the latter feed the temporal repeat).
+
 ## 2026-07-10 (kiosk gamepad UX + Apple II square-gate joystick)
 
 Kiosk mode made lean-back / controller-friendly, plus a faithful joystick fix.

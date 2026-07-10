@@ -73,6 +73,11 @@ void SpeakerDevice::setSampleRate(uint32_t hz)
     // RATE_MULTIPLIER) — no rebuild needed.
 }
 
+void SpeakerDevice::setCpuClock(double hz)
+{
+    if (hz > 0.0) cpuClockHz_.store(hz, std::memory_order_relaxed);
+}
+
 void SpeakerDevice::setVolume(float v)
 {
     if (v < 0.0f) v = 0.0f;
@@ -105,21 +110,27 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
     const uint32_t sr = outputSampleRate.load(std::memory_order_relaxed);
     if (sr == 0) { std::fill_n(output, frameCount, 0.0f); return; }
 
+    // Emulated CPU clock — NTSC nominal by default, PAL (1.0156 MHz) when a
+    // PAL profile has retuned it. Using the WRONG standard here starves the
+    // reconstructor (audio consumes more cycles/sec of toggles than the CPU
+    // produces) → periodic snap-forward glitches on continuous speaker music.
+    const double cpuClockHz = cpuClockHz_.load(std::memory_order_relaxed);
+
     // CPU cycles per sub-sample (= per intermediate sample). At 1.0227 MHz
     // and 48 kHz output that's ~5.33 cycles/sub. Tracked as `double` so
     // the fractional drift never accumulates over long buffers.
     const double cyclesPerSubSample =
-        static_cast<double>(kCpuClockHz) /
+        cpuClockHz /
         (static_cast<double>(sr) * static_cast<double>(kRateMultiplier));
 
     // Catch-up: snap forward if the producer ran ahead. Avoids 5 s of
     // buffered toggles playing at full speed after a pause+resume.
     const uint64_t latest = latestEventCycle.load(std::memory_order_relaxed);
     const uint64_t catchUpCycles =
-        static_cast<uint64_t>(2.0f * kCatchUpSecs * kCpuClockHz);
+        static_cast<uint64_t>(2.0 * kCatchUpSecs * cpuClockHz);
     if (latest > audioCpuCursor + catchUpCycles) {
         const uint64_t snapTo = latest -
-            static_cast<uint64_t>(kCatchUpSecs * kCpuClockHz);
+            static_cast<uint64_t>(kCatchUpSecs * cpuClockHz);
         std::lock_guard<std::mutex> lk(eventMutex);
         // Each toggle is a parity flip, not an absolute level —
         // recordToggle's overflow trim preserves parity by dropping in
