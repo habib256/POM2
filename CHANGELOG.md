@@ -51,6 +51,21 @@ one sibling of the PAL speaker bug, and a fistful of minors.
   reopened); the mounted-disk ● marker matches canonically (a kiosk
   launched with a *relative* path, `POM2 games/foo.dsk`, never matched the
   canonicalized scan entries — cursor landed on index 0, no ●).
+- **Paddle deadzone: continuous engage + axis-snap (follow-up).** Two
+  behavioral gaps left by the per-axis → radial deadzone switch: (1) the
+  hard cutoff stepped ~12 counts the instant the stick left the dead zone —
+  now the radial deadzone **rescales** ([dz..1] → [0..1] along the ray), so
+  the reading is continuous (128 → 130 across the edge, pinned); (2) radial
+  lost the old per-axis suppression of cross-axis drift — 5 % Y wobble
+  during a full X push read PDL(1)≈134 and crept games. Now an
+  **axis-snap notch** zeroes the small axis while it's under `dz × |big|`;
+  the threshold scales with the dominant component, so diagonals are never
+  notched and the square-gate corner guarantee (full diagonal → 255/255)
+  survives — both pinned. The whole pipeline (invert → deadzone → notch →
+  gate → 0..255) is now a pure static `stickToPaddles()` that
+  `paddleValue()` routes through, closing the review's "composition not
+  unit-testable" gap: `joystick_square_gate_test` pins center/NaN/corners/
+  rails, the deadzone edge, drift suppression, the gate-off path and invert.
 - **Joystick minors.** `edge()` now requires prior-poll history — the first
   poll after a (re)bind treated an already-held button as a fresh press
   (Start held across a rebind popped the kiosk menu). Explicit

@@ -9,7 +9,10 @@
 // out to the full square.
 //
 // This test exercises the two pure static helpers (applySquareGate +
-// axisToPaddle01), which together encode the corner-reachability behaviour.
+// axisToPaddle01), which together encode the corner-reachability behaviour,
+// plus the full stickToPaddles() composition (invert → rescaled radial
+// deadzone → axis-snap notch → gate → mapping) that paddleValue() routes
+// through.
 
 #include "JoystickInput.h"
 
@@ -113,6 +116,107 @@ void testMapEndpoints()
     std::printf("  ok: axis→paddle endpoints and clamping\n");
 }
 
+// ── stickToPaddles(): the full composition paddleValue() runs ────────────
+
+// Default binding: dz = 0.10, no invert, square gate on.
+JoystickInput::Binding bindingWith(bool gate = true, float dz = 0.10f)
+{
+    JoystickInput::Binding b;
+    b.deadzone   = dz;
+    b.squareGate = gate;
+    return b;
+}
+
+void testCompositionCentersAndCorners()
+{
+    const JoystickInput::Binding b = bindingWith();
+    uint8_t px, py;
+
+    JoystickInput::stickToPaddles(0.0f, 0.0f, b, px, py);
+    assert(px == 128 && py == 128);
+
+    // Inside the dead zone → still centered.
+    JoystickInput::stickToPaddles(0.05f, 0.05f, b, px, py);
+    assert(px == 128 && py == 128);
+
+    // NaN axes (hotplug glitch) → centered, no UB.
+    JoystickInput::stickToPaddles(NAN, NAN, b, px, py);
+    assert(px == 128 && py == 128);
+
+    // Full-tilt diagonals still reach the exact corners: the rescaled
+    // deadzone maps mag=1 to 1 and the notch never fires when both
+    // components are comparable, so the Wings-of-Fury guarantee holds.
+    const float d = 0.70710678f;
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2) {
+            JoystickInput::stickToPaddles(sx * d, sy * d, b, px, py);
+            assert(px == (sx > 0 ? 255 : 0));
+            assert(py == (sy > 0 ? 255 : 0));
+        }
+
+    // Full single-axis push still hits the rail.
+    JoystickInput::stickToPaddles(1.0f, 0.0f, b, px, py);
+    assert(px == 255 && py == 128);
+    std::printf("  ok: composition — center, deadzone, NaN, corners, rails\n");
+}
+
+void testDeadzoneEdgeIsContinuous()
+{
+    // The old hard cutoff jumped ~12 counts the instant the stick left the
+    // dead zone; the rescaled radial deadzone must be continuous: just past
+    // the threshold reads within a couple of counts of center.
+    const JoystickInput::Binding b = bindingWith();
+    uint8_t px, py;
+
+    JoystickInput::stickToPaddles(0.099f, 0.0f, b, px, py);   // just inside
+    assert(px == 128 && py == 128);
+
+    JoystickInput::stickToPaddles(0.12f, 0.0f, b, px, py);    // just outside
+    assert(px >= 128 && px <= 132);
+    assert(py == 128);
+    std::printf("  ok: no step across the deadzone edge (128 → %u)\n", px);
+}
+
+void testAxisSnapSuppressesCrossDrift()
+{
+    // 5 % Y drift during a full X push must NOT creep the Y paddle (it used
+    // to read ≈134 and drift games) — the notch snaps it back to center.
+    const JoystickInput::Binding b = bindingWith();
+    uint8_t px, py;
+    JoystickInput::stickToPaddles(1.0f, 0.05f, b, px, py);
+    assert(px == 255 && py == 128);
+
+    // …but a real diagonal is untouched: comparable components never notch.
+    JoystickInput::stickToPaddles(0.6f, 0.5f, b, px, py);
+    assert(px > 128 && py > 128);
+    std::printf("  ok: axis-snap kills cross-axis drift, spares diagonals\n");
+}
+
+void testGateOffPath()
+{
+    // squareGate=false: a full diagonal falls short (~217) exactly like the
+    // raw round-gate hardware — pins that the toggle actually bypasses.
+    const JoystickInput::Binding b = bindingWith(/*gate=*/false);
+    const float d = 0.70710678f;
+    uint8_t px, py;
+    JoystickInput::stickToPaddles(d, d, b, px, py);
+    assert(px > 210 && px < 224 && px != 255);
+    assert(py > 210 && py < 224 && py != 255);
+    std::printf("  ok: gate-off diagonal falls short at ~%u (not 255)\n", px);
+}
+
+void testInvert()
+{
+    JoystickInput::Binding b = bindingWith();
+    b.invert[1] = true;
+    uint8_t px, py;
+    JoystickInput::stickToPaddles(0.0f, -1.0f, b, px, py);
+    assert(px == 128 && py == 255);
+    JoystickInput::stickToPaddles(0.0f, 1.0f, b, px, py);
+    assert(px == 128 && py == 0);
+    std::printf("  ok: per-axis invert flips before the pipeline\n");
+}
+
 } // namespace
 
 int main()
@@ -124,6 +228,11 @@ int main()
     testPartialTiltScalesProportionally();
     testCenterIsStable();
     testMapEndpoints();
+    testCompositionCentersAndCorners();
+    testDeadzoneEdgeIsContinuous();
+    testAxisSnapSuppressesCrossDrift();
+    testGateOffPath();
+    testInvert();
     std::printf("joystick_square_gate: all assertions passed\n");
     return 0;
 }

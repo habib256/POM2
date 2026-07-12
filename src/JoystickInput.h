@@ -164,6 +164,15 @@ public:
     /// Public for unit testing (pure, side-effect free).
     static uint8_t axisToPaddle01(float axis);
 
+    /// Full stick→paddle composition — invert → radial deadzone (rescaled,
+    /// so the reading is continuous across the engage threshold) →
+    /// axis-snap notch (a strong single-axis push zeroes the other axis'
+    /// drift, without notching diagonals) → optional square gate →
+    /// axisToPaddle01. Pure and static: paddleValue() routes through it and
+    /// the unit test pins its edge cases (hostIdx in `b` is ignored).
+    static void stickToPaddles(float rawX, float rawY, const Binding& b,
+                               uint8_t& padX, uint8_t& padY);
+
 private:
     std::array<DeviceState, kHostCount> devices{};
     Binding active;

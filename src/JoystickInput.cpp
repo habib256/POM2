@@ -234,6 +234,48 @@ void JoystickInput::autoBindIfUnconfigured()
 #endif
 }
 
+void JoystickInput::stickToPaddles(float x, float y, const Binding& b,
+                                   uint8_t& padX, uint8_t& padY)
+{
+    // The deadzone and square-gate steps couple the two axes, so a single
+    // axis can't be resolved in isolation — always transform the pair.
+    if (b.invert[0]) x = -x;
+    if (b.invert[1]) y = -y;
+    if (std::isnan(x)) x = 0.0f;
+    if (std::isnan(y)) y = 0.0f;
+
+    const float dz  = std::min(std::max(b.deadzone, 0.0f), 0.9f);
+    const float mag = std::sqrt(x * x + y * y);
+    if (mag < dz || mag <= 0.0f) {
+        x = 0.0f;
+        y = 0.0f;
+    } else {
+        // Radial deadzone, RESCALED: kill stick drift by magnitude (a
+        // per-axis deadzone would notch the diagonals), and remap
+        // [dz..1] → [0..1] along the ray so the paddle reading is
+        // continuous across the engage threshold — a hard cutoff stepped
+        // ~12 counts (128 → ~140 on a diagonal at dz=0.10) the instant the
+        // stick left the dead zone. Full deflection still lands exactly on
+        // 1.0, so the gate's corner guarantee is untouched.
+        const float scale = (mag - dz) / ((1.0f - dz) * mag);
+        x *= scale;
+        y *= scale;
+        // Axis-snap notch: during a strong single-axis push, zero the other
+        // axis while it sits inside the same dz *proportion* of the big one
+        // (5 % Y drift at full X used to read PDL(1)≈134 and creep the
+        // game). The threshold scales with the dominant component, so
+        // diagonals — where both components are comparable — are never
+        // notched and the square-gate corners stay reachable.
+        const float ax = std::fabs(x), ay = std::fabs(y);
+        if      (ay < dz * ax) y = 0.0f;
+        else if (ax < dz * ay) x = 0.0f;
+        if (b.squareGate) applySquareGate(x, y);
+    }
+
+    padX = axisToPaddle01(x);
+    padY = axisToPaddle01(y);
+}
+
 uint8_t JoystickInput::paddleValue(int paddleIdx) const
 {
     // Only paddles 0/1 are driven by the active host; 2/3 are not wired.
@@ -244,25 +286,9 @@ uint8_t JoystickInput::paddleValue(int paddleIdx) const
     const DeviceState& d = devices[active.hostIdx];
     if (!d.present) return 128;
 
-    // Read the whole stick pair: the deadzone and square-gate steps couple
-    // the two axes, so a single axis can't be resolved in isolation.
-    float x = active.invert[0] ? -d.axis[0] : d.axis[0];
-    float y = active.invert[1] ? -d.axis[1] : d.axis[1];
-    if (std::isnan(x)) x = 0.0f;
-    if (std::isnan(y)) y = 0.0f;
-
-    // Radial deadzone: kill stick drift by magnitude, not per-axis. A
-    // per-axis deadzone would notch the diagonals (each component below the
-    // threshold near the axes), the opposite of what we want here.
-    const float mag = std::sqrt(x * x + y * y);
-    if (mag < active.deadzone) {
-        x = 0.0f;
-        y = 0.0f;
-    } else if (active.squareGate) {
-        applySquareGate(x, y);
-    }
-
-    return axisToPaddle01(paddleIdx == 0 ? x : y);
+    uint8_t px = 128, py = 128;
+    stickToPaddles(d.axis[0], d.axis[1], active, px, py);
+    return paddleIdx == 0 ? px : py;
 }
 
 bool JoystickInput::buttonDown(int buttonIdx) const
