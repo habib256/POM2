@@ -3694,3 +3694,32 @@ if(WIN32)
 endif()
 add_test(NAME kbd_strobe_mirror COMMAND test_kbd_strobe_mirror)
 set_tests_properties(kbd_strobe_mirror PROPERTIES TIMEOUT 10)
+
+# ─── HGR Paint DHGR block model vs real renderDhgr ────────────────────────
+# Pins the hgrpaint/ DHGR plane interleave, plot/colorAt round-trip, and the
+# nibble↔colour mapping (rotl4-by-1, from MAME's square-filter decode)
+# against Apple2Display::renderDhgr in ColorComp4Bit AND ColorNTSC, plus a
+# cross-pin to the shared lo-res palette. Gate for HgrPaintModel + the
+# Pom2HgrPaintHost offscreen staging assumptions.
+add_executable(test_dhgr_paint_model
+    dhgr_paint_model_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrPaintModel.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dhgr_paint_model PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dhgr_paint_model PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dhgr_paint_model PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dhgr_paint_model PRIVATE winmm)
+endif()
+add_test(NAME dhgr_paint_model COMMAND test_dhgr_paint_model)
+set_tests_properties(dhgr_paint_model PROPERTIES TIMEOUT 15)

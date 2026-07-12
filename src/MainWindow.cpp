@@ -34,6 +34,8 @@
 #include "LeChatMauve_ImGui.h"
 #include "Logger.h"
 #include "MemoryViewer_ImGui.h"
+#include "HgrPaintEditor.h"     // portable hgrpaint/ editor (shared with POM1)
+#include "Pom2HgrPaintHost.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
@@ -133,6 +135,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
+      hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
+      hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
       joystick       (std::make_unique<JoystickInput>()),
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
@@ -362,6 +366,7 @@ MainWindow::MainWindow(bool forceIIPlus)
             floppyEmu->setSdRoot(sd);
         }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
+        showHgrPaintEditor = settings->getBool ("show_hgr_paint",  showHgrPaintEditor);
         showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
         controller->rewind().setEnabled(settings->getBool("rewind_enabled", false));
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
@@ -640,6 +645,10 @@ MainWindow::~MainWindow()
     aiServer->stop();
     controller->stop();
 
+    // Free the paint editor's GPU textures while the GL context is still
+    // current (same window teardown order as the About-photo texture below).
+    if (hgrPaintEditor) hgrPaintEditor->releaseGL();
+
     // Persist the current state so the next launch restores the same
     // mounted disks, video mode, panels, and audio levels.
     // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
@@ -797,6 +806,7 @@ MainWindow::~MainWindow()
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
+    settings->setBool  ("show_hgr_paint",  showHgrPaintEditor);
     settings->setBool  ("show_rewind",     showRewindBar);
     settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
     settings->setBool  ("show_joystick",   showJoystickPanel);
@@ -2190,16 +2200,19 @@ void MainWindow::renderMenuBar()
         ImGui::EndMenu();
     }
 
-#ifndef __EMSCRIPTEN__
-    // The AI Control HTTP server is compiled out under WASM
-    // (AiControlServer::start() returns false — no listening socket in the
-    // browser sandbox). It is the only Tools entry, so the whole menu is
-    // hidden rather than left holding a dead item.
     if (ImGui::BeginMenu("Tools")) {
+        ImGui::MenuItem("HGR Paint Editor", nullptr, &showHgrPaintEditor);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Paint directly into HGR/GR video RAM through "
+                              "the real NTSC pipeline (image import included).");
+#ifndef __EMSCRIPTEN__
+        // The AI Control HTTP server is compiled out under WASM
+        // (AiControlServer::start() returns false — no listening socket in
+        // the browser sandbox), so its entry is hidden there.
         ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
+#endif
         ImGui::EndMenu();
     }
-#endif
 
     if (ImGui::BeginMenu("Help")) {
         ImGui::MenuItem("Welcome / Quick Start", nullptr, &showWelcomePanel);
@@ -7336,6 +7349,31 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
     }
 }
 
+void MainWindow::renderHgrPaintWindow()
+{
+    if (!showHgrPaintEditor) return;
+
+    // 64 KB main-RAM (+ IIe aux) snapshot under stateMutex — the editor's
+    // per-frame canvas/shadow read source (same idiom as the deck snapshot).
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        const Memory& mem = controller->memory();
+        hgrPaintMem_.assign(mem.data(), mem.data() + 0x10000);
+        if (mem.isIIE())
+            hgrPaintAux_.assign(mem.auxData(), mem.auxData() + 0x10000);
+        else
+            hgrPaintAux_.clear();
+    }
+
+    const float w = hgrpaint::kHiresWidth  * 3.0f + 40.0f;
+    const float h = hgrpaint::kHiresHeight * 3.0f + 180.0f;
+    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("HGR Paint Editor", &showHgrPaintEditor))
+        hgrPaintEditor->render(hgrPaintMem_, hgrPaintAux_.empty() ? nullptr
+                                                                  : &hgrPaintAux_);
+    ImGui::End();
+}
+
 void MainWindow::driveRewindHold(bool held)
 {
     // Edge-detect: hold → step the machine backwards one frame; release →
@@ -7615,6 +7653,7 @@ void MainWindow::render()
     if (showMemoryBarH) renderMemoryBarHorizontalWindow();
     if (showMemoryGrid) renderMemoryGridWindow();
     renderCassetteDeckWindow(deltaSeconds);
+    renderHgrPaintWindow();
     if (showRewindBar) renderRewindWindow(deltaSeconds);
     renderTapeFileDialogs();
     renderPasteFileDialog();

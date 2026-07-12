@@ -76,6 +76,8 @@ namespace pom2 {
     enum class CharRomLocale : uint8_t;
 }
 class MemoryViewer_ImGui;
+class Pom2HgrPaintHost;
+namespace hgrpaint { class HgrPaintEditor; }
 
 class MainWindow
 {
@@ -195,6 +197,10 @@ private:
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
     std::unique_ptr<pom2::Toolbar_ImGui>          toolbar;
+    // Portable HGR Paint editor (src/hgrpaint/, shared verbatim with POM1)
+    // + its POM2 host seam (pokes / offscreen NTSC render / file I/O).
+    std::unique_ptr<Pom2HgrPaintHost>             hgrPaintHost;
+    std::unique_ptr<hgrpaint::HgrPaintEditor>     hgrPaintEditor;
     // All plugged Disk II cards, sorted by slot ascending. `diskCard`
     // (below) is the primary alias = `diskCards.empty() ? nullptr :
     // diskCards.front()`. Most legacy code paths use `diskCard` directly
@@ -285,6 +291,11 @@ private:
     // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
+    bool         showHgrPaintEditor = false;
+    // Per-frame 64 KB main-RAM (+ aux) snapshots handed to the HGR Paint
+    // editor as its canvas/shadow read source (see renderHgrPaintWindow).
+    std::vector<uint8_t> hgrPaintMem_;
+    std::vector<uint8_t> hgrPaintAux_;
     bool         showRewindBar    = false;
     bool         rewindHeldPrev_  = false;   // hold-to-rewind edge tracker (F6 + toolbar)
     // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
@@ -680,6 +691,7 @@ private:
     void renderMemoryBarHorizontalWindow();
     void renderMemoryGridWindow();
     void renderCassetteDeckWindow(float deltaSeconds);
+    void renderHgrPaintWindow();
     void renderRewindWindow(float deltaSeconds);
     // Drive hold-to-rewind from the combined input sources (F6 key + toolbar
     // button). Edge-detected against rewindHeldPrev_ — call once per frame.
