@@ -218,16 +218,15 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Cards] slot cards & peripherals
 
-- 🟢 **SmartPortCard leftovers from the 2026-07-12 Liron audit** (the
-  mediums were fixed same-day): STATUS ($CnC0) never errors on
-  no-media/WP (pre-flight formatters expect SEC + $28/$2B); empty-bay WP
-  error code is $2B where $28 "no device" is the honest one; boot failure
-  is a silent `JMP $CnE0` loop (real firmware prints an error); 3.5-type
-  units present WP-until-write-back while HDV bays are RAM-writable —
-  inconsistent on the same card. Also: the real Liron ROM is now public
-  (BMOW dump, see CLAUDE.md § //c+ MIG) — a faithful SmartPort-protocol
-  `$Cn0D` dispatch (unit-0 DIB, param-count validation, $4x extended) is
-  implementable if ever wanted; today `$Cn0D` fails closed.
+- 🟢 **SmartPortCard leftovers** (2026-07-12 Liron audit follow-ups —
+  STATUS pre-flight, the SmartPort `$Cn0D` dispatch and the real-ROM
+  identity all landed same-day, see CHANGELOG): empty-bay WP error code
+  is $2B where $28 "no device" is the honest one; boot failure is a
+  silent `JMP $CnE0` loop (real firmware prints an error); 3.5-type units
+  present WP-until-write-back while HDV bays are RAM-writable —
+  inconsistent on the same card; CONTROL calls needing the control-list
+  DATA (only code 0 works — the stub has no guest→device list copy);
+  extended $4x calls return $01.
 - 🟢 **`$C05E/F` ignores IOUDIS on //c-class** (MAME gates DHIRES on
   `m_ioudis`); II+ broadcasts `$C00C/D` on reads while IIe is write-only —
   both flagged for awareness by the 2026-07-12 Chat Mauve review.

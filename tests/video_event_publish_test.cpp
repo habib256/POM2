@@ -126,6 +126,38 @@ int main()
         assert(mem.takeVideoEvents().empty());
     }
 
+    // ── 5. Boundary-straddling instruction: its event is stamped past the
+    // frame boundary (cycleCounter + currentInstructionCycles wraps to
+    // scanline ~0) but publication runs after the instruction — the event
+    // must be carried into the NEW frame, not published into the closing
+    // one (which applied the switch a frame early). ──────────────────────
+    {
+        Memory mem;
+        M6502  cpu(&mem);
+        mem.setCpu(&cpu);
+        // STA $C055 at $0300 — a 4-cycle absolute store on the PAGE2 switch.
+        mem.memWrite(0x0300, 0x8D);
+        mem.memWrite(0x0301, 0x55);
+        mem.memWrite(0x0302, 0xC0);
+        cpu.setProgramCounter(0x0300);
+        // Park the beam 2 cycles before the NTSC boundary: the store's
+        // event stamp = 17028 + 4 = 17032 ≥ 17030 → belongs to frame 1.
+        advance(mem, 17030 - 2);
+        cpu.step();
+        assert(mem.getCycleCounter() >= 17030
+               && "the instruction must have crossed the boundary");
+        // Frame 0 was published by the step's advanceCycles — WITHOUT the
+        // straddling event.
+        assert(mem.takeVideoEvents().empty()
+               && "boundary-crossing event must not close into frame 0");
+        // It surfaces with frame 1, stamped at the top of the frame.
+        advance(mem, 17030);
+        auto evs = mem.takeVideoEvents();
+        assert(evs.size() == 1
+               && evs[0].kind == Memory::VideoEventKind::Page2
+               && evs[0].scanline == 0);
+    }
+
     std::printf("video_event_publish OK\n");
     return 0;
 }

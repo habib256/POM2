@@ -5,6 +5,56 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 — wave 4 (deferred fixes cleared + real Liron implemented)
+
+The four items wave 3 deferred, plus the Liron follow-through now that
+the real ROM is public. 131 tests (one new).
+
+- **OE-CPU demod out of `stateMutex`.** The 17-tap × 560×192 FP demod
+  (~1-2 ms) ran inside the lock every UI frame, stalling the CPU worker
+  (read as emulation/audio jitter, worse under disk-turbo). `render()`
+  now defers it (`pendingCpuDemodRows_`) and MainWindow runs
+  `finishPendingCpuDemod()` after releasing the lock — it consumes only
+  display-owned buffers. The mixed text band is patched under the lock
+  (it reads guest RAM) and the per-row FIR only rewrites rows [0,160) in
+  mixed mode, so the patch survives; `pixels()` finishes lazily so every
+  render→pixels consumer (tests, screenshots) stays correct.
+- **Frame-wrap video-event off-by-one.** An instruction straddling the
+  17030/20280-cycle video-frame boundary stamped its soft-switch event
+  past the boundary but publication ran after the instruction — the event
+  closed into frame N and applied the switch one frame early. Stamps are
+  non-decreasing, so boundary-crossers form the log's tail: they now
+  carry into the new recording frame. Pinned by a real-6502 straddle case
+  in `video_event_publish` (STA $C055 started 2 cycles before the
+  boundary).
+- **SmartPort STATUS pre-flights.** $CnC0 now returns SEC+$28 on no
+  media and SEC+$2B on write-protect before handing back the block count
+  (TRM driver conventions) — formatters that pre-flight STATUS used to
+  get CLC on an empty/WP bay. Exactly 32 bytes, fills $CnC0-$CnDF.
+- **Golden table: 112 → 164 pins.** New hash-frozen scenes: FLASH-on
+  phase (16 emu-frames parked), text/HGR PAGE2, HGR 80STORE+PAGE2
+  (asserted **equal** to the page-1 hash — the Sather 5.10 gate),
+  HGR+AN3 rev-0 bit-7 mask (would have caught wave 3's paintHgr bug),
+  80COL+HIRES+MIXED without DHGR (upscale path), and the Chat Mauve
+  BW560/Mixed/Chunky160/Duochrome sub-modes. All 112 pre-existing hashes
+  unchanged. Deliberate gap kept: mousetext/char-ROM glyphs need a user
+  ROM; PAL beam-raced splits stay behavioural.
+- **Real Liron controller ROM in `roms/liron.rom` + SmartPort-protocol
+  dispatch.** The BMOW dump (4 KB, SHA1 fa94ecc2…, per-slot $Cn00 pages
+  at slot×256 + $C800 bank at 2048) now ships in roms/; on slot-having
+  machines SmartPortCard re-bases its page on the real dump — authentic
+  identity $Cn07=$00/$CnFB=$00/$CnFE=$BF/$CnFF=$0A — with the HLE
+  entries overlaid (the real IWM/UniDisk code can't run without the
+  drive-side 65C02; never loaded on //c-class, see
+  project_iic_smartport_boot). And $Cn0D is no longer fail-closed: a
+  168-byte 6502 handler in the $C800 bank implements the real SmartPort
+  call convention (inline cmd + param-list pointer, RA+3, ZP $42-$45
+  saved) against a C++ engine — STATUS incl. unit-0 controller status
+  and the 25-byte DIB, READ/WRITE (through the legacy commit machinery),
+  FORMAT/CONTROL/INIT, real error codes ($01/$04/$21/$27/$28/$2B/$2D/
+  $2F). Pinned by `liron_smartport_dispatch`: the full matrix executed
+  by a real 6502, in both synthetic and real-ROM identity passes.
+
 ## 2026-07-12 — wave 3 (graphics system + Liron SmartPort audit)
 
 Targeted hunts: display decode / composite pipelines / voxel & Chat Mauve

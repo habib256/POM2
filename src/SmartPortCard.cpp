@@ -10,7 +10,9 @@
 #include "SmartPort35Unit.h"
 #include "SmartPortHdvUnit.h"
 
+#include <algorithm>
 #include <cstring>
+#include <fstream>
 
 namespace pom2 {
 
@@ -40,6 +42,31 @@ SmartPortCard::SmartPortCard(int slot)
     readCacheBlock_.fill(0xFFFF);
     writeBufPrimed_.fill(false);
     buildRom();
+}
+
+bool SmartPortCard::loadLironRom(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        pom2::log().warn("SmartPort", "Cannot open Liron ROM: " + path);
+        return false;
+    }
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+    if (bytes.size() != 4096) {
+        pom2::log().warn("SmartPort",
+            "Liron ROM " + path + " has unexpected size " +
+            std::to_string(bytes.size()) + " B (expected 4096) — ignored");
+        return false;
+    }
+    lironRom_    = std::move(bytes);
+    lironLoaded_ = true;
+    buildRom();   // re-base the slot page on the real dump
+    pom2::log().info("SmartPort",
+        "Loaded real Liron controller ROM (" + path + ") — slot " +
+        std::to_string(slot_) + " presents authentic identity ($Cn07=$00 "
+        "SmartPort class, $CnFE=$BF, ProDOS entry $Cn0A)");
+    return true;
 }
 
 std::unique_ptr<SmartPortUnit>
@@ -157,6 +184,17 @@ uint8_t SmartPortCard::deviceSelectRead(uint8_t low4)
         case 0x4: return statusByte();
         case 0x5: return blockCountByte(0);   // STATUS block count, low
         case 0x6: return blockCountByte(1);   // STATUS block count, high
+        // ── SmartPort-protocol call engine (see buildC800) ──────────
+        case 0x9:                             // pull next result byte
+            return spResultPos_ < spResult_.size()
+                 ? spResult_[spResultPos_++] : uint8_t{0x00};
+        case 0xB: return static_cast<uint8_t>(spResult_.size() & 0xFF);
+        case 0xC: return static_cast<uint8_t>(spResult_.size() >> 8);
+        case 0xD: return spPushPages_;        // WRITE data pages (0 or 2)
+        case 0xE: return spExecute();         // EXECUTE → error code
+        case 0xF:                             // post-stream error re-poll
+            return (activeUnit_ < kMaxUnits && ioError_[activeUnit_])
+                 ? uint8_t{0x27} : uint8_t{0x00};
         default:  return 0xFF;
     }
 }
@@ -220,6 +258,18 @@ void SmartPortCard::deviceSelectWrite(uint8_t low4, uint8_t v)
         }
         case 0x3:                               // streaming write
             writeDataByte(v);
+            break;
+        case 0x7:                               // SmartPort param push
+            if (spCollectN_ < spCollect_.size())
+                spCollect_[spCollectN_++] = v;
+            break;
+        case 0xE:                               // SmartPort BEGIN
+            spCollectN_ = 0;
+            spCollect_.fill(0);
+            spResult_.clear();
+            spResultPos_ = 0;
+            spPushPages_ = 0;
+            spError_     = 0;
             break;
         default:
             break;
@@ -362,15 +412,15 @@ void SmartPortCard::buildRom()
     rom_[0x0B] = kDriverOff;
     rom_[0x0C] = kSlotRomHi;
     // SmartPort-convention entry = ProDOS entry + 3 = $Cn0D (real Liron:
-    // $CnFF=$0A, SmartPort dispatch $Cn0D). POM2 doesn't implement the
-    // SmartPort call protocol ($Cn07=$01 keeps ProDOS from enumerating us
-    // as one), but a caller hardcoding entry+3 used to fall through NOP
-    // padding INTO the boot routine at $Cn20 — booting block 0 over $0800
-    // instead of erroring. Fail closed: SEC, LDA #$01 (bad command), RTS.
-    rom_[0x0D] = 0x38;                           // SEC
-    rom_[0x0E] = 0xA9;                           // LDA #$01
-    rom_[0x0F] = 0x01;
-    rom_[0x10] = 0x60;                           // RTS
+    // $CnFF=$0A, SmartPort dispatch $Cn0D). Routes to the full SmartPort
+    // call handler in the $C800 bank (see buildC800) — STATUS/DIB, READ,
+    // WRITE, FORMAT, CONTROL, INIT with real error codes. Callers that
+    // hardcode entry+3 used to fall through NOP padding INTO the boot
+    // routine at $Cn20 (booting block 0 over $0800). Fetching $Cn0D also
+    // selects this card's expansion bank, so the JMP target is live.
+    rom_[0x0D] = 0x4C;                           // JMP $CE00
+    rom_[0x0E] = 0x00;
+    rom_[0x0F] = 0xCE;
 
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
     uint8_t pc = kBootOff;
@@ -431,13 +481,29 @@ void SmartPortCard::buildRom()
     });
 
     // ── STATUS routine ($CnC0) ─────────────────────────────────────────
-    // ProDOS STATUS (cmd $00) must return total blocks in X (low) / Y (high)
-    // so a volume scanner (BITSY, ProDOS ONLINE) can size the device. The
-    // count comes from $C0n5/$C0n6 (deviceSelectRead 0x5/0x6). The unit was
-    // already latched via $C0n0 at the top of the dispatch.
+    // ProDOS STATUS (cmd $00) pre-flights the device (TRM driver
+    // conventions): no media → SEC + $28 "no device connected", write-
+    // protected → SEC + $2B, else CLC with total blocks in X (low) /
+    // Y (high) from $C0n5/$C0n6 so a volume scanner (BITSY, ONLINE) can
+    // size it. The unit was latched via $C0n0 at the top of the dispatch;
+    // $C0n4 is the side-effect-free status byte (bit7 no-media, bit6 WP).
+    // Formatters that pre-flight STATUS used to get CLC on an empty/WP
+    // bay. Exactly 32 bytes — fills $CnC0-$CnDF up to the $CnE0 halt loop.
     {
         uint8_t sp = 0xC0;
         emit(rom_, sp, {
+            0xAD, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDA $C0n4
+            0x29, 0x80,        // AND #$80    ; no-media bit
+            0xF0, 0x04,        // BEQ +4 (media present)
+            0xA9, 0x28,        // LDA #$28    ; no device connected
+            0x38,              // SEC
+            0x60,              // RTS
+            0xAD, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDA $C0n4
+            0x29, 0x40,        // AND #$40    ; WP bit
+            0xF0, 0x04,        // BEQ +4 (writable)
+            0xA9, 0x2B,        // LDA #$2B    ; write protected
+            0x38,              // SEC
+            0x60,              // RTS
             0xAE, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDX $C0n5
             0xAC, static_cast<uint8_t>(kDeviceBase + 0x06), 0xC0, // LDY $C0n6
             0xA9, 0x00,        // LDA #$00
@@ -519,6 +585,207 @@ void SmartPortCard::buildRom()
         0x38,                  // SEC
         0x60                   // RTS
     });
+
+    // ── Real Liron base (roms/liron.rom present) ───────────────────────
+    // Re-base the page on the real dump (per-slot page at slot×256) for
+    // authentic identity — $Cn07=$00 (SmartPort class), $CnFB=$00,
+    // $CnFE=$BF, $CnFF=$0A — then overlay POM2's HLE service entries on
+    // top: the real firmware's IWM/UniDisk code can't run without the
+    // drive-side 65C02, so every serviceable entry routes to the block
+    // backend instead. Kept real: $03-$09 (signature/class), $10-$1F,
+    // $E3-$FF (ID bytes). The synthetic $Cn00 "JMP $Cn20" reproduces the
+    // real page's own $Cn01=$20 signature byte by construction.
+    if (lironLoaded_ && slot_ >= 1 && slot_ <= 7) {
+        const std::array<uint8_t, 256> synth = rom_;
+        std::memcpy(rom_.data(),
+                    lironRom_.data() + static_cast<size_t>(slot_) * 256, 256);
+        rom_[0x00] = 0x4C; rom_[0x01] = kBootOff; rom_[0x02] = kSlotRomHi;
+        for (int i = 0x0A; i <= 0x1F; ++i) rom_[i] = synth[i];  // $Cn0A/$Cn0D
+        for (int i = kBootOff; i <= 0xE2; ++i) rom_[i] = synth[i];
+    }
+
+    buildC800();
+}
+
+// ── $C800 bank + the SmartPort-protocol dispatch handler ($CE00) ────────
+// $Cn0D (SmartPort entry = ProDOS entry + 3, matching the real Liron's
+// $CnFF=$0A / dispatch $Cn0D convention) jumps here. The 6502 stub does
+// ALL guest-memory movement — cards have no Memory access — and drives
+// the C++ engine through device-select registers:
+//   write 0xE  BEGIN (resets the collector)
+//   write 0x7  push byte (cmd first, then the 10 param-list bytes)
+//   read  0xE  EXECUTE → A = SmartPort error code ($00 = ok)
+//   read  0x9  pull next result byte (STATUS payloads, READ data)
+//   read  0xB/0xC  result count lo / hi (bytes to pull via 0x9)
+//   read  0xD  push page count (2 for WRITE — data streams into reg 0x3,
+//              the legacy write machinery commits + latches errors)
+//   read  0xF  post-stream error re-poll ($27 on a failed WRITE commit)
+// ZP $42-$45 are saved/restored around the call (SmartPort firmware
+// convention). Assembled offline with verified branch offsets; the reg
+// operand lo-bytes are emitted as 0x80+reg and patched to the slot's
+// device-select base below.
+void SmartPortCard::buildC800()
+{
+    c800_.fill(0xFF);
+    if (lironLoaded_)
+        std::memcpy(c800_.data(), lironRom_.data() + 2048, 2048);
+
+    static constexpr uint8_t kHandler[] = {
+        0xA5, 0x42, 0x48, 0xA5, 0x43, 0x48, 0xA5, 0x44, 0x48, 0xA5, 0x45, 0x48,
+        0xBA, 0xBD, 0x05, 0x01, 0x85, 0x42, 0xBD, 0x06, 0x01, 0x85, 0x43, 0x8D,
+        0x8E, 0xC0, 0xA0, 0x01, 0xB1, 0x42, 0x8D, 0x87, 0xC0, 0xC8, 0xB1, 0x42,
+        0x85, 0x44, 0xC8, 0xB1, 0x42, 0x85, 0x45, 0xBA, 0x18, 0xBD, 0x05, 0x01,
+        0x69, 0x03, 0x9D, 0x05, 0x01, 0xBD, 0x06, 0x01, 0x69, 0x00, 0x9D, 0x06,
+        0x01, 0xA0, 0x00, 0xB1, 0x44, 0x8D, 0x87, 0xC0, 0xC8, 0xC0, 0x0A, 0xD0,
+        0xF6, 0xAD, 0x8E, 0xC0, 0xD0, 0x49, 0xA0, 0x02, 0xB1, 0x44, 0xAA, 0xC8,
+        0xB1, 0x44, 0x85, 0x45, 0x86, 0x44, 0xAE, 0x8C, 0xC0, 0xA0, 0x00, 0xE0,
+        0x00, 0xF0, 0x0D, 0xAD, 0x89, 0xC0, 0x91, 0x44, 0xC8, 0xD0, 0xF8, 0xE6,
+        0x45, 0xCA, 0xD0, 0xF3, 0xAE, 0x8B, 0xC0, 0xF0, 0x09, 0xAD, 0x89, 0xC0,
+        0x91, 0x44, 0xC8, 0xCA, 0xD0, 0xF7, 0xAE, 0x8D, 0xC0, 0xE0, 0x00, 0xF0,
+        0x0F, 0xA0, 0x00, 0xB1, 0x44, 0x8D, 0x83, 0xC0, 0xC8, 0xD0, 0xF8, 0xE6,
+        0x45, 0xCA, 0xD0, 0xF3, 0xAD, 0x8F, 0xC0, 0xAA, 0x68, 0x85, 0x45, 0x68,
+        0x85, 0x44, 0x68, 0x85, 0x43, 0x68, 0x85, 0x42, 0x8A, 0xC9, 0x01, 0x60,
+    };
+    // Register-operand lo bytes (0x80+reg placeholders) → this slot's base.
+    static constexpr size_t kRegPatch[] =
+        { 24, 31, 66, 74, 91, 100, 113, 118, 127, 138, 149 };
+
+    constexpr size_t kHandlerOff = 0x600;   // $CE00
+    std::memcpy(c800_.data() + kHandlerOff, kHandler, sizeof(kHandler));
+    const uint8_t base = static_cast<uint8_t>(0x80 + slot_ * 16);
+    for (size_t off : kRegPatch) {
+        const uint8_t reg = c800_[kHandlerOff + off] & 0x0F;
+        c800_[kHandlerOff + off] = static_cast<uint8_t>(base + reg);
+    }
+}
+
+uint8_t SmartPortCard::expansionRomRead(uint16_t offset)
+{
+    return offset < c800_.size() ? c800_[offset] : 0xFF;
+}
+
+// SmartPort call semantics (Apple IIGS Firmware Reference / Tech Notes).
+// spCollect_: [0]=cmd, [1]=pcount, [2]=unit, [3]/[4]=buffer/status-list
+// pointer, [5..] cmd-specific (statcode, or 3-byte block number).
+uint8_t SmartPortCard::spExecute()
+{
+    spResult_.clear();
+    spResultPos_ = 0;
+    spPushPages_ = 0;
+    auto fail = [&](uint8_t e) { spError_ = e; return e; };
+    auto ok   = [&]()          { spError_ = 0;  return uint8_t{0}; };
+
+    if (spCollectN_ < 3) return fail(0x01);            // bad command
+    const uint8_t cmd    = spCollect_[0];
+    const uint8_t pcount = spCollect_[1];
+    const uint8_t unitNo = spCollect_[2];
+
+    auto unitFor = [&](uint8_t n) -> SmartPortUnit* {
+        if (n == 0 || n > kMaxUnits) return nullptr;
+        return units_[n - 1].get();
+    };
+
+    switch (cmd) {
+        case 0x00: {                                   // STATUS
+            if (pcount != 3) return fail(0x04);        // bad param count
+            const uint8_t code = spCollect_[5];
+            if (unitNo == 0) {
+                if (code != 0x00) return fail(0x21);   // bad status code
+                // Controller status: device count + 7 reserved bytes.
+                spResult_ = { static_cast<uint8_t>(kMaxUnits),
+                              0, 0, 0, 0, 0, 0, 0 };
+                return ok();
+            }
+            SmartPortUnit* u = unitFor(unitNo);
+            if (!u) return fail(0x28);                 // no device connected
+            const bool     loaded = u->isLoaded();
+            const uint32_t blocks = loaded ? u->blockCount() : 0;
+            // General status byte: bit7 block dev, bit6 write allowed,
+            // bit5 read allowed, bit4 online, bit3 format allowed,
+            // bit2 write-protected, bit1 interrupting, bit0 open.
+            uint8_t g = 0xA0;                          // block + readable
+            if (loaded) {
+                g |= 0x10;                             // online
+                if (u->isWriteProtected()) g |= 0x04;
+                else                       g |= 0x48;  // writable+formattable
+            }
+            if (code == 0x00) {
+                spResult_ = { g,
+                              static_cast<uint8_t>(blocks),
+                              static_cast<uint8_t>(blocks >> 8),
+                              static_cast<uint8_t>(blocks >> 16) };
+                return ok();
+            }
+            if (code == 0x03) {                        // DIB
+                spResult_ = { g,
+                              static_cast<uint8_t>(blocks),
+                              static_cast<uint8_t>(blocks >> 8),
+                              static_cast<uint8_t>(blocks >> 16) };
+                static constexpr char kId[] = "POM2 SMARTPORT";
+                const size_t idLen = sizeof(kId) - 1;
+                spResult_.push_back(static_cast<uint8_t>(idLen));
+                for (size_t i = 0; i < 16; ++i)
+                    spResult_.push_back(i < idLen
+                        ? static_cast<uint8_t>(kId[i]) : uint8_t{' '});
+                const bool is35 = u->kindKey() == SmartPort35Unit::kKindKey;
+                spResult_.push_back(is35 ? 0x01 : 0x02);  // type: 3.5 / disk
+                spResult_.push_back(is35 ? 0x80 : 0x20);  // subtype
+                spResult_.push_back(0x01);                // firmware version
+                spResult_.push_back(0x00);
+                return ok();
+            }
+            return fail(0x21);
+        }
+        case 0x01:                                     // READ BLOCK
+        case 0x02: {                                   // WRITE BLOCK
+            if (pcount != 3) return fail(0x04);
+            SmartPortUnit* u = unitFor(unitNo);
+            if (!u) return fail(0x28);
+            if (!u->isLoaded()) return fail(0x2F);     // device offline
+            const uint32_t block = static_cast<uint32_t>(spCollect_[5])
+                                 | static_cast<uint32_t>(spCollect_[6]) << 8
+                                 | static_cast<uint32_t>(spCollect_[7]) << 16;
+            if (block >= u->blockCount()) return fail(0x2D);  // bad block
+            if (cmd == 0x01) {
+                spResult_.resize(kBlockBytes);
+                if (!u->readBlock(block, spResult_.data())) {
+                    spResult_.clear();
+                    return fail(0x27);                 // I/O error
+                }
+                noteAccess();
+                return ok();
+            }
+            if (u->isWriteProtected()) return fail(0x2B);
+            // Arm the legacy reg-0x3 streaming machinery: the 6502 pushes
+            // 512 bytes, writeDataByte commits at wrap + latches ioError_.
+            const size_t idx = unitNo - 1;
+            activeUnit_          = idx;
+            selectedBlock_[idx]  = static_cast<uint16_t>(block);
+            streamOffset_[idx]   = 0;
+            writeBufPrimed_[idx] = false;
+            ioError_[idx]        = false;
+            spPushPages_         = 2;                  // 512 bytes
+            return ok();
+        }
+        case 0x03: {                                   // FORMAT
+            SmartPortUnit* u = unitFor(unitNo);
+            if (!u) return fail(0x28);
+            if (!u->isLoaded()) return fail(0x2F);
+            if (u->isWriteProtected()) return fail(0x2B);
+            return ok();  // block devices "need only lay down marks" — no-op
+        }
+        case 0x04: {                                   // CONTROL
+            if (pcount != 3) return fail(0x04);
+            // Code 0 (device reset) is a no-op success; anything needing
+            // the control list's data is unsupported (the stub can't copy
+            // guest→device lists) → bad control code.
+            return spCollect_[5] == 0x00 ? ok() : fail(0x21);
+        }
+        case 0x05:                                     // INIT
+            return ok();
+        default:
+            return fail(0x01);                         // bad command
+    }
 }
 
 // ── MountableMediaCard ──────────────────────────────────────────────────

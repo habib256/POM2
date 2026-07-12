@@ -9,8 +9,13 @@
 //
 // What it covers: the cross product of
 //   scenes  = {text40, text80, lores, lores+mixed, hgr, hgr+mixed,
-//              dhgr, dhgr+mixed}  on a //e, plus {text40, lores, hgr} on a
-//              ][+ (the isIIE()==false branches).
+//              dhgr, dhgr+mixed, dlgr, dlgr+mixed, text40 flash-phase,
+//              text40 page2, hgr page2, hgr 80STORE+page2 (must equal the
+//              page-1 hash — Sather 5.10), hgr+AN3 (rev-0 bit-7 mask),
+//              hgr 80COL+mixed (upscale path)} on a //e, plus {text40,
+//              lores, hgr} on a ][+ (the isIIE()==false branches).
+//   + the Chat Mauve FIFO sub-modes (BW560/Mixed/Chunky160) and Eve HGR
+//     Duochrome, frozen under the ChatMauveRGB pipeline.
 //   modes   = the integer-deterministic colour pipelines:
 //              ColorNTSC, ColorCompMedium, ColorComp4Bit, ChatMauveRGB,
 //              MonoWhite, MonoGreen, MonoAmber.
@@ -24,9 +29,12 @@
 //   - its *input* (the composite signal) is golden-hashed here, and
 //   - its decode is pinned by applewin_ntsc_smoke_test.
 //
-// Determinism: every (scene, mode) pair renders into a FRESH Apple2Display,
-// so frameCounter==1 (flash phase 0), persistence/AppleWin history are clear,
-// and iteration order is irrelevant. All hashed outputs are pure integer
+// Determinism: every (scene, mode) pair renders into a FRESH Apple2Display
+// and a fresh Memory, so frameCounter — derived from Memory's cycleCounter —
+// is 0 (flash phase 0) unless the scene parks the clock deliberately
+// (sText40Flash), persistence/AppleWin history are clear, and iteration
+// order is irrelevant. ColorCompositeOECpu's framebuffer is excluded for
+// the same FP reason as ColorAppleWin; its input signal is hashed. All hashed outputs are pure integer
 // math (LUTs, palettes, bit ops) → stable across platforms.
 //
 // Regenerating goldens (after an INTENTIONAL decode change):
@@ -170,6 +178,59 @@ void sDlgrMixed(Memory& m) {
     fillMain(m, 0x0400, 0x0800, 6); fillAux(m, 0x0400, 0x0800, 7);
     fillMain(m, 0x0400, 0x0800, 1); fillAux(m, 0x0400, 0x0800, 2);
 }
+// FLASH-on phase: park the machine 16 emulated frames in (frameCounter is
+// derived from cycleCounter since the host-refresh-pacing fix), flipping
+// (frameCounter / 16) & 1 to 1 — $40-$7F text bytes render inverted vs the
+// phase-0 text40 hash.
+void sText40Flash(Memory& m) {
+    baseline(m); m.memRead(SET_TEXT);
+    fillMain(m, 0x0400, 0x0800, 1);
+    m.setCycleCounter(16ull * 65 * 262);
+}
+// PAGE2 without 80STORE: the scanner must fetch text page 2 ($0800). Both
+// pages get different salts so a wrong page choice changes the hash.
+void sText40Page2(Memory& m) {
+    baseline(m); m.memRead(SET_TEXT); m.memRead(0xC055 /*SET_PAGE2*/);
+    fillMain(m, 0x0400, 0x0800, 1); fillMain(m, 0x0800, 0x0C00, 8);
+}
+void sHgrPage2(Memory& m) {
+    baseline(m); m.memRead(SET_HIRES); m.memRead(0xC055);
+    fillMain(m, 0x2000, 0x4000, 4); fillMain(m, 0x4000, 0x6000, 9);
+}
+// 80STORE + PAGE2: Sather table 5.10 — 80STORE hijacks PAGE2 into an aux
+// bank-select, so the scanner must STAY on page 1 (same fetch as sHgr, but
+// through the videoHgrPage2 gate; page 2 holds decoy data).
+void sHgr80StorePage2(Memory& m) {
+    baseline(m); m.memRead(SET_HIRES);
+    // Fill BEFORE flipping 80STORE: with 80STORE+HIRES on, $2000-$3FFF
+    // writes land in AUX page 1 (that's the switch's whole job) and the
+    // scanner would then see zeros.
+    fillMain(m, 0x2000, 0x4000, 4); fillMain(m, 0x4000, 0x6000, 9);
+    m.memWrite(0xC001, 0 /*80STORE on*/); m.memRead(0xC055);
+}
+// IIe rev-0 DHIRES quirk: AN3 on + 80COL OFF in plain HGR suppresses the
+// bit-7 half-dot delay (MAME bit7_mask). Pins the signal path's mask too —
+// the 2026-07-12 paintHgr fix (composite disagreed with the LUT modes)
+// would have been caught by this scene.
+void sHgrAn3(Memory& m) {
+    baseline(m); m.memRead(SET_HIRES); m.memRead(DHIRES_ON);  // 80COL off
+    fillMain(m, 0x2000, 0x4000, 4);
+}
+// HGR with per-byte fg/bg colour pairs in aux — the Eve HGR Duochrome
+// source data (only decoded when the card's duochrome toggle is on).
+void sHgrDuo(Memory& m) {
+    baseline(m); m.memRead(SET_HIRES);
+    fillMain(m, 0x2000, 0x4000, 4); fillAux(m, 0x2000, 0x4000, 10);
+}
+// 80COL + HIRES + MIXED without DHGR: single-HGR graphics with an 80-col
+// text band → the upscaleFrameToFrame80 path (280-wide graphics doubled
+// into the 560-wide frame80).
+void sHgr80ColMixed(Memory& m) {
+    baseline(m); m.memWrite(IIE_80COL_ON, 0); m.memRead(SET_HIRES);
+    m.memRead(SET_MIXED);                     // DHIRES stays off
+    fillMain(m, 0x2000, 0x4000, 4);
+    fillMain(m, 0x0400, 0x0800, 1); fillAux(m, 0x0400, 0x0800, 2);
+}
 
 const Scene kScenes[] = {
     { "iie/text40",     true,  sText40    },
@@ -183,6 +244,12 @@ const Scene kScenes[] = {
     { "iie/dhgrmixed",  true,  sDhgrMixed },
     { "iie/dlgr",       true,  sDlgr      },
     { "iie/dlgrmixed",  true,  sDlgrMixed },
+    { "iie/text40flash",true,  sText40Flash },
+    { "iie/text40page2",true,  sText40Page2 },
+    { "iie/hgrpage2",   true,  sHgrPage2  },
+    { "iie/hgr80store2",true,  sHgr80StorePage2 },
+    { "iie/hgran3",     true,  sHgrAn3    },
+    { "iie/hgr80colmix",true,  sHgr80ColMixed },
     { "ii+/text40",     false, sText40    },
     { "ii+/lores",      false, sLoRes     },
     { "ii+/hgr",        false, sHgr       },
@@ -296,6 +363,54 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/dlgrmixed/monogreen", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/monoamber", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/signal", 0x24f6912007743983ULL },
+    { "iie/text40flash/ntsc", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/medium", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/4bit", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/chatmauve", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/monowhite", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/monogreen", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/monoamber", 0x8f1b51e9b548b75cULL },
+    { "iie/text40flash/signal", 0x13b0a5b10da7ed23ULL },
+    { "iie/text40page2/ntsc", 0x983e471172289783ULL },
+    { "iie/text40page2/medium", 0x983e471172289783ULL },
+    { "iie/text40page2/4bit", 0x983e471172289783ULL },
+    { "iie/text40page2/chatmauve", 0x983e471172289783ULL },
+    { "iie/text40page2/monowhite", 0x983e471172289783ULL },
+    { "iie/text40page2/monogreen", 0x983e471172289783ULL },
+    { "iie/text40page2/monoamber", 0x983e471172289783ULL },
+    { "iie/text40page2/signal", 0x87892d481d989f83ULL },
+    { "iie/hgrpage2/ntsc", 0x7b9fd686ca6ccd10ULL },
+    { "iie/hgrpage2/medium", 0x9fdd83e5a011ed17ULL },
+    { "iie/hgrpage2/4bit", 0x9a3395c8fcbf8904ULL },
+    { "iie/hgrpage2/chatmauve", 0xc24e542fee161683ULL },
+    { "iie/hgrpage2/monowhite", 0x1af25acd7e9805dcULL },
+    { "iie/hgrpage2/monogreen", 0x94b5cbcf38b3271cULL },
+    { "iie/hgrpage2/monoamber", 0x7af22149db6ebd64ULL },
+    { "iie/hgrpage2/signal", 0x7e9cd953cd9b639cULL },
+    { "iie/hgr80store2/ntsc", 0xac4e9dd561ff842eULL },
+    { "iie/hgr80store2/medium", 0xde163ccdc0549453ULL },
+    { "iie/hgr80store2/4bit", 0xdaa49b394af842f7ULL },
+    { "iie/hgr80store2/chatmauve", 0x3505e551d6200d83ULL },
+    { "iie/hgr80store2/monowhite", 0x75565f7ee4f7025cULL },
+    { "iie/hgr80store2/monogreen", 0xb953cafc4196e2dcULL },
+    { "iie/hgr80store2/monoamber", 0x16f1c2117085678cULL },
+    { "iie/hgr80store2/signal", 0x22b8536ef74be443ULL },
+    { "iie/hgran3/ntsc", 0x26ac5c2231a77e1cULL },
+    { "iie/hgran3/medium", 0x1fd6da1a6675a203ULL },
+    { "iie/hgran3/4bit", 0xfe77b96a6343a7aaULL },
+    { "iie/hgran3/chatmauve", 0x9fd22f28c333c103ULL },
+    { "iie/hgran3/monowhite", 0x472c95c035619183ULL },
+    { "iie/hgran3/monogreen", 0xf253ee760efaaa03ULL },
+    { "iie/hgran3/monoamber", 0x68dcf510380fcc43ULL },
+    { "iie/hgran3/signal", 0x61b68cc1d13d53c3ULL },
+    { "iie/hgr80colmix/ntsc", 0xa0c25597e94c2f83ULL },
+    { "iie/hgr80colmix/medium", 0x07ad6288f2c87d43ULL },
+    { "iie/hgr80colmix/4bit", 0xeac5e7898dd75443ULL },
+    { "iie/hgr80colmix/chatmauve", 0x1db8957c343a9e43ULL },
+    { "iie/hgr80colmix/monowhite", 0x6af296162fa61783ULL },
+    { "iie/hgr80colmix/monogreen", 0xf2977009aacdb383ULL },
+    { "iie/hgr80colmix/monoamber", 0x2d474387dfd78683ULL },
+    { "iie/hgr80colmix/signal", 0x30803956f9e395a3ULL },
     { "ii+/text40/ntsc", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/medium", 0x64b9ef4cc731c75cULL },
     { "ii+/text40/4bit", 0x64b9ef4cc731c75cULL },
@@ -320,6 +435,10 @@ const std::map<std::string, uint64_t> kGolden = {
     { "ii+/hgr/monogreen", 0xb953cafc4196e2dcULL },
     { "ii+/hgr/monoamber", 0x16f1c2117085678cULL },
     { "ii+/hgr/signal", 0x22b8536ef74be443ULL },
+    { "cm/dhgr-bw560", 0xaae75d8da1df975cULL },
+    { "cm/dhgr-mixed", 0xeacbc22023f7a429ULL },
+    { "cm/dhgr-chunky", 0xee2c52b12456d419ULL },
+    { "cm/hgr-duochrome", 0x2ed79ae7c027d4c3ULL },
 };
 
 } // namespace
@@ -366,6 +485,41 @@ int main()
                 static_cast<size_t>(disp.signalWidth()) * disp.signalHeight();
             const uint64_t h = fnv1a(disp.signal(), sbytes);
             results.emplace_back(std::string(sc.name) + "/signal", h);
+        }
+    }
+
+    // ── Chat Mauve FIFO sub-modes + Eve Duochrome, hash-frozen under the
+    // ChatMauveRGB pipeline only (the other pipelines ignore the card's
+    // mode register). Previously covered by behavioural smokes but not
+    // frozen — a silent palette/decode drift was invisible.
+    {
+        struct CmVariant {
+            const char* name;
+            void      (*setup)(Memory&);
+            LeChatMauveCard::RenderMode mode;
+            bool duo;
+        };
+        const CmVariant kCmVariants[] = {
+            { "cm/dhgr-bw560",    sDhgr,   LeChatMauveCard::RenderMode::BW560,     false },
+            { "cm/dhgr-mixed",    sDhgr,   LeChatMauveCard::RenderMode::Mixed,     false },
+            { "cm/dhgr-chunky",   sDhgr,   LeChatMauveCard::RenderMode::Chunky160, false },
+            { "cm/hgr-duochrome", sHgrDuo, LeChatMauveCard::RenderMode::COL140,    true  },
+        };
+        for (const auto& v : kCmVariants) {
+            Memory mem;
+            mem.setIIEMode(true);
+            v.setup(mem);
+            Apple2Display disp;
+            disp.setAuxMemory(mem.auxData());
+            LeChatMauveCard chat;
+            chat.overrideMode(v.mode);
+            chat.setHgrDuochromeEnabled(v.duo);
+            disp.setChatMauveCard(&chat);
+            disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+            disp.render(mem);
+            const size_t bytes =
+                static_cast<size_t>(disp.width()) * disp.height() * sizeof(uint32_t);
+            results.emplace_back(v.name, fnv1a(disp.pixels(), bytes));
         }
     }
 

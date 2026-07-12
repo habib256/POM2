@@ -1345,6 +1345,15 @@ void MainWindow::plugSlotsFromSettings()
         // Block-level transfers only — the card synthesises step / motor
         // / click events from READBLOCK / WRITEBLOCK directly.
         card->setFloppySound(&controller->floppySound35());
+        // Real Liron identity (roms/liron.rom, BMOW dump) on slot-having
+        // machines only — NEVER on //c-class, whose on-board $C500 stub
+        // must keep the synthetic $Cn07=$01 ProDOS-block identity (a
+        // SmartPort-class byte re-triggers the boot-scan confusion, see
+        // project_iic_smartport_boot).
+        if (!pom2::profileConfig(activeProfile).noPhysicalSlots) {
+            const std::string r = pom2::findResource("roms/liron.rom");
+            if (!r.empty()) card->loadLironRom(r);
+        }
 
         // Restore per-unit configuration from settings. Each unit row
         // remembers its kind ("35" / "hdv" / ""=empty), its mounted image
@@ -1729,6 +1738,9 @@ void MainWindow::uploadScreenTexture()
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         display->render(controller->memory());
     }
+    // OE-CPU demod runs OUTSIDE the lock — it reads only display-owned
+    // buffers and took ~1-2 ms of CPU-worker stall per UI frame inside it.
+    display->finishPendingCpuDemod();
 
     const int w = display->width();
     const int h = display->height();
@@ -6106,6 +6118,10 @@ void MainWindow::renderFloppyEmuWindow()
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         auto card = std::make_unique<pom2::SmartPortCard>(slot);
         card->setFloppySound(&controller->floppySound35());
+        if (!pom2::profileConfig(activeProfile).noPhysicalSlots) {
+            const std::string r = pom2::findResource("roms/liron.rom");
+            if (!r.empty()) card->loadLironRom(r);
+        }
         smartPortCard = card.get();
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";

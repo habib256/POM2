@@ -116,11 +116,26 @@ public:
     /// MainWindow wires this to EmulationController::floppySound35().
     void setFloppySound(FloppySoundSink* fs) { sound_ = fs; }
 
+    /// Load the REAL Liron controller ROM (BMOW/Yellowstone dump,
+    /// roms/liron.rom, 4 KB = 8 per-slot $Cn00 pages at n×256 + the 2 KB
+    /// $C800 bank at 2048). When loaded, buildRom() serves the real page
+    /// for this slot — authentic identity bytes ($Cn07=$00 SmartPort
+    /// class, $CnFB=$00, $CnFE=$BF, $CnFF=$0A → ProDOS entry $Cn0A) —
+    /// with POM2's HLE service entries overlaid at $Cn00/$Cn0A/$Cn0D and
+    /// $Cn20-$CnE2 (the real firmware's IWM/UniDisk code cannot run
+    /// without the drive-side 65C02). Do NOT load on //c-class machines:
+    /// the on-board $C500 stub keeps the synthetic $Cn07=$01 identity so
+    /// the //c boot scan never SmartPort-enumerates it (see
+    /// project_iic_smartport_boot). Call before the first slotRomRead.
+    bool loadLironRom(const std::string& path);
+    bool isLironRomLoaded() const { return lironLoaded_; }
+
     // ── SlotPeripheral interface ────────────────────────────────────────
     std::string_view name() const override { return "SmartPort"; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
+    uint8_t expansionRomRead (uint16_t offset) override;
     bool    exposesIicOnboardRom() const override;
     void    onReset() override;
     void    advanceCycles(int cycles) override;
@@ -177,7 +192,31 @@ private:
     bool             audibleMotorOn_  = false;
     static constexpr uint64_t kSpinDownCycles = 500'000;  // ~0.5 s @ 1 MHz
 
+    // ── Real Liron ROM (optional) + $C800 bank ─────────────────────────
+    std::vector<uint8_t>      lironRom_;       // 4 KB when loaded
+    bool                      lironLoaded_ = false;
+    std::array<uint8_t, 2048> c800_{};         // expansion bank ($C800-$CFFE)
+
+    // ── SmartPort-protocol call engine (entry $Cn0D → $CE00 handler) ────
+    // The 6502 stub in c800_ collects [cmd + the first 10 param-list
+    // bytes] through reg 0x7 after a BEGIN (write reg 0xE), then a read
+    // of reg 0xE executes the call here and returns the SmartPort error
+    // code ($00 = ok). Results (STATUS payloads, READ data) stream out of
+    // reg 0x9, sized by regs 0xB/0xC; WRITE data streams into the legacy
+    // reg 0x3 machinery (count pages via reg 0xD; post-commit error via
+    // reg 0xF). See buildC800() for the stub and spExecute() for the
+    // command semantics (STATUS $00 + DIB $03, READ $01, WRITE $02,
+    // FORMAT $03, CONTROL $04, INIT $05; extended $4x → $01 bad command).
+    std::array<uint8_t, 11> spCollect_{};      // [0]=cmd, [1..10]=param list
+    size_t                  spCollectN_ = 0;
+    std::vector<uint8_t>    spResult_;
+    size_t                  spResultPos_ = 0;
+    uint8_t                 spPushPages_ = 0;  // 512-byte WRITE → 2
+    uint8_t                 spError_     = 0;
+
     void    buildRom();
+    void    buildC800();
+    uint8_t spExecute();
     uint8_t readDataByte();
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;

@@ -113,7 +113,21 @@ public:
     // 2 Hz flash phase used by the text mode.
     void render(Memory& mem);
 
-    const uint32_t* pixels() const { return useFrame80 ? frame80.data() : frame.data(); }
+    // Runs the OE-CPU composite demod render() deferred (it only consumes
+    // display-owned buffers, so it must NOT hold the caller's stateMutex —
+    // ~1-2 ms of FP FIR that used to stall the CPU worker every UI frame).
+    // Call after releasing the lock, before pixels(). No-op when nothing
+    // is pending.
+    void finishPendingCpuDemod();
+
+    // Lazily completes any deferred OE-CPU demod so every consumer (tests,
+    // screenshot paths) that does render() → pixels() stays correct without
+    // knowing about the deferral; MainWindow calls finishPendingCpuDemod()
+    // explicitly after releasing stateMutex, making this a no-op there.
+    const uint32_t* pixels() const {
+        const_cast<Apple2Display*>(this)->finishPendingCpuDemod();
+        return useFrame80 ? frame80.data() : frame.data();
+    }
     int             width()  const { return useFrame80 ? kWidth80 : kWidth; }
     int             height() const { return kHeight; }
 
@@ -323,10 +337,13 @@ private:
     bool fillCompositeSignal(Memory& mem,
                              const std::vector<Memory::VideoEvent>& events);
 
-    // CPU OpenEmulator demod: demodulate signalBuf (560×192 R8) into frame80
-    // (560×192 RGBA) — the same Y/I/Q math as the GLSL demod shader, run on
-    // the CPU. Used by HiResMode::ColorCompositeOECpu.
-    void renderCompositeOeCpu();
+    // CPU OpenEmulator demod: demodulate signalBuf (560×192 R8) rows
+    // [0, rows) into frame80 (560×192 RGBA) — the same Y/I/Q math as the
+    // GLSL demod shader, run on the CPU (per-row 1D FIR, so a row limit is
+    // exact). Used by HiResMode::ColorCompositeOECpu and mixed OE frames;
+    // scheduled via pendingCpuDemodRows_ + finishPendingCpuDemod().
+    void renderCompositeOeCpu(int rows);
+    int  pendingCpuDemodRows_ = 0;   // 0 = none; else demod rows [0, n)
 
     // The actual frame dispatch (text / hires / dhgr / mixed). render()
     // is a thin wrapper that calls this then optionally fills signalBuf.

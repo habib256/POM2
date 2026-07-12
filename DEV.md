@@ -1285,8 +1285,43 @@ $C0n1 write  block LO byte
 $C0n2 write  block HI byte
 $C0n3 read   next byte (auto-incr 512 B)
 $C0n3 write  next byte INTO current block (WB-gated)
-$C0n4 read   status: bit7 = no disk, bit6 = WP
+$C0n4 read   status: bit7 = no disk, bit6 = WP, bit0 = latched I/O error
+$C0n7 write  SmartPort-call param push (cmd, then 10 param-list bytes)
+$C0n9 read   SmartPort result stream (STATUS payloads, READ data)
+$C0nB/C read result count lo / hi
+$C0nD read   WRITE push-page count (2 → 512 bytes expected on $C0n3)
+$C0nE write  SmartPort BEGIN · read = EXECUTE (returns error code)
+$C0nF read   post-stream error re-poll ($27 after a failed WRITE commit)
 ```
+
+**SmartPort-protocol dispatch ($Cn0D, 2026-07-12).** Real SmartPort call
+convention — `JSR $Cn0D / DFB cmd / DW paramList`, error in A + carry,
+return address bumped 3 — served by a 168-byte 6502 handler at **$CE00**
+in the card's $C800 bank (`buildC800`): it saves ZP $42-$45, collects the
+cmd + first 10 param-list bytes through $C0n7, EXECUTEs via $C0nE, then
+moves data guest↔device ($C0n9 pull / $C0n3 push). Commands: STATUS $00
+(unit 0 controller status; per-unit general status + 24-bit block count;
+statcode $03 = 25-byte DIB with "POM2 SMARTPORT" ID + type $01 3.5"/$02
+disk), READ $01, WRITE $02 (through the legacy commit machinery → real
+error latching), FORMAT $03 (no-op success on a block store), CONTROL $04
+(code 0 only), INIT $05. Errors per the ProDOS/SmartPort set: $01 bad
+cmd (incl. extended $4x), $04 bad pcount, $21 bad status/control code,
+$27 I/O, $28 no device, $2B write-protected, $2D bad block, $2F offline.
+Pinned by `liron_smartport_dispatch` (runs the whole matrix through a
+real 6502, synthetic AND real-ROM identity passes).
+
+**Real Liron ROM (`roms/liron.rom`, optional).** The BMOW/Yellowstone dump
+of the real controller firmware (4 KB: per-slot $Cn00 page at `slot×256`,
+$C800 bank at 2048 — see the `liron-rom-dump` memory + CLAUDE.md § //c+
+MIG). When present on a slot-having machine, `loadLironRom` re-bases the
+slot page on the real dump — authentic identity `$Cn07=$00` (SmartPort
+class), `$CnFB=$00`, `$CnFE=$BF`, `$CnFF=$0A` (the real fixed ProDOS
+entry `$Cn0A` the DIX fix documented) — and overlays the HLE entries on
+top ($Cn00 boot, $Cn0A→$Cn50, $Cn0D→$CE00, $Cn20-$CnE2 driver block): the
+real firmware's IWM/UniDisk code cannot run without the drive-side 65C02.
+**Never loaded on //c-class** (plug-site gate on `noPhysicalSlots`): the
+on-board $C500 stub keeps the synthetic `$Cn07=$01` so the //c boot scan
+never SmartPort-enumerates it (project_iic_smartport_boot).
 
 Per-drive `streamOffset_[2]` wraps every 512 B; drive-select latches
 `activeDrive_` and resets stream offset.

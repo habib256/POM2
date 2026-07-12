@@ -573,18 +573,28 @@ void Apple2Display::render(Memory& mem)
         renderInternal(mem);
     }
 
+    // The 17-tap FP demod (~1-2 ms) is DEFERRED to finishPendingCpuDemod():
+    // it consumes only signalBuf (filled above) and writes frame80 — both
+    // display-owned, UI-thread-only — so it doesn't need the caller's
+    // stateMutex, which used to stall the CPU worker every UI frame. The
+    // mixed text band is patched HERE (it reads guest RAM → needs the
+    // lock); the deferred demod is per-row and only rewrites the graphics
+    // rows [0, 160) in mixed mode, so the patch survives it.
     if (oeCpu && signalProducedFlag && !state.textMode) {
-        renderCompositeOeCpu();   // demodulate signalBuf → frame80
         useFrame80 = true;
-        if (mixedGfx)
+        if (mixedGfx) {
             patchMixedTextBand(mem);
+            pendingCpuDemodRows_ = kMixedTextFirstScanline;
+        } else {
+            pendingCpuDemodRows_ = kSignalHeight;
+        }
     }
 
     if ((mixedGfx && hiResMode == HiResMode::ColorCompositeOE)
         && signalProducedFlag) {
-        renderCompositeOeCpu();   // demodulate signalBuf → frame80
         useFrame80 = true;
         patchMixedTextBand(mem);
+        pendingCpuDemodRows_ = kMixedTextFirstScanline;
         mixedCompositeUsesFb_ = true;
     }
 
@@ -635,11 +645,19 @@ void Apple2Display::render(Memory& mem)
 // Optimised: the gaussian tap weights depend only on the tap offset i, and
 // the subcarrier sin/cos depend only on (x+i) mod 4 — both hoisted out of the
 // per-pixel loop, so the inner loop is mul/add only (no trig per pixel).
-void Apple2Display::renderCompositeOeCpu()
+void Apple2Display::finishPendingCpuDemod()
+{
+    if (pendingCpuDemodRows_ <= 0) return;
+    renderCompositeOeCpu(pendingCpuDemodRows_);
+    pendingCpuDemodRows_ = 0;
+}
+
+void Apple2Display::renderCompositeOeCpu(int rows)
 {
     constexpr float kPi = 3.14159265358979f;
     constexpr int   N = 8;
-    const int   sw = kSignalWidth, sh = kSignalHeight;   // 560 × 192
+    const int   sw = kSignalWidth;                       // 560
+    const int   sh = std::min(rows, kSignalHeight);     // ≤ 192 (per-row FIR)
     const uint8_t* sig = signalBuf.data();
 
     // OpenEmulator-exact 17-tap FIR kernels (Dolph-Chebyshev(50 dB) × sinc,

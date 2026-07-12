@@ -398,10 +398,26 @@ void Memory::advanceCycles(int cycles)
         cycleCounter / (kCyclesPerScanline * kScanlinesPerFrame);
     if (!legacyEventBracket_ && frameIndex != lastVideoFrameIndex_) {
         lastVideoFrameIndex_ = frameIndex;
+        const uint64_t newFrameStart =
+            frameIndex * kCyclesPerScanline * kScanlinesPerFrame;
         std::lock_guard<std::mutex> lk(stateMutex);
         publishedFrameStart_ = displayAtFrameStart_;
+        // An instruction can straddle the frame boundary: its soft-switch
+        // event is stamped `cycleCounter + currentInstructionCycles`, which
+        // may land PAST the boundary (rawLine wrapped to ~0) while
+        // publication only runs here, after the instruction. Publishing
+        // such an event into the closing frame applied the switch one
+        // frame early across all of frame N. Stamps are non-decreasing, so
+        // boundary-crossers form the tail of the log — carry them into the
+        // new recording frame instead.
+        auto firstNew = videoEvents_.begin();
+        while (firstNew != videoEvents_.end() &&
+               firstNew->emuCycle < newFrameStart)
+            ++firstNew;
+        std::vector<VideoEvent> carry(firstNew, videoEvents_.end());
+        videoEvents_.erase(firstNew, videoEvents_.end());
         publishedEvents_     = std::move(videoEvents_);
-        videoEvents_.clear();
+        videoEvents_         = std::move(carry);
         displayAtFrameStart_ = display;   // state at scanline 0 of the new frame
     }
 }

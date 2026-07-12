@@ -2665,6 +2665,33 @@ endif()
 add_test(NAME smartport_io_error COMMAND test_smartport_io_error)
 set_tests_properties(smartport_io_error PROPERTIES TIMEOUT 10)
 
+# ─── SmartPort-protocol dispatch ($Cn0D) + real-Liron identity ────────────
+add_executable(test_liron_smartport_dispatch
+    liron_smartport_dispatch_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_liron_smartport_dispatch PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_liron_smartport_dispatch PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_liron_smartport_dispatch PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_liron_smartport_dispatch PRIVATE winmm)
+endif()
+add_test(NAME liron_smartport_dispatch COMMAND test_liron_smartport_dispatch)
+set_tests_properties(liron_smartport_dispatch PROPERTIES TIMEOUT 10)
+
 # ─── CassetteDevice WAV tail-flush regression ─────────────────────────────
 add_executable(test_cassette_wav_tail
     cassette_wav_tail_smoke_test.cpp
