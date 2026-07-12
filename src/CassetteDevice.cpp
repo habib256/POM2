@@ -348,7 +348,7 @@ void CassetteDevice::queueAudioSegment(uint32_t cycles, bool level)
 
     const double totalSamples = audioSampleRemainder +
         (static_cast<double>(cycles) * static_cast<double>(audioOutputSampleRate) /
-         static_cast<double>(kRealtimeAudioTimebaseHz));
+         realtimeTimebaseHz_.load(std::memory_order_relaxed));
     const uint32_t sampleCount = static_cast<uint32_t>(totalSamples);
     audioSampleRemainder = totalSamples - static_cast<double>(sampleCount);
 

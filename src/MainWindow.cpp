@@ -1559,6 +1559,10 @@ void MainWindow::injectAscii(uint8_t apple2Code)
 
 void MainWindow::onChar(unsigned int codepoint)
 {
+    // While the kiosk menu is up, its keyboard fallbacks (K toggles the key
+    // band, etc.) are read via ImGui::IsKeyPressed — the same keystroke must
+    // not also land in the $C000 latch.
+    if (kioskMenuOpen_) return;
     // Apple II accepts the full ASCII range (uppercase and lowercase). We
     // forward the codepoint as-is — Applesoft and the Monitor pick whichever
     // case the user typed.
@@ -1582,6 +1586,13 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         controller->memory().setSolidAppleKey(action != GLFW_RELEASE);
         return;
     }
+
+    // Kiosk menu open: its arrows/Enter/Esc fallbacks are polled with
+    // ImGui::IsKeyPressed and the menu window never captures the keyboard,
+    // so everything below would double-deliver — Enter on the key band
+    // would send the cell AND inject $0D, Esc would close the menu AND
+    // type $1B into the game on resume.
+    if (kioskMenuOpen_) return;
 
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
     const bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
@@ -2548,15 +2559,23 @@ DiskIICard* MainWindow::kioskBootDiskCard()
 
 void MainWindow::openKioskStartMenu()
 {
-    kioskDiskPaths_.clear();
-    kioskDiskLabels_.clear();
-    kioskDiskSel_ = 0;
-    kioskStatus_.clear();
-
     kioskMenuOpen_ = true;
     kioskPage_     = KioskPage::List;
     kioskZone_     = KioskZone::Games;
     kioskActSel_   = 0;
+    kioskRescanDisks();
+}
+
+// Rebuild the GAMES list from the booted disk's folder + the extra ROM
+// folders. Split from openKioskStartMenu so the RomDirs page can refresh the
+// list on its way back — otherwise a folder added/removed there is invisible
+// until the menu is closed and reopened.
+void MainWindow::kioskRescanDisks()
+{
+    kioskDiskPaths_.clear();
+    kioskDiskLabels_.clear();
+    kioskDiskSel_ = 0;
+    kioskStatus_.clear();
 
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2632,12 +2651,24 @@ void MainWindow::openKioskStartMenu()
     });
 
     // Mark the disk currently in the boot drive so the list shows a ● next to
-    // it and the cursor lands on it.
+    // it and the cursor lands on it. Match canonically: the mounted path may
+    // be relative (kiosk launched as `POM2 games/foo.dsk`) while scanned
+    // entries come out of canonicalized dirs.
+    std::error_code ecCur;
+    const fs::path curCanon = cur.empty()
+        ? fs::path{} : fs::weakly_canonical(fs::path(cur), ecCur);
     kioskMountedPath_ = cur;
     for (const auto& p : found) {
         const std::string name = p.filename().string();
-        if (!cur.empty() && p.string() == cur)
-            kioskDiskSel_ = int(kioskDiskPaths_.size());
+        const bool isMounted = !cur.empty() &&
+            (p.string() == cur ||
+             (!ecCur && !curCanon.empty() && p == curCanon));
+        if (isMounted) {
+            kioskDiskSel_     = int(kioskDiskPaths_.size());
+            // Adopt the scanned spelling so the render loop's exact string
+            // compare against kioskDiskPaths_ draws the ● marker.
+            kioskMountedPath_ = p.string();
+        }
         kioskDiskPaths_.push_back(p.string());
         kioskDiskLabels_.push_back(name);
     }
@@ -2645,7 +2676,7 @@ void MainWindow::openKioskStartMenu()
     if (kioskDiskPaths_.empty())
         kioskStatus_ = "No disks found in the scanned folder(s)";
 
-    pom2::log().info("Kiosk", "start menu opened: " +
+    pom2::log().info("Kiosk", "disk scan: " +
                      std::to_string(kioskDiskPaths_.size()) + " disk(s) across " +
                      std::to_string(dirs.size()) + " folder(s)");
 }
@@ -2819,6 +2850,12 @@ void MainWindow::updateKioskMenu()
     // (its keys must reach a running game). Closed menu → running.
     const bool wantPause = kioskMenuOpen_ && kioskPage_ != KioskPage::Keys;
     kioskSetPaused(wantPause);
+    // Re-park if something else resumed the worker behind the open menu
+    // (e.g. an F6 hold released across the menu-open frame ends in
+    // rewindEndAndResume → Mode::Running); kioskSetPaused alone early-outs
+    // because kioskPausedByMenu_ still says "paused".
+    if (wantPause && controller->getMode() != EmulationController::Mode::Stopped)
+        controller->setMode(EmulationController::Mode::Stopped);
 
     if (!kioskMenuOpen_) return;
 
@@ -2912,7 +2949,11 @@ void MainWindow::updateKioskMenu()
                     kioskRomDirSel_ = int(kioskRomDirs_.size());
             }
         }
-        if (eCancel) { kioskPage_ = KioskPage::List; kioskZone_ = KioskZone::Actions; }
+        if (eCancel) {
+            kioskPage_ = KioskPage::List;
+            kioskZone_ = KioskZone::Actions;
+            kioskRescanDisks();   // pick up folders added/removed just now
+        }
         break;
     }
 
@@ -3326,9 +3367,6 @@ void MainWindow::onMouseMove(double x, double y)
         if (mouseCard)   mouseCard  ->setHostMouse(rx, ry, btn);
         if (mouseAwCard) mouseAwCard->setHostMouse(rx, ry, btn);
     };
-    const int activeMouseSlot = mouseCard ? mouseCard->getSlot()
-                                          : mouseAwCard->getSlot();
-
     // Need a valid Apple II Screen widget rect to map host pixels into
     // Apple-cursor coordinates. Bail until renderScreen has populated it.
     const float widgetW = screenRectMax.x - screenRectMin.x;
@@ -3554,13 +3592,32 @@ void MainWindow::pollJoystickAndPushToMemory()
     const bool menuActive = kioskMenuOpen_;
     const JoystickInput::GamepadPlay play = joystick->play();
 
+    // Menu → game isolation across the close. Circle/Cross double as the
+    // menu's B/A and the Apple PB0/PB1, and this poll runs BEFORE
+    // updateKioskMenu, so `menuActive` lags the close by a frame: the press
+    // that dismissed the menu would land in the game as a fire-button hit.
+    // Latch a swallow on the open→closed edge and hold it until every shared
+    // button (faces + D-pad) is released. Analog paddles stay live — the
+    // stick isn't a menu control and carries no edge.
+    if (kioskMenuWasOpen_ && !menuActive) kioskSwallowPad_ = true;
+    kioskMenuWasOpen_ = menuActive;
+    if (kioskSwallowPad_) {
+        const bool anyHeld = play.valid
+            ? (play.button0 || play.button1 || play.dpadUp || play.dpadDown ||
+               play.dpadLeft || play.dpadRight)
+            : (joystick->buttonDown(0) || joystick->buttonDown(1) ||
+               joystick->buttonDown(2));
+        if (!anyHeld) kioskSwallowPad_ = false;
+    }
+    const bool suppressGame = menuActive || kioskSwallowPad_;
+
     Memory& mem = controller->memory();
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         for (int i = 0; i < 4; ++i)
             mem.setPaddle(i, menuActive ? 128 : joystick->paddleValue(i));
 
-        if (menuActive) {
+        if (suppressGame) {
             for (int i = 0; i < 3; ++i) mem.setPaddleButton(i, false);
         } else if (play.valid) {
             // Gamepad-mapped: only Cross/Circle are Apple game-port buttons;
@@ -3575,9 +3632,13 @@ void MainWindow::pollJoystickAndPushToMemory()
     }
 
     // Keyboard routing for the digital controls — outside stateMutex, since
-    // queueKey has its own keyboard lock. Only in-game (menu closed) and only
-    // for a gamepad-mapped pad whose layout we can trust.
-    if (!menuActive && play.valid) {
+    // queueKey has its own keyboard lock. Only in-game (menu closed, swallow
+    // drained) and only for a gamepad-mapped pad whose layout we can trust.
+    if (suppressGame || !play.valid) {
+        // Drop the auto-repeat history so a direction still held from menu
+        // navigation re-arms cleanly (press-then-delay) once released.
+        for (bool& h : padArrowHeld_) h = false;
+    } else {
         if (play.spaceEdge) mem.queueKey(0x20);   // Square   → SPACE
         if (play.enterEdge) mem.queueKey(0x0D);   // Triangle → RETURN
         // D-pad → Apple II arrow codes (←$08 →$15 ↑$0B ↓$0A) with auto-repeat
@@ -7341,7 +7402,9 @@ void MainWindow::render()
     // run so the machine behaves identically; everything else is skipped.
     // F6 hold-to-rewind still works (no toolbar button in kiosk).
     if (kiosk_) {
-        driveRewindHold(ImGui::IsKeyDown(ImGuiKey_F6));
+        // F6 is inert while the menu has the machine parked: releaseHold →
+        // rewindEndAndResume would setMode(Running) behind the overlay.
+        driveRewindHold(!kioskMenuOpen_ && ImGui::IsKeyDown(ImGuiKey_F6));
         updateKioskMenu();         // Start/Select drive the in-game menu
         renderKiosk();
         renderKioskMenu();         // overlay drawn on top of the screen

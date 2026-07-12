@@ -143,14 +143,27 @@ public:
     /// program emits as soon as it reaches the cassette.
     void armRecording() { beginRecordingIfNeeded(); }
 
+    /// Retune the realtime pulse-audio cycles→samples conversion to the
+    /// actual emulated CPU clock (PAL ≈ 1.0156 MHz vs NTSC ≈ 1.0227 MHz).
+    /// Under PAL the CPU emits ~0.7 % fewer cycles per real second than the
+    /// NTSC constant assumes, so the pulse queue drains faster than it fills
+    /// (~330 samples/s short at 48 kHz) — periodic level dips, the same
+    /// starvation SpeakerDevice::setCpuClock fixes. Called from
+    /// EmulationController::setVideoStandard with the worker stopped; atomic
+    /// so a future unlocked caller can't tear the double.
+    void setCpuClock(double hz) { realtimeTimebaseHz_.store(hz > 1.0 ? hz : 1.0); }
+
 private:
     // The Apple II cassette (and its tape file format) is timed in CPU
     // cycles. Same constant as POM1: aligns 770 Hz sync exactly on the
     // emulated CPU clock so .wav/.mp3 round-trip without phase drift.
-    static constexpr uint32_t kRealtimeAudioTimebaseHz =
-        static_cast<uint32_t>(POM2_CPU_CLOCK_HZ);
+    // kTapeFileTimebaseHz stays at the NTSC nominal even on PAL machines —
+    // it defines the *file format's* cycle timebase, not playback pacing.
     static constexpr uint32_t kTapeFileTimebaseHz =
         static_cast<uint32_t>(POM2_CPU_CLOCK_HZ);
+    // Realtime monitor-audio timebase — see setCpuClock above.
+    std::atomic<double> realtimeTimebaseHz_{
+        static_cast<double>(POM2_CPU_CLOCK_HZ)};
     static constexpr uint32_t kWavFileSampleRate = 44100;
 
     void queueAudioSegment(uint32_t cycles, bool level);

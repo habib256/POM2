@@ -5,6 +5,58 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 (pre-release bug hunt: kiosk input leaks, PAL cassette clock)
+
+Adversarial review of everything landed since v0.7 (kiosk menu, square-gate
+joystick, PAL speaker fix). Two real input-isolation leaks in the kiosk menu,
+one sibling of the PAL speaker bug, and a fistful of minors.
+
+- **Kiosk menu keyboard fallbacks leaked into the machine (major).** The
+  menu's arrows/Enter/Esc/K are polled via `ImGui::IsKeyPressed`, but the
+  overlay window never sets `WantCaptureKeyboard`, so `glfw_key_callback`
+  kept forwarding every key to `MainWindow::onKey`/`onChar` → the $C000
+  latch. Concretely: Enter on the key band sent the selected cell **and**
+  injected $0D (every send double-typed); Esc closed the menu and delivered
+  a stray $1B to the game on resume; K typed a literal 'k' into the running
+  title. Fix: `onKey`/`onChar` early-return while `kioskMenuOpen_` (menu
+  navigation itself is unaffected — it never used the callback path).
+- **Gamepad close-press leaked PB0/PB1 into the game (major).**
+  `pollJoystickAndPushToMemory` runs *before* `updateKioskMenu` and gates
+  suppression on `kioskMenuOpen_`, which lags a close by one frame — and
+  Circle/Cross double as the menu's B/A **and** the Apple game-port
+  buttons. Dismissing the menu with B therefore fired PB0 in the game for
+  several frames (ditto Cross→PB1 after Restart, and a D-pad direction held
+  at close fired an arrow key). Fix: latch `kioskSwallowPad_` on the
+  open→closed edge and keep faces + D-pad suppressed until the pad is fully
+  released; analog paddles stay live (no edge to leak). The auto-repeat
+  history (`padArrowHeld_`) resets while suppressed so a held direction
+  re-arms cleanly.
+- **F6 rewind unpaused the machine behind the open menu (minor).** A hold
+  released while the Start menu had the worker parked ended in
+  `rewindEndAndResume` → `Mode::Running`, and `kioskSetPaused` early-outs
+  (it still believed "paused"), so the game ran with audio under the
+  overlay until reopen. Fix: F6 is inert while the menu is open **and**
+  `updateKioskMenu` re-parks the worker if anything resumed it behind a
+  wanted pause.
+- **PAL cassette pulse audio — same bug the speaker fix cured (minor).**
+  `CassetteDevice::queueAudioSegment` converted cycle durations with the
+  hardcoded NTSC `kRealtimeAudioTimebaseHz`; under PAL the queue fills
+  ~0.7 % slower than the callback drains (~330 samples/s short at 48 kHz)
+  → periodic level dips on sustained tones. Fix mirrors the speaker:
+  atomic `realtimeTimebaseHz_` + `setCpuClock()` wired from
+  `setVideoStandard`. The tape-**file** timebase stays NTSC-nominal on
+  purpose — it's the format's cycle definition, not playback pacing.
+- **Kiosk minors.** GAMES list now rescans on the RomDirs→List transition
+  (a folder added via the browser used to stay invisible until the menu was
+  reopened); the mounted-disk ● marker matches canonically (a kiosk
+  launched with a *relative* path, `POM2 games/foo.dsk`, never matched the
+  canonicalized scan entries — cursor landed on index 0, no ●).
+- **Joystick minors.** `edge()` now requires prior-poll history — the first
+  poll after a (re)bind treated an already-held button as a fresh press
+  (Start held across a rebind popped the kiosk menu). Explicit
+  `#include <algorithm>` (was compiling through transitive includes).
+  Removed dead `activeMouseSlot` (last -Wunused-variable in the GUI build).
+
 ## 2026-07-11 (kiosk follow-ups: PAL speaker clock, HDV/3.5 in menu, DS4 in-game mapping)
 
 Fixes + refinements on top of the same-day in-game menu.

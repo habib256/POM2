@@ -504,6 +504,12 @@ private:
     // Whether we actively parked the worker (Mode::Stopped) for the menu, so
     // we only resume (Mode::Running) a machine we paused ourselves.
     bool   kioskPausedByMenu_ = false;
+    // Menu → game input isolation across the close (see
+    // pollJoystickAndPushToMemory): the poll samples kioskMenuOpen_ a frame
+    // behind updateKioskMenu, and Circle/Cross double as menu B/A and Apple
+    // PB0/PB1 — swallow the shared buttons until the pad is fully released.
+    bool   kioskMenuWasOpen_ = false;
+    bool   kioskSwallowPad_  = false;
 
     // One-shot dedup for the "pad bound / gamepad-mapped" diagnostic log.
     int  loggedJoyHost_    = -2;   // -2 = never logged
@@ -522,10 +528,13 @@ private:
     /// when the menu is open.
     void renderKioskMenu();
 
-    /// (Re)build kioskDiskPaths_ from the booted disk's folder + extra ROM
-    /// folders, sorted by name-proximity to the mounted disk, and open the
-    /// Start menu on the GAMES zone. No-op-safe with no Disk II / no folder.
+    /// Open the Start menu on the GAMES zone and rescan the disk list.
     void openKioskStartMenu();
+    /// (Re)build kioskDiskPaths_ from the booted disk's folder + extra ROM
+    /// folders, sorted by name-proximity to the mounted disk. Also called on
+    /// the RomDirs → List transition so folder edits show up immediately.
+    /// No-op-safe with no Disk II / no folder.
+    void kioskRescanDisks();
     /// Swap the highlighted disk into the boot Disk II drive without reboot.
     void kioskMountSelected();
     /// Validate the focused zone's item (mount a disk, or run an action).

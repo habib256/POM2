@@ -11,6 +11,7 @@
 #include <GLFW/glfw3.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 
 JoystickInput::JoystickInput() = default;
@@ -133,8 +134,13 @@ void JoystickInput::poll()
         activeIsGamepad_ = true;
 
         auto edge = [&](int b) -> bool {
+            // Require history: on the first poll after a (re)bind or a
+            // transient glfwGetGamepadState failure, a button already held
+            // must NOT read as a fresh press (Start held across a rebind
+            // would pop the kiosk menu open). Costs at most one legitimately
+            // new press in that single frame.
             return gs.buttons[b] == GLFW_PRESS &&
-                   (!navPrevValid_ || navPrevButtons_[b] == GLFW_RELEASE);
+                   navPrevValid_ && navPrevButtons_[b] == GLFW_RELEASE;
         };
 
         // Left stick folded into a virtual D-pad (up/left = negative on the

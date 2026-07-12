@@ -26,6 +26,9 @@ void EmulationController::setVideoStandard(VideoStandard s)
     // glitching continuous speaker music. (AY/SSI263 device clocks stay at the
     // NTSC nominal by design — their 0.7 % delta is an inaudible pitch approx.)
     if (spk) spk->setCpuClock(static_cast<double>(pom2VideoTiming(s).cpuClockHz));
+    // Same starvation applies to the cassette's realtime pulse monitor (its
+    // tape-FILE timebase intentionally stays NTSC-nominal — format spec).
+    if (tape) tape->setCpuClock(static_cast<double>(pom2VideoTiming(s).cpuClockHz));
 }
 
 EmulationController::EmulationController()
