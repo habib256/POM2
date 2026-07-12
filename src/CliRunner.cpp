@@ -163,6 +163,11 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                     pom2::log().error("CLI", "--snapshot-load: " + res.error);
                     break;
                 }
+                // Backwards cycleCounter jump: flush the speaker (its
+                // cursor only snaps forward — audio would stay muted until
+                // the counter re-passes it) and drop the stale rewind ring.
+                emu.speaker().reset();
+                emu.rewind().clear();
                 pom2::log().info("CLI",
                     "--snapshot-load: restored " + a.pathS);
                 break;

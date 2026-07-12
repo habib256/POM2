@@ -414,6 +414,7 @@ void EmulationController::bootFromSlot(int slot)
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
+    rewind_.clear();   // RAM wiped → the recorded timeline is a different machine
     // Card-has-boot-entry sanity check. Apple II Ref Manual Appx C
     // describes 4 signature bytes ($Cn01=$20, $Cn03=$00, $Cn05=$03,
     // $Cn07=$3C); the F8 Autostart Monitor (Apple part 341-0020-00)

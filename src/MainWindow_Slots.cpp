@@ -668,6 +668,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // 1. Stop the worker thread (cards' destructors must not race a
     //    running CPU step or worker idle-loop probe).
     controller->stop();
+    // The rewind ring recorded the PREVIOUS machine: steps below wipe
+    // RAM/aux/ROM and rebuild the card set, so an F6 restore after the
+    // switch would push the old machine's RAM/CPU/slot state onto the new
+    // hardware (II+ Applesoft PC on a //e ROM → crash). Only coldBoot
+    // cleared it before.
+    controller->rewind().clear();
 
     // 2. Snapshot the currently-mounted media so we can re-mount after
     //    the cold reset. The user wants to test the same disk under
@@ -1012,6 +1018,10 @@ void MainWindow::restartEmulationFromSettings()
     // 1. Stop the worker thread so card destructors don't race against a
     //    running CPU step.
     controller->stop();
+    // Drop the rewind ring: its SLOTn sections describe the card set being
+    // torn down; restoring one onto the rebuilt (possibly different) cards
+    // would be incoherent. Same rationale as applyProfile.
+    controller->rewind().clear();
 
     // 2. Tear down all cards and clear our raw pointers. Holding the
     //    state mutex isn't strictly necessary now that the worker is

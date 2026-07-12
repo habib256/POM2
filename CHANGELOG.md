@@ -5,6 +5,66 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 — wave 2 (seams: stale rewind ring, snapshot-load audio, kiosk K leak)
+
+Adversarial re-review of wave 1's fixes + a sweep of the cross-subsystem
+seams (snapshot/rewind × profiles, AI server × kiosk, CLI boot × slot
+config). Wave 1's fixes all held; the seams gave up two mediums.
+
+- **Stale rewind ring across profile switch / bootFromSlot (medium).**
+  `RewindBuffer.h` documents "drop every retained frame on cold boot /
+  profile switch", but the ONLY clear site was `coldBoot()`. `applyProfile`
+  and `bootFromSlot` wipe RAM/aux (and applyProfile rebuilds the card set)
+  without clearing — so with rewind enabled, F6 after a II+→//e switch
+  restored II+ RAM/CPU/slot state onto the //e ROM (PC into II+ Applesoft →
+  crash), and `truncateAfter` made that garbage the new timeline. Now
+  cleared in `bootFromSlot`, `applyProfile` (after step-1 stop) and
+  `restartEmulationFromSettings` (its SLOTn sections describe the card set
+  being torn down).
+- **Snapshot load left the speaker dead for minutes (medium).**
+  `SpeakerDevice`'s reconstruction cursor only snaps FORWARD and purges
+  older-stamped toggles as stale; rewind/scrub knew this
+  (`flushAudioForRewind`) but `/snapshot/load` (AI server) and CLI
+  `--snapshot-load` didn't — loading a snapshot with a smaller
+  cycleCounter muted audio until the counter re-passed its pre-load value
+  (10 min of play ≈ 10 emulated minutes of silence). Both callers now
+  flush the speaker + drop the rewind ring (whose stamps would break
+  `indexForCycle` monotonicity) after a successful restore.
+- **3.5" boot without 3.5" hardware failed silently (low).**
+  `insertAndBootImage`'s Sony35 branch fell through to
+  `controller->mount35()` — the //c+-only on-board Sony hub — on ANY
+  machine without a SmartPort card, then cold-booted to the BASIC prompt
+  with `true` returned and "booted disk" logged. Now errors out ("no 3.5"
+  device in this config") unless a SmartPort card is present or the
+  profile is the //c+.
+- **Kiosk K-key leak, open direction (minor, wave-1 fix was one-sided).**
+  Closing the Keys band with K was fixed, but OPENING it still typed a
+  live 'k' into the running game: the GLFW char callback fires while the
+  menu is still closed, then the same frame's `updateKioskMenu` opens the
+  non-pausing band. K (and Ctrl-K's $0B) is now reserved in kiosk mode.
+- **Swallow latch scoped to gamepad-mapped pads.** Raw pads can't drive
+  the menu (nav needs a mapping), so their held fire button across a
+  keyboard-driven menu close is legitimate game input — no longer eaten.
+- **Adversarially re-verified, no change needed:** onKey/onChar gate (F10
+  via ImGui, AI keys via `pasteText` direct, Alt tracking above the gate),
+  swallow drain on unplug/Emscripten, F6 re-park (worst case one worker
+  tick behind the overlay), cassette clock domain split, stickToPaddles
+  math (new tests fail on the old code: 143 vs ≤132, 134 vs 128). Owned
+  trade-offs: ~13-count axis-snap detent at the cone boundary (no
+  hysteresis until someone reports flicker), F6 inert during the Keys
+  band, stick-nav edges without the history guard (can only move a cursor
+  one step).
+- **Release audit.** Docs drift fixed (README documents the kiosk in-game
+  menu and drops "no menu to quit"; DEV.md §kiosk rewritten against
+  `openKioskStartMenu`/`updateKioskMenu`/`renderKioskMenu` + §joystick
+  against the stickToPaddles pipeline and GamepadPlay mapping; CLAUDE/TODO
+  note speaker+cassette ARE retimed). CI now triggers on `v*` tags — tag
+  builds previously ran NO CI. ⚠ **Open, needs a decision: copyrighted
+  Apple ROM dumps are tracked in the public repo since the initial commit**
+  (49 files under roms/), contradicting README/CI/packaging claims;
+  cutting a public release re-publishes them. Full remedy = untrack +
+  history scrub (filter-repo) + force-push.
+
 ## 2026-07-12 (pre-release bug hunt: kiosk input leaks, PAL cassette clock)
 
 Adversarial review of everything landed since v0.7 (kiosk menu, square-gate

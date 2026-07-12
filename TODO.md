@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-07-10. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
+Status as of 2026-07-12. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
@@ -116,7 +116,9 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   Detail → `CLAUDE.md` § System profiles + `docs/test_corpus.md` § DIX /
   `CHANGELOG.md`.
   - 🟢 Remaining: device clocks (AY/IWM/SSI263) stay at NTSC nominal (0.7 % delta
-    = inaudible audio pitch, not retimed); WASM pacing (RAF 60 Hz) not yet
+    = inaudible audio pitch, not retimed — speaker + cassette realtime audio ARE
+    retimed since 2026-07-11/12, their queues starve audibly otherwise); WASM
+    pacing (RAF 60 Hz) not yet
     switched to 50 Hz; manual NTSC/PAL toggle + auto-PAL when a Chat Mauve card
     is plugged (the PAL profiles already cover the use case).
 - ✅ **DROL — page-flip flicker + cut-scene hang** — DONE (2026-06-10). Three

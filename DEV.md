@@ -2028,14 +2028,31 @@ A modern analog stick rides in a *round* gate: a full diagonal only reaches
 (~0.707, ~0.707), so both paddles top out near 217/255 at once and the four
 extreme corners are physically unreachable. The original Apple II stick rode a
 *square* gate, so the corners (full X **and** full Y = 255/255) were reachable —
-which some titles need (e.g. Wings of Fury's take-off). `paddleValue()` reads
-the whole X/Y pair (the transform couples the axes), applies a **radial**
-deadzone (a per-axis one would notch the diagonals), then scales the vector out
-along its own ray until its largest component hits the square edge:
-`s = mag / max(|x|,|y|)`. This maps the inscribed circle onto the full square
-(45° → (1,1)) while leaving pure-axis directions untouched (`s = 1`). Toggle in
-the Joystick panel. Pinned by `joystick_square_gate` (pure-math test on
-`applySquareGate` + `axisToPaddle01`).
+which some titles need (e.g. Wings of Fury's take-off). The whole pipeline is
+the pure static `stickToPaddles()` (`paddleValue()` just reads the hardware
+and routes through it): **invert** → **rescaled radial deadzone** (kill by
+magnitude — per-axis would notch the diagonals — then remap [dz..1] → [0..1]
+along the ray so the reading is continuous across the engage threshold; a
+hard cutoff stepped ~12 counts) → **axis-snap notch** (zero the small axis
+while it sits under `dz × |dominant|`, so 5 % cross-axis drift during a full
+single-axis push reads 128 instead of ~134, while diagonals — comparable
+components — are never notched) → **square gate**: scale the vector out along
+its own ray until its largest component hits the square edge,
+`s = mag / max(|x|,|y|)`, mapping the inscribed circle onto the full square
+(45° → (1,1)) while leaving pure-axis directions untouched (`s = 1`) →
+`axisToPaddle01` ([-1..1] → 0..255, center 128). Toggle in the Joystick
+panel. Pinned by `joystick_square_gate` (gate + mapping + the full
+composition: deadzone-edge continuity, drift suppression, gate-off, invert).
+
+**In-game gamepad mapping (`JoystickInput::GamepadPlay`).** When the bound
+pad has a standard GLFW/SDL gamepad mapping (`play().valid`), the analog
+stick stays the Apple II paddles and the digital controls route as:
+**Circle → PB0, Cross → PB1** (`setPaddleButton`), **Square → SPACE,
+Triangle → RETURN** (one `queueKey` per press), **D-pad → Apple II arrow
+codes** (←$08 →$15 ↑$0B ↓$0A) with //e-style auto-repeat (350 ms, then
+~16/s). Raw (unmapped) pads fall back to buttons 0/1/2 → PB0/1/2 only.
+Suppressed while the kiosk menu is open (+ swallow latch across the close —
+see § Host control).
 
 ## UI (ImGui)
 
@@ -2314,33 +2331,53 @@ bootDiskPath`; `--kiosk` → `CliPlan::kiosk`. `main.cpp`:
   `pollJoystickAndPushToMemory()` + `updateAutoTurbo()` before the
   `if (kiosk_)` short-circuit, and the short-circuit itself keeps
   `driveRewindHold(F6)`, so joystick/paddles, disk auto-turbo, and F6
-  hold-to-rewind behave identically. The unconditional global keys
-  (F11/F12 reset, F9 screenshot, Left/Right Alt = Open/Solid Apple — `main.cpp`
-  `isGlobalKey`, routed even when ImGui has keyboard focus) still reach the
-  guest. Only the chrome (menu/toolbar/panels, and their toolbar-only
-  actions) is gone.
+  hold-to-rewind behave identically **while the in-game menu is closed** —
+  F6 is deliberately inert with the menu open (a `releaseHold` would end in
+  `rewindEndAndResume` → `Mode::Running` behind the paused overlay;
+  `updateKioskMenu` also re-parks the worker every frame a pause is wanted,
+  as a belt-and-braces against anything else resuming it). The
+  unconditional global keys (F11/F12 reset, F9 screenshot, Left/Right Alt =
+  Open/Solid Apple — `main.cpp` `isGlobalKey`, routed even when ImGui has
+  keyboard focus) still reach the guest — except while the menu is open:
+  `onKey`/`onChar` early-return on `kioskMenuOpen_`, because the menu's
+  keyboard fallbacks are polled via `ImGui::IsKeyPressed` and the overlay
+  never captures the keyboard, so every menu navigation key would otherwise
+  ALSO land in the $C000 latch (Enter double-typed, Esc delivered a stray
+  $1B on resume). Only the chrome (menu/toolbar/panels, and their
+  toolbar-only actions) is gone.
 
 - **`POM2_AUTO_QUIT=<N>`** (env, `main.cpp`) requests
   `glfwSetWindowShouldClose` after N seconds — a general headless-run /
-  automation self-quit hook (handy for a kiosk window, which has no in-app
-  quit otherwise).
+  automation self-quit hook.
 
-- **Gamepad disk selector** (`updateKioskDiskMenu` / `renderKioskDiskMenu`,
-  MainWindow). Keyboard-free disk flipping: the pad's **Start** (standard GLFW
-  gamepad mapping via `JoystickInput::UiNav`) — or **F10** as a fallback when
-  the pad has no SDL mapping — opens an overlay listing the 5.25" images in the
-  **same folder** as the booted disk, filtered by **name proximity** (longest
-  common prefix ≥ 6 chars and ≥ half the shorter stem) so only the same title's
-  other sides/disks show, not the whole library. D-pad/stick move, **A/Enter**
-  mounts the highlighted disk into the boot Disk II drive (slot 6, drive 1)
-  **in-place, no reboot** (`insertDisk` under `stateMutex`), keeping the menu
-  open so a **Reset** (`bootFromSlot`, reboot on the mounted disk) or **Quit**
-  (`glfwSetWindowShouldClose`) action row can follow; **B/Start/Esc** dismiss.
-  While open, paddles/buttons are fed centred/released so menu navigation never
-  leaks into the running game. The overlay omits `NoBringToFrontOnFocus` and
-  calls `SetNextWindowFocus()` so it sits above the opaque full-viewport kiosk
-  window; text is `SetWindowFontScale(5.0f)` — re-applied inside the list child
-  (a child is a separate ImGui window with its own scale).
+- **Kiosk in-game menu** (`openKioskStartMenu` / `updateKioskMenu` /
+  `renderKioskMenu`, MainWindow; pages `KioskPage::{List,Keys,RomDirs,
+  Browse,Quit}`). The pad's **Start** (standard GLFW gamepad mapping via
+  `JoystickInput::UiNav`) — or **F10** as a fallback when the pad has no SDL
+  mapping — opens a two-zone Start menu: **GAMES** lists every image
+  `classifyDiskForSlot` recognises (5.25"/3.5"/HDV) across the booted
+  disk's folder + the persisted extra ROM folders (`kiosk_romdirs.txt`,
+  outside the read-only `state.cfg`), sorted by name-proximity so the
+  mounted title's other sides float to the top (● marks the mounted disk,
+  matched canonically so relative launch paths still hit). **ACTIONS**
+  holds Restart (`bootFromSlot`) / Keyboard / ROM folders / Quit.
+  Activating a 5.25" hot-swaps it **in place, no reboot** (`insertDisk`
+  under `stateMutex` — flip-disk gesture) and keeps the menu open so a
+  Restart can follow; a 3.5"/HDV routes through `insertAndBootImage` and
+  boots immediately. **Select** (or **K**) toggles the live keyboard band
+  (machine keeps running; grid cells go through `Memory::queueKey`).
+  **B/Esc/Start** dismiss. Every Start-menu page parks the worker
+  (`kioskSetPaused` → `Mode::Stopped`, speaker flushed on resume); the Keys
+  band does not. Menu→game input isolation is two-sided: while open,
+  paddles/buttons are fed centred/released and `onKey`/`onChar` are gated;
+  on close, `kioskSwallowPad_` keeps the shared face buttons + D-pad
+  (Circle/Cross double as menu B/A **and** Apple PB0/PB1) suppressed until
+  the pad is fully released, because the poll samples `kioskMenuOpen_` one
+  frame behind `updateKioskMenu`. The overlay omits
+  `NoBringToFrontOnFocus` and calls `SetNextWindowFocus()` so it sits above
+  the opaque full-viewport kiosk window; text is `SetWindowFontScale(5.0f)`
+  — re-applied inside the list child (a child is a separate ImGui window
+  with its own scale).
 
 Pinned: `cli_kiosk_test` — a **parser-only** smoke test (links against just
 `DiskImage.cpp`): it asserts `parseCli` captures the positional disk +

@@ -8,15 +8,16 @@
 #   wasm   — Emscripten verification build (build_wasm.sh) so the browser
 #            target can never silently rot. Build-only; no test run in-browser.
 #
-# The Apple ROMs are user-supplied (copyright) and never checked in, so no test
-# here depends on them — the suite drives the emulator core directly. Dear ImGui
-# is gitignored; both jobs clone it shallowly (same as ./setup_imgui.sh).
+# No test depends on machine ROM dumps — the suite drives the emulator core
+# directly. Dear ImGui is gitignored; both jobs clone it shallowly (same as
+# ./setup_imgui.sh).
 
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ['v*']   # release tags must gate through the same suite
   pull_request:
   workflow_dispatch:
 

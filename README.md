@@ -241,7 +241,9 @@ More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ S
 - **Boots the disk image** you pass (5.25" / 3.5" / HDV, slot auto-picked from the file type) under your saved profile — or override with `--preset`, `--display`, `--cpu-max`, …
 - Is **read-only**: it never writes your `state.cfg` settings or `imgui.ini` window layout, so a kiosk session can't disturb your desktop setup. (An HDV with no HDV/SmartPort card in your saved config gets one auto-plugged **for that session only**.)
 
-Everything the machine needs keeps running: keyboard, joystick/paddles, auto-turbo during disk I/O, **F11 / F12** (soft / hard reset), **F9** (screenshot), **Left / Right Alt** (Open / Solid Apple), and **F6** (hold to rewind). There's no menu to quit from — press **Alt-F4** to close it (POM2 handles the combo itself, so it works even in exclusive full-screen).
+Everything the machine needs keeps running: keyboard, joystick/paddles, auto-turbo during disk I/O, **F11 / F12** (soft / hard reset), **F9** (screenshot), **Left / Right Alt** (Open / Solid Apple), and **F6** (hold to rewind — inert while the in-game menu is up).
+
+**In-game menu.** Press **Start** on a gamepad — or **F10** — for the Start menu: the games list on the left (every 5.25" / 3.5" / HDV image in the booted disk's folder plus your extra ROM folders; a 5.25" hot-swaps in place for flip-disk games, a 3.5"/HDV mounts and boots straight away) and an action column on the right (**Restart · Keyboard · ROM folders · Quit**). **Select** — or **K** — toggles a live on-screen keyboard band without pausing the game. D-pad / arrows move, **A / Enter** validates, **B / Esc** backs out. The machine is paused while the menu is up (except under the keyboard band), and menu presses never leak into the running game. **Alt-F4** still quits directly (POM2 handles the combo itself, so it works even in exclusive full-screen).
 
 ```bash
 POM2 --kiosk "Lode Runner.dsk"                 # boot a game, full-screen

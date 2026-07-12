@@ -1094,6 +1094,14 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     // oversized MEX aborts the restore with a 400.
     const auto res = pom2::restoreMachineState(r, ctrl_->cpu(), ctrl_->memory());
     if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
+    // The restore usually rewinds mem's cycleCounter; the speaker's
+    // reconstruction cursor only snaps FORWARD and purges older-stamped
+    // toggles as stale, so without this flush audio stays dead until the
+    // counter re-passes its pre-load value (minutes of emulated time).
+    // The rewind ring recorded the abandoned timeline — its stamps would
+    // break indexForCycle's monotonicity — so drop it too.
+    ctrl_->speaker().reset();
+    ctrl_->rewind().clear();
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 

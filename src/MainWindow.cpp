@@ -1563,6 +1563,11 @@ void MainWindow::onChar(unsigned int codepoint)
     // band, etc.) are read via ImGui::IsKeyPressed — the same keystroke must
     // not also land in the $C000 latch.
     if (kioskMenuOpen_) return;
+    // In kiosk, K is reserved (Select fallback): the OPEN direction leaks
+    // otherwise — this callback fires while the menu is still closed, then
+    // updateKioskMenu opens the non-pausing Keys band the same frame, so the
+    // running game would receive a live 'k' on every open.
+    if (kiosk_ && (codepoint == 'k' || codepoint == 'K')) return;
     // Apple II accepts the full ASCII range (uppercase and lowercase). We
     // forward the codepoint as-is — Applesoft and the Monitor pick whichever
     // case the user typed.
@@ -1593,6 +1598,9 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
     // would send the cell AND inject $0D, Esc would close the menu AND
     // type $1B into the game on resume.
     if (kioskMenuOpen_) return;
+    // K reserved in kiosk (see onChar) — also blocks Ctrl-K's $0B, since
+    // eSelect fires on the K key regardless of modifiers.
+    if (kiosk_ && key == GLFW_KEY_K) return;
 
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
     const bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
@@ -3599,7 +3607,10 @@ void MainWindow::pollJoystickAndPushToMemory()
     // Latch a swallow on the open→closed edge and hold it until every shared
     // button (faces + D-pad) is released. Analog paddles stay live — the
     // stick isn't a menu control and carries no edge.
-    if (kioskMenuWasOpen_ && !menuActive) kioskSwallowPad_ = true;
+    // Only gamepad-mapped pads need the latch: raw pads can't drive the menu
+    // (nav requires a mapping), so a fire button held across a keyboard-
+    // driven close is a legitimate game input, not a menu leftover.
+    if (kioskMenuWasOpen_ && !menuActive && play.valid) kioskSwallowPad_ = true;
     kioskMenuWasOpen_ = menuActive;
     if (kioskSwallowPad_) {
         const bool anyHeld = play.valid
@@ -5640,6 +5651,17 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             return true;
         }
         case DiskSlotClass::Sony35: {
+            // Without a SmartPort card, routeMount35 falls through to the
+            // //c+ on-board Sony hub — a device that only exists on the
+            // //c+. On any other machine the image would "mount" into
+            // hardware the guest can't see and the cold boot below would
+            // land at the BASIC prompt with no error at all.
+            if (!smartPortCard &&
+                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
+                errOut = "no 3.5\" device in this config — add a SmartPort "
+                         "3.5\" card in Slot Configuration";
+                return false;
+            }
             if (!routeMount35(0, path, errOut)) return false;
             // SmartPort card present (incl. //c-class built-in slot 5) →
             // boot it explicitly; otherwise cold-boot (//c+ on-board hub).
