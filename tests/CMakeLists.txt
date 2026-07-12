@@ -3723,3 +3723,35 @@ if(WIN32)
 endif()
 add_test(NAME dhgr_paint_model COMMAND test_dhgr_paint_model)
 set_tests_properties(dhgr_paint_model PROPERTIES TIMEOUT 15)
+
+# ─── DHGR 560-dot converter vs real renderDhgr ────────────────────────────
+# Pins (1) the converter's internal ColorNTSC DHGR decode byte-identical to
+# Apple2Display::renderDhgr (the optimisation target IS the canvas), (2)
+# solid-field conversions land the trivial optimum, (3) ICM refinement is
+# monotone on the frozen-target cost. Gate for imageToDhgrPage560 and any
+# Apple2VideoDecode LUT change.
+add_executable(test_dhgr_convert
+    dhgr_convert_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/Cam16.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/DhgrNtsc8Palette.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrConvert.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrPaintModel.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_dhgr_convert PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_dhgr_convert PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_dhgr_convert PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_dhgr_convert PRIVATE winmm)
+endif()
+add_test(NAME dhgr_convert COMMAND test_dhgr_convert)
+set_tests_properties(dhgr_convert PROPERTIES TIMEOUT 60)

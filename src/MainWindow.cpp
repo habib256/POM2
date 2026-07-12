@@ -35,6 +35,7 @@
 #include "Logger.h"
 #include "MemoryViewer_ImGui.h"
 #include "HgrPaintEditor.h"     // portable hgrpaint/ editor (shared with POM1)
+#include "HgrSpriteEditor.h"    // portable hgrsprite/ editor (same host seam)
 #include "Pom2HgrPaintHost.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
@@ -137,6 +138,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
       hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
       hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
+      hgrSpriteEditor(std::make_unique<hgrsprite::HgrSpriteEditor>(hgrPaintHost.get())),
       joystick       (std::make_unique<JoystickInput>()),
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
@@ -367,6 +369,18 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
         showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
         showHgrPaintEditor = settings->getBool ("show_hgr_paint",  showHgrPaintEditor);
+        showHgrSpriteEditor = settings->getBool("show_hgr_sprite", showHgrSpriteEditor);
+        {
+            hgrpaint::HgrPaintEditor::Session hs;
+            hs.mode       = settings->getInt   ("hgr_paint_mode",  0);
+            hs.page2      = settings->getBool  ("hgr_paint_page2", false);
+            hs.zoomIdx    = settings->getInt   ("hgr_paint_zoom",  2);
+            hs.ntscColor  = settings->getBool  ("hgr_paint_ntsc",  true);
+            hs.aspect43   = settings->getBool  ("hgr_paint_43",    false);
+            hs.canvasPipeline = settings->getInt("hgr_paint_pipe", 0);
+            hs.browserDir = settings->getString("hgr_paint_dir",   "");
+            hgrPaintEditor->restoreSession(hs);
+        }
         showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
         controller->rewind().setEnabled(settings->getBool("rewind_enabled", false));
         showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
@@ -645,9 +659,10 @@ MainWindow::~MainWindow()
     aiServer->stop();
     controller->stop();
 
-    // Free the paint editor's GPU textures while the GL context is still
-    // current (same window teardown order as the About-photo texture below).
-    if (hgrPaintEditor) hgrPaintEditor->releaseGL();
+    // Free the paint/sprite editors' GPU textures while the GL context is
+    // still current (same window teardown order as the About-photo texture).
+    if (hgrPaintEditor)  hgrPaintEditor->releaseGL();
+    if (hgrSpriteEditor) hgrSpriteEditor->releaseGL();
 
     // Persist the current state so the next launch restores the same
     // mounted disks, video mode, panels, and audio levels.
@@ -807,6 +822,17 @@ MainWindow::~MainWindow()
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
     settings->setBool  ("show_cassette",   showCassetteDeck);
     settings->setBool  ("show_hgr_paint",  showHgrPaintEditor);
+    settings->setBool  ("show_hgr_sprite", showHgrSpriteEditor);
+    {
+        const auto hs = hgrPaintEditor->session();
+        settings->setInt   ("hgr_paint_mode",  hs.mode);
+        settings->setBool  ("hgr_paint_page2", hs.page2);
+        settings->setInt   ("hgr_paint_zoom",  hs.zoomIdx);
+        settings->setBool  ("hgr_paint_ntsc",  hs.ntscColor);
+        settings->setBool  ("hgr_paint_43",    hs.aspect43);
+        settings->setInt   ("hgr_paint_pipe",  hs.canvasPipeline);
+        settings->setString("hgr_paint_dir",   hs.browserDir);
+    }
     settings->setBool  ("show_rewind",     showRewindBar);
     settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
     settings->setBool  ("show_joystick",   showJoystickPanel);
@@ -2203,8 +2229,12 @@ void MainWindow::renderMenuBar()
     if (ImGui::BeginMenu("Tools")) {
         ImGui::MenuItem("HGR Paint Editor", nullptr, &showHgrPaintEditor);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Paint directly into HGR/GR video RAM through "
+            ImGui::SetTooltip("Paint directly into HGR/GR/DHGR video RAM through "
                               "the real NTSC pipeline (image import included).");
+        ImGui::MenuItem("HGR Sprite Editor", nullptr, &showHgrSpriteEditor);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Draw HGR sprites on a scratch page, grab from / "
+                              "stamp to the live screen, export ca65 .byte tables.");
 #ifndef __EMSCRIPTEN__
         // The AI Control HTTP server is compiled out under WASM
         // (AiControlServer::start() returns false — no listening socket in
@@ -7374,6 +7404,25 @@ void MainWindow::renderHgrPaintWindow()
     ImGui::End();
 }
 
+void MainWindow::renderHgrSpriteWindow()
+{
+    if (!showHgrSpriteEditor) return;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        const Memory& mem = controller->memory();
+        hgrPaintMem_.assign(mem.data(), mem.data() + 0x10000);
+        if (mem.isIIE())
+            hgrPaintAux_.assign(mem.auxData(), mem.auxData() + 0x10000);
+        else
+            hgrPaintAux_.clear();
+    }
+    ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("HGR Sprite Editor", &showHgrSpriteEditor))
+        hgrSpriteEditor->render(hgrPaintMem_, hgrPaintAux_.empty() ? nullptr
+                                                                   : &hgrPaintAux_);
+    ImGui::End();
+}
+
 void MainWindow::driveRewindHold(bool held)
 {
     // Edge-detect: hold → step the machine backwards one frame; release →
@@ -7654,6 +7703,7 @@ void MainWindow::render()
     if (showMemoryGrid) renderMemoryGridWindow();
     renderCassetteDeckWindow(deltaSeconds);
     renderHgrPaintWindow();
+    renderHgrSpriteWindow();
     if (showRewindBar) renderRewindWindow(deltaSeconds);
     renderTapeFileDialogs();
     renderPasteFileDialog();

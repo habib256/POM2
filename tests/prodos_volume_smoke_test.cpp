@@ -421,6 +421,41 @@ static void testSubdirsBuildAndDecode()
     std::printf("prodos_volume_smoke: subdirs build+decode OK\n");
 }
 
+// "NAME#TTAAAA" metadata tags (CiderPress convention, 2026-07-12): the tag
+// sets file_type + aux_type and is stripped from the ProDOS name — the HGR
+// Paint editor's "PIC#062000" saves become BIN files loading at $2000.
+static void testMetadataTagParsing()
+{
+    fs::path dir = makeTempDir("tags");
+    writeFile(dir / "PIC#062000", std::vector<std::uint8_t>(256, 0xAB));
+    writeFile(dir / "PLAIN.bin",  std::vector<std::uint8_t>(16, 0x01));
+    writeFile(dir / "NOTAG#12",   std::vector<std::uint8_t>(16, 0x02));  // short → not a tag
+
+    std::vector<std::uint8_t> img;
+    auto br = pom2::buildVolumeFromFolder(dir.string(), "HOST", img);
+    assert(br.ok);
+    assert(br.filesIncluded == 3);
+
+    // Scan the volume directory (blocks 2..5) for the three entries.
+    bool sawPic = false, sawPlain = false, sawNoTag = false;
+    for (int blk = 2; blk <= 5; ++blk) {
+        const std::uint8_t* b = img.data() + blk * kBlockBytes;
+        for (int e = 0; e < 13; ++e) {
+            const std::uint8_t* ent = b + 4 + e * 39;
+            const int nameLen = ent[0] & 0x0F;
+            if (nameLen == 0) continue;
+            const std::string name(reinterpret_cast<const char*>(ent + 1), nameLen);
+            const std::uint8_t  type = ent[0x10];
+            const std::uint16_t aux  = static_cast<std::uint16_t>(ent[0x1F] | (ent[0x20] << 8));
+            if (name == "PIC")   { sawPic = true;   assert(type == 0x06 && aux == 0x2000); }
+            if (name == "PLAIN") { sawPlain = true; assert(type == 0x06 && aux == 0x0000); }
+            if (name.rfind("NOTAG", 0) == 0) { sawNoTag = true; assert(aux == 0x0000); }
+        }
+    }
+    assert(sawPic && sawPlain && sawNoTag);
+    std::printf("prodos_volume_smoke: metadata tags OK\n");
+}
+
 int main()
 {
     testEmptyFolder();
@@ -428,6 +463,7 @@ int main()
     testNameSanitisationAndCollisions();
     testRoundTripFolderToVolumeToFolder();
     testSubdirsBuildAndDecode();
+    testMetadataTagParsing();
     std::printf("prodos_volume_smoke: PASS\n");
     return 0;
 }

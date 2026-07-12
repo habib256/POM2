@@ -110,6 +110,21 @@ const char* const kGrColorNames[16] = {
     "Medium Blue", "Light Blue", "Brown", "Orange", "Light Gray", "Pink",
     "Light Green", "Yellow", "Aquamarine", "White" };
 
+// MacPaint-style 8×8 fill patterns (bit x of row y&7 = foreground). Order is
+// append-only (patternIdx is plain state).
+struct Pattern8 { const char* name; uint8_t rows[8]; };
+const Pattern8 kPatterns[] = {
+    { "Solid",      {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF} },
+    { "50%",        {0xAA,0x55,0xAA,0x55,0xAA,0x55,0xAA,0x55} },
+    { "25%",        {0x88,0x00,0x22,0x00,0x88,0x00,0x22,0x00} },
+    { "75%",        {0x77,0xFF,0xDD,0xFF,0x77,0xFF,0xDD,0xFF} },
+    { "H lines",    {0xFF,0x00,0x00,0x00,0xFF,0x00,0x00,0x00} },
+    { "V lines",    {0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11} },
+    { "Diagonal",   {0x11,0x22,0x44,0x88,0x11,0x22,0x44,0x88} },
+    { "Brick",      {0xFF,0x08,0x08,0x08,0xFF,0x80,0x80,0x80} },
+};
+constexpr int kPatternCount = static_cast<int>(sizeof(kPatterns) / sizeof(kPatterns[0]));
+
 // FontAwesome-solid glyph for each tool, in Tool-enum order.
 const char* const kToolIcons[10] = {
     ICON_FA_PENCIL,        // Pencil
@@ -140,6 +155,38 @@ hgrpaint::HgrPaintEditor::~HgrPaintEditor()
     releaseGL();   // no-op if the host already released them before context teardown
 }
 
+bool hgrpaint::HgrPaintEditor::patternOn(int x, int y) const
+{
+    const int i = (patternIdx >= 0 && patternIdx < kPatternCount) ? patternIdx : 0;
+    return (kPatterns[i].rows[y & 7] >> (x & 7)) & 1;
+}
+
+hgrpaint::HgrPaintEditor::Session hgrpaint::HgrPaintEditor::session() const
+{
+    Session s;
+    s.mode = dlgrMode ? 3 : dhgrMode ? 2 : grMode ? 1 : 0;
+    s.page2 = page2;
+    s.zoomIdx = zoomIdx;
+    s.ntscColor = ntscColor;
+    s.aspect43 = aspect43;
+    s.canvasPipeline = host ? host->canvasPipeline() : 0;
+    s.browserDir = browserDir;
+    return s;
+}
+
+void hgrpaint::HgrPaintEditor::restoreSession(const Session& s)
+{
+    int mode = s.mode;
+    if ((mode == 2 || mode == 3) && !(host && host->supportsDhgr())) mode = 0;
+    switchPage(mode, s.page2);
+    zoomIdx = std::clamp(s.zoomIdx, 0, kZoomLadderCount - 1);
+    firstFit = false;   // an explicit zoom was restored — don't refit over it
+    ntscColor = s.ntscColor;
+    aspect43 = s.aspect43;
+    if (host) host->setCanvasPipeline(s.canvasPipeline);
+    browserDir = s.browserDir;
+}
+
 void hgrpaint::HgrPaintEditor::releaseGL()
 {
     // Destroy GPU textures via the host. Call this BEFORE the GL context is torn
@@ -149,8 +196,10 @@ void hgrpaint::HgrPaintEditor::releaseGL()
         if (texture)          host->destroyTexture(texture);
         if (importPreviewTex) host->destroyTexture(importPreviewTex);
         if (importSrcTex)     host->destroyTexture(importSrcTex);
+        if (onionTex)         host->destroyTexture(onionTex);
+        if (flipTex)          host->destroyTexture(flipTex);
     }
-    texture = importPreviewTex = importSrcTex = nullptr;
+    texture = importPreviewTex = importSrcTex = onionTex = flipTex = nullptr;
 }
 
 void hgrpaint::HgrPaintEditor::renderShadow(uint32_t* out, bool mono)
@@ -158,6 +207,8 @@ void hgrpaint::HgrPaintEditor::renderShadow(uint32_t* out, bool mono)
     if (!host) return;
     if (dhgrMode)
         host->renderDhgrPage(shadow.data(), shadow.data() + kHiresSize, out, mono);
+    else if (dlgrMode)
+        host->renderDlgrPage(shadow.data(), shadow.data() + 0x400, out, mono);
     else
         host->renderHgrPage(shadow.data(), out, mono, grMode);
 }
@@ -212,10 +263,55 @@ void hgrpaint::HgrPaintEditor::applyDhgrPlot(int x, int y, HgrColor c)
     if (n > 1 && shadow[offs[1]] != old1) emitShadowEdit(offs[1], old1);
 }
 
-void hgrpaint::HgrPaintEditor::applyPlot(int x, int y, HgrColor c)
+void hgrpaint::HgrPaintEditor::applyDlgrPlot(int x, int y, HgrColor c)
+{
+    // Map the 560-dot logical space to an 80×48 block (7 dots × 4 px each).
+    if (x < 0 || x >= 2 * kHiresWidth || y < 0 || y >= kHiresHeight) return;
+    const int bx = x / 7, by = y / 4;
+    const int idx = (c == HgrColor::Black) ? 0 : grColor;
+    const int probe = hgrpaint::dlgrBlockOffset(bx, by);
+    if (probe < 0) return;
+    const uint8_t old = shadow[probe];
+    const int off = hgrpaint::plotDlgrBlock(shadow.data(), bx, by, idx);
+    if (off < 0) return;
+    emitShadowEdit(off, old);
+}
+
+void hgrpaint::HgrPaintEditor::dlgrFloodFill(int x, int y, int colorIndex)
+{
+    if (x < 0 || x >= 2 * kHiresWidth || y < 0 || y >= kHiresHeight) return;
+    const int sbx = x / 7, sby = y / 4;
+    const int seed = hgrpaint::dlgrBlockColorAt(shadow.data(), sbx, sby);
+    if (seed < 0 || (seed == (colorIndex & 0x0F) && patternIdx == 0)) return;
+    std::vector<uint8_t> seen(static_cast<size_t>(kDlgrCols) * kGrRows, 0);
+    std::vector<std::pair<int,int>> stack;
+    stack.emplace_back(sbx, sby);
+    seen[static_cast<size_t>(sby) * kDlgrCols + sbx] = 1;
+    while (!stack.empty()) {
+        const auto [bx, by] = stack.back(); stack.pop_back();
+        const int probe = hgrpaint::dlgrBlockOffset(bx, by);
+        const uint8_t old = shadow[probe];
+        const int idx = patternOn(bx, by) ? colorIndex : 0;
+        const int off = hgrpaint::plotDlgrBlock(shadow.data(), bx, by, idx);
+        if (off >= 0) emitShadowEdit(off, old);
+        const int nb[4][2] = {{bx-1,by},{bx+1,by},{bx,by-1},{bx,by+1}};
+        for (auto& n : nb) {
+            const int nx = n[0], ny = n[1];
+            if (nx < 0 || nx >= kDlgrCols || ny < 0 || ny >= kGrRows) continue;
+            const size_t i = static_cast<size_t>(ny) * kDlgrCols + nx;
+            if (seen[i]) continue;
+            if (hgrpaint::dlgrBlockColorAt(shadow.data(), nx, ny) != seed) continue;
+            seen[i] = 1;
+            stack.emplace_back(nx, ny);
+        }
+    }
+}
+
+void hgrpaint::HgrPaintEditor::applyPlotRaw(int x, int y, HgrColor c)
 {
     if (grMode)  { applyGrPlot(x, y, c);   return; }
     if (dhgrMode){ applyDhgrPlot(x, y, c); return; }
+    if (dlgrMode){ applyDlgrPlot(x, y, c); return; }
     const int off = hgrpaint::targetOffset(x, y, c);
     if (off < 0) return;
     const uint8_t old = shadow[off];
@@ -224,12 +320,26 @@ void hgrpaint::HgrPaintEditor::applyPlot(int x, int y, HgrColor c)
     emitShadowEdit(changed, old);
 }
 
+void hgrpaint::HgrPaintEditor::applyPlot(int x, int y, HgrColor c)
+{
+    applyPlotRaw(x, y, c);
+    // Mirror symmetry: every brush/shape plot repeats about the enabled axes
+    // (all inside the same stroke, so one undo unwinds the whole set). The
+    // centre column/row plots once — the mirrored coordinate is checked for
+    // identity, not parity.
+    const int mx = logicalW() - 1 - x;
+    const int my = kHiresHeight - 1 - y;
+    if (mirrorX && mx != x)                          applyPlotRaw(mx, y, c);
+    if (mirrorY && my != y)                          applyPlotRaw(x, my, c);
+    if (mirrorX && mirrorY && mx != x && my != y)    applyPlotRaw(mx, my, c);
+}
+
 void hgrpaint::HgrPaintEditor::paintBrush(int cx, int cy, HgrColor c)
 {
     const int r = brushSize - 1;
     for (int dy = -r; dy <= r; ++dy)
         for (int dx = -r; dx <= r; ++dx)
-            applyPlot(cx + dx, cy + dy, c);
+            applyPlotPat(cx + dx, cy + dy, c);
 }
 
 void hgrpaint::HgrPaintEditor::paintLine(int x0, int y0, int x1, int y1, HgrColor c)
@@ -254,7 +364,7 @@ void hgrpaint::HgrPaintEditor::paintRect(int x0, int y0, int x1, int y1, HgrColo
     if (filled) {
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x)
-                applyPlot(x, y, c);
+                applyPlotPat(x, y, c);
     } else {
         paintLine(x0, y0, x1, y0, c);
         paintLine(x0, y1, x1, y1, c);
@@ -284,8 +394,8 @@ void hgrpaint::HgrPaintEditor::paintEllipse(int x0, int y0, int x1, int y1, HgrC
     auto emit = [&](int ex, int ey) {
         if (filled) {
             for (int x = cx - ex; x <= cx + ex; ++x) {
-                applyPlot(x, cy + ey, c);
-                applyPlot(x, cy - ey, c);
+                applyPlotPat(x, cy + ey, c);
+                applyPlotPat(x, cy - ey, c);
             }
         } else {
             paintBrush(cx + ex, cy + ey, c);
@@ -338,7 +448,9 @@ void hgrpaint::HgrPaintEditor::grFloodFill(int x, int y, int colorIndex)
     // block colour at the seed with colorIndex, recording per-byte undo edits.
     const int sbx = x / 7, sby = y / 4;
     const int seed = hgrpaint::grBlockColorAt(shadow.data(), sbx, sby);
-    if (seed < 0 || seed == (colorIndex & 0x0F)) return;
+    // Same-colour fill is a no-op only when the fill is SOLID — a patterned
+    // fill over its own colour is a legitimate texturing move.
+    if (seed < 0 || (seed == (colorIndex & 0x0F) && patternIdx == 0)) return;
     std::vector<uint8_t> seen(static_cast<size_t>(kGrCols) * kGrRows, 0);
     std::vector<std::pair<int,int>> stack;
     stack.emplace_back(sbx, sby);
@@ -348,7 +460,9 @@ void hgrpaint::HgrPaintEditor::grFloodFill(int x, int y, int colorIndex)
         const int bx = p.first, by = p.second;
         const int probe = hgrpaint::grBlockOffset(bx, by);
         const uint8_t old = shadow[probe];
-        const int off = hgrpaint::plotGrBlock(shadow.data(), bx, by, colorIndex);
+        // Pattern sampled at block coordinates so the fill tiles like a brush.
+        const int idx = patternOn(bx, by) ? colorIndex : 0;
+        const int off = hgrpaint::plotGrBlock(shadow.data(), bx, by, idx);
         if (off >= 0) emitShadowEdit(off, old);
         const int nb[4][2] = {{bx-1,by},{bx+1,by},{bx,by-1},{bx,by+1}};
         for (auto& n : nb) {
@@ -369,7 +483,7 @@ void hgrpaint::HgrPaintEditor::dhgrFloodFill(int x, int y, int colorIndex)
     // region of equal pixel colour at the seed. No NTSC-perception pass needed —
     // the aligned block model is a flat grid like GR, just finer.
     const int seed = hgrpaint::dhgrColorAt(shadow.data(), x, y);
-    if (seed < 0 || seed == (colorIndex & 0x0F)) return;
+    if (seed < 0 || (seed == (colorIndex & 0x0F) && patternIdx == 0)) return;
     std::vector<uint8_t> seen(static_cast<size_t>(kDhgrWidth) * kHiresHeight, 0);
     std::vector<std::pair<int,int>> stack;
     stack.emplace_back(x, y);
@@ -381,7 +495,8 @@ void hgrpaint::HgrPaintEditor::dhgrFloodFill(int x, int y, int colorIndex)
         if (n > 0) {
             const uint8_t old0 = shadow[offs[0]];
             const uint8_t old1 = (n > 1) ? shadow[offs[1]] : 0;
-            if (hgrpaint::plotDhgrPixel(shadow.data(), px, py, colorIndex) > 0) {
+            const int idx = patternOn(px, py) ? colorIndex : 0;   // patterned fill
+            if (hgrpaint::plotDhgrPixel(shadow.data(), px, py, idx) > 0) {
                 if (shadow[offs[0]] != old0) emitShadowEdit(offs[0], old0);
                 if (n > 1 && shadow[offs[1]] != old1) emitShadowEdit(offs[1], old1);
             }
@@ -404,6 +519,7 @@ void hgrpaint::HgrPaintEditor::floodFill(int x, int y, HgrColor c)
     if (x < 0 || x >= logicalW() || y < 0 || y > 191) return;
     if (grMode)  { grFloodFill(x, y, (c == HgrColor::Black) ? 0 : grColor); return; }
     if (dhgrMode){ dhgrFloodFill(x, y, (c == HgrColor::Black) ? 0 : grColor); return; }
+    if (dlgrMode){ dlgrFloodFill(x, y, (c == HgrColor::Black) ? 0 : grColor); return; }
     // Flood by *perceived* artifact colour (hgrpaint::fillRegion renders the page
     // through the host NTSC pipeline), which is what the eye sees — a raw-bit
     // flood leaks through the off sub-pixels that dither every chromatic region.
@@ -467,6 +583,9 @@ void hgrpaint::HgrPaintEditor::clearPage()
     // would poke $0400-$23FF — clobbering GR page 2, user RAM, and HIRES page 1.
     const int limit = std::min(pageBytes(), static_cast<int>(shadow.size()));
     for (int off = 0; off < limit; ++off) {
+        // Text pages: never touch the screen holes — peripheral firmware
+        // scratch (DLGR checks per plane; both planes carry holes).
+        if ((grMode || dlgrMode) && hgrpaint::grIsScreenHole(off & 0x3FF)) continue;
         if (shadow[off] != 0) {
             const uint8_t old = shadow[off];
             shadow[off] = 0;
@@ -480,38 +599,87 @@ void hgrpaint::HgrPaintEditor::clearPage()
 // Selection / clipboard (HGR-06) and palette-shift (HGR-11)
 // ─────────────────────────────────────────────────────────────
 
+void hgrpaint::HgrPaintEditor::applyIdxPlot(int x, int y, int colorIndex)
+{
+    if (grMode || dlgrMode) {
+        if (x < 0 || x >= logicalW() || y < 0 || y >= kHiresHeight) return;
+        const int bx = x / 7, by = y / 4;   // 7 canvas px per block in both spaces
+        const int probe = grMode ? hgrpaint::grBlockOffset(bx, by)
+                                 : hgrpaint::dlgrBlockOffset(bx, by);
+        if (probe < 0) return;
+        const uint8_t old = shadow[probe];
+        const int off = grMode
+            ? hgrpaint::plotGrBlock(shadow.data(), bx, by, colorIndex)
+            : hgrpaint::plotDlgrBlock(shadow.data(), bx, by, colorIndex);
+        if (off >= 0) emitShadowEdit(off, old);
+    } else if (dhgrMode) {
+        int offs[2];
+        const int n = hgrpaint::dhgrPixelOffsets(x, y, offs);
+        if (n == 0) return;
+        const uint8_t old0 = shadow[offs[0]];
+        const uint8_t old1 = (n > 1) ? shadow[offs[1]] : 0;
+        if (hgrpaint::plotDhgrPixel(shadow.data(), x, y, colorIndex) <= 0) return;
+        if (shadow[offs[0]] != old0) emitShadowEdit(offs[0], old0);
+        if (n > 1 && shadow[offs[1]] != old1) emitShadowEdit(offs[1], old1);
+    }
+}
+
 void hgrpaint::HgrPaintEditor::copySelection(bool cut)
 {
-    if (grMode || dhgrMode) { status = "Copy/cut not available in this mode"; return; }
     if (!hasSel) return;
     const int x0 = std::min(selX0, selX1), x1 = std::max(selX0, selX1);
     const int y0 = std::min(selY0, selY1), y1 = std::max(selY0, selY1);
     clip.w = x1 - x0 + 1;
     clip.h = y1 - y0 + 1;
-    clip.px.assign(static_cast<size_t>(clip.w) * clip.h, HgrColor::Black);
-    // Store LOGICAL colours so paste re-snaps parity at any destination column.
-    for (int y = y0; y <= y1; ++y)
-        for (int x = x0; x <= x1; ++x)
-            clip.px[static_cast<size_t>(y - y0) * clip.w + (x - x0)] =
-                hgrpaint::colorAt(shadow.data(), x, y);
+    clip.sixteen = sixteenMode();
+    clip.px.clear();
+    clip.idx.clear();
+    if (clip.sixteen) {
+        // 16-colour modes copy indices at the logical grid (GR reads through
+        // its 7×4 canvas-px blocks, DHGR per colour pixel).
+        clip.idx.assign(static_cast<size_t>(clip.w) * clip.h, 0);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const int v = grMode
+                    ? hgrpaint::grBlockColorAt(shadow.data(), x / 7, y / 4)
+                    : dlgrMode
+                    ? hgrpaint::dlgrBlockColorAt(shadow.data(), x / 7, y / 4)
+                    : hgrpaint::dhgrColorAt(shadow.data(), x, y);
+                clip.idx[static_cast<size_t>(y - y0) * clip.w + (x - x0)] =
+                    static_cast<int8_t>(std::max(v, 0));
+            }
+    } else {
+        // Store LOGICAL colours so paste re-snaps parity at any destination.
+        clip.px.assign(static_cast<size_t>(clip.w) * clip.h, HgrColor::Black);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                clip.px[static_cast<size_t>(y - y0) * clip.w + (x - x0)] =
+                    hgrpaint::colorAt(shadow.data(), x, y);
+    }
     if (cut) {
         beginStroke(true);
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x)
-                applyPlot(x, y, HgrColor::Black);
+                applyPlotRaw(x, y, HgrColor::Black);   // region op: no mirror
         commitStroke();
     }
 }
 
 void hgrpaint::HgrPaintEditor::pasteFloatingAt(int destX, int destY)
 {
-    if (grMode || dhgrMode || clip.w <= 0) return;
+    if (!clipUsableHere()) return;
     beginStroke(true);
     for (int y = 0; y < clip.h; ++y)
         for (int x = 0; x < clip.w; ++x) {
-            const HgrColor c = clip.px[static_cast<size_t>(y) * clip.w + x];
-            if (c == HgrColor::Black) continue;   // black = transparent (overlay paste)
-            applyPlot(destX + x, destY + y, c);
+            if (clip.sixteen) {
+                const int v = clip.idx[static_cast<size_t>(y) * clip.w + x];
+                if (v == 0) continue;             // black = transparent
+                applyIdxPlot(destX + x, destY + y, v);
+            } else {
+                const HgrColor c = clip.px[static_cast<size_t>(y) * clip.w + x];
+                if (c == HgrColor::Black) continue;   // black = transparent
+                applyPlotRaw(destX + x, destY + y, c);   // region op: no mirror
+            }
         }
     commitStroke();
 }
@@ -530,13 +698,15 @@ void hgrpaint::HgrPaintEditor::paintPaletteByte(int lx, int ly)
 
 void hgrpaint::HgrPaintEditor::stampText(const char* text, HgrColor c)
 {
-    if (grMode || dhgrMode) return;   // bbfont is 280-HIRES-only (7-px glyphs)
+    if (grMode || dlgrMode) return;   // lo-res blocks are too coarse for glyphs
     if (!textPlaced || !text || !*text) return;
-    // Chromatic colours occupy a single column parity (Violet/Blue even,
+    // HGR: chromatic colours occupy a single column parity (Violet/Blue even,
     // Green/Orange odd); light only the glyph pixels on that parity so the text
     // renders as one clean artifact colour instead of double-stamping snapped
-    // columns. White/Black light every pixel. One undo step for the whole stamp.
-    const int parity = (c == HgrColor::Violet || c == HgrColor::Blue)  ? 0
+    // columns. White/Black light every pixel. DHGR has no parity: glyphs stamp
+    // as fat 140-px colour pixels (~20 chars/line). One undo step per stamp.
+    const int parity = (dhgrMode) ? -1
+                     : (c == HgrColor::Violet || c == HgrColor::Blue)  ? 0
                      : (c == HgrColor::Green  || c == HgrColor::Orange) ? 1
                      : -1;
     beginStroke(true);
@@ -545,14 +715,14 @@ void hgrpaint::HgrPaintEditor::stampText(const char* text, HgrColor c)
         const unsigned char ch = static_cast<unsigned char>(*p);
         if (ch == '\n') { cx = textHomeX; cy += kBBFontGlyphH; continue; }
         // Word-wrap at the right edge so long strings don't run off the page.
-        if (cx + kBBFontGlyphW > kHiresWidth) { cx = textHomeX; cy += kBBFontGlyphH; }
+        if (cx + kBBFontGlyphW > logicalW()) { cx = textHomeX; cy += kBBFontGlyphH; }
         if (cy >= kHiresHeight) break;
         for (int gy = 0; gy < kBBFontGlyphH; ++gy)
             for (int gx = 0; gx < kBBFontGlyphW; ++gx) {
                 if (!hgrpaint::bbFontPixel(ch, gx, gy)) continue;
                 const int px = cx + gx;
                 if (parity >= 0 && (px & 1) != parity) continue;
-                applyPlot(px, cy + gy, c);
+                applyPlotRaw(px, cy + gy, c);   // region op: no mirror
             }
         cx += kBBFontAdvance;
     }
@@ -593,9 +763,9 @@ void hgrpaint::HgrPaintEditor::renderMinimap()
 
     // Visible viewport box (logical coords) → thumbnail.
     const float lx0 = canvasScrollX / canvasScale;
-    const float ly0 = canvasScrollY / canvasScale;
+    const float ly0 = canvasScrollY / canvasScaleY;
     const float lw  = canvasViewW  / canvasScale;
-    const float lh  = canvasViewH  / canvasScale;
+    const float lh  = canvasViewH  / canvasScaleY;
     auto mmx = [&](float lx){ return mmMin.x + (lx / kHiresWidth)  * mmW; };
     auto mmy = [&](float ly){ return mmMin.y + (ly / kHiresHeight) * mmH; };
     dl->AddRect(ImVec2(mmx(lx0), mmy(ly0)), ImVec2(mmx(lx0 + lw), mmy(ly0 + lh)),
@@ -608,58 +778,64 @@ void hgrpaint::HgrPaintEditor::renderMinimap()
         const ImVec2 m = ImGui::GetIO().MousePos;
         const float fx = std::clamp((m.x - mmMin.x) / mmW, 0.0f, 1.0f);
         const float fy = std::clamp((m.y - mmMin.y) / mmH, 0.0f, 1.0f);
-        pendingScrollX = std::clamp(fx * kHiresWidth  * canvasScale - canvasViewW * 0.5f, 0.0f, canvasScrollMaxX);
-        pendingScrollY = std::clamp(fy * kHiresHeight * canvasScale - canvasViewH * 0.5f, 0.0f, canvasScrollMaxY);
+        pendingScrollX = std::clamp(fx * kHiresWidth  * canvasScale  - canvasViewW * 0.5f, 0.0f, canvasScrollMaxX);
+        pendingScrollY = std::clamp(fy * kHiresHeight * canvasScaleY - canvasViewH * 0.5f, 0.0f, canvasScrollMaxY);
     }
 }
 
-void hgrpaint::HgrPaintEditor::switchPage(bool toGr, bool toDhgr, bool toPage2)
+void hgrpaint::HgrPaintEditor::switchPage(int mode, bool toPage2)
 {
-    if (grMode == toGr && dhgrMode == toDhgr && page2 == toPage2) return;
+    const bool toGr = (mode == 1), toDhgr = (mode == 2), toDlgr = (mode == 3);
+    if (grMode == toGr && dhgrMode == toDhgr && dlgrMode == toDlgr &&
+        page2 == toPage2) return;
     // baseAddr() changes and undo/redo store ABSOLUTE addresses for the old page,
     // so flush any open op and drop history (same reasoning as the round-2 C2 fix).
     if (dragging) { commitStroke(); dragging = false; }
     pasting = false; hasSel = false;
     undo.clear(); redo.clear();
-    grMode = toGr; dhgrMode = toDhgr; page2 = toPage2;
-    // The DHGR shadow carries BOTH planes (aux 8 KB + main 8 KB); the other
-    // modes are main-only. renderCanvas refills it from live RAM next frame.
-    shadow.assign(dhgrMode ? kDhgrPairSize : kHiresSize, 0);
-    // applyGrPlot/applyDhgrPlot treat HgrColor::Black as "erase"; make sure a
-    // fresh 16-colour session paints the chosen grColor rather than erasing if
+    grMode = toGr; dhgrMode = toDhgr; dlgrMode = toDlgr; page2 = toPage2;
+    // Double-mode shadows carry BOTH planes (aux first); the single modes keep
+    // the legacy 8 KB scratch. renderCanvas refills from live RAM next frame.
+    shadow.assign(dhgrMode ? kDhgrPairSize : dlgrMode ? kDlgrPairSize
+                                                      : kHiresSize, 0);
+    // The 16-colour plots treat HgrColor::Black as "erase"; make sure a fresh
+    // 16-colour session paints the chosen grColor rather than erasing if
     // Black happened to be picked.
-    if ((grMode || dhgrMode) && color == HgrColor::Black) color = HgrColor::White;
+    if (sixteenMode() && color == HgrColor::Black) color = HgrColor::White;
 }
 
 void hgrpaint::HgrPaintEditor::renderTopBar()
 {
     // Slim top strip: page/mode select + help on line 1, file ops on line 2. Lives
-    // above the tool palette + canvas, MacPaint-style. Six pages: HIRES page 1/2,
-    // lo-res GR page 1/2, and (on hosts with an aux bank) DHGR page 1/2.
-    struct PageBtn { const char* label; bool gr; bool dhgr; bool p2; const char* tip; };
-    static const PageBtn kPages[6] = {
-        { "HGR",   false, false, false, "HIRES page 1 ($2000)" },
-        { "HGR2",  false, false, true,  "HIRES page 2 ($4000)" },
-        { "GR",    true,  false, false, "Lo-res GR page 1 ($0400)" },
-        { "GR2",   true,  false, true,  "Lo-res GR page 2 ($0800)" },
-        { "DHGR",  false, true,  false, "Double hi-res page 1 (aux+main $2000)" },
-        { "DHGR2", false, true,  true,  "Double hi-res page 2 (aux+main $4000)" },
+    // above the tool palette + canvas, MacPaint-style. Eight pages: HIRES 1/2,
+    // lo-res GR 1/2, and (on hosts with an aux bank) DHGR 1/2 + DLGR 1/2.
+    struct PageBtn { const char* label; int mode; bool p2; const char* tip; };
+    static const PageBtn kPages[8] = {
+        { "HGR",   0, false, "HIRES page 1 ($2000)" },
+        { "HGR2",  0, true,  "HIRES page 2 ($4000)" },
+        { "GR",    1, false, "Lo-res GR page 1 ($0400)" },
+        { "GR2",   1, true,  "Lo-res GR page 2 ($0800)" },
+        { "DHGR",  2, false, "Double hi-res page 1 (aux+main $2000)" },
+        { "DHGR2", 2, true,  "Double hi-res page 2 (aux+main $4000)" },
+        { "DLGR",  3, false, "Double lo-res page 1 (aux+main $0400)" },
+        { "DLGR2", 3, true,  "Double lo-res page 2 (aux+main $0800)" },
     };
-    const int nPages = (host && host->supportsDhgr()) ? 6 : 4;
+    const int curMode = dlgrMode ? 3 : dhgrMode ? 2 : grMode ? 1 : 0;
+    const int nPages = (host && host->supportsDhgr()) ? 8 : 4;
     for (int i = 0; i < nPages; ++i) {
         if (i != 0) ImGui::SameLine();
-        const bool sel = (grMode == kPages[i].gr && dhgrMode == kPages[i].dhgr &&
-                          page2 == kPages[i].p2);
+        const bool sel = (curMode == kPages[i].mode && page2 == kPages[i].p2);
         if (sel) ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(58, 96, 150, 255));
         if (ImGui::Button(kPages[i].label)) {
-            switchPage(kPages[i].gr, kPages[i].dhgr, kPages[i].p2);
+            switchPage(kPages[i].mode, kPages[i].p2);
             // Drive the live machine's soft switches to the picked page/mode so
             // the screen follows the editor. Done on every click (even re-picking
             // the current page) so it also re-asserts the display if a program had
             // left the machine in text/another page.
             if (host) {
-                if (kPages[i].dhgr) host->setDisplayModeDhgr(kPages[i].p2);
-                else                host->setDisplayMode(kPages[i].gr, kPages[i].p2);
+                if (kPages[i].mode == 2)      host->setDisplayModeDhgr(kPages[i].p2);
+                else if (kPages[i].mode == 3) host->setDisplayModeDlgr(kPages[i].p2);
+                else host->setDisplayMode(kPages[i].mode == 1, kPages[i].p2);
             }
         }
         if (sel) ImGui::PopStyleColor();
@@ -731,6 +907,47 @@ void hgrpaint::HgrPaintEditor::renderToolPanel()
     }
     if (tool == Tool::Rectangle || tool == Tool::Ellipse)
         ImGui::Checkbox("Filled", &rectFilled);
+    // ── Fill-pattern strip (MacPaint) for the pattern-aware tools ────────────
+    const bool usesPattern = (tool == Tool::Pencil || tool == Tool::Line ||
+                              tool == Tool::Rectangle || tool == Tool::Ellipse ||
+                              tool == Tool::Fill);
+    if (usesPattern) {
+        const float cell = 2.5f;                    // 8×8 pattern → 20 px swatch
+        for (int i = 0; i < kPatternCount; ++i) {
+            if (i % 4 != 0) ImGui::SameLine();
+            ImGui::PushID(400 + i);
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##pat", ImVec2(8 * cell, 8 * cell)))
+                patternIdx = i;
+            const ImU32 fg = IM_COL32(230, 230, 230, 255);
+            const ImU32 bg = IM_COL32(25, 25, 25, 255);
+            dl->AddRectFilled(p0, ImVec2(p0.x + 8 * cell, p0.y + 8 * cell), bg);
+            for (int yy = 0; yy < 8; ++yy)
+                for (int xx = 0; xx < 8; ++xx)
+                    if ((kPatterns[i].rows[yy] >> xx) & 1)
+                        dl->AddRectFilled(ImVec2(p0.x + xx * cell, p0.y + yy * cell),
+                                          ImVec2(p0.x + (xx + 1) * cell,
+                                                 p0.y + (yy + 1) * cell), fg);
+            dl->AddRect(p0, ImVec2(p0.x + 8 * cell, p0.y + 8 * cell),
+                        i == patternIdx ? IM_COL32(255, 220, 60, 255)
+                                        : IM_COL32(90, 90, 90, 255),
+                        0, 0, i == patternIdx ? 2.0f : 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s pattern%s", kPatterns[i].name,
+                                  i == 0 ? "" : " (bits paint the colour, gaps paint black)");
+            ImGui::PopID();
+        }
+    }
+
+    // Mirror symmetry — brush/shape plots repeat about the enabled axes
+    // (region ops — paste, text, fill — deliberately don't).
+    if (usesThickness || tool == Tool::Fill) {
+        ImGui::Checkbox("SymX", &mirrorX);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mirror drawing about the vertical axis");
+        ImGui::SameLine();
+        ImGui::Checkbox("SymY", &mirrorY);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mirror drawing about the horizontal axis");
+    }
     if (tool == Tool::PaletteShift) {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::Combo("##msb", &paletteMsbMode,
@@ -740,9 +957,43 @@ void hgrpaint::HgrPaintEditor::renderToolPanel()
         if (ImGui::Button("Copy")) copySelection(false);
         ImGui::SameLine();
         if (ImGui::Button("Cut"))  copySelection(true);
-        if (ImGui::Button("Paste") && clip.w > 0 && !grMode && !dhgrMode) {   // HIRES-only
+        if (ImGui::Button("Paste") && clipUsableHere()) {
             if (dragging) { commitStroke(); dragging = false; }   // flush an open stroke
             pasting = true; pasteX = std::min(selX0, selX1); pasteY = std::min(selY0, selY1);
+        }
+        // Clip transforms (apply to the clipboard content; paste to commit).
+        if (clip.w > 0) {
+            auto at = [&](int x, int y) { return static_cast<size_t>(y) * clip.w + x; };
+            if (ImGui::Button("FlipH")) {
+                for (int y = 0; y < clip.h; ++y)
+                    for (int x = 0; x < clip.w / 2; ++x) {
+                        if (clip.sixteen) std::swap(clip.idx[at(x, y)], clip.idx[at(clip.w - 1 - x, y)]);
+                        else              std::swap(clip.px [at(x, y)], clip.px [at(clip.w - 1 - x, y)]);
+                    }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("FlipV")) {
+                for (int y = 0; y < clip.h / 2; ++y)
+                    for (int x = 0; x < clip.w; ++x) {
+                        if (clip.sixteen) std::swap(clip.idx[at(x, y)], clip.idx[at(x, clip.h - 1 - y)]);
+                        else              std::swap(clip.px [at(x, y)], clip.px [at(x, clip.h - 1 - y)]);
+                    }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Rot")) {
+                // Rotate the clip 90° clockwise: (x,y) → (h-1-y, x), dims swap.
+                Clip r;
+                r.w = clip.h; r.h = clip.w; r.sixteen = clip.sixteen;
+                if (clip.sixteen) r.idx.assign(static_cast<size_t>(r.w) * r.h, 0);
+                else              r.px.assign(static_cast<size_t>(r.w) * r.h, HgrColor::Black);
+                for (int y = 0; y < clip.h; ++y)
+                    for (int x = 0; x < clip.w; ++x) {
+                        const size_t d = static_cast<size_t>(x) * r.w + (clip.h - 1 - y);
+                        if (clip.sixteen) r.idx[d] = clip.idx[at(x, y)];
+                        else              r.px [d] = clip.px [at(x, y)];
+                    }
+                clip = std::move(r);
+            }
         }
     }
     if (tool == Tool::Text) {
@@ -784,7 +1035,70 @@ void hgrpaint::HgrPaintEditor::renderToolPanel()
     // ── Display toggles ──────────────────────────────────────────────────────
     ImGui::Checkbox("Grid", &showGrid);
     ImGui::Checkbox("Seams", &showConflicts);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(dhgrMode
+            ? "Outline pixels whose rendered dots deviate from their block\n"
+              "colour (NTSC fringing at colour transitions)."
+            : "Mark byte pairs that disagree on the palette bit (NTSC bleed).");
     ImGui::Checkbox("NTSC", &ntscColor);
+    // Colour-pipeline selector (only when the host offers a choice and the
+    // canvas is in colour — the mono preview bypasses the pipeline).
+    if (ntscColor && host) {
+        const auto pipes = host->canvasPipelines();
+        if (pipes.size() > 1) {
+            int cur = host->canvasPipeline();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##canvaspipe",
+                                  pipes[static_cast<size_t>(cur) < pipes.size() ? cur : 0].c_str())) {
+                for (int i = 0; i < static_cast<int>(pipes.size()); ++i)
+                    if (ImGui::Selectable(pipes[i].c_str(), i == cur))
+                        host->setCanvasPipeline(i);
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Colour decode pipeline the canvas (and the\n"
+                                  "import preview) renders through.");
+        }
+    }
+    ImGui::Checkbox("4:3", &aspect43);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Aspect-correct display (the Apple II filled a 4:3 CRT).");
+    // ── Flipbook (double-buffer animation preview: page 1 ↔ page 2) ─────────
+    ImGui::Checkbox("Flip", &flipShow);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Alternate the canvas between page 1 and page 2 at the\n"
+                          "chosen rate - previews double-buffered animation.\n"
+                          "Drawing still targets the selected page.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Ghost", &ghostOther);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Overlay the OTHER page at low opacity while drawing\n"
+                          "(classic animation onion-skinning between frames).");
+    if (flipShow) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderFloat("##fliphz", &flipHz, 1.0f, 30.0f, "Flip %.0f Hz");
+    }
+    if (ghostOther && !flipShow) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderFloat("##ghosta", &ghostAlpha, 0.05f, 0.9f, "Ghost %.2f");
+    }
+
+    // Onion-skin controls (armed from the import preview's "Onion skin").
+    if (onionTex) {
+        ImGui::Checkbox("Onion", &onionShow);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Tracing overlay of the last imported source.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x##onion")) {
+            if (host) host->destroyTexture(onionTex);
+            onionTex = nullptr;
+            onionShow = false;
+        }
+        if (onionShow) {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::SliderFloat("##onionalpha", &onionAlpha, 0.05f, 0.95f, "Onion %.2f");
+        }
+    }
 
     ImGui::Separator();
 
@@ -806,8 +1120,8 @@ void hgrpaint::HgrPaintEditor::renderColorBar()
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 swSz(34, 26);
 
-    // GR / DHGR mode: the 16 Apple II colours, selecting grColor.
-    if (grMode || dhgrMode) {
+    // GR / DHGR / DLGR mode: the 16 Apple II colours, selecting grColor.
+    if (sixteenMode()) {
         const ImVec2 grSw(26, 22);
         for (int i = 0; i < 16; ++i) {
             if (i % 8 != 0) ImGui::SameLine();
@@ -857,17 +1171,18 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
     // Refresh the shadow from live RAM so external program writes show, and so
     // read-modify-write paints start from the current bytes. The DHGR shadow is
     // the [aux 8 KB][main 8 KB] pair; a missing aux snapshot reads as zeros.
-    if (dhgrMode) {
-        if (aux && aux->size() >= static_cast<size_t>(baseAddr()) + kHiresSize)
+    if (dhgrMode || dlgrMode) {
+        const size_t pb = static_cast<size_t>(planeBytes());
+        if (aux && aux->size() >= static_cast<size_t>(baseAddr()) + pb)
             std::copy(aux->begin() + baseAddr(),
-                      aux->begin() + baseAddr() + kHiresSize,
+                      aux->begin() + baseAddr() + pb,
                       shadow.begin());
         else
-            std::fill(shadow.begin(), shadow.begin() + kHiresSize, uint8_t{0});
-        if (memory.size() >= static_cast<size_t>(baseAddr()) + kHiresSize)
+            std::fill(shadow.begin(), shadow.begin() + pb, uint8_t{0});
+        if (memory.size() >= static_cast<size_t>(baseAddr()) + pb)
             std::copy(memory.begin() + baseAddr(),
-                      memory.begin() + baseAddr() + kHiresSize,
-                      shadow.begin() + kHiresSize);
+                      memory.begin() + baseAddr() + pb,
+                      shadow.begin() + pb);
     } else if (memory.size() >= static_cast<size_t>(baseAddr()) + kHiresSize) {
         std::copy(memory.begin() + baseAddr(),
                   memory.begin() + baseAddr() + kHiresSize,
@@ -883,8 +1198,46 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
         texture = host->uploadTexture(texture, canvasRgba.data(),
                                       texW(), kHiresHeight, /*linear=*/false);
 
+    // Flipbook / ghost: render the SIBLING page (page 1↔2) from live RAM the
+    // same way the shadow is built, so the animation preview and the ghost
+    // overlay track external program writes too.
+    if ((flipShow || ghostOther) && host) {
+        const uint16_t otherBase = (grMode || dlgrMode)
+            ? (page2 ? 0x0400 : 0x0800) : (page2 ? 0x2000 : 0x4000);
+        flipShadow.assign(shadow.size(), 0);
+        if (dhgrMode || dlgrMode) {
+            const size_t pb = static_cast<size_t>(planeBytes());
+            if (aux && aux->size() >= static_cast<size_t>(otherBase) + pb)
+                std::copy(aux->begin() + otherBase,
+                          aux->begin() + otherBase + pb, flipShadow.begin());
+            if (memory.size() >= static_cast<size_t>(otherBase) + pb)
+                std::copy(memory.begin() + otherBase,
+                          memory.begin() + otherBase + pb,
+                          flipShadow.begin() + pb);
+        } else if (memory.size() >= static_cast<size_t>(otherBase) + kHiresSize) {
+            std::copy(memory.begin() + otherBase,
+                      memory.begin() + otherBase + kHiresSize, flipShadow.begin());
+        }
+        flipRgba.assign(static_cast<size_t>(texW()) * kHiresHeight, 0);
+        if (dhgrMode)
+            host->renderDhgrPage(flipShadow.data(), flipShadow.data() + kHiresSize,
+                                 flipRgba.data(), !ntscColor);
+        else if (dlgrMode)
+            host->renderDlgrPage(flipShadow.data(), flipShadow.data() + 0x400,
+                                 flipRgba.data(), !ntscColor);
+        else
+            host->renderHgrPage(flipShadow.data(), flipRgba.data(), !ntscColor, grMode);
+        flipTex = host->uploadTexture(flipTex, flipRgba.data(),
+                                      texW(), kHiresHeight, /*linear=*/false);
+    }
+
     float scale = static_cast<float>(kZoomLadder[zoomIdx]);
-    ImVec2 imgSize(kHiresWidth * scale, kHiresHeight * scale);
+    // Optional aspect-correct display: the Apple II active area filled a 4:3
+    // CRT, so its 280-equivalent columns are slightly narrower than square
+    // (192·4/3 = 256 wide for 192 rows). All horizontal maths below goes
+    // through this factor; 1.0 keeps the historical square-pixel canvas.
+    const float af = aspect43 ? (192.0f * 4.0f / 3.0f) / kHiresWidth : 1.0f;
+    ImVec2 imgSize(kHiresWidth * scale * af, kHiresHeight * scale);
 
     ImGui::BeginChild("hgrcanvas", ImVec2(0, 0), false,
                       ImGuiWindowFlags_HorizontalScrollbar);
@@ -903,13 +1256,13 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         int best = 0;
         for (int i = 0; i < kZoomLadderCount; ++i) {
-            if (kHiresWidth  * kZoomLadder[i] <= avail.x &&
+            if (kHiresWidth  * kZoomLadder[i] * af <= avail.x &&
                 kHiresHeight * kZoomLadder[i] <= avail.y)
                 best = i;
         }
         zoomIdx = best;
         scale = static_cast<float>(kZoomLadder[zoomIdx]);
-        imgSize = ImVec2(kHiresWidth * scale, kHiresHeight * scale);
+        imgSize = ImVec2(kHiresWidth * scale * af, kHiresHeight * scale);
     }
 
     // ── Mouse-wheel zoom (HGR-09): step the ladder, recentre on the cursor ──
@@ -922,16 +1275,16 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
             if (ni != zoomIdx) {
                 // Logical pixel currently under the cursor, in the OLD scale.
                 const ImVec2 cur = ImGui::GetCursorScreenPos();
-                const float anchorLX = (io.MousePos.x - cur.x) / oldZoom;
+                const float anchorLX = (io.MousePos.x - cur.x) / (oldZoom * af);
                 const float anchorLY = (io.MousePos.y - cur.y) / oldZoom;
                 zoomIdx = ni;
                 const int newZoom = kZoomLadder[zoomIdx];
                 scale = static_cast<float>(newZoom);
-                imgSize = ImVec2(kHiresWidth * scale, kHiresHeight * scale);
+                imgSize = ImVec2(kHiresWidth * scale * af, kHiresHeight * scale);
                 // Keep that logical pixel under the mouse after rescaling.
                 const float mouseInChildX = io.MousePos.x - cur.x + ImGui::GetScrollX();
                 const float mouseInChildY = io.MousePos.y - cur.y + ImGui::GetScrollY();
-                ImGui::SetScrollX(anchorLX * newZoom - (mouseInChildX - ImGui::GetScrollX()));
+                ImGui::SetScrollX(anchorLX * newZoom * af - (mouseInChildX - ImGui::GetScrollX()));
                 ImGui::SetScrollY(anchorLY * newZoom - (mouseInChildY - ImGui::GetScrollY()));
             }
         }
@@ -949,8 +1302,31 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
                            ImGuiButtonFlags_MouseButtonMiddle);
     const bool hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddImage(host->textureToImTexture(texture), origin,
+    // Flipbook phase: alternate the displayed page at flipHz (editing always
+    // hits the selected page regardless of which phase is on screen).
+    const bool showSibling = flipShow && flipTex &&
+        (static_cast<int>(ImGui::GetTime() * flipHz) & 1);
+    dl->AddImage(host->textureToImTexture(showSibling ? flipTex : texture), origin,
                  ImVec2(origin.x + imgSize.x, origin.y + imgSize.y));
+    // Ghost of the sibling page (onion-skin style) — only when not flipping,
+    // a flicker + ghost together would be unreadable.
+    if (ghostOther && !flipShow && flipTex)
+        dl->AddImage(host->textureToImTexture(flipTex), origin,
+                     ImVec2(origin.x + imgSize.x, origin.y + imgSize.y),
+                     ImVec2(0, 0), ImVec2(1, 1),
+                     IM_COL32(255, 255, 255, static_cast<int>(ghostAlpha * 255.0f)));
+
+    // Onion-skin tracing layer (280-eq visual space → screen via zoom·aspect).
+    if (onionShow && onionTex && host) {
+        const float cs = scale * af;
+        const ImVec2 oa(origin.x + onionX0 * cs, origin.y + onionY0 * scale);
+        const ImVec2 ob(origin.x + (onionX0 + onionW) * cs,
+                        origin.y + (onionY0 + onionH) * scale);
+        dl->AddImage(host->textureToImTexture(onionTex), oa, ob,
+                     ImVec2(onionU0, onionV0), ImVec2(onionU1, onionV1),
+                     IM_COL32(255, 255, 255,
+                              static_cast<int>(onionAlpha * 255.0f)));
+    }
 
     // ── Middle-button drag pans the canvas at any zoom. Start when pressed over
     // the canvas, continue via per-frame delta until release — robust while the
@@ -964,19 +1340,21 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) panning = false;
 
     // Each logical pixel is pxScreenW()× wider on screen than an HGR one (DHGR
-    // paints 140 fat colour pixels across the same 280·zoom canvas footprint).
-    const float xs = scale * pxScreenW();
+    // paints 140 fat colour pixels across the same 280·zoom canvas footprint),
+    // narrowed by the optional 4:3 aspect factor.
+    const float xs = scale * pxScreenW() * af;
 
     // Optional pixel grid (only at high zoom so it stays readable). HGR/GR mark
     // byte columns (7 px); DHGR marks the 140 colour pixels directly.
     if (showGrid && kZoomLadder[zoomIdx] >= (dhgrMode ? 4 : 3)) {
         const ImU32 gcol = IM_COL32(80, 80, 80, 90);
-        const int step = dhgrMode ? 1 : 7;
+        const int step = dhgrMode ? 1 : 7;   // byte cols / colour px / DLGR blocks
         for (int x = 0; x <= logicalW(); x += step) {
             const float fx = origin.x + x * xs;
             dl->AddLine(ImVec2(fx, origin.y), ImVec2(fx, origin.y + imgSize.y), gcol);
         }
-        for (int y = 0; y <= kHiresHeight; y += 8) {
+        const int rowStep = (grMode || dlgrMode) ? 4 : 8;   // block rows vs byte rows
+        for (int y = 0; y <= kHiresHeight; y += rowStep) {
             const float fy = origin.y + y * scale;
             dl->AddLine(ImVec2(origin.x, fy), ImVec2(origin.x + imgSize.x, fy), gcol);
         }
@@ -990,16 +1368,45 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
         const ImVec2 vis = ImGui::GetContentRegionAvail();
         const int y0 = std::clamp(static_cast<int>(sy / scale), 0, kHiresHeight - 1);
         const int y1 = std::clamp(static_cast<int>((sy + vis.y) / scale) + 1, 0, kHiresHeight - 1);
-        const int bc0 = std::clamp(static_cast<int>((sx / scale) / 7) - 1, 0, 38);
-        const int bc1 = std::clamp(static_cast<int>(((sx + vis.x) / scale) / 7) + 1, 0, 38);
+        const int bc0 = std::clamp(static_cast<int>((sx / xs) / 7) - 1, 0, 38);
+        const int bc1 = std::clamp(static_cast<int>(((sx + vis.x) / xs) / 7) + 1, 0, 38);
         const ImU32 seamCol = IM_COL32(255, 0, 0, 110);
         for (int y = y0; y <= y1; ++y)
             for (int bc = bc0; bc <= bc1; ++bc)
                 if (hgrpaint::byteHasPaletteSeam(shadow.data(), bc, y)) {
-                    const float fx = origin.x + (bc + 1) * 7 * scale;  // seam at byte boundary
+                    const float fx = origin.x + (bc + 1) * 7 * xs;  // seam at byte boundary
                     const float fy = origin.y + y * scale;
-                    dl->AddRect(ImVec2(fx - scale, fy), ImVec2(fx + scale, fy + scale), seamCol);
+                    dl->AddRect(ImVec2(fx - xs, fy), ImVec2(fx + xs, fy + scale), seamCol);
                 }
+    }
+
+    // ── DHGR fringing overlay: outline colour pixels whose RENDERED dots (the
+    // canvas came through the real NTSC pipeline) deviate from their aligned
+    // block colour — exactly where the sliding window bleeds across a colour
+    // transition. Only meaningful on the colour canvas.
+    if (showConflicts && dhgrMode && ntscColor) {
+        const float sx = ImGui::GetScrollX(), sy = ImGui::GetScrollY();
+        const ImVec2 vis = ImGui::GetContentRegionAvail();
+        const int y0 = std::clamp(static_cast<int>(sy / scale), 0, kHiresHeight - 1);
+        const int y1 = std::clamp(static_cast<int>((sy + vis.y) / scale) + 1, 0, kHiresHeight - 1);
+        const int x0 = std::clamp(static_cast<int>(sx / xs) - 1, 0, kDhgrWidth - 1);
+        const int x1 = std::clamp(static_cast<int>((sx + vis.x) / xs) + 1, 0, kDhgrWidth - 1);
+        const ImU32 seamCol = IM_COL32(255, 0, 0, 110);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const int c = hgrpaint::dhgrColorAt(shadow.data(), x, y);
+                if (c < 0) continue;
+                const uint32_t want = kGrPalette[c] & 0x00FFFFFF;
+                bool fringed = false;
+                for (int d = 0; d < 4 && !fringed; ++d)
+                    fringed = (canvasRgba[static_cast<size_t>(y) * 560 + 4 * x + d]
+                               & 0x00FFFFFF) != want;
+                if (fringed) {
+                    const float fx = origin.x + x * xs;
+                    const float fy = origin.y + y * scale;
+                    dl->AddRect(ImVec2(fx, fy), ImVec2(fx + xs, fy + scale), seamCol);
+                }
+            }
     }
 
     // Map mouse → logical pixel (DHGR: 140 fat colour pixels per line).
@@ -1059,11 +1466,11 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
 
     // ── Text caret: one glyph-cell box at the stamp origin ───────────────────
     if (tool == Tool::Text && textPlaced) {
-        const float cxs = origin.x + textX * scale;
+        const float cxs = origin.x + textX * xs;
         const float cys = origin.y + textY * scale;
         const bool phase = (static_cast<int>(ImGui::GetTime() * 2.0) & 1) != 0;
         dl->AddRect(ImVec2(cxs, cys),
-                    ImVec2(cxs + kBBFontGlyphW * scale, cys + kBBFontGlyphH * scale),
+                    ImVec2(cxs + kBBFontGlyphW * xs, cys + kBBFontGlyphH * scale),
                     phase ? IM_COL32(255, 220, 60, 235) : IM_COL32(255, 220, 60, 110));
     }
 
@@ -1071,8 +1478,8 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
     if (hasSel && !pasting) {
         const int sx0 = std::min(selX0, selX1), sx1 = std::max(selX0, selX1);
         const int sy0 = std::min(selY0, selY1), sy1 = std::max(selY0, selY1);
-        const ImVec2 a(origin.x + sx0 * scale, origin.y + sy0 * scale);
-        const ImVec2 b(origin.x + (sx1 + 1) * scale, origin.y + (sy1 + 1) * scale);
+        const ImVec2 a(origin.x + sx0 * xs, origin.y + sy0 * scale);
+        const ImVec2 b(origin.x + (sx1 + 1) * xs, origin.y + (sy1 + 1) * scale);
         const bool phase = (static_cast<int>(ImGui::GetTime() * 4.0) & 1) != 0;
         dl->AddRect(a, b, phase ? IM_COL32(255,255,255,255) : IM_COL32(0,0,0,255));
         dl->AddRect(ImVec2(a.x-1,a.y-1), ImVec2(b.x+1,b.y+1),
@@ -1084,15 +1491,23 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
         if (hovered) { pasteX = lx; pasteY = ly; }
         for (int cy = 0; cy < clip.h; ++cy)
             for (int cx = 0; cx < clip.w; ++cx) {
-                const HgrColor c = clip.px[static_cast<size_t>(cy) * clip.w + cx];
-                if (c == HgrColor::Black) continue;
-                const float px = origin.x + (pasteX + cx) * scale;
+                ImU32 col;
+                if (clip.sixteen) {
+                    const int v = clip.idx[static_cast<size_t>(cy) * clip.w + cx];
+                    if (v == 0) continue;
+                    col = kGrPalette[v & 0x0F];
+                } else {
+                    const HgrColor c = clip.px[static_cast<size_t>(cy) * clip.w + cx];
+                    if (c == HgrColor::Black) continue;
+                    col = swatchColor(c);
+                }
+                const float px = origin.x + (pasteX + cx) * xs;
                 const float py = origin.y + (pasteY + cy) * scale;
-                dl->AddRectFilled(ImVec2(px, py), ImVec2(px + scale, py + scale),
-                                  (swatchColor(c) & 0x00FFFFFF) | 0xC0000000);
+                dl->AddRectFilled(ImVec2(px, py), ImVec2(px + xs, py + scale),
+                                  (col & 0x00FFFFFF) | 0xC0000000);
             }
-        dl->AddRect(ImVec2(origin.x + pasteX * scale, origin.y + pasteY * scale),
-                    ImVec2(origin.x + (pasteX + clip.w) * scale, origin.y + (pasteY + clip.h) * scale),
+        dl->AddRect(ImVec2(origin.x + pasteX * xs, origin.y + pasteY * scale),
+                    ImVec2(origin.x + (pasteX + clip.w) * xs, origin.y + (pasteY + clip.h) * scale),
                     IM_COL32(255, 255, 0, 230));
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             pasteFloatingAt(pasteX, pasteY);
@@ -1128,6 +1543,9 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
                 if (grMode) {
                     const int gi = hgrpaint::grBlockColorAt(shadow.data(), lx / 7, ly / 4);
                     if (gi >= 0) grColor = gi;
+                } else if (dlgrMode) {
+                    const int gi = hgrpaint::dlgrBlockColorAt(shadow.data(), lx / 7, ly / 4);
+                    if (gi >= 0) grColor = gi;
                 } else if (dhgrMode) {
                     const int gi = hgrpaint::dhgrColorAt(shadow.data(), lx, ly);
                     if (gi >= 0) grColor = gi;
@@ -1135,19 +1553,19 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
                     color = hgrpaint::colorAt(shadow.data(), lx, ly);
                 }
                 if (tool == Tool::Eyedropper) { tool = prevTool; }  // one-shot revert
-            } else if (tool == Tool::Select && !grMode && !dhgrMode) {
+            } else if (tool == Tool::Select) {
                 dragging = true; hasSel = true;
                 dragStartX = lx; dragStartY = ly;
                 selX0 = selX1 = lx; selY0 = selY1 = ly;
-            } else if (tool == Tool::Text && !grMode && !dhgrMode) {
+            } else if (tool == Tool::Text && !grMode && !dlgrMode) {
                 // Place / move the caret; glyphs are stamped from the tool panel.
                 // Grab keyboard focus into the text box next frame so typing lands
                 // there instead of leaking to the emulated Apple-1 keyboard (the
                 // host key path only yields when an ImGui text field WantTextInput).
                 textPlaced = true; textX = lx; textY = ly; textHomeX = lx;
                 focusTextInput = true;
-            } else if (tool == Tool::Select || tool == Tool::Text) {
-                // Select / Text are HIRES-only; ignore the click in GR mode.
+            } else if (tool == Tool::Text) {
+                // Text is glyph-based — too coarse for GR; ignore the click.
             } else {
                 dragging = true;
                 dragStartX = lx; dragStartY = ly;
@@ -1221,7 +1639,8 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
     canvasScrollMaxY = ImGui::GetScrollMaxY();
     canvasViewW      = ImGui::GetWindowSize().x;
     canvasViewH      = ImGui::GetWindowSize().y;
-    canvasScale      = scale;
+    canvasScale      = scale * af;   // screen px per 280-equivalent column
+    canvasScaleY     = scale;
 
     ImGui::EndChild();
 }
@@ -1274,7 +1693,15 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
         return;
 
     ImGui::TextUnformatted(dhgrMode
-        ? "Image \xE2\x86\x92 DHGR  (140x192, 16 colours, CAM16-UCS perceptual dithering)"
+        ? (importDhgrModel == 0
+           ? "Image \xE2\x86\x92 DHGR  (560 dots, NTSC sliding window, CAM16-UCS dithering)"
+           : importDhgrModel == 1
+           ? "Image \xE2\x86\x92 DHGR  (140x192 blocks, 16 colours, CAM16-UCS dithering)"
+           : importDhgrModel == 2
+           ? "Image \xE2\x86\x92 DHGR mono  (560x192 1-bit, luma dithering)"
+           : "Image \xE2\x86\x92 DHGR NTSC  (8-px chroma, 86 colours, composite targets)")
+        : dlgrMode
+        ? "Image \xE2\x86\x92 DLGR  (80x48 blocks, 16 colours, CAM16-UCS dithering)"
         : grMode
         ? "Image \xE2\x86\x92 GR lo-res  (40x48 blocks, CAM16-UCS perceptual dithering)"
         : "Image \xE2\x86\x92 HGR  (ii-pix: CAM16-UCS perceptual dithering)");
@@ -1327,8 +1754,16 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
         // grids of 16-colour cells — so they use the simple CAM16-UCS block
         // quantisers. 280-HIRES keeps the ii-pix analysis-by-synthesis path.
         importPage.assign(static_cast<size_t>(pageBytes()), 0);
-        if (dhgrMode)
+        if (dhgrMode && importDhgrModel == 0)
+            hgrpaint::imageToDhgrPage560(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
+        else if (dhgrMode && importDhgrModel == 2)
+            hgrpaint::imageToDhgrMonoPage(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
+        else if (dhgrMode && importDhgrModel == 3)
+            hgrpaint::imageToDhgrPage560Ntsc(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
+        else if (dhgrMode)
             hgrpaint::imageToDhgrPage(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
+        else if (dlgrMode)
+            hgrpaint::imageToDlgrPage(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
         else if (grMode)
             hgrpaint::imageToGrPage(importSrcRgba.data(), importSrcW, importSrcH, opt, importPage.data());
         else
@@ -1336,7 +1771,13 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
         importPreview.assign(static_cast<size_t>(texW()) * kHiresHeight, 0);
         if (host) {
             if (dhgrMode)
+                // The mono model previews through the mono pipeline — its
+                // dither patterns would read as artifact-colour confetti in
+                // colour.
                 host->renderDhgrPage(importPage.data(), importPage.data() + kHiresSize,
+                                     importPreview.data(), importDhgrModel == 2);
+            else if (dlgrMode)
+                host->renderDlgrPage(importPage.data(), importPage.data() + 0x400,
                                      importPreview.data(), false);
             else
                 host->renderHgrPage(importPage.data(), importPreview.data(), false, grMode);
@@ -1436,7 +1877,8 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
     ImGui::EndGroup();
     ImGui::SameLine();
     ImGui::BeginGroup();
-    ImGui::TextDisabled(dhgrMode ? "DHGR result" : grMode ? "GR result" : "HGR result");
+    ImGui::TextDisabled(dhgrMode ? "DHGR result" : dlgrMode ? "DLGR result"
+                        : grMode ? "GR result" : "HGR result");
     if (importPreviewTex && host)
         ImGui::Image(host->textureToImTexture(importPreviewTex),
                      ImVec2(kHiresWidth * 2.0f, ph));
@@ -1470,6 +1912,30 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
                               "reach as an NTSC sliding-window transition (ii-pix's HGR\n"
                               "choice, smoother). Floyd-Steinberg is the classic grain.");
     }
+    if (dhgrMode) {
+        static const char* kDhgrModels[] = {
+            "560 dots (lookahead)", "140 px blocks (Dazzle Draw)",
+            "560 mono (1-bit)", "560 NTSC 8-px (composite)" };
+        ImGui::SetNextItemWidth(-180);
+        if (ImGui::Combo("DHGR model", &importDhgrModel, kDhgrModels, 4))
+            importDirty = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "560 dots: every dot chosen through the real NTSC sliding-window\n"
+                "decode + cross-column refinement (ii-pix model) - full resolution,\n"
+                "fringing avoided/exploited. Slower.\n"
+                "140 px: independent 4-dot colour blocks (Dazzle Draw style) -\n"
+                "instant, clean blocks that are easy to retouch, but half the\n"
+                "resolution and fringing at colour seams.\n"
+                "560 mono: 1-bit luma dither for monochrome displays.\n"
+                "560 NTSC 8-px: scores against the 86 colours the 8-dot chroma\n"
+                "bleed produces - pick a composite canvas pipeline (left tool\n"
+                "panel) to preview it faithfully.");
+        if (importDhgrModel == 3 && host && host->canvasPipeline() < 4)
+            ImGui::TextDisabled("NTSC 8-px targets composite displays - switch the\n"
+                                "canvas pipeline (left panel) to AppleWin NTSC or\n"
+                                "OE composite so this preview shows the real colours.");
+    }
     importDirty |= ImGui::Checkbox("Dither", &importDither);
     ImGui::SameLine();
     // Serpentine is deprecated for HGR (the converter ignores it): the NTSC
@@ -1495,6 +1961,38 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
     }
     ImGui::Separator();
 
+    // Arm the imported source as an onion-skin tracing layer over the canvas.
+    // Placement mirrors the resampler's fit/letterbox in visual 280-eq space
+    // (and the crop window becomes the texture UVs) so the overlay lines up
+    // with what Apply would put on the page.
+    if (ImGui::Button("Onion skin", ImVec2(110, 0)) && !importSrcRgba.empty() && host) {
+        int cx0 = 0, cy0 = 0, cx1 = importSrcW, cy1 = importSrcH;
+        if ((importCropActive || importCropDragging) && cropUsable()) {
+            cx0 = importCropX0; cy0 = importCropY0;
+            cx1 = importCropX1; cy1 = importCropY1;
+        }
+        const float cw = static_cast<float>(cx1 - cx0), ch = static_cast<float>(cy1 - cy0);
+        if (importStretch) {
+            onionX0 = 0; onionY0 = 0; onionW = 280; onionH = 192;
+        } else {
+            const float s = std::min(280.0f / cw, 192.0f / ch);
+            onionW = cw * s; onionH = ch * s;
+            onionX0 = (280.0f - onionW) * 0.5f;
+            onionY0 = (192.0f - onionH) * 0.5f;
+        }
+        onionU0 = static_cast<float>(cx0) / importSrcW;
+        onionV0 = static_cast<float>(cy0) / importSrcH;
+        onionU1 = static_cast<float>(cx1) / importSrcW;
+        onionV1 = static_cast<float>(cy1) / importSrcH;
+        onionTex = host->uploadTexture(onionTex, importSrcRgba.data(),
+                                       importSrcW, importSrcH, /*linear=*/true);
+        onionShow = true;
+        status = "Onion skin armed: " + importSrcName;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Keep this source as a tracing overlay on the canvas\n"
+                          "(toggle + opacity in the left tool panel).");
+    ImGui::SameLine();
     if (ImGui::Button("Apply to page", ImVec2(130, 0)) && !importPage.empty()) {
         beginStroke(true);
         // Bound by pageBytes(), not shadow.size(): in GR mode baseAddr() is $0400
@@ -1504,6 +2002,8 @@ void hgrpaint::HgrPaintEditor::renderImportPreview()
         const int limit = std::min({pageBytes(), static_cast<int>(shadow.size()),
                                     static_cast<int>(importPage.size())});
         for (int off = 0; off < limit; ++off) {
+            // Text pages: never touch the screen holes (per plane in DLGR).
+            if ((grMode || dlgrMode) && hgrpaint::grIsScreenHole(off & 0x3FF)) continue;
             if (importPage[off] == shadow[off]) continue;
             const uint8_t old = shadow[off];
             shadow[off] = importPage[off];
@@ -1600,16 +2100,43 @@ bool hgrpaint::HgrPaintEditor::performFileAction(bool forSave, int saveKind,
         // file shorter than the full page (e.g. an 8184-byte "no screen-hole"
         // dump) would otherwise leave a stale tail. renderCanvas re-reads VRAM
         // into `shadow` next frame, so the canvas reflects the load by itself.
-        // (In DHGR the offsets walk both planes via addrOfShadowOff.)
+        // (In DHGR the offsets walk both planes via addrOfShadowOff; in GR the
+        // screen holes are skipped — peripheral firmware scratch.)
         if (host) {
             host->beginBatch();
-            for (int off = 0; off < pageBytes(); ++off)
+            for (int off = 0; off < pageBytes(); ++off) {
+                if ((grMode || dlgrMode) && hgrpaint::grIsScreenHole(off & 0x3FF))
+                    continue;
                 hostPoke(addrOfShadowOff(off), 0);
+            }
             host->endBatch();
         }
-        const bool ok = host && (dhgrMode
-            ? host->loadDhgrImage(filePath, baseAddr(), err)
-            : host->loadImage(filePath, baseAddr(), err));
+        bool ok = false;
+        if (dhgrMode) {
+            ok = host && host->loadDhgrImage(filePath, baseAddr(), err);
+        } else if (grMode || dlgrMode) {
+            // Text-page loads go byte-by-byte through pokes instead of the
+            // host's raw loader, so the file's screen-hole bytes (stale
+            // scratch from whatever machine saved it) never land in the LIVE
+            // holes. DLGR reads the 2 KB pair (aux plane first, like save).
+            std::ifstream in(fullPath, std::ios::binary);
+            if (!in) {
+                err = "cannot open " + fullPath;
+            } else if (host) {
+                std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+                const int n = std::min<int>(static_cast<int>(bytes.size()), pageBytes());
+                host->beginBatch();
+                for (int off = 0; off < n; ++off) {
+                    if (hgrpaint::grIsScreenHole(off & 0x3FF)) continue;
+                    hostPoke(addrOfShadowOff(off), static_cast<uint8_t>(bytes[off]));
+                }
+                host->endBatch();
+                ok = true;
+            }
+        } else {
+            ok = host && host->loadImage(filePath, baseAddr(), err);
+        }
         if (ok) {
             char addr[8];
             std::snprintf(addr, sizeof(addr), "%04X", baseAddr());  // mode-aware
@@ -1655,11 +2182,12 @@ bool hgrpaint::HgrPaintEditor::performFileAction(bool forSave, int saveKind,
                                          static_cast<uint8_t>(kTag[i]));
             }
         }
-        ok = host && (dhgrMode
-            ? host->saveDhgrImage(outPath, baseAddr(), err)
-            : host->saveImage(outPath, baseAddr(), pageBytes(), err));
+        ok = host && (dhgrMode ? host->saveDhgrImage(outPath, baseAddr(), err)
+                    : dlgrMode ? host->saveDlgrImage(outPath, baseAddr(), err)
+                    : host->saveImage(outPath, baseAddr(), pageBytes(), err));
         const std::string outName = fs::path(outPath).filename().string();
         status = ok ? (dhgrMode ? ("Saved 16 KB DHGR (A2FC, aux+main): " + outName)
+                     : dlgrMode ? ("Saved 2 KB DLGR pair (aux+main): " + outName)
                      : grMode   ? ("Saved 1 KB lo-res GR page: " + outName)
                                 : ("Saved 8 KB HGR (+POM1HGR tag): " + outName))
                     : ("Save failed: " + (err.empty() ? std::string("(error)") : err));
@@ -1679,10 +2207,14 @@ void hgrpaint::HgrPaintEditor::renderFileBrowser()
         return;
 
     ImGui::TextUnformatted(browserForSave
-        ? (browserSaveKind == 1 ? "Save PNG export" : "Save HGR image (8 KB)")
-        : (browserImport ? (grMode ? "Import picture (PNG / JPG / BMP) — converted to GR (lo-res)"
-                                    : "Import picture (PNG / JPG / BMP) — converted to HGR")
-                         : "Load HGR image (pick a file — 8 KB ones are highlighted)"));
+        ? (browserSaveKind == 1 ? "Save PNG export"
+           : dhgrMode ? "Save DHGR image (16 KB, A2FC)" : "Save HGR image (8 KB)")
+        : (browserImport ? (dhgrMode ? "Import picture (PNG / JPG / BMP) — converted to DHGR"
+                            : grMode ? "Import picture (PNG / JPG / BMP) — converted to GR (lo-res)"
+                                     : "Import picture (PNG / JPG / BMP) — converted to HGR")
+                         : (dhgrMode
+                            ? "Load DHGR image (pick a file — 16 KB ones are highlighted)"
+                            : "Load HGR image (pick a file — 8 KB ones are highlighted)")));
     ImGui::TextDisabled("%s", browserDir.c_str());
     ImGui::Separator();
 
@@ -1729,6 +2261,7 @@ void hgrpaint::HgrPaintEditor::renderFileBrowser()
         const bool relevant = browserImport
             ? isImg
             : (!ec && (dhgrMode ? (sz >= 16000 && sz <= 16384)
+                     : dlgrMode ? (sz >= 2000 && sz <= 2048)
                                 : (sz >= 8000 && sz <= 8192)));
         char label[320];
         std::snprintf(label, sizeof(label), "%-28s %8llu B", name.c_str(),
@@ -1772,7 +2305,10 @@ void hgrpaint::HgrPaintEditor::renderFileBrowser()
 void hgrpaint::HgrPaintEditor::renderFileRow()
 {
     if (ImGui::Button("Load")) openFileBrowser(false);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open a file picker and load a raw 8 KB HGR image");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(dhgrMode
+            ? "Open a file picker and load a raw 16 KB DHGR (A2FC) image"
+            : "Open a file picker and load a raw 8 KB HGR image");
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_IMAGE " Import")) openFileBrowser(false, 0, /*importMode=*/true);
     if (ImGui::IsItemHovered())
@@ -1800,7 +2336,10 @@ void hgrpaint::HgrPaintEditor::renderStatusBar(int lx, int ly, bool hovered)
                                 "Fill", "Eyedropper", "Select", "Palette", "Text" };
     const HgrColor activeColor = (tool == Tool::Eraser) ? HgrColor::Black : color;
 
-    if (hovered && lx >= 0 && ly >= 0 && dhgrMode) {
+    if (hovered && lx >= 0 && ly >= 0 && dlgrMode) {
+        ImGui::Text("x=%3d y=%3d  block=%d,%d  colour %d", lx, ly, lx / 7, ly / 4,
+                    hgrpaint::dlgrBlockColorAt(shadow.data(), lx / 7, ly / 4));
+    } else if (hovered && lx >= 0 && ly >= 0 && dhgrMode) {
         // DHGR: fat colour pixel + the MAIN-plane byte of its first dot (the aux
         // byte lives at the same address in the other bank).
         int offs[2];
@@ -1855,7 +2394,7 @@ void hgrpaint::HgrPaintEditor::handleShortcuts()
         if (pressed(ImGuiKey_Y)) doRedo();
         if (pressed(ImGuiKey_C)) copySelection(false);
         if (pressed(ImGuiKey_X)) copySelection(true);
-        if (pressed(ImGuiKey_V) && clip.w > 0 && !grMode && !dhgrMode) {   // HIRES-only
+        if (pressed(ImGuiKey_V) && clipUsableHere()) {
             if (dragging) { commitStroke(); dragging = false; }   // flush an open stroke
             pasting = true;
             pasteX = hasSel ? std::min(selX0, selX1) : 0;
@@ -1895,10 +2434,10 @@ void hgrpaint::HgrPaintEditor::handleShortcuts()
                                  HgrColor::Green, HgrColor::Blue, HgrColor::Orange };
     const ImGuiKey numKeys[] = { ImGuiKey_1, ImGuiKey_2, ImGuiKey_3,
                                  ImGuiKey_4, ImGuiKey_5, ImGuiKey_6 };
-    // In GR/DHGR the 16-colour bar drives grColor; skip the HGR palette keys so
-    // '1' (Black) can't turn the pencil into an eraser (the 16-colour plots
-    // read `color` only to detect the eraser).
-    if (!grMode && !dhgrMode)
+    // In the 16-colour modes the colour bar drives grColor; skip the HGR
+    // palette keys so '1' (Black) can't turn the pencil into an eraser (the
+    // 16-colour plots read `color` only to detect the eraser).
+    if (!sixteenMode())
         for (int i = 0; i < 6; ++i)
             if (pressed(numKeys[i])) color = palette[i];
 

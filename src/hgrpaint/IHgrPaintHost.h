@@ -162,6 +162,15 @@ public:
     virtual ImTextureID textureToImTexture(void* tex) const
     { return (ImTextureID)(uintptr_t)tex; }
 
+    // ── Canvas colour pipeline — POM2 addition ──────────────────────────────
+    // A host may offer several colour render pipelines for the canvas (POM2:
+    // MAME-NTSC / composite-medium / 4-bit sharp / Le Chat Mauve RGB). The
+    // editor shows a selector when more than one is offered; the mono preview
+    // toggle is independent. Defaults keep single-pipeline hosts unchanged.
+    virtual std::vector<std::string> canvasPipelines() const { return {"NTSC"}; }
+    virtual void setCanvasPipeline(int idx) { (void)idx; }
+    virtual int  canvasPipeline() const { return 0; }
+
     // ── DHGR extension (Apple IIe double hi-res) — POM2 addition ────────────
     // DHGR interleaves TWO 8 KB planes: the AUX byte supplies the left 7 dots
     // of each 14-dot cell, the MAIN byte the right 7 (560 dots/line, 140
@@ -197,6 +206,18 @@ public:
     virtual bool saveDhgrImage(const std::string& path, uint16_t baseAddr,
                                std::string& err)
     { (void)path; (void)baseAddr; err = "DHGR is not supported by this host"; return false; }
+
+    // ── DLGR extension (Apple IIe double lo-res) — POM2 addition ────────────
+    // 80×48 blocks over an aux+main text-page pair (aux 1 KB first). Render
+    // paints 560×192 RGBA; save dumps the 2 KB pair. Loading goes through
+    // pokeByte/pokeAuxByte (the editor skips the screen holes itself).
+    virtual void renderDlgrPage(const uint8_t* aux1k, const uint8_t* main1k,
+                                uint32_t* outRgba, bool mono)
+    { (void)aux1k; (void)main1k; (void)outRgba; (void)mono; }
+    virtual void setDisplayModeDlgr(bool page2) { (void)page2; }
+    virtual bool saveDlgrImage(const std::string& path, uint16_t baseAddr,
+                               std::string& err)
+    { (void)path; (void)baseAddr; err = "DLGR is not supported by this host"; return false; }
 };
 
 } // namespace hgrpaint

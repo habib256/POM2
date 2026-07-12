@@ -117,10 +117,17 @@ inline const KernelSpec& kernelSpec(DitherKernel k)
 //
 // `Opts` is either hgrpaint::ImportOptions or tmspaint::ImportOptions (both
 // carry the same stretch/brightness/contrast/gamma/crop fields).
+//
+// `pixelAspect` is the visual width of one TARGET pixel relative to the other
+// modes' convention (1.0 = the square-ish 280-mode pixel every caller assumed
+// historically). The DHGR 560-dot converter passes 0.5: its dots are half as
+// wide, so the fit/letterbox maths must run in visual space or a square source
+// would come out 2× too narrow. Only the non-stretch branch consults it.
 template <typename Opts>
 inline void resampleToLinearRgb(const uint8_t* rgba, int srcW, int srcH, int W, int H,
                                 const Opts& opt, std::vector<LinRgb>& out,
-                                int& ox0, int& oy0, int& ow, int& oh)
+                                int& ox0, int& oy0, int& ow, int& oh,
+                                double pixelAspect = 1.0)
 {
     out.assign(static_cast<size_t>(W) * H, LinRgb{0, 0, 0});
 
@@ -136,10 +143,14 @@ inline void resampleToLinearRgb(const uint8_t* rgba, int srcW, int srcH, int W, 
 
     ox0 = 0; oy0 = 0; ow = W; oh = H;
     if (!opt.stretch) {
-        const double s = std::min(static_cast<double>(W) / cropW,
+        // Fit in VISUAL space: the target is (W·pixelAspect) wide relative to
+        // its H rows, then the visual width maps back to pixels by /pixelAspect.
+        const double s = std::min(W * pixelAspect / cropW,
                                   static_cast<double>(H) / cropH);
-        ow = std::max(1, static_cast<int>(std::lround(cropW * s)));
+        ow = std::max(1, static_cast<int>(std::lround(cropW * s / pixelAspect)));
         oh = std::max(1, static_cast<int>(std::lround(cropH * s)));
+        ow = std::min(ow, W);   // rounding guard
+        oh = std::min(oh, H);
         ox0 = (W - ow) / 2;
         oy0 = (H - oh) / 2;
     }

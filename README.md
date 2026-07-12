@@ -192,6 +192,7 @@ POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carr
 - **Mono phosphor** — adjustable **phosphor curve** (`ntsc_phosphor_gamma`, luminance half of the CRT model) and **persistence** (temporal half), tunable in *View → CRT Settings*.
 - **RGB cards** — Video-7 and Le Chat Mauve for IIe-class machines.
 - **3D voxel view** — lift the whole framebuffer into an orbiting voxel scene.
+- **HGR/DHGR Paint editor** (*Tools → HGR Paint Editor*) — MacPaint-style painting straight into live video RAM (HGR, GR lo-res, and DHGR on IIe-class machines), rendered through the real NTSC pipeline. Imports PNG/JPG with ii-pix-style CAM16-UCS perceptual dithering; loads/saves raw pages (8 KB HGR, 1 KB GR, 16 KB A2FC DHGR) and PNG exports.
 
 ---
 

@@ -286,4 +286,39 @@ int dhgrColorAt(const uint8_t* pagePair, int x, int y)
     return dhgrNibbleToColor(v);
 }
 
+// ── Apple IIe double lo-res (DLGR) block model ───────────────────────────────
+
+int dlgrBlockOffset(int bx, int by)
+{
+    if (bx < 0 || bx >= kDlgrCols || by < 0 || by >= kGrRows) return -1;
+    const int textOff = grTextRowAddr(by / 2) + bx / 2;
+    return ((bx & 1) ? 0x400 : 0) + textOff;   // even = aux plane (first)
+}
+
+int plotDlgrBlock(uint8_t* pair, int bx, int by, int colorIndex)
+{
+    const int off = dlgrBlockOffset(bx, by);
+    if (off < 0) return -1;
+    int v = colorIndex & 0x0F;
+    // Aux nibbles display rotated left by 1 — pre-rotate right so the screen
+    // shows colourIndex (renderLoResDouble: palette[rotl4(aNib)]).
+    if (!(bx & 1)) v = ((v >> 1) | (v << 3)) & 0x0F;
+    const uint8_t b = pair[off];
+    const uint8_t nb = (by & 1)
+        ? static_cast<uint8_t>((b & 0x0F) | (v << 4))
+        : static_cast<uint8_t>((b & 0xF0) | v);
+    if (nb == b) return -1;
+    pair[off] = nb;
+    return off;
+}
+
+int dlgrBlockColorAt(const uint8_t* pair, int bx, int by)
+{
+    const int off = dlgrBlockOffset(bx, by);
+    if (off < 0) return -1;
+    int v = (by & 1) ? (pair[off] >> 4) : (pair[off] & 0x0F);
+    if (!(bx & 1)) v = ((v << 1) | (v >> 3)) & 0x0F;   // undo the aux rotation
+    return v;
+}
+
 } // namespace hgrpaint

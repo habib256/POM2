@@ -8,10 +8,12 @@
 #include "Apple2Display.h"
 #include "EmulationController.h"
 #include "HgrPaintModel.h"        // hgrpaint:: geometry constants
+#include "LeChatMauveCard.h"
 #include "Memory.h"
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 
@@ -114,9 +116,39 @@ void Pom2HgrPaintHost::setDisplayModeDhgr(bool page2)
     mem.memWrite(0xC05E, 0);                       // AN3 / DHIRES on
 }
 
+void Pom2HgrPaintHost::setDisplayModeDlgr(bool page2)
+{
+    if (!emu_) return;
+    std::lock_guard<std::mutex> lk(emu_->stateMutex());
+    Memory& mem = emu_->memory();
+    if (!mem.isIIE()) return;
+    mem.memWrite(0xC050, 0);                       // GRAPHICS
+    mem.memWrite(0xC052, 0);                       // full screen
+    mem.memWrite(page2 ? 0xC055 : 0xC054, 0);      // page select
+    mem.memWrite(0xC056, 0);                       // LORES
+    mem.memWrite(0xC00D, 0);                       // 80COL on
+    mem.memWrite(0xC05E, 0);                       // AN3 / double-res on
+}
+
 bool Pom2HgrPaintHost::supportsDhgr() const
 {
     return emu_ && emu_->memory().isIIE();
+}
+
+// The ProDOS host-folder convention (`prodos_folder/`, same probe ladder as
+// MainWindow's disk library): pictures saved there with their "#TTAAAA" tag
+// appear in the synthesised ProDOS volume with the right type + load address
+// on the next mount/boot of the host-folder HDV.
+std::string Pom2HgrPaintHost::browseDir() const
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* c : {"prodos_folder", "../prodos_folder", "../../prodos_folder"}) {
+        if (!fs::is_directory(c, ec)) continue;
+        fs::path canon = fs::canonical(c, ec);
+        return ec ? std::string(c) : canon.string();
+    }
+    return {};
 }
 
 // ── Offscreen canvas render ──────────────────────────────────────────────────
@@ -132,6 +164,26 @@ void Pom2HgrPaintHost::ensureScratch()
     scratch_->setIIEMode(true);
     gfx_ = std::make_unique<Apple2Display>();
     gfx_->setAuxMemory(scratch_->auxData());
+    chatMauve_ = std::make_unique<LeChatMauveCard>();
+    gfx_->setChatMauveCard(chatMauve_.get());
+    // AppleWin canvas pipeline: Monitor sub-mode — Tv's 50% previous-frame
+    // blend would smear while painting (and depends on frame pacing the
+    // never-clocked scratch doesn't have).
+    gfx_->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Monitor);
+}
+
+std::vector<std::string> Pom2HgrPaintHost::canvasPipelines() const
+{
+    // The two composite pipelines demodulate the real 14.318 MHz waveform —
+    // they are what shows the DHGR NTSC-8-px import's extended colours.
+    return { "NTSC (MAME)", "Composite medium", "4-bit sharp",
+             "Le Chat Mauve RGB", "AppleWin NTSC (composite)",
+             "OE composite (CPU)" };
+}
+
+void Pom2HgrPaintHost::setCanvasPipeline(int idx)
+{
+    canvasPipe_ = std::clamp(idx, 0, 5);
 }
 
 void Pom2HgrPaintHost::renderScratch(ScratchMode m, const uint8_t* main8k,
@@ -141,12 +193,14 @@ void Pom2HgrPaintHost::renderScratch(ScratchMode m, const uint8_t* main8k,
     ensureScratch();
 
     if (!scratchStaged_ || scratchMode_ != m) {
+        const bool dbl   = (m == ScratchMode::Dhgr || m == ScratchMode::Dlgr);
+        const bool hires = (m == ScratchMode::Hgr || m == ScratchMode::Dhgr);
         scratch_->memWrite(0xC050, 0);             // GRAPHICS
         scratch_->memWrite(0xC052, 0);             // full screen
         scratch_->memWrite(0xC054, 0);             // page 1 (pages share layout)
-        scratch_->memWrite(m == ScratchMode::Gr ? 0xC056 : 0xC057, 0);
-        scratch_->memWrite(m == ScratchMode::Dhgr ? 0xC00D : 0xC00C, 0);
-        scratch_->memWrite(m == ScratchMode::Dhgr ? 0xC05E : 0xC05F, 0);
+        scratch_->memWrite(hires ? 0xC057 : 0xC056, 0);
+        scratch_->memWrite(dbl ? 0xC00D : 0xC00C, 0);   // 80COL
+        scratch_->memWrite(dbl ? 0xC05E : 0xC05F, 0);   // AN3 / double-res
         scratchMode_   = m;
         scratchStaged_ = true;
     }
@@ -166,17 +220,50 @@ void Pom2HgrPaintHost::renderScratch(ScratchMode m, const uint8_t* main8k,
             scratch_->writeRamUnchecked(static_cast<uint16_t>(0x2000 + i), main8k[i]);
         std::memcpy(scratch_->auxDataMutable() + 0x2000, aux8k, hgrpaint::kHiresSize);
         break;
+    case ScratchMode::Dlgr:
+        for (int i = 0; i < 0x400; ++i)
+            scratch_->writeRamUnchecked(static_cast<uint16_t>(0x0400 + i), main8k[i]);
+        std::memcpy(scratch_->auxDataMutable() + 0x0400, aux8k, 0x400);
+        break;
     }
 
-    // Canvas look: MAME-LUT NTSC colour / white-phosphor mono (decay 0 — no
-    // afterglow ghosting on erase). Deliberately independent of the user's
-    // on-screen HiResMode so the canvas stays deterministic.
-    gfx_->setHiResMode(mono ? Apple2Display::HiResMode::MonoWhite
-                            : Apple2Display::HiResMode::ColorNTSC);
+    // Canvas look: the selected colour pipeline / white-phosphor mono (decay
+    // 0 — no afterglow ghosting on erase). Deliberately independent of the
+    // user's on-screen HiResMode so the canvas stays deterministic.
+    Apple2Display::HiResMode colorMode = Apple2Display::HiResMode::ColorNTSC;
+    switch (canvasPipe_) {
+    case 1: colorMode = Apple2Display::HiResMode::ColorCompMedium;     break;
+    case 2: colorMode = Apple2Display::HiResMode::ColorComp4Bit;       break;
+    case 3: colorMode = Apple2Display::HiResMode::ChatMauveRGB;        break;
+    case 4: colorMode = Apple2Display::HiResMode::ColorAppleWin;       break;
+    case 5: colorMode = Apple2Display::HiResMode::ColorCompositeOECpu; break;
+    default: break;
+    }
+    gfx_->setHiResMode(mono ? Apple2Display::HiResMode::MonoWhite : colorMode);
     gfx_->render(*scratch_);
-    std::copy(gfx_->pixels(),
-              gfx_->pixels() + static_cast<size_t>(gfx_->width()) * gfx_->height(),
-              outRgba);
+
+    // Width adaptation: the renderHgrPage contract is a 280-wide buffer, but
+    // the Chat Mauve HGR path paints at its native 560 dots (frame80) —
+    // average each dot pair down. DHGR is 560-wide by contract.
+    const int wantW = (m == ScratchMode::Dhgr || m == ScratchMode::Dlgr)
+                          ? 2 * hgrpaint::kHiresWidth
+                          : hgrpaint::kHiresWidth;
+    const uint32_t* src = gfx_->pixels();
+    if (gfx_->width() == wantW) {
+        std::copy(src, src + static_cast<size_t>(wantW) * gfx_->height(), outRgba);
+    } else if (gfx_->width() == 2 * wantW) {
+        for (int y = 0; y < gfx_->height(); ++y) {
+            const uint32_t* in = src + static_cast<size_t>(y) * 2 * wantW;
+            uint32_t* out = outRgba + static_cast<size_t>(y) * wantW;
+            for (int x = 0; x < wantW; ++x) {
+                const uint32_t a = in[2 * x], b = in[2 * x + 1];
+                const uint32_t r  = (((a      ) & 0xFF) + ((b      ) & 0xFF)) >> 1;
+                const uint32_t g  = (((a >>  8) & 0xFF) + ((b >>  8) & 0xFF)) >> 1;
+                const uint32_t bl = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF)) >> 1;
+                out[x] = 0xFF000000u | (bl << 16) | (g << 8) | r;
+            }
+        }
+    }
 }
 
 void Pom2HgrPaintHost::renderHgrPage(const uint8_t* page8k, uint32_t* outRgba,
@@ -190,6 +277,31 @@ void Pom2HgrPaintHost::renderDhgrPage(const uint8_t* aux8k, const uint8_t* main8
                                       uint32_t* outRgba, bool mono)
 {
     renderScratch(ScratchMode::Dhgr, main8k, aux8k, outRgba, mono);
+}
+
+void Pom2HgrPaintHost::renderDlgrPage(const uint8_t* aux1k, const uint8_t* main1k,
+                                      uint32_t* outRgba, bool mono)
+{
+    renderScratch(ScratchMode::Dlgr, main1k, aux1k, outRgba, mono);
+}
+
+bool Pom2HgrPaintHost::saveDlgrImage(const std::string& path, uint16_t baseAddr,
+                                     std::string& err)
+{
+    if (!emu_) { err = "no emulator"; return false; }
+    std::vector<uint8_t> bytes(0x800);
+    {
+        std::lock_guard<std::mutex> lk(emu_->stateMutex());
+        const Memory& mem = emu_->memory();
+        std::memcpy(bytes.data(),         mem.auxData() + baseAddr, 0x400);
+        std::memcpy(bytes.data() + 0x400, mem.data()    + baseAddr, 0x400);
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) { err = "cannot create " + path; return false; }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!out) { err = "write failed (disk full?)"; return false; }
+    return true;
 }
 
 // ── File I/O ─────────────────────────────────────────────────────────────────

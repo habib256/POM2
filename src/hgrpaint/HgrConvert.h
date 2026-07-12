@@ -98,9 +98,56 @@ void imageToGrPage(const uint8_t* rgba, int srcW, int srcH,
 // model is a flat 140×192 grid of 16-colour pixels (same palette as GR), so
 // this is the GR quantiser at DHGR resolution: CAM16-UCS nearest-colour with
 // linear-RGB error diffusion, packed via plotDhgrPixel. `outPair` must hold
-// kDhgrPairSize bytes.
+// kDhgrPairSize bytes. This is the fast "Dazzle Draw"-style block mode; the
+// 560-dot converter below is the high-quality default.
 void imageToDhgrPage(const uint8_t* rgba, int srcW, int srcH,
                      const ImportOptions& opt, uint8_t* outPair);
+
+// High-quality DHGR conversion at the TRUE 560-dot resolution (ii-pix's "4-pixel
+// colour" model, which dropped 140px conversion as fundamentally wrong for
+// DHGR). Every dot is chosen individually by per-byte-column analysis-by-
+// synthesis: 128 candidate bit patterns per 7-dot column are rendered through
+// this module's copy of POM2's exact ColorNTSC DHGR decode (the MAME
+// sliding-window LUT with the absX+1 phase rotation — pinned equal to
+// Apple2Display::renderDhgr in the dhgr_convert test, so the optimisation
+// target IS what the canvas shows), scored in CAM16-UCS with the in-candidate
+// linear-RGB error walk, then 1-2 ICM refinement passes re-choose each column
+// against its ACTUAL committed neighbours (monotone on the frozen-target cost).
+// This both avoids and exploits the colour fringing the 140px block model
+// suffers from. `outPair` must hold kDhgrPairSize bytes; `stats` (optional)
+// receives the same telemetry as imageToHgrPage.
+void imageToDhgrPage560(const uint8_t* rgba, int srcW, int srcH,
+                        const ImportOptions& opt, uint8_t* outPair,
+                        ImportStats* stats = nullptr);
+
+// Convert a decoded RGBA image into a 2 KB Apple IIe DLGR pair (aux 1 KB then
+// main 1 KB — the HgrPaintModel layout). The GR quantiser at 80×48 double
+// lo-res resolution; plotDlgrBlock handles the aux nibble rotation.
+void imageToDlgrPage(const uint8_t* rgba, int srcW, int srcH,
+                     const ImportOptions& opt, uint8_t* outPair);
+
+// DHGR conversion against the NTSC 8-px chroma model (ii-pix --palette=ntsc):
+// the colour of every dot is looked up from the trailing 8-dot pattern × NTSC
+// phase (86 unique colours — DhgrNtsc8Palette, verbatim ii-pix data). The
+// model is CAUSAL (no right context), so the per-column analysis-by-synthesis
+// needs no guessed context and no refinement pass. The extra colours only
+// materialise on composite viewing targets (POM2's OE / AppleWin modes, real
+// hardware); on the MAME-LUT canvas the picture reads as heavy dithering.
+void imageToDhgrPage560Ntsc(const uint8_t* rgba, int srcW, int srcH,
+                            const ImportOptions& opt, uint8_t* outPair);
+
+// Monochrome DHGR conversion (ii-pix dhr_mono): every one of the 560×192 dots
+// is a free 1-bit pixel, dithered against linear LUMA with the shared error-
+// diffusion kernels. Meant for viewing on the mono canvas / a mono monitor —
+// the colour pipelines will show artifact colours over the dither patterns.
+void imageToDhgrMonoPage(const uint8_t* rgba, int srcW, int srcH,
+                         const ImportOptions& opt, uint8_t* outPair);
+
+// Decode one DHGR scanline (40 aux + 40 main bytes) to 560 RGBA dots through
+// this module's copy of the ColorNTSC DHGR pipeline. Exposed so the test can
+// pin it equal to Apple2Display::renderDhgr.
+void dhgrDecodeScanlineRgb(const uint8_t auxBytes[40], const uint8_t mainBytes[40],
+                           uint32_t out[560]);
 
 // Decode a PNG/JPG/BMP file to RGBA (4 bytes/pixel). Implemented in
 // HgrImageDecode.cpp (uses stb_image; the impl is linked from the host app), so

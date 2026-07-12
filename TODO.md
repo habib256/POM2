@@ -318,6 +318,26 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 - 🟡 **Mouse → paddles mapping** — paddle 0/1 on host mouse X/Y axes
   (alternative to pads).
 
+### [Paint editor] HGR / GR / DHGR / DLGR (hgrpaint/ + hgrsprite/)
+
+- ✅ **2026-07-12 batch — ALL 17 items DONE** (same day as planned): GR/DLGR
+  screen-hole masking · HGR import scores LUT row 0 (pinned vs `renderHiRes`)
+  · session persistence · canvas multi-pipeline (NTSC/Medium/4-bit/Chat
+  Mauve) · 4:3 aspect · DHGR fringing overlay · 16-colour copy/paste +
+  FlipH/V/Rot · MacPaint fill patterns · X/Y mirror symmetry · DHGR text ·
+  onion skin · DHGR mono import · save-to-ProDOS (host-folder + `#TTAAAA`
+  tags in `buildVolumeFromFolder`) · flipbook page 1↔2 + ghost · sprite
+  editor port (`hgrsprite/`) · **DLGR mode** (aux nibble rotation pinned) ·
+  **DHGR NTSC 8-px chroma import** (ii-pix palette, BSD-2). Detail →
+  `DEV.md` § Paint editor, why → `CHANGELOG.md`.
+- ✅ **Remaining niceties — DONE (2026-07-12, same evening)**: mono lo-res
+  rendering (GR + DLGR nibbles display as their 14 MHz bit patterns through
+  the phosphor, pinned in `dhgr_paint_model`); composite canvas pipelines
+  (AppleWin NTSC + OE-CPU added to the editor's pipeline combo — the
+  NTSC-8-px import previews faithfully); sprite editor DHGR target
+  (stamp/grab/preview/ASM-export the shape as 16-colour fat pixels,
+  aux+main pair tables).
+
 ### [UI/UX]
 
 - ✅ **Desktop disk drag & drop** — DONE (2026-05-31). `glfwSetDropCallback`

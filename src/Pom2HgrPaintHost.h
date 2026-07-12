@@ -28,6 +28,7 @@
 
 class Apple2Display;
 class EmulationController;
+class LeChatMauveCard;
 class Memory;
 
 class Pom2HgrPaintHost : public hgrpaint::IHgrPaintHost
@@ -52,6 +53,16 @@ public:
     void  destroyTexture(void* tex) override;
     ImTextureID textureToImTexture(void* tex) const override;
 
+    // Canvas colour pipeline: MAME-NTSC / composite-medium / 4-bit / Chat Mauve.
+    std::vector<std::string> canvasPipelines() const override;
+    void setCanvasPipeline(int idx) override;
+    int  canvasPipeline() const override { return canvasPipe_; }
+
+    // File browser home: the ProDOS host folder (prodos_folder/) when present,
+    // so a tagged save ("PIC#062000") lands straight in the synthesised ProDOS
+    // volume — BLOAD-able by name at $2000 after a (re)mount.
+    std::string browseDir() const override;
+
     // ── DHGR extension (POM2-only, see IHgrPaintHost.h) ──────────────────────
     bool supportsDhgr() const override;
     void pokeAuxByte(uint16_t addr, uint8_t value) override;
@@ -63,10 +74,17 @@ public:
     bool saveDhgrImage(const std::string& path, uint16_t baseAddr,
                        std::string& err) override;
 
+    // ── DLGR extension ───────────────────────────────────────────────────────
+    void renderDlgrPage(const uint8_t* aux1k, const uint8_t* main1k,
+                        uint32_t* outRgba, bool mono) override;
+    void setDisplayModeDlgr(bool page2) override;
+    bool saveDlgrImage(const std::string& path, uint16_t baseAddr,
+                       std::string& err) override;
+
 private:
     // Stage the scratch soft switches for one of the three editor regimes and
     // render it. `page8k`/`aux8k` are page-relative editor bytes.
-    enum class ScratchMode { Hgr, Gr, Dhgr };
+    enum class ScratchMode { Hgr, Gr, Dhgr, Dlgr };
     void renderScratch(ScratchMode m, const uint8_t* main8k, const uint8_t* aux8k,
                        uint32_t* outRgba, bool mono);
     void ensureScratch();
@@ -79,8 +97,14 @@ private:
     // the same pair serves HGR, lo-res GR and DHGR.
     std::unique_ptr<Memory> scratch_;
     std::unique_ptr<Apple2Display> gfx_;
+    // Standalone Chat Mauve card attached to the scratch display so the
+    // "Le Chat Mauve RGB" canvas pipeline can decode (default COL140 mode);
+    // inert for every other pipeline (the ChatMauve branches gate on the
+    // HiResMode, not on the card's presence).
+    std::unique_ptr<LeChatMauveCard> chatMauve_;
     ScratchMode scratchMode_ = ScratchMode::Hgr;
     bool scratchStaged_ = false;           // soft switches staged at least once
+    int canvasPipe_ = 0;                   // index into canvasPipelines()
 };
 
 #endif // POM2_HGRPAINT_HOST_H

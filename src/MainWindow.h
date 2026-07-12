@@ -78,6 +78,7 @@ namespace pom2 {
 class MemoryViewer_ImGui;
 class Pom2HgrPaintHost;
 namespace hgrpaint { class HgrPaintEditor; }
+namespace hgrsprite { class HgrSpriteEditor; }
 
 class MainWindow
 {
@@ -201,6 +202,8 @@ private:
     // + its POM2 host seam (pokes / offscreen NTSC render / file I/O).
     std::unique_ptr<Pom2HgrPaintHost>             hgrPaintHost;
     std::unique_ptr<hgrpaint::HgrPaintEditor>     hgrPaintEditor;
+    // Sprite editor (src/hgrsprite/) — reuses the same host seam.
+    std::unique_ptr<hgrsprite::HgrSpriteEditor>   hgrSpriteEditor;
     // All plugged Disk II cards, sorted by slot ascending. `diskCard`
     // (below) is the primary alias = `diskCards.empty() ? nullptr :
     // diskCards.front()`. Most legacy code paths use `diskCard` directly
@@ -292,6 +295,7 @@ private:
     // hidden — toggle from the Debug / Hardware menus.
     bool         showCassetteDeck = false;
     bool         showHgrPaintEditor = false;
+    bool         showHgrSpriteEditor = false;
     // Per-frame 64 KB main-RAM (+ aux) snapshots handed to the HGR Paint
     // editor as its canvas/shadow read source (see renderHgrPaintWindow).
     std::vector<uint8_t> hgrPaintMem_;
@@ -692,6 +696,7 @@ private:
     void renderMemoryGridWindow();
     void renderCassetteDeckWindow(float deltaSeconds);
     void renderHgrPaintWindow();
+    void renderHgrSpriteWindow();
     void renderRewindWindow(float deltaSeconds);
     // Drive hold-to-rewind from the combined input sources (F6 key + toolbar
     // button). Edge-detected against rewindHeldPrev_ — call once per frame.

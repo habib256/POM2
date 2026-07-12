@@ -45,6 +45,22 @@ public:
     // Which HGR page the editor targets (false = page 1 $2000, true = page 2).
     bool targetsPage2() const { return page2; }
 
+    // Session persistence — the host app round-trips this through its own
+    // settings store so the editor reopens where it was left. `mode`:
+    // 0 = HGR, 1 = GR, 2 = DHGR, 3 = DLGR (the double modes clamp to HGR
+    // when the host lacks an aux bank).
+    struct Session {
+        int mode = 0;
+        bool page2 = false;
+        int zoomIdx = 2;
+        bool ntscColor = true;
+        bool aspect43 = false;
+        int canvasPipeline = 0;
+        std::string browserDir;
+    };
+    Session session() const;
+    void restoreSession(const Session& s);
+
     // Destroy GPU textures via the host. Call from the app's shutdown path BEFORE
     // the GL context is destroyed (the destructor runs too late). Idempotent.
     void releaseGL();
@@ -63,8 +79,17 @@ private:
     struct ByteEdit { uint32_t addr; uint8_t oldVal, newVal; };
 
     // A copied region, stored as LOGICAL colours (not raw bytes) so paste
-    // re-snaps column parity correctly at any destination.
-    struct Clip { int w = 0, h = 0; std::vector<HgrColor> px; };
+    // re-snaps column parity correctly at any destination. Two colour spaces:
+    // HGR clips carry HgrColor per pixel; GR/DHGR clips carry a 16-colour
+    // index (`sixteen` = true; index 0 = black = transparent, mirroring the
+    // HGR Black-is-transparent convention). A 16-colour clip pastes into
+    // either 16-colour mode (the coordinates just rescale with the grid).
+    struct Clip {
+        int w = 0, h = 0;
+        bool sixteen = false;
+        std::vector<HgrColor> px;    // HGR logical colours (sixteen == false)
+        std::vector<int8_t> idx;     // 16-colour indices  (sixteen == true)
+    };
 
     IHgrPaintHost* host;            // emulator seam (poke / render / file I/O)
 
@@ -74,23 +99,61 @@ private:
     void* texture = nullptr;
     bool ntscColor = true;          // false → monochrome preview
 
-    // Editing state. The top-bar selector picks one of six pages from these
+    // Editing state. The top-bar selector picks one of eight pages from these
     // flags: HGR ($2000) / HGR2 ($4000) / GR ($0400) / GR2 ($0800) / DHGR /
-    // DHGR2 (aux+main $2000/$4000 — only offered when host->supportsDhgr()).
-    // grMode and dhgrMode are mutually exclusive.
+    // DHGR2 (aux+main hires) / DLGR / DLGR2 (aux+main text — the double modes
+    // are only offered when host->supportsDhgr()). The mode flags are mutually
+    // exclusive; sixteenMode() groups the three 16-colour modes.
     bool page2 = false;             // false = page 1, true = page 2
-    bool grMode = false;            // false = HIRES (7-bit NTSC), true = lo-res GR blocks
-    bool dhgrMode = false;          // true = IIe double hi-res (140×192, 16 colours)
-    int  grColor = 15;              // current 16-colour index 0..15 (GR + DHGR; 15 = white)
+    bool grMode = false;            // lo-res GR blocks (40×48)
+    bool dhgrMode = false;          // IIe double hi-res (140×192, 16 colours)
+    bool dlgrMode = false;          // IIe double lo-res (80×48, 16 colours)
+    bool sixteenMode() const { return grMode || dhgrMode || dlgrMode; }
+    int  grColor = 15;              // current 16-colour index 0..15 (15 = white)
     Tool tool = Tool::Pencil;
     Tool prevTool = Tool::Pencil;   // restored after a one-shot Eyedropper pick
     HgrColor color = HgrColor::White;
     int brushSize = 1;              // 1..7
+    // MacPaint-style 8×8 fill pattern (0 = solid). Tiles in PAGE coordinates,
+    // so overlapping strokes join seamlessly; a pattern bit paints the current
+    // colour, a clear bit paints black (opaque, like MacPaint). On the NTSC
+    // pipelines a two-colour pattern blends into real intermediate tones.
+    int patternIdx = 0;
+    bool patternOn(int x, int y) const;   // table lives in the .cpp
+    // Pattern-gated plot: chromatic plots read the pattern; Black (eraser /
+    // RMB-erase) bypasses it.
+    void applyPlotPat(int x, int y, HgrColor c) {
+        if (c != HgrColor::Black && !patternOn(x, y)) c = HgrColor::Black;
+        applyPlot(x, y, c);
+    }
     // Zoom ladder index (kZoomLadder[]). Mouse-wheel + Fit drive this.
     int zoomIdx = 2;                // → 3x
     bool showGrid = false;
     bool rectFilled = false;
-    bool showConflicts = false;     // palette-seam overlay
+    bool showConflicts = false;     // palette-seam / DHGR-fringing overlay
+    bool aspect43 = false;          // aspect-correct (4:3) canvas display
+    bool mirrorX = false;           // symmetric drawing about the vertical axis
+    bool mirrorY = false;           // …and about the horizontal axis
+    // Onion-skin tracing layer: the imported source kept as a canvas overlay.
+    void* onionTex = nullptr;
+    bool  onionShow = false;
+    float onionAlpha = 0.40f;
+    // Overlay placement in logical 280-eq space + source UVs (crop window),
+    // computed once when the layer is armed so it aligns with a fit/letterbox
+    // or cropped import.
+    float onionX0 = 0, onionY0 = 0, onionW = 280, onionH = 192;
+    float onionU0 = 0, onionV0 = 0, onionU1 = 1, onionV1 = 1;
+    // Flipbook: preview the double-buffer animation by alternating the canvas
+    // between this page and its sibling (page 1↔2) at flipHz, and/or ghost the
+    // OTHER page over the canvas — the classic way to author page-flipped
+    // animation. Editing always targets the selected page.
+    bool  flipShow = false;
+    float flipHz = 4.0f;
+    bool  ghostOther = false;
+    float ghostAlpha = 0.35f;
+    std::vector<uint8_t>  flipShadow;    // other page's bytes (refreshed per frame)
+    std::vector<uint32_t> flipRgba;
+    void* flipTex = nullptr;
     bool wantFit = false;           // queued zoom-to-fit
     int  paletteMsbMode = 2;        // PaletteShift sub-mode: 0=clear,1=set,2=toggle
 
@@ -122,7 +185,8 @@ private:
     float canvasScrollX = 0, canvasScrollY = 0;
     float canvasScrollMaxX = 0, canvasScrollMaxY = 0;
     float canvasViewW = 0, canvasViewH = 0;
-    float canvasScale = 1.0f;
+    float canvasScale = 1.0f;       // screen px per 280-eq column (zoom × aspect)
+    float canvasScaleY = 1.0f;      // screen px per scanline (zoom only)
     float pendingScrollX = -1, pendingScrollY = -1;
 
     // 8 KB shadow of the current page, refreshed from `memory` each frame.
@@ -167,6 +231,11 @@ private:
     float importContrast   = 1.0f;
     float importGamma      = 1.0f;
     float importColourNoise = 0.30f;   // 0 = vivid colour, 1 = clean black/white greys
+    // DHGR import model: 0 = 560-dot analysis-by-synthesis with cross-column
+    // refinement (ii-pix "4-pixel colour", the high-quality default); 1 = the
+    // fast 140-px aligned block quantiser (Dazzle Draw-style, clean blocks);
+    // 2 = 560×192 1-bit monochrome (ii-pix dhr_mono).
+    int   importDhgrModel = 0;
     bool  importPreviewOpen = false;   // OpenPopup requested this frame
     bool  importDirty = true;          // reconvert the preview
     bool  importSrcTexDirty = false;   // re-upload the source thumbnail texture
@@ -185,36 +254,46 @@ private:
     void* importSrcTex = nullptr;          // source thumbnail (side-by-side preview)
 
     uint16_t baseAddr() const {
-        if (grMode) return page2 ? 0x0800 : 0x0400;   // lo-res text page
+        if (grMode || dlgrMode) return page2 ? 0x0800 : 0x0400;   // text page
         return page2 ? 0x4000 : 0x2000;               // hi-res page (DHGR too)
     }
     // Bytes the current page occupies: 8 KB HIRES, 1 KB lo-res GR text page,
-    // 16 KB DHGR pair (aux plane first, then main — the shadow layout).
+    // 16 KB DHGR pair / 2 KB DLGR pair (aux plane first — the shadow layout).
     int pageBytes() const {
-        return dhgrMode ? kDhgrPairSize : grMode ? 0x400 : kHiresSize;
+        return dhgrMode ? kDhgrPairSize : dlgrMode ? kDlgrPairSize
+             : grMode ? 0x400 : kHiresSize;
     }
-    // Logical canvas geometry. DHGR paints 140 fat colour pixels per line but
-    // renders 560 dots wide; HGR/GR keep the historical 280-wide space. Each
-    // logical pixel is drawn `pxScreenW()`× wider than an HGR one so the
-    // canvas keeps the same on-screen footprint (280·zoom) in every mode.
-    int   logicalW()  const { return dhgrMode ? kDhgrWidth : kHiresWidth; }
-    int   texW()      const { return dhgrMode ? 2 * kHiresWidth : kHiresWidth; }
-    float pxScreenW() const { return dhgrMode ? 2.0f : 1.0f; }
+    // Bytes of ONE plane of a double mode (0 = single-plane mode).
+    int planeBytes() const {
+        return dhgrMode ? kHiresSize : dlgrMode ? 0x400 : 0;
+    }
+    // Logical canvas geometry. DHGR paints 140 fat colour pixels per line;
+    // DLGR paints in a 560-dot space (blocks of 7 dots); HGR/GR keep the
+    // historical 280-wide space. Each logical pixel is drawn `pxScreenW()`×
+    // wider/narrower than an HGR one so the canvas keeps the same on-screen
+    // footprint (280·zoom) in every mode.
+    int   logicalW()  const { return dhgrMode ? kDhgrWidth
+                                   : dlgrMode ? 2 * kHiresWidth : kHiresWidth; }
+    int   texW()      const { return (dhgrMode || dlgrMode) ? 2 * kHiresWidth
+                                                            : kHiresWidth; }
+    float pxScreenW() const { return dhgrMode ? 2.0f : dlgrMode ? 0.5f : 1.0f; }
 
     // ── Shadow-offset ↔ host-address plumbing (plane-aware) ─────────────────
-    // The DHGR shadow is [aux 8 KB][main 8 KB]; HGR/GR shadows are main-only.
+    // Double-mode shadows are [aux plane][main plane]; HGR/GR are main-only.
     // These map a shadow offset to the ByteEdit address encoding (kAuxFlag for
     // the aux plane) and poke the right plane on the host.
     uint32_t addrOfShadowOff(int off) const {
-        if (dhgrMode)
-            return off < kHiresSize
+        const int pb = planeBytes();
+        if (pb)
+            return off < pb
                 ? (kAuxFlag | static_cast<uint32_t>(baseAddr() + off))
-                : static_cast<uint32_t>(baseAddr() + off - kHiresSize);
+                : static_cast<uint32_t>(baseAddr() + off - pb);
         return static_cast<uint32_t>(baseAddr() + off);
     }
     int shadowOffOfAddr(uint32_t addr) const {
+        const int pb = planeBytes();
         const int rel = static_cast<int>(addr & 0xFFFF) - baseAddr();
-        if (dhgrMode) return (addr & kAuxFlag) ? rel : rel + kHiresSize;
+        if (pb) return (addr & kAuxFlag) ? rel : rel + pb;
         return rel;
     }
     void hostPoke(uint32_t addr, uint8_t val) {
@@ -234,7 +313,19 @@ private:
     void renderShadow(uint32_t* out, bool mono);
 
     // Paint helpers (operate on shadow + emit writes + accumulate undo).
+    // applyPlot honours the mirror-symmetry toggles (every brush/shape tool
+    // inherits them); applyPlotRaw is the single-point primitive used by the
+    // region-based operations (paste, text stamp) that must NOT mirror.
     void applyPlot(int x, int y, HgrColor c);
+    void applyPlotRaw(int x, int y, HgrColor c);
+    // Plot an explicit 16-colour index at logical (x,y) in GR (canvas px →
+    // block) or DHGR (colour pixel) — the paste path, which must not go
+    // through the current grColor.
+    void applyIdxPlot(int x, int y, int colorIndex);
+    // True when the clipboard content can paste into the current mode.
+    bool clipUsableHere() const {
+        return clip.w > 0 && clip.sixteen == sixteenMode();
+    }
     // GR (lo-res) variants: map the 280×192 canvas pixel to a 40×48 block. In GR
     // mode applyPlot routes here; HgrColor::Black erases (colour 0), anything else
     // paints the current grColor. grFloodFill floods over equal block colour.
@@ -243,7 +334,12 @@ private:
     // DHGR variants: paint 140×192 16-colour pixels into the aux+main pair.
     void applyDhgrPlot(int x, int y, HgrColor c);
     void dhgrFloodFill(int x, int y, int colorIndex);
-    void switchPage(bool toGr, bool toDhgr, bool toPage2);   // top-bar page selector
+    // DLGR variants: 80×48 blocks (7 dots × 4 px each in the 560-dot space).
+    void applyDlgrPlot(int x, int y, HgrColor c);
+    void dlgrFloodFill(int x, int y, int colorIndex);
+    // Top-bar page selector; mode: 0 = HGR, 1 = GR, 2 = DHGR, 3 = DLGR
+    // (Session::mode uses the same encoding).
+    void switchPage(int mode, bool toPage2);
     void paintBrush(int cx, int cy, HgrColor c);
     void paintLine(int x0, int y0, int x1, int y1, HgrColor c);
     void paintRect(int x0, int y0, int x1, int y1, HgrColor c, bool filled);

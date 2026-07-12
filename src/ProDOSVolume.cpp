@@ -357,10 +357,33 @@ void scanHostFolder(const fs::path& hostPath, PreparedDir& dir,
                 continue;
             }
         }
+        // CiderPress / SD-CARD-OS metadata tag: "NAME#TTAAAA" carries the
+        // ProDOS file type (TT) and aux type / load address (AAAA) in the host
+        // filename — e.g. the HGR Paint editor saves pages as "PIC#062000"
+        // (BIN at $2000), so a BLOAD needs no ,A override. The tag is stripped
+        // from the ProDOS name; without one, the extension picks the type and
+        // aux stays 0 (the historical behaviour).
+        std::string hostName = path.filename().string();
         pf.fileType   = fileTypeFromExtension(path.extension().string());
         pf.auxType    = 0;
-        pf.prodosName = uniqueName(sanitiseProDOSName(path.filename().string()),
-                                   usedNames);
+        {
+            const std::size_t hash = hostName.rfind('#');
+            if (hash != std::string::npos && hostName.size() - hash == 7) {
+                bool hex = true;
+                for (std::size_t i = hash + 1; i < hostName.size(); ++i)
+                    if (!std::isxdigit(static_cast<unsigned char>(hostName[i])))
+                        { hex = false; break; }
+                if (hex) {
+                    pf.fileType = static_cast<std::uint8_t>(
+                        std::stoul(hostName.substr(hash + 1, 2), nullptr, 16));
+                    pf.auxType = static_cast<std::uint16_t>(
+                        std::stoul(hostName.substr(hash + 3, 4), nullptr, 16));
+                    hostName.erase(hash);
+                    if (hostName.empty()) hostName = "FILE";
+                }
+            }
+        }
+        pf.prodosName = uniqueName(sanitiseProDOSName(hostName), usedNames);
         if (fsize <= kBlockBytes) {
             pf.storageType = kStorageSeedling;
             pf.dataBlocks  = 1;

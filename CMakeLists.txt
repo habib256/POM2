@@ -133,11 +133,15 @@ set(SOURCES
     src/Settings.cpp
     src/Pom2HgrPaintHost.cpp
     src/hgrpaint/Cam16.cpp
+    src/hgrpaint/DhgrNtsc8Palette.cpp
     src/hgrpaint/HgrConvert.cpp
     src/hgrpaint/HgrFont.cpp
     src/hgrpaint/HgrImageDecode.cpp
     src/hgrpaint/HgrPaintEditor.cpp
     src/hgrpaint/HgrPaintModel.cpp
+    src/hgrsprite/HgrSpriteAsmExport.cpp
+    src/hgrsprite/HgrSpriteBlit.cpp
+    src/hgrsprite/HgrSpriteEditor.cpp
     src/SlotBus.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
@@ -263,6 +267,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${IMGUI_DIR}/backends
     ${POM2_SRC_DIR}
     ${POM2_SRC_DIR}/hgrpaint   # portable HGR Paint editor (shared with POM1)
+    ${POM2_SRC_DIR}/hgrsprite  # portable HGR sprite editor (same host seam)
     ${POM2_GENERATED_DIR}   # generated Version.h
 )
 

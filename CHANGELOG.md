@@ -5,6 +5,142 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 — paint-editor crumbs: mono lo-res, composite canvas, DHGR sprites
+
+The three leftovers from the 17-item batch. 133 tests (pins folded in).
+
+- **Mono lo-res rendering** (`renderLoRes` / `renderLoResDouble`). On a mono
+  monitor a lo-res nibble is NOT a grey: the colour generator keeps cycling
+  at 14.318 MHz, so a block displays as its repeating 4-bit dot pattern —
+  the same serialisation the composite-signal path already used
+  (`fillCompositeSignal`, absolute-sample indexed). GR's 280-wide pixels
+  average their two samples (grey 5 → uniform 127); DLGR renders per-dot at
+  560 (grey 5 → fine stripes), aux rotation included. Standard
+  max(target, prev × decay) phosphor rule; `Phosphor`/`phosphorFor` moved
+  above the lo-res painters. Pinned in `dhgr_paint_model`.
+- **Composite canvas pipelines.** "AppleWin NTSC (composite)" and "OE
+  composite (CPU)" join the paint editor's pipeline combo (scratch display
+  in AppleWin *Monitor* sub-mode — Tv's frame blend would smear a static
+  canvas). This is what makes the DHGR NTSC-8-px import previewable
+  faithfully: its 86 colours only exist after composite demodulation, and
+  the import preview now points at the pipeline combo instead of
+  apologising. The 560-wide composite output of the 280 modes reuses the
+  existing pair-averaging width adapter.
+- **Sprite editor DHGR target** (gated on `supportsDhgr()`). The editing
+  canvas stays the mono shape; a "DHGR target" toggle re-aims Stamp / Grab /
+  colour preview / ca65 export at the DHGR page: lit pixels plot as 140-px
+  colour pixels in a picked 16-colour hue (transparent background,
+  plane-aware pokes), Grab lifts shape + dominant hue back, and the ASM
+  export emits `name_aux` / `name_main` byte-pair tables (blit at an
+  aligned byte-column pair). Placement is pixel-granular (`Px X`) — DHGR
+  pixels are nibble-aligned, so there is no ×2-style parity honesty problem.
+
+## 2026-07-12 — paint-editor batch: 17 items (tools, DLGR, NTSC 8-px, sprites)
+
+The full improvement backlog proposed after the 560-dot import landed in one
+wave. 133 tests (DLGR + NTSC-8 pins folded into the two existing paint tests).
+Highlights and the non-obvious bits:
+
+- **GR/DLGR screen holes masked.** Bulk editor ops (clear/import/load) used
+  to write the text-page screen holes ($x78-$x7F per 128-byte group) on the
+  LIVE machine — peripheral firmware (SmartPort, mouse) scratches there, so
+  a Clear Page could corrupt a running driver. Text-page loads now go
+  byte-wise through pokes with holes skipped (both planes in DLGR).
+- **HGR import now scores LUT row 0.** Closes yesterday's ~22 % divergence:
+  the importer's decode is pinned byte-identical to `renderHiRes` ColorNTSC
+  in `dhgr_convert`. POM1 parity for this file is deliberately dropped
+  (comment documents it).
+- **DLGR mode.** 80×48 blocks over the aux+main text pages; the aux nibble
+  displays ROTATED LEFT one bit (MAME renderLoResDouble), so the model
+  stores rotr4(colour) in aux nibbles — pinned against the real renderer +
+  a lo-res palette cross-pin in `dhgr_paint_model`. Editor paints it in a
+  560-dot logical space (7 dots per block), pxScreenW()=0.5.
+- **DHGR NTSC 8-px import** (`imageToDhgrPage560Ntsc`): scores against the
+  86-colour trailing-8-dot palette from ii-pix (`DhgrNtsc8Palette.cpp`,
+  BSD-2-Clause data, table anchors pinned). The model is CAUSAL — no right
+  context, no guessed neighbour, no refinement pass needed. The extra
+  colours only appear on composite viewing targets (OE/AppleWin modes);
+  the import preview warns that the MAME-LUT canvas under-sells it.
+- **Save to ProDOS**: `buildVolumeFromFolder` now parses CiderPress-style
+  `NAME#TTAAAA` filename tags into file_type/aux_type (pinned in
+  `prodos_volume_smoke`), and the paint editor's file browser homes to
+  `prodos_folder/` — a default "PIC#062000" save is BLOAD-able by name at
+  $2000 after the next host-folder mount.
+- **Tools**: 16-colour copy/paste (mode-tagged clip + FlipH/FlipV/Rot90),
+  MacPaint 8×8 fill patterns (page-anchored so strokes tile seamlessly;
+  patterned fills over the same colour are allowed), X/Y mirror symmetry
+  (applyPlot level — region ops deliberately exempt), DHGR text, onion-skin
+  tracing overlay (fit/crop-aware placement), page 1↔2 flipbook + ghost
+  (double-buffer animation authoring), canvas pipeline selector
+  (NTSC/Medium/4-bit/Chat Mauve — ChatMauve's 560-wide HGR output is
+  pair-averaged down to the 280 canvas), 4:3 aspect, DHGR fringing overlay,
+  session persistence, and the POM1 sprite editor (`hgrsprite/`) wired to
+  the same host seam.
+
+## 2026-07-12 — DHGR import upgraded to the true 560-dot model
+
+Follow-up to the paint-editor port after comparing against ii-pix and
+bmp2dhr: the 140-px block quantiser is bmp2dhr's model, which ii-pix
+dropped as "only useful to show why this is not the right approach to
+DHGR". 133 tests (one new).
+
+- **`imageToDhgrPage560`** — ii-pix's "4-pixel colour" model with the HGR
+  converter's proven architecture: per-byte-column (7 dots, 128
+  candidates) branch-and-bound analysis-by-synthesis, warm-started per
+  row, in-candidate linear-RGB error walk scored in CAM16-UCS via the
+  local Jacobian, then monotone cross-column ICM refinement with dirty
+  tracking. Exploits the full 560-dot resolution and pilots the colour
+  fringing the block model suffers blindly. ~180 ms/photo (vs 4 ms for
+  140-px) — live-slider friendly. Default; the block model stays as the
+  "140 px blocks (Dazzle Draw)" combo choice (instant, retouch-friendly).
+- **Optimisation target = canvas, bit-exact.** The candidate renderer is a
+  copy of POM2's ColorNTSC DHGR decode (Apple2VideoDecode LUT row 0 +
+  rotl4b(absX+1)), pinned byte-identical to `renderDhgr` in the new
+  `dhgr_convert` test — something ii-pix can't do for a specific emulator
+  (it scores against colour-picker-measured palettes). Also pinned: exact
+  solid fields with dither off, tone conservation dithered (mean linear
+  RGB within 0.06 — full-strength diffusion turns the unavoidable
+  black-context edge artifact into a never-decaying ripple, an inherent
+  error-diffusion property, so exactness there would be a wrong pin), and
+  refinement monotonicity.
+- **LUT archaeology.** The ~22 % HGR importer/canvas divergence documented
+  yesterday has a root cause: POM1's GraphicsCard NTSC LUT is MAME's
+  medium-color **row 1**; POM2's ColorNTSC is **row 0**. HGR keeps row 1
+  verbatim (POM1 parity); the DHGR converter carries row 0.
+- **Resampler pixel aspect.** `resampleToLinearRgb` gained a
+  `pixelAspect` parameter (default 1.0 — every existing caller unchanged);
+  the 560-dot path passes 0.5 so fit/letterbox is computed in visual space
+  (a square source fills the width instead of coming out 2× too narrow).
+
+## 2026-07-12 — HGR Paint editor ported from POM1 + DHGR mode
+
+The portable `hgrpaint/` module (MacPaint-style editor + ii-pix-style
+image importer with CAM16-UCS perceptual dithering) is copied verbatim
+from POM1 and driven by a new `Pom2HgrPaintHost` (Tools → HGR Paint
+Editor). 132 tests (one new).
+
+- **Offscreen canvas trick.** The host renders the editor page through a
+  private, never-clocked IIe `Memory` + `Apple2Display` pair: the scratch's
+  cycle counter never advances, so its video-event log never publishes and
+  `render()` always takes the fast single-state path — the canvas is
+  pixel-identical to the live screen with zero beam-racing interaction.
+- **Pokes bypass IIe paging on purpose.** `writeRamUnchecked` (main) / raw
+  aux bank (DHGR) instead of `memWrite`, so live 80STORE/RAMWRT state can't
+  silently reroute the editor's writes to the wrong plane.
+- **DHGR mode (POM2-only module extension).** New DHGR/DHGR2 pages (gated
+  on `host->supportsDhgr()`): 140×192 16-colour aligned block model over
+  the aux+main pair, 16 KB A2FC load/save, DHGR image import (CAM16-UCS +
+  error diffusion at native resolution). The nibble↔colour law
+  (`colour = rotl4(nibble,1)`) was derived from MAME's square-filter
+  decode and is pinned by `dhgr_paint_model` against the real
+  `renderDhgr` in two colour modes + a lo-res palette cross-pin — so an
+  Apple2Display palette/decode change that would desync the paint model
+  fails CI, not the user's picture.
+- **stb gotcha.** MainWindow's `stb_image` impl is `STB_IMAGE_STATIC`
+  (TU-local); the host TU compiles the only exported stb_image +
+  stb_image_write implementations, which `HgrImageDecode.cpp` links
+  against. Don't add a second non-static impl.
+
 ## 2026-07-12 — wave 4 (deferred fixes cleared + real Liron implemented)
 
 The four items wave 3 deferred, plus the Liron follow-through now that

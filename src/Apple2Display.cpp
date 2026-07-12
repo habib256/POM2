@@ -1207,6 +1207,35 @@ const uint32_t Apple2Display::kChatMauveLoResPalette[16] = {
     0xFFFFFFFF, // 15 White
 };
 
+namespace {
+
+// Phosphor for the monochrome modes. RGB is the fully-lit colour
+// (luminance 1.0); decay is the per-frame multiplier on the history buffer
+// (0.0 = no afterglow, 1.0 = freeze). Selected by an explicit switch on the
+// mode (phosphorFor), NOT by indexing a table with the HiResMode enum's
+// integer value — the old table forced every new enumerator to be appended
+// at the end to stay aligned (a fragile, silent coupling). Non-mono modes
+// return the white reference tint as a harmless default; only the mono
+// paths actually consult it. This is the seed of the Phase-2 "tint" effect
+// layer: phosphor becomes an axis independent of the colour decoder.
+// (Lives above the lo-res painters since 2026-07-12 — their mono branches
+// consult it too.)
+struct Phosphor { uint8_t r, g, b; float decay; };
+inline constexpr Phosphor kPhosphorWhite = { 0xFF, 0xFF, 0xFF, 0.00f };
+inline constexpr Phosphor kPhosphorGreen = { 0x33, 0xFF, 0x33, 0.85f }; // P31 (CIE x=0.280, y=0.595)
+inline constexpr Phosphor kPhosphorAmber = { 0xFF, 0xB0, 0x00, 0.96f }; // long persistence
+
+inline Phosphor phosphorFor(Apple2Display::HiResMode m)
+{
+    switch (m) {
+        case Apple2Display::HiResMode::MonoGreen: return kPhosphorGreen;
+        case Apple2Display::HiResMode::MonoAmber: return kPhosphorAmber;
+        default:                                  return kPhosphorWhite;
+    }
+}
+
+} // namespace
+
 void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
                                 int firstRow, int lastRow, int col0, int col1,
                                 int clipY0, int clipY1)
@@ -1230,6 +1259,19 @@ void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
     const bool useChatMauve = (hiResMode == HiResMode::ChatMauveRGB) && (chatMauve != nullptr);
     const uint32_t* palette = useChatMauve ? kChatMauveLoResPalette : kLoResPalette;
 
+    // Monochrome: a lo-res block on a mono monitor is NOT a grey — the colour
+    // nibble keeps cycling on the 14.318 MHz dot clock, so it displays as its
+    // repeating 4-bit pattern (vertical stripes; nibble 0 black, 15 white,
+    // greys 5/10 fine 50% stripes). Same serialisation as the composite
+    // signal path (fillCompositeSignal paintLoRes40: bit = nibble >>
+    // (absSample & 3)); each 280-wide pixel covers two 14 MHz samples, so its
+    // luminance is the average of its sample pair, then the standard
+    // max(target, prev × decay) phosphor rule (persistenceL, like renderHiRes).
+    const bool monochrome = (hiResMode == HiResMode::MonoWhite ||
+                             hiResMode == HiResMode::MonoGreen ||
+                             hiResMode == HiResMode::MonoAmber);
+    const Phosphor phos = phosphorFor(hiResMode);
+
     // Each lo-res row corresponds to half a text row (4 scanlines).
     for (int blockRow = firstRow; blockRow < lastRow; ++blockRow) {
         const int textRow = blockRow / 2;
@@ -1244,6 +1286,26 @@ void Apple2Display::renderLoRes(Memory& mem, const Memory::DisplayState& state,
             for (int dy = 0; dy < 4; ++dy) {
                 const int y = y0 + dy;
                 if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
+                if (monochrome) {
+                    uint8_t* histRow = persistenceL.data()
+                                     + static_cast<size_t>(y) * kWidth;
+                    for (int dx = 0; dx < 7; ++dx) {
+                        const int px = x0 + dx;
+                        const int s0 = (nibble >> ((px * 2)     & 3)) & 1;
+                        const int s1 = (nibble >> ((px * 2 + 1) & 3)) & 1;
+                        const int target = ((s0 + s1) * 255) / 2;   // 0 / 127 / 255
+                        const int prev = static_cast<int>(
+                            static_cast<float>(histRow[px]) * phos.decay);
+                        const int merged = std::max(target, prev);
+                        histRow[px] = static_cast<uint8_t>(merged);
+                        const uint32_t r = (static_cast<uint32_t>(phos.r) * merged + 127) / 255;
+                        const uint32_t g = (static_cast<uint32_t>(phos.g) * merged + 127) / 255;
+                        const uint32_t bl = (static_cast<uint32_t>(phos.b) * merged + 127) / 255;
+                        frame[y * kWidth + px] =
+                            (uint32_t(0xFF) << 24) | (bl << 16) | (g << 8) | r;
+                    }
+                    continue;
+                }
                 for (int dx = 0; dx < 7; ++dx)
                     frame[y * kWidth + (x0 + dx)] = rgb;
             }
@@ -1271,6 +1333,17 @@ void Apple2Display::renderLoResDouble(Memory& mem,
         return static_cast<uint8_t>(((n << 1) | (n >> 3)) & 0x0F);
     };
 
+    // Monochrome: like single lo-res, each nibble displays as its repeating
+    // 4-bit pattern at the 14.318 MHz dot clock — one 560-wide dot per sample,
+    // pattern indexed at the ABSOLUTE sample position (same rule as
+    // fillCompositeSignal's paintLoResDouble; the pattern generator is locked
+    // to the subcarrier, not restarted per 7-dot half-cell). Aux pattern is
+    // the rotl4'd nibble. Phosphor history in persistenceL80 (560-wide).
+    const bool monochrome = (hiResMode == HiResMode::MonoWhite ||
+                             hiResMode == HiResMode::MonoGreen ||
+                             hiResMode == HiResMode::MonoAmber);
+    const Phosphor phos = phosphorFor(hiResMode);
+
     for (int blockRow = firstRow; blockRow < lastRow; ++blockRow) {
         const int  textRow   = blockRow / 2;
         const bool upperHalf = (blockRow % 2 == 0);
@@ -1289,6 +1362,25 @@ void Apple2Display::renderLoResDouble(Memory& mem,
                 if (y < clipY0 || y >= clipY1) continue;   // beam-split clip
                 uint32_t* row = frame80.data()
                               + static_cast<size_t>(y) * kWidth80 + x0;
+                if (monochrome) {
+                    const uint8_t auxPat  = rotl4(aNib);
+                    uint8_t* histRow = persistenceL80.data()
+                                     + static_cast<size_t>(y) * kWidth80 + x0;
+                    for (int dx = 0; dx < 14; ++dx) {
+                        const uint8_t pat = (dx < 7) ? auxPat : mNib;
+                        const int bit = (pat >> ((x0 + dx) & 3)) & 1;
+                        const int target = bit ? 255 : 0;
+                        const int prev = static_cast<int>(
+                            static_cast<float>(histRow[dx]) * phos.decay);
+                        const int merged = std::max(target, prev);
+                        histRow[dx] = static_cast<uint8_t>(merged);
+                        const uint32_t r = (static_cast<uint32_t>(phos.r) * merged + 127) / 255;
+                        const uint32_t g = (static_cast<uint32_t>(phos.g) * merged + 127) / 255;
+                        const uint32_t bl = (static_cast<uint32_t>(phos.b) * merged + 127) / 255;
+                        row[dx] = (uint32_t(0xFF) << 24) | (bl << 16) | (g << 8) | r;
+                    }
+                    continue;
+                }
                 for (int dx = 0; dx < 7; ++dx) row[dx]     = auxRgb;
                 for (int dx = 0; dx < 7; ++dx) row[7 + dx] = mainRgb;
             }
@@ -1341,28 +1433,8 @@ namespace {
 // the DHGR and composite-signal paths. They're in scope here via the
 // file-level `using namespace pom2::a2v;` near the top of this file.
 
-// Phosphor for the monochrome modes. RGB is the fully-lit colour
-// (luminance 1.0); decay is the per-frame multiplier on the history buffer
-// (0.0 = no afterglow, 1.0 = freeze). Selected by an explicit switch on the
-// mode (phosphorFor), NOT by indexing a table with the HiResMode enum's
-// integer value — the old table forced every new enumerator to be appended
-// at the end to stay aligned (a fragile, silent coupling). Non-mono modes
-// return the white reference tint as a harmless default; only the mono
-// paths actually consult it. This is the seed of the Phase-2 "tint" effect
-// layer: phosphor becomes an axis independent of the colour decoder.
-struct Phosphor { uint8_t r, g, b; float decay; };
-inline constexpr Phosphor kPhosphorWhite = { 0xFF, 0xFF, 0xFF, 0.00f };
-inline constexpr Phosphor kPhosphorGreen = { 0x33, 0xFF, 0x33, 0.85f }; // P31 (CIE x=0.280, y=0.595)
-inline constexpr Phosphor kPhosphorAmber = { 0xFF, 0xB0, 0x00, 0.96f }; // long persistence
-
-inline Phosphor phosphorFor(Apple2Display::HiResMode m)
-{
-    switch (m) {
-        case Apple2Display::HiResMode::MonoGreen: return kPhosphorGreen;
-        case Apple2Display::HiResMode::MonoAmber: return kPhosphorAmber;
-        default:                                  return kPhosphorWhite;
-    }
-}
+// (Phosphor + phosphorFor moved above renderLoRes — the lo-res mono paths
+// need them too since 2026-07-12.)
 
 // Le Chat Mauve / Video-7 AppleColor RGB — 6-color HGR palette, applied
 // per-pixel-pair with the byte's MSB selecting the bank. ABGR-in-uint32

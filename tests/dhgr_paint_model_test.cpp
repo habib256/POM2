@@ -143,6 +143,113 @@ int main()
         }
     }
 
+    // ── 4. DLGR block model vs the real renderLoResDouble ───────────────────
+    // Pins the aux/main column interleave, the pair layout (aux 1 KB first)
+    // and the aux nibble rotation (display = rotl4(aux nibble)): a page solidly
+    // plotted colour c must render uniformly as the SAME RGB in DLGR and GR.
+    {
+        Memory mem;
+        mem.setIIEMode(true);
+        Apple2Display disp;
+        disp.setAuxMemory(mem.auxData());
+        disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
+
+        // Round-trip + plane split first.
+        {
+            std::vector<uint8_t> pair(kDlgrPairSize, 0);
+            for (int c = 0; c < 16; ++c)
+                for (int bx : {0, 1, 78, 79})
+                    for (int by : {0, 1, 46, 47}) {
+                        plotDlgrBlock(pair.data(), bx, by, c);
+                        assert(dlgrBlockColorAt(pair.data(), bx, by) == c);
+                    }
+            assert(dlgrBlockOffset(0, 0) < 0x400);    // even col = aux plane
+            assert(dlgrBlockOffset(1, 0) >= 0x400);   // odd col = main plane
+        }
+
+        for (int c = 0; c < 16; ++c) {
+            std::vector<uint8_t> pair(kDlgrPairSize, 0);
+            for (int by = 0; by < kGrRows; ++by)
+                for (int bx = 0; bx < kDlgrCols; ++bx)
+                    plotDlgrBlock(pair.data(), bx, by, c);
+            // Stage: aux plane → aux $0400, main plane → main $0400. DLGR
+            // switches: GRAPHICS + full + page1 + LORES + 80COL + AN3.
+            for (int i = 0; i < 0x400; ++i)
+                mem.writeRamUnchecked(static_cast<uint16_t>(0x0400 + i),
+                                      pair[0x400 + i]);
+            std::memcpy(mem.auxDataMutable() + 0x0400, pair.data(), 0x400);
+            mem.memWrite(0xC050, 0); mem.memWrite(0xC052, 0); mem.memWrite(0xC054, 0);
+            mem.memWrite(0xC056, 0); mem.memWrite(0xC00D, 0); mem.memWrite(0xC05E, 0);
+            disp.render(mem);
+            assert(disp.width() == Apple2Display::kWidth80);
+            const uint32_t dlgrRgb = disp.pixels()[96 * 560 + 280] & 0x00FFFFFF;
+            for (int y = 0; y < 192; ++y)
+                for (int x = 0; x < 560; ++x)
+                    assert((disp.pixels()[y * 560 + x] & 0x00FFFFFF) == dlgrRgb);
+
+            // Cross-pin against single lo-res of the same index.
+            mem.memWrite(0xC00C, 0); mem.memWrite(0xC05F, 0);
+            const uint8_t bb = static_cast<uint8_t>(c | (c << 4));
+            for (int i = 0; i < 0x400; ++i)
+                mem.writeRamUnchecked(static_cast<uint16_t>(0x0400 + i), bb);
+            disp.render(mem);
+            assert(disp.width() == Apple2Display::kWidth);
+            const uint32_t grRgb = disp.pixels()[96 * 280 + 140] & 0x00FFFFFF;
+            assert(dlgrRgb == grRgb);
+        }
+    }
+
+    // ── 5. Monochrome lo-res rendering (2026-07-12) ──────────────────────────
+    // On a mono monitor a lo-res nibble displays as its repeating 4-bit dot
+    // pattern (the colour generator keeps cycling at 14.318 MHz). Pins:
+    // GR white/black solid, GR grey 5 (0101 pattern → each 280-wide pixel
+    // averages one lit + one dark sample = uniform 127), and DLGR grey 5 at
+    // native 560 dots (alternating full/dark dots, aux rotation included).
+    {
+        Memory mem;
+        mem.setIIEMode(true);
+        Apple2Display disp;
+        disp.setAuxMemory(mem.auxData());
+        disp.setHiResMode(Apple2Display::HiResMode::MonoWhite);
+
+        // GR: switches + solid fills.
+        mem.memWrite(0xC050, 0); mem.memWrite(0xC052, 0); mem.memWrite(0xC054, 0);
+        mem.memWrite(0xC056, 0); mem.memWrite(0xC00C, 0); mem.memWrite(0xC05F, 0);
+        auto fillGr = [&](uint8_t nib) {
+            const uint8_t bb = static_cast<uint8_t>(nib | (nib << 4));
+            for (int i = 0; i < 0x400; ++i)
+                mem.writeRamUnchecked(static_cast<uint16_t>(0x0400 + i), bb);
+            disp.render(mem);
+            assert(disp.width() == Apple2Display::kWidth);
+        };
+        fillGr(15);
+        for (int i = 0; i < 280 * 192; ++i)
+            assert((disp.pixels()[i] & 0xFFFFFF) == 0xFFFFFF);
+        fillGr(0);
+        for (int i = 0; i < 280 * 192; ++i)
+            assert((disp.pixels()[i] & 0xFFFFFF) == 0x000000);
+        fillGr(5);
+        for (int i = 0; i < 280 * 192; ++i)
+            assert((disp.pixels()[i] & 0xFFFFFF) == 0x7F7F7F);
+
+        // DLGR: grey 5 renders as alternating full/dark dots at 560 wide.
+        std::vector<uint8_t> pair(kDlgrPairSize, 0);
+        for (int by = 0; by < kGrRows; ++by)
+            for (int bx = 0; bx < kDlgrCols; ++bx)
+                plotDlgrBlock(pair.data(), bx, by, 5);
+        for (int i = 0; i < 0x400; ++i)
+            mem.writeRamUnchecked(static_cast<uint16_t>(0x0400 + i), pair[0x400 + i]);
+        std::memcpy(mem.auxDataMutable() + 0x0400, pair.data(), 0x400);
+        mem.memWrite(0xC00D, 0); mem.memWrite(0xC05E, 0);
+        disp.render(mem);
+        assert(disp.width() == Apple2Display::kWidth80);
+        for (int y = 0; y < 192; ++y)
+            for (int x = 0; x < 560; ++x) {
+                const uint32_t want = ((5 >> (x & 3)) & 1) ? 0xFFFFFF : 0x000000;
+                assert((disp.pixels()[y * 560 + x] & 0xFFFFFF) == want);
+            }
+    }
+
     std::printf("dhgr_paint_model: OK\n");
     return 0;
 }

@@ -115,6 +115,13 @@ int plotGrBlock(uint8_t* page, int bx, int by, int colorIndex);
 // Colour index (0..15) of block (bx,by), or -1 if out of range.
 int grBlockColorAt(const uint8_t* page, int bx, int by);
 
+// True when page-relative text-page offset `off` (0..0x3FF) is a SCREEN HOLE:
+// the last 8 bytes of each 128-byte group ($x78-$x7F / $xF8-$xFF), which the
+// display never shows and peripheral firmware (SmartPort, mouse, 80-col) uses
+// as per-slot scratch. Bulk editor operations must leave them untouched on a
+// live machine; grBlockOffset never maps a visible block onto one.
+inline bool grIsScreenHole(int off) { return (off & 0x7F) >= 0x78; }
+
 // ── Apple IIe DHGR (double hi-res) block model ───────────────────────────────
 // DHGR interleaves TWO 8 KB planes over the HIRES row layout: dot d (0..559) of
 // a line lives in byte-column d/7 — EVEN byte-columns come from the AUX plane,
@@ -148,6 +155,26 @@ int plotDhgrPixel(uint8_t* pagePair, int x, int y, int colorIndex);
 
 // Colour index (0..15) of pixel (x,y), or -1 if out of range.
 int dhgrColorAt(const uint8_t* pagePair, int x, int y);
+
+// ── Apple IIe double lo-res (DLGR) block model ───────────────────────────────
+// DLGR interleaves TWO 1 KB text pages: display block column bx (0..79) —
+// EVEN columns come from the AUX page, ODD from MAIN, at text column bx/2.
+// The hardware displays the AUX nibble rotated left by one bit (MAME/POM2
+// renderLoResDouble), so the model stores rotr4(colour) in aux nibbles and
+// plain colour in main ones. A page is one 2 KB pair buffer [aux 1 KB]
+// [main 1 KB] — same plane order as the DHGR pair / A2FC convention.
+constexpr int kDlgrCols     = 80;       // block columns (rows = kGrRows)
+constexpr int kDlgrPairSize = 0x800;    // aux 1 KB + main 1 KB
+
+// Pair-buffer byte offset of block (bx,by), or -1 if out of range.
+int dlgrBlockOffset(int bx, int by);
+
+// Set block (bx,by) to colourIndex (0..15). Returns the changed pair offset,
+// or -1 if unchanged / out of range. Aux nibbles store the pre-rotated value.
+int plotDlgrBlock(uint8_t* pair, int bx, int by, int colorIndex);
+
+// Colour index (0..15) of block (bx,by) as DISPLAYED, or -1 if out of range.
+int dlgrBlockColorAt(const uint8_t* pair, int bx, int by);
 
 } // namespace hgrpaint
 
