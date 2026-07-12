@@ -112,6 +112,21 @@ bool Block512Backing::loadImage(const std::string& path)
     dataOffset_ = parsedOffset;
     dataLength_ = parsedLength;
     wpHeader_   = parsedWp;
+    // Host-filesystem write protection: a chmod-read-only image previously
+    // accepted a whole session of writes into RAM, then saveDirty() failed
+    // at flush time ("Cannot open … for write", log-only) — silent data
+    // loss. Probe writability once at load and surface it as WP so the
+    // guest sees the error at write time, like a locked floppy.
+    if (!wpHeader_) {
+        std::ofstream probe(path,
+            std::ios::in | std::ios::out | std::ios::binary);
+        if (!probe) {
+            wpHeader_ = true;
+            pom2::log().info("HDV",
+                "Image file is not writable on disk — mounting "
+                "write-protected: " + path);
+        }
+    }
     supportsWriteBack_ = true;
     synth_      = false;
     hostFolder_.clear();

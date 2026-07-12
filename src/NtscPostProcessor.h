@@ -132,10 +132,9 @@ public:
                          int signalWidth, int signalHeight,
                          int phaseOffset = 0);
 
-    // Dimensions of the texture returned by process(). The output is
-    // upscaled vertically by 2 so scanline darkening at every other
-    // output row stays crisp; horizontally we keep the native 4×-fsc
-    // sample rate which is already plenty.
+    // Dimensions of the texture returned by process(). Since the Phase-4
+    // demod-only split these equal the signal dimensions (560×192) — the
+    // scanline/upscale work moved to CrtEffectStack.
     int outputWidth () const { return outW; }
     int outputHeight() const { return outH; }
 

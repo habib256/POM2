@@ -5,6 +5,92 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 — wave 3 (graphics system + Liron SmartPort audit)
+
+Targeted hunts: display decode / composite pipelines / voxel & Chat Mauve
+(three review agents), and the Liron-class SmartPort card audited against
+primary sources (Apple Tech Notes, ProDOS 8 TRM, and the REAL Liron
+firmware — see below). ASan+UBSan build of the full suite: clean (and it
+exposed a real link bug: `test_ai_control_server` was missing
+`MouseCardAppleWin.cpp`; Release builds optimized the dynamic_cast typeinfo
+away, sanitizer builds didn't).
+
+**Headline discovery: the Liron controller ROM is publicly dumped.**
+BMOW/Yellowstone published `LIRONALL.bin` (4 KB) + full disassembly in
+2018-2019; MAME's "WANTED — never dumped" listing (which CLAUDE.md echoed
+as "cannot be implemented regardless of effort") is stale — MAME just
+never ingested it. Verified byte-level: `$Cn07=$00`, `$CnFE=$BF`,
+`$CnFF=$0A` → ProDOS entry fixed at `$Cn0A` (independently confirms the
+DIX `JSR $C50A` fix), SmartPort dispatch at `$Cn0D`. CLAUDE.md corrected.
+
+Display/composite fixes:
+- **FLASH / phosphor / Tv-blur paced by the host monitor (medium).**
+  `frameCounter` was ++ per render() call — the UI renders at vsync, so a
+  120/144 Hz panel blinked FLASH 2-2.4× too fast, decayed MonoAmber
+  afterglow 2.4× faster, and collapsed the AppleWin Tv 50 % blend; even at
+  60 Hz the PAL profiles flashed at the NTSC rate. Now derived from the
+  emulated frame index (`cycleCounter / 65·scanlines`, standard-aware) —
+  exactly MAME's `frame_number() & 0x10`; decay is raised to the
+  elapsed-emu-frames power and the Tv stash only advances with the
+  machine. `hgr_render_smoke` now pins the invariant both ways (decay on
+  frame step, NO decay on same-frame re-render).
+- **CRT glass vanished on mixed/sharp-text/fallback frames in OE-GPU mode
+  (medium-high).** The effect-stack gate only covered the pure GPU-demod
+  and OE-CPU branches; a mixed graphics+text frame (score bands, BASIC)
+  presents the CPU-rendered framebuffer and got NO scanlines/mask/
+  persistence — effects flickered off/on during gameplay with a stale-
+  persistence ghost on re-entry. Gate is now `oeFamily && presentTex ==
+  screenTexture` — every OE path that still presents the raw framebuffer
+  gets the glass.
+- **Composite HGR dropped the IIe rev-0 DHIRES bit-7 mask (low-med).**
+  `paintHgr` hardcoded `bit7Mask=0xFF` while the RGBA twin honors
+  `state.dhgr ? 0x7F : 0xFF` (MAME `bit7_mask`): with AN3 on + 80COL off,
+  the composite modes rendered the half-dot delay the LUT modes correctly
+  suppressed — two POM2 outputs disagreed on the same frame.
+- **Settings hardening.** NTSC/CRT floats + voxel tunables now clamped to
+  slider ranges on load, and all 17 sliders got `AlwaysClamp` (a
+  hand-edited `ntsc_center_lighting=0` was `1/x` → `exp(-inf)` → fully
+  black screen in every glass mode, surviving restarts).
+- **Chat Mauve rewind/snapshot hooks** ('CM' blob: FIFO/mode/AN3/80COL
+  latches) — rewinding past a BW560/Mixed switch kept rendering the later
+  mode until the guest re-clocked. Panel slot label unhardcoded (any
+  slot 1-7 on //e). Voxel shader program no longer leaked at shutdown
+  (via new `pom2::deleteShaderProgram`).
+
+Liron/SmartPort fixes (spec citations in the audit, `$` = ProDOS codes):
+- **READ/WRITE on an empty bay silently "succeeded" (medium ×2).** A read
+  streamed a $FF buffer with CLC — ProDOS ONLINE saw a garbage volume and
+  `PR#5` with no media booted 512 bytes of $FF and jumped into them; a
+  write dropped 512 bytes. Both now latch the I/O error → carry-set.
+- **`iicSmartPortArmed_` serialized (medium)** as a backwards-compatible
+  MEX trailer byte — a rewind-ring entry captured after a //c HDV/3.5"
+  boot restored with the $C500 stub swapped back to real //c firmware
+  under a live ProDOS (next MLI call executed unrelated ROM bytes).
+- **SmartPortCard transfer state serialized (medium-low)** ('SP' blob:
+  unit/block/stream offset/half-filled write buffer/error latches) — a
+  rewind landing mid-512-byte stream desynced the transfer.
+- **//c arming scoped + fallback leak (low-med).** `bootFromSlot` armed
+  the on-board SmartPort for ANY slot (a slot-6 5.25" Library boot with
+  SmartPort media re-created the dual-device "garbled banner" scenario)
+  and the no-signature fallback returned without disarming.
+- **Capability byte honest:** `$CnFE` $13→$17 (write bit was missing —
+  capability-inspecting utilities saw a read-only device). **`$Cn0D`
+  fails closed** (SmartPort-convention callers used to fall through NOP
+  padding INTO the boot routine). **Bad-command error** now $27 (real
+  driver code) instead of the invented $01 Filer surfaced on FORMAT.
+- **Host read-only images mount write-protected** (Block512Backing +
+  Disk35Image probe writability at load) — write-back on a chmod-read-only
+  .hdv used to accept a whole session of writes and lose them at flush.
+
+Verified clean (highlights): text/HGR/DHGR interleave + `frameCycleToPos`
+beam math both standards (13/13 display tests), GL lifecycle/resize/
+GLES-WASM in both composite paths, Mat4/camera (pinned by `voxel3d_math`),
+Chat Mauve FIFO edge model, SmartPort dispatch offsets against the real
+ROM's conventions, `$Cn0A` DIX path. Deferred with TODO entries: OE-CPU
+demod under `stateMutex` (~1-2 ms/frame of worker stall), frame-wrap
+video-event off-by-one (≤7 cycles exposure), golden coverage gaps,
+SmartPort STATUS pre-flight semantics.
+
 ## 2026-07-12 — wave 2 (seams: stale rewind ring, snapshot-load audio, kiosk K leak)
 
 Adversarial re-review of wave 1's fixes + a sweep of the cross-subsystem

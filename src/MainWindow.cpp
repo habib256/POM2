@@ -419,6 +419,22 @@ MainWindow::MainWindow(bool forceIIPlus)
                 std::clamp(sm, 0, 3));
             p.palMode    = settings->getBool("ntsc_pal",        p.palMode);
             p.textSharp  = settings->getBool("ntsc_text_sharp", p.textSharp);
+            // Clamp every float to its slider range: only values created
+            // in-app are slider-bounded — a hand-edited/corrupted state.cfg
+            // with e.g. ntsc_center_lighting=0 hits 1.0/uCenterLighting in
+            // the glass shader → exp(-inf) → fully black screen everywhere.
+            p.brightness         = std::clamp(p.brightness,        -0.5f, 0.5f);
+            p.contrast           = std::clamp(p.contrast,           0.5f, 1.5f);
+            p.saturation         = std::clamp(p.saturation,         0.0f, 2.0f);
+            p.hue                = std::clamp(p.hue,               -0.5f, 0.5f);
+            p.sharpness          = std::clamp(p.sharpness,          0.0f, 1.0f);
+            p.persistence        = std::clamp(p.persistence,        0.0f, 0.95f);
+            p.scanlines          = std::clamp(p.scanlines,          0.0f, 1.0f);
+            p.barrel             = std::clamp(p.barrel,             0.0f, 0.30f);
+            p.shadowMaskStrength = std::clamp(p.shadowMaskStrength, 0.0f, 1.0f);
+            p.luminanceGain      = std::clamp(p.luminanceGain,      1.0f, 2.0f);
+            p.centerLighting     = std::clamp(p.centerLighting,     0.5f, 1.0f);
+            p.phosphorGamma      = std::clamp(p.phosphorGamma,      0.6f, 2.6f);
 #ifdef __EMSCRIPTEN__
             p.barrel = std::min(p.barrel, 0.03f);
 #endif
@@ -434,11 +450,15 @@ MainWindow::MainWindow(bool forceIIPlus)
         // so the settings panel and persistence can bind to its tunables even
         // before the 3D view is first toggled on.
         if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
-        voxel3d_->voxelDepth  = settings->getFloat("voxel_depth",      voxel3d_->voxelDepth);
-        voxel3d_->colorShift  = settings->getFloat("voxel_colorshift", voxel3d_->colorShift);
-        voxel3d_->cubeFill    = settings->getFloat("voxel_fill",       voxel3d_->cubeFill);
-        voxel3d_->ambient     = settings->getFloat("voxel_ambient",    voxel3d_->ambient);
-        voxel3d_->superSample = settings->getInt  ("voxel_supersample", voxel3d_->superSample);
+        // Same slider-range clamps as the NTSC params above: negative depth
+        // extrudes the slab away, fill 0 makes every cube invisible, and
+        // ambient >1 flips the diffuse term — all persisted, so a stray
+        // Ctrl+click-typed value would survive restarts.
+        voxel3d_->voxelDepth  = std::clamp(settings->getFloat("voxel_depth",      voxel3d_->voxelDepth),  0.0f, 12.0f);
+        voxel3d_->colorShift  = std::clamp(settings->getFloat("voxel_colorshift", voxel3d_->colorShift),  0.0f, 24.0f);
+        voxel3d_->cubeFill    = std::clamp(settings->getFloat("voxel_fill",       voxel3d_->cubeFill),    0.2f, 1.0f);
+        voxel3d_->ambient     = std::clamp(settings->getFloat("voxel_ambient",    voxel3d_->ambient),     0.0f, 1.0f);
+        voxel3d_->superSample = std::clamp(settings->getInt  ("voxel_supersample", voxel3d_->superSample), 1, 4);
         voxel3d_->mono          = settings->getBool("voxel_mono",          voxel3d_->mono);
         voxel3d_->perColorDepth = settings->getBool("voxel_percolor_depth", voxel3d_->perColorDepth);
         const std::string asp = settings->getString("aspect_mode", "");
@@ -2412,9 +2432,15 @@ void MainWindow::drawScreenImage()
         }
     }
 
-    // OE CPU demod writes frame80 → screenTexture; apply the same CRT glass
-    // branch as GPU OE (neutral hue/sharpness — CPU demod has no hue knob).
-    if (oeCpuMode && crtEffectsEnabled && !mixedFbPresent) {
+    // OE CPU demod writes frame80 → screenTexture; the OE-GPU fallbacks
+    // (mixed graphics+text frame, sharp text, shader unavailable, demod
+    // failure) also still present screenTexture at this point. Give ALL of
+    // them the same CRT glass — gating on oeCpuMode alone made scanlines /
+    // mask / persistence vanish on exactly the mixed frames (score bands,
+    // menus, BASIC) and pop back on full-screen graphics, with a stale-
+    // persistence ghost on re-entry. `presentTex == screenTexture` is
+    // precisely "no OE branch above produced a processed texture".
+    if (oeFamily && crtEffectsEnabled && presentTex == screenTexture) {
         if (!crtFx) crtFx = std::make_unique<pom2::CrtEffectStack>();
         if (!crtFx->available()) crtFx->initialize();
         if (crtFx->available()) {
@@ -4065,22 +4091,22 @@ void MainWindow::renderVoxelSettingsWindow()
     ImGui::BeginDisabled(!show3dVoxel_);
 
     pom2::Voxel3DRenderer& v = *voxel3d_;
-    ImGui::SliderFloat("Voxel depth",  &v.voxelDepth, 0.0f, 12.0f, "%.1f cells");
+    ImGui::SliderFloat("Voxel depth",  &v.voxelDepth, 0.0f, 12.0f, "%.1f cells", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Uniform Z-thickness of every cube (in pixel units).");
-    ImGui::SliderFloat("Colour pop",   &v.colorShift, 0.0f, 24.0f, "%.1f cells");
+    ImGui::SliderFloat("Colour pop",   &v.colorShift, 0.0f, 24.0f, "%.1f cells", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("MicroM8 'Z-axis 3D offset': brighter pixels push\n"
                           "toward the viewer for pin-art relief. 0 = flat slab.");
-    ImGui::SliderFloat("Cube fill",    &v.cubeFill,   0.2f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Cube fill",    &v.cubeFill,   0.2f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Footprint as a fraction of the cell. 1.0 = contiguous\n"
                           "(no gap grid — best against moiré); lower = visible gaps.");
-    ImGui::SliderInt  ("Anti-alias",   &v.superSample, 1, 4, "%dx supersample");
+    ImGui::SliderInt  ("Anti-alias",   &v.superSample, 1, 4, "%dx supersample", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("FBO render scale, minify-downsampled. Higher = smoother\n"
                           "edges (kills moiré) but more GPU. 1 = off.");
-    ImGui::SliderFloat("Ambient",      &v.ambient,    0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Ambient",      &v.ambient,    0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Lighting floor so no cube face goes pure black.");
 
@@ -4176,16 +4202,16 @@ void MainWindow::renderNtscSettingsWindow()
 
     pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
     bool changed = false;
-    changed |= ImGui::SliderFloat("Brightness",  &p.brightness,  -0.5f, 0.5f);
-    changed |= ImGui::SliderFloat("Contrast",    &p.contrast,     0.5f, 1.5f);
-    changed |= ImGui::SliderFloat("Saturation",  &p.saturation,   0.0f, 2.0f);
-    changed |= ImGui::SliderFloat("Hue",         &p.hue,         -0.5f, 0.5f);
+    changed |= ImGui::SliderFloat("Brightness",  &p.brightness,  -0.5f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Contrast",    &p.contrast,     0.5f, 1.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Saturation",  &p.saturation,   0.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Hue",         &p.hue,         -0.5f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::Separator();
-    changed |= ImGui::SliderFloat("Sharpness",   &p.sharpness,    0.0f, 1.0f);
-    changed |= ImGui::SliderFloat("Persistence", &p.persistence,  0.0f, 0.95f);
+    changed |= ImGui::SliderFloat("Sharpness",   &p.sharpness,    0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Persistence", &p.persistence,  0.0f, 0.95f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::Separator();
-    changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f);
-    changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f);
+    changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
     ImGui::Separator();
     // Shadow mask: combo + strength slider. Procedural — no texture
@@ -4202,19 +4228,19 @@ void MainWindow::renderNtscSettingsWindow()
     }
     ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
     changed |= ImGui::SliderFloat("Mask strength",
-                                  &p.shadowMaskStrength, 0.0f, 1.0f);
+                                  &p.shadowMaskStrength, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     // Post-glass re-brighten — compensates the dimming from scanlines + mask.
-    changed |= ImGui::SliderFloat("Luminance gain", &p.luminanceGain, 1.0f, 2.0f);
+    changed |= ImGui::SliderFloat("Luminance gain", &p.luminanceGain, 1.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     // Vignette / center-lighting — 1.0 = flat (OpenEmulator default), lower
     // darkens the edges.
-    changed |= ImGui::SliderFloat("Center lighting", &p.centerLighting, 0.5f, 1.0f);
+    changed |= ImGui::SliderFloat("Center lighting", &p.centerLighting, 0.5f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     // Phosphor response curve (CRT gamma) — 1.0 = flat (off), >1 deepens
     // shadows, <1 lifts them. Pairs with Persistence (the temporal half of the
     // phosphor model). Applies to every mode when "CRT effects on all modes"
     // is on, and always in the OE composite path.
     changed |= ImGui::SliderFloat("Phosphor curve (gamma)",
-                                  &p.phosphorGamma, 0.6f, 2.6f);
+                                  &p.phosphorGamma, 0.6f, 2.6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
     ImGui::Separator();
     // PAL composite — line-phase alternation. Off by default (POM2
@@ -4695,6 +4721,7 @@ void MainWindow::renderChatMauvePanelWindow()
     if (chatMauveCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         snap.plugged         = true;
+        snap.slot            = chatMauveCard->getSlot();
         snap.mode            = chatMauveCard->currentMode();
         snap.fifoBits        = chatMauveCard->fifoBits();
         snap.eightyCol       = chatMauveCard->eightyCol();
@@ -4707,7 +4734,7 @@ void MainWindow::renderChatMauvePanelWindow()
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330,  500), ImGuiCond_FirstUseEver);
 
-    auto result = chatMauvePanel->render("Le Chat Mauve (slot 7)",
+    auto result = chatMauvePanel->render("Le Chat Mauve###chatMauvePanel",
                                         showChatMauvePanel, snap);
 
     if (chatMauveCard && result.requestOverride) {

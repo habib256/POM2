@@ -62,3 +62,21 @@ void LeChatMauveCard::clockFifo(bool dataBit)
     fifo = static_cast<uint8_t>(((fifo << 1) | (dataBit ? 1u : 0u)) & 0b11);
     mode = static_cast<RenderMode>(fifo);
 }
+
+void LeChatMauveCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.push_back('C'); out.push_back('M'); out.push_back(1);
+    out.push_back(fifo);
+    out.push_back(static_cast<uint8_t>(mode));
+    out.push_back(an3Prev ? 1 : 0);
+    out.push_back(eightyColLatched ? 1 : 0);
+}
+
+void LeChatMauveCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (len < 7 || data[0] != 'C' || data[1] != 'M' || data[2] != 1) return;
+    fifo             = static_cast<uint8_t>(data[3] & 0b11);
+    mode             = static_cast<RenderMode>(data[4] & 0b11);
+    an3Prev          = data[5] != 0;
+    eightyColLatched = data[6] != 0;
+}

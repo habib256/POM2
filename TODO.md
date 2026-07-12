@@ -73,6 +73,27 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Display] HGR / DHGR / 80-col
 
+- 🟡 **OE-CPU demod runs under `stateMutex`** — *small*. `MainWindow.cpp`
+  `drawScreenImage` holds the emulation mutex across `display->render()`;
+  in `ColorCompositeOECpu` (and mixed OE-GPU frames) that includes the
+  17-tap × 560×192 FP demod (~1-2 ms/frame), blocking the CPU worker every
+  UI frame — reads as emulation/audio jitter, amplified under disk-turbo.
+  The demod consumes only `signalBuf` (filled under the lock); run it
+  after release. (2026-07-12 graphics hunt, verified.)
+- 🟢 **Frame-wrap video-event off-by-one** — *small, rare*. An instruction
+  straddling the exact 17030/20280-cycle video-frame boundary publishes
+  its soft-switch event into the *closing* frame (applied one frame
+  early); ≤ ~7 cycles of exposure per frame. Fix: at publication, retain
+  events stamped `>= frameBoundaryCycle` in the new recording log.
+- 🟢 **`renderCompositeOeCpu` lacks PAL line-phase alternation** — with
+  `ntsc_pal` on, mixed OE-GPU frames (CPU-demodded) treat hue differently
+  from full-screen frames (GPU shader path).
+- 🟢 **Golden coverage gaps** (from the 2026-07-12 audit): flash-on phase,
+  ALTCHAR/mousetext + char-ROM glyphs, PAGE2/80STORE scanner-page scenes,
+  rev-0 DHIRES+80COL-off HGR (would have caught the paintHgr bit7 bug),
+  IIe 80COL+HIRES+MIXED without DHGR, Chat Mauve sub-modes hash-frozen,
+  PAL beam-raced splits. Also: OE-GPU uploads the unused ~430 KB fallback
+  framebuffer every frame (minor perf).
 - ✅ **CRT post-process shader** — DONE. `CrtEffectStack` applies barrel →
   hue → BCS → phosphor curve → scanlines → shadow mask → vignette → luminance
   gain → edge-mask → persistence on any framebuffer, with a "CRT Settings
@@ -197,6 +218,19 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Cards] slot cards & peripherals
 
+- 🟢 **SmartPortCard leftovers from the 2026-07-12 Liron audit** (the
+  mediums were fixed same-day): STATUS ($CnC0) never errors on
+  no-media/WP (pre-flight formatters expect SEC + $28/$2B); empty-bay WP
+  error code is $2B where $28 "no device" is the honest one; boot failure
+  is a silent `JMP $CnE0` loop (real firmware prints an error); 3.5-type
+  units present WP-until-write-back while HDV bays are RAM-writable —
+  inconsistent on the same card. Also: the real Liron ROM is now public
+  (BMOW dump, see CLAUDE.md § //c+ MIG) — a faithful SmartPort-protocol
+  `$Cn0D` dispatch (unit-0 DIB, param-count validation, $4x extended) is
+  implementable if ever wanted; today `$Cn0D` fails closed.
+- 🟢 **`$C05E/F` ignores IOUDIS on //c-class** (MAME gates DHIRES on
+  `m_ioudis`); II+ broadcasts `$C00C/D` on reads while IIe is write-only —
+  both flagged for awareness by the 2026-07-12 Chat Mauve review.
 - 🟠 **Z-80 SoftCard + CP/M** — Microsoft SoftCard, Z-80B clipped onto
   the 6502 bus, shares RAM via mode-switch. Unlocks the CP/M library
   (BASIC-80, dBase II, Turbo Pascal, WordStar). MAME refs

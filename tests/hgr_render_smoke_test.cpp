@@ -191,7 +191,11 @@ int main()
     // ── Mono Green afterglow: clear and re-render → expect ~85% retention.
     //    The history buffer's max-of-target-and-decayed rule means the
     //    new (black) frame keeps decay×prev = 0.85 × 255 ≈ 216.
+    //    Decay is paced by EMULATED frames (render() derives the frame
+    //    index from cycleCounter), so step the machine one video frame —
+    //    re-rendering the same frozen frame must NOT decay.
     clearScanline(mem, 10);
+    mem.advanceCycles(65 * 262);   // one NTSC video frame
     display.render(mem);
     {
         const uint32_t got = *pixelAt(display, 100, 10);
@@ -212,10 +216,19 @@ int main()
         assert(r8(got) == 0xFF && g8(got) == 0xB0 && b8(got) == 0x00);
     }
     clearScanline(mem, 11);
+    mem.advanceCycles(65 * 262);   // one NTSC video frame
     display.render(mem);
     {
         const uint32_t got = *pixelAt(display, 100, 11);
         // Amber decay 0.96 × 255 ≈ 244.
+        assert(r8(got) > 235 && r8(got) <= 255);
+    }
+    // Same frozen frame re-rendered (no emulated time passed) → NO decay:
+    // pins the host-refresh independence (a 144 Hz monitor re-renders the
+    // same emulated frame 2-3×; afterglow speed must not change).
+    display.render(mem);
+    {
+        const uint32_t got = *pixelAt(display, 100, 11);
         assert(r8(got) > 235 && r8(got) <= 255);
     }
 

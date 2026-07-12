@@ -219,8 +219,16 @@ private:
     // Frame counter — drives the FLASH attribute animation for screen
     // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
     // and inverse-blinking spaces). Wraps freely; only the parity of
-    // (frameCounter / kFlashHalfPeriodFrames) is read.
+    // (frameCounter / kFlashHalfPeriodFrames) is read. Set from the
+    // EMULATED frame index each render() (cycleCounter / 65·scanlines) so
+    // flash runs at the machine's own 50/60 Hz, not the host monitor's.
     uint32_t frameCounter = 0;
+    // Emulated-frame bookkeeping for render-rate-independent pacing:
+    // delta = emu frames elapsed since the previous render() call (0 when
+    // the same frame is re-rendered on a >60 Hz host, clamped at 8 across
+    // stalls, 0 on backwards jumps). Drives phosphor decay + Tv blur.
+    uint64_t lastEmuFrame_  = 0;
+    uint32_t emuFrameDelta_ = 0;
     // Half-period of the inverse-flashing animation. 16 frames @ 60 Hz →
     // 32-frame cycle ≈ 1.875 Hz, matching MAME IIe's `frame_number() & 0x10`
     // (toggles every 16 frames) and AppleWin's `(++counter & 0xF)==0`. (Was 15

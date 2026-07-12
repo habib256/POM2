@@ -104,6 +104,16 @@ bool shaderRunningOnGLES()
 #endif
 }
 
+void deleteShaderProgram(unsigned int program)
+{
+    if (!program) return;
+#if defined(__EMSCRIPTEN__)
+    glDeleteProgram(program);
+#else
+    if (loadEntryPoints() && glDeleteProgram_) glDeleteProgram_(program);
+#endif
+}
+
 #if defined(__EMSCRIPTEN__) || defined(__APPLE__)
 static bool loadEntryPoints() { return true; }
 #endif

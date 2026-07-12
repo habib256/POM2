@@ -72,6 +72,41 @@ void SmartPortCard::onReset()
     lastAccessCycle_ = 0;
 }
 
+void SmartPortCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.push_back('S'); out.push_back('P'); out.push_back(1);
+    out.push_back(static_cast<uint8_t>(activeUnit_));
+    for (size_t u = 0; u < kMaxUnits; ++u) {
+        out.push_back(static_cast<uint8_t>(selectedBlock_[u]));
+        out.push_back(static_cast<uint8_t>(selectedBlock_[u] >> 8));
+        out.push_back(static_cast<uint8_t>(streamOffset_[u]));
+        out.push_back(static_cast<uint8_t>(streamOffset_[u] >> 8));
+        out.push_back(writeBufPrimed_[u] ? 1 : 0);
+        out.push_back(ioError_[u] ? 1 : 0);
+        out.insert(out.end(), writeBuf_[u].begin(), writeBuf_[u].end());
+    }
+}
+
+void SmartPortCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    constexpr size_t kPerUnit = 6 + kBlockBytes;
+    if (len < 4 + kMaxUnits * kPerUnit ||
+        data[0] != 'S' || data[1] != 'P' || data[2] != 1)
+        return;
+    activeUnit_ = std::min<size_t>(data[3], kMaxUnits - 1);
+    const uint8_t* p = data + 4;
+    for (size_t u = 0; u < kMaxUnits; ++u) {
+        selectedBlock_[u] = static_cast<uint16_t>(p[0] | (p[1] << 8));
+        streamOffset_[u]  = static_cast<size_t>(p[2] | (p[3] << 8)) % kBlockBytes;
+        writeBufPrimed_[u] = p[4] != 0;
+        ioError_[u]        = p[5] != 0;
+        std::memcpy(writeBuf_[u].data(), p + 6, kBlockBytes);
+        p += kPerUnit;
+    }
+    // Media didn't move; the read cache just re-fills from the same block.
+    readCacheValid_.fill(false);
+}
+
 void SmartPortCard::advanceCycles(int cycles)
 {
     cpuCycleTotal_ += static_cast<uint64_t>(cycles);
@@ -205,7 +240,16 @@ uint8_t SmartPortCard::readDataByte()
 {
     const size_t u = activeUnit_;
     SmartPortUnit* unit = units_[u].get();
-    if (!unit || !unit->isLoaded()) return 0xFF;
+    if (!unit || !unit->isLoaded()) {
+        // No unit / no media: latch the error so the ROM routine returns
+        // carry-set instead of CLC "success" with a $FF buffer. Without
+        // this, ProDOS ONLINE on an empty bay 2 got a garbage volume and
+        // PR#5 with no media booted 512 bytes of $FF into $0800 and
+        // jumped into it. (Real driver convention: SEC + $28 "no device
+        // connected", ProDOS 8 TRM.)
+        if (u < kMaxUnits) ioError_[u] = true;
+        return 0xFF;
+    }
 
     // Lazy per-unit read cache. The driver issues 512 byte-reads per
     // ProDOS block; we hit the underlying SmartPortUnit::readBlock once
@@ -237,7 +281,12 @@ void SmartPortCard::writeDataByte(uint8_t v)
 {
     const size_t u = activeUnit_;
     SmartPortUnit* unit = units_[u].get();
-    if (!unit || !unit->isLoaded()) return;
+    if (!unit || !unit->isLoaded()) {
+        // Same as readDataByte: a write to an empty bay must error, not
+        // silently drop 512 bytes and return "success" to the driver.
+        if (u < kMaxUnits) ioError_[u] = true;
+        return;
+    }
     if (unit->isWriteProtected()) { ioError_[u] = true; return; }  // surface WP
 
     // Mirror the read cache for writes: accumulate 512 bytes in
@@ -290,7 +339,11 @@ void SmartPortCard::buildRom()
     // boot (bootFromSlot, ProDOS via $CnFF) is unaffected. See
     // project_iic_smartport_boot.
     rom_[0x07] = 0x01;                          // ProDOS block device
-    rom_[0xFE] = 0x13;                          // read+write+status, 2 units
+    // $CnFE capability byte (ProDOS 8 TN #21): bit3 format, bit2 WRITE,
+    // bit1 read, bit0 status, bits5-4 volume count. Was $13 — read+status
+    // only — which advertised a READ-ONLY device to capability-inspecting
+    // utilities despite the write path being fully implemented.
+    rom_[0xFE] = 0x17;                          // read+WRITE+status, 2 units
     rom_[0xFF] = kDriverOff;
 
     // ── Real-hardware driver entry at $Cn0A ────────────────────────────
@@ -308,6 +361,16 @@ void SmartPortCard::buildRom()
     rom_[0x0A] = 0x4C;                           // JMP $Cn50
     rom_[0x0B] = kDriverOff;
     rom_[0x0C] = kSlotRomHi;
+    // SmartPort-convention entry = ProDOS entry + 3 = $Cn0D (real Liron:
+    // $CnFF=$0A, SmartPort dispatch $Cn0D). POM2 doesn't implement the
+    // SmartPort call protocol ($Cn07=$01 keeps ProDOS from enumerating us
+    // as one), but a caller hardcoding entry+3 used to fall through NOP
+    // padding INTO the boot routine at $Cn20 — booting block 0 over $0800
+    // instead of erroring. Fail closed: SEC, LDA #$01 (bad command), RTS.
+    rom_[0x0D] = 0x38;                           // SEC
+    rom_[0x0E] = 0xA9;                           // LDA #$01
+    rom_[0x0F] = 0x01;
+    rom_[0x10] = 0x60;                           // RTS
 
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
     uint8_t pc = kBootOff;
@@ -353,7 +416,10 @@ void SmartPortCard::buildRom()
         0xF0, 0x39,            // BEQ write  (+57: skip the 45-byte read block)
         0xC9, 0x00,            // CMP #$00
         0xF0, 0x04,            // BEQ status (+4)
-        0xA9, 0x01,            // bad cmd: LDA #$01
+        0xA9, 0x27,            // bad cmd (incl. FORMAT $03): LDA #$27 —
+                               // a REAL driver error code; the old $01 is
+                               // not in the ProDOS $27/$28/$2B set and
+                               // surfaced as a bogus code in Filer.
         0x38,                  // SEC
         0x60,                  // RTS
         // status: jump to the full STATUS routine at $CnC0 (returns the

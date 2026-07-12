@@ -125,6 +125,16 @@ public:
     void    onReset() override;
     void    advanceCycles(int cycles) override;
 
+    // Rewind/snapshot: transfer-in-progress state (unit select, block
+    // registers, 512-byte stream position, half-filled write buffer,
+    // latched I/O errors). Without these, a rewind landing mid-block
+    // desynced streamOffset_ against the restored CPU loop → one corrupted
+    // block transfer after every such rewind. Media/paths are NOT
+    // serialized (host job); the read cache is just invalidated on load —
+    // it re-fills from the same block.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
     // ── MountableMediaCard: one bay per unit, with per-bay type select ──
     // (empty / 3.5" / HDV). Lets the Slot Manager drive each unit
     // generically. NOTE: persistence (smartport_slotN_unitK_*) is the

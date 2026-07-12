@@ -271,6 +271,7 @@ Voxel3DRenderer::~Voxel3DRenderer()
     if (ebo_)      glDeleteBuffers(1, &ebo_);
     if (vbo_)      glDeleteBuffers(1, &vbo_);
     if (vao_)      glDeleteVertexArrays(1, &vao_);
+    if (program_)  pom2::deleteShaderProgram(program_);
 }
 
 bool Voxel3DRenderer::initialize()

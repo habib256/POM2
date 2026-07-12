@@ -82,6 +82,15 @@ public:
     // $C05E/$C05F (clock); anything else is ignored.
     void onVideoSoftSwitch(uint16_t addr) override;
 
+    // Rewind/snapshot: the guest-visible mode register (FIFO + latches).
+    // Without these, rewinding to before a BW560/Mixed switch kept
+    // rendering in the later mode until the guest re-clocked the FIFO,
+    // and a stale an3Prev could swallow/admit one spurious shift right
+    // after restore. invertBit7_/Eve toggles are user settings, not
+    // guest-volatile state — deliberately NOT serialized.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
     // Read-only accessors used by Apple2Display and the UI panel.
     RenderMode currentMode() const { return mode; }
     uint8_t    fifoBits()    const { return fifo; }

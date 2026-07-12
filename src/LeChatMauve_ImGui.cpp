@@ -80,7 +80,7 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
     // ─── Plug status ─────────────────────────────────────────────────────
     if (snap.plugged) {
         ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f),
-                           "Plugged in slot 7 (Péritel RGB)");
+                           "Plugged in slot %d (Péritel RGB)", snap.slot);
     } else {
         ImGui::TextColored(ImVec4(0.85f, 0.4f, 0.4f, 1.0f),
                            "Not plugged");

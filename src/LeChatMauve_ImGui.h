@@ -21,6 +21,7 @@ class LeChatMauve_ImGui
 public:
     struct Snapshot {
         bool                        plugged         = false;
+        int                         slot            = 7;      // actual bus slot (any 1-7 on //e)
         LeChatMauveCard::RenderMode mode            = LeChatMauveCard::RenderMode::COL140;
         uint8_t                     fifoBits        = 0b11;
         bool                        eightyCol       = false;   // current data line

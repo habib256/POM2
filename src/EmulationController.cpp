@@ -407,7 +407,11 @@ void EmulationController::bootFromSlot(int slot)
     // $C500 firmware stub becomes visible for the signature check + boot
     // below (every reset/cold-boot disarms it again). See Memory::
     // setIicSmartPortArmed + project_iic_smartport_boot. No-op off //c-class.
-    mem.setIicSmartPortArmed(true);
+    // ONLY when booting slot 5 itself: arming during e.g. a slot-6 5.25"
+    // Library boot on a //c with SmartPort media mounted re-creates the
+    // dual-device confusion the gate exists to prevent (booted ProDOS may
+    // call real-firmware $C5xx entries the stub lacks — "garbled banner").
+    mem.setIicSmartPortArmed(slot == 5);
     mem.clearRam();
     mem.resetSoftSwitches();
     mem.slotBus().reset();
@@ -440,6 +444,9 @@ void EmulationController::bootFromSlot(int slot)
             " has no Apple-II JSR-dispatch signature at $Cn01/03/05 — "
             "the card isn't bootable. Falling back to cold boot so the "
             "F8 ROM can scan for a different bootable slot.");
+        // Honour the "every reset disarms" invariant on this path too —
+        // the //c F8 autostart must see its real $C500 firmware.
+        mem.setIicSmartPortArmed(false);
         processor.hardReset();
         workerParked_.store(false);  // same setter-thread invariant as setMode()
         mode.store(Mode::Running);

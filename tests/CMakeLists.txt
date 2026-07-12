@@ -3403,6 +3403,7 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
     ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
     ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
     ${POM2_TEST_CORE_SOURCES}

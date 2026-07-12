@@ -82,6 +82,16 @@ bool Disk35Image::loadFile(const std::string& imgPath)
         lastError_ = "Disk35Image: short read on " + imgPath;
         return false;
     }
+
+    // Host-filesystem write protection (same rationale as Block512Backing):
+    // with write-back on, a chmod-read-only image accepted a session of
+    // writes and lost them at flush. Probe once; OR-ed into both branches'
+    // header/extension-derived flag below.
+    const bool hostReadOnly = [&imgPath]() {
+        std::ofstream probe(imgPath,
+            std::ios::in | std::ios::out | std::ios::binary);
+        return !probe;
+    }();
     const std::size_t n = buf.size();
 
     // Detect 2IMG-wrapped 800K. Same header layout as 5.25"; we just
@@ -123,7 +133,7 @@ bool Disk35Image::loadFile(const std::string& imgPath)
                        buf.begin() + dataOff + dataLen);
         // Flags-word semantics live in TwoImg.h (shared with DiskImage
         // and Block512Backing).
-        fileWriteProtected_ = pom2::twoImgWriteProtected(flags);
+        fileWriteProtected_ = pom2::twoImgWriteProtected(flags) || hostReadOnly;
         kind_   = ImageKind::TwoImg800k;
         loaded_ = true;
         dirty_  = false;
@@ -148,8 +158,8 @@ bool Disk35Image::loadFile(const std::string& imgPath)
         // Plain `.po` ext: file is editable by default; user opts in
         // via setWriteBackEnabled. `.dsk` 800K dumps are sometimes
         // marked read-only by convention — we keep the same default.
-        fileWriteProtected_ = !endsWithCi(imgPath, ".po") &&
-                              !endsWithCi(imgPath, ".2mg");
+        fileWriteProtected_ = (!endsWithCi(imgPath, ".po") &&
+                               !endsWithCi(imgPath, ".2mg")) || hostReadOnly;
         kind_   = ImageKind::Raw800k;
         loaded_ = true;
         dirty_  = false;

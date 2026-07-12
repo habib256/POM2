@@ -711,6 +711,15 @@ void Memory::appendSnapshotState(std::vector<uint8_t>& out)
         putU32(static_cast<uint32_t>(ramWorksBacking_.size()));
         putBytes(ramWorksBacking_.data(), ramWorksBacking_.size());
     }
+
+    // Trailer (appended, version stays 1 — older blobs simply lack it and
+    // the loader falls back to the field's default): the //c-class on-board
+    // SmartPort ROM-exposure gate. Without it, a rewind-ring entry captured
+    // after a //c HDV/3.5" boot restored with armed=false, flipping
+    // $C500-$C5FF back to the real //c firmware under a live ProDOS whose
+    // device vector points into the stub — the next MLI call executed
+    // unrelated ROM bytes.
+    putU8(iicSmartPortArmed_ ? 1 : 0);
 }
 
 bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
@@ -804,6 +813,11 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
         }
         pos += backingSize;
     }
+
+    // Optional trailer (see appendSnapshotState): //c on-board SmartPort
+    // arming gate. Absent in pre-trailer blobs → keep the live value.
+    if (need(1)) iicSmartPortArmed_ = getU8() != 0;
+
     return true;
 }
 

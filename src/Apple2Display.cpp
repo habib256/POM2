@@ -505,11 +505,26 @@ void Apple2Display::patchMixedTextBand(Memory& mem)
 
 void Apple2Display::render(Memory& mem)
 {
-    // Frame-counter drives the 2 Hz FLASH animation; advance it once per
-    // frame here (not in renderInternal) because the AppleWin path below
-    // skips renderInternal yet still needs the flash phase to tick for the
-    // text it serialises into the composite signal.
-    ++frameCounter;
+    // Frame counter drives the FLASH animation, phosphor persistence and
+    // the AppleWin Tv blur. Derive it from the EMULATED frame index
+    // (cycleCounter / cycles-per-video-frame, standard-aware) instead of
+    // ++ per render call: the UI renders at the HOST monitor's refresh
+    // (vsync — 120/144 Hz panels exist), which made FLASH blink 2-2.4×
+    // too fast there, and PAL machines flashed at the NTSC rate. MAME's
+    // flash is frame_number() & 0x10 at the machine's own 50/60 Hz;
+    // frameCounter = emulated frame index reproduces exactly that.
+    {
+        const auto& vt = pom2VideoTiming(mem.videoStandard());
+        const uint64_t emuFrame = mem.getCycleCounter() /
+            (65ull * static_cast<uint64_t>(vt.scanlinesPerFrame));
+        // Delta feeds decay/blur pacing; clamp stalls, and treat a
+        // backwards jump (rewind / snapshot load) as "no time passed".
+        emuFrameDelta_ = (emuFrame > lastEmuFrame_)
+            ? static_cast<uint32_t>(std::min<uint64_t>(emuFrame - lastEmuFrame_, 8))
+            : 0;
+        lastEmuFrame_ = emuFrame;
+        frameCounter  = static_cast<uint32_t>(emuFrame);
+    }
     mixedCompositeUsesFb_ = false;
 
     const auto state = mem.getDisplayState();
@@ -586,15 +601,22 @@ void Apple2Display::render(Memory& mem)
         }
         const int w = kSignalWidth;   // 560
         const int h = kSignalHeight;  // 192
+        // Tv blur references the previous EMULATED frame. Refresh the stash
+        // only when the machine actually advanced a frame — stashing every
+        // render call made the blur reference the previous *UI* frame, so on
+        // a 144 Hz monitor the 50 % blend collapsed toward nothing (and
+        // repeated renders of one paused frame blended it into itself).
+        // frame80 still holds the previous frame's final output here.
+        if (emuFrameDelta_ > 0) {
+            std::memcpy(appleWinPrev80.data(), frame80.data(),
+                        static_cast<size_t>(w) * h * sizeof(uint32_t));
+        }
         pom2::AppleWinNtsc::renderFrame(signalBuf.data(),
                                   frame80.data(),
                                   w, h,
                                   sub,
                                   appleWinPrev80.data(),
                                   signalPhaseOffset_);
-        // Stash this frame for next call's Tv blur.
-        std::memcpy(appleWinPrev80.data(), frame80.data(),
-                    static_cast<size_t>(w) * h * sizeof(uint32_t));
         // The output IS native 560-wide regardless of the Apple II's
         // soft-switch state, so route the UI to frame80.
         useFrame80 = true;
@@ -1583,6 +1605,14 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
     // chemistry. Switching modes clears the buffer (see setHiResMode).
     uint8_t stream[kStreamLen];
     const Phosphor phos = phosphorFor(effMode);
+    // Decay is per EMULATED frame; the UI may render the same frame several
+    // times on a >60 Hz monitor. Raise the per-frame factor to the
+    // elapsed-emu-frames power so afterglow speed doesn't track the host
+    // refresh; delta 0 (same frame re-rendered, or paused) must not decay.
+    const float effDecay =
+        emuFrameDelta_ == 0 ? 1.0f :
+        emuFrameDelta_ == 1 ? phos.decay :
+        std::pow(phos.decay, static_cast<float>(emuFrameDelta_));
     for (int y = firstScanline; y < lastScanline; ++y) {
         const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
         buildBitStream(ram, rowAddr, stream, bit7Mask);
@@ -1592,7 +1622,7 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
             const int sub = x * 2;
             const int lit = stream[sub] + stream[sub + 1];   // 0..2
             const int target = (lit * 255) / 2;
-            const int prev   = static_cast<int>(static_cast<float>(histRow[x]) * phos.decay);
+            const int prev   = static_cast<int>(static_cast<float>(histRow[x]) * effDecay);
             const int merged = std::max(target, prev);
             histRow[x] = static_cast<uint8_t>(merged);
 
@@ -2131,7 +2161,11 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // bit stream builder (which already applies the per-byte half-dot
     // delay from bit 7).
     auto paintHgr = [&](int first, int last, int col0, int col1) {
-        const uint8_t bit7Mask = uint8_t{0xFF};
+        // IIe rev-0 DHIRES quirk, same as renderHiRes: AN3 on suppresses the
+        // half-dot delay in plain HGR (MAME apple2video.cpp `bit7_mask =
+        // m_dhires ? 0 : 0x80`). Was hardcoded 0xFF here, so the composite
+        // paths disagreed with the LUT framebuffer on the same frame.
+        const uint8_t bit7Mask = state.dhgr ? uint8_t{0x7F} : uint8_t{0xFF};
         uint8_t stream[kStreamLen];
         // Each byte column is 14 signal samples (40 × 14 = 560). The stream is
         // built for the WHOLE scanline (so the half-dot delay / byte-boundary

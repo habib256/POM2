@@ -25,6 +25,11 @@ unsigned int compileShaderProgram(const char* vertexBody,
                                   const char* fragmentBody,
                                   std::string* errorOut = nullptr);
 
+// Delete a program returned by compileShaderProgram (no-op on 0). Routes
+// through this TU's loaded glDeleteProgram pointer — desktop GL headers
+// don't declare the post-1.1 prototypes for other TUs.
+void deleteShaderProgram(unsigned int program);
+
 // True when the running GL context is GLES (Emscripten / WebGL2). The
 // shader sources need a `precision highp float;` line and the GLES
 // version string; this lets the postprocessor swap them in.
