@@ -3755,3 +3755,129 @@ if(WIN32)
 endif()
 add_test(NAME dhgr_convert COMMAND test_dhgr_convert)
 set_tests_properties(dhgr_convert PROPERTIES TIMEOUT 60)
+
+# ─── Z80 core (Phase 1 of the SoftCard / CP/M plan) ───────────────────────
+# The Z80 core is bus-abstracted and fully standalone: these targets link
+# ONLY src/Z80.cpp — no Apple II core sources.
+
+# Committed smoke test: hand-checked spot assertions over every opcode
+# page (flags incl. undocumented X/Y CP rule, DD/FD index forms, DD CB
+# write-back, ED block ops, IM1/IM2/NMI, EI shadow, T-state totals).
+# Fast always-on gate for src/Z80.cpp.
+add_executable(test_z80_core
+    z80_core_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
+)
+target_include_directories(test_z80_core PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME z80_core COMMAND test_z80_core)
+set_tests_properties(z80_core PROPERTIES TIMEOUT 15)
+
+# Frank Cringle's zexdoc/zexall exercisers — the exhaustive flag oracle
+# (CRCs captured on real Zilog silicon; zexall covers the undocumented
+# X/Y flags + MEMPTR leak). Binaries are freely redistributable (GPL,
+# shipped with anotherlin/z80emu); downloaded once at configure time,
+# SHA-256 pinned, same pattern as the Klaus 6502 tests. Each run retires
+# ~46 G T-states → a couple of minutes per exerciser.
+set(ZEXDOC_BIN "${CMAKE_CURRENT_BINARY_DIR}/zexdoc.com")
+set(ZEXALL_BIN "${CMAKE_CURRENT_BINARY_DIR}/zexall.com")
+set(ZEXDOC_URL "https://raw.githubusercontent.com/anotherlin/z80emu/master/testfiles/zexdoc.com")
+set(ZEXALL_URL "https://raw.githubusercontent.com/anotherlin/z80emu/master/testfiles/zexall.com")
+set(ZEXDOC_SHA256 "34923a7ed82285d3038b2d54bd64899e12173eebb61f9d07b4fc72e78af2ae8f")
+set(ZEXALL_SHA256 "6e2da55147a04f28d303d5da6a1e6b771557ac244653590a0f24a2d39c8537e8")
+
+foreach(zex IN ITEMS ZEXDOC ZEXALL)
+    if(NOT EXISTS "${${zex}_BIN}")
+        message(STATUS "Downloading ${zex} exerciser (~8.5 KB)...")
+        file(DOWNLOAD "${${zex}_URL}" "${${zex}_BIN}"
+             EXPECTED_HASH SHA256=${${zex}_SHA256}
+             TIMEOUT 30
+             STATUS ZEX_DL_STATUS)
+        list(GET ZEX_DL_STATUS 0 ZEX_DL_CODE)
+        if(NOT ZEX_DL_CODE EQUAL 0)
+            list(GET ZEX_DL_STATUS 1 ZEX_DL_MSG)
+            message(WARNING "${zex} download failed: ${ZEX_DL_MSG} — the "
+                            "matching ctest will fail at run time until the "
+                            "file is available at ${${zex}_BIN}")
+            file(REMOVE "${${zex}_BIN}")
+        endif()
+    endif()
+endforeach()
+
+add_executable(test_z80_zex
+    z80_zex_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
+)
+target_include_directories(test_z80_zex PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME z80_zexdoc COMMAND test_z80_zex "${ZEXDOC_BIN}")
+set_tests_properties(z80_zexdoc PROPERTIES TIMEOUT 1800 LABELS "slow")
+add_test(NAME z80_zexall COMMAND test_z80_zex "${ZEXALL_BIN}")
+set_tests_properties(z80_zexall PROPERTIES TIMEOUT 1800 LABELS "slow")
+
+# ─── Microsoft SoftCard Z80 (CP/M Phase 2) ────────────────────────────────
+# Pins the MAME a2softcard.cpp port: dma_r/dma_w window math, the
+# write_cnxx bus-ownership toggle (grant resets the Z80 only on the first
+# grant after reset; later grants resume — WAIT semantics), Z80 execution
+# out of translated Apple RAM, snapshot round-trip, and the
+# EmulationController runCpuSlice DMA arbitration (6502 → Z80 → 6502
+# inside one tickFrame). Gate for SoftCardZ80.cpp + SlotPeripheral's DMA
+# hook.
+add_executable(test_softcard_toggle
+    softcard_toggle_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
+    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
+    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_softcard_toggle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_softcard_toggle PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_softcard_toggle PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_softcard_toggle PRIVATE winmm)
+endif()
+add_test(NAME softcard_toggle COMMAND test_softcard_toggle)
+set_tests_properties(softcard_toggle PROPERTIES TIMEOUT 15)
+
+# ─── Microsoft CP/M 2.2 boot (SoftCard Phase 3 acceptance) ────────────────
+# Full-stack headless boot: II+ ROM + Disk II (CP/M boot disk) + SoftCard
+# Z80, $C600 → banner → A> prompt on the text page. Skips silently unless
+# roms/apple2p.rom + roms/disk2.rom + disks_5.4/cpm22.dsk are present
+# (media is user-provided, ROM-test pattern).
+add_executable(test_softcard_cpm_boot
+    softcard_cpm_boot_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
+    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_softcard_cpm_boot PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_softcard_cpm_boot PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_softcard_cpm_boot PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_softcard_cpm_boot PRIVATE winmm)
+endif()
+add_test(NAME softcard_cpm_boot COMMAND test_softcard_cpm_boot)
+set_tests_properties(softcard_cpm_boot PROPERTIES TIMEOUT 120)
+# //e + 80-col console variant (60K CP/M v2.23) — same binary, IIe mode.
+add_test(NAME softcard_cpm_boot_iie COMMAND test_softcard_cpm_boot "" iie)
+set_tests_properties(softcard_cpm_boot_iie PROPERTIES TIMEOUT 120)

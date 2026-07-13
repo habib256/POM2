@@ -78,6 +78,20 @@ int parseSlotSection(const std::string& name)
 
 RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
 {
+    // Disarm any live DMA bus master (SoftCard Z80) BEFORE restoring.
+    // File snapshots are captured with includeSlots=false, so the incoming
+    // blob usually has no SLOTn section to overwrite a claimant's state —
+    // without this, loading a snapshot while CP/M runs left the Z80
+    // enabled and executing over the freshly restored RAM at a stale PC,
+    // and the restored 6502 never ran (2026-07-12 bug hunt). onReset is
+    // the bus-accurate verb (MAME reset_from_bus). Snapshots that DO
+    // carry a SLOTn blob (rewind ring) re-arm the card right below.
+    for (int s = 0; s < SlotBus::kSlotCount; ++s) {
+        SlotPeripheral* card = mem.slotBus().peripheral(s);
+        if (card && card->dmaActive())
+            card->onReset();
+    }
+
     std::string name;
     uint32_t len = 0;
     while (r.nextSection(name, len)) {

@@ -88,6 +88,17 @@ public:
     /// CPU pacing — forwarded from Memory::advanceCycles().
     void advanceCycles(int cycles);
 
+    /// The card currently claiming DMA bus mastery (SoftCard Z80), or
+    /// nullptr when the 6502 owns the bus — consulted by
+    /// EmulationController before each CPU budget slice. Lowest slot
+    /// wins if several claim (real hardware: the DMA daisy chain gives
+    /// priority to the lowest slot; MAME a2bus does the same).
+    SlotPeripheral* dmaClaimant() const {
+        for (const auto& c : slots)
+            if (c && c->dmaActive()) return c.get();
+        return nullptr;
+    }
+
     /// System soft-switch broadcast — fan-out to every plugged card's
     /// onVideoSoftSwitch(). Used by Memory::softSwitchAccess() for the
     /// switches that aren't in the per-slot device-select range but that

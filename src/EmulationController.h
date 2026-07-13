@@ -240,6 +240,22 @@ private:
     std::condition_variable wakeCv;
     std::thread             worker;
 
+    /// One CPU budget slice under stateMutex: normally M6502::run, but
+    /// while a slot card claims DMA bus mastery (SoftCard Z80 — see
+    /// SlotPeripheral::dmaActive) the slice is handed to the card's
+    /// processor instead. The 6502 yields mid-chunk on the hand-over
+    /// (the card calls M6502::stop() from its toggle write), so the
+    /// swap takes effect at the next instruction boundary, not the next
+    /// 4096-cycle chunk. Budget + return value stay in 6502 cycles in
+    /// both branches (the card converts its own clock — emuCycles never
+    /// leaves the 6502 domain).
+    int  runCpuSlice(int chunk);
+    /// One single-instruction step of the current bus master: the DMA
+    /// claimant's processor when a card owns the bus (SoftCard Z80),
+    /// else the 6502. All Step verbs (debugger, CLI --step, AI /step)
+    /// route through this so stepping can't run parked-6502 code that a
+    /// DMA-halted CPU would never execute.
+    void stepBusMaster();
     void workerLoop();
     void waitUntilParked();      // block (bounded) until workerParked_ is set
     void flushAudioForRewind();  // silence the speaker after a time jump

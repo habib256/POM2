@@ -141,6 +141,12 @@ void main() {
 //      matrix. PAL line-phase alternation flips the Q sign on odd lines.
 //   3. Output the demodulated RGB (clamped). Grading + CRT glass happen
 //      downstream in CrtEffectStack. Output is 1× (no scanline doubling).
+//
+// PARITY CONTRACT: this demod exists in three copies — this GLSL, the CPU
+// twin (Apple2Display::renderCompositeOeCpu) and the C++ re-simulation in
+// tests/oe_demod_gpu_cpu_parity_test.cpp. Any edit here (kernels, phase,
+// hue/PAL/sharpness handling, matrix) must be mirrored in BOTH and re-pinned
+// by that test.
 const char* kFragmentShader = R"GLSL(
 in vec2 vUv;
 out vec4 fragColor;

@@ -528,6 +528,7 @@ void Apple2Display::render(Memory& mem)
     mixedCompositeUsesFb_ = false;
 
     const auto state = mem.getDisplayState();
+    lastRenderState_ = state;   // published-frame snapshot for present-path decisions
     const bool mixedGfx = state.mixedMode && !state.textMode;
 
     // Both ColorCompositeOE and ColorAppleWin consume the same 14.318 MHz
@@ -542,11 +543,15 @@ void Apple2Display::render(Memory& mem)
     const bool appleWin   = (hiResMode == HiResMode::ColorAppleWin);
     const bool oeCpu      = (hiResMode == HiResMode::ColorCompositeOECpu);
     // CPU demods (AppleWin, OE-CPU) overwrite frame80 from the composite
-    // signal for graphics only. Full-screen TEXT uses renderInternal (crisp
+    // signal for graphics; full-screen TEXT uses renderInternal (crisp
     // mono) — same as MAME/LUT paths and the GPU textSharp bypass; demod
-    // would falsely colour the glyph edges.
-    const bool cpuDemod    = appleWin || oeCpu;
-    const bool cpuDemodGfx = cpuDemod && !state.textMode;
+    // would falsely colour the glyph edges. OE-CPU mirrors the GPU's
+    // textSharp toggle exactly: when the user unchecks "Sharp text" the
+    // GPU shader demodulates full-screen TEXT, so the CPU twin must too
+    // (it used to ignore the toggle and always render text crisp).
+    const bool cpuDemod     = appleWin || oeCpu;
+    const bool oeDemodsText = oeCpu && !oeDemod_.textSharp;
+    const bool cpuDemodGfx  = cpuDemod && (!state.textMode || oeDemodsText);
     const bool needSignal = (hiResMode == HiResMode::ColorCompositeOE) || cpuDemod;
 
     // Fetch the last PUBLISHED video frame's soft-switch log ONCE (a copy —
@@ -580,7 +585,7 @@ void Apple2Display::render(Memory& mem)
     // mixed text band is patched HERE (it reads guest RAM → needs the
     // lock); the deferred demod is per-row and only rewrites the graphics
     // rows [0, 160) in mixed mode, so the patch survives it.
-    if (oeCpu && signalProducedFlag && !state.textMode) {
+    if (oeCpu && signalProducedFlag && (!state.textMode || oeDemodsText)) {
         useFrame80 = true;
         if (mixedGfx) {
             patchMixedTextBand(mem);
@@ -636,20 +641,35 @@ void Apple2Display::render(Memory& mem)
 }
 
 // CPU port of the OpenEmulator demod shader (NtscPostProcessor's demod-only
-// fragment shader). Same Y/I/Q recovery + NTSC YIQ→RGB + the +1.5π subcarrier
-// phase as the GPU path, run on the CPU into frame80. Fixed neutral sharpness
-// (OE-faithful soft chroma kernel, matching the GPU at slider value 0.5);
-// CRT glass (scanlines / mask / barrel / persistence) is layered on afterward
-// by CrtEffectStack when enabled.
+// fragment shader). Same Y/U/V recovery, YUV→RGB matrix, subcarrier phase
+// AND user knobs (hue rotation, chroma-bandwidth sharpness blend, PAL
+// line-phase alternation via setOeDemodParams) as the GPU path, run on the
+// CPU into frame80 — any edit here must be mirrored in the GLSL
+// (NtscPostProcessor.cpp kFragmentShader) and re-pinned by
+// oe_demod_gpu_cpu_parity. CRT glass (scanlines / mask / barrel /
+// persistence) is layered on afterward by CrtEffectStack when enabled.
 //
-// Optimised: the gaussian tap weights depend only on the tap offset i, and
-// the subcarrier sin/cos depend only on (x+i) mod 4 — both hoisted out of the
+// Optimised: the tap weights depend only on the tap offset i, and the
+// subcarrier sin/cos depend only on (x+i) mod 4 — both hoisted out of the
 // per-pixel loop, so the inner loop is mul/add only (no trig per pixel).
 void Apple2Display::finishPendingCpuDemod()
 {
     if (pendingCpuDemodRows_ <= 0) return;
     renderCompositeOeCpu(pendingCpuDemodRows_);
     pendingCpuDemodRows_ = 0;
+}
+
+void Apple2Display::demodCompositeForCapture()
+{
+    if (hiResMode != HiResMode::ColorCompositeOE) return;
+    if (!signalProducedFlag) return;
+    // Frames where the GPU path itself presents the framebuffer already
+    // have correct pixels(): mixed graphics+text (CPU demod band + patched
+    // text rows, pendingCpuDemodRows_ set by render()) and sharp TEXT.
+    if (mixedCompositeUsesFb_) return;
+    if (lastRenderState_.textMode && oeDemod_.textSharp) return;
+    useFrame80 = true;
+    pendingCpuDemodRows_ = kSignalHeight;
 }
 
 void Apple2Display::renderCompositeOeCpu(int rows)
@@ -663,18 +683,30 @@ void Apple2Display::renderCompositeOeCpu(int rows)
     // OpenEmulator-exact 17-tap FIR kernels (Dolph-Chebyshev(50 dB) × sinc,
     // realIDFT recipe — see NtscPostProcessor.cpp for the GPU twin and the
     // libemulation provenance). lumaK: 2.0 MHz, sum 1, notches fs/4
-    // (|H(0.25)| ≈ 0.002). chromaK: OE-faithful 0.6 MHz, sum 2 (the ×2 demod
-    // gain). This CPU fallback has no Sharpness param, so it uses OE's exact
-    // chroma bandwidth (= the GPU path at neutral Sharpness 0.5). Symmetric,
-    // [0]=centre.
+    // (|H(0.25)| ≈ 0.002). chromaSoft: OE-faithful 0.6 MHz, sum 2 (the ×2
+    // demod gain) — the neutral kernel at Sharpness 0.5. chromaSharp: the
+    // 2.0 MHz kernel × 2, blended in over the upper half of the Sharpness
+    // slider exactly like the GPU shader's mix(). Symmetric, [0]=centre.
     static const float lumaK[N + 1] = {
         0.27941f, 0.23593f, 0.13462f, 0.03665f, -0.01538f,
         -0.02210f, -0.00999f, -0.00072f, 0.00130f
     };
-    static const float chromaK[N + 1] = {
+    static const float chromaSoft[N + 1] = {
         0.26030f, 0.24788f, 0.21373f, 0.16602f, 0.11509f,
         0.07008f, 0.03648f, 0.01543f, 0.00515f
     };
+    static const float chromaSharp[N + 1] = {
+        0.55882f, 0.47185f, 0.26923f, 0.07331f, -0.03077f,
+        -0.04421f, -0.01999f, -0.00144f, 0.00259f
+    };
+    // Chroma-bandwidth sharpness: 0.5 = neutral (pure soft kernel); only the
+    // upper half of the slider blends toward the sharper 2.0 MHz kernel —
+    // same clamp + mix as the GPU shader.
+    const float sharp =
+        std::clamp((oeDemod_.sharpness - 0.5f) * 2.0f, 0.0f, 1.0f);
+    float chromaK[N + 1];
+    for (int a = 0; a <= N; ++a)
+        chromaK[a] = chromaSoft[a] + (chromaSharp[a] - chromaSoft[a]) * sharp;
     // OpenEmulator demod: chroma = composite·(sin φ, cos φ) → U,V; YUV→RGB
     // matrix below. The subcarrier table is built at the four raw phases
     // π/2·k; signalPhaseOffset_ enters ONCE, at the index `k = (xi+po)&3`
@@ -691,10 +723,18 @@ void Apple2Display::renderCompositeOeCpu(int rows)
         sinP[k] = std::sin(ph);
         cosP[k] = std::cos(ph);
     }
+    // Optional hue rotation in the U/V plane (user knob) — same convention
+    // as the GPU shader: h = uHue·π, applied AFTER the PAL V sign.
+    const float hueCs = std::cos(oeDemod_.hue * kPi);
+    const float hueSn = std::sin(oeDemod_.hue * kPi);
 
     for (int y = 0; y < sh; ++y) {
         const uint8_t* row = sig + static_cast<size_t>(y) * sw;
         uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
+        // PAL line-phase alternation: the GPU shader multiplies every V tap
+        // by ±1 per line; the sign is constant across a row, so applying it
+        // to the accumulated V below is identical.
+        const float vSign = (oeDemod_.palMode && (y & 1)) ? -1.0f : 1.0f;
         for (int x = 0; x < sw; ++x) {
             float Y = 0.0f, U = 0.0f, V = 0.0f;
             for (int i = -N; i <= N; ++i) {
@@ -707,10 +747,13 @@ void Apple2Display::renderCompositeOeCpu(int rows)
                 U += s * sinP[k] * chromaK[a];    // FIR chroma (sum=2 → ×2 gain)
                 V += s * cosP[k] * chromaK[a];
             }
+            V *= vSign;
+            const float Ur = U * hueCs - V * hueSn;
+            const float Vr = U * hueSn + V * hueCs;
             // YUV → RGB (OpenEmulator libemulation OpenGLCanvas.cpp).
-            float r = Y                 + 1.139883f * V;
-            float g = Y - 0.394642f * U - 0.580622f * V;
-            float b = Y + 2.032062f * U;
+            float r = Y                  + 1.139883f * Vr;
+            float g = Y - 0.394642f * Ur - 0.580622f * Vr;
+            float b = Y + 2.032062f * Ur;
             auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
             const uint32_t R = static_cast<uint32_t>(cl(r) * 255.0f + 0.5f);
             const uint32_t G = static_cast<uint32_t>(cl(g) * 255.0f + 0.5f);

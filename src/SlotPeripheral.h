@@ -100,6 +100,26 @@ public:
     /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
     virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
 
+    /// DMA bus mastery — for cards that halt the 6502 and drive the bus
+    /// with their own processor (Microsoft SoftCard's Z80; MAME models
+    /// this as the a2bus DMA daisy chain). While `dmaActive()` returns
+    /// true, EmulationController's frame loop hands each CPU budget
+    /// slice to `dmaRun(cycles)` instead of `M6502::run` — `cycles` is
+    /// in **6502 cycles** and the card must keep `Memory::advanceCycles`
+    /// fed in that same domain (emuCycles never leaves the 6502 clock).
+    /// Return the cycles actually consumed (overshoot allowed, same
+    /// contract as M6502::run). At most one card should claim DMA;
+    /// SlotBus::dmaClaimant() picks the lowest slot if several do.
+    ///
+    /// Hand-over latency contract: the claimant scan happens once per
+    /// ~4096-cycle chunk. For an instruction-precise grant a claiming
+    /// card must ALSO end the 6502's in-flight run() chunk by calling
+    /// M6502::stop() from the access that claims the bus (SoftCardZ80
+    /// does; see its slotRomWrite) — a card that only flips dmaActive()
+    /// gets chunk-granular arbitration, up to 4096 cycles late.
+    virtual bool dmaActive() const { return false; }
+    virtual int  dmaRun(int /*cycles6502*/) { return 0; }
+
     /// On //c-class machines the forced INTCXROM masks ALL slot ROM
     /// ($C100-$CFFF). POM2 punches a single hole for a built-in SmartPort
     /// whose $Cn00 firmware substitutes for the (unmodelled) IWM/Sony 3.5"

@@ -68,6 +68,8 @@ configure_file(
 
 set(SOURCES
     src/M6502.cpp
+    src/Z80.cpp
+    src/SoftCardZ80.cpp
     src/Memory.cpp
     src/MemoryProfile_IIcClass.cpp
     src/MachineSnapshot.cpp
@@ -158,6 +160,8 @@ set(SOURCES
 
 set(HEADERS
     src/M6502.h
+    src/Z80.h
+    src/SoftCardZ80.h
     src/ByteIO.h
     src/Memory.h
     src/MemoryProfile.h

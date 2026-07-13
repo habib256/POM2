@@ -16,6 +16,7 @@
 #include "CassetteDevice.h"
 #include "CharRomCatalog.h"
 #include "ClockCard.h"
+#include "SoftCardZ80.h"
 #include "EchoPlusCard.h"
 #include "EchoPlusTMS5220Card.h"
 #include "GrapplerCard.h"
@@ -1263,6 +1264,17 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugSoftCard = [&](int s) {
+        // Microsoft SoftCard (Z80 DMA bus master). No ROM to probe — the
+        // hardware has none. The card needs the real bus (soft-switch
+        // side effects, LC paging) and the 6502 so its $CnXX toggle can
+        // halt the in-flight run() chunk at an instruction boundary.
+        auto card = std::make_unique<SoftCardZ80>();
+        card->setMemory(&controller->memory());
+        card->setCpu(&controller->cpu());
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugPrinter = [&](int s) {
         auto card = std::make_unique<PrinterCard>(s);
         printerCard = card.get();
@@ -1497,6 +1509,7 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "ssc")         plugSsc(s);
         else if (kind == "printer")     plugPrinter(s);
         else if (kind == "clock")       plugClock(s);
+        else if (kind == "softcard")    plugSoftCard(s);
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
         else if (kind == "mouseaw")     {
@@ -1765,6 +1778,22 @@ void MainWindow::uploadScreenTexture()
                      0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         screenTextureWidth  = Apple2Display::kWidth;
         screenTextureHeight = Apple2Display::kHeight;
+    }
+
+    // Mirror the live demod knobs into the display BEFORE render() so the
+    // OE-CPU demod (and the OE-GPU mixed-frame CPU demod band) track the
+    // CRT-Settings sliders exactly like the GPU shader — hue / sharpness /
+    // PAL / textSharp used to be GPU-only and silently dead on the CPU path.
+    {
+        Apple2Display::OeDemodParams dp;
+        if (ntscFx) {
+            const pom2::NtscParams& np = ntscFx->getParams();
+            dp.hue       = np.hue;
+            dp.sharpness = np.sharpness;
+            dp.palMode   = np.palMode;
+            dp.textSharp = np.textSharp;
+        }
+        display->setOeDemodParams(dp);
     }
 
     {
@@ -2399,7 +2428,11 @@ void MainWindow::drawScreenImage()
     // textSharp; mixed HGR/lo-res/DHGR keeps the demod on the graphics
     // band only — the bottom 4 text rows are patched in frame80 as
     // white/black after demod (mixedCompositeUsesFramebuffer).
-    const auto displayState = controller->memory().getDisplayState();
+    // Use the soft-switch snapshot the render() above actually consumed —
+    // re-polling Memory::getDisplayState() here raced the CPU worker (it may
+    // have advanced past the rendered frame between the two), flashing one
+    // LUT-fallback frame on a text↔graphics switch.
+    const auto displayState = display->lastRenderState();
     const bool oeGpuMode = display->getHiResMode()
                          == Apple2Display::HiResMode::ColorCompositeOE;
     const bool oeCpuMode = display->getHiResMode()
@@ -2499,6 +2532,13 @@ void MainWindow::drawScreenImage()
         if (!crtFx) crtFx = std::make_unique<pom2::CrtEffectStack>();
         if (!crtFx->available()) crtFx->initialize();
         if (crtFx->available()) {
+            // Neutralise the demod-stage knobs, same as the GPU branch above:
+            // the OE-CPU demod (and the mixed-frame CPU demod band) now
+            // applies hue + chroma-bandwidth sharpness itself via
+            // setOeDemodParams, so the stack must not rotate the chroma or
+            // sharpen a second time. (The only frames reaching here without
+            // a demod are crisp B/W text — hue is a no-op on grays — and the
+            // shader-unavailable LUT fallback, a documented degraded path.)
             pom2::NtscParams crtP = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
             crtP.hue       = 0.0f;
             crtP.sharpness = 0.5f;
@@ -2513,7 +2553,7 @@ void MainWindow::drawScreenImage()
     // run the framebuffer through the shared scanline / mask / barrel /
     // persistence / BCS pass so those effects work on Color NTSC, Mono,
     // Chat Mauve and AppleWin too. OE GPU and OE CPU share one CRT branch
-    // (demod hue/sharpness already applied on GPU only — neutralise here).
+    // (demod hue/sharpness applied by their demod stage — neutralised there).
     if (!oeFamily && crtEffectsEnabled) {
         if (!crtFx) crtFx = std::make_unique<pom2::CrtEffectStack>();
         if (!crtFx->available()) crtFx->initialize();
@@ -4236,13 +4276,15 @@ void MainWindow::renderNtscSettingsWindow()
     ImGui::BeginDisabled(!crtEffectsEnabled);
 
     if (display->getHiResMode()
-        != Apple2Display::HiResMode::ColorCompositeOE) {
+            != Apple2Display::HiResMode::ColorCompositeOE
+        && display->getHiResMode()
+            != Apple2Display::HiResMode::ColorCompositeOECpu) {
         ImGui::TextWrapped(
             "CRT effects are active on this mode. All glass knobs "
             "(brightness, contrast, saturation, hue, sharpness, "
             "persistence, scanlines, barrel, shadow mask) apply. Only PAL "
-            "is demod-only and affects just the 'Composite NTSC "
-            "(OpenEmulator)' mode.");
+            "and Sharp text are demod-only and affect just the two "
+            "'Composite NTSC (OpenEmulator)' modes.");
         ImGui::Separator();
     }
 

@@ -1150,6 +1150,12 @@ void AiControlServer::handleScreen(int fd, const Request& /*req*/)
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         display_->render(ctrl_->memory());
+        // OE-GPU mode demodulates in a GLSL pass MainWindow owns; pixels()
+        // would return the LUT fallback framebuffer, not the composite image
+        // on screen. Schedule the pixel-identical CPU demod (pinned by
+        // oe_demod_gpu_cpu_parity) so the capture matches the display —
+        // pixels() below runs it lazily. No-op in every other mode.
+        display_->demodCompositeForCapture();
         // Apple2Display packs pixels as `0xAABBGGRR` (RGBA in LE memory:
         // R G B A bytes) — see Apple2Display.cpp ctor + the MainWindow
         // upload site. We re-interpret as raw bytes and drop the alpha

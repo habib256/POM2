@@ -218,6 +218,15 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Cards] slot cards & peripherals
 
+- 🟢 **Microsoft SoftCard (Z80) + CP/M — ✅ ALL 3 PHASES DONE 2026-07-12**
+  (Z80 core zexdoc+zexall 100 % → `SoftCardZ80` card + generic DMA
+  arbitration → CP/M 2.2 boots to `A>`: 44K v2.20 master on II+ 40-col
+  and 60K v2.23 on //e 80-col, MAME-oracle-identical; pinned by
+  `softcard_toggle` + media-gated `softcard_cpm_boot[_iie]`; see
+  [DEV § SoftCard Z80](DEV.md#softcard-z80-softcardz80hcpp--cpm-phase-2)).
+  Post-MVP ideas: Videx Videoterm 80-col for II+ CP/M, PCPI Applicard
+  (reuses the Z80 core + DMA hook as-is), Turbo Pascal / WordStar /
+  MBASIC corpus entries in `docs/test_corpus.md`.
 - 🟢 **SmartPortCard leftovers** (2026-07-12 Liron audit follow-ups —
   STATUS pre-flight, the SmartPort `$Cn0D` dispatch and the real-ROM
   identity all landed same-day, see CHANGELOG): empty-bay WP error code
@@ -424,6 +433,18 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Arch] refactor & tooling
 
+- 🟢 **Z80/SoftCard cleanup backlog** (2026-07-12 bug-hunt survivors — quality,
+  not correctness): SoftCardZ80 SFZ2 blob → `pom2::byteio` putU16/Reader like
+  every other card (3 hand-synced layout copies today);
+  `softcard_cpm_boot_test` → `pom2::findResource` + `Apple2Display::
+  textRowAddress` instead of private copies (6th in-repo transcription of the
+  text-row interleave); Z80.cpp decoder dedup: rp-selector switch pasted 8×
+  (readRP/writeRP helpers), JR cc's inline condition test vs `ccTest`,
+  `memEA` body re-inlined twice for special timings (chargeless
+  `indexedEA()` split); `xlate` 5-compare chain → 16-entry per-4K-page
+  offset LUT; drop the per-instruction `mem_` null tests in the dmaRun hot
+  loop (guard once at entry). Boot test could also pump a public
+  controller slice hook instead of re-implementing arbitration.
 - ✅ **CI GitHub Actions** — DONE (`.github/workflows/ci.yml`). Two jobs on
   push-to-`main` / PR / manual dispatch, with in-flight cancellation: **linux**
   builds the full tree (GUI + `pom2_headless` + tests, `POM2_ENABLE_TESTS=ON`)

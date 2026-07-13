@@ -77,7 +77,10 @@ public:
         // two. render() demodulates signalBuf into frame80 here, exactly like
         // ColorAppleWin; MainWindow then presents it as a normal framebuffer
         // (the shared CrtEffectStack still applies if "CRT effects on all
-        // modes" is on). Phase matches the GPU shader (+1.5π).
+        // modes" is on). The demod honours the same knobs as the GPU shader
+        // (hue, chroma-bandwidth sharpness, PAL line-phase alternation,
+        // textSharp) via setOeDemodParams — pinned pixel-identical by
+        // oe_demod_gpu_cpu_parity.
         ColorCompositeOECpu,
         MonoWhite,
         MonoGreen,
@@ -154,6 +157,41 @@ public:
     void      setHiResMode(HiResMode m);
     HiResMode getHiResMode() const { return hiResMode; }
 
+    /// Demod-stage knobs for the OE composite CPU path — the same subset the
+    /// GPU shader consumes (NtscPostProcessor uHue / uSharpness / uPalMode +
+    /// the textSharp bypass). MainWindow mirrors the live NtscParams here
+    /// every frame so ColorCompositeOECpu (and the OE-GPU mixed-frame CPU
+    /// demod) track the CRT-Settings sliders exactly like the GPU shader —
+    /// they used to silently ignore hue/sharpness/PAL/textSharp. Defaults are
+    /// the shader's neutral values, keeping headless consumers (tests, tools)
+    /// byte-identical when they never call setOeDemodParams.
+    struct OeDemodParams {
+        float hue       = 0.0f;   // -0.5..+0.5 → ±π U/V rotation
+        float sharpness = 0.5f;   // 0.5 = neutral OE 0.6 MHz chroma kernel
+        bool  palMode   = false;  // line-phase alternation (V sign per line)
+        bool  textSharp = true;   // true = crisp framebuffer TEXT (no demod)
+    };
+    void setOeDemodParams(const OeDemodParams& p) { oeDemod_ = p; }
+    const OeDemodParams& getOeDemodParams() const { return oeDemod_; }
+
+    /// Display state consumed by the most recent render() — the *published*
+    /// frame's soft-switch snapshot, captured under the caller's stateMutex.
+    /// MainWindow's present-path decisions (sharp-text bypass, demod routing)
+    /// read this instead of re-polling Memory::getDisplayState(), which the
+    /// CPU worker may have advanced past the rendered frame in the meantime
+    /// (a text↔graphics switch in that window flashed one LUT-fallback frame).
+    const Memory::DisplayState& lastRenderState() const { return lastRenderState_; }
+
+    /// Capture helper for the ColorCompositeOE (GPU) mode: schedules the CPU
+    /// demod of signalBuf into frame80 so pixels() returns the composite
+    /// image the shader shows on screen instead of the LUT fallback
+    /// framebuffer (AI /screen, headless captures). No-op unless the last
+    /// render() produced a signal that the GPU path would demodulate (mixed
+    /// frames and sharp-text frames already present the framebuffer). Call
+    /// after render(); the demod itself runs lazily in pixels() /
+    /// finishPendingCpuDemod().
+    void demodCompositeForCapture();
+
     /// AppleWin sub-mode selector. Only consulted when hiResMode ==
     /// ColorAppleWin; ignored otherwise. Switching to Tv clears the
     /// line-blur history so the previous Monitor frame doesn't bleed.
@@ -227,6 +265,8 @@ private:
     bool signalProducedFlag = false;
     int  signalPhaseOffset_ = 0;
     bool mixedCompositeUsesFb_ = false;
+    OeDemodParams oeDemod_{};
+    Memory::DisplayState lastRenderState_{};
     static constexpr int kMixedTextFirstScanline = 160;
 
     void patchMixedTextBand(Memory& mem);

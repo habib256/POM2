@@ -47,6 +47,10 @@ inline constexpr CardType kCardTypes[] = {
     // See markadev/AppleII-RevEng/Orange-Micro-Grappler+.
     { "grappler",     "Grappler+ (Orange Micro)" },
     { "clock",        "Clock (ProDOS)"    },
+    // Microsoft SoftCard — Z80 DMA bus-master card for CP/M. No ROM
+    // needed (the card has none; the CP/M boot disk finds it by toggling
+    // slot ROM windows). MAME a2bus/a2softcard.cpp port.
+    { "softcard",     "SoftCard Z80 (CP/M)" },
     { "chatmauve",    "Le Chat Mauve"     },
     { "mouse",        "Mouse Interface"   },
     // AppleWin-style HLE variant — only needs the slot EPROM (no MCU mask

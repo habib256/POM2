@@ -275,7 +275,7 @@ void EmulationController::tickFrame()
         if (n > 0) {
             std::lock_guard<std::mutex> lk(stateMtx);
             for (int i = 0; i < n; ++i) {
-                processor.step();   // step() runs mem.advanceCycles internally
+                stepBusMaster();
             }
         }
         mode.store(Mode::Stopped);
@@ -291,7 +291,7 @@ void EmulationController::tickFrame()
     for (int64_t done = 0; done < budget; ) {
         const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
         std::lock_guard<std::mutex> lk(stateMtx);
-        const int actually = processor.run(chunk);
+        const int actually = runCpuSlice(chunk);
         done += (actually > 0 ? actually : chunk);
     }
     if (iwmDev) {
@@ -591,6 +591,49 @@ void EmulationController::rewindEndPaused()
     setMode(Mode::Stopped);
 }
 
+// NOT inside the __EMSCRIPTEN__ guard: tickFrame — the browser-RAF CPU
+// driver on WASM — routes its chunks through here too. (2026-07-12 bug
+// hunt: defining this below, worker-only, broke the wasm link.)
+int EmulationController::runCpuSlice(int chunk)
+{
+    // DMA daisy chain (SoftCard Z80): while a card claims the bus the
+    // 6502 stays parked and the card's processor burns the budget. The
+    // claimant scan is 8 virtual calls per 4096-cycle chunk — noise.
+    if (SlotPeripheral* dma = mem.slotBus().dmaClaimant()) {
+        const int spent = dma->dmaRun(chunk);
+        // A card that flips off mid-slice returns what it consumed; the
+        // remainder of the chunk goes back to the 6502 so the hand-back
+        // doesn't cost a whole chunk of dead time.
+        if (spent < chunk && !dma->dmaActive())
+            return spent + processor.run(chunk - spent);
+        return spent;
+    }
+    const int spent = processor.run(chunk);
+    // Symmetric hand-over: the 6502 yields mid-chunk when its $CnXX
+    // write grants the bus (the card calls M6502::stop()); give the
+    // remainder to the new claimant instead of burning a dead chunk.
+    if (spent < chunk) {
+        if (SlotPeripheral* dma = mem.slotBus().dmaClaimant())
+            return spent + dma->dmaRun(chunk - spent);
+    }
+    return spent;
+}
+
+// One single-instruction step of whichever CPU owns the bus. The
+// debugger/CLI/AI Step verbs go through here: on a DMA-halted bus a real
+// 6502 executes nothing, so stepping while the SoftCard Z80 owns the bus
+// must advance the Z80 — stepping the parked 6502 instead ran its
+// post-hand-back continuation early and desynced the 6502↔Z80 handshake
+// (2026-07-12 bug hunt). dmaRun(1) retires exactly one Z80 instruction:
+// the per-instruction loop exits as soon as spent >= 1.
+void EmulationController::stepBusMaster()
+{
+    if (SlotPeripheral* dma = mem.slotBus().dmaClaimant())
+        dma->dmaRun(1);
+    else
+        processor.step();   // step() runs mem.advanceCycles internally
+}
+
 #ifndef __EMSCRIPTEN__
 void EmulationController::workerLoop()
 {
@@ -710,7 +753,7 @@ void EmulationController::workerLoop()
             if (stepsPending.load() > 0) {
                 {
                     std::lock_guard<std::mutex> lk(stateMtx);
-                    processor.step();
+                    stepBusMaster();
                     // M6502::step() already calls memory->advanceCycles(cycles)
                     // with the *current instruction's* cycle count — per-step
                     // accounting is canonical so cassette + speaker + slot
@@ -782,7 +825,7 @@ void EmulationController::workerLoop()
             }
             const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
             std::lock_guard<std::mutex> lk(stateMtx);
-            const int actually = processor.run(chunk);
+            const int actually = runCpuSlice(chunk);
             done += (actually > 0 ? actually : chunk);
             // No mem.advanceCycles here — see Step branch above.
         }
@@ -815,8 +858,17 @@ void EmulationController::workerLoop()
 
         // Hang detector: sample end-of-frame PC; if every sample over the
         // last ~3 s sits inside a small window, the CPU is stuck in a wait
-        // loop — dump it once.
-        if (hangTrace) {
+        // loop — dump it once. Skipped entirely while a DMA claimant
+        // (SoftCard Z80) owns the bus: the 6502 PC is then legitimately
+        // parked for minutes and every sample would be identical — a
+        // guaranteed false "HANG DETECTED" on a healthy CP/M session
+        // (2026-07-12 bug hunt). The ring is reset so stale pre-DMA
+        // samples don't blend with post-hand-back ones.
+        if (hangTrace && mem.slotBus().dmaClaimant() != nullptr) {
+            pcRingCount = 0;
+            hangDumped = false;
+            framesConfined = 0;
+        } else if (hangTrace) {
             const uint16_t pc = processor.getProgramCounter();
             pcRing[pcRingHead] = pc;
             pcRingHead = (pcRingHead + 1) % kHangSamples;

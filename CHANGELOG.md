@@ -5,6 +5,153 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-12 — SoftCard/Z80 bug hunt: 6 confirmed, 6 fixed, 1 refuted-as-faithful
+
+Adversarial review (8 finder angles + per-candidate verification) over the
+day's Z80/SoftCard/DMA work. Fixed same-day:
+
+1. **WASM link break** — `runCpuSlice` was defined inside the
+   `#ifndef __EMSCRIPTEN__` worker block while the unguarded `tickFrame`
+   (the browser-RAF CPU driver) calls it. Moved above the guard.
+2. **Z80 `IN r,(C)` MEMPTR** — WZ was computed *after* the register
+   write, so `IN B,(C)`/`IN C,(C)` latched WZ from the modified BC. Port
+   address captured first now. zex can't catch this class (no I/O).
+3. **Unbounded DD/FD chains** — a whole prefix run used to fold into ONE
+   `Z80::step()` (a crashed guest in a $DD/$FD sea → one giant
+   advanceCycles lump under stateMutex; wrapped 64 K of prefixes → host
+   hang). Each prefix now retires as its own 4-T step with interrupts
+   deferred to the opcode (`State::pendingPrefix`, faithful to silicon);
+   SoftCard blob bumped to `SFZ2`. `Z80::run()` (dead, misleading
+   contract) deleted.
+4. **Snapshot-load during CP/M** — file snapshots carry no SLOTn
+   sections, so restoring left a live SoftCard `enabled_` and the stale
+   Z80 executed over the restored RAM. `restoreMachineState` now
+   force-disarms DMA claimants first (rewind, which captures slots,
+   already round-tripped correctly).
+5. **Step verbs during CP/M** — debugger/CLI/AI single-step always
+   stepped the parked 6502, running its post-hand-back continuation
+   early (a DMA-halted CPU executes nothing). New
+   `EmulationController::stepBusMaster` steps the claimant's Z80
+   (`dmaRun(1)` = one instruction) instead.
+6. **POM2_TRACE_HANG false positive** — the detector samples the 6502 PC
+   per frame; under Z80 ownership that PC is legitimately frozen →
+   guaranteed "HANG DETECTED" spam on healthy CP/M. Sampling now skips
+   (and resets the ring) while a DMA claimant owns the bus.
+
+Refuted with evidence, kept as-designed (documented in DEV § SoftCard):
+Z80 writes to $C007 via the $E000 window wedging a IIe until RESET is
+what real MMU silicon does (UTAIIe 5-28) — MAME's write-through there is
+its own simplification. Cleanup backlog (ByteIO for the SFZ2 blob,
+findResource/textRowAddress reuse in the boot test, rp-selector/ccTest
+dedup in the Z80 decoder, xlate LUT) → TODO [Arch].
+
+## 2026-07-12 — CP/M 2.2 boots to A> (SoftCard Phase 3 — plan complete)
+
+Microsoft CP/M 2.2 now boots end-to-end: Disk II loads the system tracks,
+the 6502 loader finds the SoftCard by its $CnXX write probe, the Z80 runs
+CCP/BDOS/BIOS out of the six translated windows, and a live `A>` prompt
+lands on the text page in ~11 M cycles. Two media-gated ctest gates:
+`softcard_cpm_boot` (II+, 44K v2.20 1980 master, 40-col) and
+`softcard_cpm_boot_iie` (//e, 60K v2.23, 80-col) — the latter verified
+against the MAME `apple2ee -sl4 softcard` oracle with a byte-identical
+banner.
+
+The bring-up lesson: every "failure" was a **sysgen/machine mismatch,
+not an emulation bug**. The 56K/60K sysgens require the IIe-class
+console — on a II+ they paint $00s (MAME does the same), and their
+output goes through the IIe 80-col firmware, which stores even display
+columns in AUX $0400: a main-RAM screen scrape shows every second
+character missing ("Sfcr PM" for "Softcard CP/M") and reads like a Z80
+bug until the aux page is interleaved in. The 44K 2.20 master is the
+correct II+ image. Don't re-diagnose this; check the sysgen first.
+
+## 2026-07-12 — Microsoft SoftCard card + dual-CPU DMA arbitration (CP/M Phase 2)
+
+`SoftCardZ80` (catalog `softcard`) ports MAME `a2bus/a2softcard.cpp`. Two
+findings corrected the Phase-1 plan the moment the MAME source was read —
+worth remembering because both were "obvious" wrong guesses:
+
+- The bus toggle is a **write to $CnXX** (the slot-ROM window), not a
+  DEVSEL $C0nX access, and reads never toggle.
+- The Z80→6502 translation is **six windows, not `+$1000` with wrap**:
+  the Z80's $B000-$DFFF lands on the Language Card ($D000-$FFFF), $E000
+  reaches the I/O page (that's how the Z80 releases the bus itself), and
+  $F000 wraps to the zero page. CP/M's 60K layout only exists because of
+  the LC remap.
+
+Arbitration is a generic DMA daisy-chain hook (`SlotPeripheral::
+dmaActive/dmaRun`, `SlotBus::dmaClaimant`, `EmulationController::
+runCpuSlice`) rather than SoftCard special-casing — MAME's a2bus has the
+same abstraction, and a future Applicard reuses it as-is. Hand-over is
+instruction-precise both ways (the granting STA calls `M6502::stop()`,
+whose `run()` re-arms on the next call — the same yield WAI/STP uses; the
+chunk remainder goes to the other CPU). The Z80's 2× clock is converted
+2 T-states → 1 cycle with an odd-T carry so `emuCycles` stays in the 6502
+domain — video/LSS/audio never learn a second CPU exists. Pinned by
+`softcard_toggle` incl. a full tickFrame 6502→Z80→6502 round trip.
+
+## 2026-07-12 — Z80 core lands (SoftCard/CP/M Phase 1), zexdoc+zexall 100 %
+
+First deliverable of the Microsoft SoftCard + CP/M plan: a standalone
+`pom2::Z80` core (`src/Z80.h/.cpp`), bus-abstracted behind `Z80Bus` so it
+links with zero Apple II sources — the SlotPeripheral card and the
+dual-CPU arbitration come in Phase 2 (see TODO [Cards]). Full opcode
+coverage including the undocumented surface (IXH/IXL, DD CB write-back,
+SLL, X/Y flags, MEMPTR/WZ), IM 0/1/2, NMI, EI shadow, documented T-state
+totals. Pinned by `z80_core` (committed smoke) + `z80_zexdoc`/`z80_zexall`
+(configure-time downloads, SHA-256 pinned, Klaus pattern) — both
+exercisers pass 100 %.
+
+The pitfall worth remembering: **zexdoc green ≠ core correct**. zexdoc
+masks the undocumented X/Y flags, and the one bug the first full run
+surfaced was the `BIT n,r` X/Y rule — X/Y copy bits 3/5 of the *full
+tested register*, not of the masked single-bit result (and for
+`BIT n,(HL)` they come from WZ's high byte, which is why the core carries
+a real MEMPTR). Only zexall's silicon-captured CRCs catch this class;
+any future Z80 touch-up must keep both exercisers in the gate.
+
+## 2026-07-12 — OE composite bug hunt: GPU/CPU demod knob parity
+
+Bug hunt on the OpenEmulator composite pipeline, GPU shader vs CPU demod.
+The demod *math* checked out OE-exact (kernels recomputed from libemulation's
+`chebyshevWindow × lanczosWindow` realIDFT recipe to ≤5e-6; Y'UV matrix and
+sin→U / cos→V / PAL-flips-V conventions match `OpenGLCanvas.cpp` line for
+line) — every real bug was in *which path applies which knob*:
+
+- **Hue / Sharpness / PAL / Sharp-text were GPU-only.**
+  `renderCompositeOeCpu` ignored all four `NtscParams` demod knobs, yet
+  MainWindow still *neutralised* hue+sharpness in the CrtEffectStack pass on
+  the OE-CPU branch ("the demod already applied them" — only true for the
+  GPU). Net effect: the sliders were silently dead in OE-CPU mode, and —
+  worse — **popped off on OE-GPU mixed frames**, whose graphics band is CPU-
+  demodulated (`mixedCompositeUsesFramebuffer`): entering a splitscreen
+  (game score band, BASIC) visibly dropped the user's hue/PAL. Fixed by
+  mirroring the live knobs into the display each frame
+  (`Apple2Display::setOeDemodParams`) and implementing hue rotation, the
+  soft↔sharp chroma-kernel blend and PAL V-sign alternation in the CPU
+  demod — same formulas as the GLSL, pinned pixel-identical (maxDelta 0) by
+  the extended `oe_demod_gpu_cpu_parity` (now also covers
+  hue+sharpness+PAL engaged, and demodulated TEXT).
+- **AI `/screen` lied in OE-GPU mode.** `pixels()` returns the LUT fallback
+  framebuffer there (the composite image only exists in a GL texture), so
+  agent screenshots showed ColorNTSC colours, not what's on screen. New
+  `Apple2Display::demodCompositeForCapture()` schedules the pixel-identical
+  CPU demod after the server's render; no-op in every other mode.
+- **One-frame present race.** `drawScreenImage` re-polled
+  `Memory::getDisplayState()` (the CPU worker may have advanced past the
+  rendered frame) to route sharp-text/demod presentation; a text↔graphics
+  switch in that window flashed one LUT frame. It now reads
+  `Apple2Display::lastRenderState()` — the snapshot render() actually used.
+- **Golden rebaseline (15 hashes).** `display_golden_hash` was red at HEAD:
+  the intentional mono lo-res dot-pattern rendering (previous entry) landed
+  without re-recording the `lores/dlgr × mono*` hashes, which still pinned
+  the pre-fix "mono lo-res ≡ colour hash" behaviour. Re-recorded; diff
+  audited to be exactly those 15 entries.
+- **Parity contract documented.** The demod now exists in three deliberate
+  copies (GLSL, `renderCompositeOeCpu`, the test's re-simulation); each site
+  now carries a cross-pin comment naming the other two, since an edit to one
+  alone is invisible to CI until the parity test is also updated.
+
 ## 2026-07-12 — paint-editor crumbs: mono lo-res, composite canvas, DHGR sprites
 
 The three leftovers from the 17-item batch. 133 tests (pins folded in).

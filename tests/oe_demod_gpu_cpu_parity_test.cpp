@@ -1,6 +1,11 @@
-// Pins OpenEmulator demod parity: the GPU shader phase formula must match
-// renderCompositeOeCpu() (the reference CPU path). Without GL — simulates
-// the fixed GLSL demod in C++ and compares pixel-for-pixel on HGR + DHGR.
+// Pins OpenEmulator demod parity: the GPU shader (NtscPostProcessor.cpp
+// kFragmentShader) must match renderCompositeOeCpu() (the reference CPU
+// path) pixel-for-pixel. Without GL — re-simulates the full GLSL demod in
+// C++ (subcarrier phase, kernel sharpness mix, PAL line-phase alternation,
+// hue rotation) and compares on HGR + DHGR, at neutral knobs AND with
+// hue/sharpness/PAL engaged (those used to be GPU-only — the CPU demod
+// silently ignored them). Also pins the textSharp=false path: full-screen
+// TEXT must demodulate on the CPU exactly like the GPU shader does.
 
 #include "Apple2Display.h"
 #include "Memory.h"
@@ -23,6 +28,10 @@ static const float kChromaSoft[N + 1] = {
     0.26030f, 0.24788f, 0.21373f, 0.16602f, 0.11509f,
     0.07008f, 0.03648f, 0.01543f, 0.00515f
 };
+static const float kChromaSharp[N + 1] = {
+    0.55882f, 0.47185f, 0.26923f, 0.07331f, -0.03077f,
+    -0.04421f, -0.01999f, -0.00144f, 0.00259f
+};
 
 uint32_t packRgb(float r, float g, float b)
 {
@@ -33,13 +42,21 @@ uint32_t packRgb(float r, float g, float b)
     return 0xFF000000u | (B << 16) | (G << 8) | R;
 }
 
-// GPU shader demod: same phase lookup as renderCompositeOeCpu() — the
-// offset enters the subcarrier phase exactly ONCE, π/2·((xi + po) & 3),
-// matching MAME rotl4(absX+1) / AppleWin lut[(x + phase) & 3]. (An earlier
-// revision applied it twice here AND in the shader, replicating the CPU
-// path's double-application bug instead of pinning the correct phase.)
-uint32_t demodGpuStyle(const uint8_t* row, int x, int phaseOffset)
+// GPU shader demod, re-simulated tap-for-tap from the GLSL: phase offset
+// enters the subcarrier phase exactly ONCE, π/2·((xi + po) & 3), matching
+// MAME rotl4(absX+1) / AppleWin lut[(x + phase) & 3]; the chroma kernel is
+// mix(soft, sharp, clamp((sharpness-0.5)·2)); PAL multiplies every V tap by
+// ±1 per line; hue rotates U/V afterwards. (An earlier revision applied the
+// phase offset twice here AND in the shader, replicating the CPU path's
+// double-application bug instead of pinning the correct phase.)
+uint32_t demodGpuStyle(const uint8_t* row, int x, int y, int phaseOffset,
+                       float hue, float sharpness, bool palMode)
 {
+    float sharp = (sharpness - 0.5f) * 2.0f;
+    if (sharp < 0.0f) sharp = 0.0f;
+    if (sharp > 1.0f) sharp = 1.0f;
+    const float palQSign = (palMode && (y & 1)) ? -1.0f : 1.0f;
+
     float Y = 0.0f, U = 0.0f, V = 0.0f;
     const float sigX = static_cast<float>(x) + 0.5f;
     for (int i = -N; i <= N; ++i) {
@@ -49,15 +66,20 @@ uint32_t demodGpuStyle(const uint8_t* row, int x, int phaseOffset)
         if (xi >= 0 && xi < 560)
             s = row[xi] ? 1.0f : 0.0f;
         const int a = i < 0 ? -i : i;
+        const float wc = kChromaSoft[a] + (kChromaSharp[a] - kChromaSoft[a]) * sharp;
         const int phaseIdx = (xi + phaseOffset) & 3;
         const float phase = kPi * 0.5f * static_cast<float>(phaseIdx);
         Y += s * kLumaK[a];
-        U += s * std::sin(phase) * kChromaSoft[a];
-        V += s * std::cos(phase) * kChromaSoft[a];
+        U += s * std::sin(phase) * wc;
+        V += s * std::cos(phase) * wc * palQSign;
     }
-    const float r = Y + 1.139883f * V;
-    const float g = Y - 0.394642f * U - 0.580622f * V;
-    const float b = Y + 2.032062f * U;
+    const float h  = hue * kPi;
+    const float cs = std::cos(h), sn = std::sin(h);
+    const float Ur = U * cs - V * sn;
+    const float Vr = U * sn + V * cs;
+    const float r = Y + 1.139883f * Vr;
+    const float g = Y - 0.394642f * Ur - 0.580622f * Vr;
+    const float b = Y + 2.032062f * Ur;
     return packRgb(r, g, b);
 }
 
@@ -74,7 +96,8 @@ int maxChannelDelta(uint32_t a, uint32_t b)
     return std::max({std::abs(dr), std::abs(dg), std::abs(db)});
 }
 
-void assertParity(const Apple2Display& disp, int phaseOffset)
+void assertParity(const Apple2Display& disp, int phaseOffset,
+                  const Apple2Display::OeDemodParams& p, const char* label)
 {
     const int w = disp.width();
     const int h = disp.height();
@@ -84,13 +107,14 @@ void assertParity(const Apple2Display& disp, int phaseOffset)
         const uint8_t* row = sig + static_cast<size_t>(y) * 560;
         for (int x = 0; x < w; ++x) {
             const uint32_t cpuPx = pxCpu(disp, x, y);
-            const uint32_t gpuPx = demodGpuStyle(row, x, phaseOffset);
+            const uint32_t gpuPx = demodGpuStyle(row, x, y, phaseOffset,
+                                                 p.hue, p.sharpness, p.palMode);
             const int d = maxChannelDelta(cpuPx, gpuPx);
             if (d > worst) worst = d;
             assert(d <= 1 && "GPU-style demod must match OE CPU within 1 LSB");
         }
     }
-    std::printf("  phaseOffset=%d maxDelta=%d\n", phaseOffset, worst);
+    std::printf("  %-28s phaseOffset=%d maxDelta=%d\n", label, phaseOffset, worst);
 }
 
 void setupHgr(Memory& mem)
@@ -115,6 +139,28 @@ void setupDhgr(Memory& mem)
     mem.auxDataMutable()[row] = 0x2A;
 }
 
+// Knob sets: neutral (the historical pin) + engaged hue/sharpness/PAL —
+// each exercised on HGR (phase 0) and DHGR (phase 1).
+const Apple2Display::OeDemodParams kNeutral{};
+Apple2Display::OeDemodParams knobs()
+{
+    Apple2Display::OeDemodParams p;
+    p.hue       = 0.23f;
+    p.sharpness = 0.85f;
+    p.palMode   = true;
+    return p;
+}
+
+void runCase(Apple2Display& disp, Memory& mem, int phaseOffset,
+             const Apple2Display::OeDemodParams& p, const char* label)
+{
+    disp.setOeDemodParams(p);
+    disp.render(mem);
+    assert(disp.signalProduced());
+    assert(disp.signalPhaseOffset() == phaseOffset);
+    assertParity(disp, phaseOffset, p, label);
+}
+
 } // namespace
 
 int main()
@@ -124,19 +170,31 @@ int main()
 
     Memory memHgr;
     setupHgr(memHgr);
-    disp.render(memHgr);
-    assert(disp.signalProduced());
-    assert(disp.signalPhaseOffset() == 0);
     std::printf("HGR parity:\n");
-    assertParity(disp, 0);
+    runCase(disp, memHgr, 0, kNeutral, "neutral");
+    runCase(disp, memHgr, 0, knobs(),  "hue+sharpness+PAL");
 
     Memory memDhgr;
     setupDhgr(memDhgr);
     disp.setAuxMemory(memDhgr.auxData());
-    disp.render(memDhgr);
-    assert(disp.signalPhaseOffset() == 1);
     std::printf("DHGR parity:\n");
-    assertParity(disp, 1);
+    runCase(disp, memDhgr, 1, kNeutral, "neutral");
+    runCase(disp, memDhgr, 1, knobs(),  "hue+sharpness+PAL");
+
+    // textSharp=false: full-screen TEXT must demodulate on the CPU exactly
+    // like the GPU shader (which only bypasses the demod when textSharp is
+    // on). The output is 560-wide (frame80).
+    Memory memText;
+    memText.memRead(0xC051);
+    for (uint16_t a = 0x0400; a < 0x0800; ++a)
+        memText.memWrite(a, static_cast<uint8_t>('A' | 0x80));
+    Apple2Display dispText;
+    dispText.setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu);
+    Apple2Display::OeDemodParams pt;
+    pt.textSharp = false;
+    std::printf("TEXT (textSharp=off) parity:\n");
+    runCase(dispText, memText, 0, pt, "demodulated text");
+    assert(dispText.width() == 560 && "demodulated TEXT presents frame80");
 
     std::printf("oe_demod_gpu_cpu_parity OK\n");
     return 0;

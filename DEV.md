@@ -10,7 +10,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 
 ## Table of contents
 
-- [CPU](#cpu)
+- [CPU](#cpu) · [Z80 core](#z80-core-z80hcpp--softcardcpm-phase-1) · [SoftCard Z80](#softcard-z80-softcardz80hcpp--cpm-phase-2)
 - [Memory](#memory)
 - [Display](#display)
 - [Audio](#audio) · [Mockingboard](#mockingboard) · [Floppy mechanical sounds](#floppy-mechanical-sounds)
@@ -77,6 +77,145 @@ configure-time download is gated behind `-DPOM2_FETCH_TOMHARTE=ON` (default OFF
 — full corpus is ~1.4 GB/CPU). `tests/fetch_tomharte.sh <variant> <dir>` pulls
 a full 256-opcode variant for exhaustive runs. Pinned: `tomharte_6502`,
 `tomharte_65c02`.
+
+### Z80 core (`Z80.h/.cpp` — SoftCard/CP/M Phase 1)
+
+Standalone Zilog Z80, first deliverable of the Microsoft SoftCard + CP/M
+plan. **No Apple II dependency**: all bus traffic goes through the abstract
+`pom2::Z80Bus` (memRead/memWrite/ioRead/ioWrite), so the core links alone
+(the test targets compile `Z80.cpp` with zero other sources). `SoftCardZ80`
+(next section) implements `Z80Bus` with the SoftCard's six-window
+translation over `Memory` (MAME `src/devices/bus/a2bus/a2softcard.cpp`
+dma_r/dma_w — NOT a plain +$1000 wrap).
+
+Decoder = x/y/z/p/q field decomposition (z80.info/decoding.htm — the same
+structure MAME's `z80.cpp` tables flatten): the LD and ALU matrices collapse
+to two generic paths, everything else is a z-keyed switch per prefix page.
+Full coverage: main/CB/ED/DD/FD/DDCB pages, undocumented IXH/IXL, DD CB
+register write-back, SLL, ED NONI slots, IM 0/1/2, NMI, EI shadow
+instruction, HALT, R refresh counting, documented T-state totals.
+`step()` is the only execution entry point (returns consumed T-states);
+budget pacing lives in the caller. Each DD/FD prefix retires as its own
+4-T `step()` with interrupts deferred until the opcode
+(`State::pendingPrefix`) — folding the chain into one step let a crashed
+guest in a $DD/$FD sea hold the host lock unboundedly (2026-07-12 bug
+hunt).
+
+The three zexall-killer undocumented behaviours are modelled exactly, not
+approximated:
+
+- **X/Y flags** mirror bits 3/5 of whatever byte each instruction
+  "publishes" — the result for most ops, the **operand** for `CP r`, an
+  internal `A+value`/`A-value-H` sum for LDI/LDD/CPI/CPD.
+- **MEMPTR/WZ**: `BIT n,(HL)` leaks WZ's high byte into X/Y, so WZ is
+  maintained across every instruction that loads it (indexed EA, 16-bit
+  loads, ADD/ADC/SBC 16, EX (SP), jumps/calls, I/O, block ops, interrupts).
+- **SCF/CCF** X/Y use the "copy from A" NMOS rule (no Q-register model) —
+  the behaviour zexall's silicon CRCs encode.
+
+Pinned by three tests (all link `Z80.cpp` only):
+
+- `z80_core` — committed smoke, no external data: spot assertions across
+  every opcode page + T-state totals + IM1/IM2/NMI/EI-shadow. Fast gate.
+- `z80_zexdoc` / `z80_zexall` — Frank Cringle's exercisers (CRCs captured
+  on real Zilog silicon; zexall adds the undocumented flags). Binaries are
+  configure-time downloads, SHA-256 pinned (Klaus pattern), from
+  anotherlin/z80emu. Each run retires ~46.7 G T-states (~50 s native,
+  label `slow`). **Both pass 100 %** (67 + 67 blocks OK). zexdoc alone is
+  NOT a sufficient gate: it masks X/Y, and the one bug it missed was
+  exactly a BIT n,r X/Y rule (X/Y copy the full register, not the masked
+  result) that only zexall's CRCs caught.
+
+Out of (current) scope: intra-instruction bus-cycle timing (irrelevant
+for the bus-master SoftCard design), the Q register, IM0 arbitrary-opcode
+injection (only RST assumed — CP/M runs with interrupts off).
+
+### SoftCard Z80 (`SoftCardZ80.h/.cpp` — CP/M Phase 2)
+
+Microsoft SoftCard, ported from MAME `src/devices/bus/a2bus/a2softcard.cpp`
+(R. Belmont, 176 lines; line refs in the source). Catalog key `softcard`,
+no ROM to probe (the hardware has none — the CP/M boot disk finds the card
+by toggling slot windows). Three hardware facts drive the whole design:
+
+- **The toggle is a `$CnXX` WRITE** (MAME `write_cnxx`, :88-109), not a
+  DEVSEL access — reads of `$CnXX` float. Grant side releases the Z80's
+  WAIT line and raises slot DMA; release side re-asserts WAIT, so the Z80
+  **freezes in place and resumes exactly there** on the next grant. Only
+  the *first* grant after a bus reset resets the Z80 to PC=$0000
+  (`m_FirstZ80Boot`). The Z80 releases the bus itself by writing its own
+  `$CnXX` through the $E000 window (6502 $Cn00 = Z80 $En00).
+- **Six address windows** (dma_r/dma_w, :111-176), NOT a plain +$1000
+  wrap: Z80 $0000-$AFFF→$1000-$BFFF, $B000-$BFFF→**$D000** (LC),
+  $C000-$CFFF→$E000, $D000-$DFFF→$F000, $E000-$EFFF→**$C000 (I/O)**,
+  $F000-$FFFF→$0000 (zero page). CP/M gets RAM at Z80 $0000 and its BIOS
+  sits on the Language Card. All accesses go through
+  `Memory::memRead/memWrite` — the real bus — so soft-switch side
+  effects and LC/aux paging behave identically for both CPUs.
+- **Z80 clock = 2× the 6502** (:41). `dmaRun` converts 2 T-states → 1
+  6502 cycle (odd-T carry kept across slices) and feeds
+  `Memory::advanceCycles` per Z80 instruction, so **emuCycles never
+  leaves the 6502 domain** — video event log, Disk II LSS and audio
+  pacing are CPU-agnostic.
+
+**Arbitration** is a generic DMA daisy-chain hook, not SoftCard-specific
+(mirrors MAME's a2bus DMA): `SlotPeripheral::dmaActive()/dmaRun()` +
+`SlotBus::dmaClaimant()` (lowest slot wins), consumed by
+`EmulationController::runCpuSlice` — the single point both `workerLoop`
+and `tickFrame` now route their 4096-cycle chunks through. Hand-over is
+instruction-precise in both directions: the granting `STA $CnXX` calls
+`M6502::stop()` so the in-flight `run()` chunk ends at that instruction
+boundary (`run` re-arms `running` on the next call), and `runCpuSlice`
+gives the chunk remainder to the other CPU instead of burning dead time.
+Single-step (`Mode::Step`) deliberately keeps stepping the 6502 — the
+debugger is 6502-centric.
+
+Snapshot: the full Z80 register file + enabled/firstBoot/T-carry go into
+the card's `SLOTn` blob (magic `SFZ2`, hand-packed little-endian, foreign
+blobs ignored). The rewind ring captures slots, so bus ownership
+round-trips through rewind; **file snapshots don't** (`includeSlots=false`
+by design) — `restoreMachineState` therefore force-disarms any live DMA
+claimant before restoring, so loading a snapshot mid-CP/M can't leave a
+stale Z80 executing over the restored RAM (2026-07-12 bug hunt). A file
+snapshot *saved* mid-CP/M still won't resume the session (the parked-6502
+continuation runs without the Z80's results) — inherent to slot-less
+snapshots, same category as the excluded disk state. The Apple IRQ line
+is **not** wired to the Z80 (matches MAME; CP/M polls).
+
+Two behaviours that look like bugs and are hardware-faithful (2026-07-12
+bug hunt, verified against UTAIIe 5-28 + MAME source): (1) on IIe-class
+profiles a Z80 write through the $E000 window to $C007 (SETINTCXROM)
+wedges the machine — INTCXROM masks $CnXX writes, so the Z80's own
+release toggle can no longer reach the card until RESET. Real IIe MMU
+inhibits I/O SELECT' the same way; MAME delivering write_cnxx under
+INTCXROM is *its* view-banking simplification, not oracle behaviour.
+(2) Any $CnXX write toggles the bus — including AI `/mem` pokes sweeping
+the card's slot page (the endpoint is deliberately bus-faithful); an
+agent that wedges the machine this way recovers via `/reset`.
+
+Pinned by `softcard_toggle`: window math edges, write-toggles/read-doesn't,
+first-boot vs resume semantics, Z80 executing from translated RAM +
+zero-page window write, snapshot round-trip, and a full
+`tickFrame` 6502→Z80→6502 frame through `runCpuSlice`.
+
+**CP/M boot (Phase 3) — WORKS.** Two end-to-end gates (media-gated, skip
+when absent, ROM-test pattern), both booting to a live `A>` in ~11 M
+cycles:
+
+- `softcard_cpm_boot` — II+ 40-col: `disks_5.4/dsk/cpm22.dsk` = the
+  "Softcard 16-sector disk (Microsoft 1980)" 44K v2.20 master (Asimov
+  `images/cpm/os/`).
+- `softcard_cpm_boot_iie` — //e + IIe paging: `disks_5.4/dsk/cpm60k.dsk`
+  = 60K v2.23. Validated against the MAME `apple2ee -sl4 softcard`
+  oracle — banner byte-identical.
+
+Sysgen gotchas the bring-up surfaced (they *look* like emulation bugs and
+are not): the 56K/60K sysgens print through the **IIe 80-col firmware**,
+which stores even display columns in AUX $0400 — a main-RAM-only screen
+scrape sees every other char missing ("Sfcr PM"); and on a II+ those same
+sysgens write $00s (wrong machine class — they need the IIe console, MAME
+behaves identically). The 44K master is the correct II+ image. The boot
+also exercises the LC heavily: 56K/60K CBIOS lives in the Z80's
+$B000-$DFFF windows = 6502 $D000-$FFFF Language Card RAM.
 
 ## Memory
 
@@ -240,7 +379,10 @@ Ten `HiResMode`:
 - `ColorCompositeOE` — OpenEmulator-style true NTSC simulation
   via GLSL shader (see § Composite NTSC shader below).
 - `ColorCompositeOECpu` — the same OpenEmulator composite demod run
-  on the CPU into the RGBA framebuffer (no GLSL fallback).
+  on the CPU into the RGBA framebuffer (no GLSL fallback). Honours the
+  same demod knobs as the GPU shader (hue / Sharpness / PAL / textSharp,
+  mirrored via `setOeDemodParams`); pinned pixel-identical by
+  `oe_demod_gpu_cpu_parity`.
 - `MonoWhite` / `MonoGreen` (P31) / `MonoAmber` (history-buffer
   lerp).
 - `ColorAppleWin` — AppleWin-style IIR-based NTSC simulation
@@ -449,7 +591,11 @@ texture and runs `NtscPostProcessor::process()`. The fragment shader
      as the CPU path and OE-faithful demod (avoids hue-ringed edges at
      transitions while solid fills stay correct).
    The CPU path (`Apple2Display::renderCompositeOeCpu`) mirrors `lumaK`
-   and uses the OE-faithful 0.6 MHz chroma (no Sharpness param there).
+   and the same soft↔sharp chroma blend — MainWindow feeds the live
+   hue / Sharpness / PAL / textSharp knobs to the display every frame via
+   `Apple2Display::setOeDemodParams` (2026-07: they used to be GPU-only,
+   leaving the sliders silently dead in OE-CPU mode and popping off on
+   OE-GPU mixed frames, whose graphics band demodulates on the CPU).
 3. Chroma is recovered by multiplying each tap with
    `sin(π/2 · (x + phaseOffset))` and `cos(π/2 · (x + phaseOffset))` —
    Apple II's 4× subcarrier alignment. **`phaseOffset = 1` in DHGR**
