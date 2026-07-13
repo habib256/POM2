@@ -108,7 +108,7 @@ bool loadEntryPoints()
 namespace pom2 {
 
 #if defined(__EMSCRIPTEN__) || defined(__APPLE__)
-namespace { bool loadEntryPoints() { return true; } }
+namespace { [[maybe_unused]] bool loadEntryPoints() { return true; } }
 #endif
 
 namespace {

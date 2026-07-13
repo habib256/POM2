@@ -107,7 +107,7 @@ bool shaderRunningOnGLES()
 void deleteShaderProgram(unsigned int program)
 {
     if (!program) return;
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
     glDeleteProgram(program);
 #else
     if (loadEntryPoints() && glDeleteProgram_) glDeleteProgram_(program);
@@ -115,7 +115,7 @@ void deleteShaderProgram(unsigned int program)
 }
 
 #if defined(__EMSCRIPTEN__) || defined(__APPLE__)
-static bool loadEntryPoints() { return true; }
+[[maybe_unused]] static bool loadEntryPoints() { return true; }
 #endif
 
 static unsigned int compileOne(unsigned int kind,

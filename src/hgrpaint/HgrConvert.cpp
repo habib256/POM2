@@ -99,11 +99,11 @@ inline uint32_t avgRgba(Rgb a, Rgb b)
 
 // CAM16-UCS arithmetic helpers (the in-candidate scoring walk works in this
 // perceptual space; the committed error diffusion works in linear RGB).
-inline Cam16Ucs operator+(const Cam16Ucs& a, const Cam16Ucs& b)
+[[maybe_unused]] inline Cam16Ucs operator+(const Cam16Ucs& a, const Cam16Ucs& b)
 { return {a.J + b.J, a.a + b.a, a.b + b.b}; }
-inline Cam16Ucs operator-(const Cam16Ucs& a, const Cam16Ucs& b)
+[[maybe_unused]] inline Cam16Ucs operator-(const Cam16Ucs& a, const Cam16Ucs& b)
 { return {a.J - b.J, a.a - b.a, a.b - b.b}; }
-inline Cam16Ucs scale(const Cam16Ucs& a, float s)
+[[maybe_unused]] inline Cam16Ucs scale(const Cam16Ucs& a, float s)
 { return {a.J * s, a.a * s, a.b * s}; }
 
 // Perceptual cost with the chroma axes weighted by `cw`. CAM16-UCS alone makes a

@@ -47,8 +47,8 @@ constexpr uint8_t STAT_INT_ALL =
 
 // MODE bits (MOUSE_SET argument, latched into byMode).
 constexpr uint8_t MODE_MOUSE_ON     = 1 << 0;
-constexpr uint8_t MODE_INT_MOVEMENT = 1 << 1;
-constexpr uint8_t MODE_INT_BUTTON   = 1 << 2;
+[[maybe_unused]] constexpr uint8_t MODE_INT_MOVEMENT = 1 << 1;
+[[maybe_unused]] constexpr uint8_t MODE_INT_BUTTON   = 1 << 2;
 constexpr uint8_t MODE_INT_VBL      = 1 << 3;
 constexpr uint8_t MODE_INT_ALL      = STAT_INT_ALL;
 

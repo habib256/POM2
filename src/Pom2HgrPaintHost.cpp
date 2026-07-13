@@ -34,6 +34,7 @@
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wunused-function"
 #  pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"

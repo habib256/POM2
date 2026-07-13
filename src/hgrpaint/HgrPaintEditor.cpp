@@ -468,10 +468,10 @@ void hgrpaint::HgrPaintEditor::grFloodFill(int x, int y, int colorIndex)
         for (auto& n : nb) {
             const int nx = n[0], ny = n[1];
             if (nx < 0 || nx >= kGrCols || ny < 0 || ny >= kGrRows) continue;
-            const size_t idx = static_cast<size_t>(ny) * kGrCols + nx;
-            if (seen[idx]) continue;
+            const size_t ni = static_cast<size_t>(ny) * kGrCols + nx;
+            if (seen[ni]) continue;
             if (hgrpaint::grBlockColorAt(shadow.data(), nx, ny) != seed) continue;
-            seen[idx] = 1;
+            seen[ni] = 1;
             stack.emplace_back(nx, ny);
         }
     }
