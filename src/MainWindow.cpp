@@ -20,6 +20,8 @@
 #include "EchoPlusCard.h"
 #include "EchoPlusTMS5220Card.h"
 #include "GrapplerCard.h"
+#include "ImageWriter.h"
+#include "ImageWriter_ImGui.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
@@ -135,6 +137,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
       floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
+      imageWriter    (std::make_unique<pom2::ImageWriter>()),
+      imageWriterPanel(std::make_unique<pom2::ImageWriter_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
       hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
@@ -398,6 +402,21 @@ MainWindow::MainWindow(bool forceIIPlus)
         showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
         showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
+        showImageWriterPanel =
+            settings->getBool("show_imagewriter", showImageWriterPanel);
+        // Paper + raster density survive a restart; the printed sheets
+        // themselves deliberately do not (they are output, like the spool).
+        {
+            const int paper = settings->getInt("imagewriter_paper", 0);
+            if (paper > 0 && paper < static_cast<int>(
+                                pom2::ImageWriter::PaperSize::Count))
+                imageWriter->setPaperSize(
+                    static_cast<pom2::ImageWriter::PaperSize>(paper));
+            imageWriter->setDpi(settings->getInt("imagewriter_dpi",
+                                                 imageWriter->dpi()));
+            imageWriter->setAutoFeed(
+                settings->getBool("imagewriter_autolf", true));
+        }
         sscPortInput       = settings->getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
         // Dallas DS1216E "No-Slot Clock" — sits under the Monitor ROM
@@ -497,6 +516,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showMouseInspector = showChatMauvePanel = false;
         showMockingboardPanel = showPhasorPanel = showEchoPlusPanel = false;
         showAudioMixer = showSscPanel = showPrinterPanel = false;
+        showImageWriterPanel = false;
         showNoSlotClockPanel = showNtscSettings = showAiControlPanel = false;
         showVoxelSettings_ = false;
         showMemViewer = showMemoryBar = showMemoryBarH = showMemoryGrid = false;
@@ -664,6 +684,7 @@ MainWindow::~MainWindow()
     // still current (same window teardown order as the About-photo texture).
     if (hgrPaintEditor)  hgrPaintEditor->releaseGL();
     if (hgrSpriteEditor) hgrSpriteEditor->releaseGL();
+    if (imageWriterPanel) imageWriterPanel->shutdown();
 
     // Persist the current state so the next launch restores the same
     // mounted disks, video mode, panels, and audio levels.
@@ -845,6 +866,11 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
     settings->setBool  ("show_printer",    showPrinterPanel);
+    settings->setBool  ("show_imagewriter", showImageWriterPanel);
+    settings->setInt   ("imagewriter_paper",
+                        static_cast<int>(imageWriter->paperSize()));
+    settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
+    settings->setBool  ("imagewriter_autolf", imageWriter->autoFeed());
     settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
     settings->setBool  ("show_ntsc",       showNtscSettings);
@@ -2143,6 +2169,11 @@ void MainWindow::renderMenuBar()
                     "Parallel printer card → text spool (.txt).",
                     printerCard != nullptr);
         }
+        // The ImageWriter is the *printer* hanging off whichever printer
+        // interface card is plugged, so it is always openable — an empty
+        // paper tray is a legitimate thing to look at.
+        devItem("ImageWriter II (printout)", &showImageWriterPanel,
+                "Rendered ImageWriter II output: pages, colour ribbon, PNG export.");
         devItem("Le Chat Mauve (slot 7)", &showChatMauvePanel,
                 "Le Chat Mauve RGB / Eve video card controls.");
         devItem("Joystick", &showJoystickPanel,
@@ -4030,6 +4061,59 @@ void MainWindow::renderPrinterPanelWindow()
     ImGui::EndChild();
 
     ImGui::End();
+}
+
+void MainWindow::pumpImageWriter()
+{
+    // The printer is downstream of the interface card: every byte the card
+    // spooled since the last frame is handed to the ImageWriter, in order.
+    // Cheap enough to run unconditionally (the panel need not be open —
+    // a printout should be waiting when the user opens the tray).
+    if (!imageWriter) return;
+
+    std::vector<uint8_t> fresh;
+    size_t total = 0;
+    if (printerCard) {
+        // A shorter spool than we have already consumed means the Printer
+        // panel's "Clear spool" ran; restart from the top of the new spool.
+        if (printerCard->bytesWritten() < imageWriterConsumed)
+            imageWriterConsumed = 0;
+        total = printerCard->drainSpoolFrom(imageWriterConsumed, fresh);
+    } else if (grapplerCard) {
+        if (grapplerCard->bytesWritten() < imageWriterConsumed)
+            imageWriterConsumed = 0;
+        total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
+    } else {
+        // No card plugged (or it was just unplugged) — next plug starts at 0.
+        imageWriterConsumed = 0;
+        return;
+    }
+
+    if (!fresh.empty())
+        imageWriter->printBytes(fresh.data(), fresh.size());
+    imageWriterConsumed = total;
+}
+
+void MainWindow::renderImageWriterWindow()
+{
+    if (!showImageWriterPanel || !imageWriter || !imageWriterPanel) return;
+
+    pom2::ImageWriter_ImGui::HostInfo host;
+    if (printerCard) {
+        host.haveSource  = true;
+        host.sourceLabel = "fed by Printer card, slot " +
+                           std::to_string(printerCard->getSlot());
+    } else if (grapplerCard) {
+        host.haveSource  = true;
+        host.sourceLabel = "fed by Grappler+, slot " +
+                           std::to_string(grapplerCard->getSlot());
+    }
+    host.saveDir = "printouts";
+#ifdef __EMSCRIPTEN__
+    host.canSaveFiles = false;   // MEMFS writes vanish on reload
+#endif
+
+    imageWriterPanel->render(&showImageWriterPanel, *imageWriter, host);
 }
 
 void MainWindow::renderAiControlPanelWindow()
@@ -7763,6 +7847,8 @@ void MainWindow::render()
     renderEchoPlusPanelWindow();
     renderSscPanelWindow();
     renderPrinterPanelWindow();
+    pumpImageWriter();
+    renderImageWriterWindow();
     renderNoSlotClockPanelWindow();
     renderJoystickPanelWindow();
     renderMouseInspectorWindow();

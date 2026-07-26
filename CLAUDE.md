@@ -69,6 +69,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | Printer card (synthetic → spool) | `PrinterCard.h/.cpp` | [§ Printer](DEV.md#printer-card-parallel-synthetic) |
 | Grappler+ printer (ROM-gated) | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
+| ImageWriter II printer + paper tray (host-side, fed by any printer card) | `ImageWriter.*`, `ImageWriter_ImGui.*` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
 | ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (MAME + AppleWin HLE) | `MouseCard.*`, `MouseCardAppleWin.*` | [§ Mouse](DEV.md#mouse-card) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |

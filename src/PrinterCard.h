@@ -95,6 +95,13 @@ public:
     /// .txt file. Form-feed ($0C) preserved as-is.
     std::string spoolText() const;
 
+    /// Append spool bytes at index >= `from` to `out` and return the new
+    /// total. Lets a streaming consumer (the host-side ImageWriter) pick up
+    /// only what arrived since its last poll instead of re-copying the whole
+    /// spool every frame. `from` beyond the end (spool cleared meanwhile)
+    /// replays from 0.
+    size_t drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const;
+
     /// Number of bytes written since the last clear.
     size_t bytesWritten() const;
 

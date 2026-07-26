@@ -5,6 +5,70 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-26 — Apple ImageWriter II printer + paper-tray window
+
+POM2 could capture printer output but only as a text spool: `PR#1` gave
+you bytes, not a page. Anything that printed *graphics* — screen dumps,
+Print Shop, the Grappler's `^I G` dump — spooled a pile of escape codes
+and looked like garbage. `ImageWriter` (`ImageWriter.h/.cpp`) interprets
+those bytes and paints the page; `ImageWriter_ImGui` shows it, with page
+navigation, zoom and PNG export (*Devices → ImageWriter II (printout)*).
+
+**Ported from greg-kennedy/ImageWriter** (`imagewriter.cpp`, the GSport /
+KEGS / DOSBox lineage), which was written against Apple's ImageWriter II
+and LQ reference manuals. Command dispatch, soft switches, density tables
+and the ribbon encoding are line-for-line, with the reference's line
+ranges cited in the code. Full detail → DEV § ImageWriter.
+
+Non-obvious decisions worth keeping:
+
+1. **The printer is not a card.** It has no catalog key and no slot. The
+   Apple II talks to a *printer interface card*; `pumpImageWriter()`
+   streams that card's spool into the printer once per frame via a new
+   `drainSpoolFrom(consumed, out)` on `PrinterCard` / `GrapplerCard`.
+   Modelling it as a slot card would have made "Grappler+ *and* an
+   ImageWriter" unrepresentable, which is the normal 1985 desk.
+2. **Auto line-feed defaults ON.** The Apple II's `COUT` emits a bare CR
+   (`$8D`) and never an LF. With the ImageWriter's SW A-8 open — the
+   reference's default — every printout overprints a single line into an
+   unreadable smear. This was caught end-to-end (real `apple2p.rom`,
+   `PR#1`, real spool), not by unit test; the first rendered page was one
+   black stripe. Exposed as a checkbox because CR+LF drivers need it off.
+3. **No FreeType, no SDL.** The reference needs both; POM2 links neither.
+   Glyphs come from the repo's own 8×8 CP437 font
+   (`hgrpaint::kBBFontCp437`), which is *closer* to the hardware — an
+   ImageWriter draft cell really is 8 dots wide at the pitch's density and
+   8 pins tall at 1/72 in, so text and graphics share one dot plotter.
+4. **Dots are the page-pixel interval they cover**, replacing the
+   reference's `pixsize` heuristic and its "Primative scaling function"
+   fudge (`imagewriter.cpp:1556-1573`) — that produced seams and randomly
+   doubled columns at page DPIs that aren't integer multiples of the
+   graphics density. Adjacent dots now abut at any DPI.
+5. **Ribbon colour is subtractive by construction.** The page is indexed
+   `yyyxxxxx` (5-bit intensity + 3-bit band) with bands assigned so that
+   OR-ing inks mixes them: magenta|yellow = red, cyan|yellow = green, all
+   three = black. Overprinting is a plain `|=`, no blend maths.
+6. **The completed-sheet stack is capped** at 32 with older sheets rolled
+   off and counted. A guest that form-feeds in a loop would otherwise eat
+   ~2 MB of host RAM per sheet forever.
+
+Two deliberate bug-fixes against the reference: `resetPrinter()` leaves
+bold off (the reference sets `STYLE_BOLD` to fatten a thin TrueType face —
+on a dot-matrix cell it just smears), and parameter space-normalisation
+touches only digit positions, so `ESC R nnn ' '` repeats a space instead
+of printing zeros.
+
+Not modelled: user-defined character sets (absent from the reference too)
+and `ESC ?` "send ID string" (no printer→computer back-channel). An
+ImageWriter on the Super Serial Card — the //c's real printer port — needs
+a host-visible TX spool on the SSC first; only the parallel cards feed the
+printer today.
+
+Pinned: `imagewriter_smoke` (paper geometry, bit-7 strip, CR/LF + spacing,
+`ESC K` overprint + palette, `ESC G`/`ESC C` bit images, `ESC R` framing,
+form feed + page cap, RGBA export, and the spool→printer streaming seam
+including resync after "Clear spool").
+
 ## 2026-07-12 — SoftCard/Z80 bug hunt: 6 confirmed, 6 fixed, 1 refuted-as-faithful
 
 Adversarial review (8 finder angles + per-candidate verification) over the

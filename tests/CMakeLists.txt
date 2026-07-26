@@ -3041,6 +3041,35 @@ add_test(NAME printer_card_smoke COMMAND test_printer_card)
 set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── ImageWriter II printer smoke test ───────────────────────────────────
+# Pins the host-side ImageWriter (page geometry, text + bit-7 strip, CR/LF,
+# ESC K colour-ribbon overprint, ESC G/C bit images, ESC R framing, form
+# feed + page cap, RGBA export) and the PrinterCard::drainSpoolFrom seam
+# MainWindow::pumpImageWriter() streams through. No GL/ImGui dependency —
+# ImageWriter.cpp is deliberately portable.
+add_executable(test_imagewriter
+    imagewriter_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+    ${CMAKE_SOURCE_DIR}/src/PrinterCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_imagewriter PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_imagewriter PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_imagewriter PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_imagewriter PRIVATE winmm)
+endif()
+
+add_test(NAME imagewriter_smoke COMMAND test_imagewriter)
+set_tests_properties(imagewriter_smoke PROPERTIES TIMEOUT 10)
+
 # ─── Grappler+ card smoke test ───────────────────────────────────────────
 # Pins the stub-ROM fingerprint (used when no roms/grappler_plus.bin dump
 # is present), the data-port spool semantics, and the 4 KB ROM-load gate

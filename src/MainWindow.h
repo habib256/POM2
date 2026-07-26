@@ -71,6 +71,8 @@ namespace pom2 {
     class SmartPort_ImGui;
     class FloppyEmuDevice;
     class FloppyEmu_ImGui;
+    class ImageWriter;
+    class ImageWriter_ImGui;
     class Toolbar_ImGui;
     enum class SystemProfile;
     enum class CharRomLocale : uint8_t;
@@ -196,6 +198,12 @@ private:
     std::unique_ptr<pom2::FloppyEmuDevice>        floppyEmu;
     std::unique_ptr<pom2::FloppyEmu_ImGui>        floppyEmuPanel;
     std::unique_ptr<pom2::JoystickPanel_ImGui>    joystickPanel;
+    // Apple ImageWriter II: the host-side printer (page raster +
+    // control-language interpreter) and its paper-tray window. The
+    // printer is downstream of whatever printer *interface* card is
+    // plugged — `pumpImageWriter()` streams that card's spool into it.
+    std::unique_ptr<pom2::ImageWriter>            imageWriter;
+    std::unique_ptr<pom2::ImageWriter_ImGui>      imageWriterPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
     std::unique_ptr<pom2::Toolbar_ImGui>          toolbar;
     // Portable HGR Paint editor (src/hgrpaint/, shared verbatim with POM1)
@@ -321,6 +329,12 @@ private:
     bool         showNoSlotClockPanel = false;
     // Printer panel — view spool buffer, save as .txt, clear.
     bool         showPrinterPanel   = false;
+    // ImageWriter II paper-tray window (rendered printout).
+    bool         showImageWriterPanel = false;
+    // How many spool bytes have already been fed to `imageWriter`, so a
+    // poll only picks up what arrived since the previous frame. Reset
+    // whenever the source card changes or its spool is cleared.
+    size_t       imageWriterConsumed = 0;
     // Pending path the user has typed into the "Save spool as…" text box.
     // Auto-suggested with a timestamped filename under ./printouts/ on
     // first open; reused across save clicks within the same session.
@@ -718,6 +732,10 @@ private:
     void renderEchoPlusPanelWindow();
     void renderSscPanelWindow();
     void renderPrinterPanelWindow();
+    void renderImageWriterWindow();
+    /// Stream new bytes from the plugged printer interface card into the
+    /// host-side ImageWriter. Called once per frame from the render loop.
+    void pumpImageWriter();
     void renderNoSlotClockPanelWindow();
     void renderJoystickPanelWindow();
     /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.

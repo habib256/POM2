@@ -155,6 +155,18 @@ std::string GrapplerCard::spoolText() const
     return out;
 }
 
+size_t GrapplerCard::drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx_);
+    // `from` past the end means the spool was cleared behind the caller's
+    // back (the panel's "Clear spool" button) — hand back everything so the
+    // consumer resynchronises instead of silently going deaf.
+    const size_t start = (from > spool_.size()) ? 0 : from;
+    out.insert(out.end(), spool_.begin() + static_cast<std::ptrdiff_t>(start),
+               spool_.end());
+    return spool_.size();
+}
+
 size_t GrapplerCard::bytesWritten() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);

@@ -2109,6 +2109,95 @@ Source: markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB
 EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
 + data-port spool + ROM-load size gate + bank-select round-trip.
 
+### ImageWriter II printer (host-side)
+
+`ImageWriter` (`ImageWriter.h/.cpp`) is the **printer**, not an interface
+card — it never appears in the slot catalog. Whatever printer interface
+card is plugged (`PrinterCard`, `GrapplerCard`) spools bytes; the UI's
+per-frame `MainWindow::pumpImageWriter()` streams them into the printer
+via `drainSpoolFrom(consumed, out)`, and `ImageWriter_ImGui` shows the
+resulting page. Card → cable → printer, in that order, exactly like the
+real desk.
+
+**Source of truth: greg-kennedy/ImageWriter** (`imagewriter.cpp` — the
+GSport / KEGS / DOSBox lineage by Christopher G. Mason), itself written
+against Apple's *ImageWriter II Technical Reference Manual*
+(ISBN 0-201-17766-8) and *ImageWriter LQ Reference Manual*
+(ISBN 0-201-17751-X). Command dispatch, the soft-switch model, the
+density tables and the colour encoding are line-for-line ports with the
+reference's line ranges cited in the code.
+
+**Page raster** — one byte per pixel, `yyyxxxxx`: low 5 bits = ink
+intensity (31 = full), top 3 bits = ribbon band. The bands are chosen so
+that OR-ing two inks mixes them the way overprint on a real four-band
+ribbon does:
+
+```
+001 magenta   010 cyan     100 yellow
+011 blue      101 red      110 green      111 black
+```
+
+so magenta|yellow = red, cyan|yellow = green, all three = black; index 0
+is blank paper. `ESC K n` picks the band. `pageToRgba()` expands through
+`indexToRgb()`, which is `FillPalette` (`imagewriter.cpp:101-114`) in
+closed form.
+
+**Text is dot-matrix, not TrueType.** The reference needs SDL 1.2 +
+FreeType; POM2 links neither, so glyphs come from the repo's own 8×8
+CP437 font (`hgrpaint::kBBFontCp437`, 7 px + 1 px gap). That is *closer*
+to the hardware, not further: an ImageWriter draft cell really is 8 dots
+wide at the pitch's density and 8 pins tall at 1/72 in, so a character
+and a graphics column go through the same plotter (`fillDots`). Bold =
+1.5× dot width (what a half-dot-offset second pass leaves on paper);
+italics shear one dot over the cell height; double-width halves `actcpi`.
+Proportional mode (`ESC p` / `ESC P`) selects the stated pitch but keeps
+the fixed cell — the font has no per-glyph advance table.
+
+**Dots are painted as the page-pixel interval they cover**, replacing the
+reference's `pixsize` + "Primative scaling function" fudge
+(`imagewriter.cpp:1556-1573`). Adjacent dots abut at any page DPI, so
+graphics dumps have no seams and no doubled columns.
+
+**Bit images**: `ESC G/S/g nnnn` (8-pin columns, 72-160 dpi) and
+`ESC C nnnn` (24-pin LQ columns over 3 bytes, 216 dpi vertical);
+`ESC V` / `ESC U` are the repeat-column forms. Bit 7 is **never** masked
+inside a bit image — it is pin 8. Everywhere else soft switch B-6 strips
+it, which is what makes Apple II `COUT` output (always bit-7 set) print
+as plain ASCII.
+
+**Auto line-feed defaults ON.** The Apple II emits a bare CR (`$8D`) and
+never an LF, so with the ImageWriter's SW A-8 open every printout lands on
+one overprinted line. The panel exposes it as a checkbox — turn it off for
+drivers that send CR+LF themselves. This is the one setting most likely to
+need touching, so it is the first thing in *Printer settings*.
+
+**Two other deliberate deviations** from the reference: `resetPrinter()`
+leaves bold off (the reference sets `STYLE_BOLD` at
+`imagewriter.cpp:289` to fatten a thin TrueType face — on a dot-matrix
+cell that just smears), and `spacesToZeros` normalises only the *digit*
+positions of a parameter string, so `ESC R nnn ' '` repeats a space
+instead of printing zeros.
+
+**Paper handling**: `FF` ($0C) and a full page both eject onto the
+completed stack; the FORM FEED button will not eject a blank sheet. The
+stack is capped at `kMaxPages` (32) with older sheets rolled off and
+counted in `droppedPageCount()` — a guest that form-feeds in a loop must
+not exhaust host RAM. Page size = paper size (points/72) × page DPI;
+Letter at the default 144 dpi is 1224×1584.
+
+**Not modelled**: user-defined character sets (`ESC '` / `ESC I`, absent
+from the reference too) and `ESC ?` (send ID string — POM2 has no
+printer→computer back-channel). An ImageWriter hanging off the Super
+Serial Card (the //c's real printer port) is the obvious next step: the
+SSC has no host-visible TX spool yet, so only the parallel cards feed the
+printer today.
+
+Pinned: `imagewriter_smoke` — paper geometry, glyph ink + bit-7 strip,
+CR/LF + `ESC A/B` spacing, `ESC K` bands + subtractive overprint +
+palette, `ESC G`/`ESC C` bit images, `ESC R` framing and the byte
+odometer, form feed + page cap, RGBA export, and the
+`PrinterCard::drainSpoolFrom` streaming/resync seam.
+
 ### Mouse Card
 
 Verbatim port of MAME `bus/a2bus/mouse.cpp`. Pieces:

@@ -122,6 +122,8 @@ set(SOURCES
     src/OpenGLShader.cpp
     src/PhasorCard.cpp
     src/PrinterCard.cpp
+    src/ImageWriter.cpp
+    src/ImageWriter_ImGui.cpp
     src/Rewind_ImGui.cpp
     src/Ssi263.cpp
     src/Ssi263PhonemeData.cpp
@@ -214,6 +216,8 @@ set(HEADERS
     src/GrapplerCard.h
     src/PhasorCard.h
     src/PrinterCard.h
+    src/ImageWriter.h
+    src/ImageWriter_ImGui.h
     src/Rewind_ImGui.h
     src/Ssi263.h
     src/Ssi263PhonemeData.h

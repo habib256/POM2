@@ -161,7 +161,7 @@ Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`i
 | ⏪ **Rewind** | MicroM8-style snapshot ring buffer; scrub back and resume. Shares its serializer with the AI-control `/snapshot` endpoints. |
 | 🔊 **Audio** | Speaker · cassette · Mockingboard A/C · Mockingboard C **Sound II** (SSI263 speech) · Applied Engineering **Phasor** (2×VIA / 4×AY) · Cricket / Echo SSI263 · Echo+ TMS5220 scaffold · cycle-stamped Disk II + Sony 3.5" mechanical sounds. |
 | 💾 **Storage** | `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv` · DOS 3.x · ProDOS · SmartPort · CFFA 2.0. WOZ uses the real Disk II P6 LSS sequencer; detection is content-driven (MacBinary, DOS/ProDOS skew, WOZ/2IMG write-protect handled). |
-| 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
+| 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · **Apple ImageWriter II** printer with a rendered paper tray (colour ribbon, bit-image graphics, PNG export) · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
 | 🛠️ **Tools** | Disk Library · Slot Configuration · screenshots · memory viewer · snapshots · kiosk mode · CLI · AI-control HTTP server. |
 
 ---
@@ -180,6 +180,37 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `printer` | Parallel printer (host spool) | `phasor` | Applied Engineering Phasor |
 | `grappler` | Orange Micro Grappler+ | `echoplus` | Cricket / Echo SSI263 |
 | | | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
+
+---
+
+## 🖨️ ImageWriter II — see what you printed
+
+The **ImageWriter II** is a printer, not a card, so it has no slot key: it
+hangs off whichever printer interface card you plugged (`printer` or
+`grappler`) and picks up everything that card spools. Open it with
+*Devices → ImageWriter II (printout)* and print from BASIC:
+
+```
+PR#1
+PRINT "HELLO IMAGEWRITER II"
+PR#0
+```
+
+The page appears as it would come out of the printer — dot by dot. It
+interprets the real ImageWriter control language, so pitch and style
+changes (`ESC E/N/Q/p/P`, bold, underline, double-width, italics), line
+spacing, margins and tabs, the **four-band colour ribbon** (`ESC K`, with
+overprint mixing magenta + yellow into red the way real ribbons do), and
+**bit-image graphics** (`ESC G`/`ESC C` — what screen dumps and Print Shop
+actually send) all land on paper.
+
+Front panel: **Form feed** ejects the sheet onto the stack (a blank sheet
+is not ejected, like the real button), **Reset printer** returns it to
+factory settings, and **Save sheet as PNG** / **Save all sheets** write to
+`printouts/`. *Printer settings* holds the paper size, the page raster
+resolution, and **Auto line-feed after CR** — leave that on for Apple II
+software (which sends CR and never LF); turn it off if a driver sends both
+and everything double-spaces.
 
 ---
 

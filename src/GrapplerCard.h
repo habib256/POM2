@@ -85,6 +85,9 @@ public:
     std::string          spoolText()  const;
     size_t               bytesWritten() const;
     void                 clearSpool();
+    /// Streaming variant used by the host-side ImageWriter — see
+    /// `PrinterCard::drainSpoolFrom`.
+    size_t drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const;
 
 private:
     int slot_;

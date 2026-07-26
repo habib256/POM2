@@ -38,6 +38,7 @@ listed here point to detailed items in the [backlog](#backlog).
 | 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
 | 22 | PrinterCard (parallel synth)  | POM2-original    | Apple II slot 1 convention + Pascal 1.1 sig                              | 🟡 PDF export deferred (`.txt` OK)                                                       |
 | 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 4 KB EPROM now bundled (`roms/grappler_plus.bin`); upper-2 KB bank-switch modelled; remaining: MAME `a2grappler.cpp` pin + HGR→PDF raster                        |
+| 22ter | ImageWriter II printer (host-side, no slot) | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) | Apple ImageWriter II + LQ reference manuals                 | 🟢 full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG export; fed by `printer` / `grappler` (SSC path pending)                    |
 
 ## Quick wins
 
@@ -248,8 +249,9 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   **bundled** (`roms/grappler_plus.bin`, committed `ffdac5d`) so the card
   arms without a user-supplied ROM. The upper-2 KB bank-switch ($C0(8+s)X)
   is modelled (`romBankHigh_`, round-tripped through snapshot). Remaining:
-  pin against MAME `a2grappler.cpp`, and host-side raster rendering of
-  HGR dumps to PDF. *1-2 d.*
+  pin against MAME `a2grappler.cpp`. (Host-side raster rendering of its
+  HGR dumps is DONE — the Grappler's Epson-style escapes now feed the
+  ImageWriter, which paints them; only PDF output is left.) *1-2 d.*
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection. Remaining: TMS5220 LPC10
@@ -308,8 +310,22 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Printer]
 
-- 🟡 **PDF export** — `PrinterCard` spool + `.txt` OK; remaining is a
-  monospace renderer or libharu.
+- ✅ **ImageWriter II printer** — DONE (2026-07-26). Host-side
+  `ImageWriter` (ported from greg-kennedy/ImageWriter) + paper-tray
+  window: full control language, four-band colour ribbon with subtractive
+  overprint, `ESC G`/`ESC C` bit-image graphics, page stack, PNG export.
+  Fed from `PrinterCard` / `GrapplerCard` spools by
+  `MainWindow::pumpImageWriter()`. Pinned `imagewriter_smoke`.
+  Detail → `DEV.md` § ImageWriter / `CHANGELOG.md`.
+- 🟡 **ImageWriter on the Super Serial Card** — the //c's real printer
+  port is serial, and the //c profiles ship two SSCs. `SuperSerialCard`
+  has no host-visible TX spool, so the printer can only be fed by the
+  parallel cards today. Add a `drainSpoolFrom`-shaped TX tap and extend
+  `pumpImageWriter()`. *0.5 d.*
+- 🟡 **PDF export** — `PrinterCard` spool + `.txt` OK, and the
+  ImageWriter now exports PNG per sheet; remaining is a multi-page PDF
+  (the reference emits PostScript — an ASCII85 image per page — which is
+  the cheapest route now that the page raster exists).
 
 ### [Input] joystick / paddles / mouse
 
