@@ -8,12 +8,14 @@
 #include "ImageWriter_ImGui.h"
 
 #include "IconsFontAwesome6.h"
+#include "ImageWriterPdf.h"
 #include "imgui.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
@@ -169,7 +171,15 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                           "then PR#n from BASIC.");
 
     // ─── Page selector ───────────────────────────────────────────────────
-    if (follow_) viewPage_ = -1;
+    // "Follow" means "show me what is being printed". After a form feed
+    // the sheet under the head is blank and the interesting one is on the
+    // stack, so follow the last *inked* sheet until the new one gets ink —
+    // otherwise a one-page job looks like it printed nothing at all.
+    if (follow_) {
+        viewPage_ = (nDone > 0 && iw.currentPageBlank())
+                        ? static_cast<int>(nDone) - 1
+                        : -1;
+    }
     int shown = (viewPage_ < 0) ? static_cast<int>(nDone) : viewPage_;
     shown = std::clamp(shown, 0, nTotal - 1);
 
@@ -237,11 +247,179 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                               "set by the guest and unaffected.\n"
                               "Changing this restarts the sheet in progress.");
 
-        bool af = iw.autoFeed();
-        if (ImGui::Checkbox("Auto line-feed after CR", &af)) iw.setAutoFeed(af);
+        if (host.onBackPressureChanged) {
+            bool bp = host.backPressure;
+            if (ImGui::Checkbox("Make the Apple II wait for the printer",
+                                &bp))
+                host.onBackPressureChanged(bp);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "The real handshake: once the printer's 2 KB buffer is "
+                    "full it stops acknowledging,\nand the guest's firmware "
+                    "spins until the paper catches up.\n"
+                    "Faithful — a real Apple II sat there for minutes "
+                    "printing a Print Shop card — but an\nemulator that "
+                    "stops responding that long is indistinguishable from a "
+                    "crash, so it is off\nby default. The printout builds up "
+                    "at the same speed either way.");
+        }
+
+        ImGui::SetNextItemWidth(240);
+        if (ImGui::BeginCombo("Ribbon", ImageWriter::ribbonName(iw.ribbon()))) {
+            for (int i = 0; i < static_cast<int>(ImageWriter::Ribbon::Count);
+                 ++i) {
+                const auto rb = static_cast<ImageWriter::Ribbon>(i);
+                if (ImGui::Selectable(ImageWriter::ribbonName(rb),
+                                      rb == iw.ribbon()))
+                    iw.setRibbon(rb);
+            }
+            ImGui::EndCombo();
+        }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Turn on when printouts come out on a single "
-                              "line; turn off when everything double-spaces.");
+            ImGui::SetTooltip(
+                "Which cartridge is in the printer. There is no colour "
+                "\"mode\" on an ImageWriter II —\ncolour is the four-band "
+                "ribbon, and the software picks a band with ESC K.\n"
+                "So the guest has to ask for it: in Print Shop that means "
+                "Setup → Printer →\n\"Apple Imagewriter II (C)\". The (M) "
+                "driver never sends colour, whatever is fitted.");
+
+        ImGui::SetNextItemWidth(240);
+        if (ImGui::BeginCombo("Line feed after CR",
+                              ImageWriter::autoFeedName(iw.autoFeedMode()))) {
+            for (int i = 0; i < static_cast<int>(ImageWriter::AutoFeed::Count);
+                 ++i) {
+                const auto m = static_cast<ImageWriter::AutoFeed>(i);
+                if (ImGui::Selectable(ImageWriter::autoFeedName(m),
+                                      m == iw.autoFeedMode()))
+                    iw.setAutoFeedMode(m);
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "The printer's SW A-8 switch.\n"
+                "A bare PR#n : PRINT sends CR only, so the printer has to "
+                "supply the feed.\nReal drivers send CR+LF themselves "
+                "(double-spaced if the printer adds one too), and colour\n"
+                "drivers put a bare CR between passes so they overprint — "
+                "feed there and the colours\nstagger down the page.\n"
+                "Auto watches the stream and settles it: no wrong answer "
+                "to pick.");
+        if (iw.autoFeedMode() == ImageWriter::AutoFeed::Auto) {
+            ImGui::SameLine();
+            ImGui::TextDisabled(iw.autoFeedLatchedOff()
+                                ? "(guest feeds its own lines)"
+                                : "(printer is feeding)");
+        }
+
+        // ─── Interface-card DIP (Grappler+ S1 printer type) ──────────────
+        if (!host.cardDipOptions.empty() && host.onCardDipChanged) {
+            const char* cur = "(unknown)";
+            for (const auto& o : host.cardDipOptions)
+                if (o.value == host.cardDipValue) cur = o.label;
+            ImGui::SetNextItemWidth(240);
+            if (ImGui::BeginCombo("Card emulates", cur)) {
+                for (const auto& o : host.cardDipOptions) {
+                    if (ImGui::Selectable(o.label, o.value == host.cardDipValue))
+                        host.onCardDipChanged(o.value);
+                    if (o.value == host.cardDipRecommended) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(matches this printer)");
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "The interface card's DIP switches tell its firmware "
+                    "which printer is on the cable.\nSet to anything but "
+                    "the ImageWriter family, the card sends another "
+                    "printer's escape codes\n(Epson graphics, for one) and "
+                    "this printer renders them as garbage characters.");
+            if (host.cardDipRecommended >= 0 &&
+                host.cardDipValue != host.cardDipRecommended) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                                   ICON_FA_TRIANGLE_EXCLAMATION
+                                   " not an ImageWriter dialect");
+            }
+        }
+
+        // ─── Trace log ───────────────────────────────────────────────────
+        bool tracing = iw.tracing();
+        if (ImGui::Checkbox("Log the printer stream to a file", &tracing)) {
+            if (tracing) {
+                namespace fs = std::filesystem;
+                const std::string path =
+                    (fs::path(host.saveDir) / "imagewriter_trace.log").string();
+                std::string err;
+                status_ = iw.startTrace(path, err)
+                        ? "Tracing to " + path
+                        : "Cannot start trace: " + err;
+            } else {
+                iw.stopTrace();
+                status_ = "Trace stopped.";
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Writes every byte the printer receives, decoded (escape "
+                "sequences, graphics setup, page ejects),\nto "
+                "printouts/imagewriter_trace.log. Turn this on when a "
+                "printout comes out wrong —\nthe log says whether the guest "
+                "is speaking this printer's language.");
+        if (iw.tracing()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("→ %s", iw.tracePath().c_str());
+        }
+
+        // The trace has to be armed before the job; this doesn't — the
+        // last 256 KB the printer received is always kept, so a printout
+        // that already came out wrong can still be handed over verbatim.
+        ImGui::BeginDisabled(iw.rawStream().empty() || !host.canSaveFiles);
+        if (ImGui::Button(ICON_FA_FLOPPY_DISK " Save raw stream…")) {
+            namespace fs = std::filesystem;
+            const std::string path =
+                (fs::path(host.saveDir) /
+                 timestampedName("imagewriter-stream-", ".bin")).string();
+            std::error_code ec;
+            fs::create_directories(host.saveDir, ec);
+            std::ofstream f(path, std::ios::binary);
+            const auto& raw = iw.rawStream();
+            f.write(reinterpret_cast<const char*>(raw.data()),
+                    static_cast<std::streamsize>(raw.size()));
+            status_ = f ? "Wrote " + std::to_string(raw.size()) +
+                              " bytes → " + path
+                        : "Cannot write " + path;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Dump the exact bytes this printer received (the last "
+                "256 KB), no matter when they arrived.\nThat file is what "
+                "settles \"is the printout wrong, or is the guest sending "
+                "something else?\".");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu B held)", iw.rawStream().size());
+
+        ImGui::SetNextItemWidth(240);
+        if (ImGui::BeginCombo("Print speed",
+                              ImageWriter::speedName(iw.speed()))) {
+            for (int i = 0; i < static_cast<int>(ImageWriter::Speed::Count); ++i) {
+                const auto s = static_cast<ImageWriter::Speed>(i);
+                if (ImGui::Selectable(ImageWriter::speedName(s), s == iw.speed()))
+                    iw.setSpeed(s);
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How fast the mechanism prints what the card sends it.\n"
+                "Draft / NLQ are the real ImageWriter II rates, so a page\n"
+                "builds up line by line and the Apple II waits on BUSY once\n"
+                "the printer's 2 KB buffer is full — like the real thing.\n"
+                "Instant prints everything the moment it arrives.");
     }
 
     // ─── Save ────────────────────────────────────────────────────────────
@@ -255,6 +433,8 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         ImGui::Button(ICON_FA_FLOPPY_DISK " Save sheet as PNG");
         ImGui::SameLine();
         ImGui::Button("Save all sheets");
+        ImGui::SameLine();
+        ImGui::Button("Save PDF");
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::TextDisabled("(unavailable in the browser build)");
@@ -287,6 +467,32 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                       (ok == nDone ? "" : ("  (" + err + ")"));
         }
         ImGui::EndDisabled();
+
+        // Whole job as one multi-page PDF: every completed sheet plus the
+        // sheet in progress if anything is on it.
+        ImGui::SameLine();
+        if (ImGui::Button("Save PDF")) {
+            std::vector<const ImageWriter::Page*> sheets;
+            for (size_t i = 0; i < nDone; ++i)
+                sheets.push_back(&iw.completedPage(i));
+            if (!iw.currentPageBlank())
+                sheets.push_back(&iw.currentPage());
+            if (sheets.empty()) {
+                status_ = "Nothing to export — the paper is blank.";
+            } else {
+                const std::string path =
+                    (fs::path(host.saveDir) /
+                     timestampedName("imagewriter-", ".pdf")).string();
+                std::string err;
+                status_ = writeImageWriterPdf(sheets, path, err)
+                        ? "Saved " + std::to_string(sheets.size()) +
+                          " page(s) → " + path
+                        : "PDF save failed: " + err;
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("All completed sheets (plus the one in the\n"
+                              "platen, if printed on) as one PDF file.");
     }
 
     // ─── Status line ─────────────────────────────────────────────────────
@@ -299,6 +505,24 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         iw.bytesReceived() == 1 ? "" : "s",
         st.headX, st.headY, st.cpi, st.graphicsDpi, st.colorName,
         st.styleText.c_str(), st.inGraphics ? "  |  bit-image" : "");
+
+    // While the mechanism is behind the card, say so and offer the
+    // impatient way out (the real printer has no such button).
+    if (iw.busy()) {
+        ImGui::SameLine();
+        const bool waiting =
+            host.backPressure &&
+            iw.pendingBytes() > ImageWriter::kInputBufferBytes;
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
+                           "  |  " ICON_FA_PRINT " printing… %zu B queued%s",
+                           iw.pendingBytes(),
+                           waiting ? " — the Apple II is waiting" : "");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Print now")) iw.flushPending();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Skip the mechanism delay for what is still "
+                              "queued.");
+    }
     if (!status_.empty()) ImGui::TextDisabled("%s", status_.c_str());
 
     // ─── Page view ───────────────────────────────────────────────────────
@@ -314,12 +538,72 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         ImGui::Separator();
     }
     if (tex_ && texW_ > 0) {
+        // An ImageWriter II is fed continuous fanfold stock, not cut sheets:
+        // 9.5" wide paper = the 8.5" printable body plus a 0.5" pin-feed
+        // strip each side, each strip perforated off along a vertical line
+        // of holes on 0.5" centres, and one sheet joined to the next by a
+        // horizontal perforation. Drawing only the printable raster made
+        // POM2's paper look like an inkjet A4 sheet. The strips are paper,
+        // not ink — they're decoration around the raster, so the page
+        // bitmap and the "Save sheet as PNG" export stay pure printable
+        // area. (Apple, *ImageWriter II Owner's Manual*, "Paper".)
+        const int   dpi      = iw.dpi();
+        const float stripPx  = 0.5f  * dpi;     // pin-feed strip
+        const float holeR    = 0.078f * dpi;    // ⌀ ~4 mm
+        const float holePitch= 0.5f  * dpi;     // holes on 1/2" centres
+        const float totalW   = texW_ + 2.0f * stripPx;
+
         const float avail = ImGui::GetContentRegionAvail().x;
         const float scale = (zoomMode_ == 0)
-                          ? std::max(0.05f, avail / static_cast<float>(texW_))
+                          ? std::max(0.05f, avail / totalW)
                           : kZooms[zoomMode_ - 1];
+
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const ImVec2 p1(p0.x + totalW * scale, p0.y + texH_ * scale);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        const ImU32 kPaper = IM_COL32(250, 249, 244, 255);
+        const ImU32 kHole  = IM_COL32( 42,  42,  46, 255);
+        const ImU32 kPerf  = IM_COL32(196, 192, 182, 255);
+
+        dl->AddRectFilled(p0, p1, kPaper);
+
+        // Sprocket holes down both strips.
+        for (float y = holePitch * 0.5f; y < texH_; y += holePitch) {
+            const float cy = p0.y + y * scale;
+            for (int side = 0; side < 2; ++side) {
+                const float cx = p0.x + (side ? totalW - stripPx * 0.5f
+                                              : stripPx * 0.5f) * scale;
+                dl->AddCircleFilled(ImVec2(cx, cy), holeR * scale, kHole, 12);
+            }
+        }
+        // Tear-off perforations: vertical between each strip and the body,
+        // horizontal where this sheet joins the next.
+        auto dottedV = [&](float x) {
+            const float sx = p0.x + x * scale;
+            for (float y = 0; y < texH_; y += 0.06f * dpi)
+                dl->AddLine(ImVec2(sx, p0.y + y * scale),
+                            ImVec2(sx, p0.y + (y + 0.03f * dpi) * scale),
+                            kPerf, 1.0f);
+        };
+        auto dottedH = [&](float y) {
+            const float sy = p0.y + y * scale;
+            for (float x = 0; x < totalW; x += 0.06f * dpi)
+                dl->AddLine(ImVec2(p0.x + x * scale, sy),
+                            ImVec2(p0.x + (x + 0.03f * dpi) * scale, sy),
+                            kPerf, 1.0f);
+        };
+        dottedV(stripPx);
+        dottedV(stripPx + texW_);
+        dottedH(0.0f);
+        dottedH(static_cast<float>(texH_));
+
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + stripPx * scale, p0.y));
         ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(tex_)),
                      ImVec2(texW_ * scale, texH_ * scale));
+        // Reserve the strips + the joins so the scroll region covers them.
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::Dummy(ImVec2(totalW * scale, texH_ * scale));
     } else {
         ImGui::TextDisabled("(no page)");
     }

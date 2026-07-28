@@ -37,8 +37,11 @@ listed here point to detailed items in the [backlog](#backlog).
 | 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
 | 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
 | 22 | PrinterCard (parallel synth)  | POM2-original    | Apple II slot 1 convention + Pascal 1.1 sig                              | 🟡 PDF export deferred (`.txt` OK)                                                       |
-| 22bis | GrapplerCard (key `grappler`) | ROM-gated        | markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB EPROM)             | 🟡 4 KB EPROM now bundled (`roms/grappler_plus.bin`); upper-2 KB bank-switch modelled; remaining: MAME `a2grappler.cpp` pin + HGR→PDF raster                        |
-| 22ter | ImageWriter II printer (host-side, no slot) | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) | Apple ImageWriter II + LQ reference manuals                 | 🟢 full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG export; fed by `printer` / `grappler` (SSC path pending)                    |
+| 22bis | GrapplerCard (key `grappler`) | Verbatim         | MAME `bus/a2bus/grappler.cpp` (pinned 2026-07-28, line-cited) + markadev 4 KB EPROM (`roms/grappler_plus.bin`) | 🟢 /STROBE 7-clock pulse collapsed to instant (no observer); `ackEffective()` BUSY gate is POM2's back-pressure model |
+| 22ter | ImageWriter II printer (host-side, no slot) | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) | Apple ImageWriter II + LQ reference manuals                 | 🟢 full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG & multi-page PDF export; fed by `printer` / `grappler` / SSC printer tap (//c PR#1) |
+| 23  | UthernetCard + Cs8900aDevice (key `uthernet`) | Verbatim | MAME `machine/cs8900a.cpp` (VICE lineage) + `bus/a2bus/uthernet.cpp`, line-cited | 🟢 pull-mode RX (POM2 has no `device_network_interface` push bus); inbound frame queue out of snapshot deliberate |
+| 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
+| 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path |
 
 ## Quick wins
 
@@ -48,7 +51,7 @@ Suggested attack order — items with high impact/effort ratio.
 | - | --------------------------------------- | ------- | --------------------------------------- |
 | 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
-| 3 | Memory god-object split                 | 2 d     | prerequisite for IIgs + cuts recompiles  |
+| 3 | Memory god-object split                 | 2 d     | cuts recompiles (IIgs itself lives in the separate pom2gs project) |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (~130 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
@@ -62,7 +65,8 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 - 🟠 **God-object split** — extract `Keyboard` (FIFO + strobe + paste)
   and `PaddleInputs` (RC + buttons + Open/Solid Apple) from `Memory.cpp`.
   `IIcPlusBank` already done (`MemoryProfile`/`IIcClassProfile`).
-  *Prerequisite for IIgs. ~2 d.*
+  *Cuts recompiles + readability; any IIgs reuse happens in the separate
+  pom2gs project, not here. ~2 d.*
 - 🟡 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB on LC
   `$D000-$FFFF`, switches `$C080-$C08F` slot-relative. MAME refs
   `bus/a2bus/a2memexp.cpp`. *2-3 d.*
@@ -244,14 +248,14 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   the 6502 bus, shares RAM via mode-switch. Unlocks the CP/M library
   (BASIC-80, dBase II, Turbo Pascal, WordStar). MAME refs
   `a2softcard.cpp` + Z-80 core. *10-15 d.*
-- 🟡 **Grappler+ printer (`GrapplerCard`)** — ROM-gated shell in
-  place (catalog `grappler`); the Orange Micro 4 KB EPROM dump is now
-  **bundled** (`roms/grappler_plus.bin`, committed `ffdac5d`) so the card
-  arms without a user-supplied ROM. The upper-2 KB bank-switch ($C0(8+s)X)
-  is modelled (`romBankHigh_`, round-tripped through snapshot). Remaining:
-  pin against MAME `a2grappler.cpp`. (Host-side raster rendering of its
-  HGR dumps is DONE — the Grappler's Epson-style escapes now feed the
-  ImageWriter, which paints them; only PDF output is left.) *1-2 d.*
+- ✅ **Grappler+ printer (`GrapplerCard`) — MAME pin DONE 2026-07-28.**
+  Pinned line-by-line against MAME `bus/a2bus/grappler.cpp` (status byte,
+  register decode, ROM side effects, $C800 banking, S1 DIPs — ranges
+  cited at each block). The audit fixed one divergence: reset no longer
+  clears the ROM bank (U2D isn't wired to RESET; MAME `reset_from_bus`
+  :536-539), and `$CnXX` writes now drop the bank (`write_cnxx`
+  :586-591 via `slotRomWrite`). PDF output shipped with the ImageWriter
+  PDF export (see [Printer]). Detail → `DEV.md` § Grappler+.
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection. Remaining: TMS5220 LPC10
@@ -303,10 +307,26 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Network]
 
-- 🟠 **Uthernet I/II Ethernet TCP/IP** — unlocks modern
-  IRC/HTTP/telnet/FTP. I = CS8900A NIC (`uthernet.cpp`); II = W5100
-  hardware stack (`uthernetii.cpp`). Host backend = libslirp or TAP/TUN.
-  *5-7 d.*
+- ✅ **Uthernet I/II Ethernet TCP/IP** — DONE (2026-07-28).
+  `UthernetCard` + `Cs8900aDevice` (MAME `machine/cs8900a.cpp` +
+  `bus/a2bus/uthernet.cpp`, line-cited) and `UthernetIICard` +
+  `W5100Device` (AppleWin `source/Uthernet2.cpp` — MAME has no W5100).
+  Host transport = `NetworkBackend` with Null / Loopback / **libslirp**
+  (optional dep, user-mode NAT, no root). Key point: the **Uthernet II
+  needs no backend** for TCP/UDP — its W5100 is a hardware stack POM2
+  runs on host sockets, so period IRC / telnet / FTP works out of the
+  box. Virtual DNS resolves off the CPU thread. Ethernet status panel.
+  Pinned `uthernet_cs8900_smoke` + `uthernet2_w5100_smoke` (the latter
+  runs a real TCP session). Detail → `DEV.md` § Uthernet.
+- 🟡 **Uthernet II inbound (`LISTEN`)** — the W5100 `LISTEN` command is
+  decoded but unimplemented: neither transport can route an inbound
+  connection to the guest (libslirp is outbound-only without explicit
+  port forwarding). Needs a user-configured host port to bind plus a
+  slirp `hostfwd`-style mapping. *1 d.*
+- 🟢 **Uthernet I on WASM** — the CS8900A model is browser-safe but has
+  no transport there (no raw sockets, and libslirp isn't in the
+  Emscripten build). A websocket-proxied backend would fix both cards'
+  raw modes in the browser. *2-3 d.*
 
 ### [Printer]
 
@@ -317,15 +337,20 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   Fed from `PrinterCard` / `GrapplerCard` spools by
   `MainWindow::pumpImageWriter()`. Pinned `imagewriter_smoke`.
   Detail → `DEV.md` § ImageWriter / `CHANGELOG.md`.
-- 🟡 **ImageWriter on the Super Serial Card** — the //c's real printer
-  port is serial, and the //c profiles ship two SSCs. `SuperSerialCard`
-  has no host-visible TX spool, so the printer can only be fed by the
-  parallel cards today. Add a `drainSpoolFrom`-shaped TX tap and extend
-  `pumpImageWriter()`. *0.5 d.*
-- 🟡 **PDF export** — `PrinterCard` spool + `.txt` OK, and the
-  ImageWriter now exports PNG per sheet; remaining is a multi-page PDF
-  (the reference emits PostScript — an ASCII85 image per page — which is
-  the cheapest route now that the page raster exists).
+- ✅ **ImageWriter on the Super Serial Card** — DONE (2026-07-28).
+  `SuperSerialCard::setPrinterTap` mirrors accepted-TX bytes into a
+  `drainSpoolFrom`-shaped spool `pumpImageWriter()` consumes (parallel
+  cards outrank it); defaults ON for slot 1 (//c printer port), persisted
+  `ssc_printer_tap_slotN`. Also fixed en route: the synthetic SSC ROM's
+  PR#n/IN#n entries now init the ACIA (cmd=$0B) like the real firmware —
+  before, `PR#n : PRINT` bytes were DTR-dropped and only Pascal could
+  transmit. Pinned in `ssc_acia_smoke`. Detail → `DEV.md` § ImageWriter.
+- ✅ **PDF export** — DONE (2026-07-28). `ImageWriterPdf.{h,cpp}`:
+  "Save PDF" writes all sheets as one multi-page PDF (8-bit Indexed
+  images, FlateDecode via in-repo `stbi_zlib_compress`, per-sheet
+  `/MediaBox` from the new `Page::dpi`). Chosen over the reference's
+  PostScript route — same one-image-per-page idea, universally viewable.
+  Pinned `imagewriter_pdf`. Detail → `DEV.md` § ImageWriter.
 
 ### [Input] joystick / paddles / mouse
 
@@ -538,8 +563,8 @@ Do not re-litigate without re-reading the original comment.
 
 Things we will not do unless explicitly requested + clear ROI.
 
-- **Apple IIgs / ProDOS 16** — new project (Mega II + FPI + GLU +
-  Ensoniq DOC, *30-100 d*).
+- **Apple IIgs / ProDOS 16** — lives in the separate **pom2gs** project
+  (Mega II + FPI + GLU + Ensoniq DOC); never in POM2.
 - **Apple ///** + SOS — niche, *20-40 d*.
 - **Clones** Franklin / Laser / Pravetz / Basis 108 — *2-5 d/clone*,
   low demand.

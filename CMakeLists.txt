@@ -123,6 +123,7 @@ set(SOURCES
     src/PhasorCard.cpp
     src/PrinterCard.cpp
     src/ImageWriter.cpp
+    src/ImageWriterPdf.cpp
     src/ImageWriter_ImGui.cpp
     src/Rewind_ImGui.cpp
     src/Ssi263.cpp
@@ -147,6 +148,12 @@ set(SOURCES
     src/hgrsprite/HgrSpriteBlit.cpp
     src/hgrsprite/HgrSpriteEditor.cpp
     src/SlotBus.cpp
+    src/Cs8900aDevice.cpp
+    src/UthernetCard.cpp
+    src/W5100Device.cpp
+    src/UthernetIICard.cpp
+    src/SlirpNetworkBackend.cpp
+    src/Uthernet_ImGui.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
     src/SmartPortHdvUnit.cpp
@@ -156,6 +163,9 @@ set(SOURCES
     src/SpeakerDevice.cpp
     src/SuperSerialCard.cpp
     src/SystemProfile.cpp
+    src/CommandPalette_ImGui.cpp
+    src/Pom2Theme.cpp
+    src/RomStatus_ImGui.cpp
     src/Toolbar_ImGui.cpp
     src/main.cpp
 )
@@ -210,6 +220,8 @@ set(HEADERS
     src/NtscPostProcessor.h
     src/Voxel3DRenderer.h
     src/Mat4.h
+    src/CommandPalette_ImGui.h
+    src/Pom2Theme.h
     src/OpenGLShader.h
     src/MountableMediaCard.h
     src/Ay3_8910.h
@@ -217,6 +229,7 @@ set(HEADERS
     src/PhasorCard.h
     src/PrinterCard.h
     src/ImageWriter.h
+    src/ImageWriterPdf.h
     src/ImageWriter_ImGui.h
     src/Rewind_ImGui.h
     src/Ssi263.h
@@ -235,6 +248,13 @@ set(HEADERS
     src/SlotBus.h
     src/SlotCardCatalog.h
     src/SlotPeripheral.h
+    src/NetworkBackend.h
+    src/SlirpNetworkBackend.h
+    src/Cs8900aDevice.h
+    src/UthernetCard.h
+    src/W5100Device.h
+    src/UthernetIICard.h
+    src/Uthernet_ImGui.h
     src/SmartPort35Unit.h
     src/SmartPortCard.h
     src/SmartPortHdvUnit.h
@@ -260,8 +280,46 @@ foreach(_pom2_src ${SOURCES})
         COMPILE_FLAGS "${POM2_WARN_FLAGS}")
 endforeach()
 
+# ─── Optional: libslirp (Ethernet user-mode NAT) ─────────────────────────
+# Powers the Uthernet I (CS8900A), whose guest-side software carries its
+# own TCP/IP stack and therefore needs whole Ethernet frames bridged to
+# the host. libslirp does that in user space — no root, no TAP device, no
+# host configuration — which is why it is preferred over libpcap here.
+#
+# STRICTLY OPTIONAL. Without it:
+#   * Uthernet II still works completely for TCP and UDP (its W5100 is a
+#     hardware stack that POM2 maps onto ordinary host sockets), which
+#     covers every period IRC / telnet / FTP client. Only its MACRAW and
+#     IPRAW modes go dark.
+#   * Uthernet I still plugs, resets and probes correctly, but sees no
+#     traffic.
+# Install with: apt install libslirp-dev / brew install libslirp.
+# Force off with -DPOM2_ENABLE_SLIRP=OFF.
+option(POM2_ENABLE_SLIRP "Enable libslirp Ethernet backend when available" ON)
+set(POM2_SLIRP_TARGET "")
+if(POM2_ENABLE_SLIRP AND NOT EMSCRIPTEN)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SLIRP QUIET IMPORTED_TARGET slirp)
+        if(SLIRP_FOUND)
+            set(POM2_SLIRP_TARGET PkgConfig::SLIRP)
+            message(STATUS "POM2: libslirp ${SLIRP_VERSION} found — "
+                           "Uthernet I Ethernet enabled")
+        endif()
+    endif()
+endif()
+if(NOT POM2_SLIRP_TARGET)
+    message(STATUS "POM2: libslirp not found — Uthernet I will have no host "
+                   "transport (Uthernet II TCP/UDP is unaffected)")
+endif()
+
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
+
+if(POM2_SLIRP_TARGET)
+    target_link_libraries(${PROJECT_NAME} ${POM2_SLIRP_TARGET})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE POM2_HAVE_SLIRP)
+endif()
 
 # Convenience alias: the CMake target is ${PROJECT_NAME} (pom2_imgui) but the
 # output binary is POM2, so `cmake --build . --target POM2` is otherwise a

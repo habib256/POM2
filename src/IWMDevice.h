@@ -52,6 +52,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace pom2 {
 
@@ -128,6 +129,28 @@ public:
     /// FloppySoundDevice can measure cadence against. Same role as
     /// `DiskIICard::cpuCycleTotal` on the 5.25" side.
     uint64_t emuCycles() const { return now_; }
+
+    // ─── Snapshot / rewind ───────────────────────────────────────────────
+    /// Serialize the IWM's registers, state machine and — critically —
+    /// its **emuCycles timestamps**. Every one of `now_`, `lastSync_`,
+    /// `nextStateChange_`, `syncUpdate_`, `asyncUpdate_`, `revStart35_`,
+    /// `fluxWriteStart_` and `delayDeadline_` is an absolute CPU-cycle
+    /// stamp. Leaving them out of the snapshot meant a rewind rolled the
+    /// machine's `cycleCounter` backwards while the IWM kept its old,
+    /// larger `lastSync_`; `sync()`'s `while (nextSync > lastSync_)` walker
+    /// then did nothing and the IWM sat **frozen until emulated time
+    /// caught back up** to where it had been. Reachable on every //c-class
+    /// profile: `ioReadIWM` ticks the IWM on each $C0E0-$C0EF access even
+    /// in shadow mode, where the 5.25" data itself comes from DiskIICard.
+    ///
+    /// `fluxWrite_` is 64 K entries (512 KB) for MAME parity, but only the
+    /// first `fluxWriteCount_` are live — usually zero. Only those are
+    /// written, or a single rewind ring would cost hundreds of megabytes.
+    void appendSnapshotState(std::vector<uint8_t>& out) const;
+    /// Returns false (and leaves the device untouched) on a truncated or
+    /// unrecognised blob. `disk_`, `sony_` and the callbacks are host
+    /// wiring — never serialized, re-installed by the caller.
+    bool loadSnapshotState(const uint8_t* data, size_t n);
 
     /// Wire the MAME-style callbacks. `EmulationController` installs
     /// these once at construction; tests may install their own.

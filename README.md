@@ -31,6 +31,7 @@ Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 - ⏪ **Rewind time.** A snapshot ring buffer records the machine as it runs; scrub backwards through your last seconds of execution and resume from any point. Same serializer feeds the AI-control HTTP `/snapshot` endpoints, so they can never drift.
 - 📺 **CRT you can dial in.** OpenEmulator-style composite NTSC shader *and* AppleWin's CPU IIR-LUT NTSC, plus mono phosphor with an adjustable **phosphor curve** (luminance γ) and **persistence** (temporal glow), barrel distortion, hue/BCS — the full *View → CRT Settings* panel.
 - 💾 **Disks that sound right.** Cycle-stamped mechanical floppy samples: the Disk II head step and the Sony 3.5" drive whir, timed off the CPU clock — disk-turbo collapses wall-clock gaps but the nibble stream stays cycle-correct via an event-driven LSS.
+- 🌐 **Online, from 1984.** The **Uthernet II**'s W5100 is a hardware TCP/IP stack, so POM2 runs it straight on host sockets — point a period IRC, telnet or FTP client at the real internet with no extra dependency and no privileges. The **Uthernet I** (CS8900A) is there too for IP65 / Contiki, bridged by optional libslirp.
 - 🎵 **A whole sound-card era.** Speaker, cassette, Mockingboard A/C, Mockingboard C **Sound II** with SSI263 speech, the Applied Engineering **Phasor** (2×VIA / 4×AY), and the Cricket / Echo SSI263 line.
 - 🔬 **MAME is the source of truth.** Every hardware port cites the MAME file + line range in a comment and is pinned with a smoke test under `tests/`. CPU → audio/UI events carry a CPU-cycle stamp, never wall-clock.
 - 🌐 **Runs in your browser.** The full emulator builds to WebAssembly — [play it now](https://habib256.github.io/POM2/wasm/), no install.
@@ -161,6 +162,7 @@ Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`i
 | ⏪ **Rewind** | MicroM8-style snapshot ring buffer; scrub back and resume. Shares its serializer with the AI-control `/snapshot` endpoints. |
 | 🔊 **Audio** | Speaker · cassette · Mockingboard A/C · Mockingboard C **Sound II** (SSI263 speech) · Applied Engineering **Phasor** (2×VIA / 4×AY) · Cricket / Echo SSI263 · Echo+ TMS5220 scaffold · cycle-stamped Disk II + Sony 3.5" mechanical sounds. |
 | 💾 **Storage** | `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv` · DOS 3.x · ProDOS · SmartPort · CFFA 2.0. WOZ uses the real Disk II P6 LSS sequencer; detection is content-driven (MacBinary, DOS/ProDOS skew, WOZ/2IMG write-protect handled). |
+| 🌐 **Ethernet** | **Uthernet II** (WIZnet W5100 hardware TCP/IP — runs on host sockets, so period IRC / telnet / FTP clients work with no extra dependency and no root) · **Uthernet I** (CS8900A NIC, raw frames, bridged to the host by optional libslirp user-mode NAT). |
 | 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · **Apple ImageWriter II** printer with a rendered paper tray (colour ribbon, bit-image graphics, PNG export) · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
 | 🛠️ **Tools** | Disk Library · Slot Configuration · screenshots · memory viewer · snapshots · kiosk mode · CLI · AI-control HTTP server. |
 
@@ -179,7 +181,8 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `ssc` | Super Serial Card | `mockingboard_c` | Mockingboard C Sound II + SSI263 |
 | `printer` | Parallel printer (host spool) | `phasor` | Applied Engineering Phasor |
 | `grappler` | Orange Micro Grappler+ | `echoplus` | Cricket / Echo SSI263 |
-| | | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
+| `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
+| `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
 
 ---
 

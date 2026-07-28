@@ -7,6 +7,7 @@
 
 #include "Rewind_ImGui.h"
 
+#include "CpuClock.h"          // VideoTiming / pom2VideoTiming
 #include "EmulationController.h"
 #include "RewindBuffer.h"
 #include "imgui.h"
@@ -16,9 +17,28 @@
 
 namespace pom2 {
 namespace {
-// POM2_CPU_CLOCK_HZ (14.31818 MHz / 14). Only used to turn an emuCycles
-// span into a human-readable seconds figure for the timeline labels.
-constexpr double kCpuHz = 1022727.0;
+
+/// Cycles per second the machine is *actually* running at, for turning an
+/// emuCycles span into the seconds figures on the timeline.
+///
+/// This used to be a hardcoded 1022727.0. That is the NTSC nominal, and it
+/// is wrong on two of POM2's profiles:
+///   * **//c Plus** carries a 4x Zip-style accelerator — 68180 cycles per
+///     60 Hz frame, ~4.09 MHz. Dividing its cycle stamps by the NTSC clock
+///     reported a 30-second ring as "120.0 s", disagreeing by a factor of
+///     four with the "history (s)" slider sitting right beside it.
+///   * **PAL** runs 20313 cycles at 50 Hz (~1.0156 MHz).
+///
+/// The worker's own budget is the honest source: cyclesPerFrame x refresh
+/// is exactly what it spends per wall-clock second, accelerator included.
+double effectiveCpuHz(EmulationController& ctrl)
+{
+    const VideoTiming& t = pom2VideoTiming(ctrl.getVideoStandard());
+    const double hz = static_cast<double>(ctrl.getCyclesPerFrame()) *
+                      static_cast<double>(t.refreshHz);
+    return hz > 0.0 ? hz : static_cast<double>(t.cpuClockHz);
+}
+
 }  // namespace
 
 void Rewind_ImGui::beginScrubIfNeeded(EmulationController& ctrl)
@@ -92,20 +112,27 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
         }
     }
     ImGui::SameLine();
-    const double spanSec = newest >= oldest ? (newest - oldest) / kCpuHz : 0.0;
+    const double cpuHz   = effectiveCpuHz(ctrl);
+    const double spanSec = newest >= oldest ? (newest - oldest) / cpuHz : 0.0;
     ImGui::Text("%zu frames  ·  %.1f s  ·  %.1f MB",
                 count, spanSec, static_cast<double>(bytes) / (1024.0 * 1024.0));
     ImGui::SameLine();
-    // History length (max retained seconds @ 60 Hz). Takes effect immediately;
-    // shrinking evicts the oldest frames. Disabled while scrubbing because
-    // front-eviction would shift every frame index and desync `cursor_`.
-    int histSec = static_cast<int>(maxFrames / 60);
+    // History length in seconds. The ring counts *frames*, so the
+    // conversion is the profile's refresh rate, not a hardcoded 60 — on the
+    // 50 Hz PAL profiles that constant made the slider read 20 % short.
+    // Takes effect immediately; shrinking evicts the oldest frames. Disabled
+    // while scrubbing because front-eviction would shift every frame index
+    // and desync `cursor_`.
+    const int  refreshHz = pom2VideoTiming(ctrl.getVideoStandard()).refreshHz;
+    int histSec = static_cast<int>(maxFrames /
+                                   static_cast<size_t>(refreshHz));
     if (histSec < 1) histSec = 1;
     ImGui::SetNextItemWidth(150.0f);
     ImGui::BeginDisabled(scrubbing_);
     if (ImGui::SliderInt("history (s)", &histSec, 5, 120)) {
         std::lock_guard<std::mutex> lk(ctrl.stateMutex());
-        ctrl.rewind().setMaxFrames(static_cast<size_t>(histSec) * 60);
+        ctrl.rewind().setMaxFrames(static_cast<size_t>(histSec) *
+                                   static_cast<size_t>(refreshHz));
     }
     ImGui::EndDisabled();
     if (!enabled && !haveFrames)
@@ -123,7 +150,7 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
     ImGui::EndDisabled();
 
     if (scrubbing_) {
-        const double back = newest >= cursorCycle ? (newest - cursorCycle) / kCpuHz : 0.0;
+        const double back = newest >= cursorCycle ? (newest - cursorCycle) / cpuHz : 0.0;
         ImGui::Text("Scrubbing  -%.2f s   (frame %zu / %zu)", back, cursor_ + 1, count);
     } else {
         ImGui::TextDisabled("Live (newest)");

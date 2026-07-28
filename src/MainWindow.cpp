@@ -20,8 +20,14 @@
 #include "EchoPlusCard.h"
 #include "EchoPlusTMS5220Card.h"
 #include "GrapplerCard.h"
+#include "NetworkBackend.h"
+#include "SlirpNetworkBackend.h"
+#include "UthernetCard.h"
+#include "UthernetIICard.h"
+#include "Uthernet_ImGui.h"
 #include "ImageWriter.h"
 #include "ImageWriter_ImGui.h"
+#include "RomStatus_ImGui.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "Disk35Controller_ImGui.h"
@@ -63,6 +69,7 @@
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
 #include "Toolbar_ImGui.h"
+#include "CommandPalette_ImGui.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"   // BeginViewportSideBar (status bar)
@@ -118,6 +125,42 @@ namespace {
 constexpr const char* kProDOSHostSentinel = "@PRODOS_HOST_FOLDER@:";
 } // namespace
 
+namespace {
+
+// state.cfg is a flat `key=value` file with one entry per line, so a list has
+// to be packed into a single value. Disk paths can contain spaces, commas,
+// semicolons and colons, so the separator must be a byte a path cannot hold:
+// 0x1F (ASCII unit separator).
+constexpr char kListSep = '\x1f';
+
+std::string joinPaths(const std::vector<std::string>& v)
+{
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out += kListSep;
+        out += v[i];
+    }
+    return out;
+}
+
+std::vector<std::string> splitPaths(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= s.size()) {
+        const size_t end = s.find(kListSep, start);
+        const std::string piece = (end == std::string::npos)
+                                ? s.substr(start)
+                                : s.substr(start, end - start);
+        if (!piece.empty()) out.push_back(piece);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return out;
+}
+
+} // anon namespace
+
 MainWindow::MainWindow(bool forceIIPlus)
     // Member init order matches declaration order in MainWindow.h: the
     // controller is constructed first so memViewer can safely call
@@ -141,6 +184,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       imageWriterPanel(std::make_unique<pom2::ImageWriter_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
+      cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
       hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
       hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
       hgrSpriteEditor(std::make_unique<hgrsprite::HgrSpriteEditor>(hgrPaintHost.get())),
@@ -345,6 +389,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
         showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
         showSlotConfigPanel = settings->getBool ("show_slot_config", showSlotConfigPanel);
+        showMediaPanel      = settings->getBool ("show_media_panel", showMediaPanel);
+        showRomStatusPanel  = settings->getBool ("show_rom_status", showRomStatusPanel);
         showFloppyEmu      = settings->getBool ("show_floppy_emu", showFloppyEmu);
         // Floppy Emu: restore the emulation mode + SD-card root (its NVRAM).
         {
@@ -401,6 +447,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showEchoPlusPanel  = settings->getBool ("show_echoplus",   showEchoPlusPanel);
         showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
         showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
+        showEthernetPanel  = settings->getBool ("show_ethernet",   showEthernetPanel);
         showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
         showImageWriterPanel =
             settings->getBool("show_imagewriter", showImageWriterPanel);
@@ -414,8 +461,45 @@ MainWindow::MainWindow(bool forceIIPlus)
                     static_cast<pom2::ImageWriter::PaperSize>(paper));
             imageWriter->setDpi(settings->getInt("imagewriter_dpi",
                                                  imageWriter->dpi()));
-            imageWriter->setAutoFeed(
-                settings->getBool("imagewriter_autolf", true));
+            // Line-feed-after-CR switch. Old configs stored a bool; the
+            // mode (Auto/On/Off) supersedes it and Auto is the default —
+            // it settles the question from the stream itself.
+            imageWriter->setAutoFeedMode(
+                static_cast<pom2::ImageWriter::AutoFeed>(
+                    std::clamp(settings->getInt("imagewriter_autolf_mode",
+                        static_cast<int>(pom2::ImageWriter::AutoFeed::Auto)),
+                        0, static_cast<int>(
+                               pom2::ImageWriter::AutoFeed::Count) - 1)));
+            // POM2_TRACE_PRINTER=1 (or =<path>) opens the printer trace
+            // before anything can print, so a printout that goes wrong
+            // during boot is captured too.
+            if (const char* t = std::getenv("POM2_TRACE_PRINTER")) {
+                if (*t && std::strcmp(t, "0") != 0) {
+                    const std::string path =
+                        (std::strcmp(t, "1") == 0)
+                            ? std::string("printouts/imagewriter_trace.log")
+                            : std::string(t);
+                    std::string err;
+                    if (imageWriter->startTrace(path, err))
+                        pom2::log().info("ImageWriter", "Tracing to " + path);
+                    else
+                        pom2::log().warn("ImageWriter", err);
+                }
+            }
+            printerBackPressure =
+                settings->getBool("imagewriter_backpressure", false);
+            imageWriter->setRibbon(
+                static_cast<pom2::ImageWriter::Ribbon>(
+                    std::clamp(settings->getInt("imagewriter_ribbon", 0), 0,
+                               static_cast<int>(
+                                   pom2::ImageWriter::Ribbon::Count) - 1)));
+            const int spd = settings->getInt(
+                "imagewriter_speed",
+                static_cast<int>(pom2::ImageWriter::Speed::Draft));
+            if (spd >= 0 && spd < static_cast<int>(
+                                pom2::ImageWriter::Speed::Count))
+                imageWriter->setSpeed(
+                    static_cast<pom2::ImageWriter::Speed>(spd));
         }
         sscPortInput       = settings->getInt  ("ssc_port",        sscPortInput);
         diskTurboWhileMotor = settings->getBool("disk_turbo",      diskTurboWhileMotor);
@@ -504,6 +588,25 @@ MainWindow::MainWindow(bool forceIIPlus)
         if      (asp == "crt43")   aspectMode = AspectMode::Crt43;
         else if (asp == "integer") aspectMode = AspectMode::Integer;
         else if (asp == "square")  aspectMode = AspectMode::Square;
+
+        // Interface appearance. Only stored here — the theme is applied by
+        // `setDpiScale()`, which main() calls right after construction with
+        // the monitor's content scale (unknown at this point). Clamped so a
+        // hand-edited state.cfg can't leave the UI unusably small or huge.
+        uiAccent_ = pom2::accentFromKey(
+            settings->getString("ui_accent",
+                                pom2::accentKey(uiAccent_)).c_str());
+        uiScale_  = std::clamp(settings->getFloat("ui_scale", uiScale_),
+                               pom2::kUiScaleMin, pom2::kUiScaleMax);
+        // Docking: has a layout already been seeded into imgui.ini? Without
+        // this the default layout would be rebuilt on every launch, throwing
+        // away whatever the user had docked.
+        dockSeeded_ = settings->getBool("ui_dock_seeded", false);
+        libraryFavourites_ = splitPaths(settings->getString("library_favourites", ""));
+        libraryRecents_    = splitPaths(settings->getString("library_recents", ""));
+        libraryHideSizeDate_ = settings->getBool("library_hide_sizedate", false);
+        if (libraryRecents_.size() > kMaxLibraryRecents)
+            libraryRecents_.resize(kMaxLibraryRecents);
 #ifdef __EMSCRIPTEN__
         // Browser startup is intentionally chrome-light: keep only the menu,
         // toolbar, Apple II Screen window, and bottom status bar. Users can
@@ -512,6 +615,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         lastColorHiResMode_ = Apple2Display::HiResMode::ColorCompMedium;
         showDiskPanel = showDisk35Panel = showDiskLibrary = false;
         showHdvPanel = showSmartPortPanel = showSlotConfigPanel = false;
+        showMediaPanel = showRomStatusPanel = false;
         showFloppyEmu = showCassetteDeck = showJoystickPanel = false;
         showMouseInspector = showChatMauvePanel = false;
         showMockingboardPanel = showPhasorPanel = showEchoPlusPanel = false;
@@ -767,6 +871,7 @@ MainWindow::~MainWindow()
         settings->setBool("ssc_listening" + sk, ssc->isListening());
         settings->setInt ("ssc_port"      + sk, ssc->getPort());
         settings->setBool("ssc_raw_mode"  + sk, ssc->rawMode());
+        settings->setBool("ssc_printer_tap" + sk, ssc->printerTap());
     }
     if (sscCard) {
         settings->setBool("ssc_listening", sscCard->isListening());
@@ -838,6 +943,8 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
     settings->setBool  ("show_smartport_panel", showSmartPortPanel);
     settings->setBool  ("show_slot_config", showSlotConfigPanel);
+    settings->setBool  ("show_media_panel", showMediaPanel);
+    settings->setBool  ("show_rom_status", showRomStatusPanel);
     settings->setBool  ("show_floppy_emu", showFloppyEmu);
     settings->setString("floppyemu_mode",
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
@@ -865,12 +972,25 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_echoplus",     showEchoPlusPanel);
     settings->setBool  ("show_mixer",      showAudioMixer);
     settings->setBool  ("show_ssc",        showSscPanel);
+    settings->setBool  ("show_ethernet",  showEthernetPanel);
     settings->setBool  ("show_printer",    showPrinterPanel);
     settings->setBool  ("show_imagewriter", showImageWriterPanel);
     settings->setInt   ("imagewriter_paper",
                         static_cast<int>(imageWriter->paperSize()));
     settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
-    settings->setBool  ("imagewriter_autolf", imageWriter->autoFeed());
+    settings->setBool  ("imagewriter_backpressure", printerBackPressure);
+    settings->setInt   ("imagewriter_ribbon",
+                        static_cast<int>(imageWriter->ribbon()));
+    settings->setInt   ("imagewriter_autolf_mode",
+                        static_cast<int>(imageWriter->autoFeedMode()));
+    settings->setInt   ("imagewriter_speed",
+                        static_cast<int>(imageWriter->speed()));
+    if (grapplerCard) {
+        settings->setInt ("grappler_printer_type",
+                          static_cast<int>(grapplerCard->printerType()));
+        settings->setBool("grappler_msb_software",
+                          grapplerCard->msbSoftwareControl());
+    }
     settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
     settings->setBool  ("show_ntsc",       showNtscSettings);
@@ -907,6 +1027,12 @@ MainWindow::~MainWindow()
     settings->setString("aspect_mode",
         aspectMode == AspectMode::Crt43   ? "crt43" :
         aspectMode == AspectMode::Integer ? "integer" : "square");
+    settings->setString("ui_accent", pom2::accentKey(uiAccent_));
+    settings->setFloat ("ui_scale",  uiScale_);
+    settings->setBool  ("ui_dock_seeded", dockSeeded_);
+    settings->setString("library_favourites", joinPaths(libraryFavourites_));
+    settings->setString("library_recents",    joinPaths(libraryRecents_));
+    settings->setBool  ("library_hide_sizedate", libraryHideSizeDate_);
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
     settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
     settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
@@ -1160,6 +1286,23 @@ void MainWindow::plugSlotsFromSettings()
         // so the lowest-numbered slot wins naturally.
         diskCards.push_back(raw);
         if (!diskCard) diskCard = raw;
+        // Restore the persisted write-back opt-in on the freshly built card,
+        // exactly as plugHdv/plugCffa do below. A rebuilt DiskII used to come
+        // up with writeBackEnabled=false whatever the user had saved, and
+        // since `isWriteProtected()` is `fileWriteProtected || !writeBack`,
+        // the guest then saw a write-protected disk: DOS 3.3 answered WRITE
+        // PROTECTED and Print Shop hung forever retrying its setup save.
+        // applyProfile() re-plugs on every profile switch — including the
+        // one the ctor runs at startup — so without this the
+        // `disk_writeback[_slotN]` keys never reached a running machine.
+        {
+            const std::string slotKey = "_slot" + std::to_string(s);
+            const bool isPrimary = (raw == diskCard);
+            raw->setWriteBackEnabled(settings->getBool(
+                "disk_writeback" + slotKey,
+                isPrimary ? settings->getBool("disk_writeback", false)
+                          : false));
+        }
         diskPanels.push_back(std::make_unique<pom2::DiskController_ImGui>());
         if (!diskPanel) diskPanel = diskPanels.front().get();
         controller->memory().slotBus().plug(s, std::move(card));
@@ -1273,6 +1416,10 @@ void MainWindow::plugSlotsFromSettings()
         raw->setRawMode(settings->getBool(
             "ssc_raw_mode" + sk,
             legacyPrimary ? settings->getBool("ssc_raw_mode", false) : false));
+        // Printer tap: slot 1 is the printer-port convention (the //c
+        // hard-wires it), so the tap defaults ON there — a //c user gets
+        // PR#1 landing on the ImageWriter with zero configuration.
+        raw->setPrinterTap(settings->getBool("ssc_printer_tap" + sk, s == 1));
         const bool listenDefault = legacyPrimary
             ? settings->getBool("ssc_listening", false) : false;
         if (settings->getBool("ssc_listening" + sk, listenDefault)) {
@@ -1304,6 +1451,64 @@ void MainWindow::plugSlotsFromSettings()
     auto plugPrinter = [&](int s) {
         auto card = std::make_unique<PrinterCard>(s);
         printerCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
+    // Both Ethernet cards share one host-transport decision, so the
+    // backend factory lives here rather than in either plug lambda.
+    // Settings key `ethernet_backend`: "slirp" (default) | "loopback" |
+    // "none". Loopback is a self-test mode — everything the guest
+    // transmits comes straight back — and is also the honest fallback
+    // when a user explicitly wants the cards inert.
+    auto makeEthernetBackend = [&](const char* who)
+        -> std::unique_ptr<pom2::NetworkBackend> {
+        const std::string choice =
+            settings->getString("ethernet_backend", "slirp");
+        if (choice == "loopback")
+            return std::make_unique<pom2::LoopbackNetworkBackend>();
+        if (choice == "none")
+            return std::make_unique<pom2::NullNetworkBackend>();
+
+        if (!pom2::slirpAvailable()) {
+            pom2::log().warn(who,
+                "libslirp not compiled in — no host Ethernet transport. "
+                "Uthernet II TCP/UDP still works; install libslirp-dev and "
+                "rebuild for raw-frame modes and the Uthernet I.");
+            return std::make_unique<pom2::NullNetworkBackend>();
+        }
+        auto slirp = pom2::makeSlirpBackend("pom2");
+        if (!slirp) {
+            pom2::log().warn(who, "libslirp failed to start — falling back "
+                                  "to no host transport");
+            return std::make_unique<pom2::NullNetworkBackend>();
+        }
+        return slirp;
+    };
+
+    auto plugUthernet = [&](int s) {
+        // a2RetroSystems Uthernet I — CS8900A NIC, raw Ethernet only.
+        // Without a working transport the card still plugs and probes
+        // (drivers detect it via the PacketPage ProductID), it just never
+        // sees a frame — which is a better failure mode than hiding it.
+        auto card = std::make_unique<pom2::UthernetCard>(s);
+        card->setBackend(makeEthernetBackend("Uthernet"));
+        uthernetCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+    };
+
+    auto plugUthernetII = [&](int s) {
+        // a2RetroSystems Uthernet II — W5100 hardware TCP/IP. Its TCP and
+        // UDP sockets are host sockets, so this card is fully functional
+        // with no backend at all; the backend only serves MACRAW/IPRAW.
+        auto card = std::make_unique<pom2::UthernetIICard>(s);
+        card->setBackend(makeEthernetBackend("UthernetII"));
+        // Virtual DNS is an emulator extension (not on real silicon) that
+        // lets a guest connect by hostname without carrying a resolver.
+        // On by default, matching AppleWin, and detectable by software as
+        // PTIMER == 0.
+        card->chip().setVirtualDnsEnabled(
+            settings->getBool("uthernet2_virtual_dns", true));
+        uthernetIICard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1374,6 +1579,16 @@ void MainWindow::plugSlotsFromSettings()
                 " without a 4 KB ROM dump (roms/grappler_plus.bin) — "
                 "graphics dump commands unavailable, PR#n still works");
         }
+        // S1 printer-type DIP. Default = Apple Dot Matrix / ImageWriter:
+        // POM2's printer IS an ImageWriter II, and MAME's Epson default
+        // makes the firmware emit Epson escape codes that this printer
+        // renders as garbage (same as flipping the switches wrong on a
+        // real desk).
+        card->setPrinterType(static_cast<GrapplerCard::PrinterType>(
+            settings->getInt("grappler_printer_type",
+                static_cast<int>(GrapplerCard::PrinterType::AppleDotMatrix))));
+        card->setMsbSoftwareControl(
+            settings->getBool("grappler_msb_software", true));
         grapplerCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -1586,6 +1801,8 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "echoplus")    plugEchoPlus(s);
         else if (kind == "echoplus_tms") plugEchoPlusTms(s);
         else if (kind == "grappler")    plugGrappler(s);
+        else if (kind == "uthernet")    plugUthernet(s);
+        else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);
         else {
             pom2::log().warn("Slots",
@@ -1718,6 +1935,14 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         return;
     }
 
+    // Ctrl+Shift+P opens the command palette. Shift is what keeps it off the
+    // Apple II's Ctrl-P ($10) — which CP/M under the SoftCard uses for printer
+    // echo, so plain Ctrl-P must keep reaching the guest.
+    if (ctrl && (mods & GLFW_MOD_SHIFT) && key == GLFW_KEY_P) {
+        openCommandPalette();
+        return;
+    }
+
     switch (key) {
         case GLFW_KEY_ENTER:        // fallthrough — main + numpad Enter both
         case GLFW_KEY_KP_ENTER:     injectAscii(0x0D); break;
@@ -1847,6 +2072,457 @@ void MainWindow::uploadScreenTexture()
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
                         GL_RGBA, GL_UNSIGNED_BYTE, display->pixels());
     }
+}
+
+// ─── Disk Library favourites / recents ───────────────────────────────────
+
+
+void MainWindow::noteLibraryRecent(const std::string& path)
+{
+    if (path.empty()) return;
+    auto it = std::find(libraryRecents_.begin(), libraryRecents_.end(), path);
+    if (it != libraryRecents_.end()) libraryRecents_.erase(it);
+    libraryRecents_.insert(libraryRecents_.begin(), path);
+    if (libraryRecents_.size() > kMaxLibraryRecents)
+        libraryRecents_.resize(kMaxLibraryRecents);
+}
+
+// ─── Command palette ─────────────────────────────────────────────────────
+//
+// One list, one dispatch switch. Adding a command means one line in
+// buildCommands() plus one `if` in runCommand() — deliberately not a
+// registration mechanism with callbacks, because the whole value of the
+// palette is that every command is visible in one place when you read it.
+
+void MainWindow::openCommandPalette()
+{
+    if (cmdPalette) cmdPalette->open();
+}
+
+void MainWindow::renderCommandPalette()
+{
+    if (!cmdPalette || !cmdPalette->isOpen()) return;
+
+    using Cmd = pom2::CommandPalette_ImGui::Command;
+    std::vector<Cmd> cmds;
+    cmds.reserve(80);
+
+    auto add = [&cmds](const char* id, const char* cat, std::string label,
+                       const char* shortcut = "", bool enabled = true,
+                       bool checked = false) {
+        Cmd c;
+        c.id       = id;
+        c.category = cat;
+        c.label    = std::move(label);
+        c.shortcut = shortcut;
+        c.enabled  = enabled;
+        c.checked  = checked;
+        cmds.push_back(std::move(c));
+    };
+    // Panel toggles all follow the same shape, so keep them one-liners.
+    auto panel = [&add](const char* id, const char* label, bool* flag,
+                        bool enabled = true) {
+        add(id, "Panel", label, "", enabled, flag && *flag);
+    };
+
+    const auto mode = controller->getMode();
+
+    // ── Machine ──────────────────────────────────────────────────────────
+    add("machine.run",      "Machine", "Run", "",
+        mode != EmulationController::Mode::Running);
+    add("machine.pause",    "Machine", "Pause", "",
+        mode == EmulationController::Mode::Running);
+    add("machine.step",     "Machine", "Step one instruction", "",
+        mode != EmulationController::Mode::Running);
+    add("machine.reset",    "Machine", "Reset (Ctrl-Reset)", "F11");
+    add("machine.hardreset","Machine", "Hard reset", "F12");
+    add("machine.coldboot", "Machine", "Cold boot (wipe RAM)");
+    add("machine.screenshot","Machine","Save screenshot", "F9");
+
+    // Speed buckets, labelled with the real clock so "2x" isn't abstract.
+    {
+        const VideoTiming& vt = pom2VideoTiming(controller->getVideoStandard());
+        const int cur = controller->getCyclesPerFrame();
+        const double mhz = static_cast<double>(vt.cyclesPerFrame) * vt.refreshHz / 1e6;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "Speed 1x (%.2f MHz)", mhz);
+        add("speed.1x", "Machine", buf, "", true, cur == vt.cyclesPerFrame);
+        std::snprintf(buf, sizeof buf, "Speed 2x (%.2f MHz)", mhz * 2);
+        add("speed.2x", "Machine", buf, "", true, cur == vt.cyclesPerFrame * 2);
+        std::snprintf(buf, sizeof buf, "Speed 4x (%.2f MHz)", mhz * 4);
+        add("speed.4x", "Machine", buf, "", true, cur == vt.cyclesPerFrame * 4);
+        add("speed.max", "Machine", "Speed MAX (uncapped)", "", true,
+            cur == 1'000'000);
+    }
+
+    // ── Profiles ─────────────────────────────────────────────────────────
+    for (pom2::SystemProfile p : pom2::allProfiles()) {
+        const auto& cfg = pom2::profileConfig(p);
+        add(("profile." + std::to_string(static_cast<int>(p))).c_str(),
+            "Profile", std::string(cfg.displayName), "", true,
+            p == activeProfile);
+    }
+
+    // ── Display ──────────────────────────────────────────────────────────
+    {
+        const auto cur = display->getHiResMode();
+        auto pipe = [&](const char* id, const char* label,
+                        Apple2Display::HiResMode m, bool enabled = true) {
+            add(id, "Display", label, "", enabled, cur == m);
+        };
+        pipe("disp.ntsc",     "NTSC (MAME)",  Apple2Display::HiResMode::ColorNTSC);
+        pipe("disp.ntscmed",  "NTSC (MAME) medium", Apple2Display::HiResMode::ColorCompMedium);
+        pipe("disp.ntsc4bit", "NTSC (MAME) 4-bit square", Apple2Display::HiResMode::ColorComp4Bit);
+        pipe("disp.oegpu",    "Composite (OpenEmulator, GPU)", Apple2Display::HiResMode::ColorCompositeOE);
+        pipe("disp.oecpu",    "Composite (OpenEmulator, CPU)", Apple2Display::HiResMode::ColorCompositeOECpu);
+        pipe("disp.applewin", "AppleWin NTSC (TV line blur)", Apple2Display::HiResMode::ColorAppleWin);
+        pipe("disp.rgb",      "RGB card - Le Chat Mauve", Apple2Display::HiResMode::ChatMauveRGB,
+             chatMauveCard != nullptr);
+        pipe("disp.mono",     "Monochrome white", Apple2Display::HiResMode::MonoWhite);
+        pipe("disp.green",    "Monochrome green (P31)", Apple2Display::HiResMode::MonoGreen);
+        pipe("disp.amber",    "Monochrome amber", Apple2Display::HiResMode::MonoAmber);
+        add("disp.aspect.square",  "Display", "Aspect: square pixels", "", true,
+            aspectMode == AspectMode::Square);
+        add("disp.aspect.crt43",   "Display", "Aspect: 4:3 CRT shape", "", true,
+            aspectMode == AspectMode::Crt43);
+        add("disp.aspect.integer", "Display", "Aspect: integer scale", "", true,
+            aspectMode == AspectMode::Integer);
+        add("disp.crttoggle", "Display", "Toggle CRT effects", "", true,
+            crtEffectsEnabled);
+    }
+
+    // ── Layout + interface ───────────────────────────────────────────────
+    add("layout.reset",     "Layout", "Reset to default layout");
+    add("layout.emulation", "Layout", "Emulation layout");
+    add("layout.debug",     "Layout", "Debug layout");
+    add("layout.audio",     "Layout", "Audio layout");
+    {
+        std::size_t n = 0;
+        const pom2::UiAccent* accents = pom2::allAccents(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            add((std::string("accent.") + pom2::accentKey(accents[i])).c_str(),
+                "Interface", std::string("Accent: ") +
+                pom2::accentLabel(accents[i]), "", true,
+                uiAccent_ == accents[i]);
+        }
+        add("ui.zoomin",  "Interface", "Zoom in");
+        add("ui.zoomout", "Interface", "Zoom out");
+        add("ui.zoom100", "Interface", "Zoom reset to 100%");
+    }
+
+    // ── Panels ───────────────────────────────────────────────────────────
+    panel("panel.disklibrary", "Disk Library",            &showDiskLibrary);
+    panel("panel.diskii",      "Disk II drive",           &showDiskPanel);
+    panel("panel.disk35",      "Disk 3.5\" drive",        &showDisk35Panel);
+    panel("panel.hdv",         "HDV / ProDOS volume",     &showHdvPanel);
+    panel("panel.smartport",   "SmartPort configuration", &showSmartPortPanel,
+          smartPortCard != nullptr);
+    panel("panel.floppyemu",   "Floppy Emu (BMOW)",       &showFloppyEmu);
+    panel("panel.cassette",    "Cassette deck",           &showCassetteDeck);
+    panel("panel.slotconfig",  "Slot configuration",      &showSlotConfigPanel);
+    panel("panel.media",       "Internal disks & media",  &showMediaPanel);
+    panel("panel.romstatus",   "ROM status",              &showRomStatusPanel);
+    panel("panel.mockingboard","Mockingboard",            &showMockingboardPanel);
+    panel("panel.phasor",      "Phasor",                  &showPhasorPanel,
+          phasorCard != nullptr);
+    panel("panel.echoplus",    "Echo+ speech",            &showEchoPlusPanel,
+          echoPlusCard != nullptr);
+    panel("panel.mixer",       "Audio mixer",             &showAudioMixer);
+    panel("panel.ssc",         "Super Serial",            &showSscPanel,
+          !sscCards.empty());
+    panel("panel.ethernet",    "Ethernet (Uthernet)",     &showEthernetPanel,
+          uthernetCard != nullptr || uthernetIICard != nullptr);
+    panel("panel.printer",     "Printer",                 &showPrinterPanel,
+          printerCard != nullptr);
+    panel("panel.imagewriter", "ImageWriter II printout",  &showImageWriterPanel);
+    panel("panel.chatmauve",   "Le Chat Mauve",           &showChatMauvePanel);
+    panel("panel.joystick",    "Joystick / paddles",      &showJoystickPanel);
+    panel("panel.mouse",       "Mouse inspector",         &showMouseInspector);
+    panel("panel.nsclock",     "No-Slot Clock",           &showNoSlotClockPanel);
+    panel("panel.memviewer",   "Memory viewer",           &showMemViewer);
+    panel("panel.membar",      "Memory map bar",          &showMemoryBar);
+    panel("panel.membarh",     "Memory map bar (horizontal)", &showMemoryBarH);
+    panel("panel.memgrid",     "Memory map grid",         &showMemoryGrid);
+    panel("panel.crt",         "CRT settings",            &showNtscSettings);
+    panel("panel.voxel",       "3D voxel view",           &show3dVoxel_);
+    panel("panel.voxelset",    "3D voxel settings",       &showVoxelSettings_);
+    panel("panel.hgrpaint",    "HGR Paint editor",        &showHgrPaintEditor);
+    panel("panel.hgrsprite",   "HGR Sprite editor",       &showHgrSpriteEditor);
+    panel("panel.rewind",      "Rewind (time-travel)",    &showRewindBar);
+    panel("panel.welcome",     "Welcome / quick start",   &showWelcomePanel);
+#ifndef __EMSCRIPTEN__
+    panel("panel.aicontrol",   "AI Control (HTTP)",       &showAiControlPanel);
+#endif
+
+    // ── Media ────────────────────────────────────────────────────────────
+    add("media.ejectall", "Media", "Eject all disks");
+
+    cmdPalette->setCommands(std::move(cmds));
+    const auto r = cmdPalette->render();
+    if (r.executed) runCommand(r.commandId);
+}
+
+void MainWindow::runCommand(const std::string& id)
+{
+    auto toggle = [](bool& f) { f = !f; };
+
+    // Machine
+    if (id == "machine.run")        { controller->setMode(EmulationController::Mode::Running); return; }
+    if (id == "machine.pause")      { controller->setMode(EmulationController::Mode::Stopped); return; }
+    if (id == "machine.step")       { controller->requestStep(); return; }
+    if (id == "machine.reset")      { controller->softReset();  return; }
+    if (id == "machine.hardreset")  { controller->hardReset();  return; }
+    if (id == "machine.coldboot")   { controller->coldBoot();   return; }
+    if (id == "machine.screenshot") { saveScreenshot();         return; }
+
+    if (id.rfind("speed.", 0) == 0) {
+        const VideoTiming& vt = pom2VideoTiming(controller->getVideoStandard());
+        if      (id == "speed.1x")  controller->setCyclesPerFrame(vt.cyclesPerFrame);
+        else if (id == "speed.2x")  controller->setCyclesPerFrame(vt.cyclesPerFrame * 2);
+        else if (id == "speed.4x")  controller->setCyclesPerFrame(vt.cyclesPerFrame * 4);
+        else if (id == "speed.max") controller->setCyclesPerFrame(1'000'000);
+        return;
+    }
+
+    if (id.rfind("profile.", 0) == 0) {
+        const int idx = std::atoi(id.c_str() + 8);
+        for (pom2::SystemProfile p : pom2::allProfiles())
+            if (static_cast<int>(p) == idx) { applyProfile(p); return; }
+        return;
+    }
+
+    // Display
+    if (id == "disp.ntsc")     { display->setHiResMode(Apple2Display::HiResMode::ColorNTSC); return; }
+    if (id == "disp.ntscmed")  { display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium); return; }
+    if (id == "disp.ntsc4bit") { display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit); return; }
+    if (id == "disp.oegpu")    { display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOE); return; }
+    if (id == "disp.oecpu")    { display->setHiResMode(Apple2Display::HiResMode::ColorCompositeOECpu); return; }
+    if (id == "disp.applewin") {
+        display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
+        display->setHiResMode(Apple2Display::HiResMode::ColorAppleWin);
+        return;
+    }
+    if (id == "disp.rgb")   { display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB); return; }
+    if (id == "disp.mono")  { display->setHiResMode(Apple2Display::HiResMode::MonoWhite); return; }
+    if (id == "disp.green") { display->setHiResMode(Apple2Display::HiResMode::MonoGreen); return; }
+    if (id == "disp.amber") { display->setHiResMode(Apple2Display::HiResMode::MonoAmber); return; }
+    if (id == "disp.aspect.square")  { aspectMode = AspectMode::Square;  return; }
+    if (id == "disp.aspect.crt43")   { aspectMode = AspectMode::Crt43;   return; }
+    if (id == "disp.aspect.integer") { aspectMode = AspectMode::Integer; return; }
+    if (id == "disp.crttoggle")      { toggle(crtEffectsEnabled);        return; }
+
+    // Layout + interface
+    if (id == "layout.reset")     { pendingDockLayout_ = DockLayout::Reset;     dockLayoutRequested_ = true; return; }
+    if (id == "layout.emulation") { pendingDockLayout_ = DockLayout::Emulation; dockLayoutRequested_ = true; return; }
+    if (id == "layout.debug")     { pendingDockLayout_ = DockLayout::Debug;     dockLayoutRequested_ = true; return; }
+    if (id == "layout.audio")     { pendingDockLayout_ = DockLayout::Audio;     dockLayoutRequested_ = true; return; }
+    if (id.rfind("accent.", 0) == 0) {
+        uiAccent_ = pom2::accentFromKey(id.c_str() + 7);
+        applyUiTheme();
+        return;
+    }
+    if (id == "ui.zoomin")  { uiScale_ = std::clamp(uiScale_ + pom2::kUiScaleStep * 2.0f, pom2::kUiScaleMin, pom2::kUiScaleMax); applyUiTheme(); return; }
+    if (id == "ui.zoomout") { uiScale_ = std::clamp(uiScale_ - pom2::kUiScaleStep * 2.0f, pom2::kUiScaleMin, pom2::kUiScaleMax); applyUiTheme(); return; }
+    if (id == "ui.zoom100") { uiScale_ = 1.0f; applyUiTheme(); return; }
+
+    // Panels — id → flag, one table so there's no second place to update.
+    struct PanelBinding { const char* id; bool* flag; };
+    const PanelBinding panels[] = {
+        { "panel.disklibrary",  &showDiskLibrary       },
+        { "panel.diskii",       &showDiskPanel         },
+        { "panel.disk35",       &showDisk35Panel       },
+        { "panel.hdv",          &showHdvPanel          },
+        { "panel.smartport",    &showSmartPortPanel    },
+        { "panel.floppyemu",    &showFloppyEmu         },
+        { "panel.cassette",     &showCassetteDeck      },
+        { "panel.slotconfig",   &showSlotConfigPanel   },
+        { "panel.media",        &showMediaPanel        },
+        { "panel.romstatus",    &showRomStatusPanel    },
+        { "panel.mockingboard", &showMockingboardPanel },
+        { "panel.phasor",       &showPhasorPanel       },
+        { "panel.echoplus",     &showEchoPlusPanel     },
+        { "panel.mixer",        &showAudioMixer        },
+        { "panel.ssc",          &showSscPanel          },
+        { "panel.ethernet",     &showEthernetPanel     },
+        { "panel.printer",      &showPrinterPanel      },
+        { "panel.imagewriter",  &showImageWriterPanel  },
+        { "panel.chatmauve",    &showChatMauvePanel    },
+        { "panel.joystick",     &showJoystickPanel     },
+        { "panel.mouse",        &showMouseInspector    },
+        { "panel.nsclock",      &showNoSlotClockPanel  },
+        { "panel.memviewer",    &showMemViewer         },
+        { "panel.membar",       &showMemoryBar         },
+        { "panel.membarh",      &showMemoryBarH        },
+        { "panel.memgrid",      &showMemoryGrid        },
+        { "panel.crt",          &showNtscSettings      },
+        { "panel.voxel",        &show3dVoxel_          },
+        { "panel.voxelset",     &showVoxelSettings_    },
+        { "panel.hgrpaint",     &showHgrPaintEditor    },
+        { "panel.hgrsprite",    &showHgrSpriteEditor   },
+        { "panel.rewind",       &showRewindBar         },
+        { "panel.welcome",      &showWelcomePanel      },
+        { "panel.aicontrol",    &showAiControlPanel    },
+    };
+    for (const auto& b : panels)
+        if (id == b.id) { toggle(*b.flag); return; }
+
+    if (id == "media.ejectall") { ejectAllDisks(); return; }
+}
+
+// ─── Docking ─────────────────────────────────────────────────────────────
+
+void MainWindow::renderDockSpace()
+{
+    // The dockspace covers the viewport WORK area, which the main menu bar,
+    // the toolbar and the status bar have each already reserved a slice of
+    // (all three are `BeginViewportSideBar` windows). So the chrome is never
+    // overlapped and never needs hardcoded offsets.
+    //
+    // PassthruCentralNode: when nothing is docked in the middle, the central
+    // node draws no background. Without it an empty centre is a grey slab
+    // covering the whole work area.
+    dockspaceId_ = ImGui::DockSpaceOverViewport(
+        ImGui::GetID("POM2_DockSpace"), ImGui::GetMainViewport(),
+        ImGuiDockNodeFlags_PassthruCentralNode);
+
+    // Seed the default layout the first time POM2 runs with docking (or when
+    // the user picks a preset). Gated on a persisted flag rather than on "is
+    // the node empty": DockSpaceOverViewport has already created the node by
+    // this point, so emptiness can't distinguish "fresh install" from "user
+    // undocked everything on purpose".
+    if (!dockSeeded_) {
+        dockSeeded_          = true;
+        dockLayoutRequested_ = true;
+        pendingDockLayout_   = DockLayout::Reset;
+    }
+    if (dockLayoutRequested_) {
+        dockLayoutRequested_ = false;
+        applyDockLayout(pendingDockLayout_);
+    }
+}
+
+void MainWindow::applyDockLayout(DockLayout preset)
+{
+    if (dockspaceId_ == 0) return;
+
+    // Rebuild from scratch. RemoveNode undocks everything first, so windows
+    // the preset doesn't mention end up floating rather than stuck in a
+    // stale node.
+    ImGui::DockBuilderRemoveNode(dockspaceId_);
+    ImGui::DockBuilderAddNode(dockspaceId_, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspaceId_,
+                                  ImGui::GetMainViewport()->WorkSize);
+
+    // `centre` is rebound by each split to the *remaining* opposite side, so
+    // successive splits carve off the outside and leave the screen in the
+    // middle. SetNodeSize above matters: split ratios are computed against
+    // the node's size, and without it the first split's sizes are unreliable.
+    ImGuiID centre = dockspaceId_;
+    ImGuiID right = 0, rightLower = 0, bottom = 0;
+
+    switch (preset) {
+        case DockLayout::Reset:
+            right      = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right,
+                                                     0.34f, nullptr, &centre);
+            rightLower = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
+                                                     0.45f, nullptr, &right);
+            break;
+        case DockLayout::Emulation:
+            // No inspectors: one right column, all storage.
+            right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right,
+                                                0.32f, nullptr, &centre);
+            rightLower = right;
+            break;
+        case DockLayout::Debug:
+            right      = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right,
+                                                     0.38f, nullptr, &centre);
+            bottom     = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down,
+                                                     0.30f, nullptr, &centre);
+            rightLower = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
+                                                     0.50f, nullptr, &right);
+            break;
+        case DockLayout::Audio:
+            right      = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right,
+                                                     0.40f, nullptr, &centre);
+            rightLower = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
+                                                     0.35f, nullptr, &right);
+            break;
+    }
+    if (rightLower == 0) rightLower = right;
+    if (bottom     == 0) bottom     = rightLower;
+
+    // The screen is always the centre. Its window carries NoMove + a manual
+    // title-bar drag; `renderScreenWindow` disables that drag while docked so
+    // the two don't fight (a docked window is moved by its tab, not its body).
+    ImGui::DockBuilderDockWindow("Apple II Screen", centre);
+
+    // Everything below docks by literal title. Panels that are hidden right
+    // now still get assigned — the assignment is what makes them open as a
+    // tab in the right group later instead of floating over the screen, which
+    // is most of the value of doing this at all.
+    auto dock = [](const char* title, ImGuiID node) {
+        ImGui::DockBuilderDockWindow(title, node);
+    };
+
+    switch (preset) {
+        case DockLayout::Reset:
+            dock("Disk Library", right);
+            dock("Cassette Deck", right);
+            dock("Floppy Emu (BMOW)", right);
+            // Inspector tab group, bottom right.
+            dock("Memory viewer", rightLower);
+            dock("Mockingboard (VIA + AY state)", rightLower);
+            dock("Mouse Inspector", rightLower);
+            dock("CRT Settings (Composite NTSC)", rightLower);
+            dock("Audio Mixer", rightLower);
+            dock("Joystick", rightLower);
+            dock("Rewind", rightLower);
+            break;
+
+        case DockLayout::Emulation:
+            dock("Disk Library", right);
+            dock("Cassette Deck", right);
+            dock("Floppy Emu (BMOW)", right);
+            dock("Internal Disks & Media", right);
+            dock("Slot Configuration", right);
+            dock("Rewind", right);
+            break;
+
+        case DockLayout::Debug:
+            dock("Memory viewer", right);
+            dock("Memory Map Grid", right);
+            dock("Memory Map Bar", right);
+            dock("Mouse Inspector", rightLower);
+            dock("No-Slot Clock (Dallas DS1216E)###nsclockPanel", rightLower);
+            dock("AI Control (HTTP)", rightLower);
+            dock("Memory Map Bar (Horizontal)", bottom);
+            break;
+
+        case DockLayout::Audio:
+            dock("Mockingboard (VIA + AY state)", right);
+            dock("Phasor (mode + 2×VIA + 4×AY)", right);
+            dock("Echo+ (SSI263 speech)", right);
+            dock("Audio Mixer", rightLower);
+            dock("Cassette Deck", rightLower);
+            break;
+    }
+
+    ImGui::DockBuilderFinish(dockspaceId_);
+}
+
+// ─── Interface appearance ────────────────────────────────────────────────
+
+void MainWindow::applyUiTheme()
+{
+    pom2::applyTheme(uiAccent_, uiScale_, dpiScale_);
+}
+
+void MainWindow::setDpiScale(float s)
+{
+    // Guard against a windowing system reporting 0 (or something absurd) —
+    // a zero scale would collapse every padding to 0 and hide the font.
+    dpiScale_ = (s > 0.1f && s < 8.0f) ? s : 1.0f;
+    applyUiTheme();
 }
 
 // ─── Render passes ───────────────────────────────────────────────────────
@@ -2085,6 +2761,10 @@ void MainWindow::renderMenuBar()
         };
 
         ImGui::SeparatorText("Storage");
+        devItem("Internal Disks & Media...", &showMediaPanel,
+                "Every internal drive and mountable bay in one place. "
+                "Mount / Insert / Eject act immediately — the card-per-slot "
+                "list is Machine \xe2\x86\x92 Slot Configuration.");
         devItem("Floppy Emu (BMOW)", &showFloppyEmu,
                 "BMOW Floppy Emu: SD-card image browser + OLED, emulated.");
         devItem("Cassette deck", &showCassetteDeck,
@@ -2160,6 +2840,27 @@ void MainWindow::renderMenuBar()
             devItem(lbl.c_str(), &showSscPanel,
                     "6551 ACIA serial port + telnet bridge (modem / printer).",
                     !sscCards.empty());
+        }
+        // Ethernet — one entry covers both cards; the panel tabs between
+        // whichever are plugged.
+        {
+            std::string lbl = "Ethernet";
+            if (uthernetIICard && uthernetCard) {
+                lbl += " (Uthernet I slot " +
+                       std::to_string(uthernetCard->getSlot()) + ", II slot " +
+                       std::to_string(uthernetIICard->getSlot()) + ")";
+            } else if (uthernetIICard) {
+                lbl += " (Uthernet II, slot " +
+                       std::to_string(uthernetIICard->getSlot()) + ")";
+            } else if (uthernetCard) {
+                lbl += " (Uthernet I, slot " +
+                       std::to_string(uthernetCard->getSlot()) + ")";
+            } else {
+                lbl += " (no card plugged)";
+            }
+            devItem(lbl.c_str(), &showEthernetPanel,
+                    "Uthernet I / II state: host transport, MAC, W5100 sockets.",
+                    uthernetCard != nullptr || uthernetIICard != nullptr);
         }
         {
             const std::string lbl = printerCard
@@ -2278,6 +2979,102 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("View")) {
+        // ── Docking layout ──────────────────────────────────────────────
+        // Task-oriented presets. No checkmarks on purpose: the entries are
+        // actions, and the moment the user drags a tab the "active" preset
+        // stops describing what's on screen.
+        if (ImGui::BeginMenu(ICON_FA_TABLE_COLUMNS " Layout")) {
+            auto layoutItem = [&](const char* label, DockLayout p,
+                                  const char* tip) {
+                if (ImGui::MenuItem(label)) {
+                    pendingDockLayout_   = p;
+                    dockLayoutRequested_ = true;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+            };
+            layoutItem("Reset to default", DockLayout::Reset,
+                       "Screen centre, storage right, inspectors as a tab\n"
+                       "group bottom-right.");
+            ImGui::Separator();
+            layoutItem("Emulation", DockLayout::Emulation,
+                       "Widest screen. Disk Library / Cassette / Floppy Emu\n"
+                       "and Slot Config in one right column. No debug tools.");
+            layoutItem("Debug", DockLayout::Debug,
+                       "Memory viewer + maps right, horizontal map along the\n"
+                       "bottom, inspectors bottom-right.");
+            layoutItem("Audio", DockLayout::Audio,
+                       "Mockingboard / Phasor / Echo+ right, mixer and tape\n"
+                       "bottom-right.");
+            ImGui::Separator();
+            ImGui::TextDisabled("Drag any tab to re-dock; layout is saved.");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Docks persist in ~/.config/POM2/imgui.ini.\n"
+                    "Slot-numbered panels (Disk II, 3.5\", HDV, SmartPort,\n"
+                    "Printer) build their title at runtime, so presets can't\n"
+                    "place them — dock them once and they stay put.");
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+
+        // ── Interface appearance ────────────────────────────────────────
+        // Accent + zoom. Both re-theme immediately (applyUiTheme rebuilds
+        // the style from scratch, so repeated calls don't compound the
+        // scale) and both persist to state.cfg on exit.
+        if (ImGui::BeginMenu(ICON_FA_PALETTE " Interface")) {
+            ImGui::SeparatorText("Accent");
+            std::size_t nAccents = 0;
+            const pom2::UiAccent* accents = pom2::allAccents(nAccents);
+            for (std::size_t i = 0; i < nAccents; ++i) {
+                const pom2::UiAccent a = accents[i];
+                if (ImGui::MenuItem(pom2::accentLabel(a), nullptr,
+                                    uiAccent_ == a)) {
+                    uiAccent_ = a;
+                    applyUiTheme();
+                }
+            }
+
+            ImGui::SeparatorText("Zoom");
+            // Percent rather than a raw multiplier — "125 %" is the unit
+            // every other desktop app uses for this control.
+            int pct = static_cast<int>(uiScale_ * 100.0f + 0.5f);
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderInt("##uiscale", &pct,
+                                 static_cast<int>(pom2::kUiScaleMin * 100.0f),
+                                 static_cast<int>(pom2::kUiScaleMax * 100.0f),
+                                 "%d %%")) {
+                uiScale_ = std::clamp(static_cast<float>(pct) / 100.0f,
+                                      pom2::kUiScaleMin, pom2::kUiScaleMax);
+                applyUiTheme();
+            }
+            auto zoomStep = [&](const char* label, float delta) {
+                if (ImGui::MenuItem(label)) {
+                    uiScale_ = std::clamp(uiScale_ + delta,
+                                          pom2::kUiScaleMin, pom2::kUiScaleMax);
+                    applyUiTheme();
+                }
+            };
+            zoomStep("Zoom in",  +pom2::kUiScaleStep * 2.0f);
+            zoomStep("Zoom out", -pom2::kUiScaleStep * 2.0f);
+            if (ImGui::MenuItem("Reset to 100 %")) {
+                uiScale_ = 1.0f;
+                applyUiTheme();
+            }
+            if (dpiScale_ != 1.0f) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Display scale: %.0f %% (from the OS)",
+                                    dpiScale_ * 100.0f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Monitor content scale reported by the windowing\n"
+                        "system. The zoom above multiplies on top of it —\n"
+                        "effective UI scale is %.0f %%.",
+                        uiScale_ * dpiScale_ * 100.0f);
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
         ImGui::Separator();
         ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
@@ -2287,6 +3084,12 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("Tools")) {
+        if (ImGui::MenuItem("Command palette...", "Ctrl+Shift+P"))
+            openCommandPalette();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fuzzy-search every menu item, panel and machine\n"
+                              "action. Type \"mock\", \"amber\", \"eject\"...");
+        ImGui::Separator();
         ImGui::MenuItem("HGR Paint Editor", nullptr, &showHgrPaintEditor);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Paint directly into HGR/GR/DHGR video RAM through "
@@ -2308,6 +3111,10 @@ void MainWindow::renderMenuBar()
         ImGui::MenuItem("Welcome / Quick Start", nullptr, &showWelcomePanel);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Where to put ROMs/disks, keys, and signature features.");
+        ImGui::MenuItem("ROM Status...", nullptr, &showRomStatusPanel);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Every ROM POM2 probes: present or missing, which\n"
+                              "dump resolved, and what breaks without it.");
         ImGui::Separator();
         if (ImGui::MenuItem("About POM2")) showAbout = true;
         ImGui::EndMenu();
@@ -2316,34 +3123,198 @@ void MainWindow::renderMenuBar()
     ImGui::EndMainMenuBar();
 }
 
-// Bottom-of-viewport status bar. Carries the machine/mode/graphics/ROM
-// summary that used to be crammed into the right edge of the menu bar.
+// Bottom-of-viewport status bar. Carries the machine/mode/graphics summary,
+// plus the three things that used to require opening a panel to answer:
+// is a drive spinning and on what image, is the machine actually keeping up
+// with the requested clock, and is host caps-lock on.
+//
+// Everything past the machine/mode/graphics group is optional and dropped
+// when the window is too narrow (widths are measured in em so the pruning
+// behaves the same at any UI scale).
 void MainWindow::renderStatusBar()
 {
+    // ── Achieved clock ───────────────────────────────────────────────────
+    // The toolbar's speed combo shows the *requested* budget; this measures
+    // what the machine really ran, which is the number that matters when the
+    // host is too slow or disk turbo is engaged. Sampled over ≥250 ms so the
+    // readout doesn't jitter.
+    {
+        uint64_t cyc = 0;
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            cyc = controller->memory().getCycleCounter();
+        }
+        const double dt = lastFrameTime - speedSampleTime_;
+        // A rewind, snapshot restore, or profile switch rolls the counter
+        // backwards; resync instead of computing a garbage delta from the
+        // unsigned wrap.
+        if (speedSampleTime_ <= 0.0 || cyc < speedSampleCycles_) {
+            speedSampleTime_   = lastFrameTime;
+            speedSampleCycles_ = cyc;
+        } else if (dt >= 0.25) {
+            measuredMhz_ = static_cast<float>(
+                static_cast<double>(cyc - speedSampleCycles_) / dt / 1.0e6);
+            speedSampleTime_   = lastFrameTime;
+            speedSampleCycles_ = cyc;
+        }
+    }
+
     ImGuiViewport* vp = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeight();
+    // NoDocking: the status bar is chrome. Without it a dragged panel can be
+    // dropped into the one-line strip at the bottom of the screen.
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar |
                                    ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoDocking |
                                    ImGuiWindowFlags_MenuBar;
     if (ImGui::BeginViewportSideBar("##StatusBar", vp, ImGuiDir_Down,
                                     height, flags)) {
         if (ImGui::BeginMenuBar()) {
+            const pom2::Palette& pal = pom2::palette();
+            const auto  u32   = ImGui::ColorConvertU32ToFloat4;
+            // Width unit: everything below budgets in ems so the drop-when-
+            // narrow logic survives the UI zoom.
+            const float em    = ImGui::GetFontSize();
+            auto roomFor = [&](float ems) {
+                return ImGui::GetContentRegionAvail().x > ems * em;
+            };
+
+            const auto mode = controller->getMode();
             const char* modeStr = "?";
-            switch (controller->getMode()) {
-                case EmulationController::Mode::Running: modeStr = "RUN";  break;
-                case EmulationController::Mode::Stopped: modeStr = "STOP"; break;
-                case EmulationController::Mode::Step:    modeStr = "STEP"; break;
+            ImU32       modeCol = pal.textDim;
+            switch (mode) {
+                case EmulationController::Mode::Running:
+                    modeStr = "RUN";  modeCol = pal.ok;   break;
+                case EmulationController::Mode::Stopped:
+                    modeStr = "STOP"; modeCol = pal.warn; break;
+                case EmulationController::Mode::Step:
+                    modeStr = "STEP"; modeCol = pal.info; break;
             }
             const auto state = controller->memory().getDisplayState();
             const char* gfx = state.textMode ? "TEXT"
                             : state.hiRes    ? (state.mixedMode ? "HGR+TXT" : "HGR")
                                              : (state.mixedMode ? "LGR+TXT" : "LGR");
             const auto& cfg = pom2::profileConfig(activeProfile);
-            char buf[192];
-            std::snprintf(buf, sizeof(buf), "%.*s | %s | %s",
-                          static_cast<int>(cfg.displayName.size()), cfg.displayName.data(),
-                          modeStr, gfx);
-            ImGui::TextDisabled("%s", buf);
+
+            // ── Machine · mode · graphics (always shown) ─────────────────
+            ImGui::TextColored(u32(pal.textDim), "%.*s",
+                               static_cast<int>(cfg.displayName.size()),
+                               cfg.displayName.data());
+            pom2::verticalRule();
+            ImGui::TextColored(u32(modeCol), "%s", modeStr);
+            pom2::verticalRule();
+            ImGui::TextColored(u32(pal.textDim), "%s", gfx);
+
+            // ── Drive activity + mounted media ───────────────────────────
+            // Prefer whichever Disk II is actually spinning so a two-card
+            // machine shows the one doing the work; otherwise fall back to
+            // the primary card, then to a mounted HDV (no LED — a ProDOS
+            // block device has no mechanical activity to show).
+            if (roomFor(22.0f)) {
+                DiskIICard* shown = nullptr;
+                for (DiskIICard* c : diskCards)
+                    if (c && c->isMotorOn()) { shown = c; break; }
+                if (!shown) shown = diskCard;
+
+                const int  drv    = shown ? shown->getActiveDrive() : 0;
+                const bool motor  = shown && shown->isMotorOn();
+                const bool loaded = shown && shown->isDiskLoaded(drv);
+
+                if (loaded) {
+                    pom2::verticalRule();
+                    pom2::indicatorDot(motor, pal.warn);
+                    const std::string base =
+                        std::filesystem::path(shown->getDiskPath(drv))
+                            .filename().string();
+                    ImGui::TextColored(u32(motor ? pal.text : pal.textDim),
+                                       "D%d %s", drv + 1, base.c_str());
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Slot %d, drive %d — track %d\n%s",
+                                          shown->getSlot(), drv + 1,
+                                          shown->getCurrentTrack(drv),
+                                          shown->getDiskPath(drv).c_str());
+                } else if (hdvCard && !hdvCard->getImagePath().empty()) {
+                    pom2::verticalRule();
+                    pom2::indicatorDot(hdvCard->isBusy(), pal.warn);
+                    const std::string base =
+                        std::filesystem::path(hdvCard->getImagePath())
+                            .filename().string();
+                    ImGui::TextColored(u32(pal.textDim),
+                                       ICON_FA_HARD_DRIVE " %s", base.c_str());
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("ProDOS block device, slot %d\n%s",
+                                          hdvCard->getSlot(),
+                                          hdvCard->getImagePath().c_str());
+                }
+            }
+
+            // ── Achieved clock ───────────────────────────────────────────
+            // Green when the machine is within 10 % of what was asked for,
+            // amber when the host is falling behind. Paused shows a dash
+            // rather than a misleading 0.00 MHz.
+            //
+            // The 10 % band is deliberately loose. A vsynced 60 Hz host
+            // running a 50 Hz PAL profile lands ~4-5 % short of nominal from
+            // frame-pacing jitter alone; a 5 % threshold made the readout
+            // flicker green/amber on a machine that is running perfectly
+            // well. Only a deficit a user could actually feel should warn.
+            if (roomFor(14.0f)) {
+                const VideoTiming& vt =
+                    pom2VideoTiming(controller->getVideoStandard());
+                const double requestedMhz =
+                    static_cast<double>(controller->getCyclesPerFrame()) *
+                    vt.refreshHz / 1.0e6;
+                pom2::verticalRule();
+                if (mode != EmulationController::Mode::Running) {
+                    ImGui::TextColored(u32(pal.textDim), "— MHz");
+                } else {
+                    const bool behind = measuredMhz_ < requestedMhz * 0.90;
+                    ImGui::TextColored(u32(behind ? pal.warn : pal.ok),
+                                       "%.2f MHz", measuredMhz_);
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Clock the machine actually achieved.\n"
+                        "Requested: %.2f MHz (%d cycles × %d Hz)\n"
+                        "Amber means the host is more than 10 %% short.",
+                        requestedMhz, controller->getCyclesPerFrame(),
+                        vt.refreshHz);
+            }
+
+            // ── Host caps-lock ───────────────────────────────────────────
+            // Only ever shown when ON: a permanent "CAPS off" badge would be
+            // noise. Explains the classic "the game ignores my keys" report.
+            if (hostCapsLock_ && roomFor(8.0f)) {
+                pom2::verticalRule();
+                ImGui::TextColored(u32(pal.warn), ICON_FA_KEYBOARD " CAPS");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Host caps-lock is on — every letter reaches the\n"
+                        "Apple II as uppercase. Harmless on II/II+ (which\n"
+                        "are uppercase-only) but breaks lowercase input on\n"
+                        "//e and //c software.");
+            }
+
+            // A print in progress has to be visible without the paper tray
+            // being open: the printer runs at 250 cps, so a page takes
+            // minutes of host time, and with the real handshake enabled
+            // the guest is deliberately frozen for that whole stretch.
+            // Unexplained, that reads as a hung emulator.
+            if (imageWriter && imageWriter->busy()) {
+                const bool waiting =
+                    printerBackPressure && grapplerCard &&
+                    grapplerCard->printerBusy();
+                pom2::verticalRule();
+                ImGui::TextColored(u32(pal.warn),
+                                   ICON_FA_PRINT " printing %zu B%s",
+                                   imageWriter->pendingBytes(),
+                                   waiting ? " (Apple II waiting)" : "");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "The ImageWriter is still laying this job down at "
+                        "its real speed.\nDevices → ImageWriter II to watch "
+                        "the sheet, or \"Print now\" to skip the wait.");
+            }
 
             // Transient disk load / boot (and other) status messages, shown
             // right-aligned and auto-expiring (tapeStatusUntil). This is the
@@ -2357,8 +3328,9 @@ void MainWindow::renderStatusBar()
                 } else {
                     ImGui::SameLine();
                 }
-                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "%s",
-                                   tapeStatusMessage.c_str());
+                ImGui::TextColored(
+                    ImGui::ColorConvertU32ToFloat4(pom2::palette().accent),
+                    "%s", tapeStatusMessage.c_str());
             }
             ImGui::EndMenuBar();
         }
@@ -2398,7 +3370,13 @@ void MainWindow::renderScreenWindow()
         // button is released. `IsAnyItemActive()` guards against
         // claiming a click that another widget already consumed (e.g.
         // any future title-bar button).
-        {
+        //
+        // Skipped entirely while DOCKED: a docked window has no title bar of
+        // its own (it's a tab in the host node) and its position is owned by
+        // the dock node. Left enabled, the rect we compute lands on the dock
+        // node's tab bar and `SetWindowPos` fights the node every frame —
+        // the screen jitters and the tab won't drag out.
+        if (!ImGui::IsWindowDocked()) {
             const ImVec2 wp = ImGui::GetWindowPos();
             const ImVec2 ws = ImGui::GetWindowSize();
             const float  th = ImGui::GetFrameHeight();
@@ -3823,6 +4801,72 @@ void MainWindow::pollJoystickAndPushToMemory()
     }
 }
 
+// Ethernet (Uthernet I / II). Snapshot-under-lock → render → dispatch
+// actions under the lock again, the LeChatMauve_ImGui pattern. The card
+// pointers are non-owning (SlotBus owns the cards) and are nulled on
+// every re-plug, so they are only ever dereferenced inside the lock.
+void MainWindow::renderEthernetPanelWindow()
+{
+    if (!showEthernetPanel) return;
+    if (!ethernetPanel) ethernetPanel = std::make_unique<pom2::Uthernet_ImGui>();
+
+    pom2::Uthernet_ImGui::Snapshot snap;
+    snap.slirpCompiledIn = pom2::slirpAvailable();
+    snap.backendChoice   = settings->getString("ethernet_backend", "slirp");
+
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+
+        if (uthernetCard) {
+            const pom2::Cs8900aDevice& chip = uthernetCard->chip();
+            const pom2::NetworkBackend* be  = uthernetCard->backend();
+            snap.u1Plugged        = true;
+            snap.u1Slot           = uthernetCard->getSlot();
+            snap.u1Backend        = be ? std::string(be->name()) : "none";
+            snap.u1BackendValid   = be && be->isValid();
+            snap.u1Mac            = chip.macAddress();
+            snap.u1RxEnabled      = chip.receiverEnabled();
+            snap.u1TxEnabled      = chip.transmitterEnabled();
+            snap.u1Promiscuous    = chip.promiscuous();
+            snap.u1PacketPagePtr  = chip.packetPagePointer();
+            snap.u1Queued         = chip.queuedFrames();
+            snap.u1FramesSent     = chip.framesSent();
+            snap.u1FramesReceived = chip.framesReceived();
+            snap.u1FramesFiltered = chip.framesFiltered();
+        }
+
+        if (uthernetIICard) {
+            const pom2::W5100Device& chip   = uthernetIICard->chip();
+            const pom2::NetworkBackend* be  = uthernetIICard->backend();
+            snap.u2Plugged        = true;
+            snap.u2Slot           = uthernetIICard->getSlot();
+            snap.u2Backend        = be ? std::string(be->name()) : "none";
+            snap.u2BackendValid   = be && be->isValid();
+            snap.u2Mac            = chip.macAddress();
+            snap.u2Ip             = chip.localIp();
+            snap.u2VirtualDns     = chip.virtualDnsEnabled();
+            snap.u2BytesSent      = chip.bytesSent();
+            snap.u2BytesReceived  = chip.bytesReceived();
+            for (size_t i = 0; i < pom2::W5100Device::kSocketCount; ++i)
+                snap.u2Sockets[i] = chip.socketInfo(i);
+        }
+    }
+
+    const auto action =
+        ethernetPanel->render("Ethernet###ethernetPanel", showEthernetPanel, snap);
+
+    if (action.requestResetU1 || action.requestResetU2 ||
+        action.requestVirtualDns) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        if (action.requestResetU1 && uthernetCard) uthernetCard->onReset();
+        if (action.requestResetU2 && uthernetIICard) uthernetIICard->onReset();
+        if (action.requestVirtualDns && uthernetIICard) {
+            uthernetIICard->chip().setVirtualDnsEnabled(action.virtualDnsTo);
+            settings->setBool("uthernet2_virtual_dns", action.virtualDnsTo);
+        }
+    }
+}
+
 void MainWindow::renderSscPanelWindow()
 {
     if (!showSscPanel || sscCards.empty()) return;
@@ -3918,6 +4962,20 @@ void MainWindow::renderSscPanelWindow()
                               "swallowed + CR/LF normalised to CR.\n"
                               "On: every byte forwarded verbatim. Use for\n"
                               "XMODEM / Kermit / ADTPro / any binary protocol.");
+        }
+
+        bool tap = ssc->printerTap();
+        if (ImGui::Checkbox("Feed ImageWriter printer", &tap)) {
+            ssc->setPrinterTap(tap);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Mirror every transmitted byte into the\n"
+                              "host-side ImageWriter II (the //c's real\n"
+                              "printer port is this serial card — slot 1\n"
+                              "taps by default). A plugged parallel\n"
+                              "Printer card or Grappler+ takes priority.");
         }
 
         ImGui::Separator();
@@ -4063,6 +5121,15 @@ void MainWindow::renderPrinterPanelWindow()
     ImGui::End();
 }
 
+SuperSerialCard* MainWindow::printerTapSsc() const
+{
+    // sscCards is sorted by slot ascending, so the first tapped card is
+    // the lowest slot — the //c printer port when that profile is active.
+    for (auto* ssc : sscCards)
+        if (ssc && ssc->printerTap()) return ssc;
+    return nullptr;
+}
+
 void MainWindow::pumpImageWriter()
 {
     // The printer is downstream of the interface card: every byte the card
@@ -4083,15 +5150,59 @@ void MainWindow::pumpImageWriter()
         if (grapplerCard->bytesWritten() < imageWriterConsumed)
             imageWriterConsumed = 0;
         total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
+    } else if (SuperSerialCard* tap = printerTapSsc()) {
+        // //c-class printer port: the SSC's TX tap (slot 1 by default —
+        // see plugSlotsFromSettings). Parallel cards outrank it so a IIe
+        // with both a PrinterCard and an SSC keeps the parallel routing.
+        if (tap->printerSpoolBytes() < imageWriterConsumed)
+            imageWriterConsumed = 0;
+        total = tap->drainPrinterSpoolFrom(imageWriterConsumed, fresh);
     } else {
         // No card plugged (or it was just unplugged) — next plug starts at 0.
         imageWriterConsumed = 0;
         return;
     }
 
-    if (!fresh.empty())
-        imageWriter->printBytes(fresh.data(), fresh.size());
+    if (!fresh.empty()) {
+        imageWriter->queueBytes(fresh.data(), fresh.size());
+        if (imageWriter->tracing())
+            imageWriter->traceEvent("card delivered %zu byte%s (queue now %zu)",
+                                    fresh.size(), fresh.size() == 1 ? "" : "s",
+                                    imageWriter->pendingBytes());
+    }
     imageWriterConsumed = total;
+
+    // Print what the mechanism had time for this frame. ImGui's DeltaTime
+    // is the host frame time, which is what a real print head answers to
+    // (the guest can be paused, turbo'd or rewound — the paper still
+    // moves at 250 cps).
+    imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
+
+    // Report the printer's input buffer back up the cable. A stock
+    // ImageWriter II buffers 2 KB and stops acknowledging bytes until the
+    // head catches up; the Grappler firmware spins on that ACK bit before
+    // every byte, so a guest printing a long job now waits for the paper
+    // instead of blasting a whole page into a host queue.
+    if (grapplerCard) {
+        // Only hold the line when the user asked for the real handshake:
+        // a Print Shop page is ~100 KB of dot columns, which at 250 cps
+        // keeps the guest blocked for minutes. Faithful, and
+        // indistinguishable from a hang unless you know to expect it.
+        const bool busy =
+            printerBackPressure &&
+            imageWriter->pendingBytes() > pom2::ImageWriter::kInputBufferBytes;
+        if (busy != grapplerCard->printerBusy()) {
+            grapplerCard->setPrinterBusy(busy);
+            if (imageWriter->tracing())
+                imageWriter->traceEvent(
+                    "BUSY=%d — the Apple II %s (queue %zu / %zu buffer)",
+                    busy ? 1 : 0,
+                    busy ? "is now waiting on the printer"
+                         : "may send again",
+                    imageWriter->pendingBytes(),
+                    pom2::ImageWriter::kInputBufferBytes);
+        }
+    }
 }
 
 void MainWindow::renderImageWriterWindow()
@@ -4107,6 +5218,30 @@ void MainWindow::renderImageWriterWindow()
         host.haveSource  = true;
         host.sourceLabel = "fed by Grappler+, slot " +
                            std::to_string(grapplerCard->getSlot());
+        // The Grappler's S1 printer-type switches decide which dialect of
+        // escape codes its firmware emits — an Epson-configured card feeds
+        // this ImageWriter Epson graphics commands, which come out as
+        // noise. Surface it where the damage shows up.
+        using PT = GrapplerCard::PrinterType;
+        for (int i = 0; i <= 6; ++i) {
+            const auto t = static_cast<PT>(i);
+            host.cardDipOptions.push_back(
+                { GrapplerCard::printerTypeName(t), i });
+        }
+        host.cardDipValue = static_cast<int>(grapplerCard->printerType());
+        host.cardDipRecommended = static_cast<int>(PT::AppleDotMatrix);
+        host.backPressure = printerBackPressure;
+        host.onBackPressureChanged =
+            [this](bool v) { printerBackPressure = v; };
+        host.onCardDipChanged = [this](int v) {
+            if (grapplerCard)
+                grapplerCard->setPrinterType(
+                    static_cast<GrapplerCard::PrinterType>(v));
+        };
+    } else if (SuperSerialCard* tap = printerTapSsc()) {
+        host.haveSource  = true;
+        host.sourceLabel = "fed by Super Serial (printer port), slot " +
+                           std::to_string(tap->getSlot());
     }
     host.saveDir = "printouts";
 #ifdef __EMSCRIPTEN__
@@ -4337,110 +5472,229 @@ void MainWindow::renderNtscSettingsWindow()
         return;
     }
 
+    const pom2::Palette& pal = pom2::palette();
+    const auto u32 = ImGui::ColorConvertU32ToFloat4;
+
     // Master ON/OFF for every CRT effect, full-width at the top of the window.
     // Off bypasses the whole effect stack (the colour pipeline still runs);
     // the controls below grey out so it's clear they have no effect.
     {
         const bool on = crtEffectsEnabled;
-        const ImVec4 col = on ? ImVec4(0.16f, 0.52f, 0.22f, 1.0f)
-                              : ImVec4(0.55f, 0.18f, 0.18f, 1.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, col);
+        const ImVec4 col = u32(on ? pal.ok : pal.danger);
+        // Tint the face at low alpha and put the full-strength colour on the
+        // text: a saturated full-width slab was the loudest thing in the UI.
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImVec4(col.x, col.y, col.z, 0.20f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            ImVec4(col.x + 0.08f, col.y + 0.08f, col.z + 0.08f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, col);
-        if (ImGui::Button(on ? "CRT Effects: ON  (click to disable)"
-                             : "CRT Effects: OFF  (click to enable)",
+                              ImVec4(col.x, col.y, col.z, 0.32f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                              ImVec4(col.x, col.y, col.z, 0.44f));
+        ImGui::PushStyleColor(ImGuiCol_Text, col);
+        if (ImGui::Button(on ? "CRT effects: ON  —  click to disable"
+                             : "CRT effects: OFF  —  click to enable",
                           ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
             crtEffectsEnabled = !crtEffectsEnabled;
         }
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
     }
-    ImGui::Separator();
 
     ImGui::BeginDisabled(!crtEffectsEnabled);
 
-    if (display->getHiResMode()
-            != Apple2Display::HiResMode::ColorCompositeOE
-        && display->getHiResMode()
-            != Apple2Display::HiResMode::ColorCompositeOECpu) {
+    pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
+    bool changed = false;
+
+    // ── Presets ──────────────────────────────────────────────────────────
+    // The panel used to open on 13 bare numeric knobs with no starting
+    // points. Almost nobody wants to dial a luminance gain; they want to pick
+    // a look. Presets are the primary control now and the sliders moved
+    // behind "Advanced".
+    //
+    // Each preset only sets the CRT *glass*. `palMode` and `textSharp` are
+    // deliberately preserved: PAL is a property of the machine being emulated
+    // (the two PAL profiles), not of a look, and sharp text is a legibility
+    // preference. Silently flipping either from a look picker would be wrong.
+    ImGui::SeparatorText("Look");
+    {
+        auto preset = [&](const char* label, const char* tip,
+                          const pom2::NtscParams& np) {
+            if (ImGui::Button(label)) {
+                const bool keepPal   = p.palMode;
+                const bool keepSharp = p.textSharp;
+                p = np;
+                p.palMode   = keepPal;
+                p.textSharp = keepSharp;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        };
+
+        // Clean: no glass at all. Same as the master toggle off, except the
+        // stack still runs — useful for A/B against a single knob.
+        pom2::NtscParams clean{};
+        clean.sharpness = 1.0f; clean.persistence = 0.0f;
+        clean.scanlines = 0.0f; clean.barrel = 0.0f;
+        clean.shadowMask = pom2::NtscParams::ShadowMask::Off;
+        clean.luminanceGain = 1.0f; clean.centerLighting = 1.0f;
+        clean.phosphorGamma = 1.0f;
+
+        // Composite TV: the stock look — a consumer set of the era.
+        pom2::NtscParams tv{};   // struct defaults are already this look
+
+        // Trinitron: aperture grille, flat glass, crisper.
+        pom2::NtscParams trin{};
+        trin.sharpness = 0.70f; trin.persistence = 0.25f;
+        trin.scanlines = 0.18f; trin.barrel = 0.0f;
+        trin.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
+        trin.shadowMaskStrength = 0.45f;
+        trin.luminanceGain = 1.35f; trin.centerLighting = 0.95f;
+        trin.phosphorGamma = 1.10f;
+
+        // Arcade: heavy glass — deep scanlines, curved tube, dot mask.
+        pom2::NtscParams arc{};
+        arc.sharpness = 0.40f; arc.persistence = 0.55f;
+        arc.scanlines = 0.55f; arc.barrel = 0.16f;
+        arc.shadowMask = pom2::NtscParams::ShadowMask::Dot;
+        arc.shadowMaskStrength = 0.70f;
+        arc.luminanceGain = 1.60f; arc.centerLighting = 0.80f;
+        arc.phosphorGamma = 1.35f;
+
+        preset("Clean", "No glass: flat, sharp, no scanlines or mask.\n"
+                        "The reference for A/B-ing a single knob.", clean);
+        ImGui::SameLine();
+        preset("Composite TV", "Stock POM2 look — a consumer set of the era.\n"
+                               "Mild scanlines, slight tube curve, phosphor\n"
+                               "persistence.", tv);
+        ImGui::SameLine();
+        preset("Trinitron", "Aperture grille, flat glass, crisper image.", trin);
+        ImGui::SameLine();
+        preset("Arcade", "Heavy glass: deep scanlines, curved tube, dot mask.", arc);
+    }
+
+    // ── Scope notes ──────────────────────────────────────────────────────
+    // What actually applies right now. Kept terse and dim: it is reference
+    // material, not a warning.
+    const bool oeFamily =
+        display->getHiResMode() == Apple2Display::HiResMode::ColorCompositeOE ||
+        display->getHiResMode() == Apple2Display::HiResMode::ColorCompositeOECpu;
+    if (!oeFamily) {
+        ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.textDim));
         ImGui::TextWrapped(
-            "CRT effects are active on this mode. All glass knobs "
-            "(brightness, contrast, saturation, hue, sharpness, "
-            "persistence, scanlines, barrel, shadow mask) apply. Only PAL "
-            "and Sharp text are demod-only and affect just the two "
-            "'Composite NTSC (OpenEmulator)' modes.");
-        ImGui::Separator();
+            "Every glass control below applies on this mode. PAL composite and "
+            "Sharp text are demodulation-only — they affect just the two "
+            "'Composite (OpenEmulator)' pipelines.");
+        ImGui::PopStyleColor();
     }
 
     if (ntscFx && !ntscFx->available()) {
-        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1),
-            "Shader unavailable: %s", ntscFx->lastError().c_str());
+        // Previously this read as a flat contradiction: a green "CRT Effects:
+        // ON" banner immediately above a red "Shader unavailable", leaving the
+        // user unable to tell whether the controls below did anything. Scope
+        // it explicitly — only the OpenEmulator *demodulation* shader is
+        // missing; the CRT glass stack is a separate pass and still runs.
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.warn));
         ImGui::TextWrapped(
-            "POM2 falls back to the standard NTSC LUT framebuffer "
-            "for this mode.");
-        ImGui::Separator();
+            "OpenEmulator demodulation shader unavailable — the two "
+            "'Composite (OpenEmulator)' pipelines fall back to the NTSC LUT. "
+            "The glass controls below are a separate pass and still apply.");
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", ntscFx->lastError().c_str());
     }
 
-    pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
-    bool changed = false;
-    changed |= ImGui::SliderFloat("Brightness",  &p.brightness,  -0.5f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Contrast",    &p.contrast,     0.5f, 1.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Saturation",  &p.saturation,   0.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Hue",         &p.hue,         -0.5f, 0.5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::Separator();
-    changed |= ImGui::SliderFloat("Sharpness",   &p.sharpness,    0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Persistence", &p.persistence,  0.0f, 0.95f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::Separator();
-    changed |= ImGui::SliderFloat("Scanlines",   &p.scanlines,    0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Barrel",      &p.barrel,       0.0f, 0.30f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-
-    ImGui::Separator();
-    // Shadow mask: combo + strength slider. Procedural — no texture
-    // upload, no perf cost when Off.
-    static const char* kMaskNames[] = {
-        "Off", "Triad (3-stripe)", "Aperture grille (Trinitron)",
-        "Dot mask (offset triads)"
-    };
-    int maskIdx = static_cast<int>(p.shadowMask);
-    if (ImGui::Combo("Shadow mask", &maskIdx, kMaskNames,
-                     IM_ARRAYSIZE(kMaskNames))) {
-        p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(maskIdx);
-        changed = true;
-    }
-    ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
-    changed |= ImGui::SliderFloat("Mask strength",
-                                  &p.shadowMaskStrength, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    // Post-glass re-brighten — compensates the dimming from scanlines + mask.
-    changed |= ImGui::SliderFloat("Luminance gain", &p.luminanceGain, 1.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    // Vignette / center-lighting — 1.0 = flat (OpenEmulator default), lower
-    // darkens the edges.
-    changed |= ImGui::SliderFloat("Center lighting", &p.centerLighting, 0.5f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    // Phosphor response curve (CRT gamma) — 1.0 = flat (off), >1 deepens
-    // shadows, <1 lifts them. Pairs with Persistence (the temporal half of the
-    // phosphor model). Applies to every mode when "CRT effects on all modes"
-    // is on, and always in the OE composite path.
-    changed |= ImGui::SliderFloat("Phosphor curve (gamma)",
-                                  &p.phosphorGamma, 0.6f, 2.6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-
-    ImGui::Separator();
-    // PAL composite — line-phase alternation. Off by default (POM2
-    // ships with the NTSC look most users associate with the Apple II).
-    changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
-                               &p.palMode);
-    // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping
-    // the shader for the whole text screen. HGR/DHGR/lo-res still run
-    // through the demodulator.
-    changed |= ImGui::Checkbox("Sharp text (bypass shader in TEXT mode)",
-                               &p.textSharp);
-
+    // ── Advanced ─────────────────────────────────────────────────────────
+    // Collapsed by default. Labels lead, sliders fill the rest of the row:
+    // ImGui's native SliderFloat puts its label on the RIGHT, which made the
+    // panel read "bar → number → name" and clipped the longest label
+    // ("Phosphor curve (ga…"). Two decimals, not three — these are perceptual
+    // knobs and 0.055 was false precision.
     ImGui::Spacing();
-    if (ImGui::Button("Reset to defaults")) {
-        p = pom2::NtscParams{};
-        changed = true;
+    if (ImGui::CollapsingHeader("Advanced")) {
+        // Widest label sets the column, so it can never clip. Measured rather
+        // than hardcoded so it survives the UI zoom.
+        const float labelW = ImGui::CalcTextSize("Phosphor gamma").x +
+                             ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        auto slider = [&](const char* label, const char* id, float* v,
+                          float lo, float hi, const char* tip) {
+            ImGui::TextUnformatted(label);
+            if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+            ImGui::SameLine(labelW);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderFloat(id, v, lo, hi, "%.2f",
+                                   ImGuiSliderFlags_AlwaysClamp))
+                changed = true;
+        };
+
+        ImGui::SeparatorText("Picture");
+        slider("Brightness", "##bright", &p.brightness, -0.5f, 0.5f,
+               "Added to luma.");
+        slider("Contrast",   "##contrast", &p.contrast,  0.5f, 1.5f,
+               "Scaling around mid-grey.");
+        slider("Saturation", "##sat", &p.saturation, 0.0f, 2.0f,
+               "Chroma multiplier. 0 = monochrome.");
+        slider("Hue",        "##hue", &p.hue, -0.5f, 0.5f,
+               "I/Q rotation. Full turn at +/-0.5.");
+
+        ImGui::SeparatorText("Phosphor");
+        slider("Sharpness",   "##sharp", &p.sharpness, 0.0f, 1.0f,
+               "Chroma bandwidth. Lower = more composite bleed.");
+        slider("Persistence", "##persist", &p.persistence, 0.0f, 0.95f,
+               "Temporal decay — the phosphor's afterglow.");
+        slider("Phosphor gamma", "##gamma", &p.phosphorGamma, 0.6f, 2.6f,
+               "Response curve. 1.0 = flat, >1 deepens shadows.\n"
+               "Pairs with Persistence as the phosphor model.");
+
+        ImGui::SeparatorText("Glass");
+        slider("Scanlines", "##scan", &p.scanlines, 0.0f, 1.0f,
+               "0 = off, 1 = black between every line.");
+        slider("Barrel",    "##barrel", &p.barrel, 0.0f, 0.30f,
+               "Tube curvature. 0 = flat.");
+        slider("Vignette",  "##vign", &p.centerLighting, 0.5f, 1.0f,
+               "Center lighting. 1.0 = flat, lower darkens the edges.");
+
+        // Shadow mask: combo + strength. Procedural — no texture upload, no
+        // perf cost when Off.
+        static const char* kMaskNames[] = {
+            "Off", "Triad (3-stripe)", "Aperture grille (Trinitron)",
+            "Dot mask (offset triads)"
+        };
+        int maskIdx = static_cast<int>(p.shadowMask);
+        ImGui::TextUnformatted("Shadow mask");
+        ImGui::SameLine(labelW);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##mask", &maskIdx, kMaskNames,
+                         IM_ARRAYSIZE(kMaskNames))) {
+            p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(maskIdx);
+            changed = true;
+        }
+        ImGui::BeginDisabled(p.shadowMask == pom2::NtscParams::ShadowMask::Off);
+        slider("Mask strength", "##maskstr", &p.shadowMaskStrength, 0.0f, 1.0f,
+               nullptr);
+        ImGui::EndDisabled();
+        slider("Luminance gain", "##lumgain", &p.luminanceGain, 1.0f, 2.0f,
+               "Post-glass re-brighten — compensates the dimming\n"
+               "from scanlines and the shadow mask.");
+
+        ImGui::SeparatorText("Demodulation (OpenEmulator pipelines only)");
+        // PAL composite — line-phase alternation. Off by default (POM2 ships
+        // with the NTSC look most users associate with the Apple II). Left out
+        // of the presets on purpose: it describes the machine, not a look.
+        changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
+                                   &p.palMode);
+        // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping the
+        // shader for the whole text screen. HGR/DHGR/lo-res still run through
+        // the demodulator.
+        changed |= ImGui::Checkbox("Sharp text (bypass shader in TEXT mode)",
+                                   &p.textSharp);
+
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults")) {
+            p = pom2::NtscParams{};
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Saved to ntsc_* keys");
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Saved to ntsc_* keys");
 
     ImGui::EndDisabled();
 
@@ -5519,6 +6773,7 @@ void MainWindow::renderDiskPanelWindow()
             snap.lastError         = card->getLastError();
             snap.writeBackEnabled  = card->isWriteBackEnabled();
             snap.hasUnsavedChanges = card->hasUnsavedChanges();
+            snap.fileWriteProtected = card->isFileWriteProtected();
         }
         snap.turboWhileMotor = diskTurboWhileMotor;
         snap.turboActive     = diskTurboActive;
@@ -5964,7 +7219,38 @@ void MainWindow::renderDiskLibraryWindow()
         }
     }
 
-    const auto r = diskLibrary->render("Disk Library", showDiskLibrary, mounted);
+    // Favourites + recents are host state (persisted to state.cfg); the panel
+    // only renders them and reports a toggle.
+    pom2::DiskLibrary_ImGui::Lists lists;
+    lists.favourites   = libraryFavourites_;
+    lists.recents      = libraryRecents_;
+    lists.hideSizeDate = libraryHideSizeDate_;
+
+    const auto r = diskLibrary->render("Disk Library", showDiskLibrary,
+                                       mounted, lists);
+
+    if (r.toggleHideSizeDate) libraryHideSizeDate_ = !libraryHideSizeDate_;
+
+    if (!r.toggleFavourite.empty()) {
+        auto it = std::find(libraryFavourites_.begin(),
+                            libraryFavourites_.end(), r.toggleFavourite);
+        if (it != libraryFavourites_.end()) libraryFavourites_.erase(it);
+        else libraryFavourites_.push_back(r.toggleFavourite);
+    }
+
+    // Anything the user actually mounted this frame becomes the newest recent.
+    // Driven off the panel's requests rather than off the cards, so a mount
+    // that came from the CLI or a drag-and-drop doesn't silently reorder the
+    // list behind the user's back.
+    for (const std::string* p : { &r.request525InsertAndBoot,
+                                  &r.request525InsertOnly,
+                                  &r.request35MountAndBoot,
+                                  &r.request35MountOnly,
+                                  &r.requestHdvMountAndBoot,
+                                  &r.requestHdvMountOnly }) {
+        if (p->empty()) continue;
+        noteLibraryRecent(*p);
+    }
 
     // ── Eject-all (header-row button, moved here from the toolbar) ─────
     if (r.requestEjectAllDisks) ejectAllDisks();
@@ -7822,6 +9108,10 @@ void MainWindow::render()
         // the toolbar's rewind button (held this frame). One edge-tracker.
         driveRewindHold(ImGui::IsKeyDown(ImGuiKey_F6) || tr.requestRewindHeld);
     }
+    // After the menu bar + toolbar (both reserve viewport work area), before
+    // any dockable window: the DockSpace has to exist when the panels below
+    // call Begin(), or their first frame renders undocked.
+    renderDockSpace();
     renderScreenWindow();
     renderMemoryViewerWindow();
     if (showMemoryBar)  renderMemoryBarWindow();
@@ -7846,6 +9136,7 @@ void MainWindow::render()
     renderPhasorPanelWindow();
     renderEchoPlusPanelWindow();
     renderSscPanelWindow();
+    renderEthernetPanelWindow();
     renderPrinterPanelWindow();
     pumpImageWriter();
     renderImageWriterWindow();
@@ -7857,10 +9148,20 @@ void MainWindow::render()
     renderVoxelSettingsWindow();
     renderAiControlPanelWindow();
     renderSlotConfigPanel();
+    renderMediaPanel();
+    if (showRomStatusPanel) {
+        if (!romStatusPanel)
+            romStatusPanel = std::make_unique<pom2::RomStatus_ImGui>();
+        romStatusPanel->render(
+            &showRomStatusPanel,
+            std::string(pom2::profileConfig(activeProfile).displayName));
+    }
     renderFloppyEmuWindow();
     renderAboutDialog();
     renderWelcomePanelWindow();
     renderStatusBar();
+    // Last: the palette is an overlay and must draw above every panel.
+    renderCommandPalette();
 
     // Hide the host OS cursor whenever the AppleWin HLE firmware is
     // driving a visible emulated cursor AND the host pointer is over the

@@ -718,12 +718,53 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             txTail.push_back(v);
             if (txTail.size() > kTailCap) txTail.pop_front();
             ++txCount;
+            // Printer tap: mirror the accepted byte into the host-visible
+            // spool the ImageWriter drains (see setPrinterTap in the header).
+            if (printerTap_) printerSpool_.push_back(v);
             break;
         }
         case 0x1: applyProgrammedReset(); break;
         case 0x2: applyCommandReg(v);     break;
         case 0x3: applyControlReg(v);     break;
     }
+}
+
+void SuperSerialCard::setPrinterTap(bool on)
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    printerTap_ = on;
+}
+
+bool SuperSerialCard::printerTap() const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    return printerTap_;
+}
+
+size_t SuperSerialCard::drainPrinterSpoolFrom(size_t from,
+                                              std::vector<uint8_t>& out) const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    // Same resync rule as PrinterCard::drainSpoolFrom: `from` past the end
+    // means the spool was cleared behind the caller's back — hand back
+    // everything so the consumer resynchronises instead of going deaf.
+    const size_t start = (from > printerSpool_.size()) ? 0 : from;
+    out.insert(out.end(),
+               printerSpool_.begin() + static_cast<std::ptrdiff_t>(start),
+               printerSpool_.end());
+    return printerSpool_.size();
+}
+
+size_t SuperSerialCard::printerSpoolBytes() const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    return printerSpool_.size();
+}
+
+void SuperSerialCard::clearPrinterSpool()
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    printerSpool_.clear();
 }
 
 std::string SuperSerialCard::recentTxText() const
@@ -859,9 +900,21 @@ void SuperSerialCard::buildRom()
         0x60                   // RTS
     });
 
-    // PR#n entry at $Cn20 — patches CSWL/CSWH to point at the output
-    // routine at $CnB0, then RTS so the BASIC interpreter resumes.
+    // PR#n entry at $Cn20 — initialise the ACIA, then patch CSWL/CSWH to
+    // point at the output routine at $CnB0 and RTS so the BASIC
+    // interpreter resumes.
+    //
+    // The ACIA init (cmd=$0B: DTR asserted, RX IRQ off, RTS low) mirrors
+    // what the real SSC firmware does on first entry — it programs the
+    // 6551 from the DIP switches before any I/O (see the BASICINIT path
+    // in the real ROM disassembly, 6502disassembly.com/a2-rom/SSC).
+    // Without it a plain `PR#n : PRINT` writes the TDR with DTR
+    // de-asserted and the transmitter (correctly, per MAME
+    // `mos6551.cpp:317-321`) drops every byte on the floor — only Pascal,
+    // whose PINIT does the same $0B write, could ever transmit.
     putAt(0x20, {
+        0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
+        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
         0xA9, 0xB0,            // LDA #<output_routine
         0x85, 0x36,            // STA $36   (CSWL)
         0xA9, slotHi,          // LDA #>output_routine
@@ -869,8 +922,11 @@ void SuperSerialCard::buildRom()
         0x60                   // RTS
     });
 
-    // IN#n entry at $Cn40 — patches KSWL/KSWH (input vector).
+    // IN#n entry at $Cn40 — same ACIA init, then patch KSWL/KSWH (input
+    // vector). Ends at $Cn4D — just under the PINIT routine at $Cn50.
     putAt(0x40, {
+        0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
+        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
         0xA9, 0xE0,            // LDA #<input_routine
         0x85, 0x38,            // STA $38   (KSWL)
         0xA9, slotHi,          // LDA #>input_routine

@@ -5,6 +5,801 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-28 — The //c prints for real: on-board IWM was fighting the Disk II
+
+Printing on a //c through the slot-1 SSC to the host ImageWriter looked wired
+up and produced blank paper. The serial path was never the problem — it is
+byte-exact (600+ chars via `PR#1`, zero loss) and Print Shop's short SETUP
+test print rendered correctly the whole time. What failed was **disk**.
+
+POM2 mirrors `$C0E0-$C0EF` into the on-board IWM on //c-class profiles that
+have an alt firmware bank. MAME wires its IWM as *the* slot-6 controller,
+replacing the Disk II. **POM2 does not** — `iwmAuthoritative` leaves the
+slot-6 `DiskIICard` answering for 5.25". So on a plain //c the mirror was a
+*second* controller on the same soft switches, supplying no data path but
+still running its own phase/motor handling. Two controllers stepping one
+drive drifts the head, and DOS 3.3 RWTS then falls into endless seek/retry
+storms — `$B948-$B956` with the head oscillating between the target track
+and 0. Print Shop could neither save its setup nor load its print overlay,
+so it returned to its menu without even rasterising, and nothing reached the
+printer.
+
+Gating the mirror on `isPlus_` fixes it: the IWM is consulted only where it
+actually owns a drive, the //c+ MIG / Sony 3.5" path. With that, the //c
+prints a full Print Shop greeting card — **104 097 bytes, 105 `ESC G`
+graphics bands, 2 sheets**, border plus tiled artwork — matching the //e
+byte-for-byte in structure.
+
+The lesson worth keeping: POM2 and MAME differ on *who owns slot 6* on a
+//c, so MAME's wiring cannot be copied verbatim here. Pinned by
+`iic_diskii_no_iwm_conflict`, which asserts the plain //c never routes
+`$C0E0-$C0EF` to the IWM (and never even ticks it) while the //c+ still
+does.
+
+Two red herrings ruled out along the way, both reverted: the SSC pins
+`SR_TDRE` high (real 6551 pacing at the programmed 9600 baud changes
+nothing), and asserting DCD for the printer tap actively **hangs** the //c
+serial firmware in its modem path.
+
+## 2026-07-28 — Ethernet: Uthernet I + II, and the last big functional gap closes
+
+POM2 can now talk to the modern internet from an Apple II, which was the last
+item on the backlog with no implementation at all.
+
+**Two cards, two completely different animals.** This is the thing to
+internalise before touching either file:
+
+- **Uthernet I** (`uthernet`) is a *NIC*. Its CS8900A moves raw Ethernet
+  frames and nothing else; the TCP/IP lives on the Apple side (IP65, Contiki,
+  ADTPro-ethernet). It is useless without a host transport that speaks
+  Ethernet.
+- **Uthernet II** (`uthernet2`) is a *TCP/IP offload engine*. The guest writes
+  an address and a port into W5100 registers, issues `CONNECT`, and pushes
+  payload at a ring buffer — the chip does the protocol work. That maps
+  one-for-one onto host BSD sockets, so **the Uthernet II needs no Ethernet
+  backend at all** for TCP and UDP. Period IRC, telnet and FTP clients work on
+  a stock build with no libslirp and no privileges. Only its MACRAW/IPRAW
+  modes need a transport.
+
+That asymmetry is why the host side is optional. `NetworkBackend` has three
+implementations: `Null` (always present, drops everything, keeps the cards
+pluggable and software-detectable), `Loopback` (transmit feeds receive — drives
+both smoke tests so CI never touches a network), and `Slirp` (libslirp
+user-mode NAT, gated on `POM2_HAVE_SLIRP`). libslirp rather than TAP or pcap
+because both of those need root; slirp terminates the guest's IP in-process and
+re-opens ordinary user-space sockets. Virtual network is QEMU's: guest
+10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3.
+
+**The CS8900A is a verbatim MAME port** (`machine/cs8900a.cpp`, itself a VICE
+port) with line citations throughout, plus the ~40-line card shim from
+`bus/a2bus/uthernet.cpp`. Three deliberate deltas: MAME is *pushed* frames by
+`device_network_interface`, which POM2 has no equivalent of, so `pumpBackend()`
+pulls on the cycle hook applying the same `shouldAccept()` pre-filter (bounded
+per call so a busy link can't stall the CPU thread); the `assert()`-heavy
+PacketPage macros became clamped accessors, because a mis-decoded `$C0nX` must
+never take the emulator down; and `peek()` replaces
+`machine().side_effects_disabled()` for the debug panel.
+
+The subtle part of that chip is that **transmit is a four-step handshake** —
+TxCMD, TxLength, *read* BusST and observe `Rdy4TxNOW`, then push bytes — and
+skipping any step must emit nothing. Easy to "simplify" into a bug; pinned.
+Likewise reading RxEvent before draining a staged frame is an "implied skip"
+that discards it, which is real hardware, not a defect.
+
+**The W5100 had no MAME device to port**, so the reference is AppleWin's
+`source/Uthernet2.cpp` cross-checked against the WIZnet datasheet. One
+substantive improvement over the reference: AppleWin resolves virtual-DNS names
+with a blocking `getaddrinfo()`. Under POM2's `stateMutex` that would stall
+emulation for however long the resolver takes. Ours runs the lookup on a
+detached thread with a 120 ms bounded wait, and a late answer lands in a
+mutex-guarded mailbox that `poll()` folds into the cache on the CPU thread — so
+the guest's retry succeeds instantly and the audio never glitches.
+
+Snapshot rules worth not rediscovering: the CS8900A's inbound frame queue and
+the W5100's live sockets are **deliberately excluded**. Both mirror host
+network state that has moved on by the time a rewind replays. A restored TCP
+socket that claimed to still be `ESTABLISHED` would hang the guest waiting on a
+peer that is gone, so it comes back `CLOSED`; the raw modes carry no host state
+and do return. The 4 KB PacketPage and 32 KB W5100 memory *are* saved, which
+sounds expensive for a 60 Hz ring until you remember `RewindBuffer` XOR-deltas
+them — an idle NIC costs a handful of bytes per frame.
+
+`LISTEN` is decoded but unimplemented, and says so rather than pretending:
+neither transport can route an inbound connection to the guest.
+
+Pinned by `uthernet_cs8900_smoke` (MAME-parity register, handshake and filter
+behaviour over a loopback backend) and `uthernet2_w5100_smoke`, which runs a
+**real TCP session** — OPEN, CONNECT, SEND, RECV, CLOSE against a listener the
+test opens itself, deliberately with no backend plugged, so the "TCP needs no
+transport" claim is a test and not a comment.
+
+## 2026-07-28 — The //c prints: SSC printer tap, multi-page PDF, Grappler+ pinned
+
+Three follow-ups that close out the printing chantier.
+
+**The //c's printer port feeds the ImageWriter.** On a real //c the printer
+port is the *serial* port — there is no parallel card to plug — so a stock //c
+profile could render paper only by lying about its hardware. The SSC now has a
+printer tap: every byte the ACIA accepts for transmit is mirrored into a
+host-visible spool with the same `drainSpoolFrom` shape as the parallel cards,
+and `pumpImageWriter()` treats it as a third source (parallel cards outrank
+it, so a IIe with both keeps its routing). Slot 1 taps by default — `PR#1 :
+PRINT` prints with zero configuration.
+
+The pitfall worth remembering: enabling that path exposed that POM2's
+synthetic SSC ROM never initialised the ACIA outside Pascal's PINIT. A 6551
+with DTR de-asserted parks its transmitter at MARK (MAME `mos6551.cpp:
+317-321`), so every `PR#n : PRINT` byte was silently dropped — the TCP telnet
+bridge had the same latent bug, masked whenever a host program or test wrote
+the command register first. The PR#n/IN#n entries now program cmd=$0B before
+hooking CSW/KSW, exactly what the real SSC firmware's DIP-switch init does.
+
+**Multi-page PDF export** (`ImageWriterPdf.{h,cpp}`). The reference emits
+PostScript; a bare `.ps` is a dead end on modern hosts, and the cost
+difference vanished once the page raster existed. Each sheet embeds as an
+8-bit `/Indexed /DeviceRGB` image — the ImageWriter raster already *is* one
+byte per pixel with a recoverable palette — FlateDecoded through the stb zlib
+compressor that was already in-repo for PNG. Zero new dependencies. Completed
+sheets now carry their own `dpi` (`Page::dpi`), so a sheet ejected at 144 dpi
+keeps its true `/MediaBox` even if the user then flips the printer to 288.
+Pinned by `imagewriter_pdf` including a byte-exact xref audit and a Flate
+round-trip through stb_image's inflater; `pdfinfo` validates the output.
+
+**Grappler+ pinned against MAME `bus/a2bus/grappler.cpp`** with line ranges
+cited at every ported block. One silent divergence found and fixed: POM2
+cleared the ROM bank on reset, but the U2D bank flip-flop is not wired to bus
+RESET (`reset_from_bus:536-539` touches only the ACK latch) — a reset
+mid-graphics-dump must leave the high $C800 bank selected until the next
+$CnXX fetch. Also added: `$CnXX` *writes* (bus conflicts on real hardware)
+drop the bank like reads do (`write_cnxx:586-591`). Documented-deliberate
+divergences: the 7-clock /STROBE pulse collapses to instant (nothing observes
+it), the edge-driven IRQ flip-flop is derived as its equivalent level, and
+`ackEffective()`'s BUSY gate is POM2's host back-pressure model, which MAME —
+wired to a live centronics /ACK — does not need.
+
+## 2026-07-28 — ROM Status panel: what you have, what's missing, what it costs
+
+POM2 ships no ROMs, so the most common failure mode by far is a dump that is
+absent, mis-named or the wrong variant — and every symptom that produces shows
+up a long way from the cause. A profile silently boots the wrong firmware; a
+card refuses to plug with a one-line warning in a log nobody reads; a Grappler+
+prints fine but AppleWorks doesn't recognise it. The information existed, spread
+across eight probe sites and a log file.
+
+Help → ROM Status puts the whole picture in one window: every ROM POM2 probes,
+in probe order, resolved against the live ResourcePaths search roots, with size,
+CRC32, and — on hover — the full candidate list and *what breaks* if nothing
+resolves. Machine firmware and character generators are read straight from
+`profileConfig()`, so a new profile appears there with no edit; the peripheral
+side lives in `RomCatalog.h`, mirroring each card's probe list at its plug site.
+
+Three judgements, kept deliberately separate:
+
+- **Missing** is an error (red) for machine firmware, a warning for everything
+  else — most card ROMs degrade rather than fail, and the row says how.
+- **Size** is the only hard check. A Disk II PROM is 256 bytes and a Grappler+
+  EPROM is 4 KB, full stop; a mismatch is a wrong file, not a variant.
+- **CRC32** is shown for identification always, but only *judged* where POM2 has
+  a documented reference dump to compare against (the two CFFA 2.0 images).
+  Asserting a checksum POM2 cannot vouch for would turn a legitimate variant
+  into a false alarm.
+
+A `(fallback)` mark flags the case that used to be invisible: the //e
+Unenhanced profile resolving to `apple2e.rom`, i.e. running 1983 hardware on
+Enhanced firmware because the dedicated dump is absent.
+
+## 2026-07-28 — Slot Configuration and the media bays are two windows
+
+Yesterday's pass added banners to both columns of Slot Configuration so the
+window would stop hiding that its halves run opposite interaction models: the
+left is staged (edit, then Apply — which restarts the machine — or Revert), the
+right is immediate (Mount / Insert / Eject act at once). Narrating the split was
+the wrong fix. Apply and Revert sit at the bottom of the assignment column and
+still LOOK like window-level buttons, so "mount a disk, then Revert" reads as
+undoable no matter what the banner says.
+
+They are now separate windows: **Slot Configuration** (Machine →) is only the
+per-slot card list plus Apply / Revert, and **Internal Disks & Media**
+(Devices → Storage) is only the internal drives and the mountable bays of the
+plugged storage cards. Each header points at the other, so neither is a dead
+end. Side effects worth having: the assignment list gets the full window width
+instead of 52 % of it, and the media column stops collapsing into a ~100 px
+sliver when the panel is docked into a side dock — the responsive
+two-column/stacked dance that existed only to survive that squeeze is gone.
+
+Persisted as `show_media_panel`; command palette `panel.media`; both windows
+are cleared in kiosk mode, and the Emulation dock preset docks both.
+
+## 2026-07-28 — Disk II write-back: two bugs that made writing impossible
+
+Symptom that opened it: The Print Shop hangs forever on "PRESS RETURN TO SAVE
+SETUP INFO ON PRINT SHOP DISK", and every module that runs afterwards then
+reads the FACTORY printer config off the disk (slot 1 / EPSON APL) and spins
+in its handshake loop against whatever card is really in slot 1. Nothing about
+that is a printer problem — the setup save never lands, so nothing downstream
+can work. Underneath were two independent defects.
+
+**1. The write-back opt-in never reached a running machine.** `plugDiskII`
+never applied `disk_writeback[_slotN]` to the card it had just built — its
+`plugHdv` / `plugCffa` siblings, twenty lines below, always did — and
+`applyProfile`'s media snapshot carried the mounted PATH per slot but not the
+toggle (the CFFA snapshot right beside it carries `{path, writeBack}`). Since
+`applyProfile` re-plugs on every profile switch INCLUDING the one the
+constructor runs at startup, whatever the MainWindow ctor restored was thrown
+away moments later. `isWriteProtected()` is `fileWriteProtected || !writeBack`,
+so the guest simply saw a write-protected disk: DOS 3.3 answered WRITE
+PROTECTED, and Print Shop retried forever. Both sites now restore it, and
+`applyProfile` carries the LIVE toggle so a mid-session change made from the
+Disk II panel survives the rebuild.
+
+**2. The flux→nibble re-pack corrupted the track it wrote.** With the first bug
+fixed, DOS got as far as writing and answered I/O ERROR — and the disk was
+unreadable from then on, CATALOG included. A nibble store has no angular
+length, so `writeFlux` has to turn the flux the head lays down back into
+nibbles. It did that by walking the PADDED cell timeline of the track that was
+already there (8 cells per nibble, +2 for each $FF inside a sync run) and
+overwriting the nibbles the window covered. That is only correct while the new
+content pads exactly like the old one, and a sector write never does — DOS
+writes its own sync run (a 40-cycle loop = a 10-cell $FF) wherever it likes, so
+from the first sync byte on, the old grid and the new stream disagree and every
+following nibble is assembled from its neighbours' cells. Rewriting a track
+with its own contents was idempotent, which is why it survived so long; writing
+an actual data field mangled 345 of its 353 nibbles and spilled into the next
+sector's address field.
+
+The head has no grid. It writes a continuous bit stream and the reader
+self-syncs on it, so POM2 now FRAMES the incoming cells the same way: skip
+0-cells until a 1, then that 1 plus the next seven cells are the nibble (the
+two 0-cells trailing a sync $FF are skipped, which is exactly what makes them
+sync), and the nibbles are laid down sequentially from the slot the head is
+over. The shift accumulator lives in `DiskImage::writeFraming[track]` because
+DiskIICard flushes every ~30 transitions and a nibble straddles chunks
+constantly.
+
+**And the cell grid comes from the WRITE clock, not the revolution anchor.**
+The head emits one cell every `lssCyclesPerCell()` LSS cycles from the moment
+write mode came on, so a burst's transitions are exact multiples of that apart.
+Quantising them against the revolution phase — `(t - revolutionStart) mod
+period / cyc`, which is right for READS — put the grid at an arbitrary sub-cell
+offset: adjacent transitions rounded into the same cell, one of the two was
+dropped, the nibble lost a bit and the framing slipped. The anchor is still
+what says WHERE the burst starts; it is now consulted once, to pick the nibble
+the head is over, not per transition. A mid-nibble splice leaves that nibble's
+old value alone (a real write splice leaves exactly that stub) and frames into
+the following slot.
+
+Verified end to end, not just in the unit: DOS 3.3 `SAVE`, then `CATALOG`,
+`LOAD` and `LIST` return the program; the host `.dsk` gets 38 bytes on tracks
+10 and 17 (the file plus the VTOC/catalog). The Print Shop setup save now
+completes and writes its 3 config bytes at track 11 — `01 01 01` → `07 04 03`,
+slot 7 / Apple ImageWriter / Grappler+ — and a greeting card prints from a
+disk that configured itself.
+
+Pinned: `disk_writeflux_framing`. Note that `disk_write_controller_smoke`
+could not have caught this: it never calls `loadLssRom`, so it exercises the
+legacy 32-cycle nibble gate, while the shipped app bundles `roms/diskii_p6.rom`
+and therefore always runs the LSS/flux path.
+
+Diagnostics added: `POM2_TRACE_WRITEFLUX=1` logs each splice window (cells,
+anchor nibble, framing state), and `POM2_TRACE_PC_MAX` raises the instruction
+cap on `POM2_TRACE_PC` for a window that sits past a boot + menu walk.
+
+## 2026-07-28 — ImageWriter II: the paper is continuous fanfold
+
+The panel drew the printable raster alone, so POM2's paper read as a cut A4
+sheet out of an inkjet. An ImageWriter II is fed 9.5" fanfold: the printable
+body plus a 0.5" pin-feed strip each side, each strip perforated off along a
+line of sprocket holes on 1/2" centres, and each sheet joined to the next by a
+horizontal perforation. The strips and perforations are drawn around the page
+texture, not into it, so the page bitmap and "Save sheet as PNG" stay pure
+printable area.
+
+## 2026-07-27 — UI pass 5: Slot Config stops hiding which changes are staged
+
+The panel has always run on two different interaction models and never said so.
+Left column: edit the slot combos, then Apply (which restarts the emulator) or
+Revert — staged. Right column: Mount / Insert / Eject — immediate. Apply and
+Revert sat at the bottom of the left child, so they read as governing the whole
+window: mount a disk on the right, hit Revert on the left, and expecting the
+mount to come back is a perfectly reasonable reading.
+
+Both columns now announce their model. Changed rows get an accent dot whose
+tooltip names the card actually plugged; a badge counts "N staged change(s) —
+not applied yet"; Apply is disabled when nothing is staged, because a button
+that restarts the machine should never be a no-op someone hits by reflex.
+
+Two layout defects fixed while in there:
+
+**Slot numbers trailed their own control.** `LabelText` / `BeginCombo` put the
+label on the right, so the panel read "(empty) v  Slot 1" — the number, which
+is exactly what the eye scans down the column for, came last. Labels now lead,
+with the gutter measured off the widest one so it survives the UI zoom.
+
+**The assignment column was a hardcoded 400 px.** Fine at the 880 px
+free-floating default; once docking landed and the panel went into a side dock,
+the media column got a ~100 px sliver with every label clipped to
+"Mount / Inser". The columns now go side-by-side only above 46 em and stack
+below it.
+
+Also renamed `pom2::statusLed` (added in pass 1 for the status-bar drive light)
+to `pom2::indicatorDot`. `StatusLed.h` already owned a `pom2::statusLed` for
+*media* status with its own colour table and tooltips. Overload resolution
+happened to pick correctly at every call site — exact match beats a bool→ImU32
+conversion — but two same-named functions in one namespace meaning different
+things is a trap set for whoever writes the next call.
+
+## 2026-07-27 — UI pass 4: command palette, and the Disk Library becomes a browser
+
+**Command palette (Ctrl+Shift+P).** 42 menu items across 8 menus, ~33 panels,
+four keyboard shortcuts. Type "mock", "amber", "eject", "pal" and hit Enter.
+New `CommandPalette_ImGui`; dispatch is one switch in `MainWindow::runCommand`.
+
+Shift is load-bearing in that chord: plain Ctrl-P must keep reaching the guest
+because CP/M under the SoftCard uses it for printer echo. The palette also joins
+`isGlobalKey` so it opens from a focused text field — same reasoning as F11/F12.
+
+Unavailable commands stay listed and greyed instead of being filtered out:
+seeing "Phasor (no card plugged)" teaches where the thing lives.
+
+**Disk Library.** A flat list of ~950 rows with full relative paths became a
+nested folder tree with pinned Favourites and Recent sections. Two bugs on the
+way, both the kind that look fine until you read the output carefully:
+
+*A flat lexicographic sort does not group directories.* `demo/PLASMAG.dsk` sorts
+before `demo/digidream/DD.dsk` which sorts before `demo/zzz.dsk` — so walking
+the list and opening a node whenever the directory prefix changes emitted
+`demo` **twice**, two `TreeNodeEx` calls with one ID, colliding in ImGui's
+storage and sharing a single open/closed state. That was visible as folders
+that wouldn't stay open. Now built as a real nested structure.
+
+*ImGui applies tree indentation to the first column only.* The favourite star
+had its own narrow column at index 0, which ate the whole indent and left every
+filename flush left at any depth — a tree with no hierarchy to read. Name moved
+to column 0; star and mounted dot became inline prefixes.
+
+The sort selector (Name / Size / Date) is gone: the latter two forced a flat
+list, because you cannot group by folder and order by size at the same time, so
+they were quietly fighting the tree. Size / Date columns are now hideable, which
+is what makes the panel usable in a narrow dock.
+
+Favourites and recents live in `MainWindow`, not the panel — it has no Settings
+access and no business acquiring one. Both pack into one `state.cfg` value
+joined by **0x1F**: the file is flat `key=value` and a disk path can contain
+spaces, commas, semicolons and colons, so the separator must be a byte a path
+cannot hold. Recents track the panel's mount *requests* rather than the cards,
+so a CLI or drag-and-drop mount doesn't reorder the list behind the user.
+
+The favourite toggle sits in the right-click menu rather than being a clickable
+star: the row is already a full-span selectable, and an overlapping hit target
+inside it mis-fires — on a panel whose left-click cold-boots the machine, that
+is not a cosmetic concern.
+
+**`tools/dedupe_library.py`.** A duplicate on disk is a duplicate in the
+browser, and this library had 20 groups / 21 redundant files / 4 MB of them:
+`dsk/` ↔ `gist/` copies (sometimes renamed — `CRIME_A.dsk` is
+`Le Crime du Parking A.dsk`), verbose archive names beside short hand-written
+ones (`Congo Bongo (1983)(Sega)[48K].woz` = `Congo Bongo.woz`), flat files
+duplicating their own per-game subfolder, and a `Copy (1)` + `Copy (2)` +
+original triple. Groups by size first and hashes only within same-size buckets.
+Dry-run by default; keeps the shortest path, and never keeps a `Copy (N)`.
+
+## 2026-07-27 — UI pass 3: CRT Settings stops asking for 13 numbers
+
+The panel opened on 13 bare numeric knobs with no starting points and one
+"Reset to defaults". Almost nobody wants to dial a luminance gain; they want to
+pick a look. There is now a preset row — **Clean / Composite TV / Trinitron /
+Arcade** — and the sliders moved behind a collapsed `Advanced`.
+
+Presets deliberately **preserve `palMode` and `textSharp`**. PAL composite
+describes the machine being emulated (the two PAL profiles), and sharp text is
+a legibility preference; a look picker that silently flipped either would be
+wrong. Only the glass is a "look".
+
+**The real bug was the messaging.** A green "CRT Effects: ON" banner sat
+directly above a red "Shader unavailable — POM2 falls back to the standard NTSC
+LUT". Both were true and they read as a flat contradiction, leaving no way to
+tell whether the controls below did anything. They describe *different passes*:
+only the OpenEmulator demodulation shader was missing, and the CRT glass stack
+is a separate pass that still runs. The warning now scopes itself explicitly.
+
+Layout fix worth recording: ImGui's `SliderFloat` puts its label on the
+**right**, so the panel read "bar → number → name" and clipped the longest label
+to "Phosphor curve (ga…". Labels now lead, via `SameLine(labelW)` +
+`SetNextItemWidth(-FLT_MIN)`, with `labelW` measured from the widest label so it
+survives the UI zoom rather than being hardcoded. Values dropped to two
+decimals — `0.055` on a perceptual knob was false precision.
+
+## 2026-07-27 — UI pass 2: docking, so 33 panels stop fighting over the screen
+
+POM2 had ~33 free-floating panels. Opening two meant one covered the other and
+usually the Apple II screen too; positions lived in `imgui.ini` as absolute
+pixels, so they also went stale the moment the UI zoom changed (that gap was
+called out in pass 1). There is now a **DockSpace over the viewport work area**
+with a curated default layout and four task presets (View ▸ Layout).
+
+**This changed a vendored dependency.** Docking is not on Dear ImGui `master` —
+no `IMGUI_HAS_DOCK`, no `ImGuiConfigFlags_DockingEnable`. `imgui/` moved to the
+`docking` branch, and because that branch is **force-pushed on every upstream
+rebase**, it is pinned to a commit. The pin lives in one place,
+`imgui_pin.env`, sourced by `setup_imgui.sh` *and* both CI jobs — all three
+previously did an unpinned `git clone --depth 1` of master, so a fresh clone or
+a CI run would have failed to compile the moment docking landed. Multi-viewport
+is deliberately left off: separate OS windows for panels means per-viewport GL
+contexts and a different render loop, for no benefit here.
+
+**The chrome now reserves its own space instead of assuming offsets.** Menu
+bar, toolbar and status bar are all `BeginViewportSideBar` windows, each adding
+to the viewport work-area inset, and the dockspace covers what's left. The
+toolbar had to be converted from a hand-positioned `SetNextWindowPos(WorkPos)`
+window to get this — which also fixes the pass-1 defect where a 150 % zoom made
+the toolbar taller than the saved `Apple II Screen` position and the screen
+window drew over it. Both bars got `NoDocking`; without it a dragged panel can
+be dropped into the one-line status strip.
+
+Three non-obvious things worth recording:
+
+**Seeding is gated on a persisted flag, not on "is the node empty".** By the
+time we could inspect it, `DockSpaceOverViewport` has already created the node,
+so emptiness can't distinguish a fresh install from a user who undocked
+everything on purpose — and rebuilding each launch would silently discard their
+layout. Hence `ui_dock_seeded` in `state.cfg`.
+
+**Docking a *hidden* panel is the point, not a no-op.** The assignment is
+written into the window's settings, so opening the Memory viewer later makes it
+a tab in the bottom-right group instead of a window floating over the game.
+That is most of the value of seeding a layout.
+
+**The screen window's manual title-bar drag had to be disabled while docked.**
+`Apple II Screen` carries `NoMove` (click-drag inside the screen must reach the
+guest's Mouse Card) plus a hand-rolled title-bar drag. Docked, it has no title
+bar and the dock node owns its position: the computed rect lands on the node's
+tab bar and `SetWindowPos` fights the node every frame — the screen jitters and
+the tab won't drag out. Guarded with `ImGui::IsWindowDocked()`.
+
+Limitation, by construction: presets place windows by **literal title**, so the
+slot-numbered panels (Disk II, 3.5", HDV, SmartPort, Printer) build their title
+at runtime and can't be reached. They float on first open and stay where the
+user docks them.
+
+Migration note: moving to docking necessarily replaces any previously saved
+free-floating layout — the default is seeded once on the first docking run.
+
+## 2026-07-27 — UI pass 1: opaque theme, DPI/zoom scaling, a status bar that says something
+
+A design audit of the running UI turned up four things worth fixing before
+any layout work.
+
+**Panels were translucent over a running game.** POM2 ran on bare
+`ImGui::StyleColorsDark()`, whose `WindowBg` sits at alpha 0.94. Invisible on
+a black boot screen, unreadable over HGR: the CRT Settings sliders rendered on
+top of Disk Library rows. New `Pom2Theme.{h,cpp}` owns the palette and makes
+every background opaque, with rounded geometry and a phosphor accent (amber
+default; P31 green / cold blue / slate, `ui_accent`).
+
+The non-obvious part was the **surface ramp ordering**. First cut had
+`PopupBg` and `FrameBg` at the same value, which left the zoom slider *inside
+a menu* with no visible track — just a floating grab. Popups must sit below
+frames on the ramp. See DEV § Theme.
+
+**No DPI awareness at all** — font hardcoded at 14 px, no `ScaleAllSizes`,
+nothing read from the windowing system, so the whole UI was microscopic on a
+HiDPI display with no way to enlarge it. Now: monitor scale × a persisted user
+zoom (View ▸ Interface, 75–250 %, `ui_scale`).
+
+Two traps here. `ScaleAllSizes()` is **cumulative**, so `applyTheme()` rebuilds
+the style from a pristine `ImGuiStyle` on every call — otherwise each nudge of
+the zoom slider compounds the padding. And the DPI factor must come from
+`ImGui_ImplGlfw_GetContentScaleForWindow()`, **not** `glfwGetWindowContentScale()`:
+on macOS, Wayland, Emscripten and Android the framebuffer already carries the
+scale, the backend helper returns 1.0f there, and querying GLFW ourselves
+would have scaled those platforms twice. Caught before shipping by reading the
+backend rather than by testing — the dev machine is 1× X11, where both agree.
+
+**The status bar was three fields in `TextDisabled` grey.** It now carries the
+drive LED + mounted image + track, the *achieved* clock, and a host caps-lock
+badge — the three questions that previously required opening a panel. The
+achieved clock is sampled from `Memory::getCycleCounter()` over ≥250 ms and is
+resync-guarded: rewind, snapshot restore and profile switch all roll the
+counter backwards, and an unsigned delta there would print a garbage MHz.
+
+Its warn threshold is deliberately 10 %, not 5 %: a vsynced 60 Hz host running
+a 50 Hz PAL profile lands ~4–5 % short of nominal from frame-pacing jitter
+alone, and a 5 % band made a perfectly healthy machine flicker green/amber.
+
+**Toolbar** — power-cycle (the only destructive control) is the only red
+glyph; run/pause tracks the action in green/amber. The `"|"` text characters
+between groups became real drawn rules (`pom2::verticalRule`), and the
+hardcoded combo widths (86/90/110 px) became self-measuring — the new
+`FramePadding` alone clipped "//e PAL" to "//e PA", and any zoom would have
+done it again.
+
+Not addressed, and the next real constraint: 33 free-floating panels with
+absolute `imgui.ini` positions. Changing zoom mid-session doesn't move panels
+placed at the old scale. Docking is the fix.
+
+## 2026-07-27 — The IWM froze after a rewind on //c-class; MIG RAM was lost
+
+`IWMDevice` was never serialized. It holds **eight absolute emuCycles
+stamps** — `now_`, `lastSync_`, `nextStateChange_`, `syncUpdate_`,
+`asyncUpdate_`, `revStart35_`, `fluxWriteStart_`, `delayDeadline_` — so a
+rewind rolled the machine's `cycleCounter` backwards while the controller
+kept its older, *larger* `lastSync_`. `sync()`'s `while (nextSync >
+lastSync_)` walker then had nothing to do, and the IWM sat frozen until
+emulated time climbed back to where it had been before the rewind.
+
+Reachable on every //c-class profile, not just the 3.5" path: `ioReadIWM`
+ticks the IWM on each `$C0E0-$C0EF` access **before** testing
+`iwmAuthoritative_`, so even a //c+ booting 5.25" in shadow mode — where
+the data itself comes from `DiskIICard` — advances it. The visible damage
+was bounded because the shadow path supplies the bytes, which is why this
+never showed up as a boot failure.
+
+The //c+ **MIG** gate array had the same gap: its 2 KB `migRam_` and the
+auto-incrementing `migPage_` pointer came back zeroed, so the alt firmware
+read something other than what it had written.
+
+Both now ride in a second, length-prefixed trailer on the `Memory` blob,
+each section self-identifying by magic (`IWM1`, `MIG1`). Length prefixes
+so a loader can skip a section it does not understand; a blob may carry
+neither, either, or both. Older snapshots simply lack the trailer and keep
+the live values — exactly the pre-fix behaviour, so nothing regresses on an
+existing save. `MemoryProfile` grew a pair of no-op virtuals for this;
+only the //c-class profile overrides them. The MIG page pointer is masked
+to `0x7FF` on the way in rather than trusted, since `migRead` indexes
+`migRam_[migPage_ + (offset & 0x1F)]`.
+
+Pinned by `iwm_mig_snapshot`, checked against the unfixed code: with the
+trailer read stubbed out, `testMemoryTrailerCarriesIwm` fails on the
+restored device still sitting at cycle 0. The round-trip assertion
+compares a **re-serialized** blob rather than the one public accessor, so
+the private stamps are actually covered.
+
+## 2026-07-27 — Rewind timeline read 4× long on //c+; five test harnesses revived
+
+The rewind panel divided cycle spans by a hardcoded `1022727.0`. That is
+the NTSC nominal, and the //c Plus carries a 4× Zip-style accelerator —
+68180 cycles per 60 Hz frame, ~4.09 MHz. A 30-second ring displayed as
+**"120.0 s"**, contradicting by a factor of four the "history (s)" slider
+sitting immediately beside it, and the scrub readout was wrong by the same
+factor. The conversion now asks the profile: `cyclesPerFrame × refreshHz`
+is what the worker actually spends per wall-clock second, accelerator
+included. The frames↔seconds conversions had the matching bug in the other
+direction — a hardcoded `/60` and `*60` made the slider read 20 % short on
+the 50 Hz PAL profiles.
+
+Separately, `tests/{cpu_smoke,disasm_smoke,iic_dump,rom_basic,rom_boot}.cpp`
+had been unbuildable since the sources moved into `src/`: each carried a
+hand-written `g++ -I. tests/foo.cpp M6502.cpp Memory.cpp` line that no
+longer resolved, and `Memory.cpp` has since grown a dozen dependencies.
+They are now declared in `tests/CMakeLists.txt` as `EXCLUDE_FROM_ALL`
+targets, so CMake supplies the dependency list and they cannot rot
+silently again — but they stay outside ctest, because they print and
+assert nothing. Their headers say so, and name the test that does gate the
+same ground (`klaus_6502_functional` for `cpu_smoke`,
+`system_profile_smoke` for `rom_boot`, and so on). Zero cost to normal
+builds and CI.
+
+## 2026-07-27 — Printer trace was silently truncated; Grappler DIP raced the CPU
+
+Four fixes from a review pass over the printer work, none of them
+user-visible until the moment they bite.
+
+**The trace log always ended short.** `ImageWriter` opened the trace file
+but never closed it: `stopTrace()` was reachable only from the panel's
+checkbox, and the class had no destructor. Bytes already `fprintf`'d
+survived — the C runtime flushes stdio at exit — but the hex row still
+being assembled in `traceRow_` had never reached stdio at all, so up to
+15 bytes vanished, and the file ended with no `# trace closed` footer.
+That is worst exactly where the trace matters most: `POM2_TRACE_PRINTER=1`
+is the path you use to capture a stream for a bug report, and it *always*
+ended truncated, with nothing to distinguish a complete trace from one cut
+short by a crash. The printer now has a destructor that closes the trace,
+and — since it owns a `FILE*` — copy construction and assignment are
+deleted rather than left to `fclose` the same handle twice. Pinned by
+`testTraceClosedOnDestruction`, which was checked against the unfixed
+code: without the destructor it fails on the missing row.
+
+**The Grappler's printer-type DIP crossed threads unguarded.** The
+ImageWriter panel lets you change the S1 switches while the guest runs, so
+`setPrinterType` fires on the UI thread during ImGui rendering; the CPU
+worker reads `dipType_` in `deviceSelectRead`. The reader holds
+`stateMutex`, but the writer never did, so that mutex bought nothing. In
+practice the worst case on any real target is one status poll seeing the
+old switch position — harmless — but it is a data race, and `busy_` three
+lines below was already `std::atomic` with a comment spelling out the very
+same UI→CPU crossing. `dipType_` is now atomic too, and both members say
+which thread touches them (`dipMsb_` stays plain: it is written at plug
+time, before the card reaches the bus).
+
+**The status-byte comment described the old behaviour.** It still claimed
+`DIP = 000 = Epson series` while the code beside it returned the S1
+switches, defaulting to `101` = Apple Dot Matrix — the whole point of the
+change that introduced it. A misleading comment in a MAME-parity block is
+worse than none: it is what someone debugging a DIP problem reads first.
+
+**The stall watchdog stayed armed between jobs.** `stalledFor_` was reset
+whenever the queue made progress, but not when the queue was emptied by
+`flushPending()` ("Print now"), by `resetPrinterHard()`, or by draining to
+zero. A job that had stalled left the counter loaded, so the *next* job's
+first expensive byte could trip the watchdog immediately and be forced
+through ahead of its schedule. One byte, a few milliseconds early, once —
+never observable, but the reset now happens on all three paths.
+
+## 2026-07-26 — The printer no longer freezes the Apple II by default
+
+Printing still looked like a crash. Not a wedge this time — the *real
+handshake* doing its job: a Print Shop page is tens of KB of dot columns,
+the printer eats them at 250 cps, and the guest sits in its firmware ACK
+loop for the whole job. Measured on the captured streams: 5.2 s for the
+5 KB test page, 11.7 s for an 8.7 KB screen dump, and a full greeting card
+is 10-20x that — minutes of an emulator that answers nothing.
+
+That is exactly what a real Apple II did, and it is still available:
+*Printer settings → "Make the Apple II wait for the printer"*. But it is
+**off by default** now. The page still builds up line by line at the
+printer's real speed — which was the point — while the guest carries on.
+Realism that is indistinguishable from a hang needs to be asked for, not
+inflicted.
+
+A print in progress is also shown in the status bar (`printing 4312 B`,
+plus `(Apple II waiting)` when the handshake is on), so it is never a
+mystery pause with no explanation on screen.
+
+## 2026-07-26 — Ribbon cartridge modelled; read-only disks say why
+
+Two "why doesn't it…" answers turned into settings:
+
+* **Ribbon**: `Four-colour` (default) / `Black` in *Printer settings*.
+  There is no colour "mode" on an ImageWriter II — colour is the ribbon
+  you install, and software asks for a band with `ESC K`. With the black
+  cartridge fitted the printer still accepts `ESC K` and prints black,
+  like the real one. Worth knowing: the guest has to ask, so Print Shop
+  only produces colour when its Setup names "Apple Imagewriter II **(C)**".
+* **Write-back**: the Disk II panel now states, on the mounted image,
+  *why* it is read-only — "the image itself is write-protected (WOZ/2IMG
+  flag)" vs "write-back is off". The default stays off (running a program
+  must never silently rewrite a source image, and the drive reporting
+  write-protect beats accepting writes and dropping them on eject), but
+  nothing connected that default to the guest's "disk is write-protected"
+  message — Print Shop refusing to save its own Setup read as an emulator
+  bug for exactly that reason.
+
+## 2026-07-26 — Print Shop prints in colour: line feed after CR is detected
+
+Print Shop's test page came out as a coloured staircase — "Welcome to The
+Print Shop" with each colour pass one line lower than the last. The trace
+(and the raw stream, both new this round) showed why in one glance:
+
+```
+ESC T16 CR LF          ← advance one line
+ESC K1 CR  ESC G0396…  ← yellow pass
+ESC K3 CR  ESC G0442…  ← cyan pass    — bare CR: SAME line
+ESC K2 CR  ESC G0326…  ← magenta pass — bare CR: SAME line
+```
+
+The colour passes are separated by a **bare CR** precisely so they
+overprint. POM2 defaulted SW A-8 (line feed after CR) to ON — right for a
+bare `PR#n : PRINT`, wrong for every real driver (which sends CR+LF and
+then double-spaces), and destructive for a colour driver.
+
+There is no static default that satisfies all three, so `AutoFeed::Auto`
+now settles it from the stream: feed on CR until the guest sends its own
+LF right after one, then swallow that LF and stop feeding. A plain BASIC
+listing, a Grappler+ printout and Print Shop's colour page all come out
+right with nothing to configure. The switch can still be pinned On/Off.
+
+Worth keeping: the printer was never the bug in any of this. What made it
+findable was making the *byte stream* visible — the trace log said `ESC K`
++ bare CR, and at that point the answer was in the manual.
+
+## 2026-07-26 — The printer could wedge the Apple II; printer trace log
+
+Print Shop froze the moment it printed. Not a crash — a deadlock the
+pacing work had just introduced: `tick()` capped its banked mechanism
+time at 1 s, but a form feed costs `(bottomMargin - curY) / 5 ips` = up
+to 2.2 s of paper transport on a Letter sheet. That byte could never be
+afforded, so the queue stalled *forever*; BUSY stayed asserted; and the
+guest, which now correctly waits on the Grappler's ACK bit, spun in its
+firmware loop with nothing to wait for. Any page eject did it.
+
+Two fixes, because one of them should have made the other impossible:
+
+1. The credit cap is now `max(kMaxCredit, cost of the head byte)`.
+2. A watchdog forces any byte that has waited 10 s through regardless,
+   and says so in the trace. A cost-model mistake must degrade to
+   "printed late" — never to a hung guest. Wiring a device that can
+   block the CPU means the host side needs a floor, not just a model.
+
+Also this round:
+
+* **Trace log**, since "it prints nothing" and "it prints noise" are both
+  protocol questions. *Printer settings → Log the printer stream to a
+  file* (or `POM2_TRACE_PRINTER=1`) writes the byte stream as a hex dump
+  interleaved with the decoded escape sequences, bit-image setup, page
+  ejects, BUSY transitions and queue depth.
+* **"Follow" now tracks the last inked sheet.** After a form feed the
+  panel was showing the fresh blank sheet under the head while the
+  printed one sat on the stack one click to the left — which is why a
+  job that printed correctly still looked like it had printed nothing.
+
+Field notes from driving the real *New Print Shop* (WOZ) headless, worth
+keeping: its Setup carries **Printer = Apple Imagewriter II (C)** but
+**Interface Card = Built-in** — the //c/IIgs on-board port, which sends
+nothing at all to a card in a slot. And its program disk is
+write-protected, so a corrected setup can't be saved (hence its own
+"current Setup was done on a different computer" warning at every boot).
+Neither is an emulation bug; both look exactly like "the printer doesn't
+work".
+
+## 2026-07-26 — Grappler+ was talking Epson to an ImageWriter
+
+Printouts came out as pages of meaningless characters in double-width,
+with the ribbon colour flipping — while the panel showed a moving head
+and a healthy byte count. The printer parser was not the problem: it was
+audited case-by-case against the original (`david-schmidt/gsport`
+`src/imagewriter.cpp`, 84/84 commands present, same framing, same
+parameter counts). The card was.
+
+The Grappler+'s S1 DIP block tells its firmware which printer is on the
+cable, and POM2 reported MAME's default: **Epson**. Captured from the real
+4 KB dump, the same `^I G` screen dump emits:
+
+```
+S1=000 Epson      ESC A <07>  …  ESC K <18><01> + binary graphics
+S1=001 C. Itoh    ESC T14     …  ESC S0280      + graphics
+S1=101 Apple DMP  ESC T14     …  ESC G0280      + graphics
+```
+
+An ImageWriter II parses the Epson stream as "1/6 in spacing", "select
+ribbon colour $18", then prints every graphics byte as a glyph — 32 sheets
+of noise, exactly what the panel was showing. POM2's printer *is* an
+ImageWriter, so S1 now defaults to Apple Dot Matrix (101) instead of
+Epson, is settable as *Card emulates* in the ImageWriter panel (persisted,
+with a warning when it is set to a dialect this printer can't read), and
+the S1:1 MSB switch masks bit 7 at the latch like MAME's `data_latched`.
+With that, an HGR `^I G` dump renders as the picture.
+
+MAME is right to default to Epson — it wires the card to a generic
+centronics printer. The default is only wrong once you know what is on
+the other end of the cable, which POM2 does.
+
+## 2026-07-26 — ImageWriter prints at printer speed; Grappler+ ACK handshake
+
+The printer worked but printed *instantly*: the card spools a page in a
+millisecond of emulated time and the whole sheet appeared in one frame.
+`ImageWriter::queueBytes()` + `tick(dt)` now model the mechanism — bytes
+wait in the printer's input buffer and land as the head reaches them, at
+Apple's published rates (250 cps draft / 45 cps NLQ, *ImageWriter II
+Owner's Manual*). Speed is a *Printer settings* combo (`Instant` keeps
+the old behaviour); the status line shows the queue and a "Print now"
+escape hatch. Pacing runs off the host frame time, not `emuCycles`: the
+paper keeps moving while the guest is paused, turbo'd or rewound.
+
+Three things worth keeping:
+
+1. **The firmware waits on ACK, not BUSY.** Holding BUSY (bit 3) high did
+   nothing — the guest printed straight through it. The genuine Grappler+
+   dump spins on bit 0 instead (`$CD89 JSR $CDE1 / AND #$01 / BEQ $CD89`),
+   so a full 2 KB printer buffer has to read back as *not acknowledged*
+   (`GrapplerCard::ackEffective()`). With that wired, a long print job
+   blocks the Apple II in its firmware loop while the paper catches up —
+   which is what "printing" felt like in 1985.
+2. **Draft is bidirectional.** Charging every `CR` a full carriage-return
+   slew halved the throughput (3.4 lines/s instead of ~6). Draft prints on
+   the return sweep; only NLQ pays the slew.
+3. **A printer card in slot 3 of a //e is broken by design.** The internal
+   80-column firmware keeps `OURCH`/`OURCV` in the slot-3 screen holes,
+   which is where printer firmware keeps its column/line counters — so the
+   Grappler reads the cursor position back as its line width and emits
+   `CR LF` after *every character*. Reproduced against the real ROM dump
+   on `apple2e.rom` (slots 1/2/4/5/7 are clean, and II+ slot 3 is clean).
+   Faithful, not a bug: Slot Config now warns and points at slot 1.
+
+Also fixed: `grapplerCard` / `echoPlusTmsCard` were the only non-owning
+card pointers the two slot-teardown paths forgot to null, so unplugging a
+Grappler+ or switching profiles left `pumpImageWriter()` dereferencing a
+freed card every frame.
+
 ## 2026-07-26 — Apple ImageWriter II printer + paper-tray window
 
 POM2 could capture printer output but only as a text spool: `PR#1` gave

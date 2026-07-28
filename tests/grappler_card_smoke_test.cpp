@@ -6,13 +6,16 @@
 //   2. MAME-faithful $C0nX decode (a2bus_grapplerplus, grappler.cpp):
 //      data latch on !(offset & 3) ($0/$4/$8/$C → spool), A0 = high ROM
 //      bank at $C800, A1/A2 = IRQ disable/enable; status = IRQ|BUSY|PE|
-//      SELECT|ACK with the synthetic printer always ready ($03 idle).
+//      SELECT|ACK with the host printer on-line ($53 idle: the S1
+//      printer-type DIP defaults to Apple Dot Matrix, bits 6-4 = 101).
 //      (The previous decode spooled offset 1 — the real card's BANK
 //      SELECT — so genuine firmware printed into the void and read $FF
 //      status = busy + paper out.)
 //   3. ROM gate — `isRomLoaded()` is false until `loadRom()` succeeds; a
 //      wrong-size dump is rejected and the stub stays in place; $CnXX
-//      reads reset the expansion bank per MAME read_cnxx.
+//      reads AND writes reset the expansion bank (MAME read_cnxx
+//      grappler.cpp:578-583 / write_cnxx :586-591) while bus reset does
+//      NOT (reset_from_bus :536-539 leaves the U2D bank flip-flop alone).
 
 #include "GrapplerCard.h"
 
@@ -67,10 +70,11 @@ void testDataPortSpool()
 {
     GrapplerCard card(1);
 
-    // Idle status on every offset: no IRQ (bit 7), DIP 000 (6-4),
-    // BUSY=0 (3), PE=0 (2), SELECT=1 (1), ACK latch set (0) → $03.
+    // Idle status on every offset: no IRQ (bit 7), DIP = 101 in bits 6-4
+    // (Apple Dot Matrix — POM2's printer is an ImageWriter, see the
+    // header), BUSY=0 (3), PE=0 (2), SELECT=1 (1), ACK set (0) → $53.
     for (uint8_t i = 0; i < 16; ++i)
-        assert(card.deviceSelectRead(i) == 0x03);
+        assert(card.deviceSelectRead(i) == 0x53);
 
     // Data latch decodes !(offset & 3): $0/$4/$8/$C all spool.
     card.deviceSelectWrite(0x0, 0xC8);
@@ -102,7 +106,7 @@ void testDataPortSpool()
     // Reset: IRQ disabled, ACK latch back to set, idle status again.
     card.deviceSelectWrite(0x5, 0x00);
     card.onReset();
-    assert(card.deviceSelectRead(0) == 0x03);
+    assert(card.deviceSelectRead(0) == 0x53);
 
     card.clearSpool();
     assert(card.bytesWritten() == 0);
@@ -154,6 +158,23 @@ void testRomLoadGate()
     (void)card.slotRomRead(0x00);
     assert(card.expansionRomRead(0x000) == 0x00);
 
+    // $CnXX writes (a bus conflict on real hardware) still clock the bank
+    // flip-flop low — MAME `write_cnxx` (grappler.cpp:586-591).
+    card.deviceSelectWrite(0x1, 0x00);          // bank high again
+    assert(card.expansionRomRead(0x000) == 0x08);
+    card.slotRomWrite(0x00, 0xFF);
+    assert(card.expansionRomRead(0x000) == 0x00);
+
+    // Reset does NOT reset the ROM bank: the U2D flip-flop is not wired
+    // to bus RESET — MAME `reset_from_bus` (grappler.cpp:536-539) and
+    // `device_reset` (grappler.cpp:777-787) touch only the ACK latch and
+    // the IRQ flip-flop. (An earlier POM2 revision cleared the bank here.)
+    card.deviceSelectWrite(0x1, 0x00);          // bank high
+    card.onReset();
+    assert(card.expansionRomRead(0x000) == 0x08);   // still high bank
+    (void)card.slotRomRead(0x00);                    // next $CnXX fetch drops it
+    assert(card.expansionRomRead(0x000) == 0x00);
+
     // Snapshot round-trip: bank / ACK latch / IRQ-enable are guest-visible
     // state and must survive a rewind (they were absent from the snapshot
     // when the card first gained them).
@@ -161,7 +182,8 @@ void testRomLoadGate()
     assert((card.deviceSelectRead(0) & 0x80) != 0);
     std::vector<uint8_t> blob;
     card.appendSnapshotState(blob);
-    card.onReset();                             // wipes bank + IRQ enable
+    (void)card.slotRomRead(0x00);               // drop the bank…
+    card.onReset();                             // …and the IRQ enable
     assert(card.expansionRomRead(0x000) == 0x00);
     assert((card.deviceSelectRead(0) & 0x80) == 0);
     card.loadSnapshotState(blob.data(), blob.size());
@@ -172,6 +194,78 @@ void testRomLoadGate()
     std::printf("  ok: ROM-load size gate + $C800 banking + snapshot\n");
 }
 
+void testPrinterTypeDip()
+{
+    // S1 printer type reads back at status bits 6-4 (MAME read_c0nx:
+    // `(m_s1->read() & 0x07) << 4`). The firmware branches on it to pick
+    // which printer dialect it speaks — Epson makes it emit `ESC K n1 n2`
+    // binary graphics, which an ImageWriter renders as noise, so POM2
+    // defaults to Apple Dot Matrix instead of MAME's Epson.
+    GrapplerCard card(1);
+    assert(card.printerType() == GrapplerCard::PrinterType::AppleDotMatrix);
+    assert(((card.deviceSelectRead(0) >> 4) & 0x07) == 5);
+
+    card.setPrinterType(GrapplerCard::PrinterType::Epson);
+    assert(((card.deviceSelectRead(0) >> 4) & 0x07) == 0);
+    card.setPrinterType(GrapplerCard::PrinterType::CItoh8510);
+    assert(((card.deviceSelectRead(0) >> 4) & 0x07) == 1);
+    // The DIP must not leak into the other status bits.
+    assert((card.deviceSelectRead(0) & 0x0F) == 0x03);
+
+    // S1:1 "Most Significant Bit" — open drops bit 7 at the latch
+    // (MAME data_latched: `data & (BIT(s1,3) ? 0xff : 0x7f)`).
+    assert(card.msbSoftwareControl());
+    card.deviceSelectWrite(0x0, 0xC1);
+    assert(card.spoolBytes().back() == 0xC1);
+    card.setMsbSoftwareControl(false);
+    card.deviceSelectWrite(0x0, 0xC1);
+    assert(card.spoolBytes().back() == 0x41);
+
+    std::printf("  ok: S1 printer-type DIP + MSB switch\n");
+}
+
+void testPrinterBusyHandshake()
+{
+    // The host-side ImageWriter reports a full input buffer; the card has
+    // to make that visible the way the firmware senses it. The genuine
+    // Grappler+ output routine spins on bit 0 (ACK), not bit 3 (BUSY):
+    //     $CD89 JSR $CDE1 / AND #$02 (SELECT) / AND #$01 (ACK) / BEQ $CD89
+    // so a busy printer must read back as "not acknowledged" or the guest
+    // never waits for the paper.
+    GrapplerCard card(1);
+    assert(card.deviceSelectRead(0) == 0x53);      // idle: DIP + SELECT + ACK
+
+    card.setPrinterBusy(true);
+    assert(card.printerBusy());
+    const uint8_t busyStatus = card.deviceSelectRead(0);
+    assert((busyStatus & 0x01) == 0x00);           // ACK held clear
+    assert((busyStatus & 0x08) == 0x08);           // BUSY asserted
+    assert((busyStatus & 0x02) == 0x02);           // still on-line
+
+    // Writing while busy still latches the byte (the card has a latch,
+    // one byte deep) — it is the ACK the firmware waits on.
+    card.deviceSelectWrite(0x0, 'X');
+    assert(card.bytesWritten() == 1);
+    assert((card.deviceSelectRead(0) & 0x01) == 0x00);
+
+    // MAME `read_cnxx`: while the ACK latch is clear, address bit 6 is
+    // forced low for $Cn80-$CnFF fetches. That sense path follows the
+    // effective latch too.
+    card.setPrinterBusy(false);
+    assert(card.deviceSelectRead(0) == 0x53);      // acknowledged again
+
+    // A busy printer can't raise the ACK interrupt either.
+    card.deviceSelectWrite(0x5, 0x00);             // A2 = enable IRQ
+    assert((card.deviceSelectRead(0) & 0x80) != 0);
+    card.setPrinterBusy(true);
+    assert((card.deviceSelectRead(0) & 0x80) == 0);
+    card.setPrinterBusy(false);
+    assert((card.deviceSelectRead(0) & 0x80) != 0);
+    card.deviceSelectWrite(0x2, 0x00);             // A1 = disable IRQ
+
+    std::printf("  ok: printer BUSY → ACK handshake\n");
+}
+
 } // namespace
 
 int main()
@@ -180,6 +274,8 @@ int main()
     testStubRom();
     testDataPortSpool();
     testRomLoadGate();
+    testPrinterTypeDip();
+    testPrinterBusyHandshake();
     std::printf("PASS\n");
     return 0;
 }

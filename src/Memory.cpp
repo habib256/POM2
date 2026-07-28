@@ -736,6 +736,31 @@ void Memory::appendSnapshotState(std::vector<uint8_t>& out)
     // device vector points into the stub — the next MLI call executed
     // unrelated ROM bytes.
     putU8(iicSmartPortArmed_ ? 1 : 0);
+
+    // Second trailer: //c-class on-board device state, each section
+    // self-identifying by magic so a blob may carry neither, either or
+    // both. Both were previously absent, and both are cycle-sensitive:
+    //   * IWMDevice holds eight absolute emuCycles stamps. A rewind rolls
+    //     `cycleCounter` back while the IWM kept a larger `lastSync_`, so
+    //     `sync()`'s walker stopped advancing and the controller froze
+    //     until emulated time caught up to its pre-rewind position.
+    //   * The //c+ MIG gate array's 2 KB RAM + page pointer came back
+    //     zeroed, so the alt firmware read something other than what it
+    //     had written.
+    // Length-prefixed: the loader must be able to skip a section it does
+    // not understand without losing the rest of the trailer.
+    {
+        std::vector<uint8_t> sect;
+        if (iwmDevice) iwmDevice->appendSnapshotState(sect);
+        putU32(static_cast<uint32_t>(sect.size()));
+        putBytes(sect.data(), sect.size());
+    }
+    {
+        std::vector<uint8_t> sect;
+        if (iicProfile_) iicProfile_->appendSnapshotState(sect);
+        putU32(static_cast<uint32_t>(sect.size()));
+        putBytes(sect.data(), sect.size());
+    }
 }
 
 bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
@@ -833,6 +858,26 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     // Optional trailer (see appendSnapshotState): //c on-board SmartPort
     // arming gate. Absent in pre-trailer blobs → keep the live value.
     if (need(1)) iicSmartPortArmed_ = getU8() != 0;
+
+    // Second trailer (see appendSnapshotState): length-prefixed //c-class
+    // device sections. Absent in older blobs → live values kept, which is
+    // exactly the pre-fix behaviour, so nothing regresses on an old save.
+    // A section whose payload the device rejects is skipped by its length
+    // rather than desynchronising the reader.
+    auto readSection = [&](auto&& apply) {
+        if (!need(4)) return;
+        const uint32_t len = getU32();
+        if (len == 0) return;
+        if (n - pos < len) { pos = n; return; }   // truncated — stop cleanly
+        apply(data + pos, static_cast<size_t>(len));
+        pos += len;
+    };
+    readSection([&](const uint8_t* p, size_t k) {
+        if (iwmDevice) iwmDevice->loadSnapshotState(p, k);
+    });
+    readSection([&](const uint8_t* p, size_t k) {
+        if (iicProfile_) iicProfile_->loadSnapshotState(p, k);
+    });
 
     return true;
 }

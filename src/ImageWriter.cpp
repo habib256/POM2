@@ -12,7 +12,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 namespace pom2 {
 
@@ -80,6 +83,20 @@ const char* bandName(uint8_t band)
 // Multi-byte ImageWriter parameters arrive as ASCII digit strings.
 inline int paramDigit(uint8_t p) { return static_cast<int>(p) - '0'; }
 
+// ─── Mechanism speed (ImageWriter II Owner's Manual, "Specifications") ──
+// 250 cps draft / 45 cps NLQ, both quoted at the 12 cpi default pitch —
+// so the carriage crosses cps/cpi inches per second. Graphics passes are
+// unidirectional (the head only prints left-to-right so the dot columns
+// stay in register), which halves the effective rate. Paper transport is
+// quoted as a 5 in/s slew.
+constexpr double kDraftCps = 250.0;
+constexpr double kNlqCps   = 45.0;
+constexpr double kQuotedCpi = 12.0;
+constexpr double kFeedIps  = 5.0;
+/// Never bank more than this much mechanism time: a hidden window or a
+/// long host stall must not dump half a page in one frame.
+constexpr double kMaxCredit = 1.0;
+
 } // namespace
 
 const char* ImageWriter::paperSizeName(PaperSize s)
@@ -100,6 +117,11 @@ ImageWriter::ImageWriter(int dpi, PaperSize paper)
 
     rebuildPage();
     resetPrinter();
+}
+
+ImageWriter::~ImageWriter()
+{
+    stopTrace();        // flushes the partial hex row + writes the footer
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -132,6 +154,7 @@ void ImageWriter::rebuildPage()
     current_.w = std::max(1, static_cast<int>(defaultPageWidth_  * dpi_));
     current_.h = std::max(1, static_cast<int>(defaultPageHeight_ * dpi_));
     current_.pix.assign(static_cast<size_t>(current_.w) * current_.h, 0);
+    current_.dpi = dpi_;
     ++revision_;
 }
 
@@ -178,6 +201,13 @@ void ImageWriter::resetPrinter()
 
 void ImageWriter::resetPrinterHard()
 {
+    // Power cycle — whatever was still in the input buffer is gone with it.
+    pending_.clear();
+    pendingHead_ = 0;
+    credit_      = 0.0;
+    stalledFor_  = 0.0;           // and so is the stall watchdog
+    feedLatchedOff_ = false;      // new job, re-arm the CR/LF detector
+    crJustFed_      = false;
     resetPrinter();
 }
 
@@ -234,6 +264,14 @@ void ImageWriter::updateMetrics()
 
 void ImageWriter::newPage(bool save, bool resetx)
 {
+    if (trace_) {
+        traceFlushRow();
+        std::fprintf(trace_,
+            "[%8.3f] PAGE %s (head was at %.2f\" x %.2f\", %zu on the stack)\n",
+            traceClock_, save ? "sheet ejected" : "sheet restarted",
+            curX_, curY_, pages_.size());
+        std::fflush(trace_);
+    }
     if (save) {
         if (pages_.size() >= kMaxPages) {
             pages_.erase(pages_.begin());
@@ -337,6 +375,13 @@ void ImageWriter::renderGlyph(uint8_t ch)
 void ImageWriter::printChar(uint8_t ch)
 {
     ++bytesIn_;
+    // Rolling raw capture — drops the oldest half when full so a runaway
+    // job can't grow it without bound but the recent stream survives.
+    if (raw_.size() >= kRawCaptureBytes)
+        raw_.erase(raw_.begin(),
+                   raw_.begin() + static_cast<std::ptrdiff_t>(raw_.size() / 2));
+    raw_.push_back(ch);
+    if (trace_) traceByte(ch);
     printCharInternal(ch);
 }
 
@@ -386,6 +431,278 @@ void ImageWriter::printBytes(const uint8_t* data, size_t n)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Trace log
+// ─────────────────────────────────────────────────────────────────────────
+
+bool ImageWriter::startTrace(const std::string& path, std::string& err)
+{
+    stopTrace();
+    std::error_code ec;
+    const std::filesystem::path p(path);
+    if (p.has_parent_path())
+        std::filesystem::create_directories(p.parent_path(), ec);
+    trace_ = std::fopen(path.c_str(), "w");
+    if (!trace_) {
+        err = "cannot open " + path + " for writing";
+        return false;
+    }
+    tracePath_   = path;
+    traceOffset_ = 0;
+    traceRowLen_ = 0;
+    std::fprintf(trace_,
+        "# POM2 ImageWriter II trace\n"
+        "# Every byte the printer consumed, decoded. Columns:\n"
+        "#   [t]      seconds of mechanism time since the trace opened\n"
+        "#   RX       hex dump of the input stream (offset = byte index)\n"
+        "#   CMD      a completed escape sequence, with its parameters\n"
+        "#   GFX      bit-image setup (density / columns / bytes per column)\n"
+        "#   PAGE     sheet ejected\n"
+        "#   HOST     host-side event (queue depth, BUSY, stalls)\n"
+        "#\n"
+        "# If a printout is noise, look at CMD: a driver talking another\n"
+        "# printer's dialect shows up as commands this printer never got\n"
+        "# (or as RX bytes that should have been graphics data).\n\n");
+    std::fflush(trace_);
+    return true;
+}
+
+void ImageWriter::stopTrace()
+{
+    if (!trace_) return;
+    traceFlushRow();
+    std::fprintf(trace_, "# trace closed after %llu bytes\n",
+                 static_cast<unsigned long long>(traceOffset_));
+    std::fclose(trace_);
+    trace_ = nullptr;
+}
+
+void ImageWriter::traceEvent(const char* fmt, ...)
+{
+    if (!trace_) return;
+    traceFlushRow();
+    std::fprintf(trace_, "[%8.3f] HOST ", traceClock_);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(trace_, fmt, ap);
+    va_end(ap);
+    std::fputc('\n', trace_);
+    std::fflush(trace_);
+}
+
+void ImageWriter::traceFlushRow()
+{
+    if (!trace_ || traceRowLen_ == 0) return;
+    std::fprintf(trace_, "[%8.3f] RX   %06llX  ", traceClock_,
+                 static_cast<unsigned long long>(traceOffset_ - traceRowLen_));
+    for (int i = 0; i < 16; ++i) {
+        if (i < traceRowLen_) std::fprintf(trace_, "%02X ", traceRow_[i]);
+        else                  std::fprintf(trace_, "   ");
+        if (i == 7) std::fputc(' ', trace_);
+    }
+    std::fputc('|', trace_);
+    for (int i = 0; i < traceRowLen_; ++i) {
+        const uint8_t c = traceRow_[i] & 0x7F;
+        std::fputc((c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '.', trace_);
+    }
+    std::fprintf(trace_, "|\n");
+    traceRowLen_ = 0;
+    std::fflush(trace_);
+}
+
+void ImageWriter::traceByte(uint8_t ch)
+{
+    if (!trace_) return;
+    traceRow_[traceRowLen_++] = ch;
+    ++traceOffset_;
+    if (traceRowLen_ == 16) traceFlushRow();
+}
+
+void ImageWriter::traceCommand()
+{
+    if (!trace_) return;
+    traceFlushRow();
+    const bool isFs = (escCmd_ & 0x800) != 0;
+    const uint8_t c = static_cast<uint8_t>(escCmd_ & 0xFF);
+    std::string params;
+    for (uint8_t i = 0; i < numParam_; ++i) {
+        const uint8_t p = params_[i] & 0x7F;
+        params += (p >= 0x20 && p < 0x7F) ? static_cast<char>(p) : '.';
+    }
+    std::fprintf(trace_, "[%8.3f] CMD  %s %c ($%02X)%s%s\n", traceClock_,
+                 isFs ? "US " : "ESC",
+                 (c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '?', c,
+                 params.empty() ? "" : "  params=", params.c_str());
+    std::fflush(trace_);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Mechanism pacing — bytes arrive at bus speed, dots land at head speed
+// ─────────────────────────────────────────────────────────────────────────
+
+const char* ImageWriter::ribbonName(Ribbon r)
+{
+    return r == Ribbon::Black ? "Black (single band)"
+                              : "Four-colour (yellow/magenta/cyan/black)";
+}
+
+const char* ImageWriter::autoFeedName(AutoFeed m)
+{
+    switch (m) {
+        case AutoFeed::On:  return "Always (printer supplies the feed)";
+        case AutoFeed::Off: return "Never (the guest supplies it)";
+        default:            return "Auto (follow what the guest sends)";
+    }
+}
+
+void ImageWriter::setAutoFeedMode(AutoFeed m)
+{
+    if (m >= AutoFeed::Count) m = AutoFeed::Auto;
+    feedMode_       = m;
+    feedLatchedOff_ = false;      // re-arm the detector on any change
+    crJustFed_      = false;
+}
+
+const char* ImageWriter::speedName(Speed s)
+{
+    switch (s) {
+        case Speed::Draft: return "Draft (250 cps)";
+        case Speed::NLQ:   return "Near letter quality (45 cps)";
+        default:           return "Instant (no mechanism delay)";
+    }
+}
+
+void ImageWriter::setSpeed(Speed s)
+{
+    if (s >= Speed::Count) s = Speed::Draft;
+    speed_ = s;
+    // Switching to Instant must not strand a half-printed job.
+    if (speed_ == Speed::Instant) flushPending();
+}
+
+void ImageWriter::queueBytes(const uint8_t* data, size_t n)
+{
+    if (!data || n == 0) return;
+    pending_.insert(pending_.end(), data, data + n);
+}
+
+void ImageWriter::flushPending()
+{
+    while (pendingHead_ < pending_.size()) printChar(pending_[pendingHead_++]);
+    pending_.clear();
+    pendingHead_ = 0;
+    credit_      = 0.0;
+    stalledFor_  = 0.0;   // the queue is gone; don't arm the next job's
+                          // watchdog with time this one spent stalled
+}
+
+double ImageWriter::byteCost(uint8_t ch) const
+{
+    if (speed_ == Speed::Instant) return 0.0;
+
+    const double cps = (speed_ == Speed::NLQ) ? kNlqCps : kDraftCps;
+    const double ips = cps / kQuotedCpi;      // carriage inches per second
+
+    // Bit-image data: the byte is a dot column (or a third of one on the
+    // LQ's 24-pin pitches), not a glyph. Same head, half the sweep rate.
+    if (bitGraph_.remBytes > 0) {
+        const double colsPerSec = (ips * 0.5) * bitGraph_.horizDens;
+        const double perColumn  = (colsPerSec > 0.0) ? 1.0 / colsPerSec : 0.0;
+        const uint8_t perCol    = bitGraph_.bytesColumn ? bitGraph_.bytesColumn : 1;
+        return perColumn / perCol;
+    }
+
+    // Mid-escape-sequence bytes (the command letter and its ASCII digit
+    // parameters) never move the mechanism — they land in a register.
+    if (escSeen_ || fsSeen_ || numParam_ < neededParam_) return 0.0;
+
+    switch (ch & 0x7F) {
+        case 0x0D: {   // CR — carriage back to the left margin
+            // Draft is bidirectional (the head prints on the return
+            // sweep), so a CR costs only the direction change; NLQ is
+            // unidirectional and pays the full slew back.
+            double t = (speed_ == Speed::NLQ)
+                     ? std::max(0.0, curX_ - leftMargin_) / ips
+                     : 0.02;
+            if (autoFeedActive()) t += lineSpacing_ / kFeedIps;
+            return t;
+        }
+        case 0x0A:     // LF — one line of paper transport
+            return lineSpacing_ / kFeedIps;
+        case 0x0C:     // FF — slew whatever is left of the sheet
+            return std::max(0.5, bottomMargin_ - curY_) / kFeedIps;
+        default:
+            break;
+    }
+    if ((ch & 0x7F) < 0x20) return 0.0;        // other control codes
+    return 1.0 / cps;                          // one printed character
+}
+
+void ImageWriter::tick(double dt)
+{
+    if (pendingHead_ >= pending_.size()) {
+        pending_.clear();
+        pendingHead_ = 0;
+        credit_      = 0.0;
+        stalledFor_  = 0.0;   // idle printer: the next job starts fresh
+        return;
+    }
+    if (speed_ == Speed::Instant) { flushPending(); return; }
+
+    // Bank the elapsed time, capped so a hidden window or a long host
+    // stall doesn't dump half a page in one frame. The cap has to leave
+    // room for the byte at the head of the queue: a form feed near the top
+    // of a Letter sheet costs 2.2 s of paper transport, and a flat 1 s cap
+    // meant that byte could NEVER be afforded — the queue stalled forever,
+    // BUSY stayed asserted, and the guest spun in its firmware ACK loop
+    // (Print Shop froze on every page eject).
+    if (dt > 0.0) {
+        traceClock_ += dt;
+        const double head = byteCost(pending_[pendingHead_]);
+        credit_ = std::min(credit_ + dt, std::max(kMaxCredit, head));
+    }
+
+    const size_t before = pendingHead_;
+    while (pendingHead_ < pending_.size()) {
+        const uint8_t ch   = pending_[pendingHead_];
+        const double  cost = byteCost(ch);     // state-dependent: read first
+        if (cost > credit_) break;
+        credit_ -= cost;
+        ++pendingHead_;
+        printChar(ch);
+    }
+
+    // Watchdog. Nothing should ever be unaffordable for this long — but a
+    // wedged printer takes the guest down with it (it waits on ACK), so a
+    // cost-model mistake must degrade to "printed late", never to a hang.
+    if (pendingHead_ == before && dt > 0.0) {
+        stalledFor_ += dt;
+        if (stalledFor_ >= kStallSeconds) {
+            const uint8_t ch = pending_[pendingHead_];
+            traceEvent("STALL: byte $%02X unaffordable for %.1f s "
+                       "(cost %.3f s, credit %.3f s) — forcing it through",
+                       ch, stalledFor_, byteCost(ch), credit_);
+            ++pendingHead_;
+            printChar(ch);
+            credit_     = 0.0;
+            stalledFor_ = 0.0;
+        }
+    } else {
+        stalledFor_ = 0.0;
+    }
+
+    if (pendingHead_ >= pending_.size()) {
+        pending_.clear();
+        pendingHead_ = 0;
+    } else if (pendingHead_ >= 8192) {
+        // Compact instead of growing without bound on a long job.
+        pending_.erase(pending_.begin(),
+                       pending_.begin() +
+                           static_cast<std::ptrdiff_t>(pendingHead_));
+        pendingHead_ = 0;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Bit-image graphics (imagewriter.cpp:1432-1603)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -405,6 +722,17 @@ void ImageWriter::setupBitImage(uint8_t dens, uint32_t numCols)
     bitGraph_.bytesColumn = (dens < 8) ? 1 : 3;
     bitGraph_.remBytes    = numCols * bitGraph_.bytesColumn;
     bitGraph_.readBytesColumn = 0;
+
+    if (trace_) {
+        traceFlushRow();
+        std::fprintf(trace_,
+            "[%8.3f] GFX  %u dpi x %u dpi, %u columns, %u byte%s/column "
+            "(%u data bytes follow) at %.2f\"\n",
+            traceClock_, bitGraph_.horizDens, bitGraph_.vertDens, numCols,
+            bitGraph_.bytesColumn, bitGraph_.bytesColumn == 1 ? "" : "s",
+            bitGraph_.remBytes, curX_);
+        std::fflush(trace_);
+    }
 }
 
 void ImageWriter::printBitGraph(uint8_t ch)
@@ -441,6 +769,11 @@ void ImageWriter::printBitGraph(uint8_t ch)
 
 bool ImageWriter::processCommandChar(uint8_t ch)
 {
+    // "The previous byte was a CR we line-fed for" — only an LF landing
+    // immediately after one counts as the guest supplying its own feed.
+    const bool wasCrFed = crJustFed_;
+    crJustFed_ = false;
+
     // ── Phase 1: the byte right after ESC / US selects the command ──────
     if (escSeen_ || fsSeen_) {
         escCmd_ = ch;
@@ -555,9 +888,26 @@ bool ImageWriter::processCommandChar(uint8_t ch)
         case 0x0d:                              // CR
             curX_ = leftMargin_;
             if (switcha_ & kSwitchALfAfterCr) lineFeed();
-            if (!autoFeed_) return true;
-            [[fallthrough]];
+            if (!autoFeedActive()) return true;
+            lineFeed();
+            crJustFed_ = true;    // an LF right after this one is the
+            return true;          // guest's own — see the LF case
         case 0x0a:                              // LF
+            if (wasCrFed) {
+                // CR+LF from the guest: it manages its own line feeds, so
+                // the feed the CR just did was ours to give and this LF
+                // would double-space. Swallow it — and in Auto mode stop
+                // feeding on CR at all from here on, which is what lets a
+                // colour driver overprint its passes (Print Shop puts a
+                // bare CR between its yellow/cyan/magenta passes).
+                if (feedMode_ == AutoFeed::Auto && !feedLatchedOff_) {
+                    feedLatchedOff_ = true;
+                    if (trace_)
+                        traceEvent("auto line-feed OFF — the guest sent its "
+                                   "own LF after a CR");
+                }
+                return true;
+            }
             lineFeed();
             return true;
         case 0x0e:                              // SO  double width on
@@ -578,6 +928,7 @@ bool ImageWriter::processCommandChar(uint8_t ch)
     }
 
     // ── Phase 4: execute the completed command ──────────────────────────
+    if (trace_) traceCommand();
     // Several commands take their parameters as ASCII digit strings with
     // leading spaces; normalise those to '0' the way the reference does.
     // Unlike the reference (which blanket-converts params[0..3]) the count
@@ -743,8 +1094,11 @@ bool ImageWriter::processCommandChar(uint8_t ch)
 
     case 0x4b: {                                // ESC K n  ribbon colour
         const int n = paramDigit(params_[0]);
+        // A black cartridge has one band: the printer takes the command
+        // and prints black anyway, like the real thing.
         if (n >= 0 && n <= 6)
-            color_ = static_cast<uint8_t>(kRibbonBand[n] << 5);
+            color_ = static_cast<uint8_t>(
+                (ribbon_ == Ribbon::Black ? 7 : kRibbonBand[n]) << 5);
         break;
     }
 

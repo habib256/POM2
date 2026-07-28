@@ -1,5 +1,7 @@
 // POM2 — disassemble a few instructions from the Apple II Monitor ROM.
-//   g++ -std=c++17 -O2 -I. tests/disasm_smoke.cpp Memory.cpp Disassembler6502.cpp -o /tmp/pom2_disasm
+//   cd build && cmake .. && make disasm_smoke && ./tests/disasm_smoke
+// Diagnostic dump, not a test: it prints and asserts nothing, so it is
+// EXCLUDE_FROM_ALL and outside ctest.
 
 #include "Disassembler6502.h"
 #include "Memory.h"

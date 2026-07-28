@@ -36,11 +36,26 @@ std::tm fixedTime_2026_05_09_14_37_42()
 void testSignature()
 {
     ClockCard card(4);
-    // ProDOS scans for these exact bytes at the listed offsets.
+    // ProDOS scans for these exact bytes at the listed offsets. This is the
+    // real contract and holds whichever ROM the card ended up with — the
+    // ctor loads `roms/thunderclock_u9_v1.3.bin` when the user has it, and
+    // `tryLoadDump` rejects any dump that lacks this signature.
     assert(card.slotRomRead(0x00) == 0x08);     // PHP
     assert(card.slotRomRead(0x02) == 0x28);     // PLP
     assert(card.slotRomRead(0x04) == 0x58);     // CLI
     assert(card.slotRomRead(0x06) == 0x70);     // BVS
+
+    if (card.romFromDump()) {
+        // Everything below describes POM2's SYNTHETIC ROM layout, which a
+        // real Thunderware EPROM has no reason to share: it puts its own
+        // firmware in those bytes. Asserting them unconditionally made this
+        // test fail the moment a user dropped the genuine dump into roms/ —
+        // a green suite that turns red because the emulator got *more*
+        // faithful is a broken test, not a broken card.
+        std::printf("clock_card_smoke: real dump present (%s) — synthetic "
+                    "filler bytes not asserted\n", card.romSource().c_str());
+        return;
+    }
     // BVS operand must be 0 so the no-overflow path also lands at $Cs08.
     assert(card.slotRomRead(0x07) == 0x00);
     // Filler bytes between signature ops are 1-byte instructions so the

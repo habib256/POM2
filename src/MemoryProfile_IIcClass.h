@@ -45,6 +45,12 @@ public:
     void setSmartPortHub(pom2::SmartPortHub* hub) override { hub_ = hub; }
     void setIwmAuthoritative(bool on) override            { iwmAuthoritative_ = on; }
 
+    /// //c+ MIG state (page pointer + 2 KB RAM) for snapshot / rewind.
+    /// Without these the MIG falls out of a rewind and the IWM freezes
+    /// on //c-class profiles — pinned by `iwm_mig_snapshot`.
+    void   appendSnapshotState(std::vector<uint8_t>& out) const override;
+    size_t loadSnapshotState(const uint8_t* data, size_t n) override;
+
 private:
     uint8_t migRead (uint16_t migOffset, uint8_t floatBus);
     void    migWrite(uint16_t migOffset, uint8_t value);

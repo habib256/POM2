@@ -6,6 +6,7 @@
 #include "DiskLibrary_ImGui.h"
 
 #include "IconsFontAwesome6.h"
+#include "Pom2Theme.h"   // palette() for the favourite star + mounted marker
 #include "imgui.h"
 
 #include <algorithm>
@@ -161,27 +162,12 @@ void DiskLibrary_ImGui::rescan()
 
 void DiskLibrary_ImGui::applySort(std::vector<Entry>& entries) const
 {
-    switch (sortMode_) {
-        case 1:     // size ↓
-            std::sort(entries.begin(), entries.end(),
-                [](const Entry& a, const Entry& b) {
-                    return a.sizeBytes > b.sizeBytes;
-                });
-            break;
-        case 2:     // date ↓
-            std::sort(entries.begin(), entries.end(),
-                [](const Entry& a, const Entry& b) {
-                    return a.mtime > b.mtime;
-                });
-            break;
-        case 0:
-        default:    // name ↑
-            std::sort(entries.begin(), entries.end(),
-                [](const Entry& a, const Entry& b) {
-                    return a.displayName < b.displayName;
-                });
-            break;
-    }
+    // Name ascending, always. The size / date orders went away with the sort
+    // selector — see the header-row comment in render().
+    std::sort(entries.begin(), entries.end(),
+        [](const Entry& a, const Entry& b) {
+            return a.displayName < b.displayName;
+        });
 }
 
 bool DiskLibrary_ImGui::passesFilter(const std::string& name) const
@@ -304,6 +290,120 @@ void DiskLibrary_ImGui::onHdvCtx(const std::string& path, int mountedMask, Resul
     }
 }
 
+bool DiskLibrary_ImGui::isFavourite(const std::string& path) const
+{
+    if (!lists_) return false;
+    for (const auto& f : lists_->favourites)
+        if (f == path) return true;
+    return false;
+}
+
+void DiskLibrary_ImGui::renderRow(
+    const Entry&      e,
+    const char*       nameOverride,
+    const RowContext& ctx,
+    Result&           r)
+{
+    ImGui::TableNextRow();
+    int mountedMask = 0;
+    const auto& markPaths = *ctx.markPaths;
+    for (size_t i = 0; i < markPaths.size() && i < 8; ++i) {
+        if (!markPaths[i].empty() && markPaths[i] == e.fullPath)
+            mountedMask |= (1 << i);
+    }
+    const bool mounted = mountedMask != 0;
+    const bool fav     = isFavourite(e.fullPath);
+
+    ImGui::PushID(e.fullPath.c_str());
+
+    // Name lives in column 0 because ImGui applies tree indentation to the
+    // FIRST column only. An earlier cut had a narrow favourite-star column at
+    // index 0, which swallowed the whole indent and left every filename flush
+    // left regardless of depth — the tree had no readable hierarchy. Star and
+    // mounted dot are now inline prefixes instead of their own columns.
+    ImGui::TableSetColumnIndex(0);
+    // Selectable first, spanning every column, so the whole row is one hit
+    // target; AllowOverlap lets the text draw on top of it.
+    if (ImGui::Selectable("##row", mounted,
+                          ImGuiSelectableFlags_SpanAllColumns |
+                          ImGuiSelectableFlags_AllowOverlap)) {
+        (this->*ctx.onLeftClick)(e.fullPath, r);
+    }
+    if (ImGui::BeginPopupContextItem("ctx")) {
+        // Favourite toggle lives in the context menu rather than as a clickable
+        // star: the row is already a full-span selectable, and an overlapping
+        // hit target inside it is a reliable source of mis-clicks — on a panel
+        // whose left-click cold-boots the machine, that matters.
+        if (ImGui::MenuItem(fav ? "Remove from favourites"
+                                : "Add to favourites")) {
+            r.toggleFavourite = e.fullPath;
+        }
+        ImGui::Separator();
+        (this->*ctx.onContextMenu)(e.fullPath, mountedMask, r);
+        ImGui::EndPopup();
+    }
+    // Inline prefixes, drawn over the selectable. The mounted marker stays a
+    // glyph rather than relying on the row highlight alone — the highlight is
+    // also what selection looks like.
+    ImGui::SameLine(0.0f, 0.0f);
+    if (mounted) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+            ImGui::ColorConvertU32ToFloat4(pom2::palette().warn));
+        ImGui::TextUnformatted(ICON_FA_CIRCLE_DOT " ");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, 0.0f);
+    }
+    if (fav) {
+        ImGui::PushStyleColor(ImGuiCol_Text,
+            ImGui::ColorConvertU32ToFloat4(pom2::palette().accent));
+        ImGui::TextUnformatted(ICON_FA_STAR " ");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, 0.0f);
+    }
+    ImGui::TextUnformatted(nameOverride ? nameOverride : e.displayName.c_str());
+    if (nameOverride && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", e.displayName.c_str());
+
+    if (ctx.showSizeDate) {
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(fmtSize(e.sizeBytes).c_str());
+        ImGui::TableSetColumnIndex(2);
+        ImGui::TextUnformatted(fmtDate(e.mtime).c_str());
+    }
+
+    ImGui::PopID();
+}
+
+void DiskLibrary_ImGui::renderTreeNode(const TreeNode& node,
+                                       const RowContext& ctx,
+                                       Result& r)
+{
+    // Folders first, then this level's files — the convention every file
+    // browser uses, and it keeps the folder headers together where the eye
+    // expects them.
+    for (const auto& [name, kid] : node.kids) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        // The name alone is a safe ImGui ID here: an open TreeNode pushes its
+        // own ID scope, so two folders called "Sources" under different parents
+        // never collide.
+        if (ImGui::TreeNodeEx(name.c_str(),
+                              ImGuiTreeNodeFlags_SpanAllColumns |
+                              ImGuiTreeNodeFlags_DefaultOpen,
+                              ICON_FA_FOLDER " %s", name.c_str())) {
+            renderTreeNode(kid, ctx, r);
+            ImGui::TreePop();
+        }
+    }
+    for (const Entry* e : node.files) {
+        const size_t slash = e->displayName.rfind('/');
+        const char*  base  = (slash == std::string::npos)
+                           ? e->displayName.c_str()
+                           : e->displayName.c_str() + slash + 1;
+        renderRow(*e, base, ctx, r);
+    }
+}
+
 void DiskLibrary_ImGui::renderTab(
     const std::vector<Entry>&        entries,
     const std::vector<std::string>&  markPaths,
@@ -326,49 +426,87 @@ void DiskLibrary_ImGui::renderTab(
         return;
     }
 
-    // Slightly taller child than the per-card variants so the toolbar
-    // pinning leaves room and the table stays comfortable.
+    const bool searching = searchBuf_[0] != '\0';
+    // Tree unless searching: a filtered view wants a flat list of hits with
+    // their full paths, not a tree to expand looking for them.
+    const bool treeView     = !searching;
+    const bool showSizeDate = !(lists_ && lists_->hideSizeDate);
+
+    const RowContext ctx{ &markPaths, onLeftClick, onContextMenu, showSizeDate };
+
+    // Build the nested tree from the relative display names.
+    TreeNode root;
+    if (treeView) {
+        for (const auto& e : filtered) {
+            TreeNode* cur = &root;
+            const std::string& dn = e.displayName;
+            size_t pos = 0;
+            for (;;) {
+                const size_t slash = dn.find('/', pos);
+                if (slash == std::string::npos) break;      // rest is the file
+                cur = &cur->kids[dn.substr(pos, slash - pos)];
+                pos = slash + 1;
+            }
+            cur->files.push_back(&e);
+        }
+    }
+
     ImGui::BeginChild("##library_table", ImVec2(0, 0), true,
                       ImGuiWindowFlags_HorizontalScrollbar);
 
-    if (ImGui::BeginTable("##library_grid", 3,
+    const int columns = showSizeDate ? 3 : 1;
+    if (ImGui::BeginTable("##library_grid", columns,
             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp))
     {
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.65f);
-        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed,  64.0f);
-        ImGui::TableSetupColumn("Date", ImGuiTableColumnFlags_WidthFixed,  80.0f);
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        if (showSizeDate) {
+            // Shrunk from 64/80: they were taking a column of prime real estate
+            // for the least-used information in the panel. Nobody looks for a
+            // disk by its byte count.
+            ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+            ImGui::TableSetupColumn("Date", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+        }
         ImGui::TableHeadersRow();
 
-        for (const auto& e : filtered) {
+        // ── Pinned sections ───────────────────────────────────────────────
+        // Favourites and Recent are drawn from THIS tab's entries only, so a
+        // 5.25" favourite never shows up under HDV. Hidden while searching:
+        // a filtered view should show matches, not shortcuts.
+        auto section = [&](const char* label,
+                           const std::vector<std::string>& paths,
+                           bool defaultOpen) {
+            if (searching || paths.empty()) return;
+            std::vector<const Entry*> hits;
+            for (const auto& p : paths)
+                for (const auto& e : filtered)
+                    if (e.fullPath == p) { hits.push_back(&e); break; }
+            if (hits.empty()) return;
+
             ImGui::TableNextRow();
-            int mountedMask = 0;
-            for (size_t i = 0; i < markPaths.size() && i < 8; ++i) {
-                if (!markPaths[i].empty() && markPaths[i] == e.fullPath)
-                    mountedMask |= (1 << i);
-            }
-            const bool mounted = mountedMask != 0;
-            ImGui::PushID(e.fullPath.c_str());
-
             ImGui::TableSetColumnIndex(0);
-            const std::string label = (mounted ? "* " : "  ") + e.displayName;
-            if (ImGui::Selectable(label.c_str(), mounted,
-                                  ImGuiSelectableFlags_SpanAllColumns))
-            {
-                (this->*onLeftClick)(e.fullPath, r);
+            const ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_SpanAllColumns |
+                (defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+            char hdr[64];
+            std::snprintf(hdr, sizeof hdr, "%s  (%zu)", label, hits.size());
+            if (ImGui::TreeNodeEx(label, f, "%s", hdr)) {
+                for (const Entry* e : hits) {
+                    // Full relative path here: a shortcut list out of folder
+                    // context needs it to be unambiguous.
+                    renderRow(*e, nullptr, ctx, r);
+                }
+                ImGui::TreePop();
             }
-            if (ImGui::BeginPopupContextItem("ctx")) {
-                (this->*onContextMenu)(e.fullPath, mountedMask, r);
-                ImGui::EndPopup();
-            }
-
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextUnformatted(fmtSize(e.sizeBytes).c_str());
-            ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(fmtDate(e.mtime).c_str());
-
-            ImGui::PopID();
+        };
+        if (lists_) {
+            section(ICON_FA_STAR " Favourites", lists_->favourites, true);
+            section(ICON_FA_CLOCK_ROTATE_LEFT " Recent", lists_->recents, false);
         }
+
+        // ── Main list ─────────────────────────────────────────────────────
+        if (treeView) renderTreeNode(root, ctx, r);
+        else for (const auto& e : filtered) renderRow(e, nullptr, ctx, r);
+
         ImGui::EndTable();
     }
     ImGui::EndChild();
@@ -377,11 +515,13 @@ void DiskLibrary_ImGui::renderTab(
 DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     const char*               title,
     bool&                     open,
-    const CurrentlyMounted&   mounted)
+    const CurrentlyMounted&   mounted,
+    const Lists&              lists)
 {
     Result r;
     if (!open) return r;
     mounted_ = &mounted;     // for on525Ctx's per-drive target enumeration
+    lists_   = &lists;       // favourites / recents, host-owned
 
     // No SetNextWindowSize here — the host pre-applies a curated default
     // via SetNextWindowPos/Size (see MainWindow::renderDiskLibraryWindow).
@@ -418,19 +558,31 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
     ImGui::InputTextWithHint("##library_search", "search...",
                              searchBuf_, sizeof(searchBuf_));
 
+    // No sort selector: the panel is a folder tree sorted by name, which is
+    // what a file browser is. The Size/Date sorts it used to offer forced a
+    // flat list (you cannot group by folder and order by size at the same
+    // time), so they were quietly fighting the tree — and the header row is
+    // more valuable as space for the search field.
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
-    ImGui::TextUnformatted("Sort:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(96.0f);
-    static const char* kSortLabels[] = { "Name", "Size", "Date" };
-    ImGui::Combo("##library_sort", &sortMode_, kSortLabels,
-                 IM_ARRAYSIZE(kSortLabels));
+    {
+        // Checked = columns visible, matching the label. Storing the
+        // host-side flag as "hide" and rendering it as "show" keeps the
+        // checkbox reading the way the label says it does.
+        bool show = !lists.hideSizeDate;
+        if (ImGui::Checkbox("Size/Date", &show))
+            r.toggleHideSizeDate = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Show the Size and Date columns.\n"
+                              "Off gives the name column the full width, "
+                              "which matters in a narrow dock.");
+    }
 
     ImGui::Separator();
     ImGui::TextDisabled(
-        "left-click = insert + boot      right-click = more options");
+        "left-click = insert + boot      right-click = more options "
+        "(incl. favourites)");
 
     // ── Tabs ───────────────────────────────────────────────────────────
     if (ImGui::BeginTabBar("##library_tabs", ImGuiTabBarFlags_Reorderable)) {

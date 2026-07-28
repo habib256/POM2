@@ -47,6 +47,18 @@ inline constexpr CardType kCardTypes[] = {
     // See markadev/AppleII-RevEng/Orange-Micro-Grappler+.
     { "grappler",     "Grappler+ (Orange Micro)" },
     { "clock",        "Clock (ProDOS)"    },
+    // Uthernet I (a2RetroSystems) — CS8900A Ethernet NIC. Raw frames
+    // only: the Apple-side stack (IP65, Contiki, ADTPro-ethernet) does
+    // the TCP/IP. Needs a host Ethernet transport to see traffic, which
+    // in practice means a libslirp-enabled build; the card still plugs
+    // and probes without one. MAME `bus/a2bus/uthernet.cpp` port.
+    { "uthernet",     "Uthernet I (CS8900A)" },
+    // Uthernet II (a2RetroSystems) — WIZnet W5100 hardware TCP/IP stack.
+    // Its four TCP/UDP sockets map onto host BSD sockets, so IRC / telnet
+    // / FTP clients work with no libslirp and no privileges; only its
+    // MACRAW / IPRAW modes need a backend. No MAME device — ported from
+    // AppleWin `source/Uthernet2.cpp`.
+    { "uthernet2",    "Uthernet II (W5100)" },
     // Microsoft SoftCard — Z80 DMA bus-master card for CP/M. No ROM
     // needed (the card has none; the CP/M boot disk finds it by toggling
     // slot ROM windows). MAME a2bus/a2softcard.cpp port.

@@ -28,10 +28,12 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 ## Build & run
 
 ```bash
-./setup_imgui.sh             # one-time deps + clones imgui/
+./setup_imgui.sh             # one-time deps + clones imgui/ at the pinned commit
 cd build && cmake .. && make # → build/POM2
 ./run_emulator.sh            # cwd = repo root so roms/ probes resolve
 ```
+
+**Dear ImGui is pinned** — `imgui_pin.env` is the single source of truth (repo + branch + commit), shared by `setup_imgui.sh` and both CI jobs. POM2 requires the **`docking`** branch: the DockSpace that hosts its ~33 panels needs `ImGuiConfigFlags_DockingEnable`, which does not exist on `master`. The branch is force-pushed on every upstream rebase, hence the commit pin. Multi-viewport stays off. → [DEV § Docking](DEV.md#docking--layout-presets)
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
 
@@ -67,15 +69,22 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | SmartPort 3.5" //c+ on-board | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
+| Uthernet I (CS8900A NIC) | `UthernetCard.*`, `Cs8900aDevice.*` | [§ Uthernet I](DEV.md#uthernet-i-cs8900a) |
+| Uthernet II (W5100 hardware TCP/IP) | `UthernetIICard.*`, `W5100Device.*` | [§ Uthernet II](DEV.md#uthernet-ii-w5100) |
+| Ethernet host transport (libslirp, optional) | `NetworkBackend.h`, `SlirpNetworkBackend.*` | [§ Network backends](DEV.md#network-backends) |
 | Printer card (synthetic → spool) | `PrinterCard.h/.cpp` | [§ Printer](DEV.md#printer-card-parallel-synthetic) |
 | Grappler+ printer (ROM-gated) | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
-| ImageWriter II printer + paper tray (host-side, fed by any printer card) | `ImageWriter.*`, `ImageWriter_ImGui.*` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
+| ImageWriter II printer + paper tray (host-side, fed by any printer card or the SSC printer tap) + PDF export | `ImageWriter.*`, `ImageWriterPdf.*`, `ImageWriter_ImGui.*` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
 | ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (MAME + AppleWin HLE) | `MouseCard.*`, `MouseCardAppleWin.*` | [§ Mouse](DEV.md#mouse-card) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |
 | UI (ImGui) | `MainWindow.*`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui) |
+| UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
+| Command palette (Ctrl+Shift+P) | `CommandPalette_ImGui.h/.cpp` | [§ Palette](DEV.md#command-palette-commandpalette_imgui) |
+| Docking + layout presets | `MainWindow.cpp` (`renderDockSpace`/`applyDockLayout`), `imgui_pin.env` | [§ Docking](DEV.md#docking--layout-presets) |
 | HGR/DHGR Paint editor (portable, shared w/ POM1) | `hgrpaint/*`, `Pom2HgrPaintHost.*` | [§ Paint editor](DEV.md#hgr--dhgr-paint-editor-hgrpaint-shared-with-pom1) |
-| Slot Config + catalog + media bay | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
+| Slot Config + Internal Disks & Media (2 windows) | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
+| ROM inventory panel (present / missing / identity) | `RomStatus_ImGui.*`, `RomCatalog.h` | [§ ROM Status](DEV.md#rom-status-panel) |
 | Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
 | Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
@@ -116,7 +125,10 @@ $C0A8-$C0AB  SSC ACIA (slot 2)
 $C0C0        ThunderClock+ uPD1990AC bit-bang (slot 4)
 $C0E0-$C0EF  Disk II soft switches (slot 6 — $C0EC=Q6L, $C0ED=Q6H)
 $C0(8+s)X    Per-slot device select (e.g. Phasor mode soft-switch
-             $C0(8+s)0..F when a Phasor sits in slot s)
+             $C0(8+s)0..F when a Phasor sits in slot s; a whole
+             CS8900A when an Uthernet I sits there; the W5100's
+             4-register indirect window — mode / addr-hi / addr-lo /
+             data — repeated 4× when it's an Uthernet II)
 $C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on).
              When MockingboardCard SoundII is in slot s, $Cs40-$Cs44
              routes to the SSI263; when EchoPlusCard is in slot s,

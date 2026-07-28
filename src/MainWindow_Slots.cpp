@@ -50,6 +50,7 @@
 #include "SlotCardCatalog.h"
 #include "StatusLed.h"
 #include "IconsFontAwesome6.h"
+#include "Pom2Theme.h"   // palette() for the staged-change accent
 #include "MountableMediaCard.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
@@ -105,25 +106,45 @@ void MainWindow::renderSlotConfigPanel()
 {
     if (!showSlotConfigPanel) return;
 
-    ImGui::SetNextWindowSize(ImVec2(880, 480), ImGuiCond_FirstUseEver);
+    // 880 px was sized for two columns; one column needs about half that.
+    ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Slot Configuration", &showSlotConfigPanel)) {
         ImGui::End();
         return;
     }
 
+    // This window is ONE interaction model: staged. It used to carry the media
+    // column too, and the two models sat side by side with nothing but a
+    // banner to tell them apart — Apply / Revert at the bottom of the left
+    // child read as governing the whole window, so mounting a disk on the
+    // right and hitting Revert on the left looked like it should undo the
+    // mount. The media half now lives in its own window (Devices → Internal
+    // Disks & Media), which is what makes Apply / Revert unambiguous.
     ImGui::TextWrapped(
-        "Left: assign a card to each expansion slot — cards built into the "
-        "active profile are locked and shown greyed. Right: mount media into "
-        "the internal disks and the mountable ports of the storage cards that "
-        "are plugged.");
+        "Assign a card to each expansion slot. Changes are staged until you "
+        "Apply — that restarts the emulator. Mounting media is a separate "
+        "window: Devices \xe2\x86\x92 Internal Disks & Media.");
     ImGui::Spacing();
 
     const auto& profileCfg = pom2::profileConfig(activeProfile);
 
-    // ══ LEFT COLUMN: per-slot card assignment ════════════════════════════
-    ImGui::BeginChild("##slotassign", ImVec2(400, 0), true);
+    ImGui::BeginChild("##slotassign", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_Borders);
     {
         ImGui::SeparatorText("Expansion slots");
+
+        // Slot number leads, control fills the rest of the row. ImGui's native
+        // LabelText / BeginCombo put their label on the RIGHT, so the panel
+        // read "(empty) v  Slot 1" — the number, which is exactly what the eye
+        // scans down, trailed its own control. Gutter measured off the widest
+        // label so it survives the UI zoom.
+        const float slotGutter = ImGui::CalcTextSize("AUX slot").x +
+                                 ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        auto slotLabel = [slotGutter](const char* text) {
+            ImGui::TextUnformatted(text);
+            ImGui::SameLine(slotGutter);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+        };
 
         // Snapshot the canonical mapping into a working copy so the user's
         // edits are local until Apply.
@@ -146,8 +167,8 @@ void MainWindow::renderSlotConfigPanel()
         // greyed as a non-editable row.
         if (profileCfg.iieMode) {
             ImGui::BeginDisabled(true);
-            ImGui::LabelText("AUX slot", "%s",
-                "Extended 80-Column Card (built-in, $C300 firmware)");
+            slotLabel("AUX slot");
+            ImGui::TextUnformatted("Extended 80-Column Card (built-in, $C300 firmware)");
             ImGui::EndDisabled();
             ImGui::Spacing();
         }
@@ -198,8 +219,12 @@ void MainWindow::renderSlotConfigPanel()
                 std::snprintf(preview, sizeof(preview),
                               "%s — %s", cardName, bis.label.c_str());
                 ImGui::BeginDisabled(true);
-                ImGui::LabelText(label, "%s", preview);
+                slotLabel(label);
+                ImGui::TextUnformatted(preview);
                 ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Built into %s — cannot be changed.",
+                                      std::string(profileCfg.displayName).c_str());
                 continue;
             }
 
@@ -216,14 +241,18 @@ void MainWindow::renderSlotConfigPanel()
                 if (builtinRgb) {
                     draft[s] = "";
                     ImGui::BeginDisabled(true);
-                    ImGui::LabelText(label, "(no physical slot on %s)",
-                                     std::string(profileCfg.displayName).c_str());
+                    slotLabel(label);
+                    ImGui::Text("(no physical slot on %s)",
+                                std::string(profileCfg.displayName).c_str());
                     ImGui::EndDisabled();
                     continue;
                 }
                 const char* preview = (draft[s] == "chatmauve")
                     ? "Le Chat Mauve RGB (rear connector)" : "(empty)";
-                if (ImGui::BeginCombo(label, preview)) {
+                slotLabel(label);
+                char comboId[24];
+                std::snprintf(comboId, sizeof(comboId), "##slotcombo%d", s);
+                if (ImGui::BeginCombo(comboId, preview)) {
                     if (ImGui::Selectable("(empty)", draft[s].empty()))
                         draft[s] = "";
                     if (ImGui::Selectable("Le Chat Mauve RGB (rear connector)",
@@ -248,8 +277,27 @@ void MainWindow::renderSlotConfigPanel()
                 if (ct.key == draft[s]) { preview = ct.label; break; }
             }
 
+            // A staged row is marked where the user is looking — on the row
+            // itself — not only by the button at the bottom of the column.
+            const bool staged = (draft[s] != slotCards[s]);
+            if (staged) {
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    ImGui::ColorConvertU32ToFloat4(pom2::palette().accent));
+                ImGui::TextUnformatted(ICON_FA_CIRCLE_DOT);
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) {
+                    const char* wasLabel = "(empty)";
+                    for (const auto& ct : kCardTypes)
+                        if (ct.key == slotCards[s]) { wasLabel = ct.label; break; }
+                    ImGui::SetTooltip("Staged. Currently plugged: %s", wasLabel);
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+            }
+            slotLabel(label);
+            char comboId[24];
+            std::snprintf(comboId, sizeof(comboId), "##slotcombo%d", s);
             if (dup) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
-            if (ImGui::BeginCombo(label, preview)) {
+            if (ImGui::BeginCombo(comboId, preview)) {
                 for (const auto& ct : kCardTypes) {
                     const bool selected = (ct.key == draft[s]);
                     const bool disabled =
@@ -270,6 +318,29 @@ void MainWindow::renderSlotConfigPanel()
                 ImGui::EndCombo();
             }
             if (dup) ImGui::PopStyleColor();
+
+            // Slot 3 on a //e-class machine is where the built-in 80-column
+            // firmware keeps OURCH/OURCV — the screen holes at $x78+3 are
+            // its scratchpad, not the card's. Printer firmware stores its
+            // column and line counters there, so a Grappler+/Printer card
+            // in slot 3 reads the cursor position back as its line width
+            // and wraps after every character (real hardware does exactly
+            // the same — the Grappler+ manual says slot 1). Everything
+            // else about the card works, so warn instead of forbidding.
+            if (s == 3 && profileCfg.iieMode &&
+                (draft[s] == "grappler" || draft[s] == "printer")) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                                   "(80-col firmware owns slot 3 — use 1)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "On a //e the internal 80-column firmware uses the "
+                        "slot-3 screen holes ($0478+3, $057B, $05FB…) for "
+                        "its own cursor state.\nA printer card in that slot "
+                        "shares them and prints one character per line.\n"
+                        "Move it to slot 1 (or 2/4/5/7) — same as on real "
+                        "hardware.");
+            }
         }
 
         ImGui::Spacing();
@@ -292,8 +363,34 @@ void MainWindow::renderSlotConfigPanel()
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                                "One card type per slot — fix duplicates.");
         }
-        ImGui::BeginDisabled(anyDuplicate);
-        if (ImGui::Button("Apply (restarts emulator)")) {
+
+        // How many user-editable slots differ from what is actually plugged.
+        // Built-in slots are force-fed into the draft by the rows above, so
+        // they can never count as pending.
+        int pending = 0;
+        for (int s = 1; s <= 7; ++s) {
+            if (profileCfg.builtInSlots[s].has_value()) continue;
+            if (draft[s] != slotCards[s]) ++pending;
+        }
+
+        if (pending > 0) {
+            ImGui::TextColored(
+                ImGui::ColorConvertU32ToFloat4(pom2::palette().accent),
+                ICON_FA_CIRCLE_DOT " %d staged change%s — not applied yet",
+                pending, pending == 1 ? "" : "s");
+        } else {
+            ImGui::TextDisabled("No staged changes.");
+        }
+
+        // Apply is disabled with nothing staged: a button that restarts the
+        // emulator should never be a no-op the user can hit by reflex.
+        ImGui::BeginDisabled(anyDuplicate || pending == 0);
+        char applyLabel[64];
+        std::snprintf(applyLabel, sizeof(applyLabel),
+                      pending > 0 ? "Apply %d change%s (restarts emulator)"
+                                  : "Apply (restarts emulator)",
+                      pending, pending == 1 ? "" : "s");
+        if (ImGui::Button(applyLabel)) {
             // Persist ONLY user-editable slots. The panel force-feeds the
             // draft with the profile's built-in cards and force-empties the
             // non-existent connectors on a noPhysicalSlots machine (see the
@@ -313,18 +410,51 @@ void MainWindow::renderSlotConfigPanel()
             for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
         }
         ImGui::EndDisabled();
+        if (pending > 0 && ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Restarts the emulated machine with the new cards.\n"
+                "Mounted media is preserved where the card still exists.\n"
+                "Only affects the slot list above — anything mounted from\n"
+                "Internal Disks & Media has already taken effect.");
         ImGui::SameLine();
+        ImGui::BeginDisabled(pending == 0);
         if (ImGui::Button("Revert"))
             for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+        ImGui::EndDisabled();
+        if (pending > 0 && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Discard the %d staged slot change%s.\n"
+                              "Does not touch mounted media.",
+                              pending, pending == 1 ? "" : "s");
     }
     ImGui::EndChild();
 
-    ImGui::SameLine();
+    ImGui::End();
+}
 
-    // ══ RIGHT COLUMN: internal disks + mountable ports ═══════════════════
-    ImGui::BeginChild("##slotmedia", ImVec2(0, 0), true);
+// ─── Internal Disks & Media ─────────────────────────────────────────────
+// Split out of Slot Configuration on 2026-07-28. Everything here is
+// IMMEDIATE — Mount / Insert / Eject act on the running machine — which is
+// the opposite of the staged model next door, and the reason the two no
+// longer share a window.
+void MainWindow::renderMediaPanel()
+{
+    if (!showMediaPanel) return;
+
+    ImGui::SetNextWindowSize(ImVec2(520, 480), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Internal Disks & Media", &showMediaPanel)) {
+        ImGui::End();
+        return;
+    }
+
+    const auto& profileCfg = pom2::profileConfig(activeProfile);
+
+    ImGui::BeginChild("##slotmedia", ImVec2(0, 0), ImGuiChildFlags_Borders);
     {
         ImGui::SeparatorText("Internal disks & mountable ports");
+        ImGui::TextDisabled("Mount / Insert / Eject take effect immediately.");
+        ImGui::TextDisabled("Which card sits in which slot: Machine \xe2\x86\x92 "
+                            "Slot Configuration.");
+        ImGui::Spacing();
 
         // Shared media status LED (grey/green/yellow/red). Kept as a local
         // alias so the existing per-row call sites read unchanged.
@@ -693,11 +823,19 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // by slot number, not by diskCards[] order, so re-plugging in the
     // same slot picks the right path even if SettingsBackedSlots returns
     // them in a different order.
-    std::array<std::string, 8> savedDiskPaths{};
+    // Pair the path with the live write-back toggle, same as savedCffaPaths
+    // below: plugSlotsFromSettings restores the *persisted* opt-in, but a
+    // toggle made from the Disk II panel this session isn't in settings yet
+    // and would be silently reverted to read-only by the re-plug.
+    // `nullopt` = no Disk II in that slot before the switch, so the card the
+    // new profile plugs there keeps whatever plugSlotsFromSettings restored
+    // from the persisted keys instead of inheriting a fabricated read-only.
+    std::array<std::optional<std::pair<std::string, bool>>, 8> savedDiskPaths{};
     for (auto* c : diskCards) {
-        if (c && c->isDiskLoaded()) {
-            savedDiskPaths[static_cast<size_t>(c->getSlot())] = c->getDiskPath();
-        }
+        if (!c) continue;
+        savedDiskPaths[static_cast<size_t>(c->getSlot())] =
+            std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
+                           c->isWriteBackEnabled());
     }
     if (hdvCard && hdvCard->isImageLoaded()) {
         const std::string& path = hdvCard->getImagePath();
@@ -757,7 +895,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         mockingboardCard = nullptr;
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;
+        echoPlusTmsCard  = nullptr;
         printerCard      = nullptr;
+        // grapplerCard feeds pumpImageWriter() every frame — leaving it
+        // dangling here is a use-after-free the moment the card is gone.
+        grapplerCard     = nullptr;
+        // Same hazard: the Ethernet panel dereferences these every frame.
+        uthernetCard     = nullptr;
+        uthernetIICard   = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
@@ -889,7 +1034,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    disk was mounted there at the profile-switch time.
     for (auto* c : diskCards) {
         if (!c) continue;
-        const std::string& path = savedDiskPaths[static_cast<size_t>(c->getSlot())];
+        const auto& saved = savedDiskPaths[static_cast<size_t>(c->getSlot())];
+        if (!saved) continue;               // no DiskII here before the switch
+        const auto& [path, writeBack] = *saved;
+        // Write-back BEFORE the mount: insertDisk copies the card flag into
+        // the freshly loaded image, and a card that comes up read-only makes
+        // the guest see a write-protected disk (DOS 3.3 "WRITE PROTECTED",
+        // Print Shop hanging on its setup save).
+        c->setWriteBackEnabled(writeBack);
         if (path.empty()) continue;
         std::error_code ec;
         if (std::filesystem::is_regular_file(path, ec)) {
@@ -1062,7 +1214,11 @@ void MainWindow::restartEmulationFromSettings()
         mockingboardCard = nullptr;
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;
+        echoPlusTmsCard  = nullptr;
         printerCard      = nullptr;
+        grapplerCard     = nullptr;   // see pumpImageWriter() — non-owning
+        uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
+        uthernetIICard   = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the

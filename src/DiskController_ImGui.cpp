@@ -76,7 +76,34 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
                     snap.halfTrack);
         ImGui::Text("Buffer pos: %d / 6656", snap.trackPos);
         ImGui::TextWrapped("Image: %s", snap.diskPath.c_str());
-        ImGui::TextDisabled("(read-only)");
+        // Say WHY the guest sees a read-only disk. Without this the app
+        // just reports "disk is write-protected" and nothing connects that
+        // to a host checkbox — Print Shop refusing to save its own Setup
+        // looked like a bug in the emulator for exactly this reason.
+        if (snap.fileWriteProtected) {
+            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                               "Read-only: the image itself is "
+                               "write-protected (WOZ/2IMG flag)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Physical write-protect of the medium — "
+                                  "honoured whatever the write-back setting "
+                                  "is, exactly like the notch on a real "
+                                  "sleeve.");
+        } else if (!snap.writeBackEnabled) {
+            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                               "Read-only: write-back is off — the guest "
+                               "will see a write-protected disk");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Off by default so running a program "
+                                  "never silently rewrites your image "
+                                  "file.\nThe drive reports write-protect "
+                                  "rather than accepting writes and "
+                                  "discarding them on eject.\nTick "
+                                  "\"Write-back\" below to let this disk be "
+                                  "saved.");
+        } else {
+            ImGui::TextDisabled("Writable — changes are saved on eject.");
+        }
     } else {
         ImGui::TextDisabled("No disk inserted.");
         // If a previous insert attempt failed, surface the underlying

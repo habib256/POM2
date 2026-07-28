@@ -119,6 +119,28 @@ public:
     /// worker thread which calls the same method internally.
     void deliverRxBytes(const uint8_t* data, size_t n);
 
+    /// Printer tap — the //c's real printer port IS this card (slot 1),
+    /// so the host-side ImageWriter needs to see the TX byte stream the
+    /// way it sees a PrinterCard/GrapplerCard spool. When the tap is on,
+    /// every byte the ACIA accepts for transmit (i.e. past the DTR gate)
+    /// is *also* appended to a host-visible spool with the exact
+    /// `drainSpoolFrom` shape of `PrinterCard::drainSpoolFrom`, which is
+    /// what `MainWindow::pumpImageWriter()` consumes. The TCP bridge is
+    /// unaffected — tap and telnet can run at once (a serial printer and
+    /// a terminal can't share a real port either, but the tap is a
+    /// host-side wiretap, not a second DB-25). Persisted per slot as
+    /// `ssc_printer_tap_slotN`; defaults ON for slot 1 (the printer-port
+    /// convention) and OFF elsewhere.
+    void setPrinterTap(bool on);
+    bool printerTap() const;
+    /// Append every spooled byte at index >= `from` to `out`; returns the
+    /// spool's total size (the caller's next `from`). Same contract as
+    /// `PrinterCard::drainSpoolFrom`, including the resync-on-clear rule:
+    /// `from` past the end hands back the whole spool.
+    size_t drainPrinterSpoolFrom(size_t from, std::vector<uint8_t>& out) const;
+    size_t printerSpoolBytes() const;
+    void   clearPrinterSpool();
+
     /// Telnet RX line-ending normaliser (drop NUL, CR LF → CR, LF → CR).
     /// Public + static so it is unit-testable in isolation; the RX worker
     /// calls it on every non-raw inbound chunk. Mutates `data` in place,
@@ -263,6 +285,7 @@ private:
     double sendBudget_ = 0.0;
     std::chrono::steady_clock::time_point lastDrainTime_;
 
+
     /// Apply a write to the command register: decode DTR/echo/RX-IRQ,
     /// clear pending RX IRQ when its enable bit goes off (MAME
     /// `mos6551.cpp:293-296`), force TX MARK when DTR de-asserts.
@@ -306,6 +329,12 @@ private:
     // this callback so a telnet session lands characters in BASIC's
     // keyboard latch even when IN#n hasn't been run yet.
     std::function<void(uint8_t)> keyboardSink;
+
+    // Printer tap (see setPrinterTap). Guarded by bufferMtx like the TX
+    // ring; the spool intentionally survives onReset() — it is host-side
+    // paper trail, not machine state (same rule as PrinterCard's spool).
+    bool printerTap_ = false;
+    std::vector<uint8_t> printerSpool_;
 
     void buildRom();
     void runWorker();

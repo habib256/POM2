@@ -18,7 +18,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [Storage](#storage) · [ProDOSHardDiskCard](#prodoshardiskcard-hdv-synthetic-block-model) · [CffaCard](#cffacard-cffa-20--mame-faithful-ide) · [SmartPortCard](#smartportcard-e-liron-class)
 - [IWM (//c+ on-board)](#iwm-c-on-board)
 - [SmartPort 3.5" stack](#smartport-35-stack)
-- [Peripherals](#peripherals) · [SSC](#super-serial-card-slot-2--telnet-bridge) · [ClockCard](#prodos-clock-card-slot-4) · [MouseCard](#mouse-card) · [Joystick / paddles](#joystick--paddles)
+- [Peripherals](#peripherals) · [SSC](#super-serial-card-slot-2--telnet-bridge) · [Network backends](#network-backends) · [Uthernet I](#uthernet-i-cs8900a) · [Uthernet II](#uthernet-ii-w5100) · [ClockCard](#prodos-clock-card-slot-4) · [MouseCard](#mouse-card) · [Joystick / paddles](#joystick--paddles)
 - [UI (ImGui)](#ui-imgui)
 - [Host control center](#host-control-center-slot-configuration--floppy-emu)
 - [Profile switching internals](#profile-switching-internals)
@@ -38,6 +38,23 @@ abs,X=4, zp=3 ($5C left at 8). Pinned: `cmos_6502_smoke_test`,
 `klaus_65c02_extended_test` (PASSES @ `$24F1`),
 `cpu_cycle_count_test`. `setProgramCounter()` is the Klaus harness
 back-door.
+
+**Interrupt sampling is instruction-granular (owned deviation).** Real
+silicon samples IRQ/NMI in an instruction's penultimate cycle, and
+`CLI` / `SEI` / `PLP` commit their new I flag *after* that point — so an
+IRQ pending across a `CLI` is taken one instruction later than naive
+reading suggests, and `SEI` cannot cancel an already-sampled interrupt.
+MAME's `m6502` reproduces this by inhibiting interrupts for one
+instruction after those opcodes. POM2 tests the I flag at the
+instruction boundary in `step()`, so in the `CLI` case it vectors one
+instruction **early**. This is structural: `step()` charges `cycles` to
+`advanceCycles` in a single lump, so there is no penultimate cycle to
+sample at — modelling it means a cycle-stepped core. Neither Klaus nor
+Tom Harte drives the interrupt lines, so nothing pins it. Impact is
+confined to software counting cycles through an IRQ entry; the corpus
+titles depend on the VIA/timer period instead. Not to be confused with
+the VIA `syncToCpuCycle` one-instruction over-count (fixed 2026-05-25,
+see [Lazy timer sync](#mockingboard)).
 
 ### Tom Harte 65x02 ProcessorTests (cycle-exact gate)
 
@@ -1338,6 +1355,40 @@ at LSS-cycle `cellIdx*8 + 4`. `getNextTransition` verbatim MAME
 `writeFlux(track, start, end, count, transitions)` splices flux
 window back into nibble buffer.
 
+**Write framing (non-WOZ).** A nibble store has no angular length, so
+the flux the head lays down is FRAMED back into nibbles exactly as the
+read sequencer frames it: skip 0-cells until a 1, then that 1 plus the
+next seven cells are one nibble — the two 0-cells trailing a sync `$FF`
+are skipped, which is what makes them sync. Nibbles are laid down
+sequentially from the slot the head is over; a mid-nibble splice leaves
+that nibble's old value (a real write splice leaves that stub) and
+frames into the following slot. `DiskImage::writeFraming[track]` carries
+the shift accumulator + destination slot across flushes, because
+`DiskIICard` flushes every ~30 transitions and a nibble straddles chunks
+constantly. **The cell grid comes from the write clock**
+(`fr.origin = burst start`), not the revolution anchor: the head emits
+one cell every `lssCyclesPerCell()` LSS cycles, so a burst's transitions
+are exact multiples of that apart, whereas the revolution phase puts the
+grid at an arbitrary sub-cell offset and rounds adjacent transitions into
+the same cell. The anchor is consulted once, to pick the nibble the head
+is over. Aligning the write to the OLD track's padded nibble grid (the
+pre-2026-07 approach) mangled 345 of a data field's 353 nibbles the
+moment the new content padded its sync run differently — see
+[CHANGELOG 2026-07-28](CHANGELOG.md). Pinned:
+`disk_writeflux_framing`; `POM2_TRACE_WRITEFLUX=1` dumps each splice
+window. Note `disk_write_controller_smoke` exercises the **legacy**
+32-cycle gate (it never calls `loadLssRom`), so it cannot cover this
+path — the shipped app bundles `roms/diskii_p6.rom` and always runs the
+LSS/flux one.
+
+**Write-back opt-in plumbing.** `disk_writeback[_slotN]` has to be
+re-applied by `plugSlotsFromSettings`' `plugDiskII` (like `plugHdv` /
+`plugCffa` do) *and* carried through `applyProfile`'s media snapshot as
+`{path, writeBack}`, because `applyProfile` rebuilds every card and the
+MainWindow ctor calls it at startup. Miss either and the guest sees a
+write-protected disk (`isWriteProtected() == fileWriteProtected ||
+!writeBackEnabled`) — DOS 3.3 answers WRITE PROTECTED.
+
 ### ProDOSHardDiskCard (HDV — synthetic-block model)
 
 Slot-plugged ProDOS hard disk (default slot 5, label `hdv`) backed by
@@ -2027,6 +2078,244 @@ Source: markadev/AppleII-RevEng/Thunderware-Thunderclock-Plus. The
 load path validates the $08/$28/$58/$70 ProDOS signature at
 offsets 0/2/4/6 and falls back to the synth ROM if absent.
 
+### //c on-board IWM vs the slot-6 Disk II
+
+`MemoryProfile_IIcClass.cpp` (`ioReadIWM` / `ioWriteIWM`) mirrors
+`$C0E0-$C0EF` into the on-board IWM — but **only on the //c+**
+(`isPlus_`), and that gate is load-bearing.
+
+MAME wires `A2BUS_IWM` at sl6 for 32 KB //c-class machines as *the*
+controller, replacing the Disk II. POM2 does not: `iwmAuthoritative`
+leaves the slot-6 `DiskIICard` (the MAME-parity LSS) answering for 5.25"
+media. So on a plain //c the mirror contributed **no data path** while
+still running the IWM's own phase/motor handling — a second controller on
+the same soft switches. Two controllers stepping one drive drifts the
+head, and DOS 3.3 RWTS then loops in seek/retry (`$B948-$B956`, head
+oscillating between the target track and 0).
+
+The visible symptom was in a completely different subsystem: Print Shop
+on a //c could not save its setup or load its print overlay, so it
+returned to its menu without rasterising and **printing produced nothing**
+— while the SSC → ImageWriter path was provably byte-exact. Worth
+remembering when a //c bug looks like it belongs to whatever subsystem
+noticed it first.
+
+Pinned by `iic_diskii_no_iwm_conflict` (plain //c must not claim — or
+even tick — the IWM; //c+ must still route to it).
+
+### Network backends
+
+`NetworkBackend.h` — the host-side transport that carries raw Ethernet
+frames for the two Uthernet cards. Shape follows AppleWin's
+`source/Tfe/NetworkBackend.h` (GPL2+).
+
+**Who actually needs it.** Only the paths that move *frames*:
+
+| Card | Mode | Needs a backend? |
+|---|---|---|
+| Uthernet I (CS8900A) | all | **yes** — it is a plain NIC |
+| Uthernet II (W5100) | TCP, UDP | **no** — host BSD sockets |
+| Uthernet II (W5100) | MACRAW, IPRAW | yes |
+
+That table is the single most important thing about this subsystem: the
+Uthernet II is fully functional for IRC / telnet / FTP with **no backend
+at all**, because its W5100 is a TCP/IP offload engine, not a NIC — POM2
+maps its four sockets straight onto host sockets. Only the Uthernet I
+(whose guest software — IP65, Contiki, ADTPro-ethernet — carries its own
+stack and hands the card whole frames) is hard-gated on a transport.
+
+Three implementations:
+
+- **`NullNetworkBackend`** — always available, `isValid()` false. Frames
+  are dropped, nothing arrives. Keeps the cards pluggable and
+  software-detectable on a build with no host networking.
+- **`LoopbackNetworkBackend`** — `transmit()` feeds `receive()`. Drives
+  both pinned smoke tests (no real network in CI) and is selectable at
+  runtime as a self-test mode.
+- **`SlirpNetworkBackend`** (`SlirpNetworkBackend.h/.cpp`) — libslirp
+  user-mode NAT. **Optional build dep**, gated on `POM2_HAVE_SLIRP`
+  which CMake sets when `pkg-config` finds `slirp`.
+
+**Why libslirp and not TAP/pcap.** Both classic ways to bridge Ethernet
+need root (`CAP_NET_ADMIN` / `CAP_NET_RAW`). libslirp terminates the
+guest's IP inside our process and re-opens ordinary user-space sockets:
+no privileges, no host configuration, identical behaviour in CI. The
+cost is slirp's documented limits — outbound only (no inbound without
+explicit port forwarding), ICMP only where the host allows unprivileged
+ping sockets, and the guest is unreachable from the LAN.
+
+Virtual network (libslirp defaults, same as QEMU `-net user`):
+
+```
+10.0.2.0/24   the virtual network
+10.0.2.2      virtual router / gateway (the host)
+10.0.2.3      virtual DNS server
+10.0.2.15     what the DHCP server hands out
+```
+
+Configure IP65 / Contiki with `10.0.2.15 / 255.255.255.0 / 10.0.2.2 /
+10.0.2.3` if you skip DHCP.
+
+`resolveMac()` synthesises `52:55:<ip bytes>`, which is exactly what
+libslirp's own ARP responder replies for its virtual network (see
+libslirp `src/arp_table.c`), so an IPRAW frame is well-formed without
+paying an ARP round-trip the guest never observes.
+
+**Threading.** Backends are driven from the CPU thread under
+`stateMutex`, via `SlotPeripheral::advanceCycles`. Nothing may block:
+`receive()` returns <= 0 when idle and `poll()` uses a zero timeout.
+Both cards throttle to one `poll()` per ~2048 CPU cycles (≈ 500 Hz),
+well inside any Ethernet deadline and cheap enough to leave
+unconditional in the cycle hook.
+
+Settings key `ethernet_backend`: `slirp` (default) | `loopback` | `none`.
+Takes effect on the next plug (profile switch or Slot Config change).
+
+### Uthernet I (CS8900A)
+
+`UthernetCard.h/.cpp` (card, catalog key `uthernet`) +
+`Cs8900aDevice.h/.cpp` (chip). Port of MAME
+`src/devices/bus/a2bus/uthernet.cpp` (BSD-3, R. Belmont) over
+`src/devices/machine/cs8900a.cpp` (GPL-2.0+, Rhett Aultman, from Spiro
+Trikaliotis' VICE model). POM2 is GPL-3.0, which GPL-2.0+ permits. Every
+function in `Cs8900aDevice.cpp` carries the MAME line range it mirrors.
+
+The card is a ~40-line shim, exactly as in MAME: `$C0nX` forwards the low
+nibble straight to the chip, and that is the *whole* address decode. There
+is no slot ROM — a2RetroSystems left the CS8900A's boot-PROM interface
+unpopulated — so `slotRomRead` keeps the SlotPeripheral `$FF` default and
+every driver is loaded from disk. Presenting a signature here would make
+ProDOS probe a device that does not exist.
+
+**Chip shape.** 16 bytes of I/O space hiding a 4 KB indirect register
+file (the *PacketPage*). Set a pointer at `$C0nA/B`, read/write the data
+window at `$C0nC/D`; pointer bit 15 enables auto-increment (by **one**,
+not two — odd pointers are legal). Frames are not DMA'd: a received frame
+lands at PacketPage `$0400` and is read out byte-at-a-time through the
+RXTXDATA window at `$C0n0/1`.
+
+**Transmit is a four-step handshake** (`cs8900a.cpp:210-215, 839-904`)
+and skipping a step must emit nothing — pinned:
+
+1. write TxCMD (`$0144`) → `GOT_CMD`
+2. write TxLength (`$0146`) → `GOT_LEN`, if `4 <= len <= 1518`
+3. **read** BusST (`$0138`) and observe `Rdy4TxNOW` → `READ_BUSST`
+4. push `len` bytes through RXTXDATA; the last one releases the frame
+
+**Receive is polled.** Reading RxEvent (`$0124`) pops the next accepted
+frame into PacketPage and flips to `GOT_FRAME`. Reading RxEvent *again*
+before the payload is drained is an "implied skip" that discards it —
+real hardware behaviour, modelled. Payload readback order is the
+datasheet's: RxStatus H/L, RxLength H/L, then payload L/H per word.
+
+**Deltas from MAME**, all deliberate:
+
+- MAME is *pushed* frames by `device_network_interface::recv_start_cb`
+  (`cs8900a.cpp:1483-1512`). POM2 has no such bus, so `pumpBackend()`
+  pulls from the `NetworkBackend` on the cycle hook and applies the same
+  `shouldAccept()` pre-filter before queueing (bounded to 32 frames per
+  call so a busy link can't stall the CPU thread inside one
+  `advanceCycles`).
+- MAME's `assert()`-heavy PacketPage macros become clamped accessors: a
+  mis-decoded `$C0nX` must never take the emulator down.
+- `machine().side_effects_disabled()` has no POM2 analogue; `peek()`
+  gives the debug panel the same side-effect-free read.
+- The multicast hash filter needs MAME's `util::crc32_creator::simple`;
+  `crc32Ieee()` is a local standard IEEE 802.3 CRC-32 (reflected, poly
+  `0xEDB88320`), which is the same function.
+
+**Snapshot**: the whole 4 KB PacketPage rides along. That sounds heavy
+for a 60 Hz rewind ring until you notice `RewindBuffer.cpp:20-88`
+XOR-deltas it — a mostly-idle NIC costs a handful of bytes per frame. The
+*inbound frame queue* is deliberately NOT saved: it mirrors host network
+state that has moved on by the time a rewind replays, and restoring it
+would re-deliver packets the guest already consumed.
+
+Pinned by `uthernet_cs8900_smoke`.
+
+### Uthernet II (W5100)
+
+`UthernetIICard.h/.cpp` (card, catalog key `uthernet2`) +
+`W5100Device.h/.cpp` (chip). **MAME has no W5100 device** — its Apple II
+Ethernet support stops at the Uthernet I — so the reference is AppleWin
+`source/Uthernet2.cpp` + `source/W5100.h` (GPL-2.0+, Andrea Odetti),
+cross-checked against the WIZnet W5100 datasheet v1.2.8 and the Uthernet
+II manual (2018-11-17). Citations in `W5100Device.cpp` are AppleWin line
+numbers.
+
+**This is not a packet-level model, and that is the point.** The W5100 is
+a TCP/IP *offload engine*: the guest writes a destination address and
+port into registers, issues `CONNECT`, then pushes payload at a ring
+buffer. All protocol work happens inside the chip. That maps one-for-one
+onto host BSD sockets — so each of the four sockets in TCP or UDP mode
+owns a real non-blocking host socket, and the card needs **no Ethernet
+backend at all** for the traffic anyone actually cares about.
+
+Memory map (32 KB, reached through the indirect window):
+
+```
+$0000-$002F  common registers (mode, gateway, subnet, MAC, our IP,
+             retry timing, RX/TX memory-size allocation)
+$0400-$07FF  four 256-byte socket register banks (S0..S3)
+$4000-$5FFF  8 KB TX buffer, carved between sockets by TMSR
+$6000-$7FFF  8 KB RX buffer, carved between sockets by RMSR
+```
+
+Bus decode: **only A0 and A1 reach the card**, so the four registers
+repeat four times across `$C0nX`. The canonical group is `$C0n4` mode,
+`$C0n5` addr-hi, `$C0n6` addr-lo, `$C0n7` data. The aliasing is real
+hardware behaviour and drivers rely on it, so POM2 masks rather than
+range-checks. Auto-increment (mode bit 1) wraps *inside* each 8 KB buffer
+instead of spilling into the next region (manual p.12).
+
+**Per-protocol RX header.** The chip prepends a header to received data
+in the RX ring, and its size is what `SN_RX_RSR` counts:
+
+| Socket mode | Header |
+|---|---|
+| TCP (`ESTABLISHED`) | none — raw stream |
+| UDP | source IP (4) + source port (2) + length (2) |
+| IPRAW | source IP (4) + length (2) |
+| MACRAW | length (2) — and it **includes the two length bytes** |
+
+**Virtual DNS** (`Uthernet2.cpp:32-37`) is an AppleWin extension the real
+card does not have: bit 3 of a socket's protocol nibble means "the
+destination is a hostname". The length-prefixed name lives at socket
+offset `$2A-$FF`, `OPEN` resolves it into `DIPR`, and software detects
+the extension by reading `PTIMER` as 0. POM2 keeps it — it is what lets a
+guest reach `irc.libera.chat` without carrying a resolver — but **resolves
+off the CPU thread**: a plain blocking `getaddrinfo()` under `stateMutex`
+could stall emulation for seconds. The lookup runs on a detached thread
+with a bounded `kDnsWaitMs = 120` wait; on timeout the answer still lands
+in a mutex-guarded mailbox that `poll()` folds into the cache on the CPU
+thread, so the guest's retry (every practical client retries a failed
+connect) succeeds instantly. Toggle: `uthernet2_virtual_dns`.
+
+**What is deliberately not implemented.** `LISTEN` is in the W5100 command
+set but POM2 does not open a host listener for it: an inbound connection
+cannot reach the guest through either supported transport (libslirp is
+outbound-only without explicit port forwarding, and there is no host port
+the user asked to bind). The command logs "not supported" rather than
+pretending.
+
+**Snapshot**: only the datasheet-defined regions are saved — the reserved
+holes (`$0030-$03FF`, `$0800-$3FFF`) carry nothing and would just bloat
+the rewind delta. Buffer geometry is *derived*, rebuilt from RMSR/TMSR on
+load rather than stored. A live TCP connection or UDP binding **must come
+back CLOSED**: the peer moved on while the ring was rewound and the fd is
+gone, so pretending to still be `ESTABLISHED` would hang the guest. The
+raw modes carry no host state and do come back. Pinned.
+
+Pinned by `uthernet2_w5100_smoke`, which includes a **real TCP session**
+against a loopback listener the test opens itself (OPEN → CONNECT → SEND
+→ RECV → CLOSE, deliberately with no `NetworkBackend` plugged, proving
+the no-backend claim above).
+
+**WASM**: there is no usable BSD-socket API in the browser, so the
+TCP/UDP paths compile out and those modes stay `CLOSED` (same treatment
+`SuperSerialCard` gives its telnet listener). The register model, the
+rings and MACRAW/IPRAW are unaffected.
+
 ### Printer card (parallel, synthetic)
 
 `PrinterCard` (`PrinterCard.h/.cpp`) — host-side spool that captures every
@@ -2091,23 +2380,70 @@ card. Catalog key `"grappler"`, default slot 1. Adds two things over
   warning; the card falls back to a synthetic stub identical in
   shape to `PrinterCard` so `PR#n` still works.
 * **Spool semantics identical to PrinterCard.** Data port at
-  `$C0(8+s)0` enqueues bytes verbatim; the host UI saves the spool
-  as `.txt`. Grappler-graphic-dump commands (`^I G` / `^I H`) emit
-  Epson-style printer escapes — those bytes are spooled too, ready
-  for a future "render as raster" mode.
+  `$C0(8+s)0` enqueues bytes verbatim (masked to 7 bits when the S1:1
+  MSB switch is open, MAME `data_latched`); the host UI saves the spool
+  as `.txt` and the ImageWriter renders it as paper.
+
+**The S1 printer-type DIP decides which dialect the firmware speaks** —
+and getting it wrong is the single most confusing failure mode this card
+has. Bits 2-0 of S1 read back at status bits 6-4; the firmware branches
+on them. Captured from the real 4 KB dump, `^I G` (HGR screen dump) on
+the same picture:
+
+| S1 2-0 | Printer type | Bytes the firmware emits |
+|---|---|---|
+| 000 | Epson series (MAME's default) | `ESC A <07>` … `ESC K <18><01>` + **binary** graphics |
+| 001 | NEC 8023 / C. Itoh 8510 / DMP 85 | `ESC T14` … `ESC S0280` + graphics |
+| 101 | Apple Dot Matrix | `ESC T14` … `ESC G0280` + graphics |
+
+POM2's printer is an ImageWriter II, which speaks the C. Itoh dialect:
+`ESC G nnnn` with **ASCII digit** counts. Fed the Epson stream it reads
+`ESC A` as "1/6 in line spacing" (no parameter), `ESC K <18>` as a ribbon
+colour change, and then prints every graphics byte as a character —
+32 sheets of noise in double-width, which is exactly what a real desk
+with the switches set wrong would produce. So POM2 **defaults S1 to
+Apple Dot Matrix (101)**, not to MAME's Epson, and exposes the switch as
+*Card emulates* in the ImageWriter panel's *Printer settings* (persisted
+as `grappler_printer_type`), with a warning when it is set to a dialect
+this printer does not speak.
+
+**BUSY/ACK**: see [§ ImageWriter](#imagewriter-ii-printer-host-side) —
+the firmware's per-byte wait loop spins on the ACK bit, so the host
+printer's input-buffer state is what throttles a printing guest.
 
 **Bank switching is modelled.** Real Grappler+ exposes the upper
 2 KB of its 4 KB EPROM via a bank-select write. POM2 mirrors this:
 a data-port write with `low4 & 0x01` set raises `romBankHigh_`
 (`GrapplerCard.cpp:78`); the expansion window then serves the upper
 2 KB (`rom_[(offset & 0x7FF) | 0x800]`, `GrapplerCard.cpp:114`).
-Reset / `$Cn00` entry clears it (`:97,121`); the flag round-trips
+Any `$CnXX` **read or write** drops the bank low; the flag round-trips
 through snapshot. `grappler_card_smoke` asserts both banks are
 distinguishable.
 
+**Pinned against MAME `bus/a2bus/grappler.cpp`** (2026-07-28 audit,
+line ranges cited at every ported block in the .cpp): status byte
+layout (`read_c0nx:699-709`), register decode incl. the A1-before-A2
+IRQ priority (base `write_c0nx:547-575` + overlay `:711-745`), ROM
+side effects (`read_cnxx:578-583` — bank drop + ACK-gated A6 mask;
+`write_cnxx:586-591` — a bus-conflict write also drops the bank, now
+modelled via `slotRomWrite`), `$C800` banking (`read_c800:123-126`,
+`set_rom_bank:160-165`), S1 DIPs (`INPUT_PORTS:498-511`). The audit
+fixed one silent divergence: **reset no longer clears the ROM bank** —
+MAME's `reset_from_bus` (`:536-539`) and `device_reset` (`:777-787`)
+touch only the ACK latch and IRQ flip-flop; the U2D bank flip-flop is
+not wired to bus RESET. Deliberate divergences, documented in the code:
+the 7-clock /STROBE pulse timer (`:795-808`, `:839-849`) collapses to
+instant (the synthetic printer consumes at latch time, no observer);
+MAME's edge-driven IRQ flip-flop is derived as the equivalent level
+`ack && !disable`; and `ackEffective()` (ACK gated by host BUSY) is
+POM2's back-pressure model, not MAME's (MAME reads a live centronics
+/ACK line POM2 has no equivalent of).
+
 Source: markadev/AppleII-RevEng/Orange-Micro-Grappler+ (4 KB
 EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
-+ data-port spool + ROM-load size gate + bank-select round-trip.
++ data-port spool + ROM-load size gate + bank-select round-trip
+(incl. reset-keeps-bank + write_cnxx drop) + S1 printer-type/MSB DIP
++ the BUSY→ACK handshake.
 
 ### ImageWriter II printer (host-side)
 
@@ -2142,6 +2478,14 @@ is blank paper. `ESC K n` picks the band. `pageToRgba()` expands through
 `indexToRgb()`, which is `FillPalette` (`imagewriter.cpp:101-114`) in
 closed form.
 
+**Colour is a ribbon, not a mode.** `Ribbon::FourColour` (default) /
+`Ribbon::Black` models which cartridge is fitted: with the black one the
+printer still accepts `ESC K` and prints band 7 anyway, exactly like the
+hardware. Nothing host-side "enables" colour — the guest has to ask, and
+most drivers only do so when their own setup names a colour printer
+(Print Shop emits `ESC K` only for "Apple Imagewriter II **(C)**"; its
+(M) driver never does). Persisted as `imagewriter_ribbon`.
+
 **Text is dot-matrix, not TrueType.** The reference needs SDL 1.2 +
 FreeType; POM2 links neither, so glyphs come from the repo's own 8×8
 CP437 font (`hgrpaint::kBBFontCp437`, 7 px + 1 px gap). That is *closer*
@@ -2165,11 +2509,23 @@ inside a bit image — it is pin 8. Everywhere else soft switch B-6 strips
 it, which is what makes Apple II `COUT` output (always bit-7 set) print
 as plain ASCII.
 
-**Auto line-feed defaults ON.** The Apple II emits a bare CR (`$8D`) and
-never an LF, so with the ImageWriter's SW A-8 open every printout lands on
-one overprinted line. The panel exposes it as a checkbox — turn it off for
-drivers that send CR+LF themselves. This is the one setting most likely to
-need touching, so it is the first thing in *Printer settings*.
+**Line feed after CR is auto-detected** (`AutoFeed::Auto`, the default).
+SW A-8 has three right answers and no user should have to guess which:
+
+| Sender | Sends | Printer must |
+|---|---|---|
+| `PR#n : PRINT` from BASIC | CR only | feed — else the listing overprints one line |
+| Any real driver, and the Grappler+ firmware | CR **+** LF | not feed — else everything double-spaces |
+| A colour driver (Print Shop) | bare CR **between passes** | not feed — the yellow/cyan/magenta passes must overprint the same line |
+
+`Auto` feeds on CR until it sees the guest send its own LF immediately
+after one; that LF is then swallowed (one advance, not two) and CR stops
+feeding for the rest of the job. All three cases come out right with
+nothing configured. Getting this wrong is not subtle: with the printer
+always feeding, Print Shop's colour passes march down the page as a
+coloured staircase instead of forming one line. `On`/`Off` pin the switch;
+a power cycle re-arms the detector. Pinned by
+`imagewriter_smoke` (`testAutoLineFeedDetection`).
 
 **Two other deliberate deviations** from the reference: `resetPrinter()`
 leaves bold off (the reference sets `STYLE_BOLD` at
@@ -2185,18 +2541,134 @@ counted in `droppedPageCount()` — a guest that form-feeds in a loop must
 not exhaust host RAM. Page size = paper size (points/72) × page DPI;
 Letter at the default 144 dpi is 1224×1584.
 
+**The mechanism prints at its own speed.** The card hands bytes over at
+bus speed — a `PRINT` loop spools a page in a millisecond of emulated
+time — so `queueBytes()` parks them in the printer's input buffer and
+`tick(dt)` releases them at the rate the head can actually lay them
+down, driven by the host frame time (`ImGui::GetIO().DeltaTime`), not by
+`emuCycles`: the paper keeps moving while the guest is paused, turbo'd or
+rewound, exactly like the real desk. Speeds are Apple's published figures
+(*ImageWriter II Owner's Manual*, "Specifications"): **250 cps draft**,
+**45 cps NLQ**, both quoted at the 12 cpi default pitch, so the carriage
+crosses `cps/12` inches per second. `byteCost()` charges per byte from
+that: one character = `1/cps`; a bit-image byte = one dot column at the
+active density on a unidirectional (half-rate) pass; `CR` = a direction
+change in draft but the full return slew in NLQ (draft is bidirectional);
+`LF` = `lineSpacing / 5 ips` of paper transport; `FF` = whatever is left
+of the sheet. Escape-sequence bytes and other control codes are free —
+they land in a register, not on paper. `Speed::Instant` restores the old
+print-everything-this-frame behaviour.
+
+**No byte may ever be unaffordable.** `tick` banks elapsed time and spends
+it byte by byte, capped so a hidden window can't dump half a page at once
+— but the cap has to leave room for the byte at the head of the queue. A
+flat 1 s cap against a form feed that costs `(bottomMargin - curY)/5 ips`
+= 2.2 s on a Letter sheet meant that byte was never affordable: the queue
+stalled forever, BUSY stayed asserted, and the guest hung in its firmware
+ACK loop. Print Shop froze on every page eject. The cap is now
+`max(kMaxCredit, cost of the head byte)`, and a watchdog forces any byte
+that has waited `kStallSeconds` (10 s) through anyway, logging it — a
+cost-model mistake must degrade to "printed late", never to a hang.
+Pinned by `imagewriter_smoke` (`testNoUnaffordableByte`).
+
+**Trace log.** A printout that comes out as noise is a protocol
+disagreement, and the only way to see it is the byte stream, decoded.
+`startTrace(path)` writes an interleaved hex dump (`RX`), completed
+escape sequences with their parameters (`CMD`), bit-image setup (`GFX`),
+page ejects (`PAGE`) and host events (`HOST` — queue depth, BUSY
+transitions, watchdog stalls). Enable it from *Printer settings → Log the
+printer stream to a file* (→ `printouts/imagewriter_trace.log`) or set
+`POM2_TRACE_PRINTER=1` (or `=<path>`) before launch to catch a printout
+that happens during boot.
+
+**The paper is continuous fanfold, not a cut sheet.** An ImageWriter II is
+fed 9.5" pin-feed stock: the printable body plus a 0.5" tractor strip each
+side, each strip perforated off along sprocket holes on 1/2" centres, and
+each sheet joined to the next by a horizontal perforation. The panel draws
+the strips, holes and perforations AROUND the page texture
+(`ImageWriter_ImGui`, `ImDrawList`), never into it, so the page raster and
+the "Save sheet as PNG" export stay pure printable area.
+
+**"Follow" tracks the last inked sheet, not the sheet in the mechanism.**
+After a form feed the sheet under the head is blank and the interesting
+one is on the stack — following the blank one made a one-page job look
+like it had printed nothing at all.
+
+**BUSY closes the loop back to the guest — opt-in.** A stock ImageWriter II
+buffers `kInputBufferBytes` (2 KB) and then stops acknowledging; the pump
+pushes that state to the card with `GrapplerCard::setPrinterBusy()`, and
+`ackEffective()` folds it into the status byte's bit 0. That is the bit
+the genuine Grappler+ firmware spins on — **not** BUSY (bit 3):
+
+```
+$CD89  JSR $CDE1      ; read $C08n status
+$CD8C  AND #$02       ; SELECT? no → give up
+$CD93  AND #$01       ; ACK latch
+$CD95  BEQ $CD89      ; spin until the printer acknowledges
+```
+
+so a guest printing a long job blocks in its firmware wait loop while the
+paper catches up, instead of blasting a page into a host queue.
+
+`MainWindow::printerBackPressure` gates it, **default off**
+(`imagewriter_backpressure`). It is faithful — 5.2 s for Print Shop's
+5 KB test page, minutes for a full card — but an emulator that stops
+answering for minutes is indistinguishable from a hang, and the printout
+paces itself identically either way. The status bar shows any print in
+progress, and `(Apple II waiting)` when the handshake is holding the
+guest. The
+synthetic `PrinterCard`'s ROM never polls (its handler is `STA`/`RTS`), so
+it is not throttled — its queue simply drains at printer speed.
+
+**Slot 3 on a //e is a trap** (and is one on real hardware too): the
+internal 80-column firmware keeps `OURCH`/`OURCV` in the *slot-3* screen
+holes (`$0578+3`, `$05F8+3`, …), which is exactly where printer firmware
+keeps its column and line counters. A Grappler+ in slot 3 reads the
+cursor position back as its line width and emits `CR LF` after every
+character, plus a perforation skip every few. Slot Config warns; slots
+1/2/4/5/7 print correctly (verified against the real 4 KB dump on both
+`apple2p.rom` and `apple2e.rom`).
+
 **Not modelled**: user-defined character sets (`ESC '` / `ESC I`, absent
 from the reference too) and `ESC ?` (send ID string — POM2 has no
-printer→computer back-channel). An ImageWriter hanging off the Super
-Serial Card (the //c's real printer port) is the obvious next step: the
-SSC has no host-visible TX spool yet, so only the parallel cards feed the
-printer today.
+printer→computer back-channel).
+
+**Super Serial Card feed (the //c's real printer port).**
+`SuperSerialCard::setPrinterTap(true)` mirrors every byte the ACIA
+accepts for transmit (i.e. past the DTR gate — a byte the transmitter
+drops never reaches the paper either) into a host-visible spool with the
+exact `drainSpoolFrom` shape of the parallel cards, and
+`pumpImageWriter()` consumes it as a third source with parallel cards
+outranking it (a IIe with both keeps parallel routing). The tap defaults
+ON for slot 1 (the printer-port convention — a stock //c profile prints
+via `PR#1` with zero configuration) and is persisted per slot as
+`ssc_printer_tap_slotN`. Enabling that path surfaced a real firmware
+gap: POM2's synthetic SSC ROM only initialised the ACIA in the Pascal
+PINIT entry, so a plain `PR#n : PRINT` wrote the TDR with DTR
+de-asserted and the 6551 (correctly, MAME `mos6551.cpp:317-321`)
+dropped every byte. The PR#n/IN#n entries now program cmd=$0B first,
+like the real SSC firmware's DIP-switch init.
+
+**PDF export** (`ImageWriterPdf.h/.cpp`): "Save PDF" writes every
+completed sheet (plus the sheet in the platen if printed on) as one
+multi-page PDF. Each sheet embeds as an 8-bit `/Indexed /DeviceRGB`
+image — the page raster already is exactly that — compressed with
+`/FlateDecode` via stb's `stbi_zlib_compress` (in-repo for PNG; a zlib
+stream is what FlateDecode consumes), so there is no new dependency.
+`Page::dpi` records each sheet's raster density at eject time, so the
+`/MediaBox` stays at true physical size even if the host changes the
+printer DPI mid-session.
 
 Pinned: `imagewriter_smoke` — paper geometry, glyph ink + bit-7 strip,
 CR/LF + `ESC A/B` spacing, `ESC K` bands + subtractive overprint +
 palette, `ESC G`/`ESC C` bit images, `ESC R` framing and the byte
-odometer, form feed + page cap, RGBA export, and the
-`PrinterCard::drainSpoolFrom` streaming/resync seam.
+odometer, form feed + page cap, RGBA export, the
+`PrinterCard::drainSpoolFrom` streaming/resync seam, and the mechanism
+pacing (draft/NLQ rates, `flushPending`, power-cycle drops the buffer).
+`grappler_card_smoke` pins the BUSY → ACK handshake and the MAME
+register/bank parity (see § Grappler+). `ssc_acia_smoke` pins the
+printer tap and the PR#/IN# ACIA init; `imagewriter_pdf` pins the PDF
+serialiser (xref byte accounting, per-sheet MediaBox, Flate round-trip).
 
 ### Mouse Card
 
@@ -2330,6 +2802,279 @@ see § Host control).
 panels. Owns the screen GL texture. Auto-plugs Disk II in slot 6 if
 `roms/disk2.rom` exists. F9 (screenshot), F11 (soft reset), F12
 (hard reset) routed unconditionally even when ImGui has focus.
+
+### Slot Configuration: two interaction models, made visible
+
+`MainWindow_Slots.cpp`. The panel runs on two *different* models and used to
+say nothing about it: the left column is **staged** (edit combos, then Apply /
+Revert, where Apply restarts the emulator) and the right column is
+**immediate** (Mount / Insert / Eject act at once). Because Apply and Revert sat
+at the bottom of the left child, they read as governing the whole window — a
+user could mount a disk on the right, hit Revert on the left, and reasonably
+expect the mount to come back.
+
+Now: the header states both models; the media column carries "Mount / Insert /
+Eject take effect immediately"; each changed slot row gets an accent dot whose
+tooltip names the card currently plugged; a badge reads "N staged change(s) —
+not applied yet"; **Apply is disabled when nothing is staged** (a button that
+restarts the machine should never be a reflex no-op) and its label counts the
+changes; Revert is disabled when clean, and its tooltip says it does not touch
+mounted media.
+
+`pending` counts only user-editable slots — the rows force-feed the draft with
+the profile's built-in cards, so those can never register as pending.
+
+**Slot numbers lead their control.** `LabelText` / `BeginCombo` put their label
+on the right, so the panel read "(empty) v  Slot 1" — the number, which is
+exactly what the eye scans down, trailed its own control. Rows now emit the
+label, `SameLine(gutter)`, then a full-width `##`-id combo, with the gutter
+measured off the widest label ("AUX slot") so it survives the UI zoom.
+
+**Columns are responsive.** The assignment child was a hardcoded 400 px, fine
+in the 880 px free-floating default but leaving the media column a ~100 px
+sliver once the panel is docked into a side dock — every label in it clipped to
+"Mount / Inser". Side-by-side now requires `avail > 46 em`; below that the two
+sections stack, with the assignment child taking
+`ImGuiChildFlags_AutoResizeY` so the media section starts right under it.
+
+### Command palette (`CommandPalette_ImGui`)
+
+Ctrl+Shift+P fuzzy launcher over every menu item, panel toggle, profile,
+display mode, layout preset and machine action. Exists because POM2 has 42 menu
+items across 8 menus, ~33 toggleable panels, and only four keyboard shortcuts —
+reaching "Mockingboard" meant remembering it lives under Devices ▸ Sound.
+
+**Shift is load-bearing in the binding.** Plain Ctrl-P must keep reaching the
+guest: CP/M under the SoftCard uses it for printer echo. The chord is also in
+`main.cpp`'s `isGlobalKey` set, so the palette opens even when an ImGui text
+field has the keyboard — same rationale as F11/F12, the user always needs a way
+out.
+
+**The palette knows nothing about what a command does.** The host fills a
+`{id, label, category, shortcut, enabled, checked}` list every frame the palette
+is open (so `enabled`/`checked` track live machine state) and dispatches the
+returned id in `MainWindow::runCommand`. One list, one switch — deliberately not
+a callback registry, because the value of the palette is that every command is
+visible in one place when you read the source.
+
+Unavailable commands stay in the list, greyed, rather than being filtered out:
+seeing "Phasor (no card plugged)" teaches where the thing lives; silently
+omitting it does not.
+
+**Scoring** (`fuzzyScore`, case-insensitive subsequence): +10 per matched char,
++15 at a word boundary, +8×streak for consecutive runs, −1 per skipped char.
+Word-boundary and streak bonuses are what make "mock" rank
+"Mockingboard (VIA + AY state)" above a label that merely contains m-o-c-k.
+Matching runs against `"Category Label"` so "devices mock" works and a bare
+category name lists its commands.
+
+**Window height follows the match count**, capped at 10 rows — safe *because
+the window is anchored near the top*, so it grows and shrinks downwards and the
+query field the user is typing into never moves. A centre-anchored palette would
+need a fixed height instead.
+
+### Disk Library: tree, favourites, recents
+
+`DiskLibrary_ImGui`. Was a flat list of ~950 rows carrying full relative paths,
+with Size and Date columns in prime position.
+
+**Real nested tree.** Two bugs were fixed getting here, both worth remembering:
+
+1. *A flat lexicographic sort does not group directories.* `demo/PLASMAG.dsk`
+   (dir `demo`) sorts before `demo/digidream/DD.dsk` (dir `demo/digidream`)
+   which sorts before `demo/zzz.dsk` (dir `demo` again). Walking that and
+   opening a node on each prefix change emitted `demo` **twice** — two
+   `TreeNodeEx` calls with the same ID, which collide in ImGui's storage and
+   share one open/closed state. The tree is now built as an actual nested
+   structure (`TreeNode` with a `std::map` of children, so siblings come out
+   name-ordered for free), folders before files at each level.
+2. *ImGui applies tree indentation to the FIRST column only.* The first cut put
+   a narrow favourite-star column at index 0, which swallowed the entire indent
+   and left every filename flush left regardless of depth — a tree with no
+   readable hierarchy. Name is now column 0; the star and the mounted dot are
+   inline prefixes.
+
+Tree is used unless a search filter is active; a filtered view shows a flat list
+of hits with full paths, which is what someone searching wants.
+
+**Favourites and recents are host-owned.** The panel has no `Settings` access
+and no business acquiring one, so `MainWindow` holds both lists (persisted as
+`library_favourites` / `library_recents`) and the panel reports a toggle through
+`Result` — same contract as the mounted-path list. Recents are driven off the
+panel's mount *requests*, not off the cards, so a CLI or drag-and-drop mount
+doesn't silently reorder the list behind the user's back.
+
+Both persist into a single `state.cfg` value joined by **0x1F** (ASCII unit
+separator): the file is flat `key=value`, and a disk path can legitimately
+contain spaces, commas, semicolons and colons, so the separator has to be a byte
+a path cannot hold.
+
+**The favourite toggle is in the right-click menu, not a clickable star.** The
+row is already a full-span selectable; an overlapping hit target inside it is a
+reliable source of mis-clicks, and on a panel whose left-click cold-boots the
+machine that matters.
+
+**No sort selector.** It offered Name / Size / Date, and the latter two forced a
+flat list — you cannot group by folder and order by size at once, so they
+quietly fought the tree. The header row is worth more as space for search.
+Size / Date columns can be hidden entirely (`library_hide_sizedate`), which is
+what makes the panel usable in a narrow dock.
+
+**`tools/dedupe_library.py`** removes byte-identical images from `disks_5.4/`,
+`disks_3.5/` and `hdv/` — a duplicate on disk is a duplicate in the browser.
+Groups by size first and hashes only within same-size buckets, so a
+1000-file library costs a handful of full reads. Dry-run by default.
+
+### CRT Settings panel UX
+
+`MainWindow::renderNtscSettingsWindow`. The panel opened on **13 bare numeric
+knobs** with no starting points and a single "Reset to defaults". Restructured
+so the primary control is a **look**, not a number:
+
+- **Preset row** (Clean / Composite TV / Trinitron / Arcade) sets the CRT glass.
+  `palMode` and `textSharp` are explicitly **preserved** across a preset:
+  PAL describes the machine being emulated (the two PAL profiles), and sharp
+  text is a legibility preference. A look picker silently flipping either would
+  be wrong.
+- The 13 sliders moved behind a collapsed **`Advanced`** header, grouped
+  `Picture` / `Phosphor` / `Glass` / `Demodulation`.
+- **Labels lead the sliders.** ImGui's native `SliderFloat` puts its label on
+  the *right*, so the panel read "bar → number → name" and clipped the longest
+  one ("Phosphor curve (ga…"). Now: `TextUnformatted(label)` +
+  `SameLine(labelW)` + `SetNextItemWidth(-FLT_MIN)`. `labelW` is *measured*
+  from the widest label so it survives the UI zoom.
+- Two decimals, not three — `0.055` on a perceptual knob was false precision.
+
+**The contradictory status messaging is the substantive fix.** A green
+"CRT Effects: ON" banner sat directly above a red "Shader unavailable — POM2
+falls back to the standard NTSC LUT", which left the user unable to tell whether
+any control below did anything. The two statements are about different passes:
+only the OpenEmulator *demodulation* shader was missing; the CRT glass stack
+(`CrtEffectStack`) is a separate pass that still runs. The warning now says so,
+and the master toggle became a low-alpha tinted band with coloured text instead
+of a saturated full-width slab.
+
+### Docking + layout presets
+
+POM2 hosts a **DockSpace over the viewport work area** so its ~33 panels become
+tabs in a persistent layout instead of a pile of overlapping windows.
+`MainWindow::renderDockSpace()` creates it; `applyDockLayout()` seeds layouts.
+
+**Dependency.** Requires the Dear ImGui **`docking` branch** — `master` has no
+`ImGuiConfigFlags_DockingEnable` and no `IMGUI_HAS_DOCK`. The pin lives in
+`imgui_pin.env` (repo + branch + commit), sourced by `setup_imgui.sh` and both
+CI jobs so the three can't drift. Pinned to a *commit* because `docking` is
+force-pushed on every upstream rebase. **Multi-viewport stays off**
+(`ConfigDpiScaleViewports` / `ViewportsEnable`): it would move panels into
+separate OS windows, meaning per-viewport GL contexts and a different render
+loop, for no gain here.
+
+**Chrome reserves its own space.** The main menu bar, the toolbar and the
+status bar are all `BeginViewportSideBar` windows, each of which adds to the
+viewport's work-area inset. `DockSpaceOverViewport` then covers exactly what's
+left, so the chrome is never overlapped and no offset is hardcoded anywhere.
+The toolbar was converted from a hand-positioned `SetNextWindowPos(WorkPos)`
+window for precisely this reason — at 150 % UI zoom it grew taller than the
+saved `Apple II Screen` position and the screen window covered it.
+Toolbar and status bar both carry `NoDocking`: they're chrome, and without it a
+dragged panel can be dropped into the one-line strip.
+
+**`PassthruCentralNode`** on the dockspace: with nothing docked centrally, the
+central node would otherwise paint a grey slab over the whole work area.
+
+**Presets dock by literal window title.** `DockBuilderDockWindow` hashes the
+name the same way `Begin` does (`ImHashStr` restarts its CRC at `###`, so
+passing the full `"Super Serial###sscPanel"` literal is correct). Consequence:
+only panels whose title is a fixed string can be placed. The slot-numbered
+panels — Disk II, 3.5", HDV, SmartPort, Printer — build their title at runtime
+(`"Disk II (slot 6)"`), so presets can't reach them; they float on first open
+and stay wherever the user docks them.
+
+Docking a **hidden** panel still matters: the assignment is written into the
+window's settings, so when the user later opens e.g. the Memory viewer it
+appears as a tab in the bottom-right group instead of floating over the screen.
+That is most of the value of seeding a layout at all.
+
+**Seeding is gated on a persisted flag** (`ui_dock_seeded` in `state.cfg`), not
+on "is the node empty". By the time `renderDockSpace` could check,
+`DockSpaceOverViewport` has already created the node, so emptiness cannot tell
+"fresh install" from "user undocked everything on purpose" — and rebuilding on
+every launch would throw away the user's layout.
+
+`applyDockLayout` calls `DockBuilderSetNodeSize` before the first split: split
+ratios are computed against the node's size and are unreliable without it.
+`DockBuilderRemoveNode` first, so windows the new preset doesn't mention end up
+floating rather than stranded in a stale node.
+
+**The screen window's manual title-bar drag is disabled while docked.**
+`Apple II Screen` carries `NoMove` (so click-drag inside the screen reaches the
+guest's Mouse Card) plus a hand-rolled title-bar drag. Docked, it has no title
+bar of its own and the dock node owns its position — left enabled, the computed
+rect lands on the node's tab bar and `SetWindowPos` fights the node every
+frame: the screen jitters and the tab won't drag out. Hence the
+`if (!ImGui::IsWindowDocked())` guard.
+
+Presets: **Reset** (screen centre, storage right, inspector tab group
+bottom-right), **Emulation** (widest screen, one storage column, no debug
+tools), **Debug** (memory viewer + maps right, horizontal map along the bottom),
+**Audio** (Mockingboard/Phasor/Echo+ right, mixer + tape bottom-right). The
+menu entries are actions with no checkmarks — the moment a tab is dragged, the
+"active" preset stops describing what's on screen.
+
+Known gap: kiosk mode bypasses the dockspace entirely (it returns before
+`renderDockSpace`), which is correct — kiosk is chrome-free by definition.
+
+### Theme + UI scaling (`Pom2Theme`)
+
+`Pom2Theme.{h,cpp}` owns the whole ImGui look: colour palette, widget
+geometry, and the scale chain. It replaced a bare `ImGui::StyleColorsDark()`.
+
+**Opaque backgrounds are a requirement, not a taste.** The stock dark theme
+leaves `WindowBg` at alpha 0.94. Over a black boot screen that's invisible;
+over a running HGR game every panel turns translucent and the content behind
+bleeds through (CRT Settings sliders were legible *on top of* Disk Library
+rows). Every background in the palette is alpha 1.0.
+
+**Surface ramp — the ordering carries meaning.** `kBg0` window → `kBg1`
+popup → `kBgBar` menu bar → `kBg2/3/4` raised (frames, buttons, tabs, in
+hover/active order). Two constraints: popups sit *below* frames on the ramp,
+otherwise a slider inside a menu has no visible track (both were `kBg1` at
+first and the View ▸ Interface zoom slider rendered as a bare grab on
+nothing); and frames match buttons so "interactive surface" is one step.
+
+**Accents are phosphor colours** (amber default, P31 green, cold blue, slate)
+— persisted as `ui_accent`. Accent is reserved for *state* (checked,
+selected, active, focused title bar); buttons stay neutral, so an accented
+control always means something is on.
+
+**Scaling contract.** `applyTheme(accent, uiScale, dpiScale)` rebuilds the
+style from a default-constructed `ImGuiStyle` every call. That's deliberate:
+`ScaleAllSizes()` is *cumulative* (it multiplies live values and folds the
+factor into `_MainScale`), so re-theming a live style compounds the padding.
+Rebuilding makes the call idempotent, which is what lets the zoom slider
+re-apply on every nudge. Geometry scales by `uiScale × dpiScale`; fonts go
+through `style.FontScaleMain` / `FontScaleDpi`, which ImGui 1.92's dynamic
+font system applies at draw time — **no atlas rebuild** on a scale change.
+
+**DPI source: use the backend helper.** `ImGui_ImplGlfw_GetContentScaleForWindow(window)`,
+*not* `glfwGetWindowContentScale`. They differ exactly where it matters: on
+macOS, Wayland, Emscripten and Android the framebuffer is already larger than
+the window, ImGui's `DisplayFramebufferScale` path handles HiDPI, and the
+helper returns 1.0f — querying GLFW directly reports 2.0 there and scales the
+UI twice. The helper also preserves the 0.0 that virtual/accessibility
+monitors report (imgui #7902); `MainWindow::setDpiScale` clamps it back to 1.
+Call it only *after* `ImGui_ImplGlfw_InitForOpenGL` — the Wayland branch reads
+backend data.
+
+**Shared chrome primitives.** `verticalRule()` and `statusLed()` live here so
+the toolbar and status bar speak one visual language. `verticalRule` replaced
+literal `"|"` text characters in the toolbar, which inherited the text colour
+and baseline and so read as content rather than structure.
+
+Known gap: window positions in `imgui.ini` are absolute pixels, so changing
+the zoom mid-session does not move panels placed at the previous scale — a
+tall-enough toolbar can end up behind the Apple II Screen window. Docking
+(with a scale-relative layout) is the real fix.
 
 ### MainWindow Pimpl-light
 
@@ -2501,14 +3246,23 @@ MediaBayInfo`, `mountBay/ejectBay/setBayWriteBack`, plus
 entries (Mouse needs both mouse ROMs, CFFA needs
 `cffa20ee02/eec02.bin`).
 
-### Slot Configuration
+### Slot Configuration + Internal Disks & Media
 
-`MainWindow::renderSlotConfigPanel` (`MainWindow_Slots.cpp`). One
-**two-column** window (Machine → Slot Configuration) is the whole
-expansion-bus control center (absorbed the old standalone "Slot
-Manager" panel — `SlotManager_ImGui.*` removed 2026-05-25).
+**Two windows, because they run opposite interaction models** —
+`MainWindow_Slots.cpp` holds both. *Slot Configuration* (Machine →,
+`renderSlotConfigPanel`) is **staged**: edits sit in a draft until
+Apply, which restarts the machine. *Internal Disks & Media* (Devices →,
+`renderMediaPanel`) is **immediate**: Mount / Insert / Eject act on the
+running machine. They were one two-column window from 2026-05-25 (when
+it absorbed the standalone "Slot Manager" — `SlotManager_ImGui.*`
+removed) until **2026-07-28**. Sharing a window made Apply / Revert,
+which sat at the bottom of the left column, read as governing the media
+column too: mount a disk on the right, hit Revert on the left, and
+expecting the mount to come back was a perfectly reasonable reading.
+Banners (2026-07-27) narrated the split model; separate windows remove
+it. Each window points at the other in its header text.
 
-- **LEFT — card assignment.** AUX 80-col row (IIe-class) + slots 1-7.
+- **Slot Configuration — card assignment.** AUX 80-col row (IIe-class) + slots 1-7.
   Each slot a `kCardTypes` dropdown, EXCEPT profile built-ins
   (`builtInSlots[s]`) which render as locked, greyed `LabelText` with
   "card — built-in …" badge. `diskii` is multi-instance (never a
@@ -2516,7 +3270,7 @@ Manager" panel — `SlotManager_ImGui.*` removed 2026-05-25).
   Apply persists `slot_N_card` and calls
   `restartEmulationFromSettings()`.
 
-- **RIGHT — internal disks + mountable ports.** Live SlotBus walk
+- **Internal Disks & Media — internal disks + mountable ports.** Live SlotBus walk
   (`bus.peripheral(s)`, no global `*Card` pointers, so correct with
   multi cards of a kind). For each plugged card:
   - `dynamic_cast<MountableMediaCard*>` → render bays inline:
@@ -2531,8 +3285,44 @@ Manager" panel — `SlotManager_ImGui.*` removed 2026-05-25).
   Each media action takes `stateMutex` and calls `persistMediaBay()`
   (per-unit/per-slot/global keys), then `settings->save()`.
 
-Settings: `show_slot_config` (persisted). Pinned:
-`slot_multi_card_smoke_test`.
+Settings: `show_slot_config` + `show_media_panel` (both persisted;
+both cleared in kiosk). Command palette: `panel.slotconfig`,
+`panel.media`. Pinned: `slot_multi_card_smoke_test`.
+
+### ROM Status panel
+
+`RomStatus_ImGui.{h,cpp}` + `RomCatalog.h` (Help → ROM Status,
+`show_rom_status`, palette `panel.romstatus`). Host-side only: stats
+files, hashes bytes, takes no lock, and rescans on demand (open /
+Rescan) rather than per frame.
+
+**Two sources, neither duplicated.** Machine firmware and character
+generators are read from `profileConfig()` (`romProbeOrder` /
+`charRomProbeOrder`) for every entry of `allProfiles()`, so a new
+profile shows up with no edit here. The peripheral side is
+`RomCatalog.h`, which mirrors each card's probe list at its plug site
+(MainWindow.cpp / ClockCard.cpp) and adds the two things the code
+can't express: the required size and *what POM2 does when the dump is
+absent* — most card ROMs degrade (synthetic stub, embedded default)
+rather than fail, and that is the column users actually need.
+
+Verdicts are deliberately unequal:
+
+- **Missing** — error for machine firmware (the profile can't start),
+  warning elsewhere.
+- **Size** — the only hard check. 256 B PROM, 4 KB EPROM: a mismatch is
+  a wrong file, not a variant.
+- **CRC32** — always shown for identification, *judged* only where
+  `RomCatalogEntry::knownCrc` names a dump POM2 can vouch for (the two
+  CFFA 2.0 images from dreher.net). Asserting an unverified checksum
+  would turn legitimate variants into false alarms.
+- **`(fallback)`** — the probe resolved, but not to its first choice.
+  This is the //e Unenhanced profile silently running Enhanced firmware
+  when `apple2e_unenh.rom` is absent — previously only a log line.
+
+CRC-32 (IEEE, reflected) is implemented locally: POM2 links no zlib,
+and the WOZ path only ever writes the "not computed" sentinel, so
+there was nothing to borrow.
 
 ### Floppy Emu (BMOW)
 

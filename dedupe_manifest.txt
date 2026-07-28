@@ -1,0 +1,65 @@
+[ 1] 140 KB
+     KEEP   disks_5.4/dsk/CRIME_A.dsk
+     DELETE disks_5.4/gist/Le Crime du Parking A.dsk
+[ 2] 140 KB
+     KEEP   disks_5.4/dsk/CRIME_B.dsk
+     DELETE disks_5.4/gist/Le Crime du Parking B.dsk
+[ 3] 140 KB
+     KEEP   disks_5.4/dsk/Lode Runner revenge.dsk
+     DELETE disks_5.4/gist/Lode Runner revenge.dsk
+[ 4] 140 KB
+     KEEP   disks_5.4/dsk/Lode Runner.dsk
+     DELETE disks_5.4/gist/Lode Runner.dsk
+[ 5] 140 KB
+     KEEP   disks_5.4/dsk/masquerade1.dsk
+     DELETE disks_5.4/gist/masquerade1.dsk
+[ 6] 140 KB
+     KEEP   disks_5.4/dsk/masquerade2.dsk
+     DELETE disks_5.4/gist/masquerade2.dsk
+[ 7] 229 KB
+     KEEP   disks_5.4/woz/Alternate Reality- The Dungeon disk 1A.woz
+     DELETE disks_5.4/woz/Alternate Reality - The Dungeon v2.1 (1987)(Datasoft)(II+)(Disk 1 of 2 Side A)[64K].woz
+[ 8] 229 KB
+     KEEP   disks_5.4/woz/Alternate Reality- The Dungeon disk 1B.woz
+     DELETE disks_5.4/woz/Alternate Reality - The Dungeon v2.1 (1987)(Datasoft)(II+)(Disk 1 of 2 Side B)[64K].woz
+[ 9] 229 KB
+     KEEP   disks_5.4/woz/Alternate Reality- The Dungeon disk 2.woz
+     DELETE disks_5.4/woz/Alternate Reality - The Dungeon v2.1 (1987)(Datasoft)(II+)(Disk 2 of 2)[64K].woz
+[10] 214 KB
+     KEEP   disks_5.4/woz/Congo Bongo.woz
+     DELETE disks_5.4/woz/Congo Bongo (1983)(Sega)[48K].woz
+[11] 229 KB
+     KEEP   disks_5.4/woz/Sorcellerie II side B - master scenario.woz
+     DELETE disks_5.4/woz/Copy (1) Sorcellerie II side B - master scenario.woz
+     DELETE disks_5.4/woz/Copy (2) Sorcellerie II side B - master scenario.woz
+[12] 222 KB
+     KEEP   disks_5.4/woz/Dark Lord/Dark Lord side A.woz
+     DELETE disks_5.4/woz/Dark Lord (1987)(Datasoft)(II+)(Side A)[64K].woz
+[13] 222 KB
+     KEEP   disks_5.4/woz/Dark Lord/Dark Lord side B.woz
+     DELETE disks_5.4/woz/Dark Lord (1987)(Datasoft)(II+)(Side B)[64K].woz
+[14] 222 KB
+     KEEP   disks_5.4/woz/Earthquake - San Francisco 1906/Earthquake - San Francisco 1906 side A (boot).woz
+     DELETE disks_5.4/woz/Earthquake - San Francisco 1906 (1982)(Adventure International)(II+)(Side A)[48K][Apple Other-Ventures #4].woz
+[15] 229 KB
+     KEEP   disks_5.4/woz/Earthquake - San Francisco 1906/Earthquake - San Francisco 1906 side B.woz
+     DELETE disks_5.4/woz/Earthquake - San Francisco 1906 (1982)(Adventure International)(II+)(Side B)[48K][Apple Other-Ventures #4].woz
+[16] 221 KB
+     KEEP   disks_5.4/woz/Marble Madness side A.woz
+     DELETE disks_5.4/woz/Marble Madness (1986)(Electronic Arts)(IIE)(Side A)[128K].woz
+[17] 228 KB
+     KEEP   disks_5.4/woz/Marble Madness side B.woz
+     DELETE disks_5.4/woz/Marble Madness (1986)(Electronic Arts)(IIE)(Side B)[128K].woz
+[18] 175 KB
+     KEEP   disks_5.4/woz/The Neverending Story.woz
+     DELETE disks_5.4/woz/Neverending Story, The (1985)(Datasoft)(II+)[64K].woz
+[19] 143 KB
+     KEEP   disks_5.4/woz/Night Mission Pinball.woz
+     DELETE disks_5.4/woz/Night Mission Pinball (1982)(subLOGIC)[48K].woz
+[20] 229 KB
+     KEEP   disks_5.4/woz/Reach for the Stars 1.0.woz
+     DELETE disks_5.4/woz/Reach for the Stars v1.0 (1983)(Strategic Studies Group)[48K].woz
+
+20 duplicate groups, 21 redundant files, 4.0 MB reclaimable
+
+Dry run. Re-run with --apply to delete the DELETE lines above.

@@ -62,21 +62,29 @@ void testSscAtSlot(int slot)
     assert(mem.memRead(base + 0x09) == 0x40);
     assert(mem.memRead(base + 0x0A) == slotHi);
 
-    // PR#n trampoline at $Cn20: LDA #<output_routine ($CnB0).
-    //   A9 B0 85 36 A9 <slotHi> 85 37 60
+    // PR#n trampoline at $Cn20: ACIA init (cmd=$0B — the real SSC
+    // firmware programs the 6551 before any I/O; without it a plain
+    // `PR#n : PRINT` writes the TDR with DTR de-asserted and every byte
+    // is dropped), then LDA #<output_routine ($CnB0) into CSWL/CSWH.
+    //   A9 0B 8D <devLo+A> C0 A9 B0 85 36 A9 <slotHi> 85 37 60
+    const uint8_t devLo = static_cast<uint8_t>(0x80 + slot * 16);
     assert(mem.memRead(base + 0x20) == 0xA9);
-    assert(mem.memRead(base + 0x21) == 0xB0);
-    assert(mem.memRead(base + 0x22) == 0x85);
-    assert(mem.memRead(base + 0x23) == 0x36);          // CSWL
-    assert(mem.memRead(base + 0x24) == 0xA9);
-    assert(mem.memRead(base + 0x25) == slotHi);
-    assert(mem.memRead(base + 0x26) == 0x85);
-    assert(mem.memRead(base + 0x27) == 0x37);          // CSWH
-    assert(mem.memRead(base + 0x28) == 0x60);          // RTS
+    assert(mem.memRead(base + 0x21) == 0x0B);
+    assert(mem.memRead(base + 0x22) == 0x8D);
+    assert(mem.memRead(base + 0x23) == static_cast<uint8_t>(devLo + 0xA));
+    assert(mem.memRead(base + 0x24) == 0xC0);
+    assert(mem.memRead(base + 0x25) == 0xA9);
+    assert(mem.memRead(base + 0x26) == 0xB0);
+    assert(mem.memRead(base + 0x27) == 0x85);
+    assert(mem.memRead(base + 0x28) == 0x36);          // CSWL
+    assert(mem.memRead(base + 0x29) == 0xA9);
+    assert(mem.memRead(base + 0x2A) == slotHi);
+    assert(mem.memRead(base + 0x2B) == 0x85);
+    assert(mem.memRead(base + 0x2C) == 0x37);          // CSWH
+    assert(mem.memRead(base + 0x2D) == 0x60);          // RTS
 
     // Output routine at $CnB0 patches the absolute LDA $C0n9 / STA $C0n8
     // addresses to the slot's device-select range.
-    const uint8_t devLo = static_cast<uint8_t>(0x80 + slot * 16);
     // PHA at $CnB0
     assert(mem.memRead(base + 0xB0) == 0x48);
     // LDA $C0n9 at $CnB1

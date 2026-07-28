@@ -20,6 +20,7 @@
 #include "M6502.h"
 #include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
 #include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
+#include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
@@ -73,7 +74,12 @@ namespace pom2 {
     class FloppyEmu_ImGui;
     class ImageWriter;
     class ImageWriter_ImGui;
+    class UthernetCard;
+    class UthernetIICard;
+    class Uthernet_ImGui;
     class Toolbar_ImGui;
+    class CommandPalette_ImGui;
+    class RomStatus_ImGui;
     enum class SystemProfile;
     enum class CharRomLocale : uint8_t;
 }
@@ -118,6 +124,17 @@ public:
     bool setChatMauveInvertBit7(bool v);
 
     void setGlfwWindow(GLFWwindow* w);
+
+    /// Monitor content scale (`glfwGetWindowContentScale`), 1.0 on a
+    /// non-HiDPI display. Set once by main() after the ctor has restored
+    /// `ui_accent` / `ui_scale` from Settings; re-applies the theme so the
+    /// persisted zoom lands on top of the display scale.
+    void setDpiScale(float s);
+
+    /// Host caps-lock LOCK state, latched from the GLFW modifier bits (see
+    /// glfw_key_callback). Surfaced as a status-bar badge.
+    void setHostCapsLock(bool on) { hostCapsLock_ = on; }
+
     void render();
 
     // Hooks installed by main.cpp into GLFW callbacks.
@@ -192,6 +209,10 @@ private:
     pom2::DiskController_ImGui*                              diskPanel = nullptr;
     std::unique_ptr<pom2::Disk35Controller_ImGui> disk35Panel;
     std::unique_ptr<pom2::DiskLibrary_ImGui>      diskLibrary;
+    // Ctrl+Shift+P fuzzy launcher over every menu item, panel toggle and
+    // machine action. See CommandPalette_ImGui.h for why it exists (42 menu
+    // items, ~33 panels, 4 keyboard shortcuts).
+    std::unique_ptr<pom2::CommandPalette_ImGui>   cmdPalette;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
     std::unique_ptr<pom2::SmartPort_ImGui>        smartPortPanel;
     // BMOW Floppy Emu: the device model (mode/SD/favorites) + its OLED panel.
@@ -242,6 +263,11 @@ private:
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
     GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
+    // Ethernet. Both are multi-pluggable in principle but the panel and
+    // settings track one of each — two NICs on one virtual network is a
+    // configuration nobody asks for, and each would need its own MAC.
+    pom2::UthernetCard*          uthernetCard     = nullptr; // non-owning, owned by SlotBus
+    pom2::UthernetIICard*        uthernetIICard   = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -293,6 +319,83 @@ private:
     // Integer = square snapped to an integer multiple (no scaling shimmer).
     enum class AspectMode { Square, Crt43, Integer };
     AspectMode   aspectMode = AspectMode::Square;
+
+    // ── Docking layout (View ▸ Layout) ───────────────────────────────────
+    // POM2 hosts a DockSpace over the viewport work area (below the menu bar
+    // + toolbar, above the status bar) so its ~33 panels become tabs in a
+    // persistent layout instead of a pile of overlapping windows. ImGui saves
+    // the docks into `imgui.ini` by itself; we only seed a curated starting
+    // layout and offer task-oriented presets.
+    //
+    // Presets dock by *literal window title*, so only panels whose title is a
+    // fixed string can be placed. Slot-numbered panels (Disk II, 3.5", HDV,
+    // SmartPort, Printer) build their title at runtime and are left floating
+    // on first open — the user can dock them once and ImGui remembers.
+    enum class DockLayout {
+        Reset,        ///< Screen + Disk Library + an inspector tab group.
+        Emulation,    ///< Screen wide, storage panels right. No debug tools.
+        Debug,        ///< Screen left, memory/CPU inspectors right + bottom.
+        Audio,        ///< Screen left, Mockingboard/Phasor/mixer right.
+    };
+    ImGuiID    dockspaceId_        = 0;
+    DockLayout pendingDockLayout_  = DockLayout::Reset;
+    bool       dockLayoutRequested_= false;
+    /// True once a layout has been seeded into `imgui.ini` (persisted as
+    /// `ui_dock_seeded`). Without it, every launch would rebuild the default
+    /// layout and throw away whatever the user had docked.
+    bool       dockSeeded_         = false;
+    // ── Disk Library favourites / recents ────────────────────────────────
+    // Host-owned because the panel has no Settings access. Persisted as
+    // newline-free, '\n'-unsafe paths joined by '\x1f' (unit separator) under
+    // `library_favourites` / `library_recents` — state.cfg is a flat
+    // key=value file, and a disk path can legitimately contain spaces,
+    // commas and semicolons, so the separator has to be something a
+    // filesystem path cannot.
+    std::vector<std::string> libraryFavourites_;
+    std::vector<std::string> libraryRecents_;
+    bool                     libraryHideSizeDate_ = false;
+    static constexpr std::size_t kMaxLibraryRecents = 12;
+    /// Move `path` to the front of the recents list, de-duplicating and
+    /// trimming to kMaxLibraryRecents.
+    void noteLibraryRecent(const std::string& path);
+
+    void renderDockSpace();
+    /// Build the command list, draw the palette, dispatch the pick.
+    void renderCommandPalette();
+    /// Execute a palette command by id. Single dispatch point — the
+    /// palette itself has no idea what any command does.
+    void runCommand(const std::string& id);
+    /// Open the palette (Ctrl+Shift+P, or Tools â¸ Command palette).
+    void openCommandPalette();
+    void applyDockLayout(DockLayout preset);
+
+    // ── Interface appearance (View ▸ Interface) ──────────────────────────
+    // Accent hue + user zoom, both persisted (`ui_accent` / `ui_scale`).
+    // `dpiScale_` is the monitor content scale supplied by main(); the
+    // effective geometry scale is uiScale_ × dpiScale_. Changing any of the
+    // three calls `applyUiTheme()`, which rebuilds the style from scratch —
+    // ScaleAllSizes is cumulative, so incremental re-application would
+    // compound (see Pom2Theme.h).
+    pom2::UiAccent uiAccent_ = pom2::UiAccent::Amber;
+    float          uiScale_  = 1.0f;
+    float          dpiScale_ = 1.0f;
+    void applyUiTheme();
+
+    // Host caps-lock lock state (status-bar badge). Latched from GLFW
+    // modifier bits, so it is only known once the user has pressed a key —
+    // a session that never touches the keyboard shows no badge even if
+    // caps-lock happens to be on. Acceptable: the badge exists to explain
+    // unexpected uppercase, which requires typing in the first place.
+    bool hostCapsLock_ = false;
+
+    // ── Measured emulation speed (status bar) ────────────────────────────
+    // Sampled from Memory::getCycleCounter() against wall-clock in the UI
+    // thread. This is the speed the machine ACTUALLY achieved, as opposed to
+    // the toolbar's speed combo, which only shows the requested budget — the
+    // two diverge whenever the host can't keep up or disk turbo kicks in.
+    double   speedSampleTime_   = 0.0;   // lastFrameTime of the last sample
+    uint64_t speedSampleCycles_ = 0;
+    float    measuredMhz_       = 0.0f;  // 0 until the first interval closes
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
     bool         showMemoryBarH     = false;   // wide-short horizontal variant
@@ -323,6 +426,10 @@ private:
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
+    // Ethernet panel — Uthernet I / II status, host transport, W5100
+    // socket table. One window, tabbed between whichever cards are in.
+    bool         showEthernetPanel  = false;
+    std::unique_ptr<pom2::Uthernet_ImGui> ethernetPanel;
     // Dallas DS1216E "No-Slot Clock" diagnostics panel — pattern-matcher
     // counter + clock-readout bit counter so the user can verify ProDOS
     // walked the magic key successfully.
@@ -335,6 +442,13 @@ private:
     // poll only picks up what arrived since the previous frame. Reset
     // whenever the source card changes or its spool is cleared.
     size_t       imageWriterConsumed = 0;
+    /// Whether the printer's full input buffer holds the ACK line and so
+    /// blocks the guest — the real handshake. OFF by default: it is
+    /// faithful (a real Apple II *did* sit there for minutes printing a
+    /// Print Shop card) but an emulator that stops responding for two
+    /// minutes reads as a crash, and the printout builds up at the same
+    /// speed either way. Opt in from the ImageWriter panel.
+    bool         printerBackPressure = false;
     // Pending path the user has typed into the "Save spool as…" text box.
     // Auto-suggested with a timestamped filename under ./printouts/ on
     // first open; reused across save clicks within the same session.
@@ -371,10 +485,22 @@ private:
     std::string  mouseInspectorLogPath;
     std::unique_ptr<std::ofstream> mouseInspectorLogStream;
     double       mouseInspectorLastLogTime = 0.0;
-    // Slot Configuration: left = per-slot card assignment (built-ins greyed),
-    // right = internal disks + mountable ports of plugged storage cards.
-    // Persisted as `show_slot_config`. (Absorbed the old Slot Manager.)
+    // Slot Configuration: per-slot card assignment (built-ins greyed out).
+    // Staged — edits take effect on Apply, which restarts the machine.
+    // Persisted as `show_slot_config`.
     bool         showSlotConfigPanel = false;
+    // Internal disks + mountable ports of the plugged storage cards. Split
+    // out of Slot Configuration 2026-07-28: the two ran opposite interaction
+    // models in one window (staged vs immediate), which is exactly the
+    // confusion the 2026-07-27 pass papered over with banners. Persisted as
+    // `show_media_panel`; Devices → Internal Disks & Media.
+    bool         showMediaPanel = false;
+    // ROM Status: every dump POM2 probes, present/missing, with what breaks
+    // without it. POM2 ships no ROMs, so this is the first place to look
+    // when a profile boots the wrong firmware or a card won't plug.
+    // Persisted as `show_rom_status`; Help → ROM Status.
+    bool         showRomStatusPanel = false;
+    std::unique_ptr<pom2::RomStatus_ImGui> romStatusPanel;
     // BMOW Floppy Emu panel. Off by default; Devices → Floppy Emu.
     // Persisted as `show_floppy_emu`. `floppyEmuFavActive_` tracks the
     // Favorites-vs-File-Explorer toggle; `floppyEmuStatus` is the last
@@ -731,11 +857,16 @@ private:
     void renderPhasorPanelWindow();
     void renderEchoPlusPanelWindow();
     void renderSscPanelWindow();
+    void renderEthernetPanelWindow();
     void renderPrinterPanelWindow();
     void renderImageWriterWindow();
     /// Stream new bytes from the plugged printer interface card into the
     /// host-side ImageWriter. Called once per frame from the render loop.
     void pumpImageWriter();
+    /// The SSC feeding the ImageWriter, if any: lowest-slot plugged SSC
+    /// with its printer tap on (//c printer port = slot 1 by default).
+    /// Parallel cards outrank it in pumpImageWriter().
+    SuperSerialCard* printerTapSsc() const;
     void renderNoSlotClockPanelWindow();
     void renderJoystickPanelWindow();
     /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.
@@ -754,10 +885,16 @@ private:
     /// first About-dialog open. Silent no-op if the asset can't be
     /// resolved via ResourcePaths (kiosk builds, missing pic/ folder).
     void ensureAboutImageLoaded();
-    /// Slot Configuration panel (two columns): left = per-slot card
-    /// assignment (built-ins greyed), right = internal disks + mountable
-    /// ports of plugged storage cards. Implemented in MainWindow_Slots.cpp.
+    /// Slot Configuration panel: per-slot card assignment (built-ins greyed).
+    /// STAGED — edits land on Apply, which restarts the machine.
+    /// Implemented in MainWindow_Slots.cpp.
     void renderSlotConfigPanel();
+    /// Internal Disks & Media panel: the internal drives plus the mountable
+    /// bays of every plugged storage card. IMMEDIATE — Mount / Insert /
+    /// Eject act at once. Was the right column of Slot Configuration until
+    /// 2026-07-28; one window running two interaction models is what made
+    /// "mount on the right, Revert on the left" read as undoable.
+    void renderMediaPanel();
     /// Persist a media bay's state with the right key scheme for its card
     /// type (SmartPort per-unit / CFFA per-slot / synthetic HDV global key).
     /// Called under stateMutex right after a mount/eject/type/write-back.

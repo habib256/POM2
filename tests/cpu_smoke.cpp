@@ -1,6 +1,9 @@
 // POM2 — quick CPU + Memory + soft-switch smoke test.
 // Run from POM2 root:
-//   g++ -std=c++17 -O0 -I. tests/cpu_smoke.cpp M6502.cpp Memory.cpp -o /tmp/pom2_smoke && /tmp/pom2_smoke
+//   cd build && cmake .. && make cpu_smoke && ./tests/cpu_smoke
+// Diagnostic dump, not a test: it prints and asserts nothing, so it is
+// EXCLUDE_FROM_ALL and outside ctest. The gating equivalents are
+// klaus_6502_functional and tomharte_6502.
 
 #include "M6502.h"
 #include "Memory.h"

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace pom2 { class IWMDevice; class SmartPortHub; }
 
@@ -59,4 +60,18 @@ public:
     virtual void setIwm(pom2::IWMDevice* iwm) = 0;
     virtual void setSmartPortHub(pom2::SmartPortHub* hub) = 0;
     virtual void setIwmAuthoritative(bool on) = 0;
+
+    /// Serialize any profile-private device state that survives across
+    /// frames. Only the //c-class profile has any (the //c+ MIG gate
+    /// array's 2 KB RAM + its auto-incrementing page pointer); the base
+    /// contract is "append nothing, accept nothing" so profiles without
+    /// state need no override. Called from `Memory::appendSnapshotState`.
+    virtual void appendSnapshotState(std::vector<uint8_t>& out) const { (void)out; }
+    /// Consume a blob produced by `appendSnapshotState`. Returns the number
+    /// of bytes consumed, or 0 if the blob is absent/unrecognised — older
+    /// snapshots simply lack the section and keep the live values.
+    virtual size_t loadSnapshotState(const uint8_t* data, size_t n)
+    {
+        (void)data; (void)n; return 0;
+    }
 };

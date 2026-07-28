@@ -50,6 +50,9 @@
 //     splice point (TRK +6650) ignoré»).
 
 #include "IWMDevice.h"
+
+#include <cstring>
+#include <vector>
 #include "CpuClock.h"
 #include "Logger.h"
 #include "Sony35Drive.h"
@@ -793,6 +796,158 @@ void IWMDevice::sync(uint64_t nowCycles)
             break;
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Snapshot / rewind — see the header for why the timestamps matter
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+constexpr uint8_t kIwmBlobMagic[4]  = { 'I', 'W', 'M', '1' };
+}  // namespace
+
+void IWMDevice::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    auto putU8  = [&](uint8_t v) { out.push_back(v); };
+    auto putU32 = [&](uint32_t v) {
+        for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    };
+    auto putU64 = [&](uint64_t v) {
+        for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    };
+
+    out.insert(out.end(), kIwmBlobMagic, kIwmBlobMagic + 4);
+
+    // emuCycles timestamps — the whole point of this blob.
+    putU64(now_);
+    putU64(revStart35_);
+    putU64(lastSync_);
+    putU64(nextStateChange_);
+    putU64(syncUpdate_);
+    putU64(asyncUpdate_);
+    putU64(fluxWriteStart_);
+    putU64(delayDeadline_);
+
+    // Pending flux-write window: count-prefixed, live entries only.
+    const uint32_t n = (fluxWriteCount_ <= fluxWrite_.size())
+                           ? fluxWriteCount_
+                           : static_cast<uint32_t>(fluxWrite_.size());
+    putU32(n);
+    for (uint32_t i = 0; i < n; ++i) putU64(fluxWrite_[i]);
+
+    putU32(q3Clock_);
+    putU8(q3ClockActive_ ? 1 : 0);
+
+    putU32(static_cast<uint32_t>(qt_));
+    putU32(static_cast<uint32_t>(active_));
+    putU32(static_cast<uint32_t>(rw_));
+    putU32(static_cast<uint32_t>(rwState_));
+
+    putU8(data_);
+    putU8(whd_);
+    putU8(mode_);
+    putU8(status_);
+    putU8(control_);
+    putU8(rwBitCount_);
+    putU8(rsh_);
+    putU8(wsh_);
+    putU8(devsel_);
+}
+
+bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
+{
+    if (data == nullptr || n < 4) return false;
+    if (std::memcmp(data, kIwmBlobMagic, 4) != 0) return false;
+
+    size_t pos = 4;
+    bool   ok  = true;
+    auto need = [&](size_t k) { if (n - pos < k) { ok = false; return false; } return true; };
+    auto getU8 = [&]() -> uint8_t {
+        if (!need(1)) return 0;
+        return data[pos++];
+    };
+    auto getU32 = [&]() -> uint32_t {
+        if (!need(4)) return 0;
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[pos++]) << (8 * i);
+        return v;
+    };
+    auto getU64 = [&]() -> uint64_t {
+        if (!need(8)) return 0;
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(data[pos++]) << (8 * i);
+        return v;
+    };
+
+    // Decode into locals first: a truncated blob must not leave the device
+    // half-restored (that would be worse than not restoring at all — the
+    // timestamps would be a mix of two different points in time).
+    const uint64_t nowV      = getU64();
+    const uint64_t revV      = getU64();
+    const uint64_t lastV     = getU64();
+    const uint64_t nextV     = getU64();
+    const uint64_t syncV     = getU64();
+    const uint64_t asyncV    = getU64();
+    const uint64_t fluxStart = getU64();
+    const uint64_t delayV    = getU64();
+    if (!ok) return false;
+
+    const uint32_t fwCount = getU32();
+    if (!ok || fwCount > fluxWrite_.size()) return false;
+    std::vector<uint64_t> flux;
+    flux.reserve(fwCount);
+    for (uint32_t i = 0; i < fwCount; ++i) {
+        const uint64_t e = getU64();
+        if (!ok) return false;
+        flux.push_back(e);
+    }
+
+    const uint32_t q3      = getU32();
+    const uint8_t  q3Act   = getU8();
+    const uint32_t qtV     = getU32();
+    const uint32_t activeV = getU32();
+    const uint32_t rwV     = getU32();
+    const uint32_t rwStV   = getU32();
+    const uint8_t  dataV   = getU8();
+    const uint8_t  whdV    = getU8();
+    const uint8_t  modeV   = getU8();
+    const uint8_t  statV   = getU8();
+    const uint8_t  ctrlV   = getU8();
+    const uint8_t  bitsV   = getU8();
+    const uint8_t  rshV    = getU8();
+    const uint8_t  wshV    = getU8();
+    const uint8_t  devselV = getU8();
+    if (!ok) return false;
+
+    now_             = nowV;
+    revStart35_      = revV;
+    lastSync_        = lastV;
+    nextStateChange_ = nextV;
+    syncUpdate_      = syncV;
+    asyncUpdate_     = asyncV;
+    fluxWriteStart_  = fluxStart;
+    delayDeadline_   = delayV;
+
+    fluxWrite_.fill(0);
+    for (uint32_t i = 0; i < fwCount; ++i) fluxWrite_[i] = flux[i];
+    fluxWriteCount_ = fwCount;
+
+    q3Clock_       = q3;
+    q3ClockActive_ = q3Act != 0;
+    qt_            = static_cast<int>(qtV);
+    active_        = static_cast<int>(activeV);
+    rw_            = static_cast<int>(rwV);
+    rwState_       = static_cast<int>(rwStV);
+    data_          = dataV;
+    whd_           = whdV;
+    mode_          = modeV;
+    status_        = statV;
+    control_       = ctrlV;
+    rwBitCount_    = bitsV;
+    rsh_           = rshV;
+    wsh_           = wshV;
+    devsel_        = devselV;
+    return true;
 }
 
 }  // namespace pom2

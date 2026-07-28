@@ -41,38 +41,86 @@ bool GrapplerCard::loadRom(const std::string& path)
     return true;
 }
 
+const char* GrapplerCard::printerTypeName(PrinterType t)
+{
+    switch (t) {
+        case PrinterType::Epson:          return "Epson series";
+        case PrinterType::CItoh8510:      return "NEC 8023 / C. Itoh 8510 / DMP 85";
+        case PrinterType::StarGemini:     return "Star Gemini";
+        case PrinterType::Anadex:         return "Anadex";
+        case PrinterType::Okidata:        return "Okidata 82A/83A/92/93/84";
+        case PrinterType::AppleDotMatrix: return "Apple Dot Matrix / ImageWriter";
+        case PrinterType::Okidata84:      return "Okidata 84 (no Step II graphics)";
+        default:                          return "(invalid)";
+    }
+}
+
 uint8_t GrapplerCard::deviceSelectRead(uint8_t /*low4*/)
 {
-    // MAME `a2bus_grapplerplus_device::read_c0nx` (grappler.cpp): every
-    // device-select offset returns the same status byte —
+    // MAME `a2bus_grapplerplus_device::read_c0nx` (grappler.cpp:699-709):
+    // every device-select offset returns the same status byte —
     //   bit 7 IRQ pending · bits 6-4 DIP switches · bit 3 BUSY ·
     //   bit 2 PE (paper empty) · bit 1 SELECT · bit 0 ACK latch.
-    // POM2's synthetic printer is permanently ready: BUSY=0, PE=0,
-    // SELECT=1, ACK latched (instant ack), DIP = 000. The previous $FF
-    // read decoded for real firmware as "busy AND out of paper" — the
-    // worst possible value for its pre-byte status poll.
+    // POM2's printer is on-line and never runs out of paper (PE=0,
+    // SELECT=1); bits 6-4 report the S1 printer-type switches, which
+    // default to 101 = Apple Dot Matrix, not MAME's 000 = Epson (see
+    // `PrinterType` — POM2's printer IS an ImageWriter). The live lines
+    // are BUSY and the ACK latch, both driven by the host-side printer
+    // through
+    // `setPrinterBusy`: a printer whose input buffer is full has not
+    // acknowledged the byte yet, so the latch reads back clear.
+    //
+    // That bit — not BUSY — is what the genuine firmware's output
+    // routine spins on (4 KB dump, low $C800 bank):
+    //     $CD89  JSR $CDE1      ; read $C08n status
+    //     $CD8C  AND #$02       ; SELECT? no → give up
+    //     $CD93  AND #$01       ; ACK latch
+    //     $CD95  BEQ $CD89      ; spin until the printer acknowledges
+    // so holding it clear is what makes a printing guest wait for the
+    // paper instead of blasting a page into a host queue.
+    //
+    // The previous $FF read decoded for real firmware as "busy AND out
+    // of paper" — the worst possible value for that poll.
+    const bool acked = ackEffective();
+    if (acked != irqAsserted_ && !irqDisable_) updateIrq();
     return static_cast<uint8_t>((irqAsserted_ ? 0x80 : 0x00) |
+                                ((static_cast<uint8_t>(printerType()) & 0x07)
+                                     << 4) |
+                                (printerBusy() ? 0x08 : 0x00) |
                                 0x02 |                    // SELECT high
-                                (ackLatch_ ? 0x01 : 0x00));
+                                (acked ? 0x01 : 0x00));
 }
 
 void GrapplerCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
-    // MAME `a2bus_grapplerplus_device::write_c0nx` (grappler.cpp):
+    // MAME base `write_c0nx` (grappler.cpp:547-575) + Grappler+ overlay
+    // (grappler.cpp:711-745):
     //   !(offset & 3)  → latch data + strobe (offsets $0/$4/$8/$C)
     //   A0 set         → select the high 2 KB ROM bank at $C800
     //   A1 set         → disable the ACK IRQ (and release a pending one)
     //   A2 set (¬A1)   → enable the ACK IRQ
+    // Not modelled: the 7-clock /STROBE pulse timer (grappler.cpp:795-808,
+    // 839-849) — the synthetic printer consumes the byte at latch time, so
+    // the strobe edge has no observer; and MAME's ack-input gate on
+    // clearing the latch (grappler.cpp:559-570) — with an instant printer
+    // /ACK is never held asserted across a data write.
     // The previous decode spooled offset 1 ONLY — on real hardware that's
     // the bank select, so the genuine firmware's `STA $C0n0` printed into
     // the void. The synthetic printer consumes the byte and ACKs
     // instantly, so the ACK latch is re-set on the spot.
     if (!(low4 & 0x03)) {
         {
+            // MAME `data_latched` (grappler.cpp:795-808): S1:1 open drops
+            // bit 7 at the latch.
+            const uint8_t latched = dipMsb_ ? v : static_cast<uint8_t>(v & 0x7F);
             std::lock_guard<std::mutex> lk(bufferMtx_);
-            spool_.push_back(v);
+            spool_.push_back(latched);
         }
-        ackLatch_ = true;        // instant ACK pulse
+        // The printer acknowledges as soon as it has room for the byte —
+        // instantly unless the host-side ImageWriter reported a full
+        // input buffer (`ackEffective`), in which case the firmware's
+        // poll loop spins until it drains.
+        ackLatch_ = true;
         updateIrq();
     }
     if (low4 & 0x01) romBankHigh_ = true;
@@ -88,14 +136,15 @@ void GrapplerCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 uint8_t GrapplerCard::slotRomRead(uint8_t low8)
 {
     if (romLoaded_) {
-        // MAME `read_cnxx` side effects: any $CnXX read resets the ROM
-        // bank to 0, and while the ACK latch is CLEAR, address bit 6 is
+        // MAME `read_cnxx` (grappler.cpp:578-583) side effects: any $CnXX
+        // read resets the ROM bank to 0, and while the ACK latch is CLEAR,
+        // address bit 6 is
         // forced low for $Cn80-$CnFF fetches — the firmware senses ACK
         // through ROM reads (`m_rom[(!ack && BIT(offset,7)) ? offset&0xBF
         // : offset]`). With the instant-ACK printer the latch is almost
         // always set, but the wiring is kept faithful.
         romBankHigh_ = false;
-        const uint8_t idx = (!ackLatch_ && (low8 & 0x80))
+        const uint8_t idx = (!ackEffective() && (low8 & 0x80))
                                 ? static_cast<uint8_t>(low8 & 0xBF)
                                 : low8;
         return rom_[idx];
@@ -107,8 +156,9 @@ uint8_t GrapplerCard::expansionRomRead(uint16_t offset)
 {
     // The 4 KB Grappler EPROM appears in the shared $C800-$CFFF window
     // 2 KB at a time; A0 device-select writes choose the high bank and
-    // any $CnXX read drops back to the low one (MAME `read_c800` /
-    // `set_rom_bank`). Stock PR# / status entry points live in the low
+    // any $CnXX read drops back to the low one (MAME `read_c800`
+    // grappler.cpp:123-126 / `set_rom_bank` grappler.cpp:160-165). Stock
+    // PR# / status entry points live in the low
     // bank; the graphics-dump code spills into the high one.
     if (!romLoaded_) return 0xFF;
     return rom_[(offset & 0x7FF) | (romBankHigh_ ? 0x800u : 0x000u)];
@@ -116,19 +166,40 @@ uint8_t GrapplerCard::expansionRomRead(uint16_t offset)
 
 void GrapplerCard::onReset()
 {
-    // MAME reset_from_bus(): bank 0, ACK latch back to its inactive (set)
-    // level, IRQ flip-flop disabled and the line released.
-    romBankHigh_ = false;
+    // MAME `a2bus_grapplerplus_device_base::reset_from_bus`
+    // (grappler.cpp:536-539) sets only the ACK latch back to its inactive
+    // (set) level; `a2bus_grapplerplus_device::device_reset`
+    // (grappler.cpp:777-787) disables the IRQ flip-flop and releases the
+    // line. Neither touches the ROM bank — the U2D bank flip-flop is not
+    // wired to bus RESET, so a reset mid-graphics-dump leaves the high
+    // $C800 bank selected until the next $CnXX fetch drops it (an earlier
+    // POM2 revision cleared it here, a silent divergence).
     ackLatch_    = true;
     irqDisable_  = true;
     updateIrq();
 }
 
+void GrapplerCard::slotRomWrite(uint8_t /*low8*/, uint8_t /*v*/)
+{
+    // MAME `a2bus_grapplerplus_device_base::write_cnxx`
+    // (grappler.cpp:586-591): a write into the $CnXX ROM window is a bus
+    // conflict on real hardware, but the address decode still clocks the
+    // bank flip-flop back to the low 2 KB, same as a read.
+    romBankHigh_ = false;
+}
+
 void GrapplerCard::updateIrq()
 {
-    // MAME: the slot IRQ asserts while the ACK latch is set and the
-    // enable flip-flop is on; only the A1 disable (or reset) releases it.
-    const bool want = ackLatch_ && !irqDisable_;
+    // MAME models the IRQ as a flip-flop moved on each edge —
+    // `ack_latch_set` raises it when enabled (grappler.cpp:811-819),
+    // `ack_latch_cleared` (a data write) lowers it (grappler.cpp:822-831),
+    // A1/A2 writes lower/raise it (grappler.cpp:715-745), reset lowers it
+    // (grappler.cpp:777-787). The invariant those transitions maintain is
+    // `m_irq == (ack_latch && !irq_disable)`, so POM2 derives the level
+    // directly; the observable status bit 7 and slot line are identical.
+    // A byte still sitting in a full printer buffer hasn't been acked, so
+    // it can't raise the interrupt either (`ackEffective`).
+    const bool want = ackEffective() && !irqDisable_;
     if (want != irqAsserted_) {
         irqAsserted_ = want;
         assertIrq(want);

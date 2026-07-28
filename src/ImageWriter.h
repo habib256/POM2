@@ -67,6 +67,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -104,11 +105,15 @@ public:
     static const char* paperSizeName(PaperSize s);
 
     /// A rendered sheet. `pix` is `w*h` bytes in the `yyyxxxxx` encoding
-    /// described in the file header.
+    /// described in the file header. `dpi` is the raster density the sheet
+    /// was printed at — completed sheets keep theirs even if the host
+    /// changes the printer DPI afterwards, so an exporter can recover the
+    /// physical page size (PDF media box) from `w/dpi` x `h/dpi` inches.
     struct Page {
         int                  w = 0;
         int                  h = 0;
         std::vector<uint8_t> pix;
+        int                  dpi = 144;   // = kDefaultDpi (declared below)
     };
 
     /// Front-panel / print-head readout for the UI status line.
@@ -135,6 +140,19 @@ public:
     explicit ImageWriter(int dpi = kDefaultDpi,
                          PaperSize paper = PaperSize::Letter);
 
+    /// Closes the trace if one is open. Without this a quit while tracing
+    /// left the last partial hex row stranded in `traceRow_` (it never
+    /// reached stdio, so the C runtime's exit flush could not save it) and
+    /// the file ended with no `# trace closed` footer — you could not tell
+    /// a complete trace from one cut short by a crash. That matters most
+    /// on the `POM2_TRACE_PRINTER=1` path, which is the one used to
+    /// capture a trace for a bug report.
+    ~ImageWriter();
+
+    /// Owns a `FILE*`; copying it would `fclose` the same handle twice.
+    ImageWriter(const ImageWriter&)            = delete;
+    ImageWriter& operator=(const ImageWriter&) = delete;
+
     // ─── Configuration (host side — not driven by the guest) ─────────────
     int       dpi()       const { return dpi_; }
     PaperSize paperSize() const { return paper_; }
@@ -144,16 +162,121 @@ public:
     void setPaperSize(PaperSize s);
 
     /// The ImageWriter's "line feed after carriage return" DIP switch
-    /// (SW A-8). Defaults ON because the Apple II's COUT emits a bare CR
-    /// ($8D) and never an LF — with it off every printout lands on one
-    /// overprinted line. Turn it off for drivers that send CR+LF
-    /// themselves (they double-space otherwise).
-    void setAutoFeed(bool on) { autoFeed_ = on; }
-    bool autoFeed() const     { return autoFeed_; }
+    /// (SW A-8) — the setting that decides whether a printout comes out
+    /// right, double-spaced, or overprinted onto one line, and the one no
+    /// user should have to guess.
+    ///
+    ///   * A bare Apple II `PR#n : PRINT` emits CR and never LF, so the
+    ///     printer has to supply the feed.
+    ///   * Real drivers (and the Grappler+ firmware) send CR **and** LF,
+    ///     so the printer must NOT add one, or everything double-spaces.
+    ///   * Colour drivers go further: Print Shop separates its yellow /
+    ///     cyan / magenta passes with a bare CR precisely so they
+    ///     overprint the same line. Feed there and the passes stagger
+    ///     down the page in a coloured staircase.
+    ///
+    /// `Auto` (the default) settles it from the stream itself: it feeds
+    /// on CR until it sees the guest send its own LF right after one, and
+    /// then stops for the rest of the job. All three cases come out
+    /// right with nothing to configure. `On` / `Off` pin the switch.
+    enum class AutoFeed : uint8_t { Auto = 0, On, Off, Count };
+
+    /// Which ribbon cartridge is fitted. There is no "colour mode" on an
+    /// ImageWriter II: colour is a *four-band ribbon* you physically
+    /// install, and the guest picks a band with `ESC K n`. With the plain
+    /// black cartridge the printer still accepts ESC K — it just has one
+    /// band, so everything comes out black. Modelled the same way here.
+    ///
+    /// Note this only decides what the ribbon *can* do. Software has to
+    /// ask: Print Shop, for one, only emits ESC K when its Setup names an
+    /// "Apple Imagewriter II **(C)**" — the (M) driver never sends colour
+    /// no matter what is in the printer.
+    enum class Ribbon : uint8_t { FourColour = 0, Black, Count };
+    static const char* ribbonName(Ribbon r);
+    void   setRibbon(Ribbon r) { ribbon_ = r; }
+    Ribbon ribbon() const { return ribbon_; }
+
+    static const char* autoFeedName(AutoFeed m);
+    void     setAutoFeedMode(AutoFeed m);
+    AutoFeed autoFeedMode() const { return feedMode_; }
+    /// What the mechanism is actually doing right now (Auto resolved).
+    bool     autoFeedActive() const {
+        return feedMode_ == AutoFeed::On ||
+               (feedMode_ == AutoFeed::Auto && !feedLatchedOff_);
+    }
+    /// True once Auto has seen the guest manage its own line feeds.
+    bool     autoFeedLatchedOff() const { return feedLatchedOff_; }
+
+    // Back-compat shims (tests + old settings): On/Off only.
+    void setAutoFeed(bool on) {
+        setAutoFeedMode(on ? AutoFeed::On : AutoFeed::Off);
+    }
+    bool autoFeed() const { return autoFeedActive(); }
 
     // ─── Data path ───────────────────────────────────────────────────────
     void printChar(uint8_t ch);
     void printBytes(const uint8_t* data, size_t n);
+
+    // ─── Mechanism pacing ────────────────────────────────────────────────
+    // The interface card hands bytes over at bus speed — a `PRINT` loop
+    // spools a whole page in a millisecond of emulated time. A real
+    // ImageWriter II eats them at the speed of its carriage and platen,
+    // so `queueBytes` + `tick` model the mechanism: bytes wait in the
+    // printer's input buffer and are printed as the head can reach them.
+    //
+    // Speeds are Apple's published figures (ImageWriter II Owner's
+    // Manual, "Specifications"): 250 cps draft, 45 cps near-letter-
+    // quality. `Instant` is the old behaviour — everything prints the
+    // frame it arrives.
+    enum class Speed : uint8_t { Instant = 0, Draft, NLQ, Count };
+    static const char* speedName(Speed s);
+
+    void  setSpeed(Speed s);
+    Speed speed() const { return speed_; }
+
+    /// Hand `n` bytes to the printer's input buffer. They print over the
+    /// next ticks; nothing is rendered here.
+    void queueBytes(const uint8_t* data, size_t n);
+    /// Advance the mechanism by `dt` seconds of host time, printing
+    /// whatever the head had time to lay down.
+    void tick(double dt);
+    /// Print everything still queued right now ("Print now" button).
+    void flushPending();
+
+    /// Bytes accepted but not yet printed.
+    size_t pendingBytes() const { return pending_.size() - pendingHead_; }
+    bool   busy() const { return pendingHead_ < pending_.size(); }
+
+    /// Stock ImageWriter II input buffer. The interface card raises BUSY
+    /// to the Apple II while more than this is outstanding, which is what
+    /// makes a printing guest actually wait for the printer.
+    static constexpr size_t kInputBufferBytes = 2048;
+
+    // ─── Trace log ───────────────────────────────────────────────────────
+    // A printout that comes out as noise is a *protocol* problem: the
+    // guest's driver and this printer disagree about the command set. The
+    // only way to see that is the byte stream itself, decoded. The trace
+    // writes every byte the mechanism consumes as a hex dump interleaved
+    // with the decoded command, every page event, and every host event the
+    // caller reports through `traceEvent` (BUSY, queue depth).
+    //
+    // Enable from the panel, or set `POM2_TRACE_PRINTER=1` before launch
+    // (`POM2_TRACE_PRINTER=<path>` to choose the file).
+    bool startTrace(const std::string& path, std::string& err);
+    void stopTrace();
+    bool tracing() const { return trace_ != nullptr; }
+    const std::string& tracePath() const { return tracePath_; }
+    /// Log a host-side line (printf-style). No-op when not tracing.
+    void traceEvent(const char* fmt, ...);
+
+    /// Rolling capture of the raw bytes the printer received, always on
+    /// (last `kRawCaptureBytes`). The trace has to be armed *before* the
+    /// job; this doesn't — so a printout that came out wrong can still be
+    /// handed over byte-for-byte afterwards ("Save raw stream" in the
+    /// panel). Cheap: an append to a capped vector per byte.
+    static constexpr size_t kRawCaptureBytes = 256 * 1024;
+    const std::vector<uint8_t>& rawStream() const { return raw_; }
+    void clearRawStream() { raw_.clear(); }
 
     // ─── Front panel ─────────────────────────────────────────────────────
     /// FORM FEED button: eject the sheet (ignored when it is still blank).
@@ -228,7 +351,43 @@ private:
     double   definedUnit_ = 96.0;
     double   hmi_ = -1.0;                 // horizontal motion index override
 
-    bool     autoFeed_ = true;    // see setAutoFeed()
+    Ribbon   ribbon_ = Ribbon::FourColour;   // see setRibbon()
+
+    // ─── Line-feed-after-CR switch (see setAutoFeedMode) ─────────────────
+    AutoFeed feedMode_       = AutoFeed::Auto;
+    bool     feedLatchedOff_ = false;   // Auto saw the guest's own LF
+    bool     crJustFed_      = false;   // last byte was a CR that fed
+
+    // ─── Mechanism pacing (see queueBytes/tick) ──────────────────────────
+    Speed                speed_ = Speed::Draft;
+    std::vector<uint8_t> pending_;
+    size_t               pendingHead_ = 0;
+    double               credit_ = 0.0;   // banked mechanism seconds
+
+    /// Seconds the mechanism needs to consume `ch` in the current state
+    /// (glyph, dot column, carriage return, paper feed, or a free
+    /// command byte). 0 in `Instant` mode.
+    double byteCost(uint8_t ch) const;
+
+    /// How long the byte at the head of the queue has gone unaffordable.
+    /// A cost model that can never afford a byte would wedge the printer
+    /// *and* the guest waiting on it (that is exactly what a form feed
+    /// under a too-low credit cap did), so past `kStallSeconds` the byte
+    /// is forced through and the trace says so.
+    double stalledFor_ = 0.0;
+    static constexpr double kStallSeconds = 10.0;
+
+    // ─── Trace log ───────────────────────────────────────────────────────
+    std::vector<uint8_t> raw_;         // see rawStream()
+    std::FILE*  trace_       = nullptr;
+    std::string tracePath_;
+    double      traceClock_  = 0.0;    // seconds of tick() time, for stamps
+    uint8_t     traceRow_[16]{};
+    int         traceRowLen_ = 0;
+    uint64_t    traceOffset_ = 0;
+    void traceByte(uint8_t ch);
+    void traceFlushRow();
+    void traceCommand();
 
     /// Bit-image state (imagewriter.h:254-262).
     struct BitGraph {

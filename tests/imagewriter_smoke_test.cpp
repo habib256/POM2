@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -326,6 +327,223 @@ void testSpoolSeam()
     std::printf("  ok: PrinterCard::drainSpoolFrom streaming + resync\n");
 }
 
+void testMechanismPacing()
+{
+    // The card delivers a line in one frame; the mechanism prints it at
+    // 250 cps draft, so the page must build up over several ticks.
+    ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+    iw.setSpeed(ImageWriter::Speed::Draft);
+
+    const char* line = "HELLO WORLD";              // 11 chars ≈ 44 ms
+    iw.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    assert(iw.busy());
+    assert(iw.pendingBytes() == 11);
+    assert(iw.bytesReceived() == 0);               // nothing printed yet
+
+    // One 60 Hz frame buys 16.7 ms ≈ 4 characters — not the whole line.
+    iw.tick(1.0 / 60.0);
+    const uint64_t afterOneFrame = iw.bytesReceived();
+    assert(afterOneFrame > 0 && afterOneFrame < 11);
+    assert(iw.busy());
+
+    // Ticking past the line's print time drains it exactly once.
+    for (int i = 0; i < 10; ++i) iw.tick(1.0 / 60.0);
+    assert(!iw.busy());
+    assert(iw.pendingBytes() == 0);
+    assert(iw.bytesReceived() == 11);
+
+    // A tick with nothing queued must not bank credit that would later
+    // dump a whole line in one frame.
+    iw.tick(5.0);
+    iw.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    iw.tick(1.0 / 60.0);
+    assert(iw.busy());
+    iw.flushPending();
+    assert(!iw.busy());
+    assert(iw.bytesReceived() == 22);
+
+    // NLQ is the slow head: same line, more frames.
+    ImageWriter nlq(72, ImageWriter::PaperSize::Letter);
+    nlq.setSpeed(ImageWriter::Speed::NLQ);
+    nlq.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    nlq.tick(1.0 / 60.0);
+    assert(nlq.bytesReceived() < afterOneFrame);
+
+    // Instant is the old behaviour — everything lands the moment it is
+    // queued and ticked, and switching to it never strands a job.
+    ImageWriter fast(72, ImageWriter::PaperSize::Letter);
+    fast.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    fast.setSpeed(ImageWriter::Speed::Instant);
+    assert(!fast.busy());
+    assert(fast.bytesReceived() == 11);
+
+    // Power-cycling the printer throws the input buffer away with it.
+    ImageWriter off(72, ImageWriter::PaperSize::Letter);
+    off.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+    off.resetPrinterHard();
+    assert(!off.busy() && off.pendingBytes() == 0);
+    off.tick(1.0);
+    assert(off.bytesReceived() == 0);
+
+    std::printf("  ok: mechanism pacing (draft / NLQ / instant / reset)\n");
+}
+
+void testAutoLineFeedDetection()
+{
+    // The SW A-8 question — feed on CR or not — has three right answers
+    // depending on who is sending, and Auto settles it from the stream.
+    // Regression: with the printer always feeding, Print Shop's colour
+    // passes (separated by a bare CR so they overprint) marched down the
+    // page as a coloured staircase instead of landing on one line.
+    const double kLine = 1.0 / 6.0;
+
+    // 1. Bare CR (a plain PR#n : PRINT) — the printer must feed, or the
+    //    whole listing overprints one line.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        assert(iw.autoFeedMode() == ImageWriter::AutoFeed::Auto);
+        assert(iw.autoFeedActive());
+        feed(iw, "A\r");
+        assert(std::abs(iw.status().headY - kLine) < 1e-9);
+        feed(iw, "B\r");
+        assert(std::abs(iw.status().headY - 2 * kLine) < 1e-9);
+        assert(!iw.autoFeedLatchedOff());
+    }
+
+    // 2. CR+LF (every real driver, and the Grappler+ firmware) — one
+    //    advance per line, not two, and the switch latches off.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        feed(iw, "A\r\n");
+        assert(std::abs(iw.status().headY - kLine) < 1e-9);
+        assert(iw.autoFeedLatchedOff());
+        feed(iw, "B\r\n");
+        assert(std::abs(iw.status().headY - 2 * kLine) < 1e-9);
+
+        // 3. …and once latched, a bare CR overprints instead of feeding,
+        //    which is what a colour pass needs.
+        const double y = iw.status().headY;
+        feed(iw, "\rC");
+        assert(std::abs(iw.status().headY - y) < 1e-9);
+        assert(std::abs(iw.status().headX - 0.25) > 1e-9);   // it did print
+    }
+
+    // 4. An LF that is NOT preceded by a CR still feeds.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        feed(iw, "\n");
+        assert(std::abs(iw.status().headY - kLine) < 1e-9);
+        assert(!iw.autoFeedLatchedOff());
+    }
+
+    // 5. Pinning the switch by hand still wins over the detector.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setAutoFeedMode(ImageWriter::AutoFeed::On);
+        feed(iw, "A\r\n");                     // CR feeds, LF swallowed
+        assert(std::abs(iw.status().headY - kLine) < 1e-9);
+        assert(iw.autoFeedActive());           // stays on: not Auto
+
+        ImageWriter off(72, ImageWriter::PaperSize::Letter);
+        off.setAutoFeedMode(ImageWriter::AutoFeed::Off);
+        feed(off, "A\r");
+        assert(off.status().headY == 0.0);     // never feeds on CR
+    }
+
+    // 6. A power cycle re-arms the detector for the next job.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        feed(iw, "A\r\n");
+        assert(iw.autoFeedLatchedOff());
+        iw.resetPrinterHard();
+        assert(!iw.autoFeedLatchedOff());
+        assert(iw.autoFeedActive());
+    }
+
+    std::printf("  ok: line-feed-after-CR detection (bare CR / CR+LF / "
+                "overprint)\n");
+}
+
+void testNoUnaffordableByte()
+{
+    // Regression: the credit cap was a flat 1 s, but a form feed near the
+    // top of a Letter sheet costs 2.2 s of paper transport — so that byte
+    // could never be afforded, the queue stalled forever, and (with BUSY
+    // wired back to the card) the guest hung in its firmware ACK loop.
+    // Print Shop froze on every page eject.
+    ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+    iw.setSpeed(ImageWriter::Speed::Draft);
+    const uint8_t job[] = { 'H', 'I', 0x0C };       // two chars, then FF
+    iw.queueBytes(job, sizeof job);
+    for (int f = 0; f < 600; ++f) iw.tick(1.0 / 60.0);   // 10 s of frames
+    assert(!iw.busy());
+    assert(iw.pendingBytes() == 0);
+    assert(iw.completedPageCount() == 1);          // the sheet came out
+
+    // Same for the NLQ carriage return, whose slew from the right margin
+    // is also longer than the old cap.
+    ImageWriter nlq(72, ImageWriter::PaperSize::Ledger);   // 11 in wide
+    nlq.setSpeed(ImageWriter::Speed::NLQ);
+    const uint8_t wide[] = { 0x0C, 0x0D };
+    nlq.queueBytes(wide, sizeof wide);
+    for (int f = 0; f < 900; ++f) nlq.tick(1.0 / 60.0);
+    assert(!nlq.busy());
+
+    // And the belt-and-braces watchdog: whatever the cost model says, a
+    // byte may not sit unprinted forever. Paper the size of a barn door
+    // makes the form feed cost far more than any cap.
+    ImageWriter big(72, ImageWriter::PaperSize::A3);
+    big.setSpeed(ImageWriter::Speed::NLQ);
+    const uint8_t ff[] = { 'X', 0x0C };
+    big.queueBytes(ff, sizeof ff);
+    for (int f = 0; f < 60 * 60; ++f) big.tick(1.0 / 60.0);   // 60 s
+    assert(!big.busy());
+
+    std::printf("  ok: no byte is ever unaffordable (form feed / NLQ CR)\n");
+}
+
+void testTraceClosedOnDestruction()
+{
+    // Regression: the printer owned the trace `FILE*` but had no
+    // destructor, and `stopTrace()` was only ever reached from the
+    // panel's checkbox. Quitting while tracing therefore stranded the
+    // partial hex row inside `traceRow_` — it had never reached stdio, so
+    // the C runtime's exit flush could not save it — and the file ended
+    // with no footer. On the `POM2_TRACE_PRINTER=1` path (the one used to
+    // capture a trace for a bug report) that meant every trace ended
+    // truncated, with no way to tell it apart from one cut short by a
+    // crash.
+    const std::string path = "imagewriter_trace_dtor_test.log";
+    std::remove(path.c_str());
+
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        std::string err;
+        assert(iw.startTrace(path, err));
+        assert(iw.tracing());
+        // Fewer than the 16 bytes that force a row flush, so the whole
+        // row is still buffered when the printer goes away.
+        feed(iw, "HI");
+    }   // ← destructor: this is what used to lose the row
+
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    assert(f);
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) body.append(buf, n);
+    std::fclose(f);
+    std::remove(path.c_str());
+
+    // The buffered row reached the file...
+    assert(body.find("48 49") != std::string::npos);   // 'H' 'I'
+    assert(body.find("|HI|") != std::string::npos);
+    // ...and the trace says it ended on purpose.
+    assert(body.find("# trace closed after 2 bytes") != std::string::npos);
+
+    std::printf("  ok: trace flushed + closed when the printer is destroyed\n");
+}
+
 } // namespace
 
 int main()
@@ -339,6 +557,10 @@ int main()
     testPaperHandling();
     testRgbaExport();
     testSpoolSeam();
+    testMechanismPacing();
+    testAutoLineFeedDetection();
+    testNoUnaffordableByte();
+    testTraceClosedOnDestruction();
     std::printf("PASS\n");
     return 0;
 }

@@ -1,0 +1,374 @@
+// VERHILLE Arnaud 2026
+
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+//
+// W5100Device — WIZnet W5100 "hardwired TCP/IP" Ethernet controller, the
+// chip on the a2RetroSystems **Uthernet II**.
+//
+// MAME has no W5100 device (its Apple II Ethernet support stops at the
+// Uthernet I's CS8900A), so the reference here is AppleWin's
+// `source/Uthernet2.cpp` + `source/W5100.h` (GPL-2.0+, Andrea Odetti),
+// cross-checked against the WIZnet W5100 datasheet v1.2.8 and the
+// Uthernet II manual (2018-11-17). Line citations below are against
+// AppleWin's `Uthernet2.cpp`.
+//
+// Why this is NOT a packet-level model
+// ------------------------------------
+// The W5100 is not a NIC — it is a TCP/IP *offload engine*. The guest
+// does not build IP headers or run a retransmit timer; it writes a
+// destination address and a port into registers, issues CONNECT, and then
+// pushes payload bytes at a ring buffer. All the protocol work happens
+// inside the chip. That maps one-for-one onto host BSD sockets, which is
+// exactly what this class does and what AppleWin does: each of the four
+// W5100 sockets in TCP or UDP mode owns a real non-blocking host socket.
+//
+// The consequence is the headline feature: **Uthernet II works with no
+// Ethernet backend at all.** A period IRC, telnet or FTP client talks
+// TCP, so it runs over plain host sockets on any machine, no privileges,
+// no libslirp. Only the two raw modes need a `NetworkBackend`:
+//
+//   MACRAW — socket 0 only, hands the guest whole Ethernet frames.
+//   IPRAW  — the guest supplies an IP payload and a protocol number and
+//            the chip frames it (this is how W5100 software does ICMP).
+//
+// Memory map (`W5100.h`, datasheet §3)
+// ------------------------------------
+//   $0000-$002F  common registers (mode, gateway, subnet, MAC, our IP,
+//                retry timing, RX/TX memory-size allocation)
+//   $0400-$07FF  four 256-byte socket register banks (S0..S3)
+//   $4000-$5FFF  8 KB TX buffer, carved between sockets by TMSR
+//   $6000-$7FFF  8 KB RX buffer, carved between sockets by RMSR
+//
+// The Uthernet II reaches all 32 KB through a 4-register indirect window
+// (datasheet "indirect bus mode"), which UthernetIICard maps onto $C0n4-7
+// and this class implements as modeRegister/dataAddress/readData/writeData.
+//
+// Virtual DNS (`Uthernet2.cpp:32-37`)
+// ----------------------------------
+// An AppleWin extension the real card does not have: setting bit 3 of a
+// socket's protocol nibble means "the destination is a hostname, not an
+// IP". The length-prefixed name lives at socket-register offset $2A-$FF
+// and OPEN resolves it into DIPR. Software detects the extension by
+// reading PTIMER as 0. POM2 keeps it — it is what lets a guest reach
+// `irc.libera.chat` without carrying its own resolver — but resolves off
+// the CPU thread; see `resolveDns`.
+//
+// Threading: every entry point runs on the CPU thread under
+// EmulationController's stateMutex. All host sockets are non-blocking and
+// nothing here waits on the network. The one exception is the bounded DNS
+// wait documented on `kDnsWaitMs`.
+
+#ifndef POM2_W5100_DEVICE_H
+#define POM2_W5100_DEVICE_H
+
+#include "NetworkBackend.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace pom2 {
+
+// ── W5100 memory map (AppleWin `W5100.h`) ─────────────────────────────
+inline constexpr uint16_t kW5100Mr       = 0x0000;
+inline constexpr uint16_t kW5100Gar0     = 0x0001;
+inline constexpr uint16_t kW5100Gar3     = 0x0004;
+inline constexpr uint16_t kW5100Subr0    = 0x0005;
+inline constexpr uint16_t kW5100Subr3    = 0x0008;
+inline constexpr uint16_t kW5100Shar0    = 0x0009;
+inline constexpr uint16_t kW5100Shar5    = 0x000E;
+inline constexpr uint16_t kW5100Sipr0    = 0x000F;
+inline constexpr uint16_t kW5100Sipr3    = 0x0012;
+inline constexpr uint16_t kW5100Rtr0     = 0x0017;
+inline constexpr uint16_t kW5100Rtr1     = 0x0018;
+inline constexpr uint16_t kW5100Rcr      = 0x0019;
+inline constexpr uint16_t kW5100Rmsr     = 0x001A;
+inline constexpr uint16_t kW5100Tmsr     = 0x001B;
+inline constexpr uint16_t kW5100Ptimer   = 0x0028;
+inline constexpr uint16_t kW5100Uport1   = 0x002F;
+inline constexpr uint16_t kW5100S0Base   = 0x0400;
+inline constexpr uint16_t kW5100S3Max    = 0x07FF;
+inline constexpr uint16_t kW5100TxBase   = 0x4000;
+inline constexpr uint16_t kW5100RxBase   = 0x6000;
+inline constexpr uint16_t kW5100MemMax   = 0x7FFF;
+inline constexpr uint32_t kW5100MemSize  = 0x8000;
+
+// Mode register bits.
+inline constexpr uint8_t kW5100MrAi  = 0x02;   // address auto-increment
+inline constexpr uint8_t kW5100MrRst = 0x80;   // soft reset
+
+// Socket mode register — protocol nibble.
+inline constexpr uint8_t kW5100SnMrProtoMask = 0x0F;
+inline constexpr uint8_t kW5100SnMrMf        = 0x40;  // MACRAW: filter by MAC
+inline constexpr uint8_t kW5100SnMrClosed    = 0x00;
+inline constexpr uint8_t kW5100SnMrTcp       = 0x01;
+inline constexpr uint8_t kW5100SnMrUdp       = 0x02;
+inline constexpr uint8_t kW5100SnMrIpRaw     = 0x03;
+inline constexpr uint8_t kW5100SnMrMacRaw    = 0x04;
+/// Virtual-DNS flag — POM2/AppleWin extension, not on real silicon.
+inline constexpr uint8_t kW5100SnVirtualDns  = 0x08;
+
+// Socket command register.
+inline constexpr uint8_t kW5100SnCrOpen    = 0x01;
+inline constexpr uint8_t kW5100SnCrListen  = 0x02;
+inline constexpr uint8_t kW5100SnCrConnect = 0x04;
+inline constexpr uint8_t kW5100SnCrDiscon  = 0x08;
+inline constexpr uint8_t kW5100SnCrClose   = 0x10;
+inline constexpr uint8_t kW5100SnCrSend    = 0x20;
+inline constexpr uint8_t kW5100SnCrRecv    = 0x40;
+
+// Socket register offsets within a 256-byte bank.
+inline constexpr uint8_t kW5100SnMr      = 0x00;
+inline constexpr uint8_t kW5100SnCr      = 0x01;
+inline constexpr uint8_t kW5100SnSr      = 0x03;
+inline constexpr uint8_t kW5100SnPort0   = 0x04;
+inline constexpr uint8_t kW5100SnPort1   = 0x05;
+inline constexpr uint8_t kW5100SnDhar0   = 0x06;
+inline constexpr uint8_t kW5100SnDhar5   = 0x0B;
+inline constexpr uint8_t kW5100SnDipr0   = 0x0C;
+inline constexpr uint8_t kW5100SnDipr3   = 0x0F;
+inline constexpr uint8_t kW5100SnDport0  = 0x10;
+inline constexpr uint8_t kW5100SnDport1  = 0x11;
+inline constexpr uint8_t kW5100SnProto   = 0x14;
+inline constexpr uint8_t kW5100SnTos     = 0x15;
+inline constexpr uint8_t kW5100SnTtl     = 0x16;
+inline constexpr uint8_t kW5100SnTxFsr0  = 0x20;
+inline constexpr uint8_t kW5100SnTxFsr1  = 0x21;
+inline constexpr uint8_t kW5100SnTxRd0   = 0x22;
+inline constexpr uint8_t kW5100SnTxRd1   = 0x23;
+inline constexpr uint8_t kW5100SnTxWr0   = 0x24;
+inline constexpr uint8_t kW5100SnTxWr1   = 0x25;
+inline constexpr uint8_t kW5100SnRxRsr0  = 0x26;
+inline constexpr uint8_t kW5100SnRxRsr1  = 0x27;
+inline constexpr uint8_t kW5100SnRxRd0   = 0x28;
+inline constexpr uint8_t kW5100SnRxRd1   = 0x29;
+/// Virtual-DNS hostname area (POM2/AppleWin extension).
+inline constexpr uint8_t kW5100SnDnsNameLen   = 0x2A;
+inline constexpr uint8_t kW5100SnDnsNameBegin = 0x2B;
+inline constexpr uint8_t kW5100SnDnsNameEnd   = 0xFF;
+inline constexpr uint8_t kW5100SnDnsNameCpty  =
+    static_cast<uint8_t>(kW5100SnDnsNameEnd - kW5100SnDnsNameBegin);
+
+// Socket status register values.
+inline constexpr uint8_t kW5100SnSrClosed      = 0x00;
+inline constexpr uint8_t kW5100SnSrInit        = 0x13;
+inline constexpr uint8_t kW5100SnSrSynSent     = 0x15;
+inline constexpr uint8_t kW5100SnSrEstablished = 0x17;
+inline constexpr uint8_t kW5100SnSrUdp         = 0x22;
+inline constexpr uint8_t kW5100SnSrIpRaw       = 0x32;
+inline constexpr uint8_t kW5100SnSrMacRaw      = 0x42;
+
+class W5100Device
+{
+public:
+    static constexpr size_t kSocketCount = 4;
+
+    /// How long `openSocket` will wait for an in-flight virtual-DNS
+    /// lookup before giving up and leaving DIPR at 0.0.0.0. The lookup
+    /// itself runs on a detached thread and its answer is cached, so a
+    /// guest that retries after the (expected) failed connect gets the
+    /// address instantly. Bounded because this runs on the CPU thread:
+    /// a plain blocking getaddrinfo() could stall emulation for seconds.
+    static constexpr int kDnsWaitMs = 120;
+
+    W5100Device();
+    ~W5100Device();
+
+    W5100Device(const W5100Device&) = delete;
+    W5100Device& operator=(const W5100Device&) = delete;
+
+    /// `powerCycle` false = the MR RST soft reset (registers and buffers
+    /// clear, the indirect data address survives — Uthernet II manual
+    /// p.10). True additionally drops caches and the data address.
+    void reset(bool powerCycle);
+
+    // ── Indirect bus interface (Uthernet II $C0n4-$C0n7) ──────────────
+    uint8_t  modeRegister() const { return modeRegister_; }
+    void     setModeRegister(uint8_t value);
+    uint16_t dataAddress() const { return dataAddress_; }
+    void     setDataAddressHigh(uint8_t v)
+    {
+        dataAddress_ = static_cast<uint16_t>((v << 8) | (dataAddress_ & 0x00FF));
+    }
+    void     setDataAddressLow(uint8_t v)
+    {
+        dataAddress_ = static_cast<uint16_t>(v | (dataAddress_ & 0xFF00));
+    }
+    /// Read/write through the data port, honouring MR's auto-increment.
+    uint8_t readData();
+    void    writeData(uint8_t value);
+
+    // ── Direct addressing (used by the tests and the debug panel) ─────
+    uint8_t readValueAt(uint16_t address);
+    void    writeValueAt(uint16_t address, uint8_t value);
+    /// Side-effect-free: no packet pull, no command dispatch.
+    uint8_t peekValueAt(uint16_t address) const;
+
+    /// Service in-flight non-blocking connects. Called from the card's
+    /// cycle hook.
+    void poll();
+
+    /// Host transport for MACRAW / IPRAW. Not owned; may be null.
+    void setBackend(NetworkBackend* backend) { backend_ = backend; }
+    NetworkBackend* backend() const { return backend_; }
+
+    /// Virtual DNS on/off. Off makes PTIMER read back its hardware
+    /// default ($28) so software detects a stock W5100.
+    void setVirtualDnsEnabled(bool enabled);
+    bool virtualDnsEnabled() const { return virtualDns_; }
+
+    // ── Introspection for the status panel ────────────────────────────
+    struct SocketInfo {
+        uint8_t  mode          = 0;
+        uint8_t  status        = 0;
+        uint16_t localPort     = 0;
+        uint16_t remotePort    = 0;
+        uint32_t remoteIp      = 0;   // network byte order
+        uint16_t rxPending     = 0;
+        uint16_t txPending     = 0;
+        uint16_t rxCapacity    = 0;
+        uint16_t txCapacity    = 0;
+        bool     hasHostSocket = false;
+    };
+    SocketInfo socketInfo(size_t i) const;
+    std::array<uint8_t, 6> macAddress() const;
+    uint32_t localIp() const;   // network byte order
+
+    uint64_t bytesSent()     const { return bytesSent_; }
+    uint64_t bytesReceived() const { return bytesReceived_; }
+
+    // ── Snapshot / rewind ─────────────────────────────────────────────
+    void appendSnapshotState(std::vector<uint8_t>& out) const;
+    void loadSnapshotState(const uint8_t* data, std::size_t len);
+
+private:
+    /// One of the chip's four sockets. `fd` is a host socket in TCP/UDP
+    /// mode and -1 otherwise; the raw modes need no host socket because
+    /// they go out through the NetworkBackend.
+    struct Socket {
+        uint16_t transmitBase    = 0;
+        uint16_t transmitSize    = 0;
+        uint16_t receiveBase     = 0;
+        uint16_t receiveSize     = 0;
+        uint16_t registerAddress = 0;
+
+        /// Write cursor into the RX ring. The chip owns this one; the
+        /// guest only moves the matching read cursor (SN_RX_RD).
+        uint16_t rxWrite = 0;
+        /// Bytes currently staged in the RX ring (SN_RX_RSR).
+        uint16_t rxSize  = 0;
+
+        int     fd         = -1;
+        uint8_t status     = kW5100SnSrClosed;
+        /// Per-protocol header the chip prepends to received data in the
+        /// RX ring (`Uthernet2.cpp:212-234`): none for TCP, IP+port+len
+        /// for UDP, IP+len for IPRAW, len for MACRAW.
+        uint8_t headerSize = 0;
+
+        bool isOpen() const
+        {
+            return fd >= 0 &&
+                   (status == kW5100SnSrEstablished || status == kW5100SnSrUdp);
+        }
+    };
+
+    // Memory helpers.
+    uint8_t  mem(uint16_t a) const { return memory_[a & kW5100MemMax]; }
+    void     setMem(uint16_t a, uint8_t v) { memory_[a & kW5100MemMax] = v; }
+    uint16_t readNetworkWord(uint16_t a) const;
+    uint32_t readAddress(uint16_t a) const;
+
+    // Socket lifecycle (`Uthernet2.cpp:910-1102`).
+    void setSocketStatus(size_t i, uint8_t status);
+    void clearSocket(size_t i);
+    void openSystemSocket(size_t i, int type, int protocol, uint8_t status);
+    void openSocket(size_t i);
+    void closeSocket(size_t i);
+    void connectSocket(size_t i);
+    void listenSocket(size_t i);
+    void setCommandRegister(size_t i, uint8_t value);
+
+    // Buffer geometry (`Uthernet2.cpp:441-547`).
+    void     setTxSizes(uint8_t value);
+    void     setRxSizes(uint8_t value);
+    uint16_t txDataSize(size_t i) const;
+    uint8_t  txFreeSizeRegister(size_t i, unsigned shift) const;
+    uint8_t  rxDataSizeRegister(size_t i, unsigned shift) const;
+    void     resetRxTxBuffers(size_t i);
+    void     updateRsr(size_t i);
+
+    // RX ring writers (`Uthernet2.cpp:119-181`).
+    void ringWrite8(size_t i, uint8_t v);
+    void ringWrite16(size_t i, uint16_t v);
+    void ringWriteData(size_t i, const uint8_t* data, size_t len);
+    bool ringHasRoomFor(size_t i, size_t len) const;
+    uint16_t ringFreeRoom(size_t i) const;
+
+    // Receive paths (`Uthernet2.cpp:549-770`).
+    void receiveOnePacket(size_t i);
+    void receiveOnePacketFromSocket(size_t i);
+    void receiveOnePacketRaw();
+    void receiveOnePacketMacRaw(size_t i, const uint8_t* data, int size);
+    void receiveOnePacketIpRaw(size_t i, const uint8_t* payload, size_t len,
+                               uint32_t source);
+
+    // Transmit paths (`Uthernet2.cpp:772-895`).
+    void sendData(size_t i);
+    void sendDataToSocket(size_t i, const std::vector<uint8_t>& data);
+    void sendDataMacRaw(const std::vector<uint8_t>& data);
+    void sendDataIpRaw(size_t i, const std::vector<uint8_t>& payload);
+
+    // Register decode (`Uthernet2.cpp:1104-1354`).
+    uint8_t readSocketRegister(uint16_t address);
+    void    writeSocketRegister(uint16_t address, uint8_t value);
+    void    writeCommonRegister(uint16_t address, uint8_t value);
+    void    autoIncrement();
+
+    // Virtual DNS + ARP (`Uthernet2.cpp:1012-1037`, `:1487-1525`).
+    void resolveDns(size_t i);
+    void macForAddress(uint32_t ipv4, MacAddress& out);
+
+    /// A name lookup that outlived its bounded wait. The resolver thread
+    /// parks the answer here; `poll()` (CPU thread) folds it into
+    /// `dnsCache_`. Keeps the cache single-threaded despite the async
+    /// lookup — the mutex guards only this hand-off queue.
+    struct PendingDns {
+        std::string name;
+        uint32_t    address = 0;
+    };
+    void drainPendingDns();
+
+    std::vector<uint8_t>              memory_;
+    std::array<Socket, kSocketCount>  sockets_{};
+    uint8_t                           modeRegister_ = 0;
+    uint16_t                          dataAddress_  = 0;
+    bool                              virtualDns_   = true;
+    NetworkBackend*                   backend_      = nullptr;
+
+    /// The real card has no ARP cache — this one exists purely so an
+    /// IPRAW send does not re-resolve on every packet.
+    std::map<uint32_t, MacAddress> arpCache_;
+    std::map<std::string, uint32_t> dnsCache_;
+
+    /// Written by detached resolver threads, drained by poll(). Shared
+    /// through a shared_ptr so a lookup that outlives the card (the user
+    /// pulled it out of the slot mid-resolve) has nowhere unsafe to write.
+    struct DnsMailbox {
+        std::mutex              mutex;
+        std::vector<PendingDns> pending;
+    };
+    std::shared_ptr<DnsMailbox> dnsMailbox_ = std::make_shared<DnsMailbox>();
+
+    uint64_t bytesSent_     = 0;
+    uint64_t bytesReceived_ = 0;
+};
+
+} // namespace pom2
+
+#endif // POM2_W5100_DEVICE_H

@@ -21,6 +21,7 @@
 #include "ImageWriter.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,25 @@ public:
         bool        canSaveFiles = true;
         /// Directory PNG exports land in (created on demand).
         std::string saveDir      = "printouts";
+
+        /// Interface-card DIP block, when the plugged card has one (the
+        /// Grappler+'s S1 printer-type switches). The panel is the natural
+        /// home for it: what the card *says* it is talking to decides
+        /// which dialect of escape codes reaches this printer, and a
+        /// mismatch is exactly what makes a printout come out as noise.
+        /// Empty options list = no DIP UI for this card.
+        struct DipOption { const char* label; int value; };
+        std::vector<DipOption>    cardDipOptions;
+        int                       cardDipValue = 0;
+        std::function<void(int)>  onCardDipChanged;
+        /// Value the card should be on to speak this printer's language.
+        int                       cardDipRecommended = -1;
+
+        /// Whether a full printer buffer blocks the guest (real ACK
+        /// handshake). Host-owned because it lives on the card, not the
+        /// printer; surfaced here because this is where its effect shows.
+        bool                      backPressure = false;
+        std::function<void(bool)> onBackPressureChanged;
     };
 
     ImageWriter_ImGui() = default;

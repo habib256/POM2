@@ -1,5 +1,7 @@
 // POM2 — boot ROM, type a tiny Applesoft program, RUN it, dump the screen.
-//   g++ -std=c++17 -O2 -I. tests/rom_basic.cpp M6502.cpp Memory.cpp -o /tmp/pom2_basic
+//   cd build && cmake .. && make rom_basic && ./tests/rom_basic
+// Diagnostic dump, not a test: it prints and asserts nothing, so it is
+// EXCLUDE_FROM_ALL and outside ctest. dos33_save gates the real path.
 //   ./build/POM2 must NOT be running concurrently (this is headless).
 
 #include "M6502.h"

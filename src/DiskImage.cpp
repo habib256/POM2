@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -554,6 +556,10 @@ bool DiskImage::loadFile(const std::string& imgPath)
             return false;
         }
     }
+
+    // A new medium restarts the write framing (see writeFlux) — a nibble
+    // half-assembled from the previous disk must not land on this one.
+    writeFraming.fill(WriteFraming{});
 
     const DetectResult det = detectFormat(imgPath, bytes);
     if (det.kind == ImageKind::Unknown) {
@@ -1147,6 +1153,9 @@ void DiskImage::eject()
     fileWriteProtected = false;
     optimalBitTiming = 32;   // WOZ2 INFO value must not leak into the next image
     path.clear();
+    // Half-framed nibble / destination slot from the ejected medium must not
+    // continue into the next one (see writeFlux).
+    writeFraming.fill(WriteFraming{});
     for (auto& t : tracks) t.fill(0xFF);
     dirty.fill(false);
     anyDirty = false;
@@ -1611,117 +1620,158 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     const int period = trackPeriod(qt);
     if (period <= 0) return;
 
-    // Reduce both endpoints into [0, period) THROUGH the revolution
-    // anchor (MAME `find_position`, see header comment). If the window
-    // wraps the revolution boundary, recurse on the two halves.
-    const int64_t origin = (revolutionStart >= 0) ? revolutionStart
-                                                  : int64_t{0};
-    int64_t startMod = (((startLssCycle - origin) % period) + period) % period;
-    int64_t endMod   = startMod + (endLssCycle - startLssCycle);
-    if (endMod > period) {
-        // Split: [startMod, period) and [0, endMod - period).
-        std::vector<int64_t> firstHalf, secondHalf;
-        firstHalf.reserve(count);
-        secondHalf.reserve(count);
-        const int64_t origBase = startLssCycle - startMod;
-        const int64_t splitAt  = origBase + period;
-        for (int i = 0; i < count; ++i) {
-            if (transitions[i] < splitAt) firstHalf.push_back(transitions[i]);
-            else                          secondHalf.push_back(transitions[i]);
-        }
-        writeFlux(qt, startLssCycle, splitAt,
-                  static_cast<int>(firstHalf.size()), firstHalf.data(),
-                  revolutionStart);
-        writeFlux(qt, splitAt, endLssCycle,
-                  static_cast<int>(secondHalf.size()), secondHalf.data(),
-                  revolutionStart);
-        return;
-    }
-
-    // Cell-window the [startMod, endMod) range. Inclusive of partial
-    // cells at the start and end so a sub-cell-wide write doesn't drop
-    // bits.
     // Cell width in LSS cycles — same accessor as the read/WOZ paths so
-    // the two stay consistent (non-WOZ images keep the 32-default → 8,
-    // so this is a no-op for them today, but keeps the branches aligned).
-    const int cyc       = lssCyclesPerCell();
-    const int firstCell = static_cast<int>(startMod / cyc);
-    const int lastCell  = static_cast<int>((endMod + cyc - 1) / cyc);  // exclusive
+    // the two stay consistent (non-WOZ images keep the 32-default → 8).
+    const int cyc = lssCyclesPerCell();
 
-    // Map each transition into a cell index and mark that cell's bit = 1.
-    // PULSE-detect window per MAME: address bit 4 goes low for exactly one
-    // LSS cycle, at the cycle equal to the transition's timestamp. Any
-    // transition timestamped inside [k*cyc, k*cyc+cyc) lights cell k.
-    const int64_t origBase = startLssCycle - startMod;
-    std::vector<bool> newBits(lastCell - firstCell, false);
+    // The cell grid for a WRITE is the WRITE's own clock, not the track's
+    // revolution phase. The head emits one cell every `cyc` LSS cycles from
+    // the moment write mode came on, so transitions from one burst are
+    // always an exact multiple of `cyc` apart. Quantising them against the
+    // revolution anchor instead (`(t - revolutionStart) mod period / cyc`)
+    // put that grid at an arbitrary sub-cell phase: adjacent transitions
+    // rounded into the SAME cell, one of the two was dropped, the nibble
+    // lost a bit and the framing below slipped — a written data field came
+    // back as garbage and DOS 3.3 answered I/O ERROR. The revolution anchor
+    // is still what says WHERE on the track the burst starts, but it is
+    // consulted once, when the burst is anchored to a nibble (below), not
+    // per transition.
+    WriteFraming& fr = writeFraming[track];
+    const bool continues = (fr.nextCycle == startLssCycle && fr.nibbleIdx >= 0);
+    if (!continues) fr.origin = startLssCycle;
+
+    const int64_t firstCell64 = (startLssCycle - fr.origin) / cyc;
+    const int64_t lastCell64  = (endLssCycle - fr.origin + cyc - 1) / cyc;
+    if (lastCell64 <= firstCell64) return;
+    const int firstCell = static_cast<int>(firstCell64);
+    const int lastCell  = static_cast<int>(lastCell64);
+
+    // Angular position of the burst start, used only to pick the nibble the
+    // head is over when a NEW burst begins (MAME `find_position`).
+    const int64_t anchorOrigin = (revolutionStart >= 0) ? revolutionStart
+                                                        : int64_t{0};
+    const int64_t startMod =
+        (((startLssCycle - anchorOrigin) % period) + period) % period;
+    const int64_t endMod = startMod + (endLssCycle - startLssCycle);
+
+    // One bit per cell of this window, off the write clock.
+    std::vector<bool> newBits(static_cast<size_t>(lastCell - firstCell), false);
     for (int i = 0; i < count; ++i) {
-        const int64_t t = ((transitions[i] - origBase) % period + period) % period;
-        const int cell  = static_cast<int>(t / cyc) - firstCell;
-        if (cell >= 0 && cell < static_cast<int>(newBits.size())) {
-            newBits[cell] = true;
+        const int64_t cell = (transitions[i] - fr.origin) / cyc - firstCell64;
+        if (cell >= 0 && cell < static_cast<int64_t>(newBits.size())) {
+            newBits[static_cast<size_t>(cell)] = true;
         }
     }
 
-    // Re-pack the written cells into nibbles by walking the PADDED cell
-    // timeline of the existing track — the same expansion
-    // `expandTrackBits` performs (8 data cells per nibble; +2 trailing
-    // zero cells for each $FF inside a sync run of ≥ kSyncMinRun). The
-    // angular cell indices above were computed against that padded
-    // timeline (it is what `trackPeriod` / `fluxEvents` expose), so the
-    // nibble owning cell C is NOT `C / 8`: on a stock 16-sector .dsk
-    // each sector's gaps carry ~19 sync $FFs, so a naïve `/ 8` pack
-    // drifted ~4.75 nibbles per sector and splices landed on the
-    // neighbouring address field.
+    // FRAME the written cells into nibbles the way the read sequencer does
+    // — do NOT try to align them to the nibble grid of the track that was
+    // there before. That was the old approach: walk the existing track's
+    // PADDED cell timeline (8 data cells per nibble, +2 for each $FF in a
+    // sync run of ≥ kSyncMinRun) and overwrite the nibbles the window
+    // covers. It is only correct while the new content pads exactly like
+    // the old one did, and a sector write never does: DOS lays its own
+    // sync run down (a 40-cycle write loop = a 10-cell $FF) wherever it
+    // likes, so from the first sync byte on, the old grid and the new
+    // stream disagree and every subsequent nibble is assembled from cells
+    // belonging to its neighbours. Rewriting a track with its own contents
+    // was idempotent — which is why this survived so long — but writing an
+    // actual data field mangled ~345 of its 353 nibbles and spilled into
+    // the next sector's address field. DOS 3.3 answered I/O ERROR and the
+    // track was unreadable from then on (CATALOG failed too).
     //
-    // Nibbles STRADDLING the window edge are MERGED, not dropped: bits
-    // for cells inside the window come from `newBits`, bits outside keep
-    // the old nibble value. This matters because DiskIICard flushes a
-    // long write in ~30-transition chunks (≈4 nibbles), so nearly every
-    // flush boundary lands mid-nibble — dropping the straddler silently
-    // discarded its transitions and left a stale nibble mid-data-field
-    // (GCR checksum error on read-back). MAME itself stores flux
-    // natively (`imagedev/floppy.cpp` write_flux ~:1050-1095) and has
-    // no re-pack step; this mapping is POM2's nibble-store equivalent.
+    // The head has no grid: it writes a continuous bit stream and the
+    // reader self-syncs on it — skip 0-cells until a 1, then that 1 plus
+    // the next seven cells are the nibble (the two 0-cells trailing a sync
+    // $FF are simply skipped, which is exactly what makes them sync). So
+    // frame the incoming cells and lay the resulting nibbles down
+    // sequentially from wherever the head is. `writeFraming[track]` carries
+    // the shift accumulator across flushes, because DiskIICard flushes
+    // every ~30 transitions and a nibble straddles chunks routinely.
+    // MAME stores flux natively (`imagedev/floppy.cpp` write_flux
+    // ~:1050-1095) and needs no such step; this is POM2's nibble-store
+    // equivalent of the same physics.
     auto& buf = tracks[track];
 
-    // Snapshot the per-nibble sync widths BEFORE applying any write —
-    // mutating buf mid-walk would change FF-run membership and shift
-    // the timeline under our feet. computeCellWidths is the SAME rule
-    // expandTrackBits expanded with (one definition; O(N), no alloc —
-    // this runs on every ~30-transition LSS flush under stateMutex).
-    uint8_t cellWidth[kNibblesPerTrack];
-    computeCellWidths(track, cellWidth);
-
-    // Per-cell authority (same seam rule as the WOZ branch): a cell fully
-    // inside the window is authoritative (set or clear); the window's
-    // partially-covered first/last cell may only SET a bit — the adjacent
-    // flush chunk owns the rest of that cell, and clearing here would
-    // erase the bit it spliced. Cells outside the window keep old bits.
-    auto mergedBit = [&](int cell, bool oldBit) -> bool {
-        if (cell < firstCell || cell >= lastCell) return oldBit;
-        const bool nb = newBits[static_cast<size_t>(cell - firstCell)];
-        const bool partial =
-            (cell == firstCell    && (startMod % cyc) != 0) ||
-            (cell == lastCell - 1 && (endMod   % cyc) != 0);
-        return partial ? (nb || oldBit) : nb;
-    };
-    bool changed = false;
-    int cellStart = 0;                     // timeline cell of nibble n's MSB
-    for (int n = 0; n < kNibblesPerTrack && cellStart < lastCell; ++n) {
-        if (cellStart + 8 > firstCell) {   // nibble's data cells overlap window
-            uint8_t v = 0;
-            for (int b = 0; b < 8; ++b) {
-                const bool oldBit = (buf[n] & (0x80 >> b)) != 0;
-                if (mergedBit(cellStart + b, oldBit)) {
-                    v |= static_cast<uint8_t>(0x80 >> b);
-                }
+    // A window that doesn't continue the previous one starts a new burst:
+    // re-anchor on the nibble the head is over — that lookup is ANGULAR, so
+    // it uses the revolution-relative cell index, not the write-clock one.
+    if (!continues) {
+        const int angularCell = static_cast<int>(startMod / cyc);
+        uint8_t cellWidth[kNibblesPerTrack];
+        computeCellWidths(track, cellWidth);
+        int cellStart = 0;
+        int anchor    = 0;
+        for (int n = 0; n < kNibblesPerTrack; ++n) {
+            if (angularCell < cellStart + cellWidth[n]) {
+                // Mid-nibble splice: the nibble the head is part-way
+                // through keeps its old value (a real write splice leaves
+                // exactly that stub on the medium) and the new stream is
+                // framed into the following slot. Anchoring ON the straddled
+                // nibble instead shifted the whole write one slot early.
+                anchor = (cellStart == angularCell) ? n : n + 1;
+                break;
             }
-            if (buf[n] != v) {
-                buf[n] = v;
+            cellStart += cellWidth[n];
+        }
+        fr.nibbleIdx  = anchor % kNibblesPerTrack;
+        fr.acc        = 0;
+        fr.accBits    = 0;
+        fr.nextCell   = firstCell;
+        fr.heldValid  = false;
+    }
+
+    // The held cell from the previous flush is this window's first cell —
+    // merge the bit it carried, then frame it normally.
+    if (fr.heldValid && fr.heldCell == firstCell && fr.heldBit && !newBits.empty())
+        newBits[0] = true;
+    fr.heldValid = false;
+
+    // Frame only cells this burst hasn't consumed yet. `nextCell` outside
+    // the window means the write wrapped the revolution boundary (writeFlux
+    // recurses on the two halves, contiguous in time but not in cell index)
+    // — re-sync on the new window instead of skipping it whole.
+    int from = firstCell;
+    if (continues && fr.nextCell >= firstCell && fr.nextCell <= lastCell)
+        from = fr.nextCell;
+    int to = lastCell;                       // exclusive
+    if ((endMod % cyc) != 0 && to > from) {  // last cell only partly covered
+        --to;
+        fr.heldValid = true;
+        fr.heldCell  = to;
+        fr.heldBit   = newBits[static_cast<size_t>(to - firstCell)];
+    }
+
+    static const bool kTraceWf = std::getenv("POM2_TRACE_WRITEFLUX") != nullptr;
+    const int anchorDbg = fr.nibbleIdx;
+    bool changed = false;
+    for (int c = from; c < to; ++c) {
+        const bool bit = newBits[static_cast<size_t>(c - firstCell)];
+        if (fr.accBits == 0) {
+            if (!bit) continue;            // still in the sync gap
+            fr.acc     = 1;                // leading 1 — ends up as bit 7
+            fr.accBits = 1;
+            continue;
+        }
+        fr.acc = static_cast<uint8_t>((fr.acc << 1) | (bit ? 1 : 0));
+        if (++fr.accBits == 8) {
+            if (buf[fr.nibbleIdx] != fr.acc) {
+                buf[fr.nibbleIdx] = fr.acc;
                 changed = true;
             }
+            fr.nibbleIdx = (fr.nibbleIdx + 1) % kNibblesPerTrack;
+            fr.acc       = 0;
+            fr.accBits   = 0;
         }
-        cellStart += cellWidth[n];
+    }
+    fr.nextCell  = to;
+    fr.nextCycle = endLssCycle;
+    if (kTraceWf) {
+        std::fprintf(stderr,
+            "[WF] t%02d %s start=%lld end=%lld n=%d cells[%d,%d) "
+            "anchor=%d -> nib=%d accBits=%d\n",
+            track, continues ? "cont" : "NEW ",
+            (long long)startLssCycle, (long long)endLssCycle, count,
+            from, to, anchorDbg, fr.nibbleIdx, fr.accBits);
     }
     if (changed) {
         dirty[track]    = true;

@@ -1,3 +1,9 @@
+// POM2 — dump the //c reset vector and the $C600 slot-ROM window.
+//   cd build && cmake .. && make iic_dump && ./tests/iic_dump
+// Diagnostic dump, not a test: it prints and asserts nothing, so it is
+// EXCLUDE_FROM_ALL and outside ctest. iic_onboard_smartport gates the
+// //c boot path.
+
 #include "M6502.h"
 #include "Memory.h"
 #include "SystemProfile.h"

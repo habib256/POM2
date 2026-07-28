@@ -187,6 +187,12 @@ public:
     int  getActiveDrive() const { return activeDrive; }
     int  getTrackPosition(int drive = 0) const { return validDrive(drive) ? trackPos[drive] : 0; }
     bool hasUnsavedChanges(int drive = 0) const { return validDrive(drive) && images[drive].hasUnsavedChanges(); }
+    /// PHYSICAL write-protect of the medium (WOZ INFO+2 / 2IMG WP flag) —
+    /// distinct from the write-back opt-in. The UI needs both to tell the
+    /// user *why* the guest is seeing a write-protected disk.
+    bool isFileWriteProtected(int drive = 0) const {
+        return validDrive(drive) && images[drive].isFileWriteProtected();
+    }
     /// Total nibble write flushes (across both drives) since last reset.
     /// Used by the dos33_save smoke test to confirm SAVE actually
     /// exercised the write pipeline (vs. erroring out before any write).

@@ -9,6 +9,7 @@
 #include "SmartPortHub.h"
 
 #include <algorithm>
+#include <cstring>
 
 IIcClassProfile::IIcClassProfile(const uint8_t* payload, std::size_t payloadSize,
                                  const uint8_t* altBank16k,
@@ -59,7 +60,20 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
     // slot-6 DiskIICard still observes the access for motor sound /
     // turbo / head tracking; the **value** returned to the CPU is the
     // IWM's when authoritative.
-    if (!hasAltBank_ || !iwm_) return false;
+    //
+    // **//c+ ONLY.** MAME wires its IWM as *the* slot-6 controller,
+    // replacing the Disk II. POM2 does not: the DiskIICard stays
+    // authoritative for 5.25" (see iwmAuthoritative_), so mirroring here
+    // adds a *second* controller on the same soft switches without
+    // supplying the data path — and the IWM's phase/motor handling then
+    // fights the DiskIICard's over one drive. On a plain //c that
+    // corrupts the head position and DOS 3.3 RWTS falls into endless
+    // seek/retry storms ($B948-$B956, head oscillating track N<->0):
+    // Print Shop could not save its setup or load its print overlay, so
+    // printing silently produced nothing. The IWM is only needed where
+    // it actually owns a drive — the //c+ MIG / Sony 3.5" path — hence
+    // the isPlus_ gate. Pinned by `iic_diskii_no_iwm_conflict`.
+    if (!hasAltBank_ || !iwm_ || !isPlus_) return false;
     iwm_->tick(cyc);
     const uint8_t v = iwm_->read(static_cast<uint8_t>(addr & 0xF));
     if (iwmAuthoritative_) {
@@ -73,7 +87,8 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
 
 void IIcClassProfile::ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc)
 {
-    if (!hasAltBank_ || !iwm_) return;
+    // //c+ only — see the rationale in ioReadIWM above.
+    if (!hasAltBank_ || !iwm_ || !isPlus_) return;
     iwm_->tick(cyc);
     iwm_->write(static_cast<uint8_t>(addr & 0xF), value);
 }
@@ -204,3 +219,36 @@ void IIcClassProfile::migWrite(uint16_t migOffset, uint8_t value)
     }
     // Other offsets: NOP.
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Snapshot / rewind — MIG gate array (//c+ only)
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace {
+constexpr uint8_t kMigBlobMagic[4] = { 'M', 'I', 'G', '1' };
+constexpr size_t  kMigBlobBytes    = 4 + 2 + 0x800;   // magic + page + RAM
+}  // namespace
+
+void IIcClassProfile::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kMigBlobMagic, kMigBlobMagic + 4);
+    out.push_back(static_cast<uint8_t>(migPage_));
+    out.push_back(static_cast<uint8_t>(migPage_ >> 8));
+    out.insert(out.end(), migRam_.begin(), migRam_.end());
+}
+
+size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
+{
+    if (data == nullptr || n < kMigBlobBytes) return 0;
+    if (std::memcmp(data, kMigBlobMagic, 4) != 0) return 0;
+    // migRead/migWrite index `migRam_[migPage_ + (offset & 0x1F)]`, so a
+    // corrupt page pointer would read past the array. The live code keeps
+    // it in range with `& 0x7FF`; mask on the way in too rather than trust
+    // the blob.
+    migPage_ = static_cast<uint16_t>(
+        (static_cast<uint16_t>(data[4]) |
+         static_cast<uint16_t>(data[5]) << 8) & 0x7FF);
+    std::memcpy(migRam_.data(), data + 6, migRam_.size());
+    return kMigBlobBytes;
+}
+

@@ -7,6 +7,7 @@
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
 #include "MainWindow.h"
+#include "Pom2Theme.h"
 #include "Version.h"
 // MainWindow.h now forward-declares EmulationController and Apple2Display
 // to keep its include cone lean. main.cpp dereferences both via
@@ -69,6 +70,14 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
     }
 
     if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
+        // Caps-lock is reported in `mods` on every key event (we asked for
+        // GLFW_LOCK_KEY_MODS in main), so latch it here — before the
+        // ImGui-capture gate below, which would otherwise miss the toggle
+        // whenever a text field has focus. The status bar surfaces it: a
+        // stuck caps-lock is a classic "why won't this game take my input"
+        // trap on the Apple II.
+        mw->setHostCapsLock((mods & GLFW_MOD_CAPS_LOCK) != 0);
+
         // F11 (soft reset) and F12 (hard reset) are routed unconditionally
         // so the user can recover even when an ImGui widget has captured
         // the keyboard focus. F9 (screenshot) is routed the same way so
@@ -76,10 +85,16 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
         // Left/Right Alt = Open-Apple/Solid-Apple — routed unconditionally
         // so the IIe/IIc/IIc+ firmware can observe consistent press/release
         // edges via $C061/$C062 regardless of ImGui focus state.
+        // Ctrl+Shift+P (command palette) joins the unconditional set so the
+        // palette is reachable even from a focused text field — same rationale
+        // as F11/F12: the user must always have a way out.
         const bool isGlobalKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12 ||
                                   key == GLFW_KEY_F9 ||
                                   key == GLFW_KEY_LEFT_ALT ||
-                                  key == GLFW_KEY_RIGHT_ALT);
+                                  key == GLFW_KEY_RIGHT_ALT ||
+                                  (key == GLFW_KEY_P &&
+                                   (mods & GLFW_MOD_CONTROL) &&
+                                   (mods & GLFW_MOD_SHIFT)));
         if (!ImGui::GetIO().WantCaptureKeyboard || isGlobalKey) {
             mw->onKey(key, sc, action, mods);
         }
@@ -231,6 +246,26 @@ int main(int argc, char* argv[])
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+    // Docking. POM2 ships ~33 free-floating panels; without docking they pile
+    // up on top of each other and of the Apple II screen, and the user spends
+    // the session dragging windows out of the way. `MainWindow::render()`
+    // hosts a DockSpace over the viewport work area and seeds a curated
+    // default layout the first time (see applyDockLayout).
+    //
+    // Multi-viewport is deliberately NOT enabled: it would move panels into
+    // separate OS windows, which means per-viewport GL contexts and a
+    // different render loop. Docking alone is the part that pays here.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Dock by dragging a tab/title bar as usual — no modifier. The screen
+    // window's own NoMove flag keeps it from being dragged out by accident.
+    io.ConfigDockingWithShift = false;
+    // Leave `ConfigDpiScaleFonts` off: it would silently overwrite
+    // `style.FontScaleDpi`, which Pom2Theme owns (monitor scale × user zoom).
+    // Two writers on one field is how the zoom control would start fighting
+    // the monitor scale.
+    io.ConfigDpiScaleFonts     = false;
+    io.ConfigDpiScaleViewports = false;
     // Note: ImGui's global `ConfigWindowsMoveFromTitleBarOnly` would be
     // the obvious knob to make the Apple II Screen content-area click-
     // through, but the user wants only THAT window restricted (others
@@ -270,7 +305,25 @@ int main(int argc, char* argv[])
         }
         io.IniFilename = iniPath.c_str();
     }
-    ImGui::StyleColorsDark();
+    // POM2's own style, replacing bare StyleColorsDark(). The headline change
+    // is that every window background is opaque — the stock dark theme's 0.94
+    // alpha made panels unreadable over a running HGR game.
+    //
+    // Applied here at 1:1 so the font-loading code below sees a valid style;
+    // the real scale (monitor DPI × the user's persisted zoom) is applied by
+    // `mainWindow.setDpiScale()` once the GLFW backend is initialised — the
+    // content-scale query below needs it.
+    pom2::applyTheme(pom2::UiAccent::Amber, 1.0f, 1.0f);
+
+    // Report the caps-lock *lock* state (not the key press) in the modifier
+    // bits of every key event, so the status bar can warn about it. Without
+    // this GLFW only ever sets GLFW_MOD_CAPS_LOCK while the key is held.
+    // Guarded: the mode is GLFW 3.3+, and Emscripten's GLFW port does not
+    // define it — the browser never reports lock state anyway, so the badge
+    // simply stays hidden there.
+#ifdef GLFW_LOCK_KEY_MODS
+    glfwSetInputMode(window, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
+#endif
 
     // Base UI font — Proggy Clean (ImGui's default) is a bitmap that
     // only covers ASCII, so anything past U+007F (em-dash "—", en-dash
@@ -409,6 +462,18 @@ int main(int argc, char* argv[])
     // the profile-driven title update (step 13 in applyProfile) sees a
     // valid handle even when --preset triggers the switch.
     mainWindow.setGlfwWindow(window);
+    // Re-applies the theme with the settings-restored accent + user zoom on
+    // top of the monitor scale. The ctor can't do it: it loads `state.cfg`
+    // but has no way to know the display's content scale.
+    //
+    // Use the BACKEND's helper, not `glfwGetWindowContentScale` directly.
+    // They differ exactly where it matters: on macOS, Wayland, Emscripten and
+    // Android the framebuffer is already larger than the window, so ImGui's
+    // DisplayFramebufferScale path handles HiDPI and the helper returns 1.0f.
+    // Querying GLFW ourselves would report 2.0 there and scale the UI twice.
+    // It also preserves the 0.0 that virtual/accessibility monitors report
+    // (imgui #7902) — `setDpiScale` clamps that back to 1.
+    mainWindow.setDpiScale(ImGui_ImplGlfw_GetContentScaleForWindow(window));
     mainWindow.setKioskMode(plan->kiosk);
 #ifdef __EMSCRIPTEN__
     mainWindow.setBrowserResetBootImage(plan->bootDiskPath);

@@ -1,6 +1,8 @@
 // POM2 — boot the Apple II+ ROM headless and dump the text screen.
 // Build:
-//   g++ -std=c++17 -O2 -I. tests/rom_boot.cpp M6502.cpp Memory.cpp -o /tmp/pom2_rom_boot
+//   cd build && cmake .. && make rom_boot && ./tests/rom_boot
+// Diagnostic dump, not a test: it prints and asserts nothing, so it is
+// EXCLUDE_FROM_ALL and outside ctest. system_profile_smoke gates boot.
 // Run from POM2 root (so roms/apple2.rom resolves):
 //   /tmp/pom2_rom_boot
 

@@ -1767,7 +1767,16 @@ void M6502::executeOpcode(void)
             return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
         }();
         static long pcTraceN = 0;
-        if (pcTrace && pcTraceN < 3000000) {
+        // Cap so a forgotten trace can't fill the disk. 3M instructions is
+        // ~130 MB and about 10 s of emulated time — raise it with
+        // POM2_TRACE_PC_MAX when the interesting window sits further in
+        // (e.g. a print that only starts after a boot + menu walk).
+        static const long pcTraceMax = [] {
+            const char* m = std::getenv("POM2_TRACE_PC_MAX");
+            const long v = m ? std::strtol(m, nullptr, 10) : 0;
+            return v > 0 ? v : 3000000L;
+        }();
+        if (pcTrace && pcTraceN < pcTraceMax) {
             // cum = cumulative CPU cycles BEFORE this instruction (memory's
             // counter is bumped by advanceCycles after each opcode). Lets us
             // diff cycle accounting against a MAME totalcycles trace.
@@ -1986,6 +1995,27 @@ void M6502::step(void)
     // the next instruction runs. Previously every IRQ/NMI was charged 0
     // cycles, silently desyncing every cycleCounter-derived clock (VBL,
     // slot-peripheral timers, cassette) on interrupt-driven software.
+    // ── Owned deviation: interrupt sampling is instruction-granular ──────
+    // Real silicon samples IRQ/NMI during phi2 of an instruction's
+    // penultimate cycle, and CLI / SEI / PLP land their new I flag *after*
+    // that sample point — so an IRQ pending across a `CLI` is taken one
+    // instruction later than you would naively expect, and an `SEI` does
+    // not cancel an interrupt already sampled. MAME's m6502 models this
+    // by inhibiting interrupts for one instruction after those opcodes.
+    //
+    // POM2 tests the I flag here, at an instruction boundary, so it takes
+    // the interrupt one instruction EARLIER than hardware in the CLI case.
+    // This is structural, not an oversight: step() is instruction-granular
+    // (`cycles` is charged in one lump to memory->advanceCycles), so there
+    // is no penultimate cycle to sample at. Modelling the delay would mean
+    // a cycle-stepped core.
+    //
+    // Not covered by Klaus or Tom Harte — neither drives the interrupt
+    // lines. Consequences are confined to software that counts cycles
+    // through an IRQ entry; the Apple II titles in the corpus set up their
+    // handlers and rely on the VIA/timer period, not on CLI placement.
+    // (Distinct from the VIA `syncToCpuCycle` one-instruction over-count
+    // fixed 2026-05-25 — see DEV.md "Lazy timer sync".)
     int interruptCycles = 0;
     if (NMI) {
         cycles = 0;

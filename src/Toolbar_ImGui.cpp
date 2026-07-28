@@ -6,7 +6,13 @@
 #include "Toolbar_ImGui.h"
 
 #include "IconsFontAwesome6.h"
+#include "Pom2Theme.h"
 #include "imgui.h"
+// BeginViewportSideBar is declared in imgui_internal.h (it is what
+// BeginMainMenuBar itself is built on). We use it so the toolbar reserves its
+// height in the viewport work area — see the comment in render(). MainWindow
+// already depends on imgui_internal.h for the same family of helpers.
+#include "imgui_internal.h"
 
 namespace pom2 {
 
@@ -15,17 +21,55 @@ namespace {
 // Convenience: icon + text fallback in one place. When `fa-solid-900.ttf`
 // failed to load the icon glyph renders as `?`; the tooltip carries the
 // long label either way.
-struct Btn { const char* icon; const char* id; const char* tip; };
+//
+// `tint` colours the GLYPH, not the button face. A row of fully coloured
+// buttons reads as decoration; a neutral face with a coloured icon reads as
+// meaning — and it's what lets power-off (destructive) stop looking exactly
+// like single-step (harmless), which was the toolbar's core legibility
+// problem. 0 = inherit the normal text colour.
+struct Btn {
+    const char* icon;
+    const char* id;
+    const char* tip;
+    ImU32       tint = 0;
+};
 
 bool iconButton(const Btn& b, bool enabled = true) {
     ImGui::BeginDisabled(!enabled);
+    if (b.tint) ImGui::PushStyleColor(ImGuiCol_Text,
+                                      ImGui::ColorConvertU32ToFloat4(b.tint));
     char label[64];
     std::snprintf(label, sizeof(label), "%s##%s", b.icon, b.id);
     const bool clicked = ImGui::Button(label);
+    if (b.tint) ImGui::PopStyleColor();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered() && b.tip) ImGui::SetTooltip("%s", b.tip);
     return clicked;
 }
+
+// Width for a combo that must never clip its widest entry. The old toolbar
+// hardcoded pixel widths (86 / 90 / 110), which broke the moment the theme
+// grew FramePadding — "//e PAL" clipped to "//e PA" — and would break again
+// at any UI zoom. Measuring the widest label plus the frame chrome makes the
+// control self-sizing at every scale.
+float comboWidth(const char* widest) {
+    return ImGui::CalcTextSize(widest).x
+         + ImGui::GetStyle().FramePadding.x * 2.0f
+         + ImGui::GetFrameHeight();          // the dropdown arrow button
+}
+
+// A toolbar toggle that is currently ON: accent-tinted face + accent glyph,
+// so "this mode is active" is legible without hovering for the tooltip.
+struct ToggleStyle {
+    bool pushed = false;
+    void begin(bool on) {
+        if (!on) return;
+        ImGui::PushStyleColor(ImGuiCol_Button,
+            ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+        pushed = true;
+    }
+    void end() { if (pushed) { ImGui::PopStyleColor(); pushed = false; } }
+};
 
 const char* profileShortLabel(SystemProfile p) {
     switch (p) {
@@ -75,31 +119,45 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // low (fixed 2026-05-15). The `menuBarHeight` parameter is kept
     // for ABI stability in case the caller can't always feed
     // `WorkPos`; ignored here.
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, 0));
+    // A viewport side bar rather than a hand-positioned window (changed when
+    // docking landed). Two reasons: `BeginViewportSideBar` *reserves* its
+    // height in the viewport work area, so the DockSpace below it — and any
+    // window that positions from `WorkPos` — automatically starts underneath;
+    // and the reservation follows the bar's real height, so a UI zoom that
+    // makes the toolbar taller no longer lets the dockspace slide under it.
+    //
+    // The height has to be computed rather than measured: side bars take
+    // their axis size up front. One frame of content = frame height + the
+    // window padding we push below.
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float barPadY  = 4.0f;
+    const float barHeight = ImGui::GetFrameHeight() + barPadY * 2.0f;
     const ImGuiWindowFlags flags =
-        ImGuiWindowFlags_NoTitleBar     |
-        ImGuiWindowFlags_NoMove         |
-        ImGuiWindowFlags_NoResize       |
         ImGuiWindowFlags_NoScrollbar    |
         ImGuiWindowFlags_NoSavedSettings|
+        ImGuiWindowFlags_NoDocking      |
         ImGuiWindowFlags_NoBringToFrontOnFocus;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, barPadY));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(4.0f, 4.0f));
-    if (!ImGui::Begin("##POM2_Toolbar", nullptr, flags)) {
+    if (!ImGui::BeginViewportSideBar("##POM2_Toolbar", vp, ImGuiDir_Up,
+                                     barHeight, flags)) {
         ImGui::End();
         ImGui::PopStyleVar(2);
         return r;
     }
+
+    const Palette& pal = palette();
 
     // ── Power group ───────────────────────────────────────────────────
     // Power-cycle (cold boot, wipes RAM) + soft reset (Ctrl-Reset).
     // Hard reset is keyboard-only (F12) — was redundant in the toolbar
     // (effectively the same UX as soft reset for most users, the
     // distinction matters for the few users who reach for it).
+    //
+    // Power-cycle is the only destructive control in this row, so it is the
+    // only one wearing the danger colour; reset stays neutral.
     if (iconButton({ ICON_FA_POWER_OFF,    "ColdBoot",
-                     "Power-cycle (wipe RAM + cold boot)" })) {
+                     "Power-cycle (wipe RAM + cold boot)", pal.danger })) {
         r.requestColdBoot = true;
     }
     ImGui::SameLine();
@@ -108,9 +166,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         r.requestSoftReset = true;
     }
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Run group ─────────────────────────────────────────────────────
     // Rewind sits on the opposite side of Pause from Step: hold it to replay
@@ -132,12 +188,16 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         ImGui::SameLine();
     }
 
+    // Running → amber pause glyph ("click to stop"); paused → green play
+    // glyph ("click to go"). The colour tracks the ACTION, matching every
+    // media transport the user already knows.
     const char* runIcon = snap.isRunning
         ? ICON_FA_CIRCLE_PAUSE : ICON_FA_CIRCLE_PLAY;
     const char* runTip  = snap.isRunning
         ? "Pause (CPU stops at next instruction boundary)"
         : "Run (resume CPU from current PC)";
-    if (iconButton({ runIcon, "PauseToggle", runTip })) {
+    if (iconButton({ runIcon, "PauseToggle", runTip,
+                     snap.isRunning ? pal.warn : pal.ok })) {
         r.requestPauseToggle = true;
     }
     ImGui::SameLine();
@@ -147,9 +207,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         r.requestStep = true;
     }
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Speed selector ───────────────────────────────────────────────
     // Combo: 1× / 2× / 4× / MAX. The current speed sticks to whichever
@@ -171,7 +229,8 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     else if (snap.cyclesPerFrame == kSpeed4x)  speedLabel = ICON_FA_GAUGE_HIGH " 4×";
     else if (snap.cyclesPerFrame == kSpeedMax) speedLabel = ICON_FA_BOLT       " MAX";
     else                                        speedLabel = ICON_FA_GAUGE      " …";
-    ImGui::SetNextItemWidth(90.0f);
+    // Widest collapsed label is the icon + "MAX".
+    ImGui::SetNextItemWidth(comboWidth(ICON_FA_BOLT " MAX"));
     if (ImGui::BeginCombo("##POM2ToolbarSpeed", speedLabel)) {
         char lbl[64];
         std::snprintf(lbl, sizeof lbl,
@@ -193,9 +252,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Emulation speed");
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Profile selector ─────────────────────────────────────────────
     // Short-label combo. Switching = full cold reset under the hood
@@ -203,7 +260,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     char profileBuf[16];
     std::snprintf(profileBuf, sizeof(profileBuf),
                   ICON_FA_COMPUTER " %s", profileShortLabel(snap.activeProfile));
-    ImGui::SetNextItemWidth(86.0f);
+    ImGui::SetNextItemWidth(comboWidth(ICON_FA_COMPUTER " //e PAL"));
     if (ImGui::BeginCombo("##POM2ToolbarProfile", profileBuf)) {
         for (SystemProfile p : pom2::allProfiles()) {
             char rowBuf[32];
@@ -220,9 +277,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("System profile (cold-reset switch)");
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Char ROM (locale) selector ───────────────────────────────────
     // Hot swap: changing the locale calls Memory::loadCharRom(path)
@@ -238,7 +293,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
                       snap.charRomLocale == CharRomLocale::ProfileDefault
                           ? "Default"
                           : shortLocaleLabel(snap.charRomLocale));
-        ImGui::SetNextItemWidth(110.0f);
+        ImGui::SetNextItemWidth(comboWidth(ICON_FA_FONT " FR-CA-U"));
         if (ImGui::BeginCombo("##POM2ToolbarCharRom", buf)) {
             for (const auto& e : charRomCatalog()) {
                 if (!charRomFitsProfile(e, snap.activeProfile)) continue;
@@ -258,9 +313,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         }
     }
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Disk shortcuts ───────────────────────────────────────────────
     // Both insert AND eject-all now live in the Disk Library panel
@@ -271,21 +324,20 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // One-click flip between color and B&W phosphor. The host remembers
     // the specific submode on each side (e.g. Mono Green ↔ Color 4-bit).
     // Tinted active when a mono mode is showing.
-    if (snap.displayIsMono) {
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+    {
+        ToggleStyle t;
+        t.begin(snap.displayIsMono);
+        if (iconButton({ ICON_FA_CIRCLE_HALF_STROKE, "MonoColorToggle",
+                         snap.displayIsMono
+                             ? "Monochrome — click for color"
+                             : "Color — click for black & white",
+                         snap.displayIsMono ? pal.accent : 0 })) {
+            r.requestMonoColorToggle = true;
+        }
+        t.end();
     }
-    if (iconButton({ ICON_FA_CIRCLE_HALF_STROKE, "MonoColorToggle",
-                     snap.displayIsMono
-                         ? "Monochrome — click for color"
-                         : "Color — click for black & white" })) {
-        r.requestMonoColorToggle = true;
-    }
-    if (snap.displayIsMono) ImGui::PopStyleColor();
 
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
+    verticalRule();
 
     // ── Tooling ──────────────────────────────────────────────────────
     if (iconButton({ ICON_FA_CAMERA,       "Screenshot",
@@ -294,20 +346,18 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     }
     ImGui::SameLine();
     {
-        // Memory Map Grid is a toggle — render the icon with a light tint
-        // when the grid is currently visible so the state is obvious
-        // at a glance.
-        if (snap.memoryGridVisible) {
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-        }
+        // Memory Map Grid is a toggle — accent face + accent glyph while the
+        // grid is visible so the state is obvious without hovering.
+        ToggleStyle t;
+        t.begin(snap.memoryGridVisible);
         if (iconButton({ ICON_FA_BORDER_ALL, "MemGrid",
                          snap.memoryGridVisible
                              ? "MemoryGrid viewer (visible — click to hide)"
-                             : "MemoryGrid viewer (click to show)" })) {
+                             : "MemoryGrid viewer (click to show)",
+                         snap.memoryGridVisible ? pal.accent : 0 })) {
             r.requestMemoryGridToggle = true;
         }
-        if (snap.memoryGridVisible) ImGui::PopStyleColor();
+        t.end();
     }
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
     if (iconButton({ ICON_FA_CIRCLE_INFO, "About",

@@ -3070,6 +3070,35 @@ endif()
 add_test(NAME imagewriter_smoke COMMAND test_imagewriter)
 set_tests_properties(imagewriter_smoke PROPERTIES TIMEOUT 10)
 
+# ─── ImageWriter PDF export test ─────────────────────────────────────────
+# Pins the multi-page PDF serialiser (ImageWriterPdf.cpp): xref byte
+# accounting, per-sheet /MediaBox from Page::dpi, FlateDecode round-trip
+# (inflated back via stb_image's zlib decoder), and the error contract.
+# The test TU provides the stb implementations (the GUI's single
+# implementation lives in Pom2HgrPaintHost.cpp, not linked here).
+add_executable(test_imagewriter_pdf
+    imagewriter_pdf_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriterPdf.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_imagewriter_pdf PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_imagewriter_pdf PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_imagewriter_pdf PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_imagewriter_pdf PRIVATE winmm)
+endif()
+
+add_test(NAME imagewriter_pdf COMMAND test_imagewriter_pdf)
+set_tests_properties(imagewriter_pdf PROPERTIES TIMEOUT 10)
+
 # ─── Grappler+ card smoke test ───────────────────────────────────────────
 # Pins the stub-ROM fingerprint (used when no roms/grappler_plus.bin dump
 # is present), the data-port spool semantics, and the 4 KB ROM-load gate
@@ -3638,6 +3667,22 @@ endif()
 add_test(NAME disk_writeflux_anchor COMMAND test_disk_writeflux_anchor)
 set_tests_properties(disk_writeflux_anchor PROPERTIES TIMEOUT 10)
 
+# ─── Write-back framing: a written data field must land exactly ───────────
+# Writes a DOS 3.3 data field over a stock 16-sector track through
+# writeFlux, chunked the way DiskIICard flushes, and asserts the payload
+# reads back byte-for-byte with no collateral damage to its neighbours.
+# Pins both halves of the 2026-07 fix: frame the incoming cells with the
+# read sequencer's self-sync rule instead of the old track's nibble grid,
+# and take the cell grid from the write clock, not the revolution anchor.
+# See disk_writeflux_framing_test.cpp.
+add_executable(test_disk_writeflux_framing
+    disk_writeflux_framing_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+)
+target_include_directories(test_disk_writeflux_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME disk_writeflux_framing COMMAND test_disk_writeflux_framing)
+set_tests_properties(disk_writeflux_framing PROPERTIES TIMEOUT 10)
+
 # ─── ProDOSHardDiskCard slot-ROM STATUS X/Y + no-media read ───────────────
 # Executes the real slot ROM on a 6502: STATUS returns block count in X/Y
 # (clamped to $FFFF), READ with no media returns C=1/A=$28.
@@ -3910,3 +3955,144 @@ set_tests_properties(softcard_cpm_boot PROPERTIES TIMEOUT 120)
 # //e + 80-col console variant (60K CP/M v2.23) — same binary, IIe mode.
 add_test(NAME softcard_cpm_boot_iie COMMAND test_softcard_cpm_boot "" iie)
 set_tests_properties(softcard_cpm_boot_iie PROPERTIES TIMEOUT 120)
+
+
+# ─── Diagnostic dumps (build-only, EXCLUDE_FROM_ALL) ──────────────────────
+# Five eyeball tools from the project's early days: they print a screen, a
+# disassembly or a status byte and assert nothing, so they are deliberately
+# NOT ctest tests. They were also unbuildable — each carried a hand-written
+# `g++ -I. tests/foo.cpp M6502.cpp Memory.cpp` line in its header that has
+# not resolved since the sources moved into src/, and Memory.cpp has since
+# grown a dozen dependencies (SlotBus, NoSlotClock, IIcClassProfile…).
+#
+# Declaring them here lets CMake supply the real dependency list, so they
+# build again with `make <name>` and can no longer rot silently. Their
+# assertion-carrying equivalents, which DO gate CI:
+#   cpu_smoke     → klaus_6502_functional, tomharte_6502
+#   iic_dump      → iic_onboard_smartport, system_profile_smoke
+#   rom_boot      → system_profile_smoke
+#   rom_basic     → dos33_save and the boot-path tests
+#   disasm_smoke  → (none — pure disassembler eyeball tool)
+foreach(_diag cpu_smoke disasm_smoke iic_dump rom_basic rom_boot)
+    add_executable(${_diag} EXCLUDE_FROM_ALL
+        ${_diag}.cpp
+        ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
+        ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+        ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+        ${POM2_TEST_CORE_SOURCES}
+    )
+    target_include_directories(${_diag} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${_diag} PRIVATE
+            ${CMAKE_DL_LIBS} Threads::Threads m)
+    endif()
+    if(APPLE)
+        target_link_libraries(${_diag} PRIVATE
+            "-framework CoreAudio" "-framework AudioToolbox"
+            "-framework AudioUnit")
+    endif()
+    if(WIN32)
+        target_link_libraries(${_diag} PRIVATE winmm)
+    endif()
+endforeach()
+
+
+# ─── IWM + //c+ MIG snapshot round-trip ───────────────────────────────────
+# Pins the emuCycles stamps and MIG RAM that used to fall out of the
+# snapshot, freezing the IWM after a rewind on //c-class profiles.
+add_executable(test_iwm_mig_snapshot
+    iwm_mig_snapshot_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iwm_mig_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iwm_mig_snapshot PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iwm_mig_snapshot PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iwm_mig_snapshot PRIVATE winmm)
+endif()
+add_test(NAME iwm_mig_snapshot COMMAND test_iwm_mig_snapshot)
+set_tests_properties(iwm_mig_snapshot PROPERTIES TIMEOUT 10)
+
+
+# ─── Uthernet I / CS8900A smoke test ──────────────────────────────────────
+# Pins the CS8900A chip model against MAME `machine/cs8900a.cpp` and the
+# card against `bus/a2bus/uthernet.cpp`: power-on register defaults
+# (ProductID, INITD in Self Status), PacketPage pointer semantics (0x3000
+# always set, auto-increment by one), register self-address enforcement,
+# reserved ranges reading 0x0300, the four-step TX handshake (a skipped
+# step must emit nothing), TxLength bounds, the RX path in the datasheet's
+# H/L order, the MAC address filter, and a snapshot round-trip.
+# Host side is a LoopbackNetworkBackend — no real network is touched.
+add_executable(test_uthernet_cs8900
+    uthernet_cs8900_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/UthernetCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Cs8900aDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+)
+target_include_directories(test_uthernet_cs8900 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_uthernet_cs8900 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME uthernet_cs8900_smoke COMMAND test_uthernet_cs8900)
+set_tests_properties(uthernet_cs8900_smoke PROPERTIES TIMEOUT 10)
+
+
+# ─── Uthernet II / W5100 smoke test ───────────────────────────────────────
+# Pins the W5100 hardware-TCP model against AppleWin `source/Uthernet2.cpp`
+# (MAME has no W5100 device) + the WIZnet datasheet: the four-register
+# indirect window and its aliasing/auto-increment/wrap rules, power-on
+# register values, MR RST preserving the data address, the RMSR/TMSR
+# buffer carve, a REAL TCP session against a loopback listener the test
+# opens itself (OPEN → CONNECT → SEND → RECV → CLOSE, deliberately with no
+# NetworkBackend, proving TCP needs none), MACRAW framing over a loopback
+# backend, and a snapshot round-trip where a live socket must come back
+# CLOSED rather than pretending to still be connected.
+add_executable(test_uthernet2_w5100
+    uthernet2_w5100_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/UthernetIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+)
+target_include_directories(test_uthernet2_w5100 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_uthernet2_w5100 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME uthernet2_w5100_smoke COMMAND test_uthernet2_w5100)
+set_tests_properties(uthernet2_w5100_smoke PROPERTIES TIMEOUT 20)
+
+
+# ─── //c Disk II vs on-board IWM conflict ─────────────────────────────────
+# POM2 mirrors $C0E0-$C0EF into the on-board IWM on //c-class profiles with
+# an alt firmware bank. MAME wires its IWM as *the* slot-6 controller;
+# POM2 keeps the DiskIICard authoritative for 5.25", so on a plain //c the
+# mirror was a second controller on the same soft switches — its
+# phase/motor handling fought the DiskIICard's over one drive, drifting the
+# head and dropping DOS 3.3 RWTS into endless seek/retry storms. Print Shop
+# on a //c could then neither save its setup nor load its print overlay, so
+# printing to the ImageWriter silently produced nothing while the serial
+# path itself was byte-exact. Gated on isPlus_; this pins both directions.
+add_executable(test_iic_diskii_no_iwm_conflict
+    iic_diskii_no_iwm_conflict_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+)
+target_include_directories(test_iic_diskii_no_iwm_conflict PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${POM2_GENERATED_DIR})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_diskii_no_iwm_conflict PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME iic_diskii_no_iwm_conflict COMMAND test_iic_diskii_no_iwm_conflict)
+set_tests_properties(iic_diskii_no_iwm_conflict PROPERTIES TIMEOUT 10)

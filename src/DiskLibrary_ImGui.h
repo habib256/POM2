@@ -28,6 +28,7 @@
 #define POM2_DISK_LIBRARY_IMGUI_H
 
 #include <cstdint>
+#include <map>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -82,11 +83,35 @@ public:
         bool        requestHdvEject      = false;
         // Eject every loaded image at once (header-row "Eject All" button).
         bool        requestEjectAllDisks = false;
+        // Path whose favourite state the user flipped (right-click menu).
+        // Empty = no change. The host owns the set and persists it.
+        std::string toggleFavourite;
+        // User clicked the Size/Date column visibility checkbox.
+        bool        toggleHideSizeDate = false;
+    };
+
+    /// Host-owned lists the panel renders but does not own.
+    ///
+    /// Favourites and recents live in `MainWindow` (persisted to `state.cfg`
+    /// as `library_favourites` / `library_recents`) rather than here, for the
+    /// same reason the mounted paths do: this panel has no Settings access and
+    /// no business acquiring one. It reports a toggle through `Result` and the
+    /// host decides what to keep.
+    struct Lists {
+        std::vector<std::string> favourites;   ///< Any tab, matched by full path.
+        std::vector<std::string> recents;      ///< Most-recent first.
+        /// Drop the Size / Date columns. Host-owned so the choice survives a
+        /// restart (persisted as `library_hide_sizedate`) — a display
+        /// preference that resets every launch is one the user re-sets every
+        /// launch. Matters most in a narrow dock, where the two fixed columns
+        /// eat the room the name needs.
+        bool hideSizeDate = false;
     };
 
     Result render(const char*               title,
                   bool&                     open,
-                  const CurrentlyMounted&   mounted);
+                  const CurrentlyMounted&   mounted,
+                  const Lists&              lists);
 
 private:
     // ── Filesystem cache ──────────────────────────────────────────────
@@ -103,11 +128,14 @@ private:
     // UI state — survive between frames so search input / sort choice
     // stick.
     char searchBuf_[128]   = "";
-    int  sortMode_         = 0;     // 0=name, 1=size, 2=date desc
     bool needsRescan_      = true;
     // Stashed for the duration of render() so the 5.25" context-menu callback
     // can enumerate every plugged DiskII card/drive as a mount target.
     const CurrentlyMounted* mounted_ = nullptr;
+    // Ditto for the host's favourite / recent lists, so the shared row
+    // renderer and the context menus can consult them without threading an
+    // extra parameter through every callback signature.
+    const Lists*            lists_   = nullptr;
 
     void rescan();
     void rescanInto(std::vector<Entry>& out,
@@ -125,6 +153,44 @@ private:
     // 3.5" two slots (drive 1, drive 2). A path mounted in slot i sets
     // bit i in the mask passed to the context-menu callback so eject
     // items can target the right drive.
+    /// True when `path` is in the host's favourites list.
+    bool isFavourite(const std::string& path) const;
+
+    // ── Folder tree ───────────────────────────────────────────────────
+    // Built per frame from the filtered entry list. The first cut rendered
+    // folders as FLAT labels carrying their full prefix ("demo/French Touch
+    // Demos" as a sibling of "demo"), which is not a tree — it reads as a
+    // list of unrelated folders and gives no indentation to follow. This is
+    // a real nested structure: `demo` > `French Touch Demos`.
+    //
+    // `kids` is a std::map so siblings come out name-ordered without a
+    // separate sort, and folders render before files at each level.
+    struct TreeNode {
+        std::vector<const Entry*>      files;   // files directly in this dir
+        std::map<std::string, TreeNode> kids;   // subdirectories, name-ordered
+    };
+
+    /// Everything renderRow needs, bundled so the recursive tree walk doesn't
+    /// carry six parameters down every level.
+    struct RowContext {
+        const std::vector<std::string>* markPaths;
+        void (DiskLibrary_ImGui::*onLeftClick)(const std::string&, Result&);
+        void (DiskLibrary_ImGui::*onContextMenu)(const std::string&, int, Result&);
+        bool showSizeDate;
+    };
+
+    void renderTreeNode(const TreeNode& node, const RowContext& ctx, Result& r);
+
+    /// Draw one table row (full-row selectable + favourite star + name + size
+    /// + date) and route clicks. Shared by the flat list, the folder tree and
+    /// the Favourites / Recent sections so all four look and behave alike.
+    /// `nameOverride` is used by the tree to show a basename instead of the
+    /// full relative path.
+    void renderRow(const Entry&      e,
+                   const char*       nameOverride,
+                   const RowContext& ctx,
+                   Result&           r);
+
     void renderTab(const std::vector<Entry>&               entries,
                    const std::vector<std::string>&         markPaths,
                    const char*                             emptyHint,

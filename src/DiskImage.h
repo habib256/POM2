@@ -354,6 +354,31 @@ private:
     std::array<TrackBuffer, kTracks> tracks;
     std::array<bool, kTracks>        dirty{};
 
+    // ── Non-WOZ write framing (see writeFlux) ───────────────────────────
+    // A nibble store has no notion of angular length, so the flux the head
+    // lays down has to be FRAMED back into nibbles the way the read LSS
+    // frames it: skip 0-cells until a 1, then that 1 plus the next seven
+    // cells are one nibble. The framing is continuous across the ~30-
+    // transition chunks DiskIICard flushes in — a nibble routinely straddles
+    // two flushes — so the shift accumulator and the destination slot live
+    // here, per track, and are re-anchored only when a window arrives that
+    // isn't contiguous with the previous one (a new write burst).
+    struct WriteFraming {
+        int64_t nextCycle = INT64_MIN;   // end of the last spliced window
+        int     nibbleIdx = -1;          // buffer slot the next nibble lands in
+        uint8_t acc       = 0;           // shift accumulator
+        int     accBits   = 0;           // 0 = waiting for the leading 1 bit
+        int64_t origin    = 0;           // LSS cycle the burst's cell grid starts at
+        int     nextCell  = -1;          // first cell this burst hasn't framed
+        // A window may end mid-cell, so that cell's remaining span (and any
+        // transition in it) belongs to the NEXT flush. Hold its bit back
+        // rather than framing half a cell twice.
+        bool    heldValid = false;
+        bool    heldBit   = false;
+        int     heldCell  = -1;
+    };
+    std::array<WriteFraming, kTracks> writeFraming{};
+
     // Lazy per-quarter-track bit-cell expansion cache. Populated on
     // first `bitAt`/`trackBitLength` call; invalidated by `writeNibbleAt`
     // / `eject` / new `loadFile`. For non-WOZ formats only the slots at

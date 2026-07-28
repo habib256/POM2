@@ -397,6 +397,79 @@ void testPascalIdBlock()
     std::printf("  ok: Pascal 1.1 ID block + entry table\n");
 }
 
+void testPrinterTapSpool()
+{
+    // Printer tap (//c printer port → host ImageWriter). Contract mirrors
+    // PrinterCard::drainSpoolFrom: bytes accepted for transmit (past the
+    // DTR gate) land in a host-visible spool; drain-from returns the total
+    // size; a `from` past the end (spool cleared behind the caller) hands
+    // back everything so the consumer resynchronises.
+    SuperSerialCard ssc(1);
+    assert(!ssc.printerTap());                 // default off at card level
+    ssc.setPrinterTap(true);
+
+    // DTR de-asserted: the transmitter drops the byte, so the tap must
+    // not see it either (the tap sits on the accepted-TX stream, it is
+    // not a bus wiretap).
+    ssc.deviceSelectWrite(kRdrAddr, 'X');
+    assert(ssc.printerSpoolBytes() == 0);
+
+    ssc.deviceSelectWrite(kCommandAddr, 0x0B); // DTR on (firmware init value)
+    const char* msg = "HELLO";
+    for (const char* p = msg; *p; ++p)
+        ssc.deviceSelectWrite(kRdrAddr, static_cast<uint8_t>(*p));
+    assert(ssc.printerSpoolBytes() == 5);
+
+    std::vector<uint8_t> got;
+    size_t total = ssc.drainPrinterSpoolFrom(0, got);
+    assert(total == 5);
+    assert((got == std::vector<uint8_t>{'H','E','L','L','O'}));
+
+    // Incremental drain from the previous total.
+    ssc.deviceSelectWrite(kRdrAddr, '!');
+    got.clear();
+    total = ssc.drainPrinterSpoolFrom(total, got);
+    assert(total == 6);
+    assert((got == std::vector<uint8_t>{'!'}));
+
+    // Clear + stale `from` → resync from the top.
+    ssc.clearPrinterSpool();
+    ssc.deviceSelectWrite(kRdrAddr, 'A');
+    got.clear();
+    total = ssc.drainPrinterSpoolFrom(6, got);
+    assert(total == 1 && got.size() == 1 && got[0] == 'A');
+
+    // Tap off → bytes still transmit (txQueue) but stop spooling.
+    ssc.setPrinterTap(false);
+    ssc.deviceSelectWrite(kRdrAddr, 'B');
+    assert(ssc.printerSpoolBytes() == 1);
+
+    std::printf("  ok: printer tap spool (DTR gate / drain-from / resync)\n");
+}
+
+void testRomPrInEntriesInitAcia()
+{
+    // The PR#n ($Cn20) and IN#n ($Cn40) firmware entries must program the
+    // ACIA command register (cmd=$0B: DTR on, RX IRQ off) before hooking
+    // CSW/KSW — the real SSC ROM initialises the 6551 from its DIP
+    // switches on first entry (6502disassembly.com/a2-rom/SSC). Without
+    // it, `PR#n : PRINT` writes the TDR with DTR de-asserted and every
+    // byte is dropped (MAME `mos6551.cpp:317-321`).
+    SuperSerialCard ssc(2);
+    const uint8_t cmdRegAddr = 0x80 + 2 * 16 + 0xA;   // $C0AA low byte
+    for (uint8_t base : { uint8_t{0x20}, uint8_t{0x40} }) {
+        assert(ssc.slotRomRead(base + 0) == 0xA9);        // LDA #$0B
+        assert(ssc.slotRomRead(base + 1) == 0x0B);
+        assert(ssc.slotRomRead(base + 2) == 0x8D);        // STA $C0nA
+        assert(ssc.slotRomRead(base + 3) == cmdRegAddr);
+        assert(ssc.slotRomRead(base + 4) == 0xC0);
+    }
+    // The IN#n entry must not overrun the Pascal PINIT routine at $Cn50.
+    assert(ssc.slotRomRead(0x4E) == 0xEA);                // still NOP fill
+    assert(ssc.slotRomRead(0x50) == 0xA9);                // PINIT intact
+    std::printf("  ok: PR#/IN# ROM entries init the ACIA (cmd=$0B)\n");
+}
+
 int main()
 {
     testDtrAndCommandDecode();
@@ -413,6 +486,8 @@ int main()
     testStatusReadDcdDsr();
     testRawModeFlag();
     testPascalIdBlock();
+    testPrinterTapSpool();
+    testRomPrInEntriesInitAcia();
     std::printf("OK ssc_acia_smoke\n");
     return 0;
 }
