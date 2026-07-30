@@ -118,7 +118,18 @@ OUTFILE="${OUT_DIR}/POM2-v${VERSION}-${ARCH}.AppImage"
 rm -f "$OUTFILE"
 
 # ARCH is what appimagetool stamps into the runtime; it refuses to guess.
-if ARCH="$ARCH" run_tool appimagetool "$APPDIR" "$OUTFILE"; then
+#
+# POM2_APPIMAGE_RUNTIME lets the caller supply the runtime binary explicitly.
+# The aarch64 appimagetool in AppImageKit's `continuous` release embeds a
+# static-pie ET_DYN runtime, which AppImageLauncher rejects outright as
+# "type -1" — so the Pi job hands it the ET_EXEC `runtime-aarch64` from the
+# same release instead. x86_64 already ships ET_EXEC and needs nothing.
+AT_ARGS=()
+if [ -n "${POM2_APPIMAGE_RUNTIME:-}" ]; then
+    AT_ARGS+=(--runtime-file "$POM2_APPIMAGE_RUNTIME")
+fi
+
+if ARCH="$ARCH" run_tool appimagetool "${AT_ARGS[@]}" "$APPDIR" "$OUTFILE"; then
     log "Wrote ${OUTFILE}"
 else
     echo "ERROR: appimagetool not available — AppDir left at ${APPDIR}" >&2

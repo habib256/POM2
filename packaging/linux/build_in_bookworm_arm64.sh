@@ -38,6 +38,11 @@ TOOLS=/opt/appimage-tools
 mkdir -p "$TOOLS" && cd "$TOOLS"
 wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage" -O appimagetool.AppImage
 wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" -O linuxdeploy.AppImage
+# The ET_EXEC runtime. appimagetool-aarch64 embeds a static-pie ET_DYN one by
+# default, and AppImageLauncher refuses those ("type -1"), so hand it this
+# instead via --runtime-file. x86_64's appimagetool already defaults to ET_EXEC.
+wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/runtime-aarch64" -O runtime-aarch64
+chmod +x runtime-aarch64
 chmod +x ./*.AppImage
 ./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir
 ./appimagetool.AppImage --appimage-extract >/dev/null && mv squashfs-root appimagetool.AppDir
@@ -63,4 +68,5 @@ cmake --build build-appimage -j"$(nproc)"
 export POM2_APPIMAGE_SKIP_BUILD=1
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=aarch64
+export POM2_APPIMAGE_RUNTIME="$TOOLS/runtime-aarch64"
 packaging/linux/build_appimage.sh build-appimage dist
