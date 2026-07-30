@@ -33,3 +33,6 @@ tests/Makefile
 # Runtime output written by the emulator itself, not source.
 /printouts/
 /snapshots/
+
+# Dear ImGui writes its window layout here at runtime.
+imgui.ini
