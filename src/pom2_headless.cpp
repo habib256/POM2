@@ -32,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -215,7 +216,18 @@ int main(int argc, char** argv)
 
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        const auto cycles  = controller.memory().getCycleCounter();
+        // The cycle counter is plain (non-atomic) machine state that the CPU
+        // worker writes on every Memory::advanceCycles, so sampling it needs
+        // stateMutex — same as MainWindow::renderStatusBar's achieved-clock
+        // readout and AiControlServer's /status. Reading it bare here was a
+        // real data race (caught by a ThreadSanitizer run of this binary);
+        // benign on x86-64, but it is still UB and the wrong example to set.
+        // `pasteText` below takes Memory's own kbMutex, so it stays outside.
+        uint64_t cycles = 0;
+        {
+            std::lock_guard<std::mutex> lk(controller.stateMutex());
+            cycles = controller.memory().getCycleCounter();
+        }
         const int  seconds = static_cast<int>(cycles / 1'022'727);
         if (!pasted && seconds >= pasteAfter) {
             std::fprintf(stderr,
