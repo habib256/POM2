@@ -10,6 +10,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace pom2 {
@@ -202,7 +204,30 @@ void Settings::setBool  (const std::string& key, bool  v) { store[key] = v ? "tr
 void Settings::setInt   (const std::string& key, int   v) { store[key] = std::to_string(v); }
 void Settings::setFloat (const std::string& key, float v)
 {
-    std::ostringstream os; os << v; store[key] = os.str();
+    // A bare `os << v` uses ostream's DEFAULT precision of 6 significant
+    // digits, which is not enough to round-trip a float: 1.0f/3.0f writes as
+    // "0.333333" and reads back as a different float. Every float setting —
+    // all five volumes, ui_scale, and the ~15 NTSC/CRT + voxel shader
+    // parameters — therefore shifted slightly on the first save/load cycle,
+    // so what the user dialled in was not what they got back. (The drift is
+    // one-shot, not cumulative: the reloaded value re-serialises to the same
+    // text.) `max_digits10` (9 for float) is the guaranteed round-trip width.
+    //
+    // Emit the SHORTEST width that still round-trips rather than always 9, so
+    // state.cfg keeps values like "0.5" instead of "0.500000000" — the file
+    // header invites hand-editing, and a wall of noise digits works against
+    // that. Everyday values cost one extra conversion; only the genuinely
+    // awkward ones widen.
+    std::string out;
+    for (int prec = 6; prec <= std::numeric_limits<float>::max_digits10; ++prec) {
+        std::ostringstream os;
+        os << std::setprecision(prec) << v;
+        out = os.str();
+        float back = 0.0f;
+        try { back = std::stof(out); } catch (...) { continue; }
+        if (back == v) break;
+    }
+    store[key] = out;
 }
 
 std::string Settings::getStorePath() const { return resolveStorePath().string(); }

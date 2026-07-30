@@ -1048,4 +1048,17 @@ void SuperSerialCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     baudIndex_    = static_cast<uint8_t>(data[p++] & 0x0F);
     irqState_.store(data[p++]);
     irqLineDirty_.store(true);   // CPU thread re-drives the line
+
+    // `bytesPerSecond_` is DERIVED from baudIndex_, not serialized — the same
+    // reason wordLength_/extraStop_ are restored explicitly above. Without
+    // this it keeps whatever rate the LIVE session was last programmed to, so
+    // a 300-baud snapshot restored into a 19 200-baud session kept draining
+    // the TX ring 64x too fast (and vice versa). Only applyControlReg used to
+    // compute it, and a snapshot load is not a register write. Reset the
+    // pacing budget + drain clock with it, exactly as applyControlReg does:
+    // a stale `lastDrainTime_` would credit the restored rate for all the
+    // wall-clock time that elapsed before the load and dump a burst.
+    bytesPerSecond_ = baudIndexToBytesPerSec(baudIndex_);
+    sendBudget_     = 0.0;
+    lastDrainTime_  = std::chrono::steady_clock::now();
 }

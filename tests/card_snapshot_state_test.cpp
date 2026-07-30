@@ -168,7 +168,34 @@ void testSscAciaRegisters()
     c.loadSnapshotState(kForeign.data(), kForeign.size());
     assert(!c.dtrAsserted());                 // foreign blob ignored
 
-    std::printf("  ok: SSC ACIA register state round-trips\n");
+    // The TX pacing rate is DERIVED from the control register's baud divider,
+    // and is not itself serialized — restoring must recompute it. Restoring a
+    // slow-baud snapshot into a card currently programmed fast used to leave
+    // the fast rate in place, draining the TX ring far quicker than the
+    // restored ACIA configuration allows.
+    SuperSerialCard slow(2);
+    slow.deviceSelectWrite(0xB, 0x06);        // control: 300 baud
+    const double slowRate = slow.bytesPerSecond();
+    assert(slowRate > 0.0);
+    std::vector<uint8_t> slowBlob;
+    slow.appendSnapshotState(slowBlob);
+
+    SuperSerialCard fast(2);
+    fast.deviceSelectWrite(0xB, 0x0F);        // control: 19 200 baud
+    assert(fast.bytesPerSecond() > slowRate);
+    fast.loadSnapshotState(slowBlob.data(), slowBlob.size());
+    assert(fast.bytesPerSecond() == slowRate);
+
+    // And the other direction, so the fix can't be a hard-coded slow default.
+    std::vector<uint8_t> fastBlob;
+    SuperSerialCard fast2(2);
+    fast2.deviceSelectWrite(0xB, 0x0F);
+    const double fastRate = fast2.bytesPerSecond();
+    fast2.appendSnapshotState(fastBlob);
+    slow.loadSnapshotState(fastBlob.data(), fastBlob.size());
+    assert(slow.bytesPerSecond() == fastRate);
+
+    std::printf("  ok: SSC ACIA register state round-trips (incl. baud pacing)\n");
 }
 
 /// Deterministic time source (the ClockCard TimeFn shape is `std::tm(*)()`).
