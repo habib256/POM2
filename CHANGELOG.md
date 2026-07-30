@@ -5,6 +5,62 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-30 — v0.8: GLES tier, four-platform release CI, portability fixes
+
+**`POM2_GLES` — the OpenGL ES 3.0 tier is now a build option, not a browser
+accident.** POM2 already contained a complete GLES path (`GLFW_OPENGL_ES_API`,
+`#version 300 es`, direct entry points) — it was simply gated on
+`__EMSCRIPTEN__` across seven translation units. That conflated two different
+questions, *"do we speak GLES?"* and *"are we in a browser?"*, and the
+conflation is precisely what made the Raspberry Pi unreachable: a Pi needs the
+GLES tier while being an ordinary native Linux build, so every guard took the
+desktop branch and the result asked for a GL 3.2 core context, which Mesa's V3D
+cannot give (it caps *desktop* GL at 3.1). `src/Pom2Build.h` now owns the
+distinction via `POM2_GL_ES`, set by Emscripten **or** `-DPOM2_GLES=ON`.
+
+One detail worth keeping: native GLES must go through **EGL**
+(`GLFW_CONTEXT_CREATION_API = GLFW_EGL_CONTEXT_API`). GLX only hands out a GLES
+context when the X server advertises `GLX_EXT_create_context_es2_profile`, which
+V3D does not — without the hint the context request fails on exactly the
+hardware the tier exists for. libEGL itself is *dlopened by GLFW*, not linked by
+us (`readelf -d` shows libGLESv2 only); CMake locates it purely as a
+presence check so a missing package fails at configure time with a package name
+rather than at runtime with "context creation failed".
+
+**Release CI on four native runners**, modelled on POM1: Linux x86_64 (pinned
+bionic container, glibc floor 2.27), Raspberry Pi arm64 (bookworm, GLES, floor
+2.36), macOS Universal 2 `.dmg`, Windows self-contained `.zip`, plus a publish
+job attaching everything with `SHA256SUMS.txt`. POM2 **reuses POM1's**
+`pom1-bionic-builder` image rather than duplicating a near-identical one — the
+requirements are the same, and one image beats two to keep in sync.
+
+**Five real portability bugs, all found by the first CI runs** — none of them
+reachable on the dev machine:
+- `MemoryProfile.h` used `size_t` with no `<cstddef>`. libstdc++ 14 leaks it via
+  other headers; Debian bookworm's 12 does not, so the arm64 build failed.
+- `AudioDevice.cpp` used `std::fabs` with no `<cmath>` — same class, MSVC.
+- The macOS deployment target was set to 10.13, but POM2 uses `std::filesystem`
+  throughout and libc++ marks those symbols unavailable before **10.15**.
+- Seven TUs each hand-rolled the GL include block and had drifted apart. On
+  Windows that block had never been exercised, and it was wrong twice over: the
+  SDK's `<GL/gl.h>` is not self-contained (needs `<windows.h>` first) and is
+  frozen at GL **1.1**, so `GL_CLAMP_TO_EDGE` (GL 1.2) did not exist.
+  `src/Pom2GL.h` now does it once, and `opengl-registry` supplies `GL/glext.h`.
+- The aarch64 AppImage came out **ET_DYN**, which AppImageLauncher rejects as
+  "type -1". AppImageKit never rebuilt the old-style runtime for ARM:
+  `continuous/runtime-aarch64` is ET_DYN while `12/runtime-aarch64` is ET_EXEC,
+  so the Pi job pins release 12 and passes it via `--runtime-file`.
+
+**Windows ships without host networking for now** (`POM2_HAS_SOCKETS`, new in
+`Pom2Build.h`). POM2's three networking TUs are written against POSIX sockets;
+Windows has Winsock2, which is a different API, not a `#define`. Rather than
+guess, Windows takes the road Emscripten already takes: the SSC opens no telnet
+listener and the Uthernet I/II cards plug, reset and answer their registers but
+see no traffic. Everything else — CPU, video, audio, disks, printer — is
+complete. Guard host-socket code with `POM2_HAS_SOCKETS`, never
+`#ifndef __EMSCRIPTEN__`: that assumption ("not a browser, therefore POSIX") is
+what broke the Windows build in the first place.
+
 ## 2026-07-30 — Bug hunt 5: UI panels fuzzed headlessly; no defects found
 
 The 16 `src/*_ImGui.cpp` files were the largest completely untested surface left
