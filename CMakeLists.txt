@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
-project(pom2_imgui VERSION 0.7 LANGUAGES CXX)
+
+# CMP0091 NEW: the MSVC runtime library is chosen via the MSVC_RUNTIME_LIBRARY
+# target property instead of being baked into CMAKE_CXX_FLAGS_<CONFIG>. Required
+# by POM2_WIN_STATIC_RUNTIME (see the Windows section near the bottom) — without
+# it the property is silently ignored and the release exe would go out linked
+# against the DYNAMIC CRT, reintroducing the app-local-DLL failure the static
+# link exists to prevent. Must be set before project().
+cmake_policy(SET CMP0091 NEW)
+
+project(pom2_imgui VERSION 0.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -313,7 +322,16 @@ if(NOT POM2_SLIRP_TARGET)
                    "transport (Uthernet II TCP/UDP is unaffected)")
 endif()
 
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${IMGUI_SOURCES})
+# The Windows resource script embeds the application icon into POM2.exe. It is
+# listed as a target source so CMake drives rc.exe (MSVC) or windres (MinGW)
+# automatically; on every other platform the list is empty.
+set(POM2_PLATFORM_SOURCES "")
+if(WIN32)
+    list(APPEND POM2_PLATFORM_SOURCES packaging/windows/POM2.rc)
+endif()
+
+add_executable(${PROJECT_NAME}
+    ${SOURCES} ${HEADERS} ${IMGUI_SOURCES} ${POM2_PLATFORM_SOURCES})
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
 
 if(POM2_SLIRP_TARGET)
@@ -525,6 +543,34 @@ if(MSVC)
         NOMINMAX
         WIN32_LEAN_AND_MEAN)
     target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+endif()
+
+# ─── Windows: static CRT ───────────────────────────────────────────────────
+# Link the C runtime statically (/MT) so the released POM2.exe ships ALONE, with
+# no app-local vcruntime140.dll / msvcp140.dll beside it.
+#
+# This is not a size preference, it is a correctness one. When an app-local
+# msvcp140.dll sits next to the exe, the loader hands OUR copy to the GPU
+# vendor's OpenGL ICD while msvcp140_1.dll still comes from System32 — a mix the
+# lockstep-versioned msvcp140* family does not tolerate, and the ICD then fails
+# to load. The symptom is a black window or an outright launch failure on
+# machines whose installed redistributable differs from the build agent's, and
+# it is invisible in CI (runners have no vendor GPU and fall back to software
+# GL). The release workflow enforces the result structurally instead: zero DLLs
+# in the package root and an import table naming no CRT.
+#
+# Requires GLFW built with the matching runtime — hence the x64-windows-static
+# vcpkg triplet in the release workflow, which already sets
+# VCPKG_CRT_LINKAGE=static. Do NOT use x64-windows-static-md: that keeps the CRT
+# dynamic and puts the app-local DLL right back.
+option(POM2_WIN_STATIC_RUNTIME "Link the MSVC runtime statically (/MT)" ON)
+if(MSVC AND POM2_WIN_STATIC_RUNTIME)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY
+                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    if(TARGET pom2_headless)
+        set_property(TARGET pom2_headless PROPERTY
+                     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
 endif()
 
 # ─── Tests ───────────────────────────────────────────────────────────────

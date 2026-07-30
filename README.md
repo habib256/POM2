@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍏 POM2 v0.7 — Apple II Emulator
+# 🍏 POM2 v0.8 — Apple II Emulator
 
 ### *Eight machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
 
@@ -298,12 +298,49 @@ POM2 --kiosk --preset iic --cpu-max game.hdv   # //c profile, run flat-out
 
 ## 📦 Releases
 
+**Cutting a release** — push a version tag and the `Release packages` workflow
+builds every platform natively and attaches the artifacts (plus a
+`SHA256SUMS.txt`) to the GitHub Release:
+
+```bash
+git tag v0.8 && git push origin v0.8      # `0.8` without the v works too
+```
+
+Use **Run workflow** on the Actions tab for a dry run: same builds, artifacts
+uploaded, no Release created.
+
+| Package | Runner | Notes |
+| --- | --- | --- |
+| `POM2-v<ver>-x86_64.AppImage` | `ubuntu-latest` + pinned **bionic** container | glibc floor **2.27** — runs on Mint 19+, Debian 12, Ubuntu 20.04+ |
+| `POM2-macOS-v<ver>.dmg` | `macos-15` | **Universal 2** (arm64 + x86_64), static GLFW, ad-hoc signed |
+| `POM2-Windows-v<ver>.zip` | `windows-latest` + vcpkg static triplet | one self-contained `POM2.exe`, **no DLL** beside it |
+
+The Linux package is built inside a frozen container on purpose: an AppImage
+never bundles glibc, so its floor is whatever the *build* machine had. Building
+on `ubuntu-latest` stamps `GLIBC_2.38`, which will not start on Debian 12 or
+Ubuntu 22.04. Rebuild that image with the `Build bionic builder image` workflow
+only when `packaging/linux/Dockerfile.bionic` changes, then pin the digest it
+prints into `release.yml`.
+
+**Local builds** (no CI needed):
+
 ```bash
 ./build_dist.sh                     # relocatable tarball + .deb (+ AppImage if linuxdeploy present)
 ./build_dist.sh --tests             # build + run the pinned smoke tests
+packaging/linux/build_appimage.sh   # just the AppImage, from POM2's own install rules
+./package_macos_release.sh          # .app + .dmg (on a Mac)
+package_windows_release.bat         # staged folder + .zip (on Windows, after a build)
 ```
 
-Apple ROMs are **never** bundled in any artifact.
+Apple ROMs are **never** bundled in any artifact. In a read-only package
+(AppImage/.dmg) drop your own dumps into `~/.local/share/POM2/roms/` —
+`ResourcePaths` searches there; the AppImage creates it with a README on first
+run.
+
+> **Raspberry Pi** is not yet a release target. POM2 asks for desktop GL 3.2
+> core, and Mesa's V3D caps that at 3.1 on Pi 4/5, so the build would not start.
+> The GLES 3.0 tier already exists (it is what the WASM build uses) but is
+> compiled only under Emscripten — see the `POM2_GLES` item in `TODO.md`.
 
 ---
 

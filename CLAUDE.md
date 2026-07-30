@@ -212,7 +212,7 @@ can't disturb your desktop setup" promise.
 
 ## Version string locations
 
-Current release: **v0.7**. **Single source of truth = `CMakeLists.txt`
+Current release: **v0.8**. **Single source of truth = `CMakeLists.txt`
 `project(pom2_imgui VERSION x.y ...)`.** A `configure_file` expands it into
 `build/generated/Version.h` (from `src/Version.h.in`); all C++ pulls the
 version from there (`POM2_VERSION` / `POM2_VERSION_STRING` macros + `pom2::
