@@ -9,12 +9,14 @@
 #   windows  windows-latest + vcpkg static triplet      → self-contained .zip
 #   publish  ubuntu-latest                              → Release + SHA256SUMS
 #
-# The Raspberry Pi (arm64) job POM1 has is deliberately ABSENT until POM2 grows a
-# GLES tier: Mesa's V3D caps *desktop* GL at 3.1 on Pi 4/5, so POM2's GL 3.2 core
-# request fails outright there. POM2 already contains a complete GLES 3.0 /
-# "#version 300 es" path, but it is gated on __EMSCRIPTEN__ rather than on a
-# build option. Shipping a Pi package before that is wired up would mean shipping
-# one that cannot start. See TODO.md.
+#   pi       ubuntu-24.04-arm + debian:bookworm         → AppImage aarch64 (GLES)
+#
+# The Pi job builds with -DPOM2_GLES=ON: Mesa's V3D caps *desktop* GL at 3.1 on
+# Pi 4/5, so POM2's default GL 3.2 core request fails outright there. GLES 3.0 is
+# what the hardware exposes, and POM2 compiles for it from the same sources
+# (Pom2Build.h's POM2_GL_ES). CI can prove it BUILDS, links GLESv2 and not
+# desktop libGL, and starts — it cannot prove it renders correctly on a Pi. Do
+# that on real hardware before announcing the package.
 #
 # Triggers: push a version tag to cut a release; "Run workflow" for a dry run
 # (artifacts only, no Release). Both tag conventions fire, matching POM1: the
@@ -177,6 +179,107 @@ jobs:
           path: dist/*.AppImage
           if-no-files-found: error
 
+  # -------------------------------------------------- Raspberry Pi (arm64) ----
+  # Same shape as `linux`, three Pi-driven differences (see
+  # packaging/linux/build_in_bookworm_arm64.sh):
+  #   1. runs-on: ubuntu-24.04-arm — GitHub's NATIVE arm64 runner (free on
+  #      public repos). No QEMU, so this compiles at full speed.
+  #   2. A debian:bookworm container, because Raspberry Pi OS IS bookworm and an
+  #      AppImage's glibc floor is the build image's. The runner's own
+  #      ubuntu-24.04-arm userland would stamp GLIBC_2.39 and the package would
+  #      not start on a single Pi. Bookworm's 2.36 covers Pi OS bookworm/trixie.
+  #   3. -DPOM2_GLES=ON — the tier the hardware actually exposes.
+  #
+  # No pinned builder image here, unlike bionic: bookworm is current and
+  # supported, so apt in the container is reliable. Freeze it the day that stops
+  # being true.
+  raspberry:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build POM2 + AppImage in a bookworm arm64 container (GLES)
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e POM2_VERSION \
+            debian:bookworm \
+            bash /work/packaging/linux/build_in_bookworm_arm64.sh
+
+      - name: Verify the AppImage — aarch64, ET_EXEC, glibc <= 2.36, GLES-only
+        run: |
+          set -euo pipefail
+          APP=$(ls dist/*.AppImage | head -1)
+          echo "Package: $APP"
+          # The name must carry the arch: the publish job flattens every artifact
+          # into one directory, so an x86_64-named aarch64 build would silently
+          # overwrite the Intel package.
+          case "$APP" in
+            *-aarch64.AppImage) ;;
+            *) echo "ERROR: $APP is not named -aarch64.AppImage"; exit 1 ;;
+          esac
+          TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
+          test "$TYPE" = "EXEC" \
+            || { echo "ERROR: runtime is $TYPE, not EXEC"; exit 1; }
+          MAGIC=$(xxd -s 8 -l 3 -p "$APP")
+          test "$MAGIC" = "414902" \
+            || { echo "ERROR: bad AppImage magic $MAGIC"; exit 1; }
+          "$APP" --appimage-extract >/dev/null
+          BIN=squashfs-root/usr/bin/POM2
+          MACH=$(readelf -h "$BIN" | awk -F': +' '/Machine:/ {print $2; exit}')
+          echo "POM2 ELF machine: $MACH"
+          grep -q AArch64 <<<"$MACH" \
+            || { echo "ERROR: POM2 is not an AArch64 binary"; exit 1; }
+          MAX=$(objdump -T "$BIN" 2>/dev/null \
+                | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1)
+          echo "Highest glibc symbol required by POM2: ${MAX:-none}"
+          test "$(printf '%s\nGLIBC_2.36\n' "$MAX" | sort -V | tail -1)" = "GLIBC_2.36" \
+            || { echo "ERROR: requires ${MAX} > GLIBC_2.36 — will not run on Pi OS"; exit 1; }
+          # THE point of this job: the GLES package must never pull desktop
+          # libGL. On a Pi that library is the software rasteriser, so depending
+          # on it would be a silent ~2 fps regression rather than a link error.
+          if ldd "$BIN" | grep -qE 'lib(GL|OpenGL)\.so'; then
+            echo "ERROR: packaged POM2 links desktop libGL"; ldd "$BIN" | grep -E 'GL|EGL'; exit 1
+          fi
+          ldd "$BIN" | grep -E 'GLES|EGL' \
+            || { echo "ERROR: POM2 does not link GLESv2 — is POM2_GLES really on?"; exit 1; }
+          echo "OK: aarch64 + ET_EXEC + glibc <= 2.36 + GLES-only"
+
+      - name: Install runtime GLES/X libs for the launch smoke
+        run: |
+          set -eu
+          # GLESv2/EGL here instead of libGL — this package's whole point. EGL
+          # must be present because GLFW dlopens it for GLFW_EGL_CONTEXT_API.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgles2 libegl1 libglx0 \
+            libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+      - name: Smoke-launch the packaged AppImage (--help)
+        run: |
+          set -euo pipefail
+          # Runs AppRun from the already-extracted squashfs-root — same reason as
+          # the x86_64 job: immune to an AppImageLauncher interception, and
+          # reproducible by hand. 2>&1 because POM2 prints to stderr.
+          test -x squashfs-root/AppRun || { echo "ERROR: squashfs-root/AppRun missing"; exit 1; }
+          OUT=$(./squashfs-root/AppRun --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: AppImage did not print its usage"; exit 1; }
+          echo "OK: packaged aarch64 AppImage launches"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-raspberry-arm64-AppImage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
   # ---------------------------------------------------------------- macOS ----
   # ONE Universal 2 (arm64 + x86_64) .dmg — native on Apple Silicon AND Intel,
   # no Rosetta anywhere. Runs on the arm64 image; the x86_64 slice is
@@ -321,7 +424,7 @@ jobs:
 
   # ------------------------------------------------ attach to the Release ----
   publish:
-    needs: [linux, macos, windows]
+    needs: [linux, raspberry, macos, windows]
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
