@@ -1,0 +1,360 @@
+# Release packaging — build POM2 on each native OS and attach the packages to a
+# GitHub Release. Modelled on POM1's release.yml (same runner matrix, same
+# verify-then-smoke-launch discipline), minus POM1's cc65 bundling: POM2 has no
+# in-app assembler, so there is no toolchain to stage.
+#
+# Machines, and why each is what it is:
+#   linux    ubuntu-latest + a PINNED bionic container  → AppImage x86_64
+#   macos    macos-15 (arm64)                           → Universal 2 .dmg
+#   windows  windows-latest + vcpkg static triplet      → self-contained .zip
+#   publish  ubuntu-latest                              → Release + SHA256SUMS
+#
+# The Raspberry Pi (arm64) job POM1 has is deliberately ABSENT until POM2 grows a
+# GLES tier: Mesa's V3D caps *desktop* GL at 3.1 on Pi 4/5, so POM2's GL 3.2 core
+# request fails outright there. POM2 already contains a complete GLES 3.0 /
+# "#version 300 es" path, but it is gated on __EMSCRIPTEN__ rather than on a
+# build option. Shipping a Pi package before that is wired up would mean shipping
+# one that cannot start. See TODO.md.
+#
+# Triggers: push a version tag to cut a release; "Run workflow" for a dry run
+# (artifacts only, no Release). Both tag conventions fire, matching POM1: the
+# `v`-prefixed form (v0.8) and the bare numeric form (0.8).
+name: Release packages
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'        # v0.8
+      - '[0-9]*'         # 0.8
+  workflow_dispatch:
+
+permissions:
+  contents: write        # the publish job attaches packages to the Release
+
+jobs:
+  # ---------------------------------------------------- normalize version ----
+  # One source of truth for the package version. Strips a leading `v` so the
+  # value is the bare number regardless of which tag convention was pushed —
+  # each packager prepends its own `v`, so without this a v-prefixed tag would
+  # produce POM2-macOS-vv0.8.dmg. Empty on workflow_dispatch (no tag), in which
+  # case each packager falls back to the version in CMakeLists.txt.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      pom2_version: ${{ steps.v.outputs.pom2_version }}
+    steps:
+      - id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ "$REF_TYPE" = "tag" ]; then
+              echo "pom2_version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+              echo "pom2_version=" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------- Linux ----
+  # Built INSIDE the pinned bionic (glibc 2.27) image so the AppImage runs on
+  # every distro still in use. This is not theoretical: an AppImage never bundles
+  # glibc, so its floor IS the build machine's, and building on ubuntu-latest
+  # stamps GLIBC_2.38 — which refuses to start on Debian 12 (2.36), Ubuntu 22.04
+  # (2.35) or Mint 21. Measured, not assumed; the verify step below asserts it.
+  #
+  # `docker run` rather than a `container:` key because GitHub's node24 actions
+  # (checkout@v5, upload-artifact@v5) need glibc >= 2.28 — one notch above
+  # bionic's 2.27 — so they cannot run inside a bionic `container:`. The actions
+  # run on the host; the repo is bind-mounted into the container.
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read       # pull the builder image from GHCR
+    env:
+      # Build the image first via the build-bionic-image workflow, then replace
+      # this with the digest it prints. The moving tag is a convenience for
+      # bring-up; a real release should be pinned by digest.
+      BUILDER_IMAGE: ghcr.io/habib256/pom2-bionic-builder:bionic
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR (pull the builder image)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build POM2 + AppImage in the pinned bionic builder
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          IMAGE="$(echo "$BUILDER_IMAGE" | tr '[:upper:]' '[:lower:]')"
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e POM2_VERSION \
+            "$IMAGE" \
+            bash /work/packaging/linux/build_in_bionic.sh
+
+      - name: Verify the AppImage — ET_EXEC, magic, glibc floor, no bundled GL
+        run: |
+          set -euo pipefail
+          # The container ran as root, so the artifact is root-owned: read and
+          # execute it, never chmod (that would EPERM as the runner user).
+          APP=$(ls dist/*.AppImage | head -1)
+          echo "Package: $APP"
+          # The runtime must be ELF ET_EXEC. The newer static-pie ET_DYN runtime
+          # is rejected by AppImageLauncher as "type -1" — this asserts the
+          # AppImageKit appimagetool baked into the image is the one in use.
+          TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
+          echo "AppImage runtime ELF type: ${TYPE}"
+          test "$TYPE" = "EXEC" \
+            || { echo "ERROR: runtime is $TYPE, not EXEC — AppImageLauncher will reject it"; exit 1; }
+          # AI\x02 at offset 8 = valid AppImage type 2.
+          MAGIC=$(xxd -s 8 -l 3 -p "$APP")
+          test "$MAGIC" = "414902" \
+            || { echo "ERROR: bad AppImage magic $MAGIC (expected 414902)"; exit 1; }
+          "$APP" --appimage-extract >/dev/null
+          BIN=squashfs-root/usr/bin/POM2
+          MAX=$(objdump -T "$BIN" 2>/dev/null \
+                | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1)
+          echo "Highest glibc symbol required by POM2: ${MAX:-none}"
+          test "$(printf '%s\nGLIBC_2.27\n' "$MAX" | sort -V | tail -1)" = "GLIBC_2.27" \
+            || { echo "ERROR: AppImage requires ${MAX} > GLIBC_2.27"; exit 1; }
+          # Graphics-driver libraries must come from the HOST. Bundling libGL
+          # would override the user's GPU driver — a silent drop to software
+          # rendering at best, a driver-ABI mismatch at worst.
+          if ls squashfs-root/usr/lib/ 2>/dev/null | grep -qE '^lib(GL|EGL|GLX|OpenGL|GLdispatch)\.'; then
+            echo "ERROR: the AppImage bundles a graphics-driver library:"
+            ls squashfs-root/usr/lib/ | grep -E '^lib(GL|EGL|GLX|OpenGL|GLdispatch)\.'
+            exit 1
+          fi
+          echo "OK: ET_EXEC + magic + glibc floor <= 2.27 + no bundled GL"
+
+      - name: Install runtime GL/X libs for the launch smoke
+        run: |
+          set -eu
+          # These are DT_NEEDED and resolved at exec, before main runs, so they
+          # must exist even though --help opens no window and creates no GL
+          # context. No Xvfb or GPU is needed. glibc is forward-compatible, so
+          # the 2.27-built binary loads fine against the runner's newer libs.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libopengl0 libglx0 libgl1 \
+            libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+      - name: Smoke-launch the packaged AppImage (--help)
+        run: |
+          set -euo pipefail
+          # The checks above prove the file is SHAPED right; this proves it RUNS
+          # — AppRun sets up the environment and the bundled libs resolve.
+          # --help exits 0 before GLFW/any window, so it is safe display-less.
+          #
+          # Runs AppRun out of the squashfs-root the verify step already
+          # extracted, rather than `"$APP" --appimage-extract-and-run`. Same code
+          # path (AppRun → usr/bin/POM2, bundled libs, no FUSE needed), but it
+          # cannot be intercepted: on a desktop with AppImageLauncher installed,
+          # that flag is swallowed by the launcher, which then dies and produces
+          # NO output — so this step would fail on a perfectly good package and
+          # send you hunting a packaging bug that does not exist. Reproducible
+          # by hand on any machine, which the runtime-flag form is not.
+          #
+          # NOTE the 2>&1: POM2 prints its banner AND its usage to stderr, so a
+          # bare $(...) capture comes back empty and every grep below fails.
+          test -x squashfs-root/AppRun || { echo "ERROR: squashfs-root/AppRun missing"; exit 1; }
+          OUT=$(./squashfs-root/AppRun --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: AppImage did not print its usage"; exit 1; }
+          # Also asserts the version actually got stamped into the binary.
+          grep -qE "POM2: v[0-9]" <<<"$OUT" \
+            || { echo "ERROR: no version banner — Version.h did not get stamped"; exit 1; }
+          echo "OK: packaged AppImage launches"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-linux-AppImage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- macOS ----
+  # ONE Universal 2 (arm64 + x86_64) .dmg — native on Apple Silicon AND Intel,
+  # no Rosetta anywhere. Runs on the arm64 image; the x86_64 slice is
+  # cross-compiled, which the Apple toolchain does natively.
+  #
+  # GLFW is built from source as a universal STATIC library rather than taken
+  # from Homebrew. Homebrew is single-arch, and worse, the linker bakes brew's
+  # absolute prefix into the binary — so a brew-linked app looks for
+  # /usr/local/opt/glfw/... which does not exist on Apple Silicon (brew is
+  # /opt/homebrew there). That fails in dyld, which Finder reports as the
+  # useless "POM2 quit unexpectedly", and CI cannot catch it because the runner
+  # itself has brew glfw at exactly that path.
+  macos:
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch Dear ImGui (pinned commit)
+        run: tools/fetch_imgui_pinned.sh
+
+      - name: Build universal static GLFW (arm64 + x86_64)
+        run: packaging/macos/build_universal_deps.sh --out build-universal-deps
+
+      - name: Package universal .app + .dmg
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+          POM2_MACOS_ARCHS: arm64;x86_64
+          # CMake honours CMAKE_PREFIX_PATH from the environment — this is what
+          # points find_package(glfw3) at the universal static build instead of
+          # whatever Homebrew copy happens to be on the image.
+          CMAKE_PREFIX_PATH: ${{ github.workspace }}/build-universal-deps/glfw
+        run: ./package_macos_release.sh
+
+      - name: Smoke-launch the packaged .app binary (--help)
+        run: |
+          set -euo pipefail
+          # Proves the bundled binary starts and every dependency resolves.
+          # This exercises the arm64 slice (the runner's own arch); the x86_64
+          # slice is verified structurally by the lipo gate inside the packager
+          # — GitHub's arm64 macOS images ship without Rosetta, so it cannot be
+          # executed here.
+          OUT=$(dist/POM2.app/Contents/MacOS/POM2 --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: .app binary did not print its usage"; exit 1; }
+          echo "OK: packaged .app binary launches"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-macOS-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # -------------------------------------------------------------- Windows ----
+  windows:
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch Dear ImGui (pinned commit)
+        shell: bash
+        run: tools/fetch_imgui_pinned.sh
+
+      - name: Install GLFW via vcpkg (manifest mode, static triplet)
+        # x64-windows-static, NOT the default x64-windows: this triplet carries
+        # VCPKG_CRT_LINKAGE=static, so GLFW is compiled /MT and matches POM2's
+        # own static CRT (POM2_WIN_STATIC_RUNTIME, ON by default). The result is
+        # one self-contained POM2.exe with no DLL beside it. Do NOT switch to
+        # -static-md: that keeps the CRT dynamic and puts the app-local DLL back.
+        #
+        # NO package argument: the dependency and its pinned version live in the
+        # repo-root vcpkg.json (manifest mode). Passing `glfw3:x64-windows-static`
+        # here is an error, not a synonym — vcpkg rejects package arguments in
+        # manifest mode.
+        run: vcpkg install --triplet x64-windows-static
+
+      - name: Configure + build (Release, vcpkg toolchain)
+        shell: cmd
+        run: |
+          cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DPOM2_ENABLE_TESTS=OFF
+          cmake --build build --config Release -j
+
+      - name: Package ZIP
+        shell: cmd
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: call package_windows_release.bat
+
+      - name: Verify POM2.exe is self-contained (no DLL, clean import table)
+        # The bug this guards against is NOT reproducible in CI (runners have no
+        # vendor GPU and fall back to software GL), so the guarantee is
+        # structural: zero DLLs in the package root, and an import table naming
+        # no CRT and no GLFW.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # (1) Not one DLL at the package root.
+          STRAY=$(find dist/POM2-Windows -maxdepth 1 -iname '*.dll' -printf '%f\n' || true)
+          if [ -n "$STRAY" ]; then
+            echo "ERROR: DLLs found next to POM2.exe — the exe must be self-contained:"
+            echo "$STRAY"; exit 1
+          fi
+          # (2) Import table must name no CRT and no GLFW. dumpbin lives inside
+          #     the MSVC toolset; vswhere finds it without hardcoding a version.
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          DUMPBIN=""
+          if [ -x "$VSWHERE" ]; then
+            DUMPBIN=$("$VSWHERE" -latest -find '**\dumpbin.exe' | head -n 1 | tr -d '\r' || true)
+          fi
+          if [ -n "$DUMPBIN" ] && [ -f "$DUMPBIN" ]; then
+            IMPORTS=$("$DUMPBIN" //dependents dist/POM2-Windows/POM2.exe)
+            echo "$IMPORTS"
+            BAD=$(echo "$IMPORTS" | grep -iE 'vcruntime|msvcp|api-ms-win-crt|glfw3' || true)
+            if [ -n "$BAD" ]; then
+              echo "ERROR: POM2.exe still imports a runtime/GLFW DLL:"; echo "$BAD"; exit 1
+            fi
+            echo "OK: import table names no CRT and no GLFW DLL"
+          else
+            # Never silently pass: say plainly which half of the check ran.
+            echo "NOTE: dumpbin not found — the zero-DLL check ran, the import-table check did not"
+          fi
+
+      - name: Smoke-launch the packaged POM2.exe (--help)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=$(dist/POM2-Windows/POM2.exe --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: POM2.exe did not print its usage"; exit 1; }
+          echo "OK: packaged POM2.exe launches"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-Windows-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # ------------------------------------------------ attach to the Release ----
+  publish:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Attach packages + checksums to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          # This job deliberately does NOT check out the repo — it only needs the
+          # downloaded artifacts. But `gh release` infers the target repo from the
+          # git remote, so without a checkout every call would die with "failed to
+          # run git: fatal: not a git repository". GH_REPO states it explicitly.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          # Flatten the per-job artifact dirs into one staging dir so the
+          # checksum file lists clean basenames rather than nested paths. Each
+          # package basename is already unique per OS.
+          mkdir -p staging
+          find artifacts -type f \( -name '*.AppImage' -o -name '*.dmg' -o -name '*.zip' \) \
+               -exec cp -v {} staging/ \;
+          shopt -s nullglob
+          FILES=(staging/*.AppImage staging/*.dmg staging/*.zip)
+          if [ "${#FILES[@]}" -eq 0 ]; then echo "No packages found to publish."; exit 1; fi
+          # SHA-256 manifest so downloaders can verify with `sha256sum -c`.
+          ( cd staging && sha256sum -- "${FILES[@]#staging/}" > SHA256SUMS.txt )
+          cat staging/SHA256SUMS.txt
+          FILES+=(staging/SHA256SUMS.txt)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+              gh release create "$TAG" "${FILES[@]}" --generate-notes --title "POM2 $TAG"
+          fi
