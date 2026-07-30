@@ -38,10 +38,15 @@ TOOLS=/opt/appimage-tools
 mkdir -p "$TOOLS" && cd "$TOOLS"
 wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage" -O appimagetool.AppImage
 wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" -O linuxdeploy.AppImage
-# The ET_EXEC runtime. appimagetool-aarch64 embeds a static-pie ET_DYN one by
-# default, and AppImageLauncher refuses those ("type -1"), so hand it this
-# instead via --runtime-file. x86_64's appimagetool already defaults to ET_EXEC.
-wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/runtime-aarch64" -O runtime-aarch64
+# The ET_EXEC runtime, pinned to AppImageKit release **12**. This is not the
+# `continuous` one: upstream never rebuilt the old-style runtime for ARM, so
+#   continuous/runtime-x86_64  -> ET_EXEC
+#   continuous/runtime-aarch64 -> ET_DYN   (static-pie; AppImageLauncher rejects
+#                                           it as "type -1")
+#   12/runtime-aarch64         -> ET_EXEC  (the last ET_EXEC ARM release)
+# The type-2 format is unchanged — only the small bootstrap binary differs — so
+# pinning 12 costs nothing and keeps the ET_EXEC contract release.yml verifies.
+wget -q "https://github.com/AppImage/AppImageKit/releases/download/12/runtime-aarch64" -O runtime-aarch64
 chmod +x runtime-aarch64
 chmod +x ./*.AppImage
 ./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir

@@ -16,6 +16,20 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef _WIN32
+// No host sockets on Windows yet (POM2_HAS_SOCKETS is 0 there), but this file
+// still needs the BYTE-ORDER helpers and the protocol constants outside the
+// socket paths: htons/ntohs for the IPv4/Ethernet framing that IPRAW builds,
+// and SOCK_STREAM / SOCK_DGRAM / IPPROTO_TCP / IPPROTO_UDP for the socket-mode
+// switch in openSocket(). winsock2.h declares all of them. Linking ws2_32 (see
+// CMakeLists) is what makes htons/ntohs resolve; nothing here opens a socket.
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#endif
+
 #if POM2_HAS_SOCKETS
 // POSIX socket stack. Under Emscripten there is no usable BSD-socket API,
 // so the TCP/UDP paths compile out and those socket modes stay CLOSED —

@@ -524,7 +524,10 @@ else()
         )
     endif()
     if(WIN32)
-        target_link_libraries(${PROJECT_NAME} winmm)
+        # ws2_32: htons/ntohs, used by W5100Device's IPv4/Ethernet framing even
+        # though POM2_HAS_SOCKETS is 0 on Windows (no host socket is opened —
+        # see the winsock2 comment at the top of that file).
+        target_link_libraries(${PROJECT_NAME} winmm ws2_32)
     endif()
 
     if(APPLE)

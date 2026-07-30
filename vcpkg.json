@@ -4,7 +4,8 @@
   "version-string": "0.8",
   "description": "Apple II / II+ / //e / //c / //c+ emulator",
   "dependencies": [
-    "glfw3"
+    "glfw3",
+    "opengl-registry"
   ],
   "builtin-baseline": "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3",
   "overrides": [
