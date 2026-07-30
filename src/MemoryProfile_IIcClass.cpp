@@ -76,12 +76,25 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
     if (!hasAltBank_ || !iwm_ || !isPlus_) return false;
     iwm_->tick(cyc);
     const uint8_t v = iwm_->read(static_cast<uint8_t>(addr & 0xF));
-    if (iwmAuthoritative_) {
+    // The IWM's value is returned ONLY while the hub routes to a 3.5"
+    // Sony drive — the one device this IWM actually owns. For everything
+    // else (5.25" selected, or nothing selected during the firmware's
+    // boot drive-scan) the DiskIICard LSS answers: the 2026-07 bug hunt
+    // showed the IWM's bit-cell walker mis-frames DOS 3.3 RWTS reads
+    // enough that a SAVE on the //c+ ended in I/O ERROR (write-verify
+    // re-reads through the walker), while the full boot + write
+    // round-trip is clean through the LSS. This is POM2's split of
+    // MAME's single-controller model (apple2e.cpp recalc_active_device
+    // hands m_cur_floppy to ONE iwm): each drive class keeps the
+    // controller that owns it.
+    if (iwmAuthoritative_ && hub_ && hub_->active35Selected()) {
         out = v;
         return true;
     }
-    // Shadow mode: IWM state advanced, but the byte comes from the
-    // slot-6 DiskIICard LSS path (caller falls through).
+    // Shadow: IWM state advanced (the firmware's status probes and the
+    // MIG handshake still see a live chip), but the byte returned to the
+    // CPU comes from the slot-6 DiskIICard LSS path (caller falls
+    // through).
     return false;
 }
 
@@ -227,6 +240,9 @@ void IIcClassProfile::migWrite(uint16_t migOffset, uint8_t value)
 namespace {
 constexpr uint8_t kMigBlobMagic[4] = { 'M', 'I', 'G', '1' };
 constexpr size_t  kMigBlobBytes    = 4 + 2 + 0x800;   // magic + page + RAM
+// Optional v1.1 tail: romBank_ + migIntDrive_ + migHdSel_. Old blobs end
+// at kMigBlobBytes and keep the live values for these three.
+constexpr size_t  kMigBlobTail     = 3;
 }  // namespace
 
 void IIcClassProfile::appendSnapshotState(std::vector<uint8_t>& out) const
@@ -235,6 +251,13 @@ void IIcClassProfile::appendSnapshotState(std::vector<uint8_t>& out) const
     out.push_back(static_cast<uint8_t>(migPage_));
     out.push_back(static_cast<uint8_t>(migPage_ >> 8));
     out.insert(out.end(), migRam_.begin(), migRam_.end());
+    // romBank_ is the highest-impact field here: the //c+ alt firmware
+    // runs from bank 1 during MIG/3.5" work, and a rewind across a $C028
+    // toggle restored a PC captured under one bank while the ROM reader
+    // served the other — wrong 16 KB of firmware at $C100-$FFFF.
+    out.push_back(romBank_     ? 1 : 0);
+    out.push_back(migIntDrive_ ? 1 : 0);
+    out.push_back(migHdSel_    ? 1 : 0);
 }
 
 size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
@@ -249,6 +272,12 @@ size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
         (static_cast<uint16_t>(data[4]) |
          static_cast<uint16_t>(data[5]) << 8) & 0x7FF);
     std::memcpy(migRam_.data(), data + 6, migRam_.size());
+    if (n >= kMigBlobBytes + kMigBlobTail) {
+        romBank_     = data[kMigBlobBytes]     != 0;
+        migIntDrive_ = data[kMigBlobBytes + 1] != 0;
+        migHdSel_    = data[kMigBlobBytes + 2] != 0;
+        return kMigBlobBytes + kMigBlobTail;
+    }
     return kMigBlobBytes;
 }
 

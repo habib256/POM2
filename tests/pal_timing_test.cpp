@@ -101,6 +101,51 @@ int main()
     assert(vblActiveAt(VideoStandard::PAL,  311) == false);  // VBL tail
     assert(vblActiveAt(VideoStandard::PAL,  312) == true);   // 20280 → wrap
 
+    // ── 5. Floating bus follows the PAL geometry. ───────────────────────
+    // The video scanner's vertical counter runs $FA..$1FF on NTSC (262
+    // lines) and $C8..$1FF on PAL (312) — the extra 50 PAL lines land in
+    // VBL and the scanner keeps fetching through them. A stray hard-coded
+    // 262 in floatingBus() would be SILENT (a wrong RNG byte, a vapor-lock
+    // that never fires), which is exactly why it needs pinning: this is
+    // the one PAL-geometry consumer the rest of this test doesn't reach.
+    {
+        // Fill RAM so each byte encodes its own address — otherwise a
+        // uniform RAM makes two DIFFERENT scanner addresses return the
+        // same byte and the comparison below proves nothing.
+        auto busAt = [](VideoStandard std, uint64_t absCycle) {
+            Memory mem;
+            M6502  cpu(&mem);
+            mem.setCpu(&cpu);
+            mem.setIIEMode(true);
+            mem.setVideoStandard(std);
+            for (uint32_t a = 0x0400; a < 0x0C00; ++a)
+                mem.memWrite(static_cast<uint16_t>(a),
+                             static_cast<uint8_t>(a ^ (a >> 8)));
+            for (uint32_t a = 0x2000; a < 0x6000; ++a)
+                mem.memWrite(static_cast<uint16_t>(a),
+                             static_cast<uint8_t>(a ^ (a >> 8)));
+            mem.setCycleCounter(absCycle);
+            return mem.peekFloatingBus();
+        };
+        // Line 280 exists on both, but is a DIFFERENT point in the
+        // scanner's counter sequence: NTSC has wrapped (280 % 262 = 18,
+        // visible), PAL has not (still in VBL). The scanner address, and
+        // so the byte, must differ.
+        const uint64_t cyc = static_cast<uint64_t>(280) * 65 + 20;
+        assert(busAt(VideoStandard::NTSC, cyc) != busAt(VideoStandard::PAL, cyc)
+               && "floatingBus must use the live scanlinesPerFrame");
+
+        // The PAL frame repeats with period 312 × 65 = 20280 cycles, NOT
+        // the 20313 CPU budget per UI tick (those are deliberately
+        // decoupled — see CpuClock.h).
+        constexpr uint64_t kPalFrame = 312ull * 65;
+        for (uint64_t probe : {0ull, 4321ull, 15000ull}) {
+            assert(busAt(VideoStandard::PAL, probe) ==
+                   busAt(VideoStandard::PAL, probe + kPalFrame)
+                   && "PAL floating bus period must be 20280 cycles");
+        }
+    }
+
     std::printf("pal_timing OK\n");
     return 0;
 }

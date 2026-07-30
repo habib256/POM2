@@ -1093,15 +1093,19 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     // gate (crafted-snapshot over-read hardening) and the MEX size cap; an
     // oversized MEX aborts the restore with a 400.
     const auto res = pom2::restoreMachineState(r, ctrl_->cpu(), ctrl_->memory());
-    if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
     // The restore usually rewinds mem's cycleCounter; the speaker's
     // reconstruction cursor only snaps FORWARD and purges older-stamped
     // toggles as stale, so without this flush audio stays dead until the
     // counter re-passes its pre-load value (minutes of emulated time).
     // The rewind ring recorded the abandoned timeline — its stamps would
-    // break indexForCycle's monotonicity — so drop it too.
+    // break indexForCycle's monotonicity — so drop it too. Run BOTH even
+    // when the restore failed: a truncated file may already have applied
+    // CPU + MEM before the error, so the machine is mutated either way —
+    // the old early-return skipped the resync exactly when it was needed
+    // most.
     ctrl_->speaker().reset();
     ctrl_->rewind().clear();
+    if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
@@ -1148,8 +1152,18 @@ void AiControlServer::handleScreen(int fd, const Request& /*req*/)
     int w = 0, h = 0;
     std::vector<uint8_t> rgb;
     {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        display_->render(ctrl_->memory());
+        // demodMutex covers render + demod + pixel copy; stateMutex covers
+        // only render() (the guest-RAM snapshot). The UI thread runs the
+        // same phases under the same two locks in the same order
+        // (stateMutex → demodMutex) — without the shared demodMutex the
+        // two threads raced over the display-owned demod buffers.
+        std::unique_lock<std::mutex> demodLk(display_->demodMutex(),
+                                             std::defer_lock);
+        {
+            std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+            demodLk.lock();
+            display_->render(ctrl_->memory());
+        }
         // OE-GPU mode demodulates in a GLSL pass MainWindow owns; pixels()
         // would return the LUT fallback framebuffer, not the composite image
         // on screen. Schedule the pixel-identical CPU demod (pinned by

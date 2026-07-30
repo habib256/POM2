@@ -690,6 +690,15 @@ private:
     /// on the byte the read actually samples — and matches the event log's
     /// `cycleCounter + getCurrentInstructionCycles()` stamp (vs the old
     /// instruction-START byte, ±a few cycles off).
+    /// True when a card OTHER than a Le Chat Mauve occupies slot 3, whose
+    /// device-select window is $C0B8-$C0BB — the same four addresses the
+    /// Eve decodes. An SSC there drives its ACIA control register at
+    /// $C0BB, so a serial driver's baud setup would flip the Eve's HGR
+    /// Duochrome bit. A Chat Mauve plugged INTO slot 3 must still see its
+    /// own registers, hence the type check rather than a bare occupancy
+    /// test.
+    bool chatMauveBlockedBySlot3() const;
+
     uint8_t floatingBus() const;
     /// Floating bus at an explicit absolute cycle (the scanner address math).
     uint8_t floatingBus(uint64_t absCycle) const;

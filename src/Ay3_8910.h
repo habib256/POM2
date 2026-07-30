@@ -96,7 +96,12 @@ struct Ay3_8910
         readStrobeCount  = r.u32(); inactiveCount    = r.u32();
     }
 
-    enum ApplyResult { NoChange, ResetOnly, Wrote };
+    enum ApplyResult { NoChange, ResetOnly, Wrote, Read };
+
+    /// Value the chip drove onto the data bus on the last READ command
+    /// (BDIR=0, BC1=1). The card latches it onto the VIA's port-A input,
+    /// mirroring MAME's `m_porta` shadow.
+    uint8_t busOut = 0;
 
     /// React to a VIA Port B (and, on Latch/Write commands, also Port A)
     /// change. `pa` is the AY data bus (VIA Port A output bits driven by
@@ -132,7 +137,16 @@ struct Ay3_8910
             result = ApplyResult::Wrote;
             break;
         case 0b01:    // READ
+            // MAME `ay8910.cpp` drives the selected register onto the
+            // data bus, and `mockingboard.cpp via_psg_ctrl` latches that
+            // onto VIA port A. POM2 counted the strobe and did nothing
+            // else, so a driver that probes the AY by writing then
+            // READING a register back (a common presence check, and how
+            // some Phasor mode detectors identify the board) always saw
+            // the VIA's own stale port-A output instead.
             if (edge) ++readStrobeCount;
+            busOut = regs[latchedAddr & 0x0F];
+            result = ApplyResult::Read;
             break;
         case 0b00:
         default:

@@ -41,6 +41,13 @@ public:
     /// on success; logs a warning on failure (no exceptions).
     bool save() const;
 
+    /// Suppress ALL writes (kiosk). Set once when the session is or
+    /// becomes settings-read-only; `save()` then returns true without
+    /// touching the file. Central because the call sites are spread over
+    /// the whole UI and cannot each be relied on to check.
+    void setReadOnly(bool ro) { readOnly_ = ro; }
+    bool readOnly() const     { return readOnly_; }
+
     /// Get a value or fall back to the default. Conversion failures
     /// also fall back. Booleans accept "true"/"false"/"1"/"0".
     std::string getString(const std::string& key, const std::string& def = "") const;
@@ -58,6 +65,7 @@ public:
 
 private:
     std::map<std::string, std::string> store;
+    bool readOnly_ = false;   // see setReadOnly()
 };
 
 } // namespace pom2

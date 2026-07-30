@@ -202,6 +202,20 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Storage] disks & images
 
+- 🟢 **//c+ 5.25" dual-controller — ✅ RESOLVED 2026-07-29.** The repro
+  (headless //c+ cold boot, `tests/iicplus_boot_probe`) exposed that the
+  visible failure was upstream of the dual controller: (1) IWM status
+  with no selected drive answered with the 5.25" image's WP bit instead
+  of MAME's "no floppy → SENSE high" (`iwm.cpp:129`), and (2) the Sony
+  DSKCHG sense had inverted polarity for an empty drive — together they
+  hung the firmware's boot drive-scan at $F0FC (no banner, ever). The
+  dual-controller hazard itself was real on writes: the IWM's flushWrite
+  pushed 5.25" flux into the same DiskImage the LSS wrote (now
+  suppressed — DiskIICard owns 5.25" flux), and the IWM read walker
+  mis-framed RWTS verify (SAVE → I/O ERROR) — $C0Ex reads are now
+  IWM-authoritative only while the hub routes to a 3.5" Sony. Pinned by
+  `iic_plus_boot_write` (boot to DOS 3.3 banner + SAVE/LOAD/RUN
+  round-trip on the //c+ profile).
 - 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::writeFlux` splices
   bit-cells but the full `set_write_splice` handling (TRK +6650
   splice_point/nibble/bit_count fields, parsed at `DiskImage.cpp:720`)
@@ -223,6 +237,12 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Cards] slot cards & peripherals
 
+- ✅ **LOW batch from the 2026-07-29 hunt — ALL CLEARED 2026-07-30.**
+  The last seven (NMOS NOP abs,X page-cross, lazy snapshot DMA disarm,
+  CLI Phase-C ordering gate, AY READ bus latch + VIA port-A input pin
+  model, Apple2Display published-frame routing, $C019 sub-instruction
+  VBL sampling, Z80 block-repeat X/Y-from-PCH) are fixed — see
+  CHANGELOG 2026-07-30. Nothing from that hunt remains open.
 - 🟢 **Microsoft SoftCard (Z80) + CP/M — ✅ ALL 3 PHASES DONE 2026-07-12**
   (Z80 core zexdoc+zexall 100 % → `SoftCardZ80` card + generic DMA
   arbitration → CP/M 2.2 boots to `A>`: 44K v2.20 master on II+ 40-col

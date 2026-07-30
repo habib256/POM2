@@ -59,16 +59,6 @@ void SmartPortHub::setMigHdSel(bool hdSel)
     if (active35_) active35_->ssW(hdSel_);
 }
 
-void SmartPortHub::onIwmMotor(bool motorOn)
-{
-    // Forward motor state to BOTH 3.5" drives. Only the active drive
-    // actually responds, but MAME also calls `mon_w` only on
-    // m_cur_floppy. POM2 keeps both in sync so a quick devsel flip
-    // doesn't leave a Sony spinning ghost.
-    if (drive35Internal_) drive35Internal_->monW(!motorOn);
-    if (drive35External_) drive35External_->monW(!motorOn);
-}
-
 void SmartPortHub::reset()
 {
     devsel_   = 0;

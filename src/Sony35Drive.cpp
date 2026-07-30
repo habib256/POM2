@@ -48,6 +48,8 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -693,8 +695,12 @@ void Sony35Drive::reset()
     writeProtect_  = true;
     side1_         = false;
     sel_           = false;
-    directionIn_   = true;
-    diskSwitched_  = false;
+    directionIn_   = false;   // MAME floppy.cpp:290 `m_dir(0)`
+    // MAME floppy.cpp:560 device reset: `m_dskchg = exists() ? 1 : 0` —
+    // the DSKCHG latch is HIGH when a disk sits in place (or the host
+    // cleared the latch), LOW when the drive is empty / just ejected.
+    // Sense register 3 returns it NEGATED (mac wpt_r `!m_dskchg`).
+    dskchg_        = image_ && image_->isLoaded();
     track_         = 0;
     phases_        = 0;
     prevPhases_    = 0;
@@ -715,7 +721,13 @@ void Sony35Drive::setImage(Disk35Image* image)
 
 void Sony35Drive::notifyMediaChange()
 {
-    diskSwitched_ = true;
+    // MAME: load() sets m_dskchg = 1 (floppy.cpp:672-673), unload()
+    // sets it 0 (floppy.cpp:723). The old code set a "switched" flag on
+    // BOTH events and returned it un-negated from sense reg 3, so an
+    // EMPTY external drive read as "disk in place" — the //c+ firmware's
+    // boot drive-scan then walked into the read-a-disk path of a drive
+    // with no disk and hung the whole cold boot at $F0FC (no banner).
+    dskchg_       = image_ && image_->isLoaded();
     writeProtect_ = image_ && image_->isWriteProtected();
     invalidateCache();
     pom2::log().info(
@@ -779,6 +791,11 @@ void Sony35Drive::emitInsertClick()
 
 void Sony35Drive::strobeWriteRegister(uint8_t reg)
 {
+    static const bool trace = std::getenv("POM2_TRACE_IWM_SENSE") != nullptr;
+    if (trace)
+        std::fprintf(stderr, "[STROBE] drv=%p reg=%X motor=%d trk=%d\n",
+                     static_cast<const void*>(this), reg, motorOn_ ? 1 : 0,
+                     track_);
     // Decode per the MAME `mac_floppy_device::seek_phase_w` table at the
     // top of this file. An earlier "boot-tuned" mapping put MotorOff on
     // reg 0x3 (MAME: EjectOff, a no-op — real MotorOff is 0x6) and used
@@ -827,13 +844,13 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
                 if (image_->hasUnsavedChanges() && !image_->isWriteProtected())
                     image_->saveDirty();
                 image_->eject();
-                diskSwitched_ = true;
+                dskchg_ = false;   // MAME unload(): m_dskchg = 0
                 if (sound_) sound_->click();
                 pom2::log().info("Sony35", "eject requested by host");
             }
             break;
         case 0x9: break;                              // MFMModeOn — GCR-only drive
-        case 0xC: diskSwitched_ = false; break;       // DskchgClear
+        case 0xC: dskchg_ = true; break;   // DskchgClear (MAME: m_dskchg = 1)
         case 0xD: break;                              // GCRModeOn — already GCR
         default:
             // Unmapped register — MAME logs but does nothing.
@@ -843,6 +860,29 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
 
 bool Sony35Drive::senseR() const
 {
+    const uint8_t reg = regSelect();
+    const bool    v   = senseValue(reg);
+    // Diagnostic: POM2_TRACE_IWM_SENSE=1 logs each (register, value)
+    // CHANGE — the firmware polls sense in tight loops, so unconditional
+    // logging would melt the console.
+    static const bool trace = std::getenv("POM2_TRACE_IWM_SENSE") != nullptr;
+    if (trace) {
+        static const void* lastDrive = nullptr;
+        static int lastReg = -1, lastV = -1;
+        if (this != lastDrive || reg != lastReg || static_cast<int>(v) != lastV) {
+            std::fprintf(stderr,
+                         "[SENSE] drv=%p reg=%X v=%d motor=%d disk=%d trk=%d\n",
+                         static_cast<const void*>(this), reg, v ? 1 : 0,
+                         motorOn_ ? 1 : 0,
+                         (image_ && image_->isLoaded()) ? 1 : 0, track_);
+            lastDrive = this; lastReg = reg; lastV = v;
+        }
+    }
+    return v;
+}
+
+bool Sony35Drive::senseValue(uint8_t reg) const
+{
     // MAME `mac_floppy_device::wpt_r` — raw line level per register (see
     // the table at the top of this file). Notable deltas from the old
     // boot-tuned map: DIRTN polarity is `m_dir` (1 after DirPrev), the
@@ -850,15 +890,17 @@ bool Sony35Drive::senseR() const
     // STROBE (0xC) — not by reading it — and a write-protect sense (0x9)
     // exists at all (it used to be missing entirely, so a WP image was
     // invisible to firmware and writes were silently dropped).
-    switch (regSelect()) {
+    switch (reg) {
         case 0x0:                                       // DIRTN
             return directionIn_;                        // 1 after DirPrev
         case 0x1:                                       // step done
             return true;
         case 0x2:                                       // /MOTORON — 0 = running
             return !motorOn_;
-        case 0x3:                                       // disk changed since clear
-            return diskSwitched_;
+        case 0x3:                                       // disk-change / empty
+            // MAME mac wpt_r: `return !m_dskchg;` — HIGH means "empty or
+            // ejected since the last DskchgClear".
+            return !dskchg_;
         case 0x4:                                       // index pulse (MFM-only)
         case 0xC:
             return false;

@@ -50,8 +50,12 @@ void UthernetCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 // a warm reset really does drop the card's link state.
 void UthernetCard::onReset()
 {
+    // The chip keeps its programmed IA across a bus reset (MAME
+    // cs8900a.cpp device_reset does not touch it, and neither does the
+    // uthernet.cpp shim) — re-stamping kDefaultMac here silently reverted
+    // any guest- or UI-programmed address on every Ctrl-Reset. The
+    // default is stamped once at construction.
     chip_.reset();
-    chip_.setMacAddress(kDefaultMac);
     cyclesSincePoll_ = 0;
 }
 

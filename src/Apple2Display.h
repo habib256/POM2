@@ -32,6 +32,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <vector>
 
 class LeChatMauveCard;
@@ -131,6 +132,15 @@ public:
         const_cast<Apple2Display*>(this)->finishPendingCpuDemod();
         return useFrame80 ? frame80.data() : frame.data();
     }
+
+    /// Serializes the post-stateMutex demod/pixels phase between the UI
+    /// thread and the AI control server's /screen handler. The demod
+    /// deliberately runs OUTSIDE stateMutex (it costs ~1-2 ms and reads
+    /// only display-owned buffers), which left frame80/signalBuf/
+    /// pendingCpuDemodRows_ shared between two threads with no lock at
+    /// all. Lock order: stateMutex → demodMutex, never nested the other
+    /// way.
+    std::mutex& demodMutex() { return demodMutex_; }
     int             width()  const { return useFrame80 ? kWidth80 : kWidth; }
     int             height() const { return kHeight; }
 
@@ -236,6 +246,7 @@ public:
     bool mixedCompositeUsesFramebuffer() const { return mixedCompositeUsesFb_; }
 
 private:
+    std::mutex demodMutex_;          // see demodMutex()
     std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
     std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA pixels (IIe)
     bool useFrame80     = false;     // true for the current frame when 80-col

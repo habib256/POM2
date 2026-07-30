@@ -81,7 +81,14 @@ const char* bandName(uint8_t band)
 }
 
 // Multi-byte ImageWriter parameters arrive as ASCII digit strings.
-inline int paramDigit(uint8_t p) { return static_cast<int>(p) - '0'; }
+inline int paramDigit(uint8_t p)
+{
+    // Anything that is not an ASCII digit reads as 0: one corrupted byte
+    // inside an ESC G/S/C count used to go negative, and the uint32_t cast
+    // in setupBitImage turned that into ~4 G bytes of "graphics data" that
+    // wedged the parser for the rest of the session.
+    return (p >= '0' && p <= '9') ? static_cast<int>(p) - '0' : 0;
+}
 
 // ─── Mechanism speed (ImageWriter II Owner's Manual, "Specifications") ──
 // 250 cps draft / 45 cps NLQ, both quoted at the 12 cpi default pitch —
@@ -302,6 +309,9 @@ bool ImageWriter::currentPageBlank() const
 void ImageWriter::lineFeed()
 {
     curY_ += lineSpacing_;
+    // Reverse feeds (ESC r) stop at the top edge of the sheet — the head
+    // position must never walk off the raster into negative territory.
+    if (curY_ < 0.0) curY_ = 0.0;
     if (curY_ > bottomMargin_ - lineSpacing_) newPage(true, false);
 }
 
@@ -583,6 +593,12 @@ void ImageWriter::queueBytes(const uint8_t* data, size_t n)
 {
     if (!data || n == 0) return;
     pending_.insert(pending_.end(), data, data + n);
+    // The mechanism may never fall more than 1 MiB behind the card: past
+    // that, Draft/NLQ pacing yields to memory and the backlog prints
+    // instantly (a runaway guest print loop used to grow this without
+    // bound — hours of queued "mechanism time" parked on the heap).
+    constexpr size_t kMaxBacklog = 1u << 20;
+    if (pending_.size() - pendingHead_ > kMaxBacklog) flushPending();
 }
 
 void ImageWriter::flushPending()
@@ -623,11 +639,14 @@ double ImageWriter::byteCost(uint8_t ch) const
             double t = (speed_ == Speed::NLQ)
                      ? std::max(0.0, curX_ - leftMargin_) / ips
                      : 0.02;
-            if (autoFeedActive()) t += lineSpacing_ / kFeedIps;
+            // Paper transport time is positive in both directions (ESC r
+            // makes lineSpacing_ negative; a negative cost *credited* the
+            // pacing budget and dumped the whole queue in one frame).
+            if (autoFeedActive()) t += std::fabs(lineSpacing_) / kFeedIps;
             return t;
         }
         case 0x0A:     // LF — one line of paper transport
-            return lineSpacing_ / kFeedIps;
+            return std::fabs(lineSpacing_) / kFeedIps;
         case 0x0C:     // FF — slew whatever is left of the sheet
             return std::max(0.5, bottomMargin_ - curY_) / kFeedIps;
         default:
@@ -835,7 +854,10 @@ bool ImageWriter::processCommandChar(uint8_t ch)
             break;
         case 0x27:  // ESC '  select user-defined set
         case 0x49:  // ESC I  define user-defined characters
-            // Not supported by the reference either.
+            // Not supported by the reference either. neededParam_ must be
+            // cleared here: leaving the previous command's count armed made
+            // phase 2 swallow the next 1-6 printable bytes as parameters.
+            neededParam_ = 0;
             escCmd_ = 0;
             return true;
         default:

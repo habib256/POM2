@@ -1109,6 +1109,15 @@ void Z80::execED()
             if (repeat && bc()) {
                 st.pc = uint16_t(st.pc - 2);
                 st.wz = uint16_t(st.pc + 1);
+                // MAME `z80.lst` ldir/lddr repeat branch: `m_f.yx_val =
+                // PC >> 8` — on a REPEATING iteration the undocumented
+                // X/Y flags come from PCH, not from the per-iteration
+                // data formula above. POM2 kept the data-derived value,
+                // so F was wrong for the whole run of the instruction
+                // (visible to any code that PUSH AF / POP AF around it,
+                // and to flag-exactness test suites).
+                st.f = uint8_t((st.f & ~(F::X | F::Y))
+                               | ((st.pc >> 8) & (F::X | F::Y)));
                 cyc += 21;
             } else {
                 cyc += 16;
@@ -1132,6 +1141,10 @@ void Z80::execED()
             if (repeat && bc() && r8 != 0) {
                 st.pc = uint16_t(st.pc - 2);
                 st.wz = uint16_t(st.pc + 1);
+                // Same PCH override as LDIR/LDDR — MAME `z80.lst`
+                // cpir/cpdr repeat branch (`m_f.yx_val = PC >> 8`).
+                st.f = uint8_t((st.f & ~(F::X | F::Y))
+                               | ((st.pc >> 8) & (F::X | F::Y)));
                 cyc += 21;
             } else {
                 cyc += 16;

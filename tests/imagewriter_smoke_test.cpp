@@ -544,6 +544,52 @@ void testTraceClosedOnDestruction()
     std::printf("  ok: trace flushed + closed when the printer is destroyed\n");
 }
 
+// 12. Parser hardening (bug-hunt 2026-07-28). Three ways a hostile or
+//     corrupted stream used to wedge or corrupt the parser:
+//       a) a non-digit inside an ESC G count went negative and the
+//          uint32_t cast turned it into ~4 G bytes of graphics data —
+//          the printer went deaf for the rest of the session;
+//       b) ESC ' / ESC I left the previous command's parameter count
+//          armed, so the next 1-6 printable characters were swallowed;
+//       c) ESC r (reverse feed) + LFs walked the head to negative Y.
+void testParserHardening()
+{
+    // a) ESC G with a corrupted digit must not wedge in graphics mode.
+    {
+        ImageWriter iw;
+        feed(iw, "\x1BG0-10");                 // '-' is not a digit
+        // Worst case the clamped count (0x0y10-ish) eats a few bytes —
+        // definitely not 4 billion. Feed a small payload then text.
+        for (int i = 0; i < 512; ++i) { const uint8_t b = 0xFF; iw.printBytes(&b, 1); }
+        assert(!iw.status().inGraphics);
+        feed(iw, "TEXT\r");
+        assert(inkPixels(iw.currentPage()) > 0);
+    }
+
+    // b) ESC I right after a parametered command must not eat text.
+    //    Identical streams except for the (unsupported, zero-parameter)
+    //    ESC I must produce identical ink — the stale parameter count
+    //    used to swallow "HELL".
+    {
+        ImageWriter iw, ref;
+        feed(iw,  "\x1BG0004\xFF\xFF\xFF\xFF\x1BIHELLO\r");
+        feed(ref, "\x1BG0004\xFF\xFF\xFF\xFF"     "HELLO\r");
+        assert(inkPixels(iw.currentPage()) == inkPixels(ref.currentPage()));
+    }
+
+    // c) Reverse feed clamps at the top edge and keeps paying (positive)
+    //    paper-transport cost.
+    {
+        ImageWriter iw;
+        feed(iw, "X\r\n\x1Br");                // one line down, reverse
+        for (int i = 0; i < 50; ++i) feed(iw, "\n");
+        assert(iw.status().headY >= 0.0);
+    }
+
+    std::printf("  ok: corrupted counts, ESC I framing and reverse feed "
+                "are all bounded\n");
+}
+
 } // namespace
 
 int main()
@@ -561,6 +607,7 @@ int main()
     testAutoLineFeedDetection();
     testNoUnaffordableByte();
     testTraceClosedOnDestruction();
+    testParserHardening();
     std::printf("PASS\n");
     return 0;
 }

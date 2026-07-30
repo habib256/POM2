@@ -34,16 +34,37 @@ inline constexpr int POM2_MAX_CYCLES_PER_FRAME = 2'000'000;
 // effects and the Mockingboard-T2 frame sync only land correctly under PAL.
 //
 //   NTSC: 14.31818 MHz / 14 = 1 022 727 Hz, 262 lines, 60 Hz
-//   PAL : 1 015 625 Hz (= 15 625 Hz broadcast line rate × 65), 312 lines, 50 Hz
+//   PAL : 1 015 625 Hz (= 15 625 Hz line rate × 65), 312 lines, 50 Hz
 //
-// PAL clock provenance (deliberate deviation, do not "fix" silently): the
-// nominal divider would give 14.25045/14 = 1 017 889 Hz, and MAME uses the
-// long-cycle-averaged 1 016 966 Hz (`apple2e.cpp` accel_update_speed
-// `m_pal ? 1016966 : 1021800`). POM2 instead locks the PAL clock to the
-// broadcast line rate (15 625 Hz × 65) so the worker's exact 50.00 Hz
-// wall-clock pacing × 20 313 cycles/frame reproduces the machine clock with
-// zero drift. The 0.13 % gap to MAME (0.22 % to nominal) is the same order
-// as the already-owned "device clocks stay NTSC" audio-pitch approximation.
+// PAL clock provenance — DO NOT "fix" this toward MAME, it is already the
+// more accurate number (corrected 2026-07-30; the previous note here had
+// the reasoning backwards):
+//
+// An Apple II scanline is 65 CPU cycles but 912 MASTER-clock periods, not
+// 910: 64 cycles of 14 periods plus one stretched "long cycle" of 16. That
+// long cycle is why the NTSC machine's line rate is the famously off-spec
+// 15 699.8 Hz (→ 59.92 Hz frame), and why its true long-cycle-AVERAGED CPU
+// clock is 14 318 180 / 912 × 65 = 1 020 484 Hz.
+//
+// The PAL crystal 14.250450 MHz was chosen so that the SAME 912-period line
+// lands exactly on the PAL broadcast line rate: 912 × 15 625 = 14 250 000.
+// So for PAL the long-cycle average is simply 15 625 × 65 = 1 015 625 Hz —
+// the value below, accurate to 0.003 % of 14 250 450 / 912 × 65.
+//
+// Cross-check of the alternatives:
+//   * 14.25045/14 = 1 017 889 Hz is the NAIVE divider — it ignores the long
+//     cycle and is 0.22 % fast.
+//   * MAME's `m_pal ? 1016966 : 1021800` is NOT long-cycle-averaged either:
+//     1016966/1021800 == 14250450/14318180, i.e. MAME scales its NTSC figure
+//     by the crystal ratio, and that NTSC figure is itself 0.13 % above the
+//     true 1 020 484. MAME's PAL number inherits the same 0.13 % error.
+//
+// Consequence worth knowing: POM2's PAL clock is right to 0.003 %, while
+// POM2's NTSC clock (14.31818/14, the naive divider) is 0.22 % FAST — a
+// guest sees 60.05 Hz where a real NTSC Apple II gives 59.92 Hz. The two
+// standards are therefore NOT derived on the same basis; PAL is the
+// accurate one. Left as-is because every NTSC-era timing constant, test
+// and golden capture in the tree is calibrated against 1 022 727.
 //
 // `cyclesPerFrame` mirrors the NTSC convention (round(clock / refresh)); it is
 // the CPU budget the worker runs per UI tick and is intentionally decoupled

@@ -163,6 +163,20 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         state.hiRes && !state.textMode && !state.dhgr &&
         hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
     if (chatMauveHGR) {
+        // DELIBERATE divergence from MAME `apple2video.cpp hgr_update`
+        // (~:785): there the fg/bg-from-aux path is gated on
+        // `rgb_monitor() && m_dhires && !m_80col`, i.e. AN3 LOW with 80COL
+        // off. That is the **Video-7 RGB** card's foreground-background
+        // mode — an American product POM2 does not model. What POM2 models
+        // here is the **Le Chat Mauve "Eve"** (French), whose HGR
+        // Duochrome is selected by the card's OWN soft switch
+        // $C0BA/$C0BB (brevet; see LeChatMauveCard::onVideoSoftSwitch),
+        // not by AN3. Hence the opposite `!state.dhgr` term and the
+        // `hgrDuochromeEnabled()` gate — which IS guest-reachable (a
+        // `STA $C0BB` sets it; it is also snapshotted since blob v2), not
+        // a UI-only switch. Do NOT "align this with MAME": it would break
+        // the Eve model and change the //c PAL profile's default picture.
+        // A real Video-7 would need its own card class.
         if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi)) {
             if (chatMauve->hgrDuochromeEnabled() && auxRam != nullptr)
                 renderHgrDuochrome(mem, state, gLo, gHi);
@@ -527,9 +541,35 @@ void Apple2Display::render(Memory& mem)
     }
     mixedCompositeUsesFb_ = false;
 
-    const auto state = mem.getDisplayState();
+    // Routing state must describe the PUBLISHED frame — the one whose
+    // pixels we are about to paint — not the live recording frame that is
+    // already running ahead of it. `mem.getDisplayState()` is the live
+    // one: with beam-raced content, a mid-frame switch that happened
+    // AFTER the published frame closed (say the guest flipping back to
+    // TEXT) chose the wrong demod/mixed path for pixels that were still
+    // graphics, and `lastRenderState_` — documented as "the published
+    // frame's snapshot" and used by the present path — carried the same
+    // error. Fold the published events onto the published frame-start
+    // state instead; with no events the two are identical, so the
+    // non-beam-raced path is unchanged.
+    auto events = mem.takeVideoEvents();
+    Memory::DisplayState state = mem.getDisplayState();
+    if (!events.empty()) {
+        state = mem.getDisplayStateAtFrameStart();
+        for (const auto& e : events) applyVideoEvent(state, e.kind, e.value);
+    }
     lastRenderState_ = state;   // published-frame snapshot for present-path decisions
-    const bool mixedGfx = state.mixedMode && !state.textMode;
+    // Any graphics band anywhere in the frame keeps the composite/demod
+    // path alive, even when the frame ENDS in text (mixed-mode splits).
+    bool mixedGfx = state.mixedMode && !state.textMode;
+    if (!events.empty()) {
+        Memory::DisplayState walk = mem.getDisplayStateAtFrameStart();
+        if (walk.mixedMode && !walk.textMode) mixedGfx = true;
+        for (const auto& e : events) {
+            applyVideoEvent(walk, e.kind, e.value);
+            if (walk.mixedMode && !walk.textMode) mixedGfx = true;
+        }
+    }
 
     // Both ColorCompositeOE and ColorAppleWin consume the same 14.318 MHz
     // composite bitstream. ColorCompositeOE hands it to MainWindow's GLSL
@@ -562,7 +602,6 @@ void Apple2Display::render(Memory& mem)
     // splits, page flips, DHGR toggles) show up in the OE/AppleWin composite
     // picture too — not just the LUT modes. `events` survives the
     // renderBeamRacing copy and is handed to fillCompositeSignal below.
-    auto events = mem.takeVideoEvents();
     if (!cpuDemodGfx) {
         if (events.empty())
             renderInternal(mem);

@@ -189,13 +189,24 @@ Keyboard wiring:
 
 - **Left Alt = Open-Apple** → $C061 bit 7
 - **Right Alt = Solid-Apple** → $C062 bit 7
-- F11 / F12 / F9 / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
+- **F10 = full screen ⇄ windowed** (kiosk toggle — see CLI section)
+- F9 / F10 / F11 / F12 / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI
 
 `CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner` (Phase-C runner). Three phases: parse → pre-boot (preset/ROM/snapshot-load/`--load addr:file`) → post-boot (tape ops/paste/run/step).
 
 Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
+
+**Kiosk is a runtime mode, not just a flag**: `MainWindow::toggleKioskMode()`
+(F10, View menu, `view.kiosk` palette command, or the in-kiosk menu's
+EXIT KIOSK action) moves the GLFW window between exclusive full-screen and
+its saved windowed geometry and flips `kiosk_`. The machine is untouched —
+kiosk is only windowing + the chrome-free render path + suppressed settings
+writes — so no snapshot round-trip is involved. A session LAUNCHED with
+`--kiosk` stays settings-read-only for its whole life even after toggling to
+the GUI (`settingsReadOnly()`), preserving the documented "a kiosk session
+can't disturb your desktop setup" promise.
 
 **Positional disk + kiosk**: `POM2 <disk-image>` mounts the image into the slot its type maps to (`classifyDiskForSlot`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the saved profile + slot config, then cold-boots. `--kiosk` adds exclusive full-screen with a chrome-free render path. Kiosk is read-only (no settings writes). An HDV with no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard` into a free slot. Pinned: `cli_kiosk_test`.
 

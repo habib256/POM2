@@ -85,6 +85,14 @@ public:
     /// AI-control /snapshot API drive these via per-slot "SLOTn" sections
     /// (see MachineSnapshot). Restoring drive position keeps an in-progress
     /// disk read from corrupting after a rewind.
+    /// Emulated CPU clock changed (NTSC ↔ PAL profile switch). Cards whose
+    /// internal timebase is a REAL-TIME reference expressed in CPU cycles
+    /// must re-derive it here — otherwise they run 0.7 % off under PAL.
+    /// Default: no-op (most cards count guest cycles, which is already
+    /// standard-correct). Implemented by MockingboardCard (the audio
+    /// thread's emuCycles replay cursor) and ClockCard (uPD1990AC TP).
+    virtual void setCpuClock(double /*hz*/) {}
+
     virtual void appendSnapshotState(std::vector<uint8_t>& /*out*/) const {}
     virtual void loadSnapshotState(const uint8_t* /*data*/, std::size_t /*len*/) {}
 

@@ -65,18 +65,32 @@ void LeChatMauveCard::clockFifo(bool dataBit)
 
 void LeChatMauveCard::appendSnapshotState(std::vector<uint8_t>& out) const
 {
-    out.push_back('C'); out.push_back('M'); out.push_back(1);
+    // v2: the two Eve extension toggles ride along. They were documented
+    // as "user settings, not guest-volatile state" and left out — but the
+    // $C0B8-$C0BB decode above mutates them from the GUEST bus, so a
+    // rewind past a `STA $C0BB` left the display stuck in HGR Duochrome
+    // with only the UI checkbox to recover it.
+    out.push_back('C'); out.push_back('M'); out.push_back(2);
     out.push_back(fifo);
     out.push_back(static_cast<uint8_t>(mode));
     out.push_back(an3Prev ? 1 : 0);
     out.push_back(eightyColLatched ? 1 : 0);
+    out.push_back(colorTextEnabled_    ? 1 : 0);
+    out.push_back(hgrDuochromeEnabled_ ? 1 : 0);
 }
 
 void LeChatMauveCard::loadSnapshotState(const uint8_t* data, std::size_t len)
 {
-    if (len < 7 || data[0] != 'C' || data[1] != 'M' || data[2] != 1) return;
+    // v1 blobs (7 bytes, no Eve toggles) still load — they simply leave
+    // the live toggle state alone, the pre-fix behaviour.
+    if (len < 7 || data[0] != 'C' || data[1] != 'M' ||
+        (data[2] != 1 && data[2] != 2)) return;
     fifo             = static_cast<uint8_t>(data[3] & 0b11);
     mode             = static_cast<RenderMode>(data[4] & 0b11);
     an3Prev          = data[5] != 0;
     eightyColLatched = data[6] != 0;
+    if (data[2] >= 2 && len >= 9) {
+        colorTextEnabled_    = data[7] != 0;
+        hgrDuochromeEnabled_ = data[8] != 0;
+    }
 }

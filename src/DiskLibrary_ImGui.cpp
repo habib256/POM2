@@ -33,6 +33,10 @@ bool accept525(const std::string& ext, uint64_t sz) {
         // 143 360 = 35 tracks × 16 sectors × 256 B = stock 5.25" ProDOS.
         return sz == 143360 || sz == 143360 + 64; // raw or 2IMG-wrapped
     }
+    // 2IMG-wrapped 5.25" floppy (common Asimov format). Anything .2mg
+    // below the 800K Sony size is a 5.25" candidate — the DiskImage
+    // loader validates the payload precisely. Mirrors classifyDiskForSlot.
+    if (ext == ".2mg" && sz < 819200) return true;
     return false;
 }
 

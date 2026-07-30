@@ -1278,14 +1278,19 @@ void M6502::setCpuMode(CpuMode mode)
     opcodeTable[0xDA] = u1; // PHX
     opcodeTable[0xFA] = u1; // PLX
 
-    // 2-byte additions.
-    opcodeTable[0x04] = u2; // TSB zp
-    opcodeTable[0x14] = u2; // TRB zp
-    opcodeTable[0x34] = u2; // BIT zp,X
-    opcodeTable[0x64] = u2; // STZ zp
-    opcodeTable[0x74] = u2; // STZ zp,X
-    opcodeTable[0x80] = u2; // BRA
-    opcodeTable[0x89] = u2; // BIT #imm
+    // 2-byte additions. On NMOS these decode as undocumented NOPs whose
+    // TIMING follows the addressing mode (MAME om6502.lst) — the generic
+    // 3-cycle Unoff2 is only right for the zp forms. zp,X costs 4 (same
+    // class as $54/$D4/$F4 = UnoffZpX) and #imm costs 2 (same class as
+    // $82/$C2/$E2 = UnoffImm); the old flat mapping drifted 1 cycle per
+    // instruction in cycle-counted loops (the Mr. Robot RWTS drift class).
+    opcodeTable[0x04] = u2;                                     // NOP zp (3)
+    opcodeTable[0x14] = OpcodeEntry{&M6502::UnoffZpX, nullptr}; // NOP zp,X (4)
+    opcodeTable[0x34] = OpcodeEntry{&M6502::UnoffZpX, nullptr}; // NOP zp,X (4)
+    opcodeTable[0x64] = u2;                                     // NOP zp (3)
+    opcodeTable[0x74] = OpcodeEntry{&M6502::UnoffZpX, nullptr}; // NOP zp,X (4)
+    opcodeTable[0x80] = OpcodeEntry{&M6502::UnoffImm, nullptr}; // NOP #imm (2)
+    opcodeTable[0x89] = OpcodeEntry{&M6502::UnoffImm, nullptr}; // NOP #imm (2)
 
     // (zp)-indirect mode opcodes — NMOS treats these as KIL (halt).
     opcodeTable[0x12] = kil; // ORA (zp)
@@ -1310,16 +1315,23 @@ void M6502::setCpuMode(CpuMode mode)
     opcodeTable[0x42] = kil;
     opcodeTable[0x62] = kil;
 
-    // 3-byte additions.
-    opcodeTable[0x0C] = u3; // TSB abs
-    opcodeTable[0x1C] = u3; // TRB abs
-    opcodeTable[0x3C] = u3; // BIT abs,X
-    opcodeTable[0x7C] = u3; // JMP (abs,X)
-    opcodeTable[0x9C] = u3; // STZ abs
-    opcodeTable[0x9E] = u3; // STZ abs,X
+    // 3-byte additions. Same rule: NMOS NOP abs ($0C) and NOP abs,X
+    // ($1C/$3C/$7C) cost 4 cycles (MAME om6502 — abs,X is 4+p; the +1
+    // page-cross penalty is not modelled here, matching the $DC/$FC/$5C
+    // treatment). SHY/SHX ($9C/$9E) really are 5 — u3 stays right there.
+    opcodeTable[0x0C] = OpcodeEntry{&M6502::UnoffAbs4, nullptr}; // NOP abs (4)
+    opcodeTable[0x1C] = OpcodeEntry{&M6502::UnoffAbsX, nullptr}; // NOP abs,X (4+p)
+    opcodeTable[0x3C] = OpcodeEntry{&M6502::UnoffAbsX, nullptr}; // NOP abs,X (4+p)
+    opcodeTable[0x7C] = OpcodeEntry{&M6502::UnoffAbsX, nullptr}; // NOP abs,X (4+p)
+    opcodeTable[0x9C] = u3; // SHY abs,X (5)
+    opcodeTable[0x9E] = u3; // SHX abs,Y (5)
     // $5C: the 65C02 8-cycle oddball is CMOS-only; on NMOS it is a plain
     // undocumented NOP abs,X (3 bytes, 4 cycles — MAME om6502.lst).
-    opcodeTable[0x5C] = OpcodeEntry{&M6502::UnoffAbs4, nullptr};
+    opcodeTable[0x5C] = OpcodeEntry{&M6502::UnoffAbsX, nullptr};
+    // $DC/$FC are NOP abs,X on BOTH parts, but only NMOS pays the
+    // page-cross penalty (the 65C02's are a flat 4 — base table).
+    opcodeTable[0xDC] = OpcodeEntry{&M6502::UnoffAbsX, nullptr};
+    opcodeTable[0xFC] = OpcodeEntry{&M6502::UnoffAbsX, nullptr};
 
     // Rockwell SMBn / RMBn (2-byte) and BBRn / BBSn (3-byte).
     for (int n = 0; n < 8; ++n) {
@@ -1397,10 +1409,23 @@ void M6502::UnoffZpX(void)   // 2 bytes, 4 cycles: NOP zp,X ($54/$D4/$F4)
     programCounter++;
     cycles += 3;
 }
-void M6502::UnoffAbs4(void)  // 3 bytes, 4 cycles: NOP abs/abs,X ($DC/$FC, NMOS TOP)
+void M6502::UnoffAbs4(void)  // 3 bytes, 4 cycles: NOP abs ($0C, NMOS TOP)
 {
     programCounter += 2;
     cycles += 3;
+}
+void M6502::UnoffAbsX(void)  // 3 bytes, 4+p cycles: NOP abs,X (NMOS TOP)
+{
+    // MAME om6502 nop_abx: the undocumented NOP abs,X still performs the
+    // indexed read, so it pays the +1 page-cross penalty like every other
+    // abs,X read. POM2 charged a flat 4 for $1C/$3C/$5C/$7C/$DC/$FC,
+    // drifting one cycle whenever the index crossed a page — the same
+    // drift class as the Mr. Robot RWTS bug.
+    uint16_t base = memory->memRead(programCounter++);
+    base |= static_cast<uint16_t>(memory->memRead(programCounter++)) << 8;
+    const uint16_t ea = static_cast<uint16_t>(base + xRegister);
+    cycles += 3;
+    if ((base & 0xFF00) != (ea & 0xFF00)) cycles++;
 }
 void M6502::Unoff5C(void)    // 3 bytes, 8 cycles: the 65C02 oddball $5C
 {
@@ -1413,8 +1438,17 @@ void M6502::Unoff5C(void)    // 3 bytes, 8 cycles: the 65C02 oddball $5C
 
 void M6502::Hang(void)
 {
+    // NMOS KIL/JAM: the sequencer stops dead — the address bus freezes
+    // and NOTHING but RESET recovers, not even NMI. Re-pointing PC at
+    // the opcode (the old model) left the CPU executing a 2-cycle loop
+    // that step() still interrupted, so an IRQ-driven program could walk
+    // out of a jam that real silicon never releases. Route through the
+    // same `halted` latch STP uses: step() short-circuits BEFORE the
+    // IRQ/NMI poll, and soft/hardReset clear it (the latch is also
+    // snapshotted, so a rewind out of a jam works).
     programCounter--;
     cycles += 2;
+    halted = true;
 }
 
 // Master 65C02 dispatch table: each entry is {addressingMode, operation}.
@@ -1810,6 +1844,7 @@ void M6502::executeOpcode(void)
              entry.addrMode == &M6502::UnoffImm  ||
              entry.addrMode == &M6502::UnoffZpX  ||
              entry.addrMode == &M6502::UnoffAbs4 ||
+             entry.addrMode == &M6502::UnoffAbsX ||
              entry.addrMode == &M6502::Unoff5C   ||
              entry.addrMode == &M6502::Hang)) {
             char buf[64];

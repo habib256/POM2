@@ -133,9 +133,6 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         return;
     }
 
-    const size_t nDone = iw.completedPageCount();
-    const int    nTotal = static_cast<int>(nDone) + 1;   // + sheet in progress
-
     // ─── Front panel ─────────────────────────────────────────────────────
     if (ImGui::Button(ICON_FA_ARROW_ROTATE_RIGHT " Form feed")) {
         iw.formFeed();
@@ -169,6 +166,12 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         ImGui::SetTooltip("The ImageWriter is the printer, not the card. "
                           "Plug a Printer or Grappler+ card in Slot Config, "
                           "then PR#n from BASIC.");
+
+    // Counted AFTER the front panel: "Form feed" and "Clear all" change the
+    // stack within this frame, and a stale nDone made the follow logic below
+    // index completedPage() into a vector "Clear all" had just emptied.
+    const size_t nDone = iw.completedPageCount();
+    const int    nTotal = static_cast<int>(nDone) + 1;   // + sheet in progress
 
     // ─── Page selector ───────────────────────────────────────────────────
     // "Follow" means "show me what is being printed". After a form feed
@@ -526,7 +529,14 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
     if (!status_.empty()) ImGui::TextDisabled("%s", status_.c_str());
 
     // ─── Page view ───────────────────────────────────────────────────────
-    uploadPage(page, (shown < static_cast<int>(nDone)) ? shown : -1,
+    // A completed sheet's cache identity includes droppedPageCount(): when
+    // the 32-page cap drops the oldest sheet every index renames a different
+    // page, and a bare index let the cached texture show the dropped sheet's
+    // pixels under the new sheet's label.
+    uploadPage(page,
+               (shown < static_cast<int>(nDone))
+                   ? static_cast<int>(iw.droppedPageCount()) + shown
+                   : -1,
                iw.revision());
 
     ImGui::BeginChild("##iwPaper", ImVec2(0, 0), true,

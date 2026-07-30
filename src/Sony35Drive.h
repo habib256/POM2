@@ -134,6 +134,14 @@ public:
     /// SET, i.e. the high bit of the status byte is 1).
     bool senseR() const;
 
+private:
+    /// Raw register table behind senseR() — split out so the env-gated
+    /// diagnostic trace (`POM2_TRACE_IWM_SENSE=1`) can log the (reg,
+    /// value) pair without duplicating the switch.
+    bool senseValue(uint8_t reg) const;
+
+public:
+
     /// Convenience accessors for inspectors / save state.
     bool isMotorOn()        const { return motorOn_; }
     bool isWriteProtected() const { return writeProtect_; }
@@ -188,8 +196,12 @@ private:
     bool         writeProtect_  = true;   // safe default until image probed
     bool         side1_         = false;
     bool         sel_           = false;
-    bool         directionIn_   = true;   // true → step toward track 0
-    bool         diskSwitched_  = false;  // disk-change flip-flop
+    bool         directionIn_   = false;  // true → step toward track 0
+                                          // (MAME floppy.cpp:290 m_dir(0))
+    /// MAME `m_dskchg` polarity (floppy.cpp:560/672/723): HIGH = disk in
+    /// place or latch cleared, LOW = empty / ejected since last clear.
+    /// Sense register 3 returns it NEGATED (mac wpt_r `!m_dskchg`).
+    bool         dskchg_        = false;
     int          track_         = 0;
     uint8_t      phases_        = 0;
     uint8_t      prevPhases_    = 0;

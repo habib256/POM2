@@ -287,4 +287,69 @@ void AtaBlockDevice::cs1_w(uint8_t reg, uint16_t val)
     }
 }
 
+void AtaBlockDevice::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    // A rewind mid-PIO used to desync the 512-byte stream: the guest's
+    // firmware resumed pulling data words from wherever the LIVE wordIdx_
+    // happened to sit, not where the restored machine's firmware was.
+    out.push_back(error_);
+    out.push_back(features_);
+    out.push_back(sectorCount_);
+    out.push_back(lba0_);
+    out.push_back(lba1_);
+    out.push_back(lba2_);
+    out.push_back(devHead_);
+    out.push_back(status_);
+    out.push_back(control_);
+    out.push_back(static_cast<uint8_t>(phase_));
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(lba_ >> (8 * i)));
+    out.push_back(static_cast<uint8_t>(sectorsLeft_));
+    out.push_back(static_cast<uint8_t>(sectorsLeft_ >> 8));
+    out.push_back(static_cast<uint8_t>(wordIdx_));
+    out.push_back(static_cast<uint8_t>(wordIdx_ >> 8));
+    for (uint16_t w : wordBuf_) {
+        out.push_back(static_cast<uint8_t>(w));
+        out.push_back(static_cast<uint8_t>(w >> 8));
+    }
+    out.push_back(numSectors_);
+    out.push_back(numHeads_);
+}
+
+size_t AtaBlockDevice::loadSnapshotState(const uint8_t* data, size_t len)
+{
+    if (data == nullptr || len < kSnapshotBytes) return 0;
+    size_t p = 0;
+    error_       = data[p++];
+    features_    = data[p++];
+    sectorCount_ = data[p++];
+    lba0_        = data[p++];
+    lba1_        = data[p++];
+    lba2_        = data[p++];
+    devHead_     = data[p++];
+    status_      = data[p++];
+    control_     = data[p++];
+    const uint8_t ph = data[p++];
+    phase_ = (ph == 1) ? Phase::PioIn : (ph == 2) ? Phase::PioOut
+                                                  : Phase::Idle;
+    lba_ = 0;
+    for (int i = 0; i < 4; ++i)
+        lba_ |= static_cast<uint32_t>(data[p++]) << (8 * i);
+    sectorsLeft_ = static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    wordIdx_     = static_cast<size_t>(data[p] | (data[p + 1] << 8));   p += 2;
+    // >=, not >: wordIdx_ == 256 with phase_ restored to PioIn/PioOut lets
+    // the next data-port access index one past the array — an OOB read,
+    // and an OOB WRITE on the PioOut path.
+    if (wordIdx_ >= wordBuf_.size()) wordIdx_ = 0;   // untrusted
+    for (auto& w : wordBuf_) {
+        w = static_cast<uint16_t>(data[p] | (data[p + 1] << 8));
+        p += 2;
+    }
+    numSectors_ = data[p++];
+    numHeads_   = data[p++];
+    if (numSectors_ == 0) numSectors_ = 63;   // CHS divide-by-zero guard
+    if (numHeads_   == 0) numHeads_   = 16;
+    return p;
+}
+
 } // namespace pom2

@@ -86,8 +86,12 @@ public:
     // Without these, rewinding to before a BW560/Mixed switch kept
     // rendering in the later mode until the guest re-clocked the FIFO,
     // and a stale an3Prev could swallow/admit one spurious shift right
-    // after restore. invertBit7_/Eve toggles are user settings, not
-    // guest-volatile state — deliberately NOT serialized.
+    // after restore. v2 additionally carries the two Eve extension
+    // toggles: they are ALSO settable from the UI, but the $C0B8-$C0BB
+    // decode mutates them from the guest bus, so they are genuinely
+    // guest-volatile and a rewind past a `STA $C0BB` used to leave the
+    // display stuck in HGR Duochrome. invertBit7_ stays out — that one
+    // really is a user-only setting with no bus decode.
     void appendSnapshotState(std::vector<uint8_t>& out) const override;
     void loadSnapshotState(const uint8_t* data, std::size_t len) override;
 

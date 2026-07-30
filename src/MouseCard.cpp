@@ -373,3 +373,65 @@ void MouseCard::updateAxis(int axis, uint8_t dirBit, uint8_t clkBit)
     }
 }
 
+
+// ── Snapshot / rewind ─────────────────────────────────────────────────────
+//
+// The MCU + PIA carry their own state surfaces (M68705P3 /
+// MC6821::append|loadSnapshotState); this wraps them with the card's
+// bridge state. Host mouse position (hostX/hostY/hostButton) is NOT
+// serialized: it is where the user's physical pointer is right now, not
+// emulated state, and forcing it backwards on a rewind would fight the UI.
+
+namespace {
+constexpr uint8_t kMouseSnapMagic[4] = { 'M', 'S', 'E', '1' };
+}
+
+void MouseCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kMouseSnapMagic, kMouseSnapMagic + 4);
+    out.push_back(static_cast<uint8_t>(romBank));
+    out.push_back(static_cast<uint8_t>(romBank >> 8));
+    out.push_back(portAtoMcu);
+    out.push_back(portCtoMcu);
+    out.push_back(portBState);
+    for (int i = 0; i < 2; ++i) {
+        out.push_back(static_cast<uint8_t>(lastAxis[i]));
+        out.push_back(static_cast<uint8_t>(lastAxis[i] >> 8));
+        out.push_back(static_cast<uint8_t>(countAxis[i]));
+        out.push_back(static_cast<uint8_t>(countAxis[i] >> 8));
+    }
+    const uint32_t acc = static_cast<uint32_t>(mcuCycleAccum);
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(acc >> (8 * i)));
+    mcu.appendSnapshotState(out);
+    pia.appendSnapshotState(out);
+}
+
+void MouseCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    constexpr size_t kFixed = 4 + 2 + 3 + 8 + 4;
+    if (data == nullptr ||
+        len < kFixed + M68705P3::kSnapshotBytes + MC6821::kSnapshotBytes ||
+        std::memcmp(data, kMouseSnapMagic, 4) != 0)
+        return;   // foreign blob — a different card sat in this slot
+    size_t p = 4;
+    romBank    = static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    romBank    = static_cast<uint16_t>(romBank & 0x0700);   // 8 banks of 256 B
+    portAtoMcu = data[p++];
+    portCtoMcu = data[p++];
+    portBState = data[p++];
+    for (int i = 0; i < 2; ++i) {
+        lastAxis[i]  = static_cast<int16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+        countAxis[i] = static_cast<int16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    }
+    uint32_t acc = 0;
+    for (int i = 0; i < 4; ++i) acc |= static_cast<uint32_t>(data[p++]) << (8 * i);
+    mcuCycleAccum = static_cast<int>(acc);
+    p += mcu.loadSnapshotState(data + p, len - p);
+    p += pia.loadSnapshotState(data + p, len - p);
+    // Re-drive the slot IRQ from the restored PIA state: the wire-OR lives
+    // in SlotPeripheral, not in the PIA, so restoring irq_a/b_state alone
+    // left a pending mouse interrupt invisible to the bus after a rewind.
+    // (ClockCard::loadSnapshotState does the same at its tail.)
+    assertIrq(pia.irqA() || pia.irqB());
+}

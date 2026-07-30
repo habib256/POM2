@@ -23,9 +23,10 @@ namespace pom2 {
 void captureMachineState(SnapshotWriter& w, M6502& cpu, Memory& mem,
                          bool includeSlots)
 {
-    // CPU: PC(2) A X Y P SP cpuMode (6) + absolute cycle counter (8) = 16 B.
-    // IRQ/NMI lines are transient and self-correct within a frame, so they
-    // are not persisted (see SnapshotIO.h).
+    // CPU: PC(2) A X Y P SP cpuMode (6) + absolute cycle counter (8) +
+    // STP halt latch (1) = 17 B. IRQ/NMI lines are transient and
+    // self-correct within a frame, so they are not persisted (see
+    // SnapshotIO.h); `halted` is NOT transient — only RESET clears it.
     {
         SnapshotWriter::SectionHandle h = w.beginSection("CPU");
         w.writeU16(cpu.getProgramCounter());
@@ -36,6 +37,7 @@ void captureMachineState(SnapshotWriter& w, M6502& cpu, Memory& mem,
         w.writeU8 (cpu.getStackPointer());
         w.writeU8 (cpu.getCpuMode() == M6502::CpuMode::CMOS ? 1 : 0);
         w.writeU64(mem.getCycleCounter());
+        w.writeU8 (cpu.isHalted() ? 1 : 0);
         w.endSection(h);
     }
     w.writeSection("MEM", mem.data(), 0x10000);
@@ -86,20 +88,32 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
     // and the restored 6502 never ran (2026-07-12 bug hunt). onReset is
     // the bus-accurate verb (MAME reset_from_bus). Snapshots that DO
     // carry a SLOTn blob (rewind ring) re-arm the card right below.
-    for (int s = 0; s < SlotBus::kSlotCount; ++s) {
-        SlotPeripheral* card = mem.slotBus().peripheral(s);
-        if (card && card->dmaActive())
-            card->onReset();
-    }
+    // LAZY: run this only once we are about to apply a section that
+    // actually mutates the machine. A file that turns out to be empty,
+    // foreign or truncated-at-the-first-header used to kick a live bus
+    // master off the bus before anything was even read.
+    bool dmaDisarmed = false;
+    auto disarmDmaOnce = [&]() {
+        if (dmaDisarmed) return;
+        dmaDisarmed = true;
+        for (int s = 0; s < SlotBus::kSlotCount; ++s) {
+            SlotPeripheral* card = mem.slotBus().peripheral(s);
+            if (card && card->dmaActive())
+                card->onReset();
+        }
+    };
 
     std::string name;
     uint32_t len = 0;
+    bool appliedCore = false;   // CPU or MEM actually restored
     while (r.nextSection(name, len)) {
         // Require the FULL 16-byte CPU section. The block below consumes 16
         // bytes unconditionally; a gate of `>= 9` let a crafted/truncated
         // section (9..15 B) read up to 7 bytes past it → garbage cycle
         // counter / CPU mode. A normal save always writes exactly 16.
         if (name == "CPU" && len >= 16) {
+            disarmDmaOnce();
+            appliedCore = true;
             const uint16_t pc      = r.readU16();
             const uint8_t  a       = r.readU8();
             const uint8_t  x       = r.readU8();
@@ -108,17 +122,34 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
             const uint8_t  sp      = r.readU8();
             const uint8_t  cpuMode = r.readU8();
             const uint64_t cycles  = r.readU64();
+            // v1.1 tail: STP halt latch. Legacy 16-byte blobs predate the
+            // halted capture and were (almost) always taken while running
+            // — clearing is the correct default AND fixes the common
+            // rewind-out-of-a-crash case, where the live `halted` used to
+            // survive the restore and keep the machine frozen.
+            const bool halted = (len >= 17) ? (r.readU8() != 0) : false;
             cpu.setProgramCounter(pc);
-            cpu.setCpuMode(cpuMode ? M6502::CpuMode::CMOS : M6502::CpuMode::NMOS);
+            // cpuMode is read to keep the section cursor math intact but
+            // NOT applied: CPU mode is machine CONFIGURATION (profile +
+            // cpu_mode_override, with resolveCpuMode's soldered-65C02
+            // clamp on //c-class), not machine state. Applying a foreign
+            // snapshot's byte bypassed that clamp — an NMOS-mode blob
+            // loaded on a //c forced its 65C02 ROM onto an NMOS core (KIL
+            // freeze), and the override persisted across resets. Same
+            // precedent as MEX's iieMode field (Memory.cpp).
+            (void)cpuMode;
             cpu.setAccumulator(a);
             cpu.setXRegister(x);
             cpu.setYRegister(y);
             cpu.setStatusRegister(p);
             cpu.setStackPointer(sp);
+            cpu.setHalted(halted);
             mem.setCycleCounter(cycles);
         } else if (name == "MEM" && len == 0x10000) {
             // Restore the main 64 KB through writable[] so the ROM mirror in
             // $C000-$FFFF isn't clobbered (LC RAM is restored via MEX).
+            disarmDmaOnce();
+            appliedCore = true;
             std::vector<uint8_t> buf(0x10000);
             r.readBytes(buf.data(), buf.size());
             mem.restoreMainRam(buf.data(), buf.size());
@@ -130,15 +161,24 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
             if (len > kMaxMexBytes) {
                 return { false, "snapshot MEX section too large" };
             }
+            disarmDmaOnce();
             std::vector<uint8_t> buf(len);
             if (len) r.readBytes(buf.data(), len);
-            mem.loadSnapshotState(buf.data(), len);
+            // Surface a malformed MEX honestly: Memory has already been
+            // partially mutated (the MEM section ran before us), so a
+            // transactional rollback isn't possible at this layer — but
+            // returning ok=true after a failed aux/LC/paging restore hid
+            // the desync entirely.
+            if (!mem.loadSnapshotState(buf.data(), len)) {
+                return { false, "snapshot MEX section truncated or malformed" };
+            }
         } else if (const int slot = parseSlotSection(name)) {
             // Per-card state. Bound the alloc (nextSection already rejects
             // len > blob size; cap again so a crafted file can't OOM us — a
             // real card blob is well under this).
             constexpr uint32_t kMaxSlotBytes = 1u * 1024u * 1024u;
             if (len > kMaxSlotBytes) { r.skipCurrentSection(); continue; }
+            disarmDmaOnce();
             std::vector<uint8_t> buf(len);
             if (len) r.readBytes(buf.data(), len);
             // Apply only if a card sits there now; a card type mismatch is
@@ -148,6 +188,23 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
         } else {
             r.skipCurrentSection();
         }
+    }
+    // The section loop exits on BOTH clean EOF and mid-file truncation
+    // (nextSection returns false either way). Distinguish them: a section
+    // whose declared length runs past EOF sets ok=false + errorMsg, and a
+    // stream failbit means a torn header — both left the machine
+    // HALF-restored while this function reported success. good() is
+    // `ok && !fail()`, so a normal EOF (eofbit only) still passes.
+    if (!r.good()) {
+        return { false,
+                 r.error().empty() ? "snapshot truncated or corrupt"
+                                   : r.error() };
+    }
+    if (!appliedCore) {
+        // Well-formed but carrying neither CPU nor MEM: nothing was
+        // restored, so reporting success would leave the caller (and the
+        // user) believing a load happened.
+        return { false, "snapshot contains no restorable CPU/MEM sections" };
     }
     return {};
 }

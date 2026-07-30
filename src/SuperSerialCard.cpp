@@ -666,6 +666,17 @@ uint8_t SuperSerialCard::deviceSelectRead(uint8_t low4)
                                           SR_FRAMING_ERROR |
                                           SR_OVERRUN};
                 clearIrqSource(IRQ_RDRF);
+                // Re-arm while bytes remain queued. Real hardware has a
+                // ONE-byte RDR, so MAME's mos6551 raises IRQ_RDRF for
+                // every byte the receiver assembles (mos6551.cpp:668-672)
+                // and "queue" cannot desynchronise from "IRQ". POM2 holds
+                // a 4 KB host-side ring and used to raise the IRQ once per
+                // delivered TCP chunk, so an interrupt-driven guest driver
+                // (ProTERM / MODEM.MGR / GS-OS class) got ONE interrupt,
+                // read one byte, and never woke again — the rest of the
+                // chunk sat unread until the next chunk arrived. Every
+                // re-arm consumes a byte, so this cannot storm.
+                if (!rxBuf.empty() && rxIrqEnable_) raiseIrqSource(IRQ_RDRF);
                 return b;
             }
             case 0x1: {  // status register
@@ -673,7 +684,16 @@ uint8_t SuperSerialCard::deviceSelectRead(uint8_t low4)
                 uint8_t s = SR_TDRE;                   // TCP buffers TX
                 s |= statusErrors_;
                 if (!rxBuf.empty()) s |= SR_RDRF;
-                if (connected) s |= (SR_DCD | SR_DSR);
+                // DCD/DSR are ACTIVE-LOW pins: the status BIT is set when
+                // the line is INACTIVE (no carrier / not ready). MAME
+                // mos6551.cpp:37-39 inits `m_dsr(1), m_dcd(1)` and
+                // device_reset sets both status bits; AppleWin is explicit
+                // ("DSR is active low (see SY6551 datasheet)",
+                // SerialComms.cpp:864 — it returns ST_DSR|ST_DCD when
+                // nothing is attached). POM2 had the sense inverted, so a
+                // carrier-aware guest saw "online" with an idle listener
+                // and "NO CARRIER" the instant a client connected.
+                if (!connected) s |= (SR_DCD | SR_DSR);
                 if (irqState_ != 0) s |= SR_IRQ;
                 // MAME `mos6551.cpp:237-250`: status read clears
                 // `m_irq_state` and re-evaluates the line. Without this,
@@ -720,7 +740,22 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             ++txCount;
             // Printer tap: mirror the accepted byte into the host-visible
             // spool the ImageWriter drains (see setPrinterTap in the header).
-            if (printerTap_) printerSpool_.push_back(v);
+            // The spool is capped: the drain cursor speaks absolute offsets
+            // (printerSpoolBase_ + index), so trimming the consumed prefix
+            // never desynchronises the consumer. Uncapped, a runaway guest
+            // print loop grew this vector without bound (the tx ring above
+            // is capped; this one wasn't).
+            if (printerTap_) {
+                printerSpool_.push_back(v);
+                constexpr size_t kSpoolCap = 1u << 20;
+                if (printerSpool_.size() > kSpoolCap) {
+                    const size_t drop = kSpoolCap / 2;
+                    printerSpool_.erase(
+                        printerSpool_.begin(),
+                        printerSpool_.begin() + static_cast<std::ptrdiff_t>(drop));
+                    printerSpoolBase_ += drop;
+                }
+            }
             break;
         }
         case 0x1: applyProgrammedReset(); break;
@@ -745,26 +780,34 @@ size_t SuperSerialCard::drainPrinterSpoolFrom(size_t from,
                                               std::vector<uint8_t>& out) const
 {
     std::lock_guard<std::mutex> lk(bufferMtx);
-    // Same resync rule as PrinterCard::drainSpoolFrom: `from` past the end
-    // means the spool was cleared behind the caller's back — hand back
-    // everything so the consumer resynchronises instead of going deaf.
-    const size_t start = (from > printerSpool_.size()) ? 0 : from;
+    // Offsets are absolute (bytes ever spooled), so the cap's front-trim
+    // keeps the count monotonic. Same resync rule as
+    // PrinterCard::drainSpoolFrom: `from` past the end means the spool was
+    // cleared behind the caller's back — hand back everything so the
+    // consumer resynchronises instead of going deaf. `from` below the base
+    // means the cap already trimmed bytes the caller never drained (host
+    // fell > 1 MiB behind): resume at the oldest byte still held.
+    const size_t total = printerSpoolBase_ + printerSpool_.size();
+    size_t start = (from > total) ? printerSpoolBase_
+                                  : std::max(from, printerSpoolBase_);
+    start -= printerSpoolBase_;
     out.insert(out.end(),
                printerSpool_.begin() + static_cast<std::ptrdiff_t>(start),
                printerSpool_.end());
-    return printerSpool_.size();
+    return total;
 }
 
 size_t SuperSerialCard::printerSpoolBytes() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx);
-    return printerSpool_.size();
+    return printerSpoolBase_ + printerSpool_.size();
 }
 
 void SuperSerialCard::clearPrinterSpool()
 {
     std::lock_guard<std::mutex> lk(bufferMtx);
     printerSpool_.clear();
+    printerSpoolBase_ = 0;
 }
 
 std::string SuperSerialCard::recentTxText() const
@@ -958,4 +1001,51 @@ void SuperSerialCard::buildRom()
         0x09, 0x80,            // ORA #$80  (Apple keys are high-bit-set)
         0x60                   // RTS
     });
+}
+
+// ── Snapshot / rewind ─────────────────────────────────────────────────────
+// Only the ACIA's guest-visible register state travels. The TCP socket,
+// the RX/TX rings and the printer spool are host-side: a rewind cannot
+// un-send bytes that already left the socket, and re-delivering buffered
+// input would duplicate it. Pre-fix, none of this was serialized at all,
+// so a restored machine kept the live card's baud/DTR/IRQ configuration.
+
+namespace {
+constexpr uint8_t kSscSnapMagic[4] = { 'S', 'S', 'C', '1' };
+}
+
+void SuperSerialCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    out.insert(out.end(), kSscSnapMagic, kSscSnapMagic + 4);
+    out.push_back(cmdReg);
+    out.push_back(ctlReg);
+    out.push_back(statusErrors_);
+    out.push_back(dtrAsserted_ ? 1 : 0);
+    out.push_back(rxIrqEnable_ ? 1 : 0);
+    out.push_back(echoMode_    ? 1 : 0);
+    out.push_back(wordLength_);
+    out.push_back(extraStop_ ? 1 : 0);
+    out.push_back(baudIndex_);
+    out.push_back(irqState_.load());
+}
+
+void SuperSerialCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (data == nullptr || len < 14 ||
+        std::memcmp(data, kSscSnapMagic, 4) != 0)
+        return;   // foreign blob — a different card sat in this slot
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    size_t p = 4;
+    cmdReg        = data[p++];
+    ctlReg        = data[p++];
+    statusErrors_ = data[p++];
+    dtrAsserted_  = data[p++] != 0;
+    rxIrqEnable_  = data[p++] != 0;
+    echoMode_     = data[p++] != 0;
+    wordLength_   = data[p++];
+    extraStop_    = data[p++] != 0;
+    baudIndex_    = static_cast<uint8_t>(data[p++] & 0x0F);
+    irqState_.store(data[p++]);
+    irqLineDirty_.store(true);   // CPU thread re-drives the line
 }

@@ -770,6 +770,48 @@ void MainWindow::setGlfwWindow(GLFWwindow* w)
         std::string title = "POM2 " POM2_VERSION_STRING " — ";
         title.append(cfg.displayName);
         glfwSetWindowTitle(window, title.c_str());
+
+        // Reopen at the geometry the last windowed session ended with.
+        // Skipped in kiosk (main() already created the window full-screen)
+        // and when nothing was ever persisted, in which case main()'s
+        // default size stands. A saved position is clamped back onto a
+        // monitor so a window saved on a since-disconnected screen can't
+        // reopen off-screen.
+        if (!kiosk_ && loadWindowGeometryFromSettings()) {
+            // Validate against the WHOLE virtual desktop, not just the
+            // primary monitor: a monitor to the left of primary has
+            // NEGATIVE virtual-screen X and one to the right has X beyond
+            // the primary width, so a primary-only clamp dragged every
+            // secondary-display window back to the centre of screen 1 on
+            // each launch, with no way to make it stick.
+            int mc = 0;
+            GLFWmonitor** mons = glfwGetMonitors(&mc);
+            bool onSomeMonitor = false;
+            for (int i = 0; i < mc && !onSomeMonitor; ++i) {
+                int mx = 0, my = 0, mw = 0, mh = 0;
+                glfwGetMonitorWorkarea(mons[i], &mx, &my, &mw, &mh);
+                // "Visible enough to grab": the title bar's left corner
+                // must sit inside this monitor's work area.
+                if (savedWinX_ >= mx - 32 && savedWinX_ <= mx + mw - 64 &&
+                    savedWinY_ >= my - 32 && savedWinY_ <= my + mh - 64)
+                    onSomeMonitor = true;
+            }
+            GLFWmonitor* mon = glfwGetPrimaryMonitor();
+            const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+            if (vm) {
+                if (savedWinW_ > vm->width)  savedWinW_ = vm->width;
+                if (savedWinH_ > vm->height) savedWinH_ = vm->height;
+            }
+            if (!onSomeMonitor && vm) {
+                // Saved on a since-disconnected screen — recentre on
+                // primary rather than reopening off-screen.
+                savedWinX_ = (vm->width  - savedWinW_) / 2;
+                savedWinY_ = (vm->height - savedWinH_) / 2;
+            }
+            glfwSetWindowSize(window, savedWinW_, savedWinH_);
+            glfwSetWindowPos (window, savedWinX_, savedWinY_);
+            if (savedWinMaximized_) glfwMaximizeWindow(window);
+        }
     }
 }
 
@@ -943,6 +985,18 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         }
     }
 
+    // 5-7 run under stateMutex: the CPU worker is stopped, but the AI
+    // control server stays live (detach() nulls only its card pointers,
+    // not ctrl_) and its handlers take this same mutex around
+    // softReset()/memory reads — without the lock a /reset landing here
+    // raced the ROM array rewrite and the SlotBus unique_ptr swaps
+    // (torn pointer read / fetch from a half-written ROM). Handlers now
+    // simply block until the rebuild is coherent. hardReset (step 11)
+    // stays OUTSIDE: it re-acquires stateMtx internally.
+    std::string newRomPath;   // read by the "Profile: Active" log below
+    {
+    std::lock_guard<std::mutex> rebuildLk(controller->stateMutex());
+
     // 5. Resolve and load the new main ROM.
     //    //c / //c+ 32 KB dumps are two firmware banks (bank 0 lower,
     //    bank 1 upper) where the //e 32 KB layout uses "char ROM lower,
@@ -952,7 +1006,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         (p == pom2::SystemProfile::AppleIIc ||
          p == pom2::SystemProfile::AppleIIcPlus ||
          p == pom2::SystemProfile::AppleIIcPAL);
-    const std::string newRomPath = firstExistingPath(cfg.romProbeOrder);
+    newRomPath = firstExistingPath(cfg.romProbeOrder);
     if (!newRomPath.empty()
         && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
@@ -1011,6 +1065,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // Force the Slot Config panel to re-seed its draft from the rebuilt
     // slotCards[] on its next render (stale-draft-after-profile-switch fix).
     slotDraftInited_ = false;
+
+    }   // end stateMutex scope over steps 5-7
 
     // 7b. A profile that ships an on-board Le Chat Mauve (//c PAL = the
     //     Adaptateur IIc machine) defaults its display to ChatMauveRGB — the
@@ -1226,6 +1282,13 @@ void MainWindow::restartEmulationFromSettings()
         display->setChatMauveCard(nullptr);
     }
 
+    // 3-4 run under stateMutex — same rationale as applyProfile steps
+    // 5-7: the AI control server's handlers still run against
+    // controller/memory (detach() nulled only its card pointers), so the
+    // SlotBus rebuild + remounts must be atomic w.r.t. their lock.
+    {
+    std::lock_guard<std::mutex> rebuildLk(controller->stateMutex());
+
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
     plugSlotsFromSettings();
     // Re-seed the Slot Config draft from the rebuilt slotCards[] next render.
@@ -1254,6 +1317,8 @@ void MainWindow::restartEmulationFromSettings()
         }
     }
 
+    }   // end stateMutex scope over steps 3-4
+
     // 5. Hard reset + restart worker. Route through `controller->hardReset()`
     //    rather than `cpu().hardReset()` + `slotBus().reset()` — the
     //    controller path additionally disarms `iicSmartPortArmed_` (via
@@ -1277,4 +1342,175 @@ void MainWindow::restartEmulationFromSettings()
     }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
+}
+
+// ─── GUI ↔ kiosk runtime transition ──────────────────────────────────────
+//
+// Kiosk is NOT a different machine: it is exclusive full-screen + the
+// chrome-free render path + "never write settings". The emulated CPU,
+// memory and slot cards are untouched, so the switch needs no snapshot
+// round-trip — flipping the flag and moving the GLFW window is enough,
+// and nothing about the running program is disturbed (a game keeps
+// playing across the transition, mid-frame).
+
+void MainWindow::saveWindowGeometryToSettings()
+{
+    if (savedWinW_ <= 0 || !settings) return;
+    settings->setInt ("window_x", savedWinX_);
+    settings->setInt ("window_y", savedWinY_);
+    settings->setInt ("window_w", savedWinW_);
+    settings->setInt ("window_h", savedWinH_);
+    settings->setBool("window_maximized", savedWinMaximized_);
+}
+
+bool MainWindow::loadWindowGeometryFromSettings()
+{
+    if (!settings) return false;
+    const int w = settings->getInt("window_w", 0);
+    const int h = settings->getInt("window_h", 0);
+    if (w <= 0 || h <= 0) return false;
+    savedWinX_ = settings->getInt("window_x", 0);
+    savedWinY_ = settings->getInt("window_y", 0);
+    savedWinW_ = w;
+    savedWinH_ = h;
+    savedWinMaximized_ = settings->getBool("window_maximized", false);
+    return true;
+}
+
+void MainWindow::setKioskMode(bool k)
+{
+    kiosk_           = k;
+    launchedInKiosk_ = k;
+    if (k && settings) settings->setReadOnly(true);
+}
+
+void MainWindow::captureWindowGeometryNow()
+{
+    if (!window || kiosk_ || settingsReadOnly()) return;
+    // A MAXIMIZED window reports the maximized rect. Do NOT un-maximize to
+    // measure: on X11 glfwRestoreWindow only posts a _NET_WM_STATE message
+    // and returns, so the very next query still reads the maximized rect —
+    // and we would have un-maximized the user's window for nothing. Record
+    // the flag and KEEP whatever non-maximized geometry we already had
+    // (from an earlier capture or from settings), so re-maximizing on
+    // restore lands correctly and un-maximizing afterwards gives a sane
+    // floating size instead of a screen-sized rectangle.
+    const bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+    savedWinMaximized_ = maximized;
+    if (!maximized) {
+        glfwGetWindowPos(window, &savedWinX_, &savedWinY_);
+        glfwGetWindowSize(window, &savedWinW_, &savedWinH_);
+    }
+    saveWindowGeometryToSettings();
+}
+
+void MainWindow::setKioskModeRuntime(bool k)
+{
+    if (k == kiosk_) return;
+
+    if (k) {
+        // Entering kiosk. Persist first: kiosk deliberately never writes
+        // state.cfg, so anything the user changed in the GUI session would
+        // otherwise be lost if they quit from kiosk. (A session LAUNCHED
+        // with --kiosk was read-only from the start and stays that way —
+        // see settingsReadOnly().)
+        if (window) {
+            // Record the windowed geometry to come back to. A MAXIMIZED
+            // window reports its maximized size here, so remember the flag
+            // separately and re-maximize on the way out — otherwise the
+            // user gets an un-maximized window of the maximized size, which
+            // most WMs then reposition somewhere unexpected.
+            captureWindowGeometryNow();
+            GLFWmonitor* mon = glfwGetPrimaryMonitor();
+            const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+            if (mon && vm) {
+                glfwSetWindowMonitor(window, mon, 0, 0,
+                                     vm->width, vm->height, vm->refreshRate);
+            } else {
+                // No monitor info (headless/odd WM): stay windowed but
+                // still enter the chrome-free path — the user asked for it.
+                pom2::log().warn("Kiosk",
+                    "no primary monitor / video mode — kiosk stays windowed");
+            }
+        }
+        // Persist AFTER measuring, and BEFORE the flag flips: kiosk never
+        // writes state.cfg, so this is the last chance to record both the
+        // geometry we just captured and anything the user changed in the
+        // GUI session. Without it there was nothing to restore from after a
+        // quit-from-kiosk, and a --kiosk launch toggling to the GUI got a
+        // hard-coded default size instead of the user's real window.
+        if (!settingsReadOnly()) {
+            saveWindowGeometryToSettings();
+            settings->save();
+        }
+        kiosk_ = true;
+        settings->setReadOnly(true);   // covers every UI save site
+        pom2::log().info("Kiosk", "entered (full-screen, chrome-free, "
+                                  "settings read-only)");
+    } else {
+        // Leaving kiosk. Close the in-kiosk menu first so its captured
+        // key handling doesn't leak into the GUI frame — and un-pause: the
+        // menu pauses the machine while it is up, and leaving kiosk from an
+        // open menu would otherwise strand the user in the GUI with a
+        // silently stopped CPU.
+        kioskMenuOpen_ = false;
+        // Undo only the pause the MENU imposed — kioskSetPaused keeps a
+        // user-initiated pause intact (see kioskPauseWasAlreadyStopped_).
+        kioskSetPaused(false);
+        if (window) {
+            if (savedWinW_ > 0) {
+                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
+                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
+                // Many window managers IGNORE the position/size passed to
+                // glfwSetWindowMonitor when leaving full-screen (they just
+                // un-fullscreen and keep their own idea of the geometry) —
+                // this is the standard GLFW workaround. Harmless when the
+                // WM already honoured the call.
+                glfwSetWindowSize(window, savedWinW_, savedWinH_);
+                glfwSetWindowPos (window, savedWinX_, savedWinY_);
+                if (savedWinMaximized_) glfwMaximizeWindow(window);
+                pom2::log().info("Kiosk",
+                    "restored window " + std::to_string(savedWinW_) + "x" +
+                    std::to_string(savedWinH_) + " at " +
+                    std::to_string(savedWinX_) + "," +
+                    std::to_string(savedWinY_) +
+                    (savedWinMaximized_ ? " (maximized)" : ""));
+            } else if (loadWindowGeometryFromSettings()) {
+                // Launched with --kiosk: nothing was measured this session,
+                // but a previous GUI session persisted its geometry.
+                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
+                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
+                glfwSetWindowSize(window, savedWinW_, savedWinH_);
+                glfwSetWindowPos (window, savedWinX_, savedWinY_);
+                if (savedWinMaximized_) glfwMaximizeWindow(window);
+                pom2::log().info("Kiosk",
+                    "restored window from settings " +
+                    std::to_string(savedWinW_) + "x" +
+                    std::to_string(savedWinH_));
+            } else {
+                // Never ran windowed on this machine: centred default.
+                GLFWmonitor* mon = glfwGetPrimaryMonitor();
+                const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+                const int w = 1280, h = 850;
+                const int x = vm ? (vm->width  - w) / 2 : 64;
+                const int y = vm ? (vm->height - h) / 2 : 64;
+                glfwSetWindowMonitor(window, nullptr, x, y, w, h, GLFW_DONT_CARE);
+                glfwSetWindowSize(window, w, h);
+                glfwSetWindowPos (window, x, y);
+                savedWinX_ = x; savedWinY_ = y; savedWinW_ = w; savedWinH_ = h;
+            }
+        }
+        kiosk_ = false;
+        // A session LAUNCHED with --kiosk stays read-only for life (the
+        // documented "can't disturb your desktop setup" promise); a GUI
+        // session that merely visited kiosk resumes writing.
+        settings->setReadOnly(launchedInKiosk_);
+        pom2::log().info("Kiosk", "left (windowed, full UI)");
+    }
+}
+
+bool MainWindow::toggleKioskMode()
+{
+    setKioskModeRuntime(!kiosk_);
+    return kiosk_;
 }

@@ -24,6 +24,7 @@
 #include "SpeakerDevice.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -226,6 +227,12 @@ private:
     // Worker frame-pacing interval (µs) and the active video standard. PAL
     // paces at 50 Hz (20000 µs), NTSC at 60 Hz (~16667 µs).
     std::atomic<int>  frameIntervalUs{1'000'000 / 60};
+    /// Wall-clock of the previous `tickFrame()` (single-threaded / WASM
+    /// path only). Used to scale the per-call CPU budget by the time that
+    /// actually elapsed, since the browser calls us once per DISPLAY
+    /// refresh rather than once per emulated frame. Zero-initialised =
+    /// "no previous tick", which runs one nominal budget.
+    std::chrono::steady_clock::time_point lastTickWall_{};
     std::atomic<VideoStandard> videoStandard_{VideoStandard::NTSC};
     std::atomic<int>  stepsPending{0};   // queued single-step count (Step mode)
     std::atomic<bool> exitRequested{false};

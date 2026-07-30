@@ -400,6 +400,23 @@ void testSnapshotRoundTrip()
     std::printf("  snapshot round-trip OK (%zu bytes)\n", blob.size());
 }
 
+// The chip keeps its programmed IA across a bus reset — MAME
+// `cs8900a.cpp` device_reset does not touch it, and the uthernet.cpp
+// shim does not reprogram it. UthernetCard::onReset used to re-stamp
+// kDefaultMac, silently reverting the guest's address on every
+// Ctrl-Reset (bug-hunt 2026-07-28).
+void testMacSurvivesCardReset()
+{
+    pom2::UthernetCard card(3);
+    programMac(card, kOurMac);
+    assert(card.chip().macAddress() == kOurMac);
+
+    card.onReset();
+    assert(card.chip().macAddress() == kOurMac);
+
+    std::printf("  programmed MAC survives a bus reset\n");
+}
+
 } // namespace
 
 int main()
@@ -413,6 +430,7 @@ int main()
     testReceivePath();
     testAddressFilter();
     testSnapshotRoundTrip();
+    testMacSurvivesCardReset();
     std::printf("PASS\n");
     return 0;
 }

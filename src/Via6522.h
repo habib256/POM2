@@ -68,6 +68,10 @@ struct Via6522
 
     // ─── State ───────────────────────────────────────────────────────────
     uint8_t portAOut = 0x00;
+    /// External level driven onto port A's pins. Real 6522 port-A reads
+    /// return `(out & ddr) | (pin & ~ddr)`; POM2 had no pin model, so an
+    /// AY READ strobe had nowhere to land (see Ay3_8910::busOut).
+    uint8_t portAIn  = 0xFF;
     uint8_t portBOut = 0x00;
     uint8_t ddrA = 0x00;
     uint8_t ddrB = 0x00;
@@ -94,6 +98,7 @@ struct Via6522
     inline void reset()
     {
         portAOut = portBOut = 0;
+        portAIn  = 0xFF;
         ddrA = ddrB = 0;
         acr  = pcr = sr = 0;
         t1Latch = 0xFFFF;
@@ -111,7 +116,10 @@ struct Via6522
     // Fixed 24-byte layout of the full register/timer state. Lazily-synced
     // counters are captured as-is (the next syncToCpuCycle re-advances them,
     // exactly as it would have on the live machine).
-    static constexpr std::size_t kSnapshotBytes = 24;
+    /// v1 layout (pre-2026-07-30): everything except `portAIn`.
+    static constexpr std::size_t kSnapshotBytesV1 = 24;
+    /// Current layout — v1 plus the port-A input pin latch.
+    static constexpr std::size_t kSnapshotBytes = 25;
     inline void appendSnapshot(std::vector<uint8_t>& o) const
     {
         byteio::putU8(o, portAOut); byteio::putU8(o, portBOut);
@@ -123,10 +131,15 @@ struct Via6522
         byteio::putU32(o, static_cast<uint32_t>(t2Counter));
         byteio::putU8(o, t2Active ? 1 : 0);
         byteio::putU8(o, ifr);      byteio::putU8(o, ier);
+        byteio::putU8(o, portAIn);
     }
-    inline void loadSnapshot(const uint8_t* d)   // caller ensures >= kSnapshotBytes
+    /// `size` selects the layout: kSnapshotBytesV1 for a pre-2026-07-30
+    /// blob (portAIn absent → left at its reset value), kSnapshotBytes for
+    /// the current one. Caller ensures at least `size` bytes are readable.
+    inline void loadSnapshot(const uint8_t* d,
+                             std::size_t size = kSnapshotBytes)
     {
-        byteio::Reader r(d, kSnapshotBytes);
+        byteio::Reader r(d, size);
         portAOut = r.u8(); portBOut = r.u8(); ddrA = r.u8(); ddrB = r.u8();
         acr = r.u8(); pcr = r.u8(); sr = r.u8();
         t1Latch = r.u16(); t1Counter = static_cast<int32_t>(r.u32());
@@ -134,6 +147,7 @@ struct Via6522
         t2ll = r.u8(); t2Latch = r.u16(); t2Counter = static_cast<int32_t>(r.u32());
         t2Active = r.u8() != 0;
         ifr = r.u8(); ier = r.u8();
+        if (size >= kSnapshotBytes) portAIn = r.u8();
     }
 
     // Composed Port reads: input pins (DDR=0) pulled high (Mockingboard /
@@ -145,9 +159,14 @@ struct Via6522
     }
     inline uint8_t readPortA() const
     {
-        const uint8_t input = 0xFF;
-        return (portAOut & ddrA) | (input & ~ddrA);
+        // Input pins come from `portAIn` (default 0xFF = pulled high, the
+        // old hard-coded behaviour). Cards that drive port A externally —
+        // the Mockingboard/Phasor AY READ strobe — latch the chip's bus
+        // value there.
+        return (portAOut & ddrA) | (portAIn & ~ddrA);
     }
+    /// Latch an external level onto port A's input pins.
+    inline void setPortAInput(uint8_t v) { portAIn = v; }
 
     inline bool irqOut() const { return (ifr & ier & 0x7F) != 0; }
 
@@ -291,10 +310,13 @@ struct Via6522
             ifr &= ~IFR_T1;
             break;
         case VIA_T1LH:
-            // Latch high only: NO counter transfer, NO IFR side effect.
-            // T1 IFR is cleared only by T1CL read or T1CH write — NOT by
-            // T1LH write (MAME 6522via.cpp T1L-H case).
+            // Latch high only: NO counter transfer, NO restart — but the
+            // T1 interrupt flag IS cleared. MAME `6522via.cpp` VIA_T1LH
+            // (~:920-924): `m_t1lh = data; clear_int(INT_T1);` — the old
+            // comment here claimed the opposite while citing the same
+            // case. AppleWin's SY6522 clears it too.
             t1Latch = (t1Latch & 0x00FF) | (static_cast<uint16_t>(v) << 8);
+            ifr &= ~IFR_T1;
             break;
         case VIA_T2CL:
             // Store the low latch only — no effect on the running counter
@@ -320,7 +342,24 @@ struct Via6522
             t2Active   = true;
             break;
         case VIA_SR:    sr  = v; break;
-        case VIA_ACR:   acr = v; break;
+        case VIA_ACR: {
+            // MAME `6522via.cpp` VIA_ACR write: switching T1 into
+            // continuous mode RE-ARMS the timer from the current counter
+            // (`m_t1_active = 1; m_t1->adjust(counter1 + IFR_DELAY)`).
+            // POM2 only stored the byte, so a T1 that had fired one-shot
+            // and disarmed stayed dead after the guest flipped to
+            // continuous — no more IRQs until the next T1CH write. Same
+            // +2 pre-bias protocol as the T1CH/T2CH cases: the fire then
+            // lands at counter1 + IFR_DELAY(3).
+            const int32_t counter1 =
+                (t1FireArmed ? t1Counter - 2 : t1Counter) & 0xFFFF;
+            acr = v;
+            if (t1Continuous()) {
+                t1Counter   = counter1 + 2;
+                t1FireArmed = true;
+            }
+            break;
+        }
         case VIA_PCR:   pcr = v; break;
         case VIA_IFR:
             // Writing 1s to IFR clears those bits (only 0..6 user-clearable).

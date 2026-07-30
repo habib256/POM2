@@ -304,7 +304,8 @@ void PhasorCard::appendSnapshotState(std::vector<uint8_t>& out) const
 {
     using namespace pom2::byteio;
     std::lock_guard<std::mutex> lk(mtx_);
-    putU8(out, 'P'); putU8(out, 'H'); putU8(out, 'S'); putU8(out, 1);  // magic + ver
+    // ver 2 since 2026-07-30: the VIA sections gained a byte (portAIn).
+    putU8(out, 'P'); putU8(out, 'H'); putU8(out, 'S'); putU8(out, 2);  // magic + ver
     putU8(out, static_cast<uint8_t>(mode_));
     uint8_t present = 0;
     if (via_[0]) present |= 0x01;
@@ -321,13 +322,20 @@ void PhasorCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     std::lock_guard<std::mutex> lk(mtx_);
     pom2::byteio::Reader r(data, len);
     if (!r.has(6)) return;
-    if (r.u8() != 'P' || r.u8() != 'H' || r.u8() != 'S' || r.u8() != 1) return;
+    if (r.u8() != 'P' || r.u8() != 'H' || r.u8() != 'S') return;
+    // v1 blobs carry 24-byte VIA sections, v2 carry 25 (portAIn added
+    // 2026-07-30 for the AY read-bus latch). The layout change must bump
+    // this byte, or an old snapshot's every later field shifts by one.
+    const uint8_t blobVer = r.u8();
+    if (blobVer != 1 && blobVer != 2) return;
+    const std::size_t viaBytes = (blobVer >= 2)
+        ? pom2::Via6522::kSnapshotBytes : pom2::Via6522::kSnapshotBytesV1;
     mode_ = static_cast<Mode>(r.u8());
     const uint8_t present = r.u8();
     auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
-        if (!r.has(pom2::Via6522::kSnapshotBytes)) return false;
-        if (v) v->loadSnapshot(r.p + r.pos);
-        r.pos += pom2::Via6522::kSnapshotBytes;
+        if (!r.has(viaBytes)) return false;
+        if (v) v->loadSnapshot(r.p + r.pos, viaBytes);
+        r.pos += viaBytes;
         return true;
     };
     auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
@@ -573,6 +581,14 @@ void PhasorCard::onViaPortBChange(int viaIdx)
             if ((ay_[chipIdx]->latchedAddr & 0x0F) == 13) {
                 ++ayEnvWriteCount_[chipIdx];
             }
+        } else if (res == pom2::Ay3_8910::ApplyResult::Read) {
+            // Same AY read-bus latch as the Mockingboard: the chip drives
+            // the selected register onto the bus and the card latches it
+            // onto the driving VIA's port-A input. Phasor mode detectors
+            // write-then-read an AY register to identify the board.
+            const int viaIdx = chipIdx >> 1;   // 2 AYs per VIA
+            if (viaIdx >= 0 && viaIdx < 2)
+                via_[viaIdx]->setPortAInput(ay_[chipIdx]->busOut);
         } else if (res == pom2::Ay3_8910::ApplyResult::ResetOnly) {
             ++ayResetCount_[chipIdx];
         }

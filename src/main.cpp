@@ -88,8 +88,11 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
         // Ctrl+Shift+P (command palette) joins the unconditional set so the
         // palette is reachable even from a focused text field — same rationale
         // as F11/F12: the user must always have a way out.
+        // F10 (GUI ↔ kiosk) joins the unconditional set for the same
+        // reason as F11/F12: entering kiosk from a focused widget must
+        // work, and leaving it must ALWAYS work.
         const bool isGlobalKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12 ||
-                                  key == GLFW_KEY_F9 ||
+                                  key == GLFW_KEY_F9 || key == GLFW_KEY_F10 ||
                                   key == GLFW_KEY_LEFT_ALT ||
                                   key == GLFW_KEY_RIGHT_ALT ||
                                   (key == GLFW_KEY_P &&
@@ -458,6 +461,13 @@ int main(int argc, char* argv[])
     if (plan->forceIIPlus) {
         pom2::log().info("CLI", "--ii-plus: ignoring apple2e.rom, booting as II+");
     }
+    // Kiosk flag FIRST: setGlfwWindow restores the persisted windowed
+    // geometry, and doing that to the exclusive full-screen window this
+    // path already created would trigger a video MODE SWITCH to the old
+    // window's size (GLFW: glfwSetWindowSize on a full-screen window
+    // changes its desired video mode). The flag makes setGlfwWindow skip
+    // the restore.
+    mainWindow.setKioskMode(plan->kiosk);
     // Hand the GLFW window to MainWindow BEFORE any applyProfile() call so
     // the profile-driven title update (step 13 in applyProfile) sees a
     // valid handle even when --preset triggers the switch.
@@ -474,7 +484,7 @@ int main(int argc, char* argv[])
     // It also preserves the 0.0 that virtual/accessibility monitors report
     // (imgui #7902) — `setDpiScale` clamps that back to 1.
     mainWindow.setDpiScale(ImGui_ImplGlfw_GetContentScaleForWindow(window));
-    mainWindow.setKioskMode(plan->kiosk);
+    // (setKioskMode already ran above, before setGlfwWindow — see there.)
 #ifdef __EMSCRIPTEN__
     mainWindow.setBrowserResetBootImage(plan->bootDiskPath);
 #endif
@@ -580,14 +590,33 @@ int main(int argc, char* argv[])
     // `deferredCancelled` flag lets fast-quit skip the actions entirely
     // (sleep loop polls it every 10 ms) so shutdown stays snappy.
     std::atomic<bool>  deferredCancelled{false};
+    // Ordering gate vs the positional-disk boot below. The deferred
+    // actions (--run / --paste / --step …) are meant to act on the BOOTED
+    // machine, but the two used to be paced independently: this thread
+    // slept a fixed 250 ms while the boot fired on a frame countdown, so
+    // the order flipped with the monitor's refresh rate (30 frames is
+    // ~500 ms at 60 Hz but ~208 ms at 144 Hz — the actions then ran
+    // against a machine the boot was about to reset out from under them).
+    // Pre-set when there is no positional disk, so the no-disk path keeps
+    // its old timing exactly.
+    std::atomic<bool>  bootDiskSettled{plan->bootDiskPath.empty()};
 #ifndef __EMSCRIPTEN__
     std::thread        deferredThread;
     if (!plan->deferredActions.empty()) {
         deferredThread = std::thread(
             [actions = plan->deferredActions,
              emu     = &mainWindow.emul(),
+             booted  = &bootDiskSettled,
              cancel  = &deferredCancelled] {
                 for (int i = 0; i < 25; ++i) {
+                    if (cancel->load(std::memory_order_acquire)) return;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                // Then wait for the positional-disk boot to land (bounded:
+                // ~5 s, well past the 30-frame countdown at any refresh
+                // rate, so a failed/absent boot can't wedge the actions).
+                for (int i = 0; i < 500 &&
+                                !booted->load(std::memory_order_acquire); ++i) {
                     if (cancel->load(std::memory_order_acquire)) return;
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
@@ -673,12 +702,16 @@ int main(int argc, char* argv[])
         int                 cliBootCountdown;
         std::atomic<bool>*  autoBootRequested;
         std::atomic<bool>*  autoQuitRequested;
+        /// Released once the positional-disk boot has run, so the Phase-C
+        /// deferred actions always observe the booted machine regardless
+        /// of the host refresh rate. Null when there is no boot disk.
+        std::atomic<bool>*  bootDiskSettled;
 #ifdef __EMSCRIPTEN__
         bool                firstFrameReadySignaled;
 #endif
     } frameCtx{
         window, &mainWindow, plan->bootDiskPath, cliBootCountdown,
-        &autoBootRequested, &autoQuitRequested
+        &autoBootRequested, &autoQuitRequested, &bootDiskSettled
 #ifdef __EMSCRIPTEN__
         , false
 #endif
@@ -701,6 +734,10 @@ int main(int argc, char* argv[])
             } else {
                 pom2::log().warn("CLI", "disk boot failed: " + err);
             }
+            // Release the Phase-C deferred actions — success or failure,
+            // the machine's boot state is now settled (see bootDiskSettled).
+            if (c.bootDiskSettled)
+                c.bootDiskSettled->store(true, std::memory_order_release);
         }
 
         if (c.autoBootRequested->exchange(false)) {
@@ -757,6 +794,13 @@ int main(int argc, char* argv[])
     if (deferredThread.joinable()) deferredThread.join();
     if (autoBootThread.joinable()) autoBootThread.join();
 #endif
+
+    // Record where the window ended up WHILE GLFW is still alive.
+    // ~MainWindow runs after glfwTerminate() (it is a local of main), so
+    // the capture cannot live in the destructor: glfwGetWindowPos/Size
+    // bail on the un-init check, zero their out-params, and the geometry
+    // write is silently dropped.
+    mainWindow.captureWindowGeometryNow();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

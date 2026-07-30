@@ -170,6 +170,34 @@ int main()
                     nopImm, nopZpX, nopAbsX, nopZp, nop5c, nop5cN);
     }
 
+    // ── NMOS-mode remapped undoc-NOP cycle counts (bug-hunt 2026-07-29) ──
+    // setCpuMode(NMOS) replaces the 65C02-only opcodes with undoc-NOP
+    // stand-ins; the generic Unoff2/Unoff3 (3/5 cyc) contradicted MAME
+    // om6502 for the mode-dependent forms: $14/$34/$74 NOP zp,X = 4,
+    // $0C NOP abs = 4, $1C/$3C/$7C NOP abs,X = 4 (no page cross), and
+    // $80/$89 NOP #imm = 2.
+    {
+        M6502 ncpu(&mem);
+        ncpu.setCpuMode(M6502::CpuMode::NMOS);
+        ncpu.hardReset();
+        const int n14 = oneInstr(ncpu, mem, {0x14, 0x40},       0x0200);
+        const int n74 = oneInstr(ncpu, mem, {0x74, 0x40},       0x0200);
+        const int n0c = oneInstr(ncpu, mem, {0x0C, 0x00, 0x03}, 0x0200);
+        const int n1c = oneInstr(ncpu, mem, {0x1C, 0x00, 0x03}, 0x0200);
+        const int n80 = oneInstr(ncpu, mem, {0x80, 0x00},       0x0200);
+        const int n89 = oneInstr(ncpu, mem, {0x89, 0x00},       0x0200);
+        if (n14 != 4 || n74 != 4 || n0c != 4 || n1c != 4 ||
+            n80 != 2 || n89 != 2) {
+            std::printf("FAIL NMOS remapped NOP cycles: $14=%d $74=%d(want 4) "
+                        "$0C=%d $1C=%d(want 4) $80=%d $89=%d(want 2)\n",
+                        n14, n74, n0c, n1c, n80, n89);
+            assert(n14 == 4 && n74 == 4 && n0c == 4 && n1c == 4 &&
+                   n80 == 2 && n89 == 2);
+        }
+        std::printf("NMOS remapped NOP cycles: zp,X=%d/%d abs=%d abs,X=%d "
+                    "#imm=%d/%d: OK\n", n14, n74, n0c, n1c, n80, n89);
+    }
+
     // ── NMOS undoc 2-byte ops consume their operand (no PC desync) ────────
     // $0B/$2B = ANC #imm, $EB = USBC #imm are 2-byte on NMOS. The 65C02 table
     // left them as 1-byte NOPs; in NMOS mode they MUST advance PC by 2 or the

@@ -110,6 +110,9 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
     std::atomic<float>    volume     { 0.5f };       // pre-mix gain
     std::atomic<bool>     muted      { false };
+    /// Emulated CPU clock for the emuCycles replay cursor — retuned by
+    /// MockingboardCard::setCpuClock on a PAL/NTSC switch.
+    std::atomic<double>   cpuClockHz { static_cast<double>(POM2_CPU_CLOCK_HZ) };
 
     // SSI263 mix scratch — member, not a per-callback local: this runs on
     // the realtime audio thread, where a heap allocation per buffer tick
@@ -187,6 +190,21 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     };
     ChipState chip[2];
 
+    // ── emuCycles replay state (audio thread only) ────────────────────
+    // `liveRegs` is this thread's register bank, advanced by replaying
+    // the CPU thread's cycle-stamped writes; `audioCursor` is the CPU
+    // cycle rendered up to so far (SpeakerDevice::audioCpuCursor idiom).
+    uint8_t  liveRegs[2][kAyNumRegs] = {};
+    bool     regsPrimed = false;
+    uint64_t audioCursor = 0;
+    /// Sub-cycle remainder of the cursor. cyclesPerSample is ~23.19 at
+    /// 44.1 kHz; truncating it per sample made the cursor advance 0.8-1.4 %
+    /// SLOWER than the producer — a bigger error, in the same direction,
+    /// than the 0.7 % PAL/NTSC delta setCpuClock exists to remove. Same
+    /// idiom as SpeakerDevice::subSampleAccum.
+    double   cursorFrac = 0.0;
+    std::vector<MockingboardCard::AyRegEvent> pending;
+
     void fillAudioBuffer(float* output, int frameCount) override
     {
         if (frameCount <= 0) return;
@@ -204,6 +222,8 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         uint8_t  regSnap[2][kAyNumRegs];
         uint32_t resetCountSnap[2];
         uint32_t envWriteCountSnap[2];
+        uint64_t latestEventCycle = 0;
+        pending.clear();
         {
             std::lock_guard<std::mutex> lk(parent->mtx);
             std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
@@ -212,10 +232,64 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             resetCountSnap[1] = parent->ayResetCount_[1];
             envWriteCountSnap[0] = parent->ayEnvWriteCount_[0];
             envWriteCountSnap[1] = parent->ayEnvWriteCount_[1];
+            // Take the emuCycles-stamped register writes under the same
+            // lock. See the replay loop below.
+            pending.assign(parent->ayEvents_.begin(), parent->ayEvents_.end());
+            parent->ayEvents_.clear();
+            latestEventCycle = parent->latestAyEventCycle_.load(
+                std::memory_order_relaxed);
         }
+
+        // ── emuCycles replay of AY register writes ────────────────────
+        // `liveRegs` is the audio thread's OWN register bank: it starts
+        // from the CPU-side snapshot on the first buffer, then advances
+        // ONLY by replaying stamped events at their exact sample offset.
+        // Before this, the once-per-buffer snapshot collapsed every write
+        // inside the window to its last value, so an arpeggio written at
+        // ~1 ms intervals came out quantised to the ~10 ms buffer (notes
+        // merged or dropped). A PB2 reset still resyncs the whole bank
+        // from the CPU side, since that path zeroes registers wholesale.
+        if (!regsPrimed) {
+            std::memcpy(liveRegs, regSnap, sizeof(liveRegs));
+            regsPrimed = true;
+        }
+        // LIVE clock, not the NTSC constant: under PAL the CPU produces
+        // 1 015 625 cycles/s, and a cursor advancing 0.7 % faster than the
+        // producer outruns every queued event — they would all land on the
+        // first sample of the buffer, undoing the sub-buffer timing on the
+        // PAL demos that need it most.
+        const double cyclesPerSample =
+            cpuClockHz.load(std::memory_order_relaxed) / static_cast<double>(sr);
+        // Catch-up: if the producer ran far ahead (pause+resume, turbo),
+        // snap the cursor near the newest event instead of replaying
+        // minutes of queued writes at buffer rate. Same guard shape as
+        // SpeakerDevice's audioCpuCursor snap.
+        const uint64_t bufferCycles =
+            static_cast<uint64_t>(cyclesPerSample * frameCount);
+        if (latestEventCycle > audioCursor + 8 * bufferCycles)
+            audioCursor = (latestEventCycle > bufferCycles)
+                              ? latestEventCycle - bufferCycles : 0;
+        // BACKWARD jump: a rewind (or a snapshot load) rolls the machine's
+        // cycleCounter back, so new events carry stamps far BELOW the
+        // cursor. The forward-only guard above can't see that, and every
+        // event would then satisfy `cycle <= audioCursor` and land on
+        // sample 0 for the whole rewound span — exactly the collapse this
+        // queue exists to prevent. Re-anchor behind the oldest pending
+        // event. (SpeakerDevice solves the same problem with its
+        // resetPending_ flag.)
+        if (!pending.empty() && pending.front().cycle + bufferCycles < audioCursor) {
+            audioCursor = (pending.front().cycle > bufferCycles)
+                              ? pending.front().cycle - bufferCycles : 0;
+            cursorFrac  = 0.0;
+        }
+        size_t nextEvent = 0;
         for (int ci = 0; ci < 2; ++ci) {
             if (chip[ci].lastSeenResetCount != resetCountSnap[ci]) {
                 chip[ci].lastSeenResetCount = resetCountSnap[ci];
+                // Reset zeroes the bank on the CPU side wholesale — no
+                // per-register events describe it, so resync from the
+                // snapshot rather than replaying.
+                std::memcpy(liveRegs[ci], regSnap[ci], kAyNumRegs);
                 chip[ci].noiseLfsr     = 1;   // MAME ay8910.cpp:1309
                 chip[ci].noisePrescale = 0;
                 chip[ci].noiseOut      = 0;
@@ -263,10 +337,26 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         }
 
         for (int i = 0; i < frameCount; ++i) {
+            // Apply every register write stamped at or before this
+            // sample's CPU cycle — this is what gives sub-buffer timing.
+            cursorFrac += cyclesPerSample;
+            const uint64_t whole = static_cast<uint64_t>(cursorFrac);
+            audioCursor += whole;
+            cursorFrac  -= static_cast<double>(whole);
+            while (nextEvent < pending.size() &&
+                   pending[nextEvent].cycle <= audioCursor) {
+                const auto& e = pending[nextEvent++];
+                if (e.chip < 2 && e.reg < kAyNumRegs) {
+                    liveRegs[e.chip][e.reg] = e.val;
+                    // R13 store restarts the envelope even when the shape
+                    // byte is unchanged (real AY set_shape semantics).
+                    if (e.reg == 13) chip[e.chip].envRetrigger = true;
+                }
+            }
             float sample = 0.0f;
             for (int ci = 0; ci < 2; ++ci) {
                 ChipState& cs = chip[ci];
-                const uint8_t* r = regSnap[ci];
+                const uint8_t* r = liveRegs[ci];
 
                 // ── Per-channel tone period (R0/R1 pair, etc.). ────
                 // 12-bit period; period 0 is treated as 1 by real
@@ -442,6 +532,20 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             const float ssi = speechBuf ? speechBuf[i] : 0.0f;
             output[i] = (sample / 6.0f + ssi) * vol;
         }
+
+        // Anything still unconsumed was stamped past this buffer's cycle
+        // span (the CPU thread ran ahead of the audio clock). Apply it at
+        // the buffer edge rather than dropping the write — the cursor
+        // catch-up above bounds how far that can ever drift.
+        for (size_t k = nextEvent; k < pending.size(); ++k) {
+            const auto& e = pending[k];
+            if (e.chip < 2 && e.reg < kAyNumRegs) {
+                liveRegs[e.chip][e.reg] = e.val;
+                if (e.reg == 13) chip[e.chip].envRetrigger = true;
+            }
+        }
+        if (!pending.empty() && audioCursor < pending.back().cycle)
+            audioCursor = pending.back().cycle;
     }
 };
 
@@ -480,7 +584,8 @@ void MockingboardCard::appendSnapshotState(std::vector<uint8_t>& out) const
 {
     using namespace pom2::byteio;
     std::lock_guard<std::mutex> lk(mtx);
-    putU8(out, 'M'); putU8(out, 'B'); putU8(out, 'S'); putU8(out, 1);  // magic + ver
+    // ver 2 since 2026-07-30: the VIA sections gained a byte (portAIn).
+    putU8(out, 'M'); putU8(out, 'B'); putU8(out, 'S'); putU8(out, 2);  // magic + ver
     putU8(out, static_cast<uint8_t>(variant_));
     uint8_t present = 0;
     if (via_[0]) present |= 0x01;
@@ -501,13 +606,20 @@ void MockingboardCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     std::lock_guard<std::mutex> lk(mtx);
     pom2::byteio::Reader r(data, len);
     if (!r.has(6)) return;
-    if (r.u8() != 'M' || r.u8() != 'B' || r.u8() != 'S' || r.u8() != 1) return;
+    if (r.u8() != 'M' || r.u8() != 'B' || r.u8() != 'S') return;
+    // v1 blobs carry 24-byte VIA sections, v2 carry 25 (portAIn added
+    // 2026-07-30 for the AY read-bus latch). The layout change must bump
+    // this byte, or an old snapshot's every later field shifts by one.
+    const uint8_t blobVer = r.u8();
+    if (blobVer != 1 && blobVer != 2) return;
+    const std::size_t viaBytes = (blobVer >= 2)
+        ? pom2::Via6522::kSnapshotBytes : pom2::Via6522::kSnapshotBytesV1;
     (void)r.u8();                       // variant — informational
     const uint8_t present = r.u8();
     auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
-        if (!r.has(pom2::Via6522::kSnapshotBytes)) return false;
-        if (v) v->loadSnapshot(r.p + r.pos);
-        r.pos += pom2::Via6522::kSnapshotBytes;
+        if (!r.has(viaBytes)) return false;
+        if (v) v->loadSnapshot(r.p + r.pos, viaBytes);
+        r.pos += viaBytes;
         return true;
     };
     auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
@@ -543,8 +655,18 @@ void MockingboardCard::onReset()
     lastSyncCycle_ = cpu_ ? cpu_->getCycleCountNow() : 0;
     viaWriteCount_[0] = viaWriteCount_[1] = 0;
     ayWriteCount_[0]  = ayWriteCount_[1]  = 0;
-    ayResetCount_[0]  = ayResetCount_[1]  = 0;
     ayEnvWriteCount_[0] = ayEnvWriteCount_[1] = 0;
+    // Drop any cycle-stamped writes queued before the reset — replaying
+    // them afterwards would resurrect the pre-reset tone.
+    ayEvents_.clear();
+    // BUMP, don't zero. The audio thread resyncs its own register bank
+    // only when this counter CHANGES; zeroing it was a no-op whenever it
+    // was already 0 (a driver that never strobes PB2 low), so F12 / cold
+    // boot / profile switch zeroed the CPU-side AY banks while the audio
+    // thread kept the old tone — the card droned on forever. Before the
+    // emuCycles queue the per-buffer snapshot masked this.
+    ++ayResetCount_[0];
+    ++ayResetCount_[1];
 }
 
 AudioSource* MockingboardCard::audioSource()
@@ -568,6 +690,11 @@ float MockingboardCard::getVolume() const
 {
     return audio_->volume.load(std::memory_order_relaxed);
 }
+void MockingboardCard::setCpuClock(double hz)
+{
+    if (hz > 0.0 && audio_) audio_->cpuClockHz.store(hz, std::memory_order_relaxed);
+}
+
 void MockingboardCard::setMuted(bool m)
 {
     audio_->muted.store(m, std::memory_order_relaxed);
@@ -702,11 +829,39 @@ void MockingboardCard::onViaPortBChange(int chip)
     const auto res = ay_[chip]->applyControl(pa, pb);
     if (res == Ay3_8910::ApplyResult::Wrote) {
         ++ayWriteCount_[chip];
+        // emuCycles stamp for the audio thread: replay this store at its
+        // exact sample offset instead of letting the once-per-buffer
+        // register snapshot collapse every write in the window to the
+        // last one. `lastSyncCycle_` is the VIA's synced "now" (the MMIO
+        // path calls syncToCpuCycle() before touching state), so it is
+        // the same clock SpeakerDevice's queue speaks.
+        const uint8_t reg = static_cast<uint8_t>(ay_[chip]->latchedAddr & 0x0F);
+        // Overflow (audio device stalled or absent): drop the WHOLE queue
+        // and force the audio thread to resync its bank from the live
+        // registers. Evicting just the oldest event silently diverged the
+        // two banks for the rest of the session — nothing else ever
+        // re-seeds liveRegs, so one lost write persisted forever.
+        if (ayEvents_.size() >= kMaxAyEvents) {
+            ayEvents_.clear();
+            ++ayResetCount_[0];
+            ++ayResetCount_[1];
+        }
+        ayEvents_.push_back(AyRegEvent{ lastSyncCycle_,
+                                        static_cast<uint8_t>(chip), reg,
+                                        ay_[chip]->regs[reg] });
+        latestAyEventCycle_.store(lastSyncCycle_, std::memory_order_relaxed);
         // R13 (envelope shape) restarts the envelope generator on EVERY
         // write, even when the value is unchanged. Surface same-value R13
         // stores to the audio thread (which only sees the register snapshot)
         // as a monotonic counter, mirroring the ayResetCount_ pattern.
         if ((ay_[chip]->latchedAddr & 0x0F) == 13) ++ayEnvWriteCount_[chip];
+    } else if (res == Ay3_8910::ApplyResult::Read) {
+        // MAME `mockingboard.cpp via_psg_ctrl`: on a READ command the AY
+        // drives the selected register onto the data bus and the card
+        // latches it onto VIA port A (MAME's `m_porta` shadow). Latched
+        // until the next port-A write, so a driver's presence check
+        // (write a register, read it back) actually sees the chip.
+        via_[chip]->setPortAInput(ay_[chip]->busOut);
     } else if (res == Ay3_8910::ApplyResult::ResetOnly) {
         ++ayResetCount_[chip];
     }

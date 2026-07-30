@@ -78,7 +78,9 @@
 #include "Ssi263.h"
 #include "Via6522.h"
 
+#include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -138,6 +140,19 @@ public:
 
     void setMuted(bool m);
     bool isMuted() const;
+
+    /// Emulated CPU clock, for the audio thread's emuCycles replay cursor.
+    /// MUST follow the video standard: under PAL the CPU produces
+    /// 1 015 625 cycles/s, and a cursor advancing at the NTSC nominal
+    /// outruns the producer by 0.7 % — every queued AY write then lands
+    /// at the START of its buffer instead of its true sample offset,
+    /// silently undoing the sub-buffer timing on exactly the PAL demos
+    /// (French Touch / DIX) that need it. Wired from
+    /// `EmulationController::setVideoStandard`, same as the speaker and
+    /// cassette. NOTE this does NOT retune the AY tone/noise generators
+    /// themselves — those stay at the NTSC nominal, the project's
+    /// documented audio-pitch approximation (see CLAUDE.md § profiles).
+    void setCpuClock(double hz) override;
 
     // ─── SlotPeripheral overrides ────────────────────────────────────────
     std::string_view name() const override { return "Mockingboard"; }
@@ -245,6 +260,31 @@ private:
     // Bumped on every write to R13 (envelope shape) so the audio thread can
     // restart the envelope even when the shape value is unchanged.
     uint32_t ayEnvWriteCount_[2] = {0, 0};
+
+    // ── emuCycles-stamped AY register-write queue ──────────────────────
+    //
+    // The audio thread used to snapshot both register banks ONCE per
+    // audio buffer, so every write inside one buffer window collapsed to
+    // the last value: an arpeggio or fast envelope written at ~1 ms
+    // intervals came out quantised to the ~10 ms buffer (notes merged or
+    // dropped). That is the emuCycles violation — CPU→audio events must
+    // carry a CPU-cycle stamp, not land at buffer granularity.
+    //
+    // The CPU thread stamps each accepted AY register store with the
+    // VIA's synced cycle; the audio thread replays them at their exact
+    // sample offset inside the buffer (same cursor idiom as
+    // SpeakerDevice::audioCpuCursor, including the catch-up snap).
+    struct AyRegEvent {
+        uint64_t cycle;
+        uint8_t  chip;
+        uint8_t  reg;
+        uint8_t  val;
+    };
+    std::deque<AyRegEvent> ayEvents_;                 // guarded by mtx
+    std::atomic<uint64_t>  latestAyEventCycle_{0};
+    /// Hard cap so a paused audio device can't grow the queue without
+    /// bound (the audio thread drains it; nothing else does).
+    static constexpr size_t kMaxAyEvents = 16384;
 
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot

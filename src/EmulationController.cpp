@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "EmulationController.h"
+
 #include "CpuClock.h"
 #include "Logger.h"
 
@@ -29,6 +30,19 @@ void EmulationController::setVideoStandard(VideoStandard s)
     // Same starvation applies to the cassette's realtime pulse monitor (its
     // tape-FILE timebase intentionally stays NTSC-nominal — format spec).
     if (tape) tape->setCpuClock(static_cast<double>(pom2VideoTiming(s).cpuClockHz));
+    // The Mockingboard's emuCycles replay cursor (audio thread) needs the
+    // same retune: it maps a queued AY register write's CPU-cycle stamp to
+    // a sample offset inside the buffer, so a cursor left at the NTSC rate
+    // outruns a PAL producer and collapses every write to the buffer edge.
+    // Reached through the slot bus — the card is owned there, and a profile
+    // switch re-plugs it, so this is re-applied on every standard change.
+    // Virtual hook rather than a dynamic_cast per card type: casting made
+    // EmulationController link-depend on every card it named, breaking
+    // tests that link the controller without them.
+    for (int slot = 1; slot <= 7; ++slot) {
+        if (SlotPeripheral* card = mem.slotBus().peripheral(slot))
+            card->setCpuClock(static_cast<double>(pom2VideoTiming(s).cpuClockHz));
+    }
 }
 
 EmulationController::EmulationController()
@@ -74,12 +88,14 @@ EmulationController::EmulationController()
     // /16K-//c profiles the pointer is set but never consulted (the
     // iicHasAltBank guard in Memory keeps the mirror off).
     iwmDev = std::make_unique<pom2::IWMDevice>();
-    // Optional opt-in: route $C0EC/ED/EE/EF *reads* through the IWM
-    // on iicHasAltBank profiles. Off by default (shadow mode) so the
-    // //c+ boot path keeps working via DiskIICard's LSS reads while
-    // the IWM bit-cell window walker is still being tuned against
-    // POM2's flux-cell timing. Set `POM2_IWM_AUTHORITATIVE=1` to
-    // exercise the MAME-faithful IWM data path end-to-end.
+    // Routes $C0EC/ED/EE/EF *reads* through the IWM on iicHasAltBank
+    // profiles. ON by default (`Memory.h iwmAuthoritative = true`), but
+    // since 2026-07-29 "authoritative" is scoped to the one device the
+    // IWM owns: IIcClassProfile::ioReadIWM returns the IWM's byte only
+    // while the SmartPortHub routes to a 3.5" Sony; 5.25" data always
+    // comes from DiskIICard's LSS (the IWM walker mis-framed RWTS
+    // enough that a //c+ DOS 3.3 SAVE failed its write-verify). Set
+    // `POM2_IWM_AUTHORITATIVE=0` to force full shadow mode.
     if (const char* env = std::getenv("POM2_IWM_AUTHORITATIVE")) {
         mem.setIWMAuthoritative(env[0] != '0');
     }
@@ -287,7 +303,46 @@ void EmulationController::tickFrame()
     // thread, but the lock is cheap and keeps the lock-discipline
     // contract identical to the threaded path.
     constexpr int kLockChunkCycles = 4096;
-    const int64_t budget = cyclesPerFrame.load();  // int64: see workerLoop note
+    // WALL-CLOCK PACING. This path is driven by the browser's rAF
+    // (`emscripten_set_main_loop_arg(..., fps = 0, ...)`), i.e. once per
+    // DISPLAY refresh — which has nothing to do with the emulated
+    // machine's refresh. Burning a full `cyclesPerFrame` budget per call
+    // ran a PAL profile at 20313 × 60 = 1.22 MHz on a standard 60 Hz
+    // panel: 20 % over-clocked, guest VBL at 60.1 Hz instead of 50.08.
+    // (NTSC had the same hazard on 120/144 Hz panels.) Scale the budget
+    // by how much wall time actually elapsed, in units of the machine's
+    // own frame interval, so the emulated clock tracks real time on any
+    // display. The threaded path doesn't need this — workerLoop sleeps to
+    // an absolute deadline.
+    int64_t budget = cyclesPerFrame.load();        // int64: see workerLoop note
+    // WASM ONLY. The browser is the only caller that drives this off a
+    // display refresh; every other caller is a HEADLESS TEST, where "one
+    // call = one full frame budget" is the contract. Scaling there would
+    // collapse the budget to ~1 cycle (test loops complete in
+    // microseconds), so a test expecting CPU progress would silently get
+    // none — a trap for any future test, and two existing ones survive
+    // only by accident (one calls tickFrame exactly once, the other
+    // measures per-call rewind captures rather than cycles).
+#ifdef __EMSCRIPTEN__
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (lastTickWall_.time_since_epoch().count() != 0) {
+            const auto elapsedUs = std::chrono::duration_cast<
+                std::chrono::microseconds>(now - lastTickWall_).count();
+            const int64_t intervalUs = frameIntervalUs.load();
+            if (intervalUs > 0 && elapsedUs > 0) {
+                // Cap at 4 frames' worth so a backgrounded tab (or a
+                // breakpoint) doesn't dump seconds of emulated time into
+                // one call and freeze the page.
+                const int64_t scaled =
+                    budget * std::min<int64_t>(elapsedUs, intervalUs * 4)
+                           / intervalUs;
+                budget = std::max<int64_t>(scaled, 1);
+            }
+        }
+        lastTickWall_ = now;
+    }
+#endif
     for (int64_t done = 0; done < budget; ) {
         const int chunk = static_cast<int>(std::min<int64_t>(kLockChunkCycles, budget - done));
         std::lock_guard<std::mutex> lk(stateMtx);

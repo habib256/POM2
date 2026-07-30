@@ -29,6 +29,8 @@
 
 #include "IWMDevice.h"
 #include "MemoryProfile_IIcClass.h"
+#include "SmartPortHub.h"
+#include "Sony35Drive.h"
 
 #include <cassert>
 #include <cstdint>
@@ -95,21 +97,38 @@ void testIIcPlusStillRoutesToIwm()
     const std::vector<uint8_t> altBank(0x4000, 0x00);
 
     pom2::IWMDevice iwm;
+    pom2::SmartPortHub hub;
+    pom2::Sony35Drive sonyInt, sonyExt;
+    hub.attach(&iwm);
+    hub.setSony35(&sonyInt, &sonyExt);
     IIcClassProfile profile(payload.data(), payload.size(), altBank.data(),
-                            &iwm, nullptr, /*iwmAuthoritative=*/true);
+                            &iwm, &hub, /*iwmAuthoritative=*/true);
 
+    // Selective authority (2026-07-29): with NO 3.5" Sony active the
+    // access still TICKS the IWM (the mirror stays live for the MIG
+    // handshake) but the VALUE falls through to the DiskIICard LSS —
+    // the IWM's bit-cell walker mis-framed DOS 3.3 RWTS write-verify
+    // (SAVE → I/O ERROR on the //c+).
     uint8_t out = 0xAB;
-    const bool claimed = profile.ioReadIWM(0xC0EC, /*cyc=*/5000, out);
-    // //c+ keeps the mirror: the MIG / Sony 3.5" path has no other
-    // controller to fall back on.
-    assert(claimed);
+    assert(!profile.ioReadIWM(0xC0EC, /*cyc=*/5000, out));
+    assert(out == 0xAB);                 // untouched — LSS answers
 
     const std::vector<uint8_t> before = iwmState(iwm);
     profile.ioWriteIWM(0xC0E1, 0xFF, /*cyc=*/9000);
     // The write ticked the device forward, so its state must have moved.
     assert(iwmState(iwm) != before);
 
-    std::printf("  //c+: IWM mirror still live OK\n");
+    // Route to the on-board 3.5" (MAME recalc_active_device: devsel=2 +
+    // MIG intdrive → m_floppy[2]): NOW the IWM's byte is authoritative —
+    // no other controller knows the Sony.
+    profile.ioWriteIWM(0xC0E9, 0, /*cyc=*/10000);   // motor enable
+    profile.ioWriteIWM(0xC0EB, 0, /*cyc=*/10001);   // SEL → devsel 2
+    hub.setMigIntDrive(true);
+    assert(hub.active35Selected());
+    uint8_t v = 0;
+    assert(profile.ioReadIWM(0xC0EC, /*cyc=*/10002, v));
+
+    std::printf("  //c+: IWM mirror live; authoritative only for 3.5\" OK\n");
 }
 
 void testNoAltBankNeverRoutes()

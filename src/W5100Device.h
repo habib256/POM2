@@ -160,6 +160,9 @@ inline constexpr uint8_t kW5100SnSrClosed      = 0x00;
 inline constexpr uint8_t kW5100SnSrInit        = 0x13;
 inline constexpr uint8_t kW5100SnSrSynSent     = 0x15;
 inline constexpr uint8_t kW5100SnSrEstablished = 0x17;
+/// Peer sent FIN: the guest may still SEND its remaining data and must
+/// answer with DISCON/CLOSE (W5100 datasheet §5.2.1 "SOCK_CLOSE_WAIT").
+inline constexpr uint8_t kW5100SnSrCloseWait   = 0x1C;
 inline constexpr uint8_t kW5100SnSrUdp         = 0x22;
 inline constexpr uint8_t kW5100SnSrIpRaw       = 0x32;
 inline constexpr uint8_t kW5100SnSrMacRaw      = 0x42;
@@ -271,10 +274,19 @@ private:
         /// for UDP, IP+len for IPRAW, len for MACRAW.
         uint8_t headerSize = 0;
 
+        /// TCP bytes accepted from the guest (SEND already completed and
+        /// freed the TX ring) but not yet taken by the host socket — a
+        /// slow peer makes sendto() return short or EAGAIN, and dropping
+        /// the tail silently corrupted the stream. Host-side only, never
+        /// snapshotted (a restored connection is demoted to CLOSED anyway).
+        std::vector<uint8_t> pendingTx;
+
         bool isOpen() const
         {
             return fd >= 0 &&
-                   (status == kW5100SnSrEstablished || status == kW5100SnSrUdp);
+                   (status == kW5100SnSrEstablished ||
+                    status == kW5100SnSrCloseWait ||
+                    status == kW5100SnSrUdp);
         }
     };
 
@@ -297,6 +309,11 @@ private:
     // Buffer geometry (`Uthernet2.cpp:441-547`).
     void     setTxSizes(uint8_t value);
     void     setRxSizes(uint8_t value);
+    /// Re-fit rxWrite/rxSize to the socket's (possibly just rebuilt)
+    /// ring geometry so no later ring arithmetic can underflow — a guest
+    /// shrinking RMSR under staged data, or a crafted snapshot, used to
+    /// make ringFreeRoom() wrap to ~64 K.
+    void     clampRingState(size_t i);
     uint16_t txDataSize(size_t i) const;
     uint8_t  txFreeSizeRegister(size_t i, unsigned shift) const;
     uint8_t  rxDataSizeRegister(size_t i, unsigned shift) const;
@@ -321,6 +338,10 @@ private:
     // Transmit paths (`Uthernet2.cpp:772-895`).
     void sendData(size_t i);
     void sendDataToSocket(size_t i, const std::vector<uint8_t>& data);
+    /// Push a TCP socket's pendingTx tail into the host socket; called on
+    /// every poll() until the queue drains. Kills the connection if the
+    /// backlog passes 1 MiB (the peer has stalled for good).
+    void flushPendingTx(size_t i);
     void sendDataMacRaw(const std::vector<uint8_t>& data);
     void sendDataIpRaw(size_t i, const std::vector<uint8_t>& payload);
 
@@ -362,6 +383,11 @@ private:
     struct DnsMailbox {
         std::mutex              mutex;
         std::vector<PendingDns> pending;
+        /// Detached lookups still running. Checked before std::async is
+        /// even called (its future's destructor would block), so a guest
+        /// looping OPEN over random hostnames cannot pile up resolver
+        /// threads without bound.
+        int                     inFlight = 0;
     };
     std::shared_ptr<DnsMailbox> dnsMailbox_ = std::make_shared<DnsMailbox>();
 

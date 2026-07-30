@@ -130,18 +130,28 @@ void testSony35SenseWithDisk()
     drv.seekPhaseW(0x02);                      // CA1 → reg 0xA
     assert(drv.senseR() == false);
 
-    // Disk-change latch: sense reg 0x3 reads 1 after a media change and
-    // is cleared by the DskchgClear STROBE (reg 0xC) — NOT by reading.
+    // Disk-change latch, MAME polarity (floppy.cpp:672 load → m_dskchg=1,
+    // :723 unload → 0; mac wpt_r reg 3 returns !m_dskchg): right after an
+    // INSERT the latch is armed, so the sense reads 0 ("disk in place");
+    // reads do not touch it. An EJECT drops the latch (sense 1 =
+    // changed/empty) until the DskchgClear STROBE (reg 0xC) re-arms it.
+    // The old, inverted map made an EMPTY drive read "disk in place",
+    // which walked the //c+ firmware's boot drive-scan into reading a
+    // diskless drive and hung every cold boot at $F0FC.
     drv.ssW(false);
     drv.seekPhaseW(0x03);                      // reg 0x3
-    assert(drv.senseR() == true);
-    assert(drv.senseR() == true);              // read does NOT clear
+    assert(drv.senseR() == false);             // inserted → in place
+    assert(drv.senseR() == false);             // read does NOT change it
+    drv.seekPhaseW(0x07);                      // CA2|CA1|CA0, LSTRB low
+    drv.seekPhaseW(0x0F);                      // + LSTRB → EjectOn strobe
+    drv.seekPhaseW(0x03);
+    assert(drv.senseR() == true);              // ejected → changed/empty
     drv.ssW(true);
     drv.seekPhaseW(0x04);                      // CA2 → reg 0xC, LSTRB low
     drv.seekPhaseW(0x0C);                      // + LSTRB → DskchgClear
     drv.ssW(false);
     drv.seekPhaseW(0x03);
-    assert(drv.senseR() == false);             // cleared
+    assert(drv.senseR() == false);             // latch re-armed
 
     fs::remove(p);
     std::printf("  ok: Sony35Drive sense — MAME map (present/track0/dskchg)\n");
@@ -377,8 +387,11 @@ void testIwmForwardsPhases()
     // Without LSTRB strobe nothing changes inside the drive, but its
     // `senseR()` honours the current phase bits.
     drv.setSel(false);                          // SEL=0; reg = {0, 0, 1, 1} = 0x3
-    // /TRACK0 read at reg 0x3 must reflect current track (0 at reset).
-    assert(drv.senseR() == false);
+    // Reg 0x3 is the DSKCHG sense (!m_dskchg, MAME polarity): this drive
+    // has no image, so it reads HIGH ("changed/empty"). What matters here
+    // is that the phase bits selected reg 3 at all — the value pins the
+    // MAME map on the way.
+    assert(drv.senseR() == true);
     std::printf("  ok: IWM forwards phase bits to active 3.5\" drive\n");
 }
 

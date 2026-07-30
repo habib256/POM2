@@ -112,6 +112,22 @@ void SmartPortCard::appendSnapshotState(std::vector<uint8_t>& out) const
         out.push_back(ioError_[u] ? 1 : 0);
         out.insert(out.end(), writeBuf_[u].begin(), writeBuf_[u].end());
     }
+    // v1.1 tail: the SmartPort-protocol call engine ($Cn0D → $CE00
+    // handler). Omitting it left a rewind mid-STATUS/READ resuming with
+    // the LIVE result stream and collect buffer — the restored firmware
+    // pulled the wrong payload bytes out of reg 0x9. Old blobs simply end
+    // before this tail (loader treats it as optional).
+    out.insert(out.end(), spCollect_.begin(), spCollect_.end());
+    out.push_back(static_cast<uint8_t>(spCollectN_));
+    out.push_back(spPushPages_);
+    out.push_back(spError_);
+    const uint16_t rn = static_cast<uint16_t>(
+        std::min<size_t>(spResult_.size(), 0xFFFF));
+    out.push_back(static_cast<uint8_t>(rn));
+    out.push_back(static_cast<uint8_t>(rn >> 8));
+    out.push_back(static_cast<uint8_t>(spResultPos_));
+    out.push_back(static_cast<uint8_t>(spResultPos_ >> 8));
+    out.insert(out.end(), spResult_.begin(), spResult_.begin() + rn);
 }
 
 void SmartPortCard::loadSnapshotState(const uint8_t* data, std::size_t len)
@@ -132,6 +148,31 @@ void SmartPortCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     }
     // Media didn't move; the read cache just re-fills from the same block.
     readCacheValid_.fill(false);
+
+    // v1.1 tail (optional — absent in pre-fix blobs, which then keep a
+    // RESET call engine rather than the live one leaking through).
+    size_t pos = static_cast<size_t>(p - data);
+    spCollect_.fill(0);
+    spCollectN_  = 0;
+    spPushPages_ = 0;
+    spError_     = 0;
+    spResult_.clear();
+    spResultPos_ = 0;
+    if (len - pos >= spCollect_.size() + 3 + 4) {
+        std::memcpy(spCollect_.data(), data + pos, spCollect_.size());
+        pos += spCollect_.size();
+        spCollectN_  = std::min<size_t>(data[pos++], spCollect_.size());
+        spPushPages_ = data[pos++];
+        spError_     = data[pos++];
+        const size_t rn  = static_cast<size_t>(data[pos] | (data[pos + 1] << 8));
+        pos += 2;
+        size_t rpos = static_cast<size_t>(data[pos] | (data[pos + 1] << 8));
+        pos += 2;
+        if (len - pos >= rn) {
+            spResult_.assign(data + pos, data + pos + rn);
+            spResultPos_ = std::min(rpos, spResult_.size());
+        }
+    }
 }
 
 void SmartPortCard::advanceCycles(int cycles)

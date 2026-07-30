@@ -104,7 +104,7 @@ void testTimeReadProtocol()
     card->deviceSelectWrite(0, kModeTimeReadShifted);
 
     // Step 2: STB rising edge with mode=TIME_READ snapshots host time
-    // into the 48-bit shift register.
+    // into the 40-bit shift register.
     card->deviceSelectWrite(0, kModeTimeReadShifted | kBitStb);
 
     // Step 3: drop STB so subsequent writes only pulse CLK. Mode bits
@@ -113,16 +113,17 @@ void testTimeReadProtocol()
     const uint8_t baseline = kModeTimeReadShifted;     // STB low, CLK low
     card->deviceSelectWrite(0, baseline);
 
-    // Step 4: clock out 6 bytes LSB-first.
+    // Step 4: clock out the 5 bytes the chip holds, LSB-first. 40-bit
+    // register — no year byte (the shipped ThunderClock firmware reads
+    // exactly 10 nibbles = 40 CLK pulses; see ClockCard's 40-bit note).
     const uint8_t sec    = readByteLsbFirst(*card, baseline);
     const uint8_t min    = readByteLsbFirst(*card, baseline);
     const uint8_t hour   = readByteLsbFirst(*card, baseline);
     const uint8_t day    = readByteLsbFirst(*card, baseline);
     const uint8_t mthDow = readByteLsbFirst(*card, baseline);
-    const uint8_t year   = readByteLsbFirst(*card, baseline);
 
     // 2026-05-09 14:37:42 Saturday → BCD bytes:
-    //   sec=$42, min=$37, hour=$14, day=$09, year=$26.
+    //   sec=$42, min=$37, hour=$14, day=$09.
     //   shiftReg[4] packs month (4-bit binary, NOT BCD) in the high
     //   nibble and day-of-week in the low nibble (MAME upd1990a.cpp:95).
     //   May=5, Saturday=6 → (5 << 4) | 6 = $56.
@@ -130,7 +131,6 @@ void testTimeReadProtocol()
     assert(min    == 0x37);
     assert(hour   == 0x14);
     assert(day    == 0x09);
-    assert(year   == 0x26);
     assert(mthDow == 0x56);
 }
 
@@ -189,7 +189,7 @@ void testDataOutMirrorOnAllDeviceSelectOffsets()
 // MODE_TIME_SET round-trip: load 48 bits via DATA_IN + CLK in MODE_SHIFT,
 // commit via STB rising edge with mode=TIME_SET, then read back through
 // the normal TIME_READ path and confirm the bytes match. Pins both the
-// DATA_IN → MSB-of-shiftReg[5] injection on CLK and the shiftReg →
+// DATA_IN → MSB-of-shiftReg[4] injection on CLK and the shiftReg →
 // time-base commit on STB-in-TIME_SET (MAME `upd1990a.cpp:194-225`).
 void testTimeSetRoundTrip()
 {
@@ -198,21 +198,23 @@ void testTimeSetRoundTrip()
     // bytes regardless of what the injector says.
     auto card = ClockCard::makeForTest(4, &fixedTime_2026_05_09_14_37_42);
 
-    // Desired set time: 1995-12-31 23:58:59 Sunday. BCD bytes shifted
-    // out LSB-first: sec=$59, min=$58, hour=$23, day=$31,
-    // mthDow = (12<<4) | 0 = $C0 (Sunday = day-of-week 0), year=$95.
-    // We need to clock these in MSB-first across the *48-bit* register
-    // so the LAST bit clocked ends up at the LSB of shiftReg[0].
+    // Desired set time: Dec-31 23:58:59 Sunday. BCD bytes shifted out
+    // LSB-first: sec=$59, min=$58, hour=$23, day=$31,
+    // mthDow = (12<<4) | 0 = $C0 (Sunday = day-of-week 0). NO year byte:
+    // the uPD1990A(C) register is 40 bits (MAME upd1990a.cpp `max_shift`
+    // is 5 for a non-4990A part), and the shipped ThunderClock firmware
+    // clocks exactly 40 pulses — 10 nibbles over sec/min/hour/day/
+    // month+dow. Driving 48 used to slide every field by one byte.
     //
     // The shift register's serial-out layout is byte0 → byte1 → ... →
     // byte5 (each byte LSB-first). The corresponding serial-in order
     // — what we need to drive on DATA_IN as we pulse CLK 48 times —
-    // is the *reverse*: send byte5's MSB first, ... down to byte0's
-    // LSB last. (Each CLK pulse injects DATA_IN into shiftReg[5]'s MSB
+    // is the *reverse*: send byte4's MSB first, ... down to byte0's
+    // LSB last. (Each CLK pulse injects DATA_IN into shiftReg[4]'s MSB
     // and shifts everything one bit right.)
 
-    const uint8_t target[6] = {
-        0x59, 0x58, 0x23, 0x31, 0xC0, 0x95
+    const uint8_t target[5] = {
+        0x59, 0x58, 0x23, 0x31, 0xC0
     };
     constexpr uint8_t kModeShiftShifted   = 0x01 << 3;     // C0/C1/C2 = 001
     constexpr uint8_t kModeTimeSetShifted = 0x02 << 3;     // C0/C1/C2 = 010
@@ -220,14 +222,14 @@ void testTimeSetRoundTrip()
     // Arm MODE_SHIFT (no STB pulse yet — just hold the mode bits).
     card->deviceSelectWrite(0, kModeShiftShifted);
 
-    // Clock 48 bits in. For position k in [0, 48), the bit value is
+    // Clock 40 bits in. For position k in [0, 40), the bit value is
     // bit (k % 8) of target[(k/8)] — i.e. byte 0's LSB first, then
     // byte 0's bit 1, …, byte 5's MSB last. As each CLK pulse injects
-    // DATA_IN at shiftReg[5]'s MSB and shifts right by one bit, the
-    // bit that lands at shiftReg[0]'s LSB after 48 cycles is the one
+    // DATA_IN at shiftReg[4]'s MSB and shifts right by one bit, the
+    // bit that lands at shiftReg[0]'s LSB after 40 cycles is the one
     // that was clocked in FIRST. So clock byte 0 bit 0 first, byte 0
-    // bit 1 next, …, byte 5 bit 7 last.
-    for (int k = 0; k < 48; ++k) {
+    // bit 1 next, …, byte 4 bit 7 last.
+    for (int k = 0; k < 40; ++k) {
         const int byteIdx = k / 8;
         const int bitIdx  = k % 8;
         const uint8_t bit = (target[byteIdx] >> bitIdx) & 1;
@@ -252,8 +254,7 @@ void testTimeSetRoundTrip()
     const uint8_t baseline = kModeTimeReadShifted;
     card->deviceSelectWrite(0, baseline);
 
-    const uint8_t got[6] = {
-        readByteLsbFirst(*card, baseline),
+    const uint8_t got[5] = {
         readByteLsbFirst(*card, baseline),
         readByteLsbFirst(*card, baseline),
         readByteLsbFirst(*card, baseline),
@@ -276,7 +277,10 @@ void testTimeSetRoundTrip()
     // mktime against the real Dec 31 1995 (Sunday → tm_wday=0). Either
     // value 0 or 0xC0 is acceptable.
     assert((got[4] & 0xF0) == 0xC0);
-    assert(got[5] == 0x95);              // year
+    // No year assertion: the chip has no year counter (40-bit register).
+    // commitTimeSetFromShiftReg takes the year from the host clock, which
+    // is what a real ThunderClock+ does — ProDOS reads only month/day/
+    // time from the card and supplies the year itself.
 }
 
 // MODE_SHIFT is *not* strictly gated in POM2 (deliberate divergence
@@ -437,11 +441,12 @@ void testResetPreservesSetTime()
 
     // Clock in a set time of 1995-12-31 23:58:59 (same target byte layout
     // as testTimeSetRoundTrip) and commit via STB in MODE_TIME_SET.
-    const uint8_t target[6] = { 0x59, 0x58, 0x23, 0x31, 0xC0, 0x95 };
+    // 40-bit register: 5 bytes, no year (see testTimeSetRoundTrip).
+    const uint8_t target[5] = { 0x59, 0x58, 0x23, 0x31, 0xC0 };
     constexpr uint8_t kModeShiftShifted   = 0x01 << 3;
     constexpr uint8_t kModeTimeSetShifted = 0x02 << 3;
     card->deviceSelectWrite(0, kModeShiftShifted);
-    for (int k = 0; k < 48; ++k) {
+    for (int k = 0; k < 40; ++k) {
         const uint8_t bit = (target[k / 8] >> (k % 8)) & 1;
         const uint8_t baseline =
             static_cast<uint8_t>(kModeShiftShifted | (bit ? kBitDataIn : 0));
@@ -465,11 +470,11 @@ void testResetPreservesSetTime()
     const uint8_t min = readByteLsbFirst(*card, baseline);
     assert(sec == 0x59);
     assert(min == 0x58);
-    // Skip hour/day, check year (DST-immune like testTimeSetRoundTrip).
+    // Skip hour (DST-flexible), then pin day + month — the set time
+    // survived the bus RESET. No year byte on this chip (40-bit).
     (void)readByteLsbFirst(*card, baseline);    // hour
-    (void)readByteLsbFirst(*card, baseline);    // day
-    (void)readByteLsbFirst(*card, baseline);    // month/dow
-    assert(readByteLsbFirst(*card, baseline) == 0x95);
+    assert(readByteLsbFirst(*card, baseline) == 0x31);          // day
+    assert((readByteLsbFirst(*card, baseline) & 0xF0) == 0xC0); // month=12
 }
 
 // RESET disables interrupts and stops the TP timer (manual 5-2 point 2).

@@ -328,6 +328,7 @@ void W5100Device::clearSocket(size_t i)
     if (s.fd >= 0) ::close(s.fd);
 #endif
     s.fd = -1;
+    s.pendingTx.clear();
     setSocketStatus(i, kW5100SnSrClosed);
 }
 
@@ -414,12 +415,27 @@ void W5100Device::connectSocket(size_t i)
 #else
     Socket& s = sockets_[i];
     if (s.fd < 0) return;
+    // CONNECT is only legal from SOCK_INIT (TCP, freshly opened) — the
+    // real chip ignores it elsewhere. Accepting it on a UDP socket used
+    // to connect() the datagram fd, flip the status to ESTABLISHED and
+    // drop the 8-byte UDP RX header the driver still expects.
+    if (s.status != kW5100SnSrInit) return;
 
     sockaddr_in destination{};
     destination.sin_family = AF_INET;
     // Both are already in network byte order in the registers.
     destination.sin_addr.s_addr =
         readAddress(static_cast<uint16_t>(s.registerAddress + kW5100SnDipr0));
+    // DIPR 0.0.0.0 is this card's "DNS resolution failed" marker (and no
+    // valid destination either way): a real chip's ARP would time out and
+    // close, whereas connect(INADDR_ANY) on Linux reaches 127.0.0.1 — the
+    // guest would silently talk to a random host-local service.
+    if (destination.sin_addr.s_addr == 0) {
+        log().warn("W5100", "CONNECT with destination 0.0.0.0 "
+                            "(DNS failed or DIPR unset) — closing socket");
+        clearSocket(i);
+        return;
+    }
     uint16_t port;
     const uint8_t portBytes[2] = {
         mem(static_cast<uint16_t>(s.registerAddress + kW5100SnDport0)),
@@ -477,6 +493,18 @@ void W5100Device::setCommandRegister(size_t i, uint8_t value)
 // `Uthernet2.cpp:441-485` — RMSR/TMSR pack four 2-bit size codes, one per
 // socket, each selecting 1/2/4/8 KB. Bases are assigned in order and
 // clamped so a greedy allocation cannot run past the 8 KB region.
+namespace {
+// Every ring size must stay a power of two: all the pointer arithmetic
+// below masks with `size - 1`. A greedy allocation clamped against the
+// end of the region can come out non-pow2 (e.g. 1 KB + 8 KB requested in
+// an 8 KB region leaves 7 KB) — round it down so masking stays exact.
+inline uint16_t floorPow2(uint16_t v)
+{
+    while (v & (v - 1)) v = static_cast<uint16_t>(v & (v - 1));
+    return v;
+}
+} // namespace
+
 void W5100Device::setTxSizes(uint8_t value)
 {
     setMem(kW5100Tmsr, value);
@@ -486,9 +514,11 @@ void W5100Device::setTxSizes(uint8_t value)
         s.transmitBase = base;
         const uint8_t bits = static_cast<uint8_t>(value & 0x03);
         value = static_cast<uint8_t>(value >> 2);
-        base = static_cast<uint16_t>(base + (1u << (10 + bits)));
-        if (base > end) base = end;
-        s.transmitSize = static_cast<uint16_t>(base - s.transmitBase);
+        uint16_t size = static_cast<uint16_t>(1u << (10 + bits));
+        if (static_cast<uint32_t>(base) + size > end)
+            size = floorPow2(static_cast<uint16_t>(end - base));
+        s.transmitSize = size;
+        base = static_cast<uint16_t>(base + size);
     }
 }
 
@@ -497,15 +527,32 @@ void W5100Device::setRxSizes(uint8_t value)
     setMem(kW5100Rmsr, value);
     uint16_t base = kW5100RxBase;
     const uint32_t end = kW5100MemSize;
+    size_t i = 0;
     for (Socket& s : sockets_) {
         s.receiveBase = base;
         const uint8_t bits = static_cast<uint8_t>(value & 0x03);
         value = static_cast<uint8_t>(value >> 2);
-        uint32_t next = static_cast<uint32_t>(base) + (1u << (10 + bits));
-        if (next > end) next = end;
-        base = static_cast<uint16_t>(next);
-        s.receiveSize = static_cast<uint16_t>(next - s.receiveBase);
+        uint16_t size = static_cast<uint16_t>(1u << (10 + bits));
+        if (static_cast<uint32_t>(base) + size > end)
+            size = floorPow2(static_cast<uint16_t>(end - base));
+        s.receiveSize = size;
+        base = static_cast<uint16_t>(base + size);
+        // The chip state may predate this geometry (guest rewrote RMSR
+        // with data staged, or a snapshot is being restored).
+        clampRingState(i++);
     }
+}
+
+void W5100Device::clampRingState(size_t i)
+{
+    Socket& s = sockets_[i];
+    if (s.receiveSize == 0) {
+        s.rxWrite = 0;
+        s.rxSize  = 0;
+        return;
+    }
+    s.rxWrite = static_cast<uint16_t>(s.rxWrite % s.receiveSize);
+    if (s.rxSize > s.receiveSize) s.rxSize = s.receiveSize;
 }
 
 // `Uthernet2.cpp:487-502`
@@ -601,7 +648,9 @@ bool W5100Device::ringHasRoomFor(size_t i, size_t len) const
 uint16_t W5100Device::ringFreeRoom(size_t i) const
 {
     const Socket& s = sockets_[i];
-    const uint16_t total = static_cast<uint16_t>(s.receiveSize - s.rxSize);
+    // Signed on purpose: clampRingState keeps rxSize <= receiveSize, but
+    // an unsigned underflow here once meant "~64 K free" in a 1 KB ring.
+    const int total = static_cast<int>(s.receiveSize) - static_cast<int>(s.rxSize);
     return total > s.headerSize ? static_cast<uint16_t>(total - s.headerSize) : 0;
 }
 
@@ -657,8 +706,15 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
         ringWriteData(i, buffer.data(), static_cast<size_t>(got));
         bytesReceived_ += static_cast<uint64_t>(got);
     } else if (got == 0) {
-        // Orderly shutdown by the peer.
-        clearSocket(i);
+        // Orderly shutdown by the peer — half-close, not a dead socket.
+        // The real chip parks in SOCK_CLOSE_WAIT: the guest may still
+        // SEND its remaining data (the fd stays open for writing) and
+        // ends the session with DISCON/CLOSE. Jumping straight to CLOSED
+        // broke every driver that drains-then-disconnects on SR=$1C.
+        if (s.status == kW5100SnSrEstablished)
+            setSocketStatus(i, kW5100SnSrCloseWait);
+        else
+            clearSocket(i);
     } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
         clearSocket(i);
     }
@@ -796,6 +852,7 @@ void W5100Device::sendData(size_t i)
     case kW5100SnSrMacRaw:      sendDataMacRaw(data);      break;
     case kW5100SnSrIpRaw:       sendDataIpRaw(i, data);    break;
     case kW5100SnSrEstablished:
+    case kW5100SnSrCloseWait:   // half-closed: our direction still sends
     case kW5100SnSrUdp:         sendDataToSocket(i, data); break;
     default: break;
     }
@@ -823,12 +880,57 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
     std::memcpy(&port, portBytes, 2);
     destination.sin_port = port;
 
+    // TCP is a stream: whatever the non-blocking send does not take NOW
+    // must be kept and retried (poll() flushes pendingTx), or the bytes
+    // silently vanish mid-stream while the guest believes they were sent —
+    // the TX ring was already freed when SEND completed. UDP keeps the
+    // fire-and-forget path: dropping a datagram on EAGAIN is legal, and
+    // queueing datagrams here would fuse their boundaries.
+    const bool isTcp = (s.status != kW5100SnSrUdp);
+    if (isTcp && !s.pendingTx.empty()) {
+        s.pendingTx.insert(s.pendingTx.end(), data.begin(), data.end());
+        flushPendingTx(i);
+        return;
+    }
+
     const ssize_t res = ::sendto(s.fd, data.data(), data.size(), 0,
                                  reinterpret_cast<const sockaddr*>(&destination),
                                  sizeof(destination));
     if (res >= 0) {
         bytesSent_ += static_cast<uint64_t>(res);
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        if (isTcp && static_cast<size_t>(res) < data.size())
+            s.pendingTx.assign(data.begin() + res, data.end());
+    } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+        if (isTcp) s.pendingTx = data;
+    } else {
+        clearSocket(i);
+    }
+#endif
+}
+
+void W5100Device::flushPendingTx(size_t i)
+{
+#ifdef __EMSCRIPTEN__
+    (void)i;
+#else
+    Socket& s = sockets_[i];
+    if (s.pendingTx.empty() || s.fd < 0) return;
+
+    const ssize_t res = ::send(s.fd, s.pendingTx.data(), s.pendingTx.size(), 0);
+    if (res > 0) {
+        bytesSent_ += static_cast<uint64_t>(res);
+        s.pendingTx.erase(s.pendingTx.begin(), s.pendingTx.begin() + res);
+    } else if (res < 0 &&
+               errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        clearSocket(i);
+        return;
+    }
+    // A peer that has not taken a megabyte is not coming back; an honest
+    // dead connection beats an unbounded host-side queue.
+    constexpr size_t kMaxPendingTx = 1u << 20;
+    if (s.pendingTx.size() > kMaxPendingTx) {
+        log().warn("W5100", "socket " + std::to_string(i) +
+                            ": peer stalled with >1 MiB unsent — closing");
         clearSocket(i);
     }
 #endif
@@ -931,6 +1033,19 @@ void W5100Device::resolveDns(size_t i)
         resolved = cached->second;
     } else {
 #ifndef __EMSCRIPTEN__
+        // Cap the number of lookups still running detached: each hung
+        // resolver call is a live thread, and a guest looping OPEN over
+        // random hostnames must not mint them without bound. Checked
+        // BEFORE std::async — an un-detached future's destructor blocks.
+        {
+            std::lock_guard<std::mutex> lk(dnsMailbox_->mutex);
+            constexpr int kMaxDnsInFlight = 8;
+            if (dnsMailbox_->inFlight >= kMaxDnsInFlight) {
+                log().warn("W5100", "too many DNS lookups in flight — "
+                                    "'" + name + "' not attempted");
+                return;
+            }
+        }
         // Off-thread with a bounded wait: a slow resolver must not stall
         // the CPU thread. If the wait expires the lookup keeps running
         // and lands in the cache, so the guest's retry succeeds.
@@ -939,6 +1054,9 @@ void W5100Device::resolveDns(size_t i)
         if (future.wait_for(std::chrono::milliseconds(kDnsWaitMs)) ==
             std::future_status::ready) {
             resolved = future.get();
+            // The cache is guest-fed (one entry per hostname ever opened):
+            // keep it from growing without bound across a long session.
+            if (dnsCache_.size() >= 512) dnsCache_.clear();
             dnsCache_[name] = resolved;
         } else {
             // Still in flight. Detach it against the shared mailbox — the
@@ -948,10 +1066,15 @@ void W5100Device::resolveDns(size_t i)
             // CPU thread. Never touch dnsCache_ from here.
             auto shared = std::make_shared<std::future<uint32_t>>(std::move(future));
             auto mailbox = dnsMailbox_;
+            {
+                std::lock_guard<std::mutex> lk(mailbox->mutex);
+                ++mailbox->inFlight;
+            }
             std::thread([name, shared, mailbox]() {
                 const uint32_t late = shared->get();
                 std::lock_guard<std::mutex> lk(mailbox->mutex);
                 mailbox->pending.push_back({ name, late });
+                --mailbox->inFlight;
             }).detach();
             log().info("W5100", "DNS lookup for '" + name +
                                 "' still in flight — retry the connection");
@@ -1069,6 +1192,10 @@ uint8_t W5100Device::readValueAt(uint16_t address)
 // `Uthernet2.cpp:1334-1354`
 void W5100Device::writeValueAt(uint16_t address, uint8_t value)
 {
+    // Same >= $8000 mirror as readValueAt (Uthernet II manual p.13): the
+    // read path wrapped through mem()'s mask while writes up there fell
+    // past every range test and were silently dropped.
+    address &= kW5100MemMax;
     if (address <= kW5100Uport1) {
         writeCommonRegister(address, value);
     } else if (address >= kW5100S0Base && address <= kW5100S3Max) {
@@ -1136,6 +1263,10 @@ void W5100Device::poll()
 
 #ifndef __EMSCRIPTEN__
     for (size_t i = 0; i < kSocketCount; ++i) {
+        // Retry TCP bytes the host socket refused earlier (short write /
+        // EAGAIN) — see sendDataToSocket.
+        if (!sockets_[i].pendingTx.empty()) flushPendingTx(i);
+
         Socket& s = sockets_[i];
         if (s.fd < 0 || s.status != kW5100SnSrSynSent) continue;
 
@@ -1166,6 +1297,7 @@ void W5100Device::drainPendingDns()
         if (dnsMailbox_->pending.empty()) return;
         ready.swap(dnsMailbox_->pending);
     }
+    if (dnsCache_.size() >= 512) dnsCache_.clear();   // same cap as resolveDns
     for (const PendingDns& p : ready) dnsCache_[p.name] = p.address;
 }
 
@@ -1269,6 +1401,9 @@ void W5100Device::loadSnapshotState(const uint8_t* data, std::size_t len)
         Socket& s = sockets_[i];
         s.rxWrite = getU16(data + p); p += 2;
         s.rxSize  = getU16(data + p); p += 2;
+        // Never trust a blob's ring cursors against the rebuilt geometry —
+        // a stale/crafted snapshot could otherwise underflow the ring math.
+        clampRingState(i);
         uint8_t status = data[p++];
 
         // A TCP connection or a UDP binding cannot be resurrected: the

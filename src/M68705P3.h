@@ -62,6 +62,7 @@
 #define POM2_M68705P3_H
 
 #include <array>
+#include <vector>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -69,6 +70,20 @@
 class M68705P3
 {
 public:
+
+    /// Snapshot surface (raw, no magic — the owning card wraps it).
+    /// Registers + 112 B RAM + port latches/DDRs + timer + interrupt
+    /// latches. The EPROM is ROM, reloaded at construction, so it is
+    /// deliberately NOT serialized.
+    /// PC(2) + S/A/X/CC(4) + RAM(112) + 3 ports × (latch/ddr/input)(9) +
+    /// timer(4) + pending_interrupts(2) + irq_line(1) + icount(4) = 138.
+    /// The register group is FOUR bytes, not three — the old 137 let a
+    /// short blob past the loader's length guard, which then read one
+    /// byte past the caller's buffer.
+    static constexpr size_t kSnapshotBytes =
+        2 + 4 + 112 + 3 * 3 + 4 + 2 + 1 + 4;
+    void   appendSnapshotState(std::vector<uint8_t>& out) const;
+    size_t loadSnapshotState(const uint8_t* data, size_t len);
     M68705P3();
 
     // ─── ROM loading ───────────────────────────────────────────────────

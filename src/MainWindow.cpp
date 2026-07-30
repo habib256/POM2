@@ -1055,7 +1055,17 @@ MainWindow::~MainWindow()
     // booted (and any HDV card auto-plugged for it by ensureHdvCardForBoot)
     // never leak into the user's saved GUI config. The setString calls
     // above are in-memory only and discarded with `settings` here.
-    if (!kiosk_) settings->save();
+    // Record where the window ended up so the next launch (and any later
+    // kiosk round-trip) reopens at the same size and place. Skipped while
+    // in kiosk — the live geometry is full-screen, not what we want to
+    // restore; the value captured on the way INTO kiosk still stands.
+    // NB the geometry itself was captured by main() via
+    // captureWindowGeometryNow() while GLFW was still up — measuring here
+    // would be too late (see that function).
+    if (!settingsReadOnly()) {
+        saveWindowGeometryToSettings();
+        settings->save();
+    }
 
     if (aboutImageTex_) {
         GLuint t = aboutImageTex_;
@@ -1608,6 +1618,14 @@ void MainWindow::plugSlotsFromSettings()
         // negative-edge detection on the inverted A/!R wiring.
         auto card = std::make_unique<MockingboardCard>(s, variant);
         card->setSampleRate(controller->audio().getActualSampleRate());
+        // Emulated CPU clock for the audio thread's emuCycles replay
+        // cursor. Set HERE too, not only from setVideoStandard: a Slot
+        // Config "Apply" re-plugs cards without re-running the profile's
+        // video-standard step, so a Mockingboard added on a PAL profile
+        // would otherwise keep the NTSC default and collapse every queued
+        // AY write to the buffer edge.
+        card->setCpuClock(static_cast<double>(
+            pom2VideoTiming(controller->getVideoStandard()).cpuClockHz));
         // CPU pointer feeds the lazy-sync timer back-channel
         // (getCycleCountNow); IRQ routing is auto-wired via SlotBus.
         card->setCpu(&controller->cpu());
@@ -1785,13 +1803,22 @@ void MainWindow::plugSlotsFromSettings()
                 plugMouse(s);
                 continue;
             }
-            // MODE_INT_VBL pacing follows the machine's video standard
-            // (17045 cycles ≈ 60 Hz NTSC, 20313 ≈ 50 Hz PAL) — NOT the
-            // profile's defaultCyclesPerFrame, which on the //c+ carries
-            // the 4× accelerator CPU budget while the video beam (and so
-            // the VBL interrupt) still runs at 60 Hz.
-            card->setVblCycles(pom2VideoTiming(
-                pom2::profileConfig(activeProfile).videoStandard).cyclesPerFrame);
+            // MODE_INT_VBL pacing follows the machine's VIDEO FRAME —
+            // scanlinesPerFrame × cyclesPerScanline (17030 NTSC / 20280
+            // PAL), NOT `cyclesPerFrame`. The latter is the worker's CPU
+            // budget per UI tick (17045 / 20313, = round(clock/refresh))
+            // and is deliberately decoupled from the beam geometry; using
+            // it drifted the mouse VBL 33 cycles/frame under PAL — a full
+            // frame of phase every ~12 s, so a //c PAL program using the
+            // mouse VBL IRQ as its 50 Hz raster timebase watched its sync
+            // point crawl down the screen. Also NOT the profile's
+            // defaultCyclesPerFrame, which on the //c+ carries the 4×
+            // accelerator budget while the beam still runs at 60 Hz.
+            {
+                const auto& vt = pom2VideoTiming(
+                    pom2::profileConfig(activeProfile).videoStandard);
+                card->setVblCycles(vt.scanlinesPerFrame * vt.cyclesPerScanline);
+            }
             mouseAwCard = card.get();
             controller->memory().slotBus().plug(s, std::move(card));
         }
@@ -1918,7 +1945,12 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
     // so everything below would double-deliver — Enter on the key band
     // would send the cell AND inject $0D, Esc would close the menu AND
     // type $1B into the game on resume.
-    if (kioskMenuOpen_) return;
+    if (kioskMenuOpen_) {
+        // F10 still leaves kiosk with the in-kiosk menu open — the user
+        // must always have a way back to the GUI.
+        if (key == GLFW_KEY_F10 && action == GLFW_PRESS) toggleKioskMode();
+        return;
+    }
     // K reserved in kiosk (see onChar) — also blocks Ctrl-K's $0B, since
     // eSelect fires on the K key regardless of modifiers.
     if (kiosk_ && key == GLFW_KEY_K) return;
@@ -1954,6 +1986,17 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         case GLFW_KEY_ESCAPE:       injectAscii(0x1B); break;
         case GLFW_KEY_TAB:          injectAscii(0x09); break;
         case GLFW_KEY_F9:           saveScreenshot(); break;
+        // F10 = GUI <-> kiosk. "Full screen" in the GUI IS kiosk mode:
+        // exclusive full-screen with the chrome-free render path. The
+        // machine keeps running across the switch (no snapshot needed —
+        // kiosk touches only windowing / rendering / settings-writes).
+        // PRESS only: this switch also runs for GLFW_REPEAT, and holding
+        // F10 would otherwise flip full-screen ⇄ windowed ~30×/s, each
+        // entry doing a window-monitor change AND a synchronous
+        // settings->save() to disk.
+        case GLFW_KEY_F10:
+            if (action == GLFW_PRESS) toggleKioskMode();
+            break;
         case GLFW_KEY_F11:          controller->softReset(); break;
         case GLFW_KEY_F12:          controller->hardReset(); break;
         default:
@@ -2047,15 +2090,23 @@ void MainWindow::uploadScreenTexture()
         display->setOeDemodParams(dp);
     }
 
+    // demodMutex covers render + demod + upload: the AI control server's
+    // /screen handler runs the same render/demod/pixels phases on its own
+    // thread, and the two used to race over frame/frame80/signalBuf with
+    // no shared lock at all. stateMutex covers only render() (the
+    // guest-RAM snapshot) so the CPU worker still isn't stalled by the
+    // ~1-2 ms demod. Lock order: stateMutex → demodMutex, never nested
+    // the other way.
+    std::unique_lock<std::mutex> demodLk(display->demodMutex(),
+                                         std::defer_lock);
     {
         // Render under stateMutex so we get a consistent snapshot of RAM
         // (otherwise the CPU may be mid-frame with the text screen half
         // updated, producing tearing).
         std::lock_guard<std::mutex> lk(controller->stateMutex());
+        demodLk.lock();
         display->render(controller->memory());
     }
-    // OE-CPU demod runs OUTSIDE the lock — it reads only display-owned
-    // buffers and took ~1-2 ms of CPU-worker stall per UI frame inside it.
     display->finishPendingCpuDemod();
 
     const int w = display->width();
@@ -2138,6 +2189,9 @@ void MainWindow::renderCommandPalette()
     add("machine.hardreset","Machine", "Hard reset", "F12");
     add("machine.coldboot", "Machine", "Cold boot (wipe RAM)");
     add("machine.screenshot","Machine","Save screenshot", "F9");
+    add("view.kiosk", "View",
+        kiosk_ ? "Leave full screen (kiosk)" : "Full screen (kiosk)",
+        "F10", true, kiosk_);
 
     // Speed buckets, labelled with the real clock so "2x" isn't abstract.
     {
@@ -2274,6 +2328,7 @@ void MainWindow::runCommand(const std::string& id)
     if (id == "machine.hardreset")  { controller->hardReset();  return; }
     if (id == "machine.coldboot")   { controller->coldBoot();   return; }
     if (id == "machine.screenshot") { saveScreenshot();         return; }
+    if (id == "view.kiosk")        { toggleKioskMode();        return; }
 
     if (id.rfind("speed.", 0) == 0) {
         const VideoTiming& vt = pom2VideoTiming(controller->getVideoStandard());
@@ -2979,6 +3034,22 @@ void MainWindow::renderMenuBar()
     }
 
     if (ImGui::BeginMenu("View")) {
+        // ── Full screen = kiosk ─────────────────────────────────────────
+        // There is no separate "full screen": going full screen IS kiosk
+        // mode (exclusive full-screen, chrome-free, settings read-only).
+        // The machine keeps running across the switch — no state is lost.
+        if (ImGui::MenuItem(ICON_FA_EXPAND " Full screen (kiosk)", "F10",
+                            kiosk_)) {
+            toggleKioskMode();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Exclusive full screen with no UI chrome — the kiosk view.\n"
+                "F10 toggles back; the emulated machine keeps running\n"
+                "across the switch, so nothing is lost.\n"
+                "Settings are not written while in kiosk.");
+        ImGui::Separator();
+
         // ── Docking layout ──────────────────────────────────────────────
         // Task-oriented presets. No checkmarks on purpose: the entries are
         // actions, and the moment the user drags a tab the "active" preset
@@ -3869,7 +3940,8 @@ void MainWindow::kioskActivateFocused()
         return;
     }
 
-    // ACTIONS zone → 0 Restart · 1 Keyboard · 2 ROM folders · 3 Quit.
+    // ACTIONS zone → 0 Restart · 1 Keyboard · 2 ROM folders ·
+    //                3 Exit kiosk · 4 Quit.
     switch (kioskActSel_) {
         case 0: {   // Restart — reboot on whatever disk is now in the drive
             DiskIICard* boot = kioskBootDiskCard();
@@ -3890,7 +3962,11 @@ void MainWindow::kioskActivateFocused()
             kioskRomDirSel_ = 0;
             kioskPage_      = KioskPage::RomDirs;
             break;
-        case 3:     // Quit — ask for confirmation first
+        case 3:     // Back to the windowed GUI — machine keeps running
+                    // (setKioskModeRuntime closes the menu and un-pauses).
+            setKioskModeRuntime(false);
+            break;
+        case 4:     // Quit — ask for confirmation first
             kioskPage_ = KioskPage::Quit;
             break;
     }
@@ -3933,6 +4009,18 @@ void MainWindow::kioskInjectSelectedKey()
 void MainWindow::kioskSetPaused(bool want)
 {
     if (want == kioskPausedByMenu_) return;
+    if (want) {
+        // Remember whether the machine was ALREADY stopped (user paused it
+        // from the GUI toolbar before entering kiosk, or it never started).
+        // Without this, closing the menu resumed a machine the user had
+        // deliberately paused — the menu's pause is not ours to undo when
+        // it was a no-op in the first place.
+        kioskPauseWasAlreadyStopped_ =
+            controller->getMode() != EmulationController::Mode::Running;
+    } else if (kioskPauseWasAlreadyStopped_) {
+        kioskPausedByMenu_ = false;      // give the pause back to the user
+        return;
+    }
     if (!want) {
         // Resuming: while Stopped, the audio thread kept advancing the
         // speaker's reconstruction cursor over silence, so it now sits far
@@ -3954,10 +4042,15 @@ void MainWindow::updateKioskMenu()
     const JoystickInput::UiNav nav = joystick->uiNav();
 
     // Keyboard fallbacks work even when the controller isn't a recognized
-    // GLFW gamepad (so the gamepad-mapped buttons never fire). They mirror the
-    // F10/Start open the Start menu, K/Select the keyboard band, arrows move,
-    // Enter validates, Esc goes back.
-    const bool eStart   = nav.menu    || ImGui::IsKeyPressed(ImGuiKey_F10,    false);
+    // GLFW gamepad (so the gamepad-mapped buttons never fire). They mirror
+    // the pad: F1/Start opens the Start menu, K/Select the keyboard band,
+    // arrows move, Enter validates, Esc goes back.
+    //
+    // F1, NOT F10: F10 is the global full-screen ⇄ windowed toggle, so
+    // using it here meant entering kiosk ALSO opened this menu in the same
+    // frame (onKey runs during glfwPollEvents, before render) — the user
+    // asked for the game to go full-screen, not for a menu.
+    const bool eStart   = nav.menu    || ImGui::IsKeyPressed(ImGuiKey_F1,     false);
     const bool eSelect  = nav.select  || ImGui::IsKeyPressed(ImGuiKey_K,      false);
     const bool eConfirm = nav.confirm || ImGui::IsKeyPressed(ImGuiKey_Enter,  false);
     const bool eCancel  = nav.cancel  || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
@@ -4244,7 +4337,11 @@ void MainWindow::renderKioskMenu()
         // Footer reserve = the 4 action rows @2.3 + a "disks found" line @1.3.
         const float sp = ImGui::GetStyle().ItemSpacing.y;
         const float bf = ImGui::GetFontSize();
-        const float footer = 4.0f * (bf * 2.3f + sp) + (bf * 1.3f + sp) + (sp + 6.0f);
+        // 5.0f = the five action rows @2.3 (Restart / Keyboard / ROM
+        // folders / Exit kiosk / Quit). Reserving four clipped the last
+        // one below the panel edge — the window is NoScrollbar and a
+        // gamepad user cannot scroll to it.
+        const float footer = 5.0f * (bf * 2.3f + sp) + (bf * 1.3f + sp) + (sp + 6.0f);
 
         ImGui::SetWindowFontScale(1.6f);
         ImGui::TextColored(zGames ? kYellow : kDim,
@@ -4277,7 +4374,11 @@ void MainWindow::renderKioskMenu()
         actionRow(0, ImVec4(1.0f, 0.60f, 0.15f, 1.0f), ICON_FA_ROTATE " RESTART MACHINE");
         actionRow(1, ImVec4(0.55f, 0.80f, 1.0f, 1.0f), ICON_FA_KEYBOARD " KEYBOARD");
         actionRow(2, ImVec4(0.60f, 0.95f, 0.60f, 1.0f), ICON_FA_FOLDER_OPEN " ROM FOLDERS");
-        actionRow(3, ImVec4(1.0f, 0.50f, 0.40f, 1.0f), ICON_FA_RIGHT_FROM_BRACKET " QUIT");
+        // Exit to the windowed GUI. Discoverable here because a kiosk user
+        // has no menu bar and may not know about F10.
+        actionRow(3, ImVec4(0.80f, 0.80f, 1.0f, 1.0f),
+                  ICON_FA_COMPRESS " EXIT KIOSK (WINDOWED)");
+        actionRow(4, ImVec4(1.0f, 0.50f, 0.40f, 1.0f), ICON_FA_RIGHT_FROM_BRACKET " QUIT");
 
         ImGui::SetWindowFontScale(1.3f);
         ImGui::Separator();
@@ -4698,7 +4799,7 @@ void MainWindow::pollJoystickAndPushToMemory()
     // One-shot diagnostic when the bound pad (or its gamepad-mapping status)
     // changes: the kiosk Start-menu only works when gamepad-mapped=yes. If a
     // pad is present but reports "no", GLFW has no standard mapping for it,
-    // so use the F10 keyboard fallback (or add an SDL mapping).
+    // so use the F1 keyboard fallback (or add an SDL mapping).
     {
         const int  hi = joystick->binding().hostIdx;
         const bool gp = joystick->activeIsGamepad();
@@ -5140,13 +5241,24 @@ void MainWindow::pumpImageWriter()
 
     std::vector<uint8_t> fresh;
     size_t total = 0;
+    // The cursor is only meaningful against the spool it was counted on:
+    // a different source (card unplugged, SSC tap taking over) starts at 0,
+    // otherwise its independently-grown spool would be drained mid-stream.
+    auto resyncSource = [this](const void* src) {
+        if (imageWriterSource != src) {
+            imageWriterSource   = src;
+            imageWriterConsumed = 0;
+        }
+    };
     if (printerCard) {
+        resyncSource(printerCard);
         // A shorter spool than we have already consumed means the Printer
         // panel's "Clear spool" ran; restart from the top of the new spool.
         if (printerCard->bytesWritten() < imageWriterConsumed)
             imageWriterConsumed = 0;
         total = printerCard->drainSpoolFrom(imageWriterConsumed, fresh);
     } else if (grapplerCard) {
+        resyncSource(grapplerCard);
         if (grapplerCard->bytesWritten() < imageWriterConsumed)
             imageWriterConsumed = 0;
         total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
@@ -5154,11 +5266,13 @@ void MainWindow::pumpImageWriter()
         // //c-class printer port: the SSC's TX tap (slot 1 by default —
         // see plugSlotsFromSettings). Parallel cards outrank it so a IIe
         // with both a PrinterCard and an SSC keeps the parallel routing.
+        resyncSource(tap);
         if (tap->printerSpoolBytes() < imageWriterConsumed)
             imageWriterConsumed = 0;
         total = tap->drainPrinterSpoolFrom(imageWriterConsumed, fresh);
     } else {
         // No card plugged (or it was just unplugged) — next plug starts at 0.
+        imageWriterSource   = nullptr;
         imageWriterConsumed = 0;
         return;
     }
@@ -6936,7 +7050,7 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
         settings->setString(base + "_type",
             std::string(pom2::SmartPort35Unit::kKindKey));
         settings->setString(base + "_path", path);
-        if (!kiosk_) settings->save();   // kiosk is read-only: never touch state.cfg
+        if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
         return true;
     }
     // //c+ on-board path.
@@ -6998,7 +7112,7 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
         settings->setString(base + "_type",
             std::string(pom2::SmartPortHdvUnit::kKindKey));
         settings->setString(base + "_path", path);
-        if (!kiosk_) settings->save();   // kiosk is read-only: never touch state.cfg
+        if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
         bootSlotOut = smartPortCard->getSlot();
         return true;
     }
@@ -8972,6 +9086,10 @@ void MainWindow::render()
         updateKioskMenu();         // Start/Select drive the in-game menu
         renderKiosk();
         renderKioskMenu();         // overlay drawn on top of the screen
+        // The printer still runs behind the chrome-free screen — without
+        // this a //c printing in kiosk mode parked every byte in the card
+        // spool forever (unbounded growth, nothing on paper).
+        pumpImageWriter();
         return;
     }
 

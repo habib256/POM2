@@ -423,7 +423,11 @@ void testSnapshotCpuSectionGate(EmulationController& /*ctrl*/, pom2::AiControlSe
     HttpResponse r = post("/cpu", "{\"pc\":768}");
     assert(r.status == 200);
     r = post("/snapshot/load", "{\"path\":\"" + relName + "\"}");
-    assert(r.status == 200);
+    // 400, not 200: the short CPU section is skipped, which leaves this
+    // file with NOTHING restorable — reporting success there was the
+    // silent-half-restore bug (fixed 2026-07-30). The endpoint now says
+    // so; the important part is still that the machine is untouched.
+    assert(r.status == 400);
 
     // The short CPU section must be SKIPPED → PC stays $0300 (768), NOT the
     // sentinel $1234 (4660). The old gate set PC from the under-length section.

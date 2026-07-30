@@ -191,6 +191,16 @@ public:
     // ever called from the CPU thread. See raiseIrqSource()/pushIrqLine().
     void    advanceCycles(int cycles) override;
 
+    /// Snapshot/rewind: 'SSC1'-tagged blob with the guest-visible ACIA
+    /// register state (command/control decode + sticky status errors).
+    /// The TCP connection, ring buffers and printer spool are host-side
+    /// and deliberately NOT serialized — a rewind cannot un-send bytes
+    /// that already left over the socket. Without this the guest's
+    /// restored firmware saw whatever baud/DTR/IRQ config the LIVE card
+    /// had drifted to.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
 private:
     int slot;
     std::array<uint8_t, 256> rom{};
@@ -335,6 +345,10 @@ private:
     // paper trail, not machine state (same rule as PrinterCard's spool).
     bool printerTap_ = false;
     std::vector<uint8_t> printerSpool_;
+    // Absolute offset of printerSpool_[0] in the ever-spooled byte stream —
+    // lets the 1 MiB cap trim the consumed prefix without breaking the
+    // drain cursor (see drainPrinterSpoolFrom).
+    size_t printerSpoolBase_ = 0;
 
     void buildRom();
     void runWorker();

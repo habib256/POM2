@@ -69,10 +69,13 @@ public:
     void setMigIntDrive(bool intDrive);
     void setMigHdSel(bool hdSel);
 
-    /// IWM motor-enable forwarding. Called by EmulationController on
-    /// every frame (or whenever IWM enters/leaves MODE_ACTIVE) so the
-    /// active 3.5" drive's spin state mirrors the IWM's.
-    void onIwmMotor(bool motorOn);
+    // NOTE deliberately no motor-broadcast helper here: MAME's IWM fires
+    // `mon_w` on m_cur_floppy ONLY, and moves the motor with the
+    // selection in `set_floppy` (iwm.cpp:99-115) — POM2 mirrors that in
+    // IWMDevice::setSony35/notifyMonW. A previous `onIwmMotor` that
+    // forwarded motor state to BOTH Sony drives made an idle external
+    // drive report /MOTORON "running" and broke the //c+ firmware's
+    // boot drive-scan.
 
     /// True when the currently-active drive is one of the 3.5" Sony
     /// drives (otherwise the active drive is a 5.25" Disk II under

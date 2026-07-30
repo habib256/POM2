@@ -6,6 +6,8 @@
 #include "CffaCard.h"
 #include "Logger.h"
 
+#include <cstring>
+
 #include <fstream>
 
 namespace pom2 {
@@ -153,6 +155,36 @@ void CffaCard::expansionRomWrite(uint16_t offset, uint8_t v)
     if (writeProtect_) return;          // EEPROM write-enable gate
     const size_t idx = 0x800 + offset;
     if (idx < rom_.size()) rom_[idx] = v;
+}
+
+namespace {
+constexpr uint8_t kCffaSnapMagic[4] = { 'C', 'F', 'A', '1' };
+}
+
+void CffaCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kCffaSnapMagic, kCffaSnapMagic + 4);
+    out.push_back(static_cast<uint8_t>(lastReadData_));
+    out.push_back(static_cast<uint8_t>(lastReadData_ >> 8));
+    out.push_back(static_cast<uint8_t>(lastWriteData_));
+    out.push_back(static_cast<uint8_t>(lastWriteData_ >> 8));
+    out.push_back(writeProtect_ ? 1 : 0);
+    ata_.appendSnapshotState(out);
+}
+
+void CffaCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    // Foreign/undersized blobs are ignored (a different card type sat in
+    // this slot when the frame was recorded).
+    if (data == nullptr ||
+        len < 4 + 5 + pom2::AtaBlockDevice::kSnapshotBytes ||
+        std::memcmp(data, kCffaSnapMagic, 4) != 0)
+        return;
+    size_t p = 4;
+    lastReadData_  = static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    lastWriteData_ = static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    writeProtect_  = data[p++] != 0;
+    ata_.loadSnapshotState(data + p, len - p);
 }
 
 } // namespace pom2

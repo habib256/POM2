@@ -900,3 +900,65 @@ int M68705P3::run(int cycles)
     }
     return total;
 }
+
+// ── Snapshot ──────────────────────────────────────────────────────────────
+// Everything the running firmware can observe: registers, the 112-byte
+// RAM, the port latch/DDR/input triples, the timer and the interrupt
+// latches. The 2 KB EPROM is ROM (reloaded at construction) and the
+// callbacks are wiring, so neither travels.
+
+void M68705P3::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.push_back(static_cast<uint8_t>(reg.PC));
+    out.push_back(static_cast<uint8_t>(reg.PC >> 8));
+    out.push_back(reg.S);
+    out.push_back(reg.A);
+    out.push_back(reg.X);
+    out.push_back(reg.CC);
+    out.insert(out.end(), ram.begin(), ram.end());
+    for (const Port& pt : ports) {
+        out.push_back(pt.latch);
+        out.push_back(pt.ddr);
+        out.push_back(pt.input);
+    }
+    out.push_back(timer.tdr);
+    out.push_back(timer.tcr);
+    out.push_back(timer.prescale);
+    out.push_back(static_cast<uint8_t>(timer.divisor));
+    out.push_back(static_cast<uint8_t>(pending_interrupts));
+    out.push_back(static_cast<uint8_t>(pending_interrupts >> 8));
+    out.push_back(irq_line_state ? 1 : 0);
+    const uint32_t ic = static_cast<uint32_t>(icount);
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(ic >> (8 * i)));
+}
+
+size_t M68705P3::loadSnapshotState(const uint8_t* data, size_t len)
+{
+    if (data == nullptr || len < kSnapshotBytes) return 0;
+    size_t p = 0;
+    reg.PC = static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    reg.PC &= kAddrMask;
+    reg.S  = data[p++];
+    reg.A  = data[p++];
+    reg.X  = data[p++];
+    reg.CC = data[p++];
+    std::memcpy(ram.data(), data + p, ram.size()); p += ram.size();
+    for (Port& pt : ports) {
+        pt.latch = data[p++];
+        pt.ddr   = data[p++];
+        pt.input = data[p++];
+    }
+    timer.tdr      = data[p++];
+    timer.tcr      = data[p++];
+    timer.prescale = data[p++];
+    timer.divisor  = data[p++];
+    if (timer.divisor == 0) timer.divisor = 1;   // untrusted: no div-by-zero
+    pending_interrupts =
+        static_cast<uint16_t>(data[p] | (data[p + 1] << 8)); p += 2;
+    irq_line_state = data[p++] != 0;
+    uint32_t ic = 0;
+    for (int i = 0; i < 4; ++i) ic |= static_cast<uint32_t>(data[p++]) << (8 * i);
+    icount = static_cast<int>(ic);
+    return p;
+}

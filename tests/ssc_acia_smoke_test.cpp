@@ -157,7 +157,11 @@ void testOverrunAndRdrClear()
     assert(st & SR_TDRE);
     assert(st & SR_RDRF);
     assert(st & SR_OVERRUN);
-    assert((st & (SR_DCD | SR_DSR)) == 0);      // no TCP client connected
+    // ACTIVE-LOW pins: bits SET means "line inactive" (no carrier / not
+    // ready) — MAME mos6551 device_reset sets both, AppleWin returns
+    // ST_DSR|ST_DCD when nothing is attached. POM2 had this inverted
+    // until 2026-07-29.
+    assert((st & (SR_DCD | SR_DSR)) == (SR_DCD | SR_DSR));   // no client
     // No SR_IRQ flagged here — status read just consumed it and the
     // returned byte snapshots the *current* status (MAME returns the
     // pre-clear status, but POM2's order-of-evaluation is symmetric
@@ -340,9 +344,9 @@ void testTelnetTxEscaping()
 void testStatusReadDcdDsr()
 {
     SuperSerialCard ssc(2);
-    // No client connected → DCD + DSR bits clear.
+    // No client connected → DCD + DSR bits SET (active-low pins idle high).
     const uint8_t s1 = ssc.deviceSelectRead(kStatusAddr);
-    assert((s1 & (SR_DCD | SR_DSR)) == 0);
+    assert((s1 & (SR_DCD | SR_DSR)) == (SR_DCD | SR_DSR));
     // TDRE always set in POM2 (TCP buffers TX).
     assert(s1 & SR_TDRE);
 

@@ -283,7 +283,20 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     // read after insertion runs the lssSync catch-up `while (lssCycle <
     // cyclesLimit)` loop for millions of PROM-lookup iterations, freezing
     // the emulator for seconds. Mirrors what lssStart() does on motor-on.
-    if (active != MODE_IDLE) lssCycle = cpuCycleTotal * 2;
+    if (active != MODE_IDLE) {
+        lssCycle = cpuCycleTotal * 2;
+    } else if (useBitLss && motorOn) {
+        // Legacy-spun motor promoted into the LSS state machine: before
+        // the FIRST insert useBitLss is false, so a guest $C0E9 went
+        // through the legacy branch — motorOn=true but active stays
+        // MODE_IDLE. insertDisk then flips useBitLss on (P6 PROM present)
+        // and the two machines disagree: the boot PROM polls $C0EC while
+        // the LSS never runs, and the legacy motor can no longer be
+        // switched off through the LSS path. Mirror control() case 0x9's
+        // MODE_IDLE branch instead of stranding the state.
+        active = MODE_ACTIVE;
+        lssStart();
+    }
     // No click here — fires at user-initiated insert via UI / CLI only.
     // Auto-restore of the previous-session disk path calls insertDisk
     // during MainWindow construction; firing the click there would
@@ -579,7 +592,12 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
             const uint8_t cap = g8();
             if (cap) {
                 if (p + DiskImage::kMediaSnapshotBytes > len) break;
-                if (images[d].isLoaded())
+                // Mirror the CAPTURE predicate: media snapshots are taken
+                // only for non-WOZ writable images, so applying one onto a
+                // drive that NOW holds a WOZ (user swapped disks after the
+                // ring frame was recorded) wiped the WOZ's canonical bit
+                // streams with the old disk's decoded tracks.
+                if (images[d].isLoaded() && !images[d].isWoz())
                     images[d].loadMediaSnapshot(data + p, DiskImage::kMediaSnapshotBytes);
                 p += DiskImage::kMediaSnapshotBytes;
             }

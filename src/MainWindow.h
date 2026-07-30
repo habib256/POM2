@@ -175,8 +175,32 @@ public:
     /// Kiosk mode: chrome-free full-screen — render() draws only the Apple
     /// II screen (no menu bar, toolbar, panels or dialogs). Set by main()
     /// from the `--kiosk` CLI flag before the first render.
-    void setKioskMode(bool k) { kiosk_ = k; }
+    /// Set the kiosk flag WITHOUT touching the window (startup path —
+    /// main() has already created the window full-screen when `--kiosk`
+    /// was passed).
+    /// Startup path: sets BOTH the live flag and `launchedInKiosk_`, and
+    /// puts Settings into read-only mode (central suppression — a
+    /// `--kiosk` session must never write state.cfg from ANY of the ~20
+    /// UI save sites, not just the few that remember to check).
+    /// Out-of-line: Settings is only forward-declared here.
+    void setKioskMode(bool k);
     bool kioskMode() const { return kiosk_; }
+    /// Whether settings writes are suppressed. True while in kiosk, and
+    /// for the WHOLE session when launched with `--kiosk` (see
+    /// `launchedInKiosk_`) — toggling to the GUI to look around must not
+    /// silently start rewriting the user's state.cfg.
+    bool settingsReadOnly() const { return kiosk_ || launchedInKiosk_; }
+
+    /// Runtime GUI ↔ kiosk transition: flips the flag AND moves the GLFW
+    /// window between exclusive full-screen and its previous windowed
+    /// geometry. The emulated machine is NOT touched — kiosk is purely a
+    /// windowing + render-path + settings-write-suppression mode, so the
+    /// switch is instant and loses no state (no snapshot round-trip
+    /// needed). Safe to call with no window bound (headless tests): it
+    /// then only flips the flag. Returns the new state.
+    bool toggleKioskMode();
+    /// Explicit form of the above.
+    void setKioskModeRuntime(bool k);
 
     // Apple II memory map region — used by the bar / grid widgets in
     // MainWindow_MemoryMaps.cpp. Public so file-local helpers in that TU
@@ -442,6 +466,11 @@ private:
     // poll only picks up what arrived since the previous frame. Reset
     // whenever the source card changes or its spool is cleared.
     size_t       imageWriterConsumed = 0;
+    // Identity of the card the cursor above counts against. The three
+    // spools grow independently, so a cursor carried across a source
+    // switch (e.g. PrinterCard unplugged, SSC tap takes over) would skip
+    // or replay part of the new source's stream.
+    const void*  imageWriterSource = nullptr;
     /// Whether the printer's full input buffer holds the ACK line and so
     /// blocks the guest — the real handshake. OFF by default: it is
     /// faithful (a real Apple II *did* sit there for minutes printing a
@@ -612,10 +641,38 @@ private:
     // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
     // screen, full-viewport, with no menu bar / toolbar / panels.
     bool kiosk_ = false;
+    /// True when the SESSION was launched with `--kiosk`. Such a session
+    /// stays settings-read-only for its whole life even if the user
+    /// toggles to the windowed GUI to look around: the README promises a
+    /// kiosk run "can't disturb your desktop setup", and that promise is
+    /// about the session, not the current window state.
+    bool launchedInKiosk_ = false;
+    // Windowed geometry saved when entering kiosk, restored on exit.
+    // -1 width = "nothing saved yet" (started in kiosk from the CLI).
+    int  savedWinX_ = 0, savedWinY_ = 0, savedWinW_ = -1, savedWinH_ = 0;
+    bool savedWinMaximized_ = false;
+    /// Persist the current windowed geometry into Settings (`window_x/y/w/h`,
+    /// `window_maximized`) and restore it back into the members. Without
+    /// this the geometry lived only in memory, so there was nothing to
+    /// restore after a quit-from-kiosk, and a `--kiosk` launch that toggled
+    /// to the GUI fell back to a hard-coded default size.
+    void saveWindowGeometryToSettings();
+    bool loadWindowGeometryFromSettings();
+
+public:
+    /// Measure the live window and fold it into Settings. MUST be called
+    /// while GLFW is still initialised — ~MainWindow runs after
+    /// glfwTerminate(), where every glfwGetWindow* call is a no-op that
+    /// zeroes its out-params. Called from main() just before teardown.
+    /// No-op in kiosk (the live geometry is full-screen) and when the
+    /// session is settings-read-only.
+    void captureWindowGeometryNow();
+
+private:
 
     // ── Kiosk in-game menu (gamepad-driven, keyboard-free) ──────────────
     // An overlay exclusive to kiosk mode. Two entry points:
-    //   • START (or F10) → the two-zone Start menu: a GAMES list (the disk
+    //   • START (or F1) → the two-zone Start menu: a GAMES list (the disk
     //     images next to the booted disk + any extra ROM folders) and an
     //     ACTIONS column (Restart / Keyboard / ROM folders / Quit). LEFT/
     //     RIGHT swaps focus between the two zones, UP/DOWN moves within the
@@ -628,7 +685,7 @@ private:
     // kiosk's read-only main config is never touched).
     enum class KioskPage { List, Keys, Quit, Browse, RomDirs };
     enum class KioskZone { Games, Actions };
-    static constexpr int kKioskActionCount = 4;   // Restart/Keyboard/ROMs/Quit
+    static constexpr int kKioskActionCount = 5;   // Restart/Keyboard/ROMs/ExitKiosk/Quit
 
     bool        kioskMenuOpen_  = false;
     KioskPage   kioskPage_      = KioskPage::List;
@@ -659,6 +716,9 @@ private:
     // Whether we actively parked the worker (Mode::Stopped) for the menu, so
     // we only resume (Mode::Running) a machine we paused ourselves.
     bool   kioskPausedByMenu_ = false;
+    /// Was the machine already stopped when the menu "paused" it? If so,
+    /// closing the menu must NOT resume — that pause belongs to the user.
+    bool   kioskPauseWasAlreadyStopped_ = false;
     // Menu → game input isolation across the close (see
     // pollJoystickAndPushToMemory): the poll samples kioskMenuOpen_ a frame
     // behind updateKioskMenu, and Circle/Cross double as menu B/A and Apple

@@ -50,6 +50,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 class MC6821
 {
@@ -104,6 +105,13 @@ public:
     uint8_t getCRB()  const { return ctl_b; }
     uint8_t getOutA() const { return out_a; }
     uint8_t getOutB() const { return out_b; }
+
+    /// Snapshot surface (raw, no magic — the owning card wraps it).
+    /// Everything the guest can observe or that latches an edge; the
+    /// callbacks are wiring, not state.
+    static constexpr size_t kSnapshotBytes = 22;
+    void appendSnapshotState(std::vector<uint8_t>& out) const;
+    size_t loadSnapshotState(const uint8_t* data, size_t len);
 
 private:
     // Per-side state (suffixed _a / _b to mirror MAME's naming).

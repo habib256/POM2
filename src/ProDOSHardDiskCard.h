@@ -100,6 +100,13 @@ public:
     uint8_t deviceSelectRead(uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead(uint8_t low8) override;
+
+    /// Snapshot/rewind: 'HDV1'-tagged blob carrying the selected block +
+    /// the byte cursor within it. A rewind mid-transfer used to leave the
+    /// live cursor under the restored firmware's loop — the rest of the
+    /// 512-byte stream came out of the wrong offset.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
     void    onReset() override;
 
 private:

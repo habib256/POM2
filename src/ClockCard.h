@@ -60,18 +60,23 @@
 // 64/256/2048 Hz to the user ("," "." "/" write-mode chars).
 //
 // To read time, the host driver writes mode = 0b011 (MODE_TIME_READ),
-// pulses STB to load the current time counter into the 48-bit shift
-// register, then pulses CLK 48 times, sampling bit 7 of $C0n0 after
-// each rising edge to assemble 6 BCD bytes:
+// pulses STB to load the current time counter into the 40-bit shift
+// register, then pulses CLK 40 times, sampling bit 7 of $C0n0 after
+// each rising edge to assemble 5 BCD bytes:
 //
-//   sec, min, hr, day, (month<<4)|dow, year
+//   sec, min, hr, day, (month<<4)|dow
 //
-// The host driver converts BCD → binary and packs into ProDOS DATE/TIME.
+// There is NO year on this chip: MAME's upd1990a shifts 5 bytes for a
+// non-4990A part, and the shipped ThunderClock firmware clocks exactly
+// 10 nibbles = 40 pulses (see the 40-bit note in deviceSelectWrite).
+// The host driver converts BCD → binary and packs into ProDOS DATE/TIME,
+// supplying the year itself.
 
 #ifndef POM2_CLOCK_CARD_H
 #define POM2_CLOCK_CARD_H
 
 #include "SlotPeripheral.h"
+#include "CpuClock.h"
 
 #include <array>
 #include <cstdint>
@@ -105,6 +110,23 @@ public:
     bool    exposesIicOnboardRom() const override { return true; }
     void    onReset() override;
     void    advanceCycles(int cycles) override;
+
+    /// Emulated CPU clock, for converting the chip's own-crystal TP rate
+    /// into emulated cycles. The uPD1990AC's TP derives from ITS crystal
+    /// (a real-time reference), so the period in CPU cycles must follow
+    /// the host standard: left at the NTSC constant, TP ran 0.7 % slow in
+    /// wall-clock under PAL (64 Hz became 63.55 Hz for a guest using TP
+    /// IRQs as a timebase). Wired from EmulationController::setVideoStandard.
+    void setCpuClock(double hz) override;
+
+    /// Snapshot/rewind: 'CLK1'-tagged blob with the uPD1990AC bit-bang
+    /// state (40-bit shift register + edge-detect latches + mode), the
+    /// user time offset and the TP/IRQ timer. Host wall-clock is NOT
+    /// serialized — the clock keeps telling real time — but a rewind
+    /// mid-shift-out used to resume against the LIVE shift register and
+    /// hand ProDOS a garbled date.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
     // ─── Interrupt / TP state (for debug panels + tests) ─────────────────
     /// True when the INTERRUPT CONTROL REGISTER enable bit ($C0n0 bit 6)
@@ -149,14 +171,15 @@ private:
 
     // ── uPD1990AC bit-bang chip state ─────────────────────────────────
     //
-    // The 48-bit shift register lives in 6 bytes, in shift-out order
-    // (LSB of byte 0 goes out first):
+    // The 40-bit shift register lives in the FIRST 5 of these 6 bytes, in
+    // shift-out order (LSB of byte 0 goes out first):
     //   shiftReg[0] = seconds (BCD)
     //   shiftReg[1] = minutes (BCD)
     //   shiftReg[2] = hours   (BCD)
     //   shiftReg[3] = day     (BCD)
     //   shiftReg[4] = (month << 4) | (day_of_week)
-    //   shiftReg[5] = year mod 100 (BCD)
+    //   shiftReg[5] = UNUSED — the chip has no year counter; kept only so
+    //                 the array shape (and the snapshot blob) is stable.
     //
     // STB rising edge with MODE_TIME_READ snapshots host time and loads
     // these six bytes. Each subsequent CLK rising edge shifts the whole
@@ -170,7 +193,7 @@ private:
     // ── MODE_TIME_SET state ────────────────────────────────────────────
     //
     // When the host commits MODE_TIME_SET (STB rising edge after loading
-    // the shift register via 48 CLK pulses in MODE_SHIFT), the resulting
+    // the shift register via 40 CLK pulses in MODE_SHIFT), the resulting
     // BCD bytes are converted back to a `time_t` and the delta against
     // the host clock at that moment is stored as `userOffsetSeconds`.
     // Subsequent reads compose `timeFn() + userOffsetSeconds` so the
@@ -191,6 +214,7 @@ private:
     // the toggle from `advanceCycles()`. A TP rising edge is the IRQ-worthy
     // event, so the slot IRQ fires `tpRateHz_` times per second while
     // enabled. tpHalfPeriodCycles_ == 0 means the timer is stopped.
+    double cpuClockHz_       = static_cast<double>(POM2_CPU_CLOCK_HZ);
     int  tpRateHz_           = 0;
     int  tpHalfPeriodCycles_ = 0;
     int  tpAccumCycles_      = 0;

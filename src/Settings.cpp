@@ -124,6 +124,14 @@ bool Settings::load()
 
 bool Settings::save() const
 {
+    // Central read-only gate. Kiosk must never write state.cfg, and the
+    // ~20 call sites scattered across the UI cannot each be trusted to
+    // remember that — before this, only 4 of them checked, so a
+    // `--kiosk` session that toggled to the GUI (F10) and changed a
+    // profile or a slot silently rewrote the user's config. Reported as
+    // success: callers treat `false` as an I/O error worth warning about,
+    // and suppression is not an error.
+    if (readOnly_) return true;
     const fs::path path = resolveStorePath();
     const fs::path tmp  = path.string() + ".tmp";
     {

@@ -72,6 +72,13 @@ public:
     uint8_t slotRomRead (uint8_t low8) override;            // read_cnxx
     uint8_t expansionRomRead (uint16_t offset) override;    // read_c800
     void    expansionRomWrite(uint16_t offset, uint8_t v) override; // write_c800
+
+    /// Snapshot/rewind: 'CFA1'-tagged blob wrapping the ATA chip state
+    /// (taskfile + in-flight PIO) and the card latches. Media stays
+    /// host-side; a rewind mid-transfer used to desync the 512-byte
+    /// stream against the restored firmware cursor.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
     void    onReset() override;
 
 private:

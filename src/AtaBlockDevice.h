@@ -81,6 +81,18 @@ public:
     uint16_t cs1_r(uint8_t reg);
     void     cs1_w(uint8_t reg, uint16_t val);
 
+    /// Snapshot of the guest-visible chip state (taskfile + in-flight PIO
+    /// phase + sector word buffer + CHS geometry). Backing media is
+    /// host-side and NOT serialized — same policy as every other card.
+    /// Raw layout, no magic: the owning card wraps it.
+    void appendSnapshotState(std::vector<uint8_t>& out) const;
+    /// Restores a blob appendSnapshotState produced. Returns bytes
+    /// consumed, or 0 on malformed input (device left untouched).
+    size_t loadSnapshotState(const uint8_t* data, size_t len);
+    /// Fixed serialized size (see the .cpp): 9 regs + phase + lba(4) +
+    /// sectorsLeft(2) + wordIdx(2) + wordBuf(512) + CHS(2).
+    static constexpr size_t kSnapshotBytes = 9 + 1 + 4 + 2 + 2 + 512 + 2;
+
 private:
     enum class Phase { Idle, PioIn, PioOut };
 

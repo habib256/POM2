@@ -368,18 +368,29 @@ void Memory::advanceCycles(int cycles)
     const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
     const bool nowActive = scanline < kVisibleScanlines;
 
-    // Edge: active video → VBL. On a real IIe, `$C05B` (EnVBL) raises
-    // the IRQ line each frame, but only when the IOUDIS register is
-    // enabled (the boot-time default). With IOUDIS disabled the same
-    // address is the AN1 annunciator (legacy II/II+ behaviour) and
-    // many programs poke $C05B for paddle / annunciator reasons —
-    // raising an IRQ in that case crashes ProDOS (no handler installed).
-    // Until POM2 models IOUDIS we keep the pending flag for software
-    // that polls it via $C019 read but never assert the CPU IRQ line.
+    // Edge: active video → VBL. `$C05B` (EnVBL) arms the per-frame VBL
+    // interrupt. The old blanket "never assert the CPU IRQ line" existed
+    // because POM2 did not model IOUDIS: with IOUDIS disabled the same
+    // address is the AN1 annunciator (legacy II/II+ behaviour), and the
+    // many programs that poke $C05B for paddle / annunciator reasons
+    // would have raised an IRQ with no handler installed (ProDOS crash).
+    //
+    // POM2 models IOUDIS now (2026-07-30), and $C05A/$C05B only reach
+    // the VBL mask on a //c-class machine with IOUDIS clear — the real
+    // mouse/VBL switch decode, gated in softSwitchAccess. So on //c-class
+    // the arm is unambiguous and the line CAN be driven, which is what a
+    // //c PAL demo (Le Chat Mauve / French Touch target) uses as its
+    // 50 Hz frame sync: without it such a demo either spins on its
+    // "wait for frame" flag forever or free-runs and tears. MAME raises
+    // IRQ_VBL for //c-class the same way (`apple2e.cpp` m_isiic).
+    //
+    // IIe keeps the polling-only behaviour: there $C05A/$C05B really are
+    // plain annunciators (POM2 overlays the mask for the vbl_smoke_test
+    // contract), so asserting would resurrect the original crash.
     if (vblWasActive && !nowActive) {
         if (iieMode && vblIrqMask) {
             vblIrqPending = true;
-            // (Intentionally NOT calling cpu->setIRQ — see comment.)
+            if (iicProfile_ && cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, true);
         }
     }
     vblWasActive = nowActive;
@@ -498,6 +509,16 @@ void Memory::resetSoftSwitchesWarm()
     // nothing else needs touching here on II/II+.
 }
 
+bool Memory::chatMauveBlockedBySlot3() const
+{
+    SlotPeripheral* card = slots.peripheral(3);
+    if (!card) return false;                 // empty slot: Eve window free
+    // A Chat Mauve IS allowed to sit in slot 3 and answer there; only a
+    // FOREIGN card (SSC, Mockingboard…) blocks the window. Compared by
+    // name to avoid dragging the card's header into Memory.
+    return card->name() != "Le Chat Mauve";
+}
+
 void Memory::resetSoftSwitches()
 {
     std::lock_guard<std::mutex> lk(stateMutex);
@@ -521,6 +542,16 @@ void Memory::resetSoftSwitches()
     lcPrewrite    = false;
     iieMemMode    = 0;
     intC8Rom      = false;   // //e expansion-window auto-INTCXROM flip-flop
+    // VBL interrupt: disarm AND drop the line. Without this a //c that had
+    // enabled it ($C05B) kept re-asserting IRQ_SRC_VBL on the very next
+    // frame edge into a freshly reset machine with no handler — and the
+    // guest could no longer turn it off, because $C05A (DisVBL) only
+    // decodes while IOUDIS is CLEAR and the reset below forces it back
+    // TRUE. (M6502::reset clears its own source mask, so only the
+    // re-assertion mattered.)
+    vblIrqMask    = false;
+    vblIrqPending = false;
+    if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
     if (iicProfile_) iicProfile_->onResetSoftSwitches();  // ROMBANK → bank 0
     // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`,
     // `apple2e.cpp:1467-1475`). Gate on `isIIcClass` so BOTH 16 KB
@@ -761,6 +792,21 @@ void Memory::appendSnapshotState(std::vector<uint8_t>& out)
         putU32(static_cast<uint32_t>(sect.size()));
         putBytes(sect.data(), sect.size());
     }
+    // Third section: paging/IOU flip-flops that were previously invisible
+    // to snapshot/rewind — INTC8ROM (latched by $C3xx access, cleared by
+    // $CFFF; a restored PC inside $C800-$CFFF slot firmware read the
+    // wrong ROM without it), IOUDIS, and the //c VBL mask + pending
+    // latch. Same length-prefixed convention: absent in older blobs →
+    // live values kept.
+    {
+        std::vector<uint8_t> sect;
+        sect.push_back(intC8Rom      ? 1 : 0);
+        sect.push_back(ioudis        ? 1 : 0);
+        sect.push_back(vblIrqMask    ? 1 : 0);
+        sect.push_back(vblIrqPending ? 1 : 0);
+        putU32(static_cast<uint32_t>(sect.size()));
+        putBytes(sect.data(), sect.size());
+    }
 }
 
 bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
@@ -800,7 +846,30 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     ds.altChar     = getU8() != 0; ds.dhgr      = getU8() != 0; ds.eightyStore = getU8() != 0;
     cycleCounter     = getU64();
     paddleLatchCycle = getU64();
-    { std::lock_guard<std::mutex> lk(stateMutex); display = ds; }
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        display = ds;
+        // The restored clock invalidates the beam-racing event log:
+        // events stamped with pre-restore (possibly FUTURE, on rewind)
+        // emuCycles break the non-decreasing-stamp invariant the
+        // publication carry loop in advanceCycles() relies on. After a
+        // rewind every stale event sat past the new frame start, so
+        // publishedEvents_ came out empty on every publication for the
+        // whole rewound span (beam-raced effects froze at the frame-start
+        // state) while videoEvents_ carried the stale tail forever and
+        // grew without bound. Start the log fresh from the restored
+        // display state and clock.
+        videoEvents_.clear();
+        publishedEvents_.clear();
+        displayAtFrameStart_ = ds;
+        publishedFrameStart_ = ds;
+        constexpr uint64_t kCyclesPerScanline = 65;   // as in advanceCycles
+        const uint64_t kCyclesPerFrame =
+            kCyclesPerScanline *
+            static_cast<uint64_t>(
+                pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+        lastVideoFrameIndex_ = cycleCounter / kCyclesPerFrame;
+    }
 
     if (!need(lcBank1.size() + lcBank2.size() + lcHigh.size())) return false;
     getBytes(lcBank1.data(), lcBank1.size());
@@ -877,6 +946,24 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     });
     readSection([&](const uint8_t* p, size_t k) {
         if (iicProfile_) iicProfile_->loadSnapshotState(p, k);
+    });
+    // Paging/IOU flip-flops (see appendSnapshotState). Older blobs end
+    // before this section and keep the live values — the documented
+    // back-compat convention for this trailer.
+    readSection([&](const uint8_t* p, size_t k) {
+        if (k >= 4) {
+            intC8Rom      = p[0] != 0;
+            ioudis        = p[1] != 0;
+            vblIrqMask    = p[2] != 0;
+            vblIrqPending = p[3] != 0;
+            // Re-drive the LINE to match the restored latch. A rewind that
+            // lands `pending = false` while IRQ_SRC_VBL is still asserted
+            // used to wedge the machine permanently: the $C070 ack is
+            // gated on the latch, so it would be skipped forever and the
+            // //c would spin in its IRQ vector.
+            if (iicProfile_ && cpu)
+                cpu->setIrqLine(M6502::IRQ_SRC_VBL, vblIrqPending);
+        }
     });
 
     return true;
@@ -1149,19 +1236,39 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // below). Earlier POM2 versions cleared the IRQ on every $C019
     // read, contradicting Tech Note #9.
     if (iieMode && low == 0x19) {
+        uint8_t low7 = 0;
+        {
+            std::lock_guard<std::mutex> lk(kbMutex);
+            low7 = static_cast<uint8_t>(lastKey & 0x7F);
+        }
+        // //c-class: $C019 is VBLINT — the LATCHED "a VBL interrupt
+        // occurred" flag, not the live beam state. MAME `c000_iic_r`
+        // case 0x19 (apple2e.cpp:2256-2257): `(m_irqmask & (1<<IRQ_VBL))
+        // ? 0x80 : 0` with the comment "does not reset, see Apple IIc
+        // Technical Note #9". POM2 already maintains exactly that latch
+        // (vblIrqPending) but returned the IIe beam state on every
+        // iieMode machine, so //c software polling for its VBL interrupt
+        // saw a free-running beam signal instead.
+        if (iicProfile_) {
+            return static_cast<uint8_t>((vblIrqPending ? 0x80 : 0x00) | low7);
+        }
+        // IIe: live VBLBAR beam state (MAME apple2e.cpp:2092-2093),
+        // OR m_transchar into the low 7 bits.
         constexpr uint64_t kCyclesPerScanline = 65;
         const uint64_t kScanlinesPerFrame =
             static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
         constexpr uint64_t kVisibleScanlines  = 192;
-        const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
+        // Sample at the ACTUAL data-fetch cycle: cycleCounter only
+        // advances at end-of-instruction, so a bare read placed the beam
+        // up to 7 cycles early and could report the wrong side of a
+        // scanline/VBL boundary. floatingBus() and pushVideoEventLocked
+        // already add the in-flight instruction progress — this is the
+        // same stamp, and it matters for beam-racing code that polls
+        // $C019 to find the VBL edge.
+        const uint64_t now = cycleCounter +
+            (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+        const uint64_t scanline = (now / kCyclesPerScanline) % kScanlinesPerFrame;
         const bool nowActive = scanline < kVisibleScanlines;
-        // IIe: OR m_transchar into the low 7 bits (MAME
-        // `apple2e.cpp:2107`). II+ has no $C019; leave low 7 = 0.
-        uint8_t low7 = 0;
-        if (iieMode) {
-            std::lock_guard<std::mutex> lk(kbMutex);
-            low7 = static_cast<uint8_t>(lastKey & 0x7F);
-        }
         return static_cast<uint8_t>((nowActive ? 0x80 : 0x00) | low7);
     }
 
@@ -1178,6 +1285,30 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // we keep that behaviour AS AN OVERLAY on top of the AN1 state
     // tracking so a future IIc port can drop the overlay without
     // disturbing the AN-state model.
+    // //c-class with IOUDIS clear: $C058-$C05F are the IIc mouse/VBL
+    // switches, NOT annunciators and NOT DHGR. MAME `apple2e.cpp do_io`
+    // (the `(m_isiic || m_isace500) && !m_ioudis` branch, ~:1807-1852):
+    // 58/59 DisXY/EnbXY, 5A/5B DisVBL/EnVBL, 5C-5F X0/Y0 edge selects —
+    // and it RETURNS without touching AN0-AN3 or an3_w (DHGR). POM2
+    // tracked `ioudis` (writable at $C07E/F, readable at $C07E) but never
+    // gated anything on it, so a //c guest driving the mouse firmware's
+    // switch protocol wrongly flipped AN3/DHGR and the display.
+    if (low >= 0x58 && low <= 0x5F && iicProfile_ && !ioudis) {
+        if (low == 0x5A) {              // DisVBL
+            vblIrqMask = false;
+            if (vblIrqPending) {
+                vblIrqPending = false;
+                if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+            }
+        } else if (low == 0x5B) {       // EnVBL
+            vblIrqMask = true;
+        }
+        // DisXY/EnbXY and the X0/Y0 edge selects have no POM2 mouse-model
+        // consumer yet (the MouseCard keeps its own state machine); the
+        // access is swallowed exactly like MAME's tracked-bool cases.
+        return isWrite ? 0 : floatingBus();
+    }
+
     if (low >= 0x58 && low <= 0x5D) {
         const bool on = (low & 1) != 0;
         switch ((low - 0x58) >> 1) {
@@ -1395,6 +1526,19 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // shadows the other.
     if (low >= 0x70 && low <= 0x7F) {
         paddleLatchCycle = cycleCounter;
+        // //c-class: ANY $C070-$C07F access acknowledges the VBL
+        // interrupt — MAME `apple2e.cpp` c000_iic_r/w case 0x70-0x7F:
+        // `if (m_isiic ...) lower_irq(IRQ_VBL);` (~:2014-2017). Pairs
+        // with the latched $C019 VBLINT read above: poll $C019, then
+        // strobe $C070 to re-arm for the next frame (Tech Note #9).
+        // NOT gated on vblIrqPending: MAME's lower_irq is unconditional,
+        // and gating it meant any state where the line was asserted while
+        // the latch read false (a restored snapshot, a reset race) could
+        // never be acknowledged — the //c would spin in its IRQ vector.
+        if (iicProfile_) {
+            vblIrqPending = false;
+            if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+        }
         if (isWrite && iieMode && ramWorksBanks_ > 1
             && (low & 0x09) == 0x01) {
             ramWorksSwapToBank(static_cast<uint8_t>(writeVal & 0x7F));
@@ -1913,7 +2057,17 @@ uint8_t Memory::memRead(uint16_t addr)
     // these addresses don't collide unless the user also assigns a
     // slot-3 card. Forward the access to plugged Chat Mauve cards via
     // the video-switch broadcast so they update their internal flags.
-    if (addr >= 0xC0B8 && addr <= 0xC0BB) slots.broadcastVideoSwitch(addr);
+    // $C0B8-$C0BB is ALSO slot 3's device-select window. A real Eve sits
+    // on the //c's rear DB-15 (no slot 3 exists there); on a //e the user
+    // can plug both, and an SSC in slot 3 drives its ACIA data/status/
+    // command/CONTROL registers at exactly these four addresses — a
+    // serial driver's `STA $C0BB` (baud setup) would flip the Eve's HGR
+    // Duochrome bit and turn the picture to garbage. A slot-3
+    // Mockingboard hits the same range ($C0BB = VIA #1 ACR). So only
+    // decode the Eve window when slot 3 is EMPTY; the card's real home
+    // (//c-class, noPhysicalSlots) always satisfies that.
+    if (addr >= 0xC0B8 && addr <= 0xC0BB && !chatMauveBlockedBySlot3())
+        slots.broadcastVideoSwitch(addr);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
     // $C100-$CFFF — slot ROM dispatch.
@@ -2143,8 +2297,10 @@ void Memory::memWrite(uint16_t addr, uint8_t value)
             iicProfile_->ioWriteIWM(addr, value, cycleCounter);
         }
         // Le Chat Mauve Eve registers — mirror of the memRead path so the
-        // toggle reacts to STA $C0B9 and friends, not just LDA.
-        if (addr >= 0xC0B8 && addr <= 0xC0BB) slots.broadcastVideoSwitch(addr);
+        // toggle reacts to STA $C0B9 and friends, not just LDA. Same
+        // slot-3 collision guard as the read path.
+        if (addr >= 0xC0B8 && addr <= 0xC0BB && !chatMauveBlockedBySlot3())
+            slots.broadcastVideoSwitch(addr);
         slots.deviceSelectWrite(addr, value);
         return;
     }

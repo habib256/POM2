@@ -174,6 +174,18 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         if (macBinaryStripped) {
             if (!res.diag.empty()) res.diag += "; ";
             res.diag += "MacBinary 128-byte header stripped";
+            // Record the wrapper through the same envelope plumbing 2IMG
+            // uses, so write-back re-emits the 128 header bytes. Without
+            // this, saveDirty()'s pre-fill read started at file offset 0
+            // (header + shifted tracks) and then truncated the file to a
+            // bare image — every NON-dirty track was silently corrupted
+            // on the first guest write to a MacBinary-wrapped image.
+            // A 2IMG inside MacBinary already set its own (wider) window.
+            if (!res.twoImgWrap) {
+                res.twoImgWrap         = true;
+                res.twoImgHeaderEnd    = baseOff;
+                res.twoImgTrailerStart = totalLen;
+            }
         }
     };
 
@@ -765,6 +777,21 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         loaded = false; return false;
     }
 
+    // MacBinary-wrapped WOZ: detectFormat found the magic 128 bytes in,
+    // but this loader re-reads the file from scratch and used to demand
+    // the magic at offset 0 — wrapped WOZs never loaded at all. Slice
+    // the header off; loadFile()'s generic envelope capture re-attaches
+    // it for write-back, and every chunk offset below stays relative to
+    // the WOZ payload.
+    if (fileSize > 140 && std::memcmp(buf.data(), "WOZ", 3) != 0 &&
+        (std::memcmp(buf.data() + 128, "WOZ1", 4) == 0 ||
+         std::memcmp(buf.data() + 128, "WOZ2", 4) == 0)) {
+        buf.erase(buf.begin(), buf.begin() + 128);
+    }
+    // Size of the WOZ payload actually in `buf` (differs from fileSize
+    // when the MacBinary strip above ran) — every bound below uses this.
+    const size_t wozSize = buf.size();
+
     const bool isWoz1 = std::memcmp(buf.data(), "WOZ1", 4) == 0;
     const bool isWoz2 = std::memcmp(buf.data(), "WOZ2", 4) == 0;
     if (!isWoz1 && !isWoz2) {
@@ -790,7 +817,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             (static_cast<uint32_t>(buf[11]) << 24);
         if (expected != 0) {
             uint32_t crc = 0xFFFFFFFFu;
-            for (size_t i = 12; i < fileSize; ++i) {
+            for (size_t i = 12; i < wozSize; ++i) {
                 crc ^= buf[i];
                 for (int b = 0; b < 8; ++b) {
                     crc = (crc & 1u)
@@ -832,6 +859,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // Captain Goodnight, Ankh, Sundog: Frozen Legacy.
     uint16_t fluxBlock        = 0;   // INFO+46 (u16 LE, file-block units)
     uint16_t fluxLargestTrack = 0;   // INFO+48 (u16 LE, in blocks)
+    bool     boot13           = false;   // INFO+38 boot_sector_format == 2
 
     auto readU16LE = [&](size_t o) -> uint32_t {
         return static_cast<uint32_t>(buf[o])
@@ -845,10 +873,10 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     };
 
     size_t off = 12;
-    while (off + 8 <= fileSize) {
+    while (off + 8 <= wozSize) {
         const uint32_t len = readU32LE(off + 4);
         const size_t   dataOff = off + 8;
-        if (dataOff + len > fileSize) {
+        if (dataOff + len > wozSize) {
             lastError = "WOZ chunk length runs past EOF";
             loaded = false; return false;
         }
@@ -869,6 +897,13 @@ bool DiskImage::loadWoz(const std::string& imgPath)
                 if (obt >= 8 && obt <= 64) {
                     optimalBitTiming = obt;
                 }
+            }
+            // INFO+38 (v2) boot_sector_format: 2 = 13-sector only. This
+            // is what routes a DOS 3.2 .woz to the 13-sector boot PROM —
+            // loadWoz never set sectorsPerTrack_, so every 13-sector WOZ
+            // was served the 16-sector P5 PROM and could not boot.
+            if (infoVersion >= 2 && len >= 39 && buf[dataOff + 38] == 2) {
+                boot13 = true;
             }
             // INFO version 3 (WOZ2 v2.1+) adds flux_block / largest_flux_track
             // at offsets +46 / +48. Older versions report 0. MAME
@@ -941,7 +976,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         // `img[off_flux*512 + 8 + trkid]` directly without verifying
         // the chunk ID; we add a defensive verification to avoid
         // misreading a non-aligned blob as flux.
-        if (chunkOff + 8 + 160 <= fileSize
+        if (chunkOff + 8 + 160 <= wozSize
             && std::memcmp(buf.data() + chunkOff, "FLUX", 4) == 0) {
             std::memcpy(fluxFidx.data(), buf.data() + chunkOff + 8, 160);
             haveFlux = true;
@@ -979,7 +1014,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         const uint32_t trackSize  = readU32LE(hdrOff + 4);
         if (startBlock == 0 || trackSize == 0) return false;
         const size_t dataOff = static_cast<size_t>(startBlock) * 512;
-        if (dataOff + trackSize > fileSize) return false;
+        if (dataOff + trackSize > wozSize) return false;
 
         // First pass: sum total ticks to size the synthetic bitStream.
         uint64_t totalTicks = 0;
@@ -1036,6 +1071,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // t in 0..34 and lost the inter-track protection data carried
     // at qt%4 != 0 by copy-protected disks.
     int populatedSlots = 0;
+    size_t totalExpandedBits = 0;
     int populatedWholeTracks = 0;
     int populatedFluxSlots = 0;
     for (int qt = 0; qt < kQuarterTracks; ++qt) {
@@ -1075,11 +1111,25 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             bitDataBytes = static_cast<size_t>(blockCount) * 512;
             bitCount     = bc;
         }
+        // kMaxTrackBits: real 5.25" tracks hold ~50k bits (WOZ1 slots cap
+        // at 53,168); 1 Mi-bit is far above any legitimate mastering while
+        // stopping a hostile TRKS header from driving a huge expansion
+        // (bitStream stores one BYTE per bit). totalExpandedBits caps the
+        // aggregate across all 160 quarter-track slots — duplicate TMAP
+        // references could otherwise multiply even a legal track.
+        constexpr size_t kMaxTrackBits = 1u << 20;
+        constexpr size_t kMaxImageBits = 32u << 20;   // 32 MB expanded, all slots
         if (bitCount == 0
+            || bitCount > kMaxTrackBits
             || bitCount > bitDataBytes * 8
-            || bitDataOff + bitDataBytes > fileSize) {
+            || bitDataOff + bitDataBytes > wozSize) {
             // Defensive: skip malformed track rather than aborting load.
             continue;
+        }
+        totalExpandedBits += bitCount;
+        if (totalExpandedBits > kMaxImageBits) {
+            lastError = "WOZ TRKS data implausibly large (hostile header?)";
+            loaded = false; return false;
         }
 
         auto& bits = bitStream[qt];
@@ -1104,6 +1154,37 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     if (populatedWholeTracks == 0) {
         lastError = "WOZ file has no usable whole tracks";
         loaded = false; return false;
+    }
+
+    // 13-sector routing. INFO+38 (v2) is authoritative; WOZ1 and v2
+    // images with boot_sector_format 0 ("unknown") fall back to sniffing
+    // track 0's bit stream for the 5-and-3 address prologue D5 AA B5 vs
+    // the 6-and-2 D5 AA 96 — same spirit as the byte-level .nib sniff in
+    // loadFile, but bit-aligned since WOZ tracks need not start on a
+    // nibble boundary. DiskIICard keys serving13_/boot-PROM choice on
+    // is13Sector(), which loadWoz previously never set.
+    if (boot13) {
+        sectorsPerTrack_ = kSectorsPerTrack13;
+    } else if (bitStreamValid[0]) {
+        static const uint8_t kPro13[24] = {1,1,0,1,0,1,0,1,   // D5
+                                           1,0,1,0,1,0,1,0,   // AA
+                                           1,0,1,1,0,1,0,1};  // B5
+        static const uint8_t kPro16[24] = {1,1,0,1,0,1,0,1,   // D5
+                                           1,0,1,0,1,0,1,0,   // AA
+                                           1,0,0,1,0,1,1,0};  // 96
+        const auto& bits = bitStream[0];
+        bool found13 = false, found16 = false;
+        for (size_t i = 0; i + 24 <= bits.size() && !(found13 || found16);
+             ++i) {
+            bool m13 = true, m16 = true;
+            for (int k = 0; k < 24 && (m13 || m16); ++k) {
+                if (bits[i + static_cast<size_t>(k)] != kPro13[k]) m13 = false;
+                if (bits[i + static_cast<size_t>(k)] != kPro16[k]) m16 = false;
+            }
+            found13 = m13;
+            found16 = m16;
+        }
+        if (found13 && !found16) sectorsPerTrack_ = kSectorsPerTrack13;
     }
 
     path        = imgPath;
@@ -2034,6 +2115,45 @@ bool DiskImage::decodeTrack13(int track,
     return decodedAny;
 }
 
+namespace {
+// Atomic-ish file replace for the write-back paths. Every saveDirty
+// branch used to open the USER'S SOURCE FILE with std::ios::trunc and
+// write in place: an ENOSPC / removable-media / I/O failure mid-write
+// left the original truncated — and since the dirty flags survive a
+// failure, the retry then pre-filled its buffer from the now-truncated
+// file and wrote zeros over the remaining tracks. Write a sibling temp
+// file instead (same directory → same filesystem → POSIX rename is
+// atomic) and only replace the original once the write fully succeeded.
+template <typename Emit>
+bool writeFileAtomic(const std::string& path, std::string& lastError,
+                     Emit&& emit)
+{
+    const std::string tmp = path + ".pom2tmp";
+    {
+        std::ofstream wf(tmp, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!wf) { lastError = "Cannot open " + tmp + " for write"; return false; }
+        emit(wf);
+        wf.flush();
+        if (!wf) {
+            lastError = "Short write on " + tmp;
+            wf.close();
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        lastError = "Cannot replace " + path + ": " + ec.message();
+        std::error_code ec2;
+        std::filesystem::remove(tmp, ec2);
+        return false;
+    }
+    return true;
+}
+}  // namespace
+
 bool DiskImage::saveDirty()
 {
     if (!loaded || !anyDirty || !writeBackEnabled || fileWriteProtected) {
@@ -2080,11 +2200,22 @@ bool DiskImage::saveDirty()
         // which treats CRC==0 as "not computed").
         wozRaw[ 8] = 0; wozRaw[ 9] = 0; wozRaw[10] = 0; wozRaw[11] = 0;
 
-        std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
-        if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
-        wf.write(reinterpret_cast<const char*>(wozRaw.data()),
-                 static_cast<std::streamsize>(wozRaw.size()));
-        if (!wf) { lastError = "Short write on " + path; return false; }
+        const bool wrote = writeFileAtomic(path, lastError,
+            [&](std::ofstream& wf) {
+                // Wrapper envelope (MacBinary) captured at load — wozRaw
+                // holds the bare WOZ payload; re-emit the header around it.
+                if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+                    wf.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                             static_cast<std::streamsize>(twoImgHeaderRaw.size()));
+                }
+                wf.write(reinterpret_cast<const char*>(wozRaw.data()),
+                         static_cast<std::streamsize>(wozRaw.size()));
+                if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+                    wf.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                             static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+                }
+            });
+        if (!wrote) return false;
         wozQtDirty.fill(false);
         anyDirty = false;
         pom2::log().info("Disk II",
@@ -2101,27 +2232,25 @@ bool DiskImage::saveDirty()
     // header bytes + payload + trailer so the file remains a valid 2IMG
     // after the round-trip.
     if (nibFormat) {
-        std::ofstream f(path, std::ios::binary | std::ios::out | std::ios::trunc);
-        if (!f) {
-            lastError = "Cannot open " + path + " for write";
-            return false;
-        }
-        if (twoImgFormat && !twoImgHeaderRaw.empty()) {
-            f.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
-                    static_cast<std::streamsize>(twoImgHeaderRaw.size()));
-        }
-        const std::size_t bytesPerTrack =
-            cnib2Format ? static_cast<std::size_t>(6384)
-                        : static_cast<std::size_t>(kNibblesPerTrack);
-        for (int t = 0; t < kTracks; ++t) {
-            f.write(reinterpret_cast<const char*>(tracks[t].data()),
-                    static_cast<std::streamsize>(bytesPerTrack));
-        }
-        if (twoImgFormat && !twoImgTrailerRaw.empty()) {
-            f.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
-                    static_cast<std::streamsize>(twoImgTrailerRaw.size()));
-        }
-        if (!f) { lastError = "Short write on " + path; return false; }
+        const bool wrote = writeFileAtomic(path, lastError,
+            [&](std::ofstream& f) {
+                if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+                    f.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                            static_cast<std::streamsize>(twoImgHeaderRaw.size()));
+                }
+                const std::size_t bytesPerTrack =
+                    cnib2Format ? static_cast<std::size_t>(6384)
+                                : static_cast<std::size_t>(kNibblesPerTrack);
+                for (int t = 0; t < kTracks; ++t) {
+                    f.write(reinterpret_cast<const char*>(tracks[t].data()),
+                            static_cast<std::streamsize>(bytesPerTrack));
+                }
+                if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+                    f.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                            static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+                }
+            });
+        if (!wrote) return false;
         dirty.fill(false);
         anyDirty = false;
         pom2::log().info("Disk II",
@@ -2132,14 +2261,21 @@ bool DiskImage::saveDirty()
     }
 
     // 13-sector (.d13 / DOS 3.x): decode via the 5-and-3 path into a
-    // 116480-byte image. 13-sector images aren't 2IMG-wrapped, so no
-    // header/trailer handling. File offset = (track*13 + S)*256 where S
-    // is the address-field sector number (decodeTrack13 indexes by S).
+    // 116480-byte image. Never 2IMG-wrapped, but a MacBinary envelope is
+    // possible and rides the same captured-header plumbing. File offset =
+    // (track*13 + S)*256 where S is the address-field sector number
+    // (decodeTrack13 indexes by S).
     if (is13Sector()) {
+        const std::size_t payloadStart13 =
+            (twoImgFormat && !twoImgHeaderRaw.empty()) ? twoImgHeaderRaw.size()
+                                                       : 0;
         std::vector<uint8_t> bytes(kBytesPerImage13, 0);
         {
             std::ifstream rf(path, std::ios::binary);
-            if (rf) rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage13);
+            if (rf) {
+                rf.seekg(static_cast<std::streamoff>(payloadStart13));
+                rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage13);
+            }
         }
         int decodedTracks = 0;
         for (int t = 0; t < kTracks; ++t) {
@@ -2155,10 +2291,20 @@ bool DiskImage::saveDirty()
                     sectors[s], kSectorBytes);
             ++decodedTracks;
         }
-        std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
-        if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
-        wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage13);
-        if (!wf) { lastError = "Short write on " + path; return false; }
+        const bool wrote = writeFileAtomic(path, lastError,
+            [&](std::ofstream& wf) {
+                if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+                    wf.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                             static_cast<std::streamsize>(twoImgHeaderRaw.size()));
+                }
+                wf.write(reinterpret_cast<const char*>(bytes.data()),
+                         kBytesPerImage13);
+                if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+                    wf.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                             static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+                }
+            });
+        if (!wrote) return false;
         dirty.fill(false);
         anyDirty = false;
         pom2::log().info("Disk II", "Saved " + std::to_string(decodedTracks) +
@@ -2209,18 +2355,19 @@ bool DiskImage::saveDirty()
         ++decodedTracks;
     }
 
-    std::ofstream wf(path, std::ios::binary | std::ios::out | std::ios::trunc);
-    if (!wf) { lastError = "Cannot open " + path + " for write"; return false; }
-    if (twoImgFormat && !twoImgHeaderRaw.empty()) {
-        wf.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
-                 static_cast<std::streamsize>(twoImgHeaderRaw.size()));
-    }
-    wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage);
-    if (twoImgFormat && !twoImgTrailerRaw.empty()) {
-        wf.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
-                 static_cast<std::streamsize>(twoImgTrailerRaw.size()));
-    }
-    if (!wf) { lastError = "Short write on " + path; return false; }
+    const bool wrote = writeFileAtomic(path, lastError,
+        [&](std::ofstream& wf) {
+            if (twoImgFormat && !twoImgHeaderRaw.empty()) {
+                wf.write(reinterpret_cast<const char*>(twoImgHeaderRaw.data()),
+                         static_cast<std::streamsize>(twoImgHeaderRaw.size()));
+            }
+            wf.write(reinterpret_cast<const char*>(bytes.data()), kBytesPerImage);
+            if (twoImgFormat && !twoImgTrailerRaw.empty()) {
+                wf.write(reinterpret_cast<const char*>(twoImgTrailerRaw.data()),
+                         static_cast<std::streamsize>(twoImgTrailerRaw.size()));
+            }
+        });
+    if (!wrote) return false;
     dirty.fill(false);
     anyDirty = false;
     pom2::log().info("Disk II", "Saved " + std::to_string(decodedTracks) +
@@ -2291,6 +2438,15 @@ DiskSlotClass classifyDiskForSlot(const std::string& path)
         || ext == ".d13")
         return DiskSlotClass::Floppy525;
     if (ext == ".po" && (sz == 143360 || sz == 143360 + 64))
+        return DiskSlotClass::Floppy525;
+    // 2IMG-wrapped 5.25" floppy (the common Asimov distribution format):
+    // anything .2mg clearly smaller than an 800K Sony image is a 5.25"
+    // candidate — the magic-based DiskImage loader then validates the
+    // payload (143360 DOS/ProDOS, 232960/223440 NIB) and yields a precise
+    // error for malformed files. This used to fall through to Unknown
+    // even though the loader fully supports it (envelope-preserving
+    // write-back included).
+    if (ext == ".2mg" && sz < 819200)
         return DiskSlotClass::Floppy525;
 
     // 800K Sony 3.5" — mirrors accept35() (819200 ± 2IMG header slack).

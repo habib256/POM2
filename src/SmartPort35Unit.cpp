@@ -46,8 +46,15 @@ bool SmartPort35Unit::loadImage(const std::string& path)
 
 void SmartPort35Unit::eject()
 {
+    // Save-on-eject, same policy as SmartPortHdvUnit::eject():
+    // Disk35Image::eject() clears blocks_ + dirty_ unconditionally, so
+    // skipping the flush silently destroyed every un-flushed guest write
+    // of the session ("Write-back (save on eject)" checkbox lied).
+    // saveDirty() is already a guarded no-op when write-back is off or
+    // nothing is dirty.
+    img_.saveDirty();
+    lastError_ = img_.lastError();
     img_.eject();
-    lastError_.clear();
 }
 
 } // namespace pom2

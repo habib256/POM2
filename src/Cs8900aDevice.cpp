@@ -327,7 +327,12 @@ uint16_t Cs8900aDevice::receiveFrame()
 
         const std::vector<uint8_t> frame = std::move(frameQueue_.front());
         frameQueue_.pop_front();
-        int len = static_cast<int>(frame.size());
+        // Keep the true length for the status word: MAME computes the
+        // Extradata bit (0x4000) from the pre-clamp length and discards
+        // the octets beyond MAX_RXLEN afterwards. Clamping first made the
+        // bit dead code.
+        const int rawLen = static_cast<int>(frame.size());
+        int len = rawLen;
         if (len > kMaxRxLength) len = kMaxRxLength;
         std::memcpy(buffer, frame.data(), static_cast<size_t>(len));
 
@@ -353,8 +358,8 @@ uint16_t Cs8900aDevice::receiveFrame()
             retVal |= correctMac ? 0x0400 : 0;
             retVal |= broadcast  ? 0x0800 : 0;
             retVal |= crcError   ? 0x1000 : 0;
-            retVal |= (len < kMinRxLength) ? 0x2000 : 0;
-            retVal |= (len > kMaxRxLength) ? 0x4000 : 0;
+            retVal |= (len    < kMinRxLength) ? 0x2000 : 0;
+            retVal |= (rawLen > kMaxRxLength) ? 0x4000 : 0;
         }
 
         ppWrite16(kPpRxLength, static_cast<uint16_t>(len));
@@ -422,7 +427,12 @@ void Cs8900aDevice::writeTxBuffer(uint8_t value, bool oddAddress)
 
     if (txCount_ != txLength_) return;
 
-    if (txEnabled_ && backend_ && txLength_ >= kMinEthFrame) {
+    // The register path bounds TxLength to 4..1518, but a restored
+    // snapshot is untrusted input: re-check against the staging area so
+    // no backend is ever handed a length past the PacketPage buffer.
+    if (txEnabled_ && backend_ && txLength_ >= kMinEthFrame &&
+        txLength_ <= kMaxEthFrame &&
+        static_cast<size_t>(kPpTxFrameLoc) + txLength_ <= packetPage_.size()) {
         backend_->transmit(&packetPage_[kPpTxFrameLoc], txLength_);
         ++framesSent_;
     }
@@ -577,9 +587,11 @@ void Cs8900aDevice::sideEffectsReadPp(uint16_t ppAddress, bool oddAddress)
     switch (ppAddress) {
     case kPpSeRxEvent: {
         // Reading RxEvent before the staged frame is fully drained is an
-        // "implied skip" — the pending frame is lost. Drivers read the
-        // status word L-then-H, H-then-L, or even the same half twice, so
-        // the pop only happens once a *new* half is touched.
+        // "implied skip" — the pending frame is lost. MAME treats EVERY
+        // completed status read as a new one, including re-reading the
+        // same half ("L, L, L or H, H, H", cs8900a.cpp:942-979), so a
+        // repeated same-half read pops the next frame too. Do NOT "fix"
+        // this to pop only on a new half — that would break MAME parity.
         const int accessMask = oddAddress ? 1 : 2;
 
         if ((accessMask & rxEventReadMask_) != 0) {
@@ -697,8 +709,14 @@ uint8_t Cs8900aDevice::read(uint8_t ioAddress)
     const uint8_t regBase = static_cast<uint8_t>(ioAddress & ~1);
 
     // The RX window reads straight out of the staged frame.
-    if (regBase == kIoRxTxData || regBase == kIoRxTxData2)
-        return readRxBuffer((ioAddress & 1) != 0);
+    if (regBase == kIoRxTxData || regBase == kIoRxTxData2) {
+        const uint8_t v = readRxBuffer((ioAddress & 1) != 0);
+        // Keep peek() honest: the data window bypasses the register-bank
+        // cache below, and an un-updated cache made the debug panel show
+        // a permanent $00 at $C0n0-$C0n3.
+        ioRegs_[ioAddress] = v;
+        return v;
+    }
 
     uint16_t wordValue;
 
@@ -741,6 +759,7 @@ void Cs8900aDevice::write(uint8_t ioAddress, uint8_t value)
 
     // The TX window writes straight into the transmit staging area.
     if (regBase == kIoRxTxData || regBase == kIoRxTxData2) {
+        ioRegs_[ioAddress] = value;    // for peek() only — see read()
         writeTxBuffer(value, (ioAddress & 1) != 0);
         return;
     }

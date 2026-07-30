@@ -838,8 +838,10 @@ PB=`$00`.
 **6522 subset**: A/B + DDR, T1 (latch + counter, one-shot +
 continuous), **T2 (one-shot, timed phase-2)**, IFR/IER (T1/T2 bits
 6/5; bit 7 dynamic from `ifr & ier & 0x7F`). T1CL read clears
-`IFR.T1`, T2CL read clears `IFR.T2`. T1L-H ($07) does NOT clear
-`IFR.T1` (real 6522 only T1C-L or T1C-H do). IER bit 7 set-vs-
+`IFR.T1`, T2CL read clears `IFR.T2`. T1L-H ($07) write ALSO clears
+`IFR.T1` (MAME `6522via.cpp` VIA_T1LH: `m_t1lh = data;
+clear_int(INT_T1)` — no counter transfer, no restart; an earlier
+POM2 note claimed the opposite). IER bit 7 set-vs-
 clear (`$C0` enables, `$40` disables). SR/PCR/CB1 + T2 PB6-count
 mode not modelled. **T2 underflow IRQ fires at `TIMER2_VALUE +
 IFR_DELAY` (= N+3)** matching MAME `6522via.cpp:959` (POM2's
@@ -1901,8 +1903,26 @@ via `DiskImage::getNextTransition` (5.25") or
 2. Memory routes `$C0E0-$C0EF` on `isIIcPlus` through IWM (MAME
    `apple2e.cpp:2798-2801` gating on `m_isiicplus && slot == 6`).
    Plain //c uses `A2BUS_DISKIING` at sl6. On //c+ slot-6 DiskIICard
-   still observes the access (motor sound / turbo / head tracking);
-   byte returned is IWM's when `iwmAuthoritative=true` (default).
+   still observes the access (motor sound / turbo / head tracking).
+   **Selective authority (2026-07-29)**: even with
+   `iwmAuthoritative=true` (default) the IWM's byte is returned ONLY
+   while the SmartPortHub routes to a 3.5" Sony
+   (`hub->active35Selected()`); 5.25" data always comes from the
+   DiskIICard LSS. The IWM's bit-cell walker mis-framed DOS 3.3 RWTS
+   write-verify (//c+ `SAVE` → I/O ERROR), and its `flushWrite` no
+   longer pushes 5.25" flux at all — both state machines were writing
+   the same `DiskImage`. Ownership rule: one controller per drive
+   class per direction. Three MAME-parity sense fixes ride along:
+   status SENSE reads HIGH with no selected drive (`iwm.cpp:129` —
+   with an always-attached `disk_`, a writable image made the //c+
+   firmware's boot drive-scan spin at `$F0FC` forever, blank screen),
+   Sony DSKCHG latch polarity (`floppy.cpp:560/672/723`, mac wpt_r
+   `!m_dskchg` — empty drive must sense "changed/empty" HIGH), and
+   DIR init 0 (`floppy.cpp:290`). Diagnostics: `POM2_TRACE_IWM_SENSE=1`
+   logs `[SENSE]/[STROBE]/[IWMST]/[IWMMODE]` transitions;
+   `build/tests/iicplus_boot_probe` boots the full //c+ stack headless
+   (`POM2_PROBE_SHADOW=1`, `POM2_PROBE_KEYS='SAVE T~'`). Pinned:
+   `iic_plus_boot_write`.
 3. DiskIICard pushes `setFloppy(image, qt)` to IWM from `insertDisk`/
    `ejectDisk`/`selectDrive`/`seekPhaseW`. IWM's `nextTransition`
    queries `DiskImage::getNextTransition(qt, from*2) / 2` (flux events
@@ -2619,6 +2639,19 @@ progress, and `(Apple II waiting)` when the handshake is holding the
 guest. The
 synthetic `PrinterCard`'s ROM never polls (its handler is `STA`/`RTS`), so
 it is not throttled — its queue simply drains at printer speed.
+
+**Rewind vs. paper (accepted design)**: the printer chain (card spools,
+`ImageWriter::pending_`, the paper stack) lives entirely outside
+`MachineSnapshot` — paper is a host-side artefact and deliberately does
+not travel back in time. Consequence: rewinding across a print and
+replaying re-executes the guest's print code, and the replayed bytes are
+interpreted against whatever parser state the first pass left behind
+(a rewind mid-`ESC G` data run makes replayed text land as dot columns).
+The printout produced across a rewind is therefore best-effort; use the
+panel's **Reset printer** to re-arm a clean parser. Spool growth is
+bounded: the SSC tap trims its consumed prefix past 1 MiB (absolute
+drain offsets, `SuperSerialCard.cpp`), and the mechanism force-drains
+once `pending_` backlog passes 1 MiB (`ImageWriter::queueBytes`).
 
 **Slot 3 on a //e is a trap** (and is one on real hardware too): the
 internal 80-column firmware keeps `OURCH`/`OURCV` in the *slot-3* screen

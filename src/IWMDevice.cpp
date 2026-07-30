@@ -51,6 +51,8 @@
 
 #include "IWMDevice.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include "CpuClock.h"
@@ -109,6 +111,9 @@ void IWMDevice::reset()
     // so the host hub can drop any latched device-select state. POM2
     // mirrors via `fireDevsel(0)` (idempotent if already 0).
     fireDevsel(0);
+    // The phase lines were just dropped too — tell the host hub, or a
+    // Sony drive keeps acting on the pre-reset CA0-CA2/LSTRB levels.
+    if (phasesCb_) phasesCb_(phases_);
 }
 
 void IWMDevice::fireDevsel(uint8_t value)
@@ -185,10 +190,33 @@ uint8_t IWMDevice::read(uint8_t offset)
             // SENSE line on the currently-selected register (see
             // Sony35Drive::senseR comment block) — the //c+ firmware
             // probes /WPT, /TRACK0, /INSERTED, etc. via this same bit.
+            // MAME `iwm.cpp:129`:
+            //   (m_status & 0x7f) | ((!m_floppy || m_floppy->wpt_r()) ? 0x80 : 0)
+            // — with NO selected floppy the SENSE line reads HIGH. POM2's
+            // disk_ is permanently attached by DiskIICard, so it must be
+            // gated on a drive actually being enabled (devsel != 0):
+            // the //c+ firmware's boot drive-scan polls status with
+            // devsel=0 and waited forever on the 5.25" image's
+            // write-protect bit (writable disk → 0 → $F0FF BPL loop,
+            // no banner, no boot).
             bool wpt;
-            if (sony_)      wpt = sony_->senseR();
-            else if (disk_) wpt = disk_->isWriteProtected();
-            else            wpt = true;
+            const char* src;
+            if (sony_)      { wpt = sony_->senseR();           src = "sony"; }
+            else if (disk_ && devsel_ != 0)
+                            { wpt = disk_->isWriteProtected(); src = "disk525"; }
+            else            { wpt = true;                      src = "none"; }
+            static const bool trace =
+                std::getenv("POM2_TRACE_IWM_SENSE") != nullptr;
+            if (trace) {
+                static int lastKey = -1;
+                const int key = (wpt ? 1 : 0) | (sony_ ? 2 : 0) | (disk_ ? 4 : 0);
+                if (key != lastKey) {
+                    std::fprintf(stderr,
+                                 "[IWMST] src=%s wpt=%d control=%02X devsel=%d\n",
+                                 src, wpt ? 1 : 0, control_, devsel_);
+                    lastKey = key;
+                }
+            }
             return static_cast<uint8_t>((status_ & 0x7F) | (wpt ? 0x80 : 0x00));
         }
         case 0x80: return whd_;
@@ -217,30 +245,18 @@ void IWMDevice::flushWrite(uint64_t when)
         // The flux transition values in MAME live in `attotime`; POM2
         // already speaks raw cycle counts at the DiskImage boundary, so
         // we pass them through as-is.
-        if (disk_) {
-            std::vector<int64_t> fluxes;
-            fluxes.reserve(fluxWriteCount_);
-            for (uint32_t i = 0; i < fluxWriteCount_; ++i) {
-                // ×2: convert this device's CPU-cycle timestamps to the
-                // LSS domain at the API boundary — the exact mirror of
-                // the READ path (`nextTransition`: `fromLss = from * 2;
-                // … return t / 2`). DiskImage::writeFlux reduces angular
-                // position in LSS cycles; feeding CPU cycles in spliced
-                // at half scale, where the read path would never look.
-                fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]) * 2);
-            }
-            // No revolution anchor (default -1) — deliberately matching
-            // this device's 5.25" READ path (`nextTransition` calls
-            // `getNextTransition(qt_, fromLss)` with the same default),
-            // so reads and writes through the IWM shadow reduce angular
-            // position identically. The authoritative 5.25" path
-            // (DiskIICard) passes its per-drive anchor on both sides.
-            disk_->writeFlux(qt_,
-                             static_cast<int64_t>(fluxWriteStart_) * 2,
-                             static_cast<int64_t>(when) * 2,
-                             static_cast<int>(fluxes.size()),
-                             fluxes.empty() ? nullptr : fluxes.data());
-        }
+        // 5.25" (disk_): NO flux write-back from this device — ever.
+        // MAME's IWM is the only controller on its bus, but POM2 wires
+        // the slot-6 DiskIICard in parallel on //c+ (Memory::memWrite
+        // feeds $C0Ex to ioWriteIWM AND slots.deviceSelectWrite), and
+        // DiskIICard's LSS is the 5.25" write authority everywhere else
+        // in POM2. Both state machines pushing flux into the same
+        // DiskImage double-wrote every 5.25" sector on the //c+ (the
+        // dual-controller hazard from the 2026-07 bug hunt). The IWM's
+        // write handshake state (whd_, MODE_WRITE) still runs so the
+        // firmware's probes behave; only the flux landing is suppressed.
+        // The 3.5" Sony path below IS this device's to write — no other
+        // controller sees those accesses.
         if (sony_) {
             // 3.5" Sony write-back. Sony35Drive's writeFlux splices
             // the new transitions into its cached cell stream, then
@@ -317,6 +333,19 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
 
     // Activate / deactivate based on m_control bit 4 (motor enable).
     // MAME line 190-241.
+    {
+        // POM2_TRACE_IWM_SENSE=1 also logs drive-enable edges — pairs
+        // with the [SENSE]/[IWMST] lines to show whether a firmware
+        // wait-for-spin-down can ever terminate.
+        static const bool traceMot =
+            std::getenv("POM2_TRACE_IWM_SENSE") != nullptr;
+        const bool wantOn = (control_ & 0x10) != 0;
+        const bool isOn   = active_ == MODE_ACTIVE;
+        if (traceMot && wantOn != isOn)
+            std::fprintf(stderr, "[IWMMODE] enable %s now=%llu mode=%02X\n",
+                         wantOn ? "ON " : "OFF",
+                         static_cast<unsigned long long>(now_), mode_);
+    }
     if (control_ & 0x10) {
         if (active_ != MODE_ACTIVE) {
             active_      = MODE_ACTIVE;
@@ -852,6 +881,14 @@ void IWMDevice::appendSnapshotState(std::vector<uint8_t>& out) const
     putU8(rsh_);
     putU8(wsh_);
     putU8(devsel_);
+
+    // Appended after the v1 layout (old blobs simply end here — the
+    // loader treats them as optional): the CA0-CA2/LSTRB phase lines and
+    // the write-underrun-warn latch. Rewinding mid-3.5"-command-strobe
+    // kept the *live* phases, so the next LSTRB decoded the wrong Sony
+    // register.
+    putU8(phases_);
+    putU8(writeDataLoaded_ ? 1 : 0);
 }
 
 bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
@@ -919,6 +956,15 @@ bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
     const uint8_t  devselV = getU8();
     if (!ok) return false;
 
+    // Optional v1.1 tail — absent from blobs written before phases_ and
+    // writeDataLoaded_ were serialized; those keep the live values. A
+    // single leftover byte is neither format: that is a truncated v1.1
+    // blob, and a truncated blob is rejected, never half-applied.
+    if (n - pos == 1) return false;
+    const bool    hasPhaseTail = (n - pos >= 2);
+    const uint8_t phasesV      = hasPhaseTail ? data[pos]     : 0;
+    const uint8_t wdlV         = hasPhaseTail ? data[pos + 1] : 0;
+
     now_             = nowV;
     revStart35_      = revV;
     lastSync_        = lastV;
@@ -947,6 +993,18 @@ bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
     rsh_           = rshV;
     wsh_           = wshV;
     devsel_        = devselV;
+    if (hasPhaseTail) {
+        phases_          = phasesV;
+        writeDataLoaded_ = wdlV != 0;
+    }
+
+    // Re-synchronise the host side. The hub / Sony drives / MIG mirrors
+    // were NOT part of this blob and still hold their live state; firing
+    // the callbacks unconditionally (fireDevsel's transition check would
+    // stay silent when the restored value happens to equal the live one)
+    // pushes the restored phases / SEL / drive-select down the wire.
+    if (phasesCb_) phasesCb_(phases_);
+    if (devselCb_) devselCb_(devsel_);
     return true;
 }
 

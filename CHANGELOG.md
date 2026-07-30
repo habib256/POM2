@@ -5,6 +5,570 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-30 — Post-review sweep: 13 defects in the same day's own code
+
+Two adversarial reviewers went over everything written that day (none of it
+had been read by anyone). Findings, all fixed:
+
+**The window persistence did not actually work** — the feature validated by
+hand was broken twice over:
+- The shutdown capture was **dead code**: `~MainWindow` runs *after*
+  `glfwTerminate()` (it is a local of `main`), so `glfwGetWindowPos/Size`
+  bailed on the un-init check, zeroed their out-params, and the
+  `savedWinW_ <= 0` guard swallowed the write. Quitting normally persisted
+  nothing. Moved into `captureWindowGeometryNow()`, called by `main()` while
+  GLFW is still alive.
+- **`--kiosk` triggered a video-MODE SWITCH**: `setGlfwWindow` (which
+  restores geometry) ran *before* `setKioskMode`, so `kiosk_` was still
+  false and `glfwSetWindowSize` hit an exclusive full-screen window — which
+  GLFW reads as "change the desired video mode". Ordering swapped.
+- On X11, measuring right after `glfwRestoreWindow` still read the
+  **maximized** rect (the call only posts a `_NET_WM_STATE` message), and
+  un-maximized the user's window for nothing. The flag is now recorded
+  without touching the window.
+- The geometry clamp validated against the primary monitor only, so a
+  window kept on a **second display** was dragged back to screen 1 on every
+  launch (a monitor left of primary has negative virtual-screen X). Now
+  checked against every monitor's work area.
+
+**The kiosk read-only promise had holes**: only 4 of ~20 save sites checked
+the flag, so `--kiosk` → F10 → change a profile rewrote `state.cfg`. Fixed
+centrally in `Settings::save()` — no call site can forget it now. Also: F10
+fired on auto-repeat (holding it flipped full-screen ~30×/s, each entry
+doing a disk write); the kiosk menu footer reserved 4 action rows for 5, so
+QUIT was clipped below the panel edge with no scrollbar; and leaving kiosk
+resumed a machine the user had **deliberately** paused before pressing F10
+(the menu's pause is not ours to undo when it was a no-op).
+
+**Emulation core:**
+- **The VBL IRQ survived a reset** with no way to clear it: a //c that had
+  enabled it re-asserted on the next frame edge into a freshly reset
+  machine, and `$C05A` (DisVBL) only decodes while IOUDIS is clear — which
+  reset forces back true. `resetSoftSwitches` now disarms and drops the
+  line. Self-inflicted by the same day's decision to start asserting it.
+- **Snapshot restore did not re-drive the VBL line**, and the `$C070` ack
+  was gated on the latch — a rewind landing "not pending" while the line
+  was asserted wedged the //c in its IRQ vector forever. The ack is now
+  unconditional (as MAME's `lower_irq` is) and restore re-drives the line.
+- **The Mockingboard could drone forever after a reset**: the audio thread
+  resyncs its register bank only when `ayResetCount_` *changes*, and
+  `onReset` set it to 0 — a no-op whenever it already was. It now bumps,
+  and clears the pending event queue.
+- The AY replay cursor **truncated to whole cycles** (23.19 → 23), drifting
+  0.8-1.4 % slower than the producer — larger than the PAL/NTSC delta
+  `setCpuClock` exists to fix. Now carries a fractional remainder, like
+  `SpeakerDevice::subSampleAccum`.
+- A **rewind stranded that cursor**: rolled-back stamps fall far below it,
+  so every event collapsed onto sample 0 for the whole rewound span. A
+  backward-jump guard re-anchors it.
+- Queue overflow dropped the **oldest** event permanently (nothing else
+  re-seeds the audio bank); it now drops the queue and forces a resync.
+- `M68705P3::kSnapshotBytes` was **137 for 138 bytes written** (the register
+  group is four bytes, not three), letting a short blob past the length
+  guard and reading one byte past the caller's buffer.
+- Two `>` that should be `>=` in "untrusted" clamps (ATA `wordIdx_`, HDV
+  `streamOffset`) allowed an index one past the end — an OOB read *and
+  write* on the ATA PioOut path.
+- The Chat Mauve slot-3 guard tested **occupancy, not type**, so plugging
+  the card into slot 3 made it inert; it now only yields to a foreign card.
+- `ClockCard::setCpuClock` silently no-opped for non-TP modes (it replayed
+  `programTpTimer`, whose `default:` leaves the rate alone); it now
+  re-derives from the cached rate. Its snapshot also clamps `tpRateHz_` /
+  `tpAccumCycles_` — a crafted blob could give `advanceCycles` a ~2^31
+  iteration loop. Stale "48-bit shift register" docs corrected to 40.
+- `MouseCard` restore did not re-drive the slot IRQ (the wire-OR lives in
+  `SlotPeripheral`, not the PIA), losing a pending mouse interrupt.
+- **`tickFrame`'s wall-clock scaling is now `#ifdef __EMSCRIPTEN__`.** The
+  browser is its only production caller; every other caller is a headless
+  test where "one call = one frame budget" is the contract, and scaling
+  collapsed the budget to ~1 cycle. Two existing tests survived only by
+  accident. (The suite's slow-test time went 116 s → 295 s once they began
+  doing real work again — the fix is measurable.)
+
+## 2026-07-30 — Full screen ⇄ windowed at runtime (kiosk is now a mode, not a launch flag)
+
+Kiosk used to be decided once, on the command line. It is now a runtime
+toggle in both directions: **F10**, View → Full screen (kiosk), the
+`view.kiosk` command-palette entry, or a new **EXIT KIOSK (WINDOWED)** action
+in the in-kiosk menu (so someone who never reads shortcuts can still get
+out).
+
+**No snapshot round-trip is involved** — that was the obvious idea, and it
+turned out to be unnecessary. Kiosk touches exactly three things: the GLFW
+window (exclusive full-screen vs windowed), the render path (`render()`
+early-returns to `renderKiosk()`), and settings writing. The CPU, memory and
+slot cards are never involved, so the switch is instant and lossless: a game
+keeps playing across it, mid-frame. Entering saves the windowed geometry and
+restores it on the way back; a session launched with `--kiosk` (which has no
+windowed geometry to restore) gets a centred default.
+
+The window geometry is now **persisted** (`window_x/y/w/h`,
+`window_maximized` in `state.cfg`) — it previously lived nowhere at all, so
+there was literally nothing to restore from. It is written on the way INTO
+kiosk (the last chance: kiosk never writes state.cfg) and at normal
+shutdown, and applied in `setGlfwWindow` so a plain relaunch also reopens
+where you left off. Leaving kiosk prefers the geometry measured this
+session, falls back to the persisted one (the `--kiosk`-launch case), and
+only then to a centred default. A saved position is clamped back onto a
+monitor so a window saved on a since-disconnected screen can't reopen
+off-screen.
+
+Details worth knowing:
+- **F10 was already taken.** It was the keyboard fallback for the in-kiosk
+  Start menu, so entering kiosk ALSO opened that menu in the same frame
+  (`onKey` runs during `glfwPollEvents`, before render) — the user asked
+  for the game to go full-screen, not for a menu. The kiosk menu's keyboard
+  fallback moved to **F1**; the gamepad Start button is unchanged.
+- **Leaving full-screen needs the geometry re-applied explicitly.** Many
+  window managers ignore the position/size passed to
+  `glfwSetWindowMonitor` when un-fullscreening, so the call is now followed
+  by `glfwSetWindowSize` + `glfwSetWindowPos` (the standard GLFW
+  workaround), and a maximized window is remembered as a flag and
+  re-maximized rather than restored as a giant un-maximized rectangle.
+- **Leaving kiosk un-pauses.** The in-kiosk menu pauses the machine while
+  it is up; exiting from an open menu would otherwise strand the user in
+  the GUI with a silently stopped CPU.
+- **F10 is routed unconditionally**, alongside F9/F11/F12 — entering kiosk
+  from a focused text field must work, and *leaving* it must ALWAYS work. It
+  also fires with the in-kiosk menu open, which otherwise swallows keys.
+- **The `--kiosk` read-only promise is preserved.** The README says a kiosk
+  session "can't disturb your desktop setup". Naively, toggling to the GUI
+  would have resumed writing `state.cfg`. A session LAUNCHED in kiosk now
+  stays read-only for its whole life (`settingsReadOnly()`), while a GUI
+  session that enters kiosk saves once on the way in (so GUI-side changes
+  aren't lost if the user quits from kiosk) and is read-only only while
+  there.
+
+## 2026-07-30 — PAL + Le Chat Mauve audit: the PAL clock is right, NTSC is the off one
+
+Targeted hunt on the PAL profiles and the Le Chat Mauve RGB card.
+
+Closed the two follow-ups from that audit:
+- **WASM ran PAL 20 % fast.** `tickFrame()` burned a full `cyclesPerFrame`
+  budget per call, but the browser drives it once per DISPLAY refresh
+  (`emscripten_set_main_loop_arg(..., fps = 0)`) — on a 60 Hz panel a PAL
+  profile executed 20313 × 60 = 1.22 MHz with a guest VBL at 60.1 Hz
+  instead of 50.08. (NTSC had the same hazard on 120/144 Hz panels.) The
+  budget is now scaled by the wall time actually elapsed, in units of the
+  machine's own `frameIntervalUs`, capped at 4 frames so a backgrounded
+  tab can't dump seconds of emulated time into one call. The threaded path
+  is untouched — `workerLoop` already sleeps to an absolute deadline.
+- **The "unreachable MAME RGB HGR mode" was a false positive**, verified
+  against the fetched `apple2video.cpp`. MAME's `hgr_update` gate
+  (`rgb_monitor() && m_dhires && !m_80col`, where `m_dhires = !AN3`) is the
+  **Video-7** card's foreground-background mode — an American product POM2
+  does not model. POM2's Duochrome is the **Le Chat Mauve "Eve"**'s own
+  $C0BA/$C0BB soft switch (brevet), which is why the `!state.dhgr` term
+  looks inverted, and it IS guest-reachable (`STA $C0BB`; snapshotted since
+  blob v2) rather than UI-only. Changing the gate would have broken the Eve
+  model and altered the //c PAL default picture, so the divergence is now
+  spelled out in a citation comment instead — a real Video-7 would need its
+  own card class.
+
+**Headline: POM2's PAL frequency is correct — more accurate than MAME's.**
+An Apple II scanline is 65 CPU cycles but **912 master-clock periods**
+(64 × 14 plus one stretched "long cycle" of 16). The PAL crystal
+14.250450 MHz was chosen so that same 912-period line lands exactly on the
+PAL broadcast line rate (912 × 15 625 = 14 250 000), so the long-cycle
+average is 15 625 × 65 = **1 015 625 Hz** — POM2's value, right to 0.003 %.
+The naive 14.25045/14 = 1 017 889 ignores the long cycle (0.22 % fast), and
+MAME's 1 016 966 is just its NTSC figure scaled by the crystal ratio, so it
+inherits that figure's own 0.13 % error. The comment in `CpuClock.h` had
+this reasoning **backwards** (it apologised for a "deliberate deviation"
+that is in fact the accurate number) and has been rewritten — a future
+"align with MAME" would have made PAL worse. Noted alongside: POM2's NTSC
+clock IS the naive divider and runs 0.22 % fast (guest sees 60.05 Hz vs a
+real 59.92 Hz); left as-is because every NTSC-era constant, test and golden
+capture is calibrated against it.
+
+Verified correct, no change needed: the floating-bus scanner is fully
+PAL-parameterised (its vertical counter runs $C8..$1FF on PAL vs $FA..$1FF
+on NTSC, a faithful port of MAME `apple2video.cpp`), as are
+`frameCycleToPos`, `pushVideoEventLocked`, the beam segmentation, the FLASH
+counter and the 50 Hz worker pacing. The Chat Mauve's AN3 FIFO is bit-exact
+with MAME (rising-edge only, 2-bit depth, COL140 reset) and the //c PAL
+profile still reaches all four RGB modes after last pass's IOUDIS gating —
+IOUDIS powers up *true*, so $C05E/$C05F reach the card.
+
+Fixed:
+- **Mockingboard AY replay cursor was left on the NTSC clock** — a
+  regression from this same day's emuCycles queue. Under PAL the audio
+  thread advanced its cursor 0.7 % faster than the CPU produced cycles, so
+  it outran every queued write and applied them all at the buffer START,
+  silently undoing the sub-buffer timing on exactly the PAL demos (French
+  Touch / DIX) it was built for. Retuned via a new virtual
+  `SlotPeripheral::setCpuClock`, applied both on a video-standard change
+  and at plug time (a Slot Config "Apply" re-plugs without re-running the
+  profile's standard step).
+- **The //c VBL interrupt is finally asserted.** `vblIrqPending` was set
+  but the CPU line was never driven, on the stated grounds that POM2 "does
+  not model IOUDIS" — stale since this week: IOUDIS *is* modelled and
+  $C05A/$C05B only reach the VBL mask on //c-class with IOUDIS clear, so
+  the arm is now unambiguous. A //c PAL demo using the VBL IRQ as its 50 Hz
+  frame sync previously spun on its wait flag forever or free-ran with
+  tearing. IIe keeps the polling-only behaviour (there $C05A/B really are
+  annunciators, and asserting would resurrect the original ProDOS crash).
+- **AppleWin mouse VBL period used the CPU budget, not the video frame** —
+  20313 instead of 20280, drifting 33 cycles/frame, a full frame of phase
+  every ~12 s. A //c PAL program using the mouse VBL IRQ as a raster
+  timebase watched its sync point crawl down the screen. (The card's own
+  comment claimed it was locked to the beam.)
+- **ClockCard TP period followed the NTSC constant** — the uPD1990AC's TP
+  derives from the card's own crystal (a real-time reference), so 64 Hz TP
+  ran at 63.55 Hz wall-clock under PAL.
+- **Le Chat Mauve's $C0B8-$C0BB Eve registers aliased slot 3.** That range
+  IS slot 3's device-select window: an SSC there drives its ACIA
+  data/status/command/**control** at exactly those addresses, so a serial
+  driver's `STA $C0BB` (baud setup) flipped the Eve's HGR-Duochrome bit and
+  turned the picture to garbage. Now decoded only when slot 3 is empty —
+  which the card's real home (//c-class, no physical slots) always is.
+- **The two Eve toggles are snapshotted** (blob v2, v1 still loads). They
+  were documented as "user settings, not guest-volatile" but the
+  $C0B8-$C0BB decode mutates them from the guest bus, so a rewind past a
+  `STA $C0BB` left the display stuck in Duochrome.
+- **`pal_timing_test` now pins the floating bus under PAL** — the one
+  PAL-geometry consumer nothing covered, and the one where a stray 262
+  would be silent (a wrong RNG byte, a vapor-lock that never fires). RAM is
+  filled with an address-revealing pattern so the probe actually
+  discriminates.
+
+## 2026-07-30 (later) — The LOW backlog is empty
+
+All seven remaining items from the 2026-07-29 workflow hunt, fixed and
+tested:
+
+- **NMOS `NOP abs,X` pays its page-cross cycle.** New `UnoffAbsX` handler
+  (reads the operand, adds X, +1 when the page changes — MAME om6502
+  `nop_abx`); `$1C/$3C/$5C/$7C/$DC/$FC` route through it in NMOS mode.
+  The 65C02's flat-4 entries for `$DC/$FC` stay as they were.
+- **Snapshot DMA disarm is lazy.** Kicking a live bus master (SoftCard
+  Z80) off the bus used to happen BEFORE a single byte was read, so an
+  empty, foreign or immediately-truncated file killed CP/M for nothing.
+  It now fires on the first section that actually mutates the machine —
+  and a well-formed file carrying neither CPU nor MEM is reported as an
+  error instead of a silent success.
+- **CLI Phase-C ordering is deterministic.** The deferred actions
+  (`--run` / `--paste` / `--step`) slept a fixed 250 ms while the
+  positional-disk boot fired on a 30-frame countdown, so the order
+  flipped with the host refresh rate (~500 ms at 60 Hz, ~208 ms at
+  144 Hz — the actions then ran against a machine the boot was about to
+  reset). The deferred thread now waits on a `bootDiskSettled` gate
+  (bounded ~5 s so a failed boot can't wedge it), pre-set when there is
+  no positional disk so that path keeps its exact old timing.
+- **AY READ drives the bus.** `applyControl` counted the READ strobe and
+  did nothing else, so a driver probing the chip (write a register, read
+  it back — a common presence check, and how some Phasor mode detectors
+  identify the board) saw the VIA's own stale port-A output. The AY now
+  exposes `busOut`, `Via6522` grew a real port-A INPUT pin model
+  (`readPortA` mixes `(out & ddr) | (pin & ~ddr)`, snapshotted), and both
+  Mockingboard and Phasor latch the value on a READ — MAME's `m_porta`
+  shadow.
+- **`Apple2Display::render()` routes from the PUBLISHED frame.** It
+  sampled `mem.getDisplayState()` — the live recording frame, already
+  running ahead — to pick the demod / mixed-mode path for pixels
+  belonging to the published frame, and stored that same wrong state in
+  `lastRenderState_` (which the present path consumes). It now folds the
+  published events onto the published frame-start state, and keeps the
+  composite path alive when ANY band in the frame was graphics. With no
+  events the two states are identical, so the non-beam-raced path is
+  bit-for-bit unchanged.
+- **`$C019` VBL samples at the data-fetch cycle.** The IIe beam-state
+  read used bare `cycleCounter`, which only advances at end-of-
+  instruction — up to 7 cycles early, enough to report the wrong side of
+  a VBL boundary to beam-racing code. It now adds the in-flight
+  instruction progress, the same stamp `floatingBus()` and
+  `pushVideoEventLocked()` already use.
+- **Z80 block-repeat X/Y flags come from PCH.** On a repeating LDIR /
+  LDDR / CPIR / CPDR iteration MAME overwrites the undocumented X/Y
+  flags with bits 13/11 of PC (`m_f.yx_val = PC >> 8`); POM2 kept the
+  per-iteration data-derived value, so F was wrong for the entire run of
+  the instruction. zexall stays clean.
+
+## 2026-07-30 — Mockingboard emuCycles queue, MouseCard MCU snapshot, serial parity
+
+The last four items from the workflow hunt's backlog, all pinned:
+
+- **Mockingboard AY register writes are now emuCycles-stamped.** The audio
+  thread used to snapshot both AY register banks ONCE per buffer, so every
+  write inside that window collapsed to the last value — an arpeggio or
+  fast envelope written at ~1 ms intervals came out quantised to the
+  ~10 ms buffer (notes merged or dropped outright). That was the real
+  emuCycles violation. The CPU thread now stamps each accepted AY store
+  with the VIA's synced cycle and queues it; the audio thread owns its
+  register bank and replays each write at its exact sample offset, using
+  SpeakerDevice's cursor idiom (including the catch-up snap for
+  pause/resume and turbo). A PB2 reset still resyncs the bank wholesale
+  since that path zeroes registers outside the event stream.
+- **MouseCard finally snapshots** — the last card without serialization.
+  It needed state surfaces on its two embedded components first:
+  `M68705P3` (registers, 112 B RAM, port latch/DDR/input triples, timer,
+  interrupt latches — the 2 KB EPROM is ROM and stays out) and `MC6821`
+  (both register pairs + the CA/CB edge latches). The card wraps them
+  with its bridge state (ROM bank, PIA→MCU port shadows, quadrature
+  counters, MCU pacing). Host pointer position is deliberately NOT
+  serialized: that is where the user's mouse physically is, not emulated
+  state, and forcing it backwards on a rewind would fight the UI.
+- **Three serial/clock claims that died unverified on a spend limit were
+  re-judged and all three survived**:
+  - *SSC RDRF never re-armed.* Real hardware has a one-byte RDR, so MAME's
+    mos6551 raises the RX interrupt for every assembled byte; POM2 holds a
+    4 KB host ring and raised it once per delivered TCP chunk, so an
+    interrupt-driven guest driver read ONE byte per chunk and stalled. The
+    RDR read now re-arms while bytes remain queued (each re-arm consumes a
+    byte, so it cannot storm).
+  - *DCD/DSR polarity was inverted.* These are active-low pins: the status
+    BIT is set when the line is INACTIVE. MAME inits `m_dsr(1), m_dcd(1)`
+    and AppleWin is explicit ("DSR is active low (see SY6551 datasheet)").
+    POM2 reported carrier-present on an idle listener and carrier-lost the
+    moment a client connected. Flipped, with the test expectation.
+  - *The uPD1990AC shift register is 40 bits, not 48.* MAME shifts 5 bytes
+    for a non-4990A part, and disassembling the shipped
+    `roms/thunderclock_u9_v1.3.bin` settles it: the nibble routine at
+    $CACF emits 4 CLK pulses and the time-read path calls it 10× = 40
+    pulses over sec/min/hour/day/month+dow — **there is no year on this
+    card**. Reads were unaffected, but MODE_TIME_SET landed one byte out
+    of alignment and committed the garbage silently (a set of 23:58:59
+    Dec-31 read back as 00:59:58 day 23). The register is now 40-bit, the
+    year comes from the host clock (what a real ThunderClock+ does — ProDOS
+    supplies its own), and `clock_card_smoke` drives 40 pulses, making it a
+    firmware-parity test instead of a model tautology.
+- **NMOS KIL/JAM now really jams.** It re-pointed PC at the opcode, so
+  step() still serviced IRQ/NMI and an interrupt-driven program could walk
+  out of a jam real silicon never releases. It routes through the same
+  `halted` latch STP uses — checked before the interrupt poll, cleared only
+  by reset, and snapshotted.
+
+## 2026-07-29 — Workflow bug hunt #2: 38 confirmed findings, 13 fixed this pass
+
+A 10-finder / adversarial-verify agent workflow swept the subsystems the
+first hunt didn't touch (CPU, paging, Z80, display, audio, storage,
+SmartPort/HDV, snapshot, serial, CLI). 38 findings survived verification;
+the highs and the sharpest mediums are fixed, the rest is tracked in
+TODO.md ([Cards] section). Fixed here:
+
+- **MacBinary-wrapped .dsk write-back corrupted every non-dirty track**:
+  detectFormat stripped the 128-byte header at load but saveDirty
+  pre-filled from file offset 0 and truncated the file to a bare image.
+  The MacBinary wrapper now rides the 2IMG envelope plumbing (captured at
+  load, re-emitted by every save path — .dsk/.nib/.d13/.woz), and
+  MacBinary-wrapped WOZs actually load now (loadWoz re-read the file and
+  demanded the magic at offset 0).
+- **saveDirty wrote in place with O_TRUNC**: an ENOSPC/IO failure
+  mid-write destroyed the original image, and the retry then zero-filled
+  the rest. All four branches now write a sibling temp file and rename
+  over the original (atomic on POSIX); failure leaves the source intact.
+- **SmartPort 3.5" eject discarded dirty blocks** despite the UI
+  checkbox literally saying "save on eject" — eject() now flushes first,
+  mirroring SmartPortHdvUnit.
+- **Rewind/snapshot-load left the beam-racing video-event log stale**:
+  events stamped with pre-restore (future) cycles broke the publication
+  carry loop — publishedEvents_ came out empty every frame for the whole
+  rewound span while videoEvents_ grew without bound. The log is now
+  resynced from the restored clock in Memory::loadSnapshotState.
+- **Slot/ROM rebuilds ran outside stateMutex while the AI control server
+  was live** (applyProfile steps 5-7, restartEmulationFromSettings 3-4):
+  a /reset or /cpu poll during a profile switch raced the ROM rewrite
+  and SlotBus unique_ptr swaps. Both spans now hold the lock.
+- **STP ($DB) halt latch invisible to snapshot/rewind**: rewinding out of
+  a crash kept the machine frozen; restoring a halted snapshot woke STP
+  without RESET. Serialized (CPU section 16→17 B, legacy blobs default
+  to not-halted).
+- **Truncated snapshot half-restored and reported success** —
+  restoreMachineState now surfaces the reader's error state.
+- **VIA T1LH write now clears IFR.T1** (MAME 6522via.cpp VIA_T1LH; the
+  old comment claimed the opposite while citing the same case).
+- **13-sector WOZ never detected** (DOS 3.2 .woz couldn't boot): WOZ2
+  INFO+38 boot_sector_format==2 is honoured, with a bit-aligned
+  D5 AA B5-vs-D5 AA 96 track-0 sniff for WOZ1/format-0.
+- **//c IOU parity set**: IOUDIS finally gates $C058-$C05F (MAME do_io
+  `(m_isiic) && !m_ioudis` — mouse/VBL switches, no AN3/DHGR flips);
+  $C019 on //c returns the LATCHED VBLINT flag (Tech Note #9 semantics,
+  MAME c000_iic_r:2256) instead of the IIe beam state; any $C070-$C07F
+  access acks the VBL interrupt; and INTC8ROM/IOUDIS/VBL-mask/pending
+  ride a new length-prefixed snapshot section.
+- **AI /screen vs UI demod race**: the post-stateMutex demod/pixels
+  phase is now serialized by a display-owned demodMutex taken in the
+  same stateMutex→demodMutex order on both threads.
+- **2IMG-wrapped 5.25" floppies classify correctly** (the common Asimov
+  format fell through to Unknown in classifyDiskForSlot/accept525).
+- **Legacy-spun Disk II motor is promoted into the LSS on first insert**
+  (motorOn=true with the LSS idle used to hang the boot PROM poll).
+
+A second pass the same day cleared most of the LOW batch too:
+- **NMOS undoc-NOP cycle counts** for the opcodes setCpuMode(NMOS)
+  remaps: $14/$34/$74 → 4 (zp,X), $0C/$1C/$3C/$7C → 4 (abs/abs,X),
+  $80/$89 → 2 (#imm) — MAME om6502; the generic Unoff2/Unoff3
+  stand-ins drifted 1 cycle per instruction (the Mr. Robot RWTS drift
+  class). Pinned in cpu_cycle_count_test.
+- **VIA ACR write re-arms T1 in continuous mode** (MAME VIA_ACR:
+  `m_t1_active = 1` + adjust) — a one-shot-fired T1 stayed dead after
+  the guest flipped ACR to continuous.
+- **Hostile-WOZ hardening**: per-track bitCount cap (1 Mi-bit) +
+  aggregate 32 MB expansion budget; also fixed three stale pre-strip
+  size bounds the MacBinary WOZ fix had left behind (OOB read on a
+  wrapped WOZ).
+- **Snapshot restore honesty**: MEX section failure now propagates
+  (state was mutated with ok=true before); speaker/rewind resync runs
+  even when the restore FAILS (a truncated file has already applied
+  CPU+MEM — the early return skipped the resync exactly when needed);
+  the snapshot's cpuMode byte is no longer applied (machine
+  configuration, not state — it bypassed resolveCpuMode's
+  soldered-65C02 clamp and froze a //c on an NMOS-mode blob).
+- **Rewind media restore is gated on the capture predicate** — applying
+  a ring frame's decoded tracks onto a drive that NOW holds a WOZ wiped
+  the WOZ's canonical bit streams.
+
+A third pass closed the per-card snapshot gaps — five of the six cards
+that serialized nothing now carry their guest-visible state, pinned by
+the new `card_snapshot_state` test (each case drives the card into a
+distinctive state, restores into a fresh card, and re-serializes to
+prove the PRIVATE fields travelled; every loader also ignores a foreign
+blob):
+- **CffaCard** — the whole ATA taskfile plus the in-flight PIO phase,
+  LBA, sector counter, 512-byte word buffer and `wordIdx_` cursor
+  (`AtaBlockDevice::append/loadSnapshotState`, CHS geometry included
+  with divide-by-zero guards on restore). A rewind mid-transfer used to
+  resume the guest's read loop against the live cursor.
+- **ProDOSHardDiskCard** — selected block + byte cursor within it.
+- **SmartPortCard** — a v1.1 tail carrying the $Cn0D protocol call
+  engine (`spCollect_`/`spCollectN_`/`spResult_`/`spResultPos_`/
+  `spPushPages_`/`spError_`); v1 blobs still load and reset the engine
+  rather than letting the live one leak through.
+- **SuperSerialCard** — the ACIA command/control decode (DTR, RX-IRQ
+  enable, echo, word length, baud index), sticky status errors and IRQ
+  mask. The socket, rings and printer spool stay host-side on purpose:
+  a rewind cannot un-send bytes that already left the wire.
+- **ClockCard** — the uPD1990AC 48-bit shift register, edge-detect
+  latches, mode, user time offset and the TP/IRQ timer, re-driving the
+  slot IRQ line from the restored flip-flop. A rewind mid-shift-out
+  used to hand ProDOS a garbled date.
+
+MouseCard is deliberately left for its own session (it embeds an
+M68705P3 MCU + MC6821 PIA that need state surfaces first) — see TODO.md.
+Also still deferred: the Mockingboard AY event-queue redesign and the
+residual LOW items (KIL IRQ-permeability, Z80 block-op X/Y flags, AY
+READ bus latch, NOP abs,X page-cross +1, and friends). The serial-input
+finder's claims died unverified on a spend limit — parked, not judged.
+
+## 2026-07-29 — //c+ boots and WRITES 5.25" for real (the "dual-controller" was three bugs)
+
+The bug-hunt's 🔴 "//c+ dual-controller" entry got its repro — and the
+repro showed the //c+ never even reached the disk: **every cold boot hung
+at $F0FC with a blank screen**, in the alt firmware's boot drive-scan.
+`tests/iicplus_boot_probe` (headless full //c+ stack: IWM + SmartPortHub +
+2× Sony 3.5" + slot-6 Disk II) plus a `POM2_TRACE_IWM_SENSE=1` diagnostic
+narrowed it to three distinct bugs:
+
+1. **IWM SENSE with no selected drive** — the firmware polls the IWM
+   status register with devsel=0 before enabling anything. MAME
+   `iwm.cpp:129` reads `(!m_floppy || m_floppy->wpt_r()) ? 0x80 : 0` —
+   no floppy → SENSE pulls HIGH. POM2's `disk_` is permanently attached
+   by DiskIICard, so the read answered with the 5.25" image's
+   write-protect bit: a writable disk → 0 forever → the scan's very
+   first `LDA $C0EE / BPL` never fell through.
+2. **Sony DSKCHG polarity** — MAME (`floppy.cpp:560/672/723`, mac wpt_r
+   `!m_dskchg`) senses HIGH for an *empty* drive; POM2's `diskSwitched_`
+   flip-flop read 0 ("disk in place") for an empty external 3.5", so the
+   scan walked into the read-a-disk path of a drive with no disk. DIR
+   init was also inverted (MAME `m_dir(0)`). A dead `SmartPortHub::
+   onIwmMotor` broadcast helper (motor to BOTH Sonys, contradicting
+   MAME `iwm.cpp:99-115 set_floppy` motor-follows-selection) was removed
+   before it could be wired by accident.
+3. **The actual dual-controller hazard, on writes** — with the boot
+   fixed, DOS 3.3 booted but `SAVE` ended in **I/O ERROR**: the IWM's
+   bit-cell walker (authoritative $C0EC reads) mis-frames RWTS's
+   write-verify, and `IWMDevice::flushWrite` pushed 5.25" flux into the
+   same DiskImage DiskIICard's LSS was writing (double write). Fixes:
+   the IWM never writes 5.25" flux (DiskIICard owns it; the IWM keeps
+   the 3.5" Sony write path, which no other controller sees), and
+   `ioReadIWM` is authoritative **only while the hub routes to a 3.5"
+   Sony** — the POM2 split of MAME's single-controller
+   `recalc_active_device` model.
+
+After: //c+ cold-boots to the DOS 3.3 banner and a full
+`SAVE / LOAD / RUN` round-trip works on the //c+ profile, in both
+authoritative and shadow modes. Print Shop boots to its title screen.
+Pinned by `iic_plus_boot_write` (unit sense polarities + full-machine
+boot + write round-trip). The MAME oracle (`apple2cp` romset assembled
+from POM2's own `apple2cp.rom`, CRC-identical to 341-0625-a.256)
+confirmed the expected boot banner behaviour.
+
+Worth keeping: the "//c+ 5.25" auto-boot works" claim had silently
+rotted — no test covered it, so the SENSE regressions were invisible
+until the dual-controller investigation went looking. The scan hang
+looked exactly like the dual-controller symptom but was three unrelated
+MAME-parity deviations stacked.
+
+## 2026-07-29 — Bug-hunt sweep: 20+ fixes across W5100, CS8900A, ImageWriter, IWM snapshots
+
+A five-agent audit of the two Ethernet/printer commits (04890e1, f7af757)
+plus their integration seams, every finding verified in code before fixing.
+The ones worth remembering:
+
+- **W5100 TCP silently lost data on a slow peer.** SEND advanced SN_TX_RD
+  *before* the single non-blocking `sendto()`, so a short write or EAGAIN
+  dropped the tail while the guest saw a fully-free ring. TCP now stashes
+  the unsent tail per-socket (`pendingTx`) and `poll()` retries until it
+  drains (1 MiB cap → honest connection close). UDP keeps fire-and-forget
+  on purpose: queueing datagrams would fuse their boundaries, and dropping
+  one on EAGAIN is legal.
+- **Peer FIN now parks in SOCK_CLOSE_WAIT ($1C)** instead of collapsing to
+  CLOSED — the guest can still SEND before DISCON, which is what every
+  drain-then-disconnect W5100 driver keys on. CONNECT is gated on
+  TCP-INIT (it used to "establish" UDP sockets and drop their RX header),
+  and CONNECT to DIPR 0.0.0.0 closes instead of reaching 127.0.0.1 via
+  Linux's `connect(INADDR_ANY)` semantics.
+- **Ring geometry vs. stale state**: shrinking RMSR under staged data (or
+  a crafted snapshot) underflowed the free-room math to ~64 K and let the
+  RX writer stomp the neighbouring socket's ring. `clampRingState` re-fits
+  the cursors on every geometry rebuild and on snapshot load; a clamped
+  non-pow2 carve is rounded down to a power of two so the `& (size-1)`
+  masks stay exact.
+- **`romBank_` ($C028) was not snapshotted** — the highest-impact //c-class
+  rewind gap: restoring a PC captured under one firmware bank while the ROM
+  reader served the other. Now in the MIG blob's optional tail together
+  with `migIntDrive_`/`migHdSel_`; the IWM blob likewise gained `phases_` +
+  `writeDataLoaded_`, and both loaders re-fire the phases/devsel callbacks
+  so the SmartPort hub is told about the restored lines (its own state is
+  live, and a transition-gated callback stays silent when values happen to
+  match).
+- **ImageWriter parser hardening**: a non-digit in an ESC G count went
+  negative → `uint32_t` cast → ~4 G bytes of "graphics" and a deaf printer
+  (`paramDigit` now clamps); ESC '/ESC I left the previous command's
+  parameter count armed and ate up to 6 characters; ESC r (reverse feed)
+  produced *negative* pacing costs (credit grew past the cap and dumped
+  the queue in one frame) and walked the head to negative Y.
+- **"Clear all" UB in the paper tray panel**: `nDone` was captured before
+  the front-panel buttons, so the follow logic indexed `completedPage()`
+  into the vector the button had just emptied. Counted after the buttons
+  now; completed-sheet texture identity also includes `droppedPageCount()`
+  so the 32-page cap can't leave a dropped sheet's pixels under a new
+  label.
+- **Kiosk mode never pumped the ImageWriter** (early-return before
+  `pumpImageWriter()`): a printing //c parked every byte in the card spool
+  forever. The pump also tracks *which* source its drain cursor counts
+  against — carrying it from an unplugged PrinterCard onto the SSC tap
+  skipped or replayed part of the stream. Spool growth is bounded (SSC tap
+  trims its consumed prefix using absolute offsets; the mechanism
+  force-drains past a 1 MiB backlog).
+- **CS8900A**: `UthernetCard::onReset` re-stamped `kDefaultMac`, reverting
+  the guest-programmed IA on every Ctrl-Reset (MAME preserves it — pinned
+  by `testMacSurvivesCardReset`); the RxEvent Extradata bit (0x4000) was
+  computed after the clamp that made it dead code; the data-window
+  read/write now feeds the `ioRegs_` cache so `peek()` stops reporting $00.
+- **Not fixed on purpose**: the //c+ still runs the same IWM + DiskIICard
+  dual-controller arrangement on $C0EC that f7af757 removed from the plain
+  //c — it needs a repro (Print Shop save on //c+) before touching the
+  routing, because the //c+ genuinely needs the IWM for MIG/3.5". Filed in
+  TODO.md [Storage] with the mechanism spelled out. HT/VT jumping to the
+  *farthest* tab stop is byte-identical to the reference implementation —
+  owned as parity, not silently "fixed".
+
+Pinned by new cases in `uthernet2_w5100_smoke` (half-close, RMSR shrink,
+CONNECT gating, ≥$8000 mirror writes), `uthernet_cs8900_smoke` (MAC across
+reset), `imagewriter_smoke` (parser hardening ×3) and `iwm_mig_snapshot`
+(romBank round-trip + old-blob compatibility).
+
 ## 2026-07-28 — The //c prints for real: on-board IWM was fighting the Disk II
 
 Printing on a //c through the slot-1 SSC to the host ImageWriter looked wired

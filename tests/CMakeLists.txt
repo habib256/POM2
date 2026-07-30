@@ -4096,3 +4096,84 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME iic_diskii_no_iwm_conflict COMMAND test_iic_diskii_no_iwm_conflict)
 set_tests_properties(iic_diskii_no_iwm_conflict PROPERTIES TIMEOUT 10)
+
+# ── //c+ cold-boot probe (diagnostic, not a CTest target) ───────────────
+# Full on-board stack: IWM + SmartPortHub + 2x Sony 3.5" + slot-6 Disk II.
+# See iicplus_boot_probe.cpp header for the SENSE bug it was written for.
+add_executable(iicplus_boot_probe EXCLUDE_FROM_ALL
+    iicplus_boot_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(iicplus_boot_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(iicplus_boot_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(iicplus_boot_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(iicplus_boot_probe PRIVATE winmm)
+endif()
+
+# ── //c+ boot + 5.25" write round-trip (pins the 2026-07 SENSE + routing fixes)
+add_executable(test_iic_plus_boot_write
+    iic_plus_boot_write_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_plus_boot_write PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_plus_boot_write PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iic_plus_boot_write PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iic_plus_boot_write PRIVATE winmm)
+endif()
+add_test(NAME iic_plus_boot_write
+         COMMAND test_iic_plus_boot_write
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(iic_plus_boot_write PROPERTIES LABELS "slow" TIMEOUT 300)
+
+# ─── Per-card snapshot/rewind serialization (2026-07-29 hunt) ────────────
+add_executable(test_card_snapshot_state
+    card_snapshot_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/ClockCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_card_snapshot_state PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_card_snapshot_state PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME card_snapshot_state COMMAND test_card_snapshot_state
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(card_snapshot_state PROPERTIES TIMEOUT 20)

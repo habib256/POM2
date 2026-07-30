@@ -10,6 +10,7 @@
 #include "ResourcePaths.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cstddef>
 #include <ctime>
 #include <fstream>
@@ -140,7 +141,10 @@ void ClockCard::latchTimeToShiftReg()
     // upd1990a.cpp:95 stores month as plain 1..12 in the high 4 bits),
     // low nibble = day-of-week. Months 1..12 all fit in 4 bits.
     shiftReg[4] = static_cast<uint8_t>((month << 4) | (dow & 0x0F));
-    shiftReg[5] = toBcd(lt.tm_year % 100);
+    // No year byte: the uPD1990A(C) has no year counter and the
+    // ThunderClock firmware never clocks a 6th byte (see the 40-bit note
+    // in the CLK handler). shiftReg[5] stays out of the shift path.
+    shiftReg[5] = 0;
 }
 
 void ClockCard::commitTimeSetFromShiftReg()
@@ -157,10 +161,14 @@ void ClockCard::commitTimeSetFromShiftReg()
     desired.tm_hour = bcdToInt(shiftReg[2]);
     desired.tm_mday = bcdToInt(shiftReg[3]);
     desired.tm_mon  = ((shiftReg[4] >> 4) & 0x0F) - 1;     // 1..12 → 0..11
-    // shiftReg[5] is 2-digit BCD year. Assume 20xx (2000-2099). The
-    // uPD1990AC has no century bit; software that needs a different
-    // window has to set the offset accordingly. mktime then normalises.
-    desired.tm_year = bcdToInt(shiftReg[5]) + 100;         // tm_year = year - 1900
+    // The chip carries NO year (40-bit register: sec/min/hour/day/
+    // month+dow). Take the year from the host clock — that is what a real
+    // ThunderClock+ does, since ProDOS only ever reads month/day/time
+    // from it and supplies its own year.
+    {
+        std::tm hostNow = timeFn();
+        desired.tm_year = hostNow.tm_year;
+    }
     desired.tm_wday = shiftReg[4] & 0x0F;
     desired.tm_isdst = -1;     // let mktime decide
 
@@ -257,13 +265,24 @@ void ClockCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // is wired to CLK directly). DATA_IN is still latched into the MSB
     // because MODE_TIME_SET expects it.
     if (clkNow && !clkPrev) {
+        // 40-BIT register, not 48. MAME `upd1990a.cpp` shifts
+        // `max_shift = is_serial_mode() ? 6 : 5` bytes, and
+        // `is_serial_mode()` requires TYPE_4990A — a plain UPD1990A (what
+        // `a2thunderclock.cpp` instantiates) is ALWAYS 5 bytes. Confirmed
+        // against the shipped firmware: roms/thunderclock_u9_v1.3.bin's
+        // nibble routine at $CACF emits 4 CLK pulses and the time-read
+        // path calls it 10× = 40 pulses over sec/min/hour/day/month+dow —
+        // there is no year field on this card. Shifting 48 bits made
+        // MODE_TIME_SET land one byte out of alignment (every field slid:
+        // a set of 23:58:59 Dec-31 read back as 00:59:58 day 23), and the
+        // clock committed the garbage silently.
         const uint8_t dataIn = (v & kBitDataIn) ? 1 : 0;
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 4; ++i) {
             shiftReg[i] = static_cast<uint8_t>(
                 (shiftReg[i] >> 1) | ((shiftReg[i + 1] & 0x01) << 7));
         }
-        shiftReg[5] = static_cast<uint8_t>(
-            (shiftReg[5] >> 1) | (dataIn << 7));
+        shiftReg[4] = static_cast<uint8_t>(
+            (shiftReg[4] >> 1) | (dataIn << 7));
     }
 
     prevWrite = v;
@@ -298,7 +317,24 @@ void ClockCard::setTpRate(int hz)
     // The chip toggles TP at 2× the labelled rate, so a half-period (one
     // toggle) is CPU_HZ / (2·hz) emulated cycles, rounded to nearest. A
     // full period (one rising edge) is the IRQ-worthy event → `hz` IRQs/s.
-    tpHalfPeriodCycles_ = (POM2_CPU_CLOCK_HZ + hz) / (2 * hz);
+    tpHalfPeriodCycles_ = static_cast<int>(
+        (cpuClockHz_ + hz) / (2.0 * hz));
+}
+
+void ClockCard::setCpuClock(double hz)
+{
+    if (hz <= 0.0) return;
+    cpuClockHz_ = hz;
+    // Re-derive DIRECTLY from the cached rate, not by replaying
+    // programTpTimer(lastMode): that function's `default:` leaves the rate
+    // untouched, so if the last latched mode was SHIFT / TIME_SET /
+    // TIME_READ the armed timer kept its stale NTSC-derived period —
+    // exactly contradicting this function's contract.
+    if (tpRateHz_ > 0) {
+        tpHalfPeriodCycles_ = static_cast<int>(
+            (cpuClockHz_ + tpRateHz_) / (2.0 * tpRateHz_));
+        if (tpAccumCycles_ > tpHalfPeriodCycles_) tpAccumCycles_ = 0;
+    }
 }
 
 void ClockCard::clearIrqRequest()
@@ -423,4 +459,70 @@ uint8_t ClockCard::expansionRomRead(uint16_t offset)
     if (!expansionRomLoaded_) return 0xFF;
     if (offset >= expansionRom_.size()) return 0xFF;
     return expansionRom_[offset];
+}
+
+// ── Snapshot / rewind ─────────────────────────────────────────────────────
+
+namespace {
+constexpr uint8_t kClkSnapMagic[4] = { 'C', 'L', 'K', '1' };
+constexpr size_t  kClkSnapBytes    = 4 + 6 + 2 + 1 + 8 + 4 + 4 + 4 + 1 + 2;
+}
+
+void ClockCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    auto put32 = [&](int32_t v) {
+        for (int i = 0; i < 4; ++i)
+            out.push_back(static_cast<uint8_t>(static_cast<uint32_t>(v) >> (8 * i)));
+    };
+    out.insert(out.end(), kClkSnapMagic, kClkSnapMagic + 4);
+    out.insert(out.end(), shiftReg.begin(), shiftReg.end());
+    out.push_back(prevWrite);
+    out.push_back(lastMode);
+    out.push_back(userOffsetActive ? 1 : 0);
+    const uint64_t off = static_cast<uint64_t>(userOffsetSeconds);
+    for (int i = 0; i < 8; ++i)
+        out.push_back(static_cast<uint8_t>(off >> (8 * i)));
+    put32(tpRateHz_);
+    put32(tpHalfPeriodCycles_);
+    put32(tpAccumCycles_);
+    out.push_back(tpLevel_ ? 1 : 0);
+    out.push_back(irqEnabled_ ? 1 : 0);
+    out.push_back(irqPending_ ? 1 : 0);
+}
+
+void ClockCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (data == nullptr || len < kClkSnapBytes ||
+        std::memcmp(data, kClkSnapMagic, 4) != 0)
+        return;   // foreign blob — a different card sat in this slot
+    size_t p = 4;
+    auto get32 = [&]() -> int32_t {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[p++]) << (8 * i);
+        return static_cast<int32_t>(v);
+    };
+    std::memcpy(shiftReg.data(), data + p, shiftReg.size()); p += shiftReg.size();
+    prevWrite        = data[p++];
+    lastMode         = data[p++];
+    userOffsetActive = data[p++] != 0;
+    uint64_t off = 0;
+    for (int i = 0; i < 8; ++i) off |= static_cast<uint64_t>(data[p++]) << (8 * i);
+    userOffsetSeconds   = static_cast<std::time_t>(off);
+    tpRateHz_           = get32();
+    tpHalfPeriodCycles_ = get32();
+    tpAccumCycles_      = get32();
+    // Untrusted blob: advanceCycles loops `while (accum >= half)`, so a
+    // crafted accum near INT_MAX with half == 1 would spin ~2^31 times.
+    // Clamp both to the sane range this card can actually produce.
+    if (tpRateHz_ < 0 || tpRateHz_ > 4096) tpRateHz_ = 0;
+    if (tpHalfPeriodCycles_ < 0) tpHalfPeriodCycles_ = 0;
+    if (tpAccumCycles_ < 0 ||
+        (tpHalfPeriodCycles_ > 0 && tpAccumCycles_ > tpHalfPeriodCycles_))
+        tpAccumCycles_ = 0;
+    tpLevel_            = data[p++] != 0;
+    irqEnabled_         = data[p++] != 0;
+    irqPending_         = data[p++] != 0;
+    // Re-drive the slot IRQ line from the restored request flip-flop:
+    // assertIrq() owns the wire-OR bookkeeping in SlotPeripheral.
+    assertIrq(irqEnabled_ && irqPending_);
 }

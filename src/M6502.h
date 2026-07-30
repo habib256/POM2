@@ -135,6 +135,12 @@ public:
     void setYRegister(uint8_t v)      { yRegister      = v; }
     void setStatusRegister(uint8_t v) { statusRegister = v; }
     void setStackPointer(uint8_t v)   { stackPointer   = v; }
+    /// STP ($DB, WDC 65C02) halt latch — guest-visible state that only
+    /// RESET clears, so snapshot/rewind must carry it: restoring a
+    /// pre-halt frame used to leave the machine frozen (live `halted`
+    /// kept), and restoring a halted snapshot woke STP without RESET.
+    bool isHalted() const   { return halted; }
+    void setHalted(bool v)  { halted = v; }
 
     /// Cycles accumulated inside the *current* opcode (reset to 1 at the
     /// fetch by executeOpcode and incremented as the instruction runs).
@@ -311,7 +317,8 @@ private :
     void Unoff3(void);
     void UnoffImm(void);    // 2-byte, 2-cycle undoc NOP (imm) / NMOS ANC/SBC #imm
     void UnoffZpX(void);    // 2-byte, 4-cycle undoc NOP (zp,X)
-    void UnoffAbs4(void);   // 3-byte, 4-cycle undoc NOP (abs / abs,X $DC/$FC)
+    void UnoffAbs4(void);   // 3-byte, 4-cycle undoc NOP (abs)
+    void UnoffAbsX(void);   // 3-byte, 4+p-cycle undoc NOP (abs,X, NMOS)
     void Unoff5C(void);     // 3-byte, 8-cycle 65C02 oddball $5C
     void Hang(void);
     void executeOpcode(void);

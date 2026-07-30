@@ -21,6 +21,7 @@
 
 #include "IWMDevice.h"
 #include "Memory.h"
+#include "MemoryProfile_IIcClass.h"
 
 #include <cassert>
 #include <cstdint>
@@ -102,13 +103,20 @@ void testMemoryTrailerCarriesIwm()
     assert(mem2.loadSnapshotState(blob.data(), blob.size()));
     assert(iwm2.emuCycles() == iwm.emuCycles());
 
-    // Backward compatibility: lop the trailer off entirely. The old
-    // single-byte trailer ended right before our two length-prefixed
-    // sections, so cutting the last 8+ bytes models a pre-fix blob.
+    // Backward compatibility: lop the length-prefixed trailer off
+    // entirely, computing its true size from the sections a blob of this
+    // configuration carries — IWM (4-byte length + payload), profile
+    // (4 + 0, no //c profile here) and the paging/IOU flags (4 + 4).
+    // A fixed "-8" bit-rotted the moment a third section was added: it
+    // only removed the newest section and the "old blob" kept restoring
+    // the IWM.
+    std::vector<uint8_t> iwmBlob;
+    iwm.appendSnapshotState(iwmBlob);
+    const size_t trailerLen = (4 + iwmBlob.size()) + (4 + 0) + (4 + 4);
     pom2::IWMDevice iwm3;
     Memory mem3;
     mem3.setIWM(&iwm3);
-    const size_t shortLen = blob.size() - 8;
+    const size_t shortLen = blob.size() - trailerLen;
     assert(mem3.loadSnapshotState(blob.data(), shortLen));
     assert(iwm3.emuCycles() == 0);   // untouched, exactly as before the fix
 
@@ -139,6 +147,49 @@ void testMigPageMasked()
     std::printf("  ok: MIG section length-skipped when no //c profile\n");
 }
 
+void testRomBankRoundTrip()
+{
+    // romBank_ ($C028 ROMSWITCH) was the highest-impact snapshot gap on
+    // //c-class machines: the //c+ alt firmware runs from bank 1 during
+    // MIG/3.5" work, and a rewind across a toggle restored a PC captured
+    // under one bank while the ROM reader served the other — the CPU got
+    // the wrong 16 KB of firmware at $C100-$FFFF.
+    std::vector<uint8_t> payload(0x4000, 0x00);   // //c signature: [0x3bbf]=0
+    std::vector<uint8_t> altBank(0x4000, 0xEE);
+    constexpr size_t kMigBytes = 4 + 2 + 0x800;   // magic + page + RAM
+    constexpr size_t kTail     = 3;               // romBank + intDrive + hdSel
+
+    IIcClassProfile a(payload.data(), payload.size(), altBank.data(),
+                            nullptr, nullptr, true);
+    a.romBankToggle();                            // → bank 1
+    std::vector<uint8_t> blobA;
+    a.appendSnapshotState(blobA);
+    assert(blobA.size() == kMigBytes + kTail);
+    assert(blobA[kMigBytes] == 1);                // romBank serialized
+
+    // Round-trip into a fresh (bank 0) profile.
+    IIcClassProfile b(payload.data(), payload.size(), altBank.data(),
+                            nullptr, nullptr, true);
+    assert(b.loadSnapshotState(blobA.data(), blobA.size()) ==
+           kMigBytes + kTail);
+    std::vector<uint8_t> blobB;
+    b.appendSnapshotState(blobB);
+    assert(blobB == blobA);                       // bank 1 came across
+
+    // Backward compatibility: a pre-tail blob leaves the live bank alone.
+    IIcClassProfile c(payload.data(), payload.size(), altBank.data(),
+                            nullptr, nullptr, true);
+    c.romBankToggle();                            // live bank 1
+    std::vector<uint8_t> oldBlob(blobA.begin(),
+                                 blobA.begin() + static_cast<long>(kMigBytes));
+    assert(c.loadSnapshotState(oldBlob.data(), oldBlob.size()) == kMigBytes);
+    std::vector<uint8_t> blobC;
+    c.appendSnapshotState(blobC);
+    assert(blobC[kMigBytes] == 1);                // still bank 1
+
+    std::printf("  ok: romBank ($C028) round-trips; old blobs keep live bank\n");
+}
+
 }  // namespace
 
 int main()
@@ -147,6 +198,7 @@ int main()
     testIwmRoundTrip();
     testMemoryTrailerCarriesIwm();
     testMigPageMasked();
+    testRomBankRoundTrip();
     std::printf("PASS\n");
     return 0;
 }

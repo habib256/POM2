@@ -154,6 +154,10 @@ public:
         assert(n == static_cast<ssize_t>(s.size()));
     }
 
+    /// Half-close: FIN our sending direction, keep reading. This is what
+    /// a server that says "here's your data, now finish up" does.
+    void shutdownWrite() { ::shutdown(client_, SHUT_WR); }
+
 private:
     int      fd_     = -1;
     int      client_ = -1;
@@ -483,6 +487,140 @@ void testSnapshotRoundTrip()
     std::printf("  snapshot round-trip OK (%zu bytes)\n", blob.size());
 }
 
+// ── Bug-hunt pins (2026-07-28) ────────────────────────────────────────
+
+/// Open a TCP socket 0 and connect it to `listener`. Returns the socket
+/// register base. Shared plumbing for the hardening tests below.
+uint16_t connectSocket0(UthernetIICard& card, LocalListener& listener)
+{
+    const uint16_t base = socketBase(0);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrTcp);
+    writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnPort0), 1234);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrOpen);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDipr0), 127);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDipr3), 1);
+    writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDport0),
+                listener.port());
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrConnect);
+    assert(listener.acceptOne(2000));
+    pumpCard(card);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrEstablished);
+    return base;
+}
+
+// A peer FIN is a half-close: the real chip parks in SOCK_CLOSE_WAIT
+// ($1C) and still lets the guest SEND before DISCON (datasheet §5.2.1).
+// Collapsing straight to CLOSED broke every drain-then-disconnect driver.
+void testHalfCloseWait()
+{
+    LocalListener listener;
+    UthernetIICard card(3);
+    const uint16_t base = connectSocket0(card, listener);
+
+    listener.shutdownWrite();
+    // The FIN is noticed by the RSR pull (the chip is polled).
+    uint8_t sr = 0;
+    for (int i = 0; i < 200 && sr != pom2::kW5100SnSrCloseWait; ++i) {
+        readWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnRxRsr0));
+        sr = readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr));
+        if (sr != pom2::kW5100SnSrCloseWait) ::usleep(1000);
+    }
+    assert(sr == pom2::kW5100SnSrCloseWait);
+
+    // Our direction is still open: the guest's last words must arrive.
+    const std::string bye = "QUIT :bye\r\n";
+    const uint16_t txRd = readWordAt(card,
+        static_cast<uint16_t>(base + pom2::kW5100SnTxRd0));
+    for (size_t i = 0; i < bye.size(); ++i)
+        writeAt(card, static_cast<uint16_t>(pom2::kW5100TxBase +
+                    ((txRd + i) % 2048)), static_cast<uint8_t>(bye[i]));
+    writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnTxWr0),
+                static_cast<uint16_t>(txRd + bye.size()));
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrSend);
+    assert(listener.read(256, 2000) == bye);
+
+    // DISCON ends the session for real.
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrDiscon);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrClosed);
+
+    std::printf("  half-close OK (CLOSE_WAIT, SEND after FIN, DISCON)\n");
+}
+
+// Shrinking RMSR under staged data used to underflow the free-room
+// arithmetic to ~64 K and corrupt the neighbouring sockets' rings; the
+// ring state must be re-fitted to the new geometry instead.
+void testRmsrShrinkUnderStagedData()
+{
+    LocalListener listener;
+    UthernetIICard card(3);
+    const uint16_t base = connectSocket0(card, listener);
+
+    const std::string bulk(1500, 'x');
+    listener.write(bulk);
+    uint16_t pending = 0;
+    for (int i = 0; i < 200 && pending < bulk.size(); ++i) {
+        pending = readWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnRxRsr0));
+        if (pending < bulk.size()) ::usleep(1000);
+    }
+    assert(pending == bulk.size());          // 1500 staged in the 2 KB ring
+
+    writeAt(card, pom2::kW5100Rmsr, 0x00);   // shrink every socket to 1 KB
+    const uint16_t after = readWordAt(card,
+        static_cast<uint16_t>(base + pom2::kW5100SnRxRsr0));
+    assert(after <= 1024);                   // never 64 K of phantom bytes
+
+    std::printf("  RMSR shrink under staged data OK (RSR %u <= 1024)\n", after);
+}
+
+// CONNECT outside TCP-INIT is ignored by the real chip. Accepting it on
+// a UDP socket used to connect() the datagram fd, report ESTABLISHED and
+// drop the 8-byte UDP RX header.
+void testConnectGating()
+{
+    UthernetIICard card(3);
+    const uint16_t base = socketBase(0);
+
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrUdp);
+    writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnPort0), 4242);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrOpen);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrUdp);
+
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDipr0), 127);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDipr3), 1);
+    writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDport0), 7);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrConnect);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrUdp);             // still UDP, not "established"
+
+    // And a TCP CONNECT to DIPR 0.0.0.0 (this card's "DNS failed" marker)
+    // must close, not reach 127.0.0.1 via Linux's connect(INADDR_ANY).
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrClose);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrTcp);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrOpen);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrInit);
+    for (int b = 0; b < 4; ++b)
+        writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnDipr0 + b), 0);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr), pom2::kW5100SnCrConnect);
+    assert(readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr)) ==
+           pom2::kW5100SnSrClosed);
+
+    std::printf("  CONNECT gating OK (UDP ignored, 0.0.0.0 closes)\n");
+}
+
+// The >= $8000 mirror (Uthernet II manual p.13) must be read/write
+// symmetric: writes through the mirror used to be silently dropped.
+void testMirrorWriteSymmetry()
+{
+    UthernetIICard card(3);
+    writeAt(card, static_cast<uint16_t>(0x8000 + pom2::kW5100TxBase + 0x123), 0xAB);
+    assert(readAt(card, static_cast<uint16_t>(pom2::kW5100TxBase + 0x123)) == 0xAB);
+    std::printf("  >= $8000 mirror write OK\n");
+}
+
 } // namespace
 
 int main()
@@ -495,6 +633,10 @@ int main()
     testTcpSession();
     testMacRaw();
     testSnapshotRoundTrip();
+    testHalfCloseWait();
+    testRmsrShrinkUnderStagedData();
+    testConnectGating();
+    testMirrorWriteSymmetry();
     std::printf("PASS\n");
     return 0;
 }

@@ -111,6 +111,16 @@ public:
     uint8_t slotRomRead(uint8_t low8) override;
     void    advanceCycles(int cycles) override;
     void    onReset() override;
+
+    /// Snapshot/rewind: 'MSE1'-tagged blob wrapping the embedded
+    /// M68705P3 MCU (registers + 112 B RAM + ports + timer + interrupt
+    /// latches) and the MC6821 PIA, plus the card's own bridge state
+    /// (ROM bank, PIA→MCU port shadows, quadrature counters, pacing).
+    /// The MCU is the reason this card was the last one without
+    /// serialization: a rewind mid-mouse-interrupt used to drop the
+    /// restored firmware into the LIVE MCU's handshake.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
     void    onUnplug() override;
 
 private:

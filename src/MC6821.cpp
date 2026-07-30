@@ -300,3 +300,42 @@ void MC6821::setCB2(bool state)
 
 uint8_t MC6821::getPortAOutput() const { return getOutAValue(); }
 uint8_t MC6821::getPortBOutput() const { return getOutBValue(); }
+
+// ── Snapshot ──────────────────────────────────────────────────────────────
+// Guest-visible register pairs + the edge latches. Callbacks are wiring
+// (re-installed by the owning card), not state.
+
+void MC6821::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.push_back(in_a);   out.push_back(in_b);
+    out.push_back(in_ca1 ? 1 : 0);  out.push_back(in_ca2 ? 1 : 0);
+    out.push_back(in_cb1 ? 1 : 0);  out.push_back(in_cb2 ? 1 : 0);
+    out.push_back(out_a);  out.push_back(out_b);
+    out.push_back(out_ca2 ? 1 : 0); out.push_back(out_cb2 ? 1 : 0);
+    out.push_back(ddr_a);  out.push_back(ddr_b);
+    out.push_back(ctl_a);  out.push_back(ctl_b);
+    out.push_back(irq_a1 ? 1 : 0);  out.push_back(irq_a2 ? 1 : 0);
+    out.push_back(irq_b1 ? 1 : 0);  out.push_back(irq_b2 ? 1 : 0);
+    out.push_back(irq_a_state ? 1 : 0);
+    out.push_back(irq_b_state ? 1 : 0);
+    out.push_back(0); out.push_back(0);   // reserved, keeps the size fixed
+}
+
+size_t MC6821::loadSnapshotState(const uint8_t* data, size_t len)
+{
+    if (data == nullptr || len < kSnapshotBytes) return 0;
+    size_t p = 0;
+    in_a   = data[p++]; in_b   = data[p++];
+    in_ca1 = data[p++] != 0; in_ca2 = data[p++] != 0;
+    in_cb1 = data[p++] != 0; in_cb2 = data[p++] != 0;
+    out_a  = data[p++]; out_b  = data[p++];
+    out_ca2 = data[p++] != 0; out_cb2 = data[p++] != 0;
+    ddr_a  = data[p++]; ddr_b  = data[p++];
+    ctl_a  = data[p++]; ctl_b  = data[p++];
+    irq_a1 = data[p++] != 0; irq_a2 = data[p++] != 0;
+    irq_b1 = data[p++] != 0; irq_b2 = data[p++] != 0;
+    irq_a_state = data[p++] != 0;
+    irq_b_state = data[p++] != 0;
+    p += 2;                                  // reserved
+    return p;
+}

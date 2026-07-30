@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -337,4 +338,33 @@ void ProDOSHardDiskCard::buildRom()
         0x18,                // CLC
         0x60                 // RTS
     });
+}
+
+// ── Snapshot / rewind ─────────────────────────────────────────────────────
+
+namespace {
+constexpr uint8_t kHdvSnapMagic[4] = { 'H', 'D', 'V', '1' };
+}
+
+void ProDOSHardDiskCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kHdvSnapMagic, kHdvSnapMagic + 4);
+    out.push_back(static_cast<uint8_t>(selectedBlock));
+    out.push_back(static_cast<uint8_t>(selectedBlock >> 8));
+    // streamOffset ∈ [0, 512]; two bytes are plenty.
+    out.push_back(static_cast<uint8_t>(streamOffset));
+    out.push_back(static_cast<uint8_t>(streamOffset >> 8));
+}
+
+void ProDOSHardDiskCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (data == nullptr || len < 8 ||
+        std::memcmp(data, kHdvSnapMagic, 4) != 0)
+        return;   // foreign blob — a different card sat here
+    selectedBlock = static_cast<uint16_t>(data[4] | (data[5] << 8));
+    streamOffset  = static_cast<size_t>(data[6] | (data[7] << 8));
+    // >=: a restored 512 would address the FIRST byte of the next block
+    // before the modulo wrap, handing the guest one wrong byte (and
+    // corrupting one byte of the wrong block on the write path).
+    if (streamOffset >= 512) streamOffset = 0;   // untrusted input
 }

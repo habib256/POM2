@@ -122,9 +122,10 @@ POM2 --kiosk path/to/game.dsk       # exclusive full-screen, chrome-free
 | Backspace | Left arrow | Right Alt | Solid-Apple (`$C062`) |
 | Arrows | Apple II arrows | `Ctrl-A..Z` | `$01..$1A` |
 | Esc | ESC | F9 | Screenshot → `screenshot_NNN.ppm` |
-| F11 | Soft reset / Ctrl-Reset | F12 | Hard reset / power-cycle |
+| F10 | **Full screen ⇄ windowed** (kiosk toggle) | F11 | Soft reset / Ctrl-Reset |
+| F12 | Hard reset / power-cycle | | |
 
-F9 / F11 / F12 and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
+F9 / F10 / F11 / F12 and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
 
 ---
 
@@ -269,6 +270,14 @@ More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ S
 
 ### 🕹️ Kiosk mode
 
+**Full screen *is* kiosk mode.** Press **F10** (or View → Full screen, or the
+command palette) to switch between the windowed GUI and the chrome-free
+full-screen view, in either direction, at any time. The emulated machine is
+never touched by the switch — kiosk changes only the window, the render path
+and settings-writing — so a game keeps playing across it and nothing is lost.
+From inside kiosk, the in-game menu also offers **EXIT KIOSK (WINDOWED)** for
+anyone who doesn't know the shortcut.
+
 `POM2 --kiosk <disk-image>` turns POM2 into a distraction-free appliance — think arcade cabinet, museum exhibit, or a dedicated retro corner. It:
 
 - Opens **exclusive full-screen** on the primary monitor at its native video mode (falls back to a plain window if there's no monitor to grab).
@@ -278,7 +287,7 @@ More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ S
 
 Everything the machine needs keeps running: keyboard, joystick/paddles, auto-turbo during disk I/O, **F11 / F12** (soft / hard reset), **F9** (screenshot), **Left / Right Alt** (Open / Solid Apple), and **F6** (hold to rewind — inert while the in-game menu is up).
 
-**In-game menu.** Press **Start** on a gamepad — or **F10** — for the Start menu: the games list on the left (every 5.25" / 3.5" / HDV image in the booted disk's folder plus your extra ROM folders; a 5.25" hot-swaps in place for flip-disk games, a 3.5"/HDV mounts and boots straight away) and an action column on the right (**Restart · Keyboard · ROM folders · Quit**). **Select** — or **K** — toggles a live on-screen keyboard band without pausing the game. D-pad / arrows move, **A / Enter** validates, **B / Esc** backs out. The machine is paused while the menu is up (except under the keyboard band), and menu presses never leak into the running game. **Alt-F4** still quits directly (POM2 handles the combo itself, so it works even in exclusive full-screen).
+**In-game menu.** Press **Start** on a gamepad — or **F1** — for the Start menu: the games list on the left (every 5.25" / 3.5" / HDV image in the booted disk's folder plus your extra ROM folders; a 5.25" hot-swaps in place for flip-disk games, a 3.5"/HDV mounts and boots straight away) and an action column on the right (**Restart · Keyboard · ROM folders · Exit kiosk · Quit**). **Select** — or **K** — toggles a live on-screen keyboard band without pausing the game. D-pad / arrows move, **A / Enter** validates, **B / Esc** backs out. The machine is paused while the menu is up (except under the keyboard band), and menu presses never leak into the running game. **Alt-F4** still quits directly (POM2 handles the combo itself, so it works even in exclusive full-screen).
 
 ```bash
 POM2 --kiosk "Lode Runner.dsk"                 # boot a game, full-screen
