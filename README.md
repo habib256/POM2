@@ -319,9 +319,9 @@ uploaded, no Release created.
 The Linux package is built inside a frozen container on purpose: an AppImage
 never bundles glibc, so its floor is whatever the *build* machine had. Building
 on `ubuntu-latest` stamps `GLIBC_2.38`, which will not start on Debian 12 or
-Ubuntu 22.04. Rebuild that image with the `Build bionic builder image` workflow
-only when `packaging/linux/Dockerfile.bionic` changes, then pin the digest it
-prints into `release.yml`.
+Ubuntu 22.04. POM2 **reuses POM1's** `pom1-bionic-builder` image (pinned by
+digest) — the requirements are identical, so there is one image to maintain
+rather than two. Rebuild it from POM1, then re-pin the digest in both repos.
 
 **Local builds** (no CI needed):
 

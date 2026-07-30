@@ -76,10 +76,24 @@ jobs:
       contents: read
       packages: read       # pull the builder image from GHCR
     env:
-      # Build the image first via the build-bionic-image workflow, then replace
-      # this with the digest it prints. The moving tag is a convenience for
-      # bring-up; a real release should be pinned by digest.
-      BUILDER_IMAGE: ghcr.io/habib256/pom2-bionic-builder:bionic
+      # REUSES POM1's builder image, pinned by digest. The requirements are
+      # identical — glibc 2.27, g++-9 (bionic's default 7 has no usable
+      # <filesystem>), CMake >= 3.16, GLFW 3.3 from source, and an AppImageKit
+      # appimagetool whose runtime is ET_EXEC — so maintaining a second, nearly
+      # byte-identical image would just be two things to keep in sync. POM1
+      # additionally bakes cc65 and a python3.8 alternative; both are dead weight
+      # here and harmless.
+      #
+      # Rebuild it from POM1 (packaging/linux/Dockerfile.bionic + its
+      # build-bionic-image workflow), then re-pin the digest it prints in BOTH
+      # repositories.
+      #
+      # PREREQUISITE: the GHCR package must be reachable from this repository —
+      # either public, or with `pom2` added under the package's
+      # "Manage Actions access". Otherwise `docker pull` 403s here even though
+      # the token has packages: read, because GHCR scopes access per package,
+      # not per owner.
+      BUILDER_IMAGE: ghcr.io/habib256/pom1-bionic-builder@sha256:c44b786517f041f779b082b813e84a17b141db3983fc0b28f2c3e4deedeb4cca
     steps:
       - uses: actions/checkout@v5
 
@@ -95,6 +109,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/work -w /work \
             -e POM2_VERSION \
+            -e POM2_APPIMAGE_TOOLS_DIR=/opt/appimage-tools \
             "$IMAGE" \
             bash /work/packaging/linux/build_in_bionic.sh
 
