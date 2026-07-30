@@ -29,3 +29,7 @@ tests/CMakeCache.txt
 tests/cmake_install.cmake
 tests/CTestTestfile.cmake
 tests/Makefile
+
+# Runtime output written by the emulator itself, not source.
+/printouts/
+/snapshots/
