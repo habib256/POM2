@@ -67,6 +67,35 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure -j"$(nproc)"
 
+      # The GLES 3.0 tier (POM2_GLES=ON) is what the Raspberry Pi release
+      # package is built with. It shares every source file with the desktop
+      # build and differs only in the headers, the shader prologue and the
+      # context request — which is exactly the kind of second configuration
+      # that rots silently. Build-only: the test suite is renderer-agnostic and
+      # already ran above.
+      - name: Install the GLES toolchain
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgles2-mesa-dev libegl1-mesa-dev
+
+      - name: Verify the GLES tier still builds (Raspberry Pi target)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-gles \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPOM2_ENABLE_TESTS=OFF \
+            -DPOM2_GLES=ON
+          cmake --build build-gles -j"$(nproc)"
+          # Assert the tier is really engaged: GLESv2 linked, desktop libGL not.
+          # Without this the job would happily pass on a build that silently
+          # fell back to desktop GL, which is the failure it exists to catch.
+          ldd build-gles/POM2 | grep -qE 'libGLESv2' \
+            || { echo "ERROR: GLES build does not link libGLESv2"; exit 1; }
+          if ldd build-gles/POM2 | grep -qE 'lib(GL|OpenGL)\.so'; then
+            echo "ERROR: GLES build links desktop libGL"; exit 1
+          fi
+          echo "OK: GLES tier builds and links GLESv2 only"
+
   wasm:
     name: WASM verification build
     runs-on: ubuntu-latest
