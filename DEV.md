@@ -70,17 +70,56 @@ caught indirectly via stack RAM). This is exactly the timing-bug class
 `cpu_cycle_count_test` was built for, generalised to every opcode × 10 000
 states.
 
-- **NMOS 6502** (`6502/v1`): **100%** on the gated 41-opcode set (410 000
-  vectors), incl. decimal ADC/SBC + the NMOS `JMP (ind)` page bug.
-- **WDC 65C02** (`wdc65c02/v1` — the only published variant with Rockwell bit
-  ops AND WAI/STP, = POM2's table): 100% except decimal **SBC on invalid BCD
-  digits** (`e9`, ~3.4%) — the WDC's distinct, officially-undefined silicon
-  correction we don't model (unreachable by correct software). `69` (ADC) is
-  silicon-exact on both CPUs.
+Results below are from **full 256-opcode** sweeps of both variants
+(`tests/fetch_tomharte.sh <variant> <dir> --all`), not just the gated subset:
 
-Four real decimal bugs the suite surfaced + fixed in `M6502::ADC/SBC` — all
+- **NMOS 6502** (`6502/v1`): **100% on all 178 documented opcodes**
+  (1 780 000 vectors), incl. decimal ADC/SBC + the NMOS `JMP (ind)` page bug.
+  The 78 failing files are exactly the undocumented opcodes with observable
+  side effects (SLO/RLA/SRE/RRA/SAX/LAX/DCP/ISC/ANC/ALR/ARR/XAA/SBX/SHY/SHX/
+  TAS/LAS + the 12 JAMs), which POM2 models as length/cycle-correct NOP
+  placeholders by design. The undocumented *NOPs* ($x3/$x7/$xB/$xF, $04/$44/
+  $64, $0C/$1C/…, $80/$82/$89/$C2/$E2) do pass.
+- **WDC 65C02** (`wdc65c02/v1` — the only published variant with Rockwell bit
+  ops AND WAI/STP, = POM2's table): **100% on 255 of 256 opcodes**
+  (2 530 000 vectors), decimal SBC included — see the interdigit-carry fix
+  below. `69` (ADC) is silicon-exact on both CPUs.
+- **`$5C` is the one remaining CMOS divergence, and it is deliberate**: POM2
+  charges 3 bytes / **8 cycles**, matching MAME (`ow65c02.lst` `nop_c_aba` =
+  7 `read_pc()` + `prefetch()`) and the standard 65C02 unused-opcode tables.
+  All three of Harte's 65C02 variants say 4 cycles, but that corpus is
+  generated from "an implementation that conforms to available documentation"
+  (upstream README) rather than from silicon, and it invites discrepancy
+  reports. **MAME wins** per this project's source-of-truth rule, so
+  `5c : 0/10000` in a full CMOS sweep is expected, not a regression.
+
+**Decimal SBC is CPU-part-specific** (fixed 2026-07-30). The WDC 65C02 lets
+the low nibble's `-6` decimal adjustment **borrow into the high nibble** —
+MAME names it in `w65c02.cpp:28-46` (`do_sbc_cd`): *"SBC allows interdigit
+carry from decimal adjustment on 65C02"*. It packs both nibble differences
+first, then applies `-6`/`-$60` to the whole byte; the NMOS part corrects each
+nibble in isolation and never propagates that borrow, so **the two parts return
+different accumulators for the same operands**. POM2 applied the NMOS rule on
+both, costing ~3.4% of every decimal SBC addressing mode
+(`e1,e5,e9,ed,f1,f2,f5,f9,fd` — not just `e9`). `M6502::SBC` now branches on
+`cpuMode`. Divergence is confined to invalid BCD digits, so no correct-software
+behaviour changes. Pinned by `decimal_sbc_cmos` — which carries corpus vectors
+inline, so it gates the rule without the 1.4 GB download.
+
+**Harness gotcha (fixed 2026-07-30):** `runVector` re-arms the CPU's KIL/JAM +
+STP `halted` latch per vector. `step()` short-circuits before the opcode fetch
+while it is set and only a reset clears it, so a single vector landing on an
+NMOS JAM ($02/$12/$22/…) or a CMOS STP ($DB) used to freeze the shared CPU for
+**every later vector in the run** — a full NMOS sweep scored 20 000/2 560 000
+because file `02` poisoned the other 254. Curated-subset runs never noticed
+(no JAM opcode is in the manifest).
+
+Five real decimal bugs the suite surfaced + fixed in `M6502::ADC/SBC` — all
 **provably identical for valid BCD**, only invalid-digit edge cases change
 (cpu_cycle_count_test's decimal-SBC-V pin + Klaus stay green):
+0. SBC applied the NMOS nibble-isolated correction on CMOS too, dropping the
+   WDC interdigit borrow (see above). Fix: branch on `cpuMode`, CMOS follows
+   MAME `do_sbc_cd`.
 1. ADC low nibble `tmp+6` overflowed bit 5 on invalid digits → high nibble took
    `$20` not the `$10` carry. Fix `((tmp+6)&0x0F)+0x10`.
 2. ADC decimal carry tested `tmp & 0x100`, but the `+$60` high fix can push the
@@ -93,7 +132,14 @@ Gate: curated SHA-256-pinned subset (`tests/tomharte_*.manifest`); the
 configure-time download is gated behind `-DPOM2_FETCH_TOMHARTE=ON` (default OFF
 — full corpus is ~1.4 GB/CPU). `tests/fetch_tomharte.sh <variant> <dir>` pulls
 a full 256-opcode variant for exhaustive runs. Pinned: `tomharte_6502`,
-`tomharte_65c02`.
+`tomharte_65c02`, `decimal_sbc_cmos`.
+
+> **`tomharte_6502` / `tomharte_65c02` report `Passed` in 0.00 s when
+> `POM2_FETCH_TOMHARTE` is OFF** — with no corpus on disk the harness soft-skips
+> (exit 0) so CI without network stays green. A green tick from those two names
+> therefore does **not** mean the CPU was validated; check the elapsed time, or
+> configure with `-DPOM2_FETCH_TOMHARTE=ON`. `decimal_sbc_cmos` and
+> `cpu_cycle_count` carry their vectors inline and always really run.
 
 ### Z80 core (`Z80.h/.cpp` — SoftCard/CP/M Phase 1)
 
@@ -130,10 +176,52 @@ approximated:
 - **SCF/CCF** X/Y use the "copy from A" NMOS rule (no Q-register model) —
   the behaviour zexall's silicon CRCs encode.
 
-Pinned by three tests (all link `Z80.cpp` only):
+**Block-I/O repeat flags are a separate rule** (fixed 2026-07-30).
+`INIR`/`OTIR`/`INDR`/`OTDR` do NOT leave the per-iteration INI/OUTI flags in
+place: on every iteration that still has work to do (B ≠ 0 after the
+decrement) the Z80 re-derives **X/Y from the rewound PC's high byte** (the
+LDIR/CPIR rule), **H from B's low nibble** when carry is set, and **P/V from
+the parity of B±1 (or B) xored against the incoming P/V** — plus `WZ = PC+1`.
+MAME calls this `block_io_interrupted_flags()` (`z80.cpp:580-604`, invoked by
+the inir/otir/indr/otdr macros in `z80.lst:769-880`). POM2 used the
+non-repeating formula for all eight opcodes.
+
+**zexdoc/zexall are structurally blind to this**: they run under CP/M and never
+execute an I/O block instruction, so both stayed 100 % green while all four
+repeating opcodes were wrong ~99.5 % of the time. Note MAME's `pv_val` is a
+LAZY field whose getter re-parities the stored byte, so the flag that actually
+lands is the *inverse* of the `(pv_old ^ pv())` it stores — P/V ends up SET when
+the two agree. Transcribing that expression literally gets it backwards.
+Pinned by `z80_block_io_flags`.
+
+**Tom Harte 65x02-style Z80 suite.** [SingleStepTests/z80](https://github.com/SingleStepTests/z80)
+publishes the same per-opcode JSON as the 6502 corpus (1 000 vectors/opcode,
+full architectural state + a T-state bus trace), and `Z80::State` exposes
+everything it pins — including WZ, I, R, IM and IFF1/2 — so the mapping is
+direct. A full local sweep of **1 092 opcode files / 1 092 000 vectors**
+(base + CB + ED + DD + FD + DD CB + FD CB) checking A F B C D E H L, all four
+shadow pairs, IX IY SP PC WZ, I R IM IFF1 IFF2, every listed RAM cell and the
+T-state count gives **100 %**, with one documented exception:
+
+- **`37`/`3f` (SCF/CCF) and their DD/FD forms** fail on **F bits 3+5 only**
+  (~22 % of vectors). That is the **Q register** gap already listed as
+  out-of-scope below: the undocumented X/Y result depends on whether the
+  *previous* instruction wrote F. Masking those two bits takes the sweep to
+  1 092 000/1 092 000. Everything else — including all of ED's block ops and
+  I/O, which zexall cannot reach — is silicon-exact.
+
+The corpus is ~1.4 GB and only publishes *defined* opcodes (undefined ED slots
+404), so it is not vendored or gated; the harness used for the sweep lives in
+this session's notes rather than in `tests/`, and the two rules it found are
+pinned inline instead.
+
+Pinned by four tests (all link `Z80.cpp` only):
 
 - `z80_core` — committed smoke, no external data: spot assertions across
   every opcode page + T-state totals + IM1/IM2/NMI/EI-shadow. Fast gate.
+- `z80_block_io_flags` — the INIR/OTIR/INDR/OTDR interrupted-iteration rule,
+  16 Tom Harte vectors embedded inline (carry set/clear × data bit 7 set/clear
+  × both H nibble edges). No download.
 - `z80_zexdoc` / `z80_zexall` — Frank Cringle's exercisers (CRCs captured
   on real Zilog silicon; zexall adds the undocumented flags). Binaries are
   configure-time downloads, SHA-256 pinned (Klaus pattern), from
@@ -144,8 +232,35 @@ Pinned by three tests (all link `Z80.cpp` only):
   result) that only zexall's CRCs caught.
 
 Out of (current) scope: intra-instruction bus-cycle timing (irrelevant
-for the bus-master SoftCard design), the Q register, IM0 arbitrary-opcode
+for the bus-master SoftCard design), the Q register (the only thing standing
+between the Harte sweep above and a clean 100 % unmasked — **rule fully
+characterised below** if it is ever worth doing), IM0 arbitrary-opcode
 injection (only RST assumed — CP/M runs with interrupts off).
+
+**The Q register rule, should SCF/CCF exactness ever be wanted.** Derived and
+validated against `z80/v1` at **1000/1000 on each of the six affected files**
+(`37`, `3f`, `dd 37`, `fd 37`, `dd 3f`, `fd 3f` — 6 000 vectors):
+
+```
+Q = F as left by the PREVIOUS instruction, if that instruction wrote F;
+    0 otherwise.
+SCF / CCF:  F bits 3+5  =  ((Q ^ F_before) | A) & 0x28
+```
+
+The DD/FD-prefixed forms are the same rule with **Q = 0**: each prefix retires
+as its own instruction (`State::pendingPrefix`) and does not write F, so it
+clears Q. `(F_before | A) & 0x28` is 1000/1000 on all four prefixed files.
+
+Note MAME's own expression (`z80.lst:6427-6470`,
+`m_f.yx_val = (m_f.yx_val & Q) | A`) does **not** transcribe literally — its
+`Q` is a derived value, not a raw mask, and taken at face value it scores only
+548/1000 on `37`. Same lazy-field trap as `pv_val` in the block-I/O fix.
+
+Cost of adopting it: a `q` byte in `Z80::State` (snapshot version bump) is the
+easy part; the invasive part is that **every** instruction path must then
+maintain q — set it to F when it writes F, clear it otherwise, prefix
+retirement included. That is a change to every opcode's epilogue for undocumented
+flag bits no CP/M or Apple II software reads, which is why it stays out of scope.
 
 ### SoftCard Z80 (`SoftCardZ80.h/.cpp` — CP/M Phase 2)
 

@@ -5,6 +5,253 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-30 — Bug hunt 5: UI panels fuzzed headlessly; no defects found
+
+The 16 `src/*_ImGui.cpp` files were the largest completely untested surface left
+— nothing in `tests/` instantiates an ImGui context. They turn out to be
+reachable headlessly: Dear ImGui itself is platform-agnostic (only the backends
+need a window), so a context with a built font atlas, a display size and
+NewFrame/Render executes every layout, string-formatting and clipping path with
+no GPU, no GLFW and no live machine. The panels' own design does the rest —
+each takes a plain `Snapshot` struct and returns a plain `Result`, so they can
+be driven entirely from synthetic state.
+
+Six panels (Uthernet, Joystick, FloppyEmu, SmartPort, Le Chat Mauve, Toolbar)
+driven for **~21 500 frames** under ASan+UBSan with adversarial snapshots —
+empty/oversized strings, ImGui markup in labels (`##`, `###`), format-specifier
+strings (`%s`, `%d`), NaN/Inf floats, negative and out-of-range indices, empty
+and large vectors — at hostile display sizes including 1×1, 4096×2160 and
+degenerate 800×1, with the mouse driven over the whole area and buttons/wheel
+firing. **No crashes, no undefined behaviour, no ImGui assertion failures** (the
+latter would catch unmatched Begin/End or PushID/PopID).
+
+Inspection agreed: cursors are clamped before use (`FloppyEmu` re-homes and
+clamps `browseCursor_`/`settingsCursor_` every frame, and loops are bounded by
+the vector sizes rather than by the incoming index), lookups are by value with
+a null check rather than by raw index (`JoystickPanel::findHost`), fixed-size
+`std::array` members are indexed only by constants that match their declared
+extents (`kAxes = 2`, `kButtons = 3`), and the `if (!Begin(...)) { End(); }`
+pattern is used correctly.
+
+The harness is not committed — it links ImGui into a test target, which is a
+build/CI decision rather than a bug fix. It is written and working if that
+coverage is wanted.
+
+## 2026-07-30 — Bug hunt 4: persisted floats did not round-trip
+
+**Every float setting shifted on the first save/load cycle.** `Settings::
+setFloat` serialised with a bare `os << v`, and `ostringstream` defaults to
+**6 significant digits** — not enough to round-trip a float. `1.0f/3.0f` wrote
+as `"0.333333"` and read back as a different float. That covers all five
+volumes (master / speaker / cassette / both floppy), `ui_scale`, and the ~15
+NTSC/CRT and voxel shader parameters: what the user dialled in was not what
+they got back. The drift is one-shot rather than cumulative (the reloaded value
+re-serialises to the same text), and each shift is ~1e-7, so nothing was
+visibly broken — but a persistence layer that doesn't round-trip is wrong, and
+it is the same class as the SSC baud-rate bug from hunt 1.
+
+`setFloat` now emits the **shortest** width that round-trips, capped at
+`max_digits10` (9). Shortest rather than always-9 on purpose: state.cfg's own
+header invites hand-editing, and `0.5` stays `0.5` instead of becoming
+`0.500000000` — only genuinely awkward values widen (`0.33333334`).
+
+`settings_roundtrip_test` already existed but only exercised STRING values
+(plus two typed values spot-checked as raw strings), which is exactly why this
+survived. Extended to cover the typed accessors properly — int/float/bool — and
+also boundary whitespace, which `escapeValue` handles specially (load() trims
+each line to drop CRLF artifacts, so a value with a leading/trailing space
+survives only because of that encoding) but which nothing tested.
+
+**Sweeps that came back clean**, recorded so they aren't redone blind:
+- **Write-back identity across the whole writable library** (179 images): load,
+  mark every track dirty *without altering a nibble*, `saveDirty()` — the file
+  must be byte-identical. It is, for every image. This is the data-loss class:
+  if the decode-back-to-source-format were not an exact inverse of the load-time
+  encode, merely touching a disk would silently rewrite it with drifted content
+  (the shape of the MacBinary bug already recorded in `detectFormat`). Note
+  `writeNibbleAt` only dirties on a real change, so the harness has to flip a
+  nibble and flip it back; and real WOZ dumps are physically write-protected, so
+  WOZ write-back is not covered by this.
+- **Mouse card cross-implementation differential** — nothing previously compared
+  POM2's two Apple Mouse Card implementations against each other, although both
+  claim the same ProDOS firmware contract and each has its own smoke tests. Ran
+  identical host-motion scripts through both on full machines, reading the same
+  screen holes. Status/button bytes agree exactly; position agrees within a **±2
+  quadrature phase residue** that does not converge with more idle time and
+  flips sign with the sampling phase. That is inherent to modelling quadrature
+  at all (the MCU path decodes real encoder edges; the HLE copies the host delta
+  and so has no residue), **not** a defect in either — recorded here so the next
+  person to run that comparison doesn't mistake 59 "divergences" for a bug.
+
+## 2026-07-30 — Bug hunt 3: no defects found; six sweeps recorded
+
+A third pass over areas the first two didn't touch. **No bugs.** Recording what
+was covered and how, so it isn't redone blind — and one characterised follow-up.
+
+- **//e MMU bank routing, full cross-product**: all six memory-affecting soft
+  switches (80STORE, RAMRD, RAMWRT, ALTZP, PAGE2, HIRES) crossed against every
+  region boundary, reads and writes — 2 048 checks, clean. The oracle was written
+  from the IIe Tech Ref / Sather independently of the implementation, so it
+  genuinely tests the properties `iie_aux_paging_conformance_test`'s spot checks
+  cannot see: ALTZP governing $0000-$01FF *alone* (RAMRD/RAMWRT must not reach it,
+  and ALTZP must not reach $0200+), the 80STORE window not leaking outside
+  $0400-$07FF / $2000-$3FFF, HIRES gating only the $2000 window, and PAGE2 alone
+  never affecting routing.
+- **$C000-$C00F access-type matrix**: those eight switch pairs are write-only on
+  the //e. All sixteen addresses verified from both polarities of every switch
+  (the existing regression check covers two), plus the $C013-$C018 status reads
+  reporting correctly and not self-toggling. 88 checks, clean.
+- **Snapshot REPLAY determinism** — the strongest property tried so far, and
+  strictly stronger than a capture→restore→recapture blob compare: run to T,
+  snapshot, run M more → state A; restore, run M again → state B; A must equal B.
+  State absent from the snapshot but still steering execution shows up as a
+  RAM/CPU difference, and RAM/CPU *are* in the blob. 60 configurations (5 disk
+  images × 2 ROMs × 6 snapshot points, including 5 frames in — mid-boot, LSS
+  mid-track) plus //e enhanced/unenhanced and the 1977 ROM: bit-identical every
+  time, on the same machine, on a fresh machine, and against two cold boots.
+  Caveat worth knowing: this cannot catch host-side-only state (it would NOT have
+  found the SSC baud bug, whose effect never re-enters machine state).
+- **ProDOS volume decode fuzz**: `decodeVolumeToFolder` writes host files from a
+  guest-writable image, so its jail is the thing that matters. 4 000 mutations
+  with path-traversal names planted directly at the directory-entry name field
+  (`..`, `A/B`, `/etc`, control bytes, dot-only, over-length), self-referencing
+  subdir entries, smashed key pointers/EOF fields — checked structurally (scan for
+  any entry created outside the target folder + an untouched canary), not by
+  trusting the name filter. No escapes, no sanitizer reports.
+- **Whole real disk library**: all **4 771** images in the repo through the loader
+  and every read path under ASan+UBSan. Zero crashes. 50 refusals, all correct and
+  all the same 7 files (duplicated across leftover `.claude/worktrees/` copies):
+  800K/hard-disk-sized images handed to the 5.25" loader, which correctly says they
+  belong on the HDV card.
+- **3.5" / HDV / ATA loaders** (`Disk35Image`, `Block512Backing`) — the untrusted
+  surface round 2's DiskImage fuzz skipped: 127 real images + 3 000 mutated cases,
+  block and byte accessors probed past the end, truncated `loadFromBytes`. Clean.
+
+**Characterised but deliberately NOT implemented: the Z80 Q register.** The
+SCF/CCF gap that keeps the Harte Z80 sweep off a clean unmasked 100 % is now
+fully pinned down — exact rule, including why the DD/FD-prefixed forms differ,
+validated 1000/1000 on each of the six affected opcode files. Written up in
+`DEV.md § Z80 core`. Not done because closing it means maintaining `q` in
+**every** instruction epilogue for undocumented flag bits no CP/M or Apple II
+software reads; that is a scope decision, not a bug fix. Also recorded there:
+MAME's own SCF/CCF expression does not transcribe literally (its `Q` is derived,
+not a raw mask — 548/1000 at face value), the same lazy-field trap as `pv_val`.
+
+## 2026-07-30 — Bug hunt 2: Z80 block-I/O repeat flags; sanitizer + fuzz sweeps
+
+**INIR/OTIR/INDR/OTDR set the wrong flags on every repeating iteration.** The
+repeating block-I/O opcodes do not just leave the per-iteration INI/OUTI flag
+formula in place: while B ≠ 0 the Z80 re-derives X/Y from the rewound PC's high
+byte (the same rule LDIR/CPIR already used here), H from B's low nibble when
+carry is set, and P/V from the parity of B±1 (or B) xored against the incoming
+P/V — plus `WZ = PC+1`. MAME has this as `block_io_interrupted_flags()`
+(`z80.cpp:580-604`); POM2 applied the non-repeating formula to all eight
+opcodes. The four non-repeating forms (`ed a2/a3/aa/ab`) were already exact.
+
+**Why it survived two exhaustive exercisers:** zexdoc and zexall run under CP/M
+and never execute an I/O block instruction, so they are structurally blind to
+this — both stayed 100 % green while all four repeating opcodes were wrong on
+~99.5 % of vectors. It took a different oracle to see it:
+[SingleStepTests/z80](https://github.com/SingleStepTests/z80) publishes the
+same per-opcode JSON as the 6502 corpus that found the decimal-SBC bug earlier
+the same day, and `Z80::State` already exposes everything it pins (WZ, I, R,
+IM, IFF1/2). A full local sweep — **1 092 opcode files, 1 092 000 vectors**,
+base + CB + ED + DD + FD + DD CB + FD CB — is now **100 %** apart from SCF/CCF's
+F bits 3+5, which need the Q register (already an owned out-of-scope item).
+
+One trap worth recording: MAME's `pv_val` is a **lazy** field whose getter
+re-parities the stored byte, so the flag that actually reaches `get_f()` is the
+*inverse* of the `(pv_old ^ pv())` MAME stores — P/V lands SET when the two
+agree. Transcribing MAME's line literally gets it exactly backwards; the rule
+was confirmed against all 3 990 repeat-branch vectors before touching the core.
+Pinned by `z80_block_io_flags` (16 vectors inline, spanning carry set/clear ×
+data bit 7 set/clear × both H nibble edges — no 1.4 GB download).
+
+**Unsynchronised cycle-counter read in `pom2_headless`.** Its main loop sampled
+`Memory::getCycleCounter()` bare while the CPU worker wrote it under
+`stateMutex` — a real data race (ThreadSanitizer on the running binary), benign
+on x86-64 but UB, and the wrong example to set next to `MainWindow::
+renderStatusBar` and `AiControlServer`, which both take the lock for the same
+read. `pasteText` on the next line was already safe (Memory's own `kbMutex`).
+
+**Sweeps that came back clean** — recorded so they don't get redone blind:
+- **ASan + UBSan over the whole 149-test suite**: zero memory-safety and zero
+  undefined-behaviour reports. (Use an in-tree build: 3 tests exceed their tight
+  `TIMEOUT` under instrumentation and `disk_skew_sniff` needs cwd = repo root.)
+- **TSan on the shipping cross-thread surface**: 113 k concurrent HTTP requests
+  across every state-touching AI-control endpoint against a *running* CPU worker,
+  with rewind scrub/park interleaved — no races. Worth knowing that
+  `ai_control_server_smoke_test` deliberately parks the controller in `Stopped`,
+  so that configuration otherwise has no coverage at all. TSan needs
+  `setarch -R` on this kernel (high-entropy ASLR → "unexpected memory mapping").
+- **7 329 mutated disk images** (truncations, header-field smashing, magic
+  swaps, forged MacBinary wrappers, seeded from real WOZ1/WOZ2/2MG/NIB/D13/PO/
+  DO/DSK) through `loadFile` + every nibble/bit-cell/flux read path + the media
+  snapshot round trip, under ASan+UBSan: no crashes.
+- **~30 k mutated machine snapshots** (section-length smashing, tag rewriting,
+  chunk splicing, truncation) through `restoreMachineState` with real cards
+  plugged, under ASan+UBSan: no crashes.
+
+## 2026-07-30 — Bug hunt: CMOS decimal SBC, CPU-oracle harness, SSC baud restore
+
+**The 65C02 decimal SBC was using the NMOS correction rule.** The WDC 65C02
+lets the low nibble's `-6` decimal adjustment **borrow into the high nibble**;
+MAME names it outright in `w65c02.cpp:28-46` (`do_sbc_cd`): *"SBC allows
+interdigit carry from decimal adjustment on 65C02"*. It packs both nibble
+differences and only then applies `-6`/`-$60` to the whole byte, so the borrow
+propagates. The NMOS part corrects each nibble in isolation and it never does —
+meaning **the two CPU parts genuinely return different accumulators for the same
+operands**, and a single shared code path cannot be right for both. `M6502::SBC`
+now branches on `cpuMode`.
+
+Measured against a full 256-opcode Tom Harte sweep: every decimal SBC
+addressing mode was wrong ~3.4% of the time — `e1,e5,e9,ed,f1,f2,f5,f9,fd`,
+*nine* opcodes, where the previous note in `M6502.cpp` had claimed only `e9`
+and had written the divergence off as an unmodellable silicon quirk. It is
+modellable; MAME models it, and MAME is this project's source of truth. Result
+values moved by exactly $10 (the dropped borrow) and the N flag with them.
+Divergence is confined to **invalid** BCD digits, so no correct-software
+behaviour changes — but "officially undefined" is not the same as "free to get
+wrong", and it was masking a real parity gap. WDC CMOS is now 100% on 255 of
+256 opcodes (2 530 000 vectors). Pinned by `decimal_sbc_cmos`, which embeds the
+corpus vectors inline so it runs without the 1.4 GB download.
+
+**The exhaustive CPU oracle could not actually be run.** `tomharte_cpu_test`'s
+`runVector` restored PC/SP/A/X/Y/P and RAM per vector but never re-armed the
+CPU's KIL/JAM + STP `halted` latch. `step()` short-circuits before the opcode
+fetch while that latch is set and only a reset clears it, so the **first**
+vector landing on an NMOS JAM ($02/$12/$22/…) or a CMOS STP ($DB) froze the
+shared CPU for every remaining vector in the run: a full NMOS sweep scored
+20 000/2 560 000, because file `02` poisoned the other 254 files. The curated
+CTest subset never caught it — no JAM opcode is in the manifest. This is why
+the "100%" claims in `DEV.md` had only ever been checked on 41 opcodes; with the
+latch cleared, the real numbers are in `DEV.md § Tom Harte`, including the fact
+that the failing NMOS files are **exactly** the 78 undocumented opcodes with
+observable side effects (a much stronger statement than the subset could make).
+
+Two related traps recorded rather than "fixed", since both are deliberate:
+- **`$5C` fails the CMOS sweep on purpose.** POM2 charges 3 bytes / 8 cycles,
+  matching MAME (`ow65c02.lst` `nop_c_aba`) and the standard 65C02 unused-opcode
+  tables. All three of Harte's 65C02 variants say 4. That corpus is generated
+  from an implementation conforming to documentation, not from silicon, so MAME
+  wins — but `5c : 0/10000` is now documented as expected, not a regression.
+- **`tomharte_6502`/`tomharte_65c02` report `Passed` in 0.00 s with no corpus
+  on disk** (soft-skip, so networkless CI stays green). A green tick from those
+  two names does not mean the CPU was validated. Called out in `DEV.md`.
+
+**Super Serial Card restored its baud rate but not its baud pacing.**
+`bytesPerSecond_` is derived from the control register's divider and is not
+serialized — the same reason `wordLength_`/`extraStop_` are restored
+explicitly. Only `applyControlReg` ever computed it, and a snapshot load is not
+a register write, so a restore left the rate the **live** session was last
+programmed to: a 300-baud snapshot loaded into a 19 200-baud session drained
+the TX ring 64× too fast, and the reverse stalled it. Rewind hit this on every
+frame. `loadSnapshotState` now recomputes it and resets the pacing budget +
+drain clock, exactly as `applyControlReg` does — a stale `lastDrainTime_` would
+otherwise credit the restored rate for all the wall-clock time before the load
+and dump a burst. Pinned in `card_snapshot_state` (both directions, so the fix
+can't be a hard-coded slow default).
+
 ## 2026-07-30 — Post-review sweep: 13 defects in the same day's own code
 
 Two adversarial reviewers went over everything written that day (none of it
