@@ -133,6 +133,32 @@ public:
 
 private:
     std::array<std::unique_ptr<SlotPeripheral>, kSlotCount> slots{};
+
+    /// Compact list of the cards actually plugged, so the per-instruction
+    /// `advanceCycles` fan-out does not walk eight `unique_ptr` slots to find
+    /// the one or two that exist.
+    ///
+    /// A Callgrind profile (2026-07-30) measured `SlotBus::advanceCycles` at
+    /// 65 host instructions per EMULATED instruction with a single Disk II
+    /// plugged — 15.7 % of the whole emulation core, nearly all of it the
+    /// eight-way scan and its `unique_ptr` dereferences (which showed up
+    /// separately as another 1.9 % under `unique_ptr.h`).
+    ///
+    /// These are RAW, NON-OWNING pointers into `slots`, so they dangle the
+    /// instant a card is destroyed. Every mutation of `slots` must therefore
+    /// call `rebuildActiveCache()` — there are exactly three (`plug`,
+    /// `unplug`, `clear`), `slots` is private, and no accessor hands out a way
+    /// to reseat a slot from outside. `advanceCycles` asserts the cache matches
+    /// in debug builds so a future fourth mutation point fails loudly rather
+    /// than silently skipping a card or following a freed pointer.
+    ///
+    /// Safe without extra locking: mutations happen under `stateMutex` (the
+    /// worker is additionally stopped across `applyProfile`), which is the same
+    /// lock the CPU worker holds around `runCpuSlice` → `advanceCycles`.
+    std::array<SlotPeripheral*, kSlotCount> activeCards_{};
+    int activeCount_ = 0;
+    void rebuildActiveCache();
+
     /// -1 = no slot driving expansion ROM. Set by slotRomRead, cleared
     /// by $CFFF and by unplug() of the active slot.
     int activeExpansionSlot = -1;

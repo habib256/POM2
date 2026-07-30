@@ -50,11 +50,33 @@ way to record one. The suite passed that draft too.
 
 Net: **−17.5 % on the core**, −13.8 % including display, 150/150 green.
 
-Left on the table, in descending size: `SlotBus::advanceCycles` still costs
-65 instructions per emulated instruction to walk 8 `unique_ptr` slots and make
-one virtual call for a single plugged card; and the display re-decodes the whole
-text screen every frame even when nothing changed — `glyphRows7` alone is 56 %
-of display cost, ~887 instructions per character cell.
+**Third fix: `SlotBus` now keeps a compact list of the plugged cards.** The
+per-instruction fan-out walked all eight `unique_ptr` slots to find the one or
+two that exist — 65 host instructions per emulated instruction with a single
+Disk II, 15.7 % of the core, plus another 1.9 % attributed separately to
+`unique_ptr.h`. `SlotBus::advanceCycles` fell **258 M → 127 M instructions
+(−51 %)**.
+
+The cache holds RAW, NON-OWNING pointers, so it dangles the moment a card is
+destroyed. That is safe here for three checkable reasons, and they are the whole
+argument: `slots` is private with no accessor that can reseat a slot from
+outside; there are exactly three mutation points (`plug`, `unplug`, `clear`) and
+each rebuilds; and mutations run under `stateMutex` — the same lock the CPU
+worker holds around `runCpuSlice` — with `applyProfile` additionally stopping
+the worker first. `unplug()` rebuilds *before* returning, since the `return
+std::move(slots[slot])` is what empties the slot. A debug-only assertion in
+`advanceCycles` cross-checks the cache against `slots` every call, so a future
+fourth mutation point fails loudly instead of silently skipping a card or
+following a freed pointer; the whole suite was run in a Debug build with it live.
+
+Cumulative across the three fixes: **−25.6 % on the emulation core**, −19.8 %
+including display (0.531 s → 0.395 s for 2000 frames), 1 645 M → 1 407 M
+instructions. POM2 goes from ~47x to ~59x realtime.
+
+Still on the table: the display re-decodes the whole text screen every frame
+even when nothing changed — `glyphRows7` alone is 56 % of display cost, ~887
+instructions per character cell. Dirty-region tracking is the remaining big win,
+but it touches the beam-racing path the DIX demos depend on, so it is not free.
 
 ## 2026-07-30 — v0.8: GLES tier, four-platform release CI, portability fixes
 

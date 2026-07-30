@@ -3,6 +3,7 @@
 // POM2 Apple II Emulator
 // Copyright (C) 2026
 
+#include <cassert>
 #include "SlotBus.h"
 
 // ─── SlotPeripheral ↔ SlotBus wiring ────────────────────────────────────
@@ -59,6 +60,7 @@ void SlotBus::plug(int slot, std::unique_ptr<SlotPeripheral> card)
         slots[slot]->attachToBus(this, slot);
         slots[slot]->onPlug();
     }
+    rebuildActiveCache();
 }
 
 std::unique_ptr<SlotPeripheral> SlotBus::unplug(int slot)
@@ -68,7 +70,9 @@ std::unique_ptr<SlotPeripheral> SlotBus::unplug(int slot)
     slots[slot]->onUnplug();
     slots[slot]->detachFromBus();
     if (activeExpansionSlot == slot) activeExpansionSlot = -1;
-    return std::move(slots[slot]);
+    auto owned = std::move(slots[slot]);   // slots[slot] is now empty
+    rebuildActiveCache();                  // ...so rebuild BEFORE returning
+    return owned;
 }
 
 uint8_t SlotBus::deviceSelectRead(uint16_t addr)
@@ -150,10 +154,34 @@ void SlotBus::expansionRomWrite(uint16_t addr, uint8_t v)
         p->expansionRomWrite(static_cast<uint16_t>(addr - 0xC800), v);
 }
 
+void SlotBus::rebuildActiveCache()
+{
+    activeCount_ = 0;
+    for (auto& s : slots)
+        if (s) activeCards_[static_cast<size_t>(activeCount_++)] = s.get();
+}
+
 void SlotBus::advanceCycles(int cycles)
 {
     if (cycles <= 0) return;
-    for (auto& s : slots) if (s) s->advanceCycles(cycles);
+#ifndef NDEBUG
+    // The cache is raw pointers into `slots`; if a mutation ever forgets to
+    // rebuild it, the failure would be a skipped card or a freed pointer, both
+    // near-impossible to trace back here. Fail loudly in debug instead.
+    {
+        int n = 0;
+        for (auto& s : slots) {
+            if (!s) continue;
+            assert(n < activeCount_ && activeCards_[static_cast<size_t>(n)] == s.get()
+                   && "SlotBus active-card cache is stale — a mutation of slots[] "
+                      "did not call rebuildActiveCache()");
+            ++n;
+        }
+        assert(n == activeCount_ && "SlotBus active-card cache has extra entries");
+    }
+#endif
+    for (int i = 0; i < activeCount_; ++i)
+        activeCards_[static_cast<size_t>(i)]->advanceCycles(cycles);
 }
 
 void SlotBus::broadcastVideoSwitch(uint16_t addr)
@@ -179,4 +207,5 @@ void SlotBus::clear()
         }
     }
     activeExpansionSlot = -1;
+    rebuildActiveCache();
 }
