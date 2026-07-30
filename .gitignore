@@ -36,3 +36,10 @@ tests/Makefile
 
 # Dear ImGui writes its window layout here at runtime.
 imgui.ini
+
+# Release staging produced by build_dist.sh / build_appimage.sh.
+/build-appimage/
+/build-macos/
+/build-universal-deps/
+/dist/
+/squashfs-root/
