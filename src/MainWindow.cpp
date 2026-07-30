@@ -92,13 +92,8 @@
 // the About-dialog photo loader called from this same translation unit.
 // Pulling the platform-correct header once at the top keeps both sites
 // working without duplicating the #if/#else block.
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-#elif defined(__APPLE__)
-#include <OpenGL/gl.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "Pom2GL.h"
+#include <GLFW/glfw3.h>
 
 // stb_image is bundled (single-header public-domain JPEG/PNG decoder)
 // solely for the About-dialog Apple ][+ photo. The implementation macro

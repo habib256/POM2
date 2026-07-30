@@ -4,13 +4,14 @@
 // Copyright (C) 2026
 
 #include "SuperSerialCard.h"
+#include "Pom2Build.h"
 #include "Logger.h"
 #include "SocketUtil.h"
 #include "M6502.h"
 
 #include <cerrno>
 #include <cstring>
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 // POSIX socket stack — used for the telnet bridge listener. Under
 // Emscripten there is no BSD-socket API in the browser, so the
 // listener / worker thread is compiled out and startListening()
@@ -169,7 +170,7 @@ SuperSerialCard::~SuperSerialCard()
 
 bool SuperSerialCard::startListening(uint16_t newPort)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     // No BSD sockets in the browser — telnet bridge is unavailable.
     port = newPort;
     pom2::log().info("SSC", "telnet listener disabled in WASM build");
@@ -223,7 +224,7 @@ bool SuperSerialCard::startListening(uint16_t newPort)
 
 void SuperSerialCard::stopListening()
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     listening = false;
     return;
 #else
@@ -247,7 +248,7 @@ void SuperSerialCard::stopListening()
 
 void SuperSerialCard::closeClient()
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     connected = false;
     return;
 #else
@@ -261,7 +262,7 @@ void SuperSerialCard::closeClient()
 #endif
 }
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 void SuperSerialCard::runWorker()
 {
     while (!stopRequested) {
@@ -433,7 +434,7 @@ void SuperSerialCard::runWorker()
     // thread. stopListening() still join()s us via worker.joinable().
     listening = false;
 }
-#endif // !__EMSCRIPTEN__
+#endif // POM2_HAS_SOCKETS
 
 void SuperSerialCard::deliverRxBytes(const uint8_t* data, size_t n)
 {

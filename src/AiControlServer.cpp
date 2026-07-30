@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "AiControlServer.h"
+#include "Pom2Build.h"
 
 #include "Apple2Display.h"
 #include "CpuClock.h"
@@ -27,7 +28,7 @@
 #include <filesystem>
 #include <optional>
 #include <sstream>
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 // POSIX socket stack — the HTTP control endpoint is desktop-only. In a
 // WASM build the listener loop and every socket call are compiled out,
 // and start()/stop() become logged no-ops. The rest of the server's
@@ -305,7 +306,7 @@ std::string jsonEscape(const std::string& in)
     return out;
 }
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 void applyRecvTimeout(int fd, int timeoutMs)
 {
     struct timeval tv{};
@@ -327,7 +328,7 @@ bool sendAll(int fd, const char* buf, size_t n)
     }
     return true;
 }
-#endif // !__EMSCRIPTEN__
+#endif // POM2_HAS_SOCKETS
 
 std::string cpuModeName(M6502::CpuMode m)
 {
@@ -393,7 +394,7 @@ void AiControlServer::detach()
 
 bool AiControlServer::start(uint16_t port)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)port;
     pom2::log().info("AICtrl", "HTTP control listener disabled in WASM build");
     return false;
@@ -441,7 +442,7 @@ bool AiControlServer::start(uint16_t port)
 
 void AiControlServer::stop()
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     running_ = false;
     return;
 #else
@@ -461,7 +462,7 @@ void AiControlServer::stop()
 #endif
 }
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 void AiControlServer::runWorker()
 {
     while (!stopRequested_) {
@@ -1192,6 +1193,6 @@ void AiControlServer::handleScreen(int fd, const Request& /*req*/)
     body.append(reinterpret_cast<const char*>(rgb.data()), rgb.size());
     sendResponse(fd, 200, "image/x-portable-pixmap", body);
 }
-#endif // !__EMSCRIPTEN__
+#endif // POM2_HAS_SOCKETS
 
 } // namespace pom2

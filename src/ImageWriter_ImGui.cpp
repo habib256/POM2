@@ -18,13 +18,7 @@
 #include <filesystem>
 #include <fstream>
 
-#if POM2_GL_ES
-#include <GLES3/gl3.h>
-#elif defined(__APPLE__)
-#include <OpenGL/gl.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "Pom2GL.h"
 
 // Declarations only — the single non-static stb_image_write implementation
 // lives in Pom2HgrPaintHost.cpp (see the note at the top of that file).

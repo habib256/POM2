@@ -4,21 +4,18 @@
 // Copyright (C) 2026
 
 #include "NtscPostProcessor.h"
-#include "Pom2Build.h"
 #include "OpenGLShader.h"
 #include "Logger.h"
 
 #include <cstring>
 #include <string>
 
+#include "Pom2GL.h"
+#include <GLFW/glfw3.h>
+
 #if POM2_GL_ES
-#  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
-#  include <OpenGL/gl3.h>
 #else
-#  include <GL/gl.h>
-#  include <GL/glext.h>
-#  include <GLFW/glfw3.h>
 
 // Lazily-loaded GL 2.0+ entry points (Linux/Windows path). We use the
 // same dynamic-loader strategy as OpenGLShader.cpp — see the comment

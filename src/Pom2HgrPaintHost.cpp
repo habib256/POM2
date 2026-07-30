@@ -18,13 +18,7 @@
 #include <fstream>
 #include <mutex>
 
-#if POM2_GL_ES
-#include <GLES3/gl3.h>
-#elif defined(__APPLE__)
-#include <OpenGL/gl.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "Pom2GL.h"
 
 // The portable hgrpaint/ module only *declares* the stb entry points
 // (HgrImageDecode.cpp calls stbi_load, savePng below calls stbi_write_png);

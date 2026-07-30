@@ -45,4 +45,31 @@
 #  define POM2_GL_ES 0
 #endif
 
+/// 1 when the platform gives us BSD sockets, 0 when it does not.
+///
+/// POM2's three networking translation units — AiControlServer (the HTTP
+/// control API), SuperSerialCard (the telnet bridge) and W5100Device (the
+/// Uthernet II's hardware TCP/IP stack mapped onto host sockets) — are written
+/// against POSIX sockets. Two targets do not have them:
+///
+///   * Emscripten: no usable BSD-socket API in the browser at all.
+///   * Windows: has sockets, but via Winsock2 — a different API (SOCKET vs int,
+///     closesocket, WSAPoll, ioctlsocket, WSAStartup). Porting to it is real
+///     work, not a #define, so until that happens the Windows build takes the
+///     same road Emscripten already does.
+///
+/// The affected features degrade exactly as they do in the browser build: the
+/// cards still plug, reset and answer their registers, they simply see no
+/// traffic, and the SSC opens no listener. Everything else — CPU, video, audio,
+/// disks, printer — is unaffected.
+///
+/// Guard host-socket code with `#if POM2_HAS_SOCKETS`, not with
+/// `#ifndef __EMSCRIPTEN__`: the latter is what silently assumed "not a browser
+/// therefore POSIX", which is exactly what broke the Windows build.
+#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+#  define POM2_HAS_SOCKETS 0
+#else
+#  define POM2_HAS_SOCKETS 1
+#endif
+
 #endif  // POM2_BUILD_H

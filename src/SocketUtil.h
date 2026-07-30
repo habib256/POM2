@@ -19,12 +19,13 @@
 //      SO_NOSIGPIPE set once after accept (disableSigpipe).
 //
 // Not used by the Emscripten build (no sockets there); both includers
-// guard their network paths with #ifndef __EMSCRIPTEN__.
+// guard their network paths with #if POM2_HAS_SOCKETS.
 
 #ifndef POM2_SOCKET_UTIL_H
+#include "Pom2Build.h"
 #define POM2_SOCKET_UTIL_H
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 
 #include <cerrno>
 #include <cstddef>
@@ -96,5 +97,5 @@ inline ssize_t sendNoSignal(int fd, const void* buf, size_t n)
 
 } // namespace pom2
 
-#endif // !__EMSCRIPTEN__
+#endif // POM2_HAS_SOCKETS
 #endif // POM2_SOCKET_UTIL_H

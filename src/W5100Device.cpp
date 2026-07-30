@@ -9,13 +9,14 @@
 // in comments are AppleWin line numbers.
 
 #include "W5100Device.h"
+#include "Pom2Build.h"
 
 #include "Logger.h"
 
 #include <algorithm>
 #include <cstring>
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 // POSIX socket stack. Under Emscripten there is no usable BSD-socket API,
 // so the TCP/UDP paths compile out and those socket modes stay CLOSED —
 // the register model, the RX/TX rings and MACRAW/IPRAW (which go through
@@ -170,7 +171,7 @@ void getIpPayload(const uint8_t* frame, int lengthOfFrame,
     source          = ip.sourceAddress;
 }
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
 /// Blocking name lookup, run on a detached thread by resolveDns().
 /// Returns an IPv4 address in network byte order, or 0 on failure.
 uint32_t hostByName(const std::string& name)
@@ -324,7 +325,7 @@ void W5100Device::setSocketStatus(size_t i, uint8_t status)
 void W5100Device::clearSocket(size_t i)
 {
     Socket& s = sockets_[i];
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
     if (s.fd >= 0) ::close(s.fd);
 #endif
     s.fd = -1;
@@ -335,7 +336,7 @@ void W5100Device::clearSocket(size_t i)
 // `Uthernet2.cpp:910-945`
 void W5100Device::openSystemSocket(size_t i, int type, int protocol, uint8_t status)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)type; (void)protocol; (void)status;
     clearSocket(i);
     log().warn("W5100", "TCP/UDP sockets are unavailable in the WASM build");
@@ -410,7 +411,7 @@ void W5100Device::closeSocket(size_t i)
 // `Uthernet2.cpp:1039-1075`
 void W5100Device::connectSocket(size_t i)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)i;
 #else
     Socket& s = sockets_[i];
@@ -676,7 +677,7 @@ void W5100Device::receiveOnePacket(size_t i)
 // `Uthernet2.cpp:704-745`
 void W5100Device::receiveOnePacketFromSocket(size_t i)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)i;
 #else
     Socket& s = sockets_[i];
@@ -861,7 +862,7 @@ void W5100Device::sendData(size_t i)
 // `Uthernet2.cpp:812-842`
 void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)i; (void)data;
 #else
     Socket& s = sockets_[i];
@@ -910,7 +911,7 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
 
 void W5100Device::flushPendingTx(size_t i)
 {
-#ifdef __EMSCRIPTEN__
+#if !POM2_HAS_SOCKETS
     (void)i;
 #else
     Socket& s = sockets_[i];
@@ -1032,7 +1033,7 @@ void W5100Device::resolveDns(size_t i)
     if (cached != dnsCache_.end()) {
         resolved = cached->second;
     } else {
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
         // Cap the number of lookups still running detached: each hung
         // resolver call is a live thread, and a guest looping OPEN over
         // random hostnames must not mint them without bound. Checked
@@ -1261,7 +1262,7 @@ void W5100Device::poll()
 
     if (backend_) backend_->poll();
 
-#ifndef __EMSCRIPTEN__
+#if POM2_HAS_SOCKETS
     for (size_t i = 0; i < kSocketCount; ++i) {
         // Retry TCP bytes the host socket refused earlier (short write /
         // EAGAIN) — see sendDataToSocket.

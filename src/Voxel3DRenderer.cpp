@@ -7,21 +7,18 @@
 // renderbuffer and instanced drawing.
 
 #include "Voxel3DRenderer.h"
-#include "Pom2Build.h"
 
 #include "Logger.h"
 #include "OpenGLShader.h"
 
 #include <string>
 
+#include "Pom2GL.h"
+#include <GLFW/glfw3.h>
+
 #if POM2_GL_ES
-#  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
-#  include <OpenGL/gl3.h>
 #else
-#  include <GL/gl.h>
-#  include <GL/glext.h>
-#  include <GLFW/glfw3.h>
 
 // Lazily-loaded GL 2.0+/3.1 entry points (Linux/Windows). Same strategy as
 // NtscPostProcessor.cpp / OpenGLShader.cpp.
