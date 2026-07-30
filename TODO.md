@@ -13,7 +13,7 @@ listed here point to detailed items in the [backlog](#backlog).
 
 | #  | Subsystem                  | Parity           | MAME / AppleWin refs                                                     | Known gaps                                                                              |
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte (decimal included); 🟡 WDC SBC invalid-BCD decimal not modelled (`e9`, undefined); 🟢 $5C 8-cyc residual |
+| 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte on all 178 documented opcodes; 🟢 WDC decimal SBC now silicon-exact (interdigit carry, 2026-07-30); 🟢 $5C 8-cyc = deliberate (matches MAME, not Harte) |
 | 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs to extract)                                         |
 | 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, floating bus `$C05x`, page-flip DROL, Chat Mauve RGB: done) |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
@@ -493,6 +493,21 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   sourcing.*
 
 ### [Arch] refactor & tooling
+
+- 🟡 **Raspberry Pi release target needs a `POM2_GLES` build option**
+  (*~half a day*). The release workflow ships Linux x86_64 / macOS / Windows;
+  POM1's fourth runner (`ubuntu-24.04-arm` + `debian:bookworm`, native arm64)
+  is deliberately absent because a desktop-GL build cannot run on a Pi at all:
+  Mesa's V3D caps *desktop* GL at **3.1** on Pi 4/5, and `main.cpp` requests
+  GL 3.2 core, so context creation fails outright. POM2 already contains the
+  whole GLES 3.0 tier (`GLFW_OPENGL_ES_API`, `#version 300 es` in
+  `OpenGLShader.cpp`) — it is simply gated on `__EMSCRIPTEN__` across ~15 TUs.
+  Work: introduce a `POM2_USE_GLES` macro set by *either* Emscripten *or* a new
+  `POM2_GLES` CMake option, widen those `#if defined(__EMSCRIPTEN__)` guards,
+  link `GLESv2`/`EGL` instead of `GL`, then add the arm64 job (bookworm keeps
+  the glibc floor at 2.36 = Pi OS bookworm/trixie). `build_appimage.sh` already
+  accepts `POM2_CMAKE_EXTRA_ARGS` for exactly this. Verify on real hardware —
+  the CI job can only prove it *builds* and does not link desktop `libGL`.
 
 - 🟢 **Z80/SoftCard cleanup backlog** (2026-07-12 bug-hunt survivors — quality,
   not correctness): SoftCardZ80 SFZ2 blob → `pom2::byteio` putU16/Reader like
