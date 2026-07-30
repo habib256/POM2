@@ -314,6 +314,7 @@ uploaded, no Release created.
 | `POM2-v<ver>-x86_64.AppImage` | `ubuntu-latest` + pinned **bionic** container | glibc floor **2.27** — runs on Mint 19+, Debian 12, Ubuntu 20.04+ |
 | `POM2-macOS-v<ver>.dmg` | `macos-15` | **Universal 2** (arm64 + x86_64), static GLFW, ad-hoc signed |
 | `POM2-Windows-v<ver>.zip` | `windows-latest` + vcpkg static triplet | one self-contained `POM2.exe`, **no DLL** beside it |
+| `POM2-v<ver>-aarch64.AppImage` | `ubuntu-24.04-arm` + **bookworm** container | Raspberry Pi — GLES 3.0, glibc floor **2.36**, no desktop libGL |
 
 The Linux package is built inside a frozen container on purpose: an AppImage
 never bundles glibc, so its floor is whatever the *build* machine had. Building
@@ -337,10 +338,17 @@ Apple ROMs are **never** bundled in any artifact. In a read-only package
 `ResourcePaths` searches there; the AppImage creates it with a README on first
 run.
 
-> **Raspberry Pi** is not yet a release target. POM2 asks for desktop GL 3.2
-> core, and Mesa's V3D caps that at 3.1 on Pi 4/5, so the build would not start.
-> The GLES 3.0 tier already exists (it is what the WASM build uses) but is
-> compiled only under Emscripten — see the `POM2_GLES` item in `TODO.md`.
+**Raspberry Pi** builds on the OpenGL **ES 3.0** tier — Mesa's V3D caps
+*desktop* GL at 3.1 on Pi 4/5, so the default GL 3.2 core request cannot
+succeed there:
+
+```bash
+cmake -S . -B build -DPOM2_GLES=ON     # needs libgles2-mesa-dev libegl1-mesa-dev
+```
+
+Same sources, no renderer fork: only the GL headers, the shader `#version`
+prologue and the context request differ (`src/Pom2Build.h`). WASM turns the
+same tier on by itself — WebGL 2 *is* GLES 3.0.
 
 ---
 
