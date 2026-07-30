@@ -952,6 +952,47 @@ void Z80::execIndexedCB(int mode)
 
 // ── ED page ──────────────────────────────────────────────────────────
 
+// Verbatim port of MAME `z80.cpp:580-604` block_io_interrupted_flags(),
+// which the inir/otir/indr/otdr macros call after `PC -= 2`
+// (`z80.lst:769-880`). The REPEATING block-I/O instructions do NOT simply
+// leave the per-iteration INI/OUTI flags in place: on every iteration that
+// still has work to do, X/Y come from PCH (as for LDIR/CPIR) and H + P/V are
+// re-derived from B, the carry, and bit 7 of the byte just transferred.
+//
+// zexdoc/zexall cannot reach this: they run under CP/M and never execute an
+// I/O block instruction, so POM2 shipped the non-repeating flag formula for
+// the repeating opcodes. Tom Harte `z80/v1/{ed b2,ed b3,ed ba,ed bb}` fails
+// ~99.5% of vectors without this.
+void Z80::blockIoInterruptedFlags(uint8_t ioByte)
+{
+    // PC has already been rewound to the instruction, so this is the same
+    // "X/Y from PCH on a repeat" rule the LDIR/CPIR branch uses.
+    st.f = uint8_t((st.f & ~(F::X | F::Y)) | ((st.pc >> 8) & (F::X | F::Y)));
+
+    const uint8_t pvOld = uint8_t(st.f & F::PV);
+    uint8_t pvNew;
+    if (st.f & F::C) {
+        // Carry set: the ±1 that the decrement carried out of the low nibble
+        // also perturbs the parity source, and H reports that nibble edge.
+        uint8_t h = 0;
+        if (ioByte & 0x80) {
+            pvNew = uint8_t(szpTable[(st.b - 1) & 0x07] & F::PV);
+            if ((st.b & 0x0F) == 0x00) h = F::H;
+        } else {
+            pvNew = uint8_t(szpTable[(st.b + 1) & 0x07] & F::PV);
+            if ((st.b & 0x0F) == 0x0F) h = F::H;
+        }
+        st.f = uint8_t((st.f & ~F::H) | h);
+    } else {
+        pvNew = uint8_t(szpTable[st.b & 0x07] & F::PV);
+    }
+    // MAME stores `(pv_old ^ pv()) & PF` into its LAZY `pv_val` field, whose
+    // getter re-parities the stored byte — so the flag that actually reaches
+    // get_f() is the INVERSE of that xor: P/V lands SET when old and new
+    // agree. Written out directly here since POM2's F is not lazy.
+    st.f = uint8_t((st.f & ~F::PV) | ((pvOld == pvNew) ? F::PV : 0));
+}
+
 void Z80::execED()
 {
     uint8_t op = fetch8();
@@ -1152,6 +1193,7 @@ void Z80::execED()
             break;
         }
         case 2: {                      // INI / IND / INIR / INDR
+            // (repeat branch flag fixup: see blockIoInterruptedFlags)
             st.wz = uint16_t(bc() + delta);
             uint8_t v = bus.z80IoRead(bc());
             wr(hl(), v);
@@ -1164,6 +1206,8 @@ void Z80::execED()
                            | (szpTable[(t & 7) ^ st.b] & F::PV));
             if (repeat && st.b) {
                 st.pc = uint16_t(st.pc - 2);
+                st.wz = uint16_t(st.pc + 1);
+                blockIoInterruptedFlags(v);
                 cyc += 21;
             } else {
                 cyc += 16;
@@ -1183,6 +1227,8 @@ void Z80::execED()
                            | (szpTable[(t & 7) ^ st.b] & F::PV));
             if (repeat && st.b) {
                 st.pc = uint16_t(st.pc - 2);
+                st.wz = uint16_t(st.pc + 1);
+                blockIoInterruptedFlags(v);
                 cyc += 21;
             } else {
                 cyc += 16;

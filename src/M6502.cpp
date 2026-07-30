@@ -485,20 +485,42 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
 
     if (statusRegister & M6502::Status::D)
     {
-       tmp = (Op1 & 0x0F) - (Op2 & 0x0F) - (statusRegister & M6502::Status::C ? 0 : 1);
-        // Low-nibble BCD borrow correction. The naive `tmp - 6` leaves the
-        // low-nibble result un-repacked, so its bit 4 (the borrow that the
-        // high-nibble subtraction below reads via `accumulator & 0x10`) lands
-        // wrong whenever the unadjusted low difference underflows past -$0A
-        // (only reachable with an invalid BCD digit) — dropping the borrow and
-        // inflating the result by $10 (Tom Harte `6502/v1/e9` invalid-BCD
-        // vectors). Silicon re-packs as `((diff - 6) & 0x0F) - 0x10`, which is
-        // bit-identical to `tmp - 6` for valid BCD (low diff ≥ -$0A) — so real
-        // software is unaffected; only invalid-digit edge cases are fixed.
-        accumulator = !(tmp & 0x10) ? tmp : ((tmp - 6) & 0x0F) - 0x10;
-      tmp = (Op1 & 0xF0) - (Op2 & 0xF0) - (accumulator & 0x10);
-        accumulator = (accumulator & 0x0F) | (!(tmp & 0x100) ? tmp : tmp - 0x60);
-     tmp = Op1 - Op2 - (statusRegister & M6502::Status::C ? 0 : 1);
+        const int borrow = (statusRegister & M6502::Status::C) ? 0 : 1;
+        if (cpuMode == CpuMode::CMOS) {
+            // WDC 65C02 decimal SBC — MAME `w65c02.cpp:28-46` (do_sbc_cd),
+            // whose own comment names the difference: "SBC allows interdigit
+            // carry from decimal adjustment on 65C02". The CMOS part packs
+            // BOTH nibble differences first and only then applies the `-6` /
+            // `-$60` decimal adjustments to the whole byte, so a low-nibble
+            // `-6` can borrow up into the high nibble. The NMOS part corrects
+            // each nibble in isolation and never propagates that borrow —
+            // hence the separate branches. Divergence is confined to invalid
+            // BCD digits (valid-BCD operands never underflow past -$0A), so
+            // no correct-software behaviour changes; it takes
+            // `wdc65c02/v1/{e1,e5,e9,ed,f1,f2,f5,f9,fd}` from ~96.5% to 100%.
+            const uint8_t al = static_cast<uint8_t>((Op1 & 0x0F) - (Op2 & 0x0F) - borrow);
+            const uint8_t ah = static_cast<uint8_t>((Op1 >> 4) - (Op2 >> 4) -
+                                                   (static_cast<int8_t>(al) < 0 ? 1 : 0));
+            uint8_t res = static_cast<uint8_t>((ah << 4) | (al & 0x0F));
+            if (static_cast<int8_t>(al) < 0) res = static_cast<uint8_t>(res - 0x06);
+            if (static_cast<int8_t>(ah) < 0) res = static_cast<uint8_t>(res - 0x60);
+            accumulator = res;
+        } else {
+            tmp = (Op1 & 0x0F) - (Op2 & 0x0F) - borrow;
+            // Low-nibble BCD borrow correction. The naive `tmp - 6` leaves the
+            // low-nibble result un-repacked, so its bit 4 (the borrow that the
+            // high-nibble subtraction below reads via `accumulator & 0x10`) lands
+            // wrong whenever the unadjusted low difference underflows past -$0A
+            // (only reachable with an invalid BCD digit) — dropping the borrow and
+            // inflating the result by $10 (Tom Harte `6502/v1/e9` invalid-BCD
+            // vectors). Silicon re-packs as `((diff - 6) & 0x0F) - 0x10`, which is
+            // bit-identical to `tmp - 6` for valid BCD (low diff ≥ -$0A) — so real
+            // software is unaffected; only invalid-digit edge cases are fixed.
+            accumulator = !(tmp & 0x10) ? tmp : ((tmp - 6) & 0x0F) - 0x10;
+            tmp = (Op1 & 0xF0) - (Op2 & 0xF0) - (accumulator & 0x10);
+            accumulator = (accumulator & 0x0F) | (!(tmp & 0x100) ? tmp : tmp - 0x60);
+        }
+     tmp = Op1 - Op2 - borrow;
         setFlagBorrow(tmp);
         // NMOS: V undefined in BCD; N/Z from binary intermediate
         // `tmp`. CMOS: N/Z recomputed from final adjusted accumulator
@@ -507,12 +529,11 @@ uint8_t Op1 = accumulator, Op2 = memory->memRead(op);
         if (cpuMode == CpuMode::CMOS) {
             setStatusRegisterNZ(accumulator);
             // V on CMOS SBC is the binary-difference overflow (valid in decimal
-            // mode just as in binary). NOTE: the WDC 65C02's decimal SBC
-            // *result* for **invalid** BCD digits follows a distinct silicon
-            // correction we do not model — Tom Harte `wdc65c02/v1/e9` shows a
-            // ~3.4% invalid-BCD value divergence here. This is officially
-            // undefined and unreachable by correct software; the NMOS path is
-            // silicon-exact (`6502/v1/e9` = 100%). See DEV.md § Tom Harte.
+            // mode just as in binary) — same expression MAME's do_sbc_cd uses,
+            // and identical to the C it derives from `diff & 0xff00`. The
+            // decimal *result* now follows the WDC interdigit-carry rule (see
+            // the CMOS branch above), so `wdc65c02/v1/e9` is silicon-exact
+            // like `6502/v1/e9`. See DEV.md § Tom Harte.
             if (((Op1 ^ Op2) & (Op1 ^ (uint8_t)tmp)) & 0x80)
                 statusRegister |= M6502::Status::V;
             else

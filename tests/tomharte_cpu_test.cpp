@@ -245,6 +245,13 @@ bool runVector(M6502& cpu, Memory& mem, const Vector& v, std::string& why) {
     cpu.setXRegister(v.initial.x);
     cpu.setYRegister(v.initial.y);
     cpu.setStatusRegister(v.initial.p);
+    // Clear the KIL/JAM + STP halt latch. `step()` short-circuits before the
+    // opcode fetch while it is set, and only a reset clears it on real
+    // silicon — so a single vector that lands on an NMOS JAM ($02/$12/$22/…)
+    // or a CMOS STP ($DB) would otherwise freeze the shared CPU for EVERY
+    // later vector in the run. Each vector is an independent machine state,
+    // so the latch has to be re-armed here alongside the register file.
+    cpu.setHalted(false);
     for (const RamCell& c : v.initial.ram) mem.memWrite(c.addr, c.val);
 
     const int cyc = cpu.run(1);          // execute exactly one instruction

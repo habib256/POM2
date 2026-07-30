@@ -135,6 +135,11 @@ private:
     static bool    tablesReady;
     static void    initTables();
 
+    /// Re-derive X/Y/H/PV on the REPEAT branch of INIR/OTIR/INDR/OTDR.
+    /// MAME `z80.cpp:580-604` block_io_interrupted_flags(); `ioByte` is the
+    /// byte just transferred. Must be called AFTER `pc -= 2`.
+    void blockIoInterruptedFlags(uint8_t ioByte);
+
     // ── bus helpers ──────────────────────────────────────────────────
     uint8_t  rd (uint16_t a) { return bus.z80MemRead(a); }
     void     wr (uint16_t a, uint8_t v) { bus.z80MemWrite(a, v); }

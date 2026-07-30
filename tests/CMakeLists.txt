@@ -2478,6 +2478,31 @@ endif()
 add_test(NAME cmos_6502_smoke COMMAND test_cmos_6502)
 set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Decimal-mode SBC: NMOS vs WDC 65C02 split ────────────────────────────
+# Pins the "interdigit carry from decimal adjustment" rule the CMOS part uses
+# (MAME w65c02.cpp do_sbc_cd) against the nibble-isolated NMOS rule. Vectors
+# are lifted from Tom Harte wdc65c02/v1/e9, so this gates the behaviour without
+# the 1.4 GB download that tomharte_65c02 is gated behind.
+add_executable(test_decimal_sbc_cmos
+    decimal_sbc_cmos_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_decimal_sbc_cmos PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_decimal_sbc_cmos PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_decimal_sbc_cmos PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_decimal_sbc_cmos PRIVATE winmm)
+endif()
+
+add_test(NAME decimal_sbc_cmos COMMAND test_decimal_sbc_cmos)
+set_tests_properties(decimal_sbc_cmos PROPERTIES TIMEOUT 5)
+
 # ─── 6502 cycle-count test ────────────────────────────────────────────────
 # Pins per-instruction CYCLE counts (Klaus/cmos pin results, not timing).
 # Guards the RMW dummy-cycle accounting (INC/DEC abs were 5, must be 6).
@@ -3845,6 +3870,18 @@ add_executable(test_z80_core
 target_include_directories(test_z80_core PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME z80_core COMMAND test_z80_core)
 set_tests_properties(z80_core PROPERTIES TIMEOUT 15)
+
+# Block-I/O repeat flags (INIR/OTIR/INDR/OTDR). zexdoc/zexall run under CP/M
+# and never execute an I/O block instruction, so they are blind to the
+# interrupted-iteration flag rule (MAME z80.cpp block_io_interrupted_flags).
+# Vectors from Tom Harte z80/v1, embedded inline — no download needed.
+add_executable(test_z80_block_io_flags
+    z80_block_io_flags_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
+)
+target_include_directories(test_z80_block_io_flags PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME z80_block_io_flags COMMAND test_z80_block_io_flags)
+set_tests_properties(z80_block_io_flags PROPERTIES TIMEOUT 10)
 
 # Frank Cringle's zexdoc/zexall exercisers — the exhaustive flag oracle
 # (CRCs captured on real Zilog silicon; zexall covers the undocumented
