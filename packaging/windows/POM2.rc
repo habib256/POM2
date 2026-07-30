@@ -1,0 +1,8 @@
+// POM2 Windows resource script — embeds the application icon into POM2.exe.
+// Picked up automatically by CMake (rc.exe on MSVC, windres on MinGW) when this
+// .rc is listed as a target source; see the WIN32 branch in CMakeLists.txt.
+//
+// POM2.ico is generated from packaging/POM2-256.png (see packaging/regen_icons
+// notes in the release documentation) and carries 16/32/48/64/128/256 px.
+
+IDI_ICON1 ICON "POM2.ico"

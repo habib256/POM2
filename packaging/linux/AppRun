@@ -1,0 +1,44 @@
+#!/bin/bash
+# AppRun — entry point for the POM2 AppImage.
+#
+# This is deliberately much thinner than POM1's equivalent, because POM2 already
+# solves asset resolution in C++: `pom2::resourceSearchDirs()` (ResourcePaths.h)
+# probes, in order, the CWD, <exe>/.., <exe>/../share/POM2 — which IS the AppDir
+# layout — and finally $XDG_DATA_HOME/POM2 (default ~/.local/share/POM2). So
+# there is no symlink/seed dance to do here: the binary finds its own fonts,
+# pictures and floppy samples inside the read-only squashfs by itself.
+#
+# The one thing that genuinely needs help is ROMs. POM2 never bundles Apple ROM
+# dumps (copyright), and an AppImage is a read-only squashfs, so the user cannot
+# drop them "next to the binary" the way they can with the tarball. The writable
+# XDG root is the answer, and this script makes it discoverable: it creates
+# ~/.local/share/POM2/roms/ on first run and drops the same README.txt the other
+# packages ship, so a user who wonders "where do I put apple2.rom?" finds the
+# answer without reading the manual.
+#
+# Nothing else is exported: settings already live in ~/.config/POM2/state.cfg
+# (Settings::resolveStorePath), which is writable and outside the bundle.
+set -e
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+RES="${HERE}/usr/share/POM2"
+
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DATADIR="${XDG_DATA_HOME}/POM2"
+
+# First-run only: make the user-ROM directory exist and explain itself. Never
+# overwrite an existing README — the user may have annotated it, and we must
+# never touch the ROMs themselves.
+if [ ! -d "${DATADIR}/roms" ]; then
+    mkdir -p "${DATADIR}/roms"
+    if [ -f "${RES}/roms/README.txt" ]; then
+        cp "${RES}/roms/README.txt" "${DATADIR}/roms/README.txt" 2>/dev/null || true
+    fi
+fi
+
+# Bundled libraries (GLFW and friends staged by linuxdeploy). Graphics-driver
+# libraries are deliberately NOT bundled — per AppImage convention libGL/libEGL
+# come from the host, otherwise the package would override the user's GPU driver.
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+
+exec "${HERE}/usr/bin/POM2" "$@"

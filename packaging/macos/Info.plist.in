@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                 <string>POM2</string>
+    <key>CFBundleDisplayName</key>          <string>POM2</string>
+    <key>CFBundleExecutable</key>           <string>POM2</string>
+    <key>CFBundleIdentifier</key>           <string>net.bigmess.pom2</string>
+    <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleIconFile</key>             <string>POM2</string>
+    <key>CFBundleShortVersionString</key>   <string>@POM2_VERSION@</string>
+    <key>CFBundleVersion</key>              <string>@POM2_VERSION@</string>
+    <key>NSHumanReadableCopyright</key>     <string>© 2026 VERHILLE Arnaud — GPL</string>
+
+    <!-- Retina: without this the GL framebuffer is upscaled from 1x and the
+         Apple II raster looks soft on every modern Mac. -->
+    <key>NSHighResolutionCapable</key>      <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key> <true/>
+
+    <!-- macOS 10.13 is the floor GLFW + our GL 3.2 core profile need. -->
+    <key>LSMinimumSystemVersion</key>       <string>10.13</string>
+
+    <!-- Disk images open with POM2 from Finder. The Apple II formats have no
+         registered UTIs, so they are declared by extension. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>     <string>Apple II disk image</string>
+            <key>CFBundleTypeRole</key>     <string>Viewer</string>
+            <key>LSHandlerRank</key>        <string>Owner</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>dsk</string><string>do</string><string>po</string>
+                <string>nib</string><string>woz</string><string>d13</string>
+                <string>2mg</string><string>hdv</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
