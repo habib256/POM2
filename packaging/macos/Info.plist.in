@@ -17,8 +17,11 @@
     <key>NSHighResolutionCapable</key>      <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key> <true/>
 
-    <!-- macOS 10.13 is the floor GLFW + our GL 3.2 core profile need. -->
-    <key>LSMinimumSystemVersion</key>       <string>10.13</string>
+    <!-- 10.15, not 10.13: POM2 uses std::filesystem throughout (ResourcePaths,
+         DiskLibrary, Settings), and libc++ marks those symbols unavailable
+         before Catalina. Building against 10.13 fails outright — the macOS
+         release job caught it. -->
+    <key>LSMinimumSystemVersion</key>       <string>10.15</string>
 
     <!-- Disk images open with POM2 from Finder. The Apple II formats have no
          registered UTIs, so they are declared by extension. -->

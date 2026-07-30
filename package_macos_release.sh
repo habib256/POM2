@@ -40,7 +40,7 @@ log "Building POM2 v${VERSION} (${ARCHS})"
 cmake -S . -B "$BUILD_DIR" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_OSX_ARCHITECTURES="$ARCHS" \
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
       -DPOM2_ENABLE_TESTS=OFF
 cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu)"
 

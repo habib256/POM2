@@ -7,6 +7,8 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <cmath>     // std::fabs — libstdc++ leaks it via other headers,
+                     // MSVC does not (caught by the Windows release build)
 #include <cstring>
 
 // Vorbis backend for miniaudio: including stb_vorbis.c in this TU defines

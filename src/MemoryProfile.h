@@ -16,6 +16,9 @@
 // DEV.md § Memory.
 #pragma once
 
+#include <cstddef>   // size_t — <cstdint>/<vector> happen to drag it in on
+                     // libstdc++ 14, but not on Debian bookworm's 12; the
+                     // Raspberry Pi release build caught the difference.
 #include <cstdint>
 #include <vector>
 
