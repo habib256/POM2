@@ -304,6 +304,27 @@ endforeach()
 #     traffic.
 # Install with: apt install libslirp-dev / brew install libslirp.
 # Force off with -DPOM2_ENABLE_SLIRP=OFF.
+# ─── OpenGL ES tier (Raspberry Pi & co) ────────────────────────────────────
+# POM2_GLES=ON swaps the desktop GL 3.2 core context for an OpenGL ES 3.0 one
+# (GLSL ES 300). That is the tier Raspberry Pi 4/5 actually expose: Mesa's V3D
+# caps *desktop* GL at 3.1, so POM2's GL 3.2 core request simply fails there and
+# the emulator never opens a window. It also covers most ARM SoCs and older
+# iGPUs.
+#
+# No source fork: the GL subset POM2 uses (VAO/VBO, shaders, FBO, 2D textures)
+# is common to both tiers, so the same TUs compile for both. Pom2Build.h's
+# POM2_GL_ES macro picks the GLES headers, the `#version 300 es` shader
+# prologue, and the direct-link entry points. WASM is GLES already — WebGL 2 IS
+# GLES 3.0 — and turns POM2_GL_ES on by itself, without this option.
+option(POM2_GLES "Target OpenGL ES 3.0 instead of desktop GL 3.2 (Raspberry Pi & co)" OFF)
+if(POM2_GLES)
+    if(EMSCRIPTEN)
+        message(FATAL_ERROR
+            "POM2_GLES is implied by the WASM build (WebGL 2 = GLES 3.0) — drop the flag.")
+    endif()
+    message(STATUS "POM2: GL tier = OpenGL ES 3.0 / GLSL ES 300")
+endif()
+
 option(POM2_ENABLE_SLIRP "Enable libslirp Ethernet backend when available" ON)
 set(POM2_SLIRP_TARGET "")
 if(POM2_ENABLE_SLIRP AND NOT EMSCRIPTEN)
@@ -430,7 +451,13 @@ if(EMSCRIPTEN)
         SUFFIX      ".html"
     )
 else()
-    find_package(OpenGL REQUIRED)
+    # On the GLES tier we link libGLESv2 + libEGL instead of libGL.
+    # find_package(OpenGL) would drag in the desktop driver stack, which on a
+    # Raspberry Pi is the software rasteriser fallback — a silent ~2 fps
+    # regression rather than an honest link error.
+    if(NOT POM2_GLES)
+        find_package(OpenGL REQUIRED)
+    endif()
 
     find_package(glfw3 3.3 QUIET CONFIG)
     if(glfw3_FOUND)
@@ -441,10 +468,46 @@ else()
         set(GLFW_TARGET PkgConfig::GLFW3)
     endif()
 
-    target_link_libraries(${PROJECT_NAME}
-        ${GLFW_TARGET}
-        ${OPENGL_LIBRARIES}
-    )
+    target_link_libraries(${PROJECT_NAME} ${GLFW_TARGET})
+
+    if(POM2_GLES)
+        # libGLESv2 declares AND exports every GL 2.0+ entry point, so the GLES
+        # TUs call them directly and skip the glfwGetProcAddress dance that the
+        # desktop Linux/Windows path needs (see POM2_GL_ES in OpenGLShader.cpp /
+        # CrtEffectStack.cpp / NtscPostProcessor.cpp).
+        #
+        # EGL is located but NOT meaningfully linked: main.cpp asks GLFW for
+        # GLFW_EGL_CONTEXT_API (GLX can only hand out a GLES context when the X
+        # server advertises GLX_EXT_create_context_es2_profile, which V3D —
+        # the Raspberry Pi's driver — does not), and GLFW **dlopens** libEGL
+        # itself at that point. POM2 calls no EGL symbol directly, so the
+        # linker drops the reference under --as-needed and libEGL never becomes
+        # a DT_NEEDED of the binary. Verified: `readelf -d` shows libGLESv2
+        # only.
+        #
+        # find_library is therefore a PRESENCE CHECK, and a valuable one: a
+        # system missing libEGL would otherwise configure and build perfectly,
+        # then fail at runtime with an opaque "context creation failed" the
+        # first time a user launches it. Failing here names the missing package
+        # instead.
+        find_library(POM2_GLESV2_LIB NAMES GLESv2)
+        find_library(POM2_EGL_LIB    NAMES EGL)
+        if(NOT POM2_GLESV2_LIB OR NOT POM2_EGL_LIB)
+            message(FATAL_ERROR
+                "POM2_GLES=ON but libGLESv2 / libEGL were not found. "
+                "On Debian / Raspberry Pi OS: "
+                "apt install libgles2-mesa-dev libegl1-mesa-dev")
+        endif()
+        target_link_libraries(${PROJECT_NAME} ${POM2_GLESV2_LIB} ${POM2_EGL_LIB})
+        # POM2_BUILD_GLES flips Pom2Build.h's POM2_GL_ES; IMGUI_IMPL_OPENGL_ES3
+        # switches Dear ImGui's GL3 backend to the same profile (the WASM build
+        # already sets it for the same reason).
+        target_compile_definitions(${PROJECT_NAME} PRIVATE
+            POM2_BUILD_GLES=1
+            IMGUI_IMPL_OPENGL_ES3)
+    else()
+        target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARIES})
+    endif()
 
     # Miniaudio + stb_vorbis (vendored single-header decoders) need libdl /
     # libpthread / libm on Linux; CoreAudio + AudioToolbox + AudioUnit on

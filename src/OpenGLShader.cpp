@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "OpenGLShader.h"
+#include "Pom2Build.h"
 #include "Logger.h"
 
 // We need GL 2.0+ entry points (glCreateShader, glCompileShader, …) that
@@ -21,7 +22,7 @@
 #include <cstring>
 #include <string>
 
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
 #  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl3.h>
@@ -97,7 +98,7 @@ namespace pom2 {
 
 bool shaderRunningOnGLES()
 {
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
     return true;
 #else
     return false;
@@ -107,14 +108,14 @@ bool shaderRunningOnGLES()
 void deleteShaderProgram(unsigned int program)
 {
     if (!program) return;
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
     glDeleteProgram(program);
 #else
     if (loadEntryPoints() && glDeleteProgram_) glDeleteProgram_(program);
 #endif
 }
 
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
 [[maybe_unused]] static bool loadEntryPoints() { return true; }
 #endif
 
@@ -152,7 +153,7 @@ unsigned int compileShaderProgram(const char* vertexBody,
                                   const char* fragmentBody,
                                   std::string* errorOut)
 {
-#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+#if !POM2_GL_ES && !defined(__APPLE__)
     if (!loadEntryPoints()) {
         if (errorOut) *errorOut = "GL 3.x entry points unavailable";
         pom2::log().warn("NTSC", "GL 3.x entry points unavailable — "
@@ -161,7 +162,7 @@ unsigned int compileShaderProgram(const char* vertexBody,
     }
 #endif
 
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
     const char* versionLine   = "#version 300 es\n";
     const char* precisionLine = "precision highp float;\nprecision highp int;\n";
 #else

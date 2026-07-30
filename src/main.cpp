@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "CliDispatcher.h"
+#include "Pom2Build.h"
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
 #include "MainWindow.h"
@@ -171,7 +172,9 @@ int main(int argc, char* argv[])
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) return -1;
 
-#ifdef __EMSCRIPTEN__
+#if POM2_GL_ES
+    // GLES 3.0 tier — WebGL2 in the browser, Mesa V3D on a Raspberry Pi.
+    //
     // WebGL2 ≈ OpenGL ES 3.0. ImGui's OpenGL3 backend selects shader
     // source variant from the GLSL version string — desktop "#version
     // 150" produces shaders WebGL2 can't compile, so ImGui silently
@@ -186,6 +189,16 @@ int main(int argc, char* argv[])
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_ALPHA_BITS, 0);
+#  ifndef __EMSCRIPTEN__
+    // NATIVE GLES (Raspberry Pi & co) must go through EGL. GLX can only hand
+    // out a GLES context when the X server advertises
+    // GLX_EXT_create_context_es2_profile, and V3D — the Pi's driver, the whole
+    // reason this tier exists — does not. Without this hint GLFW picks GLX by
+    // default on Linux and context creation fails, which looks exactly like the
+    // desktop-GL failure this tier was added to avoid. Emscripten's GLFW port
+    // has no such knob (and needs none), hence the guard.
+    glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
+#  endif
 #else
     const char* glsl_version = "#version 150";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);

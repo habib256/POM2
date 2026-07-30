@@ -4,6 +4,7 @@
 // Pom2HgrPaintHost — see Pom2HgrPaintHost.h.
 
 #include "Pom2HgrPaintHost.h"
+#include "Pom2Build.h"
 
 #include "Apple2Display.h"
 #include "EmulationController.h"
@@ -17,7 +18,7 @@
 #include <fstream>
 #include <mutex>
 
-#ifdef __EMSCRIPTEN__
+#if POM2_GL_ES
 #include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #include <OpenGL/gl.h>

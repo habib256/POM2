@@ -4,13 +4,14 @@
 // Copyright (C) 2026
 
 #include "CrtEffectStack.h"
+#include "Pom2Build.h"
 #include "OpenGLShader.h"
 #include "Logger.h"
 
 #include <algorithm>
 #include <string>
 
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
 #  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl3.h>
@@ -107,7 +108,7 @@ bool loadEntryPoints()
 
 namespace pom2 {
 
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
 namespace { [[maybe_unused]] bool loadEntryPoints() { return true; } }
 #endif
 
@@ -342,7 +343,7 @@ bool CrtEffectStack::initialize()
     if (initialized) return ready;
     initialized = true;
 
-#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+#if !POM2_GL_ES && !defined(__APPLE__)
     if (!loadEntryPoints()) {
         errorMsg = "GL 3.x entry points unavailable";
         return false;

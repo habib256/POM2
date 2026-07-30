@@ -4,13 +4,14 @@
 // Copyright (C) 2026
 
 #include "NtscPostProcessor.h"
+#include "Pom2Build.h"
 #include "OpenGLShader.h"
 #include "Logger.h"
 
 #include <cstring>
 #include <string>
 
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
 #  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl3.h>
@@ -107,7 +108,7 @@ bool loadEntryPoints()
 
 namespace pom2 {
 
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
 namespace { [[maybe_unused]] bool loadEntryPoints() { return true; } }
 #endif
 
@@ -264,7 +265,7 @@ bool NtscPostProcessor::initialize()
     if (initialized) return ready;
     initialized = true;
 
-#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+#if !POM2_GL_ES && !defined(__APPLE__)
     if (!loadEntryPoints()) {
         errorMsg = "GL 3.x entry points unavailable";
         return false;
@@ -318,7 +319,7 @@ bool NtscPostProcessor::createTextures(int sw, int sh)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, sw, sh, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
 #else
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, sw, sh, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);

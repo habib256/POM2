@@ -7,13 +7,14 @@
 // renderbuffer and instanced drawing.
 
 #include "Voxel3DRenderer.h"
+#include "Pom2Build.h"
 
 #include "Logger.h"
 #include "OpenGLShader.h"
 
 #include <string>
 
-#if defined(__EMSCRIPTEN__)
+#if POM2_GL_ES
 #  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #  include <OpenGL/gl3.h>
@@ -144,7 +145,7 @@ bool loadEntryPoints()
 
 namespace pom2 {
 
-#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+#if POM2_GL_ES || defined(__APPLE__)
 namespace { bool loadEntryPoints() { return true; } }
 #endif
 
@@ -380,8 +381,12 @@ unsigned int Voxel3DRenderer::process(unsigned int srcTex, int dstW, int dstH,
     // down — anti-aliases the cube edges and dissolves the moiré without an
     // MSAA resolve. Keep the fragment budget in check: a browser/mobile GPU
     // chokes on a 3× blow-up of a full-window FBO plus 100k instanced cubes,
-    // so cap the factor and the absolute FBO size harder under Emscripten.
-#if defined(__EMSCRIPTEN__)
+    // so cap the factor and the absolute FBO size harder on the GLES tier.
+    // POM2_GL_ES rather than __EMSCRIPTEN__ on purpose: it is a good proxy for
+    // "constrained GPU", and the other machine behind it — a Raspberry Pi —
+    // needs these caps at least as much as a browser does. WASM is unaffected
+    // (POM2_GL_ES is 1 there too), so this only ADDS the Pi to the safe path.
+#if POM2_GL_ES
     const int kMaxSs = 2, kMaxFbDim = 2048;
 #else
     const int kMaxSs = 4, kMaxFbDim = 8192;

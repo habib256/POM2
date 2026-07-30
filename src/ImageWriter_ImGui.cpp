@@ -6,6 +6,7 @@
 // ImageWriter_ImGui — see the header for why this panel owns GL state.
 
 #include "ImageWriter_ImGui.h"
+#include "Pom2Build.h"
 
 #include "IconsFontAwesome6.h"
 #include "ImageWriterPdf.h"
@@ -17,7 +18,7 @@
 #include <filesystem>
 #include <fstream>
 
-#ifdef __EMSCRIPTEN__
+#if POM2_GL_ES
 #include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 #include <OpenGL/gl.h>
