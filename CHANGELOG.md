@@ -5,6 +5,57 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-30 — Profiling: −17 % on the emulation core
+
+A Callgrind pass over a deterministic `tickFrame()` driver (600 frames of
+steady-state DOS, **3 969 356 emulated instructions**) put ~70 % of POM2's work
+in the emulation core and ~30 % in the display, and showed the core spending
+about as much on the per-instruction device fan-out as on the 6502 itself. Two
+fixes came out of it, both measured:
+
+**The VBL check did a runtime-divisor modulo on every emulated instruction.**
+`Memory::advanceCycles` derived the scanline with
+`(cycleCounter / 65) % scanlinesPerFrame`. The `/ 65` is free — a compile-time
+constant the compiler strength-reduces to a multiply-shift — but the `%` has a
+*runtime* divisor and stays a real hardware division, executed ~4 M times per
+10 emulated seconds. The frame origin is now tracked incrementally, and the
+division only runs to resynchronise.
+
+Worth recording because it is a trap: Callgrind rated that line at 1.7 % of the
+core, yet removing it was worth **15 %** of wall-clock. Callgrind counts
+*instructions*, and a `div` is one instruction of 20-40 cycles — so on
+division-heavy code its ranking badly understates the real cost. The full
+before/after confirms it: instructions fell 4.6 % while time fell 17.5 %.
+
+The incremental base has to survive `setCycleCounter()`, which snapshot restore
+and rewind use to move the counter **arbitrarily, backwards included**. The
+subtraction is deliberately unsigned so a backwards jump wraps to a huge value,
+misses the one-frame-rollover test and lands in the resync branch — self-healing
+in a single division. (A first draft reset the base to 0 and walked forward with
+a `while` loop instead; that would have spun for millions of iterations on any
+rewind with a large cycle counter. It passed the whole suite regardless, which
+is a fair warning about what the suite does not cover.)
+
+**The cassette burned 4.1 % of the core with no tape loaded.** `advancePlayback`
+returns immediately when idle, so that was pure call overhead — ~17 instructions
+per emulated instruction to decide there was nothing to do, ~4 M times.
+`advanceCycles` is now inline in the header and gates the out-of-line work on
+the deck actually moving.
+
+`currentCycle` still advances unconditionally, and that is not incidental: it is
+the RECORDING timebase (`toggleOutput` measures pulse widths against it), so
+gating the whole call — which the first draft did — would silently corrupt the
+durations of a tape recorded from a deck that had nothing loaded, i.e. the normal
+way to record one. The suite passed that draft too.
+
+Net: **−17.5 % on the core**, −13.8 % including display, 150/150 green.
+
+Left on the table, in descending size: `SlotBus::advanceCycles` still costs
+65 instructions per emulated instruction to walk 8 `unique_ptr` slots and make
+one virtual call for a single plugged card; and the display re-decodes the whole
+text screen every frame even when nothing changed — `glyphRows7` alone is 56 %
+of display cost, ~887 instructions per character cell.
+
 ## 2026-07-30 — v0.8: GLES tier, four-platform release CI, portability fixes
 
 **`POM2_GLES` — the OpenGL ES 3.0 tier is now a build option, not a browser

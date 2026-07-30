@@ -418,13 +418,6 @@ void CassetteDevice::advanceRewind(uint32_t cycles)
     clearLiveAudioState();
 }
 
-void CassetteDevice::advanceCycles(int cycles)
-{
-    if (cycles <= 0) return;
-    advancePlayback(static_cast<uint32_t>(cycles));
-    currentCycle += static_cast<uint32_t>(cycles);
-}
-
 void CassetteDevice::beginRecordingIfNeeded()
 {
     if (lastOutputToggleCycle == 0 && recordedDurations.empty()) {

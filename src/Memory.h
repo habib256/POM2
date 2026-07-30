@@ -562,6 +562,13 @@ private:
     // Concretely: 0 - paddleLatchCycle in uint64 wraps to 0x10000 here,
     // which is well above any plausible threshold.
     uint64_t paddleLatchCycle = ~uint64_t(0) - 0xFFFFu;
+    // Cycle at which the current video frame started. Derived state, kept
+    // incrementally by advanceCycles() so the per-instruction VBL check needs
+    // no runtime-divisor modulo — see the comment there. Deliberately NOT
+    // snapshotted: it is a pure function of cycleCounter and the video
+    // standard, and advanceCycles resyncs it in one division whenever it finds
+    // the two out of step (which is exactly what a snapshot restore causes).
+    uint64_t vblFrameBase_    = 0;
     uint64_t cycleCounter     = 0;       // hand-rolled, see advanceCycles()
 
     // Cassette: non-owning pointer set by EmulationController.

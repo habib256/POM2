@@ -69,7 +69,30 @@ public:
     /// rewinding flag all survive — a real deck doesn't rewind itself just
     /// because the host got power-cycled.
     void resetCpuSide();
-    void advanceCycles(int cycles);
+
+    /// Advance the deck by `cycles` CPU cycles.
+    ///
+    /// Defined inline because `Memory::advanceCycles` calls it once per
+    /// EMULATED INSTRUCTION — ~4 M times per 10 emulated seconds — and a
+    /// Callgrind profile (2026-07-30) put it at 4.1 % of the whole emulation
+    /// core *with no tape loaded*, essentially all of it call overhead to
+    /// decide there was nothing to do.
+    ///
+    /// `currentCycle` must keep advancing even when playback is idle: it is the
+    /// RECORDING timebase, and `toggleOutput()` measures pulse widths as
+    /// `currentCycle - lastOutputToggleCycle`. Freezing it while idle would
+    /// silently corrupt the durations of a tape recorded from a deck that never
+    /// had anything loaded — which is the normal way to record one.
+    void advanceCycles(int cycles)
+    {
+        if (cycles <= 0) return;
+        // The out-of-line work only matters when the deck is actually moving.
+        // advancePlayback() re-checks both flags, so this gate is a fast path,
+        // not a new precondition.
+        if (playbackActive.load(std::memory_order_relaxed) || rewinding)
+            advancePlayback(static_cast<uint32_t>(cycles));
+        currentCycle += static_cast<uint32_t>(cycles);
+    }
 
     /// $C060 read: bit-7 = sign of the cassette input comparator.
     uint8_t readTapeInput();

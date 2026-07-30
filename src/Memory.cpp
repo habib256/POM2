@@ -365,7 +365,33 @@ void Memory::advanceCycles(int cycles)
     const uint64_t kScanlinesPerFrame =
         static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
     constexpr uint64_t kVisibleScanlines  = 192;
-    const uint64_t scanline = (cycleCounter / kCyclesPerScanline) % kScanlinesPerFrame;
+    // Track the start-of-frame cycle incrementally instead of deriving the
+    // scanline with `(cycleCounter / 65) % scanlinesPerFrame` every time.
+    //
+    // This runs once per EMULATED INSTRUCTION (~4 M times per 10 emulated
+    // seconds), and `% kScanlinesPerFrame` is a true hardware division: the
+    // divisor is a runtime value, so unlike `/ 65` — a compile-time constant the
+    // compiler turns into a multiply-shift — it cannot be strength-reduced.
+    // Removing it measured **15 % off the emulation core** (Callgrind +
+    // wall-clock, 2026-07-30). Note Callgrind *understates* it: a `div` is one
+    // instruction but 20-40 cycles.
+    //
+    // The subtraction below is deliberately unsigned. `cycleCounter` does not
+    // only march forward — `setCycleCounter()` moves it arbitrarily on a
+    // snapshot restore or a rewind, backwards included. A backwards jump wraps
+    // the difference to a huge value, which fails the `< 2 * frameCycles` test
+    // and lands in the resync branch, so the base self-heals in one division on
+    // the next call. (An earlier draft reset the base to 0 and let the `while`
+    // loop walk forward instead — that would have spun for millions of
+    // iterations on any rewind with a large cycle counter.)
+    const uint64_t frameCycles = kCyclesPerScanline * kScanlinesPerFrame;
+    const uint64_t sinceBase   = cycleCounter - vblFrameBase_;   // wraps if behind
+    if (sinceBase >= frameCycles) {
+        vblFrameBase_ = (sinceBase < 2 * frameCycles)
+                            ? vblFrameBase_ + frameCycles          // ordinary rollover
+                            : cycleCounter - (cycleCounter % frameCycles);  // resync
+    }
+    const uint64_t scanline = (cycleCounter - vblFrameBase_) / kCyclesPerScanline;
     const bool nowActive = scanline < kVisibleScanlines;
 
     // Edge: active video → VBL. `$C05B` (EnVBL) arms the per-frame VBL
