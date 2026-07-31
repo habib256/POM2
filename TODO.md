@@ -8,8 +8,16 @@ effort in *italics*. File/line in `backticks`. Quick read:
 
 ## MAME ↔ POM2 parity (dashboard)
 
-Canonical reference for what is ported and at what level. The `Known gaps`
-listed here point to detailed items in the [backlog](#backlog).
+Canonical reference for what is ported and **how faithfully** — the `Parity`
+column grades the port against its reference (verbatim → partial-verbatim →
+POM2-original → scaffold). The `Known gaps` listed here point to detailed items
+in the [backlog](#backlog).
+
+The independent axis — **where the emulation boundary is cut**, at the chip's
+pins (LLE) or at the service it provides (HLE) — lives in
+[`docs/lle_vs_hle.md`](docs/lle_vs_hle.md). The two do not correlate: a verbatim
+port can be high-level (`ImageWriter`) and a POM2-original can be low-level
+(`CassetteDevice`).
 
 | #  | Subsystem                  | Parity           | MAME / AppleWin refs                                                     | Known gaps                                                                              |
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
@@ -28,7 +36,7 @@ listed here point to detailed items in the [backlog](#backlog).
 | 12 | SmartPortCard (//e Liron)      | POM2-original    | SmartPort spec + Apple Tech Note                                         | 🟢 multi-partition ProDOS (CFFA3000)                                                     |
 | 13 | SmartPortHub + Sony35Drive     | Verbatim         | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | —                                                                                        |
 | 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2; no media preservation on profile switch                         |
-| 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`                                       | 🟡 MODE_SHIFT lax; 🟡 DATA_OUT live vs MAME latch; 🟢 slot ROM mostly NOPs             |
+| 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`; Thunderware Rev 1.3 EPROM (`roms/thunderclock_u9_v1.3.bin`) | 🟡 MODE_SHIFT lax; 🟡 DATA_OUT live vs MAME latch; 🟢 real EPROM loads from the ctor (synth ROM = fallback, untested from `$C800`) |
 | 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
@@ -288,10 +296,25 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   with no free slot (//c). MAME refs `ds1216.cpp`. Pinned by
   `no_slot_clock_smoke` (`tests/no_slot_clock_test.cpp`).
 - 🟢 **SSC IRQ gate SW2:6 DIP** not implemented (MAME `a2ssc.cpp:373`).
-- 🟢 **Real ClockCard slot ROM** — load path in place
-  (`roms/thunderclock_u9_v1.3.bin`, 256 B or 2 KB, source
-  markadev/AppleII-RevEng). Remaining: ship the default dump + test
-  against DOS 3.3 / Applesoft tools that load the driver from $C800.
+- ✅ **Real ClockCard slot ROM** — DONE (2026-07-30, shipped in `f7af757`).
+  `roms/thunderclock_u9_v1.3.bin` (Thunderware Rev 1.3, 2 KB, source
+  markadev/AppleII-RevEng) is in-repo and `ClockCard::tryLoadDump()` runs
+  from the ctor (`ClockCard.cpp:78`): both the 256 B slot window and the
+  full 2 KB `$C800-$CFFF` expansion are fed from the dump, gated on size +
+  the `$08/$28/$58/$70` ProDOS signature, with the synthetic ROM kept as
+  the fallback. The card is therefore **L2** — real firmware over the L1
+  uPD1990AC model (→ [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md)).
+  Disassembling the dump also settled the shift-register width: the nibble
+  routine at `$CACF` emits 4 CLK pulses × 10 calls = **40 bits, no year
+  field**, so `clock_card_smoke` drives 40 pulses and is a firmware-parity
+  test instead of a model tautology (CHANGELOG 2026-07-30).
+  - 🟢 Remaining: nothing asserts the *real* path is taken when the dump is
+    present — `clock_card_smoke` tolerates its absence so CI stays
+    ROM-free, so a regression that silently routed back to the synthetic
+    ROM would fail nothing. Same silent-degradation hole as every other
+    ROM-driven L path (Disk II P6, mouse MCU, Grappler EPROM);
+    → `docs/lle_vs_hle.md` § Keeping a level once you have it. The DOS 3.3 /
+    Applesoft tools that pull the driver from `$C800` are still untested.
 - 🟡 **[P2] Real Liron / UniDisk 3.5 (IWM in a slot)** — stack already
   there (`IWMDevice` verbatim, `Sony35Drive`, zoned GCR, `SmartPortHub`).
   Remaining: `LironCard : SlotPeripheral` + ROM 343S0001.
