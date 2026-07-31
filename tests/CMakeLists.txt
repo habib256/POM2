@@ -2397,6 +2397,35 @@ endif()
 add_test(NAME display_golden_hash COMMAND test_display_golden)
 set_tests_properties(display_golden_hash PROPERTIES TIMEOUT 10)
 
+# ─── Static-text frame-skip equivalence (dirty-region tracking) ───────────
+# Runs two machines in lockstep — one display allowed to take the static-text
+# fast path, one forced to repaint every frame — and requires bit-identical
+# framebuffers over a script that covers FLASH phase flips, page/80col/ALTCHAR
+# toggles, TEXT<->graphics<->MIXED and beam-raced mid-frame splits, under BOTH
+# NTSC and PAL. See display_dirty_skip_test.cpp header.
+add_executable(test_display_dirty_skip
+    display_dirty_skip_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_display_dirty_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_display_dirty_skip PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_display_dirty_skip PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_display_dirty_skip PRIVATE winmm)
+endif()
+
+add_test(NAME display_dirty_skip COMMAND test_display_dirty_skip)
+set_tests_properties(display_dirty_skip PROPERTIES TIMEOUT 30)
+
 # Video-7 / Le Chat Mauve RGB parity (4 rgbmodes + fg/bg colored text)
 # against a self-contained MAME apple2video.cpp dhgr_update() oracle.
 add_executable(test_video7_parity

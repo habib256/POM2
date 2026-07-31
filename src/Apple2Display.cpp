@@ -144,6 +144,58 @@ int bandScanlines(int scanY0, int scanY1, int lineLo, int lineHi, int* outLo, in
 
 } // namespace
 
+// See the TextFrameKey comment in Apple2Display.h for why this is limited to
+// full-screen text and never consulted on a beam-raced frame.
+bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
+                                             const Memory::DisplayState& state)
+{
+    // MIXED counts as graphics: its bottom four text rows sit under a graphics
+    // band whose painter does write phosphor persistence.
+    if (!state.textMode || state.mixedMode) { textFrameKey_.valid = false; return false; }
+
+    // $0400-$0BFF covers text/lo-res pages 1 AND 2, taken from BOTH main and
+    // aux. Copying the union rather than resolving which page is live keeps
+    // this independent of the page/80STORE/80COL routing rules — if any byte
+    // the text painters could possibly read moves, the compare fails and we
+    // repaint. Over-covering costs a bigger memcmp; under-covering would show
+    // a stale screen.
+    constexpr size_t kBase = 0x0400, kLen = 0x0800;
+    const uint8_t* mainRam = mem.data();
+    const uint8_t* auxRam  = mem.auxData();
+
+    TextFrameKey k;
+    k.valid       = true;
+    k.state       = state;
+    k.iie         = mem.isIIE();
+    k.flashPhase  = ((frameCounter / kFlashHalfPeriodFrames) & 1u) != 0;
+    k.hiResModeId = static_cast<int>(hiResMode);
+    // The char ROM goes in by VALUE, not by pointer: reloading a different
+    // character set can reuse the same heap block, so a pointer+size compare
+    // could report "unchanged" across an actual glyph change and freeze the
+    // old font on screen. A few KB more memcmp is not worth that risk.
+    const std::vector<uint8_t>& crom = mem.charRom();
+    k.charRom     = crom.data();
+    k.charRomSize = crom.size();
+    k.vram.resize(kLen * 2 + crom.size());
+    std::memcpy(k.vram.data(),            mainRam + kBase, kLen);
+    std::memcpy(k.vram.data() + kLen,     auxRam  + kBase, kLen);
+    if (!crom.empty())
+        std::memcpy(k.vram.data() + kLen * 2, crom.data(), crom.size());
+
+    const TextFrameKey& p = textFrameKey_;
+    const bool same =
+        p.valid &&
+        p.iie == k.iie && p.flashPhase == k.flashPhase &&
+        p.hiResModeId == k.hiResModeId &&
+        p.charRom == k.charRom && p.charRomSize == k.charRomSize &&
+        std::memcmp(&p.state, &k.state, sizeof(Memory::DisplayState)) == 0 &&
+        p.vram.size() == k.vram.size() &&
+        std::memcmp(p.vram.data(), k.vram.data(), k.vram.size()) == 0;
+
+    textFrameKey_ = std::move(k);
+    return same;
+}
+
 void Apple2Display::renderInternal(Memory& mem)
 {
     renderInternalBand(mem, mem.getDisplayState(), 0, kHeight);
@@ -603,10 +655,21 @@ void Apple2Display::render(Memory& mem)
     // picture too — not just the LUT modes. `events` survives the
     // renderBeamRacing copy and is handed to fillCompositeSignal below.
     if (!cpuDemodGfx) {
-        if (events.empty())
-            renderInternal(mem);
-        else
+        if (events.empty()) {
+            // Repaint unless this is the very same full-screen text frame that
+            // is already in the framebuffer. Beam-raced frames take the else
+            // branch and are never skipped.
+            if (!staticTextFrameUnchanged(mem, state)) renderInternal(mem);
+        } else {
+            // A beam-raced frame invalidates the key: the framebuffer no
+            // longer corresponds to any single whole-frame text state.
+            textFrameKey_.valid = false;
             renderBeamRacing(mem, events);
+        }
+    } else {
+        // CPU demod overwrites frame80 from the composite signal — whatever
+        // the key describes is not what is on screen any more.
+        textFrameKey_.valid = false;
     }
 
     signalProducedFlag = needSignal ? fillCompositeSignal(mem, events) : false;

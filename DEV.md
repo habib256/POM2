@@ -685,6 +685,34 @@ frame. Mixed (HIRES+80COL+MIXED): HGR top 20 rows doubled, 80-col
 rows 20..23 overlay. ALTCHAR plumbed but no-op against built-in
 fallback.
 
+### Static-text frame skip (`TextFrameKey`)
+
+`render()` returns without painting when the frame is full-screen TEXT that is
+byte-identical to the one already in the framebuffer. Measured **93.4 → 15.0
+µs/frame (−84 %)** on booted DOS; worst case (text churning every frame) is a
+wash. Key terms: `DisplayState` + `isIIE` + FLASH phase + `hiResMode` + the
+character ROM **by value** + `$0400-$0BFF` from main *and* aux **by value**
+(the union of text/lo-res pages 1 and 2 — page routing is deliberately not
+resolved, so no routing rule can be got wrong).
+
+Three exclusions, all load-bearing:
+
+| Excluded | Why |
+|---|---|
+| Beam-raced frames (`!events.empty()`) | Painted as bands with different `DisplayState`s + a column-bounded save/restore; corresponds to no single whole-frame state. Key invalidated. |
+| Graphics / MIXED | Painters write phosphor persistence (`max(target, prev × decay)`), so output changes every frame from identical inputs. `renderText`/`renderText80` write none. |
+| CPU demod (`cpuDemodGfx`) | AppleWin / OE-CPU overwrite `frame80` from the composite signal. Key invalidated. |
+
+PAL is automatic: FLASH derives from `frameCounter`, the *emulated* frame index
+(`cycleCounter / (65 × scanlinesPerFrame)`), so 312-line/50 Hz and 262-line/60
+Hz each advance the key at their own rate.
+
+`invalidateTextFrameCache()` is public — any caller that mutates the framebuffer
+behind `render()`'s back must call it. Pinned by `display_dirty_skip`, which
+runs two machines in lockstep (one skipping, one forced-full) under both
+standards and requires bit-identical output; its header records which key terms
+are mutation-proven load-bearing and which are defensive.
+
 ### Composite NTSC shader (`ColorCompositeOE`)
 
 OpenEmulator-inspired GPU pass: instead of decoding to RGB on the

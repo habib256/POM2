@@ -5,6 +5,71 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-31 — Static-text frame skip: −84 % on the display
+
+The remaining big win from the 2026-07-30 profile: the display re-decoded all
+960 character cells every frame even when the screen had not changed a byte —
+`glyphRows7` alone was 56 % of display cost, ~887 host instructions per cell.
+`Apple2Display::render` now compares the frame against a **`TextFrameKey`** and
+returns without painting when nothing that could affect the pixels has moved.
+
+Measured on booted DOS 3.3 (3000 frames, render phase only, II+):
+**93.4 → 15.0 µs/frame, −84 %**, with a byte-identical pixel checksum. The
+worst case — text churning every frame, so the key can never match and its
+copy+memcmp is pure overhead — is 94.8 → 94.7 µs, i.e. free: 16 KB of memcmp is
+nothing against ~850 K instructions of glyph decoding.
+
+**The skip is deliberately narrow, and every exclusion has a reason:**
+
+- **Beam racing.** A frame carrying video events is painted as several bands
+  with *different* DisplayStates (and, on the 560-wide path, a column-bounded
+  save/restore), so it corresponds to no single whole-frame state. `render()`
+  only consults the key on the `events.empty()` branch; the beam-raced branch
+  invalidates it. This is what the DIX / French Touch demos depend on.
+- **Persistence.** The graphics painters implement a phosphor rule
+  (`max(target, prev × decay)`), so their output legitimately changes every
+  frame from identical inputs. Only FULL-SCREEN TEXT is skipped —
+  `renderText`/`renderText80` write no persistence at all, which makes their
+  output a pure function of the key.
+- **CPU demod.** AppleWin / OE-CPU overwrite `frame80` from the composite
+  signal, so the key would describe pixels that are no longer on screen; that
+  branch invalidates too.
+
+**PAL was checked, not assumed.** FLASH is
+`frameCounter / kFlashHalfPeriodFrames & 1`, and `frameCounter` is the
+*emulated* frame index — `cycleCounter / (65 × scanlinesPerFrame)` — so PAL's
+312-line/50 Hz frame and NTSC's 262-line/60 Hz frame each advance it at their
+own rate and the key follows automatically. A skip keyed on a host frame
+counter would have drifted on PAL only.
+
+The key stores video RAM **by value** — `$0400-$0BFF` from main *and* aux, the
+union of text/lo-res pages 1 and 2 — rather than resolving which page is live.
+Over-covering costs a bigger memcmp; under-covering would freeze a stale screen.
+The character ROM goes in by value too, not by pointer: reloading a different
+character set can reuse the same heap block, and a pointer+size compare would
+then report "unchanged" across an actual glyph change.
+
+New `display_dirty_skip` test (151/151 green). It runs **two machines in
+lockstep** — one display allowed to skip, one forced to repaint via the new
+`invalidateTextFrameCache()` — and requires bit-identical framebuffers over a
+113-frame script, under **both** video standards. Two separate `Memory`
+instances, not one shared: `takeVideoEvents()` drains, so a second display on
+the same Memory would see an empty log and never take the beam-racing path —
+the test would have passed while testing nothing. (It did, until that was
+found; the published events confirm the split now lands at NTSC line 87/174 and
+PAL line 104/192 — different positions, same script.)
+
+Mutation-tested: deleting the flash-phase, video-RAM, DisplayState,
+colour-mode or beam-race-exclusion terms each makes the test fail. Two terms
+survive deletion and are therefore **defensive, not load-bearing**: the
+`mixedMode` exclusion (`renderInternalBand`'s `if (state.textMode)`
+short-circuits before any mixed handling, in both the 40- and 80-column paths,
+so MIXED cannot alter a full-text frame) and the `iie` flag (only changes
+across a profile switch, which rebuilds the display). Catching the colour-mode
+term required installing a **Le Chat Mauve** card: its colour-TEXT path is the
+only text renderer whose pixels depend on the host-side colour mode — every
+other mode draws text hard-coded white-on-black.
+
 ## 2026-07-30 — Profiling: −17 % on the emulation core
 
 A Callgrind pass over a deterministic `tickFrame()` driver (600 frames of
@@ -77,6 +142,7 @@ Still on the table: the display re-decodes the whole text screen every frame
 even when nothing changed — `glyphRows7` alone is 56 % of display cost, ~887
 instructions per character cell. Dirty-region tracking is the remaining big win,
 but it touches the beam-racing path the DIX demos depend on, so it is not free.
+*(Done 2026-07-31 — see the entry above.)*
 
 ## 2026-07-30 — v0.8: GLES tier, four-platform release CI, portability fixes
 

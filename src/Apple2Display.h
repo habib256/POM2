@@ -117,6 +117,14 @@ public:
     // 2 Hz flash phase used by the text mode.
     void render(Memory& mem);
 
+    /// Drops the static-text frame-skip key, forcing the next render() to
+    /// repaint even if nothing the key covers has changed. Required by any
+    /// caller that mutates the framebuffer behind render()'s back (the skip
+    /// assumes the pixels it left there are still present), and used by
+    /// `display_dirty_skip_test` to run a forced-full-repaint reference
+    /// display alongside a skipping one.
+    void invalidateTextFrameCache() { textFrameKey_.valid = false; }
+
     // Runs the OE-CPU composite demod render() deferred (it only consumes
     // display-owned buffers, so it must NOT hold the caller's stateMutex —
     // ~1-2 ms of FP FIR that used to stall the CPU worker every UI frame).
@@ -278,6 +286,49 @@ private:
     bool mixedCompositeUsesFb_ = false;
     OeDemodParams oeDemod_{};
     Memory::DisplayState lastRenderState_{};
+
+    // ── Static-text frame skip ──────────────────────────────────────────
+    // A Callgrind profile (2026-07-30) put ~30 % of POM2's total work in the
+    // display, and 98 % of THAT in text: renderText + glyphRows7, ~887 host
+    // instructions per character cell, re-decoding all 960 cells every frame
+    // even on a screen that had not changed a byte since the last one — which
+    // is most of the time under DOS, BASIC or a text app.
+    //
+    // The skip is deliberately narrow, because the general case is not safe:
+    //   * BEAM RACING — a frame carrying video events is painted as several
+    //     bands with different DisplayStates (and, on the 560-wide path, with
+    //     a column-bounded save/restore). Never skipped: `render()` only
+    //     consults this on the `events.empty()` branch.
+    //   * PERSISTENCE — the graphics painters implement a phosphor rule
+    //     (`max(target, prev x decay)` into persistenceL/persistenceL80), so
+    //     their output legitimately changes every frame from identical inputs.
+    //     Only FULL-SCREEN TEXT is skipped; renderText/renderText80 write no
+    //     persistence at all (verified), making their output a pure function.
+    //   * FLASH — the blinking-glyph phase is
+    //     `frameCounter / kFlashHalfPeriodFrames & 1`, so it is part of the
+    //     key. frameCounter is the EMULATED frame index and is already
+    //     standard-aware (cycleCounter / (65 * scanlinesPerFrame)), so PAL's
+    //     312-line/50 Hz frame and NTSC's 262-line/60 Hz frame both advance it
+    //     at their own rate and the key follows automatically.
+    //
+    // The key is a byte-exact copy of the source, not a hash: at 4 KB of video
+    // RAM against ~850 K instructions of glyph decoding, a memcmp is ~200x
+    // cheaper and cannot collide.
+    struct TextFrameKey {
+        bool                 valid = false;
+        Memory::DisplayState state{};        // POD of bools — compared wholesale
+        bool                 iie = false;
+        bool                 flashPhase = false;
+        int                  hiResModeId = -1;
+        const void*          charRom = nullptr;
+        size_t               charRomSize = 0;
+        std::vector<uint8_t> vram;           // $0400-$0BFF, main + aux
+    };
+    TextFrameKey textFrameKey_;
+    /// True when this frame's full-screen text is byte-identical to the one
+    /// already in the framebuffer, so painting it again would be a no-op.
+    /// Updates the stored key as a side effect.
+    bool staticTextFrameUnchanged(Memory& mem, const Memory::DisplayState& state);
     static constexpr int kMixedTextFirstScanline = 160;
 
     void patchMixedTextBand(Memory& mem);
