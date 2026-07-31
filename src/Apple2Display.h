@@ -314,6 +314,16 @@ private:
     // The key is a byte-exact copy of the source, not a hash: at 4 KB of video
     // RAM against ~850 K instructions of glyph decoding, a memcmp is ~200x
     // cheaper and cannot collide.
+    //
+    // The card fields below exist because `Memory::DisplayState` is NOT the
+    // whole picture: a Le Chat Mauve "Eve" writes its own $C0B8-$C0BB
+    // registers, which select the colour-TEXT renderer (and with it the
+    // 560-wide frame80), reach the card through SlotBus::broadcastVideoSwitch,
+    // and — unlike $C05E/$C05F — push NO video event. So a frame right after
+    // `STA $C0B9` has an empty event log and an unchanged DisplayState: every
+    // other term of the key agrees, and without these the skip served a stale
+    // screen at the wrong geometry. That card is the //c PAL profile's
+    // built-in slot 7, i.e. the French Touch / DIX target hardware.
     struct TextFrameKey {
         bool                 valid = false;
         Memory::DisplayState state{};        // POD of bools — compared wholesale
@@ -322,6 +332,8 @@ private:
         int                  hiResModeId = -1;
         const void*          charRom = nullptr;
         size_t               charRomSize = 0;
+        const void*          chatMauve = nullptr;   // card identity (may be unplugged)
+        int                  chatMauveState = -1;   // mode + Eve toggles
         std::vector<uint8_t> vram;           // $0400-$0BFF, main + aux
     };
     TextFrameKey textFrameKey_;

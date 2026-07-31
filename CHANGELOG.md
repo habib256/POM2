@@ -5,6 +5,38 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-07-31 — Bug hunt 6: stale screen on the Le Chat Mauve Eve registers
+
+**A regression in the same day's frame skip, found by hunting it rather than
+trusting it.** `TextFrameKey` keyed on `Memory::DisplayState`, and that is not
+the whole picture: a **Le Chat Mauve "Eve"** has its own $C0B8-$C0BB registers
+which select the colour-TEXT renderer (and with it the 560-wide `frame80`).
+They are guest writes — `STA $C0B9` — but they reach the card through
+`SlotBus::broadcastVideoSwitch` and, unlike $C05E/$C05F, push **no video
+event**. So the frame after such a write has an empty event log *and* an
+unchanged `DisplayState`: every term of the key agreed, the skip fired, and the
+screen kept a stale picture at the wrong geometry (280-wide mono served where
+560-wide colour text was due). The card is the **//c PAL profile's built-in
+slot 7** — the French Touch / DIX target hardware — so this was not a corner
+case. The key now carries the card's identity plus its mode + both Eve toggles.
+
+Two process notes worth keeping:
+
+- The original mutation sweep could not have caught this. It toggled the
+  **host-side** `hiResMode` but never the card's **own guest-facing** switches,
+  so it proved the key handled everything it already knew about — the classic
+  shape of a test that confirms its author's model instead of the behaviour.
+- The new section 9 **passed on the first attempt, vacuously**: the card was
+  handed to the display via `setChatMauveCard()` but never PLUGGED into the
+  `SlotBus`, so `broadcastVideoSwitch` reached nobody and the guest writes went
+  nowhere. Plugging it made the failure appear immediately. That is now recorded
+  in the test header, because it is the second time in this file that a
+  side-by-side harness passed while testing nothing (the first was the shared
+  `Memory` draining `takeVideoEvents()`).
+
+All six key terms are now mutation-proven load-bearing: flash phase, video RAM,
+DisplayState, colour mode, Chat Mauve state, beam-raced-frame exclusion.
+
 ## 2026-07-31 — Static-text frame skip: −84 % on the display
 
 The remaining big win from the 2026-07-30 profile: the display re-decoded all

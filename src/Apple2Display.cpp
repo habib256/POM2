@@ -176,6 +176,17 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     const std::vector<uint8_t>& crom = mem.charRom();
     k.charRom     = crom.data();
     k.charRomSize = crom.size();
+    // Le Chat Mauve state the guest can move without touching DisplayState and
+    // without emitting a video event ($C0B8-$C0BB, see the header). currentMode
+    // also rides along: it is driven by the $C05E/$C05F FIFO, which DOES emit
+    // events today, but keying on it costs one int and removes the dependence
+    // on that staying true.
+    k.chatMauve = chatMauve;
+    k.chatMauveState =
+        chatMauve ? ((static_cast<int>(chatMauve->currentMode()) << 2) |
+                     (chatMauve->colorTextEnabled()    ? 2 : 0) |
+                     (chatMauve->hgrDuochromeEnabled() ? 1 : 0))
+                  : -1;
     k.vram.resize(kLen * 2 + crom.size());
     std::memcpy(k.vram.data(),            mainRam + kBase, kLen);
     std::memcpy(k.vram.data() + kLen,     auxRam  + kBase, kLen);
@@ -188,6 +199,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
         p.iie == k.iie && p.flashPhase == k.flashPhase &&
         p.hiResModeId == k.hiResModeId &&
         p.charRom == k.charRom && p.charRomSize == k.charRomSize &&
+        p.chatMauve == k.chatMauve && p.chatMauveState == k.chatMauveState &&
         std::memcmp(&p.state, &k.state, sizeof(Memory::DisplayState)) == 0 &&
         p.vram.size() == k.vram.size() &&
         std::memcmp(p.vram.data(), k.vram.data(), k.vram.size()) == 0;

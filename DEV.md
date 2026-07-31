@@ -703,6 +703,15 @@ Three exclusions, all load-bearing:
 | Graphics / MIXED | Painters write phosphor persistence (`max(target, prev × decay)`), so output changes every frame from identical inputs. `renderText`/`renderText80` write none. |
 | CPU demod (`cpuDemodGfx`) | AppleWin / OE-CPU overwrite `frame80` from the composite signal. Key invalidated. |
 
+The key also carries the **Le Chat Mauve** card identity + its mode and both
+Eve toggles. `Memory::DisplayState` is not sufficient: $C0B8-$C0BB are guest
+writes that select the colour-TEXT renderer (and the 560-wide `frame80`), reach
+the card via `SlotBus::broadcastVideoSwitch`, and push **no video event** — so
+without them the skip served a stale screen at the wrong geometry on the //c
+PAL profile's built-in slot 7. Fixed 2026-07-31; pinned by section 9 of
+`display_dirty_skip`, which only bites when the card is actually **plugged into
+the SlotBus** (handing it to the display alone makes the section vacuous).
+
 PAL is automatic: FLASH derives from `frameCounter`, the *emulated* frame index
 (`cycleCounter / (65 × scanlinesPerFrame)`), so 312-line/50 Hz and 262-line/60
 Hz each advance the key at their own rate.

@@ -35,16 +35,27 @@
 //     because its colour-TEXT path is the one text renderer whose pixels
 //     actually depend on the colour mode (every other mode draws text
 //     hard-coded white-on-black)
+//   * the card's OWN $C0B8-$C0BB "Eve" registers, which are guest writes that
+//     change a full-screen text frame yet touch neither DisplayState nor the
+//     video-event log (section 9) — the case that caught a real regression
 //
 // Mutation-tested 2026-07-31: deleting the flash-phase, video-RAM,
-// DisplayState, colour-mode or beam-raced-frame terms from the key each makes
-// this test fail. Two terms survive deletion and are therefore DEFENSIVE, not
-// load-bearing, today: the `mixedMode` exclusion (renderInternalBand's
-// `if (state.textMode)` short-circuits before any mixed handling, in both the
-// 40- and 80-column paths, so MIXED cannot alter a full-text frame) and the
-// `iie` flag (a machine only changes IIe-ness across a profile switch, which
-// rebuilds the display). The character-ROM term is untestable here — the
-// harness loads no ROM, and ROMs are user-provided so no test may require one.
+// DisplayState, colour-mode, Chat-Mauve-state or beam-raced-frame terms from
+// the key each makes this test fail. Two terms survive deletion and are
+// therefore DEFENSIVE, not load-bearing, today: the `mixedMode` exclusion
+// (renderInternalBand's `if (state.textMode)` short-circuits before any mixed
+// handling, in both the 40- and 80-column paths, so MIXED cannot alter a
+// full-text frame) and the `iie` flag (a machine only changes IIe-ness across
+// a profile switch, which rebuilds the display). The character-ROM term is
+// untestable here — the harness loads no ROM, and ROMs are user-provided so no
+// test may require one.
+//
+// NOTE on section 9, because it is the trap this file exists to remember: the
+// card must be PLUGGED INTO THE SlotBus, not merely handed to the display via
+// setChatMauveCard(). Its registers arrive through
+// SlotBus::broadcastVideoSwitch, so with an unplugged card the guest writes go
+// nowhere and the section passes while testing nothing — which is exactly what
+// it did on the first attempt.
 //
 // and it runs the whole script under BOTH video standards, because the FLASH
 // phase derives from the emulated frame index — cycleCounter / (65 *
@@ -58,6 +69,7 @@
 #include "Memory.h"
 
 #include <algorithm>
+#include <memory>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -68,19 +80,25 @@ namespace {
 int failures = 0;
 
 struct Machine {
-    Memory          mem;
-    Apple2Display   disp;
-    // Fresh card, default state (COL140, colour text on). Present because the
-    // Le Chat Mauve colour-TEXT path is the one text renderer whose output
-    // depends on the host-side colour mode — see section 8.
-    LeChatMauveCard chat;
+    Memory           mem;
+    Apple2Display    disp;
+    LeChatMauveCard* chat = nullptr;   // owned by the SlotBus
 
     explicit Machine(VideoStandard vs)
     {
         mem.setIIEMode(true);
         mem.setVideoStandard(vs);
         disp.setAuxMemory(mem.auxData());
-        disp.setChatMauveCard(&chat);
+        // The card must be PLUGGED, not merely handed to the display: its
+        // $C0B8-$C0BB "Eve" registers arrive via SlotBus::broadcastVideoSwitch,
+        // so a card the bus does not know about never sees a guest write and
+        // section 9 would silently test nothing. Slot 7 mirrors the //c PAL
+        // profile's built-in; slot 3 must stay EMPTY or Memory's collision
+        // guard (chatMauveBlockedBySlot3) suppresses the whole decode.
+        auto card = std::make_unique<LeChatMauveCard>(7);
+        chat = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        disp.setChatMauveCard(chat);
     }
 };
 
@@ -240,6 +258,28 @@ void runScript(VideoStandard vs, const char* standard)
         for (int i = 0; i < 3; ++i) frame("colour-mode change");
     }
     sw(0xC05F);
+
+    // 9. The Le Chat Mauve "Eve" extension registers, $C0B8-$C0BB. These are
+    //    GUEST writes that change what a full-screen TEXT frame looks like —
+    //    $C0B9 turns colour TEXT on, which switches the renderer to
+    //    renderTextChatMauveFgBg AND the output buffer to the 560-wide
+    //    frame80 — yet they do NOT touch Memory::DisplayState and, unlike
+    //    $C05E/$C05F, they push NO video event (they reach the card through
+    //    broadcastVideoSwitch, not the display soft-switch decode). So the
+    //    frame after such a write has an EMPTY event log and an unchanged
+    //    DisplayState: nothing the rest of the key looks at has moved, and a
+    //    key that ignores the card's own state happily serves a stale screen.
+    //    This is the //c PAL profile's built-in slot-7 card — the French
+    //    Touch / DIX target hardware — so it is not a hypothetical corner.
+    for (Machine* mm : both) mm->disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+    sw(0xC05E);                                        // DHGR on (arms colour text)
+    for (int i = 0; i < 2; ++i) frame("chat mauve armed");
+    sw(0xC0B8); for (int i = 0; i < 3; ++i) frame("eve colour-text OFF");
+    sw(0xC0B9); for (int i = 0; i < 3; ++i) frame("eve colour-text ON");
+    sw(0xC0BB); for (int i = 0; i < 3; ++i) frame("eve duochrome ON");
+    sw(0xC0BA); for (int i = 0; i < 3; ++i) frame("eve duochrome OFF");
+    sw(0xC05F);
+    for (Machine* mm : both) mm->disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
 
     std::printf("[%s] %d frames compared\n", standard, f);
 }
