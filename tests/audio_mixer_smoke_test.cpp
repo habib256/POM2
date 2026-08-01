@@ -104,22 +104,28 @@ void testMasterVolumeAndMute()
     ConstSource src(0.5f);
     dev.addSource(&src);
 
+    // The bus is interleaved STEREO: mixSources writes
+    // kFrames * kChannels floats. A mono source sits at the default
+    // centre pan, which is unity on both channels, so every sample in
+    // the buffer — left and right alike — carries the same value the
+    // mono bus used to produce.
     constexpr int kFrames = 256;
-    std::vector<float> out(kFrames, 0.0f);
+    std::vector<float> out(kFrames * AudioDevice::kChannels, 0.0f);
+    const int kSamples = kFrames * static_cast<int>(AudioDevice::kChannels);
 
     // Default master = 1.0, unmuted: output should match source value
     // (clamped to ±1).
     dev.setMasterVolume(1.0f);
     dev.setMasterMuted(false);
     dev.mixSources(out.data(), kFrames);
-    for (int i = 0; i < kFrames; ++i) {
+    for (int i = 0; i < kSamples; ++i) {
         assert(std::fabs(out[i] - 0.5f) < 1e-6f);
     }
 
     // Half volume.
     dev.setMasterVolume(0.5f);
     dev.mixSources(out.data(), kFrames);
-    for (int i = 0; i < kFrames; ++i) {
+    for (int i = 0; i < kSamples; ++i) {
         assert(std::fabs(out[i] - 0.25f) < 1e-6f);
     }
 
@@ -127,7 +133,7 @@ void testMasterVolumeAndMute()
     dev.setMasterVolume(2.0f);
     dev.setMasterMuted(true);
     dev.mixSources(out.data(), kFrames);
-    for (int i = 0; i < kFrames; ++i) {
+    for (int i = 0; i < kSamples; ++i) {
         assert(out[i] == 0.0f);
     }
 
@@ -135,7 +141,7 @@ void testMasterVolumeAndMute()
     dev.setMasterMuted(false);
     dev.setMasterVolume(1.0f);
     dev.mixSources(out.data(), kFrames);
-    for (int i = 0; i < kFrames; ++i) {
+    for (int i = 0; i < kSamples; ++i) {
         assert(std::fabs(out[i] - 0.5f) < 1e-6f);
     }
 
@@ -157,7 +163,7 @@ void testPerSourcePeakTracking()
     dev.addSource(&loud);
 
     constexpr int kFrames = 256;
-    std::vector<float> out(kFrames, 0.0f);
+    std::vector<float> out(kFrames * AudioDevice::kChannels, 0.0f);
 
     dev.setMasterVolume(1.0f);
     dev.setMasterMuted(false);

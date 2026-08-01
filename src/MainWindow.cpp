@@ -353,6 +353,23 @@ MainWindow::MainWindow(bool forceIIPlus)
             settings->getFloat("master_volume", 1.0f));
         controller->audio().setMasterMuted(
             settings->getBool ("master_muted",  false));
+        // Stereo bus (2026-08-01). Off = true stereo, which is what the
+        // hardware does; the switch exists for mono playback gear and
+        // for anyone who would rather not have a single-AY tune arrive
+        // from the left speaker only.
+        controller->audio().setMonoDownmix(
+            settings->getBool ("audio_mono_downmix", false));
+        // Stereo placement of the mono sources. Centre by default — the
+        // Apple's own speaker has no stereo position to be faithful to,
+        // so this is a taste knob, not an emulation one.
+        controller->speaker().pan.store(
+            settings->getFloat("speaker_pan",  0.0f));
+        controller->cassette().pan.store(
+            settings->getFloat("cassette_pan", 0.0f));
+        controller->floppySound525().pan.store(
+            settings->getFloat("floppy_sound_pan",    0.0f));
+        controller->floppySound35().pan.store(
+            settings->getFloat("floppy_sound_pan_35", 0.0f));
     }
 
     // Plug all expansion cards in their user-configured slots. The
@@ -1041,6 +1058,11 @@ MainWindow::~MainWindow()
     settings->setBool  ("floppy_sound_muted_35",  controller->floppySound35().isMuted());
     settings->setFloat ("master_volume",          controller->audio().getMasterVolume());
     settings->setBool  ("master_muted",           controller->audio().isMasterMuted());
+    settings->setBool  ("audio_mono_downmix",     controller->audio().isMonoDownmix());
+    settings->setFloat ("speaker_pan",            controller->speaker().pan.load());
+    settings->setFloat ("cassette_pan",           controller->cassette().pan.load());
+    settings->setFloat ("floppy_sound_pan",       controller->floppySound525().pan.load());
+    settings->setFloat ("floppy_sound_pan_35",    controller->floppySound35().pan.load());
     settings->setString("char_rom_locale",        pom2::charRomLocaleKey(charRomLocale));
     if (mockingboardCard) {
         settings->setFloat("mockingboard_volume", mockingboardCard->getVolume());
@@ -6117,8 +6139,13 @@ void MainWindow::renderAudioMixerWindow()
         return;
     }
 
+    // `panSrc` is the AudioSource whose stereo placement this row edits,
+    // or null for a row that has no placement to offer: the master bus
+    // (it IS the stereo field) and the AY cards, which pan themselves
+    // per chip from the card's wiring — see AudioDevice.h.
     auto channelRow = [](const char* label, float& vol, bool& mute,
-                         float peak, const char* idSuffix, bool dim) {
+                         float peak, const char* idSuffix, bool dim,
+                         AudioSource* panSrc = nullptr) {
         if (dim) ImGui::BeginDisabled();
         ImGui::PushID(idSuffix);
         ImGui::AlignTextToFramePadding();
@@ -6142,6 +6169,35 @@ void MainWindow::renderAudioMixerWindow()
         ImGui::SameLine();
         const std::string muteId = std::string("Mute##") + idSuffix;
         ImGui::Checkbox(muteId.c_str(), &mute);
+        // Stereo placement for a mono source. Centre (0) is unity on
+        // both channels, so leaving it alone reproduces the pre-stereo
+        // mix exactly.
+        if (panSrc) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            float pan = panSrc->pan.load(std::memory_order_relaxed);
+            const std::string panId = std::string("##p") + idSuffix;
+            // Build the whole readout ourselves: ImGui takes this string
+            // as a printf FORMAT applied to the value, and one with no
+            // conversion specifier is printed literally — which is how
+            // the "centre" case works, and it saves showing a signed
+            // number the user would have to decode. Keep it free of any
+            // '%' for that reason: a literal one would have to be
+            // doubled or snprintf reads past the end of the format.
+            char fmt[24];
+            if (pan < -0.005f)
+                std::snprintf(fmt, sizeof fmt, "L %.2f", -pan);
+            else if (pan > 0.005f)
+                std::snprintf(fmt, sizeof fmt, "R %.2f",  pan);
+            else
+                std::snprintf(fmt, sizeof fmt, "centre");
+            if (ImGui::SliderFloat(panId.c_str(), &pan, -1.0f, 1.0f, fmt))
+                panSrc->pan.store(pan, std::memory_order_relaxed);
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                panSrc->pan.store(0.0f, std::memory_order_relaxed);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Stereo placement — right-click to centre");
+        }
         ImGui::PopID();
         if (dim) ImGui::EndDisabled();
     };
@@ -6154,6 +6210,36 @@ void MainWindow::renderAudioMixerWindow()
                "master", false);
     if (masterVol != dev.getMasterVolume()) dev.setMasterVolume(masterVol);
     if (masterMute != dev.isMasterMuted()) dev.setMasterMuted(masterMute);
+    // The bus is stereo, so the master needs a meter per channel — the
+    // single bar above shows the louder side, which cannot tell a
+    // hard-panned card from a centred one.
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("L / R");
+        ImGui::SameLine(110.0f);
+        const auto bar = [](float v) {
+            const float c = std::min(1.0f, std::max(0.0f, v));
+            ImVec4 col(0.20f, 0.80f, 0.20f, 1.0f);
+            if      (c >= 0.95f) col = ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
+            else if (c >= 0.70f) col = ImVec4(0.90f, 0.75f, 0.20f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
+            ImGui::ProgressBar(c, ImVec2(78.0f, 0.0f), "");
+            ImGui::PopStyleColor();
+        };
+        bar(dev.getMasterPeakL());
+        ImGui::SameLine();
+        bar(dev.getMasterPeakR());
+        ImGui::SameLine();
+        bool mono = dev.isMonoDownmix();
+        if (ImGui::Checkbox("Mono", &mono)) dev.setMonoDownmix(mono);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Fold the stereo bus down to a centred image.\n"
+                "The Mockingboard pans AY1 left and AY2 right on real\n"
+                "hardware, so a single-chip tune plays from one speaker;\n"
+                "tick this for mono gear or a centred mix.");
+        }
+    }
     ImGui::Separator();
 
     // ── Speaker ────────────────────────────────────────────────────────
@@ -6162,7 +6248,7 @@ void MainWindow::renderAudioMixerWindow()
     bool  spkMute = spk.isMuted();
     channelRow("Speaker", spkVol, spkMute,
                spk.lastBufferPeak.load(std::memory_order_relaxed),
-               "spk", false);
+               "spk", false, &spk);
     if (spkVol != spk.getVolume()) spk.setVolume(spkVol);
     if (spkMute != spk.isMuted()) spk.setMuted(spkMute);
 
@@ -6172,7 +6258,7 @@ void MainWindow::renderAudioMixerWindow()
     bool  tapeMute = tape.isMuted();
     channelRow("Cassette", tapeVol, tapeMute,
                tape.lastBufferPeak.load(std::memory_order_relaxed),
-               "tape", false);
+               "tape", false, &tape);
     if (tapeVol != tape.getVolume()) tape.setVolume(tapeVol);
     if (tapeMute != tape.isMuted()) tape.setMuted(tapeMute);
 
@@ -6227,7 +6313,7 @@ void MainWindow::renderAudioMixerWindow()
         channelRow(dim ? "Disk 5.25\" (samples missing)" : "Disk 5.25\"",
                    vol, mute,
                    fs525.lastBufferPeak.load(std::memory_order_relaxed),
-                   "fs525", dim);
+                   "fs525", dim, &fs525);
         if (!dim) {
             if (vol != fs525.getVolume()) fs525.setVolume(vol);
             if (mute != fs525.isMuted()) fs525.setMuted(mute);
@@ -6243,7 +6329,7 @@ void MainWindow::renderAudioMixerWindow()
         channelRow(dim ? "Disk 3.5\" (samples missing)" : "Disk 3.5\"",
                    vol, mute,
                    fs35.lastBufferPeak.load(std::memory_order_relaxed),
-                   "fs35", dim);
+                   "fs35", dim, &fs35);
         if (!dim) {
             if (vol != fs35.getVolume()) fs35.setVolume(vol);
             if (mute != fs35.isMuted()) fs35.setMuted(mute);
@@ -6253,6 +6339,7 @@ void MainWindow::renderAudioMixerWindow()
     ImGui::Spacing();
     ImGui::TextDisabled("Master is post-mix; per-channel knobs are pre-mix.");
     ImGui::TextDisabled("Bars show last-buffer peak with ~100 ms release.");
+    ImGui::TextDisabled("AY cards pan themselves per chip (MAME wiring).");
     ImGui::End();
 }
 

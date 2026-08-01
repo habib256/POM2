@@ -5,6 +5,62 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-01 — The audio bus goes stereo
+
+The Mockingboard is a stereo card and POM2 was summing it to one channel.
+MAME wires it to a single 2-channel speaker with AY1 on channel 0 and AY2
+on channel 1 (`a2mockingboard.cpp:159-165`); the Phasor gets a second one,
+so left = ay1+ay2 (the VIA1 pair) and right = ay3+ay4 (the VIA2 pair)
+(`:192-208`). Digidream 1 writes a deliberate A/B/C pan, and the mono sum
+destroyed it — which is also why single-AY software (Digidream 2 never
+touches chip 2) sat 6 dB down: it was being normalised for two chips'
+worth of headroom while only ever filling one.
+
+**Nothing moved level.** That was the constraint the design had to
+satisfy, because a silent 3 dB shift across every source is the kind of
+regression nobody reports and everybody hears. Three things follow from
+it:
+
+- The **mono contract is unchanged**. `fillAudioBuffer` still hands a
+  source one channel; the mixer places it with `AudioSource::pan`, whose
+  law is a **balance**, not constant power — centre is unity on *both*
+  channels. Constant power is the textbook choice and it would have put
+  the speaker, the cassette and both floppy-sound devices 3 dB down on
+  day one, in exchange for faithfulness to a stereo position the Apple's
+  own speaker does not have.
+- Cards that really are stereo override `fillAudioBufferStereo` and own
+  their placement (`pan` is then ignored — the card's wiring is the
+  authority, not a mixer knob). Both keep a **mono fold-down** of
+  `0.5 * (L + R)`, which is bit-for-bit the pre-stereo render: `/3` per
+  side folds back to the Mockingboard's old `/6`, `/6` per side to the
+  Phasor's `/12`. The test asserts that identity sample-for-sample and
+  measures 0.0 worst-case error.
+- The **mono-downmix switch** averages rather than sums, for the same
+  reason: summing would have made every centred source 6 dB louder the
+  moment a user ticked the box.
+
+Speech stays centred: MAME routes the Mockingboard's speech chip to both
+channels at unity (`:186-189`) and gives the Echo+ TMS5220 a
+`front_center` speaker (`:210-219`). Where a *pair* of speech chips would
+sit has no oracle, so it is a documented gap rather than a guess.
+
+The switch is in the mixer panel next to per-channel master meters, and
+the mono sources gained a pan knob (right-click to centre). Settings:
+`audio_mono_downmix`, `speaker_pan`, `cassette_pan`,
+`floppy_sound_pan[_35]`.
+
+Pinned by `tests/audio_stereo_test.cpp`: the pan law including the centre
+= unity guarantee, stereo passthrough, the downmix, per-chip placement on
+both cards (the silent side must be *exactly* silent — any leak means
+something is still summing), the fold-down identity, and a hard-panned
+card mixed next to a centred source.
+
+Also in this pass: `setup_imgui.sh` no longer aborts the whole setup when
+`apt update` fails. It fails as a whole if *any* configured repository is
+unreachable — one stale third-party PPA is enough — and under `set -e`
+that killed the run before Dear ImGui was even cloned, despite every
+package we actually need having refreshed fine.
+
 ## 2026-08-01 — Mockingboard audio: the write queue collapsed, and the synth never band-limited
 
 Digidream 2's Mockingboard music sounded coarse. Four things were wrong; the

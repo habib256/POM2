@@ -235,6 +235,8 @@ POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carr
 
 Every audio event is cycle-stamped, so tempo follows emulation speed, not wall-clock — disk-turbo's ~60× collapse of wall-clock gaps stays inaudible. The bus carries the **Speaker** and **Cassette**, plus a full card stack: **Mockingboard A/C** (6522 VIA + AY-3-8910), **Mockingboard C Sound II** with the **SSI263** speech chip, the **Phasor** (2 VIAs driving 4 AYs), and the **Cricket / Echo** SSI263 line. Mechanical **floppy sounds** (`FloppySoundDevice`) consume the cycle stamp emitted by `DiskIICard::seekPhaseW`, so head-steps and drive whir line up with the LSS nibble stream.
 
+The output is **stereo**, wired the way the hardware is: a Mockingboard puts AY1 in the left channel and AY2 in the right, a Phasor splits its four chips one VIA-pair per side, and speech sits centred. Music written with a deliberate stereo image — Digidream 1, for instance — plays as its authors intended. Speaker, cassette and floppy sounds are centred by default with a pan knob per channel in the **Audio Mixer**, and a **Mono** switch there folds everything back to a centred image for mono playback gear.
+
 ---
 
 ## 💾 Storage — disks, SmartPort, CFFA

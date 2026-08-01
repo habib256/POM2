@@ -950,9 +950,46 @@ Tests inherit parent's `-O3 -DNDEBUG` → would strip `assert()`.
 
 ## Audio
 
-`AudioDevice`: miniaudio mono float32. **OS-negotiated sample rate**
-(often 48 kHz on Apple Silicon) — cycle-driven sources MUST query
-`getActualSampleRate()`.
+`AudioDevice`: miniaudio **interleaved stereo** float32
+(`kChannels = 2`). **OS-negotiated sample rate** (often 48 kHz on Apple
+Silicon) — cycle-driven sources MUST query `getActualSampleRate()`.
+
+### Stereo bus (2026-08-01)
+
+The bus went stereo because the AY cards are stereo in hardware, and the
+mono sum destroyed the pan their music writes. MAME references, all in
+`bus/a2bus/a2mockingboard.cpp`:
+
+| Device | Routing | Lines |
+|---|---|---|
+| Mockingboard / ayboard | one 2-channel speaker, AY1 → ch 0 (L) @0.5, AY2 → ch 1 (R) @0.5 | `:159-165` |
+| Mockingboard speech (Votrax SC-01) | **both** channels @1.0 → centred | `:186-189` |
+| Phasor | second 2-channel speaker; audible result L = ay1+ay2 (VIA1 pair), R = ay3+ay4 (VIA2 pair) | `:192-208` |
+| Echo+ (TMS5220) | `front_center` | `:210-219` |
+
+Two contracts, so cards migrate one at a time:
+
+- **Mono** — `fillAudioBuffer(out, n)`, unchanged. The mixer places the
+  result with `AudioSource::pan` (-1 L … 0 centre … +1 R). The law is a
+  **balance**, not constant power: centre is unity on *both* channels, so
+  making the bus stereo moved no existing source. Speaker, cassette and
+  both floppy-sound devices stay here, with a UI pan knob (persisted:
+  `speaker_pan`, `cassette_pan`, `floppy_sound_pan[_35]`).
+- **Stereo** — `fillAudioBufferStereo(l, r, n)` returns true when the
+  source filled two planes itself; `pan` is then ignored, because the
+  card's wiring is the authority. Mockingboard and Phasor implement it;
+  both keep the mono path as `0.5 * (L + R)`, which is *bit-for-bit* the
+  pre-stereo render (`/3` per side folds to the old `/6`, `/6` per side
+  to the old `/12`).
+
+`AudioDevice::setMonoDownmix` folds the whole bus to `0.5 * (L + R)` on
+both channels — for mono playback gear, and for anyone who does not want
+a single-AY tune (DD2 never touches chip 2) arriving from the left
+speaker only. Off by default; persisted as `audio_mono_downmix`. Master
+metering is per channel (`getMasterPeakL/R`); `getMasterPeak()` is the
+louder side. Pinned by `tests/audio_stereo_test.cpp` — pan law, stereo
+passthrough, downmix, per-chip placement on both cards, the mono
+fold-down identity, and a card mixed next to a centred source.
 
 ### Speaker
 
@@ -1032,7 +1069,15 @@ until 2026-08-01 (full reasoning + numbers → `CHANGELOG.md`):
 * **DC blocking.** The channel model is unipolar, so gating channels
   and changing volumes steps the offset. 1-pole 20 Hz high-pass,
   matching MAME's default per-speaker filter
-  (`src/emu/audio_effects/filter.cpp:39-44`).
+  (`src/emu/audio_effects/filter.cpp:39-44`). One per side since the
+  card went stereo — MAME really does put one on each speaker, and the
+  filter is linear so the fold-down is unchanged.
+* **Stereo placement.** Chip 0 → left, chip 1 → right, `/3` per side
+  (`a2mockingboard.cpp:161-165`); the Sound II's SSI263 is added to
+  both sides at unity, because MAME centres the card's speech chip
+  (`:186-189`) and there is one speech chip, not one per side. Phasor
+  splits by VIA pair, `/6` per side. Full contract → [§ Stereo
+  bus](#stereo-bus-2026-08-01).
 
 The AY tick rate derives from the **live** CPU clock, not the NTSC
 constant — pin 22 is the slot's phase-0 line, so PAL clocks the chip at

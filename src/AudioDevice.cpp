@@ -65,11 +65,15 @@
 
 void AudioDevice::mixSources(float* output, int frameCount)
 {
-    std::memset(output, 0, static_cast<size_t>(frameCount) * sizeof(float));
+    // Interleaved stereo: 2 floats per frame.
+    std::memset(output, 0,
+                static_cast<size_t>(frameCount) * kChannels * sizeof(float));
 
     std::lock_guard<std::mutex> lock(sourcesMutex);
-    if (static_cast<int>(tmpBuf.size()) < frameCount)
+    if (static_cast<int>(tmpBuf.size()) < frameCount) {
         tmpBuf.resize(static_cast<size_t>(frameCount));
+        tmpBufR.resize(static_cast<size_t>(frameCount));
+    }
 
     for (AudioSource* src : sources) {
         // Zero the temp buffer before each source. The AudioSource
@@ -86,18 +90,50 @@ void AudioDevice::mixSources(float* output, int frameCount)
         // source per ~5 ms buffer — negligible.
         std::memset(tmpBuf.data(), 0,
                     static_cast<size_t>(frameCount) * sizeof(float));
-        src->fillAudioBuffer(tmpBuf.data(), frameCount);
+        std::memset(tmpBufR.data(), 0,
+                    static_cast<size_t>(frameCount) * sizeof(float));
+
         // Per-source peak with a short release envelope. 0.85 per
         // ~5 ms buffer settles to <5 % after ~100 ms of silence,
         // matches a typical VU meter release. The peak is sampled
         // BEFORE master gain so the mixer panel reflects the
         // channel's contribution at the slider position; the master
-        // peak below reflects what the OS actually plays.
+        // peak below reflects what the OS actually plays. On a stereo
+        // source it is the louder of the two sides, so one meter still
+        // catches a channel that only feeds one speaker.
         float srcPeak = 0.0f;
-        for (int i = 0; i < frameCount; ++i) {
-            const float a = std::fabs(tmpBuf[i]);
-            if (a > srcPeak) srcPeak = a;
-            output[i] += tmpBuf[i];
+
+        if (src->fillAudioBufferStereo(tmpBuf.data(), tmpBufR.data(),
+                                       frameCount)) {
+            // Native stereo: the source owns its placement (Mockingboard
+            // AY1/AY2, Phasor AY pairs), so `pan` is deliberately NOT
+            // applied here.
+            for (int i = 0; i < frameCount; ++i) {
+                const float l = tmpBuf[i];
+                const float r = tmpBufR[i];
+                const float a = std::max(std::fabs(l), std::fabs(r));
+                if (a > srcPeak) srcPeak = a;
+                output[2 * i]     += l;
+                output[2 * i + 1] += r;
+            }
+        } else {
+            src->fillAudioBuffer(tmpBuf.data(), frameCount);
+            // Balance law, NOT constant power: centre is unity on both
+            // channels. Constant power would have put every existing
+            // mono source 3 dB down the day the bus went stereo, which
+            // is a silent regression nobody asked for; the Apple speaker
+            // has no stereo position to be faithful to anyway.
+            const float p  = std::max(-1.0f, std::min(1.0f,
+                src->pan.load(std::memory_order_relaxed)));
+            const float gL = (p > 0.0f) ? (1.0f - p) : 1.0f;
+            const float gR = (p < 0.0f) ? (1.0f + p) : 1.0f;
+            for (int i = 0; i < frameCount; ++i) {
+                const float s = tmpBuf[i];
+                const float a = std::fabs(s);
+                if (a > srcPeak) srcPeak = a;
+                output[2 * i]     += s * gL;
+                output[2 * i + 1] += s * gR;
+            }
         }
         const float prevSrc =
             src->lastBufferPeak.load(std::memory_order_relaxed);
@@ -113,18 +149,38 @@ void AudioDevice::mixSources(float* output, int frameCount)
         masterMuted_.load(std::memory_order_relaxed)
             ? 0.0f
             : masterVolume_.load(std::memory_order_relaxed);
-    float masterPk = 0.0f;
+    const bool mono = monoDownmix_.load(std::memory_order_relaxed);
+    float masterPkL = 0.0f;
+    float masterPkR = 0.0f;
     for (int i = 0; i < frameCount; ++i) {
-        const float clamped =
-            std::max(-1.0f, std::min(1.0f, output[i] * masterGain));
-        output[i] = clamped;
-        const float a = std::fabs(clamped);
-        if (a > masterPk) masterPk = a;
+        float l = output[2 * i];
+        float r = output[2 * i + 1];
+        if (mono) {
+            // 0.5 * (L + R): the average, not the sum. A centred source
+            // sits at unity on both channels, so summing would make it
+            // 6 dB louder the moment the user ticked "mono" — and for a
+            // stereo card whose two sides used to be summed and halved
+            // by the /6 normalisation, the average reproduces the old
+            // mono render exactly.
+            const float m = 0.5f * (l + r);
+            l = m;
+            r = m;
+        }
+        const float cl = std::max(-1.0f, std::min(1.0f, l * masterGain));
+        const float cr = std::max(-1.0f, std::min(1.0f, r * masterGain));
+        output[2 * i]     = cl;
+        output[2 * i + 1] = cr;
+        const float al = std::fabs(cl);
+        const float ar = std::fabs(cr);
+        if (al > masterPkL) masterPkL = al;
+        if (ar > masterPkR) masterPkR = ar;
     }
-    const float prevMaster = masterPeak_.load(std::memory_order_relaxed);
-    const float decayedMaster =
-        masterPk > prevMaster * 0.85f ? masterPk : prevMaster * 0.85f;
-    masterPeak_.store(decayedMaster, std::memory_order_relaxed);
+    const float prevL = masterPeakL_.load(std::memory_order_relaxed);
+    const float prevR = masterPeakR_.load(std::memory_order_relaxed);
+    masterPeakL_.store(masterPkL > prevL * 0.85f ? masterPkL : prevL * 0.85f,
+                       std::memory_order_relaxed);
+    masterPeakR_.store(masterPkR > prevR * 0.85f ? masterPkR : prevR * 0.85f,
+                       std::memory_order_relaxed);
 }
 
 void AudioDevice::setMasterVolume(float v)
@@ -160,7 +216,7 @@ void AudioDevice::audioDataCallback(ma_device* pDevice, void* pOutput,
     AudioDevice* self = static_cast<AudioDevice*>(pDevice->pUserData);
     float* output = static_cast<float*>(pOutput);
     if (self == nullptr) {
-        std::fill(output, output + frameCount, 0.0f);
+        std::fill(output, output + frameCount * kChannels, 0.0f);
         return;
     }
     self->mixSources(output, static_cast<int>(frameCount));
@@ -182,7 +238,12 @@ bool AudioDevice::initAudio()
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
     config.playback.format    = ma_format_f32;
-    config.playback.channels  = 1;
+    // Stereo since 2026-08-01 — the Mockingboard/Phasor AY chips are
+    // panned per chip on real hardware (see the header). miniaudio
+    // handles the mono-device case itself when the OS only offers one
+    // channel, and the mixer's own "mono downmix" covers the user who
+    // wants a centred image on stereo hardware.
+    config.playback.channels  = kChannels;
     config.sampleRate         = kSampleRate;
     config.periodSizeInFrames = 256;
     config.periods            = 3;

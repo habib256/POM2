@@ -168,13 +168,48 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     // audible click, and half the headroom goes to an inaudible offset.
     // Real hardware AC-couples through the card's output capacitor.
     // Implementation + the MAME citation live in AyPsgSynth.h.
-    pom2::ay::DcBlocker dc;
+    // One per side since the card went stereo: each carries its own
+    // chip, and the filter is linear, so summing the two sides gives
+    // exactly what the single blocker on the summed signal gave.
+    pom2::ay::DcBlocker dcL;
+    pom2::ay::DcBlocker dcR;
 
+    // ── Stereo ────────────────────────────────────────────────────────
+    // MAME wires the card to one 2-channel speaker with AY1 on channel 0
+    // and AY2 on channel 1 (`a2mockingboard.cpp:159-165`), and routes the
+    // speech chip to BOTH channels at unity (`:186-189`) — so speech sits
+    // centred while the two PSGs are hard-panned. AppleWin splits it the
+    // same way, and says so in terms of the slot window rather than the
+    // chips: `MockingboardCardManager.cpp:388-407`, "L = Address.b7=0,
+    // R = Address.b7=1" — i.e. VIA1's AY ($Cn00) left, VIA2's ($Cn80)
+    // right, which is the pairing POM2 indexes as ay_[0] / ay_[1].
+    //
+    // `render` is the single implementation. With `right == nullptr` it
+    // writes the mono fold-down 0.5*(L+R), which is bit-for-bit the
+    // pre-stereo render: that one summed both chips and scaled by 1/6,
+    // and 0.5*(c0/3 + c1/3) is the same number.
     void fillAudioBuffer(float* output, int frameCount) override
     {
+        render(output, nullptr, frameCount);
+    }
+
+    bool fillAudioBufferStereo(float* left, float* right,
+                               int frameCount) override
+    {
+        render(left, right, frameCount);
+        return true;
+    }
+
+    void render(float* left, float* right, int frameCount)
+    {
         if (frameCount <= 0) return;
+        // Silence both planes — `right` is null on the mono path.
+        const auto silence = [&]() {
+            std::fill_n(left, frameCount, 0.0f);
+            if (right) std::fill_n(right, frameCount, 0.0f);
+        };
         const uint32_t sr = sampleRate.load(std::memory_order_relaxed);
-        if (sr == 0) { std::fill_n(output, frameCount, 0.0f); return; }
+        if (sr == 0) { silence(); return; }
         const bool  isMuted = muted.load(std::memory_order_relaxed);
         const float vol     = volume.load(std::memory_order_relaxed);
 
@@ -407,10 +442,11 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         const float invTicksPerSample =
             (ticksPerSample > 0.0f) ? (1.0f / ticksPerSample) : 0.0f;
 
-        dc.setRate(sr);
+        dcL.setRate(sr);
+        dcR.setRate(sr);
 
         if (isMuted) {
-            std::fill_n(output, frameCount, 0.0f);
+            silence();
             return;
         }
 
@@ -451,7 +487,9 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                     if (e.reg == 13) chip[e.chip].envRetrigger = true;
                 }
             }
-            float sample = 0.0f;
+            // Per chip, NOT summed: chip 0 is the left channel and chip 1
+            // the right one (MAME `a2mockingboard.cpp:161-165`).
+            float chipOut[2] = { 0.0f, 0.0f };
             for (int ci = 0; ci < 2; ++ci) {
                 ChipState& cs = chip[ci];
                 const uint8_t* r = liveRegs[ci];
@@ -478,13 +516,14 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 // what fixes CPU-driven volume-register PWM (Digidream
                 // 2's channel-A "SID voice"), whose edges land on
                 // arbitrary CPU cycles rather than on tick boundaries.
-                sample += pom2::ay::renderChipSample(
+                chipOut[ci] = pom2::ay::renderChipSample(
                     cs, r, ticksPerSample, invTicksPerSample);
             }
             // ── Level + DC blocking ───────────────────────────────────
-            // Two AYs x 3 channels x peak 1.0 = 6.0, so `/6` is the
-            // headroom-safe normalisation and the mix stays strictly
-            // LINEAR.
+            // ONE AY x 3 channels x peak 1.0 = 3.0 per side, so `/3` is
+            // the headroom-safe normalisation now that each channel
+            // carries a single chip, and the mono fold-down below is the
+            // `/6` the summed render used. The mix stays strictly LINEAR.
             //
             // An earlier pass on 2026-08-01 tried `/3` plus a `tanh` soft
             // knee, reasoning that single-AY software (the common case —
@@ -496,14 +535,21 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             // while single-AY DD2 never reached the nonlinearity and
             // sounded fine. Loudness is a knob the user already has; a
             // waveshaper across the whole mix is not something to spend
-            // it on. If single-AY level is ever worth revisiting, the
-            // honest fix is true stereo (MAME routes AY1 left and AY2
-            // right at gain 0.5, `a2mockingboard.cpp:161-165`), where
-            // each side carries one chip and `/3` falls out naturally.
-            sample *= (1.0f / 6.0f);
-            const float dcOut = dc.process(sample);
+            // it on. The honest fix for single-AY level was the stereo
+            // split this code now does, where each side carries one chip
+            // and `/3` falls out naturally.
+            const float dcOutL = dcL.process(chipOut[0] * (1.0f / 3.0f));
+            const float dcOutR = dcR.process(chipOut[1] * (1.0f / 3.0f));
+            // Speech is CENTRED — MAME routes the card's speech chip to
+            // both channels at unity (`a2mockingboard.cpp:186-189`), and
+            // there is one SSI263 on a Sound II, not one per side.
             const float ssi = speechBuf ? speechBuf[i] : 0.0f;
-            output[i] = (dcOut + ssi) * vol;
+            if (right) {
+                left[i]  = (dcOutL + ssi) * vol;
+                right[i] = (dcOutR + ssi) * vol;
+            } else {
+                left[i] = (0.5f * (dcOutL + dcOutR) + ssi) * vol;
+            }
         }
 
         // Drop only what was actually rendered. Everything still queued

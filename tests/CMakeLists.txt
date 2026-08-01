@@ -3311,6 +3311,37 @@ add_test(NAME phasor_card_smoke COMMAND test_phasor_card)
 set_tests_properties(phasor_card_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Stereo audio bus ───────────────────────────────────────────────────
+# Pins the 2026-08-01 mono → stereo conversion: the centre pan law that
+# keeps every existing mono source at its old level, native-stereo
+# sources bypassing that law, the mono-downmix switch, and the per-chip
+# placement on Mockingboard (AY1 left / AY2 right) and Phasor (VIA pair
+# per side) with the mono fold-down proving the level is unchanged.
+add_executable(test_audio_stereo
+    audio_stereo_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/PhasorCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_audio_stereo PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_audio_stereo PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_audio_stereo PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_audio_stereo PRIVATE winmm)
+endif()
+
+add_test(NAME audio_stereo COMMAND test_audio_stereo)
+set_tests_properties(audio_stereo PROPERTIES TIMEOUT 10)
+
+
 # ─── SSI263 chip-model smoke test ────────────────────────────────────────
 # Pins the register state machine + IRQ timing + audio render of the
 # Ssi263 chip standalone (independent of any host card).

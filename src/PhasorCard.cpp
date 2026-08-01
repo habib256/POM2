@@ -39,12 +39,12 @@ constexpr int kAyNumRegs = pom2::Ay3_8910::kAyNumRegs;
 
 // ─── AudioSrc ─────────────────────────────────────────────────────────────
 //
-// 4-AY mono mix, ported from `MockingboardCard::AudioSrc` (2-chip) and
-// widened: 4 `ChipState` slots, 4 register-bank snapshots, summed mono
-// output divided by 12 (peak = 4 chips × 3 channels × 1.0). The synth
-// loop body is verbatim from MAME-parity Mockingboard — same tone
-// counter (integer + fractional accumulator), same 17-bit LFSR noise,
-// same 4-flag envelope state machine.
+// 4-AY stereo mix, ported from `MockingboardCard::AudioSrc` (2-chip) and
+// widened: 4 `ChipState` slots, 4 register-bank snapshots, one VIA pair
+// per channel divided by 6 (peak = 2 chips × 3 channels × 1.0 per side).
+// The synth loop body is verbatim from MAME-parity Mockingboard — same
+// tone counter (integer + fractional accumulator), same 17-bit LFSR
+// noise, same 4-flag envelope state machine.
 //
 // What differs from Mockingboard's AudioSrc:
 //
@@ -55,13 +55,14 @@ constexpr int kAyNumRegs = pom2::Ay3_8910::kAyNumRegs;
 //     step`. Snapshotted under the parent mutex so a mid-fill mode
 //     switch doesn't mid-tear the rate; the next fill picks up the new
 //     scale.
-//   * Mix divisor = 12 (vs MB's 6). MB-mode software which only writes
-//     AY1 + AY3 (the primary AYs) will therefore sound ~6 dB quieter on
-//     a Phasor in MB-compat mode than on a real Mockingboard at the
-//     same volume knob position — the user can crank Phasor's slider
-//     to compensate. The alternative (divide by 6) would clip when
-//     a 4-AY Phasor-native driver hits full amplitude across all 4
-//     chips. Predictable headroom wins.
+//   * Mix divisor = 6 PER SIDE (vs MB's 3), because a Phasor side
+//     carries two chips where a Mockingboard side carries one. So
+//     MB-mode software — which only drives AY1 + AY3, the primary of
+//     each pair — still sounds ~6 dB quieter on a Phasor than on a real
+//     Mockingboard at the same knob position; the user can crank
+//     Phasor's slider. The alternative (matching MB's per-side level)
+//     would clip when a 4-AY native driver hits full amplitude on both
+//     chips of a side. Predictable headroom wins.
 
 struct PhasorCard::AudioSrc : public AudioSource, public RateAware
 {
@@ -89,16 +90,45 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
 
     ChipState chip[4];
 
-    /// One-pole 20 Hz high-pass on the summed output — MAME's default
-    /// per-speaker filter (`src/emu/audio_effects/filter.cpp:39-44`).
+    /// One-pole 20 Hz high-pass per side — MAME's default per-speaker
+    /// filter (`src/emu/audio_effects/filter.cpp:39-44`), and MAME really
+    /// does put one on each of the Phasor's two speakers.
     /// Implementation in AyPsgSynth.h.
-    pom2::ay::DcBlocker dc;
+    pom2::ay::DcBlocker dcL;
+    pom2::ay::DcBlocker dcR;
 
+    // ── Stereo ────────────────────────────────────────────────────────
+    // MAME gives the Phasor a second 2-channel speaker and splits the
+    // chips by VIA pair (`a2mockingboard.cpp:192-208`): ay1 and ay2 land
+    // on channel 0 of their respective speakers, ay3 and ay4 on channel 1,
+    // and both speakers are `.front()`, so the audible result is
+    // LEFT = ay1+ay2 (the VIA1 pair) and RIGHT = ay3+ay4 (the VIA2 pair).
+    // POM2 indexes the same pairing — `onViaPortBChange` routes VIA0 to
+    // {ay_[0], ay_[1]} and VIA1 to {ay_[2], ay_[3]}.
+    //
+    // As on the Mockingboard, `right == nullptr` renders the mono
+    // fold-down, which reproduces the old `/12` summed render exactly.
     void fillAudioBuffer(float* output, int frameCount) override
     {
+        render(output, nullptr, frameCount);
+    }
+
+    bool fillAudioBufferStereo(float* left, float* right,
+                               int frameCount) override
+    {
+        render(left, right, frameCount);
+        return true;
+    }
+
+    void render(float* left, float* right, int frameCount)
+    {
         if (frameCount <= 0) return;
+        const auto silence = [&]() {
+            std::fill_n(left, frameCount, 0.0f);
+            if (right) std::fill_n(right, frameCount, 0.0f);
+        };
         const uint32_t sr = sampleRate.load(std::memory_order_relaxed);
-        if (sr == 0) { std::fill_n(output, frameCount, 0.0f); return; }
+        if (sr == 0) { silence(); return; }
         const bool  isMuted = muted.load(std::memory_order_relaxed);
         const float vol     = volume.load(std::memory_order_relaxed);
 
@@ -134,7 +164,7 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
         }
 
         if (isMuted) {
-            std::fill_n(output, frameCount, 0.0f);
+            silence();
             return;
         }
 
@@ -153,10 +183,13 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
                                      / static_cast<float>(sr);
         const float invTicksPerSample =
             (ticksPerSample > 0.0f) ? (1.0f / ticksPerSample) : 0.0f;
-        dc.setRate(sr);
+        dcL.setRate(sr);
+        dcR.setRate(sr);
 
         for (int i = 0; i < frameCount; ++i) {
-            float sample = 0.0f;
+            // Index 0 = left (VIA0's pair, ay_[0..1]), 1 = right (VIA1's
+            // pair, ay_[2..3]).
+            float side[2] = { 0.0f, 0.0f };
             for (int ci = 0; ci < 4; ++ci) {
                 // Box-integrate the mixer across the ~2.9 base ticks this
                 // output sample spans, instead of point-sampling it once
@@ -164,17 +197,21 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
                 // away the sub-sample edge position it had just computed,
                 // which folded every harmonic above Nyquist back into the
                 // audible band.
-                sample += pom2::ay::renderChipSample(
+                side[ci >> 1] += pom2::ay::renderChipSample(
                     chip[ci], regSnap[ci], ticksPerSample, invTicksPerSample);
             }
-            // 4 chips x 3 channels x peak 1.0 = 12.0. Headroom-safe and
-            // strictly LINEAR — see the matching note in Mockingboard.cpp
-            // for why the `tanh` soft knee tried here on 2026-08-01 was
-            // reverted (it distorted any mix that used more than one AY).
-            sample *= (1.0f / 12.0f);
+            // 2 chips x 3 channels x peak 1.0 = 6.0 per side. Headroom-safe
+            // and strictly LINEAR — see the matching note in
+            // Mockingboard.cpp for why the `tanh` soft knee tried here on
+            // 2026-08-01 was reverted (it distorted any mix that used more
+            // than one AY). The mono fold-down below restores the `/12` the
+            // 4-chip summed render used.
             // DC blocker: the AY channel model is unipolar, so gating
             // channels on and off steps the offset.
-            output[i] = dc.process(sample) * vol;
+            const float l = dcL.process(side[0] * (1.0f / 6.0f)) * vol;
+            const float r = dcR.process(side[1] * (1.0f / 6.0f)) * vol;
+            if (right) { left[i] = l; right[i] = r; }
+            else       { left[i] = 0.5f * (l + r); }
         }
     }
 };

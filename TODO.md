@@ -40,7 +40,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
-| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo deferred                         |
+| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo L/R per VIA pair done (2026-08-01) |
 | 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME does not implement)                 | 🟢 formant synth → PCM blob, 62 phonemes (AppleWin LGPL → GPL3)                           |
 | 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
 | 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
@@ -267,17 +267,26 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   regression test is only credible once shown to FAIL against the
   reverted fix.**
 
+**Landed 2026-08-01 (stereo pass):**
+
+- ✅ **True stereo bus.** `AudioDevice` carries interleaved stereo;
+  Mockingboard routes AY1 → L / AY2 → R at `/3` per side, speech centred
+  (MAME `a2mockingboard.cpp:159-165`, `:186-189`), Phasor splits by VIA
+  pair at `/6` per side (`:192-208`). The mono contract is untouched —
+  a mono source is centred at unity on both channels, so nothing moved
+  level — and each card keeps a mono fold-down that reproduces its old
+  summed render bit-for-bit. DD1's deliberate A/B/C pan survives the mix
+  now. `setMonoDownmix` restores a centred image for mono gear.
+  Pinned: `tests/audio_stereo_test.cpp`. → [DEV § Stereo
+  bus](DEV.md#stereo-bus-2026-08-01).
+
 **Deferred, with the trade-off recorded:**
 
-- 🟢 **True stereo (AY1 → L, AY2 → R, gain 0.5).** What MAME does
-  (`a2mockingboard.cpp:161-165`) and what AppleWin does
-  (`MockingboardCardManager.cpp:388-407`). Blocked on `AudioDevice` being
-  a mono bus (`AudioDevice.cpp:185`), so it is a whole-pipeline change
-  (speaker, cassette, SSI263, floppy sounds). DD1 has a deliberate ABC
-  pan that the mono sum destroys; DD2 is unaffected (single AY). This is
-  also the honest fix for single-AY level, since each side would then
-  carry one chip and `/3` falls out naturally. Supersedes the older
-  "Phasor stereo" item below.
+- 🟢 **SSI263 / Echo+ placement is a guess beyond MAME.** MAME centres
+  the Mockingboard's speech chip and gives the Echo+ TMS5220 a
+  `front_center` speaker, which is what POM2 does; where a *pair* of
+  speech chips would sit (a two-SSI263 Sound II, or Phasor + Echo+ mode)
+  has no oracle. Left centred until one turns up.
 - 🟢 **Phasor: no cycle-stamped event queue, no `setCpuClock` override.**
   Every register write inside a buffer still collapses to its last value,
   and PAL clocks its AYs 0.7 % fast. Now the only divergence from
@@ -308,9 +317,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   demos (Music Studio, trackers). AppleWin refs `Card::CT_DX1`. *1 d.*
 - 🟢 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
   Performer. MAME refs `mc6840.cpp` + `acia6850.cpp`. *3 d.*
-- 🟢 **Phasor stereo** — folded into the "true stereo" item above; when
-  the mixer goes stereo, pan L/R per AY-pair on Phasor (MAME uses two
-  2-channel speakers, `a2mockingboard.cpp:192-208`) and on SSI263/Echo+.
 - 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
 ### [Storage] disks & images
