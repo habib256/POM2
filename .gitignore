@@ -45,6 +45,11 @@ tests/hero_probe
 /printouts/
 /snapshots/
 
+# imagewriter_pdf writes its sheets to a cwd-relative directory. Under ctest
+# the cwd is build/ (already ignored), but running the binary by hand from the
+# repo root drops it here.
+/imagewriter_pdf_test_out/
+
 # Dear ImGui writes its window layout here at runtime.
 imgui.ini
 

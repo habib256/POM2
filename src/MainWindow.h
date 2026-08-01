@@ -463,8 +463,9 @@ private:
     // ImageWriter II paper-tray window (rendered printout).
     bool         showImageWriterPanel = false;
     // How many spool bytes have already been fed to `imageWriter`, so a
-    // poll only picks up what arrived since the previous frame. Reset
-    // whenever the source card changes or its spool is cleared.
+    // poll only picks up what arrived since the previous frame. Re-seated
+    // whenever the source card changes or its spool is cleared — see
+    // `printerFeedCursor` (PrinterFeedCursor.h) for the two rules.
     size_t       imageWriterConsumed = 0;
     // Identity of the card the cursor above counts against. The three
     // spools grow independently, so a cursor carried across a source

@@ -2833,15 +2833,56 @@ feeding for the rest of the job. All three cases come out right with
 nothing configured. Getting this wrong is not subtle: with the printer
 always feeding, Print Shop's colour passes march down the page as a
 coloured staircase instead of forming one line. `On`/`Off` pin the switch;
-a power cycle re-arms the detector. Pinned by
-`imagewriter_smoke` (`testAutoLineFeedDetection`).
+a power cycle re-arms the detector — and so does the guest's own `ESC c`
+("initialize printer"), which is the **only** thing a guest can send that
+does. That matters because the latch was otherwise scoped to the host
+session rather than the job: once one CR+LF driver had latched it, every
+later `PR#n : LIST` printed its whole listing overprinted onto one black
+line with nothing in the guest able to clear it. `ESC c` is safe as the
+re-arm point precisely because Print Shop separates its colour passes
+with a bare CR and never sends it. Pinned by `imagewriter_smoke`
+(`testAutoLineFeedDetection`, cases 7 and 8).
 
-**Two other deliberate deviations** from the reference: `resetPrinter()`
-leaves bold off (the reference sets `STYLE_BOLD` at
-`imagewriter.cpp:289` to fatten a thin TrueType face — on a dot-matrix
-cell that just smears), and `spacesToZeros` normalises only the *digit*
-positions of a parameter string, so `ESC R nnn ' '` repeats a space
-instead of printing zeros.
+**Deliberate deviations** from the reference. The first two are cosmetic
+ports; the four after them are reference *bugs* that put visibly wrong
+ink on paper, checked against the *ImageWriter II Technical Reference*
+and pinned by `testCommandBoundsAndTabs`:
+
+- `resetPrinter()` leaves bold off (the reference sets `STYLE_BOLD` at
+  `imagewriter.cpp:289` to fatten a thin TrueType face — on a dot-matrix
+  cell that just smears).
+- `spacesToZeros` normalises only the *digit* positions of a parameter
+  string, so `ESC R nnn ' '` repeats a space instead of printing zeros.
+- **HT/VT go to the nearest stop**, not the farthest. The reference
+  (`imagewriter.cpp:1131-1141`) keeps overwriting its candidate as it
+  scans, so with stops at 10/20/30 the first TAB jumped to 30 and every
+  later one was a no-op — one ragged column instead of a table.
+- **`ESC 1`..`ESC 6` add n/120″ of intercharacter space**, they are not an
+  absolute head position. The reference assigns `curX_ = n/unit`
+  (`imagewriter.cpp:665-678`), so `ESC 3` mid-line threw the head from
+  1.25″ back to 0.02″ — outside the left margin — and destroyed every
+  justified line a proportional driver produced.
+- **`ESC c` ejects the sheet on the platen instead of binning it.** The
+  reference discards it (`imagewriter.cpp:315`) and can afford to: it
+  wrote each page to disk as it went. Here the sheet exists nowhere else,
+  so a short report with no trailing form feed vanished the moment the
+  next program sent its init. A blank platen still does not eject, the
+  same rule the FORM FEED button follows.
+- **`ESC H` and `ESC L` clamp to the sheet.** `ESC H 0000` set a
+  zero-length page so every line feed ejected — three LFs, three sheets,
+  and a real job rolled the whole 32-page stack away in blanks. `ESC L
+  999` put the left margin 83″ out and every page came out blank; `ESC L
+  000` gave a negative margin that clipped the first character. All
+  silent. A margin or page length off the paper is a garbled parameter,
+  not an instruction.
+
+**What the guest cannot reach**: bit 7 of either soft switch. The bit-7
+mask (`printCharInternal`, following `imagewriter.cpp:1260-1263`) is
+applied before the escape parser sees the byte, so `ESC D`/`ESC Z` can
+only set bits 0-6. Left alone deliberately — neither bit 7 is wired to
+anything here. A-8 is the "LF after CR" switch, which POM2 models with
+`AutoFeed` above rather than the switch byte, and B-8 is unused
+(`updateSwitch` reads only the charset field, B-1 and B-6).
 
 **Paper handling**: `FF` ($0C) and a full page both eject onto the
 completed stack; the FORM FEED button will not eject a blank sheet. The
@@ -2876,9 +2917,53 @@ flat 1 s cap against a form feed that costs `(bottomMargin - curY)/5 ips`
 stalled forever, BUSY stayed asserted, and the guest hung in its firmware
 ACK loop. Print Shop froze on every page eject. The cap is now
 `max(kMaxCredit, cost of the head byte)`, and a watchdog forces any byte
-that has waited `kStallSeconds` (10 s) through anyway, logging it — a
-cost-model mistake must degrade to "printed late", never to a hang.
-Pinned by `imagewriter_smoke` (`testNoUnaffordableByte`).
+that has waited through anyway, logging it — a cost-model mistake must
+degrade to "printed late", never to a hang. The watchdog's patience is
+`max(kStallSeconds, 1.5 × the head byte's cost)`, not a flat 10 s: since
+the credit cap already grows to the head cost, a byte that is merely
+*slow* becomes affordable on its own, and a flat threshold cut a
+legitimately long form feed short and logged a STALL for a printer that
+was working correctly. Pinned by `imagewriter_smoke`
+(`testNoUnaffordableByte`, `testCommandBoundsAndTabs` case 6).
+
+**The credit cap bounds seconds, not work.** Those are different, and
+conflating them was a freeze. Past `kMaxBacklog` (1 MiB) the mechanism
+gives up on Draft/NLQ pacing — but it must catch up *across ticks*.
+`queueBytes()` used to call `flushPending()` and print the whole backlog
+synchronously, on the UI thread, from `pumpImageWriter()`: measured
+852 ms for plain text and **301 s for a form-feed storm, in one frame**,
+while audio and the CPU worker carried on — a hard freeze. `catchUp_` now
+arms instead, and `tick()` drains a bounded slice: `kCatchUpBytes`
+(16 KiB) **and** `kCatchUpSheets` (4), budgeted separately because an
+eject copies a whole page raster (~1.9 MB at Letter/144) and so is orders
+of magnitude dearer per byte than a glyph. Worst frame: ~14 ms, and a
+1 MiB backlog clears in about a second. It stays armed until the queue is
+*empty*, not merely back under the threshold — stopping at the threshold
+would hand ~512 KiB back to the 250 cps model and spend half an hour of
+wall clock on it. Past a hard ceiling (`kHardBacklog`, 4 MiB) the oldest
+input is dropped and counted in `droppedInputBytes()`, the same rule the
+page stack and the SSC tap spool already follow: a guest that sustainably
+outruns even the catch-up rate must not grow the heap without bound.
+Truncating a printout is bad; freezing the emulator is worse. Pinned by
+`testBoundedCatchUp`.
+
+**One printer, three possible feeds.** `pumpImageWriter()` arbitrates —
+parallel cards outrank the SSC tap, `PrinterCard` outranks `GrapplerCard`
+— and keeps ONE drain cursor. Everything hard about that is the handover,
+so it lives in `printerFeedCursor()` (`PrinterFeedCursor.h`), header-only
+and dependency-free so it can be pinned without an ImGui context. A
+changed source re-seats the cursor at the new source's **current total**,
+not at 0. Re-seating at 0 re-drained everything that source had ever
+spooled: the SSC tap's spool outlives its source status (nothing clears
+it), so a single frame with "Feed ImageWriter printer" unticked reprinted
+the whole session on the next frame — and on a //c, where slot 1 is the
+printer port and slot 2 the modem port and both are SSCs, unticking slot 1
+handed the source to slot 2 at 0 and printed the entire modem transcript
+onto paper. Adopting also means bytes spooled *while not the source* never
+print, which is the physically right answer: the cable was out. Slot
+Config lets a `PrinterCard` and a `Grappler+` coexist (different catalog
+keys, so its duplicate check does not object) and the loser then feeds
+nothing, so the panel's source line names it. Pinned by `testSpoolSeam`.
 
 **Trace log.** A printout that comes out as noise is a protocol
 disagreement, and the only way to see it is the byte stream, decoded.
@@ -2971,6 +3056,30 @@ de-asserted and the 6551 (correctly, MAME `mos6551.cpp:317-321`)
 dropped every byte. The PR#n/IN#n entries now program cmd=$0B first,
 like the real SSC firmware's DIP-switch init.
 
+**An armed tap is a device on the pins.** On a //c, `$C100` is *internal*
+ROM: `PR#1` runs the machine's own printer-port firmware, not the card's
+synthetic ROM, and that firmware gates every character on the 6551 status
+register — it spins until `status & (DCD|TDRE)` reads "carrier present,
+transmitter empty". DCD/DSR are active-low *device-present* pins, so the
+status read reports them **inactive when nothing is attached** (MAME
+`mos6551.cpp:37-39` inits `m_dsr(1), m_dcd(1)`; AppleWin
+`SerialComms.cpp:864` returns `ST_DSR|ST_DCD`). "Nothing attached" is the
+operative phrase: an ImageWriter cabled to the port *is* a DCE sitting
+there, and a printer has no carrier to acquire. Answering those pins from
+the telnet connection alone told the //c its printer was absent —
+`PR#1` wedged the guest inside the firmware and not one byte reached the
+spool, on all three //c profiles, with no workaround (nothing else is
+pluggable on a machine with no slots). `deviceAttached()`
+(= telnet peer **or** armed printer tap) is what the pins answer to.
+Pinned by `iic_printer_port`.
+
+The tap's spool is capped at 1 MiB and trims its oldest half when the
+host falls behind — the drain cursor speaks absolute offsets
+(`printerSpoolBase_ + index`) so trimming never desynchronises the
+consumer. It now **warns once per session** when it fires: half a
+megabyte out of the middle of a printout is silent data loss otherwise,
+and all the paper shows is a job that stops mid-sentence.
+
 **PDF export** (`ImageWriterPdf.h/.cpp`): "Save PDF" writes every
 completed sheet (plus the sheet in the platen if printed on) as one
 multi-page PDF. Each sheet embeds as an 8-bit `/Indexed /DeviceRGB`
@@ -2991,6 +3100,13 @@ pacing (draft/NLQ rates, `flushPending`, power-cycle drops the buffer).
 register/bank parity (see § Grappler+). `ssc_acia_smoke` pins the
 printer tap and the PR#/IN# ACIA init; `imagewriter_pdf` pins the PDF
 serialiser (xref byte accounting, per-sheet MediaBox, Flate round-trip).
+`iic_printer_port` pins the //c route end-to-end — the DCD/DSR
+device-present contract, the firmware's status wait-loop shape, and a real
+DOS 3.3 boot where `PR#1` + `PRINT` land bytes in the spool on all three
+//c ROMs (ROM/disk gated: skips when the user-provided media is absent).
+`ssc_acia_smoke` alone could not catch the //c hang — it drives the tap
+through the *card's* synthetic `PR#n` ROM, which only checks TDRE and is
+blind to DCD.
 
 ### Mouse Card
 

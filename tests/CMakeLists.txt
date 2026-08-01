@@ -4376,6 +4376,41 @@ endif()
 add_test(NAME iic_diskii_no_iwm_conflict COMMAND test_iic_diskii_no_iwm_conflict)
 set_tests_properties(iic_diskii_no_iwm_conflict PROPERTIES TIMEOUT 10)
 
+
+# ─── //c printer port → ImageWriter ──────────────────────────────────────
+# The //c has no physical slots, so the built-in SSC printer port (slot 1,
+# tap armed by default) is the ONLY route to the host ImageWriter. Its
+# built-in firmware — not the card's synthetic PR#n ROM — gates every
+# character on the 6551 status register and spins until DCD reads active.
+# Reporting DCD/DSR inactive with no telnet client is right for the modem
+# port (MAME mos6551.cpp:37-39, AppleWin SerialComms.cpp:864) but wrong at
+# an armed printer tap: PR#1 wedged the guest and no byte reached the spool
+# on all three //c profiles. ssc_acia_smoke missed it because it exercises
+# the tap against the card's synthetic ROM, which only checks TDRE.
+# Pins the status contract, the firmware's wait-loop shape, and a real
+# DOS 3.3 boot + PR#1 + PRINT reaching the spool (ROM/disk gated → SKIPs).
+add_executable(test_iic_printer_port
+    iic_printer_port_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_printer_port PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_printer_port PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iic_printer_port PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    # ws2_32: SuperSerialCard is host-socket code on Windows too.
+    target_link_libraries(test_iic_printer_port PRIVATE winmm ws2_32)
+endif()
+add_test(NAME iic_printer_port COMMAND test_iic_printer_port)
+set_tests_properties(iic_printer_port PROPERTIES TIMEOUT 60)
+
 # ── //c+ cold-boot probe (diagnostic, not a CTest target) ───────────────
 # Full on-board stack: IWM + SmartPortHub + 2x Sony 3.5" + slot-6 Disk II.
 # See iicplus_boot_probe.cpp header for the SENSE bug it was written for.

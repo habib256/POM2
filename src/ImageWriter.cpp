@@ -198,12 +198,32 @@ void ImageWriter::resetPrinter()
     verticalDot_  = 0;
     numHorizTabs_ = 0;
     numVertTabs_  = 0;
+    // Re-arm the CR/LF detector. `ESC c` is "initialize printer" — a new
+    // job announcing itself — and it is the ONLY thing a guest can send
+    // that re-arms this. Leaving the latch here scoped it to the host
+    // session instead of the job: once one CR+LF driver had latched CR
+    // "don't feed", every later `PR#n : LIST` in the same session printed
+    // its whole listing overprinted onto a single black line, and nothing
+    // in the guest could clear it — only the panel's power button.
+    //
+    // Print Shop's colour passes are safe: it separates them with a BARE
+    // CR, never `ESC c`, so the latch it relies on survives its own job.
+    // Both cases are pinned in testAutoLineFeedDetection.
+    feedLatchedOff_ = false;
+    crJustFed_      = false;
 
     selectDefaultMap();
     updateMetrics();
     updateSwitch();
 
-    newPage(false, true);
+    // Keep whatever is already on the platen. The reference discards it
+    // (imagewriter.cpp:315) — it could afford to, because it wrote each
+    // page out to disk as it went; here the sheet exists nowhere else, so
+    // discarding is silent data loss. A short report with no trailing form
+    // feed vanished the moment the next program sent its `ESC c` init.
+    // Eject it instead: that is also what the paper does on a real desk —
+    // you do not get the sheet back by pressing reset.
+    newPage(!currentPageBlank(), true);
 }
 
 void ImageWriter::resetPrinterHard()
@@ -213,9 +233,8 @@ void ImageWriter::resetPrinterHard()
     pendingHead_ = 0;
     credit_      = 0.0;
     stalledFor_  = 0.0;           // and so is the stall watchdog
-    feedLatchedOff_ = false;      // new job, re-arm the CR/LF detector
-    crJustFed_      = false;
-    resetPrinter();
+    catchUp_     = false;         // and the backlog it was chasing
+    resetPrinter();               // re-arms the CR/LF detector
 }
 
 void ImageWriter::clearAll()
@@ -285,6 +304,10 @@ void ImageWriter::newPage(bool save, bool resetx)
             ++droppedPages_;
         }
         pages_.push_back(current_);
+        // Monotonic (unlike pages_.size(), which the cap holds at 32) so
+        // the catch-up drain can budget ejects — each one copies a whole
+        // page raster, so a form-feed storm is dear per byte.
+        ++sheetsEjected_;
     }
     if (resetx) curX_ = leftMargin_;
     curY_ = topMargin_;
@@ -593,12 +616,45 @@ void ImageWriter::queueBytes(const uint8_t* data, size_t n)
 {
     if (!data || n == 0) return;
     pending_.insert(pending_.end(), data, data + n);
-    // The mechanism may never fall more than 1 MiB behind the card: past
-    // that, Draft/NLQ pacing yields to memory and the backlog prints
-    // instantly (a runaway guest print loop used to grow this without
-    // bound — hours of queued "mechanism time" parked on the heap).
-    constexpr size_t kMaxBacklog = 1u << 20;
-    if (pending_.size() - pendingHead_ > kMaxBacklog) flushPending();
+
+    // Past kMaxBacklog the mechanism gives up on Draft/NLQ pacing — but it
+    // catches up in tick(), at a bounded rate. Printing it here would run
+    // the whole backlog on the UI thread in one frame (see kMaxBacklog).
+    if (pendingBytes() > kMaxBacklog) catchUp_ = true;
+
+    // A guest that sustainably outruns even the catch-up rate — a form
+    // feed loop, where every one-byte FF asks for a whole sheet — still
+    // may not grow the heap without bound. Past the hard ceiling the
+    // oldest input is dropped, which is the same rule the page stack
+    // (kMaxPages / droppedPageCount) and the SSC tap spool already follow:
+    // bound the memory, count what was lost, and say so in the trace.
+    // Truncating a printout is bad; freezing the emulator is worse.
+    if (pendingBytes() > kHardBacklog) {
+        const size_t drop = pendingBytes() - kHardBacklog;
+        pendingHead_  += drop;
+        droppedInput_ += drop;
+        traceEvent("HOST: backlog over %zu KiB — dropped %zu input byte%s "
+                   "(%zu total)", kHardBacklog >> 10, drop,
+                   drop == 1 ? "" : "s", droppedInput_);
+        // Advancing the cursor only makes the bytes unreachable — the
+        // vector still holds them. Compact, or the "hard ceiling" bounds
+        // nothing at all between two ticks.
+        compactPending();
+    }
+}
+
+void ImageWriter::compactPending()
+{
+    if (pendingHead_ >= pending_.size()) {
+        pending_.clear();
+        pendingHead_ = 0;
+    } else if (pendingHead_ >= 8192) {
+        // Compact instead of growing without bound on a long job.
+        pending_.erase(pending_.begin(),
+                       pending_.begin() +
+                           static_cast<std::ptrdiff_t>(pendingHead_));
+        pendingHead_ = 0;
+    }
 }
 
 void ImageWriter::flushPending()
@@ -609,6 +665,7 @@ void ImageWriter::flushPending()
     credit_      = 0.0;
     stalledFor_  = 0.0;   // the queue is gone; don't arm the next job's
                           // watchdog with time this one spent stalled
+    catchUp_     = false; // nothing left to catch up on
 }
 
 double ImageWriter::byteCost(uint8_t ch) const
@@ -663,9 +720,32 @@ void ImageWriter::tick(double dt)
         pendingHead_ = 0;
         credit_      = 0.0;
         stalledFor_  = 0.0;   // idle printer: the next job starts fresh
+        catchUp_     = false;
         return;
     }
     if (speed_ == Speed::Instant) { flushPending(); return; }
+
+    // Behind by more than kMaxBacklog: pacing is suspended and the head
+    // runs flat out — but only for a bounded slice of this tick, so the
+    // window keeps repainting while it catches up. It stays armed until
+    // the queue is EMPTY, not merely back under the threshold: stopping
+    // at the threshold would hand ~512 KiB back to the 250 cps model and
+    // spend half an hour of wall clock printing it, which is neither what
+    // the memory bound wanted nor what the user is waiting for.
+    if (catchUp_) {
+        const size_t byteBudget  = pendingHead_ + kCatchUpBytes;
+        const size_t sheetBudget = sheetsEjected_ + kCatchUpSheets;
+        while (pendingHead_ < pending_.size() &&
+               pendingHead_ < byteBudget &&
+               sheetsEjected_ < sheetBudget) {
+            printChar(pending_[pendingHead_++]);
+        }
+        credit_     = 0.0;
+        stalledFor_ = 0.0;   // nothing is unaffordable while un-paced
+        if (pendingHead_ >= pending_.size()) catchUp_ = false;
+        compactPending();
+        return;
+    }
 
     // Bank the elapsed time, capped so a hidden window or a long host
     // stall doesn't dump half a page in one frame. The cap has to leave
@@ -695,7 +775,17 @@ void ImageWriter::tick(double dt)
     // cost-model mistake must degrade to "printed late", never to a hang.
     if (pendingHead_ == before && dt > 0.0) {
         stalledFor_ += dt;
-        if (stalledFor_ >= kStallSeconds) {
+        // The threshold has to clear the dearest byte the cost model can
+        // legitimately produce, or the watchdog fires on a byte that was
+        // merely SLOW. `ESC H 9999` + FF is 69" of paper at 5 ips = 13.9 s
+        // of honest mechanism time, and a flat 10 s cap cut it short and
+        // logged a STALL for a printer that was working correctly. The
+        // credit cap already grows to `head` (see above), so waiting that
+        // long is the paced answer; the watchdog is only for a cost the
+        // model can never afford at all.
+        const double patience =
+            std::max(kStallSeconds, byteCost(pending_[pendingHead_]) * 1.5);
+        if (stalledFor_ >= patience) {
             const uint8_t ch = pending_[pendingHead_];
             traceEvent("STALL: byte $%02X unaffordable for %.1f s "
                        "(cost %.3f s, credit %.3f s) — forcing it through",
@@ -709,16 +799,7 @@ void ImageWriter::tick(double dt)
         stalledFor_ = 0.0;
     }
 
-    if (pendingHead_ >= pending_.size()) {
-        pending_.clear();
-        pendingHead_ = 0;
-    } else if (pendingHead_ >= 8192) {
-        // Compact instead of growing without bound on a long job.
-        pending_.erase(pending_.begin(),
-                       pending_.begin() +
-                           static_cast<std::ptrdiff_t>(pendingHead_));
-        pendingHead_ = 0;
-    }
+    compactPending();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -885,9 +966,18 @@ bool ImageWriter::processCommandChar(uint8_t ch)
             return true;
         }
         case 0x09: {                            // HT
+            // NEAREST stop to the right, not the farthest. The reference
+            // (imagewriter.cpp:1131-1141) keeps overwriting `moveTo` as it
+            // scans, so it lands on the LAST stop past the head — with
+            // stops at 10/20/30 chars the first TAB jumped to 30 and every
+            // later TAB was a no-op, which turns any columnar report into
+            // one ragged column. A deliberate deviation from the
+            // reference, matching the ImageWriter II Technical Reference.
             double moveTo = -1.0;
             for (uint8_t i = 0; i < numHorizTabs_; ++i)
-                if (horiztabs_[i] > curX_) moveTo = horiztabs_[i];
+                if (horiztabs_[i] > curX_ &&
+                    (moveTo < 0.0 || horiztabs_[i] < moveTo))
+                    moveTo = horiztabs_[i];
             if (moveTo > 0.0 && moveTo < rightMargin_) curX_ = moveTo;
             return true;
         }
@@ -895,9 +985,11 @@ bool ImageWriter::processCommandChar(uint8_t ch)
             if (numVertTabs_ == 0) {
                 curX_ = leftMargin_;            // all tabs cancelled → CR
             } else {
-                double moveTo = -1.0;
-                for (uint8_t i = 0; i < numVertTabs_; ++i)
-                    if (verttabs_[i] > curY_) moveTo = verttabs_[i];
+                double moveTo = -1.0;              // nearest stop below —
+                for (uint8_t i = 0; i < numVertTabs_; ++i)   // see HT above
+                    if (verttabs_[i] > curY_ &&
+                        (moveTo < 0.0 || verttabs_[i] < moveTo))
+                        moveTo = verttabs_[i];
                 if (moveTo > bottomMargin_ - lineSpacing_ || moveTo < 0.0)
                     newPage(true, false);
                 else
@@ -993,11 +1085,18 @@ bool ImageWriter::processCommandChar(uint8_t ch)
     }
 
     case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: {
-        // ESC 1..6 — insert n intercharacter spaces (proportional only).
+        // ESC 1..6 — add n/120" of intercharacter space (proportional
+        // only), the same knob `ESC s n` sets. The reference
+        // (imagewriter.cpp:665-678) assigns `curX_ = n/unit` instead: an
+        // ABSOLUTE position a fraction of an inch from the left edge, so
+        // `ESC 3` mid-line threw the head from 1.25" back to 0.02" —
+        // outside the left margin — and destroyed every justified line a
+        // proportional driver (AppleWorks, the LQ GS/OS driver) produced.
+        // A deliberate deviation from the reference, matching the
+        // ImageWriter II Technical Reference.
         if (style_ & kStyleProp) {
-            const double unit = definedUnit_ < 0 ? 72.0 : definedUnit_;
-            const double newX = (escCmd_ - '0') / unit;
-            if (newX <= rightMargin_) curX_ = newX;
+            extraIntraSpace_ = (escCmd_ - '0') / 120.0;
+            updateMetrics();
         }
         break;
     }
@@ -1081,7 +1180,14 @@ bool ImageWriter::processCommandChar(uint8_t ch)
 
     case 0x48:                                  // ESC H nnnn  page length
         spacesToZeros(4);
-        pageHeightIn_ = param4() / 144.0;
+        // Clamped to something a sheet can be. `ESC H 0000` set a
+        // zero-length page, so every single line feed ejected: three LFs
+        // produced three sheets and a real job blew the whole 32-page
+        // stack away in blanks. The upper end is the physical raster —
+        // past it the head runs off the bottom and the ink is dropped
+        // silently, with no eject to show for it.
+        pageHeightIn_ = std::clamp(param4() / 144.0,
+                                   1.0, defaultPageHeight_);
         bottomMargin_ = pageHeightIn_;
         topMargin_    = 0.0;
         updateSwitch();
@@ -1110,7 +1216,13 @@ bool ImageWriter::processCommandChar(uint8_t ch)
 
     case 0x4c:                                  // ESC L nnn  left margin
         spacesToZeros(3);
-        leftMargin_ = (param3() - 1.0) / cpi_;
+        // Clamped to the sheet. `ESC L 000` gave a NEGATIVE margin (the
+        // -1 is the 1-based column) and clipped the first character;
+        // `ESC L 999` put it 83" out and every page came out blank, with
+        // no diagnostic either way. A margin off the paper is a garbled
+        // parameter, not an instruction.
+        leftMargin_ = std::clamp((param3() - 1.0) / cpi_,
+                                 0.0, std::max(0.0, pageWidthIn_ - 1.0 / cpi_));
         if (curX_ < leftMargin_) curX_ = leftMargin_;
         break;
 

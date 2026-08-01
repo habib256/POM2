@@ -246,6 +246,12 @@ public:
     /// Bytes accepted but not yet printed.
     size_t pendingBytes() const { return pending_.size() - pendingHead_; }
     bool   busy() const { return pendingHead_ < pending_.size(); }
+    /// Input bytes dropped to hold the backlog under its hard ceiling —
+    /// see `kHardBacklog`. Nonzero means a printout came out truncated.
+    size_t droppedInputBytes() const { return droppedInput_; }
+    /// True while the mechanism is running flat out to clear a backlog
+    /// (Draft/NLQ pacing suspended until the queue empties).
+    bool   catchingUp() const { return catchUp_; }
 
     /// Stock ImageWriter II input buffer. The interface card raises BUSY
     /// to the Apple II while more than this is outstanding, which is what
@@ -376,6 +382,36 @@ private:
     /// is forced through and the trace says so.
     double stalledFor_ = 0.0;
     static constexpr double kStallSeconds = 10.0;
+
+    // ─── Backlog catch-up (see queueBytes/tick) ──────────────────────────
+    // The mechanism may never fall more than `kMaxBacklog` behind the
+    // card: hours of queued "mechanism time" parked on the heap is a leak
+    // in all but name. Past that, Draft/NLQ pacing yields and the printer
+    // catches up — but it must catch up ACROSS TICKS. Draining the
+    // backlog inside `queueBytes()` (which is what this used to do) ran it
+    // synchronously on the UI thread, from `pumpImageWriter()`: measured
+    // 852 ms for plain text and 301 s for a form-feed storm, each in ONE
+    // frame — the window stops repainting while audio and the CPU worker
+    // carry on, which reads as a hard freeze rather than a slow printer.
+    // The credit cap bounds credited *seconds*; only these
+    // budgets bound the *work*. Sheets are budgeted separately from bytes
+    // because an eject copies a whole page raster (~1.9 MB at Letter/144),
+    // so a one-byte FF is four orders of magnitude dearer than a glyph.
+    // Budgets sized against measured cost: ~0.8 us per glyph and ~0.5 ms
+    // per eject (a Letter/144 raster memcpy), so 16 KiB + 4 sheets is
+    // ~13 ms — under a 60 Hz frame — and clears the 1 MiB arming
+    // threshold in about a second of wall clock.
+    static constexpr size_t kMaxBacklog    = 1u << 20;    // arm catch-up
+    static constexpr size_t kHardBacklog   = 4u << 20;    // drop past this
+    static constexpr size_t kCatchUpBytes  = 16u << 10;   // per tick
+    static constexpr size_t kCatchUpSheets = 4;           // per tick
+    bool   catchUp_       = false;
+    size_t droppedInput_  = 0;
+    size_t sheetsEjected_ = 0;   // monotonic; budgets the eject rate
+
+    /// Drop the consumed prefix of `pending_` (or clear it when the queue
+    /// has drained). Shared by the paced and catch-up drains.
+    void compactPending();
 
     // ─── Trace log ───────────────────────────────────────────────────────
     std::vector<uint8_t> raw_;         // see rawStream()

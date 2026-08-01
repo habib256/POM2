@@ -319,6 +319,16 @@ private:
     /// than per-bit-clock polling.
     void onConnectionEdge(bool nowConnected);
 
+    /// Is anything actually cabled to the port? DCD/DSR are active-low
+    /// "device present" pins, and two different devices can hold them
+    /// down: a telnet peer on the modem side, or an ImageWriter on the
+    /// printer side. The tap counts because a printer is a DCE that is
+    /// simply *there* — it has no carrier to acquire, so a firmware that
+    /// waits for one (the //c's built-in printer port does, on every
+    /// character) must not be told the line is dead.
+    /// Caller must hold `bufferMtx` (reads `printerTap_`).
+    bool deviceAttached() const { return connected || printerTap_; }
+
     /// Latch new IRQ sources and push the line if it transitioned.
     /// Caller must hold `bufferMtx`.
     void raiseIrqSource(uint8_t mask);
@@ -352,6 +362,10 @@ private:
     // lets the 1 MiB cap trim the consumed prefix without breaking the
     // drain cursor (see drainPrinterSpoolFrom).
     size_t printerSpoolBase_ = 0;
+    // The cap drops half a megabyte out of the middle of a printout; warn
+    // once so it is not silent, but only once (a guest that trips it will
+    // trip it again immediately, and a log storm helps nobody).
+    bool   printerSpoolTrimWarned_ = false;
 
     void buildRom();
     void runWorker();

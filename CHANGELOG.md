@@ -5,6 +5,121 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-01 — ImageWriter: the freeze, the reprint, the overprint, and four reference bugs
+
+Follow-up to the //c fix below, from the same multi-agent audit of the
+print chain. Everything downstream of the interface card had held up under
+compiled probes and ASan/UBSan — no memory-safety defect anywhere — so what
+was left were behavioural faults, each of which needed its own reasoning.
+
+**The freeze.** `queueBytes()` printed the whole backlog synchronously
+once it passed 1 MiB. On the UI thread, from `pumpImageWriter()`. Measured
+with a probe: 852 ms for plain text and **301 s for a form-feed storm, in
+a single frame**, while audio and the CPU worker carried on — which reads
+as a hard freeze, not a slow printer. The bug is a category error: the
+credit cap in `tick()` bounds credited *seconds*, and nothing ever bounded
+the *work*. Catch-up now happens across ticks under two budgets, bytes and
+sheet ejects, budgeted separately because an eject copies a whole page
+raster and so is orders of magnitude dearer per byte than a glyph. Worst
+frame is ~14 ms. Past a 4 MiB hard ceiling the oldest input is dropped and
+counted, the rule the page stack and the SSC spool already follow:
+truncating a printout is bad, freezing the emulator is worse.
+
+**The reprint.** One drain cursor serves three possible sources, and it
+was re-seated at 0 whenever the source changed. A spool can outlive its
+source status — the SSC tap's does, nothing clears it — so one frame with
+"Feed ImageWriter printer" unticked reprinted the entire session on the
+next frame. Worse on a //c, where slot 1 is the printer port and slot 2
+the modem port and both are SSCs: unticking slot 1 handed the source to
+slot 2 at 0 and printed the whole modem transcript onto paper. It now
+adopts the new source's current total, which also gives the physically
+right answer for the toggle — while the box is unticked the cable is out,
+and what the guest sent meanwhile went to a port with nothing on the end.
+The arithmetic moved to `PrinterFeedCursor.h`, header-only, because it
+lived in `MainWindow.cpp` where no test could reach it.
+
+**The overprint.** `resetPrinter()` did not re-arm the CR/LF detector, and
+nothing else a guest can send did either — so the latch was scoped to the
+host session rather than the job. Once one CR+LF driver had latched it,
+every later `PR#n : LIST` printed its whole listing onto one black line,
+unrecoverable from inside the guest. `ESC c` ("initialize printer") now
+re-arms it. That is safe as the re-arm point precisely because Print Shop
+separates its colour passes with a bare CR and never sends `ESC c` — both
+directions are pinned, because getting this wrong in the other direction
+brings back the coloured staircase the detector exists to prevent.
+
+**Four reference bugs.** Auditing the port against greg-kennedy's
+`imagewriter.cpp` proves faithfulness, not correctness. Checked against
+the *ImageWriter II Technical Reference* instead, four faithfully-ported
+behaviours put visibly wrong ink on paper, so POM2 now deviates
+deliberately (documented at each site, per the CLAUDE.md convention):
+HT/VT went to the *farthest* tab stop rather than the nearest, so with
+stops at 10/20/30 the first TAB jumped to 30 and every later one was a
+no-op; `ESC 1`..`ESC 6` assigned an absolute head position instead of
+adding intercharacter space, throwing the head backwards out of the left
+margin mid-line and destroying justified output; `ESC c` binned the sheet
+on the platen, which the reference can afford because it wrote pages to
+disk but here is silent data loss; and `ESC H`/`ESC L` took any parameter,
+so `ESC H 0000` ejected on every line feed and `ESC L 999` put the margin
+83″ off the sheet — both silently.
+
+Also: the stall watchdog's patience now scales with the head byte's cost
+instead of a flat 10 s, so a legitimately long form feed is no longer cut
+short and logged as a STALL; and the ImageWriter panel names any printer
+card that is plugged but *not* feeding, since Slot Config allows a
+`PrinterCard` and a `Grappler+` at once and the loser was silently dead.
+
+One reported defect was verified and deliberately left alone: `ESC D`/`ESC
+Z` cannot set bit 7 of either soft switch, because the bit-7 mask runs
+before the escape parser. Neither bit 7 is wired to anything here — A-8 is
+the "LF after CR" switch, which POM2 models with `AutoFeed` rather than
+the switch byte, and B-8 is unused — so the change would be a no-op with
+nonzero regression risk. Recorded in DEV.md rather than fixed.
+
+## 2026-08-01 — The //c prints again: an armed printer tap is a device on the pins
+
+`PR#1` on //c, //c+ and //c PAL hung the guest and printed nothing. Not
+"printed badly" — the machine wedged inside its own printer firmware and
+never came back, on three of the eight shipped profiles, with no
+workaround available: a //c has no physical slots, so the built-in SSC
+printer port is the *only* route to the ImageWriter.
+
+The cause is a two-days-apart interaction between two correct changes.
+`$C100` on a //c is **internal** ROM, so `PR#1` runs the machine's own
+printer-port firmware rather than the card's synthetic `PR#n` ROM — and
+that firmware gates every single character on the 6551 status register,
+spinning until `status & (DCD|TDRE)` reads "carrier present, transmitter
+empty". On 2026-07-30 the DCD/DSR polarity was corrected to match MAME
+(`mos6551.cpp:37-39` inits `m_dsr(1), m_dcd(1)`) and AppleWin
+(`SerialComms.cpp:864` returns `ST_DSR|ST_DCD` "when nothing is
+attached"). That fix was right — POM2 had the sense inverted, so a
+carrier-aware guest saw "online" with an idle listener. But it answered
+the pins from the **telnet connection alone**, and two days earlier
+(2026-07-28) the printer tap had shipped as a second kind of device on
+the same port. With no telnet client, the //c was told its printer was
+absent, and it waited for a carrier that a printer never has.
+
+The fix is not a revert — the modem polarity stays as MAME has it. It is
+that "nothing is attached" was simply false: an ImageWriter cabled to the
+port *is* a DCE sitting there with its lines up. `deviceAttached()`
+(= telnet peer **or** armed printer tap) is now what DCD/DSR answer to.
+One condition, and the //c prints.
+
+Worth recording is **why the existing test passed throughout**.
+`ssc_acia_smoke` does exercise the printer tap — but it drives it through
+the *card's* synthetic `PR#n` ROM, which only ever checks TDRE. It is
+structurally blind to DCD, so it could not have failed here no matter how
+the polarity moved. Nothing booted a //c profile and ran `PR#1` through to
+the spool, which is exactly the gap a "//c printing" feature needed
+covered. `iic_printer_port` now closes it at three levels: the DCD/DSR
+device-present contract, the firmware's `status & $30 == $10` wait-loop
+shape, and a real DOS 3.3 boot on all three //c ROMs where `PR#1` +
+`PRINT "HI"` must land bytes in the spool. Against the pre-fix source all
+three ROMs fail with the PC frozen in firmware ($C2BA / $C1C2 / $C2B7);
+post-fix each spools the echoed command line and its output. The
+end-to-end half is ROM/disk gated and skips rather than fails when the
+user-provided media is absent.
+
 ## 2026-08-01 — Host sockets on Windows: the Uthernet II now has a network there
 
 `POM2_HAS_SOCKETS` was 0 on Windows, which took out more than it looked

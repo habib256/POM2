@@ -688,7 +688,19 @@ uint8_t SuperSerialCard::deviceSelectRead(uint8_t low4)
                 // nothing is attached). POM2 had the sense inverted, so a
                 // carrier-aware guest saw "online" with an idle listener
                 // and "NO CARRIER" the instant a client connected.
-                if (!connected) s |= (SR_DCD | SR_DSR);
+                //
+                // "Nothing is attached" is the operative phrase: an
+                // ImageWriter cabled to the port IS a DCE sitting there
+                // with its lines up, and a printer has no carrier to
+                // lose. The //c has no physical slots, so its built-in
+                // printer port (slot 1) is the only route to the
+                // ImageWriter — and its firmware gates every character on
+                // this exact status read, spinning until DCD reads
+                // active. Reporting "no carrier" at an armed printer tap
+                // therefore hangs the guest on `PR#1` and no byte ever
+                // reaches the spool. deviceAttached() is what the pins
+                // answer to: a telnet peer OR a tapped printer.
+                if (!deviceAttached()) s |= (SR_DCD | SR_DSR);
                 if (irqState_ != 0) s |= SR_IRQ;
                 // MAME `mos6551.cpp:237-250`: status read clears
                 // `m_irq_state` and re-evaluates the line. Without this,
@@ -749,6 +761,20 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
                         printerSpool_.begin(),
                         printerSpool_.begin() + static_cast<std::ptrdiff_t>(drop));
                     printerSpoolBase_ += drop;
+                    // Half a megabyte just fell out of the middle of a
+                    // printout. That has to leave a mark somewhere: it is
+                    // silent data loss otherwise, and the paper only shows
+                    // a job that stops mid-sentence. Logged once per
+                    // session — a guest that trips this once will trip it
+                    // repeatedly, and a log storm helps nobody.
+                    if (!printerSpoolTrimWarned_) {
+                        printerSpoolTrimWarned_ = true;
+                        pom2::log().warn("SSC",
+                            "printer spool hit its 1 MiB cap — dropping the "
+                            "oldest " + std::to_string(drop / 1024) +
+                            " KiB. The ImageWriter is falling behind the "
+                            "guest; the printout will have a gap.");
+                    }
                 }
             }
             break;
