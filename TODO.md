@@ -40,7 +40,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
-| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo deferred                         |
+| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo L/R per VIA pair done (2026-08-01) |
 | 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME does not implement)                 | 🟢 formant synth → PCM blob, 62 phonemes (AppleWin LGPL → GPL3)                           |
 | 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
 | 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
@@ -49,7 +49,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 22ter | ImageWriter II printer (host-side, no slot) | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) | Apple ImageWriter II + LQ reference manuals                 | 🟢 full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG & multi-page PDF export; fed by `printer` / `grappler` / SSC printer tap (//c PR#1) |
 | 23  | UthernetCard + Cs8900aDevice (key `uthernet`) | Verbatim | MAME `machine/cs8900a.cpp` (VICE lineage) + `bus/a2bus/uthernet.cpp`, line-cited | 🟢 pull-mode RX (POM2 has no `device_network_interface` push bus); inbound frame queue out of snapshot deliberate |
 | 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
-| 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path |
+| 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path; 🟡 libslirp is Linux/macOS only, so Uthernet I has no transport on Windows |
 
 ## Quick wins
 
@@ -61,7 +61,7 @@ Suggested attack order — items with high impact/effort ratio.
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | cuts recompiles (IIgs itself lives in the separate pom2gs project) |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
-| 4b | **Digidream 1 tempo regression** | ? | open audio regression from the 2026-08-01 Mockingboard pass — cause not established (see [Audio]) |
+| 4b | ~~Digidream 1 tempo regression~~ ✅ DONE | — | cause measured (`caughtUp` paced against the last write, not CPU-now) and fixed 2026-08-01 (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (~130 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
@@ -267,17 +267,26 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   regression test is only credible once shown to FAIL against the
   reverted fix.**
 
+**Landed 2026-08-01 (stereo pass):**
+
+- ✅ **True stereo bus.** `AudioDevice` carries interleaved stereo;
+  Mockingboard routes AY1 → L / AY2 → R at `/3` per side, speech centred
+  (MAME `a2mockingboard.cpp:159-165`, `:186-189`), Phasor splits by VIA
+  pair at `/6` per side (`:192-208`). The mono contract is untouched —
+  a mono source is centred at unity on both channels, so nothing moved
+  level — and each card keeps a mono fold-down that reproduces its old
+  summed render bit-for-bit. DD1's deliberate A/B/C pan survives the mix
+  now. `setMonoDownmix` restores a centred image for mono gear.
+  Pinned: `tests/audio_stereo_test.cpp`. → [DEV § Stereo
+  bus](DEV.md#stereo-bus-2026-08-01).
+
 **Deferred, with the trade-off recorded:**
 
-- 🟢 **True stereo (AY1 → L, AY2 → R, gain 0.5).** What MAME does
-  (`a2mockingboard.cpp:161-165`) and what AppleWin does
-  (`MockingboardCardManager.cpp:388-407`). Blocked on `AudioDevice` being
-  a mono bus (`AudioDevice.cpp:185`), so it is a whole-pipeline change
-  (speaker, cassette, SSI263, floppy sounds). DD1 has a deliberate ABC
-  pan that the mono sum destroys; DD2 is unaffected (single AY). This is
-  also the honest fix for single-AY level, since each side would then
-  carry one chip and `/3` falls out naturally. Supersedes the older
-  "Phasor stereo" item below.
+- 🟢 **SSI263 / Echo+ placement is a guess beyond MAME.** MAME centres
+  the Mockingboard's speech chip and gives the Echo+ TMS5220 a
+  `front_center` speaker, which is what POM2 does; where a *pair* of
+  speech chips would sit (a two-SSI263 Sound II, or Phasor + Echo+ mode)
+  has no oracle. Left centred until one turns up.
 - 🟢 **Phasor: no cycle-stamped event queue, no `setCpuClock` override.**
   Every register write inside a buffer still collapses to its last value,
   and PAL clocks its AYs 0.7 % fast. Now the only divergence from
@@ -308,9 +317,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   demos (Music Studio, trackers). AppleWin refs `Card::CT_DX1`. *1 d.*
 - 🟢 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
   Performer. MAME refs `mc6840.cpp` + `acia6850.cpp`. *3 d.*
-- 🟢 **Phasor stereo** — folded into the "true stereo" item above; when
-  the mixer goes stereo, pan L/R per AY-pair on Phasor (MAME uses two
-  2-channel speakers, `a2mockingboard.cpp:192-208`) and on SSI263/Echo+.
 - 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
 ### [Storage] disks & images
@@ -466,6 +472,24 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   box. Virtual DNS resolves off the CPU thread. Ethernet status panel.
   Pinned `uthernet_cs8900_smoke` + `uthernet2_w5100_smoke` (the latter
   runs a real TCP session). Detail → `DEV.md` § Uthernet.
+- ✅ **Host sockets on Windows** — DONE (2026-08-01). `POM2_HAS_SOCKETS`
+  was 0 on Windows, so the Uthernet II's TCP/UDP paths, the SSC telnet
+  bridge and the AI control server were all compiled out of the Windows
+  build. The POSIX-vs-Winsock difference now lives in one header,
+  `src/SocketCompat.h`, and those three TUs are written against it.
+  Verified by cross-compiling every `src/*.cpp` with
+  `x86_64-w64-mingw32-g++`. Detail (including the five silent traps and
+  why the readiness wait is `select`, not `WSAPoll`) → [DEV § Host
+  sockets](DEV.md#host-sockets-posix--winsock).
+- 🟡 **Uthernet I has no host transport on Windows** — libslirp is the
+  only backend that moves raw frames, and CMake deliberately does not
+  look for it on WIN32. vcpkg *does* carry a libslirp port (4.9.1), so
+  the library is obtainable; what is missing is POM2's side —
+  `SlirpNetworkBackend`'s poll loop is POSIX `poll()` over the fds
+  libslirp returns, and porting it cannot be verified without a Windows
+  libslirp build to test against. Note the vcpkg port pulls **glib**,
+  which is a heavy addition to the Windows CI job. Uthernet II is
+  unaffected (hardware TCP/IP on host sockets). *1-2 d + CI budget.*
 - 🟡 **Uthernet II inbound (`LISTEN`)** — the W5100 `LISTEN` command is
   decoded but unimplemented: neither transport can route an inbound
   connection to the guest (libslirp is outbound-only without explicit

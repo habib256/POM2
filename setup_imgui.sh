@@ -19,7 +19,14 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     if   command -v apt    &> /dev/null; then
-        sudo apt update
+        # `apt update` fails as a whole when ANY configured repository is
+        # unreachable — a stale third-party PPA (deadsnakes, ondrej/php…)
+        # or a proxy that 403s launchpad is enough. Under `set -e` that
+        # aborted the entire setup before Dear ImGui was even cloned,
+        # even though every package we need lives in the distro archive
+        # and was refreshed successfully. Warn and carry on; the install
+        # below still fails loudly if a package is genuinely missing.
+        sudo apt update || echo "note: apt update reported errors (unreachable third-party repo?) — continuing"
         sudo apt install -y cmake libglfw3-dev pkg-config libgl1-mesa-dev g++
         sudo apt install -y libslirp-dev || echo "note: libslirp-dev unavailable — Uthernet I will have no host transport"
     elif command -v dnf    &> /dev/null; then

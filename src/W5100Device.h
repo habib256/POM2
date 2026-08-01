@@ -63,6 +63,7 @@
 #define POM2_W5100_DEVICE_H
 
 #include "NetworkBackend.h"
+#include "SocketCompat.h"   // socket_t / kInvalidSocket for Socket::fd
 
 #include <array>
 #include <cstddef>
@@ -252,8 +253,13 @@ public:
 
 private:
     /// One of the chip's four sockets. `fd` is a host socket in TCP/UDP
-    /// mode and -1 otherwise; the raw modes need no host socket because
-    /// they go out through the NetworkBackend.
+    /// mode and `kInvalidSocket` otherwise; the raw modes need no host
+    /// socket because they go out through the NetworkBackend.
+    ///
+    /// `pom2::socket_t`, not `int`: Winsock's SOCKET is an unsigned handle
+    /// whose failure value is INVALID_SOCKET, not -1, so the `fd >= 0`
+    /// test this struct used to carry was always true on Windows. See
+    /// SocketCompat.h.
     struct Socket {
         uint16_t transmitBase    = 0;
         uint16_t transmitSize    = 0;
@@ -267,7 +273,7 @@ private:
         /// Bytes currently staged in the RX ring (SN_RX_RSR).
         uint16_t rxSize  = 0;
 
-        int     fd         = -1;
+        socket_t fd        = kInvalidSocket;
         uint8_t status     = kW5100SnSrClosed;
         /// Per-protocol header the chip prepends to received data in the
         /// RX ring (`Uthernet2.cpp:212-234`): none for TCP, IP+port+len
@@ -283,7 +289,7 @@ private:
 
         bool isOpen() const
         {
-            return fd >= 0 &&
+            return isValidSocket(fd) &&
                    (status == kW5100SnSrEstablished ||
                     status == kW5100SnSrCloseWait ||
                     status == kW5100SnSrUdp);

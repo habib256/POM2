@@ -45,28 +45,34 @@
 #  define POM2_GL_ES 0
 #endif
 
-/// 1 when the platform gives us BSD sockets, 0 when it does not.
+/// 1 when the platform gives us host sockets, 0 when it does not.
 ///
 /// POM2's three networking translation units — AiControlServer (the HTTP
 /// control API), SuperSerialCard (the telnet bridge) and W5100Device (the
-/// Uthernet II's hardware TCP/IP stack mapped onto host sockets) — are written
-/// against POSIX sockets. Two targets do not have them:
+/// Uthernet II's hardware TCP/IP stack mapped onto host sockets) — were written
+/// against POSIX sockets. Exactly one target has no usable host sockets at all:
 ///
-///   * Emscripten: no usable BSD-socket API in the browser at all.
-///   * Windows: has sockets, but via Winsock2 — a different API (SOCKET vs int,
-///     closesocket, WSAPoll, ioctlsocket, WSAStartup). Porting to it is real
-///     work, not a #define, so until that happens the Windows build takes the
-///     same road Emscripten already does.
+///   * Emscripten: the browser exposes no BSD-socket API, and nothing can be
+///     abstracted over that absence.
 ///
-/// The affected features degrade exactly as they do in the browser build: the
-/// cards still plug, reset and answer their registers, they simply see no
-/// traffic, and the SSC opens no listener. Everything else — CPU, video, audio,
-/// disks, printer — is unaffected.
+/// WINDOWS IS NOT ON THAT LIST ANY MORE (2026-08-01). It has sockets, via
+/// Winsock2 — the same stack behind a different API (SOCKET vs int,
+/// closesocket, ioctlsocket, WSAStartup, WSAGetLastError). That difference now
+/// lives in ONE header, `SocketCompat.h`, and the three TUs above are written
+/// against it, so the Uthernet II, the telnet bridge and the AI control API
+/// work on Windows like anywhere else.
+///
+/// Under Emscripten the affected features still degrade the documented way: the
+/// cards plug, reset and answer their registers but see no traffic, and the SSC
+/// opens no listener. Everything else — CPU, video, audio, disks, printer — is
+/// unaffected.
 ///
 /// Guard host-socket code with `#if POM2_HAS_SOCKETS`, not with
-/// `#ifndef __EMSCRIPTEN__`: the latter is what silently assumed "not a browser
-/// therefore POSIX", which is exactly what broke the Windows build.
-#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+/// `#ifndef __EMSCRIPTEN__`: the latter silently assumed "not a browser
+/// therefore POSIX", which is what broke the Windows build in the first place.
+/// And inside such a block, reach for `SocketCompat.h` rather than a bare
+/// POSIX call — see the four silent Winsock traps documented there.
+#if defined(__EMSCRIPTEN__)
 #  define POM2_HAS_SOCKETS 0
 #else
 #  define POM2_HAS_SOCKETS 1

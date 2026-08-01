@@ -34,13 +34,9 @@
 // and start()/stop() become logged no-ops. The rest of the server's
 // state machine (attach, detach, handlers) stays linked so any callers
 // inside the binary still see a valid object.
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+// Host socket stack for both families — POSIX and Winsock. SocketUtil.h
+// (included above) is built on it and carries the accept/SIGPIPE idioms.
+#include "SocketCompat.h"
 #endif
 
 namespace pom2 {
@@ -307,20 +303,29 @@ std::string jsonEscape(const std::string& in)
 }
 
 #if POM2_HAS_SOCKETS
-void applyRecvTimeout(int fd, int timeoutMs)
+void applyRecvTimeout(pom2::socket_t fd, int timeoutMs)
 {
+#ifdef _WIN32
+    // Winsock's SO_RCVTIMEO takes a DWORD of milliseconds, NOT a timeval —
+    // passing a timeval there is accepted and then read as garbage, which
+    // is how a 2-second timeout silently becomes minutes.
+    const DWORD ms = static_cast<DWORD>(timeoutMs);
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&ms), sizeof(ms));
+#else
     struct timeval tv{};
     tv.tv_sec  = timeoutMs / 1000;
     tv.tv_usec = (timeoutMs % 1000) * 1000;
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
 }
 
-bool sendAll(int fd, const char* buf, size_t n)
+bool sendAll(pom2::socket_t fd, const char* buf, size_t n)
 {
     while (n > 0) {
-        const ssize_t s = pom2::sendNoSignal(fd, buf, n);
+        const pom2::iolen_t s = pom2::sendNoSignal(fd, buf, n);
         if (s <= 0) {
-            if (s < 0 && errno == EINTR) continue;
+            if (s < 0 && pom2::errInterrupted(pom2::lastSocketError())) continue;
             return false;
         }
         buf += s;
@@ -404,28 +409,27 @@ bool AiControlServer::start(uint16_t port)
         pom2::log().warn("AICtrl", "start() called before attach() — refusing");
         return false;
     }
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        pom2::log().warn("AICtrl", std::string("socket() failed: ") + std::strerror(errno));
+    pom2::ensureSocketStack();     // Winsock needs WSAStartup; no-op elsewhere
+    const pom2::socket_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!pom2::isValidSocket(fd)) {
+        pom2::log().warn("AICtrl", "socket() failed: " + pom2::lastSocketErrorText());
         return false;
     }
-    int yes = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    pom2::setSockOptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1);
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(port);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         pom2::log().warn("AICtrl",
             "bind 127.0.0.1:" + std::to_string(port) + " failed: " +
-            std::strerror(errno));
-        ::close(fd);
+            pom2::lastSocketErrorText());
+        pom2::closeHostSocketValue(fd);
         return false;
     }
-    if (::listen(fd, 4) < 0) {
-        pom2::log().warn("AICtrl", std::string("listen() failed: ") +
-                         std::strerror(errno));
-        ::close(fd);
+    if (::listen(fd, 4) != 0) {
+        pom2::log().warn("AICtrl", "listen() failed: " + pom2::lastSocketErrorText());
+        pom2::closeHostSocketValue(fd);
         return false;
     }
     listenFd_.store(fd, std::memory_order_release);
@@ -453,11 +457,10 @@ void AiControlServer::stop()
     // kernel recycle the descriptor while the worker still holds it in
     // an in-flight accept(), creating a use-after-close window. Mirrors
     // SuperSerialCard::stopListening() exactly.
-    { const int fd = listenFd_.load(std::memory_order_acquire);
-      if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
+    pom2::shutdownBoth(listenFd_.load(std::memory_order_acquire));
     if (worker_.joinable()) worker_.join();
-    { const int fd = listenFd_.exchange(-1, std::memory_order_acq_rel);
-      if (fd >= 0) ::close(fd); }
+    pom2::closeHostSocketValue(
+        listenFd_.exchange(pom2::kInvalidSocket, std::memory_order_acq_rel));
     running_ = false;
 #endif
 }
@@ -471,18 +474,17 @@ void AiControlServer::runWorker()
         // the ai_control_server_smoke ctest timeout — every assertion
         // passed, then the binary died in stop()'s worker_.join()).
         sockaddr_in peer{};
-        int fd = -1;
+        pom2::socket_t fd = pom2::kInvalidSocket;
         const auto pa = pom2::pollAcceptOnce(
             listenFd_.load(std::memory_order_acquire), 200, fd, peer);
         if (pa == pom2::PollAccept::Retry)    continue;
         if (pa == pom2::PollAccept::Shutdown) break;
-        if (stopRequested_) { ::close(fd); break; }
+        if (stopRequested_) { pom2::closeHostSocketValue(fd); break; }
         pom2::disableSigpipe(fd);
-        int yes = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        pom2::setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
         {
             std::lock_guard<std::mutex> lk(mtx_);
-            lastClient_ = ::inet_ntoa(peer.sin_addr);
+            lastClient_ = pom2::peerAddressText(peer);
         }
         // A handler must never escape an exception out of the worker thread —
         // that calls std::terminate() and kills the whole emulator. Catch all,
@@ -494,15 +496,15 @@ void AiControlServer::runWorker()
         } catch (...) {
             pom2::log().warn("AICtrl", "handler exception (unknown)");
         }
-        ::shutdown(fd, SHUT_RDWR);
-        ::close(fd);
+        pom2::shutdownBoth(fd);
+        pom2::closeHostSocketValue(fd);
         ++requestsServed_;
     }
 }
 
 // ─── Request parsing ──────────────────────────────────────────────────────
 
-bool AiControlServer::readRequest(int fd, Request& req)
+bool AiControlServer::readRequest(socket_t fd, Request& req)
 {
     applyRecvTimeout(fd, kRecvTimeoutMs);
 
@@ -522,7 +524,7 @@ bool AiControlServer::readRequest(int fd, Request& req)
     while (headerEnd == std::string::npos) {
         if (buffer.size() > kMaxHeaderBytes) return false;
         if (pastDeadline()) return false;
-        const ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
+        const iolen_t got = recvSocket(fd, chunk, sizeof(chunk));
         if (got <= 0) return false;
         buffer.append(chunk, chunk + got);
         headerEnd = buffer.find("\r\n\r\n");
@@ -577,7 +579,7 @@ bool AiControlServer::readRequest(int fd, Request& req)
         }
         while (req.body.size() < static_cast<size_t>(cl)) {
             if (pastDeadline()) return false;
-            const ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
+            const iolen_t got = recvSocket(fd, chunk, sizeof(chunk));
             if (got <= 0) return false;
             req.body.append(chunk, chunk + got);
         }
@@ -590,7 +592,7 @@ bool AiControlServer::readRequest(int fd, Request& req)
 
 // ─── Response helpers ─────────────────────────────────────────────────────
 
-void AiControlServer::sendResponse(int fd,
+void AiControlServer::sendResponse(socket_t fd,
                                    int status,
                                    const std::string& contentType,
                                    const std::string& body)
@@ -623,13 +625,13 @@ void AiControlServer::sendResponse(int fd,
     if (!body.empty()) sendAll(fd, body.data(), body.size());
 }
 
-void AiControlServer::sendJsonError(int fd, int status, const std::string& message)
+void AiControlServer::sendJsonError(socket_t fd, int status, const std::string& message)
 {
     const std::string b = "{\"ok\":false,\"error\":\"" + jsonEscape(message) + "\"}";
     sendResponse(fd, status, "application/json", b);
 }
 
-void AiControlServer::sendJsonOk(int fd, const std::string& body)
+void AiControlServer::sendJsonOk(socket_t fd, const std::string& body)
 {
     // `body` is expected to be either an empty JSON object `{}` or a body
     // starting with `{` and ending with `}`. We inject `"ok":true` after
@@ -661,7 +663,7 @@ bool AiControlServer::checkAuth(const Request& req) const
 
 // ─── Dispatch ─────────────────────────────────────────────────────────────
 
-void AiControlServer::handleClient(int fd)
+void AiControlServer::handleClient(socket_t fd)
 {
     Request req;
     if (!readRequest(fd, req)) {
@@ -711,7 +713,7 @@ void AiControlServer::handleClient(int fd)
 
 // ─── Endpoint implementations ─────────────────────────────────────────────
 
-void AiControlServer::handleStatus(int fd, const Request& /*req*/)
+void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
 {
     std::string profile;
     {
@@ -779,7 +781,7 @@ void AiControlServer::handleStatus(int fd, const Request& /*req*/)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleReset(int fd, const Request& req)
+void AiControlServer::handleReset(socket_t fd, const Request& req)
 {
     if (req.method != "POST") {
         sendJsonError(fd, 405, "POST only"); return;
@@ -793,7 +795,7 @@ void AiControlServer::handleReset(int fd, const Request& req)
     sendJsonOk(fd, "{\"kind\":\"" + kind + "\"}");
 }
 
-void AiControlServer::handleCpuGet(int fd, const Request& /*req*/)
+void AiControlServer::handleCpuGet(socket_t fd, const Request& /*req*/)
 {
     M6502& cpu = ctrl_->cpu();
     std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
@@ -811,7 +813,7 @@ void AiControlServer::handleCpuGet(int fd, const Request& /*req*/)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleCpuSet(int fd, const Request& req)
+void AiControlServer::handleCpuSet(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     M6502& cpu = ctrl_->cpu();
@@ -829,7 +831,7 @@ void AiControlServer::handleCpuSet(int fd, const Request& req)
     sendJsonOk(fd, "{}");
 }
 
-void AiControlServer::handleMemGet(int fd, const Request& req)
+void AiControlServer::handleMemGet(socket_t fd, const Request& req)
 {
     if (req.method != "GET") { sendJsonError(fd, 405, "GET only"); return; }
     long addr = -1, len = -1;
@@ -857,7 +859,7 @@ void AiControlServer::handleMemGet(int fd, const Request& req)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleMemSet(int fd, const Request& req)
+void AiControlServer::handleMemSet(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     long addr = -1;
@@ -889,7 +891,7 @@ void AiControlServer::handleMemSet(int fd, const Request& req)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleKeyboard(int fd, const Request& req)
+void AiControlServer::handleKeyboard(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string text = jsonGetString(req.body, "text");
@@ -903,7 +905,7 @@ void AiControlServer::handleKeyboard(int fd, const Request& req)
     sendJsonOk(fd, "{\"queued\":" + std::to_string(n) + "}");
 }
 
-void AiControlServer::handleMouse(int fd, const Request& req)
+void AiControlServer::handleMouse(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     if (!ctrl_)               { sendJsonError(fd, 503, "no controller"); return; }
@@ -976,7 +978,7 @@ void AiControlServer::handleMouse(int fd, const Request& req)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleDiskInsert(int fd, const Request& req)
+void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     // Parse the body BEFORE locking — these are pure JSON ops, no card
@@ -1018,7 +1020,7 @@ void AiControlServer::handleDiskInsert(int fd, const Request& req)
                    ",\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
-void AiControlServer::handleDiskEject(int fd, const Request& req)
+void AiControlServer::handleDiskEject(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     long drive = 0;
@@ -1036,7 +1038,7 @@ void AiControlServer::handleDiskEject(int fd, const Request& req)
     sendJsonOk(fd, "{\"drive\":" + std::to_string(drive) + "}");
 }
 
-void AiControlServer::handleSnapshotSave(int fd, const Request& req)
+void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string path = jsonGetString(req.body, "path");
@@ -1074,7 +1076,7 @@ void AiControlServer::handleSnapshotSave(int fd, const Request& req)
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
-void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
+void AiControlServer::handleSnapshotLoad(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     const std::string path = jsonGetString(req.body, "path");
@@ -1110,7 +1112,7 @@ void AiControlServer::handleSnapshotLoad(int fd, const Request& req)
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
-void AiControlServer::handleSpeed(int fd, const Request& req)
+void AiControlServer::handleSpeed(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     long cpf = -1;
@@ -1145,7 +1147,7 @@ void AiControlServer::handleSpeed(int fd, const Request& req)
     sendJsonOk(fd, oss.str());
 }
 
-void AiControlServer::handleScreen(int fd, const Request& /*req*/)
+void AiControlServer::handleScreen(socket_t fd, const Request& /*req*/)
 {
     if (!display_) { sendJsonError(fd, 503, "no display attached"); return; }
     // Render under stateMutex so we don't race the CPU thread mutating

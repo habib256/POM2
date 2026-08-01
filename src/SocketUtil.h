@@ -2,7 +2,7 @@
 
 // POM2 Apple II Emulator
 //
-// Small shared POSIX-socket idioms for the two TCP workers (AiControlServer
+// Small shared socket idioms for the two TCP workers (AiControlServer
 // HTTP + SuperSerialCard telnet bridge). Two hard-won rules live here so
 // they are fixed ONCE:
 //
@@ -12,14 +12,22 @@
 //      This deadlock was found and fixed in AiControlServer, then
 //      re-discovered months later in SuperSerialCard (whose destructor
 //      runs under stateMutex during profile switches — a UI-thread hang).
+//      Windows is a third variant of the same problem: closesocket() on a
+//      listener does wake a blocked accept(), but the handle is then free
+//      to be recycled by the next socket() on another thread, so the
+//      wait-then-accept shape is what makes the shutdown sequence safe
+//      everywhere rather than on Linux only.
 //
 //   2. SIGPIPE-proof send: a peer that vanished uncleanly must surface as
 //      an error return, not kill the process. Linux spells that
 //      MSG_NOSIGNAL; macOS/BSD have no such flag — there the socket needs
-//      SO_NOSIGPIPE set once after accept (disableSigpipe).
+//      SO_NOSIGPIPE set once after accept (disableSigpipe). Windows has no
+//      SIGPIPE at all, so both are no-ops there.
 //
-// Not used by the Emscripten build (no sockets there); both includers
-// guard their network paths with #if POM2_HAS_SOCKETS.
+// The POSIX-vs-Winsock differences themselves are NOT here — they live in
+// SocketCompat.h, which this header is written against. Not used by the
+// Emscripten build (no sockets there); both includers guard their network
+// paths with #if POM2_HAS_SOCKETS.
 
 #ifndef POM2_SOCKET_UTIL_H
 #include "Pom2Build.h"
@@ -27,12 +35,9 @@
 
 #if POM2_HAS_SOCKETS
 
-#include <cerrno>
+#include "SocketCompat.h"
+
 #include <cstddef>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 
 namespace pom2 {
 
@@ -42,41 +47,38 @@ enum class PollAccept {
     Shutdown,   ///< listen fd gone (owner shut it down) — exit the worker
 };
 
-/// One iteration of the poll-then-accept idiom (rule 1 above). Polls
+/// One iteration of the wait-then-accept idiom (rule 1 above). Waits on
 /// `listenFd` for up to `timeoutMs`, then accepts. The caller loops on
 /// Retry so its stop flag is re-checked at least every `timeoutMs`.
-inline PollAccept pollAcceptOnce(int listenFd, int timeoutMs,
-                                 int& outFd, sockaddr_in& peer)
+inline PollAccept pollAcceptOnce(socket_t listenFd, int timeoutMs,
+                                 socket_t& outFd, sockaddr_in& peer)
 {
-    outFd = -1;
-    if (listenFd < 0) return PollAccept::Shutdown;
+    outFd = kInvalidSocket;
+    if (!isValidSocket(listenFd)) return PollAccept::Shutdown;
 
-    struct pollfd pfd{};
-    pfd.fd     = listenFd;
-    pfd.events = POLLIN;
-    const int pr = ::poll(&pfd, 1, timeoutMs);
-    if (pr < 0)  return (errno == EINTR) ? PollAccept::Retry
-                                         : PollAccept::Shutdown;
-    if (pr == 0) return PollAccept::Retry;                    // timeout
-    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
-        return PollAccept::Shutdown;   // fd invalidated under us
+    switch (waitSocket(listenFd, SocketWait::Read, timeoutMs)) {
+    case WaitResult::Timeout:  return PollAccept::Retry;
+    case WaitResult::Failed:   return PollAccept::Shutdown;
+    case WaitResult::Ready:    break;
+    }
 
-    socklen_t peerLen = sizeof(peer);
-    const int fd = ::accept(listenFd,
-                            reinterpret_cast<sockaddr*>(&peer), &peerLen);
-    if (fd < 0) {
-        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-            return PollAccept::Retry;
+    socklen_c peerLen = sizeof(peer);
+    const socket_t fd = ::accept(listenFd,
+                                 reinterpret_cast<sockaddr*>(&peer), &peerLen);
+    if (!isValidSocket(fd)) {
+        const int e = lastSocketError();
+        if (errInterrupted(e) || errWouldBlock(e)) return PollAccept::Retry;
         return PollAccept::Shutdown;   // listening socket closed under us
     }
     outFd = fd;
     return PollAccept::Accepted;
 }
 
-/// Arm rule 2 on a fresh client socket. No-op where MSG_NOSIGNAL covers it.
-inline void disableSigpipe(int fd)
+/// Arm rule 2 on a fresh client socket. No-op where MSG_NOSIGNAL covers it
+/// (Linux) or where SIGPIPE does not exist (Windows).
+inline void disableSigpipe(socket_t fd)
 {
-#ifdef SO_NOSIGPIPE
+#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
     int one = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #else
@@ -85,14 +87,11 @@ inline void disableSigpipe(int fd)
 }
 
 /// send() that cannot raise SIGPIPE (rule 2). Pair with disableSigpipe()
-/// on platforms without MSG_NOSIGNAL.
-inline ssize_t sendNoSignal(int fd, const void* buf, size_t n)
+/// on platforms without MSG_NOSIGNAL. Thin alias kept so the two workers
+/// read the same as before the Winsock port.
+inline iolen_t sendNoSignal(socket_t fd, const void* buf, std::size_t n)
 {
-#ifdef MSG_NOSIGNAL
-    return ::send(fd, buf, n, MSG_NOSIGNAL);
-#else
-    return ::send(fd, buf, n, 0);
-#endif
+    return sendSocket(fd, buf, n);
 }
 
 } // namespace pom2

@@ -3124,7 +3124,7 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 endif()
 if(WIN32)
-    target_link_libraries(test_slot_config PRIVATE winmm)
+    target_link_libraries(test_slot_config PRIVATE winmm ws2_32)
 endif()
 
 add_test(NAME slot_config_smoke COMMAND test_slot_config)
@@ -3309,6 +3309,57 @@ endif()
 
 add_test(NAME phasor_card_smoke COMMAND test_phasor_card)
 set_tests_properties(phasor_card_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Host socket compatibility layer ────────────────────────────────────
+# Pins src/SocketCompat.h, the one place that answers POSIX-vs-Winsock.
+# Header-only, so this target needs no POM2 sources at all. Its point is
+# that the same source compiles for Windows (verified by cross-compiling
+# with x86_64-w64-mingw32-g++), so each helper's contract is asserted
+# once and holds on both families — including the refused non-blocking
+# connect that W5100Device::poll() depends on.
+add_executable(test_socket_compat socket_compat_test.cpp)
+target_include_directories(test_socket_compat PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_socket_compat PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(test_socket_compat PRIVATE ws2_32)
+endif()
+
+add_test(NAME socket_compat COMMAND test_socket_compat)
+set_tests_properties(socket_compat PROPERTIES TIMEOUT 30)
+
+
+# ─── Stereo audio bus ───────────────────────────────────────────────────
+# Pins the 2026-08-01 mono → stereo conversion: the centre pan law that
+# keeps every existing mono source at its old level, native-stereo
+# sources bypassing that law, the mono-downmix switch, and the per-chip
+# placement on Mockingboard (AY1 left / AY2 right) and Phasor (VIA pair
+# per side) with the mono fold-down proving the level is unchanged.
+add_executable(test_audio_stereo
+    audio_stereo_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/PhasorCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_audio_stereo PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_audio_stereo PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_audio_stereo PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_audio_stereo PRIVATE winmm)
+endif()
+
+add_test(NAME audio_stereo COMMAND test_audio_stereo)
+set_tests_properties(audio_stereo PROPERTIES TIMEOUT 10)
 
 
 # ─── SSI263 chip-model smoke test ────────────────────────────────────────
@@ -3662,7 +3713,7 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 endif()
 if(WIN32)
-    target_link_libraries(test_ssc_acia PRIVATE winmm)
+    target_link_libraries(test_ssc_acia PRIVATE winmm ws2_32)
 endif()
 
 add_test(NAME ssc_acia_smoke COMMAND test_ssc_acia)
@@ -3712,7 +3763,7 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 endif()
 if(WIN32)
-    target_link_libraries(test_ai_control_server PRIVATE winmm)
+    target_link_libraries(test_ai_control_server PRIVATE winmm ws2_32)
 endif()
 
 add_test(NAME ai_control_server_smoke COMMAND test_ai_control_server)
@@ -3910,7 +3961,7 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 endif()
 if(WIN32)
-    target_link_libraries(test_hdv_status_driver PRIVATE winmm)
+    target_link_libraries(test_hdv_status_driver PRIVATE winmm ws2_32)
 endif()
 add_test(NAME hdv_status_driver COMMAND test_hdv_status_driver)
 set_tests_properties(hdv_status_driver PROPERTIES TIMEOUT 10)
@@ -3948,7 +3999,7 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 endif()
 if(WIN32)
-    target_link_libraries(test_ai_mouse_hle_probe PRIVATE winmm)
+    target_link_libraries(test_ai_mouse_hle_probe PRIVATE winmm ws2_32)
 endif()
 add_test(NAME ai_mouse_hle_probe COMMAND test_ai_mouse_hle_probe)
 set_tests_properties(ai_mouse_hle_probe PROPERTIES TIMEOUT 15)
@@ -4258,6 +4309,11 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(test_uthernet_cs8900 PRIVATE
         ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
+if(WIN32)
+    # ws2_32: the networking TUs in this target are host-socket
+    # code on Windows too since 2026-08-01 (src/SocketCompat.h).
+    target_link_libraries(test_uthernet_cs8900 PRIVATE ws2_32)
+endif()
 add_test(NAME uthernet_cs8900_smoke COMMAND test_uthernet_cs8900)
 set_tests_properties(uthernet_cs8900_smoke PROPERTIES TIMEOUT 10)
 
@@ -4282,6 +4338,11 @@ target_include_directories(test_uthernet2_w5100 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_uthernet2_w5100 PRIVATE
         ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    # ws2_32: the networking TUs in this target are host-socket
+    # code on Windows too since 2026-08-01 (src/SocketCompat.h).
+    target_link_libraries(test_uthernet2_w5100 PRIVATE ws2_32)
 endif()
 add_test(NAME uthernet2_w5100_smoke COMMAND test_uthernet2_w5100)
 set_tests_properties(uthernet2_w5100_smoke PROPERTIES TIMEOUT 20)
@@ -4391,6 +4452,11 @@ target_include_directories(test_card_snapshot_state PRIVATE ${CMAKE_SOURCE_DIR}/
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_card_snapshot_state PRIVATE
         ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(WIN32)
+    # ws2_32: the networking TUs in this target are host-socket
+    # code on Windows too since 2026-08-01 (src/SocketCompat.h).
+    target_link_libraries(test_card_snapshot_state PRIVATE ws2_32)
 endif()
 add_test(NAME card_snapshot_state COMMAND test_card_snapshot_state
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

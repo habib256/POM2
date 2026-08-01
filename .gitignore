@@ -30,6 +30,17 @@ tests/cmake_install.cmake
 tests/CTestTestfile.cmake
 tests/Makefile
 
+# Compiled test executables, if someone configures in-source instead of
+# into build/. Every one has an add_executable target in
+# tests/CMakeLists.txt, so `cmake .. && make` regenerates the lot. The
+# `test_` prefix belongs to the CMake targets only — the sources are
+# named <subject>_test.cpp — but keep the negation as insurance.
+tests/test_*
+!tests/test_*.cpp
+tests/c2plus_boot_probe
+tests/copy2plus_boot_dump
+tests/hero_probe
+
 # Runtime output written by the emulator itself, not source.
 /printouts/
 /snapshots/

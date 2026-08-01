@@ -16,36 +16,19 @@
 #include <algorithm>
 #include <cstring>
 
-#ifdef _WIN32
-// No host sockets on Windows yet (POM2_HAS_SOCKETS is 0 there), but this file
-// still needs the BYTE-ORDER helpers and the protocol constants outside the
-// socket paths: htons/ntohs for the IPv4/Ethernet framing that IPRAW builds,
-// and SOCK_STREAM / SOCK_DGRAM / IPPROTO_TCP / IPPROTO_UDP for the socket-mode
-// switch in openSocket(). winsock2.h declares all of them. Linking ws2_32 (see
-// CMakeLists) is what makes htons/ntohs resolve; nothing here opens a socket.
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
-#endif
+// SocketCompat.h carries the host socket stack for BOTH families — POSIX
+// and Winsock — plus the byte-order helpers and protocol constants this
+// file needs even where no socket is opened (htons/ntohs for the IPv4 and
+// Ethernet framing IPRAW builds, SOCK_STREAM / SOCK_DGRAM / IPPROTO_TCP /
+// IPPROTO_UDP for the mode switch in openSocket).
+#include "SocketCompat.h"
 
 #if POM2_HAS_SOCKETS
-// POSIX socket stack. Under Emscripten there is no usable BSD-socket API,
-// so the TCP/UDP paths compile out and those socket modes stay CLOSED —
-// the register model, the RX/TX rings and MACRAW/IPRAW (which go through
-// the NetworkBackend, not through sockets) are unaffected. Same treatment
-// SuperSerialCard gives its telnet listener.
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-
+// Under Emscripten there is no usable BSD-socket API, so the TCP/UDP paths
+// compile out and those socket modes stay CLOSED — the register model, the
+// RX/TX rings and MACRAW/IPRAW (which go through the NetworkBackend, not
+// through sockets) are unaffected. Same treatment SuperSerialCard gives its
+// telnet listener.
 #include <chrono>
 #include <future>
 #include <thread>
@@ -340,9 +323,9 @@ void W5100Device::clearSocket(size_t i)
 {
     Socket& s = sockets_[i];
 #if POM2_HAS_SOCKETS
-    if (s.fd >= 0) ::close(s.fd);
+    closeHostSocket(s.fd);          // closesocket() on Windows, close() elsewhere
 #endif
-    s.fd = -1;
+    s.fd = kInvalidSocket;
     s.pendingTx.clear();
     setSocketStatus(i, kW5100SnSrClosed);
 }
@@ -357,17 +340,19 @@ void W5100Device::openSystemSocket(size_t i, int type, int protocol, uint8_t sta
 #else
     clearSocket(i);
 
-    const int fd = ::socket(AF_INET, type, protocol);
-    if (fd < 0) {
-        log().warn("W5100", std::string("socket() failed: ") + std::strerror(errno));
+    // Winsock needs the stack started before the first call; no-op elsewhere.
+    ensureSocketStack();
+
+    socket_t fd = ::socket(AF_INET, type, protocol);
+    if (!isValidSocket(fd)) {
+        log().warn("W5100", "socket() failed: " + lastSocketErrorText());
         return;
     }
     // Non-blocking is mandatory — every call below runs on the CPU thread
     // under stateMutex and must not wait on the network.
-    const int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        log().warn("W5100", std::string("fcntl(O_NONBLOCK) failed: ") + std::strerror(errno));
-        ::close(fd);
+    if (!setNonBlocking(fd)) {
+        log().warn("W5100", "non-blocking mode failed: " + lastSocketErrorText());
+        closeHostSocket(fd);
         return;
     }
     sockets_[i].fd = fd;
@@ -429,7 +414,7 @@ void W5100Device::connectSocket(size_t i)
     (void)i;
 #else
     Socket& s = sockets_[i];
-    if (s.fd < 0) return;
+    if (!isValidSocket(s.fd)) return;
     // CONNECT is only legal from SOCK_INIT (TCP, freshly opened) — the
     // real chip ignores it elsewhere. Accepting it on a UDP socket used
     // to connect() the datagram fd, flip the status to ESTABLISHED and
@@ -468,10 +453,11 @@ void W5100Device::connectSocket(size_t i)
     // A non-blocking connect almost always lands here; SYNSENT is exactly
     // what the real chip reports while the handshake is in flight, and
     // poll() promotes it to ESTABLISHED (or drops it) later.
-    if (errno == EINPROGRESS || errno == EWOULDBLOCK) {
+    const int cerr = lastSocketError();
+    if (errInProgress(cerr)) {
         setSocketStatus(i, kW5100SnSrSynSent);
     } else {
-        log().warn("W5100", std::string("connect() failed: ") + std::strerror(errno));
+        log().warn("W5100", "connect() failed: " + socketErrorText(cerr));
         clearSocket(i);
     }
 #endif
@@ -704,9 +690,13 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
 
     std::vector<uint8_t> buffer(freeRoom - 1);   // never fill the ring
     sockaddr_in source{};
-    socklen_t sourceLen = sizeof(source);
+    socklen_c sourceLen = sizeof(source);
 
-    const ssize_t got = ::recvfrom(s.fd, buffer.data(), buffer.size(), 0,
+    // Winsock's recvfrom takes `char*` and an `int` length; the cast keeps
+    // one call site for both families (SocketCompat.h, trap 2/3).
+    const iolen_t got = ::recvfrom(s.fd,
+                                   reinterpret_cast<char*>(buffer.data()),
+                                   static_cast<int>(buffer.size()), 0,
                                    reinterpret_cast<sockaddr*>(&source), &sourceLen);
     if (got > 0) {
         // UDP prepends source IP + source port + length; TCP is a raw
@@ -730,8 +720,9 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
             setSocketStatus(i, kW5100SnSrCloseWait);
         else
             clearSocket(i);
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        clearSocket(i);
+    } else {
+        const int e = lastSocketError();
+        if (!errWouldBlock(e) && !errInterrupted(e)) clearSocket(i);
     }
 #endif
 }
@@ -908,17 +899,22 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
         return;
     }
 
-    const ssize_t res = ::sendto(s.fd, data.data(), data.size(), 0,
+    const iolen_t res = ::sendto(s.fd,
+                                 reinterpret_cast<const char*>(data.data()),
+                                 static_cast<int>(data.size()), 0,
                                  reinterpret_cast<const sockaddr*>(&destination),
                                  sizeof(destination));
     if (res >= 0) {
         bytesSent_ += static_cast<uint64_t>(res);
         if (isTcp && static_cast<size_t>(res) < data.size())
             s.pendingTx.assign(data.begin() + res, data.end());
-    } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-        if (isTcp) s.pendingTx = data;
     } else {
-        clearSocket(i);
+        const int e = lastSocketError();
+        if (errWouldBlock(e) || errInterrupted(e)) {
+            if (isTcp) s.pendingTx = data;
+        } else {
+            clearSocket(i);
+        }
     }
 #endif
 }
@@ -929,16 +925,18 @@ void W5100Device::flushPendingTx(size_t i)
     (void)i;
 #else
     Socket& s = sockets_[i];
-    if (s.pendingTx.empty() || s.fd < 0) return;
+    if (s.pendingTx.empty() || !isValidSocket(s.fd)) return;
 
-    const ssize_t res = ::send(s.fd, s.pendingTx.data(), s.pendingTx.size(), 0);
+    const iolen_t res = sendSocket(s.fd, s.pendingTx.data(), s.pendingTx.size());
     if (res > 0) {
         bytesSent_ += static_cast<uint64_t>(res);
         s.pendingTx.erase(s.pendingTx.begin(), s.pendingTx.begin() + res);
-    } else if (res < 0 &&
-               errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        clearSocket(i);
-        return;
+    } else if (res < 0) {
+        const int e = lastSocketError();
+        if (!errWouldBlock(e) && !errInterrupted(e)) {
+            clearSocket(i);
+            return;
+        }
     }
     // A peer that has not taken a megabyte is not coming back; an honest
     // dead connection beats an unbounded host-side queue.
@@ -1283,17 +1281,17 @@ void W5100Device::poll()
         if (!sockets_[i].pendingTx.empty()) flushPendingTx(i);
 
         Socket& s = sockets_[i];
-        if (s.fd < 0 || s.status != kW5100SnSrSynSent) continue;
+        if (!isValidSocket(s.fd) || s.status != kW5100SnSrSynSent) continue;
 
-        pollfd pfd{};
-        pfd.fd = s.fd;
-        pfd.events = POLLOUT;
-        if (::poll(&pfd, 1, 0) <= 0) continue;
+        // Zero timeout: this runs on the emulation thread, so it polls and
+        // returns. A refused connection has to reach us too, not just a
+        // successful one — on Winsock that arrives through select()'s
+        // exception set, which is why waitSocket() is not WSAPoll. See
+        // SocketCompat.h.
+        if (waitSocket(s.fd, SocketWait::Write, 0) != WaitResult::Ready)
+            continue;
 
-        int err = 0;
-        socklen_t errLen = sizeof(err);
-        const int res = ::getsockopt(s.fd, SOL_SOCKET, SO_ERROR, &err, &errLen);
-        if (res == 0 && err == 0) {
+        if (connectResult(s.fd) == 0) {
             setSocketStatus(i, kW5100SnSrEstablished);
         } else {
             // Connection refused / unreachable — back to CLOSED, which is
@@ -1332,7 +1330,7 @@ W5100Device::SocketInfo W5100Device::socketInfo(size_t i) const
     info.txPending  = txDataSize(i);
     info.rxCapacity = s.receiveSize;
     info.txCapacity = s.transmitSize;
-    info.hasHostSocket = s.fd >= 0;
+    info.hasHostSocket = isValidSocket(s.fd);
     return info;
 }
 
