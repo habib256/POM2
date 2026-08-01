@@ -25,7 +25,7 @@ constexpr uint16_t SET_HIRES = 0xC057;
 constexpr uint16_t SET_PAGE1 = 0xC054;
 
 constexpr int W            = 560;          // composite signal width
-constexpr int kSplitCol    = 20;           // byte column where text takes over
+constexpr int kSplitCol    = 21;           // byte column where text takes over (hpos 45 → col 21)
 constexpr int kSplitSample = kSplitCol * 14;   // 280
 constexpr int kBandTop     = 96;           // row-aligned (12 * 8)
 
@@ -114,7 +114,7 @@ int main()
     for (int y = kBandTop; y < 192; ++y) {
         beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 5);   // HBL → col 0
         beam.memRead(CLR_TEXT);              // graphics from column 0
-        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 20
+        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 21 (mapping is `hpos - 24`)
         beam.memRead(SET_TEXT);              // text from column 20
     }
     const auto sBeam = signalOf(beam);

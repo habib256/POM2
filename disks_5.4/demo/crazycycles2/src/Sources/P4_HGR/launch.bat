@@ -1,0 +1,1 @@
+start dw.py ..\dsk\test.dsk hgrs 0x16 0 + d

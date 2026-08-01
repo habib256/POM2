@@ -1002,12 +1002,42 @@ IFR_DELAY` (= N+3)** matching MAME `6522via.cpp:959` (POM2's
 drive: `T2 = 7512 − latency`, IRQ → mid-scanline beam-race. Pinned
 by `via_t2_timing`.
 
-**AY-3-8910 synthesis** runs on audio thread inside inner
-`AudioSrc`. CPU updates regs under `mtx`; callback snapshots both
-banks (32 B), releases, synthesises lock-free. Tone counters =
-integer at `clockHz/8/sampleRate`; 17-bit LFSR `x^17 + x^14 + 1`;
-envelope 32 steps with R13 shape continue / attack / alternate /
-hold. Both chips → mono.
+**AY-3-8910 synthesis** runs on the audio thread inside inner
+`AudioSrc`. CPU updates regs under `mtx`; the callback snapshots both
+banks (32 B), releases, synthesises lock-free. The generators, mixer
+and band-limiting live in **`AyPsgSynth.h`, shared with `PhasorCard`**
+(extracted 2026-08-01 — the two cards had carried verbatim copies and
+drifted). 17-bit LFSR `x^17 + x^14 + 1`; MAME-verbatim 4-flag envelope
+state machine (all 16 shapes pinned against MAME's step sequence).
+Both chips → mono; MAME's Mockingboard is stereo (AY1 L, AY2 R,
+`a2mockingboard.cpp:161-165`) and POM2 is not, because `AudioDevice`
+is a mono bus.
+
+Three properties the audio path depends on, each of which was broken
+until 2026-08-01 (full reasoning + numbers → `CHANGELOG.md`):
+
+* **Band-limiting.** MAME never renders at the output rate: its stream
+  runs on the chip's clock/8 grid (`ay8910.cpp:1298`) and
+  `src/emu/resampler.cpp` decimates. POM2 renders straight to the
+  device rate, so `renderChipSample` **box-integrates** the mixer over
+  the ~2.9 base ticks each output sample spans. Point-sampling instead
+  put 7 % of output power into inharmonic fold-back; integration gives
+  0.51 %. Cost 0.67 % of a core per chip.
+* **The event queue is a jitter buffer, not a chase.** The CPU worker
+  publishes ~17045 cycles of writes per burst; one callback covers
+  ~5937. Un-rendered events STAY queued and the cursor runs about one
+  burst *behind* `latestAyEventCycle_`, deadbanded. Never set the
+  cursor to `pending.back().cycle` — that is zero lag, and it collapsed
+  ~90 % of writes onto the buffer edge.
+* **DC blocking.** The channel model is unipolar, so gating channels
+  and changing volumes steps the offset. 1-pole 20 Hz high-pass,
+  matching MAME's default per-speaker filter
+  (`src/emu/audio_effects/filter.cpp:39-44`).
+
+The AY tick rate derives from the **live** CPU clock, not the NTSC
+constant — pin 22 is the slot's phase-0 line, so PAL clocks the chip at
+1 015 625 Hz (12 cents below NTSC). `PhasorCard` still lacks both the
+event queue and a `setCpuClock` override.
 
 Each VIA `irqOut() = (ifr & ier & 0x7F) != 0`; OR'd onto slot IRQ.
 

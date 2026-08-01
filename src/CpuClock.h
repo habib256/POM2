@@ -59,6 +59,12 @@ inline constexpr int POM2_MAX_CYCLES_PER_FRAME = 2'000'000;
 //     by the crystal ratio, and that NTSC figure is itself 0.13 % above the
 //     true 1 020 484. MAME's PAL number inherits the same 0.13 % error.
 //
+// MAME oracle for European //e PAL work is `apple2eefr` (enhanced France),
+// NOT the US `apple2ee`. Its `-listxml` screen reports the true PAL geometry:
+//   vtotal=312, refresh=50.146252 Hz, pixclock=14 237 524 Hz (≈14.2375 MHz),
+//   CPU W65C02 @ 1 016 966 Hz (= pixclock/14). Use that machine for
+//   like-for-like DIX / French Touch captures; `apple2ee` is NTSC-only.
+//
 // Consequence worth knowing: POM2's PAL clock is right to 0.003 %, while
 // POM2's NTSC clock (14.31818/14, the naive divider) is 0.22 % FAST — a
 // guest sees 60.05 Hz where a real NTSC Apple II gives 59.92 Hz. The two

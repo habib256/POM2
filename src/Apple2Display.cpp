@@ -356,7 +356,28 @@ Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle,
     // exact transition cycle within a character clock is a later refinement;
     // v1 is "visually correct at the column boundary".
     const int hpos    = static_cast<int>(emuCycle % kCyclesPerScanline);
-    const int byteCol = std::clamp(hpos - 25, 0, 40);
+    // -24, not -25. The visible window does open at hpos 25, but a soft
+    // switch performed AT hpos 25+c is too late to affect column c: the
+    // video scanner latches that byte during phi1 of the cycle whose phi2
+    // the CPU is using for its access, so the switch first shows at column
+    // c+1. Hence the effective mapping is one cycle earlier than the raw
+    // window offset.
+    //
+    // Measured, not assumed. Replaying French Touch's MAD EFFECT (GPLv3
+    // sources in disks_5.4/demo/madef/) and sweeping all 65 candidate
+    // phases, the demo's 192 per-scanline lit-run starts ($C055 — their
+    // column IS the silhouette it draws) land wholly inside the 40-column
+    // window only for offsets **21..24**, and nowhere else. 25 sat just
+    // outside that band, which is exactly why the leftmost scanlines of the
+    // picture spilled one cycle into HBL and clamped to column 0 while the
+    // rest drew correctly. 24 is the edge of the measured band and the one
+    // value with a mechanism behind it.
+    //
+    // (Sweeping ALL switches instead has no solution: the `$C054` that
+    // CLOSES the lit run is legitimately thrown in HBL — a switch in
+    // blanking governs the whole upcoming line. Only the opening switch
+    // must be inside the window.)
+    const int byteCol = std::clamp(hpos - 24, 0, 40);
     return {scanline, byteCol};
 }
 

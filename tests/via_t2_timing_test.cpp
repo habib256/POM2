@@ -73,8 +73,26 @@ void testT1FirstShotTiming()
         assert(c == n + 3 && "T1 first-shot timing != MAME TIMER1_VALUE+IFR_DELAY");
     }
 
-    // Continuous mode: first shot at N+3, then every N+3 thereafter —
-    // the same constant for shot and reload (MAME t1_tick :536-543).
+    // Continuous mode: first shot at N+3 (the IFR_DELAY latency above
+    // applies once), then every **N+2** — the hardware free-run period.
+    //
+    // This assertion used to demand N+3 for the reload too, copying MAME's
+    // `t1_tick` (:536-543), which adds IFR_DELAY on every reload. That is a
+    // MAME divergence, not hardware: IFR_DELAY is the one-off underflow→IFR
+    // latency, and folding it into the recurring period stretches every
+    // interval by a cycle. Harmless for a music tick; fatal when T1 is used
+    // as a frame clock, because the error accumulates.
+    //
+    // Ground truth is French Touch "MAD EFFECT", which arms T1 as its PAL
+    // frame clock and states the arithmetic in `Sources/main.a` (GPLv3,
+    // shipped in disks_5.4/demo/madef/):
+    //     ; PAL delay = 65*(192+70+50) = 20280
+    //     ; -2 (6522 takes 2 cycles to generate INT)
+    //     ; = 20278 = $4F36
+    // period == latch + 2. Under N+3 its 192-line beam-raced loop slid one
+    // cycle per frame until scanlines fell into VBL and were dropped — and
+    // MAME, which keeps N+3, renders the demo wrong for the same reason.
+    // Detailed period coverage lives in `via_t1_continuous_period`.
     {
         constexpr int n = 100;
         Via6522 via;
@@ -87,8 +105,9 @@ void testT1FirstShotTiming()
             if (via.ifr & IFR_T1) {
                 ++fires;
                 std::printf("  T1 continuous fire %d at cycle %d\n", fires, c);
-                assert(c == fires * (n + 3) &&
-                       "T1 continuous fire spacing != N+3");
+                const int expect = (n + 3) + (fires - 1) * (n + 2);
+                assert(c == expect &&
+                       "T1 continuous: first shot N+3, then period N+2");
                 last = c;
                 (void)via.read(T1CL);     // clear IFR.T1, keep counting
             }
@@ -96,7 +115,7 @@ void testT1FirstShotTiming()
         (void)last;
         assert(fires == 3);
     }
-    std::printf("OK t1 first-shot/reload timing (N+3)\n");
+    std::printf("OK t1 timing (first shot N+3, continuous period N+2)\n");
 }
 
 void testOraAccessClearsCa1()

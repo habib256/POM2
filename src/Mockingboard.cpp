@@ -5,28 +5,24 @@
 
 #include "Mockingboard.h"
 
+#include "AyPsgSynth.h"
 #include "ByteIO.h"
 #include "CpuClock.h"
 #include "M6502.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <deque>
 #include <vector>
 
 namespace {
 
 // ─── AY-3-8910 amplitude table ───────────────────────────────────────────
-//
-// Logarithmic 4-bit volume → linear amplitude. Sourced from MAME
-// `src/devices/sound/ay8910.cpp`'s `build_single_table(normalize=1)` with
-// `ay8910_param` (Westcott 2001 measurements). Canonical Apple II / CPC /
-// Spectrum reference. Index 0 is silence; index 15 is the per-channel
-// peak. Three channels at peak would clip a single AY at roughly 3.0 —
-// the audio mixer's clamp catches that.
-constexpr float kAyVolumeTable[16] = {
-    0.0000f, 0.0105f, 0.0154f, 0.0223f, 0.0321f, 0.0468f, 0.0635f, 0.1061f,
-    0.1319f, 0.2164f, 0.2974f, 0.3909f, 0.5128f, 0.6371f, 0.8186f, 1.0000f
-};
+// Lives in AyPsgSynth.h since 2026-08-01 so Mockingboard and Phasor share
+// one copy (and one provenance note — the old "MAME build_single_table"
+// citation here was wrong; see the header).
+using pom2::ay::kVolumeTable;
 
 // AY-3-8910 input clock on the Mockingboard — pin 22 (CLOCK) is wired to
 // the slot's phase 0 clock, i.e. the Apple II 1.0227 MHz CPU clock.
@@ -40,9 +36,13 @@ constexpr float kAyVolumeTable[16] = {
 // /2 lives in the toggle. Earlier POM2 versions used clock/16 which
 // produced **one octave too low** on every Mockingboard note. Fixed
 // 2026-05-14.
-constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
-constexpr float kAyToneStepHz    = kAyClockHz / 8.0f;    // ~127.8 kHz
-constexpr float kAyNoiseStepHz   = kAyClockHz / 8.0f;    // ~127.8 kHz
+// These are the NTSC nominal values, kept for reference and for tests
+// that quote them. The render loop derives its own tick rate from the
+// LIVE CPU clock instead (`ticksPerSample` in fillAudioBuffer) so that a
+// PAL machine clocks the AY at its real 1 015 625 Hz.
+[[maybe_unused]] constexpr float kAyClockHz     = static_cast<float>(POM2_CPU_CLOCK_HZ);
+[[maybe_unused]] constexpr float kAyToneStepHz  = kAyClockHz / 8.0f;   // ~127.8 kHz
+[[maybe_unused]] constexpr float kAyNoiseStepHz = kAyClockHz / 8.0f;   // ~127.8 kHz
 
 // Convenience aliases — the VIA register layout, IFR bits, AY register
 // count, and PB control-bus map all live as static members of the
@@ -81,11 +81,13 @@ constexpr uint8_t VIA_ORANH     = Via::VIA_ORANH;
 //
 // Via6522 + Ay3_8910 live in shared headers (`Via6522.h` / `Ay3_8910.h`)
 // since 2026-05-27 so PhasorCard can reuse them verbatim — same VIA
-// timer logic, same AY register-bank + control-bus decoder. AudioSrc
-// stays private to this card; its 2-AY synthesis state is tightly
-// coupled to MockingboardCard's `ayResetCount_` / `ayEnvWriteCount_`
-// telemetry and the audio thread's mutex protocol. Phasor ships its
-// own AudioSrc until/unless we extract a shared multi-AY synth class.
+// timer logic, same AY register-bank + control-bus decoder. Since
+// 2026-08-01 the audio-thread synthesis is shared too (`AyPsgSynth.h`:
+// generators, mixer, box integration, DC blocker). What stays private to
+// this card is the AudioSrc *shell* — the cycle-stamped event queue and
+// its jitter-buffer cursor, which are coupled to MockingboardCard's
+// `ayResetCount_` / `ayEnvWriteCount_` telemetry and the audio thread's
+// mutex protocol. Phasor has no equivalent queue yet.
 
 // File-scope aliases so call sites below (constructors,
 // `via_[chip]->advance()`, `Ay3_8910::ApplyResult::Wrote`, …) stay
@@ -128,66 +130,12 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
-    // Per-chip synthesis state. Counters are INTEGERS (MAME parity —
-    // `ay8910.cpp:998-1015` uses uint counters). The fractional
-    // accumulator captures the sub-tick remainder that builds up
-    // between audio samples at the typical kAyToneStepHz/sampleRate
-    // ratio (≈ 22.7 ticks/sample at 44.1 kHz). Pre-2026-05-16 POM2
-    // used pure float counters which aliased noticeably at periods
-    // 1-3 (PWM tricks like Cosmic Bouncer sounded sour) because
-    // float arithmetic accumulated rounding error across the
-    // `while (counter >= period)` resolve loop. Integer counters
-    // remove that drift entirely.
-    struct ChipState {
-        // 3 tone channels: integer phase counter + fractional sub-tick
-        // accumulator + current output bit.
-        uint16_t toneCounter[3] = { 0, 0, 0 };
-        float    toneAccum  [3] = { 0, 0, 0 };
-        uint8_t  toneOut    [3] = { 0, 0, 0 };
-        // Noise: 17-bit LFSR.
-        // `noisePrescale` halves the LFSR update rate vs the noise
-        // counter — MAME `ay8910.cpp:1086-1104` toggles `m_prescale_noise`
-        // on every counter expiry and only calls `noise_rng_tick()` on
-        // alternate cycles. Without this, after the tone-rate fix
-        // (counter at clock/8 instead of clock/16) the LFSR would tick
-        // 2× too fast, making noise hiss too coarse.
-        //
-        // `lastSeenResetCount` tracks `ayResetCount_[chip]` so we can
-        // re-seed the LFSR to MAME's reset value (`m_rng = 1`, MAME
-        // `ay8910.cpp:1309`) when the CPU side strobes PB2=0. Without
-        // this re-seed, noise sequences are not deterministic across
-        // resets (POM2's CPU-thread `Ay3_8910::reset()` clears regs but
-        // can't reach this audio-thread state).
-        uint16_t noiseCounter        = 0;
-        float    noiseAccum          = 0;
-        uint32_t noiseLfsr           = 1;       // MAME ay8910.cpp:1309
-        uint8_t  noiseOut            = 0;
-        uint8_t  noisePrescale       = 0;
-        uint32_t lastSeenResetCount  = 0;
-        // Envelope state machine. Verbatim port of MAME `ay8910.h:182-219`
-        // + `ay8910.cpp:989-1020`. The 4 flags (attack, hold, alternate,
-        // holding) are derived from R13 via `setShape`, called whenever
-        // we detect R13 has changed. `step` walks 15→0 (down); when it
-        // hits -1, hold/alternate decide the wrap behaviour. `volume =
-        // step ^ attack` is the live 4-bit DAC level. Replaces the
-        // earlier branchy `envStep` 0..31 model which mis-handled
-        // shapes 10 (/\/\), 12 (\\\\), and 14 (\/\/) — vibrato patterns
-        // used by Mockingboard music drivers.
-        uint32_t envCounter     = 0;
-        float    envAccum       = 0;
-        int      envStep        = 15;    // walks 15 → 0
-        uint8_t  envAttack      = 0;     // 0 or 15
-        uint8_t  envHold        = 0;
-        uint8_t  envAlternate   = 0;
-        uint8_t  envHolding     = 0;
-        int      lastShape      = -1;    // forces setShape on first sample
-        // Tracks `ayEnvWriteCount_[chip]` so a write to R13 with an
-        // UNCHANGED shape value still restarts the envelope (real AY-3-8910
-        // behaviour — set_shape runs on every R13 store). The register
-        // snapshot alone can't reveal a same-value store.
-        uint32_t lastSeenEnvWriteCount = 0;
-        bool     envRetrigger          = false;
-    };
+    // Per-chip synthesis state + the per-tick generators live in
+    // AyPsgSynth.h, shared with PhasorCard. Before the 2026-08-01
+    // extraction both cards carried verbatim copies and had already
+    // drifted apart.
+    using ChipState = pom2::ay::ChipSynthState;
+
     ChipState chip[2];
 
     // ── emuCycles replay state (audio thread only) ────────────────────
@@ -203,7 +151,24 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     /// than the 0.7 % PAL/NTSC delta setCpuClock exists to remove. Same
     /// idiom as SpeakerDevice::subSampleAccum.
     double   cursorFrac = 0.0;
-    std::vector<MockingboardCard::AyRegEvent> pending;
+    /// Cycle-stamped register writes not yet rendered. PERSISTENT across
+    /// callbacks — see the jitter-buffer note in fillAudioBuffer. Before
+    /// 2026-08-01 this was cleared and re-filled every callback, and
+    /// anything stamped past the buffer's cycle span was dumped wholesale
+    /// at the buffer edge.
+    std::deque<MockingboardCard::AyRegEvent> pending;
+
+    // ── DC blocker ────────────────────────────────────────────────────
+    // The AY channel model is UNIPOLAR: a channel contributes
+    // `kVolumeTable[level]` or nothing, so a 50 %-duty tone carries a DC
+    // term of half its amplitude, and a channel with both tone and noise
+    // masked off in R7 (the volume-register PWM / digi technique — 54 %
+    // of Digidream 2's register traffic) is pure DC. Every note-on and
+    // every volume write therefore steps the DC level, which is an
+    // audible click, and half the headroom goes to an inaudible offset.
+    // Real hardware AC-couples through the card's output capacitor.
+    // Implementation + the MAME citation live in AyPsgSynth.h.
+    pom2::ay::DcBlocker dc;
 
     void fillAudioBuffer(float* output, int frameCount) override
     {
@@ -223,7 +188,8 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         uint32_t resetCountSnap[2];
         uint32_t envWriteCountSnap[2];
         uint64_t latestEventCycle = 0;
-        pending.clear();
+        // NOTE: `pending` is NOT cleared — it is a jitter buffer that
+        // carries un-rendered writes over to the next callback.
         {
             std::lock_guard<std::mutex> lk(parent->mtx);
             std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
@@ -233,8 +199,10 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             envWriteCountSnap[0] = parent->ayEnvWriteCount_[0];
             envWriteCountSnap[1] = parent->ayEnvWriteCount_[1];
             // Take the emuCycles-stamped register writes under the same
-            // lock. See the replay loop below.
-            pending.assign(parent->ayEvents_.begin(), parent->ayEvents_.end());
+            // lock, APPENDING to whatever the last callback could not
+            // render yet. See the replay loop below.
+            pending.insert(pending.end(),
+                           parent->ayEvents_.begin(), parent->ayEvents_.end());
             parent->ayEvents_.clear();
             latestEventCycle = parent->latestAyEventCycle_.load(
                 std::memory_order_relaxed);
@@ -260,27 +228,92 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // PAL demos that need it most.
         const double cyclesPerSample =
             cpuClockHz.load(std::memory_order_relaxed) / static_cast<double>(sr);
-        // Catch-up: if the producer ran far ahead (pause+resume, turbo),
-        // snap the cursor near the newest event instead of replaying
-        // minutes of queued writes at buffer rate. Same guard shape as
-        // SpeakerDevice's audioCpuCursor snap.
-        const uint64_t bufferCycles =
+        [[maybe_unused]] const uint64_t bufferCycles =
             static_cast<uint64_t>(cyclesPerSample * frameCount);
-        if (latestEventCycle > audioCursor + 8 * bufferCycles)
-            audioCursor = (latestEventCycle > bufferCycles)
-                              ? latestEventCycle - bufferCycles : 0;
-        // BACKWARD jump: a rewind (or a snapshot load) rolls the machine's
-        // cycleCounter back, so new events carry stamps far BELOW the
-        // cursor. The forward-only guard above can't see that, and every
-        // event would then satisfy `cycle <= audioCursor` and land on
-        // sample 0 for the whole rewound span — exactly the collapse this
-        // queue exists to prevent. Re-anchor behind the oldest pending
-        // event. (SpeakerDevice solves the same problem with its
-        // resetPending_ flag.)
-        if (!pending.empty() && pending.front().cycle + bufferCycles < audioCursor) {
-            audioCursor = (pending.front().cycle > bufferCycles)
-                              ? pending.front().cycle - bufferCycles : 0;
-            cursorFrac  = 0.0;
+
+        // ── Cursor pacing: a JITTER BUFFER, not a chase ───────────────
+        // The producer and the consumer move the same number of cycles
+        // per second by construction (17045 cycles x 60 Hz = 44100
+        // samples x 23.19 cycles), but NOT at the same granularity: the
+        // CPU worker publishes one video frame's worth of writes in a
+        // single burst every ~16.7 ms, while one audio callback only ever
+        // covers `bufferCycles` (256 frames = 5937 cycles at 44.1 kHz).
+        // A burst therefore lands ~3 callbacks' worth of future writes in
+        // the queue at once.
+        //
+        // Until 2026-08-01 the loop drained the entire queue every
+        // callback, replayed whatever fitted inside this buffer's cycle
+        // span, dumped ALL the rest at the buffer edge, and then set
+        // `audioCursor = pending.back().cycle` — parking the cursor ON
+        // the newest event, i.e. at zero lag. Consequences, measured on a
+        // producer emitting 1 write per 1000 cycles: ~90 % of writes
+        // collapsed to the buffer edge, and because the tail dump applies
+        // them in order to the same register bank, only the LAST value
+        // written to each register in the burst survived. Volume-register
+        // PWM (Digidream 2's channel-A "SID voice" — 54 % of its register
+        // traffic) and digi playback were destroyed outright; the cursor
+        // then over-ran the next burst and tripped the backward re-anchor
+        // roughly every third buffer, re-quantising the timeline.
+        //
+        // The fix is to run the cursor deliberately BEHIND the newest
+        // event, so there is always a backlog to render in time order,
+        // and to keep un-rendered events queued instead of dumping them.
+        //
+        // SIZING THE LAG (got this wrong on the first attempt, 2026-08-01,
+        // and Digidream 1 exposed it as tempo glitches). Between bursts
+        // `latestEventCycle` is frozen while the cursor free-runs, so the
+        // lag falls by one full burst every producer tick and then jumps
+        // back up when the next burst lands. A target of ONE burst
+        // therefore makes the lag oscillate between one burst and ZERO —
+        // it sits exactly on the re-anchor threshold, and any scheduling
+        // jitter trips a resync every frame. The target has to be TWO
+        // bursts so the lag oscillates in [1, 2] bursts and the minimum
+        // stays at the one burst that spreading a burst actually needs.
+        //
+        // `kBurst` is one PAL video frame — the slower of the two refresh
+        // rates, hence the safe bound. Cost: ~40 ms of added latency on
+        // this card, which is inaudible for a music/SFX peripheral and far
+        // cheaper than a resync.
+        const uint64_t burst = static_cast<uint64_t>(
+            cpuClockHz.load(std::memory_order_relaxed) / 50.0);
+        const uint64_t targetLag = 2 * burst;
+        if (latestEventCycle > 0) {
+            const uint64_t desired =
+                (latestEventCycle > targetLag) ? latestEventCycle - targetLag : 0;
+            // Re-anchor only on gross error: starved (pause+resume, disk
+            // turbo, first buffer) or run up onto the producer. Steady
+            // state never trips either bound, so the cursor just free-runs
+            // at cyclesPerSample and the timeline stays continuous.
+            const bool starved =
+                latestEventCycle > audioCursor &&
+                (latestEventCycle - audioCursor) > 5 * burst;
+            const bool caughtUp = audioCursor + burst / 2 > latestEventCycle;
+            if (starved || caughtUp) {
+                audioCursor = desired;
+                cursorFrac  = 0.0;
+            }
+        }
+        // Queue hygiene, and the reason there is no separate backward-jump
+        // guard any more. Anything at or behind the cursor — pre-rewind
+        // stamps, or events the re-anchor above just skipped over — is
+        // folded into `liveRegs` here as silent state catch-up, so the
+        // render loop's queue front is always in the future.
+        //
+        // The first version of this code kept a second guard that yanked
+        // the cursor BACKWARD whenever `pending.front()` sat behind it.
+        // With a persistent queue that guard fired on the re-anchor above
+        // rather than on a real rewind: forward snap, immediate backward
+        // snap, repeat. The two fought every callback, which is what
+        // Digidream 1's dense digidrum stream turned into audible tempo
+        // instability. A rewind is already handled by `caughtUp` (a
+        // rolled-back cycleCounter drags `latestEventCycle` down with it).
+        while (!pending.empty() && pending.front().cycle <= audioCursor) {
+            const auto& e = pending.front();
+            if (e.chip < 2 && e.reg < kAyNumRegs) {
+                liveRegs[e.chip][e.reg] = e.val;
+                if (e.reg == 13) chip[e.chip].envRetrigger = true;
+            }
+            pending.pop_front();
         }
         size_t nextEvent = 0;
         for (int ci = 0; ci < 2; ++ci) {
@@ -290,9 +323,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 // per-register events describe it, so resync from the
                 // snapshot rather than replaying.
                 std::memcpy(liveRegs[ci], regSnap[ci], kAyNumRegs);
-                chip[ci].noiseLfsr     = 1;   // MAME ay8910.cpp:1309
-                chip[ci].noisePrescale = 0;
-                chip[ci].noiseOut      = 0;
+                chip[ci].resetGenerators();   // MAME ay8910.cpp:1309-1319
             }
             // A write to R13 (even same value) restarts the envelope.
             if (chip[ci].lastSeenEnvWriteCount != envWriteCountSnap[ci]) {
@@ -301,15 +332,25 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             }
         }
 
-        // Pre-compute per-sample increments. AY internal step rates are
-        // fixed (function of pin-22 clock and divider); only the periods
-        // vary with the registers, so we recompute periods inside the
-        // loop.
-        const float toneStepPerSample  = kAyToneStepHz  / static_cast<float>(sr);
-        const float noiseStepPerSample = kAyNoiseStepHz / static_cast<float>(sr);
-        // Envelope step-per-sample (kAyEnvStepHz / sr) is computed inline
-        // when the AY envelope branch fires — leaving the pre-computed
-        // local here would just warn unused under -Wall.
+        // Base clock/8 ticks covered by one output sample. Tone, noise and
+        // envelope all run off this single base tick (MAME allocates ONE
+        // stream at `master_clock / 8`, `ay8910.cpp:1298`), so one figure
+        // serves all three.
+        //
+        // Derived from the LIVE CPU clock, not the NTSC compile-time
+        // constant: the AY's pin-22 CLOCK is wired to the slot's phase-0
+        // line, so on a PAL machine the chip really does run at
+        // 1 015 625 Hz. Synthesising PAL music at the NTSC rate put every
+        // note 0.699 % sharp = 12.05 cents — small, but Digidream 2 and
+        // the rest of the French Touch / DIX corpus are PAL-timed, which
+        // is exactly the material this path exists for.
+        const float ticksPerSample = static_cast<float>(
+            cpuClockHz.load(std::memory_order_relaxed) / 8.0
+            / static_cast<double>(sr));
+        const float invTicksPerSample =
+            (ticksPerSample > 0.0f) ? (1.0f / ticksPerSample) : 0.0f;
+
+        dc.setRate(sr);
 
         if (isMuted) {
             std::fill_n(output, frameCount, 0.0f);
@@ -358,194 +399,81 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 ChipState& cs = chip[ci];
                 const uint8_t* r = liveRegs[ci];
 
-                // ── Per-channel tone period (R0/R1 pair, etc.). ────
-                // 12-bit period; period 0 is treated as 1 by real
-                // hardware (channel always-on at audio rate).
-                const auto tonePeriod = [&](int ch) -> uint16_t {
-                    const int lo = r[ch * 2];
-                    const int hi = r[ch * 2 + 1] & 0x0F;
-                    const int p  = (hi << 8) | lo;
-                    return static_cast<uint16_t>(p == 0 ? 1 : p);
-                };
-
-                // Step tone counters in integer ticks (MAME parity —
-                // `ay8910.cpp:998-1015` uses uint counters). The float
-                // accumulator handles the fractional sub-tick rate at
-                // the audio output rate; each integer tick increments
-                // the counter and toggles output when ≥ period. Full
-                // cycle = 2 × period (AY T-flop divides by 2).
-                for (int ch = 0; ch < 3; ++ch) {
-                    cs.toneAccum[ch] += toneStepPerSample;
-                    const uint16_t p = tonePeriod(ch);
-                    while (cs.toneAccum[ch] >= 1.0f) {
-                        cs.toneAccum[ch] -= 1.0f;
-                        if (++cs.toneCounter[ch] >= p) {
-                            cs.toneCounter[ch] = 0;
-                            cs.toneOut[ch] ^= 1;
-                        }
-                    }
-                }
-
-                // ── Noise ────────────────────────────────────────
-                // 5-bit period in R6. MAME `ay8910.cpp:1086-1104`
-                // toggles `m_prescale_noise ^= 1` on every counter
-                // expiry and only ticks the LFSR when prescale lands
-                // on 0 → effective LFSR rate = clock/(16*NP). Integer
-                // counter (MAME parity).
-                const uint16_t noisePer = static_cast<uint16_t>(
-                    (r[6] & 0x1F) ? (r[6] & 0x1F) : 1);
-                cs.noiseAccum += noiseStepPerSample;
-                while (cs.noiseAccum >= 1.0f) {
-                    cs.noiseAccum -= 1.0f;
-                    if (++cs.noiseCounter < noisePer) continue;
-                    cs.noiseCounter = 0;
-                    cs.noisePrescale ^= 1;
-                    if (cs.noisePrescale) continue;
-                    // 17-bit LFSR, polynomial x^17 + x^14 + 1. (MAME's
-                    // canonical AY noise tap pair.)
-                    const uint32_t bit =
-                        ((cs.noiseLfsr >> 0) ^ (cs.noiseLfsr >> 3)) & 1;
-                    cs.noiseLfsr = (cs.noiseLfsr >> 1) | (bit << 16);
-                    cs.noiseOut  = static_cast<uint8_t>(cs.noiseLfsr & 1);
-                }
-
-                // ── Envelope (MAME-verbatim 4-flag state machine) ─
-                // R13 = shape register, 4 bits.  On every R13 write
-                // MAME's `set_shape` reinitialises the machine; we
-                // detect the write by comparing against the cached
-                // `lastShape`. Period = R11 + (R12 << 8). Counter ticks
-                // at clock/8 (same as tone); MAME `ay8910.cpp:994`:
-                // `period = envelope->period * m_step` with `m_step=2`
-                // for AY-3-8910, so each step takes `2*envPer` ticks
-                // at clock/8 → individual step rate = clock/(16*envPer).
-                // A full 16-step ramp therefore completes in
-                // 32*envPer/(clock/8) = 256*envPer/clock seconds — full
-                // cycle freq = clock/(256*envPer), matches datasheet.
-                {
-                    const int shape = r[13] & 0x0F;
-                    if (shape != cs.lastShape || cs.envRetrigger) {
-                        cs.envRetrigger = false;   // consumed
-                        // MAME `ay8910.h:204-219` set_shape:
-                        //   attack = (shape & 0x04) ? mask : 0
-                        //   if (!(shape & 0x08))  // continue == 0
-                        //       hold = 1; alternate = attack;
-                        //   else
-                        //       hold      = shape & 0x01;
-                        //       alternate = shape & 0x02;
-                        //   step = mask; holding = 0;
-                        constexpr uint8_t kMask = 0x0F;
-                        cs.envAttack = (shape & 0x04) ? kMask : uint8_t{0};
-                        if ((shape & 0x08) == 0) {
-                            cs.envHold      = 1;
-                            cs.envAlternate = cs.envAttack;
-                        } else {
-                            cs.envHold      = (shape & 0x01) ? 1 : 0;
-                            cs.envAlternate = (shape & 0x02) ? 1 : 0;
-                        }
-                        cs.envStep      = kMask;
-                        cs.envHolding   = 0;
-                        cs.envCounter   = 0;
-                        cs.envAccum     = 0;
-                        cs.lastShape    = shape;
-                    }
-                    // NO period-0 clamp for the envelope: unlike tone/noise,
-                    // "period = 0 is half as period = 1" (MAME `ay8910.cpp:
-                    // 89-91`). MAME's step test is `(++count) >= period`
-                    // (`ay8910.cpp:1119-1122`) with the raw register value
-                    // (`envelope_t::set_period`, ay8910.h — no clamp), so
-                    // EP=0 (threshold 0) steps every base tick while EP=1
-                    // (threshold 2) steps every other tick — exactly double
-                    // rate. POM2's `++envCounter < threshold` below has the
-                    // same pre-increment shape, so passing 0 through
-                    // reproduces MAME bit-for-bit.
-                    const int envPer = r[11] | (r[12] << 8);
-                    // MAME `ay8910.cpp:1119`: `period = envelope->period * m_step`
-                    // where `m_step = 2` for AY-3-8910. Each envelope
-                    // step takes `envPer * 2` base ticks; the base
-                    // rate is the same clock/8 we step the tone with.
-                    // Integer counter (MAME parity).
-                    const uint32_t threshold =
-                        static_cast<uint32_t>(envPer) * 2u;
-                    cs.envAccum += toneStepPerSample;
-                    while (cs.envAccum >= 1.0f) {
-                        cs.envAccum -= 1.0f;
-                        if (++cs.envCounter < threshold) continue;
-                        cs.envCounter = 0;
-                        if (cs.envHolding) continue;
-                        cs.envStep--;
-                        if (cs.envStep < 0) {
-                            // MAME `ay8910.cpp:1000-1015` end-of-ramp:
-                            //   if (hold) {
-                            //       if (alternate) attack ^= mask;
-                            //       holding = 1; step = 0;
-                            //   } else {
-                            //       if (alternate && (step & (mask+1)))
-                            //           attack ^= mask;
-                            //       step &= mask;
-                            //   }
-                            constexpr uint8_t kMask = 0x0F;
-                            if (cs.envHold) {
-                                if (cs.envAlternate) cs.envAttack ^= kMask;
-                                cs.envHolding = 1;
-                                cs.envStep    = 0;
-                            } else {
-                                if (cs.envAlternate
-                                    && (cs.envStep & (kMask + 1))) {
-                                    cs.envAttack ^= kMask;
-                                }
-                                cs.envStep &= kMask;
-                            }
-                        }
-                    }
-                }
-                // Output level: `volume = step ^ attack` (MAME
-                // `ay8910.cpp:1020`). step ∈ [0..15], attack ∈ {0, 15}.
-                const uint8_t envOut = static_cast<uint8_t>(
-                    cs.envStep ^ cs.envAttack);
-
-                // ── Mixer (R7) ────────────────────────────────────
-                // R7 bit n (n=0..2) = tone-disable for channel n
-                // (active low). Bit n+3 = noise-disable for channel n.
-                // Mockingboard convention: AY output = sum of channel
-                // outputs, where each channel = (tone_out | tone_dis)
-                // AND (noise_out | noise_dis), gated by per-channel
-                // amplitude (R8/R9/R10).
-                const uint8_t mix = r[7];
-                for (int ch = 0; ch < 3; ++ch) {
-                    const bool toneEn  = ((mix >> ch)       & 1) == 0;
-                    const bool noiseEn = ((mix >> (ch + 3)) & 1) == 0;
-                    const uint8_t chOut =
-                        (toneEn  ? cs.toneOut[ch] : 1) &
-                        (noiseEn ? cs.noiseOut    : 1);
-                    if (!chOut) continue;
-                    const uint8_t ampReg = r[8 + ch];
-                    const uint8_t level =
-                        (ampReg & 0x10) ? envOut
-                                        : static_cast<uint8_t>(ampReg & 0x0F);
-                    sample += kAyVolumeTable[level & 0x0F];
-                }
+                // ── Box-integrate the mixer across this output sample ──
+                // MAME renders the PSG on the chip's own clock/8 grid
+                // (`ay8910.cpp:1298`) and hands the result to a decimating
+                // resampler (`src/emu/resampler.cpp`). POM2 renders
+                // straight to the device rate, so the decimation has to
+                // happen right here: averaging the mixer output over the
+                // ~2.9 base ticks each output sample spans is an exact
+                // one-sample box filter.
+                //
+                // It buys two distinct things. It band-limits the square
+                // waves — the old point-sampler folded every harmonic
+                // above Nyquist straight back into the audible band,
+                // measured at -11 dB of inharmonic energy on an ordinary
+                // mid-register note, and at envelope periods below 2 it
+                // skipped whole envelope steps without ever sampling
+                // them. And, because the partial ticks at both ends of
+                // the sample are weighted by their true duration, it
+                // restores the sub-sample edge position that the old code
+                // computed and then threw away. That second property is
+                // what fixes CPU-driven volume-register PWM (Digidream
+                // 2's channel-A "SID voice"), whose edges land on
+                // arbitrary CPU cycles rather than on tick boundaries.
+                sample += pom2::ay::renderChipSample(
+                    cs, r, ticksPerSample, invTicksPerSample);
             }
-            // Each AY peaks at ~3.0 (3 channels × 1.0). Two AYs sum to
-            // 6.0. Pre-divide by 6 so a maxed-out signal sits at 1.0
-            // before the volume knob; mixer clamp stops anything past.
-            // The SSI263 (already ≤ 1.0 peak) rides on top, post-divide.
+            // ── Level + DC blocking ───────────────────────────────────
+            // Two AYs x 3 channels x peak 1.0 = 6.0, so `/6` is the
+            // headroom-safe normalisation and the mix stays strictly
+            // LINEAR.
+            //
+            // An earlier pass on 2026-08-01 tried `/3` plus a `tanh` soft
+            // knee, reasoning that single-AY software (the common case —
+            // Digidream 2 never touches the second chip) was sitting 6 dB
+            // down. That was a regression, and Digidream 1 showed it
+            // immediately: DD1 drives BOTH AYs, so its 6-channel sum
+            // routinely exceeds unity, and `tanh` then compressed and
+            // intermodulated it continuously — timbres audibly wrong,
+            // while single-AY DD2 never reached the nonlinearity and
+            // sounded fine. Loudness is a knob the user already has; a
+            // waveshaper across the whole mix is not something to spend
+            // it on. If single-AY level is ever worth revisiting, the
+            // honest fix is true stereo (MAME routes AY1 left and AY2
+            // right at gain 0.5, `a2mockingboard.cpp:161-165`), where
+            // each side carries one chip and `/3` falls out naturally.
+            sample *= (1.0f / 6.0f);
+            const float dcOut = dc.process(sample);
             const float ssi = speechBuf ? speechBuf[i] : 0.0f;
-            output[i] = (sample / 6.0f + ssi) * vol;
+            output[i] = (dcOut + ssi) * vol;
         }
 
-        // Anything still unconsumed was stamped past this buffer's cycle
-        // span (the CPU thread ran ahead of the audio clock). Apply it at
-        // the buffer edge rather than dropping the write — the cursor
-        // catch-up above bounds how far that can ever drift.
-        for (size_t k = nextEvent; k < pending.size(); ++k) {
-            const auto& e = pending[k];
-            if (e.chip < 2 && e.reg < kAyNumRegs) {
-                liveRegs[e.chip][e.reg] = e.val;
-                if (e.reg == 13) chip[e.chip].envRetrigger = true;
+        // Drop only what was actually rendered. Everything still queued
+        // is stamped past this buffer's cycle span and belongs to a LATER
+        // buffer — it stays put and gets replayed at its true sample
+        // offset next time round. (Until 2026-08-01 the leftovers were
+        // instead applied in bulk right here, which meant only the last
+        // value written to each register in a burst survived, and the
+        // cursor was then yanked to `pending.back().cycle`. See the
+        // jitter-buffer note above.)
+        pending.erase(pending.begin(),
+                      pending.begin() + static_cast<ptrdiff_t>(nextEvent));
+        // Bound the queue: if the audio thread stops consuming (device
+        // closed, buffer starvation) the CPU side would otherwise grow it
+        // without limit. kMaxAyEvents is the same bound the producer uses.
+        if (pending.size() > kMaxAyEvents) {
+            const size_t drop = pending.size() - kMaxAyEvents;
+            for (size_t k = 0; k < drop; ++k) {
+                const auto& e = pending[k];
+                if (e.chip < 2 && e.reg < kAyNumRegs) {
+                    liveRegs[e.chip][e.reg] = e.val;
+                    if (e.reg == 13) chip[e.chip].envRetrigger = true;
+                }
             }
+            pending.erase(pending.begin(),
+                          pending.begin() + static_cast<ptrdiff_t>(drop));
         }
-        if (!pending.empty() && audioCursor < pending.back().cycle)
-            audioCursor = pending.back().cycle;
     }
 };
 

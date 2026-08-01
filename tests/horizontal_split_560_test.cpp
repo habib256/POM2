@@ -28,7 +28,7 @@ constexpr uint16_t IIE_80COL_ON = 0xC00D;
 constexpr uint16_t DHIRES_ON    = 0xC05E;
 
 constexpr int W         = 560;
-constexpr int kSplitDot = 20 * 14;     // 280
+constexpr int kSplitDot = 21 * 14;     // 294 — hpos 45 → col 21 (`hpos - 24`)
 constexpr int kBandTop  = 96;          // row-aligned (12 * 8)
 
 // Fill main + aux text page ($0400-$07FF) and HGR page ($2000-$3FFF) with
@@ -71,7 +71,7 @@ void makeBeam(Memory& m)
     for (int y = kBandTop; y < 192; ++y) {
         m.setCycleCounter(static_cast<uint64_t>(y) * 65 + 5);   // HBL → col 0
         m.memRead(CLR_TEXT);              // DHGR from column 0
-        m.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 20
+        m.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 21 (mapping is `hpos - 24`)
         m.memRead(SET_TEXT);              // 80-col text from column 20
     }
 }

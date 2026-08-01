@@ -50,6 +50,17 @@ const std::vector<CharRomEntry>& catalogStorage()
           "//e/c — Deutsch (341-0161-A)",          "roms/apple2e_char_de.rom",          true },
         { CharRomLocale::AppleIIeGermanImproved,
           "//e/c — Deutsch Improved",              "roms/apple2e_char_de_improved.rom", true },
+
+        // The genuine 342-0274-A: one 8 KB part holding BOTH sets, as fitted
+        // to the French //e (MAME `apple2eefr` gfx1). Offered as two entries
+        // because POM2 selects a bank at load time instead of modelling the
+        // machine's charset switch. Note the older "Français" entry above is
+        // a 4 KB dump that is byte-identical to the FR-CA unenhanced one and
+        // is NOT 342-0274-A, despite how it used to be labelled.
+        { CharRomLocale::AppleIIeFrench8k_FR,
+          "//e — Français 342-0274-A (banque FR)", "roms/342-0274-a.e9",                true, 0 },
+        { CharRomLocale::AppleIIeFrench8k_US,
+          "//e — Français 342-0274-A (banque US)", "roms/342-0274-a.e9",                true, 1 },
     };
     return all;
 }
@@ -106,8 +117,17 @@ const char* charRomLocaleKey(CharRomLocale l)
         case CharRomLocale::AppleIIeUK_Unenhanced:               return "iie_uk_unenh";
         case CharRomLocale::AppleIIeGerman:                      return "iie_de";
         case CharRomLocale::AppleIIeGermanImproved:              return "iie_de_improved";
+        case CharRomLocale::AppleIIeFrench8k_FR:                 return "iie_fr8k_fr";
+        case CharRomLocale::AppleIIeFrench8k_US:                 return "iie_fr8k_us";
     }
     return "default";
+}
+
+int charRomBank(CharRomLocale l)
+{
+    for (const auto& e : charRomCatalog())
+        if (e.locale == l) return e.bank;
+    return 0;
 }
 
 std::string resolveCharRomPath(const std::string& catalogPath)

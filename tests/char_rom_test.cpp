@@ -56,12 +56,23 @@ int main()
         assert(mem.charRom().size() == 4096);
     }
 
-    // 8K dump → rejected (no normalization path; would render garbage).
+    // 8K dump → ACCEPTED since 2026-07-31: an 8K part is an international //e
+    // video ROM carrying two 4K sets (MAME's gfx1 region is 8K; apple2eefr's
+    // 342-0274-a.e9 holds FR-CA + US). loadCharRom collapses it to the chosen
+    // bank and runs the ordinary 4K normalization, so the result is 4096 bytes
+    // whichever bank was asked for. Bank CONTENT equivalence against POM2's
+    // standalone 4K dumps is pinned separately by `char_rom_8k_bank`, which
+    // needs the real ROMs; this file uses synthetic fills and only pins the
+    // size/acceptance contract.
     {
         Memory mem;
-        assert(mem.loadCharRom(p8k.string().c_str()) == 0);
-        assert(mem.getLastError().find("2K or 4K") != std::string::npos);
-        assert(mem.charRom().empty());          // nothing half-loaded
+        assert(mem.loadCharRom(p8k.string().c_str(), 0) == 1);
+        assert(mem.charRom().size() == 4096);
+    }
+    {
+        Memory mem;
+        assert(mem.loadCharRom(p8k.string().c_str(), 1) == 1);
+        assert(mem.charRom().size() == 4096);
     }
 
     // Odd size and empty file → rejected by the same gate.

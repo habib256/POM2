@@ -7,6 +7,8 @@
 
 #include "PhasorCard.h"
 
+#include "AyPsgSynth.h"
+
 #include "ByteIO.h"
 #include "CpuClock.h"
 #include "M6502.h"
@@ -26,13 +28,10 @@ constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
 constexpr float kAyToneStepHz    = kAyClockHz / 8.0f;
 constexpr float kAyNoiseStepHz   = kAyClockHz / 8.0f;
 
-// AY-3-8910 / 8913 logarithmic 4-bit volume → linear amplitude.
-// Sourced from MAME `ay8910.cpp` `build_single_table(normalize=1)` with
-// `ay8910_param`. Index 0 = silence, 15 = peak.
-constexpr float kAyVolumeTable[16] = {
-    0.0000f, 0.0105f, 0.0154f, 0.0223f, 0.0321f, 0.0468f, 0.0635f, 0.1061f,
-    0.1319f, 0.2164f, 0.2974f, 0.3909f, 0.5128f, 0.6371f, 0.8186f, 1.0000f
-};
+// Amplitude table lives in AyPsgSynth.h since 2026-08-01, shared with
+// MockingboardCard (the old "MAME build_single_table" citation on both
+// copies was wrong — see the header).
+using pom2::ay::kVolumeTable;
 
 constexpr int kAyNumRegs = pom2::Ay3_8910::kAyNumRegs;
 
@@ -80,34 +79,20 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
-    // Per-chip synthesis state (identical to MockingboardCard's
-    // ChipState — counters, LFSR seed, envelope state machine, MAME
-    // parity). Replicated here rather than extracted to a shared
-    // header to keep the audio-thread state self-contained; an
-    // `AyPsgSynth` shared base is a viable future refactor once the
-    // two cards have settled.
-    struct ChipState {
-        uint16_t toneCounter[3] = { 0, 0, 0 };
-        float    toneAccum  [3] = { 0, 0, 0 };
-        uint8_t  toneOut    [3] = { 0, 0, 0 };
-        uint16_t noiseCounter         = 0;
-        float    noiseAccum           = 0;
-        uint32_t noiseLfsr            = 1;     // MAME ay8910.cpp:1309
-        uint8_t  noiseOut             = 0;
-        uint8_t  noisePrescale        = 0;
-        uint32_t lastSeenResetCount   = 0;
-        uint32_t envCounter           = 0;
-        float    envAccum             = 0;
-        int      envStep              = 15;
-        uint8_t  envAttack            = 0;
-        uint8_t  envHold              = 0;
-        uint8_t  envAlternate         = 0;
-        uint8_t  envHolding           = 0;
-        int      lastShape            = -1;
-        uint32_t lastSeenEnvWriteCount = 0;
-        bool     envRetrigger         = false;
-    };
+    // Per-chip synthesis state + the per-tick generators live in
+    // AyPsgSynth.h, shared with MockingboardCard since 2026-08-01.
+    // Before that both cards carried verbatim copies (~130 lines, 4
+    // differing lines) and had already drifted apart — Phasor never
+    // gained the cycle-stamped event queue, and would also have missed
+    // the band-limiting rework.
+    using ChipState = pom2::ay::ChipSynthState;
+
     ChipState chip[4];
+
+    /// One-pole 20 Hz high-pass on the summed output — MAME's default
+    /// per-speaker filter (`src/emu/audio_effects/filter.cpp:39-44`).
+    /// Implementation in AyPsgSynth.h.
+    pom2::ay::DcBlocker dc;
 
     void fillAudioBuffer(float* output, int frameCount) override
     {
@@ -153,127 +138,43 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
             return;
         }
 
-        // Per-sample step rates. Phasor-native mode doubles the AY chip
-        // clock (clockScale == 2), so every counter ticks twice as fast
-        // per audio sample → registers produce notes one octave up.
+        // Base clock/8 ticks covered by one output sample. Phasor-native
+        // mode doubles the AY chip clock (clockScale == 2), so every
+        // counter ticks twice as fast per audio sample -> registers
+        // produce notes one octave up.
+        //
+        // Derived from the NTSC constant rather than a live CPU clock:
+        // unlike MockingboardCard, PhasorCard has no setCpuClock override
+        // yet, so a PAL machine still clocks these AYs 0.7 % fast. Minor
+        // next to the aliasing this loop used to produce, but it is a
+        // real remaining gap.
         const float scale = static_cast<float>(clockScaleSnap);
-        const float toneStepPerSample  = (kAyToneStepHz  * scale) / static_cast<float>(sr);
-        const float noiseStepPerSample = (kAyNoiseStepHz * scale) / static_cast<float>(sr);
+        const float ticksPerSample = (kAyToneStepHz * scale)
+                                     / static_cast<float>(sr);
+        const float invTicksPerSample =
+            (ticksPerSample > 0.0f) ? (1.0f / ticksPerSample) : 0.0f;
+        dc.setRate(sr);
 
         for (int i = 0; i < frameCount; ++i) {
             float sample = 0.0f;
             for (int ci = 0; ci < 4; ++ci) {
-                ChipState& cs = chip[ci];
-                const uint8_t* r = regSnap[ci];
-
-                const auto tonePeriod = [&](int ch) -> uint16_t {
-                    const int lo = r[ch * 2];
-                    const int hi = r[ch * 2 + 1] & 0x0F;
-                    const int p  = (hi << 8) | lo;
-                    return static_cast<uint16_t>(p == 0 ? 1 : p);
-                };
-
-                // ── Tone counters ──────────────────────────────────
-                for (int ch = 0; ch < 3; ++ch) {
-                    cs.toneAccum[ch] += toneStepPerSample;
-                    const uint16_t p = tonePeriod(ch);
-                    while (cs.toneAccum[ch] >= 1.0f) {
-                        cs.toneAccum[ch] -= 1.0f;
-                        if (++cs.toneCounter[ch] >= p) {
-                            cs.toneCounter[ch] = 0;
-                            cs.toneOut[ch] ^= 1;
-                        }
-                    }
-                }
-
-                // ── Noise (17-bit LFSR x^17 + x^14 + 1) ────────────
-                const uint16_t noisePer = static_cast<uint16_t>(
-                    (r[6] & 0x1F) ? (r[6] & 0x1F) : 1);
-                cs.noiseAccum += noiseStepPerSample;
-                while (cs.noiseAccum >= 1.0f) {
-                    cs.noiseAccum -= 1.0f;
-                    if (++cs.noiseCounter < noisePer) continue;
-                    cs.noiseCounter = 0;
-                    cs.noisePrescale ^= 1;
-                    if (cs.noisePrescale) continue;
-                    const uint32_t bit =
-                        ((cs.noiseLfsr >> 0) ^ (cs.noiseLfsr >> 3)) & 1;
-                    cs.noiseLfsr = (cs.noiseLfsr >> 1) | (bit << 16);
-                    cs.noiseOut  = static_cast<uint8_t>(cs.noiseLfsr & 1);
-                }
-
-                // ── Envelope (MAME 4-flag state machine) ───────────
-                {
-                    const int shape = r[13] & 0x0F;
-                    if (shape != cs.lastShape || cs.envRetrigger) {
-                        cs.envRetrigger = false;
-                        constexpr uint8_t kMask = 0x0F;
-                        cs.envAttack = (shape & 0x04) ? kMask : uint8_t{0};
-                        if ((shape & 0x08) == 0) {
-                            cs.envHold      = 1;
-                            cs.envAlternate = cs.envAttack;
-                        } else {
-                            cs.envHold      = (shape & 0x01) ? 1 : 0;
-                            cs.envAlternate = (shape & 0x02) ? 1 : 0;
-                        }
-                        cs.envStep      = kMask;
-                        cs.envHolding   = 0;
-                        cs.envCounter   = 0;
-                        cs.envAccum     = 0;
-                        cs.lastShape    = shape;
-                    }
-                    // No period-0 clamp: envelope "period = 0 is half as
-                    // period = 1" (MAME `ay8910.cpp:89-91`; pre-increment
-                    // compare at `:1119-1122` — see the matching note in
-                    // MockingboardCard::AudioSrc).
-                    const int envPer = r[11] | (r[12] << 8);
-                    const uint32_t threshold =
-                        static_cast<uint32_t>(envPer) * 2u;
-                    cs.envAccum += toneStepPerSample;
-                    while (cs.envAccum >= 1.0f) {
-                        cs.envAccum -= 1.0f;
-                        if (++cs.envCounter < threshold) continue;
-                        cs.envCounter = 0;
-                        if (cs.envHolding) continue;
-                        cs.envStep--;
-                        if (cs.envStep < 0) {
-                            constexpr uint8_t kMask = 0x0F;
-                            if (cs.envHold) {
-                                if (cs.envAlternate) cs.envAttack ^= kMask;
-                                cs.envHolding = 1;
-                                cs.envStep    = 0;
-                            } else {
-                                if (cs.envAlternate
-                                    && (cs.envStep & (kMask + 1))) {
-                                    cs.envAttack ^= kMask;
-                                }
-                                cs.envStep &= kMask;
-                            }
-                        }
-                    }
-                }
-                const uint8_t envOut = static_cast<uint8_t>(
-                    cs.envStep ^ cs.envAttack);
-
-                // ── Mixer (R7) + per-channel amplitude (R8/R9/R10) ─
-                const uint8_t mix = r[7];
-                for (int ch = 0; ch < 3; ++ch) {
-                    const bool toneEn  = ((mix >> ch)       & 1) == 0;
-                    const bool noiseEn = ((mix >> (ch + 3)) & 1) == 0;
-                    const uint8_t chOut =
-                        (toneEn  ? cs.toneOut[ch] : 1) &
-                        (noiseEn ? cs.noiseOut    : 1);
-                    if (!chOut) continue;
-                    const uint8_t ampReg = r[8 + ch];
-                    const uint8_t level =
-                        (ampReg & 0x10) ? envOut
-                                        : static_cast<uint8_t>(ampReg & 0x0F);
-                    sample += kAyVolumeTable[level & 0x0F];
-                }
+                // Box-integrate the mixer across the ~2.9 base ticks this
+                // output sample spans, instead of point-sampling it once
+                // at the end. See AyPsgSynth.h for why: the old loop threw
+                // away the sub-sample edge position it had just computed,
+                // which folded every harmonic above Nyquist back into the
+                // audible band.
+                sample += pom2::ay::renderChipSample(
+                    chip[ci], regSnap[ci], ticksPerSample, invTicksPerSample);
             }
-            // 4 chips × 3 channels × peak 1.0 = 12.0 max amplitude.
-            // Pre-divide so full-scale signal hits 1.0 before vol knob.
-            output[i] = (sample / 12.0f) * vol;
+            // 4 chips x 3 channels x peak 1.0 = 12.0. Headroom-safe and
+            // strictly LINEAR — see the matching note in Mockingboard.cpp
+            // for why the `tanh` soft knee tried here on 2026-08-01 was
+            // reverted (it distorted any mix that used more than one AY).
+            sample *= (1.0f / 12.0f);
+            // DC blocker: the AY channel model is unipolar, so gating
+            // channels on and off steps the offset.
+            output[i] = dc.process(sample) * vol;
         }
     }
 };

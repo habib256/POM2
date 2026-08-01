@@ -75,6 +75,18 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           { "roms/liron.rom" }, 4096, 0, "",
           "SmartPortCard presents a synthetic identity instead of the real "
           "firmware. Blocks still work; the $Cn0D dispatch does not." },
+        { "Storage cards",
+          "Apple II 3.5\" Disk Controller / SuperDrive (341-0438-A)",
+          { "roms/341-0438-a.bin" }, 32768, 0xC73FF25Bu,
+          "MAME a2superdrive (CRC c73ff25b)",
+          "Not used by POM2 yet — kept for the MAME apple2eefr oracle "
+          "(-slN superdrive) and a future SuperDrive card port." },
+        { "Reference dumps (oracle only)",
+          "//e international keyboard decode ROM (342-0326-A, FR)",
+          { "roms/342-0326-a.f12" }, 2048, 0xF04970A9u,
+          "MAME apple2eefr (BAD_DUMP upstream: FR half + QWERTY UK half)",
+          "Nothing — POM2 maps host keys directly and has no keyboard-decode "
+          "ROM. Present only so the MAME PAL //e oracle romset is complete." },
         { "Storage cards", "CFFA 2.0 firmware, 65C02 build",
           { "roms/cffa20eec02.bin" }, 4096, 0xFB3726F8u,
           "dreher.net Run6_CDROM.zip",

@@ -2176,6 +2176,91 @@ endif()
 add_test(NAME dix_modpage_split COMMAND test_dix_modpage_split)
 set_tests_properties(dix_modpage_split PROPERTIES TIMEOUT 5)
 
+# $C019 intra-line phase: the VBL'/DISPLAY edge sits 13 cycles BEFORE the
+# 65-cycle line boundary (hpos 52), per French Touch MAD EFFECT's own
+# cycle-annotated source. Pins the *timing* half of the DIX/French Touch
+# validation the way dix_modpage_split pins the rendering half.
+add_executable(test_vbl_edge_phase
+    vbl_edge_phase_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_vbl_edge_phase PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_vbl_edge_phase PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_vbl_edge_phase PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_vbl_edge_phase PRIVATE winmm)
+endif()
+
+add_test(NAME vbl_edge_phase COMMAND test_vbl_edge_phase)
+set_tests_properties(vbl_edge_phase PROPERTIES TIMEOUT 10)
+
+# 6522 T1 continuous period == latch + 2. Header-only VIA, so no extra
+# sources. Guards the frame clock every beam-raced Mockingboard demo uses.
+add_executable(test_via_t1_period via_t1_period_test.cpp)
+target_include_directories(test_via_t1_period PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME via_t1_continuous_period COMMAND test_via_t1_period)
+set_tests_properties(via_t1_continuous_period PROPERTIES TIMEOUT 10)
+
+# MAD EFFECT beam-phase probe — diagnostic only (needs the demo disk), so it
+# is built but NOT registered with ctest.
+add_executable(madef_phase_probe EXCLUDE_FROM_ALL
+    madef_phase_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(madef_phase_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(madef_phase_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(madef_phase_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(madef_phase_probe PRIVATE winmm)
+endif()
+
+# DIGIDREAM 2 AY register trace — diagnostic only (needs the demo disk +
+# roms/), so it is built but NOT registered with ctest.
+add_executable(dd2_ay_trace EXCLUDE_FROM_ALL
+    dd2_ay_trace.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(dd2_ay_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(dd2_ay_trace PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(dd2_ay_trace PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(dd2_ay_trace PRIVATE winmm)
+endif()
+
 # PAL 50 Hz machine timing: VideoTiming table + frameCycleToPos 262↔312 geometry
 # + Memory scanline stamping under the active standard.
 add_executable(test_pal_timing
@@ -2396,6 +2481,31 @@ endif()
 
 add_test(NAME display_golden_hash COMMAND test_display_golden)
 set_tests_properties(display_golden_hash PROPERTIES TIMEOUT 10)
+
+# ─── 8K international //e video ROM: bank selection ──────────────────────
+# Pins that collapsing an 8K two-bank dump (342-0274-a.e9, FR-CA + US) to the
+# selected bank yields byte-identical normalized glyphs to POM2's standalone
+# 4K dumps of the same sets. Soft-skips without the user-provided ROMs.
+add_executable(test_char_rom_8k_bank
+    char_rom_8k_bank_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_char_rom_8k_bank PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_char_rom_8k_bank PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_char_rom_8k_bank PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_char_rom_8k_bank PRIVATE winmm)
+endif()
+
+add_test(NAME char_rom_8k_bank COMMAND test_char_rom_8k_bank
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(char_rom_8k_bank PROPERTIES TIMEOUT 15)
 
 # ─── Static-text frame-skip equivalence (dirty-region tracking) ───────────
 # Runs two machines in lockstep — one display allowed to take the static-text
@@ -3304,6 +3414,48 @@ endif()
 
 add_test(NAME mockingboard_smoke COMMAND test_mockingboard)
 set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)
+
+# ─── Mockingboard AUDIO QUALITY ─────────────────────────────────────────
+# Spectral purity, DC offset, sub-buffer write placement under a bursty
+# producer, and the 16 MAME envelope shape sequences. Separate from
+# `mockingboard_smoke` (register/IRQ plumbing + "is it silent") because
+# these assert on the rendered signal itself. Same source list.
+add_executable(test_mockingboard_audio_quality
+    mockingboard_audio_quality_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_mockingboard_audio_quality PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_audio_quality PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_audio_quality PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_audio_quality PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_audio_quality COMMAND test_mockingboard_audio_quality)
+set_tests_properties(mockingboard_audio_quality PROPERTIES TIMEOUT 30)
 
 
 # ─── Mockingboard lazy timer-sync smoke test ───────────────────────────
@@ -4243,3 +4395,40 @@ endif()
 add_test(NAME card_snapshot_state COMMAND test_card_snapshot_state
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(card_snapshot_state PROPERTIES TIMEOUT 20)
+
+# DIGIDREAM 1 audio A/B probe — diagnostic only (needs the demo disk +
+# roms/), so it is built but NOT registered with ctest. Three variants can
+# exist so the audio-thread replay path can be compared build-to-build; the
+# extra two only appear when their source has been dropped in
+# ${CMAKE_BINARY_DIR}/dd1_ab/ (e.g. `git show HEAD:src/Mockingboard.cpp`).
+set(POM2_DD1_AB_COMMON
+    dd1_audio_ab.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+function(pom2_add_dd1_probe name mbsrc)
+    add_executable(${name} EXCLUDE_FROM_ALL ${POM2_DD1_AB_COMMON} ${mbsrc})
+    target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${name} PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+    endif()
+    if(APPLE)
+        target_link_libraries(${name} PRIVATE
+            "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+    endif()
+    if(WIN32)
+        target_link_libraries(${name} PRIVATE winmm)
+    endif()
+endfunction()
+pom2_add_dd1_probe(dd1_audio_ab ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp)
+foreach(v old instr)
+    if(EXISTS ${CMAKE_BINARY_DIR}/dd1_ab/Mockingboard_${v}.cpp)
+        pom2_add_dd1_probe(dd1_audio_${v} ${CMAKE_BINARY_DIR}/dd1_ab/Mockingboard_${v}.cpp)
+    endif()
+endforeach()

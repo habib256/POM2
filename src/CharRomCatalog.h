@@ -50,6 +50,14 @@ enum class CharRomLocale : uint8_t {
     AppleIIeUK_Unenhanced,
     AppleIIeGerman,
     AppleIIeGermanImproved,
+
+    // 8 KB INTERNATIONAL //e video ROM (342-0274-A), which carries TWO 4 KB
+    // sets in one part — the real French //e switches between them. POM2
+    // offers each bank as its own entry rather than modelling the switch:
+    // bank 0 is the FR-CA set, bank 1 the US set (verified by CRC against
+    // POM2's standalone 4 KB dumps; pinned by `char_rom_8k_bank`).
+    AppleIIeFrench8k_FR,
+    AppleIIeFrench8k_US,
 };
 
 struct CharRomEntry {
@@ -59,10 +67,18 @@ struct CharRomEntry {
     bool          isIIeClass;       // hides II/II+ entries on IIe profiles
                                     // and vice-versa (a "ProfileDefault"
                                     // entry is shown for every profile)
+    int           bank = 0;         // 4 KB bank inside an 8 KB two-set dump;
+                                    // ignored for 2 KB / 4 KB parts
 };
 
 /// All entries the dropdown could ever display, in stable order.
 const std::vector<CharRomEntry>& charRomCatalog();
+
+/// The 4 KB bank to select inside an 8 KB two-set dump for this locale
+/// (0 for every 2 KB / 4 KB part, and for ProfileDefault). Callers must pass
+/// it to `Memory::loadCharRom`, or both banks of a two-set ROM would load as
+/// bank 0 and the picker's two entries would draw the same glyphs.
+int charRomBank(CharRomLocale l);
 
 /// True when this entry is meaningful to offer for the active profile.
 /// `ProfileDefault` is universal; II / II+ get only the classic 2 KB

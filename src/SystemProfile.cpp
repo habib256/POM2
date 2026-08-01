@@ -116,7 +116,16 @@ const ProfileConfig& cfgAppleIIc()
         // 16 KB dump = ROM 255 (original), 32 KB Kv0 = ROM 0/3/4 (later
         // revisions with bigger mousetext + AppleTalk hooks). Try the
         // larger one first to get the full feature set.
-        { "roms/apple2c-32Kv0.rom", "roms/apple2c-16K.rom" },
+        //
+        // `3420033a.256` is MAME's `apple2c0` part — the "//c (UniDisk 3.5)"
+        // revision, i.e. the ROM whose firmware knows the external UniDisk
+        // 3.5. It sits LAST on purpose: it is a fallback for users who own
+        // only that dump, not an upgrade. POM2 still serves 3.5"/HDV on //c
+        // through the host-side SmartPort at built-in slot 5 (the real IWM
+        // bit-shift path is deliberately unmodelled — see CLAUDE.md), so
+        // this ROM does not by itself unlock a hardware-accurate 3.5 boot.
+        { "roms/apple2c-32Kv0.rom", "roms/apple2c-16K.rom",
+          "roms/3420033a.256" },
         { "roms/apple2e_char.rom", "roms/apple2_char.rom" },
         /*iieMode=*/true,        // same paging as IIe
         M6502::CpuMode::CMOS,    // //c always shipped 65C02

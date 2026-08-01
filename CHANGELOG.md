@@ -5,6 +5,292 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-01 — Mockingboard audio: the write queue collapsed, and the synth never band-limited
+
+Digidream 2's Mockingboard music sounded coarse. Four things were wrong; the
+first is the one that mattered, and it was not in the synthesiser at all.
+
+**1. ~90 % of AY register writes were dumped at the buffer edge.** The CPU
+worker publishes one video frame of writes in a single burst (~17045 cycles),
+while one audio callback only covers `periodSizeInFrames` = 256 samples =
+~5937 cycles. So every burst carried ~3 callbacks' worth of *future* writes.
+`fillAudioBuffer` drained the whole queue each callback, replayed what fitted
+in this buffer's cycle span, applied **all the rest in bulk at the buffer
+edge** — where, being applied in order to the same register bank, only the
+last value written to each register survived — and then set
+`audioCursor = pending.back().cycle`, parking the cursor on the newest event
+at zero lag. Two callbacks later it had over-run the next burst and tripped
+the backward re-anchor, roughly every third buffer.
+
+DD2 is exactly the workload that destroys. A headless trace of the real disk
+(150 s, 169 930 writes) shows **54 % of its entire register traffic is R8** —
+an Atari-ST style "SID voice" that toggles channel A's volume register in a
+50 % duty square between 129 and 1006 Hz, driven by VIA1 T1+T2 interrupts.
+That modulation cannot survive being collapsed to one value per burst.
+
+The queue is now a jitter buffer: un-rendered events stay queued instead of
+being dumped, and the cursor deliberately runs about one producer burst
+*behind* the newest event, with a +/- one-burst deadband so steady-state
+playback never snaps at all. Costs one PAL frame of added latency on this
+card; buys correct sub-buffer placement.
+
+**2. The synthesiser point-sampled a signal it had already resolved.** It
+advanced tone/noise/envelope in integer clock/8 ticks inside a per-output-
+sample loop — then read the mixer *once*, throwing away the sub-sample edge
+position it had just computed. Every square-wave edge snapped to the 44.1 kHz
+grid (+/-22.7 us of jitter) and everything above Nyquist folded back in.
+Measured: **7 % of total output power was inharmonic** on an ordinary 4 kHz
+note; at envelope periods below 2, whole envelope steps were never sampled.
+
+MAME does not have this problem because it never renders at the output rate:
+its stream runs on the chip's own clock/8 grid (`ay8910.cpp:1298`) and a real
+decimating resampler takes it to the device rate (`src/emu/resampler.cpp`).
+POM2 renders straight to the device rate, so the decimation now happens
+inline — the mixer is **box-integrated** across the ~2.9 base ticks each
+output sample spans, weighting the partial ticks at both ends by their true
+duration. Inharmonic energy drops to **0.51 %** (-22.9 dB), and edge position
+becomes continuous again, which is what the volume-register PWM needs.
+Cost: 0.67 % of one core per chip at realtime.
+
+**3. No DC blocking, on a unipolar model.** A channel contributes
+`kVolumeTable[level]` or nothing, so a 50 %-duty tone carries a DC term of
+half its amplitude and a channel with tone *and* noise masked off in R7 (the
+digi/PWM configuration) is pure DC. Every note and volume write stepped that
+offset — audible clicks, and half the headroom spent on silence. Now a 1-pole
+20 Hz high-pass, matching MAME's default per-speaker filter
+(`src/emu/audio_effects/filter.cpp:39-44,63-68`).
+
+**4. Level and clock.** `sample / 6.0f` normalised for *both* AYs at once,
+so the very common single-AY tune (DD2 never touches the second chip) sat
+6 dB down and users made it up on the volume slider — amplifying the aliasing
+along with the music. Now `/3` with a `tanh` soft knee for the genuine
+two-chip peak. Separately, the AY tick rate was pinned to the NTSC constant;
+pin 22 is wired to the slot's phase-0 line, so a PAL machine really does
+clock the chip at 1 015 625 Hz. It now derives from the live CPU clock —
+PAL music was **12 cents sharp**, and the French Touch / DIX corpus this path
+exists for is PAL.
+
+**Extraction.** `MockingboardCard` and `PhasorCard` carried verbatim copies
+of the synthesis (~130 lines, 4 differing lines) and had already drifted:
+Phasor never gained the cycle-stamped event queue. Both now share
+`src/AyPsgSynth.h` (generators, mixer, box integration, DC blocker), so an
+audio fix cannot land on one card and silently skip the other. Phasor is
+-149/+51 lines. It still lacks the event queue and a `setCpuClock` override —
+both real, both now the only remaining divergence rather than a hidden one.
+
+**Not changed, and worth recording as verified rather than assumed.** The
+envelope state machine was suspected of an off-by-one on the alternate
+shapes (`$0A`/`$0E`), where `envStep--` reaches -1 and the code tests
+`envStep & 0x10`. It is correct: `-1 & 0x10 == 0x10` in C++, the same integer
+promotion MAME's `s8 step` gets. All 16 shapes are now decoded back out of
+the rendered audio and compared against MAME's step sequence in
+`mockingboard_audio_quality`. The noise LFSR taps, prescale and period-0
+handling were likewise checked against `ay8910.h:263-273` and are right.
+The `kAyVolumeTable` **provenance comment** was wrong, though — it claimed
+MAME's `build_single_table(normalize=1)`, which actually maps to
+[-0.125, +0.375] and only applies under `AY8910_LEGACY_OUTPUT`. The data is
+Westcott's measured curve renormalised; citation corrected in place.
+
+New `mockingboard_audio_quality` test: spectral purity (FFT, inharmonic
+energy), residual DC, volume-register PWM placement under a reproduced
+bursty producer, and the 16 envelope shape sequences. Nothing in the suite
+asserted on rendered audio before this — `mockingboard_smoke` only checked
+"not silent" and pitch to +/-6 %, so every defect above passed it.
+
+## 2026-07-31 — 6522 T1 continuous period is latch+2, not latch+3 (a frame clock that drifted)
+
+`Via6522::advance` reloaded T1 in continuous mode with `latch + 3`, copied
+from MAME's `t1_tick` (`6522via.cpp:536-543`) `TIMER1_VALUE + IFR_DELAY`.
+**IFR_DELAY is the one-off underflow→IFR latency, not part of the recurring
+period.** Folding it into the reload stretched every interval by one cycle.
+
+One cycle per frame is inaudible in the Mockingboard's usual job (a music
+tick), which is why this survived so long. It is fatal when T1 is armed as a
+*frame clock*, because the error accumulates: French Touch's **MAD EFFECT**
+arms T1 with one PAL frame and beam-races a 192-line picture off each
+interrupt, so its drawing loop slid a cycle per frame until whole scanlines
+fell past line 191, got stamped scanline 192 by `pushVideoEventLocked`, and
+were dropped by the renderer. Measured on the real disk: the loop's per-frame
+phase went from drifting to stable, and recovered page-flip events per frame
+rose from 169 to 188 of 192.
+
+The demo states the contract while computing its own latch (`Sources/main.a`,
+GPLv3, archived in `disks_5.4/demo/madef/`):
+
+```
+; PAL delay = 65*(192+70+50) = 20280
+; -2 (6522 takes 2 cycles to generate INT)
+; = 20278 = $4F36
+```
+
+period == latch + 2. The first shot keeps N+3 (the IFR latency genuinely
+applies once); only the reload changed.
+
+`via_t2_timing` had pinned the *wrong* value — it asserted N+3 spacing for
+the continuous reload, citing MAME. That assertion was MAME parity, not
+hardware parity, and is now corrected in place with the reasoning; the new
+`via_t1_continuous_period` covers eight consecutive reloads, since it is the
+reload and not the first shot that accumulates. Consistent with the rest of
+today's findings: MAME keeps N+3 and renders the demo wrong, AppleWin only
+started running it at 1.29.6.0 after fixing this class of timing bug.
+
+Diagnostic harness: `tests/madef_phase_probe.cpp` (built, not in ctest — it
+needs the demo disk) boots the real image and reports per-frame drift,
+per-line period, and where each page-flip lands horizontally.
+
+**Still open**: the picture is much closer but not right — some scanlines
+still open at column 0 because their switch lands where
+`frameCycleToPos` clamps (`byteCol = clamp(hpos - 25, 0, 40)`). A sweep of
+all 65 candidate phases finds none that keeps every switch inside the
+40-column window (best is 28, still 55 of 380 outside), so this is **not** a
+constant offset to tune — the line attribution itself is still wrong for a
+subset of events.
+
+Deriving the line origin from `main.a` was attempted and **did not settle
+it**, which is worth recording so it is not retried blind. The source pins a
+*relation* — 13 cycles between the `$C019` edge and the demo's "cycle 0" —
+but not where that cycle 0 sits in POM2's beam coordinates; one equation,
+two unknowns. The alternative reading (cycle 0 = first visible byte ⇒ edge
+at hpos 12 of line 0, 25 cycles from the hpos-52 placement) was implemented
+and measured: MAD EFFECT's page-flips moved from column 0 to column **1**,
+not the predicted column 13, and `pal_timing` + `vbl_smoke` both failed
+because they require line 192 to read VBL from its first cycle. Reverted.
+The hpos-52 placement is what the demo states literally *and* what those two
+pinned tests corroborate. Settling the residual needs an independent anchor
+— a column-accurate reference capture, or a hardware statement of VBLBAR's
+position relative to the start of active video — not more reasoning.
+
+## 2026-07-31 — switch→column mapping is `hpos - 24`: a switch is one cycle too late for its own byte
+
+`Apple2Display::frameCycleToPos` mapped a soft switch to a screen column with
+`byteCol = clamp(hpos - 25, 0, 40)` — the raw offset of the visible window,
+which opens at hpos 25 after the 25-cycle HBL. But a switch performed *at*
+hpos 25+c cannot affect column c: the video scanner latches that byte during
+phi1 of the very cycle whose phi2 the CPU is using for its access, so the
+change first shows one column later. The effective mapping is `hpos - 24`.
+
+Established by measurement, not by the argument above. Replaying French
+Touch's **MAD EFFECT** (GPLv3 sources archived in `disks_5.4/demo/madef/`)
+and sweeping all 65 candidate phases, the demo's 192 per-scanline lit-run
+starts — the `$C055` whose column *is* the silhouette it draws — land wholly
+inside the 40-column window only for offsets **21..24**. 25 sat one cycle
+outside, which is exactly why the scanlines whose start falls at the far left
+of the silhouette spilled into HBL and clamped to column 0 while every other
+line drew correctly.
+
+Method note that cost two wrong turns: sweeping *all* switches has no
+solution at any phase. The `$C054` that CLOSES the lit run is legitimately
+thrown in HBL — "a switch in blanking governs the whole upcoming line" is the
+standard idiom. Only the opening switch must be inside the window.
+
+**This moves the beam-racing convention**, so five pinned tests were
+re-baselined: `horizontal_split`, `horizontal_split_composite`,
+`horizontal_split_560`, `dix_modpage_split` and one line of `pal_timing`.
+None of them measured anything — every one drives a synthetic switch at
+hpos 45 and asserted the resulting column, i.e. they restated POM2's own
+choice. The *expected column* was moved (20 → 21) rather than the stimulus
+(45 → 44), so the change stays visible in the tests instead of hiding in a
+one-character edit. `horizontal_split_smoke` now spells the rule out:
+hpos 24 → col 0, hpos 25 → col 1, hpos 45 → col 21, and hpos 64 → the
+end-of-window clamp (the last cycle of a line can no longer affect the last
+byte, which is already latched).
+
+Residual: the measured band was 21..24 and 24 is its edge — the value with a
+mechanism behind it, but 21-23 are not excluded by the data. If real software
+ever contradicts `hpos - 24`, this is the commit to reopen.
+
+## 2026-07-31 — `$C019` intra-line phase: proposed, implemented, measured, rejected
+
+Recorded because the reasoning is seductive and someone will try it again.
+
+French Touch's **MAD EFFECT** syncs its whole frame off the `$C019`
+VBL'→DISPLAY edge, and its cycle-annotated `Sources/main.a` says:
+
+```
+; WARNING: DISPLAY detected (VERTBLANK <0) from cycle #52 of last line (#311) of VBL
+...                                        ; line 311 / cycle 54
+NOP : NOP : NOP : NOP  : LDA $EA           ; +11
+                                           ; = 65
+; line 0 (display) / cycle 0
+```
+
+Read naively this says the edge is 13 cycles before the line boundary, and
+POM2 derived the flag from the scanline number alone (`scanline = now / 65`),
+i.e. with **no** horizontal phase — apparently a bug. It is not: the sentence
+pins a *relation* (13 cycles from the edge to the demo's "cycle 0"), not a
+*position*, because nothing says where that cycle 0 sits in POM2's beam
+coordinates. One equation, two unknowns.
+
+Both anchorings were implemented and falsified against the real disk, using
+the count of MAD EFFECT's 192 per-scanline lit-run starts (`$C055`) that fall
+outside the 40-column visible window:
+
+| `$C019` lead | clean-phase band | distance from `frameCycleToPos`'s 25 |
+| --- | --- | --- |
+| +13 (edge at hpos 52 of the previous line) | 9–12 | 13–16 cycles |
+| +28 | ~58 | worse |
+| **0 (no shift — what POM2 already did)** | **21–24** | **1–4 cycles** |
+
+So the un-phased implementation was already within 1–4 cycles and every
+proposed shift moved *away* from the answer. A third variant (edge at hpos 12
+of line 0, from reading the demo's "cycle 0" as the first visible byte) also
+broke `pal_timing` and `vbl_smoke`, which independently require line 192 to
+read VBL from its very first cycle. All reverted; `vbl_edge_phase` now pins
+the un-phased edge together with this history, and the //c VBLINT latch path
+carries a matching note.
+
+Method note, since it cost two wrong turns: the first phase sweep demanded
+that *every* switch land inside the visible window and therefore had no
+solution at all. The `$C054` that CLOSES the lit run is legitimately thrown
+in HBL — the standard "a switch in blanking governs the whole upcoming line"
+idiom. Only the `$C055` that OPENS it has to be inside the window, because
+its column *is* the silhouette. Sweeping those alone is what produced the
+table above.
+
+**Resolved the same day** — see the `hpos - 24` entry above: the residual was
+the cycle→column mapping, not this edge.
+
+## 2026-07-31 — 8 KB international //e video ROM (342-0274-A)
+
+`Memory::loadCharRom` used to reject anything that was not 2 KB or 4 KB, on the
+stated grounds that "no shipped char ROM is 8K". The genuine **342-0274-A** is
+8 KB, and it is the part fitted to the French //e — MAME's //e character
+generator region (`gfx1`) is 8 KB = **two 4 KB banks**, and the machine's
+charset switch picks one. The US `apple2ee` fills both banks with the same 4 KB
+part (`342-0265-a.chr` at offset 0 *and* 0x1000); `apple2eefr` instead ships one
+8 KB part carrying two different sets.
+
+POM2 now collapses an 8 KB dump to a selected bank and runs its ordinary 4 KB
+normalization on it — one normalization routine, not two. The bank layout was
+established by CRC rather than assumed: **bank 0 == `apple2e_char_frca.rom`
+(2c8fc403), bank 1 == `apple2e_char.rom` (2651014d)**, both of which POM2
+already ships standalone, so the two halves are independently checkable.
+
+The picker gains two entries (`iie_fr8k_fr` / `iie_fr8k_us`) rather than
+modelling the hardware charset switch, which is not emulated. `charRomBank()`
+carries the bank to every `loadCharRom` call site — without that plumbing both
+entries would silently load bank 0 and draw identical glyphs.
+
+**Catalogue correction found on the way**: the existing "//e/c — Français
+(342-0274-A)" entry points at a 4 KB file that is byte-identical to
+`apple2e_char_frca_unenh.rom` (both ab0be706), so it was never 342-0274-A. The
+label is now honest and the real part is offered alongside it.
+
+Pinned by `char_rom_8k_bank` (5 checks: both banks match their standalone 4 KB
+dumps, the banks differ so the argument is load-bearing, out-of-range clamps,
+and a 4 KB dump ignores the bank). It soft-skips without the user-provided ROMs.
+`char_rom_test` pinned the *old* "8 K is rejected" contract and was updated
+deliberately, not deleted.
+
+Also wired: **`3420033a.256`** (MAME `apple2c0`, the "//c UniDisk 3.5" ROM
+revision) appended **last** in the //c probe order — a fallback for users who
+own only that dump, not an upgrade. It does not unlock hardware-accurate 3.5
+boot on //c: POM2 still serves 3.5"/HDV there through the host-side SmartPort at
+built-in slot 5, because the IWM bit-shift path is deliberately unmodelled.
+**`342-0326-a.f12`** (French keyboard decode ROM) is catalogued as oracle-only —
+POM2 maps host keys directly and has no keyboard-decode ROM. `a2c.128` is
+byte-identical to the existing `apple2c-16K.rom` and needed nothing.
+
 ## 2026-07-31 — Bug hunt 6: stale screen on the Le Chat Mauve Eve registers
 
 **A regression in the same day's frame skip, found by hunting it rather than

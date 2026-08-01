@@ -1052,7 +1052,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     }
     charRomPath = newCharPath;
     if (!newCharPath.empty()) {
-        controller->memory().loadCharRom(newCharPath.c_str());
+        controller->memory().loadCharRom(newCharPath.c_str(),
+                                         pom2::charRomBank(charRomLocale));
     }
     if (cfg.iieMode) display->setAuxMemory(controller->memory().auxData());
     else             display->setAuxMemory(nullptr);

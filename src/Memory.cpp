@@ -276,7 +276,7 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
     return 1;
 }
 
-int Memory::loadCharRom(const char* filename)
+int Memory::loadCharRom(const char* filename, int bank)
 {
     std::ifstream f(filename, std::ios::binary);
     if (!f) {
@@ -287,15 +287,37 @@ int Memory::loadCharRom(const char* filename)
     f.seekg(0, std::ios::end);
     auto size = static_cast<size_t>(f.tellg());
     f.seekg(0, std::ios::beg);
-    // Only 2K and 4K dumps have a normalization path below; an 8K dump would
-    // be stored raw and the renderer would draw garbage glyphs. Reject it
-    // cleanly rather than accept-and-corrupt (no shipped char ROM is 8K).
-    if (size != 2048 && size != 4096) {
-        lastError = "Char ROM must be 2K or 4K, got " + std::to_string(size);
+    // 2K (II/II+) and 4K (IIe-class) dumps are normalized below. An 8K dump is
+    // an INTERNATIONAL //e video ROM: MAME's `gfx1` region is 8K = two 4K
+    // banks, and the machine's charset switch picks one. The US apple2ee fills
+    // both banks with the same 4K dump (342-0265-a.chr at offset 0 AND 0x1000);
+    // the French apple2eefr ships one 8K part, 342-0274-a.e9, whose low bank is
+    // the FR-CA set and whose high bank is the US set — verified by CRC against
+    // POM2's own 4K apple2e_char_frca.rom / apple2e_char.rom. So an 8K dump is
+    // handled by selecting `bank` and running the ordinary 4K path on it, which
+    // keeps one normalization routine rather than two. Anything else is
+    // rejected rather than stored raw (the renderer gates on size >= 2048 and
+    // would happily draw garbage).
+    if (size != 2048 && size != 4096 && size != 8192) {
+        lastError = "Char ROM must be 2K, 4K or 8K, got " + std::to_string(size);
         return 0;
     }
     characterRom.resize(size);
     f.read(reinterpret_cast<char*>(characterRom.data()), size);
+    if (size == 8192 && f) {
+        // Collapse to the selected 4K bank, then fall through to the ordinary
+        // 4K normalization. Done before the short-read check below so a failed
+        // read still lands in the same error path.
+        const size_t off = (bank == 1) ? 4096u : 0u;
+        characterRom.erase(characterRom.begin() + static_cast<long>(off) + 4096,
+                           characterRom.end());
+        characterRom.erase(characterRom.begin(),
+                           characterRom.begin() + static_cast<long>(off));
+        size = 4096;
+        pom2::log().info("ROM",
+            std::string("Char ROM: 8K international dump, bank ") +
+            std::to_string(bank == 1 ? 1 : 0) + " of " + filename);
+    }
     if (!f) {
         // Short read — don't leave a partial ROM the renderer would treat as
         // valid (it gates on size >= 2048 and would draw the garbage tail).
@@ -393,6 +415,12 @@ void Memory::advanceCycles(int cycles)
     }
     const uint64_t scanline = (cycleCounter - vblFrameBase_) / kCyclesPerScanline;
     const bool nowActive = scanline < kVisibleScanlines;
+
+    // Line-boundary edge, same as the $C019 read path (see the long note
+    // there: an intra-line phase was tried both ways against MAD EFFECT and
+    // measured to be wrong). This path drives the //c-class VBLINT *latch*
+    // and is evaluated per tick rather than per cycle, so it would be coarse
+    // regardless.
 
     // Edge: active video → VBL. `$C05B` (EnVBL) arms the per-frame VBL
     // interrupt. The old blanket "never assert the CPU IRQ line" existed
@@ -1293,6 +1321,27 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         // $C019 to find the VBL edge.
         const uint64_t now = cycleCounter +
             (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+        // NO intra-line phase shift is applied here, and that is a
+        // measured conclusion rather than an omission.
+        //
+        // French Touch's MAD EFFECT (//e PAL + Mockingboard, GPLv3 sources
+        // in disks_5.4/demo/madef/) syncs its whole frame off this edge and
+        // its `Sources/main.a` says "DISPLAY detected from cycle #52 of last
+        // line (#311) of VBL", which reads like a 13-cycle lead. Two
+        // different anchorings of that sentence into POM2's beam coordinates
+        // were implemented and BOTH were falsified by replaying the real
+        // disk: a +13 lead and a -12 lead each moved the demo's 192
+        // per-scanline lit-run starts FURTHER outside the visible window,
+        // and the -12 variant also broke `pal_timing` / `vbl_smoke` (which
+        // require line 192 to read VBL from its first cycle).
+        //
+        // The sentence pins a relation, not a position: it cannot say where
+        // the demo's "cycle 0" sits relative to POM2's line boundary — one
+        // equation, two unknowns. Sweeping all 65 phases against the real
+        // disk shows the lit-run starts land wholly inside the 40-column
+        // window for offsets 21..24 with NO shift here, i.e. within 1-4
+        // cycles of `frameCycleToPos`'s existing 25. Any shift on this edge
+        // moves it away. Pinned by `vbl_edge_phase`; see CHANGELOG.
         const uint64_t scanline = (now / kCyclesPerScanline) % kScanlinesPerFrame;
         const bool nowActive = scanline < kVisibleScanlines;
         return static_cast<uint8_t>((nowActive ? 0x80 : 0x00) | low7);

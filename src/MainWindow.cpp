@@ -299,7 +299,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         // instead of leaving them staring at a bare "NO ROM" screen.
         showWelcomePanel = true;
     }
-    controller->memory().loadCharRom(charRomPath.c_str());
+    controller->memory().loadCharRom(charRomPath.c_str(),
+                                     pom2::charRomBank(charRomLocale));
 
     // Load the MAME floppy sound samples (head step, motor spin, insert
     // click) for both 5.25" and 3.5" form factors. Each FloppySoundDevice
@@ -9199,7 +9200,8 @@ void MainWindow::render()
             namespace fs = std::filesystem;
             if (!newPath.empty() && fs::exists(newPath)) {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (controller->memory().loadCharRom(newPath.c_str())) {
+                if (controller->memory().loadCharRom(
+                        newPath.c_str(), pom2::charRomBank(charRomLocale))) {
                     charRomPath = newPath;
                     settings->setString("char_rom_locale",
                         pom2::charRomLocaleKey(charRomLocale));

@@ -26,8 +26,8 @@ constexpr uint16_t SET_PAGE1 = 0xC054;
 
 constexpr int W       = 280;          // legacy 280-wide framebuffer
 constexpr int H       = 192;
-constexpr int kSplitCol  = 20;        // byte column where text takes over
-constexpr int kSplitPx   = kSplitCol * 7;   // 140
+constexpr int kSplitCol  = 21;        // byte column where text takes over (hpos 45 → col 21, mapping is `hpos - 24`)
+constexpr int kSplitPx   = kSplitCol * 7;   // 147
 constexpr int kBandTop   = 96;        // row-aligned (12 * 8): split band start
 
 uint16_t textRowAddr(int row)
@@ -86,14 +86,19 @@ bool spanEqual(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b,
 int main()
 {
     // ── frameCycleToPos unit check (plan step 1) ──────────────────────────
-    // 65 cycles/scanline; 25-cycle HBL, then 40 visible bytes.
+    // 65 cycles/scanline; 25-cycle HBL, then 40 visible bytes — but the
+    // switch→column mapping is `hpos - 24`, one cycle earlier than the raw
+    // window offset: the scanner latches column c's byte in phi1 of the
+    // cycle whose phi2 the CPU uses, so a switch there first shows at c+1.
+    // Measured against French Touch MAD EFFECT (2026-07-31, see CHANGELOG).
     assert(Apple2Display::frameCycleToPos(0).byteCol == 0);          // HBL → col 0
+    assert(Apple2Display::frameCycleToPos(23).byteCol == 0);         // still HBL
     assert(Apple2Display::frameCycleToPos(24).byteCol == 0);         // last HBL cyc
-    assert(Apple2Display::frameCycleToPos(25).byteCol == 0);         // first visible
-    assert(Apple2Display::frameCycleToPos(45).byteCol == 20);        // mid-line
-    assert(Apple2Display::frameCycleToPos(64).byteCol == 39);        // last visible
+    assert(Apple2Display::frameCycleToPos(25).byteCol == 1);         // first visible → c+1
+    assert(Apple2Display::frameCycleToPos(45).byteCol == 21);        // mid-line
+    assert(Apple2Display::frameCycleToPos(64).byteCol == 40);        // clamp at window end
     assert(Apple2Display::frameCycleToPos(96 * 65 + 45).scanline == 96);
-    assert(Apple2Display::frameCycleToPos(96 * 65 + 45).byteCol  == 20);
+    assert(Apple2Display::frameCycleToPos(96 * 65 + 45).byteCol  == 21);
 
     // ── Reference 1: a pure graphics+HIRES frame. ────────────────────────
     Memory hgrRef;
@@ -129,7 +134,7 @@ int main()
     for (int y = kBandTop; y < H; ++y) {
         beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 5);   // HBL → byteCol 0
         beam.memRead(CLR_TEXT);              // graphics from column 0
-        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 20
+        beam.setCycleCounter(static_cast<uint64_t>(y) * 65 + 45);  // hpos 45 → col 21 (mapping is `hpos - 24`)
         beam.memRead(SET_TEXT);              // text from column 20
     }
     const auto fBeam = frameOf(beam);

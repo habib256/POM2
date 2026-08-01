@@ -1,0 +1,15 @@
+﻿Soft reset
+[:sl4:mockingboard:ay1] (reset phase): warning - AY-3-8913 PSG upper address mismatch
+[:sl4:mockingboard:ay2] (reset phase): warning - AY-3-8913 PSG upper address mismatch
+[:sl5:superdrive] LED off
+[:sl5:superdrive:fdc:0:35dd] cmd step dir -1
+[:sl5:superdrive:fdc:0:35dd] cmd step dir +1
+[:sl5:superdrive:fdc:0:35dd] cmd step dir -1
+[:sl5:superdrive:fdc:0:35dd] cmd clear m_dskchg
+[:sl5:superdrive:fdc:0:35dd] cmd step dir -1
+[:sl5:superdrive:fdc:0:35dd] cmd motor on
+[:sl5:superdrive:fdc:1:35hd] cmd step dir -1
+[:sl5:superdrive:fdc:1:35hd] cmd step dir +1
+[:sl5:superdrive:fdc:1:35hd] cmd step dir -1
+[:sl5:superdrive:fdc:1:35hd] cmd clear m_dskchg
+[:sl5:superdrive:fdc:0:35dd] cmd reg a -

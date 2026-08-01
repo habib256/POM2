@@ -1,0 +1,1 @@
+%A2SDK%\BIN\dw.py ..\DSK\test.dsk title.bin 1 0 + D>log.txt

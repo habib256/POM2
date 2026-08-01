@@ -179,7 +179,10 @@ public:
     // indistinguishable from file size alone — the caller passes
     // `pickLower16KFor32K=true` when loading a //c-style dump.
     int loadAppleIIRom(const char* filename, bool pickLower16KFor32K = false);
-    int loadCharRom(const char* filename);  // 2 KB, 256 glyphs × 8 rows
+    /// 2 KB (II/II+) or 4 KB (IIe-class) dump, or an 8 KB INTERNATIONAL //e
+    /// video ROM — two 4 KB banks, `bank` selects which (0 = low). See the
+    /// comment in the definition for why an 8 KB part exists at all.
+    int loadCharRom(const char* filename, int bank = 0);
 
     const std::string& getLastError() const { return lastError; }
 
