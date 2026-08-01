@@ -432,6 +432,107 @@ void testDenseDigiStreamBothChips()
     assert(frac < 0.06);
 }
 
+// ─── Test 3c: an IDLE producer must not disturb the replay cursor ───────
+// The case a continuous-write harness can never show, and the one that
+// actually broke Digidream 1. Music has gaps: part transitions, disk
+// loads, silence between patterns. During a gap the CPU keeps running but
+// emits no AY writes, so `latestAyEventCycle_` freezes while the audio
+// thread keeps consuming and the replay cursor keeps advancing.
+//
+// The first version of the pacing guard treated that as "the consumer has
+// run up onto the producer" and re-anchored — every single callback, for
+// the whole gap, dragging the cursor progressively further behind real
+// CPU time. When writes resumed, the cursor was hundreds of thousands of
+// cycles late, the starvation branch fired, and a buffer's worth of
+// events went out in a lump. Audible as a tempo glitch on resumption.
+//
+// This test plays, goes quiet, then plays again, and looks at the audio
+// RIGHT AFTER the resumption.
+//
+// HONEST SCOPE: it pins that resumption works, and it would catch a cursor
+// that failed to recover from a gap at all. It does NOT discriminate the
+// specific defect described above — measured against a deliberately
+// restored buggy guard it produces identical numbers, because that guard
+// still self-heals via the starvation branch within one buffer. The defect
+// is real (it was caught from a live run's instrumentation, not from this
+// harness) but its blast radius is one mis-placed buffer, so do not read a
+// pass here as proof that gap handling is optimal.
+void testIdleProducerThenResume()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    MockingboardCard card(4);
+    card.setCpu(&cpu);
+    card.setSampleRate(kSr);
+    card.setVolume(1.0f);
+    card.setMuted(false);
+    card.setCpuClock(kPalClockHz);
+
+    ayWrite(card, 0, 7, 0x3F);      // tone + noise masked: level == R8
+    ayWrite(card, 0, 8, 0x00);
+
+    constexpr int    kHalfPeriodCycles = 1000;
+    const double     kExpectedHz = kPalClockHz / (2.0 * kHalfPeriodCycles);
+    constexpr int    kFrameCycles  = 20313;
+    constexpr double kFrameSamples = 882.0;
+    constexpr int    kChunk        = 256;
+
+    AudioSource* src = card.audioSource();
+    assert(src);
+    std::vector<float> chunk(kChunk);
+    std::vector<float> resumed;          // samples captured after the gap
+    double samplesOwed   = 0.0;
+    int    cyclesIntoHalf = 0;
+    bool   high           = false;
+    bool   capture        = false;
+
+    // phase 0: 20 frames of PWM | phase 1: 40 silent frames | phase 2: PWM
+    for (int f = 0; f < 100; ++f) {
+        const bool writing = (f < 20) || (f >= 60);
+        if (f == 60) capture = true;     // start capturing at resumption
+        int remaining = kFrameCycles;
+        while (remaining > 0) {
+            const int step =
+                std::min(remaining, kHalfPeriodCycles - cyclesIntoHalf);
+            mem.advanceCycles(step);
+            cyclesIntoHalf += step;
+            remaining      -= step;
+            if (cyclesIntoHalf >= kHalfPeriodCycles) {
+                cyclesIntoHalf = 0;
+                high = !high;
+                // During the gap the CPU still runs — it just does not
+                // touch the AY. That is the whole point of the test.
+                if (writing) ayWrite(card, 0, 8, high ? 0x0F : 0x00);
+            }
+        }
+        samplesOwed += kFrameSamples;
+        while (samplesOwed >= kChunk) {
+            src->fillAudioBuffer(chunk.data(), kChunk);
+            if (capture && resumed.size() < 8192)
+                resumed.insert(resumed.end(), chunk.begin(), chunk.end());
+            samplesOwed -= kChunk;
+        }
+    }
+
+    assert(resumed.size() >= 8192);
+    resumed.resize(8192);
+    // Skip the first two buffers: the jitter buffer legitimately needs the
+    // target lag to refill before the resumed stream is placeable.
+    std::vector<float> win(resumed.begin() + 1024, resumed.end());
+    win.resize(4096);
+
+    double sumSq = 0.0;
+    for (float v : win) sumSq += static_cast<double>(v) * v;
+    const double rms = std::sqrt(sumSq / static_cast<double>(win.size()));
+    const double frac = inharmonicFraction(win, kExpectedHz, kSr);
+    std::printf("  resume after idle gap: rms=%.4f inharmonic=%.2f %%\n",
+                rms, frac * 100.0);
+    // A mis-anchored cursor dumps a buffer of edges in a lump, which is
+    // broadband. A clean resumption is a plain square wave.
+    assert(rms > 0.02);
+    assert(frac < 0.10);
+}
+
 // ─── Test 4: envelope shape sequences match MAME, all 16 shapes ──────────
 // Drives R13 with a slow envelope period and decodes the amplitude
 // staircase back into MAME's 4-bit `step ^ attack` sequence. Pins the
@@ -550,6 +651,8 @@ int main()
     std::printf("volume PWM placement . OK\n");
     testDenseDigiStreamBothChips();
     std::printf("dense digi stream .... OK\n");
+    testIdleProducerThenResume();
+    std::printf("idle then resume ..... OK\n");
     testEnvelopeShapes();
     std::printf("envelope shapes ...... OK\n");
     std::printf("Mockingboard audio quality test passed.\n");

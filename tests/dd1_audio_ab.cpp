@@ -38,7 +38,17 @@
 // Mockingboard.cpp only (see tests/CMakeLists.txt dd1_audio_instr).
 //
 // Usage: build/tests/dd1_audio_ab [wall-seconds] [disk] [out-prefix] [turbo0|1]
+//                                 [jitter-samples] [buffer-frames]
+//
+// `jitter-samples` models the fact that the audio callback and the CPU
+// worker frame are driven by two INDEPENDENT clocks (the sound card's and
+// steady_clock + OS scheduling). Their relative phase random-walks; the
+// argument bounds that walk in samples (441 = ±10 ms, a normal scheduling
+// hiccup). 0 = the idealised, perfectly locked cadence.
+// `buffer-frames` is the device period size (AudioDevice.cpp:187 asks for
+// 256, but the backend may hand back 480/512/1024).
 
+#include "AyPsgSynth.h"
 #include "DiskIICard.h"
 #include "M6502.h"
 #include "Memory.h"
@@ -105,6 +115,14 @@ int main(int argc, char** argv)
         "disks_5.4/demo/digidream/DD.dsk"});
     const std::string prefix = (argc > 3) ? std::string(argv[3]) : std::string("dd1");
     const bool turbo = (argc > 4) ? (std::atoi(argv[4]) != 0) : true;
+    const int  jitter = (argc > 5) ? std::atoi(argv[5]) : 0;
+    const int  bufFrames = (argc > 6) ? std::atoi(argv[6]) : 256;
+    // Models a host that cannot quite hold 50 Hz: <1.0 shortens the CPU
+    // budget every frame, so the producer falls behind the audio clock.
+    const double speed = (argc > 7) ? std::atof(argv[7]) : 1.0;
+    // Models an occasional scheduling stall: every Nth frame runs no CPU
+    // cycles at all while the audio device keeps pulling.
+    const int dropEvery = (argc > 8) ? std::atoi(argv[8]) : 0;
     if (rom.empty() || boot.empty() || dsk.empty()) {
         std::printf("dd1_audio_ab SKIP: missing apple2e.rom / disk2.rom / DD.dsk\n");
         return 0;
@@ -144,7 +162,7 @@ int main(int argc, char** argv)
     const auto vt = pom2VideoTiming(VideoStandard::PAL);
     const double cpuHz = static_cast<double>(vt.cpuClockHz);
     constexpr uint32_t kSampleRate = 44100;
-    constexpr int      kBufFrames  = 256;
+    const int          kBufFrames  = bufFrames;
 
     // Same wiring MainWindow does: the card learns the live CPU clock and
     // the device sample rate before any audio is pulled.
@@ -170,10 +188,15 @@ int main(int argc, char** argv)
     if (fr) std::fprintf(fr, "frame,cycle,motor,ayWritesCum,samplesCum\n");
 
     double samplesOwed = 0.0;
+    // Bounded random walk of the audio/CPU phase — see the usage note.
+    uint32_t rng = 12345;
+    double   phase = 0.0;
     uint64_t turboFrames = 0;
     for (int fnum = 0; fnum < totalFrames; ++fnum) {
         const bool motor = disk->isMotorOn();
-        const int64_t budget = (turbo && motor) ? 1'000'000 : vt.cyclesPerFrame;
+        int64_t budget = (turbo && motor) ? 1'000'000
+                       : static_cast<int64_t>(vt.cyclesPerFrame * speed);
+        if (dropEvery > 0 && !motor && (fnum % dropEvery) == 0) budget = 0;
         if (turbo && motor) ++turboFrames;
         const uint64_t target = cpu.getCycleCountNow() + static_cast<uint64_t>(budget);
         while (cpu.getCycleCountNow() < target) {
@@ -190,7 +213,17 @@ int main(int argc, char** argv)
                 }
             }
         }
-        samplesOwed += samplesPerFrame;
+        double dPhase = 0.0;
+        if (jitter > 0) {
+            rng = rng * 1103515245u + 12345u;
+            const double r = ((rng >> 16) & 0x7FFF) / 32767.0 * 2.0 - 1.0;
+            double np = phase + r * (jitter / 8.0);
+            if (np >  jitter) np =  jitter;
+            if (np < -jitter) np = -jitter;
+            dPhase = np - phase;
+            phase  = np;
+        }
+        samplesOwed += samplesPerFrame + dPhase;
         while (samplesOwed >= kBufFrames) {
             src->fillAudioBuffer(buf.data(), kBufFrames);
             out.insert(out.end(), buf.begin(), buf.end());
@@ -203,6 +236,57 @@ int main(int argc, char** argv)
     if (fr) std::fclose(fr);
 
     writeWav(prefix + ".wav", out, kSampleRate);
+
+    // ── ORACLE render ────────────────────────────────────────────────────
+    // Ground truth for the replay path: the SAME synthesis core driven
+    // straight off the cycle-stamped write log, with no queue, no cursor
+    // lag and no buffer granularity. Whichever build's output correlates
+    // better with this is the one whose register timing is more faithful.
+    // `point=true` swaps the box integrator for the pre-2026-08-01 point
+    // sampler so the old build can be scored against a like-for-like oracle.
+    auto oracle = [&](bool point, bool dcBlock) {
+        std::vector<float> o;
+        o.reserve(out.size());
+        pom2::ay::ChipSynthState cs[2];
+        pom2::ay::DcBlocker      db;
+        db.setRate(kSampleRate);
+        uint8_t regs[2][16] = {};
+        const double cps = cpuHz / static_cast<double>(kSampleRate);
+        const float  tps = static_cast<float>(cpuHz / 8.0 / kSampleRate);
+        const float  itps = 1.0f / tps;
+        double   frac = 0.0;
+        uint64_t cur  = 0;
+        size_t   ei   = 0;
+        for (size_t i = 0; i < out.size(); ++i) {
+            frac += cps;
+            const uint64_t whole = static_cast<uint64_t>(frac);
+            cur += whole; frac -= static_cast<double>(whole);
+            while (ei < log.size() && log[ei].cycle <= cur) {
+                const auto& e = log[ei++];
+                regs[e.chip][e.reg] = e.val;
+                if (e.reg == 13) cs[e.chip].envRetrigger = true;
+            }
+            float smp = 0.0f;
+            for (int ci = 0; ci < 2; ++ci) {
+                if (point) {
+                    pom2::ay::applyEnvShape(cs[ci], regs[ci]);
+                    cs[ci].tickPhase += tps;
+                    while (cs[ci].tickPhase >= 1.0f) {
+                        cs[ci].tickPhase -= 1.0f;
+                        pom2::ay::stepTick(cs[ci], regs[ci]);
+                    }
+                    smp += pom2::ay::chipLevel(cs[ci], regs[ci]);
+                } else {
+                    smp += pom2::ay::renderChipSample(cs[ci], regs[ci], tps, itps);
+                }
+            }
+            smp *= (1.0f / 6.0f);
+            o.push_back(dcBlock ? db.process(smp) : smp);
+        }
+        return o;
+    };
+    writeWav(prefix + "_oracle_box.wav", oracle(false, true), kSampleRate);
+    writeWav(prefix + "_oracle_pt.wav",  oracle(true,  true), kSampleRate);
     if (FILE* f = std::fopen((prefix + ".csv").c_str(), "w")) {
         for (const auto& w : log)
             std::fprintf(f, "%llu,%u,%u,%u\n", (unsigned long long)w.cycle,

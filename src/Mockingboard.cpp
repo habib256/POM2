@@ -188,6 +188,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         uint32_t resetCountSnap[2];
         uint32_t envWriteCountSnap[2];
         uint64_t latestEventCycle = 0;
+        uint64_t cpuNowSnap       = 0;
         // NOTE: `pending` is NOT cleared — it is a jitter buffer that
         // carries un-rendered writes over to the next callback.
         {
@@ -198,6 +199,10 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             resetCountSnap[1] = parent->ayResetCount_[1];
             envWriteCountSnap[0] = parent->ayEnvWriteCount_[0];
             envWriteCountSnap[1] = parent->ayEnvWriteCount_[1];
+            // The VIA's synced "now" — the CPU cycle the emulation has
+            // actually reached. Pacing needs THIS, not the last write; see
+            // the guard below.
+            cpuNowSnap = parent->lastSyncCycle_;
             // Take the emuCycles-stamped register writes under the same
             // lock, APPENDING to whatever the last callback could not
             // render yet. See the replay loop below.
@@ -277,17 +282,62 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         const uint64_t burst = static_cast<uint64_t>(
             cpuClockHz.load(std::memory_order_relaxed) / 50.0);
         const uint64_t targetLag = 2 * burst;
-        if (latestEventCycle > 0) {
-            const uint64_t desired =
-                (latestEventCycle > targetLag) ? latestEventCycle - targetLag : 0;
+        // TWO preconditions, both learned the hard way (2026-08-01):
+        //
+        //   `!pending.empty()` — re-anchoring is only meaningful when there
+        //   is a backlog whose placement the cursor decides. With an IDLE
+        //   producer (card plugged, nothing driving it; a gap between
+        //   patterns; a disk load) `latestEventCycle` freezes while the
+        //   cursor keeps free-running, so `caughtUp` goes true and STAYS
+        //   true — it fired on every single callback, slamming the cursor
+        //   backwards each time. Harmless while there is nothing to render,
+        //   but the moment writes resume the cursor is mis-anchored and the
+        //   resumed events go out in a lump. That is the mechanism behind
+        //   the tempo glitches reported on Digidream 1, whose music has
+        //   exactly those gaps. A synthetic harness with an unbroken write
+        //   stream never reproduces it, which is why the first version of
+        //   this guard measured clean and shipped broken.
+        //
+        //   `latestEventCycle > targetLag` — without it, `desired` fell
+        //   back to 0 during the first ~40 ms of a session (and forever, if
+        //   the software only ever pokes the AY once), so the "re-anchor"
+        //   was a slam to cycle 0 rather than to a sane lag.
+        // Pace against CPU-NOW, never against the last WRITE. This is the
+        // Digidream 1 bug, and it is worth stating precisely because the
+        // difference looks cosmetic and is not.
+        //
+        // A music driver writes the AY in one dense clump per frame and
+        // then leaves it alone: measured on DD1, the card is write-silent
+        // for 88 % of every frame, with a worst inter-write gap of 17.6 ms.
+        // If the guard measures lag as `latestAyEventCycle_ - audioCursor`,
+        // that 17.6 ms of legitimate silence is charged against the budget
+        // as if the cursor had caught up, because `latestAyEventCycle_`
+        // stops moving while the cursor does not. Measured margin before
+        // the guard falsely trips: 1076 cycles = **1.06 ms** on DD1, vs
+        // 9.6 ms on DD2 (whose writes are 40x denser). Hence one demo
+        // glitching and the other not.
+        //
+        // Each false trip is a real dropout: the cursor jumps back ~30 ms
+        // and the register bank then freezes for 7-8 consecutive callbacks
+        // = 40-46 ms, i.e. two frames of music. Under ordinary conditions
+        // (host 0.5 % slow, or one dropped frame per 200 ms) it fired
+        // 4-71 times per 25 s.
+        //
+        // `lastSyncCycle_` is the VIA's synced "now", advanced every
+        // emulated instruction, so it keeps moving through write silence
+        // and the guard measures what it actually means to measure.
+        const uint64_t producerNow =
+            (cpuNowSnap > latestEventCycle) ? cpuNowSnap : latestEventCycle;
+        if (producerNow > targetLag) {
+            const uint64_t desired = producerNow - targetLag;
             // Re-anchor only on gross error: starved (pause+resume, disk
-            // turbo, first buffer) or run up onto the producer. Steady
-            // state never trips either bound, so the cursor just free-runs
-            // at cyclesPerSample and the timeline stays continuous.
+            // turbo, first buffer) or genuinely run up onto the producer.
+            // Steady state never trips either bound, so the cursor just
+            // free-runs at cyclesPerSample and the timeline is continuous.
             const bool starved =
-                latestEventCycle > audioCursor &&
-                (latestEventCycle - audioCursor) > 5 * burst;
-            const bool caughtUp = audioCursor + burst / 2 > latestEventCycle;
+                producerNow > audioCursor &&
+                (producerNow - audioCursor) > 5 * burst;
+            const bool caughtUp = audioCursor + burst / 2 > producerNow;
             if (starved || caughtUp) {
                 audioCursor = desired;
                 cursorFrac  = 0.0;
@@ -325,11 +375,18 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
                 std::memcpy(liveRegs[ci], regSnap[ci], kAyNumRegs);
                 chip[ci].resetGenerators();   // MAME ay8910.cpp:1309-1319
             }
-            // A write to R13 (even same value) restarts the envelope.
-            if (chip[ci].lastSeenEnvWriteCount != envWriteCountSnap[ci]) {
-                chip[ci].lastSeenEnvWriteCount = envWriteCountSnap[ci];
-                chip[ci].envRetrigger = true;
-            }
+            // R13 retrigger comes from the REPLAYED event only (see the
+            // `e.reg == 13` case in the render loop). `ayEnvWriteCount_` is
+            // a CPU-now counter, but the cursor deliberately runs ~40 ms
+            // behind it, so honouring it here restarted the envelope a
+            // second time, ~40 ms EARLY — measured at 202 spurious
+            // retriggers in 25 s of Digidream 1 (its 103 R13 stores x 2
+            // chips), moving 13.8 % of the render's RMS. The event path
+            // already covers same-value stores, because the producer
+            // queues an event for every write regardless of value, so
+            // nothing is lost by ignoring the counter. Kept in sync so a
+            // later reader does not think it was forgotten.
+            chip[ci].lastSeenEnvWriteCount = envWriteCountSnap[ci];
         }
 
         // Base clock/8 ticks covered by one output sample. Tone, noise and

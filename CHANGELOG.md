@@ -97,6 +97,90 @@ bursty producer, and the 16 envelope shape sequences. Nothing in the suite
 asserted on rendered audio before this — `mockingboard_smoke` only checked
 "not silent" and pitch to +/-6 %, so every defect above passed it.
 
+### Same day, follow-up: one regression reverted, one hypothesis retracted
+
+Listening on the real disks corrected two things in the above.
+
+**The `/3` + `tanh` soft knee was a regression and is reverted.** Reported
+symptom: Digidream 2 much improved, Digidream 1 worse — glitchy tempo and
+timbres that "do not correspond". The split is diagnostic. DD2 drives ONE
+AY, so its sum never left the near-linear region of `tanh`; DD1 drives
+BOTH, and its 6-channel sum routinely exceeds unity, so the waveshaper was
+compressing and intermodulating it continuously. Mixing is linear `/6`
+again, on Mockingboard and Phasor. Loudness is a knob the user already
+has; a waveshaper across the whole mix is not something to spend it on.
+The honest fix for single-AY level is true stereo, where each side carries
+one chip — see `TODO.md` [Audio].
+
+**The Digidream 1 cause, measured on the real disk.** An A/B harness
+(`tests/dd1_audio_ab`) boots `DD.dsk` on //e PAL, drives one 50 Hz frame
+of CPU then pulls 882 samples in 256-frame buffers, and renders through
+the old renderer, the new one, and a cycle-exact zero-queue oracle. All
+three produce byte-identical AY write logs, so the comparison isolates
+the renderer.
+
+The fault is the `caughtUp` guard measuring lag against
+`latestAyEventCycle_` — the last WRITE — instead of against CPU-now. A
+music driver writes the AY in one dense clump per frame and then leaves
+it alone: DD1 is write-silent for **88 % of every frame**, worst
+inter-write gap **17.6 ms**. That silence is charged against the guard's
+budget as if the consumer had caught up. Measured margin before a false
+trip: **1076 cycles = 1.06 ms** on DD1, against **9.6 ms** on DD2, whose
+writes are 40x denser — which is exactly why one demo glitched and the
+other did not.
+
+Each false trip is a real dropout: the cursor jumps back ~30 ms and the
+register bank then freezes for **7-8 consecutive callbacks = 40-46 ms**,
+two frames of music. Frequency per 25 s under ordinary conditions: host
+0.5 % slow → 4, host 1 % slow → 8, one dropped frame per 200 ms → 71.
+Fixed by pacing against `lastSyncCycle_` (the VIA's synced "now", which
+keeps advancing through write silence).
+
+Note the earlier `!pending.empty()` guard, added from live instrumentation
+that showed an endless `ANCHOR caughtUp lag=-3270`, does **not** fix this
+— measured identical trip counts with and without. That instrumentation
+had caught a genuine but different defect (an idle producer plus a
+re-anchor target that collapsed to cycle 0); `pending` is empty in only
+179 of 4306 callbacks and all 179 precede the first AY write. Both fixes
+are kept; only the second one addresses DD1.
+
+**A second defect, introduced by the lag itself.** `ayEnvWriteCount_` is
+a CPU-now counter, but the cursor deliberately runs ~40 ms behind it, so
+honouring it restarted the envelope a second time, ~40 ms early —
+**202 spurious retriggers in 25 s** of DD1 (its 103 R13 stores x 2 chips),
+moving 13.8 % of the render's RMS. The replayed event already covers
+same-value R13 stores, since the producer queues an event for every write
+regardless of value, so the counter path is simply dropped.
+
+**Where the timbre change actually came from.** Attribution over a 25 s
+render: **89.5 % of the OLD output's total power sat below 50 Hz.** DD1's
+digidrum is unipolar PCM, so the old render carried an enormous sub-audio
+pedestal that every hit stepped. The DC blocker removes it — peak 0.64 →
+0.49, audible level actually **+0.79 dB**, so the "quieter" impression is
+the missing bottom end, not lost loudness. Box integration is the small
+term (waveform correlation 0.95-0.99 against point sampling; centroid
+1327 → 1143 Hz, >6 kHz share halved). The replay timing dominates
+everything: OLD vs NEW correlates only 0.10-0.22, and swapping the point
+sampler back in changes that by <0.002.
+
+Ruled out with measurements, so nobody re-opens them: envelope hold (DD1
+only ever writes shape `$08`, so `envHolding` is never set); the PAL tick
+rate (12.05 cents, uniform — a pitch shift, not a tempo change); queue
+overflow (`pending` max 731 vs `kMaxAyEvents` 16384); disk turbo (7 turbo
+frames, all before music, 1 `starved` at t=1.04 s and none after); buffer
+size (256/480/512/1024/2048 all clean in the ideal cadence).
+
+**Methodology, because this cost real time.** Two successive synthetic
+harnesses PASSED against the very bugs they were written to catch. The
+first produced NTSC-sized bursts while the target lag is sized in PAL
+frames, so the lag never swept its critical range. The second used an
+unbroken write stream, so it never modelled a production gap — which is
+exactly the condition the live instrumentation caught. A Mockingboard
+audio regression test is only credible once it has been demonstrated to
+FAIL against the reverted fix; test 3c in
+`tests/mockingboard_audio_quality` carries an explicit note that it does
+not discriminate the defect it accompanies.
+
 ## 2026-07-31 — 6522 T1 continuous period is latch+2, not latch+3 (a frame clock that drifted)
 
 `Via6522::advance` reloaded T1 in continuous mode with `latch + 3`, copied

@@ -61,6 +61,7 @@ Suggested attack order — items with high impact/effort ratio.
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | cuts recompiles (IIgs itself lives in the separate pom2gs project) |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
+| 4b | **Digidream 1 tempo regression** | ? | open audio regression from the 2026-08-01 Mockingboard pass — cause not established (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (~130 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
@@ -200,12 +201,116 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Audio]
 
+#### Mockingboard AY-3-8910 rendering — 2026-08-01 pass
+
+Triggered by "DD2's Mockingboard music sounds coarse". Four research
+agents (MAME `ay8910.cpp`/`resampler.cpp`, AppleWin + `ayumi`, a POM2
+audit, and a headless register trace of the real disks) plus a rendering
+rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
+`docs/lle_vs_hle.md`. Probes: `tests/mockingboard_audio_quality`
+(spectral purity / DC / write placement / 16 envelope shapes),
+`tests/dd2_ay_trace`, `tests/dd1_audio_ab`.
+
+**Landed:**
+
+- ✅ **Band-limiting.** The mixer is box-integrated over the ~2.9 clock/8
+  ticks each output sample spans instead of point-sampled once. MAME
+  sidesteps this by rendering on the chip's clock/8 grid
+  (`ay8910.cpp:1298`) and decimating (`src/emu/resampler.cpp`); POM2
+  renders at the device rate, so the decimation is inline. Inharmonic
+  energy on a 4 kHz note: **7 % → 0.51 %**. Cost 0.67 % of a core/chip.
+- ✅ **Register replay is a jitter buffer.** Un-rendered events stay
+  queued; the cursor is held ~2 PAL frames behind `latestAyEventCycle_`.
+  The old code drained the queue every callback, applied the leftovers in
+  bulk at the buffer edge (so only the last value per register survived)
+  and parked the cursor on the newest event at zero lag.
+- ✅ **DC blocker**, 1-pole 20 Hz, matching MAME's default per-speaker
+  high-pass (`src/emu/audio_effects/filter.cpp:39-44`).
+- ✅ **PAL AY clock.** Tick rate now derives from the live CPU clock —
+  pin 22 is the slot's phase-0 line, so PAL really is 1 015 625 Hz. PAL
+  music was 12 cents sharp.
+- ✅ **Shared synth core** `src/AyPsgSynth.h`. Mockingboard and Phasor
+  carried verbatim copies (~130 lines, 4 differing lines) that had
+  already drifted. Phasor is −149/+51.
+- ✅ **Verified, not assumed:** the envelope state machine is correct on
+  all 16 shapes including the alternate ones ($0A/$0E) — `-1 & 0x10` is
+  the same integer promotion MAME's `s8 step` gets. Noise LFSR taps,
+  prescale and period-0 handling match `ay8910.h:263-273`. The
+  `kAyVolumeTable` **provenance comment** was wrong and is corrected.
+
+**DD1 regression — ✅ RESOLVED 2026-08-01, cause measured:**
+
+- ✅ **Root cause: the `caughtUp` guard measured lag against the last
+  WRITE (`latestAyEventCycle_`) instead of CPU-now.** DD1 writes one dense
+  clump per frame and is write-silent for **88 % of every frame** (worst
+  gap 17.6 ms); that silence was charged against the guard's budget.
+  Margin before a false trip: **1.06 ms on DD1 vs 9.6 ms on DD2** — hence
+  one demo glitching and not the other. Each trip froze the register bank
+  for **40-46 ms** (two frames). Fixed by pacing against `lastSyncCycle_`.
+  Measured with `tests/dd1_audio_ab` on the real disk.
+- ✅ **Double envelope retrigger, introduced by the 40 ms lag.**
+  `ayEnvWriteCount_` is a CPU-now counter read while the cursor runs 40 ms
+  behind, so every R13 store retriggered twice — 202 spurious retriggers
+  in 25 s, 13.8 % of RMS. The replayed event already covers same-value
+  stores; the counter path is dropped.
+- ✅ **Timbre change attributed:** **89.5 % of the OLD render's power was
+  below 50 Hz** (unipolar digidrum PCM pedestal). The DC blocker removes
+  it; audible level is **+0.79 dB**, so "quieter" was the missing bottom.
+- ⚠️ **Probe gotcha:** `tests/dd2_ay_trace` never calls `setCpu()`, so
+  `lastSyncCycle_` stays 0, every event is stamped cycle 0 and the whole
+  replay path is silently bypassed. Any new Mockingboard probe must wire
+  the CPU or it measures nothing.
+- ⚠️ **Methodology.** Two successive synthetic harnesses PASSED against
+  the bugs they were written to catch (NTSC bursts vs PAL-sized lag; an
+  unbroken write stream vs a production gap). The fault needs the audio
+  and CPU clocks to be genuinely independent. **A Mockingboard audio
+  regression test is only credible once shown to FAIL against the
+  reverted fix.**
+
+**Deferred, with the trade-off recorded:**
+
+- 🟢 **True stereo (AY1 → L, AY2 → R, gain 0.5).** What MAME does
+  (`a2mockingboard.cpp:161-165`) and what AppleWin does
+  (`MockingboardCardManager.cpp:388-407`). Blocked on `AudioDevice` being
+  a mono bus (`AudioDevice.cpp:185`), so it is a whole-pipeline change
+  (speaker, cassette, SSI263, floppy sounds). DD1 has a deliberate ABC
+  pan that the mono sum destroys; DD2 is unaffected (single AY). This is
+  also the honest fix for single-AY level, since each side would then
+  carry one chip and `/3` falls out naturally. Supersedes the older
+  "Phasor stereo" item below.
+- 🟢 **Phasor: no cycle-stamped event queue, no `setCpuClock` override.**
+  Every register write inside a buffer still collapses to its last value,
+  and PAL clocks its AYs 0.7 % fast. Now the only divergence from
+  Mockingboard rather than a hidden one.
+- 🟢 **ayumi-grade resampling** (native clock/8 → 8× quadratic interp →
+  192-tap FIR decimation + moving-average DC filter,
+  `true-grue/ayumi`, MIT). Strictly better than the box filter and what
+  chiptune players use; ~8× the inner iterations plus ~96 MACs per sample
+  per channel, ~192 doubles/channel of rewind state and ~2 ms group
+  delay — a real cost on the **WASM** target. Only worth it if listening
+  shows the box filter is insufficient. Note this would be a deliberate
+  departure from "MAME = source of truth" for the audio path.
+- 🟢 **Analog output stage.** The real Sweet Micro board's LM386 pair
+  makes the output *triangular*, not square (deater's scope capture:
+  `deater.net/weave/vmwprod/chiptune/mock_problem/`). No emulator models
+  it and there is no MAME oracle, so it would have to be an off-by-default
+  toggle labelled non-authoritative — and only after band-limiting, since
+  a low-pass over an aliased signal muffles rather than removes.
+- 🟢 **Mutex contention.** `advanceCycles` takes the card mutex on every
+  emulated instruction (~1 M/s) and the realtime audio callback needs the
+  same one, holding it across the whole SSI263 render on Sound II.
+  Classic priority inversion; wants an SPSC handoff.
+- 🟢 **Mute drops the queue.** The `isMuted` early-out returns after
+  `pending` has been drained, so writes are lost while muted and `vol`
+  changes are applied as a hard step at buffer boundaries (click).
+
 - 🟢 **8-bit DAC (Marczewski)** — 8-bit slot latch → R-2R DAC. Niche
   demos (Music Studio, trackers). AppleWin refs `Card::CT_DX1`. *1 d.*
 - 🟢 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
   Performer. MAME refs `mc6840.cpp` + `acia6850.cpp`. *3 d.*
-- 🟢 **Phasor stereo** — POM2 mixer is mono-only; when stereo, pan L/R
-  per AY-pair on Phasor (and SSI263/Echo+).
+- 🟢 **Phasor stereo** — folded into the "true stereo" item above; when
+  the mixer goes stereo, pan L/R per AY-pair on Phasor (MAME uses two
+  2-channel speakers, `a2mockingboard.cpp:192-208`) and on SSI263/Echo+.
 - 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
 ### [Storage] disks & images
