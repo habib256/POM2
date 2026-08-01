@@ -73,7 +73,8 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | Uthernet I (CS8900A NIC) | `UthernetCard.*`, `Cs8900aDevice.*` | [§ Uthernet I](DEV.md#uthernet-i-cs8900a) |
 | Uthernet II (W5100 hardware TCP/IP) | `UthernetIICard.*`, `W5100Device.*` | [§ Uthernet II](DEV.md#uthernet-ii-w5100) |
-| Ethernet host transport (libslirp, optional) | `NetworkBackend.h`, `SlirpNetworkBackend.*` | [§ Network backends](DEV.md#network-backends) |
+| Ethernet host transport (libslirp, optional — Linux/macOS) | `NetworkBackend.h`, `SlirpNetworkBackend.*` | [§ Network backends](DEV.md#network-backends) |
+| Host sockets (POSIX / Winsock, one compat header) | `SocketCompat.h`, `SocketUtil.h` | [§ Host sockets](DEV.md#host-sockets-posix--winsock) |
 | Printer card (synthetic → spool) | `PrinterCard.h/.cpp` | [§ Printer](DEV.md#printer-card-parallel-synthetic) |
 | Grappler+ printer (ROM-gated) | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
 | ImageWriter II printer + paper tray (host-side, fed by any printer card or the SSC printer tap) + PDF export | `ImageWriter.*`, `ImageWriterPdf.*`, `ImageWriter_ImGui.*` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |

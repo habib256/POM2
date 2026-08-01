@@ -1,0 +1,412 @@
+// VERHILLE Arnaud 2026
+
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+//
+// SocketCompat.h — the ONE place that answers "POSIX sockets or Winsock?".
+//
+// POM2's three networking translation units (AiControlServer's HTTP control
+// API, SuperSerialCard's telnet bridge, W5100Device's Uthernet II host TCP/IP)
+// were written against BSD sockets. Winsock2 is the same protocol stack behind
+// a gratuitously different API, and the differences are *silent* ones — code
+// that compiles clean against Winsock can still be wrong. The five traps, all
+// of which this header exists to remove (the fifth is not Winsock's fault but
+// bit this port anyway — see closeHostSocket):
+//
+//   1. `SOCKET` IS UNSIGNED (`UINT_PTR`), and the failure value is
+//      `INVALID_SOCKET` = `(SOCKET)~0`, not -1. So `if (fd >= 0)` is
+//      ALWAYS TRUE on Windows and `fd = -1` marks a socket as *valid*
+//      with a huge handle. Every "is this open?" test in the POSIX idiom
+//      inverts its meaning without a single warning. Use `kInvalidSocket`
+//      and `isValidSocket()`; never compare a socket to 0 or -1.
+//   2. Errors do not go through `errno`. `WSAGetLastError()` carries them,
+//      the codes are different (`WSAEWOULDBLOCK`, not `EWOULDBLOCK`), and
+//      `strerror` cannot render them. Use `lastSocketError()` +
+//      `socketErrorText()`.
+//   3. `close()` does not close a socket (it closes a CRT file descriptor —
+//      a different namespace); `closesocket()` does. `fcntl(O_NONBLOCK)`
+//      does not exist; `ioctlsocket(FIONBIO)` is the equivalent.
+//   4. The stack must be started per process with `WSAStartup` before the
+//      first call, or every socket call fails with WSANOTINITIALISED.
+//      `ensureSocketStack()` does it once, thread-safely.
+//
+// Not compiled under Emscripten: the browser has no usable BSD-socket API at
+// all, so those paths stay compiled out via POM2_HAS_SOCKETS (Pom2Build.h).
+
+#ifndef POM2_SOCKET_COMPAT_H
+#define POM2_SOCKET_COMPAT_H
+
+#include "Pom2Build.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+#if !POM2_HAS_SOCKETS
+// No host sockets (Emscripten). The socket TYPE still has to exist so that
+// headers holding a handle — W5100Device::Socket::fd — compile unchanged;
+// only the API is absent. Nothing can open one, so the value is never
+// anything but kInvalidSocket.
+namespace pom2 {
+using socket_t = int;
+inline constexpr socket_t kInvalidSocket = -1;
+inline bool isValidSocket(socket_t s) { return s != kInvalidSocket; }
+} // namespace pom2
+#endif
+
+#if POM2_HAS_SOCKETS
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+// winsock2.h MUST precede windows.h — the ancient winsock.h that windows.h
+// pulls in otherwise redefines the same symbols and the build dies in a
+// wall of redefinition errors. WIN32_LEAN_AND_MEAN above is the other half
+// of that defence.
+//
+// If a TU pulled windows.h in FIRST, say so in one line instead of letting
+// the compiler emit fifty. `_WINSOCKAPI_` set without `_WINSOCK2API_` is
+// exactly that situation: winsock.h (v1) is already in, and including v2
+// on top of it cannot work.
+#  if defined(_WINSOCKAPI_) && !defined(_WINSOCK2API_)
+#    error "windows.h was included before SocketCompat.h, so winsock v1 is \
+already in. Include SocketCompat.h first in this TU (or define \
+WIN32_LEAN_AND_MEAN before the windows.h include)."
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#else
+#  include <arpa/inet.h>
+#  include <cerrno>
+#  include <cstring>
+#  include <fcntl.h>
+#  include <netdb.h>
+#  include <netinet/in.h>
+#  include <netinet/tcp.h>
+#  include <poll.h>
+#  include <sys/socket.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+#endif
+
+namespace pom2 {
+
+// ── Types ─────────────────────────────────────────────────────────────
+
+#ifdef _WIN32
+using socket_t  = SOCKET;
+using socklen_c = int;              ///< `socklen_t` is `int` in Winsock
+inline const socket_t kInvalidSocket = INVALID_SOCKET;
+#else
+using socket_t  = int;
+using socklen_c = socklen_t;
+inline constexpr socket_t kInvalidSocket = -1;
+#endif
+
+/// The only correct "is this socket open?" test on both platforms — see
+/// trap 1 in the header comment.
+inline bool isValidSocket(socket_t s) { return s != kInvalidSocket; }
+
+// ── Process-wide stack init ───────────────────────────────────────────
+
+/// Start the socket stack if the platform needs it (trap 4). Idempotent
+/// and thread-safe: the work happens inside a function-local static, whose
+/// initialisation the C++ runtime serialises. No matching WSACleanup —
+/// the counterpart would have to run after every socket everywhere is
+/// closed, and getting that wrong tears the stack down under a live
+/// connection. Windows reclaims the whole Winsock context at process exit
+/// anyway, so the shutdown call buys nothing and risks a real bug.
+/// Call it before the first socket() in each entry point; it costs one
+/// atomic load once the guard is initialised.
+inline void ensureSocketStack()
+{
+#ifdef _WIN32
+    struct Startup {
+        Startup()  { WSADATA d; WSAStartup(MAKEWORD(2, 2), &d); }
+    };
+    static Startup once;
+    (void)once;
+#endif
+}
+
+// ── Errors ────────────────────────────────────────────────────────────
+
+/// Last socket error, from whichever channel the platform uses (trap 2).
+/// Read it IMMEDIATELY after the failing call: on Windows any intervening
+/// Win32 call may overwrite the thread's last-error slot.
+inline int lastSocketError()
+{
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+inline bool errWouldBlock(int e)
+{
+#ifdef _WIN32
+    return e == WSAEWOULDBLOCK;
+#else
+    return e == EAGAIN || e == EWOULDBLOCK;
+#endif
+}
+
+/// A non-blocking connect() that is still in flight. POSIX says
+/// EINPROGRESS; Winsock reports WSAEWOULDBLOCK for the same state.
+inline bool errInProgress(int e)
+{
+#ifdef _WIN32
+    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+#else
+    return e == EINPROGRESS || e == EWOULDBLOCK;
+#endif
+}
+
+inline bool errInterrupted(int e)
+{
+#ifdef _WIN32
+    return e == WSAEINTR;
+#else
+    return e == EINTR;
+#endif
+}
+
+/// Human-readable form. `std::strerror` cannot render a WSA code, so
+/// Windows goes through FormatMessage.
+inline std::string socketErrorText(int e)
+{
+#ifdef _WIN32
+    char* buf = nullptr;
+    const DWORD n = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, static_cast<DWORD>(e),
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<char*>(&buf), 0, nullptr);
+    std::string msg = (n && buf) ? std::string(buf, n)
+                                 : ("winsock error " + std::to_string(e));
+    if (buf) LocalFree(buf);
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+        msg.pop_back();
+    return msg;
+#else
+    return std::strerror(e);
+#endif
+}
+
+/// Convenience: text for the error the last failing call left behind.
+inline std::string lastSocketErrorText() { return socketErrorText(lastSocketError()); }
+
+// ── Lifetime + mode ───────────────────────────────────────────────────
+
+/// Close and invalidate in one step (trap 3). Takes the handle by
+/// reference so the caller cannot leave a dangling one behind — the
+/// use-after-close hazard the SSC worker documents at length.
+///
+/// NAMED `closeHostSocket`, NOT `closeSocket`, AND THAT MATTERS (trap 5).
+/// W5100Device has a member `closeSocket(size_t)` — the chip-level CLOSE
+/// command for one of its four sockets. Inside that class, unqualified
+/// lookup finds the MEMBER first (class scope beats namespace scope) and
+/// stops; `socket_t` then converts to `size_t` without a murmur, so
+/// `closeSocket(s.fd)` compiles clean and recurses until the stack dies.
+/// It did exactly that, caught by uthernet2_w5100_smoke as a segfault
+/// with 74 000 identical frames. A name no plausible card would use for
+/// its own chip-level operation is what keeps that from coming back.
+inline void closeHostSocket(socket_t& s)
+{
+    if (!isValidSocket(s)) return;
+#ifdef _WIN32
+    ::closesocket(s);
+#else
+    ::close(s);
+#endif
+    s = kInvalidSocket;
+}
+
+/// Close without clearing — for the exchange() idiom, where the caller has
+/// already taken the handle out of its atomic. Same naming rule as above.
+inline void closeHostSocketValue(socket_t s)
+{
+    if (!isValidSocket(s)) return;
+#ifdef _WIN32
+    ::closesocket(s);
+#else
+    ::close(s);
+#endif
+}
+
+/// Half-close both directions, to wake a worker parked in recv()/accept()
+/// without closing the handle (which would open a close/reuse race).
+/// SHUT_RDWR and SD_BOTH are the same idea under different spellings.
+inline void shutdownBoth(socket_t s)
+{
+    if (!isValidSocket(s)) return;
+#ifdef _WIN32
+    ::shutdown(s, SD_BOTH);
+#else
+    ::shutdown(s, SHUT_RDWR);
+#endif
+}
+
+/// Put the socket in non-blocking mode (trap 3). Returns false on failure.
+inline bool setNonBlocking(socket_t s)
+{
+#ifdef _WIN32
+    u_long on = 1;
+    return ::ioctlsocket(s, FIONBIO, &on) == 0;
+#else
+    const int flags = ::fcntl(s, F_GETFL, 0);
+    if (flags < 0) return false;
+    return ::fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+// ── I/O ───────────────────────────────────────────────────────────────
+//
+// Winsock's send/recv take `char*` and an `int` length and return `int`;
+// POSIX takes `void*`/`size_t` and returns `ssize_t`. One signature for
+// both, returning a 64-bit signed count so no platform truncates.
+
+using iolen_t = std::int64_t;
+
+/// send() that cannot raise SIGPIPE. Linux spells that MSG_NOSIGNAL;
+/// macOS/BSD need SO_NOSIGPIPE set on the socket instead (see
+/// disableSigpipe in SocketUtil.h); Windows has no SIGPIPE at all, so a
+/// vanished peer surfaces as a plain error return.
+inline iolen_t sendSocket(socket_t s, const void* buf, std::size_t n)
+{
+#ifdef _WIN32
+    return ::send(s, static_cast<const char*>(buf), static_cast<int>(n), 0);
+#elif defined(MSG_NOSIGNAL)
+    return ::send(s, buf, n, MSG_NOSIGNAL);
+#else
+    return ::send(s, buf, n, 0);
+#endif
+}
+
+inline iolen_t recvSocket(socket_t s, void* buf, std::size_t n)
+{
+#ifdef _WIN32
+    return ::recv(s, static_cast<char*>(buf), static_cast<int>(n), 0);
+#else
+    return ::recv(s, buf, n, 0);
+#endif
+}
+
+// ── Readiness ─────────────────────────────────────────────────────────
+
+enum class SocketWait { Read, Write };
+
+enum class WaitResult {
+    Ready,      ///< the requested direction is ready
+    Timeout,    ///< nothing happened within timeoutMs (or EINTR — retry)
+    Failed,     ///< the socket errored or was closed under us
+};
+
+/// Wait for one socket to become readable or writable.
+///
+/// WINDOWS USES select(), NOT WSAPoll(), and the reason is the caller in
+/// W5100Device::poll(): it waits for WRITE on a socket with a non-blocking
+/// connect in flight, and it has to learn about a REFUSED connection, not
+/// just a successful one. On Winsock the documented channel for that is
+/// select()'s `exceptfds` — a failed connection attempt is signalled in
+/// the exception set, which is precisely why Winsock's select takes one.
+/// Folding the exception set into "ready" here lets the caller do what it
+/// does on POSIX: wake up, then ask getsockopt(SO_ERROR) which of the two
+/// happened. A readiness wait that can only report success would leave a
+/// guest polling SN_SR forever on a connection that was refused.
+///
+/// select() also sidesteps the FD_SETSIZE concern by construction: it is
+/// one socket per call, and a Winsock fd_set is an array of handles rather
+/// than a bitmask indexed by fd, so there is no descriptor-number ceiling.
+inline WaitResult waitSocket(socket_t s, SocketWait dir, int timeoutMs)
+{
+    if (!isValidSocket(s)) return WaitResult::Failed;
+#ifdef _WIN32
+    fd_set rd, wr, ex;
+    FD_ZERO(&rd); FD_ZERO(&wr); FD_ZERO(&ex);
+    FD_SET(s, &ex);
+    if (dir == SocketWait::Read) FD_SET(s, &rd); else FD_SET(s, &wr);
+    timeval tv;
+    tv.tv_sec  = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    // nfds is ignored by Winsock; it is there for source compatibility.
+    const int r = ::select(0, &rd, &wr, &ex,
+                           (timeoutMs < 0) ? nullptr : &tv);
+    if (r == SOCKET_ERROR)
+        return errInterrupted(lastSocketError()) ? WaitResult::Timeout
+                                                 : WaitResult::Failed;
+    if (r == 0) return WaitResult::Timeout;
+    if (FD_ISSET(s, &ex)) return WaitResult::Ready;   // caller reads SO_ERROR
+    return WaitResult::Ready;
+#else
+    struct pollfd pfd{};
+    pfd.fd     = s;
+    pfd.events = (dir == SocketWait::Read) ? POLLIN : POLLOUT;
+    const int r = ::poll(&pfd, 1, timeoutMs);
+    if (r < 0)
+        return errInterrupted(lastSocketError()) ? WaitResult::Timeout
+                                                 : WaitResult::Failed;
+    if (r == 0) return WaitResult::Timeout;
+    if (pfd.revents & POLLNVAL) return WaitResult::Failed;
+    // POLLERR/POLLHUP still mean "wake up and ask SO_ERROR", same as the
+    // exception set above — the caller distinguishes success from refusal.
+    return WaitResult::Ready;
+#endif
+}
+
+/// Result of a non-blocking connect that `waitSocket` reported ready:
+/// 0 = connected, otherwise the socket-level error code.
+inline int connectResult(socket_t s)
+{
+    int err = 0;
+    socklen_c len = sizeof(err);
+#ifdef _WIN32
+    if (::getsockopt(s, SOL_SOCKET, SO_ERROR,
+                     reinterpret_cast<char*>(&err), &len) != 0)
+        return lastSocketError();
+#else
+    if (::getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &len) != 0)
+        return lastSocketError();
+#endif
+    return err;
+}
+
+/// Dotted-quad text for a peer address, for log lines.
+///
+/// `inet_ntop`, not `inet_ntoa`: the latter returns a pointer into a
+/// static buffer, so two threads logging a connection at once can splice
+/// each other's addresses, and MSVC deprecates it outright. Both workers
+/// that call this run on their own thread.
+inline std::string peerAddressText(const sockaddr_in& peer)
+{
+    char buf[INET_ADDRSTRLEN] = {};
+    if (::inet_ntop(AF_INET, const_cast<void*>(
+                        static_cast<const void*>(&peer.sin_addr)),
+                    buf, sizeof(buf)) == nullptr)
+        return "?";
+    return buf;
+}
+
+/// setsockopt for the int-valued options POM2 uses (SO_REUSEADDR,
+/// TCP_NODELAY). Winsock wants a `const char*`, POSIX a `const void*`.
+inline bool setSockOptInt(socket_t s, int level, int name, int value)
+{
+#ifdef _WIN32
+    return ::setsockopt(s, level, name,
+                        reinterpret_cast<const char*>(&value),
+                        sizeof(value)) == 0;
+#else
+    return ::setsockopt(s, level, name, &value, sizeof(value)) == 0;
+#endif
+}
+
+} // namespace pom2
+
+#endif // POM2_HAS_SOCKETS
+#endif // POM2_SOCKET_COMPAT_H

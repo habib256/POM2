@@ -327,7 +327,15 @@ endif()
 
 option(POM2_ENABLE_SLIRP "Enable libslirp Ethernet backend when available" ON)
 set(POM2_SLIRP_TARGET "")
-if(POM2_ENABLE_SLIRP AND NOT EMSCRIPTEN)
+# WIN32 is excluded deliberately, and it is NOT the same gap the host sockets
+# were. vcpkg does carry a libslirp port, so the library itself is obtainable;
+# what is missing is the POM2 side — SlirpNetworkBackend's poll loop is written
+# against POSIX poll() over the fds libslirp hands back, and porting that to
+# Winsock cannot be verified without a Windows libslirp build to test against.
+# Enabling the detection here would only trade a documented absence for a wall
+# of missing-header errors. Uthernet II is unaffected: its W5100 is a hardware
+# TCP/IP stack running on ordinary host sockets, which Windows now has.
+if(POM2_ENABLE_SLIRP AND NOT EMSCRIPTEN AND NOT WIN32)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(SLIRP QUIET IMPORTED_TARGET slirp)
@@ -524,9 +532,11 @@ else()
         )
     endif()
     if(WIN32)
-        # ws2_32: htons/ntohs, used by W5100Device's IPv4/Ethernet framing even
-        # though POM2_HAS_SOCKETS is 0 on Windows (no host socket is opened —
-        # see the winsock2 comment at the top of that file).
+        # ws2_32: the whole Winsock2 API. Since 2026-08-01 Windows is a full
+        # host-socket target (POM2_HAS_SOCKETS is 1 there) — the Uthernet II's
+        # TCP/UDP sockets, the SSC telnet bridge and the AI control server all
+        # go through it, on top of the htons/ntohs framing helpers that were
+        # the only reason to link it before. See src/SocketCompat.h.
         target_link_libraries(${PROJECT_NAME} winmm ws2_32)
     endif()
 

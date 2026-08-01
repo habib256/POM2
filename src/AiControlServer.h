@@ -54,6 +54,8 @@
 #ifndef POM2_AI_CONTROL_SERVER_H
 #define POM2_AI_CONTROL_SERVER_H
 
+#include "SocketCompat.h"   // socket_t / kInvalidSocket for the listener fd
+
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -148,7 +150,9 @@ private:
     std::atomic<bool>      running_       { false };
     std::atomic<bool>      stopRequested_ { false };
     std::atomic<uint64_t>  requestsServed_{ 0 };
-    std::atomic<int>       listenFd_      { -1 };
+    // socket_t, not int: Winsock's SOCKET is an unsigned handle whose
+    // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
+    std::atomic<socket_t>  listenFd_      { kInvalidSocket };
     uint16_t               port_     = kDefaultPort;
     std::thread            worker_;
     std::string            authToken_;
@@ -166,7 +170,7 @@ private:
     bool    mouseBtn_    = false;
 
     void runWorker();
-    void handleClient(int fd);
+    void handleClient(socket_t fd);
 
     // HTTP request shape (parsed in-place from the socket).
     struct Request {
@@ -182,30 +186,30 @@ private:
     /// the peer closed before a full request landed, or if the request
     /// looks malformed (oversized body, missing terminator, etc.) — in
     /// which case the caller should send a 400 and close.
-    bool readRequest(int fd, Request& req);
+    bool readRequest(socket_t fd, Request& req);
     /// Send a response. Body may be binary; pass the right Content-Type.
-    void sendResponse(int fd,
+    void sendResponse(socket_t fd,
                       int status,
                       const std::string& contentType,
                       const std::string& body);
-    void sendJsonError(int fd, int status, const std::string& message);
-    void sendJsonOk   (int fd, const std::string& body);
+    void sendJsonError(socket_t fd, int status, const std::string& message);
+    void sendJsonOk   (socket_t fd, const std::string& body);
 
     // ─── Request handlers ────────────────────────────────────────────────
-    void handleStatus  (int fd, const Request& req);
-    void handleReset   (int fd, const Request& req);
-    void handleCpuGet  (int fd, const Request& req);
-    void handleCpuSet  (int fd, const Request& req);
-    void handleMemGet  (int fd, const Request& req);
-    void handleMemSet  (int fd, const Request& req);
-    void handleKeyboard(int fd, const Request& req);
-    void handleDiskInsert(int fd, const Request& req);
-    void handleDiskEject (int fd, const Request& req);
-    void handleSnapshotSave(int fd, const Request& req);
-    void handleSnapshotLoad(int fd, const Request& req);
-    void handleSpeed   (int fd, const Request& req);
-    void handleScreen  (int fd, const Request& req);
-    void handleMouse   (int fd, const Request& req);
+    void handleStatus  (socket_t fd, const Request& req);
+    void handleReset   (socket_t fd, const Request& req);
+    void handleCpuGet  (socket_t fd, const Request& req);
+    void handleCpuSet  (socket_t fd, const Request& req);
+    void handleMemGet  (socket_t fd, const Request& req);
+    void handleMemSet  (socket_t fd, const Request& req);
+    void handleKeyboard(socket_t fd, const Request& req);
+    void handleDiskInsert(socket_t fd, const Request& req);
+    void handleDiskEject (socket_t fd, const Request& req);
+    void handleSnapshotSave(socket_t fd, const Request& req);
+    void handleSnapshotLoad(socket_t fd, const Request& req);
+    void handleSpeed   (socket_t fd, const Request& req);
+    void handleScreen  (socket_t fd, const Request& req);
+    void handleMouse   (socket_t fd, const Request& req);
 
     /// True when the request carries a valid auth token (or when no token
     /// is configured server-side). Caller still has to send the 401 — this

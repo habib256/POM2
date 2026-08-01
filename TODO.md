@@ -49,7 +49,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 22ter | ImageWriter II printer (host-side, no slot) | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) | Apple ImageWriter II + LQ reference manuals                 | 🟢 full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG & multi-page PDF export; fed by `printer` / `grappler` / SSC printer tap (//c PR#1) |
 | 23  | UthernetCard + Cs8900aDevice (key `uthernet`) | Verbatim | MAME `machine/cs8900a.cpp` (VICE lineage) + `bus/a2bus/uthernet.cpp`, line-cited | 🟢 pull-mode RX (POM2 has no `device_network_interface` push bus); inbound frame queue out of snapshot deliberate |
 | 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
-| 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path |
+| 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path; 🟡 libslirp is Linux/macOS only, so Uthernet I has no transport on Windows |
 
 ## Quick wins
 
@@ -472,6 +472,24 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   box. Virtual DNS resolves off the CPU thread. Ethernet status panel.
   Pinned `uthernet_cs8900_smoke` + `uthernet2_w5100_smoke` (the latter
   runs a real TCP session). Detail → `DEV.md` § Uthernet.
+- ✅ **Host sockets on Windows** — DONE (2026-08-01). `POM2_HAS_SOCKETS`
+  was 0 on Windows, so the Uthernet II's TCP/UDP paths, the SSC telnet
+  bridge and the AI control server were all compiled out of the Windows
+  build. The POSIX-vs-Winsock difference now lives in one header,
+  `src/SocketCompat.h`, and those three TUs are written against it.
+  Verified by cross-compiling every `src/*.cpp` with
+  `x86_64-w64-mingw32-g++`. Detail (including the five silent traps and
+  why the readiness wait is `select`, not `WSAPoll`) → [DEV § Host
+  sockets](DEV.md#host-sockets-posix--winsock).
+- 🟡 **Uthernet I has no host transport on Windows** — libslirp is the
+  only backend that moves raw frames, and CMake deliberately does not
+  look for it on WIN32. vcpkg *does* carry a libslirp port (4.9.1), so
+  the library is obtainable; what is missing is POM2's side —
+  `SlirpNetworkBackend`'s poll loop is POSIX `poll()` over the fds
+  libslirp returns, and porting it cannot be verified without a Windows
+  libslirp build to test against. Note the vcpkg port pulls **glib**,
+  which is a heavy addition to the Windows CI job. Uthernet II is
+  unaffected (hardware TCP/IP on host sockets). *1-2 d + CI budget.*
 - 🟡 **Uthernet II inbound (`LISTEN`)** — the W5100 `LISTEN` command is
   decoded but unimplemented: neither transport can route an inbound
   connection to the guest (libslirp is outbound-only without explicit

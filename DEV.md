@@ -2350,6 +2350,57 @@ noticed it first.
 Pinned by `iic_diskii_no_iwm_conflict` (plain //c must not claim — or
 even tick — the IWM; //c+ must still route to it).
 
+### Host sockets (POSIX / Winsock)
+
+`src/SocketCompat.h` is the ONE place that answers "POSIX or Winsock?".
+Three TUs consume it — `W5100Device` (Uthernet II TCP/UDP),
+`SuperSerialCard` (telnet bridge), `AiControlServer` (HTTP control API) —
+and `SocketUtil.h` (the accept/SIGPIPE idioms) is built on top of it.
+`POM2_HAS_SOCKETS` is now 0 for **Emscripten only**; Windows is a full
+host-socket target since 2026-08-01.
+
+Winsock is the same stack behind a different API, and its differences are
+**silent** — code that compiles clean against it can still be wrong.
+Five traps, each removed by a helper rather than by remembering:
+
+| # | Trap | Helper |
+|---|---|---|
+| 1 | `SOCKET` is **unsigned**; failure is `INVALID_SOCKET`, not -1 — so `fd >= 0` is always true and `fd = -1` marks a socket *valid* | `socket_t`, `kInvalidSocket`, `isValidSocket()` |
+| 2 | Errors bypass `errno` (`WSAGetLastError`, `WSAEWOULDBLOCK`, no `strerror`) | `lastSocketError()`, `errWouldBlock/InProgress/Interrupted()`, `socketErrorText()` |
+| 3 | `close()` closes a CRT fd, not a socket; no `fcntl(O_NONBLOCK)` | `closeHostSocket()`, `setNonBlocking()`, `shutdownBoth()` |
+| 4 | The stack needs `WSAStartup` before the first call | `ensureSocketStack()` |
+| 5 | A member `closeSocket()` shadows a namespace-scope one — class scope wins, `socket_t`→`size_t` converts silently, infinite recursion | the helper is named `closeHostSocket`, deliberately |
+
+Trap 5 is not Winsock's fault and bit this port anyway: `W5100Device`
+already had a chip-level `closeSocket(size_t)` (the CLOSE command), so
+`closeSocket(s.fd)` inside that class compiled clean and blew the stack —
+caught by `uthernet2_w5100_smoke` as a segfault with 74 000 identical
+frames.
+
+**Readiness waits use `select()` on Windows, not `WSAPoll()`**, and the
+reason is `W5100Device::poll()`: it waits for WRITE on a socket with a
+non-blocking connect in flight and must learn about a *refused*
+connection, not only a successful one. On Winsock the documented channel
+for that is `select()`'s `exceptfds`. A wait that could only report
+success would leave a guest polling `SN_SR` forever on a refused
+connection. `waitSocket()` folds the exception set into "ready" so the
+caller does what it does on POSIX: wake, then ask `getsockopt(SO_ERROR)`
+which of the two happened (`connectResult()`).
+
+Two more Windows-only details worth keeping: `SO_RCVTIMEO` takes a
+`DWORD` of milliseconds there, **not** a `timeval` (passing a timeval is
+accepted and then read as garbage), and there is no `SIGPIPE`, so
+`disableSigpipe`/`sendNoSignal` are no-ops. `inet_ntoa` is avoided
+entirely (static buffer, two threads logging at once splice each other's
+addresses; MSVC deprecates it) in favour of `peerAddressText()`.
+
+Verification is by **cross-compilation**: `x86_64-w64-mingw32-g++
+-fsyntax-only` over every `src/*.cpp`, which is what proves the include
+order is safe in the big consumers too. `SocketCompat.h` turns the one
+remaining ordering hazard — a TU that pulled `windows.h` in first, so
+winsock v1 is already loaded — into a single `#error` instead of fifty
+redefinition errors.
+
 ### Network backends
 
 `NetworkBackend.h` — the host-side transport that carries raw Ethernet
@@ -2361,7 +2412,7 @@ frames for the two Uthernet cards. Shape follows AppleWin's
 | Card | Mode | Needs a backend? |
 |---|---|---|
 | Uthernet I (CS8900A) | all | **yes** — it is a plain NIC |
-| Uthernet II (W5100) | TCP, UDP | **no** — host BSD sockets |
+| Uthernet II (W5100) | TCP, UDP | **no** — host sockets |
 | Uthernet II (W5100) | MACRAW, IPRAW | yes |
 
 That table is the single most important thing about this subsystem: the
@@ -2370,6 +2421,17 @@ at all**, because its W5100 is a TCP/IP offload engine, not a NIC — POM2
 maps its four sockets straight onto host sockets. Only the Uthernet I
 (whose guest software — IP65, Contiki, ADTPro-ethernet — carries its own
 stack and hands the card whole frames) is hard-gated on a transport.
+
+**Platform coverage** (2026-08-01). Host sockets — hence Uthernet II
+TCP/UDP, the SSC telnet bridge and the AI control server — now work on
+**Windows** as well, through `src/SocketCompat.h` (see [§ Host
+sockets](#host-sockets-posix--winsock)). The libslirp backend is still
+Linux/macOS only, so **Uthernet I has no host transport on Windows**:
+vcpkg does carry a libslirp port, but `SlirpNetworkBackend`'s poll loop
+is written against POSIX `poll()` over the fds libslirp returns, and that
+port cannot be verified without a Windows libslirp build to test against.
+CMake therefore does not even look for libslirp on WIN32 — a documented
+absence beats a wall of missing-header errors.
 
 Three implementations:
 

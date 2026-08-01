@@ -18,14 +18,9 @@
 // becomes a logged no-op. The rest of the SSC (6551 ACIA registers,
 // slot ROM, Pascal 1.1 block) is fully functional in WASM; only the
 // host-side TCP plumbing is dropped.
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+// Host socket stack for both families — POSIX and Winsock. SocketUtil.h
+// (included above) is built on it and carries the accept/SIGPIPE idioms.
+#include "SocketCompat.h"
 #endif
 
 namespace {
@@ -185,30 +180,30 @@ bool SuperSerialCard::startListening(uint16_t newPort)
     // bind a fresh one. stopListening() is a no-op when nothing is live.
     stopListening();
     port = newPort;
-    listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFd < 0) {
-        pom2::log().warn("SSC", std::string("socket() failed: ") + std::strerror(errno));
+    pom2::ensureSocketStack();     // Winsock needs WSAStartup; no-op elsewhere
+    const pom2::socket_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    listenFd = lfd;
+    if (!pom2::isValidSocket(lfd)) {
+        pom2::log().warn("SSC", "socket() failed: " + pom2::lastSocketErrorText());
         return false;
     }
-    int yes = 1;
-    ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    pom2::setSockOptInt(lfd, SOL_SOCKET, SO_REUSEADDR, 1);
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(port);
-    if (::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         pom2::log().warn("SSC",
             "bind 127.0.0.1:" + std::to_string(port) + " failed: " +
-            std::strerror(errno));
-        ::close(listenFd);
-        listenFd = -1;
+            pom2::lastSocketErrorText());
+        pom2::closeHostSocketValue(lfd);
+        listenFd = pom2::kInvalidSocket;
         return false;
     }
-    if (::listen(listenFd, 1) < 0) {
-        pom2::log().warn("SSC", std::string("listen() failed: ") +
-                         std::strerror(errno));
-        ::close(listenFd);
-        listenFd = -1;
+    if (::listen(lfd, 1) != 0) {
+        pom2::log().warn("SSC", "listen() failed: " + pom2::lastSocketErrorText());
+        pom2::closeHostSocketValue(lfd);
+        listenFd = pom2::kInvalidSocket;
         return false;
     }
 
@@ -236,12 +231,12 @@ void SuperSerialCard::stopListening()
     // close() of clientFd is the worker's job (on its exit path), and
     // listenFd is closed here only AFTER join() so nothing recv()s/accept()s
     // a recycled descriptor.
-    { const int fd = clientFd.load(); if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
-    { const int fd = listenFd.load(); if (fd >= 0) ::shutdown(fd, SHUT_RDWR); }
+    pom2::shutdownBoth(clientFd.load());
+    pom2::shutdownBoth(listenFd.load());
     if (worker.joinable()) worker.join();
-    { const int fd = listenFd.exchange(-1); if (fd >= 0) ::close(fd); }
+    pom2::closeHostSocketValue(listenFd.exchange(pom2::kInvalidSocket));
     // Worker closed clientFd on exit; exchange() makes a stray close a no-op.
-    { const int fd = clientFd.exchange(-1); if (fd >= 0) ::close(fd); }
+    pom2::closeHostSocketValue(clientFd.exchange(pom2::kInvalidSocket));
     listening = false;
 #endif
 }
@@ -253,10 +248,10 @@ void SuperSerialCard::closeClient()
     return;
 #else
     // exchange() guarantees exactly one close even if called from two paths.
-    const int fd = clientFd.exchange(-1);
-    if (fd >= 0) {
-        ::shutdown(fd, SHUT_RDWR);
-        ::close(fd);
+    const pom2::socket_t fd = clientFd.exchange(pom2::kInvalidSocket);
+    if (pom2::isValidSocket(fd)) {
+        pom2::shutdownBoth(fd);
+        pom2::closeHostSocketValue(fd);
     }
     connected = false;
 #endif
@@ -271,20 +266,18 @@ void SuperSerialCard::runWorker()
         // stateMutex during profile switches, so a parked accept() was a
         // UI-thread hang).
         sockaddr_in peer{};
-        int fd = -1;
+        pom2::socket_t fd = pom2::kInvalidSocket;
         const auto pa = pom2::pollAcceptOnce(listenFd.load(), 200, fd, peer);
         if (pa == pom2::PollAccept::Retry)    continue;
         if (pa == pom2::PollAccept::Shutdown) break;
-        if (stopRequested) { ::close(fd); break; }
+        if (stopRequested) { pom2::closeHostSocketValue(fd); break; }
         pom2::disableSigpipe(fd);
         // Disable Nagle so single-character writes from the Apple II
         // appear at the telnet client immediately.
-        int yes = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        pom2::setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
         // Make read non-blocking so the worker can drain TX between RX
         // arrivals without sleeping on input.
-        const int flags = ::fcntl(fd, F_GETFL, 0);
-        ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        pom2::setNonBlocking(fd);
 
         clientFd  = fd;
         connected = true;
@@ -292,7 +285,7 @@ void SuperSerialCard::runWorker()
         onConnectionEdge(true);
         pom2::log().info("SSC",
             std::string("client connected from ") +
-            ::inet_ntoa(peer.sin_addr));
+            pom2::peerAddressText(peer));
 
         // Bridge loop: pull bytes from socket → rxBuf, push txBuf → socket.
         // Sleep briefly between iterations to avoid a hot spin when both
@@ -306,12 +299,13 @@ void SuperSerialCard::runWorker()
         // EAGAIN being treated as a fatal error and disconnecting).
         std::vector<uint8_t> pendingOut;
         uint8_t scratch[256];
-        while (!stopRequested && clientFd >= 0) {
+        while (!stopRequested && pom2::isValidSocket(clientFd.load())) {
             // Raw mode gates BOTH directions of telnet processing; sample
             // once per iteration so RX filtering, sink forwarding, and TX
             // escaping agree within the iteration.
             const bool raw = rawMode_.load(std::memory_order_relaxed);
-            const ssize_t got = ::recv(clientFd, scratch, sizeof(scratch), 0);
+            const pom2::iolen_t got =
+                pom2::recvSocket(clientFd, scratch, sizeof(scratch));
             if (got > 0) {
                 size_t n = static_cast<size_t>(got);
                 // Raw mode: skip both filters so XMODEM/Kermit/ADTPro
@@ -352,9 +346,9 @@ void SuperSerialCard::runWorker()
                 // Peer closed.
                 pom2::log().info("SSC", "client disconnected");
                 break;
-            } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (!pom2::errWouldBlock(pom2::lastSocketError())) {
                 pom2::log().info("SSC",
-                    std::string("recv error: ") + std::strerror(errno));
+                    "recv error: " + pom2::lastSocketErrorText());
                 break;
             }
 
@@ -397,18 +391,18 @@ void SuperSerialCard::runWorker()
                 }
                 lastDrainTime_ = now;
             }
-            if (!pendingOut.empty() && clientFd >= 0) {
+            if (!pendingOut.empty() && pom2::isValidSocket(clientFd.load())) {
                 // SIGPIPE-proof send (SocketUtil rule 2): a peer that
                 // vanished mid-send must surface as EPIPE, not a signal
                 // that kills the whole process.
-                const ssize_t sent = pom2::sendNoSignal(
+                const pom2::iolen_t sent = pom2::sendNoSignal(
                     clientFd, pendingOut.data(), pendingOut.size());
+                const int sendErr = (sent < 0) ? pom2::lastSocketError() : 0;
                 if (sent > 0) {
                     pendingOut.erase(pendingOut.begin(),
                                      pendingOut.begin() + sent);
-                } else if (sent < 0 && (errno == EAGAIN ||
-                                        errno == EWOULDBLOCK ||
-                                        errno == EINTR)) {
+                } else if (sent < 0 && (pom2::errWouldBlock(sendErr) ||
+                                        pom2::errInterrupted(sendErr))) {
                     // Transient: TCP window full / interrupted — keep the
                     // bytes queued in pendingOut and retry after the idle
                     // backoff below. NOT a disconnect.
@@ -416,14 +410,14 @@ void SuperSerialCard::runWorker()
                     // Real socket error (EPIPE / ECONNRESET / …) → drop the
                     // client. (send() == 0 can't happen for n > 0.)
                     pom2::log().info("SSC",
-                        std::string("send error: ") + std::strerror(errno));
+                        "send error: " + pom2::socketErrorText(sendErr));
                     break;
                 }
             }
 
             // Idle backoff. Tight enough that interactive typing feels
             // instantaneous; slow enough to avoid burning a core.
-            ::usleep(2000);
+            std::this_thread::sleep_for(std::chrono::microseconds(2000));
         }
         closeClient();
         onConnectionEdge(false);

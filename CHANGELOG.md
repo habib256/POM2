@@ -5,6 +5,77 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-01 — Host sockets on Windows: the Uthernet II now has a network there
+
+`POM2_HAS_SOCKETS` was 0 on Windows, which took out more than it looked
+like: the Uthernet II's TCP and UDP paths, the Super Serial Card's telnet
+bridge and the AI control server were all compiled out of every Windows
+build. The card still plugged, reset and answered its registers — it just
+never saw a packet.
+
+The blocker was never capability. Windows has the same stack behind
+Winsock2, and the difference is an API, not a feature. What made it worth
+a header rather than a scatter of `#ifdef`s is that **every one of those
+differences is silent** — code that compiles clean against Winsock can
+still be wrong:
+
+- `SOCKET` is **unsigned** and its failure value is `INVALID_SOCKET`, not
+  -1. So `if (fd >= 0)` is always true, and `fd = -1` marks a socket as
+  *valid* with a huge handle. Every "is this open?" test in the POSIX
+  idiom inverts its meaning without a single warning.
+- Errors bypass `errno`: `WSAGetLastError`, different codes, and
+  `strerror` cannot render them.
+- `close()` closes a CRT file descriptor, a different namespace from
+  sockets; `closesocket()` is the one that works. `fcntl(O_NONBLOCK)`
+  does not exist.
+- The stack needs `WSAStartup` before the first call.
+
+`src/SocketCompat.h` is now the one place that answers "POSIX or
+Winsock?", and the three TUs are written against it.
+
+**A fifth trap was not Winsock's fault and bit anyway.** `W5100Device`
+already had a member `closeSocket(size_t)` — the chip-level CLOSE for one
+of its four sockets. Inside that class, unqualified lookup finds the
+member first and stops; `socket_t` then converts to `size_t` without a
+murmur. `closeSocket(s.fd)` compiled clean and recursed until the stack
+died — `uthernet2_w5100_smoke` caught it as a segfault with 74 000
+identical frames. The helper is now named `closeHostSocket`, which no
+card would plausibly use for a chip-level operation.
+
+**Readiness waits use `select()` on Windows, not `WSAPoll()`.** The
+caller that decides this is `W5100Device::poll()`: it waits for WRITE on
+a socket with a non-blocking connect in flight, and it has to learn about
+a *refused* connection, not just a successful one. On Winsock the
+documented channel for that is `select()`'s `exceptfds` — which is why
+Winsock's select takes one. A wait that could only report success would
+leave a guest polling `SN_SR` forever on a connection that was refused.
+
+Two smaller Windows facts, both of the silently-wrong kind: `SO_RCVTIMEO`
+takes a `DWORD` of milliseconds there, **not** a `timeval` (pass a
+timeval and it is accepted, then read as garbage — a 2-second timeout
+quietly becomes minutes), and `inet_ntoa`'s static buffer lets two
+threads logging a connection splice each other's addresses, so both
+workers now use `inet_ntop` via `peerAddressText`.
+
+Verified by cross-compilation, not by reasoning: `x86_64-w64-mingw32-g++
+-fsyntax-only` over **every** `src/*.cpp`. 83 compile for Windows
+outright; the 9 GL/UI ones needed only GLFW's header staged, including
+`MainWindow.cpp`, which is what proves the winsock1-vs-winsock2 include
+ordering is safe in the file most likely to break it. The one remaining
+ordering hazard — a TU that pulled `windows.h` in first — is now a single
+`#error` instead of fifty redefinition errors. Linux: 156/156 ctest.
+
+**What this does NOT cover: the Uthernet I on Windows.** It is a plain
+NIC, so it needs raw frames, which means libslirp. vcpkg does carry a
+libslirp port (4.9.1), so the library is obtainable — what is missing is
+POM2's side: `SlirpNetworkBackend`'s poll loop is written against POSIX
+`poll()` over the fds libslirp hands back, and that port cannot be
+verified without a Windows libslirp build to test against. CMake
+therefore does not look for libslirp on WIN32 at all, and says so; a
+documented absence beats trading it for a wall of missing-header errors.
+The vcpkg port also pulls glib, which is a real addition to the Windows
+CI budget. Tracked in TODO.
+
 ## 2026-08-01 — The audio bus goes stereo
 
 The Mockingboard is a stereo card and POM2 was summing it to one channel.

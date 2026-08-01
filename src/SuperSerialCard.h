@@ -43,6 +43,7 @@
 #define POM2_SUPER_SERIAL_CARD_H
 
 #include "SlotPeripheral.h"
+#include "SocketCompat.h"   // socket_t / kInvalidSocket for the telnet fds
 
 #include <array>
 #include <atomic>
@@ -217,8 +218,10 @@ private:
     // out of accept()/recv() without a torn read, and so close() happens
     // exactly once (the worker is the sole closer of clientFd). See
     // stopListening()/closeClient().
-    std::atomic<int> listenFd { -1 };
-    std::atomic<int> clientFd { -1 };
+    // pom2::socket_t, not int: Winsock's SOCKET is an unsigned handle whose
+    // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
+    std::atomic<pom2::socket_t> listenFd { pom2::kInvalidSocket };
+    std::atomic<pom2::socket_t> clientFd { pom2::kInvalidSocket };
     std::thread worker;
     std::atomic<bool> stopRequested { false };
 
