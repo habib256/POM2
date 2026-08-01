@@ -61,7 +61,7 @@ Suggested attack order — items with high impact/effort ratio.
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | cuts recompiles (IIgs itself lives in the separate pom2gs project) |
 | 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
-| 4b | **Digidream 1 tempo regression** | ? | open audio regression from the 2026-08-01 Mockingboard pass — cause not established (see [Audio]) |
+| 4b | ~~Digidream 1 tempo regression~~ ✅ DONE | — | cause measured (`caughtUp` paced against the last write, not CPU-now) and fixed 2026-08-01 (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (~130 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
 
