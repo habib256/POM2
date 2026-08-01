@@ -30,6 +30,7 @@
 #include "RomStatus_ImGui.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
+#include "PrinterFeedCursor.h"
 #include "Disk35Controller_ImGui.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
@@ -5259,39 +5260,38 @@ void MainWindow::pumpImageWriter()
 
     std::vector<uint8_t> fresh;
     size_t total = 0;
-    // The cursor is only meaningful against the spool it was counted on:
-    // a different source (card unplugged, SSC tap taking over) starts at 0,
-    // otherwise its independently-grown spool would be drained mid-stream.
-    auto resyncSource = [this](const void* src) {
-        if (imageWriterSource != src) {
-            imageWriterSource   = src;
-            imageWriterConsumed = 0;
-        }
-    };
+    // Cursor handover rules (source change, spool cleared) live in
+    // printerFeedCursor() — see PrinterFeedCursor.h for why re-seating at
+    // 0 was wrong. Pinned by testSpoolSeam.
     if (printerCard) {
-        resyncSource(printerCard);
-        // A shorter spool than we have already consumed means the Printer
-        // panel's "Clear spool" ran; restart from the top of the new spool.
-        if (printerCard->bytesWritten() < imageWriterConsumed)
-            imageWriterConsumed = 0;
+        imageWriterConsumed = pom2::printerFeedCursor(
+            imageWriterSource, imageWriterConsumed,
+            printerCard, printerCard->bytesWritten());
         total = printerCard->drainSpoolFrom(imageWriterConsumed, fresh);
     } else if (grapplerCard) {
-        resyncSource(grapplerCard);
-        if (grapplerCard->bytesWritten() < imageWriterConsumed)
-            imageWriterConsumed = 0;
+        imageWriterConsumed = pom2::printerFeedCursor(
+            imageWriterSource, imageWriterConsumed,
+            grapplerCard, grapplerCard->bytesWritten());
         total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
     } else if (SuperSerialCard* tap = printerTapSsc()) {
         // //c-class printer port: the SSC's TX tap (slot 1 by default —
         // see plugSlotsFromSettings). Parallel cards outrank it so a IIe
         // with both a PrinterCard and an SSC keeps the parallel routing.
-        resyncSource(tap);
-        if (tap->printerSpoolBytes() < imageWriterConsumed)
-            imageWriterConsumed = 0;
+        imageWriterConsumed = pom2::printerFeedCursor(
+            imageWriterSource, imageWriterConsumed,
+            tap, tap->printerSpoolBytes());
         total = tap->drainPrinterSpoolFrom(imageWriterConsumed, fresh);
     } else {
-        // No card plugged (or it was just unplugged) — next plug starts at 0.
-        imageWriterSource   = nullptr;
-        imageWriterConsumed = 0;
+        // No source this frame (card unplugged, or the tap switched off).
+        // Forget WHICH source it was so the next one re-seats — but do not
+        // zero the cursor here: that was the other half of the reprint
+        // bug, since a source that comes back is re-seated at its own
+        // current total by resyncSource above.
+        imageWriterSource = nullptr;
+        // The mechanism keeps running: a job already in the printer's
+        // input buffer must still reach paper even with nothing feeding
+        // it (unplugging the card does not un-print the page).
+        imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
         return;
     }
 
@@ -5342,6 +5342,26 @@ void MainWindow::renderImageWriterWindow()
     if (!showImageWriterPanel || !imageWriter || !imageWriterPanel) return;
 
     pom2::ImageWriter_ImGui::HostInfo host;
+
+    // There is one ImageWriter and up to three things that can feed it, so
+    // pumpImageWriter() arbitrates: parallel cards outrank the SSC tap,
+    // and PrinterCard outranks Grappler+. Slot Config lets a PrinterCard
+    // and a Grappler+ coexist (different catalog keys, so its duplicate
+    // check does not object), and the loser then feeds nothing at all —
+    // silently, with paper that just stays blank. Name the losers.
+    std::vector<std::string> ignored;
+    {
+        const bool haveParallel = printerCard || grapplerCard;
+        if (printerCard && grapplerCard)
+            ignored.push_back("Grappler+ slot " +
+                              std::to_string(grapplerCard->getSlot()));
+        if (haveParallel)
+            for (auto* ssc : sscCards)
+                if (ssc && ssc->printerTap())
+                    ignored.push_back("Super Serial slot " +
+                                      std::to_string(ssc->getSlot()));
+    }
+
     if (printerCard) {
         host.haveSource  = true;
         host.sourceLabel = "fed by Printer card, slot " +
@@ -5374,6 +5394,12 @@ void MainWindow::renderImageWriterWindow()
         host.haveSource  = true;
         host.sourceLabel = "fed by Super Serial (printer port), slot " +
                            std::to_string(tap->getSlot());
+    }
+    if (host.haveSource && !ignored.empty()) {
+        host.sourceLabel += "  (not feeding: ";
+        for (size_t i = 0; i < ignored.size(); ++i)
+            host.sourceLabel += (i ? ", " : "") + ignored[i];
+        host.sourceLabel += ")";
     }
     host.saveDir = "printouts";
 #ifdef __EMSCRIPTEN__

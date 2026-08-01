@@ -27,6 +27,7 @@
 
 #include "ImageWriter.h"
 #include "PrinterCard.h"
+#include "PrinterFeedCursor.h"
 
 #include <cassert>
 #include <cstdint>
@@ -291,14 +292,17 @@ void testRgbaExport()
 void testSpoolSeam()
 {
     // The UI streams bytes card → printer with drainSpoolFrom(); this is
-    // the exact sequence MainWindow::pumpImageWriter() performs.
+    // the exact sequence MainWindow::pumpImageWriter() performs, using the
+    // same cursor helper it calls.
     PrinterCard card(1);
     ImageWriter iw(72, ImageWriter::PaperSize::Letter);
-    size_t consumed = 0;
+    size_t      consumed = 0;
+    const void* source   = nullptr;
 
     auto pump = [&]() {
         std::vector<uint8_t> fresh;
-        if (card.bytesWritten() < consumed) consumed = 0;
+        consumed = pom2::printerFeedCursor(source, consumed,
+                                           &card, card.bytesWritten());
         consumed = card.drainSpoolFrom(consumed, fresh);
         if (!fresh.empty()) iw.printBytes(fresh.data(), fresh.size());
         return fresh.size();
@@ -324,7 +328,65 @@ void testSpoolSeam()
     assert(pump() == 1);
     assert(iw.bytesReceived() == 4);
 
-    std::printf("  ok: PrinterCard::drainSpoolFrom streaming + resync\n");
+    // ─── Source handover ────────────────────────────────────────────────
+    // Regression: the cursor was re-seated at 0 on any source change, so a
+    // source whose spool outlives its source status re-delivered the whole
+    // thing. The SSC printer tap is exactly that — its spool is never
+    // cleared by the app, and the "Feed ImageWriter printer" checkbox is a
+    // one-click toggle. Two SSCs is the //c's default layout (slot 1 =
+    // printer port, slot 2 = modem port), so unticking slot 1 handed the
+    // source to slot 2 and printed the entire modem transcript.
+    //
+    // Modelled here with a second card standing in for the other source:
+    // what matters is that it arrives already holding bytes.
+    {
+        PrinterCard a(1), b(2);
+        ImageWriter pr(72, ImageWriter::PaperSize::Letter);
+        size_t      cur = 0;
+        const void* src = nullptr;
+
+        auto drain = [&](PrinterCard& c) {
+            std::vector<uint8_t> fresh;
+            cur = pom2::printerFeedCursor(src, cur, &c, c.bytesWritten());
+            cur = c.drainSpoolFrom(cur, fresh);
+            if (!fresh.empty()) pr.printBytes(fresh.data(), fresh.size());
+            return fresh.size();
+        };
+
+        // Frame 1: A is the source and has spooled nothing yet — which is
+        // what the real pump always sees, since it runs from the first
+        // frame and the ImageWriter is built in the MainWindow ctor.
+        assert(drain(a) == 0);
+
+        // Source B spools a session's worth while A is the live source.
+        for (char ch : std::string("MODEM TRANSCRIPT"))
+            b.deviceSelectWrite(1, static_cast<uint8_t>(ch));
+
+        a.deviceSelectWrite(1, 'X');
+        assert(drain(a) == 1);
+        assert(pr.bytesReceived() == 1);
+
+        // Hand over to B: it must adopt B's backlog, not print it.
+        assert(drain(b) == 0);
+        assert(pr.bytesReceived() == 1);
+        // …and still deliver what B spools from here on.
+        b.deviceSelectWrite(1, 'Y');
+        assert(drain(b) == 1);
+        assert(pr.bytesReceived() == 2);
+
+        // Hand back to A: same rule, and A's earlier 'X' is not replayed.
+        assert(drain(a) == 0);
+        assert(pr.bytesReceived() == 2);
+
+        // A source dropping out entirely (card unplugged / tap unticked)
+        // and coming back must not replay either. That is the off/on
+        // toggle that reprinted whole jobs.
+        src = nullptr;                      // the no-source frame
+        assert(drain(a) == 0);
+        assert(pr.bytesReceived() == 2);
+    }
+
+    std::printf("  ok: drainSpoolFrom streaming + resync + source handover\n");
 }
 
 void testMechanismPacing()
@@ -386,6 +448,206 @@ void testMechanismPacing()
     assert(off.bytesReceived() == 0);
 
     std::printf("  ok: mechanism pacing (draft / NLQ / instant / reset)\n");
+}
+
+void testCommandBoundsAndTabs()
+{
+    // Six defects found by auditing the port against the ImageWriter II
+    // Technical Reference rather than only against greg-kennedy's
+    // imagewriter.cpp. Four are inherited reference bugs that still put
+    // wrong ink on paper, so POM2 deviates deliberately — the kind of
+    // divergence CLAUDE.md asks to be commented at the site and pinned.
+    const double kChar = 1.0 / 12.0;           // 12 cpi default cell
+
+    // 1. HT goes to the NEAREST stop right of the head, not the farthest.
+    //    Reference (imagewriter.cpp:1131-1141) keeps overwriting as it
+    //    scans, so the first TAB jumped to the LAST stop and every later
+    //    one was a no-op — every columnar report came out as one column.
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        feed(iw, "\x1B(010,020,030.");         // stops at 10, 20, 30 chars
+        assert(std::abs(iw.status().headX - 0.25) < 1e-9);   // left margin
+        feed(iw, "\t");
+        assert(std::abs(iw.status().headX - 10 * kChar) < 1e-9);
+        feed(iw, "\t");
+        assert(std::abs(iw.status().headX - 20 * kChar) < 1e-9);
+        feed(iw, "\t");
+        assert(std::abs(iw.status().headX - 30 * kChar) < 1e-9);
+    }
+
+    // 2. ESC 1..6 ADDS n/120" of intercharacter space; it is not an
+    //    absolute head position. The reference assigns curX_ = n/unit, so
+    //    `ESC 3` mid-line threw the head from 1.25" back to 0.02" and
+    //    destroyed every justified line a proportional driver produced.
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        feed(iw, "\x1B" "p");                  // proportional, 10 cpi
+        feed(iw, "HELLO WORLD");
+        const double before = iw.status().headX;
+        feed(iw, "\x1B" "3");
+        assert(iw.status().headX == before);   // the command itself moves nothing
+        feed(iw, "X");
+        const double advance = iw.status().headX - before;
+        assert(advance > 0.0);                 // forward, never backward
+        assert(std::abs(advance - (0.1 + 3.0 / 120.0)) < 1e-9);
+    }
+
+    // 3. `ESC c` must not silently destroy the sheet on the platen. The
+    //    reference could discard it (imagewriter.cpp:315) because it wrote
+    //    every page to disk as it went; here the sheet exists nowhere
+    //    else, so a short report with no trailing FF vanished the moment
+    //    the next program sent its init.
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        feed(iw, "IMPORTANT REPORT");
+        assert(!iw.currentPageBlank());
+        assert(iw.completedPageCount() == 0);
+        feed(iw, "\x1B" "c");
+        assert(iw.completedPageCount() == 1);  // ejected, not binned
+        assert(iw.currentPageBlank());         // fresh sheet on the platen
+
+        // …but `ESC c` on a blank platen must not eject a blank sheet,
+        // the same rule the FORM FEED button follows.
+        feed(iw, "\x1B" "c");
+        assert(iw.completedPageCount() == 1);
+    }
+
+    // 4. `ESC H 0000` — a zero-length page made every LF eject, so three
+    //    line feeds produced three sheets and a real job rolled the whole
+    //    32-page stack away in blanks.
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        feed(iw, "\x1B" "H0000");
+        feed(iw, "X\nY\nZ\n");
+        assert(iw.completedPageCount() == 0);
+    }
+
+    // 5. `ESC L` clamps to the sheet. 999 put the margin 83" out and every
+    //    page came out blank; 000 gave a negative margin that clipped the
+    //    first character. Both silent.
+    {
+        ImageWriter wide(144, ImageWriter::PaperSize::Letter);
+        feed(wide, "\x1B" "L999");
+        feed(wide, "HELLO");
+        assert(inkPixels(wide.currentPage()) > 0);      // still on the paper
+
+        ImageWriter zero(144, ImageWriter::PaperSize::Letter);
+        feed(zero, "\x1B" "L000");
+        assert(zero.status().headX >= 0.0);
+        feed(zero, "HELLO");
+        assert(inkPixels(zero.currentPage()) > 0);
+    }
+
+    // 6. The stall watchdog must not fire on a byte that is merely SLOW.
+    //    `ESC H 9999` + FF is honest mechanism time, and a flat 10 s cap
+    //    cut it short and logged a STALL for a printer working correctly.
+    //    (ESC H now clamps too, so this also checks the two interact.)
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        feed(iw, "\x1B" "H9999");
+        const uint8_t ff = 0x0C;
+        iw.queueBytes(&ff, 1);
+        int ticks = 0;
+        while (iw.busy() && ticks < 60 * 60) { iw.tick(1.0 / 60.0); ++ticks; }
+        assert(!iw.busy());
+        // Letter is 11" of transport at 5 ips = 2.2 s, well inside the
+        // watchdog — the byte was affordable, not forced.
+        assert(ticks / 60.0 < 9.0);
+    }
+
+    std::printf("  ok: HT/VT nearest stop, ESC 1-6 relative, ESC c keeps the "
+                "sheet, ESC H/L clamped\n");
+}
+
+void testBoundedCatchUp()
+{
+    // Regression: past a 1 MiB backlog, queueBytes() called flushPending()
+    // and printed the WHOLE backlog synchronously — on the UI thread, from
+    // pumpImageWriter(). Measured from a real 6502: 0.6 s for an Applesoft
+    // print loop, 5.4 s for random binary, 119 s for a form-feed storm,
+    // all inside one frame. The credit cap in tick() bounds credited
+    // *seconds*; it never bounded the *work*.
+    //
+    // The contract now: queueBytes() never prints, and each tick does a
+    // bounded slice — capped in bytes AND in sheet ejects, because an
+    // eject copies a whole page raster and so is orders of magnitude
+    // dearer than a glyph.
+    const size_t kOver = (1u << 20) + 4096;        // just past kMaxBacklog
+
+    // 1. A 1 MiB+ dump of plain text: queueBytes prints nothing at all,
+    //    and no single tick drains it either.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        const std::vector<uint8_t> blob(kOver, 'X');
+        iw.queueBytes(blob.data(), blob.size());
+        assert(iw.bytesReceived() == 0);           // NOT printed on the wire
+        assert(iw.pendingBytes() == kOver);
+        assert(iw.catchingUp());
+
+        iw.tick(1.0 / 60.0);
+        const uint64_t afterOne = iw.bytesReceived();
+        assert(afterOne > 0);                      // it does make progress…
+        assert(afterOne < kOver);                  // …but not all of it
+        assert(afterOne <= (16u << 10));           // within the byte budget
+    }
+
+    // 2. A form-feed storm — the 119 s case. Every one-byte FF asks for a
+    //    whole sheet, so the sheet budget, not the byte budget, is what
+    //    has to bite. Bound ejects per tick, or one frame copies hundreds
+    //    of page rasters.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        std::vector<uint8_t> ffs(kOver);
+        for (size_t i = 0; i < ffs.size(); ++i)
+            ffs[i] = (i % 2) ? 0x0C : 'A';         // ink, eject, ink, eject…
+        iw.queueBytes(ffs.data(), ffs.size());
+        assert(iw.completedPageCount() == 0);      // queueBytes ejected none
+
+        const size_t before = iw.completedPageCount() + iw.droppedPageCount();
+        iw.tick(1.0 / 60.0);
+        const size_t ejected =
+            iw.completedPageCount() + iw.droppedPageCount() - before;
+        assert(ejected > 0);
+        assert(ejected <= 4);                      // the per-tick sheet cap
+    }
+
+    // 3. Memory stays bounded even against a guest that outruns the
+    //    catch-up rate. Dropping input truncates a printout, which is bad
+    //    — but it is counted and traced, and the alternative (unbounded
+    //    heap, or an unbounded synchronous flush) is worse.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        const std::vector<uint8_t> blob(1u << 20, 'Y');
+        for (int i = 0; i < 8; ++i) iw.queueBytes(blob.data(), blob.size());
+        assert(iw.pendingBytes() <= (4u << 20));
+        assert(iw.droppedInputBytes() > 0);
+    }
+
+    // 4. Catch-up disarms once the backlog is cleared, so the printer goes
+    //    back to Draft/NLQ pacing instead of staying flat out forever.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        const std::vector<uint8_t> blob(kOver, 'Z');
+        iw.queueBytes(blob.data(), blob.size());
+        assert(iw.catchingUp());
+        for (int i = 0; i < 400 && iw.busy(); ++i) iw.tick(1.0 / 60.0);
+        assert(!iw.busy());
+        assert(!iw.catchingUp());
+
+        // Back to paced: one frame buys ~4 characters, not the line.
+        const char* line = "HELLO WORLD";
+        iw.queueBytes(reinterpret_cast<const uint8_t*>(line), std::strlen(line));
+        const uint64_t mark = iw.bytesReceived();
+        iw.tick(1.0 / 60.0);
+        assert(iw.bytesReceived() - mark < 11);
+    }
+
+    std::printf("  ok: backlog catch-up is bounded per tick (bytes, sheets, "
+                "memory)\n");
 }
 
 void testAutoLineFeedDetection()
@@ -460,8 +722,44 @@ void testAutoLineFeedDetection()
         assert(iw.autoFeedActive());
     }
 
+    // 7. `ESC c` (initialize printer) re-arms it too — and it is the only
+    //    thing a GUEST can send that does. Regression: the latch used to
+    //    survive every reset the guest could reach, so it was scoped to
+    //    the host session rather than the job. Job 1 in the CR+LF
+    //    convention latched CR "don't feed"; job 2 sending bare CRs (a
+    //    plain `PR#n : LIST`) then printed its whole listing overprinted
+    //    onto one black line, unrecoverable from inside the guest.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        feed(iw, "REPORT\r\nTOTAL\r\n");           // job 1: CR+LF driver
+        assert(iw.autoFeedLatchedOff());
+
+        feed(iw, "\x1B" "c");                      // job 2 announces itself
+        assert(!iw.autoFeedLatchedOff());
+        assert(iw.autoFeedActive());
+
+        const double y0 = iw.status().headY;
+        feed(iw, "10 PRINT\r");                    // bare CR, as LIST emits
+        assert(std::abs(iw.status().headY - (y0 + kLine)) < 1e-9);
+    }
+
+    // 8. …but a bare CR WITHOUT `ESC c` must still overprint. This is the
+    //    guard on case 7: Print Shop separates its yellow/cyan/magenta
+    //    passes with a bare CR and never sends `ESC c`, so re-arming on
+    //    anything looser would march its colour passes down the page as a
+    //    staircase — the exact bug the detector exists to prevent.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        feed(iw, "PASS1\r\n");
+        assert(iw.autoFeedLatchedOff());
+        const double y = iw.status().headY;
+        feed(iw, "\rPASS2");                       // colour pass 2
+        assert(std::abs(iw.status().headY - y) < 1e-9);
+        assert(iw.autoFeedLatchedOff());
+    }
+
     std::printf("  ok: line-feed-after-CR detection (bare CR / CR+LF / "
-                "overprint)\n");
+                "overprint / ESC c re-arm)\n");
 }
 
 void testNoUnaffordableByte()
@@ -604,6 +902,8 @@ int main()
     testRgbaExport();
     testSpoolSeam();
     testMechanismPacing();
+    testCommandBoundsAndTabs();
+    testBoundedCatchUp();
     testAutoLineFeedDetection();
     testNoUnaffordableByte();
     testTraceClosedOnDestruction();

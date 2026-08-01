@@ -77,7 +77,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Host sockets (POSIX / Winsock, one compat header) | `SocketCompat.h`, `SocketUtil.h` | [§ Host sockets](DEV.md#host-sockets-posix--winsock) |
 | Printer card (synthetic → spool) | `PrinterCard.h/.cpp` | [§ Printer](DEV.md#printer-card-parallel-synthetic) |
 | Grappler+ printer (ROM-gated) | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
-| ImageWriter II printer + paper tray (host-side, fed by any printer card or the SSC printer tap) + PDF export | `ImageWriter.*`, `ImageWriterPdf.*`, `ImageWriter_ImGui.*` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
+| ImageWriter II printer + paper tray (host-side, fed by any printer card or the SSC printer tap) + PDF export | `ImageWriter.*`, `ImageWriterPdf.*`, `ImageWriter_ImGui.*`, `PrinterFeedCursor.h` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
 | ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
 | Mouse Card (MAME + AppleWin HLE) | `MouseCard.*`, `MouseCardAppleWin.*` | [§ Mouse](DEV.md#mouse-card) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |

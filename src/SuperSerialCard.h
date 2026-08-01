@@ -362,6 +362,10 @@ private:
     // lets the 1 MiB cap trim the consumed prefix without breaking the
     // drain cursor (see drainPrinterSpoolFrom).
     size_t printerSpoolBase_ = 0;
+    // The cap drops half a megabyte out of the middle of a printout; warn
+    // once so it is not silent, but only once (a guest that trips it will
+    // trip it again immediately, and a log storm helps nobody).
+    bool   printerSpoolTrimWarned_ = false;
 
     void buildRom();
     void runWorker();

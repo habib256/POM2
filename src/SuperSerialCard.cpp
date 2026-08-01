@@ -761,6 +761,20 @@ void SuperSerialCard::deviceSelectWrite(uint8_t low4, uint8_t v)
                         printerSpool_.begin(),
                         printerSpool_.begin() + static_cast<std::ptrdiff_t>(drop));
                     printerSpoolBase_ += drop;
+                    // Half a megabyte just fell out of the middle of a
+                    // printout. That has to leave a mark somewhere: it is
+                    // silent data loss otherwise, and the paper only shows
+                    // a job that stops mid-sentence. Logged once per
+                    // session — a guest that trips this once will trip it
+                    // repeatedly, and a log storm helps nobody.
+                    if (!printerSpoolTrimWarned_) {
+                        printerSpoolTrimWarned_ = true;
+                        pom2::log().warn("SSC",
+                            "printer spool hit its 1 MiB cap — dropping the "
+                            "oldest " + std::to_string(drop / 1024) +
+                            " KiB. The ImageWriter is falling behind the "
+                            "guest; the printout will have a gap.");
+                    }
                 }
             }
             break;
