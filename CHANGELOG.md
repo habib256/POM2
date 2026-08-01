@@ -5,6 +5,50 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-01 — The //c prints again: an armed printer tap is a device on the pins
+
+`PR#1` on //c, //c+ and //c PAL hung the guest and printed nothing. Not
+"printed badly" — the machine wedged inside its own printer firmware and
+never came back, on three of the eight shipped profiles, with no
+workaround available: a //c has no physical slots, so the built-in SSC
+printer port is the *only* route to the ImageWriter.
+
+The cause is a two-days-apart interaction between two correct changes.
+`$C100` on a //c is **internal** ROM, so `PR#1` runs the machine's own
+printer-port firmware rather than the card's synthetic `PR#n` ROM — and
+that firmware gates every single character on the 6551 status register,
+spinning until `status & (DCD|TDRE)` reads "carrier present, transmitter
+empty". On 2026-07-30 the DCD/DSR polarity was corrected to match MAME
+(`mos6551.cpp:37-39` inits `m_dsr(1), m_dcd(1)`) and AppleWin
+(`SerialComms.cpp:864` returns `ST_DSR|ST_DCD` "when nothing is
+attached"). That fix was right — POM2 had the sense inverted, so a
+carrier-aware guest saw "online" with an idle listener. But it answered
+the pins from the **telnet connection alone**, and two days earlier
+(2026-07-28) the printer tap had shipped as a second kind of device on
+the same port. With no telnet client, the //c was told its printer was
+absent, and it waited for a carrier that a printer never has.
+
+The fix is not a revert — the modem polarity stays as MAME has it. It is
+that "nothing is attached" was simply false: an ImageWriter cabled to the
+port *is* a DCE sitting there with its lines up. `deviceAttached()`
+(= telnet peer **or** armed printer tap) is now what DCD/DSR answer to.
+One condition, and the //c prints.
+
+Worth recording is **why the existing test passed throughout**.
+`ssc_acia_smoke` does exercise the printer tap — but it drives it through
+the *card's* synthetic `PR#n` ROM, which only ever checks TDRE. It is
+structurally blind to DCD, so it could not have failed here no matter how
+the polarity moved. Nothing booted a //c profile and ran `PR#1` through to
+the spool, which is exactly the gap a "//c printing" feature needed
+covered. `iic_printer_port` now closes it at three levels: the DCD/DSR
+device-present contract, the firmware's `status & $30 == $10` wait-loop
+shape, and a real DOS 3.3 boot on all three //c ROMs where `PR#1` +
+`PRINT "HI"` must land bytes in the spool. Against the pre-fix source all
+three ROMs fail with the PC frozen in firmware ($C2BA / $C1C2 / $C2B7);
+post-fix each spools the echoed command line and its output. The
+end-to-end half is ROM/disk gated and skips rather than fails when the
+user-provided media is absent.
+
 ## 2026-08-01 — Host sockets on Windows: the Uthernet II now has a network there
 
 `POM2_HAS_SOCKETS` was 0 on Windows, which took out more than it looked

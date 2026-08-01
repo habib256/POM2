@@ -2971,6 +2971,23 @@ de-asserted and the 6551 (correctly, MAME `mos6551.cpp:317-321`)
 dropped every byte. The PR#n/IN#n entries now program cmd=$0B first,
 like the real SSC firmware's DIP-switch init.
 
+**An armed tap is a device on the pins.** On a //c, `$C100` is *internal*
+ROM: `PR#1` runs the machine's own printer-port firmware, not the card's
+synthetic ROM, and that firmware gates every character on the 6551 status
+register — it spins until `status & (DCD|TDRE)` reads "carrier present,
+transmitter empty". DCD/DSR are active-low *device-present* pins, so the
+status read reports them **inactive when nothing is attached** (MAME
+`mos6551.cpp:37-39` inits `m_dsr(1), m_dcd(1)`; AppleWin
+`SerialComms.cpp:864` returns `ST_DSR|ST_DCD`). "Nothing attached" is the
+operative phrase: an ImageWriter cabled to the port *is* a DCE sitting
+there, and a printer has no carrier to acquire. Answering those pins from
+the telnet connection alone told the //c its printer was absent —
+`PR#1` wedged the guest inside the firmware and not one byte reached the
+spool, on all three //c profiles, with no workaround (nothing else is
+pluggable on a machine with no slots). `deviceAttached()`
+(= telnet peer **or** armed printer tap) is what the pins answer to.
+Pinned by `iic_printer_port`.
+
 **PDF export** (`ImageWriterPdf.h/.cpp`): "Save PDF" writes every
 completed sheet (plus the sheet in the platen if printed on) as one
 multi-page PDF. Each sheet embeds as an 8-bit `/Indexed /DeviceRGB`
@@ -2991,6 +3008,13 @@ pacing (draft/NLQ rates, `flushPending`, power-cycle drops the buffer).
 register/bank parity (see § Grappler+). `ssc_acia_smoke` pins the
 printer tap and the PR#/IN# ACIA init; `imagewriter_pdf` pins the PDF
 serialiser (xref byte accounting, per-sheet MediaBox, Flate round-trip).
+`iic_printer_port` pins the //c route end-to-end — the DCD/DSR
+device-present contract, the firmware's status wait-loop shape, and a real
+DOS 3.3 boot where `PR#1` + `PRINT` land bytes in the spool on all three
+//c ROMs (ROM/disk gated: skips when the user-provided media is absent).
+`ssc_acia_smoke` alone could not catch the //c hang — it drives the tap
+through the *card's* synthetic `PR#n` ROM, which only checks TDRE and is
+blind to DCD.
 
 ### Mouse Card
 
