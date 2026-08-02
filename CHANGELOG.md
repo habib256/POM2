@@ -5,6 +5,54 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-02 — Status bar: drop the MHz readout, show every mounted volume
+
+The achieved-clock readout is gone, along with its sampling state — the
+toolbar still shows the requested budget, and the measured figure was
+costing a `stateMutex` acquisition every frame to tell most users something
+they never acted on.
+
+The media row used to show exactly **one** entry: whichever Disk II was
+spinning, else the primary drive, else a mounted HDV as a fallback. A
+machine with two floppies, a CFFA and a SmartPort showed one of them. It now
+walks the SlotBus slot by slot — each Disk II contributes both drives when
+loaded, and every card implementing `MountableMediaCard` contributes each of
+its bays, so multi-instance cards appear too (the named aliases in
+`MainWindow` only ever remember one card per kind, which is what limited the
+old code). Entries are added while there is room and dropped silently past
+that, in bus order so a given machine's row does not reshuffle as drives
+spin up.
+
+The LEDs mean different things per bay, deliberately: a Disk II lights on
+real spindle motion, a block device has no mechanics and bleeds off
+`Block512Backing`'s activity counter instead, and SmartPort units expose no
+activity signal at all, so theirs stays dark. An honest dark LED beats one
+that never means anything — giving SmartPort a real one needs an activity
+signal on the card first.
+
+The row is built as a value snapshot under `stateMutex` and drawn with the
+lock released — the same discipline the sibling panel snapshots were just
+given. Both halves are load-bearing: `getDiskPath()` returns a reference
+into live `DiskImage` state that the AI server's HTTP thread rewrites on
+`/disk` and `/eject`, and holding `stateMutex` across ImGui calls is exactly
+what deadlocked the memory viewer.
+
+`indicatorDot` gained an explicit centring height. Inside a menu bar ImGui
+applies no frame padding to a bare `Text()`, so every item sits at the top
+of the bar; text carries that off, a circle does not, and the drive light
+rode visibly high. The status bar now passes `GetFrameHeight()`.
+
+## 2026-08-02 — `pom2_headless` did not link Winsock
+
+Found by the first Windows package build since 7e7d8de enabled host sockets
+there: 17 unresolved Winsock externals out of `SuperSerialCard.obj`. The GUI
+target had been given `ws2_32`, the headless one had not — before that
+commit `POM2_HAS_SOCKETS` was 0 on Windows and the socket code compiled out
+entirely, so the omission was invisible. Worth noting how it surfaced: the
+compile succeeded, so the `#ifdef _WIN32` branches themselves were sound;
+only the link failed. CI does not build Windows — only the release workflow
+does, and it had not run since.
+
 ## 2026-08-02 — Bug-hunt sweep: 21 defects across ten subsystems
 
 A ten-way parallel audit of the whole tree, then a fix pass. Framing that

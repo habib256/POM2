@@ -3314,29 +3314,26 @@ void MainWindow::renderStatusBar()
             // (`Block512Backing::isBusy`). SmartPort units expose no activity
             // signal at all, so theirs stays dark — better an honest dark LED
             // than one that never means anything.
+            //
+            // Built as a VALUE snapshot under `stateMutex`, then rendered
+            // with the lock released. Both halves matter: `getDiskPath()`
+            // hands back a reference into live `DiskImage` state that the AI
+            // server's HTTP thread rewrites on /disk and /eject, and holding
+            // `stateMutex` across ImGui calls is what deadlocked the memory
+            // viewer (a non-recursive mutex, and ImGui callbacks can re-enter
+            // host code). Snapshot, unlock, draw.
+            struct MediaRow {
+                bool        active = false;
+                const char* icon   = nullptr;
+                std::string label;
+                std::string tip;
+            };
+            std::vector<MediaRow> mediaRows;
             {
-                const float lineH = ImGui::GetFrameHeight();
-                auto mediaEntry = [&](bool active, const char* icon,
-                                      const std::string& label,
-                                      const std::string& tip) {
-                    // 6 ems of chrome (rule + dot + icon + padding) plus the
-                    // label itself, measured rather than guessed so a long
-                    // filename cannot push the row off the end of the bar.
-                    const float need =
-                        6.0f * em + ImGui::CalcTextSize(label.c_str()).x;
-                    if (ImGui::GetContentRegionAvail().x <= need) return false;
-                    pom2::verticalRule();
-                    pom2::indicatorDot(active, pal.warn, 4.0f, lineH);
-                    ImGui::TextColored(u32(active ? pal.text : pal.textDim),
-                                       "%s %s", icon, label.c_str());
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", tip.c_str());
-                    return true;
-                };
                 auto baseName = [](const std::string& p) {
                     return std::filesystem::path(p).filename().string();
                 };
-
+                std::lock_guard<std::mutex> lk(controller->stateMutex());
                 for (int slot = 1; slot <= 7; ++slot) {
                     SlotPeripheral* per =
                         controller->memory().slotBus().peripheral(slot);
@@ -3349,14 +3346,15 @@ void MainWindow::renderStatusBar()
                             // controller drives one spindle at a time.
                             const bool spinning =
                                 d2->isMotorOn() && d2->getActiveDrive() == drv;
-                            mediaEntry(
-                                spinning, ICON_FA_FLOPPY_DISK,
-                                baseName(d2->getDiskPath(drv)),
-                                "Slot " + std::to_string(d2->getSlot()) +
-                                    ", drive " + std::to_string(drv + 1) +
-                                    " — track " +
-                                    std::to_string(d2->getCurrentTrack(drv)) +
-                                    "\n" + d2->getDiskPath(drv));
+                            const std::string path = d2->getDiskPath(drv);
+                            mediaRows.push_back(
+                                { spinning, ICON_FA_FLOPPY_DISK,
+                                  baseName(path),
+                                  "Slot " + std::to_string(d2->getSlot()) +
+                                      ", drive " + std::to_string(drv + 1) +
+                                      " — track " +
+                                      std::to_string(d2->getCurrentTrack(drv)) +
+                                      "\n" + path });
                         }
                         continue;
                     }
@@ -3378,9 +3376,27 @@ void MainWindow::renderStatusBar()
                         if (!info.kindLabel.empty())
                             tip += " — " + info.kindLabel;
                         tip += "\n" + info.path;
-                        mediaEntry(busy, ICON_FA_HARD_DRIVE,
-                                   baseName(info.path), tip);
+                        mediaRows.push_back({ busy, ICON_FA_HARD_DRIVE,
+                                              baseName(info.path),
+                                              std::move(tip) });
                     }
+                }
+            }
+            {
+                const float lineH = ImGui::GetFrameHeight();
+                for (const MediaRow& row : mediaRows) {
+                    // 6 ems of chrome (rule + dot + icon + padding) plus the
+                    // label itself, measured rather than guessed so a long
+                    // filename cannot push the row off the end of the bar.
+                    const float need =
+                        6.0f * em + ImGui::CalcTextSize(row.label.c_str()).x;
+                    if (ImGui::GetContentRegionAvail().x <= need) break;
+                    pom2::verticalRule();
+                    pom2::indicatorDot(row.active, pal.warn, 4.0f, lineH);
+                    ImGui::TextColored(u32(row.active ? pal.text : pal.textDim),
+                                       "%s %s", row.icon, row.label.c_str());
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", row.tip.c_str());
                 }
             }
 
