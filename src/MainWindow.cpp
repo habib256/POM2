@@ -3251,32 +3251,6 @@ void MainWindow::renderMenuBar()
 // behaves the same at any UI scale).
 void MainWindow::renderStatusBar()
 {
-    // ── Achieved clock ───────────────────────────────────────────────────
-    // The toolbar's speed combo shows the *requested* budget; this measures
-    // what the machine really ran, which is the number that matters when the
-    // host is too slow or disk turbo is engaged. Sampled over ≥250 ms so the
-    // readout doesn't jitter.
-    {
-        uint64_t cyc = 0;
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            cyc = controller->memory().getCycleCounter();
-        }
-        const double dt = lastFrameTime - speedSampleTime_;
-        // A rewind, snapshot restore, or profile switch rolls the counter
-        // backwards; resync instead of computing a garbage delta from the
-        // unsigned wrap.
-        if (speedSampleTime_ <= 0.0 || cyc < speedSampleCycles_) {
-            speedSampleTime_   = lastFrameTime;
-            speedSampleCycles_ = cyc;
-        } else if (dt >= 0.25) {
-            measuredMhz_ = static_cast<float>(
-                static_cast<double>(cyc - speedSampleCycles_) / dt / 1.0e6);
-            speedSampleTime_   = lastFrameTime;
-            speedSampleCycles_ = cyc;
-        }
-    }
-
     ImGuiViewport* vp = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeight();
     // NoDocking: the status bar is chrome. Without it a dragged panel can be
@@ -3323,80 +3297,91 @@ void MainWindow::renderStatusBar()
             pom2::verticalRule();
             ImGui::TextColored(u32(pal.textDim), "%s", gfx);
 
-            // ── Drive activity + mounted media ───────────────────────────
-            // Prefer whichever Disk II is actually spinning so a two-card
-            // machine shows the one doing the work; otherwise fall back to
-            // the primary card, then to a mounted HDV (no LED — a ProDOS
-            // block device has no mechanical activity to show).
-            if (roomFor(22.0f)) {
-                DiskIICard* shown = nullptr;
-                for (DiskIICard* c : diskCards)
-                    if (c && c->isMotorOn()) { shown = c; break; }
-                if (!shown) shown = diskCard;
-
-                const int  drv    = shown ? shown->getActiveDrive() : 0;
-                const bool motor  = shown && shown->isMotorOn();
-                const bool loaded = shown && shown->isDiskLoaded(drv);
-
-                if (loaded) {
-                    pom2::verticalRule();
-                    pom2::indicatorDot(motor, pal.warn);
-                    const std::string base =
-                        std::filesystem::path(shown->getDiskPath(drv))
-                            .filename().string();
-                    ImGui::TextColored(u32(motor ? pal.text : pal.textDim),
-                                       "D%d %s", drv + 1, base.c_str());
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Slot %d, drive %d — track %d\n%s",
-                                          shown->getSlot(), drv + 1,
-                                          shown->getCurrentTrack(drv),
-                                          shown->getDiskPath(drv).c_str());
-                } else if (hdvCard && !hdvCard->getImagePath().empty()) {
-                    pom2::verticalRule();
-                    pom2::indicatorDot(hdvCard->isBusy(), pal.warn);
-                    const std::string base =
-                        std::filesystem::path(hdvCard->getImagePath())
-                            .filename().string();
-                    ImGui::TextColored(u32(pal.textDim),
-                                       ICON_FA_HARD_DRIVE " %s", base.c_str());
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("ProDOS block device, slot %d\n%s",
-                                          hdvCard->getSlot(),
-                                          hdvCard->getImagePath().c_str());
-                }
-            }
-
-            // ── Achieved clock ───────────────────────────────────────────
-            // Green when the machine is within 10 % of what was asked for,
-            // amber when the host is falling behind. Paused shows a dash
-            // rather than a misleading 0.00 MHz.
+            // ── Mounted media, every bay, each with its own access LED ───
+            // Walked off the SlotBus rather than the named card aliases so a
+            // second Disk II, a second CFFA or a SmartPort's two units all
+            // appear — the aliases only ever remember one card per kind.
             //
-            // The 10 % band is deliberately loose. A vsynced 60 Hz host
-            // running a 50 Hz PAL profile lands ~4-5 % short of nominal from
-            // frame-pacing jitter alone; a 5 % threshold made the readout
-            // flicker green/amber on a machine that is running perfectly
-            // well. Only a deficit a user could actually feel should warn.
-            if (roomFor(14.0f)) {
-                const VideoTiming& vt =
-                    pom2VideoTiming(controller->getVideoStandard());
-                const double requestedMhz =
-                    static_cast<double>(controller->getCyclesPerFrame()) *
-                    vt.refreshHz / 1.0e6;
-                pom2::verticalRule();
-                if (mode != EmulationController::Mode::Running) {
-                    ImGui::TextColored(u32(pal.textDim), "— MHz");
-                } else {
-                    const bool behind = measuredMhz_ < requestedMhz * 0.90;
-                    ImGui::TextColored(u32(behind ? pal.warn : pal.ok),
-                                       "%.2f MHz", measuredMhz_);
+            // The bar is one line and the machine can carry a lot of media,
+            // so each entry is added only while `roomFor` still says yes and
+            // the rest are dropped silently. Entries go in bus order (slot,
+            // then drive/bay) so a given machine's layout stays put instead
+            // of reshuffling as drives spin up.
+            //
+            // LED semantics differ per bay and that is deliberate: a Disk II
+            // lights on real spindle motion, while a block device has no
+            // mechanics and instead bleeds off an activity counter
+            // (`Block512Backing::isBusy`). SmartPort units expose no activity
+            // signal at all, so theirs stays dark — better an honest dark LED
+            // than one that never means anything.
+            {
+                const float lineH = ImGui::GetFrameHeight();
+                auto mediaEntry = [&](bool active, const char* icon,
+                                      const std::string& label,
+                                      const std::string& tip) {
+                    // 6 ems of chrome (rule + dot + icon + padding) plus the
+                    // label itself, measured rather than guessed so a long
+                    // filename cannot push the row off the end of the bar.
+                    const float need =
+                        6.0f * em + ImGui::CalcTextSize(label.c_str()).x;
+                    if (ImGui::GetContentRegionAvail().x <= need) return false;
+                    pom2::verticalRule();
+                    pom2::indicatorDot(active, pal.warn, 4.0f, lineH);
+                    ImGui::TextColored(u32(active ? pal.text : pal.textDim),
+                                       "%s %s", icon, label.c_str());
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", tip.c_str());
+                    return true;
+                };
+                auto baseName = [](const std::string& p) {
+                    return std::filesystem::path(p).filename().string();
+                };
+
+                for (int slot = 1; slot <= 7; ++slot) {
+                    SlotPeripheral* per =
+                        controller->memory().slotBus().peripheral(slot);
+                    if (!per) continue;
+
+                    if (auto* d2 = dynamic_cast<DiskIICard*>(per)) {
+                        for (int drv = 0; drv < 2; ++drv) {
+                            if (!d2->isDiskLoaded(drv)) continue;
+                            // Only the SELECTED drive's motor turns: a Disk II
+                            // controller drives one spindle at a time.
+                            const bool spinning =
+                                d2->isMotorOn() && d2->getActiveDrive() == drv;
+                            mediaEntry(
+                                spinning, ICON_FA_FLOPPY_DISK,
+                                baseName(d2->getDiskPath(drv)),
+                                "Slot " + std::to_string(d2->getSlot()) +
+                                    ", drive " + std::to_string(drv + 1) +
+                                    " — track " +
+                                    std::to_string(d2->getCurrentTrack(drv)) +
+                                    "\n" + d2->getDiskPath(drv));
+                        }
+                        continue;
+                    }
+
+                    // Everything else that can hold an image advertises bays.
+                    // `ProDOSBlockCard` is the only one carrying an activity
+                    // signal, so probe for it separately from the bay view.
+                    auto* media = dynamic_cast<pom2::MountableMediaCard*>(per);
+                    if (!media) continue;
+                    auto* block = dynamic_cast<pom2::ProDOSBlockCard*>(per);
+                    const bool busy = block && block->isBusy();
+
+                    for (int bay = 0; bay < media->bayCount(); ++bay) {
+                        const pom2::MediaBayInfo info = media->bayInfo(bay);
+                        if (!info.loaded || info.path.empty()) continue;
+                        std::string tip = "Slot " + std::to_string(slot);
+                        if (media->bayCount() > 1)
+                            tip += ", bay " + std::to_string(bay + 1);
+                        if (!info.kindLabel.empty())
+                            tip += " — " + info.kindLabel;
+                        tip += "\n" + info.path;
+                        mediaEntry(busy, ICON_FA_HARD_DRIVE,
+                                   baseName(info.path), tip);
+                    }
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Clock the machine actually achieved.\n"
-                        "Requested: %.2f MHz (%d cycles × %d Hz)\n"
-                        "Amber means the host is more than 10 %% short.",
-                        requestedMhz, controller->getCyclesPerFrame(),
-                        vt.refreshHz);
             }
 
             // ── Host caps-lock ───────────────────────────────────────────

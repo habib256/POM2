@@ -419,14 +419,6 @@ private:
     // unexpected uppercase, which requires typing in the first place.
     bool hostCapsLock_ = false;
 
-    // ── Measured emulation speed (status bar) ────────────────────────────
-    // Sampled from Memory::getCycleCounter() against wall-clock in the UI
-    // thread. This is the speed the machine ACTUALLY achieved, as opposed to
-    // the toolbar's speed combo, which only shows the requested budget — the
-    // two diverge whenever the host can't keep up or disk turbo kicks in.
-    double   speedSampleTime_   = 0.0;   // lastFrameTime of the last sample
-    uint64_t speedSampleCycles_ = 0;
-    float    measuredMhz_       = 0.0f;  // 0 until the first interval closes
     bool         showMemViewer = false;
     bool         showMemoryBar      = false;   // tall vertical map
     bool         showMemoryBarH     = false;   // wide-short horizontal variant

@@ -116,7 +116,13 @@ void verticalRule(float padX = 6.0f);
 /// table and tooltips). Two same-named functions in one namespace with
 /// different meanings is a trap for whoever writes the next call, even though
 /// overload resolution happens to pick correctly today.
-void indicatorDot(bool on, ImU32 onColor, float radius = 4.0f);
+/// `lineHeight` is the vertical span the dot centres itself on; 0 means the
+/// text line. Pass `ImGui::GetFrameHeight()` inside a menu bar: plain items
+/// there sit at the TOP of the bar (ImGui applies no frame padding to a bare
+/// `Text()`), so a dot centred on the text line rides visibly high against
+/// the bar it shares. Text gets away with that; a circle does not.
+void indicatorDot(bool on, ImU32 onColor, float radius = 4.0f,
+                  float lineHeight = 0.0f);
 
 /// Clamp bounds for the user zoom control — shared by the menu widget and the
 /// settings loader so a hand-edited `state.cfg` can't produce an unusable UI.
