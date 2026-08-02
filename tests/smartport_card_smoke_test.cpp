@@ -30,6 +30,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -298,6 +299,59 @@ bool testRomSignature()
     return true;
 }
 
+// Per-unit access LED. Three properties, each of which was broken or
+// absent before: the light comes on for the unit that was actually read
+// (not card-wide), it does so with NO FloppySoundDevice attached (the
+// bump used to sit behind `noteAccess`'s `sound_` early-out), and it
+// bleeds off on its own so it cannot latch on forever — which is what
+// would have happened had the SmartPort simply reported the
+// `Block512Backing` counter nothing decays for it.
+bool testAccessLed()
+{
+    pom2::SmartPortCard card(5);          // no sound sink attached
+    auto u0 = std::make_unique<pom2::SmartPort35Unit>();
+    auto u1 = std::make_unique<pom2::SmartPort35Unit>();
+    if (!u0->loadImage(writeSyntheticPo("led0", 0x30)) ||
+        !u1->loadImage(writeSyntheticPo("led1", 0x70))) {
+        std::printf("FAIL: LED test image load\n"); return false;
+    }
+    card.setUnit(0, std::move(u0));
+    card.setUnit(1, std::move(u1));
+
+    if (card.bayInfo(0).busy || card.bayInfo(1).busy) {
+        std::printf("FAIL: a bay reported busy before any access\n");
+        return false;
+    }
+
+    uint8_t buf[kBlockBytes];
+    if (!readBlockViaCard(card, 0, 5, buf)) {
+        std::printf("FAIL: LED test block read\n"); return false;
+    }
+    if (!card.bayInfo(0).busy) {
+        std::printf("FAIL: unit 0 read left its access LED dark\n");
+        return false;
+    }
+    if (card.bayInfo(1).busy) {
+        std::printf("FAIL: unit 0 read lit unit 1's LED too\n");
+        return false;
+    }
+
+    // Decay is driven by the host, one step per frame. It must reach zero
+    // in a bounded number of steps; 64 is far past the 8-frame hysteresis
+    // and still catches a counter that never moves.
+    int frames = 0;
+    for (; frames < 64 && card.bayInfo(0).busy; ++frames)
+        for (size_t u = 0; u < pom2::SmartPortCard::kMaxUnits; ++u)
+            if (auto* unit = card.unit(u)) unit->tickActivityDecay();
+    if (card.bayInfo(0).busy) {
+        std::printf("FAIL: access LED never decayed (stuck on)\n");
+        return false;
+    }
+    std::printf("OK : per-unit access LED (lit unit 0 only, decayed in %d "
+                "frames, no sound device)\n", frames);
+    return true;
+}
+
 } // anon namespace
 
 int main() {
@@ -307,5 +361,6 @@ int main() {
     ok &= testStatusByte();
     ok &= testWriteBackRoundtrip();
     ok &= testBlockCountClamp();
+    ok &= testAccessLed();
     return ok ? 0 : 1;
 }

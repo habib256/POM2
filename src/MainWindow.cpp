@@ -3359,13 +3359,12 @@ void MainWindow::renderStatusBar()
                         continue;
                     }
 
-                    // Everything else that can hold an image advertises bays.
-                    // `ProDOSBlockCard` is the only one carrying an activity
-                    // signal, so probe for it separately from the bay view.
+                    // Everything else that can hold an image advertises bays,
+                    // and each bay reports its own activity — a SmartPort's
+                    // two units light independently, which a card-wide flag
+                    // could not express.
                     auto* media = dynamic_cast<pom2::MountableMediaCard*>(per);
                     if (!media) continue;
-                    auto* block = dynamic_cast<pom2::ProDOSBlockCard*>(per);
-                    const bool busy = block && block->isBusy();
 
                     for (int bay = 0; bay < media->bayCount(); ++bay) {
                         const pom2::MediaBayInfo info = media->bayInfo(bay);
@@ -3376,7 +3375,7 @@ void MainWindow::renderStatusBar()
                         if (!info.kindLabel.empty())
                             tip += " — " + info.kindLabel;
                         tip += "\n" + info.path;
-                        mediaRows.push_back({ busy, ICON_FA_HARD_DRIVE,
+                        mediaRows.push_back({ info.busy, ICON_FA_HARD_DRIVE,
                                               baseName(info.path),
                                               std::move(tip) });
                     }
@@ -6982,9 +6981,26 @@ void MainWindow::updateAutoTurbo()
         dev->tickActivityDecay();
         if (dev->isBusy()) hdvBusy = true;
     }
+    // SmartPort units carry the same hysteretic counter but are NOT
+    // ProDOSBlockCards, so `blockCards()` never sees them. Until this loop
+    // existed their counters were bumped and never bled off, and — more
+    // than a stuck LED — SmartPort media sat outside disk turbo entirely.
+    // That is the //c / //c+ boot path for 3.5" and HDV, so the machines
+    // most dependent on it were the ones loading at 1 MHz while an HDV card
+    // in a //e got ~60×.
+    const auto smartPorts = smartPortCards();
+    for (auto* sp : smartPorts) {
+        for (size_t u = 0; u < pom2::SmartPortCard::kMaxUnits; ++u) {
+            if (auto* unit = sp->unit(u)) {
+                unit->tickActivityDecay();
+                if (unit->isBusy()) hdvBusy = true;
+            }
+        }
+    }
     const bool anyBusy       = anyMotorOn || hdvBusy;
     const bool turboEligible =
-        diskTurboWhileMotor && (!diskCards.empty() || !blocks.empty());
+        diskTurboWhileMotor &&
+        (!diskCards.empty() || !blocks.empty() || !smartPorts.empty());
     if (turboEligible) {
         if (anyBusy && !diskTurboActive) {
             diskSavedCyclesPerFrame = controller->getCyclesPerFrame();

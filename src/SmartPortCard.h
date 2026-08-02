@@ -221,7 +221,12 @@ private:
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;
     uint8_t blockCountByte(int which) const;   // 0 = low, 1 = high (STATUS)
-    void    noteAccess();
+    /// One block access on `unit` (null = the active one): lights that
+    /// unit's access LED and, when a floppy sound device is attached,
+    /// drives the audible motor/seek. The unit is explicit because the
+    /// SmartPort `$Cn0D` dispatch addresses a unit by number, which need
+    /// not be the one the legacy streaming registers have selected.
+    void    noteAccess(SmartPortUnit* unit = nullptr);
 };
 
 } // namespace pom2

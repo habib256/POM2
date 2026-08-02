@@ -5,6 +5,44 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-02 — SmartPort access LEDs, and the disk turbo they were hiding
+
+The status-bar row shipped earlier today left SmartPort LEDs dark because
+the units exposed no activity signal. Wiring one up turned out to uncover a
+bigger miss than the lamp.
+
+`SmartPortUnit` now carries the same hysteretic counter `Block512Backing`
+uses — a block access sets it, the host bleeds it off one step per frame.
+It lives on the base class and `SmartPortCard::noteAccess()` bumps it, so
+one site covers 3.5" and HDV units alike; that function already existed as
+the audible-motor hook and already fired at all three block-dispatch sites.
+Two details worth keeping: the bump goes **before** `noteAccess`'s
+`sound_` early-out, because a machine with no FloppySoundDevice still has
+an LED; and the unit is passed explicitly, because the SmartPort `$Cn0D`
+dispatch addresses a unit by number, which need not be the one the legacy
+streaming registers have selected.
+
+`SmartPortHdvUnit` does wrap a `Block512Backing` with a counter of its own,
+so it looked like the signal was already there for free. It was not usable:
+nothing decays it. The host's decay loop walks `ProDOSBlockCard`
+implementers, and `SmartPortCard` implements `MountableMediaCard` instead —
+so reporting that counter would have latched the lamp on permanently after
+the first access.
+
+**Which is the actual find.** That same gap meant SmartPort media never
+counted toward `anyBusy`, so it sat outside **disk turbo** entirely. On
+//c / //c+ / //c PAL the built-in slot-5 SmartPort *is* the boot path for
+3.5" and HDV, so precisely the machines that depend on it were loading at
+1 MHz while an HDV card in a //e got the ~60× speed-up. The decay loop now
+covers SmartPort units and they count toward turbo eligibility.
+
+`MediaBayInfo` gained a `busy` field, so the status bar reads activity
+uniformly per bay and the old `dynamic_cast<ProDOSBlockCard*>` special case
+is gone — and a SmartPort's two units light independently, which a
+card-wide flag could not have expressed. Pinned by `smartport_card_smoke`:
+a read lights only the unit that was read, with no sound device attached,
+and the lamp decays on its own within a bounded number of frames.
+
 ## 2026-08-02 — Status bar: drop the MHz readout, show every mounted volume
 
 The achieved-clock readout is gone, along with its sampling state — the
