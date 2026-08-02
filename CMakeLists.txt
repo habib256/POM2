@@ -678,8 +678,8 @@ endif()
 # <prefix>/share/POM2. ResourcePaths resolves assets via <exeDir>/../share/
 # POM2 (and the per-user ~/.local/share/POM2), so this same tree works for
 # a relocatable tarball (CPack TGZ), an FHS /usr install (CPack DEB), and an
-# AppImage. The Apple ROMs are deliberately NOT installed — they are user-
-# supplied (copyright); only a drop-here README ships in roms/.
+# AppImage. The full roms/ tree (system + peripheral dumps + floppy_samples)
+# ships with every artifact so a release boots out of the box.
 include(GNUInstallDirs)
 set(POM2_DATADIR "${CMAKE_INSTALL_DATADIR}/POM2")
 # GNUInstallDirs derives DOCDIR from the (internal) project name pom2_imgui;
@@ -697,15 +697,16 @@ install(FILES fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf
 # ResourcePaths → `<share/POM2>/pic/Apple_II_plus.jpg`.
 install(FILES pic/Apple_II_plus.jpg DESTINATION "${POM2_DATADIR}/pic")
 
-# MAME floppy mechanical samples (BSD-3-Clause — roms/floppy_samples/
-# README.txt). Optional: only when present in the source tree.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms/floppy_samples")
-    install(DIRECTORY roms/floppy_samples
-            DESTINATION "${POM2_DATADIR}/roms"
-            FILES_MATCHING PATTERN "*.wav" PATTERN "*.txt")
+# Full roms/ tree: system firmware, character generators, peripheral dumps,
+# and MAME floppy mechanical samples (BSD-3-Clause — see floppy_samples/
+# README.txt). Optional only in the sense that a tree without roms/ still
+# configures; release builds always have it.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms")
+    install(DIRECTORY roms/
+            DESTINATION "${POM2_DATADIR}/roms")
 endif()
 
-# Drop-here note in place of the (non-redistributable) Apple ROMs.
+# Inventory note alongside the dumps (overrides any README already in roms/).
 install(FILES packaging/roms_README.txt
         DESTINATION "${POM2_DATADIR}/roms" RENAME README.txt)
 

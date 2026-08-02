@@ -38,7 +38,7 @@ cd build && cmake .. && make # → build/POM2
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
 
-ROMs are user-provided. Default profile is `Apple ][+`; see [System profiles](#system-profiles) for ROM probe order.
+Release packages ship the full `roms/` tree; a source build uses the same in-repo dumps. Default profile is `Apple ][+`; see [System profiles](#system-profiles) for ROM probe order.
 
 ## Subsystem map
 

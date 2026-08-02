@@ -5,6 +5,15 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-02 — Bundle the full `roms/` tree in release artifacts
+
+Packaging previously shipped only `roms/floppy_samples/` plus a drop-here
+README, while the copyrighted dumps were already tracked in the public repo.
+That split is closed: `cmake --install`, the Linux tarball/AppImage/.deb,
+the macOS `.app`/`.dmg`, and the Windows zip all copy the entire `roms/`
+directory so a release boots without a separate ROM drop. Docs and
+`packaging/roms_README.txt` match.
+
 ## 2026-08-02 — SmartPort access LEDs, and the disk turbo they were hiding
 
 The status-bar row shipped earlier today left SmartPort LEDs dark because
@@ -3337,11 +3346,10 @@ config). Wave 1's fixes all held; the seams gave up two mediums.
   `openKioskStartMenu`/`updateKioskMenu`/`renderKioskMenu` + §joystick
   against the stickToPaddles pipeline and GamepadPlay mapping; CLAUDE/TODO
   note speaker+cassette ARE retimed). CI now triggers on `v*` tags — tag
-  builds previously ran NO CI. ⚠ **Open, needs a decision: copyrighted
-  Apple ROM dumps are tracked in the public repo since the initial commit**
-  (49 files under roms/), contradicting README/CI/packaging claims;
-  cutting a public release re-publishes them. Full remedy = untrack +
-  history scrub (filter-repo) + force-push.
+  builds previously ran NO CI. Decision (2026-08-02): keep the in-repo
+  dumps and **bundle the full `roms/` tree in every release artifact** —
+  packaging/docs now match the tree that has been public since the
+  initial commit.
 
 ## 2026-07-12 (pre-release bug hunt: kiosk input leaks, PAL cassette clock)
 

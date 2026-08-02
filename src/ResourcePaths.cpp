@@ -84,22 +84,28 @@ const std::vector<fs::path>& resourceSearchDirs()
         push("..");
         push("../..");
 
-        // 4-6: executable-relative roots (portable bundle + FHS install).
+        // 4: per-user data dir — overrides for a bundled dump in a read-only
+        // package (AppImage / .deb / .dmg). Searched before the install tree
+        // so a file dropped in ~/.local/share/POM2/roms/ wins. Honours
+        // $XDG_DATA_HOME, else $HOME/.local/share (XDG basedir); on Windows
+        // also %LOCALAPPDATA%\POM2.
+        if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+            push(fs::path(xdg) / "POM2");
+        } else if (const char* home = std::getenv("HOME"); home && *home) {
+            push(fs::path(home) / ".local" / "share" / "POM2");
+        }
+#if defined(_WIN32)
+        if (const char* lad = std::getenv("LOCALAPPDATA"); lad && *lad) {
+            push(fs::path(lad) / "POM2");
+        }
+#endif
+
+        // 5-7: executable-relative roots (portable bundle + FHS install).
         const fs::path exe = executableDir();
         if (!exe.empty()) {
             push(exe);                        // binary beside roms/, fonts/
             push(exe / "..");                 // binary in bin/, assets a level up
             push(exe / ".." / "share" / "POM2");  // /usr/bin + /usr/share/POM2
-        }
-
-        // 7: per-user data dir. When POM2 is installed read-only (a .deb in
-        // /usr, an AppImage), the Apple ROMs the user supplies can't live
-        // beside the binary — they go here, e.g. ~/.local/share/POM2/roms/.
-        // Honours $XDG_DATA_HOME, else $HOME/.local/share (XDG basedir spec).
-        if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-            push(fs::path(xdg) / "POM2");
-        } else if (const char* home = std::getenv("HOME"); home && *home) {
-            push(fs::path(home) / ".local" / "share" / "POM2");
         }
         return dirs;
     }();

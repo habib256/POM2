@@ -13,9 +13,8 @@
 # <exe>/.. , which from Contents/MacOS resolves to Contents/ — so the standard
 # Resources/ location is found by adding one search root. See the note below.
 #
-# ROMs are never bundled (copyright). Contents/Resources/roms/README.txt tells
-# the user to drop their own dumps into ~/Library/Application Support/POM2/roms
-# or beside the .app.
+# The full roms/ tree (system + peripheral dumps + floppy_samples) is bundled
+# under Contents/Resources/roms/ so the .app boots without a separate ROM drop.
 #
 # Env:
 #   POM2_VERSION        version for the artifact name (default: from CMakeLists)
@@ -54,16 +53,16 @@ cp packaging/macos/POM2.icns "$APP/Contents/Resources/POM2.icns"
 sed "s/@POM2_VERSION@/${VERSION}/g" packaging/macos/Info.plist.in \
     > "$APP/Contents/Info.plist"
 
-# Read-only assets. Mirrors the FHS install rules, minus the ROMs.
+# Read-only assets. Mirrors the FHS install rules (including the full roms/).
 mkdir -p "$APP/Contents/Resources/fonts" \
          "$APP/Contents/Resources/pic" \
          "$APP/Contents/Resources/roms"
 cp fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf "$APP/Contents/Resources/fonts/"
 cp pic/Apple_II_plus.jpg                       "$APP/Contents/Resources/pic/"
-cp packaging/roms_README.txt                   "$APP/Contents/Resources/roms/README.txt"
-if [ -d roms/floppy_samples ]; then
-    cp -R roms/floppy_samples "$APP/Contents/Resources/roms/"
+if [ -d roms ]; then
+    cp -R roms/. "$APP/Contents/Resources/roms/"
 fi
+cp packaging/roms_README.txt                   "$APP/Contents/Resources/roms/README.txt"
 
 # ResourcePaths probes <exe>/.. (= Contents/) and <exe>/../share/POM2. Give the
 # Apple layout a home by ALSO exposing Resources/ under the name the FHS probe
