@@ -22,6 +22,7 @@
 #ifndef POM2_SMARTPORT_UNIT_H
 #define POM2_SMARTPORT_UNIT_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,6 +36,35 @@ public:
     static constexpr size_t kBlockBytes = 512;
 
     virtual ~SmartPortUnit() = default;
+
+    // ── Access activity ──────────────────────────────────────────────────
+    //
+    // Same shape as `Block512Backing`'s: a block access sets a hysteresis
+    // count, the host bleeds it off one step per frame, and `isBusy()` is
+    // true while it holds. Without the hysteresis the light would only be
+    // lit on the exact frames a transfer happened to land in, which for a
+    // block device is a flicker rather than a read.
+    //
+    // It lives on the BASE, not on each unit kind, and `SmartPortCard`
+    // bumps it where it dispatches READ/WRITE — one site covers 3.5" and
+    // HDV alike. `SmartPortHdvUnit` does wrap a `Block512Backing` that
+    // keeps a counter of its own, but nothing decays that one (the host's
+    // decay loop walks `ProDOSBlockCard` implementers and a SmartPort card
+    // is not one), so reading it would latch the light on forever after
+    // the first access.
+    bool isBusy() const
+    {
+        return activityTicks_.load(std::memory_order_relaxed) > 0;
+    }
+    void tickActivityDecay()
+    {
+        uint32_t v = activityTicks_.load(std::memory_order_relaxed);
+        if (v) activityTicks_.store(v - 1, std::memory_order_relaxed);
+    }
+    void bumpActivity() const
+    {
+        activityTicks_.store(kBusyHysteresisFrames, std::memory_order_relaxed);
+    }
 
     /// Short stable key for slot-config + settings persistence
     /// (`"35"`, `"hdv"`, …). Must be unique per concrete subclass.
@@ -91,6 +121,12 @@ public:
     /// Persist dirty blocks now. No-op when write-back is off or
     /// nothing is dirty. Returns false on I/O failure.
     virtual bool saveDirty() = 0;
+
+private:
+    // Matches Block512Backing::kBusyHysteresisFrames so a SmartPort volume
+    // and an HDV card light for the same duration on the same transfer.
+    static constexpr uint32_t kBusyHysteresisFrames = 8;
+    mutable std::atomic<uint32_t> activityTicks_{0};
 };
 
 /// Factory: create a fresh empty unit for the given kind key. Returns

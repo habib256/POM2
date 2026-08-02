@@ -185,8 +185,14 @@ void SmartPortCard::advanceCycles(int cycles)
     }
 }
 
-void SmartPortCard::noteAccess()
+void SmartPortCard::noteAccess(SmartPortUnit* unit)
 {
+    // Access light BEFORE the sound early-out: `sound_` is optional (no
+    // FloppySoundDevice on a headless run, and the user can disable the
+    // samples), but the LED is not.
+    if (!unit) unit = units_[activeUnit_].get();
+    if (unit) unit->bumpActivity();
+
     if (!sound_) return;
     if (!audibleMotorOn_) {
         sound_->motor(true, true);
@@ -793,7 +799,7 @@ uint8_t SmartPortCard::spExecute()
                     spResult_.clear();
                     return fail(0x27);                 // I/O error
                 }
-                noteAccess();
+                noteAccess(u);
                 return ok();
             }
             if (u->isWriteProtected()) return fail(0x2B);
@@ -845,6 +851,7 @@ MediaBayInfo SmartPortCard::bayInfo(int bay) const
     info.lastError         = u->lastError();
     info.blockCount        = u->blockCount();
     info.loaded            = u->isLoaded();
+    info.busy              = u->isBusy();
     info.writeProtected    = u->isWriteProtected();
     info.writeBackEnabled  = u->isWriteBackEnabled();
     info.supportsWriteBack = true;

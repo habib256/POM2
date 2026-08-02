@@ -63,6 +63,7 @@ public:
         MediaBayInfo info;
         if (bay != 0) return info;
         info.loaded            = isImageLoaded();
+        info.busy              = isBusy();
         info.path              = getImagePath();
         info.lastError         = getLastError();
         info.blockCount        = static_cast<uint32_t>(getBlockCount());

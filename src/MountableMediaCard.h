@@ -39,6 +39,10 @@ struct MediaBayInfo
     std::string lastError;        // last mount/load error ("" = none)
     uint32_t    blockCount       = 0;
     bool        loaded           = false;
+    /// Recent block activity, for an access LED. Hysteretic (a few frames),
+    /// not a single-frame edge, so a transfer reads as a lit lamp rather
+    /// than a flicker. False on cards that expose no activity signal.
+    bool        busy             = false;
     bool        writeProtected   = false;
     bool        writeBackEnabled  = false;
     bool        supportsWriteBack = true;
