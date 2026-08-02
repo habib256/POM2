@@ -104,6 +104,15 @@ public:
     /// Called from the UI thread once per frame.
     void setHostMouse(uint8_t rawX, uint8_t rawY, bool button);
 
+    /// Telemetry: total MCU machine cycles actually retired since the last
+    /// `onReset()`. Divided by the CPU cycles handed to `advanceCycles()`
+    /// this must converge on MCU_CLOCK_NUMERATOR / MCU_CLOCK_DENOMINATOR
+    /// (2.0), i.e. MAME's `M68705P3(config, m_mcu, 2043600)` against the
+    /// 1.02 MHz bus. Pinned by tests/mouse_card_smoke_test.cpp — dropping
+    /// the run overshoot instead of billing it used to clock the MCU
+    /// 26-50 % fast. Never affects emulation.
+    uint64_t mcuCyclesRun() const { return mcuCyclesRun_; }
+
     // ─── SlotPeripheral overrides ──────────────────────────────────────
     std::string_view name() const override { return "Mouse"; }
     uint8_t deviceSelectRead (uint8_t low4) override;
@@ -156,9 +165,16 @@ private:
     int16_t countAxis[2] = { 0, 0 };
     uint8_t portBState = 0xFF;     // running snapshot of MCU PB pins
 
-    // MCU pacing — the 68705 runs at 2× the Apple II clock. We
-    // accumulate fractional cycles to keep ratio exact across calls.
+    // MCU pacing — the 68705 runs at 2× the Apple II clock. Holds the
+    // signed cycle budget owed to the MCU: advanceCycles credits it and
+    // debits what `mcu.run()` actually retired, so the instruction the
+    // MCU was mid-way through when the budget expired is paid for out of
+    // the next tick instead of being run for free. Goes negative while a
+    // long instruction is being amortised.
     int mcuCycleAccum = 0;
+
+    // Telemetry only (see mcuCyclesRun()); not part of the snapshot blob.
+    uint64_t mcuCyclesRun_ = 0;
 
     // ── Internal hooks ────────────────────────────────────────────────
     void onPiaPortAOut(uint8_t v);

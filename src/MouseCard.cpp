@@ -189,13 +189,27 @@ void MouseCard::advanceCycles(int cycles)
 {
     if (!isReady() || cycles <= 0) return;
 
-    // MCU runs at 2× the Apple II clock — accumulate fractional cycles
-    // to keep the ratio exact across calls.
+    // MCU runs at 2× the Apple II clock — accumulate fractional cycles to
+    // keep the ratio exact across calls. `mcu.run()` finishes whatever
+    // instruction is in flight when the budget runs out (2..11 machine
+    // cycles on the 68705; the firmware's idle loop is all 10-cycle
+    // BRCLRs), so it overshoots. Bill the ACTUAL cycles retired against
+    // the accumulator — which then goes negative and suppresses the next
+    // run until the debt is repaid. This is MAME's own contract: its
+    // `m6805_base_device::execute_run` is a do/while that runs
+    // `while (m_icount > 0)` and leaves `m_icount` negative, and the
+    // scheduler advances the device's local time by
+    // `cycles_running - m_icount`, i.e. by what actually ran.
+    // advanceCycles is called per 6502 instruction, so budgets are 4-14
+    // MCU cycles here; dropping the overshoot instead ran the 68705 at
+    // 1.26-1.50× its 2043600 Hz (MAME mouse.cpp:148
+    // `M68705P3(config, m_mcu, 2043600);`).
     mcuCycleAccum += cycles * MCU_CLOCK_NUMERATOR;
     const int mcuCycles = mcuCycleAccum / MCU_CLOCK_DENOMINATOR;
-    mcuCycleAccum -= mcuCycles * MCU_CLOCK_DENOMINATOR;
     if (mcuCycles > 0) {
-        (void)mcu.run(mcuCycles);
+        const int ran = mcu.run(mcuCycles);
+        mcuCycleAccum -= ran * MCU_CLOCK_DENOMINATOR;
+        mcuCyclesRun_ += static_cast<uint64_t>(ran);
         if (traceEnabled()) {
             // Log only on PC change. Suppress the firmware's main idle
             // loop ($03F3 / $0403 / $0405 / $0409 / $0469) which spins
@@ -241,6 +255,7 @@ void MouseCard::onReset()
     portBState = 0xFF;
     assertIrq(false);
     mcuCycleAccum = 0;
+    mcuCyclesRun_ = 0;
 }
 
 void MouseCard::onUnplug()
@@ -427,11 +442,24 @@ void MouseCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     uint32_t acc = 0;
     for (int i = 0; i < 4; ++i) acc |= static_cast<uint32_t>(data[p++]) << (8 * i);
     mcuCycleAccum = static_cast<int>(acc);
+    // Untrusted blob: this feeds `mcu.run()` directly, so a crafted value
+    // near INT_MAX would hand the MCU a two-billion-cycle slice. A live
+    // accumulator only ever holds one bus slice's worth of credit minus at
+    // most one 68705 instruction of debt.
+    if (mcuCycleAccum < -64 || mcuCycleAccum > 1 << 16) mcuCycleAccum = 0;
     p += mcu.loadSnapshotState(data + p, len - p);
     p += pia.loadSnapshotState(data + p, len - p);
-    // Re-drive the slot IRQ from the restored PIA state: the wire-OR lives
-    // in SlotPeripheral, not in the PIA, so restoring irq_a/b_state alone
-    // left a pending mouse interrupt invisible to the bus after a rewind.
-    // (ClockCard::loadSnapshotState does the same at its tail.)
-    assertIrq(pia.irqA() || pia.irqB());
+    // Re-drive the slot IRQ from MCU Port B bit 6, the card's ONLY IRQ
+    // source (MAME mouse.cpp:46 "68705 PB6 is IRQ for the slot", and
+    // mouse.cpp:275-284 `mcu_port_b_w`: `if (!BIT(data, 6)) raise_slot_irq();
+    // else lower_slot_irq();`). The PIA's IRQ-A/B outputs are wired but
+    // dead — MAME's `pia_irqa_w` / `pia_irqb_w` (mouse.cpp:235-240) are
+    // empty stubs — so deriving the line from them published a constant
+    // false and swallowed any interrupt that was pending at snapshot time.
+    // The pin state itself rides in the MCU blob restored just above; the
+    // wire-OR lives in SlotPeripheral, so it has to be re-published here.
+    // Nothing else re-arms it: `onMcuPortWrite` only fires when the
+    // firmware WRITES port B, which it next does after the host services
+    // the request that was already outstanding.
+    assertIrq((mcu.getPortPins(1) & 0x40) == 0);
 }

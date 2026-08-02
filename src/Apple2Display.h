@@ -118,12 +118,12 @@ public:
     void render(Memory& mem);
 
     /// Drops the static-text frame-skip key, forcing the next render() to
-    /// repaint even if nothing the key covers has changed. Required by any
-    /// caller that mutates the framebuffer behind render()'s back (the skip
-    /// assumes the pixels it left there are still present), and used by
-    /// `display_dirty_skip_test` to run a forced-full-repaint reference
-    /// display alongside a skipping one.
-    void invalidateTextFrameCache() { textFrameKey_.valid = false; }
+    /// repaint even if nothing the key covers has changed. Every mutation of
+    /// the framebuffer this class performs itself already invalidates (see
+    /// `framebufferMutated()`), so this exists for OUTSIDE callers that reach
+    /// past pixels() — and for `display_dirty_skip_test`, which runs a
+    /// forced-full-repaint reference display alongside a skipping one.
+    void invalidateTextFrameCache() { framebufferMutated(); }
 
     // Runs the OE-CPU composite demod render() deferred (it only consumes
     // display-owned buffers, so it must NOT hold the caller's stateMutex —
@@ -138,7 +138,7 @@ public:
     // explicitly after releasing stateMutex, making this a no-op there.
     const uint32_t* pixels() const {
         const_cast<Apple2Display*>(this)->finishPendingCpuDemod();
-        return useFrame80 ? frame80.data() : frame.data();
+        return useFrame80_ ? frame80.data() : frame.data();
     }
 
     /// Serializes the post-stateMutex demod/pixels phase between the UI
@@ -149,7 +149,7 @@ public:
     /// all. Lock order: stateMutex → demodMutex, never nested the other
     /// way.
     std::mutex& demodMutex() { return demodMutex_; }
-    int             width()  const { return useFrame80 ? kWidth80 : kWidth; }
+    int             width()  const { return useFrame80_ ? kWidth80 : kWidth; }
     int             height() const { return kHeight; }
 
     /// Raster position (visible scanline + 40-byte column index) of a CPU
@@ -207,7 +207,10 @@ public:
     /// render() produced a signal that the GPU path would demodulate (mixed
     /// frames and sharp-text frames already present the framebuffer). Call
     /// after render(); the demod itself runs lazily in pixels() /
-    /// finishPendingCpuDemod().
+    /// finishPendingCpuDemod(). When it does schedule, it rewrites the whole
+    /// framebuffer behind render()'s back and drops the static-text skip key
+    /// with it, so the next render() rebuilds the on-screen image instead of
+    /// leaving the capture's demodulated pixels on display.
     void demodCompositeForCapture();
 
     /// AppleWin sub-mode selector. Only consulted when hiResMode ==
@@ -257,7 +260,12 @@ private:
     std::mutex demodMutex_;          // see demodMutex()
     std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
     std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA pixels (IIe)
-    bool useFrame80     = false;     // true for the current frame when 80-col
+    // Which buffer pixels()/width() publish. Write it ONLY through
+    // setUseFrame80() / scheduleCpuDemodInto80() — the trailing underscore is
+    // there so a plain `useFrame80 = true` no longer compiles: flipping the
+    // published buffer is a framebuffer mutation, and the static-text skip is
+    // only sound while every such mutation announces itself.
+    bool useFrame80_    = false;     // true for the current frame when 80-col
     const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
     HiResMode hiResMode = HiResMode::ColorNTSC;
     AppleWinSubMode appleWinSubMode = AppleWinSubMode::Tv;
@@ -324,11 +332,19 @@ private:
     // other term of the key agrees, and without these the skip served a stale
     // screen at the wrong geometry. That card is the //c PAL profile's
     // built-in slot 7, i.e. the French Touch / DIX target hardware.
+    //
+    // `textSharp` is in the key for the same reason: unchecking "Sharp text"
+    // makes the OE-CPU path demodulate full-screen TEXT instead of painting it
+    // crisp (`oeDemodsText` in render()), and on the OE-GPU path it decides
+    // whether MainWindow presents this framebuffer at all. It is a host-side
+    // knob — no guest write, no video event — so like the colour mode it is
+    // invisible to every other term.
     struct TextFrameKey {
         bool                 valid = false;
         Memory::DisplayState state{};        // POD of bools — compared wholesale
         bool                 iie = false;
         bool                 flashPhase = false;
+        bool                 textSharp = true;
         int                  hiResModeId = -1;
         const void*          charRom = nullptr;
         size_t               charRomSize = 0;
@@ -336,10 +352,51 @@ private:
         int                  chatMauveState = -1;   // mode + Eve toggles
         std::vector<uint8_t> vram;           // $0400-$0BFF, main + aux
     };
+    // The key describes the pixels that are in the framebuffer RIGHT NOW, so
+    // it is published (`commitTextFrameKey`) at the very END of render() and
+    // torn down by every framebuffer mutation. Two slots, not one:
+    //   * `textFrameKey_`      — what the framebuffer currently holds. Any
+    //                            mutation clears it, whoever performs it and
+    //                            whenever: render()'s own painters (harmless,
+    //                            they are about to republish) or a caller
+    //                            poking the buffer AFTER render() returned
+    //                            (demodCompositeForCapture on the AI /screen
+    //                            path), which is the case a single well-placed
+    //                            invalidate call kept getting wrong.
+    //   * `nextTextFrameKey_`  — this frame's candidate, filled by
+    //                            staticTextFrameUnchanged() iff the frame is a
+    //                            skippable full-screen text frame. Everything
+    //                            else (beam-raced frames, CPU demods, graphics)
+    //                            leaves it invalid, so "those frames never
+    //                            enable a skip" falls out of the commit rather
+    //                            than out of scattered invalidations.
     TextFrameKey textFrameKey_;
+    TextFrameKey nextTextFrameKey_;
+    /// Publishes this frame's candidate key. Called on every exit from
+    /// render() (RAII), so a future early return cannot leave the previous
+    /// frame's key describing pixels that have since been repainted.
+    void commitTextFrameKey() {
+        textFrameKey_ = std::move(nextTextFrameKey_);
+        nextTextFrameKey_.valid = false;   // moved-from: `valid` was copied
+    }
+    /// Announces that the published framebuffer (its pixels, or which of the
+    /// two buffers is published) no longer matches what render() last painted.
+    /// EVERY such mutation must funnel through here — that is what the private
+    /// `useFrame80_` name and the two helpers below enforce.
+    void framebufferMutated() { textFrameKey_.valid = false; }
+    void setUseFrame80(bool v) { useFrame80_ = v; framebufferMutated(); }
+    /// Arms the deferred OE-CPU demod over rows [0, rows) and routes the UI to
+    /// frame80 — the single door to `pendingCpuDemodRows_`, so a demod
+    /// scheduled from outside render() (screen capture) can never be forgotten
+    /// by the skip. The demod itself runs in finishPendingCpuDemod().
+    void scheduleCpuDemodInto80(int rows) {
+        useFrame80_          = true;
+        pendingCpuDemodRows_ = rows;
+        framebufferMutated();
+    }
     /// True when this frame's full-screen text is byte-identical to the one
     /// already in the framebuffer, so painting it again would be a no-op.
-    /// Updates the stored key as a side effect.
+    /// Fills `nextTextFrameKey_` as a side effect.
     bool staticTextFrameUnchanged(Memory& mem, const Memory::DisplayState& state);
     static constexpr int kMixedTextFirstScanline = 160;
 
@@ -457,7 +514,10 @@ private:
     // exact). Used by HiResMode::ColorCompositeOECpu and mixed OE frames;
     // scheduled via pendingCpuDemodRows_ + finishPendingCpuDemod().
     void renderCompositeOeCpu(int rows);
-    int  pendingCpuDemodRows_ = 0;   // 0 = none; else demod rows [0, n)
+    // 0 = none; else demod rows [0, n). Armed only by scheduleCpuDemodInto80();
+    // cleared by render() (a demod armed against the previous frame's signal
+    // must never fire onto this frame's pixels) and by finishPendingCpuDemod().
+    int  pendingCpuDemodRows_ = 0;
 
     // The actual frame dispatch (text / hires / dhgr / mixed). render()
     // is a thin wrapper that calls this then optionally fills signalBuf.

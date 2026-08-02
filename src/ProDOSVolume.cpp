@@ -13,6 +13,7 @@
 #include <fstream>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -41,6 +42,20 @@ constexpr std::uint8_t kStorageVolDir       = 0xF;
 constexpr std::uint8_t kFileTypeDir         = 0x0F;
 
 constexpr std::size_t  kMaxRecursionDepth   = 16;
+
+// Bounds for the write-back walk (`decodeOneDir`). The volume image is
+// guest-writable RAM, so the directory graph it describes is untrusted
+// input: a subdir entry's key_pointer is only range-checked, nothing stops
+// it pointing back at an ancestor — or at the very block that holds the
+// entry. A depth cap alone bounds NOTHING there, because it does not bound
+// the fan-out: 12 self-referential entries in one block explored to depth 16
+// is 12^17 visits, each performing a real `fs::create_directories` under a
+// fresh path. So the walk also carries a per-call set of already-expanded
+// directory blocks (making the graph a forest — every block is walked at
+// most once, which caps the visit count at the number of blocks in the
+// image) and a hard budget on directories created.
+constexpr std::size_t  kMaxDirBlockChain    = 256;    // blocks per dir chain
+constexpr std::size_t  kMaxDecodeDirs       = 2048;   // host dirs per decode
 
 struct PreparedFile {
     std::string                 prodosName;
@@ -690,31 +705,57 @@ bool writeFileAtomic(const fs::path& dest, const std::vector<std::uint8_t>& byte
 
 namespace {
 
+// Per-decode walk state. `expanded` is GLOBAL to the walk, not per path:
+// a directory block is expanded once and only once, so an aliased or
+// self-referential key_pointer costs one skipped entry instead of an
+// exponential subtree. `dirsLeft` is the second, independent bound — it
+// survives even if some future entry type re-enters the walk.
+struct DecodeWalk {
+    const std::vector<std::uint8_t>&  image;
+    std::size_t                       totalBlocks = 0;
+    std::unordered_set<std::uint16_t> expanded;
+    std::size_t                       dirsLeft    = kMaxDecodeDirs;
+    ProDOSDecodeResult&               r;
+};
+
 // Walk one ProDOS directory (volume root or subdir) starting at `firstBlock`
 // and recreate its contents under `hostFolder`. Recurses into subdir entries
 // (storage_type $D) by creating a host subdirectory and calling itself.
-// `depth` is bounded to avoid infinite loops on malformed volumes.
-void decodeOneDir(const std::vector<std::uint8_t>& image,
-                  std::size_t totalBlocks,
+// Termination rests on `w.expanded` (see DecodeWalk), not on `depth`.
+void decodeOneDir(DecodeWalk& w,
                   std::uint16_t firstBlock,
                   const std::string& hostFolder,
-                  std::size_t depth,
-                  ProDOSDecodeResult& r)
+                  std::size_t depth)
 {
+    ProDOSDecodeResult& r           = w.r;
+    const std::size_t   totalBlocks = w.totalBlocks;
+
     if (depth > kMaxRecursionDepth) {
         pom2::log().warn("ProDOSVol",
             "decode: recursion depth exceeded under " + hostFolder);
+        r.aborted = true;
         return;
     }
 
     auto blockPtr = [&](std::size_t b) -> const std::uint8_t* {
-        return image.data() + b * kBlockBytes;
+        return w.image.data() + b * kBlockBytes;
     };
 
     std::uint16_t curBlock = firstBlock;
     std::size_t   guard    = 0;
-    while (curBlock != 0 && guard++ < 256) {
+    while (curBlock != 0 && guard++ < kMaxDirBlockChain) {
         if (curBlock >= totalBlocks) break;
+        // Cycle / alias guard: a directory block reached a second time (via
+        // a next-block pointer looping back, or a subdir key_pointer aliasing
+        // a block already walked) would replay its entire subtree.
+        if (!w.expanded.insert(curBlock).second) {
+            pom2::log().warn("ProDOSVol",
+                "decode: directory block " + std::to_string(curBlock) +
+                " already walked (cyclic volume) — stopping chain under " +
+                hostFolder);
+            ++r.dirsSkipped;
+            break;
+        }
         const std::uint8_t* blk = blockPtr(curBlock);
 
         for (std::size_t slot = 0; slot < kVolDirEntriesKN; ++slot) {
@@ -744,7 +785,29 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
                     pom2::log().warn("ProDOSVol",
                         "decode: skipping unsafe subdir name under " + hostFolder);
                     ++r.filesSkipped;
+                    ++r.dirsSkipped;
                     continue;
+                }
+                // Refuse before touching the host filesystem: an entry whose
+                // key_pointer names an already-walked block is a cycle, and
+                // creating its directory would let a crafted volume mint host
+                // directories for free.
+                if (w.expanded.count(keyPtr) != 0) {
+                    pom2::log().warn("ProDOSVol",
+                        "decode: subdir '" + name + "' points at already-walked "
+                        "block " + std::to_string(keyPtr) + " (cyclic volume) "
+                        "— skipping");
+                    ++r.dirsSkipped;
+                    continue;
+                }
+                if (w.dirsLeft == 0) {
+                    pom2::log().warn("ProDOSVol",
+                        "decode: directory budget (" +
+                        std::to_string(kMaxDecodeDirs) +
+                        ") exhausted — host tree is partial");
+                    ++r.dirsSkipped;
+                    r.aborted = true;
+                    return;
                 }
                 const fs::path subDest = fs::path(hostFolder) / name;
                 std::error_code ec;
@@ -753,10 +816,12 @@ void decodeOneDir(const std::vector<std::uint8_t>& image,
                     pom2::log().warn("ProDOSVol",
                         "cannot create subdir " + subDest.string() + ": " + ec.message());
                     ++r.filesSkipped;
+                    ++r.dirsSkipped;
                     continue;
                 }
-                decodeOneDir(image, totalBlocks, keyPtr, subDest.string(),
-                             depth + 1, r);
+                --w.dirsLeft;
+                ++r.dirsCreated;
+                decodeOneDir(w, keyPtr, subDest.string(), depth + 1);
                 continue;
             }
 
@@ -886,8 +951,14 @@ ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
         return r;
     }
 
-    decodeOneDir(image, totalBlocks, /*firstBlock=*/2, hostFolder, /*depth=*/0, r);
+    DecodeWalk walk{ image, totalBlocks, {}, kMaxDecodeDirs, r };
+    decodeOneDir(walk, /*firstBlock=*/2, hostFolder, /*depth=*/0);
 
+    if (r.aborted) {
+        r.error = "volume directory graph exceeded the decode bounds; "
+                  "host folder holds a partial tree";
+        pom2::log().warn("ProDOSVol", "decode: " + r.error);
+    }
     r.ok = true;
     return r;
 }

@@ -9,7 +9,7 @@
 // API, SuperSerialCard's telnet bridge, W5100Device's Uthernet II host TCP/IP)
 // were written against BSD sockets. Winsock2 is the same protocol stack behind
 // a gratuitously different API, and the differences are *silent* ones — code
-// that compiles clean against Winsock can still be wrong. The five traps, all
+// that compiles clean against Winsock can still be wrong. The seven traps, all
 // of which this header exists to remove (the fifth is not Winsock's fault but
 // bit this port anyway — see closeHostSocket):
 //
@@ -29,6 +29,23 @@
 //   4. The stack must be started per process with `WSAStartup` before the
 //      first call, or every socket call fails with WSANOTINITIALISED.
 //      `ensureSocketStack()` does it once, thread-safely.
+//   5. (POM2's own, not Winsock's — see closeHostSocket.)
+//   6. `SO_REUSEADDR` MEANS SOMETHING ELSE ENTIRELY. On POSIX it only
+//      relaxes TIME_WAIT and a second LIVE bind to the same address still
+//      fails; on Winsock it lets any process bind an address another
+//      socket is already listening on, and the later binder collects the
+//      new connections. Setting it on Windows the way POSIX code does
+//      turns a loopback listener into something a local process can
+//      hijack. Use `setListenerBindPolicy()`, never the raw option.
+//   7. DATAGRAM ERRORS DESCRIBE THE PACKET, NOT THE SOCKET. Winsock's
+//      recvfrom fails an oversized datagram with WSAEMSGSIZE instead of
+//      truncating it, and surfaces an ICMP port-unreachable from an
+//      earlier sendto as WSAECONNRESET on an UNCONNECTED UDP socket —
+//      neither of which POSIX reports at all. Code that closes the socket
+//      on "any error but EWOULDBLOCK" therefore destroys a working UDP
+//      socket on Windows the first time a peer is unreachable. Classify
+//      with `errDatagramDiscard()` and turn the ICMP report off with
+//      `disableUdpConnReset()`.
 //
 // Not compiled under Emscripten: the browser has no usable BSD-socket API at
 // all, so those paths stay compiled out via POM2_HAS_SOCKETS (Pom2Build.h).
@@ -51,6 +68,54 @@ namespace pom2 {
 using socket_t = int;
 inline constexpr socket_t kInvalidSocket = -1;
 inline bool isValidSocket(socket_t s) { return s != kInvalidSocket; }
+} // namespace pom2
+#endif
+
+// ─── Byte order + protocol selectors, available in BOTH builds ───────────
+//
+// The W5100's MACRAW/IPRAW framing goes through NetworkBackend, not through
+// a socket, so it is compiled even on Emscripten — yet it still has to build
+// big-endian IPv4 and Ethernet headers, and it still names a protocol in the
+// SnMR mode switch. Taking those from <arpa/inet.h> tied code that opens no
+// socket to the socket stack, and broke the WASM build for exactly that
+// reason (undeclared htons / SOCK_STREAM / IPPROTO_TCP).
+//
+// A 16-bit byte swap is arithmetic, not networking, so POM2 spells it out
+// rather than reaching for the platform header. `__BYTE_ORDER__` is a
+// GCC/Clang/Emscripten builtin; MSVC does not define it, and every Windows
+// target POM2 builds for is little-endian, so the swap branch is right there
+// too.
+namespace pom2 {
+
+inline constexpr uint16_t byteSwap16(uint16_t v)
+{
+    return static_cast<uint16_t>((v << 8) | (v >> 8));
+}
+
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+inline constexpr uint16_t hostToNet16(uint16_t v) { return v; }
+inline constexpr uint16_t netToHost16(uint16_t v) { return v; }
+#else
+inline constexpr uint16_t hostToNet16(uint16_t v) { return byteSwap16(v); }
+inline constexpr uint16_t netToHost16(uint16_t v) { return byteSwap16(v); }
+#endif
+
+// The protocol selectors live further down, after the platform headers that
+// define SOCK_STREAM and friends have been pulled in.
+
+} // namespace pom2
+
+#if !POM2_HAS_SOCKETS
+namespace pom2 {
+// Socketless build: the SnMR mode switch still names these, but
+// `openSystemSocket()` refuses before reaching a syscall, so the values are
+// inert. They keep the BSD numbering so a reader comparing against
+// Uthernet2.cpp is not misled.
+inline constexpr int kSockStream = 1;
+inline constexpr int kSockDgram  = 2;
+inline constexpr int kIpProtoTcp = 6;
+inline constexpr int kIpProtoUdp = 17;
 } // namespace pom2
 #endif
 
@@ -94,6 +159,14 @@ WIN32_LEAN_AND_MEAN before the windows.h include)."
 #endif
 
 namespace pom2 {
+
+// ── Protocol selectors ────────────────────────────────────────────────
+// Named here rather than used raw at the call site so the SnMR mode switch
+// in W5100Device compiles identically with and without a host socket stack.
+inline constexpr int kSockStream = SOCK_STREAM;
+inline constexpr int kSockDgram  = SOCK_DGRAM;
+inline constexpr int kIpProtoTcp = IPPROTO_TCP;
+inline constexpr int kIpProtoUdp = IPPROTO_UDP;
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -173,6 +246,35 @@ inline bool errInterrupted(int e)
     return e == WSAEINTR;
 #else
     return e == EINTR;
+#endif
+}
+
+/// True when a failed recvfrom() on a DATAGRAM socket describes the packet
+/// that was just discarded rather than the socket itself, so the caller
+/// must drop the datagram and keep the socket (trap 7). Meaningless — and
+/// wrong — for a stream socket: on TCP, WSAECONNRESET/ECONNRESET is the
+/// peer aborting the connection and the socket really is dead.
+///
+///   WSAEMSGSIZE   Winsock's answer to a datagram larger than the buffer.
+///                 POSIX instead returns the truncated byte count with no
+///                 error at all, which is why only Windows raises this.
+///   WSAECONNRESET On Windows an ICMP port-unreachable provoked by an
+///                 earlier sendto() is reported on the NEXT recvfrom of an
+///                 unconnected UDP socket (the SIO_UDP_CONNRESET
+///                 behaviour). One datagram to a closed port would
+///                 otherwise tear the socket down.
+///   ECONNREFUSED  the POSIX equivalent, raised only on a CONNECTED UDP
+///                 socket. Tolerated for symmetry.
+///   ENETUNREACH / EHOSTUNREACH: the other ICMP unreachable classes,
+///                 likewise per-destination and not per-socket.
+inline bool errDatagramDiscard(int e)
+{
+#ifdef _WIN32
+    return e == WSAEMSGSIZE || e == WSAECONNRESET || e == WSAECONNREFUSED ||
+           e == WSAENETUNREACH || e == WSAEHOSTUNREACH || e == WSAENETRESET;
+#else
+    return e == EMSGSIZE || e == ECONNRESET || e == ECONNREFUSED ||
+           e == ENETUNREACH || e == EHOSTUNREACH;
 #endif
 }
 
@@ -263,6 +365,34 @@ inline bool setNonBlocking(socket_t s)
     const int flags = ::fcntl(s, F_GETFL, 0);
     if (flags < 0) return false;
     return ::fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+#ifdef _WIN32
+// Declared in <mstcpip.h>, which is not pulled in by ws2tcpip.h on every
+// toolchain. The definition is the one both the Windows SDK and mingw-w64
+// use, so an identical redefinition from that header is harmless.
+#  ifndef SIO_UDP_CONNRESET
+#    define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#  endif
+#endif
+
+/// Stop a UDP socket reporting somebody else's ICMP port-unreachable as a
+/// WSAECONNRESET failure on its next recvfrom (trap 7). Windows-only and
+/// harmless everywhere else: POSIX never raises that on an unconnected
+/// datagram socket. Belt and braces with `errDatagramDiscard()` — this
+/// ioctl is undocumented before Windows XP SP2 and can fail on layered
+/// service providers, so the classifier must still tolerate the code.
+inline bool disableUdpConnReset(socket_t s)
+{
+#ifdef _WIN32
+    BOOL  enable = FALSE;
+    DWORD returned = 0;
+    return ::WSAIoctl(s, SIO_UDP_CONNRESET, &enable, sizeof(enable),
+                      nullptr, 0, &returned, nullptr, nullptr) == 0;
+#else
+    (void)s;
+    return true;
 #endif
 }
 
@@ -403,6 +533,36 @@ inline bool setSockOptInt(socket_t s, int level, int name, int value)
                         sizeof(value)) == 0;
 #else
     return ::setsockopt(s, level, name, &value, sizeof(value)) == 0;
+#endif
+}
+
+/// The bind policy for POM2's two loopback listeners (AiControlServer's
+/// HTTP control API, SuperSerialCard's telnet bridge): *this process may
+/// re-bind its own port straight after a restart, and no other process may
+/// take it while we hold it*. Call it after socket() and before bind().
+///
+/// One intent, two options, because `SO_REUSEADDR` is not the same feature
+/// on the two families (trap 6):
+///
+///   POSIX   SO_REUSEADDR relaxes exactly one rule — a lingering TIME_WAIT
+///           from the previous run no longer blocks the bind. A second
+///           LIVE socket on the same address still gets EADDRINUSE, which
+///           is the half we want to keep.
+///   Winsock SO_REUSEADDR means "let anyone bind this address even while
+///           somebody is listening on it", and the later binder wins the
+///           new connections (MS: "Using SO_REUSEADDR"). On a listener the
+///           agent talks to, that is a hijack: another local process binds
+///           127.0.0.1:6503, serves the agent's requests, and collects the
+///           control token on the way past. SO_EXCLUSIVEADDRUSE is the
+///           documented spelling of the POSIX intent — it also lets this
+///           process re-bind its own port once the old socket is closed,
+///           so the restart case is covered too.
+inline bool setListenerBindPolicy(socket_t s)
+{
+#ifdef _WIN32
+    return setSockOptInt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
+    return setSockOptInt(s, SOL_SOCKET, SO_REUSEADDR, 1);
 #endif
 }
 

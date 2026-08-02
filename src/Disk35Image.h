@@ -93,6 +93,9 @@ public:
     /// Flush dirty blocks back to the source file. Re-emits the 2IMG
     /// envelope if one was present at load time. Returns true on
     /// success. After save, `dirty_` is cleared.
+    /// The replace is atomic (sibling `.pom2tmp` + rename, as in
+    /// `DiskImage::saveDirty`): a failed or interrupted save leaves the
+    /// user's image exactly as it was rather than truncated.
     bool saveDirty();
 
     bool isWriteProtected() const {

@@ -3,8 +3,8 @@
 // The existing `mockingboard_smoke_test` asserts that the synthesiser is
 // not silent and that a tone lands within 6 % of its nominal pitch. That
 // left every audio-fidelity defect free to regress unnoticed. This file
-// pins the three properties the 2026-08-01 rendering rework bought, each
-// of which was measurably broken before it:
+// pins the properties the 2026-08-01/02 rendering work bought, each of
+// which was measurably broken before it:
 //
 //   1. SPECTRAL PURITY. The renderer used to advance the AY's counters in
 //      integer clock/8 ticks inside a per-output-sample loop and then
@@ -35,7 +35,18 @@
 //      the newest event. Volume-register PWM was destroyed. Test 3
 //      reproduces exactly that technique: Digidream 2's channel-A "SID
 //      voice", which is 54 % of that demo's entire register traffic.
+//
+//   4. LOW-FREQUENCY RESPONSE. The DC blocker of (2) started life as a
+//      1-pole filter at MAME's 20 Hz corner. MAME's is a 2-pole
+//      Butterworth, which is flat where a 1-pole is already drooping, so
+//      POM2 was throwing away up to 0.8 dB of the AY's bottom two octaves.
+//      Test 5 measures the fundamental against the analytic filter.
+//
+// The two ways the cycle-stamped timeline itself can break — a rewind, and
+// an out-of-band bank wipe — are pinned separately in
+// `mockingboard_timeline_test.cpp`.
 
+#include "AyPsgSynth.h"
 #include "M6502.h"
 #include "Memory.h"
 #include "Mockingboard.h"
@@ -597,46 +608,139 @@ void testEnvelopeShapes()
         src->fillAudioBuffer(buf.data(), static_cast<int>(buf.size()));
 
         // The output has been through the DC blocker, so the raw sample
-        // is NOT the table level. The filter is exactly invertible and
-        // starts from a known zero state at card construction, so undo it
-        // rather than trying to decode around it:
-        //     y[n] = s[n] - s[n-1] + R*y[n-1]
-        //  -> s[n] = y[n] - R*y[n-1] + s[n-1]
-        // and the channel level is s * 6 (undoing the /6 normalisation).
-        const double R = static_cast<double>(
-            std::exp(-2.0f * 3.14159265358979f * 20.0f
-                     / static_cast<float>(kSr)));
-        std::vector<double> level(buf.size(), 0.0);
-        double prevY = 0.0, prevS = 0.0;
-        for (size_t i = 0; i < buf.size(); ++i) {
-            const double y = static_cast<double>(buf[i]);
-            const double s = y - R * prevY + prevS;
-            level[i] = s * 6.0;
-            prevY = y;
-            prevS = s;
-        }
-
-        // Sample the middle of each step and map back to a table index.
-        std::string got;
-        for (int s = 0; s < nSteps; ++s) {
-            const size_t idx =
-                static_cast<size_t>(s) * samplesPerStep + samplesPerStep / 2;
-            const double v = level[idx];
-            int best = 0;
-            double bestErr = 1e9;
-            for (int k = 0; k < 16; ++k) {
-                const double e = std::fabs(v - static_cast<double>(kTab[k]));
-                if (e < bestErr) { bestErr = e; best = k; }
+        // is NOT the table level. Decode FORWARD rather than inverting the
+        // filter: build the staircase each candidate shape predicts, push
+        // it through a fresh blocker of the same type, and see which one
+        // the render actually matches.
+        //
+        // This used to run the blocker backwards instead, which only
+        // worked while it was one pole. Inverting the MAME biquad the card
+        // now uses means a recursion with a DOUBLE pole at z = 1 driven by
+        // float-quantised samples — a double integrator on the
+        // quantisation noise, which diverges over the ~45 k samples this
+        // test captures. Matching forward is filter-agnostic and, unlike
+        // the inverse, also pins the LEVELS rather than just their order.
+        const auto reference = [&](int cand) {
+            std::vector<float> ref(buf.size(), 0.0f);
+            pom2::ay::DcBlocker dc;
+            dc.setRate(kSr);
+            for (size_t i = 0; i < ref.size(); ++i) {
+                const size_t st = i / static_cast<size_t>(samplesPerStep);
+                const char c = (st < 32) ? kExpect[cand][st] : '0';
+                const int lvl = (c <= '9') ? (c - '0') : (c - 'A' + 10);
+                // /6 = the card's per-side /3 followed by the mono
+                // fold-down's x0.5.
+                ref[i] = dc.process(kTab[lvl & 0x0F] / 6.0f);
             }
-            got += "0123456789ABCDEF"[best];
+            return ref;
+        };
+
+        int    bestCand = -1;
+        double bestErr  = 1e9, secondErr = 1e9;
+        for (int cand = 0; cand < 16; ++cand) {
+            const std::vector<float> ref = reference(cand);
+            double err = 0.0;
+            for (int s = 0; s < nSteps; ++s) {
+                const size_t idx =
+                    static_cast<size_t>(s) * samplesPerStep + samplesPerStep / 2;
+                err += std::fabs(static_cast<double>(buf[idx] - ref[idx]));
+            }
+            err /= nSteps;
+            if (err < bestErr) { secondErr = bestErr; bestErr = err; bestCand = cand; }
+            else if (err < secondErr) { secondErr = err; }
         }
-        if (got != kExpect[shape]) {
-            std::printf("  shape $%X MISMATCH\n    got    %s\n    expect %s\n",
-                        shape, got.c_str(), kExpect[shape]);
+        // Shapes 0-7 collapse onto two behaviours, so several candidates
+        // are legitimately identical; compare the SEQUENCES, not the
+        // indices, and require the winner to be an exact string match.
+        if (std::string(kExpect[bestCand]) != std::string(kExpect[shape]) ||
+            bestErr > 0.002) {
+            std::printf("  shape $%X MISMATCH: best match $%X "
+                        "(err %.5f, runner-up %.5f)\n    expect %s\n",
+                        shape, bestCand, bestErr, secondErr, kExpect[shape]);
             assert(false && "envelope shape sequence diverges from MAME");
         }
     }
     std::printf("  all 16 envelope shapes match the MAME step sequence\n");
+}
+
+// ─── Test 5: low-frequency response matches MAME's speaker high-pass ────
+// The AY channel model is unipolar, so the render chain HAS to high-pass;
+// the only question is which filter. MAME's answer is its default speaker
+// effect: a 2-pole Butterworth at 20 Hz, one instance per output channel
+// (`src/emu/audio_effects/filter.cpp` — `reset_highpass_active` defaults
+// to `true`, `reset_fh` to 20, `reset_qh` to `DEFAULT_Q = 0.7071067f` from
+// `filter.h`; coefficients from `build_highpass`).
+//
+// POM2 used a 1-POLE blocker at the same corner until 2026-08-02. Same
+// -3 dB point, very different passband: a 1-pole is already drooping an
+// octave up where the Butterworth is flat, and the AY's bass register is
+// exactly there. Measured deficit against MAME, single tone at amplitude
+// 15: 0.76 dB at 27.5 Hz, 0.46 dB at 55 Hz, 0.23 dB at 82.5 Hz.
+//
+// Everything ELSE in the chain measured transparent down to 27.5 Hz, which
+// is why this test asserts against the analytic filter response rather
+// than a fudge factor: the volume table is Westcott's measurement to
+// within 0.0007 (see kVolumeTable's note), the box integrator's sinc is
+// 1.0000 below 100 Hz, and the two DC blockers sit in PARALLEL on
+// independent channels, so the mono fold-down cannot cancel any of it.
+void testLowFrequencyResponse()
+{
+    // Ideal fundamental of the rendered square. One hard-panned chip at
+    // amplitude 15 toggles chipOut between 0 and 1; x1/3 for the per-side
+    // normalisation and x0.5 for the mono fold-down gives a square of
+    // amplitude 1/12 about its own mean, whose fundamental is 4/pi of that.
+    const double ideal = (4.0 / kPi) / 12.0;
+
+    struct Point { int period; double maxDeviationDb; };
+    // Tone periods chosen to land on musical pitches: A0, A1, E2, A2, A4.
+    static const Point kPoints[] = {
+        { 2308, 0.10 },   // 27.50 Hz
+        { 1154, 0.10 },   // 55.01 Hz
+        {  769, 0.10 },   // 82.54 Hz
+        {  577, 0.10 },   // 110.01 Hz
+        {  144, 0.10 },   // 440.81 Hz
+    };
+
+    for (const Point& p : kPoints) {
+        MockingboardCard card(4);
+        card.setSampleRate(kSr);
+        card.setVolume(1.0f);
+        card.setMuted(false);
+        card.setCpuClock(kPalClockHz);
+        ayWrite(card, 0, 0, p.period & 0xFF);
+        ayWrite(card, 0, 1, (p.period >> 8) & 0x0F);
+        ayWrite(card, 0, 7, 0x3E);        // tone A only
+        ayWrite(card, 0, 8, 0x0F);        // amplitude 15
+
+        // 11.9 s: at 27.5 Hz one period is 1604 samples, and the Goertzel
+        // below needs many of them to resolve the fundamental cleanly.
+        const size_t N = 1u << 19;
+        std::vector<float> buf(N);
+        AudioSource* src = card.audioSource();
+        assert(src);
+        src->fillAudioBuffer(buf.data(), static_cast<int>(N));   // settle
+        src->fillAudioBuffer(buf.data(), static_cast<int>(N));
+
+        const double f0 = (kPalClockHz / 8.0) / (2.0 * p.period);
+        // Goertzel magnitude at f0.
+        const double w = 2.0 * kPi * f0 / kSr;
+        const double cw = 2.0 * std::cos(w);
+        double s1 = 0.0, s2 = 0.0;
+        for (float v : buf) { const double s0 = v + cw * s1 - s2; s2 = s1; s1 = s0; }
+        const double re = s1 - s2 * std::cos(w), im = s2 * std::sin(w);
+        const double meas = 2.0 * std::sqrt(re * re + im * im) / double(N);
+
+        // MAME's 2-pole Butterworth high-pass, analytically.
+        const double r = f0 / 20.0;
+        const double expected = ideal * (r * r / std::sqrt(1.0 + r * r * r * r));
+        const double devDb = 20.0 * std::log10(meas / expected);
+        // What the old 1-pole would have given, for the record.
+        const double onePole = ideal * (f0 / std::sqrt(f0 * f0 + 400.0));
+        std::printf("  f0=%7.2f Hz  fund=%.6f  vs MAME 2-pole %+.2f dB "
+                    "(1-pole would be %+.2f dB)\n",
+                    f0, meas, devDb, 20.0 * std::log10(onePole / expected));
+        assert(std::fabs(devDb) < p.maxDeviationDb);
+    }
 }
 
 }  // namespace
@@ -655,6 +759,8 @@ int main()
     std::printf("idle then resume ..... OK\n");
     testEnvelopeShapes();
     std::printf("envelope shapes ...... OK\n");
+    testLowFrequencyResponse();
+    std::printf("bass response ........ OK\n");
     std::printf("Mockingboard audio quality test passed.\n");
     return 0;
 }

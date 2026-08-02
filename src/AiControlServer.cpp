@@ -415,7 +415,10 @@ bool AiControlServer::start(uint16_t port)
         pom2::log().warn("AICtrl", "socket() failed: " + pom2::lastSocketErrorText());
         return false;
     }
-    pom2::setSockOptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+    // NOT a bare SO_REUSEADDR: on Winsock that option would let any local
+    // process bind 127.0.0.1:<port> while this listener is up and take the
+    // agent's requests — token and all. SocketCompat.h, trap 6.
+    pom2::setListenerBindPolicy(fd);
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

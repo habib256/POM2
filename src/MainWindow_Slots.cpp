@@ -859,6 +859,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    (its "path" is a `[host folder] <dir>` sentinel, not a real
     //    file) since `loadImage` would fail on the sentinel; the user
     //    can re-synthesise from the Library after the switch.
+    //
+    //    Built under stateMutex and copied BY VALUE. `controller->stop()`
+    //    above parks the CPU worker but nothing quiesces the AI control
+    //    server's HTTP thread, whose /disk insert + eject handlers reassign
+    //    the very std::string that getDiskPath()/getImagePath() return a
+    //    reference into. aiServer->detach() only happens in step 3, below.
     std::string savedHdvPath;
     // Capture every plugged Disk II's path so multi-instance setups
     // (DiskII slot 6 + DiskII slot 4) survive the profile switch. Indexed
@@ -873,29 +879,32 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // new profile plugs there keeps whatever plugSlotsFromSettings restored
     // from the persisted keys instead of inheriting a fabricated read-only.
     std::array<std::optional<std::pair<std::string, bool>>, 8> savedDiskPaths{};
-    for (auto* c : diskCards) {
-        if (!c) continue;
-        savedDiskPaths[static_cast<size_t>(c->getSlot())] =
-            std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
-                           c->isWriteBackEnabled());
-    }
-    if (hdvCard && hdvCard->isImageLoaded()) {
-        const std::string& path = hdvCard->getImagePath();
-        if (path.rfind("[host folder] ", 0) == std::string::npos) {
-            savedHdvPath = path;
-        }
-    }
     // Same idea for CFFA: a Disk-Library mid-session mount only updates the
     // live card, not settings, so plugSlotsFromSettings's cffa_slotN_path
     // restore would otherwise silently revert to the pre-session path (or
     // drop the mount entirely if there wasn't one). Pair the path with the
     // user's write-back toggle — re-plug defaults to read-only.
     std::array<std::pair<std::string, bool>, 8> savedCffaPaths{};
-    for (auto* blk : blockCards()) {
-        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-        if (!cffa || !cffa->isImageLoaded()) continue;
-        savedCffaPaths[static_cast<size_t>(cffa->getSlot())] =
-            { cffa->getImagePath(), cffa->isWriteBackEnabled() };
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        for (auto* c : diskCards) {
+            if (!c) continue;
+            savedDiskPaths[static_cast<size_t>(c->getSlot())] =
+                std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
+                               c->isWriteBackEnabled());
+        }
+        if (hdvCard && hdvCard->isImageLoaded()) {
+            const std::string path = hdvCard->getImagePath();
+            if (path.rfind("[host folder] ", 0) == std::string::npos) {
+                savedHdvPath = path;
+            }
+        }
+        for (auto* blk : blockCards()) {
+            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+            if (!cffa || !cffa->isImageLoaded()) continue;
+            savedCffaPaths[static_cast<size_t>(cffa->getSlot())] =
+                { cffa->getImagePath(), cffa->isWriteBackEnabled() };
+        }
     }
 
     // 3. Tear down all slot cards under the state mutex. Mockingboard's
@@ -913,15 +922,12 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // Any card that registered an AudioSource with the audio device
         // must be unregistered BEFORE slotBus().clear() destroys it —
         // otherwise the audio thread's next callback dereferences a
-        // freed source. Mirror this in restartEmulationFromSettings.
-        if (controller->audio().isAvailable()) {
-            if (mockingboardCard)
-                controller->audio().removeSource(mockingboardCard->audioSource());
-            if (phasorCard)
-                controller->audio().removeSource(phasorCard->audioSource());
-            if (echoPlusCard)
-                controller->audio().removeSource(echoPlusCard->audioSource());
-        }
+        // freed source. Drive this off the registration inventory, not the
+        // `*Card` aliases: those are last-one-wins and a config with two
+        // Mockingboard variants (A/C + Sound II) left the first card's
+        // source registered against freed memory. Mirrored in
+        // restartEmulationFromSettings.
+        unregisterAllAudioSources();
         diskCard         = nullptr;
         diskCards.clear();
         diskPanels.clear();
@@ -1201,26 +1207,36 @@ void MainWindow::restartEmulationFromSettings()
     //    Slot-Config "Apply" rebuilds from stale keys and silently drops the
     //    mounted disk/HDV/CFFA. plugSlotsFromSettings + step 4 restore FROM
     //    settings, so persisting the live state here preserves it.
-    for (auto* c : diskCards) {
-        if (!c) continue;
-        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        settings->setString("disk_path" + slotKey,
-            c->isDiskLoaded() ? c->getDiskPath() : std::string());
-        settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
-    }
-    if (hdvCard && hdvCard->getSlot() != autoProvisionedHdvSlot_ &&
-        hdvCard->isImageLoaded()) {
-        const std::string& p = hdvCard->getImagePath();
-        if (p.rfind("[host folder] ", 0) == std::string::npos)
-            settings->setString("hdv_path", p);
-    }
-    for (auto* blk : blockCards()) {
-        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-        if (!cffa) continue;
-        const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
-        settings->setString(key + "_path",
-            cffa->isImageLoaded() ? cffa->getImagePath() : std::string());
-        settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
+    //
+    //    Read under stateMutex and copy BY VALUE: getDiskPath() /
+    //    getImagePath() hand back a reference into the card's live
+    //    DiskImage, and the AI control server's HTTP thread (which nothing
+    //    has parked yet — aiServer->detach() is step 2) reassigns exactly
+    //    that string from its /disk insert + eject handlers.
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        for (auto* c : diskCards) {
+            if (!c) continue;
+            const std::string slotKey = "_slot" + std::to_string(c->getSlot());
+            settings->setString("disk_path" + slotKey,
+                c->isDiskLoaded() ? std::string(c->getDiskPath()) : std::string());
+            settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
+        }
+        if (hdvCard && hdvCard->getSlot() != autoProvisionedHdvSlot_ &&
+            hdvCard->isImageLoaded()) {
+            const std::string p = hdvCard->getImagePath();
+            if (p.rfind("[host folder] ", 0) == std::string::npos)
+                settings->setString("hdv_path", p);
+        }
+        for (auto* blk : blockCards()) {
+            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
+            if (!cffa) continue;
+            const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
+            settings->setString(key + "_path",
+                cffa->isImageLoaded() ? std::string(cffa->getImagePath())
+                                      : std::string());
+            settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
+        }
     }
     // (3.5"/SmartPort media is already saved eagerly on mount.)
 
@@ -1246,16 +1262,11 @@ void MainWindow::restartEmulationFromSettings()
         // Every card that owns an AudioSource (Mockingboard / Phasor /
         // Echo+) must be unregistered from the audio device BEFORE the
         // slot bus destroys it — otherwise the audio thread's next
-        // callback dereferences a freed source. Same gotcha mirrored
-        // in applyProfile's teardown.
-        if (controller->audio().isAvailable()) {
-            if (mockingboardCard)
-                controller->audio().removeSource(mockingboardCard->audioSource());
-            if (phasorCard)
-                controller->audio().removeSource(phasorCard->audioSource());
-            if (echoPlusCard)
-                controller->audio().removeSource(echoPlusCard->audioSource());
-        }
+        // callback dereferences a freed source. The inventory covers every
+        // registered source, including the second of two coexisting
+        // Mockingboard variants that the single `mockingboardCard` alias
+        // cannot represent. Same gotcha mirrored in applyProfile's teardown.
+        unregisterAllAudioSources();
         diskCard         = nullptr;
         diskCards.clear();
         diskPanels.clear();

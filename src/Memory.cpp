@@ -406,7 +406,27 @@ void Memory::advanceCycles(int cycles)
     // the next call. (An earlier draft reset the base to 0 and let the `while`
     // loop walk forward instead — that would have spun for millions of
     // iterations on any rewind with a large cycle counter.)
+    //
+    // The base is only meaningful for the frame period it was aligned to; the
+    // invariant the incremental scheme rests on is
+    // `vblFrameBase_ % frameCycles == 0`. The period is a LIVE input:
+    // `setVideoStandard()` flips NTSC↔PAL on an already-running machine
+    // (profile switch), and the rollover test below can never notice, because
+    // the two periods sit within a factor of two of each other (17030 vs
+    // 20280) — `sinceBase` always lands in the ordinary-rollover branch, which
+    // carries the stale residue forward forever. A boot-in-NTSC then
+    // switch-to-//c-PAL put the VBL edge on scanline 252 instead of 192, out
+    // of step with `$C019`, `pushVideoEventLocked` and
+    // `Apple2Display::frameCycleToPos` (all of which take a true modulo). So
+    // re-derive the base whenever the period moves, comparing the DERIVED
+    // `frameCycles` rather than the video standard: any future input feeding
+    // into the period re-aligns the base automatically instead of silently
+    // reintroducing the phase error.
     const uint64_t frameCycles = kCyclesPerScanline * kScanlinesPerFrame;
+    if (frameCycles != vblFrameCycles_) {
+        vblFrameCycles_ = frameCycles;
+        vblFrameBase_   = cycleCounter - (cycleCounter % frameCycles);
+    }
     const uint64_t sinceBase   = cycleCounter - vblFrameBase_;   // wraps if behind
     if (sinceBase >= frameCycles) {
         vblFrameBase_ = (sinceBase < 2 * frameCycles)
@@ -1391,11 +1411,35 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
             case 1: an1 = on; break;
             case 2: an2 = on; break;
         }
-        if (iieMode && (low == 0x5A || low == 0x5B)) {
+        if (iieMode && !iicProfile_ && (low == 0x5A || low == 0x5B)) {
             // POM2 overlay: $C05A/B doubles as VBL IRQ mask in IIe.
             // Strictly speaking that's an IIc/IIc+ feature in MAME;
             // we keep it here so existing software that relies on the
             // overlay (and `vbl_smoke_test.cpp`) keeps working.
+            //
+            // //c-class is EXCLUDED (`!iicProfile_`): there the VBL mask
+            // is reachable only through the real IOU decode above. MAME
+            // `apple2e.cpp:1808-1876` splits the same way — the
+            // `(m_isiic || m_isace500) && !m_ioudis` branch (:1811) owns
+            // DisVBL/EnVBL (:1823-1830) and `return`s (:1848); the else
+            // branch is commented "IIe does not have IOUDIS" (:1851),
+            // handles only SETDHIRES/CLRDHIRES and falls through to the
+            // plain AN0/AN1/AN2 cases (:1975-1983), which touch `m_an1`
+            // and the gameio pin and NOTHING else. MAME quotes the IIc
+            // Technical Reference in that fall-through (:1867-1870): "if
+            // the IOUDis switch is on, both reading from and writing to
+            // addresses C058 through C05D are reserved".
+            //
+            // IOUDIS resets to TRUE (`resetSoftSwitches`, MAME
+            // `apple2e.cpp:1234`), so without this gate the reset default
+            // on a //c sent a plain `LDA $C05B` (the legacy AN1 idiom)
+            // into the overlay, arming vblIrqMask — and unlike IIe, the
+            // //c-class edge in advanceCycles DOES drive the CPU IRQ
+            // line, so the guest took an unhandled 50/60 Hz IRQ storm
+            // through $FFFE. The mirror case was as bad: `LDA $C05A`
+            // silently ACKed a VBL interrupt the guest had legitimately
+            // armed with IOUDIS clear, costing a //c PAL demo its frame
+            // sync.
             if (low == 0x5A) {
                 vblIrqMask = false;
                 if (vblIrqPending) {

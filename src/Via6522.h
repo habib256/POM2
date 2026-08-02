@@ -300,11 +300,13 @@ struct Via6522
             // counter crosses < 0, i.e. one tick AFTER it reaches 0, so a
             // raw `t1Counter = N` would fire at N+1 — two cycles EARLY.
             // Pre-bias by (IFR_DELAY - 1) = 2 so the first shot lands at
-            // exactly N+3, matching both hardware and the continuous
-            // reload below (which already adds latch+3 per period). Same
-            // pre-bias protocol as the T2CH case — see the DIX beam-racing
-            // rationale there. Counter readback DELTAS are unaffected
-            // (pinned by mockingboard_4am_detect).
+            // exactly N+3, matching hardware. The RECURRING period below is
+            // a different number — latch+2, not latch+3 — because IFR_DELAY
+            // is a one-off underflow→IFR latency and does not repeat; see
+            // the free-run comment in `advance()`. Same pre-bias protocol as
+            // the T2CH case — see the DIX beam-racing rationale there.
+            // Counter readback DELTAS are unaffected (pinned by
+            // mockingboard_4am_detect).
             t1Counter = static_cast<int32_t>(t1Latch) + 2;
             t1FireArmed = true;
             ifr &= ~IFR_T1;
@@ -437,11 +439,15 @@ struct Via6522
                 // `via_t1_continuous_period`.
                 //
                 // Collapse the reload
-                // arithmetically: a degenerate tiny latch (e.g. 0 → period 3)
+                // arithmetically: a degenerate tiny latch (e.g. 0 → period 2)
                 // under a large `cycles` (clamped to ~2.1e9 on a sync desync)
                 // would otherwise spin this loop hundreds of millions of
                 // times. IFR_T1 has already latched (idempotent above), so
-                // jump t1Counter forward in one int64 step to ≥ 0.
+                // jump t1Counter forward in one int64 step to ≥ 0. MAME
+                // instead guards its reschedule with `if (TIMER1_VALUE > 0)`
+                // (`6522via.cpp` t1_tick); no equivalent guard is needed
+                // here because `period` is never 0 and the int64 step below
+                // terminates for any latch value.
                 const int64_t period  = static_cast<int64_t>(t1Latch) + 2;
                 const int64_t deficit = -static_cast<int64_t>(t1Counter);   // > 0
                 const int64_t periods = deficit / period + 1;

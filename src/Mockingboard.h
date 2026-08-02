@@ -280,11 +280,47 @@ private:
         uint8_t  reg;
         uint8_t  val;
     };
+    /// Pseudo-register marking an AY /RESET strobe (VIA PB2 low) in the
+    /// event stream. A wholesale bank wipe carries no per-register write
+    /// to stamp, so before 2026-08-02 the audio thread learned about it
+    /// out-of-band through `ayResetCount_` — i.e. at CPU-NOW, ~40 ms
+    /// ahead of the replay cursor, after which the still-queued pre-reset
+    /// writes replayed on top and resurrected the note. Stamping it like
+    /// any other write puts the silence exactly where the driver put it.
+    static constexpr uint8_t kRegAyReset = 0xFF;
     std::deque<AyRegEvent> ayEvents_;                 // guarded by mtx
     std::atomic<uint64_t>  latestAyEventCycle_{0};
     /// Hard cap so a paused audio device can't grow the queue without
     /// bound (the audio thread drains it; nothing else does).
     static constexpr size_t kMaxAyEvents = 16384;
+
+    /// Timeline generation, guarded by `mtx`. Bumped whenever the
+    /// cycle-stamped stream becomes DISCONTINUOUS — the stamps already
+    /// queued no longer describe the machine's future. The audio thread
+    /// compares it against its own copy and, on a change, drops its
+    /// backlog and re-primes from the live register bank.
+    ///
+    /// The cursor cannot do this job. A rewind drags `lastSyncCycle_` and
+    /// `latestAyEventCycle_` backwards, so the cursor's own re-anchor
+    /// follows them down — but `pending` still holds events stamped in
+    /// the pre-rewind FUTURE, and the render loop consumes strictly
+    /// front-ordered, so those block every write behind them and the AY
+    /// bank freezes. Measured silence before this counter existed: 0.49 s
+    /// / 2.00 s / >3 s for rewind depths of 0.5 / 2 / 5 s, bounded only
+    /// by `kMaxAyEvents`.
+    uint32_t ayQueueGen_ = 0;
+    /// Edge state for the /RESET strobe, per chip. `applyControl` reports
+    /// `ResetOnly` on EVERY VIA write while PB2 is held low, and a driver
+    /// can leave it low for many writes; only the falling edge is an
+    /// event.
+    bool     ayResetHeld_[2] = { false, false };
+
+    /// Queue one cycle-stamped AY event (register store or `kRegAyReset`)
+    /// for the audio thread. Caller must hold `mtx`.
+    void queueAyEvent(int chip, uint8_t reg, uint8_t val);
+    /// Drop both sides of the event stream and bump `ayQueueGen_`.
+    /// Caller must hold `mtx`.
+    void invalidateAyTimeline();
 
     // Cross-thread guard. CPU thread takes it for VIA reads/writes and
     // for `advanceCycles`; audio thread takes it briefly to snapshot

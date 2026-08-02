@@ -201,6 +201,25 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 
 ### [Audio]
 
+#### Mockingboard output level vs MAME's route gain — open question (2026-08-02)
+
+Raised by "il reste des choses à améliorer au niveau des basses". The
+2026-08-02 sweep measured the whole card render chain against MAME and found
+it already correct down to 27.5 Hz — volume table within 0.0007 of Westcott's
+data, linear channel sum matching `a2mockingboard.cpp`, box integrator with a
+sinc gain of 1.0000 below 100 Hz, no stereo cancellation. The one real gap
+was the DC blocker (1-pole where MAME uses a 2-pole Butterworth), now ported,
+worth ≤0.8 dB below 80 Hz.
+
+That is almost certainly **too small to be what is actually heard**, so the
+remaining suspect is level rather than frequency response: POM2 normalises
+the per-side chip sum by `/3` (Mockingboard) and `/6` (Phasor), while MAME
+routes each AY channel through `add_route(ALL_OUTPUTS, "speaker", 0.5, ch)`.
+Those are different scalings, and a card that sits low against the speaker
+and disk channels reads as thin. Wants a numbers-first comparison of POM2's
+end-to-end output level against MAME's for the same register stream, not more
+tuning inside `AyPsgSynth.h`. → `CHANGELOG.md` 2026-08-02.
+
 #### Mockingboard AY-3-8910 rendering — 2026-08-01 pass
 
 Triggered by "DD2's Mockingboard music sounds coarse". Four research
@@ -666,6 +685,29 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   verification build (`build_wasm.sh`) asserting `wasm/POM2.{js,wasm}` +
   `index.html` are produced. Both jobs shallow-clone Dear ImGui (gitignored); no
   test depends on the user-supplied ROMs.
+- 🟠 **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
+  audio thread** *(2026-08-02 bug-hunt follow-up)* — the highest-yield gap we
+  know of. That sweep's ASan+UBSan build (156 test binaries, ~24 000
+  hostile-input cases, ~6 M random instructions) returned **zero**
+  diagnostics, yet code reading found a UI deadlock, two use-after-frees and
+  three unlocked cross-thread reads in the same tree. ASan cannot see data
+  races and the headless tests cannot reach the GUI, which is exactly where
+  the defects were. Needs a TSan build driving the GUI with the AI server
+  polling `/screen.ppm`, slot reconfiguration, and rewind under load. Would
+  also retire the two findings that could not be pinned (`saveScreenshot`'s
+  `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
+- 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
+  divergent copies now: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
+  namespace), `Disk35Image.cpp:214` (added 2026-08-02, the only one that
+  preserves the original's permissions) and `ProDOSVolume.cpp:664-702`.
+  Extract to `src/FileAtomicWrite.h`. **None of the three `fsync` before the
+  `rename`**, so a power cut can still land an empty file where the user's
+  disk image was — fold that in when extracting.
+- 🟢 **Run the `SnapshotIO` fuzzer** *(2026-08-02)* — built during the ASan
+  sweep but never executed, so that parser is the one untrusted-input surface
+  in the tree with no dynamic coverage. The disk-image and WOZ parsers came
+  through 4 200 + 13 270 mutations clean; snapshots are loaded from
+  user-supplied files on the same trust footing.
 - 🟠 **`MainWindow.cpp` god-object (~6700 lines)** *(audit 2026-05-31)* — biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
   `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window

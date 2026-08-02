@@ -84,6 +84,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -1117,6 +1118,34 @@ MainWindow::~MainWindow()
 //   "chatmauve"  LeChatMauveCard
 //   "mouse"      MouseCard (Phase 4 — falls through with a warning until then)
 //   "mockingboard"  MockingboardCard (Sweet Microsystems A/C — 6522×2 + AY×2)
+
+// ─── Audio-source inventory ──────────────────────────────────────────────
+//
+// See MainWindow.h: AudioDevice holds raw pointers that the miniaudio
+// callback thread dereferences, so every source registered here must be
+// unregistered before the SlotBus destroys the card that owns it. Going
+// through this pair (rather than the named `*Card` aliases) is what makes
+// that hold for multi-instance configurations — two Mockingboard variants,
+// a future second Phasor — without each new card type having to remember
+// to add a line to two teardown blocks.
+
+void MainWindow::registerAudioSource(AudioSource* src)
+{
+    if (!src) return;
+    if (!controller->audio().isAvailable()) return;
+    controller->audio().addSource(src);
+    registeredAudioSources_.push_back(src);
+}
+
+void MainWindow::unregisterAllAudioSources()
+{
+    if (controller->audio().isAvailable()) {
+        for (AudioSource* src : registeredAudioSources_)
+            controller->audio().removeSource(src);
+    }
+    registeredAudioSources_.clear();
+}
+
 void MainWindow::plugSlotsFromSettings()
 {
     namespace fs = std::filesystem;
@@ -1553,9 +1582,7 @@ void MainWindow::plugSlotsFromSettings()
         card->setCpu(&controller->cpu());
         card->setVolume(settings->getFloat("phasor_volume", 0.5f));
         card->setMuted (settings->getBool ("phasor_muted",  false));
-        if (controller->audio().isAvailable()) {
-            controller->audio().addSource(card->audioSource());
-        }
+        registerAudioSource(card->audioSource());
         phasorCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -1570,9 +1597,7 @@ void MainWindow::plugSlotsFromSettings()
         card->setCpu(&controller->cpu());
         card->setVolume(settings->getFloat("echoplus_volume", 0.7f));
         card->setMuted (settings->getBool ("echoplus_muted",  false));
-        if (controller->audio().isAvailable()) {
-            controller->audio().addSource(card->audioSource());
-        }
+        registerAudioSource(card->audioSource());
         echoPlusCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -1653,9 +1678,7 @@ void MainWindow::plugSlotsFromSettings()
         // Mockingboard panel (TODO).
         card->setVolume(settings->getFloat("mockingboard_volume", 0.5f));
         card->setMuted(settings->getBool ("mockingboard_muted",  false));
-        if (controller->audio().isAvailable()) {
-            controller->audio().addSource(card->audioSource());
-        }
+        registerAudioSource(card->audioSource());
         mockingboardCard = card.get();
         controller->memory().slotBus().plug(s, std::move(card));
     };
@@ -1863,13 +1886,18 @@ void MainWindow::plugSlotsFromSettings()
 
 void MainWindow::saveScreenshot()
 {
-    // Snapshot the framebuffer under stateMutex — the worker thread is
-    // happily running but the renderer will never resize the buffer
-    // mid-copy, so a brief lock is enough.
+    // Snapshot the framebuffer under BOTH locks. stateMutex keeps the
+    // renderer from resizing the buffer mid-copy; demodMutex is what makes
+    // `pixels()` safe — on ColorCompositeOE it lazily runs
+    // finishPendingCpuDemod() → renderCompositeOeCpu(), a ~1-2 ms pass that
+    // WRITES frame80, and the AI control server's /screen.ppm handler runs
+    // the identical demod on its own thread holding only demodMutex. Lock
+    // order stateMutex → demodMutex, never the other way (Apple2Display.h).
     int w = 0, h = 0;
     std::vector<uint32_t> pixels;
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::lock_guard<std::mutex> demodLk(display->demodMutex());
         w = display->width();
         h = display->height();
         const uint32_t* src = display->pixels();
@@ -3587,11 +3615,22 @@ void MainWindow::drawScreenImage()
             // chains into it just like every other mode — one effects
             // implementation. Run the stack ALWAYS for OE (not gated by the
             // opt-in toggle) so the look the user configured is preserved.
-            const unsigned int demod = ntscFx->process(
-                display->signal(),
-                display->signalWidth(),
-                display->signalHeight(),
-                display->signalPhaseOffset());
+            unsigned int demod = 0;
+            {
+                // demodMutex: `signal()` hands the shader a raw pointer into
+                // signalBuf, which the AI control server's /screen handler
+                // rewrites via display->render() on its own thread. Without
+                // the lock the upload can read a half-rewritten field (one
+                // torn frame). uploadScreenTexture() released the lock
+                // before returning, so this is a fresh acquisition, not a
+                // nesting; scoped tight so the CRT stack below runs unlocked.
+                std::lock_guard<std::mutex> demodLk(display->demodMutex());
+                demod = ntscFx->process(
+                    display->signal(),
+                    display->signalWidth(),
+                    display->signalHeight(),
+                    display->signalPhaseOffset());
+            }
             if (demod != 0) {
                 presentTex = demod;
                 voxelSrcTex = demod;   // colour image, pre-CRT-glass (3D tap)
@@ -5163,8 +5202,16 @@ void MainWindow::renderPrinterPanelWindow()
     // Save without typing anything. printerSavePath persists across saves
     // within a session — the user can edit it freely.
     if (printerSavePath.empty()) {
-        const auto t   = std::time(nullptr);
-        const auto tm  = *std::localtime(&t);
+        const std::time_t t = std::time(nullptr);
+        // localtime_r, not localtime: the latter hands back a shared static
+        // `tm`, and ClockCard converts times of its own on the CPU thread (a
+        // ProDOS timestamp under stateMutex). Same split as NoSlotClock.
+        std::tm tm{};
+#if defined(_WIN32)
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
         char stamp[32];
         std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
         printerSavePath = std::string("printouts/spool-") + stamp + ".txt";
@@ -6158,26 +6205,60 @@ void MainWindow::renderAudioMixerWindow()
 {
     if (!showAudioMixer) return;
 
+    // The default size has to cover a full row — label column + volume
+    // slider + meter + Mute + pan — or the rightmost control lands outside
+    // the window with no way to reach it. Scale it, because everything the
+    // row is built from (font, padding) scales with the UI zoom while a
+    // literal pixel size would not.
+    const float uiSc = uiScale_ * dpiScale_;
     ImGui::SetNextWindowPos (ImVec2(80, 80),  ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(380, 260), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(540 * uiSc, 320 * uiSc), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Audio Mixer", &showAudioMixer)) {
         ImGui::End();
         return;
     }
 
+    // Row geometry. The columns used to hang off hard-coded 110/160/40/90 px
+    // offsets, which do NOT follow uiScale_/dpiScale_ while the text and
+    // padding around them do: the pan slider already sat ~100 px past the
+    // content edge at this panel's own default size, and every zoom step
+    // made it worse. Derive the label column and the meter from the font
+    // (which does scale) and let the two sliders share whatever width the
+    // window actually offers, so the row stays whole at any scale and in
+    // any docked width.
+    const float labelColW = 8.0f * ImGui::GetFontSize();
+
     // `panSrc` is the AudioSource whose stereo placement this row edits,
     // or null for a row that has no placement to offer: the master bus
     // (it IS the stereo field) and the AY cards, which pan themselves
     // per chip from the card's wiring — see AudioDevice.h.
-    auto channelRow = [](const char* label, float& vol, bool& mute,
+    auto channelRow = [labelColW](const char* label, float& vol, bool& mute,
                          float peak, const char* idSuffix, bool dim,
                          AudioSource* panSrc = nullptr) {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float em     = ImGui::GetFontSize();
+        const float avail  = ImGui::GetContentRegionAvail().x;
+        // A label longer than the column (the "(samples missing)" rows)
+        // pushes its own row right instead of being overdrawn by the slider.
+        const float labelW = std::max(labelColW,
+                                      ImGui::CalcTextSize(label).x + st.ItemSpacing.x);
+        const float meterW = 3.0f * em;
+        const float muteW  = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x
+                           + ImGui::CalcTextSize("Mute").x;
+        const float fixedW = labelW + meterW + muteW
+                           + (panSrc ? 4.0f : 3.0f) * st.ItemSpacing.x;
+        // Floor at a still-draggable width: below that the user has shrunk
+        // the panel past what the controls need and clipping is on them.
+        const float freeW  = std::max(6.0f * em, avail - fixedW);
+        const float panW   = panSrc ? std::min(6.5f * em, freeW * 0.40f) : 0.0f;
+        const float volW   = freeW - panW;
+
         if (dim) ImGui::BeginDisabled();
         ImGui::PushID(idSuffix);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label);
-        ImGui::SameLine(110.0f);
-        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SameLine(labelW);
+        ImGui::SetNextItemWidth(volW);
         const std::string slid = std::string("##v") + idSuffix;
         ImGui::SliderFloat(slid.c_str(), &vol, 0.0f, 2.0f, "%.2f");
         // Tiny activity meter: lets the user confirm at a glance that
@@ -6190,7 +6271,7 @@ void MainWindow::renderAudioMixerWindow()
         if      (clamped >= 0.95f) col = ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
         else if (clamped >= 0.70f) col = ImVec4(0.90f, 0.75f, 0.20f, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
-        ImGui::ProgressBar(clamped, ImVec2(40.0f, 0.0f), "");
+        ImGui::ProgressBar(clamped, ImVec2(meterW, 0.0f), "");
         ImGui::PopStyleColor();
         ImGui::SameLine();
         const std::string muteId = std::string("Mute##") + idSuffix;
@@ -6200,7 +6281,7 @@ void MainWindow::renderAudioMixerWindow()
         // mix exactly.
         if (panSrc) {
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(90.0f);
+            ImGui::SetNextItemWidth(panW);
             float pan = panSrc->pan.load(std::memory_order_relaxed);
             const std::string panId = std::string("##p") + idSuffix;
             // Build the whole readout ourselves: ImGui takes this string
@@ -6242,14 +6323,17 @@ void MainWindow::renderAudioMixerWindow()
     {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("L / R");
-        ImGui::SameLine(110.0f);
-        const auto bar = [](float v) {
+        ImGui::SameLine(labelColW);
+        // Two bars spanning roughly the volume slider above them — same
+        // font-relative unit, so they stay aligned under UI scaling.
+        const float barW = 5.6f * ImGui::GetFontSize();
+        const auto bar = [barW](float v) {
             const float c = std::min(1.0f, std::max(0.0f, v));
             ImVec4 col(0.20f, 0.80f, 0.20f, 1.0f);
             if      (c >= 0.95f) col = ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
             else if (c >= 0.70f) col = ImVec4(0.90f, 0.75f, 0.20f, 1.0f);
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
-            ImGui::ProgressBar(c, ImVec2(78.0f, 0.0f), "");
+            ImGui::ProgressBar(c, ImVec2(barW, 0.0f), "");
             ImGui::PopStyleColor();
         };
         bar(dev.getMasterPeakL());
@@ -7391,54 +7475,63 @@ void MainWindow::renderDiskLibraryWindow()
     ImGui::SetNextWindowSize(ImVec2(435,  745), ImGuiCond_FirstUseEver);
 
     pom2::DiskLibrary_ImGui::CurrentlyMounted mounted;
-    // Currently-inserted Disk II images (per plugged card). The library
-    // tags rows with `* ` when their path matches any of these — gives
-    // the user a visual cue across all plugged cards at once.
-    for (auto* c : diskCards) {
-        if (!c) continue;
-        pom2::DiskLibrary_ImGui::CurrentlyMounted::DiskIICardInfo info;
-        info.slot = c->getSlot();
-        if (c->isDiskLoaded(0)) {
-            info.drive1 = c->getDiskPath(0);
-            mounted.diskII.push_back(info.drive1);
+    // Build the mount snapshot under stateMutex, copying every path BY
+    // VALUE — same rule as renderDiskPanelWindow / renderSmartPortPanelWindow
+    // / renderFloppyEmuWindow. getDiskPath() & friends return a reference
+    // into the card's live DiskImage, and the AI control server's HTTP
+    // thread reassigns it from /disk insert + eject. The lock is released
+    // before diskLibrary->render() below: that path re-locks.
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        // Currently-inserted Disk II images (per plugged card). The library
+        // tags rows with `* ` when their path matches any of these — gives
+        // the user a visual cue across all plugged cards at once.
+        for (auto* c : diskCards) {
+            if (!c) continue;
+            pom2::DiskLibrary_ImGui::CurrentlyMounted::DiskIICardInfo info;
+            info.slot = c->getSlot();
+            if (c->isDiskLoaded(0)) {
+                info.drive1 = c->getDiskPath(0);
+                mounted.diskII.push_back(info.drive1);
+            }
+            if (c->isDiskLoaded(1)) {
+                info.drive2 = c->getDiskPath(1);
+                mounted.diskII.push_back(info.drive2);
+            }
+            mounted.diskIICards.push_back(info);
         }
-        if (c->isDiskLoaded(1)) {
-            info.drive2 = c->getDiskPath(1);
-            mounted.diskII.push_back(info.drive2);
+        // 3.5" mount sources: the //c+ on-board hub OR a slot-plugged
+        // SmartPort card's unit 0/1 (one or the other, never both on the
+        // same profile). The library marks rows mounted on either, so the
+        // user sees the `* ` cue regardless of which path is active.
+        mounted.disk35Internal = controller->disk35Internal().isLoaded()
+            ? controller->disk35Internal().path() : std::string();
+        mounted.disk35External = controller->disk35External().isLoaded()
+            ? controller->disk35External().path() : std::string();
+        if (smartPortCard) {
+            const pom2::SmartPortUnit* u0 = smartPortCard->unit(0);
+            const pom2::SmartPortUnit* u1 = smartPortCard->unit(1);
+            if (u0 && u0->isLoaded() &&
+                u0->kindKey() == pom2::SmartPort35Unit::kKindKey &&
+                mounted.disk35Internal.empty()) {
+                mounted.disk35Internal = u0->path();
+            }
+            if (u1 && u1->isLoaded() &&
+                u1->kindKey() == pom2::SmartPort35Unit::kKindKey &&
+                mounted.disk35External.empty()) {
+                mounted.disk35External = u1->path();
+            }
         }
-        mounted.diskIICards.push_back(info);
-    }
-    // 3.5" mount sources: the //c+ on-board hub OR a slot-plugged
-    // SmartPort card's unit 0/1 (one or the other, never both on the
-    // same profile). The library marks rows mounted on either, so the
-    // user sees the `* ` cue regardless of which path is active.
-    mounted.disk35Internal = controller->disk35Internal().isLoaded()
-        ? controller->disk35Internal().path() : std::string();
-    mounted.disk35External = controller->disk35External().isLoaded()
-        ? controller->disk35External().path() : std::string();
-    if (smartPortCard) {
-        const pom2::SmartPortUnit* u0 = smartPortCard->unit(0);
-        const pom2::SmartPortUnit* u1 = smartPortCard->unit(1);
-        if (u0 && u0->isLoaded() &&
-            u0->kindKey() == pom2::SmartPort35Unit::kKindKey &&
-            mounted.disk35Internal.empty()) {
-            mounted.disk35Internal = u0->path();
-        }
-        if (u1 && u1->isLoaded() &&
-            u1->kindKey() == pom2::SmartPort35Unit::kKindKey &&
-            mounted.disk35External.empty()) {
-            mounted.disk35External = u1->path();
-        }
-    }
-    if (pom2::ProDOSBlockCard* dev = hdvDevice(); dev && dev->isImageLoaded()) {
-        mounted.hdv = dev->getImagePath();
-    } else if (smartPortCard) {
-        // SmartPort-routed HDV — show as mounted in the Library so the
-        // `* ` marker matches reality regardless of which path holds it.
-        const pom2::SmartPortUnit* u = smartPortCard->unit(0);
-        if (u && u->isLoaded() &&
-            u->kindKey() == pom2::SmartPortHdvUnit::kKindKey) {
-            mounted.hdv = u->path();
+        if (pom2::ProDOSBlockCard* dev = hdvDevice(); dev && dev->isImageLoaded()) {
+            mounted.hdv = dev->getImagePath();
+        } else if (smartPortCard) {
+            // SmartPort-routed HDV — show as mounted in the Library so the
+            // `* ` marker matches reality regardless of which path holds it.
+            const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+            if (u && u->isLoaded() &&
+                u->kindKey() == pom2::SmartPortHdvUnit::kKindKey) {
+                mounted.hdv = u->path();
+            }
         }
     }
 
@@ -8961,12 +9054,22 @@ void MainWindow::renderMemoryViewerWindow()
     if (!showMemViewer) return;
     ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Memory viewer", &showMemViewer)) {
-        // Hold the state mutex briefly so the snapshot the viewer reads
-        // (Memory::data()) is consistent — no torn writes mid-row.
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        memViewer->setCmosMode(
-            controller->cpu().getCpuMode() == M6502::CpuMode::CMOS);
-        memViewer->render();
+        {
+            // Hold the state mutex briefly so the snapshot the viewer reads
+            // (Memory::data()) is consistent — no torn writes mid-row.
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            memViewer->setCmosMode(
+                controller->cpu().getCpuMode() == M6502::CpuMode::CMOS);
+            memViewer->render();
+        }
+        // Byte edits / Undo / Redo are only STAGED by render(); apply them
+        // here, OUTSIDE the lock. The write sink re-takes stateMutex (the
+        // poke must go through Memory::memWrite like a CPU store), and
+        // stateMutex is a plain non-recursive std::mutex — flushing inline
+        // would self-deadlock the UI thread while it still holds the lock
+        // the CPU worker needs at its next chunk, freezing the emulator.
+        // Same hazard as ejectAllDisks() → eject35().
+        memViewer->flushPendingWrites();
     }
     ImGui::End();
 }

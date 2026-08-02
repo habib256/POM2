@@ -34,6 +34,7 @@
 struct GLFWwindow;
 
 class Apple2Display;
+class AudioSource;
 class ClockCard;
 class DiskIICard;
 class EmulationController;
@@ -280,6 +281,12 @@ private:
     // the two is plugged at a time). Both implement the same setHostMouse
     // API so the UI input layer is variant-agnostic.
     MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
+    // These three are "last one plugged wins" aliases used by the mixer /
+    // panels. They are NOT a complete inventory: several of these card
+    // types are distinct catalog keys that can coexist (e.g. "mockingboard"
+    // = Variant::AC in one slot AND "mockingboard_c" = Variant::SoundII in
+    // another, which the single-instance uniqueness rule does not merge).
+    // Never drive AudioDevice teardown off them — see registeredAudioSources_.
     MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
     PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
     EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
@@ -842,6 +849,25 @@ private:
     /// requests log a warning and skip the second instance. Populates the
     /// raw `*Card` pointer fields and the `slotCards[]` index.
     void plugSlotsFromSettings();
+
+    // ── Audio-source ownership ───────────────────────────────────────────
+    // AudioDevice keeps raw AudioSource pointers and dereferences them from
+    // the miniaudio callback thread every ~5 ms, while the sources are owned
+    // by the slot cards the SlotBus destroys on every profile switch / Slot
+    // Config "Apply". Teardown therefore has to unregister EVERY source that
+    // was ever registered, and driving that off the named `*Card` aliases is
+    // wrong: two Mockingboard variants (catalog keys "mockingboard" and
+    // "mockingboard_c") are distinct types to the uniqueness rule, so both
+    // can be plugged and the single alias only remembers the last one — the
+    // first card's source survived teardown and the audio thread called
+    // through freed memory. This vector is the inventory instead.
+    /// Add `src` to the audio device and remember it for teardown. No-op on
+    /// a null source or when the audio device is unavailable.
+    void registerAudioSource(AudioSource* src);
+    /// Remove every source added via registerAudioSource(). MUST run before
+    /// `slotBus().clear()` destroys the owning cards.
+    void unregisterAllAudioSources();
+    std::vector<AudioSource*> registeredAudioSources_;
 
     // ── Disk insert+boot routing (shared by Disk Library UI + CLI) ───────
     // Promoted from file-local lambdas in renderDiskLibraryWindow so

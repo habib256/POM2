@@ -11,10 +11,24 @@
 // whose directory holds a malicious "../PWNED" file plus a benign "GOOD"
 // file, decodes it into base/jail/inner, and asserts the escape file is NOT
 // created in base/jail while the benign file IS written.
+//
+// Part 3 pins the OTHER untrusted-graph hazard: the same guest-writable
+// image describes the directory GRAPH, and a subdir entry's key_pointer was
+// only range-checked — nothing stopped it pointing at an ancestor block. The
+// walk was then a cyclic graph explored to depth 16 with a fan-out of 13
+// slots × 256 chained blocks per level, each visit doing a real
+// fs::create_directories: a single block of 12 self-referential subdir
+// entries is 12^17 visits, i.e. a permanent hang on the eject/save path that
+// fills the host filesystem while it runs (measured: fan-out 2 → 262 142
+// host directories in 7.2 s; fan-out 12 → still creating directories when
+// killed at 25 s). Termination now rests on a per-decode set of expanded
+// directory blocks plus a directory budget, not on the depth cap.
 
 #include "ProDOSVolume.h"
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -43,6 +57,30 @@ void putEntry(std::vector<std::uint8_t>& img, size_t block, size_t slot,
     e[0x15] = eof & 0xFF;
     e[0x16] = (eof >> 8) & 0xFF;
     e[0x17] = (eof >> 16) & 0xFF;
+}
+
+// Set a directory block's next-block pointer (offset 2 of every dir block).
+void setNextBlock(std::vector<std::uint8_t>& img, size_t block, std::uint16_t next)
+{
+    img[block * kBlk + 2] = static_cast<std::uint8_t>(next & 0xFF);
+    img[block * kBlk + 3] = static_cast<std::uint8_t>((next >> 8) & 0xFF);
+}
+
+// Total directories anywhere under `root`, and the deepest nesting level.
+void treeStats(const fs::path& root, size_t& count, size_t& maxDepth)
+{
+    count = 0;
+    maxDepth = 0;
+    if (!fs::exists(root)) return;
+    for (auto it = fs::recursive_directory_iterator(root);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (!it->is_directory()) continue;
+        ++count;
+        maxDepth = std::max<size_t>(maxDepth,
+                                    static_cast<size_t>(it.depth()) + 1);
+        // Never walk an explosion to the end: bail out loudly instead.
+        if (count > 4096) return;
+    }
 }
 
 } // namespace
@@ -97,7 +135,82 @@ int main()
     assert(r.filesWritten == 1);
     assert(r.filesSkipped >= 1);
 
+    // ── Part 3a: subdir entry whose key_pointer is its own block ─────────
+    // One self-referential entry is the cheap, non-destructive shape of the
+    // bomb: against the unbounded walk it still recreates D1/D1/D1/… down to
+    // the depth cap. The decoder must create nothing at all — the target
+    // block is already being walked.
+    {
+        const fs::path root = base / "cycle_self";
+        std::vector<std::uint8_t> bad(16 * kBlk, 0);
+        putEntry(bad, 2, 0, /*storage=*/0xF, "VOL", 0x0F, 0, 0);
+        putEntry(bad, 2, 1, /*subdir entry=*/0xD, "D1", 0x0F, /*key=*/2, 0);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        pom2::ProDOSDecodeResult c = pom2::decodeVolumeToFolder(bad, root.string());
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+
+        size_t dirs = 0, deepest = 0;
+        treeStats(root, dirs, deepest);
+        assert(c.ok);
+        assert(dirs == 0 && "self-referential subdir must not mint host dirs");
+        assert(deepest == 0);
+        assert(c.dirsCreated == 0);
+        assert(c.dirsSkipped >= 1 && "the cycle must be reported, not silent");
+        assert(ms < 2000 && "decode of a cyclic volume must terminate promptly");
+    }
+
+    // ── Part 3b: 12 sibling entries aliasing one directory block ─────────
+    // The fan-out dimension. Every slot in the key block names the same
+    // target block, so only the first may be expanded; the rest are aliases
+    // and must be refused before they create anything.
+    {
+        const fs::path root = base / "cycle_alias";
+        std::vector<std::uint8_t> bad(16 * kBlk, 0);
+        putEntry(bad, 2, 0, /*storage=*/0xF, "VOL", 0x0F, 0, 0);
+        for (int i = 1; i <= 12; ++i) {
+            putEntry(bad, 2, static_cast<size_t>(i), /*subdir entry=*/0xD,
+                     "D" + std::to_string(i), 0x0F, /*key=*/4, 0);
+        }
+
+        const auto t0 = std::chrono::steady_clock::now();
+        pom2::ProDOSDecodeResult c = pom2::decodeVolumeToFolder(bad, root.string());
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+
+        size_t dirs = 0, deepest = 0;
+        treeStats(root, dirs, deepest);
+        assert(c.ok);
+        assert(dirs == 1 && "only the first entry may expand a given block");
+        assert(c.dirsCreated == 1);
+        assert(c.dirsSkipped == 11);
+        assert(ms < 2000);
+    }
+
+    // ── Part 3c: directory block chain that loops back on itself ─────────
+    // The 256-iteration `guard` bounded this one, but it still replayed both
+    // blocks 128 times each. Revisiting a walked block now ends the chain.
+    {
+        const fs::path root = base / "cycle_chain";
+        std::vector<std::uint8_t> bad(16 * kBlk, 0);
+        putEntry(bad, 2, 0, /*storage=*/0xF, "VOL", 0x0F, 0, 0);
+        putEntry(bad, 2, 1, /*seedling=*/0x1, "F1", 0x00, /*key=*/6, /*eof=*/4);
+        putEntry(bad, 3, 1, /*seedling=*/0x1, "F2", 0x00, /*key=*/7, /*eof=*/4);
+        setNextBlock(bad, 2, 3);
+        setNextBlock(bad, 3, 2);          // ← loop
+        std::memcpy(bad.data() + 6 * kBlk, "AAAA", 4);
+        std::memcpy(bad.data() + 7 * kBlk, "BBBB", 4);
+
+        pom2::ProDOSDecodeResult c = pom2::decodeVolumeToFolder(bad, root.string());
+        assert(c.ok);
+        assert(c.filesWritten == 2);
+        assert(c.dirsSkipped == 1 && "the chain loop must be reported");
+        assert(fs::exists(root / "F1") && fs::exists(root / "F2"));
+    }
+
     fs::remove_all(base);
-    std::printf("OK prodos_decode_safety (validator + traversal blocked, benign OK)\n");
+    std::printf("OK prodos_decode_safety (validator + traversal blocked, "
+                "benign OK, cyclic volume bounded)\n");
     return 0;
 }

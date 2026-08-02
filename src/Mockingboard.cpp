@@ -157,6 +157,34 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     /// anything stamped past the buffer's cycle span was dumped wholesale
     /// at the buffer edge.
     std::deque<MockingboardCard::AyRegEvent> pending;
+    /// Last `MockingboardCard::ayQueueGen_` this thread acted on. A
+    /// change means the stamps in `pending` describe a timeline the
+    /// machine has left (rewind, snapshot load, reset, queue overflow),
+    /// so the backlog is dropped rather than replayed.
+    uint32_t lastSeenQueueGen = 0;
+
+    /// Fold one replayed event into this thread's register bank. Shared
+    /// by the three places that consume the queue — the pre-roll catch-up,
+    /// the per-sample render loop, and the overflow drop — so a new event
+    /// kind can never be honoured in one and ignored in another.
+    void applyEvent(const MockingboardCard::AyRegEvent& e)
+    {
+        if (e.chip >= 2) return;
+        if (e.reg == MockingboardCard::kRegAyReset) {
+            // AY /RESET (PB2 low). MAME `ay8910.cpp ay8910_reset_ym`
+            // writes 0 to registers 0..AY_PORTA-1 and leaves R14/R15
+            // (the I/O ports) alone, then re-seeds the generators.
+            std::memset(liveRegs[e.chip], 0, 14);
+            chip[e.chip].resetGenerators();
+            return;
+        }
+        if (e.reg < kAyNumRegs) {
+            liveRegs[e.chip][e.reg] = e.val;
+            // R13 store restarts the envelope even when the shape byte is
+            // unchanged (real AY set_shape semantics).
+            if (e.reg == 13) chip[e.chip].envRetrigger = true;
+        }
+    }
 
     // ── DC blocker ────────────────────────────────────────────────────
     // The AY channel model is UNIPOLAR: a channel contributes
@@ -224,8 +252,12 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         uint32_t envWriteCountSnap[2];
         uint64_t latestEventCycle = 0;
         uint64_t cpuNowSnap       = 0;
-        // NOTE: `pending` is NOT cleared — it is a jitter buffer that
-        // carries un-rendered writes over to the next callback.
+        // Set when the CPU side signalled a timeline break (rewind,
+        // snapshot load, reset, queue overflow) since the last callback.
+        bool     timelineBroke    = false;
+        // NOTE: `pending` is NOT cleared unless the timeline broke — it is
+        // a jitter buffer that carries un-rendered writes over to the next
+        // callback.
         {
             std::lock_guard<std::mutex> lk(parent->mtx);
             std::memcpy(regSnap[0], parent->ay_[0]->regs, kAyNumRegs);
@@ -238,6 +270,14 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             // actually reached. Pacing needs THIS, not the last write; see
             // the guard below.
             cpuNowSnap = parent->lastSyncCycle_;
+            // Timeline break check FIRST: `parent->ayEvents_` was emptied
+            // at the moment of the break, so everything still in it now
+            // belongs to the new timeline and must survive the purge.
+            if (parent->ayQueueGen_ != lastSeenQueueGen) {
+                lastSeenQueueGen = parent->ayQueueGen_;
+                pending.clear();
+                timelineBroke = true;
+            }
             // Take the emuCycles-stamped register writes under the same
             // lock, APPENDING to whatever the last callback could not
             // render yet. See the replay loop below.
@@ -257,9 +297,19 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // ~1 ms intervals came out quantised to the ~10 ms buffer (notes
         // merged or dropped). A PB2 reset still resyncs the whole bank
         // from the CPU side, since that path zeroes registers wholesale.
-        if (!regsPrimed) {
+        if (!regsPrimed || timelineBroke) {
+            // A break is a genuine discontinuity, so the live CPU-side
+            // bank — not the dropped backlog — is the truth at the new
+            // anchor point. Zeroing the cursor hands the re-anchor below
+            // its `starved` branch, which is the same code path a
+            // pause/resume or a disk-turbo burst already takes.
             std::memcpy(liveRegs, regSnap, sizeof(liveRegs));
             regsPrimed = true;
+            if (timelineBroke) {
+                for (int ci = 0; ci < 2; ++ci) chip[ci].resetGenerators();
+                audioCursor = 0;
+                cursorFrac  = 0.0;
+            }
         }
         // LIVE clock, not the NTSC constant: under PAL the CPU produces
         // 1 015 625 cycles/s, and a cursor advancing 0.7 % faster than the
@@ -379,10 +429,10 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             }
         }
         // Queue hygiene, and the reason there is no separate backward-jump
-        // guard any more. Anything at or behind the cursor — pre-rewind
-        // stamps, or events the re-anchor above just skipped over — is
-        // folded into `liveRegs` here as silent state catch-up, so the
-        // render loop's queue front is always in the future.
+        // guard any more. Anything at or behind the cursor — events the
+        // re-anchor above just skipped over — is folded into `liveRegs`
+        // here as silent state catch-up, so the render loop's queue front
+        // is always in the future.
         //
         // The first version of this code kept a second guard that yanked
         // the cursor BACKWARD whenever `pending.front()` sat behind it.
@@ -390,37 +440,42 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // rather than on a real rewind: forward snap, immediate backward
         // snap, repeat. The two fought every callback, which is what
         // Digidream 1's dense digidrum stream turned into audible tempo
-        // instability. A rewind is already handled by `caughtUp` (a
-        // rolled-back cycleCounter drags `latestEventCycle` down with it).
+        // instability.
+        //
+        // A rewind is NOT covered by either of them, and the note that
+        // used to stand here claiming `caughtUp` handled it had the
+        // reasoning inverted: `caughtUp` moves the CURSOR, while the
+        // damage is in the QUEUE — a rolled-back cycleCounter leaves
+        // `pending` full of events stamped in the pre-rewind future,
+        // which the render loop's strict front-ordering then treats as
+        // "not yet due" and blocks on for the whole rewind depth. That is
+        // what `ayQueueGen_` / `timelineBroke` above exist for.
         while (!pending.empty() && pending.front().cycle <= audioCursor) {
-            const auto& e = pending.front();
-            if (e.chip < 2 && e.reg < kAyNumRegs) {
-                liveRegs[e.chip][e.reg] = e.val;
-                if (e.reg == 13) chip[e.chip].envRetrigger = true;
-            }
+            applyEvent(pending.front());
             pending.pop_front();
         }
         size_t nextEvent = 0;
         for (int ci = 0; ci < 2; ++ci) {
-            if (chip[ci].lastSeenResetCount != resetCountSnap[ci]) {
-                chip[ci].lastSeenResetCount = resetCountSnap[ci];
-                // Reset zeroes the bank on the CPU side wholesale — no
-                // per-register events describe it, so resync from the
-                // snapshot rather than replaying.
-                std::memcpy(liveRegs[ci], regSnap[ci], kAyNumRegs);
-                chip[ci].resetGenerators();   // MAME ay8910.cpp:1309-1319
-            }
-            // R13 retrigger comes from the REPLAYED event only (see the
-            // `e.reg == 13` case in the render loop). `ayEnvWriteCount_` is
-            // a CPU-now counter, but the cursor deliberately runs ~40 ms
-            // behind it, so honouring it here restarted the envelope a
-            // second time, ~40 ms EARLY — measured at 202 spurious
-            // retriggers in 25 s of Digidream 1 (its 103 R13 stores x 2
-            // chips), moving 13.8 % of the render's RMS. The event path
-            // already covers same-value stores, because the producer
-            // queues an event for every write regardless of value, so
-            // nothing is lost by ignoring the counter. Kept in sync so a
-            // later reader does not think it was forgotten.
+            // NEITHER counter drives this thread, for the same reason:
+            // both are CPU-NOW counters while the cursor deliberately runs
+            // ~40 ms behind CPU-now, so acting on one applies its effect
+            // 40 ms EARLY.
+            //
+            // For R13 that was measured at 202 spurious retriggers in 25 s
+            // of Digidream 1 (its 103 R13 stores x 2 chips), moving 13.8 %
+            // of the render's RMS. For the /RESET strobe it was worse than
+            // early: the bank was wiped at CPU-now and the ~40 ms of
+            // pre-reset writes still queued behind the cursor then
+            // replayed straight back on top of the zeros, so a board the
+            // driver had just silenced went on holding its last note
+            // forever. Both now arrive as ordinary cycle-stamped events
+            // (`kRegAyReset`, and the reg-13 case in `applyEvent`), which
+            // also covers same-value stores because the producer queues an
+            // event for every write regardless of value.
+            //
+            // Kept in sync so a later reader does not think they were
+            // forgotten; `ayResetCount_` remains live as UI telemetry.
+            chip[ci].lastSeenResetCount    = resetCountSnap[ci];
             chip[ci].lastSeenEnvWriteCount = envWriteCountSnap[ci];
         }
 
@@ -479,13 +534,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
             cursorFrac  -= static_cast<double>(whole);
             while (nextEvent < pending.size() &&
                    pending[nextEvent].cycle <= audioCursor) {
-                const auto& e = pending[nextEvent++];
-                if (e.chip < 2 && e.reg < kAyNumRegs) {
-                    liveRegs[e.chip][e.reg] = e.val;
-                    // R13 store restarts the envelope even when the shape
-                    // byte is unchanged (real AY set_shape semantics).
-                    if (e.reg == 13) chip[e.chip].envRetrigger = true;
-                }
+                applyEvent(pending[nextEvent++]);
             }
             // Per chip, NOT summed: chip 0 is the left channel and chip 1
             // the right one (MAME `a2mockingboard.cpp:161-165`).
@@ -567,13 +616,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
         // without limit. kMaxAyEvents is the same bound the producer uses.
         if (pending.size() > kMaxAyEvents) {
             const size_t drop = pending.size() - kMaxAyEvents;
-            for (size_t k = 0; k < drop; ++k) {
-                const auto& e = pending[k];
-                if (e.chip < 2 && e.reg < kAyNumRegs) {
-                    liveRegs[e.chip][e.reg] = e.val;
-                    if (e.reg == 13) chip[e.chip].envRetrigger = true;
-                }
-            }
+            for (size_t k = 0; k < drop; ++k) applyEvent(pending[k]);
             pending.erase(pending.begin(),
                           pending.begin() + static_cast<ptrdiff_t>(drop));
         }
@@ -665,6 +708,15 @@ void MockingboardCard::loadSnapshotState(const uint8_t* data, std::size_t len)
         r.pos += pom2::Ssi263::kSnapshotBytes;
         return true;
     };
+    // A restore re-anchors the machine at a cycle that is almost always in
+    // the PAST of whatever is queued (rewind, snapshot load —
+    // `MachineSnapshot.cpp` sets the cycle counter in the same pass that
+    // calls us). Those stamps describe a timeline the machine has left, so
+    // both queues go. Without this the audio thread's `pending` front sits
+    // in the pre-restore future, the render loop's strict front-ordering
+    // blocks on it, and the card is SILENT for the whole rewind depth.
+    invalidateAyTimeline();
+    ayResetHeld_[0] = ayResetHeld_[1] = false;
     if ((present & 0x01) && !loadVia(via_[0])) return;
     if ((present & 0x02) && !loadVia(via_[1])) return;
     if ((present & 0x04) && !loadAy(ay_[0]))   return;
@@ -687,9 +739,15 @@ void MockingboardCard::onReset()
     viaWriteCount_[0] = viaWriteCount_[1] = 0;
     ayWriteCount_[0]  = ayWriteCount_[1]  = 0;
     ayEnvWriteCount_[0] = ayEnvWriteCount_[1] = 0;
+    ayResetHeld_[0] = ayResetHeld_[1] = false;
     // Drop any cycle-stamped writes queued before the reset — replaying
-    // them afterwards would resurrect the pre-reset tone.
-    ayEvents_.clear();
+    // them afterwards would resurrect the pre-reset tone. Clearing only
+    // this side was not enough: the audio thread's own `pending` backlog
+    // (the deliberate ~40 ms of replay lag) still held pre-reset stamps
+    // and replayed them straight over the zeroed bank, so F12 / a profile
+    // switch left the card droning its last note. `invalidateAyTimeline`
+    // purges BOTH sides.
+    invalidateAyTimeline();
     // BUMP, don't zero. The audio thread resyncs its own register bank
     // only when this counter CHANGES; zeroing it was a no-op whenever it
     // was already 0 (a driver that never strobes PB2 low), so F12 / cold
@@ -775,6 +833,20 @@ void MockingboardCard::syncToCpuCycle()
 void MockingboardCard::syncToCpuCycleAt(uint64_t now)
 {
     if (now <= lastSyncCycle_) {
+        // A SMALL step back is routine: `advanceCycles` corrects "now" by
+        // one instruction (see its comment), so any MMIO access that
+        // already synced later in the same instruction lands ahead of it.
+        // A LARGE one is the cycle counter being rolled back under us —
+        // rewind, or `MachineSnapshot`'s `mem.setCycleCounter`. The
+        // threshold only has to clear one instruction (7 cycles at most);
+        // 1024 leaves three orders of magnitude of margin below the
+        // shallowest meaningful rewind (one video frame, 17045 cycles).
+        //
+        // The card's own `loadSnapshotState` covers the restore path when
+        // the card is in the blob; this covers the rest (a bare
+        // `setCycleCounter`, a card plugged after the snapshot was taken).
+        constexpr uint64_t kTimelineBreakCycles = 1024;
+        if (lastSyncCycle_ - now > kTimelineBreakCycles) invalidateAyTimeline();
         lastSyncCycle_ = now;
         return;
     }
@@ -858,6 +930,9 @@ void MockingboardCard::onViaPortBChange(int chip)
     const uint8_t pa = via_[chip]->portAOut & via_[chip]->ddrA;
     const uint8_t pb = via_[chip]->portBOut & via_[chip]->ddrB;
     const auto res = ay_[chip]->applyControl(pa, pb);
+    // Any result other than ResetOnly means PB2 (AY /RESET) is high, so
+    // the strobe's falling edge can arm again.
+    if (res != Ay3_8910::ApplyResult::ResetOnly) ayResetHeld_[chip] = false;
     if (res == Ay3_8910::ApplyResult::Wrote) {
         ++ayWriteCount_[chip];
         // emuCycles stamp for the audio thread: replay this store at its
@@ -867,20 +942,7 @@ void MockingboardCard::onViaPortBChange(int chip)
         // path calls syncToCpuCycle() before touching state), so it is
         // the same clock SpeakerDevice's queue speaks.
         const uint8_t reg = static_cast<uint8_t>(ay_[chip]->latchedAddr & 0x0F);
-        // Overflow (audio device stalled or absent): drop the WHOLE queue
-        // and force the audio thread to resync its bank from the live
-        // registers. Evicting just the oldest event silently diverged the
-        // two banks for the rest of the session — nothing else ever
-        // re-seeds liveRegs, so one lost write persisted forever.
-        if (ayEvents_.size() >= kMaxAyEvents) {
-            ayEvents_.clear();
-            ++ayResetCount_[0];
-            ++ayResetCount_[1];
-        }
-        ayEvents_.push_back(AyRegEvent{ lastSyncCycle_,
-                                        static_cast<uint8_t>(chip), reg,
-                                        ay_[chip]->regs[reg] });
-        latestAyEventCycle_.store(lastSyncCycle_, std::memory_order_relaxed);
+        queueAyEvent(chip, reg, ay_[chip]->regs[reg]);
         // R13 (envelope shape) restarts the envelope generator on EVERY
         // write, even when the value is unchanged. Surface same-value R13
         // stores to the audio thread (which only sees the register snapshot)
@@ -894,8 +956,44 @@ void MockingboardCard::onViaPortBChange(int chip)
         // (write a register, read it back) actually sees the chip.
         via_[chip]->setPortAInput(ay_[chip]->busOut);
     } else if (res == Ay3_8910::ApplyResult::ResetOnly) {
-        ++ayResetCount_[chip];
+        ++ayResetCount_[chip];              // UI telemetry, every strobe
+        // Stamp only the FALLING edge. `applyControl` reports ResetOnly on
+        // every VIA write while PB2 is held low, and holding it low across
+        // a run of writes is legal, so an un-gated push would flood the
+        // queue with duplicates of an idempotent event.
+        if (!ayResetHeld_[chip]) {
+            ayResetHeld_[chip] = true;
+            queueAyEvent(chip, kRegAyReset, 0);
+        }
     }
+}
+
+// Queue one cycle-stamped AY event for the audio thread. Caller holds mtx.
+void MockingboardCard::queueAyEvent(int chip, uint8_t reg, uint8_t val)
+{
+    // Overflow (audio device stalled or absent): break the timeline
+    // instead of evicting the oldest event. Eviction silently diverged
+    // the CPU-side and audio-side banks for the rest of the session —
+    // nothing else ever re-seeds `liveRegs`, so one lost write persisted
+    // forever — and dropping the CPU queue alone left the audio thread's
+    // own backlog to replay stale values on top of the resync.
+    if (ayEvents_.size() >= kMaxAyEvents) invalidateAyTimeline();
+    ayEvents_.push_back(AyRegEvent{ lastSyncCycle_,
+                                    static_cast<uint8_t>(chip), reg, val });
+    latestAyEventCycle_.store(lastSyncCycle_, std::memory_order_relaxed);
+}
+
+// Declare the cycle-stamped event stream discontinuous. Caller holds mtx.
+void MockingboardCard::invalidateAyTimeline()
+{
+    ayEvents_.clear();
+    // `latestAyEventCycle_` is half of the cursor's `producerNow`. Leaving
+    // a pre-rewind value in it would hold `producerNow` at the OLD
+    // timeline's high-water mark, so the re-anchor would refuse to bring
+    // the cursor back with the machine. Zero lets `lastSyncCycle_` — which
+    // the rollback already dragged down — speak for itself.
+    latestAyEventCycle_.store(0, std::memory_order_relaxed);
+    ++ayQueueGen_;
 }
 
 void MockingboardCard::advanceCycles(int cycles)

@@ -17,14 +17,30 @@
 //   * Button bit on PB7 (active LOW: 0 = pressed).
 //   * Without ROMs the card refuses to load (loadRoms returns false on
 //     missing files).
+//   * A pending slot IRQ (MCU PB6 driven low) survives a snapshot
+//     save/restore round trip. PB6 is the card's ONLY IRQ source (MAME
+//     mouse.cpp:46 + `mcu_port_b_w`); re-deriving the line from the PIA's
+//     irqa/irqb — whose MAME handlers are empty stubs — silently dropped
+//     every interrupt that was outstanding at snapshot time, and nothing
+//     re-arms it because the firmware only rewrites PB6 after the host
+//     services the request.
+//   * MCU pacing: the retired/budget cycle ratio converges on 2.0 over
+//     many small per-instruction budgets. `M68705P3::run` finishes the
+//     instruction that straddles the budget edge, so the overshoot must
+//     be billed to the next tick (MAME's `m6805_base_device::execute_run`
+//     leaves `m_icount` negative and the scheduler charges the device
+//     `cycles_running - m_icount`). Discarding it clocked the 68705
+//     26-50 % above its 2043600 Hz.
 
 #include "MouseCard.h"
 #include "Memory.h"
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -179,6 +195,133 @@ void test_signature_passes_through_to_slot_rom()
     std::remove(mcuPath.c_str());
 }
 
+// Locate a repo file from whichever build subdirectory ctest runs in.
+std::string firstExisting(const std::vector<std::string>& cands)
+{
+    namespace fs = std::filesystem;
+    for (const auto& p : cands) {
+        if (fs::exists(p))            return p;
+        if (fs::exists("../" + p))    return "../" + p;
+        if (fs::exists("../../" + p)) return "../../" + p;
+    }
+    return {};
+}
+
+// Build a 2 KB MCU image that drives PB6 low (= slot IRQ asserted, MAME
+// mouse.cpp:275-284 `if (!BIT(data, 6)) raise_slot_irq();`) and then parks
+// in a BRA self-loop, exactly as the real firmware parks while waiting for
+// the host to service the request it just raised.
+std::vector<uint8_t> buildIrqAssertingMcuRom()
+{
+    std::vector<uint8_t> rom(0x800, 0xFF);
+    uint16_t p = 0x80;
+    rom[p++] = 0xA6; rom[p++] = 0x40;   // LDA #$40
+    rom[p++] = 0xB7; rom[p++] = 0x05;   // STA $05   DDRB: PB6 = output
+    rom[p++] = 0xA6; rom[p++] = 0x00;   // LDA #$00
+    rom[p++] = 0xB7; rom[p++] = 0x01;   // STA $01   PB6 latch = 0 -> IRQ
+    rom[p++] = 0x20; rom[p++] = 0xFE;   // BRA *-2   park
+    rom[0x7FE] = 0x00;
+    rom[0x7FF] = 0x80;
+    return rom;
+}
+
+void test_pending_irq_survives_snapshot()
+{
+    const auto slotPath = writeTempBlob(buildBankSignatureRom(), "irq_slot.bin");
+    const auto mcuPath  = writeTempBlob(buildIrqAssertingMcuRom(), "irq_mcu.bin");
+
+    MouseCard a(4);
+    assert(a.loadRoms(slotPath, mcuPath));
+    a.onReset();
+    assert(!a.slotIrqAsserted());
+
+    // Let the MCU reach its park loop with PB6 held low.
+    for (int i = 0; i < 64 && !a.slotIrqAsserted(); ++i) a.advanceCycles(4);
+    assert(a.slotIrqAsserted());
+
+    std::vector<uint8_t> blob;
+    a.appendSnapshotState(blob);
+    assert(!blob.empty());
+
+    // A FRESH card is where a rewind lands: its IRQ line starts released.
+    MouseCard b(4);
+    assert(b.loadRoms(slotPath, mcuPath));
+    b.onReset();
+    assert(!b.slotIrqAsserted());
+
+    b.loadSnapshotState(blob.data(), blob.size());
+    if (!b.slotIrqAsserted()) {
+        std::fprintf(stderr,
+            "pending mouse IRQ lost across snapshot restore\n");
+    }
+    assert(b.slotIrqAsserted());
+
+    // ...and it must still be visible without the firmware writing PB6
+    // again: the restored MCU is parked, so nothing re-runs the port-write
+    // callback.
+    for (int i = 0; i < 64; ++i) b.advanceCycles(4);
+    assert(b.slotIrqAsserted());
+
+    // A foreign blob must leave the card alone rather than misparse it.
+    const std::vector<uint8_t> foreign(256, 0xAB);
+    std::vector<uint8_t> before;
+    b.appendSnapshotState(before);
+    b.loadSnapshotState(foreign.data(), foreign.size());
+    std::vector<uint8_t> after;
+    b.appendSnapshotState(after);
+    assert(after == before);
+
+    std::remove(slotPath.c_str());
+    std::remove(mcuPath.c_str());
+}
+
+void test_mcu_pacing_ratio()
+{
+    // Prefer the real 341-0269 firmware: its idle loop is all 10-cycle
+    // BRCLRs, the worst case against the 4-14 MCU-cycle budgets
+    // advanceCycles actually sees. Fall back to the synthetic park loop so
+    // the invariant is still pinned on a ROM-less checkout.
+    std::string slotPath = firstExisting({"roms/mouse_341-0270-c.bin"});
+    std::string mcuPath  = firstExisting({"roms/mouse_341-0269.bin"});
+    std::string tmpSlot, tmpMcu;
+    if (slotPath.empty() || mcuPath.empty()) {
+        tmpSlot = writeTempBlob(buildBankSignatureRom(), "pace_slot.bin");
+        tmpMcu  = writeTempBlob(buildIrqAssertingMcuRom(), "pace_mcu.bin");
+        slotPath = tmpSlot;
+        mcuPath  = tmpMcu;
+    }
+
+    MouseCard card(4);
+    assert(card.loadRoms(slotPath, mcuPath));
+    card.onReset();
+
+    // A realistic 6502 instruction-cycle mix — advanceCycles is driven per
+    // instruction, so every budget is this small.
+    static const int kInstrCycles[] = { 2, 3, 4, 2, 5, 6, 3, 4, 2, 7, 4, 2, 3, 6 };
+    uint64_t budget = 0;
+    for (int i = 0; i < 200000; ++i) {
+        const int c = kInstrCycles[i % (sizeof(kInstrCycles) / sizeof(int))];
+        budget += static_cast<uint64_t>(c);
+        card.advanceCycles(c);
+    }
+
+    const double ratio = static_cast<double>(card.mcuCyclesRun()) /
+                         static_cast<double>(budget);
+    std::printf("  mouse MCU pacing: %llu MCU cycles / %llu CPU cycles"
+                " = %.6f (target 2.000000)\n",
+                static_cast<unsigned long long>(card.mcuCyclesRun()),
+                static_cast<unsigned long long>(budget), ratio);
+    std::fflush(stdout);     // the assert below abort()s without flushing
+    if (std::fabs(ratio - 2.0) > 0.001) {
+        std::fprintf(stderr,
+            "MCU clocked at %.4fx the bus instead of 2.0x\n", ratio);
+    }
+    assert(std::fabs(ratio - 2.0) <= 0.001);
+
+    if (!tmpSlot.empty()) std::remove(tmpSlot.c_str());
+    if (!tmpMcu.empty())  std::remove(tmpMcu.c_str());
+}
+
 }  // namespace
 
 int main()
@@ -187,6 +330,8 @@ int main()
     test_size_mismatch_refuses_to_load();
     test_slot_rom_bank_select();
     test_signature_passes_through_to_slot_rom();
+    test_pending_irq_survives_snapshot();
+    test_mcu_pacing_ratio();
 
     std::printf("OK mouse_card_smoke\n");
     return 0;

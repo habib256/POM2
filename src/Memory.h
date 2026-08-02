@@ -572,6 +572,10 @@ private:
     // standard, and advanceCycles resyncs it in one division whenever it finds
     // the two out of step (which is exactly what a snapshot restore causes).
     uint64_t vblFrameBase_    = 0;
+    // Frame period (65 × scanlines) `vblFrameBase_` is currently aligned to.
+    // 0 = unaligned, which forces the first advanceCycles() call to derive it.
+    // Also NOT snapshotted, for the same reason as the base.
+    uint64_t vblFrameCycles_  = 0;
     uint64_t cycleCounter     = 0;       // hand-rolled, see advanceCycles()
 
     // Cassette: non-owning pointer set by EmulationController.

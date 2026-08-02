@@ -39,6 +39,15 @@
 //     change a full-screen text frame yet touch neither DisplayState nor the
 //     video-event log (section 9) — the case that caught a real regression
 //
+// A second, separate script (section 10) covers the other side of the same
+// contract: a caller that rewrites the framebuffer AFTER render() returned.
+// demodCompositeForCapture() — the AI control server's `GET /screen` — is the
+// only production one, and the display must come back to its own image on the
+// next frame instead of skipping onto the capture's pixels. Section 11 then
+// checks that the skip is still actually TAKEN: every assertion above is an
+// equivalence, and a display that repainted unconditionally would satisfy all
+// of them while quietly throwing away the optimisation.
+//
 // Mutation-tested 2026-07-31: deleting the flash-phase, video-RAM,
 // DisplayState, colour-mode, Chat-Mauve-state or beam-raced-frame terms from
 // the key each makes this test fail. Two terms survive deletion and are
@@ -69,6 +78,7 @@
 #include "Memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <cstdint>
 #include <cstdio>
@@ -284,6 +294,112 @@ void runScript(VideoStandard vs, const char* standard)
     std::printf("[%s] %d frames compared\n", standard, f);
 }
 
+// A quiet full-screen 40-column TEXT machine — the state the skip is built for.
+void seedStaticText(Memory& mem)
+{
+    mem.memRead(0xC051);                       // SETTEXT
+    for (uint16_t a = 0x0400; a < 0x0C00; ++a)
+        mem.writeRamUnchecked(a, static_cast<uint8_t>(0xA0 + (a & 0x3F)));
+}
+
+// 10. THE SCREEN-CAPTURE PATH. `GET /screen` (AiControlServer::handleScreen)
+//     runs render(), then demodCompositeForCapture() so the PPM shows the
+//     composite image the GPU shader puts on screen rather than the LUT
+//     fallback framebuffer. That second call rewrites all 192 rows of frame80
+//     and flips the published buffer to 560 wide — behind render()'s back, on
+//     a frame the skip key still describes. With the key left standing, every
+//     later render() skipped, useFrame80 was never recomputed, and re-checking
+//     "Sharp text" presented the capture's soft demodulated text instead of the
+//     crisp framebuffer until the guest happened to touch a byte of the screen.
+//
+//     So: after a capture, the very next render() must republish the display's
+//     OWN image — same pixels, same geometry, for either setting of the
+//     sharp-text knob (with it on, the capture is a documented no-op and the
+//     skip may legitimately stay engaged; with it off, the capture mutates and
+//     the next frame must repaint).
+void runCapturePath(bool textSharp)
+{
+    const char* const what = textSharp ? "capture, sharp text ON"
+                                       : "capture, sharp text OFF";
+    Memory mem;
+    seedStaticText(mem);
+
+    Apple2Display d;
+    d.setHiResMode(Apple2Display::HiResMode::ColorCompositeOE);
+    Apple2Display::OeDemodParams p;
+    p.textSharp = textSharp;
+    d.setOeDemodParams(p);
+
+    d.render(mem);
+    const std::vector<uint32_t> onScreen = grab(d);   // crisp 280-wide text
+    d.render(mem);                                    // steady state
+    compare(grab(d), onScreen, "steady state before the capture", 0, what);
+    if (!d.signalProduced()) {
+        std::printf("FAIL [%s] no composite signal — demodCompositeForCapture() "
+                    "is a no-op and this section tests nothing\n", what);
+        ++failures;
+        return;
+    }
+
+    d.demodCompositeForCapture();
+    const std::vector<uint32_t> captured = grab(d);
+    if (textSharp) {
+        // Sharp text bypasses the demod: the framebuffer already IS the capture.
+        compare(captured, onScreen, "the capture must not mutate anything", 1, what);
+    } else if (captured == onScreen) {
+        std::printf("FAIL [%s] the capture returned the untouched framebuffer — "
+                    "the demod never ran\n", what);
+        ++failures;
+    }
+
+    d.render(mem);
+    compare(grab(d), onScreen, "display image after a capture", 2, what);
+}
+
+// 11. The skip must still be TAKEN. Compares a display left to its own devices
+//     against one forced to repaint (invalidateTextFrameCache) over the same
+//     motionless text screen. The real ratio is ~600x — a full repaint decodes
+//     960 character cells at ~887 host instructions each, a skipped frame is a
+//     ~16 KB memcmp — so a threshold of 3x has three orders of magnitude of
+//     headroom and only fires if the skip stopped happening at all. Best-of-3
+//     so a scheduler hiccup inside the (sub-millisecond) fast loop cannot
+//     manufacture a failure.
+void runSkipStillEngages()
+{
+    Memory mem;
+    seedStaticText(mem);
+
+    Apple2Display skip, full;
+    skip.render(mem);
+    full.render(mem);
+
+    constexpr int kFrames = 400;
+    double best = 1e30, bestFull = 1e30;
+    for (int rep = 0; rep < 3; ++rep) {
+        auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kFrames; ++i) skip.render(mem);
+        auto t1 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kFrames; ++i) {
+            full.invalidateTextFrameCache();
+            full.render(mem);
+        }
+        auto t2 = std::chrono::steady_clock::now();
+        best     = std::min(best,
+                       std::chrono::duration<double, std::milli>(t1 - t0).count());
+        bestFull = std::min(bestFull,
+                       std::chrono::duration<double, std::milli>(t2 - t1).count());
+    }
+    const double ratio = bestFull / std::max(best, 1e-6);
+    std::printf("[skip] %d static text frames: skipping %.2f ms, "
+                "forced repaint %.2f ms (%.0fx)\n",
+                kFrames, best, bestFull, ratio);
+    if (ratio < 3.0) {
+        std::printf("FAIL [skip] the static-text fast path is no longer taken "
+                    "(expected a large speed-up, got %.1fx)\n", ratio);
+        ++failures;
+    }
+}
+
 }  // namespace
 
 int main()
@@ -291,6 +407,9 @@ int main()
     std::puts("=== display static-text frame-skip equivalence ===");
     runScript(VideoStandard::NTSC, "NTSC");
     runScript(VideoStandard::PAL,  "PAL");
+    runCapturePath(false);
+    runCapturePath(true);
+    runSkipStillEngages();
 
     if (failures) {
         std::printf("display_dirty_skip_test: FAIL (%d)\n", failures);

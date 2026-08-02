@@ -24,6 +24,14 @@
 //      double close cannot reach a recycled descriptor.
 //   5. An idle listener yields Retry, not Accepted or Shutdown — the
 //      property the two TCP workers' stop flags depend on.
+//   6. THE BIND POLICY IS NOT `SO_REUSEADDR`. That option means opposite
+//      things on the two families: POSIX only relaxes TIME_WAIT, Winsock
+//      hands the address to whoever binds it LAST, even while the first
+//      socket is listening. Setting it the POSIX way on Windows lets any
+//      local process take over 127.0.0.1:6503 and serve the agent's
+//      requests — token included. `setListenerBindPolicy()` is the split,
+//      and the property asserted here is the one that must hold on both:
+//      a second LIVE bind to a listening address always fails.
 
 #include "SocketCompat.h"
 #include "SocketUtil.h"
@@ -49,7 +57,9 @@ socket_t makeListener(uint16_t& portOut, int backlog = 4)
 {
     socket_t s = ::socket(AF_INET, SOCK_STREAM, 0);
     assert(isValidSocket(s));
-    setSockOptInt(s, SOL_SOCKET, SO_REUSEADDR, 1);
+    // The same policy the two real listeners use, so this helper cannot
+    // drift away from what it is meant to be modelling.
+    setListenerBindPolicy(s);
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -227,6 +237,61 @@ void testWouldBlockClassification()
     std::puts("OK would_block_classification");
 }
 
+// ─── 6: a live listener cannot be hijacked ────────────────────────────
+//
+// AiControlServer and SuperSerialCard both bind a loopback port that a
+// local agent (or the user's telnet client) connects to. The bind policy
+// has to allow a restart of THIS process to re-take its own port while
+// refusing to let a second live socket steal it. On POSIX both halves
+// come from SO_REUSEADDR; on Winsock that option grants exactly the
+// hijack, so the platform split lives in setListenerBindPolicy().
+void testListenerBindPolicy()
+{
+    // The option the policy actually applies, per platform.
+    socket_t probe = ::socket(AF_INET, SOCK_STREAM, 0);
+    assert(isValidSocket(probe));
+    assert(setListenerBindPolicy(probe));
+
+    int value = 0;
+    socklen_c len = sizeof(value);
+#ifdef _WIN32
+    assert(::getsockopt(probe, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                        reinterpret_cast<char*>(&value), &len) == 0);
+    assert(value != 0);
+    // And emphatically NOT SO_REUSEADDR, which is the hijack switch here.
+    value = 0; len = sizeof(value);
+    assert(::getsockopt(probe, SOL_SOCKET, SO_REUSEADDR,
+                        reinterpret_cast<char*>(&value), &len) == 0);
+    assert(value == 0);
+#else
+    assert(::getsockopt(probe, SOL_SOCKET, SO_REUSEADDR, &value, &len) == 0);
+    assert(value != 0);          // the TIME_WAIT relaxation we do want
+#endif
+    closeHostSocket(probe);
+
+    // The behaviour that must hold on both families: while one socket is
+    // listening on 127.0.0.1:<port>, a second one cannot take the address
+    // even though it asks for the same policy.
+    uint16_t port = 0;
+    socket_t listener = makeListener(port);
+
+    socket_t thief = ::socket(AF_INET, SOCK_STREAM, 0);
+    assert(isValidSocket(thief));
+    setListenerBindPolicy(thief);
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port        = htons(port);
+    const int r = ::bind(thief, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    assert(r != 0);
+    std::printf("  second bind to 127.0.0.1:%u refused: %s\n",
+                static_cast<unsigned>(port), lastSocketErrorText().c_str());
+
+    closeHostSocket(thief);
+    closeHostSocket(listener);
+    std::puts("OK listener_bind_policy_refuses_hijack");
+}
+
 }  // namespace
 
 int main()
@@ -238,6 +303,7 @@ int main()
     testConnectSucceeds();
     testIdleListenerRetries();
     testWouldBlockClassification();
+    testListenerBindPolicy();
     std::puts("All socket compatibility tests passed.");
     return 0;
 }

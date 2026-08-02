@@ -243,9 +243,23 @@ public:
     /// Print everything still queued right now ("Print now" button).
     void flushPending();
 
-    /// Bytes accepted but not yet printed.
+    /// Bytes accepted but not yet printed. This is the input *buffer* only
+    /// — an `ESC R` run outstanding behind it is six bytes on the wire
+    /// however many characters it still owes, which is also what the real
+    /// buffer holds, so back-pressure keys off this and not off `busy()`.
     size_t pendingBytes() const { return pending_.size() - pendingHead_; }
-    bool   busy() const { return pendingHead_ < pending_.size(); }
+    /// True while the mechanism still owes work: queued bytes, or an
+    /// `ESC R` run only partly expanded. The repeat is paced like anything
+    /// else it prints, so it outlives the byte that asked for it and
+    /// `tick()` must keep being called until this clears.
+    bool   busy() const {
+        return pendingHead_ < pending_.size() || repeatRemaining_ > 0;
+    }
+    /// Bytes an `ESC R` / `ESC V` / `ESC U` run still owes. They never sat
+    /// in the input buffer — the whole run arrived as one short sequence —
+    /// so `pendingBytes()` cannot show them and a status line that reports
+    /// only that would read "0 B queued" for a printer mid-run.
+    size_t pendingRepeats() const { return repeatRemaining_; }
     /// Input bytes dropped to hold the backlog under its hard ceiling —
     /// see `kHardBacklog`. Nonzero means a printout came out truncated.
     size_t droppedInputBytes() const { return droppedInput_; }
@@ -375,6 +389,64 @@ private:
     /// command byte). 0 in `Instant` mode.
     double byteCost(uint8_t ch) const;
 
+    /// Cost of the next unit of work a drain will do: an outstanding
+    /// repeat byte if there is one, else the byte at the head of the
+    /// queue. 0 when there is nothing left to do.
+    double nextUnitCost() const;
+
+    // ─── Repeat expansion: ESC R / ESC V / ESC U (see printRepeatUnit) ───
+    // Three commands ask, from one input byte, for work proportional to a
+    // parameter the guest chooses:
+    //
+    //   ESC R nnn c        up to  999 copies of one character
+    //   ESC V nnnn c       up to 9999 copies of one dot column
+    //   ESC U nnnn abc     up to 9999 copies of one 24-pin dot column
+    //
+    // Expanding a run inside the byte that completes the sequence put all
+    // of it inside one `tick()`, which neither budget below can bound —
+    // both are only checked BETWEEN input bytes — and which `byteCost`
+    // charged nothing for, since `numParam_ < neededParam_` holds on the
+    // terminating byte (it is a register load). Measured: `ESC R 999 $0C`
+    // (999 form feeds) 773 ms in one tick at Letter/144 dpi and 13.8 s at
+    // Ledger/288 dpi, rolling the user's whole 32-sheet tray away in the
+    // same frame; a stream of `ESC U 9999` 1.4 s in one catch-up tick
+    // against 9 ms for the same backlog of plain text.
+    //
+    // So a run is resumable state instead: a drain emits ONE byte of the
+    // pattern per iteration, priced by `byteCost` like any other byte the
+    // mechanism consumes, and may yield with the remainder outstanding.
+    // Clamping the count is not an alternative — a real printer really does
+    // print 999 characters — and truncating a valid job would be silent
+    // output corruption.
+    //
+    // ESC V / ESC U set the bit-image state up ONCE for their whole run
+    // (`setupBitImage(printRes_, nnnn)`), so each outstanding byte flows
+    // through `printBitGraph` and is priced at the dot-column rate; the
+    // pattern is 1 byte for ESC R/V and the 3-byte column for ESC U.
+    uint8_t  repeatPat_[3]{};
+    uint8_t  repeatPatLen_ = 1;
+    uint8_t  repeatPatPos_ = 0;
+    uint32_t repeatRemaining_ = 0;      // pattern bytes still owed
+    /// ESC V / ESC U force bit 7 through for the duration of their run
+    /// (phase 1 sets `msb_ = 255`); the reference restores it when the run
+    /// ends (imagewriter.cpp:1160-1200), which is now a tick or more later.
+    bool     repeatRestoresMsb_ = false;
+
+    /// Emit one outstanding pattern byte. Goes through
+    /// `printCharInternal`, so a repeat run still counts as the handful of
+    /// bytes the interface card delivered.
+    void printRepeatUnit();
+
+    /// Odometer + raw capture + trace for one byte the card delivered, then
+    /// interpret it. Any repeat run the byte starts is left OUTSTANDING for
+    /// the caller to drain: `tick()` spends it against the mechanism
+    /// budget, `printChar()` runs it out on the spot.
+    void acceptByte(uint8_t ch);
+
+    /// Arm a repeat run of `count` bytes cycling through `pat[0..len)`.
+    void armRepeat(const uint8_t* pat, uint8_t len, uint32_t count,
+                   bool restoresMsb);
+
     /// How long the byte at the head of the queue has gone unaffordable.
     /// A cost model that can never afford a byte would wedge the printer
     /// *and* the guest waiting on it (that is exactly what a form feed
@@ -447,8 +519,8 @@ private:
     void updateMetrics();
     void selectDefaultMap();
 
-    /// printChar() minus the byte odometer — the ESC R repeat handler
-    /// re-enters here so a 200-character run counts as the 5 bytes the
+    /// printChar() minus the byte odometer — `printRepeatUnit` re-enters
+    /// here so a 200-character `ESC R` run counts as the six bytes the
     /// interface card actually delivered.
     void printCharInternal(uint8_t ch);
 
