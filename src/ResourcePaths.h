@@ -39,9 +39,10 @@ std::filesystem::path executableDir();
 /// Search order (first hit wins):
 ///   1. CWD                        — dev (run_emulator.sh from repo root)
 ///   2. ../, ../../               — dev (launched from build/ or build/<cfg>/)
-///   3. <exeDir>                  — portable bundle (binary beside roms/)
-///   4. <exeDir>/..               — portable bundle (binary in bin/)
-///   5. <exeDir>/../share/POM2    — FHS install (/usr/bin + /usr/share/POM2)
+///   3. per-user data dir          — override a bundled dump (XDG / LOCALAPPDATA)
+///   4. <exeDir>                  — portable bundle (binary beside roms/)
+///   5. <exeDir>/..               — portable bundle (binary in bin/)
+///   6. <exeDir>/../share/POM2    — FHS install (/usr/bin + /usr/share/POM2)
 /// Cached after the first call.
 const std::vector<std::filesystem::path>& resourceSearchDirs();
 

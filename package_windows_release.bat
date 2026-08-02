@@ -9,8 +9,8 @@ REM copied next to POM2.exe. See the POM2_WIN_STATIC_RUNTIME comment in
 REM CMakeLists.txt for why an app-local msvcp140.dll breaks the GPU vendor's
 REM OpenGL ICD. The workflow asserts the absence structurally after this runs.
 REM
-REM ROMs are never bundled (copyright) — roms\README.txt explains where to put
-REM them. POM2 finds them beside the exe or in %%LOCALAPPDATA%%\POM2.
+REM The full roms\ tree ships beside POM2.exe so the zip boots out of the box.
+REM POM2 also probes %%LOCALAPPDATA%%\POM2 for overrides.
 setlocal EnableDelayedExpansion
 
 if "%POM2_VERSION%"=="" (
@@ -38,14 +38,14 @@ if not exist "%STAGE%\POM2.exe" (
     exit /b 1
 )
 
-REM --- read-only assets (mirrors the FHS install rules, minus the ROMs) ------
+REM --- read-only assets (mirrors the FHS install rules, including roms\) -----
 copy /y fonts\DejaVuSans.ttf   "%STAGE%\fonts\" >nul
 copy /y fonts\fa-solid-900.ttf "%STAGE%\fonts\" >nul
 copy /y pic\Apple_II_plus.jpg  "%STAGE%\pic\"   >nul
-copy /y packaging\roms_README.txt "%STAGE%\roms\README.txt" >nul
-if exist roms\floppy_samples (
-    xcopy /e /i /q /y roms\floppy_samples "%STAGE%\roms\floppy_samples" >nul
+if exist roms (
+    xcopy /e /i /q /y roms\* "%STAGE%\roms\" >nul
 )
+copy /y packaging\roms_README.txt "%STAGE%\roms\README.txt" >nul
 
 REM --- docs -----------------------------------------------------------------
 copy /y README.md    "%STAGE%\" >nul

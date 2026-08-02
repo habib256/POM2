@@ -6,15 +6,12 @@
 # probes, in order, the CWD, <exe>/.., <exe>/../share/POM2 — which IS the AppDir
 # layout — and finally $XDG_DATA_HOME/POM2 (default ~/.local/share/POM2). So
 # there is no symlink/seed dance to do here: the binary finds its own fonts,
-# pictures and floppy samples inside the read-only squashfs by itself.
+# pictures, ROMs and floppy samples inside the read-only squashfs by itself.
 #
-# The one thing that genuinely needs help is ROMs. POM2 never bundles Apple ROM
-# dumps (copyright), and an AppImage is a read-only squashfs, so the user cannot
-# drop them "next to the binary" the way they can with the tarball. The writable
-# XDG root is the answer, and this script makes it discoverable: it creates
-# ~/.local/share/POM2/roms/ on first run and drops the same README.txt the other
-# packages ship, so a user who wonders "where do I put apple2.rom?" finds the
-# answer without reading the manual.
+# The full roms/ tree is bundled under usr/share/POM2/roms/. The writable XDG
+# root remains available for overrides: on first run this script creates
+# ~/.local/share/POM2/roms/ and drops the same README.txt the other packages
+# ship, so a user who wants to replace a dump knows where to put it.
 #
 # Nothing else is exported: settings already live in ~/.config/POM2/state.cfg
 # (Settings::resolveStorePath), which is writable and outside the bundle.
@@ -26,9 +23,9 @@ RES="${HERE}/usr/share/POM2"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 DATADIR="${XDG_DATA_HOME}/POM2"
 
-# First-run only: make the user-ROM directory exist and explain itself. Never
-# overwrite an existing README — the user may have annotated it, and we must
-# never touch the ROMs themselves.
+# First-run only: make the override-ROM directory exist and explain itself.
+# Never overwrite an existing README — the user may have annotated it, and we
+# must never touch the ROMs themselves.
 if [ ! -d "${DATADIR}/roms" ]; then
     mkdir -p "${DATADIR}/roms"
     if [ -f "${RES}/roms/README.txt" ]; then

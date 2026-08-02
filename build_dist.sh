@@ -14,8 +14,8 @@
 #   POM2-v<ver>-linux-<arch>.deb      Debian/Ubuntu package (if cpack DEB ok)
 #   POM2-v<ver>-x86_64.AppImage       single-file portable (if tooling present)
 #
-# The Apple ROMs are never bundled (copyright) ; each artifact ships a
-# roms/README.txt telling the user where to drop their own dumps.
+# The full roms/ tree ships under share/POM2/roms/ (system + peripheral
+# dumps + floppy_samples) so a release boots without a separate ROM drop.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,8 +88,7 @@ cat > "${STAGE}/README.txt" <<EOF
 POM2 v${VERSION} — Apple II emulator (Linux ${ARCH})
 
 Run:        ./POM2          (or bin/POM2 directly)
-ROMs:       drop your Apple ROM dumps into share/POM2/roms/
-            (see share/POM2/roms/README.txt — they are NOT bundled)
+ROMs:       bundled under share/POM2/roms/ (see README.txt there)
 Needs:      libglfw3 and an OpenGL driver installed on the system.
 Docs:       share/doc/POM2/README.md
 EOF

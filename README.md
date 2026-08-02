@@ -92,15 +92,15 @@ hard-fails if `imgui/` is missing.)
 ./build_wasm.sh --with-data         # also bundle the disks_3.5/ library
 ```
 
-The browser build preloads `roms/`, `fonts/`, `pic/` and `floppyemu/`, but **user Apple ROMs are still required**. Telnet and the AI-control HTTP server are compiled out under WASM.
+The browser build preloads `roms/`, `fonts/`, `pic/` and `floppyemu/` — including the shipped firmware dumps. Telnet and the AI-control HTTP server are compiled out under WASM.
 </details>
 
-### 💿 Drop in ROMs and media
+### 💿 ROMs and media
 
-Apple ROMs are **user-provided** — POM2 bundles none. Drop your files here:
+Release packages (and the repo) ship the full `roms/` tree. Disk / HDV media stays yours:
 
 ```text
-roms/         Apple II firmware dumps
+roms/         Apple II firmware dumps (bundled in releases)
 disks_5.4/    5.25" disk images
 disks_3.5/    3.5" disk images
 hdv/          ProDOS hard-disk images
@@ -337,10 +337,10 @@ packaging/linux/build_appimage.sh   # just the AppImage, from POM2's own install
 package_windows_release.bat         # staged folder + .zip (on Windows, after a build)
 ```
 
-Apple ROMs are **never** bundled in any artifact. In a read-only package
-(AppImage/.dmg) drop your own dumps into `~/.local/share/POM2/roms/` —
-`ResourcePaths` searches there; the AppImage creates it with a README on first
-run.
+Every artifact bundles the full `roms/` tree. To override a dump in a read-only
+package (AppImage/.dmg/.deb), drop a replacement into
+`~/.local/share/POM2/roms/` — the AppImage creates that folder with a README on
+first run; `ResourcePaths` also probes beside the executable.
 
 **Raspberry Pi** builds on the OpenGL **ES 3.0** tier — Mesa's V3D caps
 *desktop* GL at 3.1 on Pi 4/5, so the default GL 3.2 core request cannot
