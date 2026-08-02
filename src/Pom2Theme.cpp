@@ -160,10 +160,11 @@ void verticalRule(float padX)
     ImGui::SameLine(0.0f, scaled);
 }
 
-void indicatorDot(bool on, ImU32 onColor, float radius)
+void indicatorDot(bool on, ImU32 onColor, float radius, float lineHeight)
 {
     const float  r = radius * g_scale;
-    const float  h = ImGui::GetTextLineHeight();
+    const float  h = lineHeight > 0.0f ? lineHeight
+                                       : ImGui::GetTextLineHeight();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const ImVec2 centre(p.x + r, p.y + h * 0.5f);
     ImDrawList* dl = ImGui::GetWindowDrawList();

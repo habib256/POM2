@@ -609,7 +609,14 @@ if(APPLE)
     )
 endif()
 if(WIN32)
-    target_link_libraries(pom2_headless PRIVATE winmm)
+    # ws2_32 for the same reason the GUI target links it (see above): since
+    # 2026-08-01 POM2_HAS_SOCKETS is 1 on Windows, so SuperSerialCard's telnet
+    # listener and the W5100 sockets are compiled in here too. Before that
+    # commit the socket code vanished behind the guard on Windows and this
+    # target genuinely needed nothing — which is why the omission only
+    # surfaced on the first Windows package build afterwards, as 17 unresolved
+    # Winsock externals out of SuperSerialCard.obj.
+    target_link_libraries(pom2_headless PRIVATE winmm ws2_32)
 endif()
 endif() # NOT EMSCRIPTEN (pom2_headless)
 
