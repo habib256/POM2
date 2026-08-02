@@ -51,9 +51,11 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 class MouseCardAppleWin : public SlotPeripheral
 {
@@ -138,6 +140,19 @@ public:
     uint8_t slotRomRead(uint8_t low8) override;
     void    advanceCycles(int cycles) override;
     void    onReset() override;
+
+    /// Snapshot/rewind: 'MAW1'-tagged blob carrying the HLE'd MCU's whole
+    /// working set — mode/state bytes, position + clamp window, button
+    /// shadows, the command-byte cursor (byBuff/nBuffPos/nDataLen), the
+    /// Port A/B latch shadows, the VBL pacer and the slot IRQ level —
+    /// wrapping the real MC6821's own blob. Without this the card was
+    /// skipped entirely by MachineSnapshot (empty blob ⇒ no SLOTn
+    /// section), so a rewind past a MOUSE_SET left `byMode` holding
+    /// MODE_INT_VBL and the card kept interrupting a guest whose handler
+    /// no longer existed, with only a MOUSE_SERV that would never come to
+    /// release the line.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
     // //c-class punches the forced INTCXROM mask for this card's $Cn00
     // firmware so PR#4 runs the AppleWin EPROM (which drives our PIA at
     // $C0C0) instead of the //c's on-board mouse firmware (which would

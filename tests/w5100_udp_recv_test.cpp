@@ -1,0 +1,329 @@
+// W5100 receive-path robustness test — pins the rules the UDP half of
+// `W5100Device::receiveOnePacketFromSocket` has to obey, plus the $8000
+// address mirror on the read side.
+//
+// Reference: AppleWin `source/Uthernet2.cpp:704-745` (the receive path this
+// class is ported from), WIZnet W5100 datasheet v1.2.8 §5.2.2 (the UDP RX
+// header: source IP, source port, then the payload LENGTH), and the
+// Uthernet II manual p.13 (addresses >= $8000 mirror the 32 KB map).
+//
+// The guest is driven exactly as a 6502 driver drives the chip — register
+// writes and an RX ring read — against a REAL loopback UDP peer this test
+// opens itself. Everything host-side goes through SocketCompat.h, so the
+// file builds and runs on Winsock too; that matters here because two of
+// the failures being pinned only ever surface on Windows (recvfrom failing
+// an oversized datagram with WSAEMSGSIZE, and an ICMP port-unreachable
+// arriving as WSAECONNRESET).
+//
+// What is pinned, and why each one is worth a test:
+//
+//   1. A datagram that does not fit the RX ring is DROPPED WHOLE. It used
+//      to be read into a buffer sized from the ring's remaining room,
+//      which on POSIX returns a TRUNCATED datagram with no error at all
+//      (recvfrom discards the rest), so the in-band length stamped into
+//      the ring described a datagram the guest never received. On Winsock
+//      the same call fails with WSAEMSGSIZE, which the error arm read as
+//      "socket is dead". Either the whole datagram lands with a correct
+//      length, or nothing does — and the socket survives either way.
+//   2. A datagram that DOES fit still lands whole, with the 8-byte header
+//      the datasheet specifies. (Regression guard for rule 1.)
+//   3. A ZERO-LENGTH datagram is a datagram, not a peer close. recvfrom
+//      returning 0 on a datagram socket used to take the "connection
+//      closed" arm and destroy the guest's socket; an empty keepalive
+//      from any peer was enough.
+//   4. Reads through the $8000 mirror decode like the low copy. Writes
+//      masked the address first and reads did not, so $8403 read plain
+//      memory (always 0) instead of S0's status, and $8426 never pulled
+//      a packet in.
+
+#include "SocketCompat.h"
+#include "W5100Device.h"
+
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+#if !POM2_HAS_SOCKETS
+int main()
+{
+    std::puts("SKIP: built without host sockets (Emscripten)");
+    return 0;
+}
+#else
+
+#include <chrono>
+#include <thread>
+
+namespace {
+
+using namespace pom2;
+
+constexpr uint16_t kS0 = kW5100S0Base;
+/// UDP RX header: source IP (4) + source port (2) + length (2).
+constexpr uint16_t kUdpHeader = 8;
+
+void sleepMs(int ms)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+void writeWord(W5100Device& dev, uint16_t address, uint16_t value)
+{
+    dev.writeValueAt(address, static_cast<uint8_t>((value >> 8) & 0xFF));
+    dev.writeValueAt(static_cast<uint16_t>(address + 1),
+                     static_cast<uint8_t>(value & 0xFF));
+}
+
+uint16_t peekWord(const W5100Device& dev, uint16_t address)
+{
+    return static_cast<uint16_t>(
+        (dev.peekValueAt(address) << 8) |
+        dev.peekValueAt(static_cast<uint16_t>(address + 1)));
+}
+
+/// A UDP socket on 127.0.0.1, port chosen by the kernel. Stands in for
+/// whatever the guest is talking to.
+class LocalPeer
+{
+public:
+    LocalPeer()
+    {
+        ensureSocketStack();
+        fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+        assert(isValidSocket(fd_));
+        // Non-blocking rather than MSG_DONTWAIT, which Winsock has no
+        // equivalent of.
+        assert(setNonBlocking(fd_));
+
+        sockaddr_in addr{};
+        addr.sin_family      = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port        = 0;
+        assert(::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_c len = sizeof(addr);
+        assert(::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        port_ = ntohs(addr.sin_port);
+    }
+    ~LocalPeer() { closeHostSocket(fd_); }
+
+    uint16_t port() const { return port_; }
+
+    /// Wait for the guest's first datagram, which is how this side learns
+    /// the ephemeral port the guest's unbound socket picked.
+    bool learnGuestAddress(int timeoutMs)
+    {
+        char buf[64];
+        for (int waited = 0; waited < timeoutMs; waited += 5) {
+            socklen_c len = sizeof(guest_);
+            // The `char*` + `int` spelling is the one that compiles on
+            // both families (SocketCompat.h, trap 2/3).
+            const iolen_t n = ::recvfrom(fd_, buf, static_cast<int>(sizeof(buf)), 0,
+                                         reinterpret_cast<sockaddr*>(&guest_), &len);
+            if (n >= 0) return true;
+            sleepMs(5);
+        }
+        return false;
+    }
+
+    /// Send `length` bytes of a recognisable pattern to the guest.
+    void sendToGuest(size_t length)
+    {
+        std::vector<uint8_t> payload(length);
+        for (size_t i = 0; i < length; ++i)
+            payload[i] = static_cast<uint8_t>(i & 0xFF);
+        const iolen_t n = ::sendto(fd_, reinterpret_cast<const char*>(payload.data()),
+                                   static_cast<int>(payload.size()), 0,
+                                   reinterpret_cast<const sockaddr*>(&guest_),
+                                   sizeof(guest_));
+        assert(n == static_cast<iolen_t>(length));
+    }
+
+private:
+    socket_t    fd_   = kInvalidSocket;
+    uint16_t    port_ = 0;
+    sockaddr_in guest_{};
+};
+
+/// Open socket 0 in UDP mode with an `rmsr`-sized RX ring, then make the
+/// guest send one byte so the peer learns its ephemeral port.
+void openUdpSocket(W5100Device& dev, LocalPeer& peer, uint8_t rmsr)
+{
+    dev.reset(true);
+    dev.writeValueAt(kW5100Rmsr, rmsr);
+
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnMr), kW5100SnMrUdp);
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnCr), kW5100SnCrOpen);
+    assert(dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnSr)) == kW5100SnSrUdp);
+
+    // Destination 127.0.0.1 : peer port.
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnDipr0), 127);
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnDipr0 + 1), 0);
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnDipr0 + 2), 0);
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnDipr3), 1);
+    writeWord(dev, static_cast<uint16_t>(kS0 + kW5100SnDport0), peer.port());
+
+    // Stage one byte in the TX ring, advance SN_TX_WR, SEND.
+    dev.writeValueAt(kW5100TxBase, 0x2A);
+    writeWord(dev, static_cast<uint16_t>(kS0 + kW5100SnTxWr0), 1);
+    dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnCr), kW5100SnCrSend);
+
+    assert(peer.learnGuestAddress(2000));
+}
+
+/// Poll SN_RX_RSR the way a driver does — reading it is what pulls a
+/// packet off the host socket — until something is staged or time is up.
+/// `regBase` lets a caller poll through the $8000 mirror instead.
+uint16_t pollForData(W5100Device& dev, int timeoutMs, uint16_t regBase = kS0)
+{
+    uint16_t pending = 0;
+    for (int waited = 0; waited < timeoutMs && pending == 0; waited += 5) {
+        const uint8_t hi = dev.readValueAt(
+            static_cast<uint16_t>(regBase + kW5100SnRxRsr0));
+        const uint8_t lo = dev.readValueAt(
+            static_cast<uint16_t>(regBase + kW5100SnRxRsr1));
+        pending = static_cast<uint16_t>((hi << 8) | lo);
+        if (pending == 0) sleepMs(5);
+    }
+    return pending;
+}
+
+/// Read `count` bytes out of socket 0's RX ring starting at SN_RX_RD.
+std::vector<uint8_t> drainRing(W5100Device& dev, uint16_t count)
+{
+    const uint16_t ring = dev.socketInfo(0).rxCapacity;
+    const uint16_t rd   = peekWord(dev, static_cast<uint16_t>(kS0 + kW5100SnRxRd0));
+    std::vector<uint8_t> out;
+    out.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        out.push_back(dev.peekValueAt(
+            static_cast<uint16_t>(kW5100RxBase + ((rd + i) % ring))));
+    }
+    return out;
+}
+
+// ─── 1: an oversized datagram is dropped, never truncated ─────────────
+//
+// RMSR $00 gives socket 0 a 1 KB ring, a legal and common carve. The
+// datagram is a plain 1472-byte one (an Ethernet MTU minus IP+UDP
+// headers) — the size any real UDP reply arrives at.
+void testOversizedDatagramIsDropped()
+{
+    LocalPeer peer;
+    W5100Device dev;
+    openUdpSocket(dev, peer, 0x00);
+    assert(dev.socketInfo(0).rxCapacity == 1024);
+
+    constexpr size_t kDatagram = 1472;
+    peer.sendToGuest(kDatagram);
+
+    const uint16_t pending = pollForData(dev, 500);
+
+    // The ring cannot hold 1472 + 8, so nothing may be staged. What must
+    // NEVER happen is a partial datagram carrying a length that does not
+    // describe it: that is what a ring-sized read buffer produced.
+    if (pending != 0) {
+        const auto staged = drainRing(dev, pending);
+        const uint16_t stamped = static_cast<uint16_t>((staged[6] << 8) | staged[7]);
+        std::printf("  FAIL: staged %u bytes stamped as a %u-byte datagram "
+                    "(really %zu)\n", pending, stamped, kDatagram);
+        assert(false && "truncated datagram staged in the RX ring");
+    }
+    // The socket also survives: a datagram too big for the ring costs one
+    // packet, not the guest's socket. This is the half that fails on
+    // Windows, where the same call comes back as WSAEMSGSIZE.
+    assert(dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnSr)) == kW5100SnSrUdp);
+    assert(dev.socketInfo(0).hasHostSocket);
+
+    std::puts("OK oversized_datagram_dropped_whole");
+}
+
+// ─── 2: a datagram that fits lands whole ──────────────────────────────
+void testFittingDatagramLandsWhole()
+{
+    LocalPeer peer;
+    W5100Device dev;
+    openUdpSocket(dev, peer, 0x02);           // 4 KB ring for socket 0
+    assert(dev.socketInfo(0).rxCapacity == 4096);
+
+    constexpr size_t kDatagram = 1472;
+    peer.sendToGuest(kDatagram);
+
+    const uint16_t pending = pollForData(dev, 2000);
+    assert(pending == kUdpHeader + kDatagram);
+
+    const auto staged = drainRing(dev, pending);
+    // Source IP is 127.0.0.1 and the port is the peer's, both in network
+    // order in the header (datasheet §5.2.2).
+    assert(staged[0] == 127 && staged[1] == 0 && staged[2] == 0 && staged[3] == 1);
+    assert(((staged[4] << 8) | staged[5]) == peer.port());
+    assert(((staged[6] << 8) | staged[7]) == static_cast<int>(kDatagram));
+    for (size_t i = 0; i < kDatagram; ++i)
+        assert(staged[kUdpHeader + i] == static_cast<uint8_t>(i & 0xFF));
+
+    std::puts("OK fitting_datagram_lands_whole");
+}
+
+// ─── 3: a zero-length datagram is not a close ─────────────────────────
+void testZeroLengthDatagramKeepsSocket()
+{
+    LocalPeer peer;
+    W5100Device dev;
+    openUdpSocket(dev, peer, 0x02);
+
+    peer.sendToGuest(0);
+
+    // The header alone is staged, with a length of 0.
+    const uint16_t pending = pollForData(dev, 2000);
+    assert(pending == kUdpHeader);
+    const auto staged = drainRing(dev, pending);
+    assert(((staged[6] << 8) | staged[7]) == 0);
+
+    // And the socket is still a live UDP socket, not CLOSED.
+    assert(dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnSr)) == kW5100SnSrUdp);
+    assert(dev.socketInfo(0).hasHostSocket);
+
+    std::puts("OK zero_length_datagram_keeps_socket");
+}
+
+// ─── 4: the $8000 mirror decodes on the read side too ─────────────────
+void testHighMirrorReads()
+{
+    LocalPeer peer;
+    W5100Device dev;
+    openUdpSocket(dev, peer, 0x02);
+
+    constexpr uint16_t kMirror = static_cast<uint16_t>(kS0 + 0x8000);
+
+    // Status through the mirror is the socket's status, not the (always
+    // zero) byte of plain memory the unmasked range test fell through to.
+    assert(dev.readValueAt(static_cast<uint16_t>(kMirror + kW5100SnSr)) ==
+           kW5100SnSrUdp);
+    assert(dev.peekValueAt(static_cast<uint16_t>(kMirror + kW5100SnSr)) ==
+           kW5100SnSrUdp);
+
+    // And $8426 pulls a packet in exactly like $0426 does: this whole
+    // receive runs through the mirror.
+    peer.sendToGuest(64);
+    const uint16_t pending = pollForData(dev, 2000, kMirror);
+    assert(pending == kUdpHeader + 64);
+
+    std::puts("OK high_mirror_reads_decode_registers");
+}
+
+}  // namespace
+
+int main()
+{
+    std::puts("=== W5100 receive-path robustness test ===");
+    ensureSocketStack();
+    testOversizedDatagramIsDropped();
+    testFittingDatagramLandsWhole();
+    testZeroLengthDatagramKeepsSocket();
+    testHighMirrorReads();
+    std::puts("All W5100 receive-path tests passed.");
+    return 0;
+}
+
+#endif // POM2_HAS_SOCKETS

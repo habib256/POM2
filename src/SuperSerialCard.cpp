@@ -187,7 +187,10 @@ bool SuperSerialCard::startListening(uint16_t newPort)
         pom2::log().warn("SSC", "socket() failed: " + pom2::lastSocketErrorText());
         return false;
     }
-    pom2::setSockOptInt(lfd, SOL_SOCKET, SO_REUSEADDR, 1);
+    // Re-bind after our own TIME_WAIT, but never let a second live process
+    // steal the telnet port — the two are the SAME option on POSIX and
+    // opposite ones on Winsock. SocketCompat.h, trap 6.
+    pom2::setListenerBindPolicy(lfd);
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

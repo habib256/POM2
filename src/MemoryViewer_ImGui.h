@@ -28,7 +28,25 @@ public:
 
     // Render the entire viewer window contents. Caller owns Begin()/End()
     // and decides where the window sits in the layout.
+    //
+    // LOCKING CONTRACT: the host calls render() with the emulator state
+    // mutex HELD (the hex grid reads Memory::data() directly and would
+    // otherwise tear against the CPU worker), then calls
+    // flushPendingWrites() with the mutex RELEASED. Nothing in render()
+    // may reach the write sink, because that sink re-takes the same
+    // non-recursive std::mutex.
     void render();
+
+    // Apply the byte edits queued by the last render() (inline edit, Undo,
+    // Redo) through the write callback, in the order the user made them.
+    //
+    // MUST be called with the state mutex released — see render(). The
+    // callback installed by MainWindow re-locks it to route the write
+    // through Memory::memWrite, and re-locking a non-recursive std::mutex
+    // on the same thread is undefined behaviour (it hangs the UI thread
+    // while it still holds the lock the CPU worker needs, freezing the
+    // whole emulator).
+    void flushPendingWrites();
 
     // Programmatic navigation — used by future "go to PC" buttons or a
     // disassembly listing that wants to centre on a label.
@@ -44,9 +62,10 @@ public:
         return { startAddress, end };
     }
 
-    // Hook fired when the user edits a byte. MainWindow plumbs this through
-    // EmulationController so the write goes through Memory::memWrite under
-    // stateMutex (rather than scribbling on the raw array).
+    // Hook fired for each queued byte edit when flushPendingWrites() runs.
+    // MainWindow plumbs this through EmulationController so the write goes
+    // through Memory::memWrite under stateMutex (rather than scribbling on
+    // the raw array) — hence it is NEVER invoked from render().
     void setWriteCallback(std::function<void(uint16_t, uint8_t)> cb) {
         writeCallback = std::move(cb);
     }
@@ -86,10 +105,24 @@ private:
     int  editAddress  = -1;
     char editBuffer[4] = {0};
     bool editFocusSet  = false;
+    // Set once the edit InputText has actually held ImGui's active id.
+    // SetKeyboardFocusHere() posts a nav-move request that only resolves in
+    // EndFrame, so the item is NOT active on the frame that requests focus —
+    // testing "lost focus" before that made the box cancel itself on its
+    // first frame and no byte edit ever committed.
+    bool editWasActive = false;
 
     struct EditRecord { uint16_t address; uint8_t oldValue; uint8_t newValue; };
     std::vector<EditRecord> undoStack;
     std::vector<EditRecord> redoStack;
+
+    // Writes staged by render() and drained by flushPendingWrites(). The
+    // indirection exists purely for the locking contract documented on
+    // render(): the sink re-enters the host's state mutex, which render()
+    // is already inside. Ordered, so an edit followed by an Undo in the
+    // same frame lands in that order.
+    struct PendingWrite { uint16_t address; uint8_t value; };
+    std::vector<PendingWrite> pendingWrites;
 
     // Bookmarks.
     std::vector<int> bookmarks;

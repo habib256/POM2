@@ -5,6 +5,270 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-02 — Bug-hunt sweep: 21 defects across ten subsystems
+
+A ten-way parallel audit of the whole tree, then a fix pass. Framing that
+matters for reading the rest: **the suite was 158/158 green before this,
+and stayed green throughout** — every defect below sat in a gap the tests
+did not cover. An ASan+UBSan build of all 156 test binaries, ~24 000
+hostile-input cases against the image parsers and ~6 M random CPU
+instructions produced **zero** diagnostics. Everything here came out of
+reading code and then proving it with a probe. The lesson is not that
+dynamic analysis is weak but that it is blind where this codebase actually
+breaks: the GUI, and the seams between threads.
+
+### The four that could bite a user hard
+
+**Print now, free later.** The ImageWriter panel bound `const Page&` to a
+completed sheet at the top of the frame, then let "Print now" call
+`flushPending()` before `uploadPage()` read it — an eject `push_back()`s
+into `pages_` and reallocates. Heap use-after-free, confirmed under ASan,
+two clicks from ordinary multi-page printing. At the 32-sheet cap the same
+call `erase()`s the front instead, silently renaming every index. What
+makes this worth remembering: the sibling buttons "Reset printer" and
+"Clear all" were deliberately placed *before* the reference is taken, with
+a comment saying why — the discipline existed and one button escaped it.
+So the fix is not a reorder: sheet selection is now derived state resolved
+on demand and re-resolved after every call into the printer, including the
+paper-size / DPI / speed controls, which eject too and were a second
+latent instance nobody had noticed.
+
+**Editing a byte froze the emulator.** `renderMemoryViewerWindow()` held
+`stateMutex` across `memViewer->render()`, and the write callback re-locked
+that same non-recursive `std::mutex`. The UI thread deadlocked *while
+holding* the lock the CPU worker needs, so the whole machine stopped, not
+just the panel — the exact hazard `MainWindow.cpp` already documents for
+`eject35()`. Edits, undo and redo are now staged and drained by
+`flushPendingWrites()` after the lock is released, with the contract
+written on both methods. Found while pinning it: the inline editor also
+*never committed*. `SetKeyboardFocusHere()` posts a nav request ImGui
+resolves in `EndFrame`, so `IsItemActive()` is false on the frame that
+requests focus and the old cancel closed the box one frame after the
+double-click. Byte editing had been quietly dead, which is why the
+deadlock went unreported.
+
+**Two Mockingboards, one alias.** `"mockingboard"` (A/C) and
+`"mockingboard_c"` (Sound II) are distinct catalog keys, so the duplicate
+guard — which compares key strings — lets both plug. But `plugMockingboard`
+overwrites a single `mockingboardCard` raw alias, and teardown unregistered
+only that one before `slotBus().clear()` destroyed both cards. The
+miniaudio thread then dispatched through freed memory every ~5 ms.
+`MainWindow` now keeps an inventory of every `AudioSource` it registered,
+so a future card cannot reintroduce this by adding a second catalog key.
+
+**A ProDOS volume that never stops unpacking.** `decodeVolumeToFolder`
+walked a *guest-writable* image as if it were a tree. A subdir entry's
+`key_pointer` was only range-checked, so one pointing back at an ancestor
+made the graph cyclic, explored to depth 16 with a fan-out of 13 slots ×
+256 chained blocks — each visit doing a real `create_directories`. Measured
+before the fix: fan-out 2 produced **262 143 host directories in 10.8 s**;
+fan-out 12 was still running when killed at 25 s. It sits on the eject/save
+path, so POM2 could never quit while it filled the user's disk. A
+malicious image is not required — a crashing guest that scribbles on block
+2 will do. The depth cap was never the right tool because it bounds no
+fan-out; the walk now carries a global set of expanded blocks (so each is
+walked at most once) plus a hard directory budget, and reports what it
+skipped instead of emitting a partial tree in silence.
+
+### Mockingboard: two user-reported symptoms, one root shape
+
+Both came from the same place — the audio thread's replay cursor runs
+~40 ms behind CPU-now on purpose, and anything that reaches it *out of
+band* arrives at the wrong time.
+
+**Rewind silenced the card.** The cycle-stamped queue had no way to learn
+the CPU timeline had jumped. After a rewind or snapshot load, `pending`
+was full of pre-rewind stamps that the front-ordered render loop read as
+"not due yet", blocking everything behind them: measured 0.49 s / 2.00 s /
+>3 s of total silence at rewind depths of 0.5 / 2 / 5 s. The in-code
+comment asserting that `caughtUp` already handled rewind had the reasoning
+inverted — it moves the *cursor*; the damage is in the *queue*. A
+generation counter now purges both queues and re-primes from the live bank.
+Regression from 2c385ce, which removed the old per-callback `pending.clear()`
+in favour of a persistent jitter buffer.
+
+**A note hung between DIX demos.** The wholesale bank wipe reached the
+audio thread through `ayResetCount_`, i.e. at CPU-now — so the ~40 ms of
+already-queued pre-reset writes replayed *on top of* the zeroed bank and
+the board held its last note forever. The trigger is in DIX's own GPLv3
+`loader.a`: `RESET_AY`, called at every demo hand-off, silences the board
+with nothing but the /RESET strobe and no volume writes. That also explains
+why the user saw it only *sometimes* — `CCII_2016` silences by writing 0 to
+R8/R9/R10, ordinary stamped writes that were never broken. The strobe now
+travels as a `kRegAyReset` event and lands at its true cycle stamp, and
+`resetGenerators()` was completed to MAME's full `ay8910_reset_ym`: it had
+only reseeded the noise LFSR, so a chip mid-envelope or mid-tone-phase
+carried that state across a reset. PhasorCard inherits the same fix.
+
+**And the bass.** `AyPsgSynth.h` justified a 1-pole DC blocker by citing
+MAME's `audio_effects/filter.cpp`. That citation was wrong: MAME's is a
+**2-pole Butterworth biquad** (`DEFAULT_Q = 0.7071067f`, high-pass on by
+default), which is maximally flat where a 1-pole is already drooping. Same
+corner, different passband. Ported verbatim; measured recovery of 0.77 dB
+at 27.5 Hz, 0.46 dB at 55 Hz, 0.23 dB at 82.5 Hz, now tracking the analytic
+MAME response to within 0.01 dB. Stated plainly because it matters for the
+next person chasing this: **≤0.8 dB below 80 Hz will not on its own be what
+anyone hears as "missing bass."** The volume table (within 0.0007 of
+Westcott's measurements), the linear channel sum, the box integrator (sinc
+gain 1.0000 below 100 Hz) and the stereo split were all measured against
+MAME and found already correct. If the perception persists, the next place
+to look is the mixer's `/3` normalisation against MAME's `0.5` route gain —
+downstream of the card, not inside the AY synthesis.
+
+### Timing and hardware parity
+
+**The VBL frame phase froze after an NTSC↔PAL switch.** `advanceCycles`
+tracks the start-of-frame cycle incrementally (6e9e0f2), and the invariant
+is `vblFrameBase_ % frameCycles == 0`. `setVideoStandard()` changes
+`frameCycles` on a running machine and nothing re-derived the base — and
+because 17030 and 20280 sit within a factor of two, the rollover branch can
+never notice, so the stale residue persists forever. Boot NTSC, load the
+//c PAL profile, and the VBL edge lands on scanline 252 instead of 192,
+disagreeing with `$C019`, `pushVideoEventLocked` and `frameCycleToPos`,
+which all take a true modulo. That is precisely the 50 Hz frame sync the
+French Touch / DIX demos rely on. The base now re-aligns whenever the
+*derived* period moves, so any future input feeding it re-aligns too.
+
+**A plain annunciator poke armed a real IRQ on //c.** The `$C05A`/`$C05B`
+→ VBL-mask overlay is a POM2 //e compatibility shim, but it was gated on
+`iieMode`, which is also true on //c-class; since IOUDIS resets to *set*,
+the MAME-faithful IOU decode was bypassed and the legacy `LDA $C05B` idiom
+armed the mask. The arming guard said `iieMode` while the asserting guard
+said `iicProfile_` — and on //c, unlike //e, the line really is driven, so
+the guest took an unhandled 50/60 Hz IRQ storm through `$FFFE`. `LDA $C05A`
+symmetrically ACKed an interrupt a //c guest had legitimately armed. MAME
+`apple2e.cpp:1808-1876` keeps DisVBL/EnVBL strictly inside the
+`(m_isiic || m_isace500) && !m_ioudis` branch and otherwise falls through
+to plain AN0/AN1/AN2.
+
+**The mouse MCU ran 26-50 % fast, and lost its interrupt on rewind.**
+`advanceCycles` debited the accumulator by the requested budget while
+`mcu.run()` finishes the instruction straddling the edge; with
+per-6502-instruction budgets of 4-14 MCU cycles the discarded overshoot was
+comparable to the budget itself — measured 2.4906 MCU cycles per bus cycle
+against the intended 2.0, now 2.000003. Separately,
+`MouseCard::loadSnapshotState` re-derived the slot IRQ from
+`pia.irqA() || pia.irqB()`, but this card's IRQ is MCU port B bit 6 —
+MAME's `pia_irqa_w`/`pia_irqb_w` (`mouse.cpp:235-240`) are empty stubs, so
+that expression was an unconditional `assertIrq(false)` and a rewind taken
+mid-MousePaint-handshake killed the mouse until reset. `MouseCardAppleWin`
+serialized nothing at all and gained a snapshot blob.
+
+### Networking, and a class of Windows-only divergence
+
+The Windows socket paths from 7e7d8de are new, and three of them were wrong
+in ways POSIX hides.
+
+**UDP reads were sized against the ring, not the datagram.**
+`recvfrom`'s buffer was `freeRoom - 1`, so with `RMSR $00` a standard
+1472-byte reply into a 1 KB ring came back truncated on POSIX — the kernel
+discards the remainder and reports *no error*, and the in-band length
+stamped into the ring described a datagram the guest never received
+(measured on Linux: 1015 bytes stamped "1015" out of 1472). The same call
+on Winsock fails with `WSAEMSGSIZE`, which the error arm read as "socket is
+dead". UDP now reads into an 8 KB scratch buffer — sized so truncation
+cannot pass `ringHasRoomFor` by construction — and drops a datagram the
+ring cannot take. TCP stays clamped to the ring, because dropping stream
+bytes would tear a hole.
+
+**Errors that describe a packet were killing the socket.** On Winsock an
+ICMP port-unreachable from an earlier `sendto` surfaces as `WSAECONNRESET`
+on the next `recvfrom` of an *unconnected* UDP socket, so one datagram to a
+closed port destroyed the guest's socket. `SIO_UDP_CONNRESET` is now off at
+creation and a per-packet error set is tolerated — **for UDP only**, since
+on TCP `ECONNRESET` genuinely is the connection dying. Likewise `recvfrom`
+returning 0 is a zero-length datagram, not a close; it used to fall into an
+arm that destroyed the socket, an arm which turned out to be reachable
+*only* in that case.
+
+**`SO_REUSEADDR` means the opposite of what it means on POSIX.** On
+Winsock it lets a second socket bind an address another is already
+listening on, and the later binder wins new connections — so any local
+process could take over the AI control listener and collect its token. The
+intent now goes through `setListenerBindPolicy()`: `SO_REUSEADDR` on POSIX
+for the wanted `TIME_WAIT` relaxation, `SO_EXCLUSIVEADDRUSE` on Windows.
+These branches were verified by reading only — there is no Windows host or
+mingw cross-compiler here — but the new test is written entirely through
+`SocketCompat.h`, so it will exercise them for real the day a Windows CI
+exists.
+
+### Smaller, but real
+
+- **Screen capture froze a soft 560-wide text screen.**
+  `demodCompositeForCapture()` rewrites the framebuffer *after* `render()`
+  has returned, and the static-text skip key survived it. The fix is
+  structural rather than a call added at the guilty site: the key is now
+  published at the end of `render()` behind an RAII, `useFrame80` was
+  renamed `useFrame80_` so a bare assignment no longer compiles, and every
+  mutation invalidates. Verified the optimisation still bites — 400 static
+  text frames cost 0.09 ms skipping vs 52.6 ms repainting, a 582× ratio now
+  pinned by the test.
+- **`ESC R` / `ESC V` / `ESC U` froze the UI.** All three expanded a whole
+  run inside the single byte that completed the sequence — past both
+  catch-up budgets, which are only checked *between* bytes, and free of
+  credit, since `byteCost` returns 0 while `numParam_ < neededParam_`.
+  `PRINT CHR$(27);"R999";CHR$(12)` cost 773 ms in one tick at defaults and
+  13.8 s at 288 dpi/Ledger while wiping the 32-sheet tray; `ESC U 9999` cost
+  1.4 s per catch-up tick. A repeat is now resumable state, worst tick
+  0.9 ms, and the count is never clamped — a real printer does print 999
+  characters.
+- **Disk-path snapshots were taken unlocked, by reference.**
+  `getDiskPath()` returns a view into live `DiskImage` state, and
+  `controller->stop()` parks only the CPU worker — the AI server's HTTP
+  thread keeps serving `/disk` and rewrites those strings. Three snapshot
+  builders now lock and copy, matching the sibling panels that already did.
+- **`saveScreenshot` bypassed `demodMutex`**, running the same ~1-2 ms
+  demod as the AI server's `/screen.ppm` handler with no shared lock.
+- **`Disk35Image::saveDirty` truncated the user's 800K image in place** —
+  the failure `DiskImage::saveDirty` was hardened against. Now temp file +
+  `rename`, permissions carried across.
+- **`ClockCard` raced the UI over `std::localtime`'s shared static `tm`**;
+  switched to `localtime_r`, as `NoSlotClock` already did. The two UI-side
+  callers were converted too.
+- **The W5100's `$8000+` mirror was asymmetric** — writes masked before the
+  range test, reads did not, so a guest reading `$8403` got plain memory
+  instead of socket 0's status.
+- **The Audio Mixer's pan slider sat ~100 px off-screen** at the panel's
+  default size: the row's hard-coded pixel offsets did not follow
+  `uiScale_`/`dpiScale_` while the text and padding did. Widths are now
+  font-relative.
+
+### The WASM build had been red since 7e7d8de
+
+Not from this sweep — found while checking CI before pushing it. The Windows
+socket commit left `W5100Device.cpp` naming `htons` / `ntohs` /
+`SOCK_STREAM` / `IPPROTO_TCP` outside the `POM2_HAS_SOCKETS` guard, and
+Emscripten compiles that file (MACRAW/IPRAW framing and the SnMR mode switch
+go through `NetworkBackend`, not through a socket). Two CI runs in a row had
+failed on it while the Linux job stayed green, so the tree looked healthier
+than it was.
+
+The file's own header comment already claimed `SocketCompat.h` supplied
+those symbols "even where no socket is opened" — it did not. It does now:
+`pom2::hostToNet16` / `netToHost16` are spelled out as the arithmetic they
+are rather than borrowed from `<arpa/inet.h>`, and the protocol selectors
+get a `pom2::kSockStream` family that exists in both builds. Code that opens
+no socket no longer depends on the socket stack. Verified locally with
+emsdk, not just left to CI: `build_wasm.sh` produces `POM2.{js,wasm}` again,
+and the committed `wasm/` bundle is refreshed with it.
+
+### Notes for next time
+
+`disk_path_snapshot` was flaky on arrival — a reader loop that re-locks
+immediately can starve the writer to zero mutations under `ctest -j`,
+because `std::mutex` is not fair. Bounding the *writer* and letting the
+reader run until it finishes makes the interleaving the thing under test
+instead of the scheduler's generosity. Worth copying into any future
+thread-stress test here.
+
+Still open, and deliberately not done in this pass: a **ThreadSanitizer**
+run over `EmulationController` / `stateMutex` / the audio thread, which is
+where ASan is structurally blind and where this sweep's own findings
+cluster; the `SnapshotIO` fuzzer that was built but never executed; and the
+three divergent copies of the atomic-write helper (`DiskImage.cpp`,
+`Disk35Image.cpp`, `ProDOSVolume.cpp`), none of which `fsync` before the
+rename, so a power cut can still land an empty file.
+
 ## 2026-08-01 — ImageWriter: the freeze, the reprint, the overprint, and four reference bugs
 
 Follow-up to the //c fix below, from the same multi-agent audit of the

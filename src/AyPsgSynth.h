@@ -59,11 +59,18 @@
 // volume-register PWM / digi technique) is pure DC. Every note and every
 // volume write then steps the DC level, which is an audible click, and
 // half the headroom is spent on an inaudible offset. Real hardware
-// AC-couples through the card's output capacitor; MAME high-passes each
-// speaker at 20 Hz by default (`src/emu/audio_effects/filter.cpp:39-44`
-// highpass active, `:63-68` fh = 20 Hz). `AyDcBlocker` is the 1-pole
-// equivalent, the same idiom POM2 already uses for the speaker
-// (`SpeakerDevice.cpp:193-197`).
+// AC-couples through the card's output capacitor.
+//
+// MAME high-passes every speaker channel by default, and `DcBlocker` is
+// a verbatim port of that filter — see its own comment for the
+// coefficients. Until 2026-08-02 POM2 used a 1-POLE blocker at the same
+// 20 Hz corner and the comment here claimed it was "the equivalent". It
+// is not: MAME's is a 2-pole Butterworth biquad, which is maximally FLAT
+// in the passband where a 1-pole is already drooping. Measured on a
+// single tone at amplitude 15 (`tests/mockingboard_bass_response_test`),
+// the 1-pole cost 1.83 dB at 27.5 Hz, 0.53 dB at 55 Hz and 0.24 dB at
+// 82.5 Hz against 1.07 / 0.08 / 0.01 dB for MAME's — i.e. up to 0.8 dB
+// of bass thrown away below 80 Hz, on the AY's lowest two octaves.
 
 #ifndef POM2_AY_PSG_SYNTH_H
 #define POM2_AY_PSG_SYNTH_H
@@ -132,13 +139,42 @@ struct ChipSynthState {
     uint32_t lastSeenResetCount    = 0;
     uint32_t lastSeenEnvWriteCount = 0;
 
-    /// Re-seed the generators the way MAME's `ay8910_reset_ym` does
-    /// (`ay8910.cpp:1309-1319`) after a PB2=0 strobe zeroes the bank.
+    /// Re-seed the generators the way MAME's `ay8910_reset_ym` does after
+    /// a PB2=0 strobe (or a card reset) zeroes the bank. MAME
+    /// `ay8910.cpp ay8910_reset_ym`:
+    ///
+    ///     m_rng = 1;  m_noise_out = 0;
+    ///     for (int chan = 0; chan < NUM_CHANNELS; chan++)
+    ///       { m_tone[chan].reset(); m_envelope[chan].reset(); }
+    ///     m_noise_value = 0;  m_count_noise = 0;  m_prescale_noise = 0;
+    ///     for (int i = 0; i < AY_PORTA; i++) ay8910_write_reg(i, 0);
+    ///
+    /// The tone and envelope halves were missing here until 2026-08-02,
+    /// so a chip that was mid-ramp when the driver strobed /RESET carried
+    /// its envelope step and its tone phase across the reset.
     void resetGenerators()
     {
         noiseLfsr     = 1;
         noisePrescale = 0;
         noiseOut      = 0;
+        noiseCounter  = 0;
+        for (int ch = 0; ch < 3; ++ch) {
+            toneCounter[ch] = 0;
+            toneOut[ch]     = 0;
+        }
+        envCounter   = 0;
+        envAttack    = 0;
+        envHold      = 0;
+        envAlternate = 0;
+        envHolding   = 0;
+        // MAME's `envelope_t::reset()` leaves `step` at 0 and the
+        // `ay8910_write_reg(13, 0)` at the end of the same function then
+        // re-enters `set_shape`, which puts it back to 15. Invalidating
+        // `lastShape` is how that second half reaches applyEnvShape here,
+        // including when the bank already held shape 0 before the reset.
+        envStep      = 15;
+        lastShape    = -1;
+        tickPhase    = 0.0f;
     }
 };
 
@@ -289,34 +325,70 @@ inline float renderChipSample(ChipSynthState& cs, const uint8_t* r,
     return acc * invTicksPerSample;
 }
 
-/// One-pole DC blocker: y[n] = x[n] - x[n-1] + R*y[n-1], with the pole
-/// placed at MAME's default 20 Hz speaker high-pass corner.
+/// MAME's default speaker high-pass, ported verbatim: a 2-pole
+/// (biquad) Butterworth at 20 Hz, one instance per output channel.
+///
+/// It is on by DEFAULT in MAME — `filter.cpp reset_highpass_active`:
+/// `m_highpass_active = d ? d->highpass_active() : true;`, and
+/// `reset_fh`: `m_fh = d ? d->fh() : 20;`. `reset_qh` takes
+/// `DEFAULT_Q = 0.7071067f` (`filter.h`) = Butterworth. The companion
+/// LOW-pass defaults OFF (`reset_lowpass_active` falls back to `false`),
+/// so the high-pass is the whole default chain and there is nothing else
+/// to port. Coefficients are `filter.cpp build_highpass`, Zölzer "DAFX"
+/// Table 2.2:
+///
+///     K = tan(pi * fh / sr);  K2 = K*K;  d = K2*Q + K + Q;
+///     b0 = Q/d;  b1 = -2*Q/d;  b2 = b0;
+///     a1 = 2*Q*(K2-1)/d;  a2 = (K2*Q - K + Q)/d;
+///
+/// and the difference equation is `filter.h filter::apply`:
+/// `b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]`.
+///
+/// ORDER, not just corner, is what makes this the right filter. MAME
+/// runs ONE such filter per speaker CHANNEL (`filter.cpp apply` loops
+/// `channel` over `m_history[channel]`), and its Mockingboard puts AY1
+/// on channel 0 and AY2 on channel 1 of a single 2-channel speaker
+/// (`a2mockingboard.cpp:128-132`). POM2's dcL/dcR are the same
+/// one-per-channel arrangement — the two are in PARALLEL on independent
+/// signals, never cascaded, so the high-pass order is not multiplied and
+/// the mono fold-down (both sides at +0.5) cannot cancel anything.
 struct DcBlocker {
     static constexpr float kCornerHz = 20.0f;
+    /// MAME `filter.h`: `static constexpr float DEFAULT_Q = 0.7071067f;`
+    static constexpr float kQ = 0.7071067f;
 
     void setRate(uint32_t sr)
     {
         if (sr == rate_ || sr == 0) return;
         rate_ = sr;
-        pole_ = std::exp(-2.0f * 3.14159265358979f * kCornerHz
-                         / static_cast<float>(sr));
+        const float k  = std::tan(3.14159265358979f * kCornerHz
+                                  / static_cast<float>(sr));
+        const float k2 = k * k;
+        const float d  = k2 * kQ + k + kQ;
+        b0_ = kQ / d;
+        b1_ = -2.0f * kQ / d;
+        b2_ = b0_;
+        a1_ = 2.0f * kQ * (k2 - 1.0f) / d;
+        a2_ = (k2 * kQ - k + kQ) / d;
     }
 
     float process(float x)
     {
-        const float y = x - prevX_ + pole_ * prevY_;
-        prevX_ = x;
-        prevY_ = y;
+        const float y = b0_ * x + b1_ * x1_ + b2_ * x2_ - a1_ * y1_ - a2_ * y2_;
+        x2_ = x1_; x1_ = x;
+        y2_ = y1_; y1_ = y;
         return y;
     }
 
-    void reset() { prevX_ = prevY_ = 0.0f; }
+    void reset() { x1_ = x2_ = y1_ = y2_ = 0.0f; }
 
 private:
-    uint32_t rate_  = 0;
-    float    pole_  = 0.0f;
-    float    prevX_ = 0.0f;
-    float    prevY_ = 0.0f;
+    uint32_t rate_ = 0;
+    // `clear()` identity coefficients until setRate runs, so a caller
+    // that renders before configuring a rate passes the signal through
+    // instead of zeroing it (MAME `filter.h filter::clear`).
+    float b0_ = 1.0f, b1_ = 0.0f, b2_ = 0.0f, a1_ = 0.0f, a2_ = 0.0f;
+    float x1_ = 0.0f, x2_ = 0.0f, y1_ = 0.0f, y2_ = 0.0f;
 };
 
 }  // namespace ay

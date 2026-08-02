@@ -40,8 +40,16 @@ constexpr const char* kDpiLabels =
 
 std::string timestampedName(const char* prefix, const char* ext)
 {
-    const auto  t  = std::time(nullptr);
-    const auto  tm = *std::localtime(&t);
+    const std::time_t t = std::time(nullptr);
+    // localtime_r, not localtime: the latter hands back a shared static `tm`,
+    // and ClockCard converts times of its own on the CPU thread (a ProDOS
+    // timestamp under stateMutex). Same split as NoSlotClock.cpp:12-18.
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
     return std::string(prefix) + stamp + ext;
@@ -162,41 +170,81 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                           "Plug a Printer or Grappler+ card in Slot Config, "
                           "then PR#n from BASIC.");
 
-    // Counted AFTER the front panel: "Form feed" and "Clear all" change the
-    // stack within this frame, and a stale nDone made the follow logic below
-    // index completedPage() into a vector "Clear all" had just emptied.
-    const size_t nDone = iw.completedPageCount();
-    const int    nTotal = static_cast<int>(nDone) + 1;   // + sheet in progress
+    // ─── Sheet selection ─────────────────────────────────────────────────
+    // Which sheet the panel is showing is DERIVED state over a vector the
+    // printer owns, so it is resolved on demand and never cached across a
+    // call into `iw`. Any eject invalidates it two ways:
+    //
+    //   * `newPage()` push_back()s into `pages_`, which reallocates — a
+    //     `const Page&` taken before it dangles (ASan caught exactly that
+    //     on the "Print now" path below, which calls flushPending());
+    //   * at the 32-sheet cap `pages_.erase(pages_.begin())` shifts without
+    //     reallocating, so no reference dangles but every index silently
+    //     names a different sheet, and `shown` / `nDone` / the texture
+    //     cache key stop agreeing with each other.
+    //
+    // Hence: mutate first, `resolve()` after, and pass `sheet(sel)` into
+    // the call that needs it rather than holding it. "Form feed", "Reset
+    // printer" and "Clear all" above sit before the first resolve for the
+    // same reason.
+    struct Selection {
+        size_t nDone  = 0;   // completed sheets on the stack
+        int    nTotal = 1;   // + the one under the head
+        int    shown  = 0;   // 0 .. nTotal-1
+    };
+    auto resolve = [&]() -> Selection {
+        Selection s;
+        s.nDone  = iw.completedPageCount();
+        s.nTotal = static_cast<int>(s.nDone) + 1;
+        // "Follow" means "show me what is being printed". After a form feed
+        // the sheet under the head is blank and the interesting one is on
+        // the stack, so follow the last *inked* sheet until the new one
+        // gets ink — otherwise a one-page job looks like it printed nothing
+        // at all.
+        if (follow_) {
+            viewPage_ = (s.nDone > 0 && iw.currentPageBlank())
+                            ? static_cast<int>(s.nDone) - 1
+                            : -1;
+        }
+        s.shown = (viewPage_ < 0) ? static_cast<int>(s.nDone) : viewPage_;
+        s.shown = std::clamp(s.shown, 0, s.nTotal - 1);
+        return s;
+    };
+    auto sheet = [&iw](const Selection& s) -> const ImageWriter::Page& {
+        return (s.shown < static_cast<int>(s.nDone))
+                   ? iw.completedPage(static_cast<size_t>(s.shown))
+                   : iw.currentPage();
+    };
+    // Texture-cache identity of the shown sheet (-1 = the one in progress).
+    // It includes droppedPageCount() because when the cap drops the oldest
+    // sheet every index renames a different page, and a bare index let the
+    // cached texture show the dropped sheet's pixels under the new sheet's
+    // label.
+    auto cacheKey = [&iw](const Selection& s) {
+        return (s.shown < static_cast<int>(s.nDone))
+                   ? static_cast<int>(iw.droppedPageCount()) + s.shown
+                   : -1;
+    };
+
+    Selection sel = resolve();
 
     // ─── Page selector ───────────────────────────────────────────────────
-    // "Follow" means "show me what is being printed". After a form feed
-    // the sheet under the head is blank and the interesting one is on the
-    // stack, so follow the last *inked* sheet until the new one gets ink —
-    // otherwise a one-page job looks like it printed nothing at all.
-    if (follow_) {
-        viewPage_ = (nDone > 0 && iw.currentPageBlank())
-                        ? static_cast<int>(nDone) - 1
-                        : -1;
-    }
-    int shown = (viewPage_ < 0) ? static_cast<int>(nDone) : viewPage_;
-    shown = std::clamp(shown, 0, nTotal - 1);
-
-    ImGui::BeginDisabled(shown <= 0);
+    ImGui::BeginDisabled(sel.shown <= 0);
     if (ImGui::Button(ICON_FA_ARROW_LEFT "##pgPrev")) {
-        viewPage_ = shown - 1;
+        viewPage_ = sel.shown - 1;
         follow_   = false;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(shown >= nTotal - 1);
+    ImGui::BeginDisabled(sel.shown >= sel.nTotal - 1);
     if (ImGui::Button(ICON_FA_ARROW_RIGHT "##pgNext")) {
-        viewPage_ = (shown + 1 >= nTotal - 1) ? -1 : shown + 1;
-        follow_   = (shown + 1 >= nTotal - 1);
+        viewPage_ = (sel.shown + 1 >= sel.nTotal - 1) ? -1 : sel.shown + 1;
+        follow_   = (sel.shown + 1 >= sel.nTotal - 1);
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::Text("Sheet %d / %d%s", shown + 1, nTotal,
-                (shown == nTotal - 1) ? "  (in the printer)" : "");
+    ImGui::Text("Sheet %d / %d%s", sel.shown + 1, sel.nTotal,
+                (sel.shown == sel.nTotal - 1) ? "  (in the printer)" : "");
     ImGui::SameLine();
     if (ImGui::Checkbox("Follow", &follow_) && follow_) viewPage_ = -1;
     if (ImGui::IsItemHovered())
@@ -420,12 +468,13 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                 "Instant prints everything the moment it arrives.");
     }
 
-    // ─── Save ────────────────────────────────────────────────────────────
-    const ImageWriter::Page& page =
-        (shown < static_cast<int>(nDone)) ? iw.completedPage(
-                                                static_cast<size_t>(shown))
-                                          : iw.currentPage();
+    // Paper size, page DPI and Instant speed all reach `resetPrinter()` /
+    // `flushPending()`, which eject whatever was on the platen — so the
+    // selection resolved for the page selector above may be a sheet out of
+    // date by here (see Selection).
+    sel = resolve();
 
+    // ─── Save ────────────────────────────────────────────────────────────
     if (!host.canSaveFiles) {
         ImGui::BeginDisabled();
         ImGui::Button(ICON_FA_FLOPPY_DISK " Save sheet as PNG");
@@ -443,17 +492,17 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                 (fs::path(host.saveDir) /
                  timestampedName("imagewriter-", ".png")).string();
             std::string err;
-            status_ = savePagePng(page, path, err)
+            status_ = savePagePng(sheet(sel), path, err)
                     ? "Saved " + path
                     : "Save failed: " + err;
         }
         ImGui::SameLine();
-        ImGui::BeginDisabled(nDone == 0);
+        ImGui::BeginDisabled(sel.nDone == 0);
         if (ImGui::Button("Save all sheets")) {
             const std::string base = timestampedName("imagewriter-", "");
             size_t ok = 0;
             std::string err;
-            for (size_t i = 0; i < nDone; ++i) {
+            for (size_t i = 0; i < sel.nDone; ++i) {
                 char suffix[16];
                 std::snprintf(suffix, sizeof(suffix), "-p%02zu.png", i + 1);
                 const std::string path =
@@ -461,8 +510,9 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                 if (savePagePng(iw.completedPage(i), path, err)) ++ok;
             }
             status_ = "Saved " + std::to_string(ok) + " / " +
-                      std::to_string(nDone) + " sheet(s) → " + host.saveDir +
-                      (ok == nDone ? "" : ("  (" + err + ")"));
+                      std::to_string(sel.nDone) + " sheet(s) → " +
+                      host.saveDir +
+                      (ok == sel.nDone ? "" : ("  (" + err + ")"));
         }
         ImGui::EndDisabled();
 
@@ -471,7 +521,7 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         ImGui::SameLine();
         if (ImGui::Button("Save PDF")) {
             std::vector<const ImageWriter::Page*> sheets;
-            for (size_t i = 0; i < nDone; ++i)
+            for (size_t i = 0; i < sel.nDone; ++i)
                 sheets.push_back(&iw.completedPage(i));
             if (!iw.currentPageBlank())
                 sheets.push_back(&iw.currentPage());
@@ -511,12 +561,28 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
         const bool waiting =
             host.backPressure &&
             iw.pendingBytes() > ImageWriter::kInputBufferBytes;
+        // A repeat run (ESC R / ESC V / ESC U) is work the mechanism owes
+        // that never sat in the input buffer, so the byte count alone would
+        // read "0 B queued" for a printer that is visibly still going.
+        char queued[64];
+        if (iw.pendingRepeats() > 0)
+            std::snprintf(queued, sizeof queued,
+                          "%zu B queued + %zu repeat%s", iw.pendingBytes(),
+                          iw.pendingRepeats(),
+                          iw.pendingRepeats() == 1 ? "" : "s");
+        else
+            std::snprintf(queued, sizeof queued, "%zu B queued",
+                          iw.pendingBytes());
         ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
-                           "  |  " ICON_FA_PRINT " printing… %zu B queued%s",
-                           iw.pendingBytes(),
+                           "  |  " ICON_FA_PRINT " printing… %s%s", queued,
                            waiting ? " — the Apple II is waiting" : "");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Print now")) iw.flushPending();
+        if (ImGui::SmallButton("Print now")) {
+            // Prints the whole queue, so it can eject: re-resolve before
+            // anything downstream touches the stack again (see Selection).
+            iw.flushPending();
+            sel = resolve();
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Skip the mechanism delay for what is still "
                               "queued.");
@@ -524,19 +590,11 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
     if (!status_.empty()) ImGui::TextDisabled("%s", status_.c_str());
 
     // ─── Page view ───────────────────────────────────────────────────────
-    // A completed sheet's cache identity includes droppedPageCount(): when
-    // the 32-page cap drops the oldest sheet every index renames a different
-    // page, and a bare index let the cached texture show the dropped sheet's
-    // pixels under the new sheet's label.
-    uploadPage(page,
-               (shown < static_cast<int>(nDone))
-                   ? static_cast<int>(iw.droppedPageCount()) + shown
-                   : -1,
-               iw.revision());
+    uploadPage(sheet(sel), cacheKey(sel), iw.revision());
 
     ImGui::BeginChild("##iwPaper", ImVec2(0, 0), true,
                       ImGuiWindowFlags_HorizontalScrollbar);
-    if (iw.bytesReceived() == 0 && nDone == 0) {
+    if (iw.bytesReceived() == 0 && sel.nDone == 0) {
         ImGui::TextDisabled(
             "Nothing printed yet. Plug a Printer or Grappler+ card in\n"
             "Slot Config, then from BASIC:   PR#1 : PRINT \"HELLO\" : PR#0");

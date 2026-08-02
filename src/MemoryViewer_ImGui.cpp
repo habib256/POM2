@@ -311,6 +311,14 @@ void MemoryViewer_ImGui::renderHexView()
                         ImGuiInputTextFlags_CharsUppercase   |
                         ImGuiInputTextFlags_EnterReturnsTrue |
                         ImGuiInputTextFlags_AutoSelectAll);
+                    // "Focus went elsewhere → abandon the edit" must only be
+                    // tested once the box has HELD focus. SetKeyboardFocusHere
+                    // posts a nav-move request that ImGui resolves in
+                    // EndFrame, so IsItemActive() is still false on the frame
+                    // that asked for focus; cancelling on that made the editor
+                    // close itself one frame after the double-click and no
+                    // edit ever reached applyEdit().
+                    if (ImGui::IsItemActive()) editWasActive = true;
                     if (enter) {
                         unsigned parsed = 0;
                         const char* b = editBuffer;
@@ -322,7 +330,7 @@ void MemoryViewer_ImGui::renderHexView()
                         }
                         editAddress = -1;
                     } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
-                               (!ImGui::IsItemActive() && editFocusSet)) {
+                               (editWasActive && !ImGui::IsItemActive())) {
                         editAddress = -1;
                     }
                 } else {
@@ -340,7 +348,8 @@ void MemoryViewer_ImGui::renderHexView()
                         if (ImGui::IsMouseDoubleClicked(0)) {
                             editAddress = currentAddr;
                             std::snprintf(editBuffer, sizeof(editBuffer), "%02X", value);
-                            editFocusSet = false;
+                            editFocusSet  = false;
+                            editWasActive = false;
                         }
                     }
                     ImGui::PopID();
@@ -488,12 +497,16 @@ void MemoryViewer_ImGui::searchAsciiString()
 
 // ─── Edit / undo / redo ──────────────────────────────────────────────────
 
+// All three of these run from render(), i.e. under the host's state mutex,
+// so they only STAGE the write. flushPendingWrites() performs it once the
+// host has let the lock go — see the contract on MemoryViewer_ImGui::render().
+
 void MemoryViewer_ImGui::applyEdit(uint16_t address, uint8_t newValue)
 {
     if (!writeCallback) return;
     const uint8_t oldValue = readByte(address);
     if (oldValue == newValue) return;
-    writeCallback(address, newValue);
+    pendingWrites.push_back({address, newValue});
     undoStack.push_back({address, oldValue, newValue});
     redoStack.clear();
     if (undoStack.size() > 256) undoStack.erase(undoStack.begin());
@@ -504,7 +517,7 @@ void MemoryViewer_ImGui::undo()
     if (undoStack.empty() || !writeCallback) return;
     EditRecord r = undoStack.back();
     undoStack.pop_back();
-    writeCallback(r.address, r.oldValue);
+    pendingWrites.push_back({r.address, r.oldValue});
     redoStack.push_back(r);
 }
 
@@ -513,6 +526,17 @@ void MemoryViewer_ImGui::redo()
     if (redoStack.empty() || !writeCallback) return;
     EditRecord r = redoStack.back();
     redoStack.pop_back();
-    writeCallback(r.address, r.newValue);
+    pendingWrites.push_back({r.address, r.newValue});
     undoStack.push_back(r);
+}
+
+void MemoryViewer_ImGui::flushPendingWrites()
+{
+    if (pendingWrites.empty()) return;
+    // Move first: the callback re-enters the host, and a re-entrant call
+    // back into the viewer must not see a half-drained queue.
+    std::vector<PendingWrite> batch;
+    batch.swap(pendingWrites);
+    if (!writeCallback) return;
+    for (const PendingWrite& w : batch) writeCallback(w.address, w.value);
 }

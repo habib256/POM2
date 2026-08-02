@@ -1,6 +1,6 @@
 // MouseCardAppleWin smoke test — pins the AppleWin HLE port (the
 // non-MAME variant that synthesises the MCU side instead of running the
-// 341-0269 mask ROM). Three things checked:
+// 341-0269 mask ROM). Checked here:
 //
 //   1. Construction with a synthetic 2 KB slot ROM works; loadRom rejects
 //      missing files and wrong sizes.
@@ -11,6 +11,9 @@
 //      the slot IRQ stays low + the card is alive afterwards (no state
 //      corruption). Also pulse MOUSE_INIT and verify the firmware ends
 //      up reading 0xFF back on Port A (the canned reply for MOUSE_INIT).
+//   4. Snapshot / rewind: mode, the mid-command byte cursor and the VBL
+//      pacer round-trip, and a card restored from a state where the guest
+//      had interrupts OFF stops interrupting.
 
 #include "MouseCardAppleWin.h"
 #include "Memory.h"
@@ -220,6 +223,109 @@ void test_vbl_pacing_follows_set_cycles()
     std::remove(slotPath.c_str());
 }
 
+// Snapshot / rewind. This card serialized NOTHING, and MachineSnapshot
+// skips a card whose blob comes back empty — so no SLOTn section was ever
+// written and a rewind left the LIVE card in place. The visible damage: a
+// rewind past the guest's MOUSE_SET left byMode holding MODE_INT_VBL, so
+// the card kept raising the slot IRQ at frame rate into a machine whose
+// vector no longer pointed at a mouse handler, with only a MOUSE_SERV that
+// would never arrive to release the line.
+void test_snapshot_round_trip_and_irq_rewind()
+{
+    std::vector<uint8_t> rom(0x800, 0x00);
+    const auto slotPath = writeTempBlob(rom, "snap_slot.bin");
+    const uint16_t devBase = 0xC0C0;     // slot 4
+
+    // Plug a card into `mem` and return the raw pointer (mem owns it).
+    auto plug = [&](Memory& mem) {
+        auto card = std::make_unique<MouseCardAppleWin>(4);
+        assert(card->loadRom(slotPath));
+        MouseCardAppleWin* raw = card.get();
+        mem.slotBus().plug(4, std::move(card));
+        raw->onReset();
+        primePiaForOutput(mem, devBase);
+        return raw;
+    };
+
+    // ── A: the recorded machine. Interrupts on, mid-MOUSE_CLAMP, and a
+    //    partly-elapsed VBL period.
+    Memory memA;
+    MouseCardAppleWin* a = plug(memA);
+    pulseCommand(memA, devBase, 0x09);      // MOUSE_SET: MOUSE_ON | INT_VBL
+    pulseCommand(memA, devBase, 0x60);      // MOUSE_CLAMP: 5-byte command...
+    pulseCommand(memA, devBase, 0x11);      // ...byte 2
+    pulseCommand(memA, devBase, 0x22);      // ...byte 3 (cursor parked at 3)
+    a->advanceCycles(1000);                 // VBL pacer partly elapsed
+    assert(!a->slotIrqAsserted());
+    {
+        const auto s = a->debugSnapshot();
+        assert(s.byMode == 0x09);
+        assert(s.dataLen == 5 && s.buffPos == 3 && s.lastCmd == 0x60);
+    }
+
+    std::vector<uint8_t> blob;
+    a->appendSnapshotState(blob);
+    assert(!blob.empty());                  // else MachineSnapshot skips us
+
+    // ── B: a fresh card is where a rewind lands. Restore must reproduce
+    //    mode, the mid-command cursor and the VBL pacer exactly.
+    Memory memB;
+    MouseCardAppleWin* b = plug(memB);
+    b->loadSnapshotState(blob.data(), blob.size());
+    {
+        const auto s = b->debugSnapshot();
+        assert(s.byMode == 0x09);
+        assert(s.dataLen == 5 && s.buffPos == 3 && s.lastCmd == 0x60);
+    }
+    std::vector<uint8_t> blob2;
+    b->appendSnapshotState(blob2);
+    assert(blob2 == blob);
+
+    // The restored pacer still owes 17045 - 1000 cycles before the next
+    // MODE_INT_VBL, not a full frame.
+    b->advanceCycles(17045 - 1000 - 1);
+    assert(!b->slotIrqAsserted());
+    b->advanceCycles(1);
+    assert(b->slotIrqAsserted());
+
+    // ── C/D: rewind to before the guest enabled interrupts. The restored
+    //    card must go quiet — this is the case that used to keep firing at
+    //    60 Hz into a machine with no handler.
+    Memory memC;
+    MouseCardAppleWin* c = plug(memC);
+    std::vector<uint8_t> quiet;
+    c->appendSnapshotState(quiet);          // interrupts off, nothing pending
+
+    Memory memD;
+    MouseCardAppleWin* d = plug(memD);
+    pulseCommand(memD, devBase, 0x09);
+    d->advanceCycles(17045);
+    assert(d->slotIrqAsserted());           // interrupting the guest
+
+    d->loadSnapshotState(quiet.data(), quiet.size());
+    if (d->slotIrqAsserted()) {
+        std::fprintf(stderr,
+            "restored mouse card still asserting IRQ after rewind\n");
+    }
+    assert(!d->slotIrqAsserted());
+    assert(d->debugSnapshot().byMode == 0);
+    for (int i = 0; i < 5; ++i) d->advanceCycles(17045);
+    assert(!d->slotIrqAsserted());          // and stays quiet
+
+    // ── A foreign blob must be ignored, not misparsed.
+    Memory memE;
+    MouseCardAppleWin* e = plug(memE);
+    std::vector<uint8_t> before;
+    e->appendSnapshotState(before);
+    const std::vector<uint8_t> foreign(256, 0xAB);
+    e->loadSnapshotState(foreign.data(), foreign.size());
+    std::vector<uint8_t> after;
+    e->appendSnapshotState(after);
+    assert(after == before);
+
+    std::remove(slotPath.c_str());
+}
+
 }  // namespace
 
 int main()
@@ -228,6 +334,7 @@ int main()
     test_size_mismatch_refuses_to_load();
     test_slot_rom_bank_select();
     test_command_handshake_reaches_oncommand();
+    test_snapshot_round_trip_and_irq_rewind();
     test_vbl_pacing_follows_set_cycles();
 
     std::printf("OK mouse_card_applewin_smoke\n");

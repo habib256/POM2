@@ -56,16 +56,27 @@ int bcdToInt(uint8_t b)
     return ((b >> 4) & 0x0F) * 10 + (b & 0x0F);
 }
 
-std::tm hostLocalTime()
+// Reentrant broken-down-time conversion. `std::localtime` hands back a
+// pointer to a single process-wide `tm`, and this card runs on the CPU
+// thread (deviceSelectWrite → latchTimeToShiftReg / commitTimeSetFromShiftReg)
+// while the UI thread converts times of its own; the guest would then read
+// back somebody else's `tm` — for a card carrying a TIME_SET offset, a
+// different time than the one it asked for. Same split as
+// `NoSlotClock::defaultTimeFn`.
+std::tm localTimeR(std::time_t t)
 {
-    const std::time_t now = std::time(nullptr);
     std::tm out{};
 #if defined(_WIN32)
-    localtime_s(&out, &now);
+    localtime_s(&out, &t);
 #else
-    if (std::tm* p = std::localtime(&now)) out = *p;
+    localtime_r(&t, &out);
 #endif
     return out;
+}
+
+std::tm hostLocalTime()
+{
+    return localTimeR(std::time(nullptr));
 }
 
 }  // namespace
@@ -108,7 +119,7 @@ std::tm ClockCard::effectiveTime() const
 {
     std::tm host = timeFn();
     if (!userOffsetActive) return host;
-    // Compose `host + offset` via std::mktime / std::localtime so the
+    // Compose `host + offset` via std::mktime / localtime_r so the
     // BCD bytes that come out the shift register reflect the user's
     // set time + elapsed real seconds since the set point. Mirrors
     // MAME's internal time counter which ticks at 1 Hz from
@@ -116,13 +127,7 @@ std::tm ClockCard::effectiveTime() const
     std::time_t hostT = std::mktime(&host);
     if (hostT == static_cast<std::time_t>(-1)) return host;
     hostT += userOffsetSeconds;
-    std::tm out{};
-#if defined(_WIN32)
-    localtime_s(&out, &hostT);
-#else
-    if (std::tm* p = std::localtime(&hostT)) out = *p;
-#endif
-    return out;
+    return localTimeR(hostT);
 }
 
 void ClockCard::latchTimeToShiftReg()

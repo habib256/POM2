@@ -4533,3 +4533,228 @@ foreach(v old instr)
         pom2_add_dd1_probe(dd1_audio_${v} ${CMAKE_BINARY_DIR}/dd1_ab/Mockingboard_${v}.cpp)
     endif()
 endforeach()
+
+# ═══════════════════════════════════════════════════════════════════════
+# Regression pins added 2026-08-02 (bug-hunt sweep).
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── VBL frame phase across a RUNTIME video-standard switch ───────────────
+# Pins that `advanceCycles`'s incremental frame base re-aligns when
+# setVideoStandard() flips NTSC<->PAL on an ALREADY-RUNNING machine (the
+# //c PAL profile switch). The existing pal_timing / vbl_smoke /
+# vbl_edge_phase tests only ever switch on a fresh Memory (cycleCounter 0).
+add_executable(test_vbl_standard_switch
+    vbl_standard_switch_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_vbl_standard_switch PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_vbl_standard_switch PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_vbl_standard_switch PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_vbl_standard_switch PRIVATE winmm)
+endif()
+
+add_test(NAME vbl_standard_switch COMMAND test_vbl_standard_switch
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(vbl_standard_switch PROPERTIES TIMEOUT 20)
+
+# ─── $C058-$C05F with IOUDIS at its reset default ─────────────────────────
+# On //c-class those are annunciators, NOT the VBL interrupt (MAME
+# apple2e.cpp:1808-1876). Pins that a plain LDA $C05B neither arms the mask
+# nor asserts IRQ_SRC_VBL there, that LDA $C05A cannot ACK an interrupt
+# armed through the real IOU decode, and that the IIe overlay vbl_smoke
+# relies on is unchanged.
+add_executable(test_vbl_ioudis_annunciator
+    vbl_ioudis_annunciator_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_vbl_ioudis_annunciator PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_vbl_ioudis_annunciator PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_vbl_ioudis_annunciator PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_vbl_ioudis_annunciator PRIVATE winmm)
+endif()
+
+add_test(NAME vbl_ioudis_annunciator COMMAND test_vbl_ioudis_annunciator
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(vbl_ioudis_annunciator PROPERTIES TIMEOUT 10)
+
+# ─── Disk35Image write-back atomicity guard ──────────────────────────────
+add_executable(test_disk35_atomic_save
+    disk35_atomic_save_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+)
+target_include_directories(test_disk35_atomic_save PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME disk35_atomic_save COMMAND test_disk35_atomic_save)
+set_tests_properties(disk35_atomic_save PROPERTIES TIMEOUT 20)
+
+# ─── W5100 receive-path robustness ──────────────────────────────────────
+# Pins the UDP half of W5100Device::receiveOnePacketFromSocket against a
+# real loopback peer: an oversized datagram is dropped WHOLE (never
+# truncated with a wrong in-band length — and never fatal, which is how
+# Winsock's WSAEMSGSIZE used to read), a zero-length datagram is a
+# datagram and not a peer close, and reads through the $8000 mirror decode
+# registers like the low copy ($8426 pulls a packet, $8403 is SN_SR).
+add_executable(test_w5100_udp_recv
+    w5100_udp_recv_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
+)
+target_include_directories(test_w5100_udp_recv PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_w5100_udp_recv PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(test_w5100_udp_recv PRIVATE ws2_32)
+endif()
+add_test(NAME w5100_udp_recv COMMAND test_w5100_udp_recv)
+set_tests_properties(w5100_udp_recv PROPERTIES TIMEOUT 20)
+
+# ─── Memory viewer write-path locking contract ───────────────────────────
+# Pins the recursive-lock freeze: MemoryViewer_ImGui::render() runs under the
+# host's stateMutex, so a byte edit is only STAGED there and applied later by
+# flushPendingWrites() — the write sink re-takes that same non-recursive
+# std::mutex. Drives a real headless Dear ImGui frame (no backend, no GL)
+# through a double-click edit. NOTE: the first test here that links ImGui.
+add_executable(test_memory_viewer_write_lock
+    memory_viewer_write_lock_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryViewer_ImGui.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+)
+target_include_directories(test_memory_viewer_write_lock PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR}
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_memory_viewer_write_lock PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_memory_viewer_write_lock PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_memory_viewer_write_lock PRIVATE winmm)
+endif()
+
+add_test(NAME memory_viewer_write_lock COMMAND test_memory_viewer_write_lock)
+set_tests_properties(memory_viewer_write_lock PROPERTIES TIMEOUT 10)
+
+
+# ─── Audio-source teardown inventory ─────────────────────────────────────
+# Pins the two-Mockingboard use-after-free: "mockingboard" (A/C) and
+# "mockingboard_c" (Sound II) are distinct catalog keys so both plug, and the
+# single `mockingboardCard` alias could only unregister ONE AudioSource before
+# slotBus().clear() destroyed both. Registration oracle = mixSources writing
+# AudioSource::lastBufferPeak.
+add_executable(test_audio_source_teardown
+    audio_source_teardown_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_audio_source_teardown PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_audio_source_teardown PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_audio_source_teardown PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_audio_source_teardown PRIVATE winmm)
+endif()
+
+add_test(NAME audio_source_teardown COMMAND test_audio_source_teardown)
+set_tests_properties(audio_source_teardown PROPERTIES TIMEOUT 10)
+
+
+# ─── Disk-path snapshot locking ──────────────────────────────────────────
+# Pins that DiskIICard::getDiskPath() aliases mutable card state (so the
+# profile-switch / Slot-Config / Disk-Library snapshots must copy BY VALUE
+# under stateMutex, not hold a reference the AI server's HTTP thread rewrites).
+add_executable(test_disk_path_snapshot
+    disk_path_snapshot_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_disk_path_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_disk_path_snapshot PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_disk_path_snapshot PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_disk_path_snapshot PRIVATE winmm)
+endif()
+
+add_test(NAME disk_path_snapshot COMMAND test_disk_path_snapshot)
+set_tests_properties(disk_path_snapshot PROPERTIES TIMEOUT 15)
+
+# ─── Mockingboard emuCycles timeline test ──────────────────────────────
+# The two ways the cycle-stamped stream stops describing the machine: a
+# backward jump of the cycle counter (rewind / snapshot load), which used
+# to block the audio thread's front-ordered replay queue for the whole
+# rewind depth; and an out-of-band bank wipe (AY /RESET strobe, card
+# reset), whose ~40 ms of already-queued pre-reset writes replayed on top
+# of the zeroed bank and left the card holding its last note forever
+# (DIX `loader.a RESET_AY`, called at every demo hand-off). Same source
+# list as `mockingboard_audio_quality`.
+add_executable(test_mockingboard_timeline
+    mockingboard_timeline_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_mockingboard_timeline PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_timeline PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_timeline PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_timeline PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_timeline COMMAND test_mockingboard_timeline)
+set_tests_properties(mockingboard_timeline PROPERTIES TIMEOUT 30)

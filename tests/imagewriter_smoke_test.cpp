@@ -24,6 +24,12 @@
 //   7. Spool seam — PrinterCard::drainSpoolFrom hands over exactly the
 //      bytes written since the previous poll, and replays from 0 after a
 //      clearSpool() so the printer never goes silently deaf.
+//   8. Eject invalidation — an eject reallocates the completed-sheet
+//      vector and, at the cap, renames every index. The panel's ordering
+//      discipline rests on that; this is where it is stated.
+//   9. Repeat pacing — ESC R / ESC V / ESC U ask for up to 9999 units of
+//      work from one input byte, and the mechanism budgets only ever look
+//      between input bytes. The run must be resumable, not atomic.
 
 #include "ImageWriter.h"
 #include "PrinterCard.h"
@@ -888,6 +894,211 @@ void testParserHardening()
                 "are all bounded\n");
 }
 
+void testEjectInvalidatesSheetReferences()
+{
+    // Regression (heap use-after-free, confirmed under AddressSanitizer).
+    // The ImageWriter panel bound
+    //
+    //     const Page& page = (shown < nDone) ? iw.completedPage(shown)
+    //                                        : iw.currentPage();
+    //
+    // near the top of the frame and then, further down the SAME frame, its
+    // "Print now" button called iw.flushPending() before handing `page` to
+    // uploadPage(). Whatever the queue held, that call can eject, and an
+    // eject invalidates the binding two different ways:
+    //
+    //   * newPage() push_back()s into pages_, which REALLOCATES — the
+    //     reference dangles and uploadPage() read freed memory;
+    //   * at the 32-sheet cap it first erase()s the front, which shifts
+    //     without reallocating — nothing dangles, but every index then
+    //     names a different sheet, so `shown`, `nDone` and the panel's
+    //     texture cache key (droppedPageCount() + shown) stop agreeing.
+    //
+    // The panel is GL + Dear ImGui and cannot be driven headlessly, so what
+    // is pinned here is the printer-side fact its ordering discipline
+    // exists for. The discipline itself — mutate first, re-resolve after,
+    // never hold a Page reference across a call into the printer — lives
+    // next to the `Selection` helper in ImageWriter_ImGui.cpp.
+    const uint8_t job[] = { 'Z', 0x0C };       // one inked line, then eject
+
+    // 1. Ejecting reallocates: a reference taken before flushPending() does
+    //    not survive it. The address is captured as an integer while it is
+    //    still valid, so the comparison itself stays well defined.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        feed(iw, "A\x0C");
+        assert(iw.completedPageCount() == 1);
+
+        const auto first = reinterpret_cast<uintptr_t>(&iw.completedPage(0));
+        size_t ejects = 0;
+        while (reinterpret_cast<uintptr_t>(&iw.completedPage(0)) == first &&
+               ejects < 8) {
+            iw.queueBytes(job, sizeof job);
+            iw.flushPending();                 // ← what the button calls
+            ++ejects;
+        }
+        assert(ejects > 0);
+        assert(reinterpret_cast<uintptr_t>(&iw.completedPage(0)) != first);
+    }
+
+    // 2. At the cap the stack shifts instead of growing: the sheet an index
+    //    names changes underneath the caller, and so does the cache key,
+    //    since droppedPageCount() moves with it. Sheets are told apart by
+    //    how much ink they carry.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        for (size_t i = 0; i < ImageWriter::kMaxPages; ++i) {
+            for (size_t c = 0; c <= i; ++c) feed(iw, "X");
+            feed(iw, "\x0C");
+        }
+        assert(iw.completedPageCount() == ImageWriter::kMaxPages);
+        assert(iw.droppedPageCount() == 0);
+
+        const int    shown  = 0;               // the sheet the panel shows
+        const size_t inkWas = inkPixels(iw.completedPage(shown));
+        const size_t keyWas = iw.droppedPageCount() + shown;
+
+        iw.queueBytes(job, sizeof job);
+        iw.flushPending();                     // ← the button again
+
+        assert(iw.completedPageCount() == ImageWriter::kMaxPages);
+        assert(iw.droppedPageCount() == 1);
+        assert(iw.droppedPageCount() + shown != keyWas);        // key moved…
+        assert(inkPixels(iw.completedPage(shown)) != inkWas);    // …so did the
+    }                                                            //   sheet
+
+    std::printf("  ok: an eject invalidates both sheet references and sheet "
+                "indices\n");
+}
+
+void testRepeatIsPacedNotAtomic()
+{
+    // Regression: `ESC R nnn c` expanded all nnn copies inside the single
+    // input byte that completed the sequence — and `c` may itself be a form
+    // feed. Neither catch-up budget can bound that (both are only checked
+    // BETWEEN input bytes), and byteCost charged the terminating byte
+    // nothing, because `numParam_ < neededParam_` still holds on it, so the
+    // sequence ran free of credit on the paced path too.
+    //
+    // Measured for `PR#1 : PRINT CHR$(27);"R999";CHR$(12)`: 773 ms inside
+    // ONE tick() at Letter/144 dpi and 13.8 s at Ledger/288 dpi, with 999
+    // sheets ejected and 967 dropped — the user's whole tray gone in the
+    // same frame, worse than the freeze the catch-up budgets were added to
+    // fix.
+    //
+    // The contract: a repeat run is resumable state paced by byteCost like
+    // any other printing, and every one of the 999 sheets still comes out.
+    // Clamping the count is not a fix — a real printer prints 999
+    // characters, and truncating a valid job is silent output corruption.
+    const uint8_t job[] = { 0x1B, 'R', '9', '9', '9', 0x0C };
+
+    // 1. Paced path. Six bytes is far under kMaxBacklog, so catch-up never
+    //    arms and the credit cap is the only thing bounding the work.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        iw.queueBytes(job, sizeof job);
+        assert(!iw.catchingUp());
+
+        // One 60 Hz frame buys 16.7 ms and a Letter form feed is 2.2 s of
+        // paper transport, so the frame that parses the command ejects
+        // nothing at all — and still owes the run afterwards.
+        iw.tick(1.0 / 60.0);
+        assert(iw.completedPageCount() + iw.droppedPageCount() == 0);
+        assert(iw.busy());
+        assert(iw.pendingBytes() == 0);        // the six bytes are consumed…
+        assert(iw.bytesReceived() == 6);       // …and the odometer is honest
+
+        size_t ejected = 0, worstTick = 0;
+        int    ticks   = 0;
+        while (iw.busy() && ticks < 20000) {
+            const size_t before =
+                iw.completedPageCount() + iw.droppedPageCount();
+            iw.tick(1.0);                      // a whole second at a time
+            ejected = iw.completedPageCount() + iw.droppedPageCount();
+            if (ejected - before > worstTick) worstTick = ejected - before;
+            ++ticks;
+        }
+        assert(!iw.busy());
+        assert(ejected == 999);                // every sheet that was asked
+        assert(worstTick <= 2);                // …one or two per second of
+        assert(ticks > 500);                   //   mechanism time, not 999
+        assert(iw.bytesReceived() == 6);       // still six bytes on the wire
+    }
+
+    // 2. Catch-up path: the same command buried in a backlog past
+    //    kMaxBacklog, where Draft/NLQ pacing is suspended. The per-tick
+    //    SHEET budget has to bite on a repeat exactly as it does on a
+    //    stream of form feeds.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        std::vector<uint8_t> blob((1u << 20) + 4096, 'X');
+        std::memcpy(blob.data(), job, sizeof job);
+        iw.queueBytes(blob.data(), blob.size());
+        assert(iw.catchingUp());
+
+        for (int i = 0; i < 8; ++i) {
+            const size_t before =
+                iw.completedPageCount() + iw.droppedPageCount();
+            iw.tick(1.0 / 60.0);
+            const size_t after =
+                iw.completedPageCount() + iw.droppedPageCount();
+            assert(after - before <= 4);       // kCatchUpSheets
+        }
+    }
+
+    // 3. `ESC V nnnn c` / `ESC U nnnn abc` are the same shape at ten times
+    //    the count. They eject nothing (a dot column never moves paper),
+    //    but a backlog of them cost 1.4 s in ONE catch-up tick against
+    //    9 ms for the same backlog of plain text, because every column ran
+    //    free inside one input byte. Routed through the same resumable
+    //    state they are ordinary bit-image bytes: paced, and priced at the
+    //    dot-column rate.
+    {
+        ImageWriter iw(72, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        const uint8_t escU[] = { 0x1B, 'U', '9','9','9','9', 0xFF,0xFF,0xFF };
+        iw.queueBytes(escU, sizeof escU);
+
+        iw.tick(1.0 / 60.0);
+        assert(iw.busy());
+        assert(iw.status().inGraphics);        // most of the run still owed
+        assert(iw.bytesReceived() == 9);
+
+        int ticks = 0;
+        while (iw.busy() && ticks < 20000) { iw.tick(1.0); ++ticks; }
+        assert(!iw.busy());
+        assert(!iw.status().inGraphics);       // all 9999 columns laid down
+        assert(iw.completedPageCount() + iw.droppedPageCount() == 0);
+        assert(inkPixels(iw.currentPage()) > 0);
+        assert(iw.bytesReceived() == 9);
+    }
+
+    // 4. The immediate entry points stay atomic: no mechanism sits between
+    //    the byte and the paper there, so `printBytes` (and "Print now",
+    //    and Speed::Instant) must run a repeat out before returning.
+    {
+        ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+        feed(iw, "\x1B" "R008*");
+        assert(iw.status().headX - 0.25 - 8.0 / 12.0 < 1e-9);
+        assert(!iw.busy());
+
+        ImageWriter now(72, ImageWriter::PaperSize::Letter);
+        now.setSpeed(ImageWriter::Speed::Draft);
+        now.queueBytes(job, sizeof job);
+        now.tick(1.0 / 60.0);                  // parses, ejects nothing
+        assert(now.busy());
+        now.flushPending();                    // "Print now"
+        assert(!now.busy());
+        assert(now.completedPageCount() + now.droppedPageCount() == 999);
+    }
+
+    std::printf("  ok: ESC R / ESC V / ESC U repeats are paced, not atomic\n");
+}
+
 } // namespace
 
 int main()
@@ -908,6 +1119,8 @@ int main()
     testNoUnaffordableByte();
     testTraceClosedOnDestruction();
     testParserHardening();
+    testEjectInvalidatesSheetReferences();
+    testRepeatIsPacedNotAtomic();
     std::printf("PASS\n");
     return 0;
 }

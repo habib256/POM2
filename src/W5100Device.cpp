@@ -17,10 +17,12 @@
 #include <cstring>
 
 // SocketCompat.h carries the host socket stack for BOTH families — POSIX
-// and Winsock — plus the byte-order helpers and protocol constants this
-// file needs even where no socket is opened (htons/ntohs for the IPv4 and
-// Ethernet framing IPRAW builds, SOCK_STREAM / SOCK_DGRAM / IPPROTO_TCP /
-// IPPROTO_UDP for the mode switch in openSocket).
+// and Winsock — plus `pom2::hostToNet16` / `netToHost16` and the
+// `pom2::kSockStream` family, which exist in the socketless build too.
+// MACRAW/IPRAW framing and the SnMR mode switch are compiled even on
+// Emscripten (they go through NetworkBackend, not through a socket), so
+// naming <arpa/inet.h>'s htons / SOCK_STREAM directly here broke the WASM
+// build for code that opens no socket at all.
 #include "SocketCompat.h"
 
 #if POM2_HAS_SOCKETS
@@ -42,6 +44,15 @@ constexpr uint16_t kSnapVersion = 1;
 
 /// Dest MAC + source MAC + EtherType.
 constexpr int kEthMinimumSize = 6 + 6 + 2;
+
+/// Scratch size for one recvfrom on a TCP/UDP socket. Deliberately the
+/// whole 8 KB RX region rather than an MTU: a single socket may own all of
+/// it (RMSR $FF), and a datagram is read WHOLE or not at all. Sizing it
+/// this way also makes truncation unstageable by construction — a datagram
+/// long enough to fill this buffer cannot pass ringHasRoomFor(), whose
+/// ceiling is the same 8 KB minus the in-band header, so a truncated read
+/// is always dropped instead of being stamped with a wrong length.
+constexpr size_t kMaxDatagram = kW5100MemSize - kW5100RxBase;   // 8 KB
 
 uint8_t indexByte(uint16_t value, unsigned shift)
 {
@@ -107,13 +118,14 @@ std::vector<uint8_t> createEth2Frame(const std::vector<uint8_t>& data,
     Eth2Frame eth{};
     std::memcpy(eth.destinationMac, destinationMac.b, 6);
     std::memcpy(eth.sourceMac,      sourceMac.b,      6);
-    eth.type = htons(0x0800);
+    eth.type = pom2::hostToNet16(0x0800);
     std::memcpy(frame.data(), &eth, sizeof(eth));
 
     Ip4Header ip{};
     ip.ihlVersion = 0x45;   // version 4, IHL 5 (20 bytes, no options)
     ip.tos        = tos;
-    ip.len = htons(static_cast<uint16_t>(sizeof(Ip4Header) + data.size()));
+    ip.len = pom2::hostToNet16(
+        static_cast<uint16_t>(sizeof(Ip4Header) + data.size()));
     ip.id            = 0;
     ip.flagsFragment = 0;
     ip.ttl           = ttl;
@@ -151,11 +163,11 @@ void getIpPayload(const uint8_t* frame, int lengthOfFrame,
     std::memcpy(&eth, frame, sizeof(eth));
     std::memcpy(&ip, frame + sizeof(Eth2Frame), sizeof(ip));
 
-    if (eth.type != htons(0x0800)) return;
+    if (eth.type != pom2::hostToNet16(0x0800)) return;
     if ((ip.ihlVersion >> 4) != 4) return;
 
     const uint16_t ipv4HeaderSize = static_cast<uint16_t>((ip.ihlVersion & 0x0F) * 4);
-    const uint16_t ipPacketSize   = ntohs(ip.len);
+    const uint16_t ipPacketSize   = pom2::netToHost16(ip.len);
     const int      expectedSize   = static_cast<int>(sizeof(Eth2Frame)) + ipPacketSize;
 
     if (ipPacketSize <= ipv4HeaderSize) return;
@@ -355,6 +367,14 @@ void W5100Device::openSystemSocket(size_t i, int type, int protocol, uint8_t sta
         closeHostSocket(fd);
         return;
     }
+    // Windows turns an ICMP port-unreachable provoked by an earlier
+    // sendto() into a WSAECONNRESET failure on the next recvfrom of an
+    // UNCONNECTED datagram socket, which is every UDP socket this class
+    // opens. Off, so one datagram to a closed port stays one lost datagram
+    // (SocketCompat.h, trap 7). No-op on POSIX, and the receive path still
+    // classifies the code in case a layered provider refuses the ioctl.
+    if (type == SOCK_DGRAM) disableUdpConnReset(fd);
+
     sockets_[i].fd = fd;
     setSocketStatus(i, status);
 #endif
@@ -387,11 +407,11 @@ void W5100Device::openSocket(size_t i)
         break;
     case kW5100SnMrTcp:
     case kW5100SnMrTcp | kW5100SnVirtualDns:
-        openSystemSocket(i, SOCK_STREAM, IPPROTO_TCP, kW5100SnSrInit);
+        openSystemSocket(i, pom2::kSockStream, pom2::kIpProtoTcp, kW5100SnSrInit);
         break;
     case kW5100SnMrUdp:
     case kW5100SnMrUdp | kW5100SnVirtualDns:
-        openSystemSocket(i, SOCK_DGRAM, IPPROTO_UDP, kW5100SnSrUdp);
+        openSystemSocket(i, pom2::kSockDgram, pom2::kIpProtoUdp, kW5100SnSrUdp);
         break;
     default:
         break;
@@ -683,32 +703,69 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
     Socket& s = sockets_[i];
     if (!s.isOpen()) return;
 
+    // Only ESTABLISHED and UDP reach here (receiveOnePacket dispatches the
+    // raw modes elsewhere and nothing else at all), and the two protocols
+    // want opposite treatment on every branch below, so decide once.
+    const bool isUdp = (s.status == kW5100SnSrUdp);
+
     const uint16_t freeRoom = ringFreeRoom(i);
-    // Below this a read is not worth the syscall — and for UDP it risks
-    // truncating a datagram, which recvfrom would discard the rest of.
+    // Never fill the ring: rxWrite meeting the read pointer reads as empty
+    // (see ringHasRoomFor). Below a couple of bytes the read is not worth
+    // the syscall either. For UDP this is only a "come back later" gate —
+    // the datagram stays queued in the host socket until the guest drains
+    // the ring, which is better than reading it out and dropping it.
     if (freeRoom <= 32) return;
 
-    std::vector<uint8_t> buffer(freeRoom - 1);   // never fill the ring
+    uint8_t buffer[kMaxDatagram];
+    // A DATAGRAM read must be sized against a whole datagram, NOT against
+    // the ring's free room. recvfrom keeps no remainder: whatever does not
+    // fit the supplied buffer is discarded, and the two families disagree
+    // about how loudly. POSIX returns the truncated count with errno
+    // untouched, so a short buffer stamps a wrong in-band length into the
+    // ring and hands the guest a silently corrupt datagram; Winsock fails
+    // the call with WSAEMSGSIZE, which the error arm below used to read as
+    // "socket is dead". Reading whole datagrams removes both. A TCP read
+    // is a stream and stays clamped to the ring, since bytes taken out of
+    // the socket and then dropped would tear a hole in it.
+    const size_t want = isUdp
+        ? sizeof(buffer)
+        : std::min<size_t>(static_cast<size_t>(freeRoom) - 1, sizeof(buffer));
+
     sockaddr_in source{};
     socklen_c sourceLen = sizeof(source);
 
     // Winsock's recvfrom takes `char*` and an `int` length; the cast keeps
     // one call site for both families (SocketCompat.h, trap 2/3).
     const iolen_t got = ::recvfrom(s.fd,
-                                   reinterpret_cast<char*>(buffer.data()),
-                                   static_cast<int>(buffer.size()), 0,
+                                   reinterpret_cast<char*>(buffer),
+                                   static_cast<int>(want), 0,
                                    reinterpret_cast<sockaddr*>(&source), &sourceLen);
-    if (got > 0) {
-        // UDP prepends source IP + source port + length; TCP is a raw
-        // stream with no header at all.
-        if (s.status == kW5100SnSrUdp) {
-            const uint8_t* ip = reinterpret_cast<const uint8_t*>(&source.sin_addr.s_addr);
-            ringWriteData(i, ip, 4);
-            const uint8_t* port = reinterpret_cast<const uint8_t*>(&source.sin_port);
-            ringWriteData(i, port, 2);
-            ringWrite16(i, static_cast<uint16_t>(got));
-        }
-        ringWriteData(i, buffer.data(), static_cast<size_t>(got));
+    if (got >= 0 && isUdp) {
+        // got == 0 is a legitimate ZERO-LENGTH datagram — the empty
+        // keepalive/probe several period stacks send — and never a peer
+        // close, which is a concept datagram sockets do not have. The
+        // real chip stages the 8-byte header with a length of 0 for it.
+        // Treating it as a close destroyed the guest's socket.
+        const size_t length = static_cast<size_t>(got);
+        // Whole datagram or none: a message-oriented socket has no way to
+        // hand the guest half of one, and the in-band length that follows
+        // must describe what actually lands in the ring. The datagram is
+        // dropped, which is exactly what a real network does when a
+        // receiver cannot take it.
+        if (!ringHasRoomFor(i, length)) return;
+
+        // UDP prepends source IP + source port + length.
+        const uint8_t* ip = reinterpret_cast<const uint8_t*>(&source.sin_addr.s_addr);
+        ringWriteData(i, ip, 4);
+        const uint8_t* port = reinterpret_cast<const uint8_t*>(&source.sin_port);
+        ringWriteData(i, port, 2);
+        ringWrite16(i, static_cast<uint16_t>(length));
+        ringWriteData(i, buffer, length);
+        bytesReceived_ += static_cast<uint64_t>(length);
+    } else if (got > 0) {
+        // TCP is a raw stream with no header at all, and `want` above
+        // already fitted it to the ring.
+        ringWriteData(i, buffer, static_cast<size_t>(got));
         bytesReceived_ += static_cast<uint64_t>(got);
     } else if (got == 0) {
         // Orderly shutdown by the peer — half-close, not a dead socket.
@@ -716,13 +773,20 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
         // SEND its remaining data (the fd stays open for writing) and
         // ends the session with DISCON/CLOSE. Jumping straight to CLOSED
         // broke every driver that drains-then-disconnects on SR=$1C.
-        if (s.status == kW5100SnSrEstablished)
-            setSocketStatus(i, kW5100SnSrCloseWait);
-        else
-            clearSocket(i);
+        setSocketStatus(i, kW5100SnSrCloseWait);
     } else {
         const int e = lastSocketError();
-        if (!errWouldBlock(e) && !errInterrupted(e)) clearSocket(i);
+        if (errWouldBlock(e) || errInterrupted(e)) return;   // nothing yet
+        // On a datagram socket a failure can describe the packet rather
+        // than the socket — Winsock reports an oversized datagram
+        // (WSAEMSGSIZE) and somebody else's ICMP port-unreachable
+        // (WSAECONNRESET, raised on the NEXT recvfrom of an unconnected
+        // UDP socket) through the same channel as a genuine fault. Those
+        // must cost one datagram, not the guest's socket. On TCP the very
+        // same ECONNRESET IS the connection dying, so the tolerance is
+        // strictly UDP-only. SocketCompat.h, trap 7.
+        if (isUdp && errDatagramDiscard(e)) return;
+        clearSocket(i);
     }
 #endif
 }
@@ -1193,21 +1257,26 @@ void W5100Device::writeCommonRegister(uint16_t address, uint8_t value)
 // `Uthernet2.cpp:1154-1183`
 uint8_t W5100Device::readValueAt(uint16_t address)
 {
+    // Fold the >= $8000 mirror FIRST, exactly as writeValueAt does
+    // (Uthernet II manual p.13). Masking only inside mem() further down
+    // wrapped plain memory but let every range test below see the raw
+    // address, so $8403 read back memory_[$0403] — always 0 — instead of
+    // S0's status register, and $8426 never pulled a packet in.
+    address &= kW5100MemMax;
     if (address == kW5100Mr) return modeRegister_;
     if (address >= kW5100S0Base && address <= kW5100S3Max)
         return readSocketRegister(address);
     // Common registers, TX/RX buffers and everything else read straight
-    // out of the array. Addresses >= 0x8000 wrap, matching the Uthernet II
-    // manual's note at the top of p.13.
+    // out of the array.
     return mem(address);
 }
 
 // `Uthernet2.cpp:1334-1354`
 void W5100Device::writeValueAt(uint16_t address, uint8_t value)
 {
-    // Same >= $8000 mirror as readValueAt (Uthernet II manual p.13): the
-    // read path wrapped through mem()'s mask while writes up there fell
-    // past every range test and were silently dropped.
+    // Same >= $8000 mirror as readValueAt (Uthernet II manual p.13):
+    // without the mask, writes up there fall past every range test below
+    // and are silently dropped.
     address &= kW5100MemMax;
     if (address <= kW5100Uport1) {
         writeCommonRegister(address, value);
@@ -1221,6 +1290,7 @@ void W5100Device::writeValueAt(uint16_t address, uint8_t value)
 
 uint8_t W5100Device::peekValueAt(uint16_t address) const
 {
+    address &= kW5100MemMax;        // same mirror as readValueAt
     if (address == kW5100Mr) return modeRegister_;
     if (address >= kW5100S0Base && address <= kW5100S3Max) {
         const size_t i = static_cast<size_t>((address >> 8) - 0x04);

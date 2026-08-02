@@ -150,8 +150,10 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
                                              const Memory::DisplayState& state)
 {
     // MIXED counts as graphics: its bottom four text rows sit under a graphics
-    // band whose painter does write phosphor persistence.
-    if (!state.textMode || state.mixedMode) { textFrameKey_.valid = false; return false; }
+    // band whose painter does write phosphor persistence. Leaving the candidate
+    // key invalid is all it takes to bar the next frame from skipping — render()
+    // commits whatever this function leaves behind.
+    if (!state.textMode || state.mixedMode) return false;
 
     // $0400-$0BFF covers text/lo-res pages 1 AND 2, taken from BOTH main and
     // aux. Copying the union rather than resolving which page is live keeps
@@ -168,6 +170,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     k.state       = state;
     k.iie         = mem.isIIE();
     k.flashPhase  = ((frameCounter / kFlashHalfPeriodFrames) & 1u) != 0;
+    k.textSharp   = oeDemod_.textSharp;
     k.hiResModeId = static_cast<int>(hiResMode);
     // The char ROM goes in by VALUE, not by pointer: reloading a different
     // character set can reuse the same heap block, so a pointer+size compare
@@ -197,6 +200,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     const bool same =
         p.valid &&
         p.iie == k.iie && p.flashPhase == k.flashPhase &&
+        p.textSharp == k.textSharp &&
         p.hiResModeId == k.hiResModeId &&
         p.charRom == k.charRom && p.charRomSize == k.charRomSize &&
         p.chatMauve == k.chatMauve && p.chatMauveState == k.chatMauveState &&
@@ -204,7 +208,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
         p.vram.size() == k.vram.size() &&
         std::memcmp(p.vram.data(), k.vram.data(), k.vram.size()) == 0;
 
-    textFrameKey_ = std::move(k);
+    nextTextFrameKey_ = std::move(k);
     return same;
 }
 
@@ -257,7 +261,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                 upscaleFrameToFrame80(gLo, gHi);
             }
         }
-        useFrame80 = true;
+        setUseFrame80(true);
         return;
     }
 
@@ -268,7 +272,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
     if (chatMauveText) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
             renderTextChatMauveFgBg(mem, state, tLo, tHi, scanY0, scanY1);
-        useFrame80 = true;
+        setUseFrame80(true);
         return;
     }
 
@@ -277,7 +281,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         if (state.textMode) {
             if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
                 renderText80(mem, state, tLo, tHi, scanY0, scanY1);
-            useFrame80 = true;
+            setUseFrame80(true);
             return;
         }
         if (state.hiRes && state.dhgr) {
@@ -285,7 +289,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                 renderDhgr(mem, state, gLo, gHi);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
                 renderText80(mem, state, tLo, tHi, scanY0, scanY1);
-            useFrame80 = true;
+            setUseFrame80(true);
             return;
         }
         if (!state.hiRes && state.dhgr) {
@@ -294,7 +298,7 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                 renderLoResDouble(mem, state, gLo / 4, (gHi + 3) / 4, gLo, gHi);
             if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
                 renderText80(mem, state, tLo, tHi, scanY0, scanY1);
-            useFrame80 = true;
+            setUseFrame80(true);
             return;
         }
         if (state.mixedMode) {
@@ -306,13 +310,13 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                 upscaleFrameToFrame80(gLo, gHi);
             if (bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
                 renderText80(mem, state, tLo, tHi, scanY0, scanY1);
-            useFrame80 = true;
+            setUseFrame80(true);
             return;
         }
     }
 
     // ── Legacy 280-wide path (frame) ────────────────────────────────────
-    useFrame80 = false;
+    setUseFrame80(false);
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
             renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
@@ -442,7 +446,7 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
                     savedFb.size() * sizeof(uint32_t));
         std::memcpy(savedPe.data(), persistenceL80.data() + scanY0 * rowLen,
                     savedPe.size());
-        renderInternalBand(mem, state, scanY0, scanY1);   // sets useFrame80
+        renderInternalBand(mem, state, scanY0, scanY1);   // sets useFrame80_
         for (size_t r = 0; r < nRows; ++r) {
             uint32_t* fbRow = frame80.data()        + (scanY0 + r) * rowLen;
             uint8_t*  peRow = persistenceL80.data() + (scanY0 + r) * rowLen;
@@ -465,7 +469,7 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
     // ── Legacy 280-wide path, clipped to byte columns [col0, col1) ──────
     // Same decision tree (and bandRows / bandScanlines clipping) as the
     // legacy tail of renderInternalBand, with the column window threaded in.
-    useFrame80 = false;
+    setUseFrame80(false);
     int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
     if (state.textMode) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
@@ -581,7 +585,7 @@ void Apple2Display::forEachBeamSegment(
 void Apple2Display::renderBeamRacing(Memory& mem,
                                      std::vector<Memory::VideoEvent> events)
 {
-    useFrame80 = false;
+    setUseFrame80(false);
     forEachBeamSegment(mem.getDisplayStateAtFrameStart(), std::move(events),
         mem.videoStandard(),
         [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
@@ -604,6 +608,21 @@ void Apple2Display::patchMixedTextBand(Memory& mem)
 
 void Apple2Display::render(Memory& mem)
 {
+    // The static-text skip key is published when render() returns, on every
+    // path — see commitTextFrameKey() and the two-slot rationale in the header.
+    // Doing it here rather than at the bottom of the function means the frame
+    // this render() paints is the one the key describes even if a future edit
+    // grows an early return.
+    struct KeyPublisher {
+        Apple2Display* self;
+        ~KeyPublisher() { self->commitTextFrameKey(); }
+    } keyPublisher{this};
+    // A demod armed for the PREVIOUS frame's signal must not fire onto the
+    // pixels this frame is about to paint; whoever wants it has already had
+    // its chance (pixels() / finishPendingCpuDemod() run it lazily), and the
+    // paths below re-arm it for this frame when the mode still calls for one.
+    pendingCpuDemodRows_ = 0;
+
     // Frame counter drives the FLASH animation, phosphor persistence and
     // the AppleWin Tv blur. Derive it from the EMULATED frame index
     // (cycleCounter / cycles-per-video-frame, standard-aware) instead of
@@ -694,16 +713,14 @@ void Apple2Display::render(Memory& mem)
             // branch and are never skipped.
             if (!staticTextFrameUnchanged(mem, state)) renderInternal(mem);
         } else {
-            // A beam-raced frame invalidates the key: the framebuffer no
-            // longer corresponds to any single whole-frame text state.
-            textFrameKey_.valid = false;
+            // A beam-raced frame publishes no key: the framebuffer no longer
+            // corresponds to any single whole-frame text state.
             renderBeamRacing(mem, events);
         }
-    } else {
-        // CPU demod overwrites frame80 from the composite signal — whatever
-        // the key describes is not what is on screen any more.
-        textFrameKey_.valid = false;
     }
+    // The remaining case — a CPU demod about to overwrite frame80 from the
+    // composite signal — also publishes no key, and needs no statement to say
+    // so: nextTextFrameKey_ stays invalid.
 
     signalProducedFlag = needSignal ? fillCompositeSignal(mem, events) : false;
 
@@ -721,20 +738,18 @@ void Apple2Display::render(Memory& mem)
     // lock); the deferred demod is per-row and only rewrites the graphics
     // rows [0, 160) in mixed mode, so the patch survives it.
     if (oeCpu && signalProducedFlag && (!state.textMode || oeDemodsText)) {
-        useFrame80 = true;
         if (mixedGfx) {
             patchMixedTextBand(mem);
-            pendingCpuDemodRows_ = kMixedTextFirstScanline;
+            scheduleCpuDemodInto80(kMixedTextFirstScanline);
         } else {
-            pendingCpuDemodRows_ = kSignalHeight;
+            scheduleCpuDemodInto80(kSignalHeight);
         }
     }
 
     if ((mixedGfx && hiResMode == HiResMode::ColorCompositeOE)
         && signalProducedFlag) {
-        useFrame80 = true;
         patchMixedTextBand(mem);
-        pendingCpuDemodRows_ = kMixedTextFirstScanline;
+        scheduleCpuDemodInto80(kMixedTextFirstScanline);
         mixedCompositeUsesFb_ = true;
     }
 
@@ -769,7 +784,7 @@ void Apple2Display::render(Memory& mem)
                                   signalPhaseOffset_);
         // The output IS native 560-wide regardless of the Apple II's
         // soft-switch state, so route the UI to frame80.
-        useFrame80 = true;
+        setUseFrame80(true);
         if (mixedGfx)
             patchMixedTextBand(mem);
     }
@@ -792,6 +807,13 @@ void Apple2Display::finishPendingCpuDemod()
     if (pendingCpuDemodRows_ <= 0) return;
     renderCompositeOeCpu(pendingCpuDemodRows_);
     pendingCpuDemodRows_ = 0;
+    // This runs after render() returned (pixels(), or MainWindow once it has
+    // dropped stateMutex) and rewrites frame80 — the closing half of the
+    // contract scheduleCpuDemodInto80() opened. The frames that arm it never
+    // publish a key, so this is normally a no-op; stating it here keeps the
+    // rule "the code that writes the framebuffer is the code that invalidates"
+    // true of the deferred write as well as of the scheduling.
+    framebufferMutated();
 }
 
 void Apple2Display::demodCompositeForCapture()
@@ -803,8 +825,13 @@ void Apple2Display::demodCompositeForCapture()
     // text rows, pendingCpuDemodRows_ set by render()) and sharp TEXT.
     if (mixedCompositeUsesFb_) return;
     if (lastRenderState_.textMode && oeDemod_.textSharp) return;
-    useFrame80 = true;
-    pendingCpuDemodRows_ = kSignalHeight;
+    // From here the capture owns the framebuffer: frame80 is about to hold a
+    // demodulated image the on-screen (GPU-demodulated) frame never had, and
+    // width() jumps to 560. scheduleCpuDemodInto80 drops the static-text key
+    // with it, so the next render() rebuilds the display's own image instead
+    // of skipping and leaving the capture's pixels up — a /screen taken on a
+    // motionless TEXT screen used to soften it until the guest touched a byte.
+    scheduleCpuDemodInto80(kSignalHeight);
 }
 
 void Apple2Display::renderCompositeOeCpu(int rows)

@@ -62,6 +62,15 @@ struct ProDOSDecodeResult {
     std::string error;
     std::size_t filesWritten  = 0;
     std::size_t filesSkipped  = 0;
+    std::size_t dirsCreated   = 0;
+    /// Subdirectory entries the walk refused: unsafe name, cyclic/aliased
+    /// key_pointer, depth cap, or exhausted directory budget.
+    std::size_t dirsSkipped   = 0;
+    /// True when a bound fired (directory budget or depth cap), i.e. the
+    /// host tree is a PARTIAL image of the volume. The decode still reports
+    /// `ok` — the files it did write are valid — but `error` then carries a
+    /// human-readable reason for callers that want to surface it.
+    bool        aborted       = false;
 };
 
 /// Reverse of `buildVolumeFromFolder`: walk a synthesised volume's directory
@@ -71,6 +80,14 @@ struct ProDOSDecodeResult {
 /// deleted. Existing files whose bytes already match the volume are skipped
 /// (no write, no mtime bump). Tree files (>128 KB) are skipped with a warn.
 /// `hostFolder` is created if missing.
+///
+/// The image is guest-writable RAM, so its directory graph is untrusted: a
+/// subdir entry's key_pointer may alias an ancestor block and turn the walk
+/// into a cycle whose fan-out (13 entries × 256 chained blocks per level)
+/// makes even a depth-bounded traversal unbounded in visits — every one of
+/// which creates a host directory. The walk therefore keeps a per-call set
+/// of expanded directory blocks (each is walked at most once) and a global
+/// directory budget; both report through `dirsSkipped` / `aborted`.
 ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
                                         const std::string& hostFolder);
 

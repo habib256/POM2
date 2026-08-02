@@ -19,7 +19,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 
 namespace pom2 {
 
@@ -209,23 +211,57 @@ bool Disk35Image::saveDirty()
         lastError_ = "Disk35Image: image is write-protected";
         return false;
     }
-    std::ofstream f(path_, std::ios::binary | std::ios::trunc);
-    if (!f) {
-        lastError_ = "Disk35Image: cannot open " + path_ + " for write";
-        return false;
+
+    // Never open the user's image with `trunc` and rewrite it in place:
+    // save-on-eject writes 800 KB, and an ENOSPC / removable-media / network
+    // -share failure part-way through then leaves the ONLY copy of the disk
+    // truncated — the rest lives in `blocks_`, which dies with the process.
+    // Same discipline (and same reason) as `DiskImage::saveDirty`'s
+    // writeFileAtomic: emit a sibling temp file — same directory, therefore
+    // same filesystem, therefore `rename` is atomic and cannot fail
+    // cross-device — and only swap it in once the write fully succeeded.
+    const std::string tmp = path_ + ".pom2tmp";
+    // A rename replaces the inode, so the temp file's umask-derived mode
+    // would become the image's. Carry the original's permissions across.
+    std::error_code permEc;
+    const std::filesystem::perms origPerms =
+        std::filesystem::status(path_, permEc).permissions();
+    const bool havePerms = !permEc;
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!f) {
+            lastError_ = "Disk35Image: cannot open " + tmp + " for write";
+            return false;
+        }
+        if (!twoImgHeaderRaw_.empty()) {
+            f.write(reinterpret_cast<const char*>(twoImgHeaderRaw_.data()),
+                    static_cast<std::streamsize>(twoImgHeaderRaw_.size()));
+        }
+        f.write(reinterpret_cast<const char*>(blocks_.data()),
+                static_cast<std::streamsize>(blocks_.size()));
+        if (!twoImgTrailerRaw_.empty()) {
+            f.write(reinterpret_cast<const char*>(twoImgTrailerRaw_.data()),
+                    static_cast<std::streamsize>(twoImgTrailerRaw_.size()));
+        }
+        f.flush();
+        if (!f) {
+            lastError_ = "Disk35Image: write failed on " + tmp;
+            f.close();
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
     }
-    if (!twoImgHeaderRaw_.empty()) {
-        f.write(reinterpret_cast<const char*>(twoImgHeaderRaw_.data()),
-                static_cast<std::streamsize>(twoImgHeaderRaw_.size()));
+    std::error_code ec;
+    if (havePerms) {
+        std::filesystem::permissions(tmp, origPerms, ec);
+        ec.clear();
     }
-    f.write(reinterpret_cast<const char*>(blocks_.data()),
-            static_cast<std::streamsize>(blocks_.size()));
-    if (!twoImgTrailerRaw_.empty()) {
-        f.write(reinterpret_cast<const char*>(twoImgTrailerRaw_.data()),
-                static_cast<std::streamsize>(twoImgTrailerRaw_.size()));
-    }
-    if (!f) {
-        lastError_ = "Disk35Image: write failed on " + path_;
+    std::filesystem::rename(tmp, path_, ec);
+    if (ec) {
+        lastError_ = "Disk35Image: cannot replace " + path_ + ": " + ec.message();
+        std::error_code ec2;
+        std::filesystem::remove(tmp, ec2);
         return false;
     }
     dirty_ = false;

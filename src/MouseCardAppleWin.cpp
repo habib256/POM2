@@ -12,7 +12,9 @@
 #include "MouseCardAppleWin.h"
 #include "Logger.h"
 
+#include <cstring>
 #include <fstream>
+#include <iterator>
 
 namespace {
 
@@ -458,4 +460,111 @@ void MouseCardAppleWin::pollHostInput()
         lastHostButton = hb;
         setButton(0, hb);
     }
+}
+
+// ── Snapshot / rewind ─────────────────────────────────────────────────────
+//
+// The whole HLE'd MCU is plain C++ members, so this blob IS the MCU state:
+// mode/status bytes, the resolved position + clamp window, button shadows,
+// the command-byte cursor, the Port A/B latch shadows and the VBL pacer,
+// wrapping the real MC6821's own blob. The host-input shadows
+// (hostX/hostY/hostButton and their lastHost* delta trackers) are NOT
+// serialized — same rule as MouseCard: that is where the user's physical
+// pointer is right now, not emulated state. `hostPrimed` is forced false on
+// restore so the next pollHostInput re-seeds the delta trackers from the
+// live pointer with a zero delta, instead of replaying the distance the
+// pointer travelled while the snapshot sat on disk as one cursor jump.
+
+namespace {
+constexpr uint8_t kMouseAwSnapMagic[4] = { 'M', 'A', 'W', '1' };
+constexpr size_t  kMouseAwFixedBytes   = 4 + 2 + 8 + 8 + 2 + 16 + 16 + 4 + 8 + 1;
+}
+
+void MouseCardAppleWin::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    auto put32 = [&](int32_t v) {
+        for (int i = 0; i < 4; ++i)
+            out.push_back(static_cast<uint8_t>(static_cast<uint32_t>(v) >> (8 * i)));
+    };
+    out.insert(out.end(), kMouseAwSnapMagic, kMouseAwSnapMagic + 4);
+    out.push_back(by6821A);
+    out.push_back(by6821B);
+    out.insert(out.end(), std::begin(byBuff), std::end(byBuff));
+    put32(nBuffPos);
+    put32(nDataLen);
+    out.push_back(byState);
+    out.push_back(byMode);
+    put32(iX);    put32(iY);
+    put32(nX);    put32(nY);
+    put32(iMinX); put32(iMaxX);
+    put32(iMinY); put32(iMaxY);
+    out.push_back(bButtons[0] ? 1 : 0);
+    out.push_back(bButtons[1] ? 1 : 0);
+    out.push_back(bBtn0 ? 1 : 0);
+    out.push_back(bBtn1 ? 1 : 0);
+    put32(vblCycles_);
+    put32(vblCycleAccum);
+    // The IRQ level cannot be re-derived from byState: MOUSE_SERV drops the
+    // line (AppleWin's CpuIrqDeassert(IS_MOUSE)) WITHOUT clearing byState's
+    // STAT_INT_* bits — only the next MOUSE_READ does that. Carry the level
+    // the card actually published to the wire-OR.
+    out.push_back(slotIrqAsserted() ? 1 : 0);
+    pia.appendSnapshotState(out);
+}
+
+void MouseCardAppleWin::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    if (data == nullptr ||
+        len < kMouseAwFixedBytes + MC6821::kSnapshotBytes ||
+        std::memcmp(data, kMouseAwSnapMagic, 4) != 0)
+        return;   // foreign blob — a different card sat in this slot
+    size_t p = 4;
+    auto get32 = [&]() -> int32_t {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[p++]) << (8 * i);
+        return static_cast<int32_t>(v);
+    };
+    by6821A = data[p++];
+    by6821B = data[p++];
+    std::memcpy(byBuff, data + p, sizeof(byBuff)); p += sizeof(byBuff);
+    nBuffPos = get32();
+    nDataLen = get32();
+    byState  = data[p++];
+    byMode   = data[p++];
+    iX    = get32(); iY    = get32();
+    nX    = get32(); nY    = get32();
+    iMinX = get32(); iMaxX = get32();
+    iMinY = get32(); iMaxY = get32();
+    bButtons[0] = data[p++] != 0;
+    bButtons[1] = data[p++] != 0;
+    bBtn0       = data[p++] != 0;
+    bBtn1       = data[p++] != 0;
+    vblCycles_    = get32();
+    vblCycleAccum = get32();
+    const bool irq = data[p++] != 0;
+    p += pia.loadSnapshotState(data + p, len - p);
+
+    // Untrusted blob: onPiaPortBOut indexes byBuff with nBuffPos and
+    // advanceCycles loops `while (vblCycleAccum >= vblCycles_)`, so clamp
+    // every cursor and pacer to the range this card can actually produce.
+    if (nBuffPos < 0 || nBuffPos > 7) nBuffPos = 0;
+    if (nDataLen < 1 || nDataLen > 8) nDataLen = 1;
+    if (vblCycles_ <= 0) vblCycles_ = 17045;
+    if (vblCycleAccum < 0 || vblCycleAccum >= vblCycles_) vblCycleAccum = 0;
+    // AppleWin's SetClampX/Y only ever store 0..0xFFFF; anything else came
+    // from a corrupt blob and would let clampX/clampY strand iX outside the
+    // firmware's window.
+    auto clampBound = [](int v) { return (v < 0 || v > 0xFFFF) ? 0 : v; };
+    iMinX = clampBound(iMinX); iMaxX = clampBound(iMaxX);
+    iMinY = clampBound(iMinY); iMaxY = clampBound(iMaxY);
+    if (iMinX > iMaxX) { iMinX = 0; iMaxX = 1023; }
+    if (iMinY > iMaxY) { iMinY = 0; iMaxY = 1023; }
+    clampX();
+    clampY();
+
+    // Re-seed the host delta trackers from the live pointer on the next poll.
+    hostPrimed = false;
+    // Re-publish the slot IRQ: the wire-OR bookkeeping lives in
+    // SlotPeripheral, not in any serialized member.
+    assertIrq(irq);
 }

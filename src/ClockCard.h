@@ -139,8 +139,10 @@ public:
     /// 64 / 256 / 2048 / 4096 once a TP/REGISTER_HOLD mode has been latched.
     int  tpRateHz() const { return tpRateHz_; }
 
-    /// Time-source hook. Defaults to std::time + std::localtime; the
-    /// public test factory below swaps in a deterministic source.
+    /// Time-source hook. Defaults to std::time + localtime_r (reentrant:
+    /// this card converts on the CPU thread while the UI thread converts
+    /// times of its own); the public test factory below swaps in a
+    /// deterministic source.
     using TimeFn = std::tm (*)();
 
     /// Test-only factory: build a ClockCard that reads time through

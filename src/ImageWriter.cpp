@@ -192,6 +192,13 @@ void ImageWriter::resetPrinter()
     extraIntraSpace_ = 0.0;
     bitGraph_.remBytes = 0;
     bitGraph_.readBytesColumn = 0;
+    // A repeat run still owed is part of the parser state a reset clears —
+    // and leaving it armed would keep `busy()` asserted with nothing left
+    // in the input buffer to explain it. (`updateSwitch()` below is what
+    // restores `msb_`, so ESC V/U's deferred restore is covered too.)
+    repeatRemaining_   = 0;
+    repeatPatPos_      = 0;
+    repeatRestoresMsb_ = false;
     hmi_          = -1.0;
     switcha_      = 0;                  // SWITCHA_CHARSET_US
     switchb_      = ' ';
@@ -405,7 +412,7 @@ void ImageWriter::renderGlyph(uint8_t ch)
     }
 }
 
-void ImageWriter::printChar(uint8_t ch)
+void ImageWriter::acceptByte(uint8_t ch)
 {
     ++bytesIn_;
     // Rolling raw capture — drops the oldest half when full so a runaway
@@ -416,6 +423,41 @@ void ImageWriter::printChar(uint8_t ch)
     raw_.push_back(ch);
     if (trace_) traceByte(ch);
     printCharInternal(ch);
+}
+
+void ImageWriter::armRepeat(const uint8_t* pat, uint8_t len, uint32_t count,
+                            bool restoresMsb)
+{
+    repeatPatLen_ = (len == 0 || len > 3) ? 1 : len;
+    for (uint8_t i = 0; i < repeatPatLen_; ++i) repeatPat_[i] = pat[i];
+    repeatPatPos_      = 0;
+    repeatRemaining_   = count;
+    repeatRestoresMsb_ = restoresMsb;
+    if (count == 0 && restoresMsb) msb_ = 0;   // `nnnn = 0000`: nothing owed
+}
+
+void ImageWriter::printRepeatUnit()
+{
+    if (repeatRemaining_ == 0) return;
+    --repeatRemaining_;
+    const uint8_t ch = repeatPat_[repeatPatPos_];
+    if (++repeatPatPos_ >= repeatPatLen_) repeatPatPos_ = 0;
+    printCharInternal(ch);
+    if (repeatRemaining_ == 0 && repeatRestoresMsb_) {
+        msb_ = 0;                     // ESC V / ESC U — see repeatPat_
+        repeatRestoresMsb_ = false;
+    }
+}
+
+void ImageWriter::printChar(uint8_t ch)
+{
+    // The immediate entry point — no mechanism between the byte and the
+    // paper (`printBytes`, `flushPending`, `Speed::Instant`), so a repeat
+    // run this byte starts is run out before returning. The paced drain in
+    // tick() calls `acceptByte` instead and spends the run over as many
+    // ticks as the mechanism needs (see repeatPat_).
+    acceptByte(ch);
+    while (repeatRemaining_ > 0) printRepeatUnit();
 }
 
 void ImageWriter::printCharInternal(uint8_t ch)
@@ -659,6 +701,9 @@ void ImageWriter::compactPending()
 
 void ImageWriter::flushPending()
 {
+    // What a partly-expanded repeat still owes comes off the head first —
+    // it was asked for before anything queued behind it.
+    while (repeatRemaining_ > 0) printRepeatUnit();
     while (pendingHead_ < pending_.size()) printChar(pending_[pendingHead_++]);
     pending_.clear();
     pendingHead_ = 0;
@@ -713,9 +758,19 @@ double ImageWriter::byteCost(uint8_t ch) const
     return 1.0 / cps;                          // one printed character
 }
 
+double ImageWriter::nextUnitCost() const
+{
+    // An outstanding repeat byte is a unit of work that consumes no input
+    // byte, so it — not `pending_[pendingHead_]` — is what the credit cap,
+    // the drain and the stall watchdog have to price when one is pending.
+    if (repeatRemaining_ > 0) return byteCost(repeatPat_[repeatPatPos_]);
+    if (pendingHead_ < pending_.size()) return byteCost(pending_[pendingHead_]);
+    return 0.0;
+}
+
 void ImageWriter::tick(double dt)
 {
-    if (pendingHead_ >= pending_.size()) {
+    if (!busy()) {
         pending_.clear();
         pendingHead_ = 0;
         credit_      = 0.0;
@@ -733,16 +788,19 @@ void ImageWriter::tick(double dt)
     // spend half an hour of wall clock printing it, which is neither what
     // the memory bound wanted nor what the user is waiting for.
     if (catchUp_) {
-        const size_t byteBudget  = pendingHead_ + kCatchUpBytes;
+        // Budgeted in units of WORK, not in queue positions: an outstanding
+        // repeat byte is a unit that consumes no input byte, and `pending_`
+        // may even be empty while a run is still owed.
+        size_t       work        = 0;
         const size_t sheetBudget = sheetsEjected_ + kCatchUpSheets;
-        while (pendingHead_ < pending_.size() &&
-               pendingHead_ < byteBudget &&
-               sheetsEjected_ < sheetBudget) {
-            printChar(pending_[pendingHead_++]);
+        while (busy() && work < kCatchUpBytes && sheetsEjected_ < sheetBudget) {
+            ++work;
+            if (repeatRemaining_ > 0) { printRepeatUnit(); continue; }
+            acceptByte(pending_[pendingHead_++]);
         }
         credit_     = 0.0;
         stalledFor_ = 0.0;   // nothing is unaffordable while un-paced
-        if (pendingHead_ >= pending_.size()) catchUp_ = false;
+        if (!busy()) catchUp_ = false;
         compactPending();
         return;
     }
@@ -756,24 +814,25 @@ void ImageWriter::tick(double dt)
     // (Print Shop froze on every page eject).
     if (dt > 0.0) {
         traceClock_ += dt;
-        const double head = byteCost(pending_[pendingHead_]);
-        credit_ = std::min(credit_ + dt, std::max(kMaxCredit, head));
+        credit_ = std::min(credit_ + dt, std::max(kMaxCredit, nextUnitCost()));
     }
 
-    const size_t before = pendingHead_;
-    while (pendingHead_ < pending_.size()) {
-        const uint8_t ch   = pending_[pendingHead_];
-        const double  cost = byteCost(ch);     // state-dependent: read first
+    size_t units = 0;
+    while (busy()) {
+        const double cost = nextUnitCost();    // state-dependent: read first
         if (cost > credit_) break;
         credit_ -= cost;
-        ++pendingHead_;
-        printChar(ch);
+        ++units;
+        // A repeat byte the previous unit left outstanding comes before
+        // the next input byte — the run is what the head is busy with.
+        if (repeatRemaining_ > 0) { printRepeatUnit(); continue; }
+        acceptByte(pending_[pendingHead_++]);
     }
 
     // Watchdog. Nothing should ever be unaffordable for this long — but a
     // wedged printer takes the guest down with it (it waits on ACK), so a
     // cost-model mistake must degrade to "printed late", never to a hang.
-    if (pendingHead_ == before && dt > 0.0) {
+    if (units == 0 && dt > 0.0) {
         stalledFor_ += dt;
         // The threshold has to clear the dearest byte the cost model can
         // legitimately produce, or the watchdog fires on a byte that was
@@ -783,15 +842,23 @@ void ImageWriter::tick(double dt)
         // credit cap already grows to `head` (see above), so waiting that
         // long is the paced answer; the watchdog is only for a cost the
         // model can never afford at all.
-        const double patience =
-            std::max(kStallSeconds, byteCost(pending_[pendingHead_]) * 1.5);
+        const double patience = std::max(kStallSeconds, nextUnitCost() * 1.5);
         if (stalledFor_ >= patience) {
-            const uint8_t ch = pending_[pendingHead_];
-            traceEvent("STALL: byte $%02X unaffordable for %.1f s "
-                       "(cost %.3f s, credit %.3f s) — forcing it through",
-                       ch, stalledFor_, byteCost(ch), credit_);
-            ++pendingHead_;
-            printChar(ch);
+            if (repeatRemaining_ > 0) {
+                traceEvent("STALL: repeat byte $%02X unaffordable for %.1f s "
+                           "(cost %.3f s, credit %.3f s) — forcing it through "
+                           "(%u left)",
+                           repeatPat_[repeatPatPos_], stalledFor_,
+                           nextUnitCost(), credit_, repeatRemaining_);
+                printRepeatUnit();
+            } else {
+                const uint8_t ch = pending_[pendingHead_];
+                traceEvent("STALL: byte $%02X unaffordable for %.1f s "
+                           "(cost %.3f s, credit %.3f s) — forcing it through",
+                           ch, stalledFor_, byteCost(ch), credit_);
+                ++pendingHead_;
+                acceptByte(ch);
+            }
             credit_     = 0.0;
             stalledFor_ = 0.0;
         }
@@ -1117,28 +1184,25 @@ bool ImageWriter::processCommandChar(uint8_t ch)
         setupBitImage(printRes_, static_cast<uint32_t>(param3()) * 8u);
         break;
 
+    // ESC V / ESC U are ESC G / ESC C with the data bytes implied: nnnn
+    // columns of one repeated pattern. Setting the bit image up ONCE for
+    // the whole run (rather than per column, as the reference does) leaves
+    // the outstanding bytes flowing through `printBitGraph`, which is what
+    // prices them at the dot-column rate and lets the drain yield mid-run.
+    // A stream of `ESC U 9999` used to cost 1.4 s inside one catch-up tick,
+    // against 9 ms for the same backlog of plain text — see repeatPat_.
     case 0x56: {                                // ESC V nnnn c  repeat column
         spacesToZeros(4);
         printRes_ &= ~8;
-        const int n = param4();
-        for (int i = 0; i < n; ++i) {
-            setupBitImage(printRes_, 1);
-            printBitGraph(params_[4]);
-        }
-        msb_ = 0;
+        setupBitImage(printRes_, static_cast<uint32_t>(param4()));
+        armRepeat(&params_[4], 1, bitGraph_.remBytes, true);
         break;
     }
     case 0x55: {                                // ESC U nnnn abc  hi-res repeat
         spacesToZeros(4);
         printRes_ |= 8;
-        const int n = param4();
-        for (int i = 0; i < n; ++i) {
-            setupBitImage(printRes_, 1);
-            printBitGraph(params_[4]);
-            printBitGraph(params_[5]);
-            printBitGraph(params_[6]);
-        }
-        msb_ = 0;
+        setupBitImage(printRes_, static_cast<uint32_t>(param4()));
+        armRepeat(&params_[4], 3, bitGraph_.remBytes, true);
         break;
     }
 
@@ -1238,10 +1302,11 @@ bool ImageWriter::processCommandChar(uint8_t ch)
 
     case 0x52: {                                // ESC R nnn c  repeat char
         spacesToZeros(3);
-        const int n = param3();
-        const uint8_t c = params_[3];
-        escCmd_ = 0;                            // so the recursion prints
-        for (int i = 0; i < n; ++i) printCharInternal(c);
+        // Left OUTSTANDING, not expanded here: `c` may be a form feed, so
+        // one input byte can ask for 999 page ejects. The drain spends the
+        // run one copy at a time against the mechanism budget — see
+        // repeatPat_ in the header for the measurements.
+        armRepeat(&params_[3], 1, static_cast<uint32_t>(param3()), false);
         break;
     }
 
