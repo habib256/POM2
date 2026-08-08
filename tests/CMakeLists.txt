@@ -4782,3 +4782,33 @@ endif()
 
 add_test(NAME mockingboard_timeline COMMAND test_mockingboard_timeline)
 set_tests_properties(mockingboard_timeline PROPERTIES TIMEOUT 30)
+
+# DIX "RETURN right after launch" crash probe (diagnostic executable, no
+# add_test): boots disks_3.5/DIX.po on //e PAL through slot-4 Mockingboard +
+# slot-5 SmartPort and injects a RETURN at a chosen emulated time.
+add_executable(dix_return_crash_probe EXCLUDE_FROM_ALL
+    dix_return_crash_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(dix_return_crash_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(dix_return_crash_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(dix_return_crash_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(dix_return_crash_probe PRIVATE winmm)
+endif()
