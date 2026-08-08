@@ -134,7 +134,7 @@ jobs:
             libgles2 libegl1 libglx0 \
             libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
 
-      - name: Smoke-launch + MEASURE on the runner (it is ARM64 — this is real)
+      - name: Smoke-launch, and run the packaged bench
         id: bench
         run: |
           set -euo pipefail
@@ -142,17 +142,25 @@ jobs:
           OUT=$(./squashfs-root/AppRun --help 2>&1)
           grep -q "Usage: POM2" <<<"$OUT" || { echo "ERROR: no usage printed"; exit 1; }
 
-          # The runner is aarch64, so the package's own pom2_bench runs here.
-          # This is not decoration: it is the only check that the PGO binary is
-          # still the SAME EMULATOR — the hashes must match a plain build's.
-          # (It is NOT a Pi-speed measurement: this runner is far faster than a
-          # Pi 4, and its core is not necessarily the -mcpu target.)
+          # The runner is aarch64, so the package's own pom2_bench runs here —
+          # proof the shipped binary starts and completes a run.
+          #
+          # This is NOT the output-identity check. That one lives inside the
+          # container (build_in_bookworm_pi.sh), where the pass-1 and pass-2
+          # binaries can be compared on the SAME machine and the SAME image;
+          # it fails the build on any difference. And it is NOT a Pi-speed
+          # measurement: this runner is much faster than a Pi 4 and its core
+          # need not be the -mcpu target.
+          #
+          # ⚠ LC_ALL=C on the glob — the "first .dsk" otherwise depends on the
+          # host's collation, and a run that measured a different image than
+          # the reference would look like a discrepancy that is not one.
           TD=$(mktemp -d); tar xzf dist/POM2-*-aarch64.tar.gz -C "$TD"
-          DISK=$(ls disks_5.4/dsk/*.dsk 2>/dev/null | head -1 || true)
+          DISK=$(LC_ALL=C ls disks_5.4/dsk/*.dsk 2>/dev/null | head -1 || true)
           CPU=$("$TD/bin/pom2_bench" --frames 3000 --quiet 2>/dev/null | tail -1)
           echo "banner: $CPU"
           if [ -n "$DISK" ]; then
-            DSK=$("$TD/bin/pom2_bench" --disk "$DISK" --frames 900 --quiet 2>/dev/null | tail -1)
+            DSK="$(basename "$DISK") — $("$TD/bin/pom2_bench" --disk "$DISK" --frames 900 --quiet 2>/dev/null | tail -1)"
             echo "disk  : $DSK"
           else
             DSK="(no 5.25\" image in the checkout)"
@@ -172,7 +180,9 @@ jobs:
             echo "| \`$(basename "$APP")\` | $(du -h "$APP" | cut -f1) | Pi OS **with a desktop** — one clickable file |"
             echo "| \`$(basename "$TGZ")\` | $(du -h "$TGZ" | cut -f1) | Pi OS **Lite** cabinet — \`tar -xzf … -C /opt/POM2\` |"
             echo ''
-            echo 'Measured on the ARM64 runner (NOT a Pi — it is much faster; the point is the hashes):'
+            echo 'Run on the ARM64 runner — **not** a Pi (this runner is much faster,'
+            echo 'and its core need not be the `-mcpu` target). Output identity vs the'
+            echo 'un-profiled build is gated inside the container, not here.'
             echo ''
             echo '```'
             echo "banner  ${{ steps.bench.outputs.cpu }}"
