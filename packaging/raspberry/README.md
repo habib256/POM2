@@ -2,9 +2,9 @@
 
 Three separate things, in the order they are worth doing:
 
-| Step | Script | What it buys |
-|------|--------|--------------|
-| Build for the actual core, with a profile | `build_native_pi.sh --pgo` | ~40 % off the emulation core vs the generic AppImage |
+| Step | How | What it buys |
+|------|-----|--------------|
+| Get a binary built for your actual core, with a profile | **CI** (`pi400.yml`) — or `build_native_pi.sh --pgo` on the Pi | ~40 % off the emulation core vs the generic AppImage |
 | Take the stutter out of the system | `pi_tuning.sh` | removes governor ramps, IRQ contention, swap hitches |
 | Check you actually got it | `pom2_bench` | see [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md) |
 
@@ -14,12 +14,45 @@ This file is only the Pi-side how-to.
 
 ---
 
-## 1. Build natively, with PGO
+## 1. Get the fast binary — from CI, not from the Pi
 
-The released `POM2-v*-aarch64.AppImage` is built for **generic aarch64** — it
-has to run from a Pi 3 to a Pi 5. Building on the Pi itself lets GCC use the
-real core (`-mcpu=cortex-a72` on a Pi 4/400, `cortex-a76` on a Pi 5) and, far
-more importantly, use a **profile**.
+The released `POM2-v*-aarch64.AppImage` is built for **generic aarch64**: it
+has to run from a Pi 3 to a Pi 5, so GCC gets neither the real core's cost
+model nor a profile.
+
+**You do not need to compile on the Pi to fix that.** The
+`Raspberry Pi packages` workflow (`.github/workflows/pi400.yml`) does the whole
+two-pass PGO + LTO build on GitHub's **native ARM64 runner**, inside a
+`debian:bookworm` container — the training run included. The Pi pays nothing:
+
+```sh
+gh workflow run pi400.yml -f mcpu=cortex-a72      # Pi 4 / Pi 400 (default)
+gh workflow run pi400.yml -f mcpu=cortex-a76      # Pi 5
+gh run download <run-id> -n POM2-pi400-aarch64
+```
+
+Two packages come out of **one** build, no recompilation:
+
+| Package | For |
+|---|---|
+| `POM2-v<ver>-pi400-aarch64.AppImage` | Pi OS **with a desktop** — one clickable file |
+| `POM2-v<ver>-pi400-aarch64.tar.gz` | Pi OS **Lite** cabinet — no FUSE; `sudo tar -xzf … -C /opt/POM2` |
+
+The tarball is exactly the `cmake --install` tree (`bin/POM2` +
+`share/POM2/{roms,fonts,pic}`), which is what `ResourcePaths` resolves — the
+same layout `build_native_pi.sh --install` produces, so a machine set up either
+way looks identical. `pom2_bench` ships beside the binary so you can measure on
+the Pi itself.
+
+The job also *verifies* rather than hopes: aarch64, ET_EXEC AppImage runtime,
+glibc floor ≤ 2.36, GLES-only (no desktop libGL — on a Pi that is the software
+rasteriser, a silent ~2 fps regression rather than a link error), ROMs present
+in both packages, and it runs `pom2_bench` on the runner (which is ARM64) to
+confirm the PGO binary's output **hashes** still match a plain build's.
+
+## 1b. Or build on the Pi itself
+
+Still supported, and the right thing when you are iterating on the source:
 
 ```sh
 git clone <repo> POM2 && cd POM2
@@ -29,7 +62,8 @@ packaging/raspberry/build_native_pi.sh --pgo       # 2 passes + LTO, ~40-60 min 
 sudo packaging/raspberry/build_native_pi.sh --pgo --install    # → /opt/POM2
 ```
 
-What the script does, and the traps it closes:
+What the script does, and the traps it closes (`build_in_bookworm_pi.sh`, the
+CI-side script, closes the same ones):
 
 * picks `-mcpu` from `/proc/device-tree/model` rather than trusting
   `-mcpu=native` (on some 64-bit kernels the MIDR GCC reads is incomplete and
@@ -96,7 +130,9 @@ The `speed=… MHz (…x)` figure is emulated CPU throughput; `1.0x` is realtime
 for an Apple II. The `ram=` / `fb=` hashes must not change between builds — if
 they do, the faster binary is not the same emulator.
 
-> ⚠ These scripts have **not yet been run on real Pi hardware**. The build
-> recipe and its two PGO traps were validated end to end on x86-64 (same GCC
-> semantics, same CMake object layout); the `-mcpu` selection, the RAM-based
-> `-j` cap and everything in `pi_tuning.sh` are Pi-specific and untested.
+> ⚠ Not yet run on real Pi hardware. The PGO recipe and both of its traps were
+> validated end to end on x86-64 (same GCC semantics, same CMake object
+> layout), and `pi400.yml` re-checks arch / glibc floor / GLES-only / output
+> hashes on every run — but the `-mcpu` selection, the RAM-based `-j` cap in
+> the on-Pi script, and everything in `pi_tuning.sh` are Pi-specific and
+> unexercised.
