@@ -84,6 +84,10 @@ public:
     /// LDA $0100,X` trick — so the slot number is held only for
     /// diagnostics / UI display.
     explicit DiskIICard(int slot = kDefaultSlot);
+    /// Flushes both drives' pending write-back (see `flushPendingWrites`)
+    /// so tearing the card down — process exit, profile switch — can't
+    /// drop writes the user opted in to.
+    ~DiskIICard();
 
     int getSlot() const { return slot_; }
 
@@ -116,6 +120,11 @@ public:
             trackPos[d]         = 0;
         }
         cycleAccum = 0;
+        // The //c / //c+ on-board IWM caches (image, quarter-track); every
+        // other head-moving path re-pushes it. Without this the IWM kept
+        // reading the pre-boot quarter-track after the UI's "Boot disk"
+        // shortcut yanked the head back to 0.
+        pushIwmFloppy();
     }
 
     /// Load the 256-byte Disk II boot PROM from disk. Must succeed before
@@ -161,6 +170,14 @@ public:
     bool insertDisk(const std::string& path) { return insertDisk(0, path); }
     void ejectDisk(int drive);
     void ejectDisk() { ejectDisk(0); }
+
+    /// Persist any pending write-back for both drives WITHOUT ejecting.
+    /// insertDisk / ejectDisk already flush on the swap, but shutdown and
+    /// profile switching tear the card down through neither — so a session's
+    /// worth of guest writes used to die with the process even with
+    /// write-back enabled. A no-op when write-back is off or the medium is
+    /// physically write-protected.
+    void flushPendingWrites();
 
     // All per-drive getters bound-check `drive` (0..kDriveCount-1) and return
     // a safe default out of range — insertDisk/ejectDisk already validate, so
@@ -421,6 +438,13 @@ private:
     bool     writeLineActive = false;  // tracks WRITE_DATA edge state
 
     uint64_t writeFlushCount = 0;
+
+    /// Recompute the card-wide latches derived from the currently mounted
+    /// media: `serving13_` (13-sector boot PROM at $Cn00) and `useBitLss`
+    /// (WOZ / 13-sector force the bit-level LSS). Called from BOTH
+    /// insertDisk and ejectDisk — they describe the mounted set, so an
+    /// eject has to be able to clear them again.
+    void refreshMediaDerivedState(bool warnMissing13Rom);
 
     void handleSwitchAccess(uint8_t low4);
     /// MAME `floppy_image_device::seek_phase_w`: settle the head into the
