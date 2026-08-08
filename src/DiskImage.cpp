@@ -1539,12 +1539,49 @@ int64_t DiskImage::getNextTransition(int qt, int64_t fromLssCycle,
     int64_t cellOff  = delta - fullRevs * period;
     if (cellOff < 0) { cellOff += period; --fullRevs; }
     const int pos = static_cast<int>(cellOff);
-    auto it = std::lower_bound(flux.begin(), flux.end(), pos);
-    if (it == flux.end()) {
+
+    // ── lower_bound, resumed from the previous answer ────────────────────
+    // `idx` must end up as the true std::lower_bound(flux, pos), i.e. the
+    // smallest index with flux[idx] >= pos. The cursor only changes HOW it
+    // is found (see the lbHint_ comment in the header): the hint is
+    // *verified* against the lower-bound predicate, so a stale one costs a
+    // failed test and nothing else. Output is identical by construction —
+    // pinned by diskii_lss_smoke and disk_boot_smoke.
+    const size_t n = flux.size();
+    const int*   f = flux.data();
+    size_t idx;
+    size_t hint = (qt == lbHintQt_) ? lbHintIdx_ : 0;
+    if (hint > n) hint = n;                       // array may have shrunk
+    if ((hint == 0 || f[hint - 1] < pos) && (hint == n || f[hint] >= pos)) {
+        idx = hint;                               // hit: 2 comparisons
+    } else if (hint < n && f[hint] < pos) {
+        // The usual miss: the head advanced past a handful of events since
+        // the previous call. Walk forward a bounded number of steps before
+        // giving up — an unbounded walk would be worse than the binary
+        // search on a long seek.
+        size_t j = hint;
+        const size_t stop = (n - j) < 8 ? n : j + 8;
+        while (j < stop && f[j] < pos) ++j;
+        // f[j-1] < pos holds by construction, so j is the lower bound as
+        // soon as it stops on an event at or past `pos`.
+        idx = (j < n && f[j] >= pos)
+                  ? j
+                  : static_cast<size_t>(
+                        std::lower_bound(flux.begin(), flux.end(), pos)
+                        - flux.begin());
+    } else {
+        // Backwards jump (revolution wrap, track step, seek): full search.
+        idx = static_cast<size_t>(
+            std::lower_bound(flux.begin(), flux.end(), pos) - flux.begin());
+    }
+    lbHintQt_  = qt;
+    lbHintIdx_ = idx;
+
+    if (idx == n) {
         // Wrap to next revolution.
         return origin + (fullRevs + 1) * period + flux.front();
     }
-    return origin + fullRevs * period + *it;
+    return origin + fullRevs * period + f[idx];
 }
 
 // MAME `floppy_image_device::write_flux` — splice `count` flux events

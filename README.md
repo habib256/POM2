@@ -352,7 +352,22 @@ cmake -S . -B build -DPOM2_GLES=ON     # needs libgles2-mesa-dev libegl1-mesa-de
 
 Same sources, no renderer fork: only the GL headers, the shader `#version`
 prologue and the context request differ (`src/Pom2Build.h`). WASM turns the
-same tier on by itself — WebGL 2 *is* GLES 3.0.
+same tier on by itself — WebGL 2 *is* GLES 3.0. (On a *desktop*-GL build the
+CRT/NTSC shaders negotiate their dialect at run time — 150 → 140 → 130 — so a
+driver capped below GLSL 1.50 no longer disables the effect stack.)
+
+For a Pi you actually intend to run games on, build it **natively with a
+profile** instead of using the generic aarch64 AppImage — worth roughly 40 % on
+the emulation core — and take the stutter out of the system:
+
+```bash
+packaging/raspberry/build_native_pi.sh --pgo --install   # -mcpu + PGO + LTO
+sudo packaging/raspberry/pi_tuning.sh                    # governor, IRQs, swap
+```
+
+→ [`packaging/raspberry/README.md`](packaging/raspberry/README.md) for the
+how-to, [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the measurements and
+the profiling recipe.
 
 ---
 

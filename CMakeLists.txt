@@ -620,6 +620,62 @@ if(WIN32)
 endif()
 endif() # NOT EMSCRIPTEN (pom2_headless)
 
+# ─── pom2_bench ───────────────────────────────────────────────────────────
+# Deterministic headless run of N frames — no threads, no audio device, no
+# sockets, no wall-clock pacing. Two roles, both of which need that closed
+# shape (see the header comment in src/pom2_bench.cpp):
+#   * callgrind subject — instruction counts are stable run to run, which
+#     compares two builds far better than wall time;
+#   * PGO training driver — packaging/raspberry/pgo_train.sh sweeps it over
+#     several machine profiles and video pipelines.
+# It links the emulator core + Apple2Display only; nothing that would pull in
+# GLFW/ImGui or open a device.
+if(NOT EMSCRIPTEN)
+add_executable(pom2_bench
+    src/pom2_bench.cpp
+    src/Apple2Display.cpp
+    src/AppleWinNtsc.cpp
+    src/AudioDevice.cpp
+    src/CassetteDevice.cpp
+    src/Disk35Image.cpp
+    src/DiskIICard.cpp
+    src/DiskImage.cpp
+    src/FloppySoundDevice.cpp
+    src/IWMDevice.cpp
+    src/LeChatMauveCard.cpp
+    src/M6502.cpp
+    src/Memory.cpp
+    src/MemoryProfile_IIcClass.cpp
+    src/NoSlotClock.cpp
+    src/ResourcePaths.cpp
+    src/RomLoader.cpp
+    src/SlotBus.cpp
+    src/SmartPortHub.cpp
+    src/SnapshotIO.cpp
+    src/Sony35Drive.cpp
+    src/SpeakerDevice.cpp
+)
+target_include_directories(pom2_bench PRIVATE
+    ${POM2_SRC_DIR}
+    ${POM2_GENERATED_DIR}
+    ${IMGUI_DIR}     # miniaudio.h location only, no ImGui linkage
+)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(pom2_bench PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(pom2_bench PRIVATE
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+        "-framework AudioUnit"
+    )
+endif()
+if(WIN32)
+    target_link_libraries(pom2_bench PRIVATE winmm ws2_32)
+endif()
+endif() # NOT EMSCRIPTEN (pom2_bench)
+
 if(MSVC)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         _CRT_SECURE_NO_WARNINGS
@@ -671,6 +727,17 @@ if(POM2_IPO_SUPPORTED)
                  INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     set_property(TARGET ${PROJECT_NAME} PROPERTY
                  INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    # pom2_bench must be built EXACTLY like the shipped binary or its numbers
+    # describe a build nobody runs — LTO alone is worth ~20 % on the emulation
+    # core (docs/PERFORMANCE.md § build recipe). Skipped when the caller sets
+    # CMAKE_INTERPROCEDURAL_OPTIMIZATION explicitly, which is how the profiling
+    # and PGO-pass-1 builds ask for LTO off.
+    if(TARGET pom2_bench AND NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        set_property(TARGET pom2_bench PROPERTY
+                     INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET pom2_bench PROPERTY
+                     INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    endif()
 endif()
 
 # ─── Install + packaging ──────────────────────────────────────────────────

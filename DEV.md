@@ -25,6 +25,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [CLI (CliDispatcher)](#cli-clidispatcher)
 - [Clock & threading](#clock--threading)
 - [WebAssembly (browser build)](#webassembly-browser-build)
+- [Performance & profiling](#performance--profiling)
 
 ## CPU
 
@@ -4088,3 +4089,35 @@ applied via the IDBFS mount path for future user uploads.
 refactors of `main.cpp`, `MainWindow.cpp`, `EmulationController.cpp`,
 `AiControlServer.cpp`, `SuperSerialCard.cpp`, or `CMakeLists.txt`.
 Run it manually after touching any of those.
+
+---
+
+## Performance & profiling
+
+The measurements, the optimisations already applied and the PGO/LTO build
+recipe live in their own document — **[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)**.
+Read it *before* touching anything on the hot path: it records what was tried,
+what it was worth, and — for the items deliberately left alone — why.
+
+The short version of the tooling:
+
+- **`pom2_bench`** (`src/pom2_bench.cpp`, target `pom2_bench`) is the
+  deterministic subject. N frames of `cyclesPerFrame`, no threads, no audio
+  device, no sockets, no wall-clock pacing → two runs retire the same
+  instruction count. It prints FNV-1a hashes of RAM and of the framebuffer;
+  **those hashes are the contract**: an optimisation that moves one is a
+  behaviour change, and POM2 is cycle-accurate. `pom2_headless` is a telnet
+  console and cannot be used for this.
+- **callgrind** over that binary, `--auto=yes` for line-level attribution.
+  Profile *two* shapes at least — the hot spots with the drive spinning and
+  without it are not the same code.
+- **PGO** is the largest single lever and touches no emulation code:
+  `packaging/raspberry/build_native_pi.sh --pgo`. Two failure modes there cost
+  the entire gain *silently* (`.gcda` naming by absolute object path; the
+  training driver and the shipped binary being different CMake targets over the
+  same sources) — both are closed in the script and explained in the doc.
+
+Current hot spots, for orientation: `DiskIICard::lssSync` +
+`DiskImage::getNextTransition` dominate any disk-active workload;
+`M6502::executeOpcode` and `Memory::advanceCycles` dominate the rest.
+
