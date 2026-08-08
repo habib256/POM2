@@ -356,14 +356,19 @@ same tier on by itself — WebGL 2 *is* GLES 3.0. (On a *desktop*-GL build the
 CRT/NTSC shaders negotiate their dialect at run time — 150 → 140 → 130 — so a
 driver capped below GLSL 1.50 no longer disables the effect stack.)
 
-For a Pi you actually intend to run games on, build it **natively with a
-profile** instead of using the generic aarch64 AppImage — worth roughly 40 % on
-the emulation core — and take the stutter out of the system:
+For a Pi you actually intend to run games on, take the **core-specific PGO
+package** rather than the generic aarch64 AppImage — worth roughly 40 % on the
+emulation core. CI builds it for you on a native ARM64 runner, so the Pi never
+compiles anything:
 
 ```bash
-packaging/raspberry/build_native_pi.sh --pgo --install   # -mcpu + PGO + LTO
-sudo packaging/raspberry/pi_tuning.sh                    # governor, IRQs, swap
+gh workflow run pi400.yml -f mcpu=cortex-a72     # or cortex-a76 for a Pi 5
+gh run download <run-id> -n POM2-pi400-aarch64   # AppImage + /opt tarball
+sudo packaging/raspberry/pi_tuning.sh            # governor, IRQs, swap
 ```
+
+(`packaging/raspberry/build_native_pi.sh --pgo --install` does the same build
+on the Pi itself when you are iterating on the source.)
 
 → [`packaging/raspberry/README.md`](packaging/raspberry/README.md) for the
 how-to, [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the measurements and

@@ -15,6 +15,12 @@
 #  jumps, and above all a far better-used instruction cache. That counts double
 #  on a Cortex-A72 (32 KB L1i, a modest predictor next to a desktop x86 core).
 #
+#  YOU MAY NOT NEED THIS SCRIPT. `.github/workflows/pi400.yml` runs exactly the
+#  same two-pass recipe on GitHub's native ARM64 runner (in a debian:bookworm
+#  container, via build_in_bookworm_pi.sh) and uploads a ready AppImage + /opt
+#  tarball — no compiling on the Pi at all. This script is for iterating on the
+#  source on the machine itself, or when you have no CI to hand.
+#
 #  Usage (ON the Pi, in a checkout):
 #      packaging/raspberry/build_native_pi.sh              # → build-pi/
 #      packaging/raspberry/build_native_pi.sh --pgo        # 2 passes + LTO

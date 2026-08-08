@@ -199,12 +199,27 @@ faster binary is still the same emulator.
 > on the hot path), but it *is* worth knowing: §3.2 hand-inlined by hand
 > precisely the cross-TU call LTO used to be recovering.
 
-On the Pi everything goes through the scripts:
+**Nothing about this requires compiling on the Pi.** The
+`Raspberry Pi packages` workflow (`.github/workflows/pi400.yml`) runs both
+passes and the training on GitHub's native ARM64 runner, in a `debian:bookworm`
+container, and uploads an AppImage + a tarball built for one core:
+
+```sh
+gh workflow run pi400.yml -f mcpu=cortex-a72     # Pi 4 / Pi 400
+gh run download <run-id> -n POM2-pi400-aarch64
+```
+
+On the Pi itself — for iterating on the source — the same recipe is:
 
 ```sh
 packaging/raspberry/build_native_pi.sh --pgo            # 2 passes + LTO
 packaging/raspberry/build_native_pi.sh --pgo --install  # + /opt/POM2
 ```
+
+The two scripts (`build_native_pi.sh` on the Pi, `build_in_bookworm_pi.sh` in
+the container) close the same two traps below, deliberately in duplicate:
+each has to be correct on its own, and a shared helper would make the CI job
+depend on a script whose failure mode is silent.
 
 The training run is `packaging/raspberry/pgo_train.sh`. It deliberately covers
 several families of load — ][+ and //e banners, PAL and NTSC, every video

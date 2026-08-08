@@ -58,6 +58,21 @@ M6502/Memory/DiskIICard/DiskImage/Apple2Display came out untrained. Also
 ⚠ The Pi-specific parts are not yet exercised on real hardware; the build recipe
 and both traps were validated end-to-end on x86-64.
 
+**The Pi never has to compile any of this.** `.github/workflows/pi400.yml`
+(`workflow_dispatch`, `-f mcpu=cortex-a72|a76|a53`) runs both passes *and* the
+training on GitHub's native ARM64 runner inside a `debian:bookworm` container —
+bookworm because Raspberry Pi OS *is* bookworm and building on the runner's own
+userland would stamp GLIBC_2.39, which starts on no Pi. One build, two packages,
+no recompilation: a `-pi400-aarch64.AppImage` (Pi OS with a desktop) and a
+`-pi400-aarch64.tar.gz` laid out like `cmake --install` (Pi OS Lite cabinet — no
+FUSE). The name carries the core tag on purpose: a release's publish job
+flattens every artifact into one directory, and a package named like the generic
+aarch64 one would overwrite it in silence. The job verifies rather than hopes —
+ET_EXEC runtime, aarch64, glibc ≤ 2.36, GLES-only (desktop libGL on a Pi is the
+software rasteriser: a silent ~2 fps regression, not a link error), ROMs in both
+packages — and, since the runner *is* ARM64, it runs the shipped `pom2_bench` to
+confirm the PGO binary's output hashes still match a plain build's.
+
 Footnote: **LTO now measures ~0 %** on these workloads — the header inlining did
 by hand exactly the cross-TU call LTO was recovering. Kept anyway, as a guard.
 

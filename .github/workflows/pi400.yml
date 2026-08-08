@@ -1,0 +1,191 @@
+# =============================================================================
+#  Raspberry Pi core-specific packages (PGO + LTO) — on demand.
+#
+#  Why this is separate from `release.yml`:
+#   · it is triggered BY HAND (workflow_dispatch), when you are setting up a
+#     machine, not on every tag;
+#   · it produces binaries compiled for ONE core (`-mcpu=cortex-a72` for a
+#     Pi 4 / Pi 400), where the release publishes a GENERIC aarch64 AppImage
+#     that must run from a Pi 3 to a Pi 5;
+#   · it compiles in TWO PROFILE-GUIDED PASSES then with LTO — measured −39 %
+#     on a CPU-bound load and −29 % on a disk-active one, at identical sources
+#     and byte-identical output (docs/PERFORMANCE.md). The training runs HERE,
+#     on the ARM64 runner, so the Pi pays nothing for it: there is no need to
+#     spend 40 minutes compiling on the Pi to get the fast binary.
+#   · it does not touch the release pipeline — breaking this cannot stop a
+#     release from going out.
+#
+#  Two packages come out of ONE build, no recompilation:
+#     POM2-v<ver>-pi400-aarch64.AppImage   Pi OS WITH a desktop — one clickable file
+#     POM2-v<ver>-pi400-aarch64.tar.gz     Pi OS Lite cabinet — no FUSE, untar into /opt
+#
+#  The build happens IN a debian:bookworm container, not on the runner:
+#  Raspberry Pi OS IS bookworm (glibc 2.36), and ubuntu-24.04-arm would stamp
+#  GLIBC_2.39 — the binary would start on no Pi. The floor is verified twice.
+#
+#  Fetch the artifact:
+#      gh run download <run-id> -n POM2-pi400-aarch64
+# =============================================================================
+name: Raspberry Pi packages (aarch64, core-specific + PGO)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mcpu:
+        description: "Target core: cortex-a72 (Pi 4 / Pi 400), cortex-a76 (Pi 5), cortex-a53 (Pi 3)"
+        required: true
+        default: cortex-a72
+        type: choice
+        options: [cortex-a72, cortex-a76, cortex-a53]
+  # workflow_dispatch only exists once the file is on the DEFAULT branch. This
+  # second trigger lets a preparation branch build itself without waiting for a
+  # merge: pushing to it is enough to get the packages.
+  push:
+    branches: [pi-packages]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'packaging/**'
+      - '.github/workflows/pi400.yml'
+
+jobs:
+  pi:
+    runs-on: ubuntu-24.04-arm     # GitHub's NATIVE arm64 runner — no QEMU
+    # Two full compiles (instrumented, then profile-guided WITH LTO) plus the
+    # training run between them. docs/PERFORMANCE.md § 5.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build identity
+        id: id
+        run: |
+          VER=$(sed -n 's/^project(pom2_imgui VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "ver=${VER:-0.0}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (PGO + LTO, -mcpu) in a bookworm arm64 container
+        env:
+          POM2_MCPU: ${{ inputs.mcpu || 'cortex-a72' }}
+          POM2_VERSION: ${{ steps.id.outputs.ver }}
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e POM2_MCPU -e POM2_VERSION \
+            debian:bookworm \
+            bash /work/packaging/raspberry/build_in_bookworm_pi.sh
+
+      - name: Verify both packages (runtime, arch, glibc floor, GLES-only, ROMs)
+        run: |
+          set -euo pipefail
+          APP=$(ls dist/*-aarch64.AppImage | head -1)
+          TGZ=$(ls dist/POM2-*-aarch64.tar.gz | head -1)
+          echo "AppImage: $APP"
+          echo "Tarball : $TGZ"
+
+          # The name must carry the core tag AND the arch: a release's publish
+          # job flattens every artifact into one directory, so a package named
+          # like the generic aarch64 one would silently overwrite it.
+          case "$APP" in
+            *-pi400-aarch64.AppImage|*-pi5-aarch64.AppImage|*-pi3-aarch64.AppImage) ;;
+            *) echo "ERROR: $APP is not named <tag>-aarch64.AppImage"; exit 1 ;;
+          esac
+
+          # ET_EXEC: the aarch64 runtime in AppImageKit's `continuous` release
+          # is ET_DYN and AppImageLauncher rejects it as "type -1". The build
+          # script pins release 12 — check the pin actually took.
+          TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
+          test "$TYPE" = "EXEC" || { echo "ERROR: runtime is $TYPE, not EXEC"; exit 1; }
+          MAGIC=$(xxd -s 8 -l 3 -p "$APP")
+          test "$MAGIC" = "414902" || { echo "ERROR: bad AppImage magic $MAGIC"; exit 1; }
+
+          "$APP" --appimage-extract >/dev/null
+          BIN=squashfs-root/usr/bin/POM2
+          readelf -h "$BIN" | grep -q AArch64 \
+            || { echo "ERROR: POM2 is not an AArch64 binary"; exit 1; }
+          MAX=$(objdump -T "$BIN" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1)
+          echo "Highest glibc symbol: ${MAX:-none}"
+          test "$(printf '%s\nGLIBC_2.36\n' "$MAX" | sort -V | tail -1)" = "GLIBC_2.36" \
+            || { echo "ERROR: requires $MAX > GLIBC_2.36 — will not run on Pi OS"; exit 1; }
+          if ldd "$BIN" | grep -qE 'lib(GL|OpenGL)\.so'; then
+            echo "ERROR: links desktop libGL (the software rasteriser on a Pi)"; exit 1
+          fi
+          ldd "$BIN" | grep -qE 'GLES' \
+            || { echo "ERROR: does not link GLESv2 — is POM2_GLES really on?"; exit 1; }
+          test -s squashfs-root/usr/share/POM2/roms/apple2p.rom \
+            || { echo "ERROR: apple2p.rom missing from the AppImage"; exit 1; }
+
+          # Tarball: same tree as `cmake --install`, which is what ResourcePaths
+          # resolves. ⚠ no `tar | grep -q` under pipefail — grep closes the pipe
+          # early, tar dies on write, and you get a false failure.
+          LIST=$(tar tzf "$TGZ")
+          for want in ./bin/POM2 ./bin/pom2_bench ./share/POM2/roms/apple2p.rom; do
+            printf '%s\n' "$LIST" | grep -q -- "$want" \
+              || { echo "ERROR: $want missing from the tarball"; exit 1; }
+          done
+          echo "OK: both packages verified"
+
+      - name: Install runtime GLES/X libs for the launch smoke
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgles2 libegl1 libglx0 \
+            libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+      - name: Smoke-launch + MEASURE on the runner (it is ARM64 — this is real)
+        id: bench
+        run: |
+          set -euo pipefail
+          test -x squashfs-root/AppRun || { echo "ERROR: AppRun missing"; exit 1; }
+          OUT=$(./squashfs-root/AppRun --help 2>&1)
+          grep -q "Usage: POM2" <<<"$OUT" || { echo "ERROR: no usage printed"; exit 1; }
+
+          # The runner is aarch64, so the package's own pom2_bench runs here.
+          # This is not decoration: it is the only check that the PGO binary is
+          # still the SAME EMULATOR — the hashes must match a plain build's.
+          # (It is NOT a Pi-speed measurement: this runner is far faster than a
+          # Pi 4, and its core is not necessarily the -mcpu target.)
+          TD=$(mktemp -d); tar xzf dist/POM2-*-aarch64.tar.gz -C "$TD"
+          DISK=$(ls disks_5.4/dsk/*.dsk 2>/dev/null | head -1 || true)
+          CPU=$("$TD/bin/pom2_bench" --frames 3000 --quiet 2>/dev/null | tail -1)
+          echo "banner: $CPU"
+          if [ -n "$DISK" ]; then
+            DSK=$("$TD/bin/pom2_bench" --disk "$DISK" --frames 900 --quiet 2>/dev/null | tail -1)
+            echo "disk  : $DSK"
+          else
+            DSK="(no 5.25\" image in the checkout)"
+          fi
+          { echo "cpu=$CPU"; echo "disk=$DSK"; } >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          APP=$(ls dist/*-aarch64.AppImage | head -1)
+          TGZ=$(ls dist/POM2-*-aarch64.tar.gz | head -1)
+          {
+            echo "### Packages ready — PGO + LTO, \`-mcpu=${{ inputs.mcpu || 'cortex-a72' }}\`"
+            echo ''
+            echo "| Package | Size | For |"
+            echo "|---|---|---|"
+            echo "| \`$(basename "$APP")\` | $(du -h "$APP" | cut -f1) | Pi OS **with a desktop** — one clickable file |"
+            echo "| \`$(basename "$TGZ")\` | $(du -h "$TGZ" | cut -f1) | Pi OS **Lite** cabinet — \`tar -xzf … -C /opt/POM2\` |"
+            echo ''
+            echo 'Measured on the ARM64 runner (NOT a Pi — it is much faster; the point is the hashes):'
+            echo ''
+            echo '```'
+            echo "banner  ${{ steps.bench.outputs.cpu }}"
+            echo "disk    ${{ steps.bench.outputs.disk }}"
+            echo '```'
+            echo ''
+            echo 'Then on the Pi: `sudo packaging/raspberry/pi_tuning.sh` — see `packaging/raspberry/README.md`.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-pi400-aarch64
+          path: |
+            dist/*-aarch64.AppImage
+            dist/POM2-*-aarch64.tar.gz
+          if-no-files-found: error
