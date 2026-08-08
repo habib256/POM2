@@ -115,6 +115,24 @@ inline uint8_t decode4and4(const uint8_t* p)
     return static_cast<uint8_t>(((p[0] << 1) & 0xAA) | (p[1] & 0x55));
 }
 
+// Can the host filesystem accept a write-back to this image at all?
+// Same probe (and same rationale) as `Block512Backing::loadFile` and
+// `Disk35Image::loadFile`: a chmod-read-only .dsk used to mount as a
+// perfectly writable disk, take a whole session of guest writes, and then
+// have `saveDirty()` REPLACE the file anyway — writeFileAtomic renames a
+// sibling temp over it, and POSIX rename only needs write permission on
+// the DIRECTORY, not on the file. The user's deliberate read-only marking
+// was silently defeated (and the file's mode reset to the umask default).
+// Where the directory is read-only too, the rename fails instead and the
+// whole session's writes are lost with only a log line. Surfacing the
+// condition as physical write-protect makes the guest see the error at
+// write time, exactly like the notch on a real sleeve.
+bool hostFileIsReadOnly(const std::string& path)
+{
+    std::ofstream probe(path, std::ios::in | std::ios::out | std::ios::binary);
+    return !probe;
+}
+
 }  // namespace
 
 DiskImage::DiskImage()
@@ -572,6 +590,12 @@ bool DiskImage::loadFile(const std::string& imgPath)
     // A new medium restarts the write framing (see writeFlux) — a nibble
     // half-assembled from the previous disk must not land on this one.
     writeFraming.fill(WriteFraming{});
+    // Every failure below leaves `loaded == false`; the per-format loaders
+    // set `path` only on success. Drop the old one here so a FAILED insert
+    // can't leave the drive reporting "empty, but the previous disk's path"
+    // — the AI control server publishes `path` and `loaded` as independent
+    // fields, so the stale pair read as a mounted disk.
+    path.clear();
 
     const DetectResult det = detectFormat(imgPath, bytes);
     if (det.kind == ImageKind::Unknown) {
@@ -660,6 +684,15 @@ bool DiskImage::loadFile(const std::string& imgPath)
         twoImgTrailerRaw.clear();
     }
 
+    // Host-filesystem write protection, folded in last so no per-format
+    // loader can clear it (they all reset `fileWriteProtected` on entry).
+    if (ok && !fileWriteProtected && hostFileIsReadOnly(imgPath)) {
+        fileWriteProtected = true;
+        pom2::log().info("Disk II",
+            "Image file is not writable on disk — mounting "
+            "write-protected: " + imgPath);
+    }
+
     return ok;
 }
 
@@ -692,8 +725,19 @@ bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
         loaded = false;
         return false;
     }
+    // A new medium restarts the write framing, and a failed load must not
+    // leave the previous disk's path behind — same reasons as the
+    // auto-detecting overload above.
+    writeFraming.fill(WriteFraming{});
+    path.clear();
     const bool ok = loadSectorImageFromBuffer(buf.data(), buf.size(),
                                               order, /*volume=*/254, imgPath);
+    if (ok && hostFileIsReadOnly(imgPath)) {
+        fileWriteProtected = true;
+        pom2::log().info("Disk II",
+            "Image file is not writable on disk — mounting "
+            "write-protected: " + imgPath);
+    }
     if (ok) {
         pom2::log().info("Disk II", "Loaded " + imgPath +
                          " (35 tracks, 16 sectors, GCR-encoded, " +
@@ -2166,6 +2210,14 @@ bool writeFileAtomic(const std::string& path, std::string& lastError,
                      Emit&& emit)
 {
     const std::string tmp = path + ".pom2tmp";
+    // The rename replaces the inode, so without this the image inherits the
+    // temp file's umask-derived mode and the user's own permissions on their
+    // disk image are silently rewritten on the first write-back. Capture
+    // before the write (same discipline as `Disk35Image::saveDirty`).
+    std::error_code permEc;
+    const std::filesystem::perms origPerms =
+        std::filesystem::status(path, permEc).permissions();
+    const bool havePerms = !permEc;
     {
         std::ofstream wf(tmp, std::ios::binary | std::ios::out | std::ios::trunc);
         if (!wf) { lastError = "Cannot open " + tmp + " for write"; return false; }
@@ -2180,6 +2232,10 @@ bool writeFileAtomic(const std::string& path, std::string& lastError,
         }
     }
     std::error_code ec;
+    if (havePerms) {
+        std::filesystem::permissions(tmp, origPerms, ec);
+        ec.clear();
+    }
     std::filesystem::rename(tmp, path, ec);
     if (ec) {
         lastError = "Cannot replace " + path + ": " + ec.message();

@@ -83,6 +83,79 @@ startup line says what was picked and what the driver claims: `[NTSC] GLSL 140
 **1.40 → 140 (the Pi case)**, 1.30 → 130, each linking cleanly. ⚠ `MESA_*_OVERRIDE`
 is ignored by the NVIDIA driver; `LIBGL_ALWAYS_SOFTWARE=1
 __GLX_VENDOR_LIBRARY_NAME=mesa` is required to test this at all.
+## 2026-08-08 — Disk & floppy management sweep: eight defects around the LSS
+
+An audit of the media-*management* layer — everything that surrounds the
+bit-level data path rather than living inside it. The LSS itself came
+through clean; every finding below is state that is set on one edge and
+never unset, or a persistence path with no owner.
+
+**The 13-sector boot PROM latched forever.** `insertDisk` recomputed
+`serving13_` (341-0009 boot PROM at `$Cn00`) and `useBitLss` from the
+mounted set; `ejectDisk` recomputed neither. They describe *what is
+mounted*, so an eject has to be able to clear them: pull a DOS 3.2 disk
+with a stock 16-sector disk in the other drive and the card kept answering
+`$Cn00` out of the 13-sector PROM, so the remaining disk could not boot.
+Both are now derived by one `refreshMediaDerivedState()` called from insert
+**and** eject. Demoting `useBitLss` mid-spin also parks the sequencer —
+the legacy 32-cycle gate has no notion of `active`, so `$C0n8` would have
+cleared `motorOn` while `active` stayed MODE_ACTIVE and a later WOZ insert
+would have resumed the LSS on a drive whose motor was off.
+
+**Quitting threw away the session's disk writes.** `~MainWindow` flushed
+3.5" media with a comment claiming to mirror "the Disk II save-on-shutdown
+hook". There was no such hook. Write-back was flushed on eject and on swap
+only, so with write-back enabled a whole session of DOS `SAVE`s died with
+the process unless the user happened to eject first. `DiskIICard` gained
+`flushPendingWrites()`, called from `~MainWindow` (ordered before the
+settings write) and from `~DiskIICard`, which also covers profile switching
+— that rebuilds the slot cards without ejecting anything.
+
+**A read-only image file mounted as a writable disk.** `Block512Backing`
+and `Disk35Image` both probe host writability at load and mount
+write-protected when the probe fails. `DiskImage` — the 5.25" path — did
+not, and the consequence was worse than the RAM-only write loss those two
+were fixed for: `writeFileAtomic` renames a sibling temp over the target,
+and POSIX `rename` needs write permission on the *directory*, not on the
+file. So a `chmod 444` .dsk was replaced anyway, and its mode reset to the
+umask default. The user's deliberate read-only marking was silently
+defeated. Same probe now, folded in after the per-format loaders (they all
+reset `fileWriteProtected` on entry) so it can't be cleared.
+
+**Write-back reset the image's permissions.** `writeFileAtomic` didn't
+carry the original file's mode across the rename — the one thing
+`Disk35Image::saveDirty`'s copy of the helper already did right (and which
+`TODO.md` flags for the eventual consolidation). Any non-default mode on a
+disk image was rewritten to the process umask on the first save.
+
+**Ctrl-Reset left the motor humming.** `onReset()` cleared `motorOn`
+behind the sound sink's back. `FloppySoundDevice` only silences its spin
+loop on an explicit `motor(false)` command, and after a reset nothing else
+would ever emit one — so a reset mid-read left the drive hum looping for
+the rest of the session. Reset now emits the matching motor-off.
+
+**A failed insert reported the previous disk's path.** The per-format
+loaders set `path` only on success and every failure path leaves
+`loaded == false`, so a rejected image left the drive advertising
+"empty, but here is the last disk's path". Harmless in the UI (every call
+site guards on `isDiskLoaded`) but the AI control server publishes `path`
+and `loaded` as independent JSON fields, where the stale pair reads as a
+mounted disk. `loadFile` clears `path` up front now.
+
+**"Boot disk" didn't tell the IWM the head had moved.** `seekTrack0()`
+yanks both heads back to track 0 but was the one head-moving path that
+skipped `pushIwmFloppy()`, so on //c / //c+ the on-board IWM kept reading
+the pre-boot quarter-track.
+
+**The Disk II panel's LED could never go amber.** It passed a hard-coded
+`wp=false` to the shared `statusLed`, so it was the one media panel that
+never showed the write-protected colour — while its own body text right
+underneath already explained *why* the disk was read-only. It now uses the
+same sense the guest sees (medium WP flag, or write-back off).
+
+Pinned by `tests/disk_media_state_test.cpp` (`disk_media_state`), which
+reproduces five of the seven against the unfixed code — the read-only case
+self-skips when the mode bits are bypassed (running as root).
 
 ## 2026-08-02 — Bundle the full `roms/` tree in release artifacts
 

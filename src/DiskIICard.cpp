@@ -205,6 +205,94 @@ bool DiskIICard::loadLssRom13(const std::string& path)
     return true;
 }
 
+// Recompute every card-wide latch that is a function of WHICH media are
+// currently mounted. Called from both insertDisk and ejectDisk: these are
+// properties of the mounted set, not one-way switches. Leaving them latched
+// across an eject made the card keep serving the 341-0009 13-sector boot
+// PROM after the 13-sector disk that selected it was removed — a 16-sector
+// disk left in the other drive (or inserted into a `bootFromSlot` that
+// re-reads $Cn00 before any insert) then booted against the wrong PROM.
+void DiskIICard::refreshMediaDerivedState(bool warnMissing13Rom)
+{
+    // Active iff P6 PROM file was loaded explicitly via loadLssRom.
+    // The embedded default is also valid (and MAME-layout) but the
+    // gating keeps the legacy 32-cycle gate available for tests that
+    // pin pre-LSS behaviour until they're updated. Plus: any drive
+    // holding a .woz image *forces* the LSS path. WOZ stores raw bit
+    // cells, the legacy 32-cycle nibble gate cannot decode them, and
+    // the embedded default P6 PROM in p6Rom is sufficient — so this
+    // override works even without roms/diskii_p6.rom on disk.
+    const bool wasBitLss = useBitLss;
+    useBitLss = p6RomLoaded;
+    for (int d = 0; d < kDriveCount; ++d) {
+        if (images[d].isWoz()) { useBitLss = true; break; }
+    }
+    // 13-sector controller selection. A Disk II controller is physically
+    // either 13- or 16-sector (different P5/P6 PROMs); you can't mix them
+    // on one card. So any mounted 13-sector disk flips the whole card to
+    // the 341-0009 boot PROM + 341-0010 LSS — provided both were loaded
+    // (loadBootRom13 / loadLssRom13). slotRomRead / lssSync index the 13s
+    // pair while serving13_ is set; otherwise nothing changes for 16s.
+    bool any13 = false;
+    for (int d = 0; d < kDriveCount; ++d)
+        if (images[d].isLoaded() && images[d].is13Sector()) { any13 = true; break; }
+    // A 13-sector disk flips the card to the 341-0009 boot PROM at $Cn00.
+    // The READ sequencer stays the 16-sector P6 (341-0028): the LSS is
+    // bit-level and encoding-agnostic — it recovers the 5-and-3 nibble
+    // stream (D5 AA B5 / translate5 bytes) just as well, and the 5-and-3
+    // *decode* is done in software by the 341-0009 boot / DOS 3.2 RWTS.
+    // (The raw 341-0010 dump doesn't drive POM2's wozfdc-port lssSync —
+    // it yields zero byte-ready — whereas the 16s P6 reads 13s correctly;
+    // verified by tests/dos32_boot_trace.cpp phase 0.) We force the
+    // bit-level LSS on because the 341-0009 read loop is tighter than the
+    // 16s-tuned legacy 32-cycle gate (which mis-frames the 5-and-3 read).
+    serving13_ = any13 && bootRom13Loaded;
+    if (warnMissing13Rom && any13 && !serving13_)
+        pom2::log().warn("Disk II",
+            "13-sector disk mounted but the 341-0009 boot PROM "
+            "(roms/disk2_13.rom) is missing — it won't boot");
+    if (serving13_) useBitLss = true;
+
+    // Demoting to the legacy 32-cycle gate mid-spin (ejecting the only WOZ
+    // when no P6 dump was loaded) hands motor control to a path that has no
+    // notion of `active`: `$C0n8` would then clear `motorOn` while `active`
+    // stayed MODE_ACTIVE, and a later WOZ insert would resume the LSS on a
+    // drive whose motor is supposedly off. Park the sequencer instead — the
+    // next motor-on re-anchors it from scratch.
+    if (wasBitLss && !useBitLss && active != MODE_IDLE) {
+        active          = MODE_IDLE;
+        motorOffDelay   = 0;
+        writePosition   = 0;
+        writeLineActive = false;
+        for (int d = 0; d < kDriveCount; ++d)
+            revolutionStartLssCycle[d] = kNeverRev;
+    }
+}
+
+// Flush every drive's pending write-back without ejecting. The eject and
+// swap paths already do this, but process shutdown / profile switch tears
+// the card down without either — a session's DOS SAVEs then died with the
+// process even though the user had opted in to write-back. Guarded twice
+// over inside DiskImage::saveDirty (write-back off, or a physically
+// write-protected medium, is a no-op returning success).
+void DiskIICard::flushPendingWrites()
+{
+    for (int d = 0; d < kDriveCount; ++d) {
+        DiskImage& img = images[d];
+        if (!img.isLoaded() || !img.hasUnsavedChanges()) continue;
+        if (!img.saveDirty()) {
+            pom2::log().warn("Disk II",
+                "Flush failed for drive " + std::to_string(d + 1) + ": " +
+                img.getLastError());
+        }
+    }
+}
+
+DiskIICard::~DiskIICard()
+{
+    flushPendingWrites();
+}
+
 bool DiskIICard::insertDisk(int drive, const std::string& path)
 {
     if (drive < 0 || drive >= kDriveCount) {
@@ -239,43 +327,7 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     writePosition   = 0;
     writeLineActive = false;
     writeStartTime  = 0;
-    // Active iff P6 PROM file was loaded explicitly via loadLssRom.
-    // The embedded default is also valid (and MAME-layout) but the
-    // gating keeps the legacy 32-cycle gate available for tests that
-    // pin pre-LSS behaviour until they're updated. Plus: any drive
-    // holding a .woz image *forces* the LSS path. WOZ stores raw bit
-    // cells, the legacy 32-cycle nibble gate cannot decode them, and
-    // the embedded default P6 PROM in p6Rom is sufficient — so this
-    // override works even without roms/diskii_p6.rom on disk.
-    useBitLss       = p6RomLoaded;
-    for (int d = 0; d < kDriveCount; ++d) {
-        if (images[d].isWoz()) { useBitLss = true; break; }
-    }
-    // 13-sector controller selection. A Disk II controller is physically
-    // either 13- or 16-sector (different P5/P6 PROMs); you can't mix them
-    // on one card. So any mounted 13-sector disk flips the whole card to
-    // the 341-0009 boot PROM + 341-0010 LSS — provided both were loaded
-    // (loadBootRom13 / loadLssRom13). slotRomRead / lssSync index the 13s
-    // pair while serving13_ is set; otherwise nothing changes for 16s.
-    bool any13 = false;
-    for (int d = 0; d < kDriveCount; ++d)
-        if (images[d].isLoaded() && images[d].is13Sector()) { any13 = true; break; }
-    // A 13-sector disk flips the card to the 341-0009 boot PROM at $Cn00.
-    // The READ sequencer stays the 16-sector P6 (341-0028): the LSS is
-    // bit-level and encoding-agnostic — it recovers the 5-and-3 nibble
-    // stream (D5 AA B5 / translate5 bytes) just as well, and the 5-and-3
-    // *decode* is done in software by the 341-0009 boot / DOS 3.2 RWTS.
-    // (The raw 341-0010 dump doesn't drive POM2's wozfdc-port lssSync —
-    // it yields zero byte-ready — whereas the 16s P6 reads 13s correctly;
-    // verified by tests/dos32_boot_trace.cpp phase 0.) We force the
-    // bit-level LSS on because the 341-0009 read loop is tighter than the
-    // 16s-tuned legacy 32-cycle gate (which mis-frames the 5-and-3 read).
-    serving13_ = any13 && bootRom13Loaded;
-    if (any13 && !serving13_)
-        pom2::log().warn("Disk II",
-            "13-sector disk mounted but the 341-0009 boot PROM "
-            "(roms/disk2_13.rom) is missing — it won't boot");
-    if (serving13_) useBitLss = true;
+    refreshMediaDerivedState(/*warnMissing13Rom=*/true);
     // Re-anchor the bit-level LSS clock to "now". If the controller was
     // already spinning (active != MODE_IDLE) over an empty drive, lssCycle
     // has been frozen — lssStart()/lssSync() only run with a disk present —
@@ -318,6 +370,11 @@ void DiskIICard::ejectDisk(int drive)
     img.eject();
     trackPos[drive] = 0;
     writeLatch      = 0xFF;
+    // The 13-sector PROM selection and the WOZ-forced LSS path are functions
+    // of what is mounted RIGHT NOW — removing the disk that selected them has
+    // to un-select them, or the card keeps answering $Cn00 out of the
+    // 341-0009 13-sector boot PROM with no 13-sector disk in sight.
+    refreshMediaDerivedState(/*warnMissing13Rom=*/false);
     // No click here — symmetric with insertDisk; UI / CLI sites fire
     // their own click when the user triggers the eject.
     pushIwmFloppy();
@@ -356,6 +413,13 @@ void DiskIICard::dumpRecentReads(size_t maxEntries) const
 
 void DiskIICard::onReset()
 {
+    // The drive really does stop, so the mechanical-sound source has to be
+    // told. It only silences its spin loop on an explicit motor(false)
+    // command; a Ctrl-Reset (F11) mid-read used to clear `motorOn` behind
+    // its back and leave the motor hum looping for the rest of the session
+    // — nothing else would ever emit the matching motor-off.
+    if (motorOn && sound_)
+        sound_->motor(false, images[activeDrive].isLoaded());
     motorOn   = false;
     motorOffDelay = 0;
     writeMode = false;

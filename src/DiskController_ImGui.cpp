@@ -32,7 +32,12 @@ DiskController_ImGui::FrameResult DiskController_ImGui::render(
     // grey empty / green disk inserted / red last-insert error.
     {
         const bool err = !snap.diskLoaded && !snap.lastError.empty();
-        pom2::statusLed(snap.diskLoaded, /*wp=*/false, err,
+        // Same read-only sense the guest sees: the medium's own WP flag OR
+        // the host write-back opt-in being off. Hard-coding `wp=false` here
+        // meant this was the one media panel whose LED could never go
+        // amber, while the body text right below already said "Read-only".
+        const bool wp = snap.fileWriteProtected || !snap.writeBackEnabled;
+        pom2::statusLed(snap.diskLoaded, wp, err,
                         snap.diskLoaded ? snap.diskPath.c_str()
                         : err           ? snap.lastError.c_str()
                                         : "No disk inserted");

@@ -354,6 +354,42 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   IWM-authoritative only while the hub routes to a 3.5" Sony. Pinned by
   `iic_plus_boot_write` (boot to DOS 3.3 banner + SAVE/LOAD/RUN
   round-trip on the //c+ profile).
+- 🟡 **A failed insert destroys the disk that was in the drive**
+  *(management audit 2026-08-08)* — `DiskImage::loadFile` clobbers the
+  live buffer before it knows the new file parses, so clicking a corrupt
+  / wrong-size image in the Disk Library ejects the disk that was
+  running. The header documents it ("Mounting a new image discards any
+  previously loaded buffer"), but no real drive behaves that way and the
+  user gets no warning. Fix is a load-into-scratch-then-commit: decode
+  into a temporary `DiskImage` and move-assign only on success — which
+  also wants `DiskImage` to be cheaply movable (it is: 228 KB of tracks
+  plus vectors). Deliberately out of scope of the 2026-08-08 sweep,
+  which only made the FAILURE state coherent (`path` is cleared, so the
+  drive no longer reports "empty, but here is the last disk's path").
+  *~2 h.*
+- 🟢 **`decodeTrack` trusts the address field** *(management audit
+  2026-08-08)* — the write-back decoder reads vol/track/sector/checksum
+  as 4-and-4 but validates none of them: the checksum is discarded, and
+  the address field's TRACK number is ignored in favour of the buffer
+  index. A guest that rewrites a whole track with a different track
+  number in its address fields (sector editors, Locksmith-style
+  copiers) therefore lands its sectors at the wrong file offset. `$D5`
+  is not a legal GCR data byte so a spurious prologue match can't
+  happen, which is why this has never bitten in practice. *~1 h.*
+- 🟢 **800 K `.dsk` routes to the 5.25" bucket and fails** *(management
+  audit 2026-08-08)* — `classifyDiskForSlot` / `accept525` claim every
+  `.dsk` regardless of size, so an 819 200-byte one goes to the Disk II
+  card, which refuses it — even though `Disk35Image::loadFile` accepts a
+  bare 800 K `.dsk` payload. Needs a size-gated `.dsk` rule in BOTH
+  predicates (they are deliberately kept in lock-step). *~30 min.*
+- 🟢 **WOZ FLUX quarter-tracks are silently read-only** *(management
+  audit 2026-08-08)* — `loadWoz`'s flux path populates `bitStream[qt]` /
+  `fluxStream[qt]` but leaves `wozQtBitCount[qt]` at 0, which is exactly
+  the condition `writeFlux` bails on. Correct for now (splicing into a
+  delta stream needs re-encoding the tick deltas, not just flipping
+  cells) but undocumented — a write to a FLUX track is dropped with no
+  diagnostic. At minimum: log it once per track. *~15 min to warn, ~1 d
+  to implement.*
 - 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::writeFlux` splices
   bit-cells but the full `set_write_splice` handling (TRK +6650
   splice_point/nibble/bit_count fields, parsed at `DiskImage.cpp:720`)
@@ -698,8 +734,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
 - 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
   divergent copies now: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
-  namespace), `Disk35Image.cpp:214` (added 2026-08-02, the only one that
-  preserves the original's permissions) and `ProDOSVolume.cpp:664-702`.
+  namespace), `Disk35Image.cpp:214` (added 2026-08-02) and
+  `ProDOSVolume.cpp:664-702`. `DiskImage`'s copy caught up on permission
+  preservation 2026-08-08 (it was silently resetting the image's mode to the
+  umask default on every write-back); `ProDOSVolume`'s still hasn't.
   Extract to `src/FileAtomicWrite.h`. **None of the three `fsync` before the
   `rename`**, so a power cut can still land an empty file where the user's
   disk image was — fold that in when extracting.
