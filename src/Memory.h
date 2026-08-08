@@ -160,7 +160,51 @@ public:
     uint8_t peekMainRam(uint16_t addr) const { return mem[addr]; }
 
     // CPU bus interface (called from M6502).
-    uint8_t memRead(uint16_t addr);
+    //
+    // memRead() is the single most-executed function in POM2 — once or twice
+    // per emulated CPU cycle, ~1.02 M cycles per emulated second. It used to
+    // live entirely in Memory.cpp, where callgrind put it (plus the
+    // languageCardRead it tail-calls) at **35 % of a ROM-banner profile**,
+    // most of that being the out-of-line call itself around what is, in the
+    // common case, one array index.
+    //
+    // So the two hot cases are decided HERE, in the header, where they inline
+    // into M6502's accessors:
+    //
+    //   * $0000-$BFFF on a non-//e machine → plain main RAM;
+    //   * $D000-$FFFF with the language card reading ROM → plain ROM.
+    //     That second one is not an edge case: with no LC RAM mapped, EVERY
+    //     opcode fetch of Applesoft and the Monitor goes through it. (The
+    //     equivalent trap in NeoST's bus was worth −4 % vs −20 % depending on
+    //     whether the ROM window was in the fast path — see docs/PERFORMANCE.md.)
+    //
+    // Everything else — soft switches, slot ROM/IO, //e aux paging with bank
+    // tracing on, LC RAM, the //c alt-firmware banks, the NoSlotClock window
+    // — falls through to memReadSlow(), which is the ORIGINAL function,
+    // unchanged. The fast path's conditions are the exact negation of that
+    // function's own guards, so behaviour is identical by construction.
+    uint8_t memRead(uint16_t addr)
+    {
+        if (addr < 0xC000) {
+            // testMode (Klaus harness) = flat RAM over the whole space, and
+            // it is checked first in memReadSlow too — keep that order.
+            if (!iieMode || testMode) return mem[addr];
+            // //e aux routing. `bankTrace_` is a debug-only diagnostic; when
+            // it is armed the slow path takes over so the tracing lives in
+            // exactly one place.
+            if (!bankTrace_) return iieReadFromAux(addr) ? aux[addr] : mem[addr];
+            return memReadSlow(addr);
+        }
+        if (testMode) return mem[addr];
+        // ROM window. `!lcReadRam` → the LC maps ROM; `!iicProfile_` → no //c
+        // alt-firmware bank can override it; the last clause is the exact
+        // NoSlotClock intercept condition ($F800+ on a II/II+ with a chip
+        // fitted), which is the only other reader of this range.
+        if (addr >= 0xD000 && !lcReadRam && !iicProfile_
+            && !(noSlotClock_ && !iieMode && addr >= 0xF800))
+            return mem[addr];
+        return memReadSlow(addr);
+    }
     void    memWrite(uint16_t addr, uint8_t value);
 
     // Diagnostic — used by M6502's BRK trace.
@@ -716,6 +760,42 @@ private:
     uint8_t floatingBus() const;
     /// Floating bus at an explicit absolute cycle (the scanner address math).
     uint8_t floatingBus(uint64_t absCycle) const;
+
+    /// Everything memRead()'s inline fast path does not handle. This IS the
+    /// former body of memRead(), moved wholesale — see the comment on
+    /// memRead() for why the split exists.
+    uint8_t memReadSlow(uint16_t addr);
+
+    /// Aux-vs-main routing for $0000-$BFFF reads under //e paging. ONE
+    /// definition, shared by memRead()'s inline fast path and iieMemRead()'s
+    /// traced path: two copies of this table would be a divergence waiting to
+    /// happen, and it decides which 64 KB bank every //e read lands in.
+    ///
+    ///   $0000-$01FF  ALTZP            → aux else main
+    ///   $0200-$03FF  RAMRD            → aux else main
+    ///   $0400-$07FF  80STORE on       → PAGE2 picks aux/main; else RAMRD
+    ///   $0800-$1FFF  RAMRD            → aux else main
+    ///   $2000-$3FFF  80STORE+HIRES on → PAGE2 picks aux/main; else RAMRD
+    ///   $4000-$BFFF  RAMRD            → aux else main
+    ///
+    /// Mutex note (unchanged from iieMemRead): `display.page2` / `display.
+    /// hiRes` are read without holding `stateMutex`. Safe in this threading
+    /// model — writers (softSwitchAccess, iieHandleSoftSwitch,
+    /// resetSoftSwitches) and this reader all run on the CPU worker thread.
+    /// TSAN may flag it formally because the writers DO take the mutex; there
+    /// is no actual race, and taking a lock per emulated bus cycle would be
+    /// ruinous.
+    bool iieReadFromAux(uint16_t addr) const
+    {
+        const bool ramrd = (iieMemMode & MF_RAMRD) != 0;
+        if (addr < 0x0200) return (iieMemMode & MF_ALTZP) != 0;
+        if (addr >= 0x0400 && addr <= 0x07FF)
+            return (iieMemMode & MF_80STORE) ? display.page2 : ramrd;
+        if (addr >= 0x2000 && addr <= 0x3FFF)
+            return ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2
+                                                                : ramrd;
+        return ramrd;
+    }
 
     // IIe-only routing helpers. Selected per address range based on the
     // current iieMemMode + DisplayState; see the table at the top of the

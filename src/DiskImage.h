@@ -422,6 +422,29 @@ private:
     /// desynchronises a little more per revolution.
     mutable std::array<int, kQuarterTracks>              fluxQtPeriodLss{};
     void expandTrackFlux(int qt) const;
+
+    // ── Search cursor for getNextTransition (performance only) ───────────
+    // The binary search inside getNextTransition was ~20 % of a disk-active
+    // profile (callgrind on `pom2_bench --disk … --frames 1200`): a track
+    // holds tens of thousands of flux events, so every call paid ~16 probes
+    // — while the LSS actually walks the revolution STRICTLY SEQUENTIALLY
+    // and lands on the same index, or the very next one, nearly every time.
+    //
+    // These two members remember the previous answer. They are a HINT, never
+    // an authority: the fast path re-verifies that the remembered index still
+    // *is* the lower bound (two comparisons) before using it, so a stale hint
+    // — a write splice that rebuilt the flux array, a track step, an eject,
+    // a snapshot restore — simply fails verification and falls back to the
+    // full search. Nothing has to invalidate them, and that is the point: an
+    // invalidation you can forget to place at one of its sites is a
+    // correctness bug waiting to happen, a self-verifying hint cannot be.
+    //
+    // `mutable` because getNextTransition is const and this changes nothing
+    // observable. Not thread-safe and doesn't need to be: the flux read path
+    // runs on the CPU worker thread only (DiskIICard::lssSync,
+    // IWMDevice::sync), both under `stateMutex`.
+    mutable int    lbHintQt_  = -1;
+    mutable size_t lbHintIdx_ = 0;
     /// LSS cycles per bit cell, derived from `optimalBitTiming`. Default
     /// 8 (= 4 µs / 0.5 µs per LSS cycle). WOZ2 honours INFO+39; WOZ1 and
     /// non-WOZ formats keep the default. Used by `expandTrackFlux` and

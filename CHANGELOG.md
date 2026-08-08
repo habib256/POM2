@@ -5,6 +5,85 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-08 — Core 2× faster on the same output, and a Raspberry Pi build recipe
+
+Ported the optimisation campaign method from **NeoST** (POM2's sibling Atari ST
+emulator, `../neost`): a deterministic headless subject, callgrind, then PGO.
+Full write-up with the before/after numbers in **`docs/PERFORMANCE.md`**.
+Everything below is **output-identical** — 166/166 tests green and byte-equal
+RAM/framebuffer hashes on every workload measured.
+
+**`pom2_bench` (new target).** `pom2_headless` cannot be profiled: worker
+thread, wall-clock pacing, audio device, waits for a human. `pom2_bench` runs
+exactly N frames of `cyclesPerFrame` with no threads, no audio, no sockets and
+no pacing, so two runs retire the *same instruction count* — which is what makes
+before/after comparisons trustworthy. It prints FNV-1a hashes of RAM and of the
+framebuffer: an optimisation that moves either is a bug, not an optimisation.
+It doubles as the PGO training driver. ⚠ Its own per-frame framebuffer hash was
+17 % of the very first profile taken — hence `--hash-all` being opt-in.
+
+**Flux lookup: resume the search instead of redoing it (−33 % on disk).**
+`DiskImage::getNextTransition` ran a full `std::lower_bound` over the track's
+flux array on every call — tens of thousands of events, ~16 probes — while
+`DiskIICard::lssSync` calls it once per flux event for as long as the motor
+turns. Together they were **42 %** of a disk-active profile. The class now
+remembers the previous index and resumes from it. The hint is *verified*, never
+trusted: the fast path re-checks that the remembered index really is the lower
+bound (two comparisons) before using it, so a write splice, an eject or a
+snapshot restore just fails the check and falls back to the binary search.
+Nothing has to invalidate it — an invalidation you can forget at one call site
+is a latent correctness bug; a self-verifying hint cannot be.
+
+**Bus reads decided in the header (−18 % on CPU-bound loads).** `Memory::memRead`
+plus the `languageCardRead` it tail-calls were **35 %** of a ROM-banner profile,
+most of it the out-of-line call around what is usually one array index. The two
+hot cases now inline in `Memory.h` — main RAM below `$C000` on a non-//e, and
+`$D000-$FFFF` when the language card maps ROM — and everything else goes to
+`memReadSlow` (the original body, untouched). The second case is the trap NeoST
+also hit: fast-pathing RAM alone is worth a few percent, because *the ROM is
+where the code executes from*. The //e aux/main decision moved into one shared
+inline helper (`iieReadFromAux`) rather than being copied.
+
+**PGO is the single biggest win, and it touches no emulation code**: −39 % / −29 %
+on top of the above. `packaging/raspberry/build_native_pi.sh --pgo` does the two
+passes, `pgo_train.sh` sweeps ][+ and //e, PAL and NTSC, every video pipeline and
+a 5.25" boot — *a too-narrow profile is worse than none*, it marks live code cold.
+Two traps that cost the entire gain **in silence**, both closed by the script:
+GCC names each `.gcda` after the object's absolute path (so both passes share one
+build dir), and — POM2-specific — the training driver is `pom2_bench` while the
+shipped binary is `pom2_imgui`, two different object directories for the same
+sources, so the profiles are copied across and the build **fails** if any of
+M6502/Memory/DiskIICard/DiskImage/Apple2Display came out untrained. Also
+`pi_tuning.sh` (governor, IRQ pinning, swap) and `packaging/raspberry/README.md`.
+⚠ The Pi-specific parts are not yet exercised on real hardware; the build recipe
+and both traps were validated end-to-end on x86-64.
+
+Footnote: **LTO now measures ~0 %** on these workloads — the header inlining did
+by hand exactly the cross-TU call LTO was recovering. Kept anyway, as a guard.
+
+## 2026-08-08 — CRT/NTSC shader: negotiate the GLSL dialect instead of demanding 1.50
+
+`OpenGLShader.cpp` hardcoded `#version 150`, so on any desktop-GL driver capped
+below it the whole effect stack died with *"GLSL 1.50 is not supported.
+Supported versions are: 1.10, 1.20, 1.30, 1.40…"*. Mesa's V3D (Raspberry Pi)
+caps *desktop* GL at 3.1 = GLSL 1.40; old llvmpipe and several VM drivers land
+in the same place. Nothing needed rewriting — POM2's shader bodies only use
+1.30 constructs (`in`/`out`, `texture()`, `fwidth()`); they were merely *asking*
+for 1.50.
+
+The dialect is now read from `GL_SHADING_LANGUAGE_VERSION` and tried in cascade
+**150 → 140 → 130** (`300 es` unchanged where the context is GLES — the Pi's own
+AppImage tier, WASM; `150` unchanged on macOS, whose core profile has no lower
+rung). The cascade is a net rather than an affectation: a driver can advertise a
+version and still refuse it in *this* context, and only a real compile settles
+it. Intermediate failures are silent and `errorOut` is cleared on success, or
+the panel would report "shader unavailable" with the stack already running. One
+startup line says what was picked and what the driver claims: `[NTSC] GLSL 140
+(driver: 1.40)`. Verified under Mesa llvmpipe with forced versions — 4.50 → 150,
+**1.40 → 140 (the Pi case)**, 1.30 → 130, each linking cleanly. ⚠ `MESA_*_OVERRIDE`
+is ignored by the NVIDIA driver; `LIBGL_ALWAYS_SOFTWARE=1
+__GLX_VENDOR_LIBRARY_NAME=mesa` is required to test this at all.
+
 ## 2026-08-02 — Bundle the full `roms/` tree in release artifacts
 
 Packaging previously shipped only `roms/floppy_samples/` plus a drop-here

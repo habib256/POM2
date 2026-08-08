@@ -18,6 +18,7 @@
 // handful of shader entry points.
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -120,7 +121,8 @@ static unsigned int compileOne(unsigned int kind,
                                const char* versionLine,
                                const char* precisionLine,
                                const char* body,
-                               std::string* errorOut)
+                               std::string* errorOut,
+                               bool quiet)
 {
     unsigned int sh = glCreateShader(kind);
     if (!sh) {
@@ -139,39 +141,28 @@ static unsigned int compileOne(unsigned int kind,
         std::string msg = "shader compile failed: ";
         msg.append(log, len);
         if (errorOut) *errorOut = msg;
-        pom2::log().warn("NTSC", msg);
+        if (!quiet) pom2::log().warn("NTSC", msg);
         glDeleteShader(sh);
         return 0;
     }
     return sh;
 }
 
-unsigned int compileShaderProgram(const char* vertexBody,
-                                  const char* fragmentBody,
-                                  std::string* errorOut)
+// One full build attempt at a given `#version`. Returns the linked program or
+// 0; on failure `errorOut` carries the reason. `quiet` suppresses the log for
+// the intermediate attempts of the cascade below.
+static unsigned int buildAt(const char* versionLine,
+                            const char* precisionLine,
+                            const char* vertexBody,
+                            const char* fragmentBody,
+                            std::string* errorOut,
+                            bool quiet)
 {
-#if !POM2_GL_ES && !defined(__APPLE__)
-    if (!loadEntryPoints()) {
-        if (errorOut) *errorOut = "GL 3.x entry points unavailable";
-        pom2::log().warn("NTSC", "GL 3.x entry points unavailable — "
-                                 "OpenEmulator shader disabled");
-        return 0;
-    }
-#endif
-
-#if POM2_GL_ES
-    const char* versionLine   = "#version 300 es\n";
-    const char* precisionLine = "precision highp float;\nprecision highp int;\n";
-#else
-    const char* versionLine   = "#version 150\n";
-    const char* precisionLine = "\n";
-#endif
-
-    unsigned int vs = compileOne(GL_VERTEX_SHADER,
-                                 versionLine, precisionLine, vertexBody, errorOut);
+    unsigned int vs = compileOne(GL_VERTEX_SHADER, versionLine, precisionLine,
+                                 vertexBody, errorOut, quiet);
     if (!vs) return 0;
-    unsigned int fs = compileOne(GL_FRAGMENT_SHADER,
-                                 versionLine, precisionLine, fragmentBody, errorOut);
+    unsigned int fs = compileOne(GL_FRAGMENT_SHADER, versionLine, precisionLine,
+                                 fragmentBody, errorOut, quiet);
     if (!fs) { glDeleteShader(vs); return 0; }
 
     unsigned int prog = glCreateProgram();
@@ -200,11 +191,95 @@ unsigned int compileShaderProgram(const char* vertexBody,
         std::string msg = "shader link failed: ";
         msg.append(log, len);
         if (errorOut) *errorOut = msg;
-        pom2::log().warn("NTSC", msg);
+        if (!quiet) pom2::log().warn("NTSC", msg);
         glDeleteProgram(prog);
         return 0;
     }
     return prog;
+}
+
+unsigned int compileShaderProgram(const char* vertexBody,
+                                  const char* fragmentBody,
+                                  std::string* errorOut)
+{
+#if !POM2_GL_ES && !defined(__APPLE__)
+    if (!loadEntryPoints()) {
+        if (errorOut) *errorOut = "GL 3.x entry points unavailable";
+        pom2::log().warn("NTSC", "GL 3.x entry points unavailable — "
+                                 "OpenEmulator shader disabled");
+        return 0;
+    }
+#endif
+
+#if POM2_GL_ES
+    // GLES 3.0 / WebGL 2 is a single well-defined tier; nothing to negotiate.
+    return buildAt("#version 300 es\n",
+                   "precision highp float;\nprecision highp int;\n",
+                   vertexBody, fragmentBody, errorOut, /*quiet=*/false);
+#elif defined(__APPLE__)
+    // macOS core profiles expose exactly GLSL 1.50 for GL 3.2 core; there is
+    // no lower dialect to fall back to on that stack.
+    return buildAt("#version 150\n", "\n",
+                   vertexBody, fragmentBody, errorOut, /*quiet=*/false);
+#else
+    // ── Desktop GL: negotiate the dialect instead of demanding 1.50 ───────
+    //
+    // `#version 150` used to be hardcoded here, and on any driver that caps
+    // below it the whole effect stack died with "GLSL 1.50 is not supported.
+    // Supported versions are: 1.10, 1.20, 1.30, 1.40 …". Mesa's V3D — the
+    // Raspberry Pi — caps *desktop* GL at 3.1, i.e. GLSL 1.40; llvmpipe on an
+    // old Mesa and several VM drivers land in the same place.
+    //
+    // Nothing had to be rewritten: POM2's shader bodies only use GLSL 1.30
+    // constructs (`in`/`out`, `texture()`, `fwidth()`). They were merely
+    // *asking* for 1.50.
+    //
+    // So: read what the driver advertises, start there, and walk down. The
+    // cascade is a safety net rather than an affectation — a driver can
+    // advertise a version and still refuse it in *this* context, and only a
+    // real compile settles the question. Intermediate failures stay silent,
+    // and errorOut is CLEARED on success: otherwise the panel would report
+    // "shader unavailable" while the stack is up and running.
+    static const struct { int id; const char* line; } kDialects[] = {
+        { 150, "#version 150\n" },
+        { 140, "#version 140\n" },
+        { 130, "#version 130\n" },
+    };
+
+    int advertised = 0;   // e.g. 140 for "1.40"
+    if (const char* s = reinterpret_cast<const char*>(
+            glGetString(GL_SHADING_LANGUAGE_VERSION))) {
+        int major = 0, minor = 0;
+        if (std::sscanf(s, "%d.%d", &major, &minor) == 2)
+            advertised = major * 100 + minor;
+    }
+
+    size_t start = 0;
+    while (start < (sizeof(kDialects) / sizeof(kDialects[0])) - 1 &&
+           advertised > 0 && advertised < kDialects[start].id)
+        ++start;
+
+    for (size_t i = start; i < sizeof(kDialects) / sizeof(kDialects[0]); ++i) {
+        const bool last = (i + 1 == sizeof(kDialects) / sizeof(kDialects[0]));
+        unsigned int prog = buildAt(kDialects[i].line, "\n",
+                                    vertexBody, fragmentBody, errorOut,
+                                    /*quiet=*/!last);
+        if (prog) {
+            if (errorOut) errorOut->clear();
+            static bool announced = false;
+            if (!announced) {
+                announced = true;
+                char msg[96];
+                std::snprintf(msg, sizeof(msg), "GLSL %d (driver: %d.%02d)",
+                              kDialects[i].id, advertised / 100,
+                              advertised % 100);
+                pom2::log().info("NTSC", msg);
+            }
+            return prog;
+        }
+    }
+    return 0;
+#endif
 }
 
 } // namespace pom2

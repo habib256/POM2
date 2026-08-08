@@ -1797,35 +1797,10 @@ bool Memory::iieReadStatus(uint16_t addr, uint8_t& out) const
 
 uint8_t Memory::iieMemRead(uint16_t addr)
 {
-    // Routing rules (see header):
-    //   $0000-$01FF      ALTZP            → aux else main
-    //   $0200-$03FF      RAMRD            → aux else main
-    //   $0400-$07FF      80STORE on       → PAGE2 picks aux/main; else RAMRD
-    //   $0800-$1FFF      RAMRD            → aux else main
-    //   $2000-$3FFF      80STORE+HIRES on → PAGE2 picks aux/main; else RAMRD
-    //   $4000-$BFFF      RAMRD            → aux else main
-    //
-    // Mutex note: `display.page2` and `display.hiRes` are read here
-    // without holding `stateMutex`. That is intentionally safe in our
-    // threading model: both the writers (softSwitchAccess, iieHandle-
-    // SoftSwitch, resetSoftSwitches) and this reader run on the CPU
-    // worker thread — they cannot race against each other. The UI
-    // thread always reads display state through `getDisplayState()`,
-    // which copies the struct under the mutex. TSAN may flag the read
-    // formally because the writers DO take the mutex, but no actual
-    // race exists. Adding a per-access mutex acquire here would tank
-    // performance (one lock per emulated bus cycle).
-    const bool ramrd = (iieMemMode & MF_RAMRD) != 0;
-    bool fromAux;
-    if (addr < 0x0200) {
-        fromAux = (iieMemMode & MF_ALTZP) != 0;
-    } else if (addr >= 0x0400 && addr <= 0x07FF) {
-        fromAux = (iieMemMode & MF_80STORE) ? display.page2 : ramrd;
-    } else if (addr >= 0x2000 && addr <= 0x3FFF) {
-        fromAux = ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2 : ramrd;
-    } else {
-        fromAux = ramrd;
-    }
+    // Routing rules and the mutex rationale both live on iieReadFromAux()
+    // in the header — it is the single definition of the aux/main decision,
+    // shared with memRead()'s inline fast path.
+    const bool fromAux = iieReadFromAux(addr);
     const uint8_t v = fromAux ? aux[addr] : mem[addr];
     if (bankTrace_) checkBankRead(addr, fromAux, v);
     return v;
@@ -2105,7 +2080,11 @@ std::string Memory::recentIoReadSummary() const
     return out;
 }
 
-uint8_t Memory::memRead(uint16_t addr)
+// The slow half of the bus read. memRead() in the header decides the two hot
+// cases inline (main RAM below $C000, ROM at $D000+) and calls this for
+// everything else; this body is unchanged, so any path that reaches it
+// behaves exactly as before the split.
+uint8_t Memory::memReadSlow(uint16_t addr)
 {
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) return mem[addr];
