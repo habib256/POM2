@@ -1180,6 +1180,30 @@ target_include_directories(test_disk_wp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disk_wp COMMAND test_disk_wp)
 set_tests_properties(disk_wp PROPERTIES TIMEOUT 5)
 
+# ─── Disk / floppy MANAGEMENT state (around the LSS, not inside it) ───────
+# Pins five defects in the media-management layer: the 13-sector boot-PROM
+# latch surviving an eject, a host-read-only image mounting as writable,
+# write-back dropped on card teardown, saveDirty resetting the image's file
+# permissions, and reset silencing the motor without telling the sound sink.
+add_executable(test_disk_media_state
+    disk_media_state_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+)
+target_include_directories(test_disk_media_state PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_disk_media_state PRIVATE Threads::Threads)
+endif()
+# The 13-sector case needs roms/disk2_13.rom (it self-skips without it), so
+# run from the source tree rather than the build dir.
+add_test(NAME disk_media_state COMMAND test_disk_media_state
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(disk_media_state PROPERTIES TIMEOUT 10)
+
 # ─── 13-sector (DOS 3.x, 5-and-3 GCR) round-trip ──────────────────────────
 # Pins nibblizeTrack13 ↔ decodeTrack13 (port of MAME a2_13sect_format) and
 # 116480-byte format detection. Synthesized image, no network/PROM.

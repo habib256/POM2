@@ -698,8 +698,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
 - 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
   divergent copies now: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
-  namespace), `Disk35Image.cpp:214` (added 2026-08-02, the only one that
-  preserves the original's permissions) and `ProDOSVolume.cpp:664-702`.
+  namespace), `Disk35Image.cpp:214` (added 2026-08-02) and
+  `ProDOSVolume.cpp:664-702`. `DiskImage`'s copy caught up on permission
+  preservation 2026-08-08 (it was silently resetting the image's mode to the
+  umask default on every write-back); `ProDOSVolume`'s still hasn't.
   Extract to `src/FileAtomicWrite.h`. **None of the three `fsync` before the
   `rename`**, so a power cut can still land an empty file where the user's
   disk image was — fold that in when extracting.

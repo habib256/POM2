@@ -827,6 +827,16 @@ MainWindow::~MainWindow()
     // Persist per-slot DiskII state. The primary (lowest-slot) card ALSO
     // writes to the legacy unsuffixed `disk_path` / `disk_writeback` so
     // an older POM2 build reading this settings.ini still sees the disk.
+    //
+    // Flush the 5.25" media FIRST — the 3.5" block below has always done
+    // this, and its comment claimed to "mirror the Disk II save-on-shutdown
+    // hook", but no such hook existed: quitting with write-back on threw
+    // away every sector DOS had written since the last eject. The card's
+    // destructor now flushes too (covering profile switches, which rebuild
+    // the slot cards without ejecting), but doing it here keeps it ordered
+    // before the settings write and inside the same teardown the user can
+    // see in the log.
+    for (auto* c : diskCards) if (c) c->flushPendingWrites();
     for (auto* c : diskCards) {
         if (!c) continue;
         const std::string slotKey = "_slot" + std::to_string(c->getSlot());
