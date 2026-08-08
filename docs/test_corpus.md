@@ -116,6 +116,71 @@ pinned `video_event_publish`). *(Headless verify: `/mem` text/HGR page +
 `/status` PC; `/screen.ppm` frozen without a UI loop. Remaining: real visual
 observation to confirm the fine placement of the effects.)*
 
+### DIX menu: RETURN before any arrow key wedges — DIX bug, not POM2 (2026-08-08)
+
+Reported as "launch DIX, press RETURN straight away, the program dies".
+Reproduced headlessly by `tests/dix_return_crash_probe.cpp` (//e PAL +
+slot-4 Mockingboard + slot-5 SmartPort on `disks_3.5/DIX.po`) and traced to
+an **off-by-one in DIX's own menu**, faithfully reproduced by POM2.
+
+Confirmed against DIX's own GPLv3 sources ([Fr3nchT0uch/DIX](https://github.com/Fr3nchT0uch/DIX/),
+ACME syntax): `MENU/main.a` (assembles to `$E000`) and `loader.a` (`$D000`),
+both declaring `CurrentChoice = $DFFF` (`MENU/main.a:21`, `loader.a:64`).
+
+DIX keeps the highlighted menu entry in **`$DFFF`** (LC bank 2) and
+initialises it to **0** at `$D026` (`LDA #$00 / STA CurrentChoice`,
+`loader.a:119-121`) — once, at cold boot; the `JMP -` demo loop
+(`loader.a:130`) never re-zeroes it, so 0 is reachable only on the *first*
+menu entry. Only the arrow keys ever give it a valid 1..16 value
+(`MENU/main.a:178-211`):
+
+```
+$E10F  LDA $C000 / BPL $E0F4 / STA $C010
+$E117  CMP #$88  BEQ $E129     ; LEFT   0 -> 17 then DEC -> 16
+$E11B  CMP #$95  BEQ $E13E     ; RIGHT  INC -> 1
+$E11F  CMP #$8D  BEQ $E153     ; RETURN launch
+$E123  CMP #$A0  BEQ $E153     ; SPACE  launch
+```
+
+Index 0 is a *deliberate* display state, not an accident: `RefreshChoice`
+(`MENU/main.a:224-230`) indexes 17-entry name tables (`MENU/main.a:730-731`)
+whose entry 0 is the "use arrows to select demo" prompt (`DEMOX`,
+`MENU/main.a:639`). But the accept path has no matching guard — `.return`
+(`MENU/main.a:213-222`) loads `CurrentChoice` into a dead A (the only test
+on it, `CMP #16 / BNE`, is commented out) and falls straight through to
+teardown + `RTS`. The launcher then indexes a 16-entry jump table
+**one-based** (`loader.a:117-153`):
+
+```
+$D02C  LDX $DFFF
+$D02F  DEX                     ; 0 -> $FF   <-- underflow
+$D030  LDA $D076,X / STA $D03D ; $D175 = $E1
+$D036  LDA $D086,X / STA $D03E ; $D185 = $17
+$D03C  JSR $17E1               ; garbage -> BRK storm in unwritten RAM
+```
+
+So **RETURN or SPACE pressed before any arrow key** jumps to `$17E1`. The
+main thread then grinds BRK-by-BRK upward through empty RAM while the 50 Hz
+Mockingboard IRQ music engine keeps servicing itself — picture frozen,
+music still playing. That is exactly the reported symptom.
+
+"Right after launch" is a red herring: an early keypress simply sits in the
+hardware keyboard latch (DIX polls `$C000` only once the menu is up, ~17 s
+in), so the wedge lands later. Injecting RETURN at 18 s, 25 s or 40 s wedges
+identically. The index arithmetic is deterministic 6502 (`abs,X` does not
+page-wrap), so real hardware and MAME behave the same.
+
+**POM2 is exonerated**: press LEFT or RIGHT first and RETURN loads the part
+normally — SmartPort reads at `$C58B`, the selected part runs at `$7xxx`
+with video updating. Verified for both wrap directions (RIGHT → part 1,
+LEFT → part 16), matching the asymmetric handlers in `MENU/main.a:189-211`
+that clamp any arrow press into 1..16.
+
+Upstream fix, if ever reported: `LDA CurrentChoice / BEQ MAINLOOP` at the
+head of `.return` (`MENU/main.a:213`). Initialising `CurrentChoice` to 1
+instead would lose the `DEMOX` prompt and the first-boot intro trigger at
+`MENU/main.a:66-67`.
+
 ---
 
 ## 2. Disk II controller hell (flux / WOZ)
