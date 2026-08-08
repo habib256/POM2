@@ -160,6 +160,32 @@ if [ "$DO_PGO" = "1" ]; then
                  echo "       the shipped binary would get NO benefit."; exit 1; }
     done
 
+    # ── Reference signature, taken from the PASS-1 binary ────────────────
+    # The whole claim behind this build is "PGO + LTO change the code layout,
+    # never the semantics". That is a claim you can TEST, on this machine, for
+    # free: run a fixed workload now with the instrumented (un-optimised,
+    # un-profiled) binary, run the same one after pass 2, and compare.
+    #
+    # It has to be done here because pass 2 overwrites the binary. Only the
+    # hash and cycle fields are compared — wall/speed obviously differ.
+    #
+    # ⚠ LC_ALL=C on the glob. Without it the "first .dsk" depends on the
+    # host's collation (a French desktop picks buzzard_bait, a C-locale runner
+    # picks CRIME_A), so the two sides would silently measure different disks
+    # — which is exactly how the first version of this check compared two
+    # unrelated runs and looked fine.
+    REF_DISK="$(LC_ALL=C ls disks_5.4/dsk/*.dsk 2>/dev/null | head -1 || true)"
+    sig() {   # sig <binary> <args…>  → "cycles=… ram=… fb=…"
+        local b="$1"; shift
+        "$b" "$@" --quiet 2>/dev/null | tail -1 \
+            | grep -oE 'cycles=[0-9]+|ram=[0-9a-f]+|fb=[0-9a-f]+' | tr '\n' ' '
+    }
+    REF_CPU="$(sig "$BUILD_DIR/pom2_bench" --frames 3000)"
+    REF_DSK=""
+    [ -n "$REF_DISK" ] && REF_DSK="$(sig "$BUILD_DIR/pom2_bench" --disk "$REF_DISK" --frames 900)"
+    echo "[pi-build] reference (pass-1 binary): $REF_CPU"
+    [ -n "$REF_DSK" ] && echo "[pi-build] reference (disk, $(basename "$REF_DISK")): $REF_DSK"
+
     echo "[pi-build] PGO pass 2/2 — final build (profile + LTO)"
     # -fprofile-partial-training: the untrained objects (the GUI's main.cpp,
     # ImGui, miniaudio) get optimised normally instead of being treated as cold
@@ -177,6 +203,28 @@ if [ "$DO_PGO" = "1" ]; then
         echo "ERROR: a core source was compiled with no profile (build paths out of step?)"
         exit 1
     fi
+
+    # ── The output-identity gate ─────────────────────────────────────────
+    # Same machine, same workloads, pass-1 binary vs the final PGO+LTO one.
+    # If these differ, the fast binary is not the same emulator and the whole
+    # recipe is void — that is a build failure, not a footnote.
+    NEW_CPU="$(sig "$BUILD_DIR/pom2_bench" --frames 3000)"
+    if [ "$NEW_CPU" != "$REF_CPU" ]; then
+        echo "ERROR: PGO+LTO changed the emulator's output (CPU workload)"
+        echo "  pass 1: $REF_CPU"
+        echo "  pass 2: $NEW_CPU"
+        exit 1
+    fi
+    if [ -n "$REF_DSK" ]; then
+        NEW_DSK="$(sig "$BUILD_DIR/pom2_bench" --disk "$REF_DISK" --frames 900)"
+        if [ "$NEW_DSK" != "$REF_DSK" ]; then
+            echo "ERROR: PGO+LTO changed the emulator's output (disk workload)"
+            echo "  pass 1: $REF_DSK"
+            echo "  pass 2: $NEW_DSK"
+            exit 1
+        fi
+    fi
+    echo "[pi-build] OK: output byte-identical to the un-profiled build"
 else
     echo "[pi-build] PGO disabled (POM2_PGO=0) — single pass"
     configure "" ON

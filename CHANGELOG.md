@@ -70,8 +70,13 @@ flattens every artifact into one directory, and a package named like the generic
 aarch64 one would overwrite it in silence. The job verifies rather than hopes —
 ET_EXEC runtime, aarch64, glibc ≤ 2.36, GLES-only (desktop libGL on a Pi is the
 software rasteriser: a silent ~2 fps regression, not a link error), ROMs in both
-packages — and, since the runner *is* ARM64, it runs the shipped `pom2_bench` to
-confirm the PGO binary's output hashes still match a plain build's.
+packages. The "PGO changes layout, never semantics" claim is *enforced* rather
+than asserted: the container runs a fixed workload with the pass-1 (instrumented,
+unoptimised) binary, repeats it with the final PGO+LTO one on the same machine,
+and **fails the build** if a cycle count or an output hash moved. Getting that
+right needed one non-obvious guard — `LC_ALL=C` on the "first `.dsk`" glob,
+because collation differs between a French desktop and a C-locale runner, so
+without it the two sides can compare *different disks* and agree by accident.
 
 Footnote: **LTO now measures ~0 %** on these workloads — the header inlining did
 by hand exactly the cross-TU call LTO was recovering. Kept anyway, as a guard.
