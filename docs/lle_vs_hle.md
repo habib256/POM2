@@ -86,6 +86,7 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **Super Serial Card** | **L1 chip / H1 firmware** | 6551 ACIA register-faithful; the slot ROM is synthetic (PR#n/IN#n hooks + Pascal 1.1 ID block), real SSC ROM not shipped | Chip is right; firmware is a stub because no dump is bundled |
 | **Uthernet I** (`Cs8900aDevice`) | **L1** | Verbatim MAME `machine/cs8900a.cpp` (VICE lineage), packet-level | RX is pull-mode — POM2 has no `device_network_interface` push bus |
 | **Uthernet II** (`W5100Device`) | **L1 — and see below** | Register/socket model per AppleWin + WIZnet datasheet; each W5100 socket owns a real host BSD socket | **The chip is itself an offload engine** — host sockets *are* the faithful model, not a shortcut |
+| **FujiNet card** (`FujiNetCard`) | **H1 + relay** | Synthetic 256 B slot ROM whose only job is to trap into the host; every SmartPort call is forwarded verbatim to a real FujiNet over SP-over-SLIP (loopback TCP, or USB CDC-ACM to a physical board) | Nothing below the protocol exists to model — **the device is real and off-box**. MAME has no FujiNet device, so the source of truth is the published spec + the FujiNet AppleWin fork |
 | **Network transport** (`NetworkBackend`) | **H2** | Null / Loopback / libslirp user-mode NAT | Outbound-only by design: no root, no TAP/pcap |
 | **Clock card** (`ClockCard`) | **L2** | uPD1990AC bit-bang state machine per MAME `upd1990a.cpp`, driving the **real Thunderware Rev 1.3 EPROM** — `roms/thunderclock_u9_v1.3.bin` is in-repo and `tryLoadDump()` runs from the ctor (`ClockCard.cpp:78`), 2 KB mirrored into `$C800-$CFFF`. Synthetic ROM is the fallback only | Already there. The dump even settled the 40-bit-vs-48-bit shift-register question by disassembly (`$CACF` emits 4 CLK × 10 = 40) |
 | **No-Slot Clock** (`NoSlotClock`) | **L1** | Full DS1216E SmartWatch 64-bit pattern-match state machine on `Memory::interceptRead` | — |
@@ -195,8 +196,12 @@ Every one of these is documented in-repo. They are the price list.
 | `PrinterCard` Pascal block absent | Pascal printer drivers (PINIT/PREAD/PWRITE/PSTATUS) cannot bind — BASIC `PR#n` only |
 | `MouseCardAppleWin` delta copy | No quadrature rate limit; needs a compensating cursor sync the L0 card does not |
 | SSI263 phoneme blob | Arbitrary formant/filter sweeps outside the 62-phoneme set are not reproducible |
+| ImageWriter character ROMs | Not chip dumps: the dot patterns Apple **published** in the ImageWriter/II Technical Reference Appendix C, transcribed by mikedaley/web-a2e (MIT) and re-generated into `src/ImageWriterRom.h`. Same provenance class as the SSI263 blob — the transcription is MIT, the typeface design is Apple's. Codes outside the tables fall back to POM2's bundled CP437 font |
 | `ClockCard` synthetic ROM | No `$C800` driver load for tools that pull the driver off the card |
 | Uthernet II `LISTEN` unimplemented | A direct consequence of mapping onto host sockets with no bind path — no inbound connections |
+| FujiNet relay: **no peer** | A third failure category, distinct from LLE-incomplete and HLE-out-of-contract: the device is *elsewhere*. Absent or slow shows up as a bounded stall (250 ms) then SmartPort `$27`; the boot path falls back to continuing the slot scan |
+| FujiNet relay: **rewind does not rewind** | The peer's clock never moves backwards. Blocks it wrote stay written, HTTP requests stay made; the card only resynchronises its sequence number on snapshot load |
+| FujiNet relay: not on //c-class | Forced INTCXROM masks slot ROM; the real //c wires FujiNet to the disk port instead, which needs the on-board `$C500` path |
 | `bootFromSlot` | Labelled a "synthetic shortcut" in `EmulationController.h:147`: cold boot + forced `PC = $Cn00` after validating the JSR trio. No real firmware scan happens |
 
 And the mirror-image failure, worth keeping in view: the **//c+ IWM 3.5" boot**

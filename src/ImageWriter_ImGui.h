@@ -57,6 +57,27 @@ public:
         /// printer; surfaced here because this is where its effect shows.
         bool                      backPressure = false;
         std::function<void(bool)> onBackPressureChanged;
+
+        // ── Durable print history (printer plan phase E) ──────────────────
+        // The host owns the store; the panel only lists it and asks. One row
+        // per stored page, newest first.
+        struct HistoryRow {
+            std::string file;      ///< bare filename inside historyDir
+            std::string savedAt;
+            std::string printer;   ///< model name at the time
+            std::string ribbon;
+            uint64_t    job = 0;
+            int         w = 0, h = 0;
+            double      paperW = 0.0, paperL = 0.0;
+        };
+        std::vector<HistoryRow> history;
+        std::string             historyDir;
+        /// Fetch a stored page as RGBA, for the re-preview. Returns false if
+        /// the file has gone since the list was built.
+        std::function<bool(const std::string& file, std::vector<uint8_t>& rgba,
+                           int& w, int& h)> loadHistoryPage;
+        std::function<void(const std::string& file)> onDeleteHistoryPage;
+        std::function<void()>                        onClearHistory;
     };
 
     ImageWriter_ImGui() = default;
@@ -79,12 +100,22 @@ private:
     uint32_t     texRev_  = 0;
 
     int   viewPage_ = -1;        // -1 = sheet in progress
+    /// Index into HostInfo::history when the canvas is showing a STORED page
+    /// instead of one on the platen; -1 = not in history view. Kept separate
+    /// from viewPage_ so leaving the history returns to whatever sheet the
+    /// user was on.
+    int   viewHistory_ = -1;
+    std::string historyFile_;    // which stored file the texture holds
     bool  follow_   = true;      // snap to the newest sheet
     int   zoomMode_ = 0;         // 0 = fit width, else index into kZooms
     std::vector<uint8_t> rgba_;  // scratch, reused across uploads
     std::string status_;
 
     void uploadPage(const ImageWriter::Page& p, int pageIdx, uint32_t rev);
+    /// Upload an arbitrary RGBA image (a stored page). `key` identifies it in
+    /// the texture cache; history pages use negative keys so they can never
+    /// collide with a live page index.
+    void uploadRgba(const std::vector<uint8_t>& rgba, int w, int h, int key);
     bool savePagePng(const ImageWriter::Page& p, const std::string& path,
                      std::string& err);
 };

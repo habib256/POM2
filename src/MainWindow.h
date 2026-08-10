@@ -21,6 +21,7 @@
 #include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
 #include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
+#include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
@@ -71,12 +72,16 @@ namespace pom2 {
     class Settings;
     class SmartPortCard;
     class SmartPort_ImGui;
+    class PrinterSoundDevice;
+    class PrinterHistory;
+    class FujiNet_ImGui;
     class FloppyEmuDevice;
     class FloppyEmu_ImGui;
     class ImageWriter;
     class ImageWriter_ImGui;
     class UthernetCard;
     class UthernetIICard;
+    class FujiNetCard;
     class Uthernet_ImGui;
     class Toolbar_ImGui;
     class CommandPalette_ImGui;
@@ -167,6 +172,17 @@ public:
     /// internally between frames).
     bool insertAndBootImage(const std::string& path, std::string& errOut);
 
+    /// CLI (`--fujinet` / `--fujinet-serial`): plug a FujiNet relay card into
+    /// `slot` and arm its link before the machine boots, so an autostart scan
+    /// finds a FujiNet on its first pass. `serialDevice` empty in serial mode
+    /// means "auto-pick when exactly one candidate exists".
+    ///
+    /// Refuses an occupied slot rather than replacing what is there:
+    /// destroying a live card would race the CPU worker, and silently
+    /// evicting the user's Disk II would be worse than an error message.
+    bool plugFujiNetFromCli(int slot, bool serial, const std::string& serialDevice,
+                            int tcpPort, std::string& errOut);
+
 #ifdef __EMSCRIPTEN__
     /// Browser UX: toolbar reset should relaunch the boot image that was
     /// passed in through the WASM page arguments (Total Replay by default).
@@ -240,6 +256,7 @@ private:
     std::unique_ptr<pom2::CommandPalette_ImGui>   cmdPalette;
     std::unique_ptr<pom2::HdvController_ImGui>    hdvPanel;
     std::unique_ptr<pom2::SmartPort_ImGui>        smartPortPanel;
+    std::unique_ptr<pom2::FujiNet_ImGui>          fujiNetPanel;
     // BMOW Floppy Emu: the device model (mode/SD/favorites) + its OLED panel.
     std::unique_ptr<pom2::FloppyEmuDevice>        floppyEmu;
     std::unique_ptr<pom2::FloppyEmu_ImGui>        floppyEmuPanel;
@@ -248,6 +265,13 @@ private:
     // control-language interpreter) and its paper-tray window. The
     // printer is downstream of whatever printer *interface* card is
     // plugged — `pumpImageWriter()` streams that card's spool into it.
+    /// Declared BEFORE imageWriter: the ctor initialiser list runs in
+    /// declaration order, and imageWriter is handed this pointer there.
+    std::unique_ptr<pom2::PrinterSoundDevice>     printerSound;
+    /// Durable printouts. Every ejected sheet is written here, so a printout
+    /// outlives the session — the in-ImageWriter stack is capped at 32 and
+    /// dies with the process.
+    std::unique_ptr<pom2::PrinterHistory>         printerHistory;
     std::unique_ptr<pom2::ImageWriter>            imageWriter;
     std::unique_ptr<pom2::ImageWriter_ImGui>      imageWriterPanel;
     std::unique_ptr<pom2::LeChatMauve_ImGui>      chatMauvePanel;
@@ -299,6 +323,10 @@ private:
     // configuration nobody asks for, and each would need its own MAC.
     pom2::UthernetCard*          uthernetCard     = nullptr; // non-owning, owned by SlotBus
     pom2::UthernetIICard*        uthernetIICard   = nullptr; // non-owning, owned by SlotBus
+    /// FujiNet relay. Single-instance on purpose: the card holds a listening
+    /// socket (or an open serial device), and a second one would just fail to
+    /// bind / open the same endpoint.
+    pom2::FujiNetCard*           fujiNetCard      = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -446,6 +474,7 @@ private:
     bool         showDisk35Panel = false;
     bool         showHdvPanel    = false;
     bool         showSmartPortPanel = false;
+    bool         showFujiNetPanel   = false;
     bool         showJoystickPanel = false;
     bool         showChatMauvePanel = false;
     bool         showSscPanel       = false;
@@ -578,6 +607,24 @@ private:
     // Mount-dialog state lives in `hdvPanel`.
     std::string hdvPath;
     std::string hdvStatus;
+    /// FujiNet: last link error / info line, and the cached serial-device
+    /// list (scanning /dev or the registry every frame would be silly, and
+    /// the list only changes when hardware is plugged in).
+    std::string fujiNetStatus_;
+    std::vector<std::pair<std::string, std::string>> fujiNetSerialDevices_;
+    /// Helper program the user configured (empty = auto-detect), and what
+    /// auto-detection last resolved it to.
+    std::string fujiNetHelperPath_;
+    std::string fujiNetHelperResolved_;
+    /// Threshold / inversion for Machine ▸ Print screen. Auto-invert by
+    /// default, so a text screen prints black-on-white instead of flooding
+    /// the sheet.
+    pom2::ScreenDumpOptions printerDumpOptions_;
+    /// How many sheets the printer had ejected when the archiver last ran.
+    /// Compared against ImageWriter's MONOTONIC eject counter — the page
+    /// stack itself is capped at 32 and reused, so counting entries there
+    /// would miss pages pushed out of it between two frames.
+    uint64_t printerArchivedSheets_ = 0;
 
     // Cassette load/save dialog state moved to CassetteDeck_ImGui.
     std::string tapeStatusMessage;
@@ -931,6 +978,17 @@ private:
     void renderHdvPanelWindow();
     void renderHdvFileDialog();
     void renderSmartPortPanelWindow();
+    void renderFujiNetPanelWindow();
+
+    /// Machine ▸ "Print screen": snapshot the framebuffer and hand the
+    /// printer the ESC G bit-image stream a period driver would have sent.
+    /// See PrinterScreenDump.h for why it is bytes and not pixels.
+    void dumpScreenToPrinter();
+
+    /// Copy any sheets the printer has ejected since the last call into the
+    /// durable history. Driven from pumpImageWriter, so it costs nothing
+    /// until a page actually completes.
+    void archiveNewPrinterPages();
     void renderChatMauvePanelWindow();
     void renderMockingboardPanelWindow();
     void renderPhasorPanelWindow();

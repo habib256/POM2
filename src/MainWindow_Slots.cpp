@@ -951,6 +951,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // Same hazard: the Ethernet panel dereferences these every frame.
         uthernetCard     = nullptr;
         uthernetIICard   = nullptr;
+        // The FujiNet card owns a listening socket / open serial device and
+        // a worker thread; slotBus().clear() destroys it, which joins the
+        // thread. Dropping our alias first keeps the panel from touching a
+        // card that is mid-teardown.
+        fujiNetCard      = nullptr;
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
@@ -1287,6 +1292,7 @@ void MainWindow::restartEmulationFromSettings()
         grapplerCard     = nullptr;   // see pumpImageWriter() — non-owning
         uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
         uthernetIICard   = nullptr;
+        fujiNetCard      = nullptr;   // owns a socket + worker thread
         smartPortCard    = nullptr;
         controller->memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the

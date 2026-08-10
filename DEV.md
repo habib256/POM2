@@ -2402,6 +2402,179 @@ remaining ordering hazard — a TU that pulled `windows.h` in first, so
 winsock v1 is already loaded — into a single `#error` instead of fifty
 redefinition errors.
 
+### Host serial ports (`SerialPort`)
+
+`src/SerialPort.h/.cpp` is to serial what `SocketCompat.h` is to sockets: one
+compat pair covering POSIX `termios` and Win32 `DCB`, with no knowledge of what
+speaks the protocol on the other end. POM2 had no serial code before the
+FujiNet USB transport needed it — `SuperSerialCard` emulates a 6551 and bridges
+it to *TCP*, it never opens a host device. `POM2_HAS_SERIAL` is 0 under
+Emscripten only.
+
+**Three traps it exists to remove**, all silent:
+
+1. **The ESP32 auto-reset circuit.** Every ESP32 USB bridge wires **DTR → EN
+   (reset)** and **RTS → IO0 (boot select)** through the two-transistor
+   auto-reset circuit — that is exactly how `esptool` enters the ROM
+   bootloader with no button press. An `open()` that lets the OS assert those
+   at their defaults **reboots the user's FujiNet, or strands it in the
+   bootloader, every single time POM2 opens the port**, and the symptom ("my
+   FujiNet restarts when I launch the emulator") points nowhere near the
+   emulator. `open()` de-asserts both before the first byte and clears
+   **`HUPCL`**, so that *closing* the port — i.e. quitting POM2 — does not
+   drop DTR and reset the board either.
+2. **Raw mode is not optional.** SLIP frames carry `$11`/`$13`, which `IXON`
+   eats, and `$0D`/`$0A`, which `ICRNL`/`ONLCR` rewrite. `cfmakeraw` plus an
+   explicit re-clear of those flags; on Win32, `fBinary` with every flow-control
+   field disabled.
+3. **macOS: `/dev/cu.*`, never `/dev/tty.*`.** The `tty.` twin blocks on
+   carrier detect, which a USB CDC device never raises, so the open never
+   returns. `enumerate()` only ever reports `cu.*`.
+
+Two smaller ones: Win32 needs the `\\.\` prefix or `COM10` and above resolve
+to nothing, and on Linux a user outside the `dialout` group gets a bare
+`EACCES` — `lastError()` spells out the fix rather than reporting "open
+failed".
+
+Enumeration prefers `/dev/serial/by-id/*` on Linux (those names survive a
+replug; `ttyACM0` does not), `cu.usbmodem*` / `cu.usbserial*` on macOS, and
+`HKLM\HARDWARE\DEVICEMAP\SERIALCOMM` on Windows.
+
+Pinned by `tests/serial_port_test.cpp`, which uses a **pty pair**
+(`posix_openpt`/`grantpt`/`unlockpt` yields a real slave device node). Honest
+limit: a Linux pty has no modem-control lines — `TIOCMGET` fails on both ends —
+so the harness pins the *termios* half of trap 1 (HUPCL clear, CLOCAL set) and
+the binary round trip, and only asserts the DTR/RTS levels when the device
+actually has them. The line-state half is on the manual checklist in
+[docs/fujinet_plan.md](docs/fujinet_plan.md).
+
+### FujiNet (SP-over-SLIP relay)
+
+[FujiNet](https://fujinet.online/) is an ESP32 peripheral whose headline
+feature is the **`N:` network device**: a deported TCP/IP stack the guest
+drives with simple commands, so an Apple II gets HTTP(S), TNFS, FTP, SSH,
+Telnet and a JSON parser without running a byte of TCP/IP itself. On the Apple
+II **every** FujiNet function is a SmartPort unit — block storage, `N:`, the
+clock, the printer, the modem, CP/M — which is why POM2 relays *one* protocol
+and gets all of them, rather than porting six devices.
+
+`FujiNetCard` is a **relay, not an emulation**. It presents a SmartPort
+controller to the guest and forwards every call verbatim to a real FujiNet.
+
+**Sources.** MAME has no FujiNet device, so the project's usual "MAME = source
+of truth" rule does not apply; this is stated in the file headers so the
+deviation is deliberate rather than sloppy. The references are the FujiNet wiki
+page *"Apple II SP over SLIP"* (revision of 2025-01-25, normative for framing
+and the request/response tables), the FujiNet fork of AppleWin
+(`source/SmartPortOverSlip.cpp`, `source/devrelay/**`,
+`firmware/SPoverSLIP/spoverslip.s` — GPL-2.0-**or-later**, so GPLv3-compatible;
+consulted, not copied), and the Apple IIc Technical Reference ch. 6 / IIgs
+Firmware Reference ch. 7 for the call convention the spec supplements.
+
+**Four layers, four concerns.**
+
+| File | Concern |
+|---|---|
+| `SlipFramer.h` | SLIP encode/decode. No I/O, no threads, no protocol. |
+| `SpTransport.h` + `SpTcpTransport.cpp` / `SpSerialTransport.cpp` | Byte pipe. TCP (POM2 listens on `127.0.0.1:1985`, a FujiNet *desktop build* connects in) or USB CDC-ACM (POM2 opens a serial device, a *physical board* answers). |
+| `SpOverSlipLink.*` | Session: sequence numbers, the bounded round trip, device enumeration, the peer-watching worker. |
+| `FujiNetCard.*` | `SlotPeripheral`: synthetic slot ROM, the `$C0n2` trap, RAM/register marshalling. |
+
+**The trap.** The synthesised slot ROM does almost nothing — both entry points
+are three instructions: `LDA #$65` (or `#$66` for ProDOS) / `STA $C0n2` /
+`CMP #$01` / `RTS`. `deviceSelectWrite` sees that store and does everything on
+the host: decode the parameter list out of emulated RAM, **rewrite the return
+address on the stack** past the three inline bytes a SmartPort call carries, do
+the round trip, write the response back into RAM, set A/X/Y. The trailing
+`CMP #$01` turns the status byte into the carry flag both conventions expect.
+
+**Two things that will bite anyone touching this code:**
+
+- **The stack index must wrap inside page 1.** The AppleWin fork's `regs.sp` is
+  already a full `$01xx` address, so it indexes `mem[regs.sp + 1]`. POM2's
+  `getStackPointer()` is the 8-bit register, so `0x0100 + ((sp + 1) & 0xFF)` is
+  mandatory. Written without the mask, a call made with SP near the bottom of
+  the page writes the fixed-up address to `$0200` — corrupting unrelated memory
+  and leaving the stale address on the stack. Pinned with `SP = $01`.
+- **A buffer inside `$C0xx` is refused.** Marshalling goes through
+  `Memory::memRead/memWrite` (mandatory: only the real dispatcher knows whether
+  a ProDOS buffer currently resolves to main or aux RAM), and "reading memory"
+  in the I/O page toggles soft switches. A malformed parameter list would
+  otherwise flip video mode or bank state as a side effect.
+
+**Boot.** The card's ROM reads block 0 of unit 1 to `$0800` and runs it. When
+no FujiNet answers it **continues the autostart slot scan** (`JMP $FABA`)
+instead of erroring — without that, a FujiNet card in slot 7 would break
+booting from the Disk II in slot 6 whenever the FujiNet is not running. Slot 7
+is the default precisely because the //e scans it first, so a machine with a
+FujiNet attached boots straight into its CONFIG.
+
+**Enumeration** is the SmartPort daisy-chain sweep: INIT unit 1, 2, … until one
+answers non-zero. *Deliberate divergence from the reference:* the AppleWin fork
+registers a device even on the iteration whose INIT failed (it inserts before
+testing its own `still_scanning` flag), so its count runs one high; POM2
+registers only units that answered `$00`. `sp_over_slip_link_test` keeps that
+from being "fixed" back into a bug.
+
+**Threading.** `transact()` blocks the CPU thread under `stateMutex` — the
+emulated 6502 is parked inside its `JSR` for the whole round trip, so this is
+what the hardware does too, and the alternative (a completion register the ROM
+polls) would change the guest-visible protocol and break "any FujiNet software
+works unmodified". Bounded by a **250 ms** default timeout: ~50× headroom over
+a real USB round trip, and a dead peer costs one dropped frame rather than a
+full second. Only peer acquisition and enumeration live on the worker thread.
+
+`SpOverSlipLink` has **two** peer-teardown entry points on purpose —
+`peerLostLocked()` for callers already holding `callMtx_` (that is `transact()`
+itself) and `handlePeerLost()` for everyone else. `std::mutex` is not
+recursive, and taking it twice there deadlocks the CPU thread with the 6502
+parked mid-SmartPort-call.
+
+**Reset and rewind.** `onReset()` bumps the sequence number (so a response in
+flight for the pre-reset request cannot be mistaken for the next answer) and
+sends `Control` code `$00` to each device, which is what the spec asks the
+Apple II side to do so a modem drops its connection and a printer ejects a
+partial page. **Rewind is the honest limitation**: the peer is a live external
+device, so rewinding past a `WriteBlock` does not un-write its SD card and
+rewinding past an HTTP POST does not un-post it. The ring keeps working; the
+card simply does not roll back with it, and `loadSnapshotState` only
+resynchronises the link — deliberately *not* `notifyGuestReset()`, because the
+user rewound, the machine did not reset, and hanging up somebody's modem
+because they scrubbed the timeline would be wrong.
+
+**Not supported: //c-class.** Their forced INTCXROM masks all slot ROM. On a
+real //c the FujiNet *is* the SmartPort on the disk port, so the correct
+integration is to hang the relay off the on-board `$C500` hole — separate work.
+
+**Printer tap.** Bytes the guest WRITEs to the peer's printer unit are also
+spooled to POM2's `ImageWriter`, through the same
+`bytesWritten()`/`drainSpoolFrom()` contract `PrinterCard` and `GrapplerCard`
+use, so `pumpImageWriter`'s shared `printerFeedCursor` handover rules apply
+unchanged. Ranked between the parallel cards (which outrank it) and the SSC tap
+(which it outranks). The peer still prints its own copy — this is a tap.
+
+The unit is identified by its DIB **name**, not its type byte: the firmware's
+`iwmPrinter::create_dib_reply_packet` (lib/device/iwm/printer.cpp:32) sets
+`dib.type = SP_TYPE_BYTE_FUJINET_MODEM`, so **the printer advertises itself as
+a modem**. That is an upstream copy-paste bug; the name ("PRINTER") is right.
+The correct type byte ($14) is accepted too, so this survives an upstream fix,
+and `fujinet_card_smoke_test` reproduces the bug so the workaround cannot be
+tidied away by someone who has not met it.
+
+**Helper process.** POM2 can launch a FujiNet desktop build itself
+(`ChildProcess`, `FujiNetCard::startHelper`) rather than making the user start
+one by hand, and terminates its whole **process group** on exit — killing only
+the direct child leaves grandchildren holding the loopback port, which is what
+would make the *next* POM2 session fail to bind 1985. POM2 does not touch the
+helper's `fnconfig.ini` (WiFi credentials live there, and the firmware's Apple
+default for Bus-over-IP is already 127.0.0.1:1985). Vendoring the firmware into
+POM2's build was considered and rejected — see docs/fujinet_plan.md § 8.
+
+CLI: `--fujinet[=PORT]`, `--fujinet-serial[=DEVICE]`, `--fujinet-slot N`.
+Panel: View ▸ FujiNet. Design notes and the remaining phases:
+[docs/fujinet_plan.md](docs/fujinet_plan.md).
+
+
 ### Network backends
 
 `NetworkBackend.h` — the host-side transport that carries raw Ethernet
@@ -2755,7 +2928,199 @@ EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
 (incl. reset-keeps-bank + write_cnxx drop) + S1 printer-type/MSB DIP
 + the BUSY→ACK handshake.
 
+### Print history (`PrinterHistory`)
+
+Printouts that outlive the session. `ImageWriter`'s own sheet stack is capped
+at 32 and dies with the process; this writes every ejected sheet to
+`printouts/history/` as a PNG plus a tab-separated index carrying the printer,
+ribbon, paper size and raster dimensions. The ImageWriter panel lists them
+newest first and puts one back on the canvas when clicked.
+
+**Not JSON**, deliberately: POM2 has no JSON *parser* (the AI control server
+only writes it), and adding one to read a few dozen index lines is not worth
+it. Tab-separated text also survives a truncated final line and can be read in
+a terminal.
+
+**Four traps, all pinned by `printer_history`:**
+
+- **Archive against the MONOTONIC eject counter** (`ImageWriter::sheetsEjected`,
+  added for this), not `completedPageCount()`. The page stack is capped and
+  reused, so a form-feed burst between two frames pushes sheets off it and a
+  count-based archiver loses them silently. When the archiver cannot reach
+  everything it logs how many it missed rather than pretending.
+- **Archiving runs on every path** through `pumpImageWriter`, including the
+  "no source this frame" early return: a job already in the printer's buffer
+  keeps ejecting after its card is unplugged.
+- **The filename counter resumes** from the index on load. Restarting it at 1
+  would clobber an existing PNG and show two history rows of the same image.
+- **The index is written to a temp file and renamed.** A crash mid-write
+  leaves the previous index intact; an unrecognised index yields an EMPTY
+  history rather than rows pointing at files POM2 cannot vouch for.
+
+Capped at 200 pages, deleting the PNGs as well as the rows — an emulator left
+running must not quietly fill a disk.
+
+### Printer sound (`PrinterSoundDevice`)
+
+The head buzz, the carriage-return sweep and the platen motor. **Synthesised,
+and for once that is not a fallback**: the floppy sounds are MAME's WAV set,
+but no equivalent free ImageWriter set exists — and mikedaley/web-a2e, the
+reference for the rest of the printer work, **ships no audio assets at all**
+(checked, not assumed). Its `printer-sound.js` synthesises, and this is a port
+of that model (MIT, Shawn Bullock).
+
+**Why grains.** A dot-matrix impact is a short broadband NOISE click, not a
+tone: the head energy sits near the basic printing frequency (~900-1000 Hz)
+with a skirt to ~5 kHz and no clean fundamental. Using an oscillator is what
+makes a printer emulation *sing* rather than clack, so every voice is
+bandpassed noise with a wide Q.
+
+One **grain** per printed character (11 ms, ~1500 Hz) or line feed (40 ms,
+~950 Hz), and grains are **spaced along the audio timeline** instead of all
+starting when the event arrived. That is the whole trick: at print rate they
+overlap and fuse into the familiar continuous buzz, while a lone character is
+one tick — so print density drives the texture with no extra machinery.
+
+**Web Audio → pull mixer.** The reference schedules on an `AudioContext`
+timeline. POM2's mixer pulls a mono float buffer, so the timeline becomes an
+audio FRAME COUNTER the audio thread advances and the UI thread reads when it
+stamps a grain — the same arrangement `FloppySoundDevice` documents for its
+step cadence.
+
+**The load-bearing detail** is the cap on how far ahead the scheduling cursor
+may run (0.2 s). A full-black screen dump is tens of thousands of strikes
+arriving in one UI frame; at 5 ms spacing that is *100 seconds* of buzz still
+rattling long after the page is finished. With the cap the burst simply THINS.
+`printer_sound` fires 20 000 strikes and asserts the noise is over in ~0.2 s.
+
+**No `emuCycles` here, unlike the floppy** — and the printer plan's § 9 was
+wrong to say otherwise. `FloppySoundSink::step` carries a cycle stamp because
+the guest drives the stepper directly and disk turbo collapses the wall-clock
+gaps. `ImageWriter` consumes its queue on its own wall-clock pacing
+(`tick(double dt)` at the head's cps), so a job fired in at any speed still
+prints at 180 cps and these events are already in real time.
+
+### Screen dump (`PrinterScreenDump`)
+
+"Print what is on screen", as the dot-matrix bit-image stream a period driver
+would have produced. Ported from the design in mikedaley/web-a2e's
+`src/js/printer/screen-dump.js` (MIT).
+
+**The rule that makes it honest: it synthesises a WIRE FORMAT and pushes it
+through the printer's real parser.** Nothing paints a page pixel. The dump
+emits the same `ESC G` bytes a Grappler ROM or Print Shop drives the head
+with, hands them to `ImageWriter::queueBytes`, and lets the existing bit-image
+path do the work — so it obeys the ribbon, the pacing and the paper, lands in
+the tray and the PDF export, and cannot drift from what a real driver sends.
+
+The head prints a **band** at a time: 8 vertical dots packed into one column
+byte, one byte per horizontal position, then a feed to the next band. The
+framebuffer walk is the same for every printer in the family; only four things
+differ between heads, which is why they sit in one place rather than through
+the loop:
+
+| | C. Itoh / ImageWriter / DMP | Epson FX-80 |
+|---|---|---|
+| Graphics command | `ESC G` | `ESC *` |
+| Column count | 4 ASCII digits | 2 binary bytes |
+| Top-dot bit | **bit 0** | bit 7 |
+| Band feed | `ESC T 16` (16/144 in) | `ESC 3 24` (24/216 in) |
+
+`ESC n` (9 cpi, 72 dpi graphics) is selected first so one screen pixel is one
+dot and the aspect ratio survives; 16/144 in is exactly 8 dots at 72 dpi, so
+bands abut with no seam and no overprint.
+
+**Auto-invert** picks polarity from lit density: the screen is light-on-dark
+and paper is the reverse, so dumping a text screen without inverting floods
+the sheet.
+
+Pinned by `printer_screen_dump`, whose central assertion is a **round trip** —
+build the stream from a known framebuffer, run it back through `ImageWriter`,
+and check the picture comes out. That pins scanner and parser against each
+other; a dump that agreed only with itself would be a screenshot with extra
+steps.
+
 ### ImageWriter II printer (host-side)
+
+**Character ROMs (2026-08-10).** Glyphs no longer come from POM2's bundled
+CP437 font. `src/ImageWriterRom.h` is GENERATED by
+`tools/import_printer_roms.py` and carries seven banks — ImageWriter II
+correspondence / draft / NLQ, each fixed and proportional where the hardware
+had one, plus the ImageWriter I pair — with the seven locale substitutions per
+bank. Consequences:
+
+- **`ESC a n` now changes the page** (0 = correspondence, 1 = draft, 2 = NLQ,
+  Table 4-1). It used to be swallowed, and "NLQ" was only the host's *pacing*
+  knob. `Quality` (guest, `ESC a`) and `Speed` (host, cps) are now separate on
+  purpose.
+- **Proportional is proportional.** `ESC p` / `ESC P` advance by the glyph's
+  own escapement over the pitch's dot unit (144 / 160 per inch), not by a
+  fixed cell. `hmi_` still outranks both — an explicit motion index is the
+  guest saying "move exactly this far".
+- **International sets are the ROM's own substitutions**, not the nearest
+  CP437 stand-in.
+
+The CP437 font is KEPT as the fallback for anything a bank does not carry, and
+as the one-file revert if the provenance question below is ever answered "no".
+
+**Provenance.** The tables are transcribed from the dot patterns Apple
+*published* in the ImageWriter / ImageWriter II Technical Reference Appendix C
+(via mikedaley/web-a2e, MIT). They are not chip dumps; the transcription is
+MIT, the typeface design is Apple's. Same class as the AppleWin SSI263 phoneme
+blob — see `docs/lle_vs_hle.md` and `docs/printer_plan.md` § 3.
+
+**Two generator traps**, both of which compiled clean and printed wrong:
+a backslash ending a `//` comment continues it onto the next line (`$5C` is
+`\`), which silently dropped one glyph per bank into a fixed-size array; and
+the row comments contain `{` and `}`, which broke a brace-walk parser.
+
+**Three heads (phase C).** `IwModelProfile` is a three-row table —
+ImageWriter II, ImageWriter I, Apple DMP — and `setModel()` power-cycles into
+one. They share the C. Itoh 8510 command set (the II is a backward-compatible
+superset), so what varies is DATA, not code paths: which ROM banks exist,
+whether there is a four-band colour ribbon, which ESC codes the head has no
+hardware for, the power-on pitch (the DMP comes up at Pica 10 cpi, the two
+ImageWriters at Elite 12), and the carriage rate.
+
+An absent command is **consumed with its parameter bytes and dropped** — the
+manuals' rule is that an unrecognised code goes away with its ESC, and letting
+the parameter fall through prints it as text. The trap when implementing that:
+the early return must still clear `escCmd_`, or the parser stays armed and eats
+the rest of the job. (It did, first time.)
+
+Note the ImageWriter I and DMP correspondence banks are currently
+byte-identical to the II's upstream — web-a2e seeds them from it. POM2 keeps
+them as separate banks anyway so a future divergence lands automatically, and
+`printer_glyph` deliberately does not assert that the faces differ.
+
+**The Epson FX-80 is a fourth head but NOT a fourth row's worth of data.** It
+is a different lineage, so `IwModelProfile::escP` routes it to a SECOND PARSER
+(`processEpsonChar` / `execEpsonEscape`) over the same page, dot plotter,
+ribbon, pacing and paper. The two grammars collide outright — `ESC G` is
+graphics on the C. Itoh family and double-strike on ESC/P, `ESC A` is 1/6 in
+spacing on one and n/72 in on the other — which is precisely why they cannot
+share a dispatch, and the test asserts that collision directly.
+
+Its graphics take **two binary count bytes and bit 7 as the top dot**, both the
+opposite of the C. Itoh spelling; `bitGraph_.msbTop` carries that. Getting it
+backwards mirrors every image vertically in 8-pixel stripes and still looks
+like a picture, so it is pinned by a round trip rather than by eye.
+
+Commands POM2 does not implement (user-defined characters, the VFU, nine-pin
+graphics, tab lists, margins) are CONSUMED WITH THEIR PARAMETERS. That is the
+difference between a missing feature and gibberish on the page. And
+`resetPrinter()` clears the ESC/P collector, or a reset mid-command leaves the
+parser eating the start of the next job.
+
+**Front panel (phase D).** `setPowered()` / `setOnline()` gate the input path
+and nothing else — switching a real printer off does **not** eject the sheet or
+wipe it, which is exactly what distinguishes them from `powerCycle()`.
+`setPaperDimensions()` takes any size in 1/4" steps, clamps to the tractor's
+range, and writes back what it *committed* so a caller cannot end up believing
+it got a size the printer refused.
+
+Design notes and the remaining phases: [docs/printer_plan.md](docs/printer_plan.md).
+
 
 `ImageWriter` (`ImageWriter.h/.cpp`) is the **printer**, not an interface
 card — it never appears in the slot catalog. Whatever printer interface

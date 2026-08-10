@@ -4812,3 +4812,167 @@ endif()
 if(WIN32)
     target_link_libraries(dix_return_crash_probe PRIVATE winmm)
 endif()
+
+
+# ─── FujiNet (SP-over-SLIP relay) ────────────────────────────────────────
+# Four tests, deliberately layered so each one can fail for exactly one
+# reason: framing with no I/O, the host serial primitive with no protocol,
+# the protocol with no CPU, and the card with all three.
+
+# 1. SLIP framing — pure, no sockets, no threads.
+add_executable(test_slip_framer slip_framer_test.cpp)
+target_include_directories(test_slip_framer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME slip_framer COMMAND test_slip_framer
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(slip_framer PROPERTIES TIMEOUT 10)
+
+# 2. Host serial port. POSIX-only harness (pty); compiles to a SKIP on
+# Windows, where there is no pseudo-terminal to stand in for a USB device.
+add_executable(test_serial_port
+    serial_port_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
+)
+target_include_directories(test_serial_port PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_serial_port PRIVATE Threads::Threads)
+endif()
+add_test(NAME serial_port COMMAND test_serial_port
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(serial_port PROPERTIES TIMEOUT 20)
+
+# 3. The SP-over-SLIP session layer against an in-process fake FujiNet.
+add_executable(test_sp_over_slip_link
+    sp_over_slip_link_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpTcpTransport.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpSerialTransport.cpp
+    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
+)
+target_include_directories(test_sp_over_slip_link PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_sp_over_slip_link PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(test_sp_over_slip_link PRIVATE ws2_32)
+endif()
+add_test(NAME sp_over_slip_link COMMAND test_sp_over_slip_link
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(sp_over_slip_link PROPERTIES TIMEOUT 60)
+
+# 4. The card: a real 6502 through the synthesised slot ROM, against the
+# same fake peer. Pins the stack fixup (including the page-1 wrap), the
+# boot path with and WITHOUT a peer, and the I/O-page buffer refusal.
+add_executable(test_fujinet_card
+    fujinet_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/FujiNetCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpTcpTransport.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpSerialTransport.cpp
+    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_fujinet_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_fujinet_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_fujinet_card PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_fujinet_card PRIVATE winmm ws2_32)
+endif()
+add_test(NAME fujinet_card COMMAND test_fujinet_card
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(fujinet_card PROPERTIES TIMEOUT 60)
+
+
+# 5. Helper-process supervision (the FujiNet program POM2 can launch).
+# POSIX-only harness — it uses /bin/sh as a stand-in helper.
+add_executable(test_child_process
+    child_process_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
+)
+target_include_directories(test_child_process PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_child_process PRIVATE Threads::Threads)
+endif()
+add_test(NAME child_process COMMAND test_child_process
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(child_process PROPERTIES TIMEOUT 30)
+
+
+# ─── ImageWriter character ROMs (printer plan phase A) ───────────────────
+# Pins that ESC a actually changes the face, that proportional advance comes
+# from the glyph's escapement, and that the international sets are the ROM's
+# real substitutions rather than the old nearest-CP437 approximation.
+add_executable(test_printer_glyph
+    printer_glyph_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+)
+target_include_directories(test_printer_glyph PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_printer_glyph PRIVATE Threads::Threads m)
+endif()
+add_test(NAME printer_glyph COMMAND test_printer_glyph
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(printer_glyph PROPERTIES TIMEOUT 30)
+
+
+# ─── Screen dump (printer plan phase B) ─────────────────────────────────
+# Round-trips a known framebuffer through the generated ESC G stream and the
+# REAL ImageWriter parser, which is what pins the scanner and the parser
+# against each other (band bit order, band feed, auto-invert).
+add_executable(test_printer_screen_dump
+    printer_screen_dump_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PrinterScreenDump.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+)
+target_include_directories(test_printer_screen_dump PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_printer_screen_dump PRIVATE Threads::Threads m)
+endif()
+add_test(NAME printer_screen_dump COMMAND test_printer_screen_dump
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(printer_screen_dump PROPERTIES TIMEOUT 30)
+
+
+# ─── Printer mechanical sound (printer plan phase F) ────────────────────
+# No samples to diff and no ears in CI, so what is pinned is the grain
+# scheduler's structure — above all that a dense burst THINS instead of
+# queueing minutes of buzz.
+add_executable(test_printer_sound
+    printer_sound_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PrinterSoundDevice.cpp
+)
+target_include_directories(test_printer_sound PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_printer_sound PRIVATE Threads::Threads m)
+endif()
+add_test(NAME printer_sound COMMAND test_printer_sound
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(printer_sound PROPERTIES TIMEOUT 30)
+
+
+# ─── Print history (printer plan phase E) ───────────────────────────────
+# The durable half of the printer: what matters is that a store SURVIVES a
+# session boundary and that its failure modes are boring — a foreign index
+# empties rather than half-parses, the cap deletes files as well as rows, and
+# the filename counter resumes so a reload cannot clobber an old page.
+add_executable(test_printer_history
+    printer_history_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PrinterHistory.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+)
+target_include_directories(test_printer_history PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_printer_history PRIVATE Threads::Threads m)
+endif()
+add_test(NAME printer_history COMMAND test_printer_history
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(printer_history PROPERTIES TIMEOUT 30)

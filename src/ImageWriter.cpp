@@ -8,6 +8,7 @@
 
 #include "ImageWriter.h"
 
+#include "ImageWriterRom.h"
 #include "hgrpaint/HgrFont.h"
 
 #include <algorithm>
@@ -60,6 +61,102 @@ constexpr uint8_t kIntlCharSets[8][10] = {
     { 0x23, 0x40, 0x8e, 0x99, 0x8f, 0x60, 0x84, 0x94, 0x86, 0x7e }, // Swedish
     { 0x9c, 0x85, 0xf8, 0x87, 0x15, 0x60, 0x82, 0x97, 0x8a, 0x22 }, // French
     { 0x9c, 0x15, 0xad, 0xa5, 0xa8, 0x60, 0xf8, 0xa4, 0x87, 0x7e }, // Spanish
+};
+
+// ── Character ROM banks (src/ImageWriterRom.h) ──────────────────────────
+//
+// POM2 used to draw every glyph with the bundled 8x8 CP437 font, which meant
+// NLQ was only a *speed* and proportional mode kept a fixed cell. These are
+// the real ImageWriter faces, so the quality the guest asks for with `ESC a`
+// now changes what lands on paper.
+//
+// `rows` and `rowPitch` come in pairs: draft/correspondence are 9 wires at
+// 1/72 in, NLQ is 18 rows at 1/144 in. Both make a cell 1/8 in tall, which is
+// why a mixed-quality line still sits on one baseline.
+const IwRomBank kBankStdFixed { iwrom::kIw2StdFixed,  iwrom::kIw2StdFixedOverrides,
+                              iwrom::kIw2StdFixedOverridesCount,  9, 1.0 / 72.0,  false };
+const IwRomBank kBankStdProp  { iwrom::kIw2StdProp,   iwrom::kIw2StdPropOverrides,
+                              iwrom::kIw2StdPropOverridesCount,   9, 1.0 / 72.0,  true  };
+const IwRomBank kBankDraft    { iwrom::kIw2Draft,     iwrom::kIw2DraftOverrides,
+                              iwrom::kIw2DraftOverridesCount,     9, 1.0 / 72.0,  false };
+const IwRomBank kBankNlqFixed { iwrom::kIw2NlqFixed,  iwrom::kIw2NlqFixedOverrides,
+                              iwrom::kIw2NlqFixedOverridesCount, 18, 1.0 / 144.0, false };
+const IwRomBank kBankNlqProp  { iwrom::kIw2NlqProp,   iwrom::kIw2NlqPropOverrides,
+                              iwrom::kIw2NlqPropOverridesCount,  18, 1.0 / 144.0, true  };
+const IwRomBank kBankIw1Fixed { iwrom::kIw1Fixed,     iwrom::kIw1FixedOverrides,
+                              iwrom::kIw1FixedOverridesCount,     9, 1.0 / 72.0,  false };
+const IwRomBank kBankIw1Prop  { iwrom::kIw1Prop,      iwrom::kIw1PropOverrides,
+                              iwrom::kIw1PropOverridesCount,      9, 1.0 / 72.0,  true  };
+const IwRomBank kBankDmpFixed { iwrom::kDmpFixed,     iwrom::kDmpFixedOverrides,
+                              iwrom::kDmpFixedOverridesCount,     9, 1.0 / 72.0,  false };
+const IwRomBank kBankDmpProp  { iwrom::kDmpProp,      iwrom::kDmpPropOverrides,
+                              iwrom::kDmpPropOverridesCount,      9, 1.0 / 72.0,  true  };
+// Epson FX-80 Roman: 12 columns x 9 wires, like the C. Itoh draft cell. The
+// FX-80's proportional mode derives width at render time rather than from a
+// second bitmap, so there is one bank and `stdProp` points at it too.
+const IwRomBank kBankEpson    { iwrom::kEpsonFx,      nullptr, 0, 9, 1.0 / 72.0, false };
+
+// ── Per-model ESC codes with no hardware behind them ────────────────────
+//
+// Consumed WITH their parameter bytes. The manuals' rule is that an
+// unrecognised code is dropped along with the ESC; letting the parameter fall
+// through would print it as ordinary text, which is how a "MouseText" command
+// ends up spraying a stray 'm' into somebody's letter.
+//
+//   w W   half-height              x y z  super/subscript
+//   m M   alternate character map (MouseText)      & MouseText enable
+//   a     font (quality) select    K      colour select
+constexpr uint8_t kIw1Ignored[] = {
+    0x77, 0x57, 0x78, 0x79, 0x7A, 0x6D, 0x4D, 0x26, 0x61, 0x4B,
+};
+// The DMP drops all of the above plus its own absences (Appendix B):
+//   e  13.4 cpi semicondensed is not one of its seven pitches
+//   s  proportional spacing is spelled ESC 1..6 on this head
+//   c  it resets only via the INPUT.PRIME line, never in software
+//   g  it has ESC G / ESC V only
+//   u  its tabbing is ESC ( / ESC ) / ESC 0 only
+constexpr uint8_t kDmpIgnored[] = {
+    0x77, 0x57, 0x78, 0x79, 0x7A, 0x6D, 0x4D, 0x26, 0x61, 0x4B,
+    0x65, 0x73, 0x63, 0x67, 0x75,
+};
+
+// ── The three heads ─────────────────────────────────────────────────────
+//
+// Sources: Apple ImageWriter II Technical Reference; ImageWriter I User's
+// Manual Part I (single 120 cps face, Elite power-on default, App. E); Apple
+// DMP Reference (rebadged C. Itoh 8510, Pica power-on, App. B command list).
+// Cross-checked against mikedaley/web-a2e's `imagewriter-i.js` / `apple-dmp.js`.
+const IwModelProfile kModels[static_cast<size_t>(IwModel::Count)] = {
+    // ImageWriter II — the superset.
+    { "ImageWriter II", /*colour*/ true, /*tiers*/ true,
+      &kBankStdFixed, &kBankStdProp, &kBankDraft, &kBankNlqFixed, &kBankNlqProp,
+      12.0, 2, 96, 180.0, 45.0, /*escP*/ false, nullptr, 0 },
+    // ImageWriter I — mono, one face, powers up at Elite 12 cpi.
+    { "ImageWriter I", false, false,
+      &kBankIw1Fixed, &kBankIw1Prop, nullptr, nullptr, nullptr,
+      12.0, 2, 96, 120.0, 120.0, /*escP*/ false,
+      kIw1Ignored, sizeof(kIw1Ignored) / sizeof(kIw1Ignored[0]) },
+    // Apple DMP — mono, one face, powers up at Pica 10 cpi.
+    { "Apple DMP", false, false,
+      &kBankDmpFixed, &kBankDmpProp, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 120.0, 120.0, /*escP*/ false,
+      kDmpIgnored, sizeof(kDmpIgnored) / sizeof(kDmpIgnored[0]) },
+    // Epson FX-80 — ESC/P. Pica 10 cpi at power-on, 160 cps draft
+    // (FX-80 User's Manual App. A), mono. `escP` routes it to the other
+    // parser; the ignored-command list is unused for it, since ESC/P has its
+    // own dispatch and its own idea of what is unknown.
+    { "Epson FX-80", false, false,
+      &kBankEpson, &kBankEpson, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 160.0, 160.0, /*escP*/ true, nullptr, 0 },
+};
+
+/// POM2's soft-switch A charset index → the ROM's locale enum. The order of
+/// `kIntlCharSets` above is the reference's, not the ROM's, so this table is
+/// the join between them.
+constexpr iwrom::IwLocale kCharsetToLocale[8] = {
+    iwrom::IwLocale::US, iwrom::IwLocale::IT, iwrom::IwLocale::DK,
+    iwrom::IwLocale::UK, iwrom::IwLocale::DE, iwrom::IwLocale::SE,
+    iwrom::IwLocale::FR, iwrom::IwLocale::ES,
 };
 
 // ESC K n → ribbon band (imagewriter.cpp:935-949). n is an ASCII digit:
@@ -156,6 +253,43 @@ void ImageWriter::setPaperSize(PaperSize s)
     resetPrinter();
 }
 
+void ImageWriter::setPaperDimensions(double widthIn, double lengthIn,
+                                     double* committedWidth,
+                                     double* committedLength)
+{
+    // Quarter-inch steps: that is the granularity a tractor is adjusted in,
+    // and it keeps the page raster on whole pixels at every DPI POM2 offers.
+    auto snap = [](double v, double lo, double hi) {
+        v = std::round(v * 4.0) / 4.0;
+        return std::clamp(v, lo, hi);
+    };
+
+    const double w = snap(widthIn,  kMinPaperWidthIn,  kMaxPaperWidthIn);
+    const double l = snap(lengthIn, kMinPaperLengthIn, kMaxPaperLengthIn);
+
+    if (committedWidth)  *committedWidth  = w;
+    if (committedLength) *committedLength = l;
+    if (w == defaultPageWidth_ && l == defaultPageHeight_) return;
+
+    defaultPageWidth_  = w;
+    defaultPageHeight_ = l;
+    // The sheet on the platen is a different size now, so there is nothing
+    // meaningful to preserve on it.
+    rebuildPage();
+    resetPrinter();
+}
+
+void ImageWriter::setPowered(bool on)
+{
+    if (on == powered_) return;
+    powered_ = on;
+    if (sound_) sound_->power(on);
+    // DELIBERATELY not resetPrinter() and not newPage(): switching a real
+    // printer off does not eject the sheet or wipe what is on it. That is
+    // what `powerCycle()` is for, and conflating the two is why "power off"
+    // in an emulator so often loses the user's page.
+}
+
 void ImageWriter::rebuildPage()
 {
     current_.w = std::max(1, static_cast<int>(defaultPageWidth_  * dpi_));
@@ -183,9 +317,20 @@ void ImageWriter::resetPrinter()
     rightMargin_  = pageWidthIn_  = defaultPageWidth_;
     bottomMargin_ = pageHeightIn_ = defaultPageHeight_;
     lineSpacing_  = 1.0 / 6.0;
-    cpi_          = 12.0;
-    printRes_     = 2;                  // 12 cpi / 96 dpi graphics
-    definedUnit_  = 96.0;
+    // Power-on pitch is the HEAD's, not a constant: the ImageWriter I comes
+    // up at Elite 12 cpi (DIP SW1-6) and the Apple DMP at Pica 10 cpi.
+    {
+        const IwModelProfile& mp = modelProfile();
+        cpi_         = mp.defaultCpi;
+        printRes_    = mp.defaultPrintRes;
+        definedUnit_ = mp.defaultUnit;
+    }
+    quality_      = Quality::Correspondence;   // ESC a default (Table 4-1)
+    // The ESC/P collector as well: a reset arriving mid-command would
+    // otherwise leave the parser expecting parameters and eat the start of
+    // the next job.
+    epsonNeed_    = 0;
+    epsonCount_   = 0;
     // Reference sets STYLE_BOLD here to fatten a thin TrueType face; on a
     // dot-matrix cell that smears every glyph — see ImageWriter.h.
     style_        = 0;
@@ -338,6 +483,7 @@ bool ImageWriter::currentPageBlank() const
 
 void ImageWriter::lineFeed()
 {
+    if (sound_) sound_->paperFeed(lineSpacing_);
     curY_ += lineSpacing_;
     // Reverse feeds (ESC r) stop at the top edge of the sheet — the head
     // position must never walk off the raster into negative territory.
@@ -377,14 +523,116 @@ void ImageWriter::fillDots(double xInch, double yInch,
 // Text
 // ─────────────────────────────────────────────────────────────────────────
 
+const IwModelProfile& iwModelProfile(IwModel m)
+{
+    const size_t i = static_cast<size_t>(m);
+    return kModels[i < static_cast<size_t>(IwModel::Count) ? i : 0];
+}
+
+void ImageWriter::setModel(IwModel m)
+{
+    if (m == model_ || static_cast<size_t>(m) >=
+                           static_cast<size_t>(IwModel::Count)) return;
+    model_ = m;
+
+    // A different head means a different ribbon, a different power-on pitch
+    // and different faces, so nothing already on the platen still means what
+    // it did. Power-cycle rather than pretend continuity.
+    const IwModelProfile& p = modelProfile();
+    if (!p.colourRibbon) ribbon_ = Ribbon::Black;
+    resetPrinter();
+}
+
+bool ImageWriter::modelIgnoresEsc(uint8_t cmd) const
+{
+    const IwModelProfile& p = modelProfile();
+    for (size_t i = 0; i < p.ignoredEscCount; ++i)
+        if (p.ignoredEsc[i] == cmd) return true;
+    return false;
+}
+
+const IwRomBank& ImageWriter::currentBank() const
+{
+    // ESC a picks the quality; ESC p / ESC P pick proportional. Draft has no
+    // proportional face on the real machine, so asking for both lands on the
+    // correspondence proportional bank rather than silently staying fixed.
+    //
+    // A single-face head (ImageWriter I, Apple DMP) has no draft or NLQ bank
+    // at all — `quality_` is pinned to Correspondence for it in the ESC a
+    // handler, and the null checks here are the belt to that braces.
+    const IwModelProfile& p = modelProfile();
+    const bool prop = (style_ & kStyleProp) != 0;
+
+    if (prop) {
+        // NLQ has its own proportional bank; everything else uses the
+        // correspondence one, which is also all a single-face head has.
+        if (quality_ == Quality::NLQ && p.nlqProp) return *p.nlqProp;
+        return *p.stdProp;
+    }
+
+    switch (quality_) {
+    case Quality::Draft:  return p.draft    ? *p.draft    : *p.stdFixed;
+    case Quality::NLQ:    return p.nlqFixed ? *p.nlqFixed : *p.stdFixed;
+    case Quality::Correspondence:
+    default:              return *p.stdFixed;
+    }
+}
+
+const iwrom::IwGlyph* ImageWriter::romGlyph(uint8_t ch) const
+{
+    // Bit 7 is masked by the character generator (soft switch B-6) before it
+    // reaches the ROM, exactly as `curMap_` handles it for the fallback font.
+    const uint8_t code = static_cast<uint8_t>(ch & 0x7F);
+    if (code < iwrom::kIwFirstCode || code > iwrom::kIwLastCode) return nullptr;
+
+    const IwRomBank& bank = currentBank();
+    const iwrom::IwLocale loc =
+        kCharsetToLocale[switcha_ & kSwitchACharsetMask];
+
+    // A locale substitution replaces one of the ten alternate-language code
+    // points outright — this is the real ROM's own mechanism, and it is why
+    // POM2 no longer has to approximate them with the nearest CP437 glyph.
+    if (const iwrom::IwGlyph* o = iwrom::findOverride(
+            bank.overrides, bank.overrideCount, loc, code))
+        return o->width ? o : nullptr;
+
+    const iwrom::IwGlyph& g = bank.glyphs[code - iwrom::kIwFirstCode];
+    return g.width ? &g : nullptr;
+}
+
+double ImageWriter::glyphAdvance(uint8_t ch) const
+{
+    const IwRomBank& bank = currentBank();
+    if (!bank.proportional) return 0.0;          // caller uses the pitch cell
+    const iwrom::IwGlyph* g = romGlyph(ch);
+    if (!g) return 0.0;
+    // THE point of a proportional face: the advance is the glyph's own
+    // escapement, measured in the dot units the pitch command established
+    // (`ESC p` = 144/in, `ESC P` = 160/in). Before the ROMs landed, POM2
+    // selected the pitch and then advanced by a fixed cell anyway, so
+    // proportional text came out monospaced.
+    const double unit = (definedUnit_ > 0) ? static_cast<double>(definedUnit_)
+                                           : 144.0;
+    return static_cast<double>(g->width) / unit;
+}
+
 void ImageWriter::renderGlyph(uint8_t ch)
 {
-    // An ImageWriter draft cell is 8 dots wide at the pitch's density and
-    // 8 pins tall at 1/72 in spacing; the bundled font is 7 px + a 1 px
-    // inter-character gap, so it drops straight into that cell.
-    const double cellW = 1.0 / actcpi_;
-    const double dotW  = cellW / 8.0;
-    double dotH = 1.0 / 72.0;
+    const IwRomBank& bank = currentBank();
+    const iwrom::IwGlyph* g = romGlyph(ch);
+
+    // The cell the head will advance by, so the glyph fills exactly what the
+    // pitch (or its own escapement) reserved.
+    double cellW = 1.0 / actcpi_;
+    if (bank.proportional) {
+        const double adv = glyphAdvance(ch);
+        if (adv > 0.0) cellW = adv;
+    }
+
+    const int    cols = g ? g->width : 8;
+    const double dotW = cellW / (cols > 0 ? cols : 8);
+    const int    rows = g ? bank.rows : hgrpaint::kBBFontGlyphH;
+    double dotH = g ? bank.rowPitch : 1.0 / 72.0;
     double top  = curY_;
 
     if (style_ & (kStyleSuperscript | kStyleSubscript | kStyleHalfHeight)) {
@@ -392,19 +640,47 @@ void ImageWriter::renderGlyph(uint8_t ch)
         // Superscript hugs the ascender line; the other two sit on the
         // baseline of the full-height cell.
         if (!(style_ & kStyleSuperscript))
-            top += (8.0 / 72.0) - 8.0 * dotH;
+            top += (8.0 / 72.0) - static_cast<double>(rows) * dotH;
     }
 
     // Bold on a real head is a second pass shifted half a dot — here the
     // dot is simply 1.5x wide, which is what that pass leaves on paper.
     const double inkW = (style_ & kStyleBold) ? dotW * 1.5 : dotW;
+    const double shearSpan = (rows > 1) ? 1.0 / (rows - 1) : 0.0;
 
-    const uint8_t glyph = curMap_[ch];
+    if (g) {
+        if (sound_) {
+            // Pins struck, not columns: a full stop and a 'W' do not make the
+            // same noise, and the sink turns pin COUNT into loudness.
+            int pins = 0;
+            for (int gx = 0; gx < cols; ++gx)
+                for (int gy = 0; gy < rows; ++gy)
+                    if (g->cols[gx] & (1u << gy)) ++pins;
+            if (pins) sound_->strike(std::min(pins, 9));
+        }
+        for (int gx = 0; gx < cols; ++gx) {
+            const uint32_t col = g->cols[gx];
+            if (!col) continue;
+            for (int gy = 0; gy < rows; ++gy) {
+                if (!(col & (1u << gy))) continue;
+                // Italics shear the cell by one dot over its height, matching
+                // the reference's 0.20 FreeType x-shear (imagewriter.cpp:437-442).
+                const double shear = (style_ & kStyleItalics)
+                                   ? dotW * (rows - 1 - gy) * shearSpan : 0.0;
+                fillDots(curX_ + gx * dotW + shear, top + gy * dotH, inkW, dotH);
+            }
+        }
+        return;
+    }
+
+    // No ROM glyph for this code (control codes, the user-defined range, or a
+    // bank that simply does not carry it) — fall back to the bundled CP437
+    // font. Kept deliberately: it is the graceful degradation, and it is what
+    // keeps the printer working if the ROM tables ever have to be dropped.
+    const uint8_t fallback = curMap_[ch];
     for (int gy = 0; gy < hgrpaint::kBBFontGlyphH; ++gy) {
         for (int gx = 0; gx < hgrpaint::kBBFontGlyphW; ++gx) {
-            if (!hgrpaint::bbFontPixel(glyph, gx, gy)) continue;
-            // Italics shear the cell by one dot over its height, matching
-            // the reference's 0.20 FreeType x-shear (imagewriter.cpp:437-442).
+            if (!hgrpaint::bbFontPixel(fallback, gx, gy)) continue;
             const double shear = (style_ & kStyleItalics)
                                ? dotW * (7 - gy) * (1.0 / 7.0) : 0.0;
             fillDots(curX_ + gx * dotW + shear, top + gy * dotH, inkW, dotH);
@@ -414,6 +690,13 @@ void ImageWriter::renderGlyph(uint8_t ch)
 
 void ImageWriter::acceptByte(uint8_t ch)
 {
+    // The front panel comes first. Powered off, the head is dead and the byte
+    // is gone; deselected (offline), the printer is alive but the software
+    // cannot reach it. Both DROP the byte rather than buffering it — a real
+    // printer has no backlog to flush when you switch it back on, and
+    // pretending otherwise would print a burst of stale output.
+    if (!powered_ || !online_) return;
+
     ++bytesIn_;
     // Rolling raw capture — drops the oldest half when full so a runaway
     // job can't grow it without bound but the recent stream survives.
@@ -475,14 +758,29 @@ void ImageWriter::printCharInternal(uint8_t ch)
     renderGlyph(ch);
 
     // Slashed zero when soft switch B-1 is closed (imagewriter.cpp:1325).
+    // Overstrike, not substitution: the real switch prints a slash THROUGH
+    // the zero, and with a ROM face both glyphs come from the same bank, so
+    // simply rendering '/' on top at the same origin is what the head does.
     if ((switchb_ & 1) && ch == '0') {
-        const uint8_t saved = curMap_['0'];
-        curMap_['0'] = curMap_['/'];
-        renderGlyph('0');
-        curMap_['0'] = saved;
+        if (romGlyph('0')) {
+            renderGlyph('/');
+        } else {
+            const uint8_t saved = curMap_['0'];
+            curMap_['0'] = curMap_['/'];
+            renderGlyph('0');
+            curMap_['0'] = saved;
+        }
     }
 
+    // A proportional face advances by the glyph's own escapement; a fixed
+    // one by the pitch cell. `hmi_` (ESC 1..6 / the LQ drivers' explicit
+    // motion index) still overrides both — it is the guest saying "move
+    // exactly this far", which outranks the font.
     double advance = (hmi_ > 0.0) ? hmi_ : 1.0 / actcpi_;
+    if (hmi_ <= 0.0) {
+        const double prop = glyphAdvance(ch);
+        if (prop > 0.0) advance = prop;
+    }
     advance += extraIntraSpace_;
     curX_ += advance;
 
@@ -494,6 +792,7 @@ void ImageWriter::printCharInternal(uint8_t ch)
 
     // Wrap when the next character would cross the right margin.
     if ((curX_ + advance) > rightMargin_) {
+        if (sound_) sound_->carriageReturn(curX_ - leftMargin_);
         curX_ = leftMargin_;
         lineFeed();
     }
@@ -637,6 +936,16 @@ void ImageWriter::setAutoFeedMode(AutoFeed m)
     crJustFed_      = false;
 }
 
+const char* ImageWriter::qualityName(Quality q)
+{
+    switch (q) {
+        case Quality::Draft:  return "Draft";
+        case Quality::NLQ:    return "Near letter quality";
+        case Quality::Correspondence:
+        default:              return "Correspondence";
+    }
+}
+
 const char* ImageWriter::speedName(Speed s)
 {
     switch (s) {
@@ -717,7 +1026,11 @@ double ImageWriter::byteCost(uint8_t ch) const
 {
     if (speed_ == Speed::Instant) return 0.0;
 
-    const double cps = (speed_ == Speed::NLQ) ? kNlqCps : kDraftCps;
+    // A single-face head has one mechanical speed; only the ImageWriter II
+    // pays the NLQ penalty, because only it has an NLQ pass to make.
+    const IwModelProfile& mp = modelProfile();
+    const double cps = (mp.qualityTiers && speed_ == Speed::NLQ)
+                           ? mp.nlqCps : mp.draftCps;
     const double ips = cps / kQuotedCpi;      // carriage inches per second
 
     // Bit-image data: the byte is a dot column (or a third of one on the
@@ -889,6 +1202,7 @@ void ImageWriter::setupBitImage(uint8_t dens, uint32_t numCols)
     bitGraph_.bytesColumn = (dens < 8) ? 1 : 3;
     bitGraph_.remBytes    = numCols * bitGraph_.bytesColumn;
     bitGraph_.readBytesColumn = 0;
+    bitGraph_.msbTop      = false;      // C. Itoh: bit 0 is the top dot
 
     if (trace_) {
         traceFlushRow();
@@ -910,6 +1224,15 @@ void ImageWriter::printBitGraph(uint8_t ch)
     // Only paint once a whole column has arrived.
     if (bitGraph_.readBytesColumn < bitGraph_.bytesColumn) return;
 
+    if (sound_) {
+        int pins = 0;
+        for (uint8_t i = 0; i < bitGraph_.bytesColumn; ++i) {
+            uint8_t v = bitGraph_.column[i];
+            while (v) { pins += (v & 1); v = static_cast<uint8_t>(v >> 1); }
+        }
+        if (pins) sound_->strike(pins);
+    }
+
     const double oldY  = curY_;
     const double dotH  = 1.0 / bitGraph_.vertDens;
     const double dotW  = 1.0 / bitGraph_.horizDens;
@@ -919,8 +1242,13 @@ void ImageWriter::printBitGraph(uint8_t ch)
         curY_ += static_cast<double>(verticalDot_) / bitGraph_.vertDens;
 
     for (uint8_t i = 0; i < bitGraph_.bytesColumn; ++i) {
-        for (unsigned j = 1; j < 256u; j <<= 1) {   // pin 1 = bit 0 = top
-            if (bitGraph_.column[i] & j) fillDots(curX_, curY_, dotW, dotH);
+        // C. Itoh packs pin 1 (top) in bit 0; Epson ESC/P packs it in bit 7.
+        // Walking the wrong way mirrors every image vertically in 8-pixel
+        // stripes — which still looks like a picture, so it is pinned by a
+        // round trip rather than by eye.
+        for (int b = 0; b < 8; ++b) {
+            const unsigned mask = bitGraph_.msbTop ? (0x80u >> b) : (1u << b);
+            if (bitGraph_.column[i] & mask) fillDots(curX_, curY_, dotW, dotH);
             curY_ += dotH;
         }
     }
@@ -936,6 +1264,12 @@ void ImageWriter::printBitGraph(uint8_t ch)
 
 bool ImageWriter::processCommandChar(uint8_t ch)
 {
+    // The Epson speaks a different grammar over the same mechanism. Routed
+    // here rather than inside the switch below because the two command sets
+    // COLLIDE: ESC G is graphics on the C. Itoh and double-strike on the
+    // Epson, ESC A is 1/6 in spacing on one and n/72 in on the other.
+    if (modelProfile().escP) return processEpsonChar(ch);
+
     // "The previous byte was a CR we line-fed for" — only an LF landing
     // immediately after one counts as the guest supplying its own feed.
     const bool wasCrFed = crJustFed_;
@@ -1128,7 +1462,30 @@ bool ImageWriter::processCommandChar(uint8_t ch)
                paramDigit(params_[2]) * 10 + paramDigit(params_[3]);
     };
 
+    // A command this head has no hardware for is DROPPED here, after its
+    // parameter bytes have been collected — the manuals' rule is that an
+    // unrecognised code goes away with its ESC, and letting the parameter
+    // fall through to the text path would print it.
+    // NOTE the escCmd_ = 0: the tail of this function clears it, and an early
+    // return that skips that leaves the parser still armed — every following
+    // byte is then eaten as a parameter and the rest of the job prints
+    // nothing at all. (Which is exactly what happened first time round.)
+    if (modelIgnoresEsc(escCmd_)) { escCmd_ = 0; return true; }
+
     switch (escCmd_) {
+    case 0x61: {                                // ESC a n  select quality
+        // Table 4-1: 0 = correspondence, 1 = draft, 2 = NLQ. Tolerates the
+        // ASCII digit and the raw value, as the real firmware does.
+        // A single-face head has no tiers, so the parameter is consumed (see
+        // the ignored-command list) and the quality stays pinned.
+        if (!modelProfile().qualityTiers) break;
+        const uint8_t sel = static_cast<uint8_t>(params_[0] & 0x0F);
+        if      (sel == 1) quality_ = Quality::Draft;
+        else if (sel == 2) quality_ = Quality::NLQ;
+        else               quality_ = Quality::Correspondence;
+        break;
+    }
+
     case 0x73:                                  // ESC s n  intercharacter space
         if (style_ & kStyleProp) {
             extraIntraSpace_ = paramDigit(params_[0]) / 120.0;
@@ -1268,7 +1625,9 @@ bool ImageWriter::processCommandChar(uint8_t ch)
     case 0x72: if (lineSpacing_ > 0) lineSpacing_ *= -1; break; // ESC r reverse
     case 0x66: if (lineSpacing_ < 0) lineSpacing_ *= -1; break; // ESC f forward
 
-    case 0x61: case 0x6d: case 0x4d: break;     // typeface select — one font
+    // ESC a is handled above (quality select); ESC m / ESC M pick a
+    // typeface variant POM2 has only one bank for.
+    case 0x6d: case 0x4d: break;                // typeface select — one font
     case 0x3d: break;                           // internal font ID
     case 0x24: break;                           // cancel MSB + MouseText
     case 0x3f: break;                           // ESC ?  ID string: no back-channel
@@ -1375,6 +1734,255 @@ bool ImageWriter::processCommandChar(uint8_t ch)
 
     escCmd_ = 0;
     return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Epson FX-80 — ESC/P (printer plan phase C3)
+// ═════════════════════════════════════════════════════════════════════════
+//
+// A second command grammar over the SAME mechanism: the page, the dot
+// plotter, the ribbon, the pacing and the paper below this layer are the ones
+// the C. Itoh heads use. Only the byte grammar differs — and it differs
+// enough that sharing a dispatch is impossible (`ESC G` is graphics on one
+// family and double-strike on the other).
+//
+// Reference: Epson FX-80 User's Manual, Appendix A (command summary),
+// cross-checked against mikedaley/web-a2e's `src/js/printer/epson-fx80.js`.
+//
+// WHAT IS NOT IMPLEMENTED, deliberately and visibly: user-defined characters
+// (ESC &, ESC %, ESC :), the vertical forms unit (ESC b, ESC /, ESC B),
+// nine-pin graphics (ESC ^), horizontal tab lists (ESC D), margins (ESC l,
+// ESC Q) and graphics-letter reassignment (ESC ?). Each is CONSUMED with its
+// parameters where the length is knowable, so a stray parameter never prints
+// as text — the failure mode that makes a partial ESC/P parser look like
+// gibberish rather than like a missing feature.
+
+namespace {
+/// ESC * density modes → horizontal dots per inch (FX-80 App. A, Table A-2).
+/// Modes 5-7 are the FX's "plotter" densities; the FX-80 prints 4 and 6 at
+/// the same dot pitch as 0 and 1 but at half speed, which POM2 does not model
+/// separately because it changes no ink.
+int epsonStarDpi(uint8_t mode)
+{
+    switch (mode) {
+    case 0: return 60;
+    case 1: return 120;
+    case 2: return 120;    // double-speed: same pitch, adjacent dots skipped
+    case 3: return 240;
+    case 4: return 80;
+    case 5: return 72;
+    case 6: return 90;
+    case 7: return 144;
+    default: return 60;
+    }
+}
+} // namespace
+
+void ImageWriter::setupEpsonBitImage(int dotsPerInch, uint32_t columns)
+{
+    bitGraph_.horizDens       = static_cast<uint16_t>(dotsPerInch);
+    bitGraph_.vertDens        = 72;          // 8 of the 9 wires, 1/72 in apart
+    bitGraph_.adjacent        = true;
+    bitGraph_.bytesColumn     = 1;
+    bitGraph_.remBytes        = columns;
+    bitGraph_.readBytesColumn = 0;
+    bitGraph_.msbTop          = true;        // ESC/P: bit 7 is the TOP dot
+}
+
+bool ImageWriter::processEpsonChar(uint8_t ch)
+{
+    // ── Parameter collection ────────────────────────────────────────────
+    if (epsonNeed_ > 0) {
+        epsonParams_[epsonCount_++] = ch;
+        if (--epsonNeed_ > 0) return true;
+        execEpsonEscape();
+        return true;
+    }
+
+    // ── ESC selects the command ─────────────────────────────────────────
+    if (escSeen_) {
+        escSeen_  = false;
+        escCmd_   = ch;
+        epsonCount_ = 0;
+
+        switch (ch) {
+        // No parameters.
+        case 0x40: resetPrinter();                     return true;  // ESC @
+        case 0x45: style_ |=  kStyleBold;              return true;  // ESC E
+        case 0x46: style_ &= ~kStyleBold;              return true;  // ESC F
+        case 0x47: style_ |=  kStyleDoubleStrike;      return true;  // ESC G
+        case 0x48: style_ &= ~kStyleDoubleStrike;      return true;  // ESC H
+        case 0x34: style_ |=  kStyleItalics;           return true;  // ESC 4
+        case 0x35: style_ &= ~kStyleItalics;           return true;  // ESC 5
+        case 0x54: style_ &= ~(kStyleSuperscript |                    // ESC T
+                               kStyleSubscript);       return true;
+        case 0x30: lineSpacing_ = 1.0 / 8.0;           return true;  // ESC 0
+        case 0x31: lineSpacing_ = 7.0 / 72.0;          return true;  // ESC 1
+        case 0x32: lineSpacing_ = 1.0 / 6.0;           return true;  // ESC 2
+        case 0x4D: cpi_ = 12.0; printRes_ = 2; definedUnit_ = 96;     // ESC M
+                   style_ &= ~kStyleCondensed; updateMetrics(); return true;
+        case 0x50: cpi_ = 10.0; printRes_ = 1; definedUnit_ = 80;     // ESC P
+                   style_ &= ~kStyleCondensed; updateMetrics(); return true;
+        case 0x0F: style_ |=  kStyleCondensed; updateMetrics(); return true; // ESC SI
+        case 0x0E: style_ |=  kStyleDoubleWidth; updateMetrics(); return true; // ESC SO
+        case 0x4F: topMargin_ = 0.0; bottomMargin_ = pageHeightIn_;   // ESC O
+                   return true;
+
+        // One parameter.
+        case 0x21:   // ESC ! n  master select
+        case 0x2D:   // ESC - n  underline
+        case 0x33:   // ESC 3 n  n/216 in line spacing
+        case 0x41:   // ESC A n  n/72 in line spacing
+        case 0x43:   // ESC C n  form length in lines (n = 0 → inches follow)
+        case 0x4A:   // ESC J n  immediate n/216 in feed
+        case 0x4E:   // ESC N n  skip-over-perforation
+        case 0x52:   // ESC R n  international charset
+        case 0x53:   // ESC S n  super/subscript
+        case 0x57:   // ESC W n  expanded
+        case 0x6A:   // ESC j n  reverse feed n/216 in
+        case 0x49: case 0x55: case 0x69: case 0x73:   // consumed, no effect
+            epsonNeed_ = 1;
+            return true;
+
+        // Graphics: two count bytes then that many column bytes.
+        case 0x4B: case 0x4C: case 0x59: case 0x5A:
+            epsonNeed_ = 2;
+            return true;
+
+        // ESC * m n1 n2 — density byte then the count.
+        case 0x2A:
+            epsonNeed_ = 3;
+            return true;
+
+        default:
+            // Unknown ESC: dropped with its ESC, as the manual says. Any
+            // following bytes print as text, which is what real iron does.
+            return true;
+        }
+    }
+
+    // ── Control characters ──────────────────────────────────────────────
+    switch (ch) {
+    case 0x1B: escSeen_ = true;                       return true;   // ESC
+    case 0x0D: curX_ = leftMargin_;                                   // CR
+               if (autoFeedActive()) lineFeed();      return true;
+    case 0x0A: lineFeed();                            return true;   // LF
+    case 0x0C: formFeed();                            return true;   // FF
+    case 0x08: curX_ = std::max(leftMargin_, curX_ - 1.0 / actcpi_);  // BS
+               return true;
+    case 0x0E: style_ |= kStyleDoubleWidth; updateMetrics(); return true; // SO
+    case 0x14: style_ &= ~kStyleDoubleWidth; updateMetrics(); return true; // DC4
+    case 0x0F: style_ |= kStyleCondensed;  updateMetrics(); return true;  // SI
+    case 0x12: style_ &= ~kStyleCondensed; updateMetrics(); return true;  // DC2
+    case 0x07: case 0x11: case 0x13: case 0x18: case 0x7F:
+        return true;                                   // BEL/DC1/DC3/CAN/DEL
+    default:
+        return false;                                  // printable
+    }
+}
+
+void ImageWriter::execEpsonEscape()
+{
+    const uint8_t p0 = epsonParams_[0];
+
+    switch (escCmd_) {
+    case 0x21: {                                   // ESC ! n  master select
+        // A bitmask that sets several styles at once (App. A): bit 0 elite,
+        // bit 2 condensed, bit 3 emphasized, bit 4 double-strike, bit 5
+        // double width, bit 7 underline.
+        style_ &= ~(kStyleCondensed | kStyleBold | kStyleDoubleStrike |
+                    kStyleDoubleWidth | kStyleUnderline);
+        cpi_ = (p0 & 0x01) ? 12.0 : 10.0;
+        printRes_    = (p0 & 0x01) ? 2 : 1;
+        definedUnit_ = (p0 & 0x01) ? 96 : 80;
+        if (p0 & 0x04) style_ |= kStyleCondensed;
+        if (p0 & 0x08) style_ |= kStyleBold;
+        if (p0 & 0x10) style_ |= kStyleDoubleStrike;
+        if (p0 & 0x20) style_ |= kStyleDoubleWidth;
+        if (p0 & 0x80) style_ |= kStyleUnderline;
+        updateMetrics();
+        break;
+    }
+    case 0x2D:                                     // ESC - n  underline
+        if (p0 & 0x01) style_ |=  kStyleUnderline;
+        else           style_ &= ~kStyleUnderline;
+        break;
+    case 0x33:                                     // ESC 3 n  n/216 in
+        lineSpacing_ = static_cast<double>(p0) / 216.0;
+        break;
+    case 0x41:                                     // ESC A n  n/72 in
+        lineSpacing_ = static_cast<double>(std::min<uint8_t>(p0, 85)) / 72.0;
+        break;
+    case 0x4A:                                     // ESC J n  immediate feed
+        curY_ += static_cast<double>(p0) / 216.0;
+        break;
+    case 0x6A:                                     // ESC j n  reverse feed
+        curY_ = std::max(topMargin_, curY_ - static_cast<double>(p0) / 216.0);
+        break;
+    case 0x43: {                                   // ESC C n  form length
+        // n = 0 means "the NEXT byte is a length in inches" — a second
+        // parameter, so re-arm rather than committing a zero-length page,
+        // which would eject on every line feed.
+        if (p0 == 0 && epsonCount_ == 1) { epsonNeed_ = 1; return; }
+        const double lines = (epsonCount_ >= 2)
+                                 ? static_cast<double>(epsonParams_[1]) / lineSpacing_
+                                 : static_cast<double>(p0);
+        const double len = (epsonCount_ >= 2)
+                               ? static_cast<double>(epsonParams_[1])
+                               : lines * lineSpacing_;
+        pageHeightIn_ = std::clamp(len, 1.0, kMaxPaperLengthIn);
+        bottomMargin_ = pageHeightIn_;
+        break;
+    }
+    case 0x4E:                                     // ESC N n  skip perforation
+        bottomMargin_ = std::max(0.0,
+                                 pageHeightIn_ - static_cast<double>(p0) * lineSpacing_);
+        break;
+    case 0x52: {                                   // ESC R n  charset
+        // The FX-80's set numbering is its own; map the ones POM2 has a
+        // charset row for and leave the rest at USA.
+        static constexpr uint8_t kEpsonToSwitchA[13] = {
+            0, 6, 4, 3, 2, 5, 1, 7, 0, 0, 0, 0, 0
+        };
+        const uint8_t idx = (p0 < 13) ? kEpsonToSwitchA[p0] : 0;
+        switcha_ = static_cast<uint8_t>((switcha_ & ~kSwitchACharsetMask) | idx);
+        updateSwitch();
+        break;
+    }
+    case 0x53:                                     // ESC S n  super/subscript
+        style_ &= ~(kStyleSuperscript | kStyleSubscript);
+        style_ |= (p0 & 0x01) ? kStyleSubscript : kStyleSuperscript;
+        break;
+    case 0x57:                                     // ESC W n  expanded
+        if (p0 & 0x01) style_ |=  kStyleDoubleWidth;
+        else           style_ &= ~kStyleDoubleWidth;
+        updateMetrics();
+        break;
+
+    // Graphics. `ESC K/L/Y/Z n1 n2` and `ESC * m n1 n2` differ only in where
+    // the density comes from; the count is TWO BINARY BYTES, low first —
+    // not the four ASCII digits the C. Itoh family uses.
+    case 0x4B: case 0x4C: case 0x59: case 0x5A: {
+        const uint32_t cols = static_cast<uint32_t>(epsonParams_[0]) |
+                              (static_cast<uint32_t>(epsonParams_[1]) << 8);
+        const int dpi = (escCmd_ == 0x4B) ? 60
+                      : (escCmd_ == 0x5A) ? 240 : 120;
+        setupEpsonBitImage(dpi, cols);
+        break;
+    }
+    case 0x2A: {                                   // ESC * m n1 n2
+        const uint32_t cols = static_cast<uint32_t>(epsonParams_[1]) |
+                              (static_cast<uint32_t>(epsonParams_[2]) << 8);
+        setupEpsonBitImage(epsonStarDpi(epsonParams_[0]), cols);
+        break;
+    }
+
+    default:
+        break;                                     // consumed, no effect
+    }
+
+    epsonCount_ = 0;
+    escCmd_     = 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

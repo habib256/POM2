@@ -484,6 +484,24 @@ int main(int argc, char* argv[])
     // Hand the GLFW window to MainWindow BEFORE any applyProfile() call so
     // the profile-driven title update (step 13 in applyProfile) sees a
     // valid handle even when --preset triggers the switch.
+    // FujiNet relay, armed BEFORE the machine boots so the autostart slot
+    // scan finds a FujiNet on its first pass rather than falling through to
+    // the Disk II and needing a manual reboot.
+    if (plan->fujiNet != pom2::CliPlan::FujiNetTransport::None) {
+        std::string err;
+        const bool serial = plan->fujiNet == pom2::CliPlan::FujiNetTransport::Serial;
+        if (mainWindow.plugFujiNetFromCli(plan->fujiNetSlot, serial,
+                                          plan->fujiNetSerialPath,
+                                          plan->fujiNetPort, err)) {
+            pom2::log().info("CLI", "FujiNet card in slot " +
+                                        std::to_string(plan->fujiNetSlot) +
+                                        (serial ? " (serial)" : " (TCP :" +
+                                            std::to_string(plan->fujiNetPort) + ")"));
+        } else {
+            pom2::log().error("CLI", "--fujinet: " + err);
+        }
+    }
+
     mainWindow.setGlfwWindow(window);
     // Re-applies the theme with the settings-restored accent + user zoom on
     // top of the monitor scale. The ctor can't do it: it loads `state.cfg`

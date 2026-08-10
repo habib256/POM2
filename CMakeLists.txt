@@ -165,6 +165,16 @@ set(SOURCES
     src/Uthernet_ImGui.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
+    src/SerialPort.cpp
+    src/ChildProcess.cpp
+    src/PrinterScreenDump.cpp
+    src/PrinterSoundDevice.cpp
+    src/PrinterHistory.cpp
+    src/SpOverSlipLink.cpp
+    src/SpTcpTransport.cpp
+    src/SpSerialTransport.cpp
+    src/FujiNetCard.cpp
+    src/FujiNet_ImGui.cpp
     src/SmartPortHdvUnit.cpp
     src/SmartPortUnit.cpp
     src/SmartPort_ImGui.cpp

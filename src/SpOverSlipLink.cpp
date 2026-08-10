@@ -1,0 +1,513 @@
+// VERHILLE Arnaud 2026
+
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+//
+// SpOverSlipLink implementation. See the header for the wire format and the
+// threading contract.
+
+#include "SpOverSlipLink.h"
+
+#include "Logger.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <utility>
+
+namespace pom2 {
+
+namespace {
+
+/// Poll interval while looking for a peer. Short enough that plugging a
+/// FujiNet in feels immediate, long enough that an idle POM2 is not spinning.
+constexpr int kPeerPollMs = 200;
+
+/// The 11-byte request header every command shares.
+constexpr std::size_t kRequestHeaderBytes = 11;
+/// Response header: sequence number + status.
+constexpr std::size_t kResponseHeaderBytes = 2;
+
+/// A SmartPort DIB (Status code $03) as the spec's referenced manuals lay it
+/// out: 4 bytes general status (status byte + 3-byte block count), a 1-byte
+/// ID string length, 16 bytes of ID string, then type/subtype/version.
+constexpr std::size_t kDibMinBytes = 21;
+
+} // namespace
+
+SpOverSlipLink::SpOverSlipLink() = default;
+
+SpOverSlipLink::~SpOverSlipLink() { stop(); }
+
+// ── Transport selection ──────────────────────────────────────────────────
+
+void SpOverSlipLink::setTcpMode(uint16_t port)
+{
+    const bool wasRunning = isRunning();
+    stop();
+    mode_    = Mode::Tcp;
+    tcpPort_ = port;
+    if (wasRunning) { std::string err; start(err); }
+}
+
+void SpOverSlipLink::setSerialMode(std::string devicePath, int baud)
+{
+    const bool wasRunning = isRunning();
+    stop();
+    mode_       = Mode::Serial;
+    serialPath_ = std::move(devicePath);
+    serialBaud_ = baud;
+    if (wasRunning) { std::string err; start(err); }
+}
+
+void SpOverSlipLink::setOff()
+{
+    stop();
+    mode_ = Mode::Off;
+}
+
+bool SpOverSlipLink::start(std::string& errOut)
+{
+    if (running_.load()) return true;
+    if (mode_ == Mode::Off) { errOut = "FujiNet link is disabled"; return false; }
+
+    stopFlag_.store(false);
+
+    if (mode_ == Mode::Tcp) {
+        auto tcp = std::make_unique<SpTcpTransport>(tcpPort_);
+        if (!tcp->startListening(errOut)) {
+            std::lock_guard<std::mutex> lk(stateMtx_);
+            lastError_ = errOut;
+            return false;
+        }
+        transport_ = std::move(tcp);
+    } else {
+        transport_ = std::make_unique<SpSerialTransport>(serialPath_, serialBaud_);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(stateMtx_);
+        lastError_.clear();
+    }
+    running_.store(true);
+    worker_ = std::thread(&SpOverSlipLink::workerLoop, this);
+    return true;
+}
+
+void SpOverSlipLink::stop()
+{
+    if (!running_.load() && !worker_.joinable()) {
+        transport_.reset();
+        return;
+    }
+    stopFlag_.store(true);
+    // Wake a worker parked in accept()/poll() WITHOUT closing anything under
+    // it — the descriptor must stay alive until the thread is gone.
+    if (transport_) transport_->shutdown();
+    if (worker_.joinable()) worker_.join();
+    running_.store(false);
+
+    // Only now is it safe to tear the transport down: nothing else can be
+    // inside it.
+    if (transport_) {
+        transport_->dropPeer();
+        if (auto* tcp = dynamic_cast<SpTcpTransport*>(transport_.get()))
+            tcp->stopListening();
+    }
+    transport_.reset();
+
+    std::lock_guard<std::mutex> lk(stateMtx_);
+    devices_.clear();
+}
+
+// ── Worker ───────────────────────────────────────────────────────────────
+
+void SpOverSlipLink::workerLoop()
+{
+    while (!stopFlag_.load()) {
+        SpTransport* t = transport_.get();
+        if (!t) break;
+
+        if (!t->isOpen()) {
+            if (t->pollForPeer(kPeerPollMs)) {
+                // A peer just appeared. Enumerating immediately is safe even
+                // for a board that is still booting: enumerateDevices()
+                // retries the sweep.
+                enumerateDevices();
+            } else if (!stopFlag_.load() && mode_ == Mode::Serial) {
+                // A serial pollForPeer does not wait on anything (the device
+                // node is either there or not), so pace the retry ourselves
+                // rather than spinning a core looking for an unplugged board.
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kPeerPollMs));
+            }
+            continue;
+        }
+
+        // Peer is attached and the CPU thread owns the conversation. Nothing
+        // for the worker to do but watch for it going away, which it learns
+        // from the CPU thread's failed reads (handlePeerLost) — so idle here.
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPeerPollMs));
+    }
+}
+
+void SpOverSlipLink::enumerateDevices()
+{
+    // SmartPort daisy-chain enumeration: INIT unit 1, then 2, … until a
+    // non-zero status says "no more devices". Same sweep the FujiNet AppleWin
+    // fork does in Listener::create_connection.
+    //
+    // DELIBERATE DIVERGENCE from that reference: AppleWin registers a device
+    // even on the iteration whose INIT *failed* (it inserts before testing
+    // `still_scanning`), so its device count runs one high. POM2 registers
+    // only units that answered with status $00.
+    std::vector<SpDevice> found;
+
+    for (uint8_t unit = 1; unit <= kMaxUnits; ++unit) {
+        Response r = init(unit);
+
+        if (!r.replied && unit == 1) {
+            // A board that just enumerated its USB endpoint may not have its
+            // firmware up yet. Retry the first unit a couple of times before
+            // concluding there is nothing there.
+            for (int attempt = 0; attempt < 2 && !r.replied; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                if (stopFlag_.load()) return;
+                r = init(unit);
+            }
+        }
+        if (!r.replied) {
+            // Peer is not answering at all — not "no more devices".
+            handlePeerLost();
+            return;
+        }
+        if (r.status != kSpOk) break;      // end of the chain
+
+        SpDevice dev;
+        dev.unit = unit;
+
+        // Ask for the DIB so the panel can name the device. A failure here is
+        // not fatal: the unit exists and works, we just have no label.
+        const Response dib = status(unit, 0x03);
+        if (dib.ok() && dib.data.size() >= kDibMinBytes) {
+            dev.blocks = static_cast<uint32_t>(dib.data[1]) |
+                         (static_cast<uint32_t>(dib.data[2]) << 8) |
+                         (static_cast<uint32_t>(dib.data[3]) << 16);
+            const std::size_t nameLen = std::min<std::size_t>(dib.data[4], 16);
+            dev.name.assign(reinterpret_cast<const char*>(dib.data.data() + 5),
+                            nameLen);
+            while (!dev.name.empty() && dev.name.back() == ' ') dev.name.pop_back();
+            if (dib.data.size() >= 22) dev.type    = dib.data[21];
+            if (dib.data.size() >= 23) dev.subtype = dib.data[22];
+        }
+        found.push_back(dev);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(stateMtx_);
+        devices_ = found;
+    }
+    log().info("FujiNet", "enumerated " + std::to_string(found.size()) +
+                              " SmartPort device(s) on " + describe());
+}
+
+void SpOverSlipLink::peerLostLocked()
+{
+    if (transport_) transport_->dropPeer();
+    // Bytes from the dead peer must not glue themselves to the first packet
+    // of the next one.
+    rx_.reset();
+    std::lock_guard<std::mutex> lk(stateMtx_);
+    devices_.clear();
+}
+
+void SpOverSlipLink::handlePeerLost()
+{
+    std::lock_guard<std::mutex> lk(callMtx_);
+    peerLostLocked();
+}
+
+// ── State ────────────────────────────────────────────────────────────────
+
+bool SpOverSlipLink::isConnected() const
+{ return transport_ && transport_->isOpen(); }
+
+std::string SpOverSlipLink::describe() const
+{
+    if (!transport_) return "off";
+    return transport_->describe();
+}
+
+std::string SpOverSlipLink::lastError() const
+{
+    {
+        std::lock_guard<std::mutex> lk(stateMtx_);
+        if (!lastError_.empty()) return lastError_;
+    }
+    // A serial transport's open failures are the interesting ones (device
+    // missing, permission denied) and it keeps its own text.
+    if (auto* ser = dynamic_cast<SpSerialTransport*>(transport_.get()))
+        return ser->lastError();
+    return std::string{};
+}
+
+std::vector<SpDevice> SpOverSlipLink::devices() const
+{
+    std::lock_guard<std::mutex> lk(stateMtx_);
+    return devices_;
+}
+
+std::size_t SpOverSlipLink::deviceCount() const
+{
+    std::lock_guard<std::mutex> lk(stateMtx_);
+    return devices_.size();
+}
+
+SpOverSlipLink::Stats SpOverSlipLink::stats() const
+{
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    return stats_;
+}
+
+void SpOverSlipLink::setTimeoutMs(int ms)
+{
+    timeoutMs_.store(std::max(kMinTimeoutMs, std::min(kMaxTimeoutMs, ms)));
+}
+
+// ── The round trip ───────────────────────────────────────────────────────
+
+uint8_t SpOverSlipLink::nextSequence()
+{
+    // Skip 0 so a zeroed buffer can never look like a valid sequence number.
+    if (++sequence_ == 0) sequence_ = 1;
+    return sequence_;
+}
+
+SpOverSlipLink::Response
+SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
+                         const uint8_t fields[5],
+                         const uint8_t* data, std::size_t dataLen)
+{
+    Response out;
+
+    SpTransport* t = transport_.get();
+    if (!t || !t->isOpen()) return out;      // replied = false → no device
+
+    std::lock_guard<std::mutex> lk(callMtx_);
+    // Re-check under the lock: the peer can go away between the test above
+    // and here.
+    if (!t->isOpen()) return out;
+
+    const uint8_t seq = nextSequence();
+
+    uint8_t header[kRequestHeaderBytes] = {};
+    header[0] = seq;
+    header[1] = command;
+    header[2] = paramCount;
+    header[3] = unit;
+    header[4] = 0x00;                        // reserved
+    header[5] = 0x00;
+    std::memcpy(header + 6, fields, 5);
+
+    std::vector<uint8_t> packet;
+    packet.reserve(kRequestHeaderBytes + dataLen);
+    packet.insert(packet.end(), header, header + kRequestHeaderBytes);
+    if (data && dataLen) packet.insert(packet.end(), data, data + dataLen);
+
+    txBuf_.clear();
+    SlipFramer::encode(packet, txBuf_);
+
+    {
+        std::lock_guard<std::mutex> sl(statsMtx_);
+        ++stats_.calls;
+        stats_.bytesOut += txBuf_.size();
+    }
+
+    if (!t->writeAll(txBuf_.data(), txBuf_.size())) {
+        peerLostLocked();          // callMtx_ is ours right now
+        return out;
+    }
+
+    // Wait for OUR response. The deadline covers the whole exchange, not each
+    // read, so a peer dribbling bytes cannot extend the stall indefinitely.
+    const int budgetMs = timeoutMs_.load();
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(budgetMs);
+
+    uint8_t buf[1024];
+    for (;;) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            std::lock_guard<std::mutex> sl(statsMtx_);
+            ++stats_.timeouts;
+            return out;                      // replied = false
+        }
+        const int waitMs = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+                .count());
+
+        const int got = t->readSome(buf, sizeof(buf), waitMs > 0 ? waitMs : 1);
+        if (got < 0) { peerLostLocked(); return out; }
+        if (got == 0) continue;              // nothing yet; deadline re-checked
+
+        {
+            std::lock_guard<std::mutex> sl(statsMtx_);
+            stats_.bytesIn += static_cast<uint64_t>(got);
+        }
+
+        for (int i = 0; i < got; ++i) {
+            switch (rx_.feed(buf[static_cast<std::size_t>(i)])) {
+            case SlipFramer::Feed::NeedMore:
+                break;
+
+            case SlipFramer::Feed::Truncated:
+                // A frame cut short — exactly what a guest reset mid-transfer
+                // looks like. Not fatal: resync and keep waiting for ours.
+                log().warn("FujiNet", "discarded a truncated SP-over-SLIP frame");
+                break;
+
+            case SlipFramer::Feed::Frame: {
+                const auto& f = rx_.frame();
+                if (f.size() < kResponseHeaderBytes) break;   // runt, ignore
+                if (f[0] != seq) {
+                    // THE reason the sequence number exists: a response left
+                    // over from before a guest reset. Drop it and keep
+                    // waiting for the one we asked for.
+                    std::lock_guard<std::mutex> sl(statsMtx_);
+                    ++stats_.stale;
+                    break;
+                }
+                out.replied = true;
+                out.status  = f[1];
+                out.data.assign(f.begin() + kResponseHeaderBytes, f.end());
+                return out;
+            }
+            }
+        }
+    }
+}
+
+// ── Typed calls ──────────────────────────────────────────────────────────
+//
+// Field layouts are the spec's tables, verbatim. Parameter counts likewise —
+// they are what the guest's own parameter list carries, and the peer checks
+// them.
+
+SpOverSlipLink::Response SpOverSlipLink::status(uint8_t unit, uint8_t statusCode)
+{
+    const uint8_t fields[5] = { statusCode, 0, 0, 0, 0 };
+    return transact(kSpStatus, 0x03, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response SpOverSlipLink::readBlock(uint8_t unit, uint32_t block)
+{
+    const uint8_t fields[5] = {
+        static_cast<uint8_t>(block & 0xFF),
+        static_cast<uint8_t>((block >> 8) & 0xFF),
+        static_cast<uint8_t>((block >> 16) & 0xFF),
+        0, 0 };
+    return transact(kSpReadBlock, 0x03, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response
+SpOverSlipLink::writeBlock(uint8_t unit, uint32_t block,
+                           const uint8_t* data, std::size_t n)
+{
+    const uint8_t fields[5] = {
+        static_cast<uint8_t>(block & 0xFF),
+        static_cast<uint8_t>((block >> 8) & 0xFF),
+        static_cast<uint8_t>((block >> 16) & 0xFF),
+        0, 0 };
+    return transact(kSpWriteBlock, 0x03, unit, fields, data, n);
+}
+
+SpOverSlipLink::Response SpOverSlipLink::format(uint8_t unit)
+{
+    const uint8_t fields[5] = { 0, 0, 0, 0, 0 };
+    return transact(kSpFormat, 0x01, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response
+SpOverSlipLink::control(uint8_t unit, uint8_t controlCode,
+                        const uint8_t* list, std::size_t n)
+{
+    const uint8_t fields[5] = { controlCode, 0, 0, 0, 0 };
+    return transact(kSpControl, 0x03, unit, fields, list, n);
+}
+
+SpOverSlipLink::Response SpOverSlipLink::init(uint8_t unit)
+{
+    const uint8_t fields[5] = { 0, 0, 0, 0, 0 };
+    return transact(kSpInit, 0x01, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response SpOverSlipLink::open(uint8_t unit)
+{
+    const uint8_t fields[5] = { 0, 0, 0, 0, 0 };
+    return transact(kSpOpen, 0x01, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response SpOverSlipLink::close(uint8_t unit)
+{
+    const uint8_t fields[5] = { 0, 0, 0, 0, 0 };
+    return transact(kSpClose, 0x01, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response
+SpOverSlipLink::read(uint8_t unit, uint16_t byteCount, uint32_t address)
+{
+    const uint8_t fields[5] = {
+        static_cast<uint8_t>(byteCount & 0xFF),
+        static_cast<uint8_t>(byteCount >> 8),
+        static_cast<uint8_t>(address & 0xFF),
+        static_cast<uint8_t>((address >> 8) & 0xFF),
+        static_cast<uint8_t>((address >> 16) & 0xFF) };
+    return transact(kSpRead, 0x04, unit, fields, nullptr, 0);
+}
+
+SpOverSlipLink::Response
+SpOverSlipLink::write(uint8_t unit, uint16_t byteCount, uint32_t address,
+                      const uint8_t* data, std::size_t n)
+{
+    const uint8_t fields[5] = {
+        static_cast<uint8_t>(byteCount & 0xFF),
+        static_cast<uint8_t>(byteCount >> 8),
+        static_cast<uint8_t>(address & 0xFF),
+        static_cast<uint8_t>((address >> 8) & 0xFF),
+        static_cast<uint8_t>((address >> 16) & 0xFF) };
+    return transact(kSpWrite, 0x04, unit, fields, data, n);
+}
+
+// ── Guest reset ──────────────────────────────────────────────────────────
+
+void SpOverSlipLink::resync()
+{
+    std::lock_guard<std::mutex> lk(callMtx_);
+    nextSequence();
+    rx_.reset();
+}
+
+void SpOverSlipLink::notifyGuestReset()
+{
+    // The correctness-critical half, and it is cheap: move the sequence
+    // number on so any response still in flight for the pre-reset request is
+    // rejected as stale by the next transact().
+    resync();
+
+    if (!isConnected()) return;
+
+    // The courtesy half: tell each device the machine reset, so a modem drops
+    // its connection and a printer ejects a partial page (the spec asks the
+    // Apple II side to send Control code $00 for exactly this).
+    //
+    // Bounded on purpose: if the FIRST device does not answer, the peer is
+    // gone and there is no point stalling the reset for every remaining unit.
+    // A live peer answers each of these in microseconds.
+    const auto list = devices();
+    for (const auto& d : list) {
+        const Response r = control(d.unit, 0x00, nullptr, 0);
+        if (!r.replied) break;
+    }
+}
+
+} // namespace pom2

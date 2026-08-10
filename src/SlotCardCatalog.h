@@ -59,6 +59,16 @@ inline constexpr CardType kCardTypes[] = {
     // MACRAW / IPRAW modes need a backend. No MAME device — ported from
     // AppleWin `source/Uthernet2.cpp`.
     { "uthernet2",    "Uthernet II (W5100)" },
+    // FujiNet (fujinet.online) — SmartPort controller that RELAYS every call
+    // to a real FujiNet over the project's SP-over-SLIP protocol: a FujiNet
+    // desktop build on loopback TCP, or a physical ESP32 board over USB
+    // CDC-ACM. One card carries every FujiNet function (block storage, the
+    // N: network device, clock, printer, modem, CP/M) because on the Apple II
+    // they are all SmartPort units. No ROM dump needed — POM2 synthesises the
+    // slot ROM. Slot 7 by convention so the autostart scan reaches it before
+    // the Disk II in slot 6. II+ / //e only: a //c-class machine's forced
+    // INTCXROM masks slot ROM entirely.
+    { "fujinet",      "FujiNet (SP over SLIP)" },
     // Microsoft SoftCard — Z80 DMA bus-master card for CP/M. No ROM
     // needed (the card has none; the CP/M boot disk finds it by toggling
     // slot ROM windows). MAME a2bus/a2softcard.cpp port.

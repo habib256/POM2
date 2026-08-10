@@ -184,6 +184,16 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `grappler` | Orange Micro Grappler+ | `echoplus` | Cricket / Echo SSI263 |
 | `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 | `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
+| `fujinet` | FujiNet relay (SP over SLIP) | | |
+
+**FujiNet.** POM2 does not emulate a [FujiNet](https://fujinet.online/) — it **relays** to a real one. Put the `fujinet` card in **slot 7** (the //e scans it before the Disk II in slot 6, so the machine boots straight into FujiNet's CONFIG) and point it at either:
+
+- a **FujiNet desktop build** running alongside POM2 — POM2 listens on `127.0.0.1:1985`, the same port the FujiNet project itself uses, so an existing configuration needs no changes; or
+- a **real FujiNet board** plugged into your USB port, over its CDC-ACM serial device.
+
+Because every Apple II FujiNet function is a SmartPort unit, that one connection carries all of them: disk images mounted from TNFS or the internet, the `N:` network device (HTTP/HTTPS, TCP, UDP, SSH, Telnet, JSON), the clock, the printer, the modem and CP/M. Guest-side software — `fujinet-apps`, `fujinet-lib`, CONFIG, the BBS and high-score clients — runs unmodified. With no FujiNet answering, the card steps aside and lets the autostart scan carry on to slot 6, so it is safe to leave plugged in. CLI: `--fujinet[=PORT]`, `--fujinet-serial[=DEVICE]`, `--fujinet-slot N`. II+ / //e only (a //c's forced INTCXROM hides slot ROM), and note that **Rewind cannot rewind the FujiNet** — data it wrote stays written.
+
+On Linux, a serial FujiNet needs your user in the `dialout` group (`sudo usermod -aG dialout $USER`, then log out and back in).
 
 **Ethernet, per platform.** The **Uthernet II** needs nothing installed: its W5100 is a hardware TCP/IP stack that POM2 runs on host sockets, so TCP and UDP work out of the box on **Linux, macOS and Windows**. The **Uthernet I** is a plain NIC — its guest software (IP65, Contiki, ADTPro-ethernet) carries its own stack and hands the card raw frames — so it needs the optional **libslirp** user-mode NAT backend, available on **Linux and macOS only**. The Uthernet II's own raw modes (MACRAW / IPRAW) go through the same backend and have the same limitation.
 

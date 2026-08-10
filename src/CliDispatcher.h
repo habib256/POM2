@@ -105,6 +105,23 @@ struct CliPlan {
     /// above. The window can only be closed via the OS (Alt-F4 / WM).
     bool                            kiosk = false;
 
+    /// `--fujinet[=PORT]` / `--fujinet-serial[=DEVICE]` / `--fujinet-slot N`.
+    /// Plug a FujiNet relay card and arm its link before the machine boots,
+    /// so an autostart scan can find a FujiNet on the first try. `fujiNetSlot`
+    /// defaults to 7 — the slot the //e scans before the Disk II in slot 6,
+    /// which is what makes a machine with a FujiNet attached boot straight
+    /// into its CONFIG.
+    ///
+    /// The serial form's DEVICE may be omitted, meaning "auto": take the only
+    /// candidate if there is exactly one, and otherwise stay idle rather than
+    /// guessing — opening the wrong device drives DTR/RTS at whatever else is
+    /// plugged in.
+    enum class FujiNetTransport { None, Tcp, Serial };
+    FujiNetTransport                fujiNet = FujiNetTransport::None;
+    int                             fujiNetPort = 1985;
+    std::string                     fujiNetSerialPath;
+    int                             fujiNetSlot = 7;
+
     std::optional<int>              executionSpeed;        // cycles/frame
     std::string                     initialTapePath;       // --tape <path>
     bool                            initialTapeAutoPlay = false;

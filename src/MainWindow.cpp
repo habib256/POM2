@@ -24,6 +24,7 @@
 #include "SlirpNetworkBackend.h"
 #include "UthernetCard.h"
 #include "UthernetIICard.h"
+#include "FujiNetCard.h"
 #include "Uthernet_ImGui.h"
 #include "ImageWriter.h"
 #include "ImageWriter_ImGui.h"
@@ -65,7 +66,11 @@
 #include "SmartPortUnit.h"
 #include "FloppyEmuDevice.h"
 #include "FloppyEmu_ImGui.h"
+#include "PrinterScreenDump.h"
+#include "PrinterHistory.h"
+#include "PrinterSoundDevice.h"
 #include "SmartPort_ImGui.h"
+#include "FujiNet_ImGui.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
 #include "SystemProfile.h"
@@ -172,16 +177,19 @@ MainWindow::MainWindow(bool forceIIPlus)
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
+      cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
       hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
       smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
+      fujiNetPanel   (std::make_unique<pom2::FujiNet_ImGui>()),
       floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
       floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
       joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
+      printerSound   (std::make_unique<pom2::PrinterSoundDevice>()),
+      printerHistory (std::make_unique<pom2::PrinterHistory>()),
       imageWriter    (std::make_unique<pom2::ImageWriter>()),
       imageWriterPanel(std::make_unique<pom2::ImageWriter_ImGui>()),
       chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
       toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
-      cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
       hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
       hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
       hgrSpriteEditor(std::make_unique<hgrsprite::HgrSpriteEditor>(hgrPaintHost.get())),
@@ -403,6 +411,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
         showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
         showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
+        showFujiNetPanel   = settings->getBool ("show_fujinet_panel",   showFujiNetPanel);
         showSlotConfigPanel = settings->getBool ("show_slot_config", showSlotConfigPanel);
         showMediaPanel      = settings->getBool ("show_media_panel", showMediaPanel);
         showRomStatusPanel  = settings->getBool ("show_rom_status", showRomStatusPanel);
@@ -474,6 +483,26 @@ MainWindow::MainWindow(bool forceIIPlus)
                                 pom2::ImageWriter::PaperSize::Count))
                 imageWriter->setPaperSize(
                     static_cast<pom2::ImageWriter::PaperSize>(paper));
+            // Mechanical sound. Registered like any other source so it
+            // lands in the mixer panel with its own level and mute.
+            printerSound->setVolume(
+                settings->getFloat("printer_sound_volume", 0.35f));
+            printerSound->setMuted(
+                settings->getBool("printer_sound_muted", false));
+            imageWriter->setSoundSink(printerSound.get());
+            registerAudioSource(printerSound.get());
+
+            // Durable printouts, alongside the spool and trace files POM2
+            // already writes there.
+            {
+                std::string herr;
+                if (!printerHistory->open("printouts/history", herr))
+                    pom2::log().warn("PrinterHistory", herr);
+            }
+
+            imageWriter->setModel(static_cast<pom2::IwModel>(
+                std::clamp(settings->getInt("imagewriter_model", 0), 0,
+                           static_cast<int>(pom2::IwModel::Count) - 1)));
             imageWriter->setDpi(settings->getInt("imagewriter_dpi",
                                                  imageWriter->dpi()));
             // Line-feed-after-CR switch. Old configs stored a bool; the
@@ -904,6 +933,21 @@ MainWindow::~MainWindow()
         settings->setBool("ssc_raw_mode",  sscCard->rawMode());
     }
 
+    // FujiNet relay — transport choice and its parameters, per slot.
+    if (fujiNetCard) {
+        const std::string sk = "_slot" + std::to_string(fujiNetCard->getSlot());
+        const auto& link = fujiNetCard->link();
+        settings->setBool("fujinet_enabled" + sk, link.isRunning());
+        settings->setInt ("fujinet_timeout_ms" + sk, link.timeoutMs());
+        settings->setString("fujinet_transport" + sk,
+                            link.mode() == pom2::SpOverSlipLink::Mode::Serial
+                                ? "serial" : "tcp");
+        settings->setInt   ("fujinet_port" + sk, link.tcpPort());
+        settings->setString("fujinet_serial_path" + sk, link.serialPath());
+        settings->setInt   ("fujinet_serial_baud" + sk, link.serialBaud());
+        settings->setString("fujinet_helper_path" + sk, fujiNetHelperPath_);
+    }
+
     // AI control listener — persist enable, port, token, and the panel
     // visibility flag. Re-armed on next launch by the constructor.
     settings->setBool  ("ai_control_enable", aiServer->isRunning());
@@ -967,6 +1011,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_disk_library", showDiskLibrary);
     settings->setBool  ("show_hdv_panel",  showHdvPanel);
     settings->setBool  ("show_smartport_panel", showSmartPortPanel);
+    settings->setBool  ("show_fujinet_panel",   showFujiNetPanel);
     settings->setBool  ("show_slot_config", showSlotConfigPanel);
     settings->setBool  ("show_media_panel", showMediaPanel);
     settings->setBool  ("show_rom_status", showRomStatusPanel);
@@ -1003,6 +1048,10 @@ MainWindow::~MainWindow()
     settings->setInt   ("imagewriter_paper",
                         static_cast<int>(imageWriter->paperSize()));
     settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
+    settings->setInt   ("imagewriter_model",
+                        static_cast<int>(imageWriter->model()));
+    settings->setFloat ("printer_sound_volume", printerSound->volume());
+    settings->setBool  ("printer_sound_muted",  printerSound->muted());
     settings->setBool  ("imagewriter_backpressure", printerBackPressure);
     settings->setInt   ("imagewriter_ribbon",
                         static_cast<int>(imageWriter->ribbon()));
@@ -1580,6 +1629,48 @@ void MainWindow::plugSlotsFromSettings()
         controller->memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugFujiNet = [&](int s) {
+        // FujiNet relay. The card itself is inert until the link finds a
+        // peer, and finding one is asynchronous, so plugging always succeeds
+        // — a machine with this card and no FujiNet running behaves like a
+        // machine with an empty drive, not a broken one.
+        auto card = std::make_unique<pom2::FujiNetCard>(s);
+        card->setMemory(&controller->memory());
+        card->setCpu(&controller->cpu());
+
+        const std::string sk = "_slot" + std::to_string(s);
+        auto& link = card->link();
+        link.setTimeoutMs(settings->getInt("fujinet_timeout_ms" + sk,
+                                           pom2::SpOverSlipLink::kDefaultTimeoutMs));
+
+        const std::string transport =
+            settings->getString("fujinet_transport" + sk, "tcp");
+        if (transport == "serial") {
+            link.setSerialMode(
+                settings->getString("fujinet_serial_path" + sk, ""),
+                settings->getInt("fujinet_serial_baud" + sk,
+                                 pom2::SerialPort::kDefaultBaud));
+        } else {
+            link.setTcpMode(static_cast<uint16_t>(
+                settings->getInt("fujinet_port" + sk,
+                                 pom2::SpTcpTransport::kDefaultPort)));
+        }
+
+        if (settings->getBool("fujinet_enabled" + sk, true)) {
+            std::string err;
+            if (!link.start(err))
+                pom2::log().warn("FujiNet", "link not started: " + err);
+        }
+
+        fujiNetCard = card.get();
+        controller->memory().slotBus().plug(s, std::move(card));
+
+        fujiNetHelperPath_ = settings->getString("fujinet_helper_path" + sk, "");
+        fujiNetHelperResolved_ = pom2::ChildProcess::findOnPath(
+            fujiNetHelperPath_.empty() ? std::string("fujinet")
+                                       : fujiNetHelperPath_);
+    };
+
     auto plugPhasor = [&](int s) {
         // Applied Engineering Phasor. Same MMIO surface as a Mockingboard
         // plus a mode soft-switch at $C0(8+s)X that flips between MB-
@@ -1883,6 +1974,7 @@ void MainWindow::plugSlotsFromSettings()
         else if (kind == "uthernet")    plugUthernet(s);
         else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);
+        else if (kind == "fujinet")     plugFujiNet(s);
         else {
             pom2::log().warn("Slots",
                 "Slot " + std::to_string(s) + " has unknown card type '" +
@@ -2246,6 +2338,7 @@ void MainWindow::renderCommandPalette()
     add("machine.hardreset","Machine", "Hard reset", "F12");
     add("machine.coldboot", "Machine", "Cold boot (wipe RAM)");
     add("machine.screenshot","Machine","Save screenshot", "F9");
+    add("printer.dumpscreen","Machine","Print screen (dump to printer)");
     add("view.kiosk", "View",
         kiosk_ ? "Leave full screen (kiosk)" : "Full screen (kiosk)",
         "F10", true, kiosk_);
@@ -2328,6 +2421,8 @@ void MainWindow::renderCommandPalette()
     panel("panel.hdv",         "HDV / ProDOS volume",     &showHdvPanel);
     panel("panel.smartport",   "SmartPort configuration", &showSmartPortPanel,
           smartPortCard != nullptr);
+    panel("panel.fujinet",     "FujiNet (SP over SLIP)",  &showFujiNetPanel,
+          fujiNetCard != nullptr);
     panel("panel.floppyemu",   "Floppy Emu (BMOW)",       &showFloppyEmu);
     panel("panel.cassette",    "Cassette deck",           &showCassetteDeck);
     panel("panel.slotconfig",  "Slot configuration",      &showSlotConfigPanel);
@@ -2385,6 +2480,7 @@ void MainWindow::runCommand(const std::string& id)
     if (id == "machine.hardreset")  { controller->hardReset();  return; }
     if (id == "machine.coldboot")   { controller->coldBoot();   return; }
     if (id == "machine.screenshot") { saveScreenshot();         return; }
+    if (id == "printer.dumpscreen") { dumpScreenToPrinter();    return; }
     if (id == "view.kiosk")        { toggleKioskMode();        return; }
 
     if (id.rfind("speed.", 0) == 0) {
@@ -2445,6 +2541,7 @@ void MainWindow::runCommand(const std::string& id)
         { "panel.disk35",       &showDisk35Panel       },
         { "panel.hdv",          &showHdvPanel          },
         { "panel.smartport",    &showSmartPortPanel    },
+        { "panel.fujinet",      &showFujiNetPanel      },
         { "panel.floppyemu",    &showFloppyEmu         },
         { "panel.cassette",     &showCassetteDeck      },
         { "panel.slotconfig",   &showSlotConfigPanel   },
@@ -2906,6 +3003,14 @@ void MainWindow::renderMenuBar()
             devItem(lbl.c_str(), &showSmartPortPanel,
                     "SmartPort units behind a Liron-class card (3.5\" + HDV volumes).",
                     smartPortCard != nullptr);
+        }
+        {
+            const std::string lbl = fujiNetCard
+                ? "FujiNet (slot " + std::to_string(fujiNetCard->getSlot()) + ")"
+                : std::string("FujiNet (no card plugged)");
+            devItem(lbl.c_str(), &showFujiNetPanel,
+                    "FujiNet relay: transport, attached devices and call counters.",
+                    fujiNetCard != nullptr);
         }
 
         ImGui::SeparatorText("Sound");
@@ -5315,6 +5420,12 @@ void MainWindow::pumpImageWriter()
     // a printout should be waiting when the user opens the tray).
     if (!imageWriter) return;
 
+    // Archive first, so this runs on EVERY path — the "no source this frame"
+    // branch below returns early, and a job already inside the printer's
+    // buffer keeps ejecting sheets after its card is unplugged. Running at
+    // the top costs one frame of lag and never misses a page.
+    archiveNewPrinterPages();
+
     std::vector<uint8_t> fresh;
     size_t total = 0;
     // Cursor handover rules (source change, spool cleared) live in
@@ -5330,6 +5441,16 @@ void MainWindow::pumpImageWriter()
             imageWriterSource, imageWriterConsumed,
             grapplerCard, grapplerCard->bytesWritten());
         total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
+    } else if (fujiNetCard && fujiNetCard->hasPrinterUnit()) {
+        // FujiNet's printer unit. Ranked below the parallel cards (a machine
+        // with a real printer card keeps that routing) but above the SSC tap,
+        // because a FujiNet printer is an explicit choice while the tap is a
+        // //c-class default. The FujiNet prints its own copy too — POM2 just
+        // renders the same byte stream on its own paper.
+        imageWriterConsumed = pom2::printerFeedCursor(
+            imageWriterSource, imageWriterConsumed,
+            fujiNetCard, fujiNetCard->bytesWritten());
+        total = fujiNetCard->drainSpoolFrom(imageWriterConsumed, fresh);
     } else if (SuperSerialCard* tap = printerTapSsc()) {
         // //c-class printer port: the SSC's TX tap (slot 1 by default —
         // see plugSlotsFromSettings). Parallel cards outrank it so a IIe
@@ -5459,6 +5580,53 @@ void MainWindow::renderImageWriterWindow()
         host.sourceLabel += ")";
     }
     host.saveDir = "printouts";
+
+    // ── Print history (printer plan phase E) ─────────────────────────────
+    // The panel lists and asks; the store stays here. Rebuilt each frame,
+    // which is cheap — it is a few dozen rows of already-loaded metadata.
+    if (printerHistory && printerHistory->isOpen()) {
+        host.historyDir = printerHistory->dir();
+        host.history.reserve(printerHistory->size());
+        for (const auto& p : printerHistory->pages()) {
+            pom2::ImageWriter_ImGui::HostInfo::HistoryRow row;
+            row.file    = p.file;
+            row.savedAt = p.savedAt;
+            row.printer = pom2::ImageWriter::modelName(
+                static_cast<pom2::IwModel>(p.model));
+            row.ribbon  = pom2::ImageWriter::ribbonName(
+                static_cast<pom2::ImageWriter::Ribbon>(p.ribbon));
+            row.job     = p.job;
+            row.w       = p.w;
+            row.h       = p.h;
+            row.paperW  = p.paperW;
+            row.paperL  = p.paperL;
+            host.history.push_back(std::move(row));
+        }
+        host.loadHistoryPage = [this](const std::string& file,
+                                      std::vector<uint8_t>& rgba,
+                                      int& w, int& h) {
+            for (const auto& p : printerHistory->pages()) {
+                if (p.file != file) continue;
+                std::string err;
+                return printerHistory->loadRgba(p, rgba, w, h, err);
+            }
+            return false;
+        };
+        host.onDeleteHistoryPage = [this](const std::string& file) {
+            for (const auto& p : printerHistory->pages()) {
+                if (p.file != file) continue;
+                std::string err;
+                if (!printerHistory->erase(p, err))
+                    pom2::log().warn("PrinterHistory", err);
+                return;
+            }
+        };
+        host.onClearHistory = [this]() {
+            std::string err;
+            if (!printerHistory->clear(err))
+                pom2::log().warn("PrinterHistory", err);
+        };
+    }
 #ifdef __EMSCRIPTEN__
     host.canSaveFiles = false;   // MEMFS writes vanish on reload
 #endif
@@ -7886,6 +8054,257 @@ void MainWindow::renderSmartPortPanelWindow()
     if (dirtySettings) settings->save();
 }
 
+bool MainWindow::plugFujiNetFromCli(int slot, bool serial,
+                                    const std::string& serialDevice,
+                                    int tcpPort, std::string& errOut)
+{
+    if (slot < 1 || slot > 7) { errOut = "slot must be 1-7"; return false; }
+
+    std::lock_guard<std::mutex> lk(controller->stateMutex());
+    auto& bus = controller->memory().slotBus();
+    if (bus.peripheral(slot) != nullptr) {
+        errOut = "slot " + std::to_string(slot) + " already holds " +
+                 std::string(bus.peripheral(slot)->name()) +
+                 " — pick a free slot with --fujinet-slot";
+        return false;
+    }
+
+    auto card = std::make_unique<pom2::FujiNetCard>(slot);
+    card->setMemory(&controller->memory());
+    card->setCpu(&controller->cpu());
+    auto& link = card->link();
+    if (serial)
+        link.setSerialMode(serialDevice, pom2::SerialPort::kDefaultBaud);
+    else
+        link.setTcpMode(static_cast<uint16_t>(tcpPort));
+
+    std::string err;
+    if (!link.start(err)) { errOut = err; return false; }
+
+    fujiNetCard = card.get();
+    bus.plug(slot, std::move(card));
+    slotCards[static_cast<size_t>(slot)] = "fujinet";
+    return true;
+}
+
+void MainWindow::archiveNewPrinterPages()
+{
+    if (!imageWriter || !printerHistory || !printerHistory->isOpen()) return;
+
+    const uint64_t ejected = static_cast<uint64_t>(imageWriter->sheetsEjected());
+    if (ejected <= printerArchivedSheets_) return;
+
+    // How many of those sheets are still reachable. The stack is capped, so a
+    // burst of form feeds between two frames can push pages off it before we
+    // ever see them — archive what is there and resynchronise rather than
+    // pretending we captured everything.
+    const uint64_t missed = ejected - printerArchivedSheets_;
+    const size_t   have   = imageWriter->completedPageCount();
+    const size_t   take   = static_cast<size_t>(std::min<uint64_t>(missed, have));
+
+    for (size_t i = have - take; i < have; ++i) {
+        std::string err;
+        if (!printerHistory->addPage(imageWriter->completedPage(i),
+                                     static_cast<int>(imageWriter->model()),
+                                     static_cast<int>(imageWriter->ribbon()),
+                                     imageWriter->paperWidthIn(),
+                                     imageWriter->paperLengthIn(), err)) {
+            pom2::log().warn("PrinterHistory", err);
+            break;
+        }
+    }
+    if (take < missed) {
+        pom2::log().warn("PrinterHistory",
+            "archived " + std::to_string(take) + " of " +
+            std::to_string(missed) + " ejected sheets — the rest had already "
+            "fallen off the printer's page stack");
+    }
+    printerArchivedSheets_ = ejected;
+}
+
+void MainWindow::dumpScreenToPrinter()
+{
+    if (!imageWriter) return;
+
+    // Snapshot the framebuffer under BOTH locks, exactly as saveScreenshot
+    // does — `pixels()` can lazily run the composite demod, which writes
+    // frame80 and races the AI control server's /screen handler otherwise.
+    // Lock order stateMutex → demodMutex, never the other way.
+    int w = 0, h = 0;
+    std::vector<uint32_t> px;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::lock_guard<std::mutex> demodLk(display->demodMutex());
+        w = display->width();
+        h = display->height();
+        if (w > 0 && h > 0) {
+            const uint32_t* src = display->pixels();
+            px.assign(src, src + static_cast<size_t>(w) * h);
+        }
+    }
+    if (px.empty()) return;
+
+    // The dump goes in as BYTES, through the printer's own ESC G parser —
+    // never painted onto the page. So it obeys the ribbon, the pacing and the
+    // paper, lands in the tray and the PDF export, and cannot drift from what
+    // a period driver would have produced. See PrinterScreenDump.h.
+    // Each head has its own graphics grammar, so the dump has to be built
+    // for the one actually fitted — the Epson wants ESC * with a binary count
+    // and bit 7 as the top dot, the C. Itoh family ESC G with four ASCII
+    // digits and bit 0.
+    std::vector<uint8_t> stream;
+    if (imageWriter->model() == pom2::IwModel::EpsonFX80)
+        pom2::buildScreenDumpEpson(px.data(), w, h, w,
+                                   printerDumpOptions_, stream);
+    else
+        pom2::buildScreenDumpImageWriter(px.data(), w, h, w,
+                                         printerDumpOptions_, stream);
+    if (stream.empty()) return;
+
+    imageWriter->queueBytes(stream.data(), stream.size());
+    showImageWriterPanel = true;  // the user asked to print; show the paper
+}
+
+void MainWindow::renderFujiNetPanelWindow()
+{
+    if (!showFujiNetPanel) return;
+
+    pom2::FujiNet_ImGui::Snapshot snap;
+    snap.plugged = (fujiNetCard != nullptr);
+    if (snap.plugged) {
+        // The link has its own locking, so the state mutex is only needed to
+        // keep the card pointer alive across the read — the CPU worker never
+        // touches the link except from inside a SmartPort call, which cannot
+        // overlap this because it holds that same mutex.
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        const auto& link = fujiNetCard->link();
+        snap.slot      = fujiNetCard->getSlot();
+        snap.transport = link.mode() == pom2::SpOverSlipLink::Mode::Serial
+                             ? pom2::FujiNet_ImGui::Transport::Serial
+                         : link.mode() == pom2::SpOverSlipLink::Mode::Tcp
+                             ? pom2::FujiNet_ImGui::Transport::Tcp
+                             : pom2::FujiNet_ImGui::Transport::Off;
+        snap.running    = link.isRunning();
+        snap.connected  = link.isConnected();
+        snap.state      = link.describe();
+        snap.lastError  = link.lastError();
+        if (snap.lastError.empty()) snap.lastError = fujiNetStatus_;
+        snap.tcpPort    = link.tcpPort();
+        snap.serialPath = link.serialPath();
+        snap.serialBaud = link.serialBaud();
+        snap.timeoutMs  = link.timeoutMs();
+        for (const auto& d : link.devices()) {
+            pom2::FujiNet_ImGui::DeviceRow row;
+            row.unit    = d.unit;
+            row.name    = d.name;
+            row.type    = d.type;
+            row.subtype = d.subtype;
+            row.blocks  = d.blocks;
+            snap.devices.push_back(row);
+        }
+        const auto st  = link.stats();
+        snap.calls      = st.calls;
+        snap.timeouts   = st.timeouts;
+        snap.stale      = st.stale;
+        snap.bytesIn    = st.bytesIn;
+        snap.bytesOut   = st.bytesOut;
+        snap.localCalls = fujiNetCard->localCount();
+        snap.serialDevices = fujiNetSerialDevices_;
+        snap.printerTap    = fujiNetCard->hasPrinterUnit();
+        snap.printerBytes  = fujiNetCard->bytesWritten();
+        // pumpImageWriter() arbitrates: parallel cards outrank the FujiNet
+        // tap, which outranks the SSC tap.
+        snap.printerOutranked = snap.printerTap &&
+                                (printerCard != nullptr || grapplerCard != nullptr);
+        snap.hostClockCard = (clockCard != nullptr);
+        snap.helperRunning  = fujiNetCard->helper().isRunning();
+        snap.helperPath     = fujiNetHelperPath_;
+        snap.helperExitCode = fujiNetCard->helper().lastExitCode();
+        snap.helperResolved = fujiNetHelperResolved_;
+    }
+
+    const auto r = fujiNetPanel->render("FujiNet", showFujiNetPanel, snap);
+    if (!snap.plugged) return;
+
+    // Enumerating serial devices scans /dev (or the registry), so it happens
+    // on demand rather than every frame.
+    if (r.requestRescan) {
+        fujiNetSerialDevices_.clear();
+        for (const auto& d : pom2::SerialPort::enumerate())
+            fujiNetSerialDevices_.emplace_back(d.path, d.description);
+    }
+
+    // Every transport change stops and restarts a worker thread, so all of
+    // these take the state mutex — a reconfiguration racing an in-flight
+    // SmartPort call would tear the transport out from under it.
+    auto& link = fujiNetCard->link();
+    if (r.transportChanged) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        switch (r.transportTo) {
+        case pom2::FujiNet_ImGui::Transport::Tcp:
+            link.setTcpMode(link.tcpPort());
+            break;
+        case pom2::FujiNet_ImGui::Transport::Serial:
+            link.setSerialMode(link.serialPath(), link.serialBaud());
+            break;
+        case pom2::FujiNet_ImGui::Transport::Off:
+            link.setOff();
+            break;
+        }
+    }
+    if (r.portChanged) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        link.setTcpMode(r.portTo);
+    }
+    if (r.serialChanged) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        link.setSerialMode(r.serialPathTo, r.serialBaudTo);
+    }
+    if (r.timeoutChanged) link.setTimeoutMs(r.timeoutTo);
+
+    if (r.requestStart) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::string err;
+        if (!link.start(err)) fujiNetStatus_ = err;
+        else                  fujiNetStatus_.clear();
+    }
+    if (r.requestStop) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        link.stop();
+    }
+    if (r.requestDropPeer) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        // Cheapest correct way to drop a peer without reaching into the
+        // transport: stop and restart the link.
+        link.stop();
+        std::string err;
+        link.start(err);
+    }
+    if (r.helperPathChanged) {
+        fujiNetHelperPath_ = r.helperPathTo;
+        fujiNetHelperResolved_ =
+            pom2::ChildProcess::findOnPath(fujiNetHelperPath_.empty()
+                                               ? std::string("fujinet")
+                                               : fujiNetHelperPath_);
+    }
+    if (r.requestHelperStart) {
+        std::string err;
+        if (!fujiNetCard->startHelper(fujiNetHelperPath_, err))
+            fujiNetStatus_ = err;
+        else
+            fujiNetStatus_.clear();
+    }
+    if (r.requestHelperStop) fujiNetCard->helper().stop();
+
+    if (r.requestOpenWebUi) {
+        // The FujiNet web UI is on port 80 of the peer's host; over the
+        // loopback transport that is simply localhost. No portable
+        // "open a URL" helper exists in POM2, so surface the address for the
+        // user to click/copy rather than shelling out to a browser.
+        fujiNetStatus_ = "FujiNet web UI: http://127.0.0.1/";
+    }
+}
+
 void MainWindow::renderFloppyEmuWindow()
 {
     if (!showFloppyEmu) return;
@@ -9489,6 +9908,7 @@ void MainWindow::render()
     renderDisk35FileDialog();
     renderHdvPanelWindow();
     renderSmartPortPanelWindow();
+    renderFujiNetPanelWindow();
     renderChatMauvePanelWindow();
     renderMockingboardPanelWindow();
     renderPhasorPanelWindow();
