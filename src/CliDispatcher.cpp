@@ -119,6 +119,13 @@ void printUsage()
         "  --kiosk                    Full-screen, no menus/panels — just the\n"
         "                              screen. Implies booting [disk-image].\n"
         "                              Closes only via the OS (Alt-F4 / WM).\n"
+        "  --fujinet[=PORT]           Plug a FujiNet relay card and listen on\n"
+        "                             127.0.0.1:PORT (default 1985) for a\n"
+        "                             FujiNet desktop build to connect.\n"
+        "  --fujinet-serial[=DEV]     Same, but talk to a physical FujiNet\n"
+        "                             board over USB CDC-ACM. DEV omitted =\n"
+        "                             auto-pick when exactly one is present.\n"
+        "  --fujinet-slot N           Which slot the card goes in (default 7).\n"
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
         "  -p, --preset <ii|ii+|iie|iic|iic+>  System profile to boot into\n"
@@ -200,6 +207,33 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
         }
         else if (a == "--kiosk") {
             plan.kiosk = true;
+        }
+        else if (a == "--fujinet" || a.rfind("--fujinet=", 0) == 0) {
+            plan.fujiNet = CliPlan::FujiNetTransport::Tcp;
+            const auto eq = a.find('=');
+            if (eq != std::string::npos) {
+                const int p = std::atoi(a.c_str() + eq + 1);
+                if (p <= 0 || p > 65535) {
+                    pom2::log().error("CLI", "--fujinet: port out of range: " +
+                                                 a.substr(eq + 1));
+                    return std::nullopt;
+                }
+                plan.fujiNetPort = p;
+            }
+        }
+        else if (a == "--fujinet-serial" || a.rfind("--fujinet-serial=", 0) == 0) {
+            plan.fujiNet = CliPlan::FujiNetTransport::Serial;
+            const auto eq = a.find('=');
+            if (eq != std::string::npos) plan.fujiNetSerialPath = a.substr(eq + 1);
+        }
+        else if (a == "--fujinet-slot") {
+            const char* v = needArg(i, "--fujinet-slot"); if (!v) return std::nullopt;
+            const int s = std::atoi(v);
+            if (s < 1 || s > 7) {
+                pom2::log().error("CLI", std::string("--fujinet-slot must be 1-7, got ") + v);
+                return std::nullopt;
+            }
+            plan.fujiNetSlot = s;
         }
         else if (a == "--display") {
             const char* v = needArg(i, "--display"); if (!v) return std::nullopt;

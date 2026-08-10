@@ -486,6 +486,22 @@ void testCommandBoundsAndTabs()
     //    `ESC 3` mid-line threw the head from 1.25" back to 0.02" and
     //    destroyed every justified line a proportional driver produced.
     {
+        // Baseline: what one 'X' advances by in proportional mode with no
+        // extra intercharacter space. NOT hardcoded — since the character
+        // ROMs landed, a proportional advance is the glyph's own escapement
+        // (see docs/printer_plan.md phase A), so pinning a number here would
+        // pin the font data rather than this command's behaviour.
+        double plain = 0.0;
+        {
+            ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+            feed(iw, "\x1B" "p");
+            feed(iw, "HELLO WORLD");
+            const double b = iw.status().headX;
+            feed(iw, "X");
+            plain = iw.status().headX - b;
+            assert(plain > 0.0);
+        }
+
         ImageWriter iw(144, ImageWriter::PaperSize::Letter);
         feed(iw, "\x1B" "p");                  // proportional, 10 cpi
         feed(iw, "HELLO WORLD");
@@ -495,7 +511,9 @@ void testCommandBoundsAndTabs()
         feed(iw, "X");
         const double advance = iw.status().headX - before;
         assert(advance > 0.0);                 // forward, never backward
-        assert(std::abs(advance - (0.1 + 3.0 / 120.0)) < 1e-9);
+        // THE property: ESC 3 ADDED exactly 3/120", it did not replace the
+        // advance with an absolute position.
+        assert(std::abs(advance - (plain + 3.0 / 120.0)) < 1e-9);
     }
 
     // 3. `ESC c` must not silently destroy the sheet on the platen. The

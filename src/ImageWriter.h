@@ -65,6 +65,9 @@
 #ifndef POM2_IMAGEWRITER_H
 #define POM2_IMAGEWRITER_H
 
+#include "ImageWriterRom.h"   // character ROM banks (generated)
+#include "PrinterSoundSink.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -72,6 +75,84 @@
 #include <vector>
 
 namespace pom2 {
+
+/// Which printer this is. The three share the C. Itoh 8510 command set — the
+/// ImageWriter II is a backward-compatible SUPERSET that added the four-band
+/// colour ribbon, the draft/NLQ font tiers, half-height, super/subscript and
+/// MouseText. So the other two are the II *minus* things, which is capability
+/// DATA rather than a class hierarchy: see `IwModelProfile`.
+///
+/// The Epson FX-80 is deliberately absent. It is a different lineage (ESC/P)
+/// with its own parser, not a capability mask on this one — see
+/// docs/printer_plan.md § 6.
+enum class IwModel : uint8_t {
+    ImageWriterII = 0,
+    ImageWriterI,
+    AppleDMP,
+    /// Epson FX-80 — a DIFFERENT LINEAGE. It shares this class's page, dot
+    /// plotter, ribbon and pacing, but not its command parser: ESC/P and the
+    /// C. Itoh set collide outright (`ESC G` is graphics on one and
+    /// double-strike on the other, `ESC A` is 1/6" spacing on one and n/72"
+    /// on the other), so it gets its own dispatch rather than a capability
+    /// mask. See `execEpsonEscape`.
+    EpsonFX80,
+    Count
+};
+
+/// One character-ROM bank: the glyph table, its locale substitutions, and the
+/// cell geometry that goes with it. Draft and correspondence are 9 wires at
+/// 1/72 in; NLQ is 18 rows at 1/144 in. Both make a cell 1/8 in tall, which is
+/// why a line mixing qualities still sits on one baseline.
+///
+/// Declared here rather than in the .cpp because ImageWriter's private
+/// helpers return one.
+struct IwRomBank {
+    const iwrom::IwGlyph*    glyphs;
+    const iwrom::IwOverride* overrides;
+    std::size_t              overrideCount;
+    int                      rows;
+    double                   rowPitch;
+    bool                     proportional;
+};
+
+/// Everything that differs between the three C. Itoh heads. Adding a member
+/// here is how a model gets a new difference; adding a code path is not.
+struct IwModelProfile {
+    const char* name;
+    /// Four-band colour cartridge. II only — the I and the DMP were black.
+    bool colourRibbon;
+    /// Draft / NLQ tiers selectable with `ESC a`. II only; the others have a
+    /// single face, so the command is swallowed and quality is pinned.
+    bool qualityTiers;
+    /// Character banks. `draft` / `nlqFixed` / `nlqProp` are null on a
+    /// single-face model.
+    const IwRomBank* stdFixed;
+    const IwRomBank* stdProp;
+    const IwRomBank* draft;
+    const IwRomBank* nlqFixed;
+    const IwRomBank* nlqProp;
+    /// Power-on pitch: cpi, the graphics-density index, and the unit `ESC F`
+    /// and the proportional advance are measured in. The IW-I powers up at
+    /// Elite 12 cpi (DIP SW1-6 closed), not Pica.
+    double  defaultCpi;
+    uint8_t defaultPrintRes;
+    int     defaultUnit;
+    /// Carriage rate. A single-face model has one speed; `nlqCps` is ignored
+    /// unless `qualityTiers`.
+    double  draftCps;
+    double  nlqCps;
+    /// True when this head speaks ESC/P instead of the C. Itoh set, i.e. it
+    /// needs the other parser entirely.
+    bool escP;
+    /// ESC codes this head has no hardware for. They are still CONSUMED with
+    /// their parameter bytes — the manual's rule is that an unrecognised code
+    /// is dropped along with the ESC, and letting the parameter fall through
+    /// would print it as text.
+    const uint8_t* ignoredEsc;
+    size_t         ignoredEscCount;
+};
+
+const IwModelProfile& iwModelProfile(IwModel m);
 
 class ImageWriter
 {
@@ -161,6 +242,54 @@ public:
     void setDpi(int dpi);
     void setPaperSize(PaperSize s);
 
+    /// Which head this is. Changing it is a power cycle: the ribbon, the
+    /// pitch and the available faces all change, so nothing on the platen
+    /// would still mean what it did.
+    void    setModel(IwModel m);
+    IwModel model() const { return model_; }
+    const IwModelProfile& modelProfile() const { return iwModelProfile(model_); }
+    static const char* modelName(IwModel m) { return iwModelProfile(m).name; }
+
+    // ── Custom paper, power and the front panel (printer plan phase D) ────
+
+    /// Tractor-feed paper the ImageWriter II actually accepts: 4.0"-10.0"
+    /// overall, and a form length `ESC H` can set anywhere from 1" to ~69"
+    /// in 1/144" steps (Tech Ref Table 5-3). Sizes are committed in QUARTER
+    /// INCH increments, which is how the tractor is adjusted.
+    static constexpr double kMinPaperWidthIn  = 4.0;
+    static constexpr double kMaxPaperWidthIn  = 10.0;
+    static constexpr double kMinPaperLengthIn = 1.0;
+    static constexpr double kMaxPaperLengthIn = 69.0;
+
+    /// Set an arbitrary sheet size. Values are snapped to 1/4" and clamped to
+    /// the ranges above; the COMMITTED values are written back through the
+    /// out-parameters, because a caller that asked for something impossible
+    /// needs to know what it actually got rather than silently disagreeing
+    /// with the printer.
+    void setPaperDimensions(double widthIn, double lengthIn,
+                            double* committedWidth = nullptr,
+                            double* committedLength = nullptr);
+    double paperWidthIn()  const { return defaultPageWidth_; }
+    double paperLengthIn() const { return defaultPageHeight_; }
+
+    /// Mechanical sound sink (head buzz, carriage sweep, platen motor).
+    /// Optional; null = a silent printer, which is what every headless build
+    /// and test gets. See PrinterSoundSink.h for why these events carry no
+    /// emuCycles stamp, unlike the floppy's.
+    void setSoundSink(PrinterSoundSink* s) { sound_ = s; }
+
+    /// Front-panel POWER. Off ignores every incoming byte — and KEEPS THE
+    /// PAPER, which is what distinguishes it from `powerCycle()`: pulling the
+    /// plug does not eject or erase what is already on the platen.
+    void setPowered(bool on);
+    bool powered() const { return powered_; }
+
+    /// Front-panel SELECT. Offline stops accepting data (the printer is still
+    /// on, the software just cannot reach it), which is what "deselected"
+    /// means to a driver and the usual reason a real one appears to hang.
+    void setOnline(bool on) { online_ = on; }
+    bool online() const { return online_; }
+
     /// The ImageWriter's "line feed after carriage return" DIP switch
     /// (SW A-8) — the setting that decides whether a printout comes out
     /// right, double-spaced, or overprinted onto one line, and the one no
@@ -228,6 +357,14 @@ public:
     // Manual, "Specifications"): 250 cps draft, 45 cps near-letter-
     // quality. `Instant` is the old behaviour — everything prints the
     // frame it arrives.
+    /// Print quality the GUEST selected with `ESC a n` (Table 4-1:
+    /// 0 = correspondence, 1 = draft, 2 = NLQ). Distinct from `Speed`
+    /// below, which is the HOST's pacing knob — the two were conflated
+    /// before the character ROMs landed, when NLQ could only mean "slower".
+    enum class Quality : uint8_t { Correspondence = 0, Draft, NLQ, Count };
+    static const char* qualityName(Quality q);
+    Quality quality() const { return quality_; }
+
     enum class Speed : uint8_t { Instant = 0, Draft, NLQ, Count };
     static const char* speedName(Speed s);
 
@@ -311,6 +448,11 @@ public:
     int          pageHeight() const { return current_.h; }
     const Page&  currentPage() const { return current_; }
     bool         currentPageBlank() const;
+    /// Sheets ejected since power-on. MONOTONIC, unlike completedPageCount()
+    /// whose stack is capped at kMaxPages and reused — an archiver comparing
+    /// counts must use this or it silently misses pages that fell off the
+    /// stack between two of its polls.
+    size_t       sheetsEjected() const { return sheetsEjected_; }
     size_t       completedPageCount() const { return pages_.size(); }
     const Page&  completedPage(size_t idx) const { return pages_[idx]; }
     size_t       droppedPageCount() const { return droppedPages_; }
@@ -331,6 +473,10 @@ private:
     // ─── Page geometry ───────────────────────────────────────────────────
     int       dpi_;
     PaperSize paper_;
+    IwModel   model_   = IwModel::ImageWriterII;
+    PrinterSoundSink* sound_ = nullptr;
+    bool      powered_ = true;
+    bool      online_  = true;
     double    defaultPageWidth_  = 8.5;   // inches
     double    defaultPageHeight_ = 11.0;
 
@@ -367,6 +513,7 @@ private:
     uint8_t  numVertTabs_ = 0;
 
     uint8_t  printRes_ = 2;               // pitch → graphics density index
+    Quality  quality_  = Quality::Correspondence;   // ESC a n
     double   extraIntraSpace_ = 0.0;
     double   definedUnit_ = 96.0;
     double   hmi_ = -1.0;                 // horizontal motion index override
@@ -505,7 +652,19 @@ private:
         uint32_t remBytes  = 0;
         uint8_t  column[6]{};
         uint8_t  readBytesColumn = 0;
+        /// Bit 7 is the TOP dot (Epson ESC/P) instead of bit 0 (C. Itoh).
+        /// Get this wrong and every graphic comes out mirrored vertically in
+        /// 8-pixel stripes, which still looks like a picture — so it is
+        /// pinned by a round trip rather than by eye.
+        bool     msbTop = false;
     } bitGraph_;
+
+    // ESC/P parameter collection. Separate from `params_` because the two
+    // grammars disagree on how many bytes a command takes and on whether
+    // they are ASCII digits (C. Itoh) or raw values (Epson).
+    uint8_t  epsonParams_[4]{};
+    uint8_t  epsonCount_ = 0;
+    uint8_t  epsonNeed_  = 0;
 
     /// ASCII → CP437 glyph index. Identity except for the ten positions
     /// the international soft-switches (A-1..A-3) remap.
@@ -526,6 +685,25 @@ private:
 
     bool processCommandChar(uint8_t ch);
     void renderGlyph(uint8_t ch);
+    /// Character-ROM bank the current quality + proportional state selects,
+    /// the glyph it holds for `ch` (nullptr = fall back to the bundled font),
+    /// and the advance a proportional face asks for (0 = use the pitch cell).
+    const IwRomBank&      currentBank() const;
+    /// True when this head has no hardware for `cmd` — swallow it.
+    bool                  modelIgnoresEsc(uint8_t cmd) const;
+
+    // ── Epson ESC/P (printer plan phase C3) ──────────────────────────────
+    // A second parser over the SAME mechanism. Everything below the command
+    // layer — the page, the dot plotter, the ribbon, the pacing, the paper —
+    // is shared; only the byte grammar differs.
+    bool processEpsonChar(uint8_t ch);
+    void execEpsonEscape();
+    /// Arm an ESC/P bit image: `dotsPerInch` horizontal density and `columns`
+    /// column bytes. Epson packs bit 7 as the TOP dot, the opposite of the
+    /// C. Itoh family — see `bitGraph_.msbTop`.
+    void setupEpsonBitImage(int dotsPerInch, uint32_t columns);
+    const iwrom::IwGlyph* romGlyph(uint8_t ch) const;
+    double                glyphAdvance(uint8_t ch) const;
     void setupBitImage(uint8_t dens, uint32_t numCols);
     void printBitGraph(uint8_t ch);
 

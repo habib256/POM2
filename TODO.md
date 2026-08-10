@@ -514,7 +514,99 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   analog tape filtering (hiss, drop-out), VU-meter, timecode.
   MAME refs `apple2.cpp` cassette. *2 d.*
 
+### [Printer]
+
+- ✅ **Real ImageWriter character ROMs** — DONE (2026-08-10). Seven banks
+  (IW II correspondence/draft/NLQ fixed+proportional, IW I fixed+prop) with
+  7 locale variants each, generated into `src/ImageWriterRom.h` by
+  `tools/import_printer_roms.py` from
+  [mikedaley/web-a2e](https://github.com/mikedaley/web-a2e) (MIT). `ESC a`
+  now changes the face, proportional advance comes from the glyph's own
+  escapement, and the international sets are the ROM's real substitutions.
+  The CP437 font is kept as the fallback. Pinned `printer_glyph`.
+  Provenance settled 2026-08-10: keep, under web-a2e's MIT grant, with the
+  source manual named in the generated header (`docs/printer_plan.md` § 3).
+- ✅ **Screen dump to the printer** — DONE (2026-08-10).
+  `PrinterScreenDump` synthesises the `ESC G` stream and feeds it through
+  the real parser, so it obeys ribbon/pacing/paper and lands in the tray and
+  the PDF. Palette: `printer.dumpscreen`. Pinned `printer_screen_dump`
+  (round trip against the parser).
+- ✅ **Printer power / online switch + custom paper geometry** — DONE
+  (2026-08-10). Power off discards input and KEEPS the sheet (unlike
+  `powerCycle`); offline likewise; paper is settable in ¼" steps with
+  clamping that reports what it committed.
+- ✅ **ImageWriter I + Apple DMP** — DONE (2026-08-10) via `IwModelProfile`,
+  a three-row capability table rather than the class hierarchy the plan
+  proposed: the two extra heads differ only in DATA (ROM banks, colour
+  ribbon, absent ESC codes, power-on pitch, carriage rate). Note their
+  correspondence faces are byte-identical to the II's upstream — POM2 keeps
+  separate banks so a future divergence lands by itself. Pinned in
+  `printer_glyph`.
+- ✅ **[Printer] Epson FX-80** — DONE (2026-08-10). Its own ESC/P parser over
+  the shared mechanism (`ESC *` / `ESC K L Y Z` graphics with binary counts
+  and bit 7 as the top dot, n/216 and n/72 spacing, master select, the style
+  and pitch set). Unimplemented commands are consumed WITH their parameters
+  so a stray byte never prints as text. Pinned by an ESC/P round trip and by
+  the `ESC G` collision (graphics on C. Itoh, double-strike on ESC/P). Also
+  serves the FujiNet path, whose firmware printer is `epson80`.
+- ✅ **Printer sound** — DONE (2026-08-10). SYNTHESISED, not sampled: there
+  is no free ImageWriter sample set and web-a2e ships no audio assets
+  either (checked), so `PrinterSoundDevice` ports its grain model — one
+  bandpassed-noise grain per character/line feed, spaced along the audio
+  timeline so they overlap into the buzz. The scheduling cursor is capped
+  0.2 s ahead, which is what makes a full-black screen dump THIN instead of
+  queueing 100 seconds of rattle. Pinned `printer_sound`. NOTE: the plan's
+  § 9 claim that this needed `emuCycles` was wrong — the ImageWriter paces
+  itself in wall clock, so the events are already in real time.
+- ✅ **[Printer] Print history** — DONE (2026-08-10). Every ejected sheet is
+  written to `printouts/history/` as a PNG with its printer / ribbon / paper,
+  listed in the ImageWriter panel and clickable back onto the canvas. Index
+  is tab-separated text, not JSON (POM2 has no JSON parser and this is a few
+  dozen lines). Pinned `printer_history`. **This completes
+  `docs/printer_plan.md` — all six phases.**
+
 ### [Network]
+
+- ✅ **FujiNet relay (SP-over-SLIP)** — DONE (2026-08-10). `FujiNetCard`
+  presents a SmartPort controller and forwards every call to a real
+  FujiNet: a desktop build over loopback TCP 1985, or a **physical ESP32
+  board over USB CDC-ACM**. One protocol carries every FujiNet function
+  (block storage, the `N:` network device, clock, printer, modem, CP/M)
+  because on the Apple II they are all SmartPort units. New host
+  primitive `SerialPort` (POSIX termios / Win32 DCB) came with it.
+  Pinned `slip_framer`, `serial_port`, `sp_over_slip_link`,
+  `fujinet_card`. Detail → `DEV.md` § FujiNet, design →
+  `docs/fujinet_plan.md`.
+- ✅ **[FujiNet] Phase 2 printer tap** — DONE (2026-08-10). Bytes the guest
+  WRITEs to the peer's printer unit are spooled to POM2's `ImageWriter`
+  through the same `bytesWritten()`/`drainSpoolFrom()` contract as
+  `PrinterCard`, ranked between the parallel cards and the SSC tap. The
+  unit is identified by its DIB **name**, because the firmware's own
+  `iwmPrinter::create_dib_reply_packet` labels the printer
+  `SP_TYPE_BYTE_FUJINET_MODEM` — an upstream bug the test reproduces.
+- ✅ **[FujiNet] Phase 3 helper process** — DONE (2026-08-10), by a
+  different route than planned: POM2 launches and reaps an EXISTING FujiNet
+  desktop binary (`ChildProcess`) instead of vendoring the firmware. See
+  `docs/fujinet_plan.md` § 8 for why the vendored build was rejected.
+- 🟢 **[FujiNet] media bays + modem bridge — DECIDED AGAINST.** Surfacing
+  the peer's block units as `MountableMediaCard` bays would add rows whose
+  Mount/Eject cannot work (the images live on the FujiNet's own SD/TNFS
+  storage, which POM2 has no path to write); the FujiNet panel's device
+  table already answers "what has it got mounted". Bridging its modem unit
+  into the SSC telnet path would fight the FujiNet's own stack, which
+  already reaches the network — POM2 dialling out in parallel would break
+  the connection state the guest thinks it owns.
+- 🟡 **[FujiNet] //c-class support** — the card is II+ / //e only: a
+  //c's forced INTCXROM masks all slot ROM. On real hardware the FujiNet
+  *is* the SmartPort on the disk port, so the correct integration hangs
+  the relay off the on-board `$C500` hole (`exposesIicOnboardRom`,
+  see `project_iic_smartport_boot`) rather than a slot card. *~1-2 d.*
+- 🟢 **[FujiNet] embedded firmware** — `fujinet-go-apple2-desktop` builds
+  the FujiNet firmware as a shared library and `dlopen`s it, so the user
+  needs no second program. Deliberately NOT done: it drags in mbedtls,
+  expat, a pinned submodule and a patch set anchored to exact upstream
+  text. Revisit only if "having to install a second program" turns out to
+  be the real blocker.
 
 - ✅ **Uthernet I/II Ethernet TCP/IP** — DONE (2026-07-28).
   `UthernetCard` + `Cs8900aDevice` (MAME `machine/cs8900a.cpp` +

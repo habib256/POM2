@@ -107,6 +107,39 @@ void ImageWriter_ImGui::uploadPage(const ImageWriter::Page& p,
     texRev_  = rev;
 }
 
+void ImageWriter_ImGui::uploadRgba(const std::vector<uint8_t>& rgba,
+                                   int w, int h, int key)
+{
+    if (w <= 0 || h <= 0 ||
+        rgba.size() < static_cast<size_t>(w) * h * 4) return;
+    if (tex_ && texPage_ == key) return;      // already resident
+
+    if (!tex_) {
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        tex_  = t;
+        texW_ = texH_ = 0;
+    }
+    glBindTexture(GL_TEXTURE_2D, tex_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (w != texW_ || h != texH_) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        texW_ = w;
+        texH_ = h;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
+                        GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    }
+    texPage_ = key;
+    texRev_  = 0;
+}
+
 bool ImageWriter_ImGui::savePagePng(const ImageWriter::Page& p,
                                     const std::string& path, std::string& err)
 {
@@ -262,6 +295,87 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
     }
 
     // ─── Printer settings ────────────────────────────────────────────────
+    // ─── Print history (printer plan phase E) ────────────────────────────
+    if (ImGui::CollapsingHeader("Print history")) {
+        if (host.history.empty()) {
+            ImGui::TextDisabled(
+                "Nothing stored yet. Every sheet the printer ejects is saved "
+                "here and survives quitting.");
+            if (!host.historyDir.empty())
+                ImGui::TextDisabled("Folder: %s", host.historyDir.c_str());
+        } else {
+            ImGui::Text("%zu stored page(s)", host.history.size());
+            ImGui::SameLine();
+            if (viewHistory_ >= 0 && ImGui::SmallButton("Back to the platen")) {
+                viewHistory_ = -1;
+                historyFile_.clear();
+                texPage_ = -2;          // force the live sheet to re-upload
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear all") && host.onClearHistory) {
+                host.onClearHistory();
+                viewHistory_ = -1;
+                historyFile_.clear();
+                texPage_ = -2;
+            }
+            if (!host.historyDir.empty() && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Deletes every stored page from %s",
+                                  host.historyDir.c_str());
+
+            if (ImGui::BeginTable("##iwHistory", 5,
+                                  ImGuiTableFlags_Borders |
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_SizingStretchProp,
+                                  ImVec2(0, 160))) {
+                ImGui::TableSetupColumn("When");
+                ImGui::TableSetupColumn("Printer");
+                ImGui::TableSetupColumn("Ribbon", ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableSetupColumn("Paper",  ImGuiTableColumnFlags_WidthFixed, 90);
+                ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed, 110);
+                ImGui::TableHeadersRow();
+
+                std::string deleteFile;
+                for (size_t i = 0; i < host.history.size(); ++i) {
+                    const auto& r = host.history[i];
+                    ImGui::TableNextRow();
+                    ImGui::PushID(static_cast<int>(i));
+
+                    ImGui::TableNextColumn();
+                    const bool sel2 = (viewHistory_ == static_cast<int>(i));
+                    if (ImGui::Selectable(r.savedAt.c_str(), sel2,
+                                          ImGuiSelectableFlags_SpanAllColumns)) {
+                        viewHistory_ = sel2 ? -1 : static_cast<int>(i);
+                        if (viewHistory_ < 0) { historyFile_.clear(); texPage_ = -2; }
+                    }
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(r.printer.c_str());
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(r.ribbon.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.2f x %.2f\"", r.paperW, r.paperL);
+                    ImGui::TableNextColumn();
+                    if (ImGui::SmallButton("Delete")) deleteFile = r.file;
+
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+
+                // Applied after the loop: deleting inside it would invalidate
+                // the very vector being iterated.
+                if (!deleteFile.empty() && host.onDeleteHistoryPage) {
+                    host.onDeleteHistoryPage(deleteFile);
+                    viewHistory_ = -1;
+                    historyFile_.clear();
+                    texPage_ = -2;
+                }
+            }
+            ImGui::TextDisabled(
+                "Click a row to put that sheet back on the canvas. The PNGs "
+                "are in %s and can be opened directly.",
+                host.historyDir.empty() ? "the printouts folder"
+                                        : host.historyDir.c_str());
+        }
+    }
+
     if (ImGui::CollapsingHeader("Printer settings")) {
         int paperIdx = static_cast<int>(iw.paperSize());
         ImGui::SetNextItemWidth(240);
@@ -292,6 +406,86 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
                               "printer's own dot densities (72-320 dpi) are "
                               "set by the guest and unaffected.\n"
                               "Changing this restarts the sheet in progress.");
+
+        // ── Which head (printer plan phase C) ─────────────────────────
+        {
+            int mi = static_cast<int>(iw.model());
+            const char* labels[static_cast<int>(pom2::IwModel::Count)];
+            for (int i = 0; i < static_cast<int>(pom2::IwModel::Count); ++i)
+                labels[i] = ImageWriter::modelName(static_cast<pom2::IwModel>(i));
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::Combo("Printer", &mi, labels,
+                             static_cast<int>(pom2::IwModel::Count))) {
+                iw.setModel(static_cast<pom2::IwModel>(mi));
+                texPage_ = -2;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "All three speak the C. Itoh 8510 command set; the "
+                    "ImageWriter II is the superset.\n"
+                    "The I and the DMP have no colour ribbon and no draft/NLQ "
+                    "tiers, and the DMP powers up at Pica 10 cpi.\n"
+                    "Switching is a power cycle — the faces and the pitch "
+                    "change, so the sheet cannot carry over.");
+        }
+
+        // ── Front panel (printer plan phase D) ───────────────────────
+        {
+            bool pw = iw.powered();
+            if (ImGui::Checkbox("Power", &pw)) iw.setPowered(pw);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Switched off, the printer ignores everything the Apple II "
+                    "sends — and KEEPS THE PAPER.\n"
+                    "That is the difference from a power cycle, which clears "
+                    "the sheet.");
+
+            ImGui::SameLine();
+            bool on = iw.online();
+            if (ImGui::Checkbox("Select (online)", &on)) iw.setOnline(on);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Deselected, the printer is powered but unreachable — the "
+                    "front-panel button.\n"
+                    "This is the usual reason a real one appears to hang: the "
+                    "data goes nowhere.");
+
+            if (!iw.powered() || !iw.online()) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.20f, 1.0f),
+                                   iw.powered() ? "offline — data discarded"
+                                                : "off — data discarded");
+            }
+
+            // Paper size, in the quarter-inch steps a tractor is adjusted in.
+            float wIn = static_cast<float>(iw.paperWidthIn());
+            float lIn = static_cast<float>(iw.paperLengthIn());
+            ImGui::SetNextItemWidth(110);
+            const bool wCh = ImGui::DragFloat("##paperW", &wIn, 0.25f,
+                                              static_cast<float>(ImageWriter::kMinPaperWidthIn),
+                                              static_cast<float>(ImageWriter::kMaxPaperWidthIn),
+                                              "%.2f\" wide");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(110);
+            const bool lCh = ImGui::DragFloat("Paper", &lIn, 0.25f,
+                                              static_cast<float>(ImageWriter::kMinPaperLengthIn),
+                                              static_cast<float>(ImageWriter::kMaxPaperLengthIn),
+                                              "%.2f\" long");
+            if (wCh || lCh) {
+                // The printer clamps and snaps; take back what it committed
+                // so the widget cannot disagree with the paper.
+                double cw = 0, cl = 0;
+                iw.setPaperDimensions(wIn, lIn, &cw, &cl);
+                texPage_ = -2;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Continuous tractor paper, in 1/4\" steps. The form length "
+                    "the guest sets with ESC H\noverrides this for pagination; "
+                    "changing either restarts the sheet in progress.");
+        }
+
+        ImGui::Separator();
 
         if (host.onBackPressureChanged) {
             bool bp = host.backPressure;
@@ -590,7 +784,36 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
     if (!status_.empty()) ImGui::TextDisabled("%s", status_.c_str());
 
     // ─── Page view ───────────────────────────────────────────────────────
-    uploadPage(sheet(sel), cacheKey(sel), iw.revision());
+    // A stored page takes over the canvas while the user is browsing the
+    // history; leaving it drops straight back to whatever sheet they were on.
+    bool showingHistory = false;
+    if (viewHistory_ >= 0 &&
+        viewHistory_ < static_cast<int>(host.history.size()) &&
+        host.loadHistoryPage) {
+        const auto& row = host.history[static_cast<size_t>(viewHistory_)];
+        if (historyFile_ != row.file) {
+            std::vector<uint8_t> px;
+            int hw = 0, hh = 0;
+            if (host.loadHistoryPage(row.file, px, hw, hh)) {
+                // Negative keys: a stored page can never collide with a live
+                // page index in the texture cache.
+                uploadRgba(px, hw, hh, -1000 - viewHistory_);
+                historyFile_ = row.file;
+                showingHistory = true;
+            } else {
+                viewHistory_ = -1;      // vanished under us
+                historyFile_.clear();
+            }
+        } else {
+            showingHistory = true;
+        }
+    } else {
+        viewHistory_ = -1;
+        historyFile_.clear();
+    }
+
+    if (!showingHistory)
+        uploadPage(sheet(sel), cacheKey(sel), iw.revision());
 
     ImGui::BeginChild("##iwPaper", ImVec2(0, 0), true,
                       ImGuiWindowFlags_HorizontalScrollbar);

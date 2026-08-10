@@ -5,6 +5,236 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-10 — The printer grew real ImageWriter faces, and learned to print the screen
+
+Three phases of `docs/printer_plan.md`, the gap analysis against
+[mikedaley/web-a2e](https://github.com/mikedaley/web-a2e) (MIT).
+
+**POM2 was drawing every printed character with a substitute font.** Its own
+header said so: glyphs came from the bundled 8×8 CP437 bitmap, which meant
+`ESC a` did nothing to the page, "NLQ" was only a *speed*, proportional mode
+kept a fixed cell so an `i` took as much paper as an `M`, and the seven
+international character sets were nearest-CP437 approximations. Seven real
+banks now live in a generated `src/ImageWriterRom.h`, and all four of those
+statements are false.
+
+**Provenance, stated rather than implied.** The tables are the dot patterns
+Apple *published* in the ImageWriter Technical Reference Appendix C,
+transcribed by web-a2e. They are not chip dumps: the transcription is MIT, the
+typeface design is Apple's. Same class as the AppleWin SSI263 phoneme blob, and
+recorded the same way — in the generated header, in the importer, and in
+`docs/lle_vs_hle.md`. **This is a judgement call and it is still open**; the
+CP437 fallback was deliberately kept so reverting is one file.
+
+**Two generator bugs that compiled clean and printed wrong.** A backslash at
+the end of a `//` comment continues that comment onto the next line — and `$5C`
+is `\`, so annotating each row with the character it draws swallowed the row
+after it. Every bank ended up with 94 initialisers for a 95-element array,
+which is not a diagnostic, just a zero-filled tail: one blank glyph (`~`) per
+bank, three layers from the cause. Before that, a brace-walking parser counted
+the `{` and `}` inside the row comments.
+
+**Screen dump.** "Print what is on screen" now exists (`printer.dumpscreen` in
+the palette). It synthesises the `ESC G` byte stream a Grappler ROM or Print
+Shop would have sent and pushes it through the printer's REAL parser — nothing
+paints a page pixel — so it obeys the ribbon, the pacing and the paper, and
+lands in the tray and the PDF export like any other job. Its test is a round
+trip, which pins the scanner and the parser against each other; a dump that
+agreed only with itself would be a screenshot with extra steps.
+
+**A power switch that does not eat your page.** POM2 had `powerCycle()`, which
+resets everything and clears the sheet. A front-panel power switch is a
+different thing: off ignores incoming bytes and KEEPS the paper. Offline
+(deselect) does the same while staying powered — the usual reason a real
+printer appears to hang. Paper is now settable to any size in ¼" steps, clamped
+to the tractor's range, reporting what it actually committed.
+
+**One existing test was asserting the old bug** and had to be recast:
+`imagewriter_smoke` pinned a proportional advance of `0.1 + 3/120`, i.e. the
+fixed cell proportional mode was wrongly using. It now measures the baseline
+advance and asserts `ESC 3` *added* 3/120" — which is what that test's comment
+always claimed it was about, and it no longer pins font data.
+
+**Three heads, by table not by hierarchy.** The ImageWriter I and the Apple DMP
+(a rebadged C. Itoh 8510) now exist alongside the II. The plan called for
+splitting `ImageWriter` into a base class with per-model subclasses; reading the
+reference implementation's two model classes settled it otherwise — they are
+almost entirely overrides that RETURN DATA (which ROM banks exist, colour
+ribbon or not, which ESC codes have no hardware, power-on pitch, carriage
+rate). So POM2 got `IwModelProfile`: one struct, three rows. A 1459-line
+heavily-tested class stayed untouched and the whole suite stayed green.
+
+Two things worth remembering from it. An ESC code a head does not have is
+consumed *with its parameters* and dropped — but the early return must still
+clear `escCmd_`, or the parser stays armed and swallows the rest of the job
+(mine did, and the symptom was a printer that went silent after one command).
+And the ImageWriter I / DMP character banks turn out to be **byte-identical to
+the II's** upstream, which is stated in the test rather than asserted around:
+POM2 keeps them separate so a future divergence lands by itself.
+
+**And the Epson FX-80**, which is a different lineage and got a second parser
+rather than a capability mask. The two grammars collide outright — `ESC G` is
+*graphics* on the C. Itoh family and *double-strike* on ESC/P — and the test
+asserts exactly that: the same four bytes leave 0 dots on one head and 86 on
+the other. Its graphics take two binary count bytes with bit 7 as the top dot,
+both the opposite of the C. Itoh spelling, which is the kind of mistake that
+still looks like a picture, so it is pinned by a round trip.
+
+Commands POM2 does not implement there (user-defined characters, the vertical
+forms unit, nine-pin graphics, tab lists, margins) are consumed **with their
+parameters**. That is the whole difference between "a missing feature" and
+"gibberish on the page", and it is why a partial ESC/P parser is worth doing
+carefully rather than quickly.
+
+Font provenance settled the same day: POM2 keeps the web-a2e tables under their
+MIT grant, with the source manual named in the generated header.
+
+**And the printer makes a noise now.** Synthesised, not sampled — which is a
+first for POM2's audio, and not a shortcut: the floppy sounds are MAME's WAV
+set, but no free ImageWriter set exists, and the reference project ships no
+audio assets at all (checked rather than assumed — its printer sound is Web
+Audio synthesis).
+
+The model it ports is worth stating because it is what makes it sound right: a
+dot-matrix impact is a short broadband NOISE click, not a tone, so every voice
+is bandpassed noise with a wide Q — an oscillator is what makes a printer
+emulation *sing* instead of clack. One grain per character (11 ms) or line feed
+(40 ms), and the grains are **spaced along the audio timeline** rather than all
+firing when the event arrived, so at print rate they overlap into the
+continuous buzz while a lone character stays a tick. Print density drives the
+texture for free.
+
+The detail that matters most is a cap on how far ahead the scheduling cursor
+may run. A full-black screen dump is tens of thousands of strikes in one UI
+frame; at 5 ms apart that queues *100 seconds* of rattle that keeps playing
+long after the page is done. Capped, the burst just thins — the test fires
+20 000 strikes and asserts silence within ~0.2 s.
+
+Also a correction to the plan: § 9 said this needed `emuCycles` stamping like
+the floppy. It does not. The floppy needs it because the guest drives the
+stepper and disk turbo collapses the gaps; the ImageWriter paces itself in wall
+clock, so its events are already in real time.
+
+**And printouts now survive quitting.** Every ejected sheet is written to
+`printouts/history/` as a PNG with the printer, ribbon and paper it was made
+on; the ImageWriter panel lists them and puts one back on the canvas when you
+click it. The index is tab-separated text rather than the JSON the plan asked
+for — POM2 has no JSON parser, and adding one to read a few dozen lines would
+be the tail wagging the dog.
+
+The trap worth remembering: the archiver has to compare against the printer's
+MONOTONIC eject counter, not the size of its page stack. That stack is capped
+at 32 and reused, so a form-feed burst between two frames pushes sheets off it
+and a count-based archiver loses them without a word. It now logs how many it
+missed instead. Three smaller ones — archiving must run on the path where no
+card is feeding (a job already in the buffer keeps ejecting), the filename
+counter must resume across sessions or a reload clobbers an existing PNG, and
+the index is written to a temp file and renamed so a crash mid-write cannot
+truncate it.
+
+**That completes `docs/printer_plan.md` — all six phases.** POM2's printer went
+from one head drawing substitute glyphs to four heads with their real faces, a
+screen dump, a front panel, mechanical sound and a durable history.
+
+## 2026-08-10 — FujiNet, over loopback TCP *or* a real board on USB
+
+POM2 can now use a **FujiNet** ([fujinet.online](https://fujinet.online/)) —
+the ESP32 peripheral whose `N:` device gives an 8-bit machine HTTP(S), TNFS,
+FTP, SSH, Telnet and a JSON parser without the guest running any TCP/IP itself.
+
+**Why one card and not six.** On the Apple II *every* FujiNet function is a
+SmartPort unit: block storage, the network device, the clock, the printer, the
+modem, CP/M. So POM2 relays the SmartPort protocol and gets all of them at
+once, instead of porting each device. `FujiNetCard` is a **relay, not an
+emulation** — it presents a SmartPort controller to the guest and forwards
+every call verbatim over the FujiNet project's published **SP-over-SLIP**
+protocol.
+
+**Two transports, both shipping.** Loopback TCP 1985 for a FujiNet *desktop
+build* running alongside POM2 (the everyday case, and the port an existing
+FujiNet configuration already uses), and **USB CDC-ACM** for a *physical
+board*. The spec blesses both — "any medium providing a transparent, duplex,
+lossless byte stream" — and the serial path is what lets POM2 drive real
+hardware rather than only a software peer.
+
+**MAME is not the source of truth here, and the code says so.** MAME has no
+FujiNet device. The references are the project's wiki spec (revision of
+2025-01-25) and the FujiNet fork of AppleWin, which is GPL-2.0-**or-later** and
+therefore GPLv3-compatible; it was consulted, not copied.
+
+**The two bugs worth remembering.**
+
+- *The stack index must wrap inside page 1.* A SmartPort call is `JSR $Cn0D`
+  followed by three inline bytes, so the host has to rewrite the pushed return
+  address to step over them. AppleWin's `regs.sp` is already a full `$01xx`
+  address; POM2's `getStackPointer()` is the 8-bit register, so
+  `0x0100 + ((sp + 1) & 0xFF)` is mandatory. Without the mask, a call made with
+  SP near the bottom of the page writes the fixed-up address to `$0200` —
+  corrupting unrelated memory *and* leaving the stale address on the stack.
+  Pinned with `SP = $01`.
+- *`std::mutex` is not recursive.* `transact()` discovers a dead peer while it
+  already holds the call lock, so peer teardown exists in two forms
+  (`peerLostLocked()` / `handlePeerLost()`). The first version deadlocked the
+  CPU thread with the emulated 6502 parked mid-SmartPort-call — caught by
+  `sp_over_slip_link`'s clean-shutdown case, and only intermittently.
+
+**The ESP32 auto-reset trap, for anything that ever opens a serial port.**
+Every ESP32 USB bridge wires DTR → EN (reset) and RTS → IO0 (boot select)
+through the standard auto-reset circuit — that is how `esptool` enters the
+bootloader with no button press. An `open()` that lets the OS assert them
+**reboots the user's FujiNet every time POM2 opens the port**, and clearing
+`HUPCL` is what stops *quitting* POM2 from doing the same. That defence lives
+in the new `SerialPort` host primitive (POSIX termios / Win32 DCB), not in the
+FujiNet code, so anything else that opens a device inherits it.
+
+**Boot fails safe.** With no FujiNet answering, the card's ROM continues the
+autostart slot scan (`JMP $FABA`) rather than erroring — otherwise a FujiNet
+card in slot 7 would break booting from the Disk II in slot 6 whenever the
+FujiNet was not running. Slot 7 is the default precisely because the //e scans
+it first, so a machine *with* a FujiNet boots straight into its CONFIG.
+
+**What it deliberately does not do.** Rewind does not rewind the peer — blocks
+it wrote stay written, HTTP requests stay made; the card only resynchronises
+its sequence number. And it is II+ / //e only: a //c's forced INTCXROM masks
+all slot ROM, and on real hardware the FujiNet *is* the disk-port SmartPort,
+which is a different integration.
+
+Timeout defaults to **250 ms** — the emulated 6502 is parked inside its `JSR`
+for the whole round trip, so that is how long the machine stalls when the peer
+goes quiet: ~50× headroom over a real USB round trip, one dropped frame instead
+of a full second when something dies.
+
+Four new pinned tests (`slip_framer`, `serial_port`, `sp_over_slip_link`,
+`fujinet_card`), layered so each fails for exactly one reason. Detail →
+`DEV.md` § FujiNet; design and remaining phases → `docs/fujinet_plan.md`.
+
+**Phase 2 — the printer reaches POM2's paper.** Bytes the guest writes to the
+FujiNet's printer unit are also rendered by POM2's own ImageWriter, through the
+same spool contract `PrinterCard` uses. Identifying that unit turned out to be
+the interesting part: the firmware's `iwmPrinter::create_dib_reply_packet`
+labels the printer `SP_TYPE_BYTE_FUJINET_MODEM`, so **the printer advertises
+itself as a modem**. POM2 keys on the DIB *name* instead, and the smoke test
+reproduces the upstream bug so nobody "cleans up" the workaround.
+
+Two Phase-2 items were dropped on purpose, not forgotten. Surfacing the peer's
+disks as mountable bays would add Mount/Eject buttons that cannot work — the
+images live on the FujiNet's own storage — and the panel's device table already
+answers the question. Bridging its modem to the SSC telnet path would fight a
+stack that already reaches the network.
+
+**Phase 3 — POM2 starts the FujiNet for you.** Not by vendoring the firmware:
+the reference recipe for that is 856 lines of bash that builds mbedTLS from
+source and applies a dozen patches anchored to exact upstream text, and it buys
+nothing except not installing a binary. POM2 launches an existing FujiNet
+desktop build instead, and reaps it on exit. It does **not** rewrite the
+program's `fnconfig.ini` (WiFi credentials live there, and its Apple default is
+already 127.0.0.1:1985).
+
+The trap worth remembering: killing only the direct child leaves *its* children
+alive holding POM2's stdout pipe. That showed up as a test passing by hand and
+hanging under ctest; in the field it would be a stray FujiNet still holding port
+1985 after POM2 "stopped" it. `stop()` signals the process group.
+
 ## 2026-08-08 — Core 2× faster on the same output, and a Raspberry Pi build recipe
 
 Ported the optimisation campaign method from **NeoST** (POM2's sibling Atari ST

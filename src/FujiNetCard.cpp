@@ -1,0 +1,661 @@
+// VERHILLE Arnaud 2026
+
+// POM2 Apple II Emulator
+// Copyright (C) 2026
+//
+// FujiNetCard implementation — synthetic slot ROM, the $C0n2 trap, and the
+// marshalling between emulated RAM/CPU state and SP-over-SLIP requests.
+// See FujiNetCard.h for the architecture and the source citations.
+
+#include "FujiNetCard.h"
+
+#include "Logger.h"
+#include "M6502.h"
+#include "Memory.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+namespace pom2 {
+
+namespace {
+
+// ── ROM layout (offsets from $Cn00) ──────────────────────────────────────
+// The signature bytes are real instructions so that a JMP $Cn00 — which is
+// how both the autostart scan and PR#n enter a card — executes them
+// harmlessly and falls straight into the boot code.
+constexpr uint8_t kBootOff   = 0x08;
+constexpr uint8_t kBootErr   = 0x30;
+constexpr uint8_t kErrExit   = 0x42;
+constexpr uint8_t kDriverOff = 0x60;
+constexpr uint8_t kErrText   = 0xF0;
+
+// Monitor entry points the boot fallback uses.
+constexpr uint16_t kMonSloop  = 0xFABA;   // continue the autostart slot scan
+constexpr uint16_t kMonSetKbd = 0xFE89;
+constexpr uint16_t kMonSetScr = 0xFE93;
+constexpr uint16_t kMonSetTxt = 0xFB39;
+constexpr uint16_t kMonHome   = 0xFC58;
+constexpr uint16_t kMonCout   = 0xFDED;
+constexpr uint16_t kBasic     = 0xE000;
+constexpr uint16_t kMslot     = 0x07F8;
+
+/// ProDOS zero-page call block.
+constexpr uint16_t kZpCommand = 0x42;
+constexpr uint16_t kZpUnit    = 0x43;
+constexpr uint16_t kZpBufLo   = 0x44;
+constexpr uint16_t kZpBlkLo   = 0x46;
+
+constexpr std::size_t kBlockBytes = 512;
+
+void emit(std::array<uint8_t, 256>& rom, uint8_t& pc,
+          std::initializer_list<uint8_t> bytes)
+{
+    for (uint8_t b : bytes) rom[pc++] = b;
+}
+
+/// Relative branch displacement from the branch opcode at `at` to `target`.
+/// `at` is the opcode's own offset; the operand follows, so the PC the CPU
+/// adds to is `at + 2`.
+constexpr uint8_t rel(uint8_t at, uint8_t target)
+{
+    return static_cast<uint8_t>(target - (at + 2));
+}
+
+} // namespace
+
+FujiNetCard::FujiNetCard(int slot) : slot_(slot)
+{
+    buildRom();
+}
+
+FujiNetCard::~FujiNetCard()
+{
+    // Order matters: stop the link first so the helper's peer goes away
+    // cleanly, then terminate the helper. The other way round leaves the
+    // link's worker chasing a socket whose far end just died.
+    link_.stop();
+    helper_.stop();
+}
+
+bool FujiNetCard::startHelper(const std::string& exePath, std::string& errOut)
+{
+    std::string exe = exePath;
+    if (exe.empty()) exe = ChildProcess::findOnPath("fujinet");
+    if (exe.empty()) {
+        errOut = "no FujiNet program found — set its path, or install one on "
+                 "PATH as 'fujinet'";
+        return false;
+    }
+    // No arguments: the firmware takes its Bus-over-IP target from its own
+    // fnconfig.ini, whose Apple default is already 127.0.0.1:1985.
+    return helper_.start(exe, {}, std::string{}, errOut);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slot ROM
+// ─────────────────────────────────────────────────────────────────────────
+
+void FujiNetCard::buildRom()
+{
+    rom_.fill(0xEA);                                    // NOP padding
+
+    const uint8_t romHi   = static_cast<uint8_t>(0xC0 + slot_);
+    const uint8_t unitDrv1 = static_cast<uint8_t>(slot_ << 4);
+    // $C0(8+slot)2 — the device-select address the driver stores the magic to.
+    const uint8_t trapLo  = static_cast<uint8_t>(0x80 + slot_ * 16 + 2);
+
+    // ── Signature ($Cn00-$Cn07) ──────────────────────────────────────────
+    // CPX #$20 / LDX #$00 / CPX #$03 / CPX #$00 — chosen so the bytes at
+    // $Cn01/$Cn03/$Cn05 are the ProDOS block-device signature $20/$00/$03
+    // that POM2's own bootFromSlot validates, and $Cn07 = $00 marks the
+    // SmartPort class. Executing them is harmless (X ends up 0).
+    uint8_t pc = 0x00;
+    emit(rom_, pc, {
+        0xE0, 0x20,          // CPX #$20   → $Cn01 = $20
+        0xA2, 0x00,          // LDX #$00   → $Cn03 = $00
+        0xE0, 0x03,          // CPX #$03   → $Cn05 = $03
+        0xE0, 0x00,          // CPX #$00   → $Cn07 = $00 (SmartPort)
+    });
+
+    // ── Boot ($Cn08) ─────────────────────────────────────────────────────
+    // Read block 0 of unit 1 to $0800 through our own ProDOS entry, sanity
+    // check it the way a ProDOS boot block is supposed to look, then run it.
+    pc = kBootOff;
+    emit(rom_, pc, {
+        0xA2, 0x00,                       // LDX #$00
+        0x86, 0x46,                       // STX $46      block lo
+        0x86, 0x47,                       // STX $47      block hi
+        0x86, 0x44,                       // STX $44      buffer lo
+        0xE8,                             // INX
+        0x86, 0x42,                       // STX $42      command = 1 (read)
+        0xA2, 0x08,                       // LDX #$08
+        0x86, 0x45,                       // STX $45      buffer hi = $08
+        0xA2, unitDrv1,                   // LDX #slot*16 unit, drive 1
+        0x86, 0x43,                       // STX $43
+        0x20, kDriverOff, romHi,          // JSR $Cn60    ProDOS entry
+        0xB0, rel(0x1E, kBootErr),        // BCS bootErr
+        0xAE, 0x00, 0x08,                 // LDX $0800    boot block count
+        0xCA,                             // DEX
+        0xD0, rel(0x24, kBootErr),        // BNE bootErr  must be 1
+        0xAE, 0x01, 0x08,                 // LDX $0801    first opcode
+        0xF0, rel(0x29, kBootErr),        // BEQ bootErr  must not be BRK
+        0xA2, unitDrv1,                   // LDX #slot*16 boot blocks want it
+        0x4C, 0x01, 0x08,                 // JMP $0801
+    });
+
+    // ── Boot failure ($Cn30) ─────────────────────────────────────────────
+    // No FujiNet, or no bootable volume on unit 1. If we got here from the
+    // autostart SLOT SCAN, continue it so the Disk II in slot 6 still boots —
+    // without this, plugging a FujiNet card into slot 7 would break booting
+    // whenever the FujiNet is not running. The scan is recognised the way the
+    // Monitor leaves it: $00/$01 hold the $Cn00 it jumped to, and MSLOT
+    // ($07F8) holds $Cn.
+    pc = kBootErr;
+    emit(rom_, pc, {
+        0xA6, 0x00,                       // LDX $00
+        0xD0, rel(0x32, kErrExit),        // BNE errExit  low byte must be 0
+        0xA6, 0x01,                       // LDX $01
+        0xEC, static_cast<uint8_t>(kMslot & 0xFF),
+              static_cast<uint8_t>(kMslot >> 8),          // CPX $07F8 (MSLOT)
+        0xD0, rel(0x39, kErrExit),        // BNE errExit
+        0xE0, romHi,                      // CPX #$Cn     and is it us?
+        0xD0, rel(0x3D, kErrExit),        // BNE errExit
+        0x4C, static_cast<uint8_t>(kMonSloop & 0xFF),
+              static_cast<uint8_t>(kMonSloop >> 8),      // JMP $FABA
+    });
+
+    // ── Not a scan: somebody ran PR#n with nothing to boot ($Cn42) ───────
+    pc = kErrExit;
+    emit(rom_, pc, {
+        0x20, static_cast<uint8_t>(kMonSetScr & 0xFF), static_cast<uint8_t>(kMonSetScr >> 8),
+        0x20, static_cast<uint8_t>(kMonSetKbd & 0xFF), static_cast<uint8_t>(kMonSetKbd >> 8),
+        0x20, static_cast<uint8_t>(kMonSetTxt & 0xFF), static_cast<uint8_t>(kMonSetTxt >> 8),
+        0x20, static_cast<uint8_t>(kMonHome   & 0xFF), static_cast<uint8_t>(kMonHome   >> 8),
+        0xA2, 0x07,                       // LDX #$07
+        0xBD, kErrText, romHi,            // LDA $CnF0,X  (text stored reversed)
+        0x20, static_cast<uint8_t>(kMonCout & 0xFF), static_cast<uint8_t>(kMonCout >> 8),
+        0xCA,                             // DEX
+        0x10, rel(0x57, 0x50),            // BPL loop
+        0x4C, static_cast<uint8_t>(kBasic & 0xFF), static_cast<uint8_t>(kBasic >> 8),
+    });
+
+    // ── The driver ($Cn60) ───────────────────────────────────────────────
+    // THE WHOLE POINT OF THE CARD. Two entry points three bytes apart, as the
+    // Apple convention requires (ProDOS entry at $CnFF's offset, SmartPort
+    // entry at that + 3), both of which just tell the host to take over.
+    //
+    // `CMP #$01` after the trap turns the status byte the host left in A into
+    // the carry flag ProDOS and SmartPort both expect: carry clear iff A == 0.
+    // It also overwrites N/Z, which is why `finish()` setting them is a
+    // courtesy for callers that enter mid-routine rather than a contract.
+    pc = kDriverOff;
+    emit(rom_, pc, {
+        0x38,                             // SEC              ProDOS entry
+        0xB0, rel(0x61, 0x67),            // BCS doProdos
+        0xA9, kMagicSmartPort,            // LDA #$65         SmartPort entry
+        0xD0, rel(0x65, 0x69),            // BNE store          ( = entry + 3 )
+        0xA9, kMagicProDOS,               // LDA #$66
+        0x8D, trapLo, 0xC0,               // STA $C0n2        ← the trap
+        0xC9, 0x01,                       // CMP #$01         A != 0 → carry
+        0x60,                             // RTS
+    });
+
+    // ── "FN ERROR", stored reversed because the printer counts X down ────
+    const char text[8] = { 'R', 'O', 'R', 'R', 'E', ' ', 'N', 'F' };
+    for (int i = 0; i < 8; ++i)
+        rom_[kErrText + i] = static_cast<uint8_t>(text[i] | 0x80);
+
+    // ── ProDOS identification tail ───────────────────────────────────────
+    // $CnFC/$CnFD = total blocks. ZERO ON PURPOSE: it makes ProDOS issue a
+    // STATUS call to learn the size, which is the only correct answer for a
+    // device whose media the user can change from the FujiNet's own web UI
+    // while the machine is running.
+    rom_[0xFC] = 0x00;
+    rom_[0xFD] = 0x00;
+    // $CnFE capability byte (ProDOS 8 TN #21): removable, interruptible,
+    // read + write + status. Same value the FujiNet AppleWin fork's ROM
+    // publishes, so a guest that special-cases FujiNet sees what it expects.
+    rom_[0xFE] = 0xF7;
+    rom_[0xFF] = kDriverOff;
+}
+
+uint8_t FujiNetCard::slotRomRead(uint8_t low8) { return rom_[low8]; }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Guest memory access
+// ─────────────────────────────────────────────────────────────────────────
+
+bool FujiNetCard::rangeIsSafe(uint16_t addr, std::size_t n)
+{
+    if (n == 0) return true;
+    // Refuse anything touching the I/O page: reading $C0xx as if it were
+    // memory toggles soft switches, so a malformed parameter list could flip
+    // video mode or bank state instead of merely failing.
+    const uint32_t end = static_cast<uint32_t>(addr) + n - 1;
+    if (end > 0xFFFF) return false;                 // would wrap
+    if (addr <= 0xC0FF && end >= 0xC000) return false;
+    return true;
+}
+
+uint8_t FujiNetCard::readGuest(uint16_t addr) const
+{
+    if (!mem_ || !rangeIsSafe(addr, 1)) return 0;
+    return mem_->memRead(addr);
+}
+
+void FujiNetCard::writeGuest(uint16_t addr, uint8_t v)
+{
+    if (!mem_ || !rangeIsSafe(addr, 1)) return;
+    mem_->memWrite(addr, v);
+}
+
+uint16_t FujiNetCard::readGuest16(uint16_t addr) const
+{
+    return static_cast<uint16_t>(readGuest(addr)) |
+           static_cast<uint16_t>(readGuest(static_cast<uint16_t>(addr + 1)) << 8);
+}
+
+bool FujiNetCard::writeGuestBlock(uint16_t addr, const uint8_t* p, std::size_t n)
+{
+    if (!mem_) return false;
+    if (!rangeIsSafe(addr, n)) {
+        if (!warnedUnsafeRange_) {
+            warnedUnsafeRange_ = true;
+            char hex[8];
+            std::snprintf(hex, sizeof(hex), "%04X", addr);
+            log().warn("FujiNet", std::string("refused a SmartPort transfer "
+                                              "through the I/O page (buffer $") +
+                                      hex + ")");
+        }
+        return false;
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        mem_->memWrite(static_cast<uint16_t>(addr + i), p[i]);
+    return true;
+}
+
+bool FujiNetCard::readGuestBlock(uint16_t addr, uint8_t* p, std::size_t n) const
+{
+    if (!mem_ || !rangeIsSafe(addr, n)) return false;
+    for (std::size_t i = 0; i < n; ++i)
+        p[i] = mem_->memRead(static_cast<uint16_t>(addr + i));
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Result registers
+// ─────────────────────────────────────────────────────────────────────────
+
+void FujiNetCard::finish(uint8_t status, uint8_t x, uint8_t y)
+{
+    if (!cpu_) return;
+    cpu_->setAccumulator(status);
+    cpu_->setXRegister(x);
+    cpu_->setYRegister(y);
+
+    // The ROM's `CMP #$01` recomputes N/Z/C from A immediately after we
+    // return, so these are for callers that enter the driver body directly.
+    // Keeping them consistent with what the CMP will produce means the two
+    // paths can never disagree.
+    uint8_t p = cpu_->getStatusRegister();
+    if (status == 0) p |=  M6502::Status::Z; else p &= static_cast<uint8_t>(~M6502::Status::Z);
+    if (status == 0) p &= static_cast<uint8_t>(~M6502::Status::C); else p |= M6502::Status::C;
+    cpu_->setStatusRegister(p);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The trap
+// ─────────────────────────────────────────────────────────────────────────
+
+uint8_t FujiNetCard::deviceSelectRead(uint8_t) { return 0xFF; }
+
+void FujiNetCard::deviceSelectWrite(uint8_t low4, uint8_t v)
+{
+    if (low4 != 0x02) return;
+    if (v == kMagicSmartPort) handleSmartPortCall();
+    else if (v == kMagicProDOS) handleProDosCall();
+}
+
+namespace {
+/// Turn a link response into the status byte the guest should see.
+/// A peer that is attached but silent is an I/O error; no peer at all is
+/// "no device", which is what makes a bus scan with nothing plugged in
+/// terminate cleanly instead of reporting broken hardware.
+uint8_t statusFor(const SpOverSlipLink::Response& r, bool connected)
+{
+    if (r.replied) return r.status;
+    return connected ? kSpIoError : kSpNoDevice;
+}
+} // namespace
+
+void FujiNetCard::handleSmartPortCall()
+{
+    if (!cpu_ || !mem_) return;
+    ++callCount_;
+
+    // The caller did `JSR $Cn0D` (or whatever $CnFF+3 resolves to) followed by
+    // three inline bytes: the command, then a pointer to the parameter list.
+    // The return address the JSR pushed points at the LAST BYTE OF THE JSR,
+    // i.e. one before the command byte.
+    //
+    // NOTE for anyone comparing with the AppleWin fork: its `regs.sp` is
+    // already a full $01xx address, so it indexes mem[regs.sp + 1] directly.
+    // POM2's getStackPointer() is the 8-bit register, so the $0100 base and
+    // the page-1 wrap are both mandatory here. Getting that wrong corrupts
+    // whatever lives at $0001/$0002 instead — silently.
+    const uint8_t sp = cpu_->getStackPointer();
+    const uint16_t retLoAddr = static_cast<uint16_t>(0x0100 + ((sp + 1) & 0xFF));
+    const uint16_t retHiAddr = static_cast<uint16_t>(0x0100 + ((sp + 2) & 0xFF));
+
+    uint16_t ret = static_cast<uint16_t>(readGuest(retLoAddr)) |
+                   static_cast<uint16_t>(readGuest(retHiAddr) << 8);
+
+    const uint8_t  command    = readGuest(static_cast<uint16_t>(ret + 1));
+    const uint16_t cmdList    = readGuest16(static_cast<uint16_t>(ret + 2));
+
+    // Step the return address past the three inline bytes so the ROM's RTS
+    // lands on the instruction after them.
+    ret = static_cast<uint16_t>(ret + 3);
+    writeGuest(retLoAddr, static_cast<uint8_t>(ret & 0xFF));
+    writeGuest(retHiAddr, static_cast<uint8_t>(ret >> 8));
+
+    const uint8_t  unit    = readGuest(static_cast<uint16_t>(cmdList + 1));
+    const uint16_t payload = readGuest16(static_cast<uint16_t>(cmdList + 2));
+    // Command-specific parameters follow the count/unit/pointer triple.
+    const uint16_t params  = static_cast<uint16_t>(cmdList + 4);
+
+    const bool connected = link_.isConnected();
+
+    switch (command) {
+    case kSpStatus: {
+        const uint8_t code = readGuest(params);
+        // Unit 0, status code 0 = "how many devices?". Answered locally so a
+        // scanning guest gets a sane answer with no peer attached, and does
+        // not stall for a timeout per probe.
+        if (unit == 0 && code == 0x00) { answerDeviceCount(payload); return; }
+
+        const auto r = link_.status(unit, code);
+        if (!r.ok()) { finish(statusFor(r, connected)); return; }
+        const std::size_t n = r.data.size();
+        if (!writeGuestBlock(payload, r.data.data(), n)) { finish(kSpIoError); return; }
+        finish(kSpOk, static_cast<uint8_t>(n & 0xFF),
+                      static_cast<uint8_t>(n >> 8));
+        return;
+    }
+
+    case kSpReadBlock: {
+        const uint32_t block = static_cast<uint32_t>(readGuest(params)) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 1))) << 8) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
+        const auto r = link_.readBlock(unit, block);
+        if (!r.ok()) { finish(statusFor(r, connected)); return; }
+        if (r.data.size() < kBlockBytes) { finish(kSpIoError); return; }
+        if (!writeGuestBlock(payload, r.data.data(), kBlockBytes)) { finish(kSpIoError); return; }
+        finish(kSpOk, 0x00, 0x02);                 // 512 bytes transferred
+        return;
+    }
+
+    case kSpWriteBlock: {
+        const uint32_t block = static_cast<uint32_t>(readGuest(params)) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 1))) << 8) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
+        uint8_t buf[kBlockBytes];
+        if (!readGuestBlock(payload, buf, kBlockBytes)) { finish(kSpIoError); return; }
+        const auto r = link_.writeBlock(unit, block, buf, kBlockBytes);
+        finish(statusFor(r, connected), 0x00, 0x02);
+        return;
+    }
+
+    case kSpFormat: {
+        const auto r = link_.format(unit);
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    case kSpControl: {
+        const uint8_t code = readGuest(params);
+        // The control list is length-prefixed (2 bytes, little-endian) at the
+        // pointer the parameter list carries.
+        const uint16_t listLen = readGuest16(payload);
+        std::vector<uint8_t> list(listLen);
+        if (listLen &&
+            !readGuestBlock(static_cast<uint16_t>(payload + 2), list.data(), listLen)) {
+            finish(kSpIoError);
+            return;
+        }
+        const auto r = link_.control(unit, code, list.data(), list.size());
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    case kSpInit: {
+        const auto r = link_.init(unit);
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    case kSpOpen: {
+        const auto r = link_.open(unit);
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    case kSpClose: {
+        const auto r = link_.close(unit);
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    case kSpRead: {
+        const uint16_t count = readGuest16(params);
+        const uint32_t addr  = static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 3))) << 8) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 4))) << 16);
+        const auto r = link_.read(unit, count, addr);
+        if (!r.ok()) { finish(statusFor(r, connected)); return; }
+        const std::size_t n = std::min<std::size_t>(r.data.size(), count);
+        if (n && !writeGuestBlock(payload, r.data.data(), n)) { finish(kSpIoError); return; }
+        finish(kSpOk, static_cast<uint8_t>(n & 0xFF),
+                      static_cast<uint8_t>(n >> 8));
+        return;
+    }
+
+    case kSpWrite: {
+        const uint16_t count = readGuest16(params);
+        const uint32_t addr  = static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 3))) << 8) |
+                               (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 4))) << 16);
+        std::vector<uint8_t> data(count);
+        if (count && !readGuestBlock(payload, data.data(), count)) {
+            finish(kSpIoError);
+            return;
+        }
+        const auto r = link_.write(unit, count, addr, data.data(), data.size());
+        // Printer tap: the peer prints its own copy, and POM2's ImageWriter
+        // prints one too. Only on success — a write the FujiNet rejected did
+        // not reach paper there and must not reach paper here either.
+        if (r.ok() && !data.empty()) tapPrinterWrite(unit, data.data(), data.size());
+        finish(statusFor(r, connected),
+               static_cast<uint8_t>(count & 0xFF),
+               static_cast<uint8_t>(count >> 8));
+        return;
+    }
+
+    default:
+        // Extended ($4x) and unknown calls. A //e never issues them, and
+        // answering "bad command" is what a real controller that does not
+        // implement them does.
+        finish(kSpBadCommand);
+        return;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Printer tap
+// ─────────────────────────────────────────────────────────────────────────
+
+bool FujiNetCard::hasPrinterUnit() const
+{
+    for (const auto& d : link_.devices())
+        if (d.isPrinter()) return true;
+    return false;
+}
+
+void FujiNetCard::tapPrinterWrite(uint8_t unit, const uint8_t* p, std::size_t n)
+{
+    // Ask the enumeration whether this unit is the printer. `devices()` takes
+    // its own lock and copies, which is fine at printer rates (a page is a few
+    // KB, arriving in ~80-byte writes) and keeps the check honest if the peer
+    // re-enumerates.
+    bool isPrinter = false;
+    for (const auto& d : link_.devices())
+        if (d.unit == unit) { isPrinter = d.isPrinter(); break; }
+    if (!isPrinter) return;
+
+    std::lock_guard<std::mutex> lk(printerMtx_);
+    printerSpool_.insert(printerSpool_.end(), p, p + n);
+}
+
+size_t FujiNetCard::bytesWritten() const
+{
+    std::lock_guard<std::mutex> lk(printerMtx_);
+    return printerSpool_.size();
+}
+
+size_t FujiNetCard::drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const
+{
+    std::lock_guard<std::mutex> lk(printerMtx_);
+    // `from` past the end means the spool was cleared behind the caller's
+    // back — replay from 0, same contract as PrinterCard.
+    if (from > printerSpool_.size()) from = 0;
+    out.assign(printerSpool_.begin() + static_cast<std::ptrdiff_t>(from),
+               printerSpool_.end());
+    return printerSpool_.size();
+}
+
+void FujiNetCard::clearPrinterSpool()
+{
+    std::lock_guard<std::mutex> lk(printerMtx_);
+    printerSpool_.clear();
+}
+
+void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)
+{
+    ++localCount_;
+    // Status list for the unit-0 / code-0 call: device count, then reserved
+    // bytes. Eight bytes total, which is what X/Y report.
+    uint8_t list[8] = {};
+    list[0] = static_cast<uint8_t>(std::min<std::size_t>(link_.deviceCount(), 255));
+    if (!writeGuestBlock(payloadAddr, list, sizeof(list))) { finish(kSpIoError); return; }
+    finish(kSpOk, static_cast<uint8_t>(sizeof(list)), 0x00);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ProDOS entry
+// ─────────────────────────────────────────────────────────────────────────
+
+void FujiNetCard::handleProDosCall()
+{
+    if (!cpu_ || !mem_) return;
+    ++callCount_;
+
+    const uint8_t  command  = readGuest(kZpCommand);
+    const uint8_t  unitByte = readGuest(kZpUnit);
+    const uint16_t buffer   = readGuest16(kZpBufLo);
+    const uint16_t block    = readGuest16(kZpBlkLo);
+
+    // ProDOS addresses two drives per slot; map them onto the first two
+    // SmartPort units, which is what every FujiNet configuration expects.
+    const uint8_t unit = (unitByte & 0x80) ? 2 : 1;
+
+    const bool connected = link_.isConnected();
+    if (!connected) { finish(kSpNoDevice); return; }
+
+    switch (command) {
+    case 0x00: {                                   // STATUS
+        const auto r = link_.status(unit, 0x00);
+        if (!r.ok()) { finish(statusFor(r, connected)); return; }
+        // General status: status byte, then a 3-byte block count. ProDOS
+        // wants the low 16 bits of that count in X/Y.
+        const uint8_t lo = r.data.size() > 1 ? r.data[1] : 0;
+        const uint8_t hi = r.data.size() > 2 ? r.data[2] : 0;
+        finish(kSpOk, lo, hi);
+        return;
+    }
+
+    case 0x01: {                                   // READ
+        const auto r = link_.readBlock(unit, block);
+        if (!r.ok()) { finish(statusFor(r, connected)); return; }
+        if (r.data.size() < kBlockBytes) { finish(kSpIoError); return; }
+        if (!writeGuestBlock(buffer, r.data.data(), kBlockBytes)) { finish(kSpIoError); return; }
+        finish(kSpOk, 0x00, 0x02);
+        return;
+    }
+
+    case 0x02: {                                   // WRITE
+        uint8_t buf[kBlockBytes];
+        if (!readGuestBlock(buffer, buf, kBlockBytes)) { finish(kSpIoError); return; }
+        const auto r = link_.writeBlock(unit, block, buf, kBlockBytes);
+        finish(statusFor(r, connected), 0x00, 0x02);
+        return;
+    }
+
+    case 0x03: {                                   // FORMAT
+        const auto r = link_.format(unit);
+        finish(statusFor(r, connected));
+        return;
+    }
+
+    default:
+        finish(kSpBadCommand);
+        return;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Lifecycle
+// ─────────────────────────────────────────────────────────────────────────
+
+void FujiNetCard::onReset()
+{
+    // The spec asks the Apple II side to tell connected devices about a 6502
+    // reset (Control code $00) so a modem drops its connection and a printer
+    // ejects a partial page, and to make sure a response still in flight for
+    // the pre-reset request cannot be mistaken for the next answer.
+    link_.notifyGuestReset();
+}
+
+void FujiNetCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    // 'FNET', version 1. There is no rewindable device state to save — the
+    // devices are not in this process — so the blob exists mainly so that
+    // LOADING one can resynchronise the link (see below).
+    out.push_back('F'); out.push_back('N'); out.push_back('E'); out.push_back('T');
+    out.push_back(0x01);
+    out.push_back(link_.isConnected() ? 1 : 0);
+}
+
+void FujiNetCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    // A foreign or older blob is ignored, per the SlotPeripheral contract:
+    // the slot might have held a different card when the snapshot was taken.
+    if (len < 6 || data[0] != 'F' || data[1] != 'N' || data[2] != 'E' ||
+        data[3] != 'T' || data[4] != 0x01)
+        return;
+
+    // THE HONEST LIMITATION. A rewind moves the guest's clock backwards; the
+    // FujiNet's does not move at all. Blocks it wrote stay written and HTTP
+    // requests stay made. All this can do is make sure the LINK is coherent
+    // afterwards: bump the sequence number so a response in flight for a
+    // request that (from the guest's point of view) never happened is
+    // rejected as stale.
+    //
+    // Deliberately NOT notifyGuestReset(): the user rewound, the machine did
+    // not reset, and hanging up somebody's modem because they scrubbed the
+    // timeline would be wrong.
+    link_.resync();
+}
+
+} // namespace pom2
