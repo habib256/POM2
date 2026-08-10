@@ -79,6 +79,11 @@ std::string sanitise(std::string s)
 
 bool PrinterHistory::open(const std::string& dir, std::string& err)
 {
+    // Retarget the store only once the writer is idle: it caches `dir_` per
+    // job, and swapping the directory under a queued page would file it in
+    // the wrong place. Also drains, so nothing pending is dropped.
+    stopWriter();
+
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {
@@ -189,6 +194,79 @@ bool PrinterHistory::writeIndex(std::string& err) const
     return true;
 }
 
+// ── Background writer ────────────────────────────────────────────────────
+
+PrinterHistory::~PrinterHistory() { stopWriter(); }
+
+void PrinterHistory::startWriter()
+{
+    if (writer_.joinable()) return;
+    writer_ = std::thread(&PrinterHistory::writerLoop, this);
+}
+
+void PrinterHistory::stopWriter()
+{
+    if (!writer_.joinable()) return;
+    {
+        std::lock_guard<std::mutex> lk(qMtx_);
+        writerQuit_ = true;
+    }
+    // The loop only returns once the queue is EMPTY, so this drains rather
+    // than discards: a sheet ejected a frame before the user quit still lands
+    // on disk.
+    qCv_.notify_all();
+    writer_.join();
+    std::lock_guard<std::mutex> lk(qMtx_);
+    writerQuit_ = false;
+}
+
+void PrinterHistory::writerLoop()
+{
+    for (;;) {
+        PendingWrite job;
+        std::string  dir;
+        {
+            std::unique_lock<std::mutex> lk(qMtx_);
+            qCv_.wait(lk, [this] { return writerQuit_ || !queue_.empty(); });
+            if (queue_.empty()) return;         // asked to quit, nothing left
+            // COPIED, not moved: the entry has to stay visible at the front
+            // until its file exists, so loadRgba() can serve a sheet the user
+            // clicked on before the encode finished.
+            job = queue_.front();
+            dir = dir_;
+        }
+
+        std::vector<uint8_t> rgba;
+        ImageWriter::pageToRgba(job.page, rgba);
+        const fs::path out = fs::path(dir) / job.file;
+        if (rgba.size() < static_cast<size_t>(job.page.w) * job.page.h * 4 ||
+            !stbi_write_png(out.string().c_str(), job.page.w, job.page.h, 4,
+                            rgba.data(), job.page.w * 4)) {
+            pom2::log().warn("PrinterHistory",
+                             "cannot write " + out.string());
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(qMtx_);
+            if (!queue_.empty()) queue_.pop_front();
+        }
+        qDoneCv_.notify_all();
+        qCv_.notify_all();                      // a producer may want the room
+    }
+}
+
+void PrinterHistory::flushPending() const
+{
+    std::unique_lock<std::mutex> lk(qMtx_);
+    qDoneCv_.wait(lk, [this] { return queue_.empty(); });
+}
+
+size_t PrinterHistory::pendingWrites() const
+{
+    std::lock_guard<std::mutex> lk(qMtx_);
+    return queue_.size();
+}
+
 // ── Storing ──────────────────────────────────────────────────────────────
 
 bool PrinterHistory::addPage(const ImageWriter::Page& page, int model,
@@ -201,23 +279,24 @@ bool PrinterHistory::addPage(const ImageWriter::Page& page, int model,
         return false;
     }
 
-    std::vector<uint8_t> rgba;
-    ImageWriter::pageToRgba(page, rgba);
-    if (rgba.size() < static_cast<size_t>(page.w) * page.h * 4) {
-        err = "page conversion failed";
-        return false;
-    }
-
     char name[32];
     std::snprintf(name, sizeof(name), "p%06llu.png",
                   static_cast<unsigned long long>(nextFile_));
-    const fs::path out = fs::path(dir_) / name;
 
-    if (!stbi_write_png(out.string().c_str(), page.w, page.h, 4,
-                        rgba.data(), page.w * 4)) {
-        err = "cannot write " + out.string();
-        return false;
+    // Hand the sheet to the writer thread rather than encoding it here: this
+    // runs on the ImGui render thread, once per ejected sheet, and a Letter
+    // page at 144 dpi costs ~100-140 ms to convert and deflate — six to eight
+    // dropped frames, four of them back to back on a form-feed catch-up.
+    startWriter();
+    {
+        std::unique_lock<std::mutex> lk(qMtx_);
+        // Back-pressure instead of unbounded RAM. Only ever waits when the
+        // disk is genuinely slower than the printer, which is strictly better
+        // than paying the encode on every single sheet.
+        qCv_.wait(lk, [this] { return queue_.size() < kMaxPending; });
+        queue_.push_back(PendingWrite{name, page});
     }
+    qCv_.notify_all();
 
     const int64_t now = nowEpoch();
     HistoryPage p;
@@ -264,6 +343,20 @@ void PrinterHistory::trim(std::string& err)
 bool PrinterHistory::loadRgba(const HistoryPage& p, std::vector<uint8_t>& rgba,
                               int& w, int& h, std::string& err) const
 {
+    // A sheet the writer has not reached yet is served straight from the
+    // queue. The panel puts a freshly archived page on screen within a frame,
+    // which is well inside the ~100 ms its encode takes.
+    {
+        std::lock_guard<std::mutex> lk(qMtx_);
+        for (const auto& q : queue_) {
+            if (q.file != p.file) continue;
+            ImageWriter::pageToRgba(q.page, rgba);
+            w = q.page.w;
+            h = q.page.h;
+            return true;
+        }
+    }
+
     const fs::path full = fs::path(dir_) / p.file;
     int comp = 0;
     unsigned char* data = stbi_load(full.string().c_str(), &w, &h, &comp, 4);
@@ -290,6 +383,10 @@ std::vector<const HistoryPage*> PrinterHistory::jobPages(uint64_t job) const
 
 bool PrinterHistory::erase(const HistoryPage& p, std::string& err)
 {
+    // Never delete a file the writer is still about to create — it would be
+    // resurrected moments later as an orphan the index does not mention.
+    // A user-paced action can afford the wait; a per-sheet encode could not.
+    flushPending();
     const std::string file = p.file;         // `p` may point into pages_
     std::error_code ec;
     fs::remove(fs::path(dir_) / file, ec);
@@ -301,6 +398,7 @@ bool PrinterHistory::erase(const HistoryPage& p, std::string& err)
 
 bool PrinterHistory::clear(std::string& err)
 {
+    flushPending();                          // see erase()
     for (const auto& p : pages_) {
         std::error_code ec;
         fs::remove(fs::path(dir_) / p.file, ec);

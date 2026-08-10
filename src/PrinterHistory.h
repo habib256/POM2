@@ -32,14 +32,36 @@
 // No thumbnails, no search, no compression beyond PNG's. A printout history is
 // a few dozen pages; anything cleverer would be machinery in search of a
 // problem.
+//
+// ── Why there IS a thread ─────────────────────────────────────────────────
+//
+// The one piece of machinery here is a single background writer, and it earns
+// its place: `addPage` is reached from `MainWindow::pumpImageWriter` on the
+// ImGui RENDER thread, once per ejected sheet. Encoding a Letter page at the
+// default 144 dpi (1224×1584 → a 7.76 MB RGBA buffer) with stb's default
+// compression level measured 99-143 ms — six to eight dropped frames, and
+// `ImageWriter::tick` allows four ejects in one tick, so a form-feed catch-up
+// froze the UI for half a second. That is the same budget ImageWriter.h
+// defends when it explains why the spool drain was moved out of `queueBytes`.
+//
+// So the RGBA conversion and the PNG encode happen on the writer thread, while
+// the index and the in-memory page list are updated synchronously — the panel
+// sees the new row on the very next frame. A page still in the queue is served
+// straight from it by `loadRgba`, so browsing a sheet that was just ejected
+// works before its file exists. Nothing is lost on quit: the destructor drains
+// the queue before joining.
 
 #ifndef POM2_PRINTER_HISTORY_H
 #define POM2_PRINTER_HISTORY_H
 
 #include "ImageWriter.h"
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pom2 {
@@ -66,6 +88,20 @@ public:
     /// a printout is a few hundred KB, and an unbounded store on a machine
     /// left running is how an emulator ends up owning someone's disk.
     static constexpr size_t kMaxPages = 200;
+
+    /// Pages accepted but not yet encoded. Past this `addPage` waits for the
+    /// writer instead of growing the queue — a Page is ~1.9 MB, and an
+    /// unbounded queue on a slow disk is the same "emulator owns your machine"
+    /// failure `kMaxPages` guards against, in RAM. Eight is comfortably above
+    /// the four sheets one `ImageWriter::tick` can eject.
+    static constexpr size_t kMaxPending = 8;
+
+    PrinterHistory() = default;
+    /// Drains the write queue, then joins the writer. Nothing queued is lost.
+    ~PrinterHistory();
+
+    PrinterHistory(const PrinterHistory&)            = delete;
+    PrinterHistory& operator=(const PrinterHistory&) = delete;
 
     /// Point the store at `dir`, creating it, and read whatever index is
     /// there. A missing or unreadable index is not an error — it means an
@@ -95,10 +131,42 @@ public:
     bool erase(const HistoryPage& p, std::string& err);
     bool clear(std::string& err);
 
+    /// Block until every accepted page is on disk. Called before any deletion
+    /// (so a page cannot be removed and then recreated by the writer) and by
+    /// the destructor; also what makes a test deterministic.
+    void flushPending() const;
+    /// Pages accepted but not yet written. Test/diagnostic hook.
+    size_t pendingWrites() const;
+
 private:
     bool writeIndex(std::string& err) const;
     bool readIndex();
     void trim(std::string& err);
+    void writerLoop();
+    void startWriter();
+    void stopWriter();
+
+    /// One sheet on its way to disk. The Page is carried rather than its RGBA
+    /// expansion: ~1.9 MB instead of 7.76 MB, and it moves the conversion off
+    /// the render thread along with the encode.
+    struct PendingWrite {
+        std::string       file;    ///< bare filename, matches HistoryPage::file
+        ImageWriter::Page page;
+    };
+
+    /// Guards `queue_` + `writerQuit_` ONLY. `pages_`, `dir_` and the counters
+    /// stay single-threaded (render thread), which is why the panel can read
+    /// `pages()` without a lock the way it always has.
+    mutable std::mutex              qMtx_;
+    /// Signals both directions: work for the writer, room for the producer.
+    mutable std::condition_variable qCv_;
+    /// Signals "the queue is empty" for flushPending().
+    mutable std::condition_variable qDoneCv_;
+    /// The entry being encoded stays at the FRONT until its file exists, so
+    /// `loadRgba` can always find a page that is not on disk yet.
+    std::deque<PendingWrite>        queue_;
+    std::thread                     writer_;
+    bool                            writerQuit_ = false;
 
     std::string              dir_;
     std::vector<HistoryPage> pages_;      ///< newest first

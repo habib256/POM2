@@ -36,30 +36,28 @@
 namespace pom2 {
 
 SpSerialTransport::SpSerialTransport(std::string path, int baud)
-    : path_(std::move(path)), baud_(baud)
+    : baud_(baud), path_(std::move(path))
 {}
 
 SpSerialTransport::~SpSerialTransport() { dropPeer(); }
 
 void SpSerialTransport::setPath(std::string path)
 {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(statusMtx_);
     path_ = std::move(path);
 }
 
 bool SpSerialTransport::isOpen() const
 {
-    std::lock_guard<std::mutex> lk(mtx_);
-    return port_.isOpen();
+    // No lock: the UI thread asks this every frame with stateMutex held, and
+    // mtx_ can be held for a whole read timeout.
+    return open_.load();
 }
 
 bool SpSerialTransport::pollForPeer(int timeoutMs)
 {
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (stopping_) return false;
-        if (port_.isOpen()) return false;      // already have our peer
-    }
+    if (stopping_.load()) return false;
+    if (open_.load()) return false;            // already have our peer
 
     // Decide what to open. An empty path means "auto": take the single
     // candidate if there is exactly one, and otherwise stay idle rather than
@@ -67,7 +65,7 @@ bool SpSerialTransport::pollForPeer(int timeoutMs)
     // else is plugged in.
     std::string target;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<std::mutex> lk(statusMtx_);
         target = path_;
     }
     if (target.empty()) {
@@ -75,7 +73,7 @@ bool SpSerialTransport::pollForPeer(int timeoutMs)
         if (candidates.size() == 1) {
             target = candidates[0].path;
         } else {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<std::mutex> lk(statusMtx_);
             lastError_ = candidates.empty()
                              ? "no serial device found"
                              : "several serial devices found — pick one";
@@ -83,20 +81,26 @@ bool SpSerialTransport::pollForPeer(int timeoutMs)
         }
     }
 
+    const int baud = baud_.load();
     std::lock_guard<std::mutex> lk(mtx_);
-    if (stopping_ || port_.isOpen()) return false;
-    if (!port_.open(target, baud_)) {
+    if (stopping_.load() || port_.isOpen()) return false;
+    if (!port_.open(target, baud)) {
         // Not logged every poll: the worker calls this a couple of times a
         // second while the board is unplugged, and "device not found" is the
         // normal idle state, not an incident. The panel shows lastError().
+        std::lock_guard<std::mutex> st(statusMtx_);
         lastError_ = port_.lastError();
         return false;
     }
 
-    openPath_ = target;
-    lastError_.clear();
+    {
+        std::lock_guard<std::mutex> st(statusMtx_);
+        openPath_ = target;
+        lastError_.clear();
+    }
+    open_.store(true);
     log().info("FujiNet", "SP-over-SLIP serial port opened: " + target +
-                              " @ " + std::to_string(baud_));
+                              " @ " + std::to_string(baud));
     (void)timeoutMs;   // nothing to wait ON — the open either works or not
     return true;
 }
@@ -106,6 +110,7 @@ bool SpSerialTransport::writeAll(const uint8_t* p, std::size_t n)
     std::lock_guard<std::mutex> lk(mtx_);
     if (!port_.isOpen()) return false;
     if (port_.writeAll(p, n)) return true;
+    std::lock_guard<std::mutex> st(statusMtx_);
     lastError_ = port_.lastError();
     return false;
 }
@@ -115,17 +120,26 @@ int SpSerialTransport::readSome(uint8_t* p, std::size_t n, int timeoutMs)
     std::lock_guard<std::mutex> lk(mtx_);
     if (!port_.isOpen()) return -1;
     const int r = port_.readSome(p, n, timeoutMs);
-    if (r < 0) lastError_ = port_.lastError();
+    if (r < 0) {
+        std::lock_guard<std::mutex> st(statusMtx_);
+        lastError_ = port_.lastError();
+    }
     return r;
 }
 
 void SpSerialTransport::dropPeer()
 {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!port_.isOpen()) return;
-    port_.close();
-    log().info("FujiNet", "SP-over-SLIP serial port closed: " + openPath_);
-    openPath_.clear();
+    std::string closed;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!port_.isOpen()) return;
+        port_.close();
+        open_.store(false);
+        std::lock_guard<std::mutex> st(statusMtx_);
+        closed = openPath_;
+        openPath_.clear();
+    }
+    log().info("FujiNet", "SP-over-SLIP serial port closed: " + closed);
 }
 
 void SpSerialTransport::shutdown()
@@ -134,15 +148,21 @@ void SpSerialTransport::shutdown()
     // device or reports "not there"), so there is nothing to interrupt —
     // just latch the stop so a poll racing us does not reopen the port after
     // the owner asked us to stop.
-    std::lock_guard<std::mutex> lk(mtx_);
-    stopping_ = true;
+    //
+    // The latch is atomic rather than mtx_-guarded because shutdown() is the
+    // one method that must stay callable while a read is in flight, and
+    // readSome holds mtx_ for its whole timeout.
+    stopping_.store(true);
 }
 
 std::string SpSerialTransport::describe() const
 {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (port_.isOpen())
-        return openPath_ + " @ " + std::to_string(baud_);
+    // statusMtx_ only — see the header. Taking the I/O mutex here parked the
+    // UI thread (and, through stateMutex, the CPU worker) behind every read
+    // timeout of a peer that had stopped answering.
+    std::lock_guard<std::mutex> lk(statusMtx_);
+    if (open_.load())
+        return openPath_ + " @ " + std::to_string(baud_.load());
     if (!path_.empty())  return "waiting for " + path_;
     return "waiting for a serial device";
 }

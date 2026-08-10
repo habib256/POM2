@@ -24,6 +24,7 @@
 #include "PrinterScreenDump.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -455,6 +456,89 @@ void testEscPSlashCItohCollision()
                 "(%ld vs %ld dots)\n", ia, ib);
 }
 
+// ── 10. The FX-80 head must not double-feed a CR+LF ──────────────────────
+//
+// processCommandChar keeps a "the previous byte was a CR we line-fed for"
+// latch so a guest supplying its own LF does not get a second feed — but it
+// sets that latch AFTER routing to the ESC/P parser, so for a long time the
+// Epson head never maintained it. Every CR+LF line fed the platen TWICE.
+//
+// Visible in the screen dump above all: buildScreenDumpEpson ends each band
+// with `ESC 3 24 \r \n`, so bands computed to abut at 1/9" landed 2/9" apart —
+// a white seam the height of a band between every one, and a dump twice as
+// long. testBandsAbut covers the C. Itoh head only, which is why this slipped
+// through.
+void testEpsonCrLfDoesNotDoubleFeed()
+{
+    using pom2::IwModel;
+
+    auto headAfterTenLines = [](IwModel m) {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(m);
+        const uint8_t line[] = { 'X', 0x0D, 0x0A };
+        for (int i = 0; i < 10; ++i) iw.printBytes(line, sizeof(line));
+        return iw.status().headY;
+    };
+
+    const double citoh = headAfterTenLines(IwModel::ImageWriterII);
+    const double epson = headAfterTenLines(IwModel::EpsonFX80);
+
+    // Both heads default to 1/6" spacing, so ten CR+LF lines advance 10/6".
+    // The bug put the Epson at exactly twice that.
+    assert(epson < citoh * 1.5 &&
+           "the ESC/P head feeds twice per CR+LF line");
+    assert(std::fabs(epson - citoh) < 1e-6);
+
+    std::printf("  ok: CR+LF feeds once on both heads (C.Itoh %.4f\", "
+                "FX-80 %.4f\")\n", citoh, epson);
+}
+
+// ── 11. ESC N / ESC C cannot make every line feed eject ──────────────────
+//
+// The C. Itoh `ESC H 0000` case is already guarded (a zero-length page ejected
+// on every single line feed and blew the sheet stack away in blanks). The
+// ESC/P siblings had the same hole: `ESC N n` past the form length collapsed
+// the bottom margin to zero, and `ESC C` clamped to the 69" paper maximum
+// rather than the mounted sheet, so a longer form silently clipped its ink.
+void testEpsonFormLengthGuards()
+{
+    using pom2::IwModel;
+
+    auto ejectsAfterTenFeeds = [](const std::vector<uint8_t>& setup) {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(IwModel::EpsonFX80);
+        if (!setup.empty()) iw.printBytes(setup.data(), setup.size());
+        const uint8_t lf = 0x0A;
+        for (int i = 0; i < 10; ++i) iw.printBytes(&lf, 1);
+        return iw.sheetsEjected();
+    };
+
+    // A legal skip-over-perforation leaves a printable page.
+    assert(ejectsAfterTenFeeds({ 0x1B, 'N', 6 }) == 0);
+    // An n at or past the form length is out of spec; real firmware ignores
+    // it. Accepting it ejected one blank sheet per feed.
+    assert(ejectsAfterTenFeeds({ 0x1B, 'N', 80 }) == 0);
+
+    // ESC C with a form longer than the mounted sheet: clamped to the sheet,
+    // so the page still ejects instead of running the head off the raster and
+    // dropping the ink.
+    {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(IwModel::EpsonFX80);
+        const uint8_t escC14in[] = { 0x1B, 'C', 0, 14 };   // n=0 → inches follow
+        iw.printBytes(escC14in, sizeof(escC14in));
+        const uint8_t lf = 0x0A;
+        for (int i = 0; i < 80; ++i) iw.printBytes(&lf, 1);
+        assert(iw.sheetsEjected() >= 1 &&
+               "a 14\" form on a Letter sheet never ejected");
+    }
+
+    std::printf("  ok: ESC N / ESC C are clamped to the mounted sheet\n");
+}
+
 } // namespace
 
 int main()
@@ -468,6 +552,8 @@ int main()
     testPaperDimensions();
     testEpsonRoundTrip();
     testEscPSlashCItohCollision();
+    testEpsonCrLfDoesNotDoubleFeed();
+    testEpsonFormLengthGuards();
 
     std::puts("printer_screen_dump: OK");
     return 0;

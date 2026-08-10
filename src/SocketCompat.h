@@ -428,6 +428,20 @@ inline iolen_t recvSocket(socket_t s, void* buf, std::size_t n)
 #endif
 }
 
+/// Look at what is waiting WITHOUT consuming it. The one use for this is a
+/// liveness probe: a readable socket that peeks 0 bytes has been closed by the
+/// peer, whereas one that peeks >0 has real data another thread is about to
+/// read — and MSG_PEEK is what lets the prober tell those apart without
+/// stealing the bytes.
+inline iolen_t recvPeekSocket(socket_t s, void* buf, std::size_t n)
+{
+#ifdef _WIN32
+    return ::recv(s, static_cast<char*>(buf), static_cast<int>(n), MSG_PEEK);
+#else
+    return ::recv(s, buf, n, MSG_PEEK);
+#endif
+}
+
 // ── Readiness ─────────────────────────────────────────────────────────
 
 enum class SocketWait { Read, Write };

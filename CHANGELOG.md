@@ -5,6 +5,118 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-10 — Bug sweep over the FujiNet relay and the printer stack
+
+A multi-agent review of the previous commit, then an adversarial pass that
+threw out anything it could refute. Eighteen defects survived; all are fixed
+below, and the ones worth a regression test got one.
+
+**The forked helper inherited every open descriptor, and squatted POM2's
+ports.** `ChildProcess.h` promised "nothing is inherited by the child beyond
+stdio". Win32 kept that promise with `bInheritHandles=FALSE`; POSIX did not
+keep it at all. `fork()` dups the whole descriptor table, POM2 opens no socket
+with `SOCK_CLOEXEC`, and the child closed nothing before `execv()` — so the
+FujiNet helper held a live copy of the SP-over-SLIP listener on 1985, the
+AI-control server on 6503 and any SSC telnet listener. Two consequences, both
+reproduced: "Drop peer" (stop-then-start) failed to re-bind with `EADDRINUSE`
+because the helper's copy was still in `LISTEN`, and a **Ctrl-C on POM2 runs no
+destructor**, so `helper_.stop()` never fired and the orphan kept the port for
+the next session. The child now closes everything above stderr
+(`close_range`, with a loop for pre-5.9 kernels) between `chdir` and `execv`.
+Pinned: `child_process` binds a listener, starts a helper, closes its own copy
+and asserts the port can be re-bound.
+
+**Status getters were sharing a mutex with blocking I/O.** The FujiNet panel
+reads `isOpen()` / `describe()` / `lastError()` every frame **while holding
+`stateMutex`**, and those took the transport's I/O mutex — which `readSome()`
+holds for its entire timeout. A peer that connected and then went silent
+therefore stalled the UI *and*, through `stateMutex`, the CPU worker: measured
+as ~750 ms held out of every 1.15 s cycle, i.e. the emulated machine at roughly
+a third speed with audible underruns, for as long as the dead peer sat there.
+Status is now published separately — atomics where one value suffices, plus a
+`statusMtx_` that is never held across a syscall. `lastError()` also stopped
+handing out a `const std::string&` the worker rewrites every 200 ms: the
+reader's copy-construct could follow a pointer into a block the writer had just
+freed, whenever the message changed length.
+
+**A peer that left while the guest was idle was never noticed.** Nothing probed
+the socket once a peer was attached — the worker just slept and left discovery
+to the CPU thread's failed reads. Restart the helper at the BASIC prompt and
+`isOpen()` stayed true forever: the panel named a corpse, and because
+`pollForPeer()` is gated behind `!isOpen()`, the replacement sat unaccepted in
+the listen backlog until the guest happened to issue a SmartPort call. The
+worker now runs a zero-timeout `MSG_PEEK` probe, which distinguishes "idle" from
+"closed" without consuming a byte an in-flight `transact()` is waiting for.
+`stop()` also resets the SLIP framer, the invariant `peerLostLocked()` already
+documented — otherwise half a frame survived a stop/start and ate the next
+peer's first packet.
+
+**`--fujinet` did not work.** Two independent reasons. Its default slot 7 is
+also where POM2's own first-run map puts a Le Chat Mauve, so the bare flag —
+the documented invocation — was refused on a stock install. And combined with
+`--preset` it was *silently destroyed after logging success*: `applyProfile`
+clears the SlotBus and rebuilds strictly from the `slot_N_card` keys, which a
+one-shot CLI card deliberately never writes. Slot 7 is now a preference that
+falls back to the first free slot (an explicit `--fujinet-slot N` that is
+occupied stays a hard error), and the request is remembered so
+`plugSlotsFromSettings()` reproduces it on every rebuild — which also puts it
+back *before* `applyProfile`'s cold boot, so the autostart scan still finds it
+on the first pass.
+
+**The ESC/P head double-fed every CR+LF.** `processCommandChar` keeps a
+"the previous byte was a CR we line-fed for" latch, but sets it *after* routing
+to the Epson parser — so that head never maintained it. Every CR+LF line fed
+the platen twice and Auto mode could never latch off. Most visible in the screen
+dump, whose bands end with `ESC 3 24 \r \n`: bands computed to abut at 1/9"
+landed 2/9" apart, a white seam between every one and a dump twice as long.
+`testBandsAbut` only ever covered the C. Itoh head, which is how it survived.
+While there: `ESC N n` past the form length collapsed the bottom margin to zero
+so every line feed ejected a blank sheet (the same failure `ESC H 0000` was
+already guarded against), and `ESC C` clamped to the 69" paper maximum instead
+of the mounted sheet, silently clipping a 14"-fanfold job on a Letter tray.
+
+**Printer sound: the envelope never decayed.** The attack/decay phase was
+inferred from `env < peak` with no flag, and every grain shape here has an
+attack step larger than one decay step — so the comparison flipped back to
+attack the instant a decay step lowered `env`. The envelope locked into a
+two-frame oscillation just under the peak and every voice became a flat-top
+burst cut off dead at `end`. Only a grain shorter than ~7.5 ms would ever have
+decayed; the shortest constant is 11 ms. Phase is now explicit.
+
+**…and the sound was inaudible or dangling anyway.** It was registered once in
+the constructor, but both slot-rebuild paths call `unregisterAllAudioSources()`
+and only re-register *card-owned* sources — so any profile switch or Slot Config
+"Apply" silenced the printer permanently, including the switch the constructor
+itself performs when the saved profile differs from the ROM auto-probe. It was
+also never unregistered: `printerSound` is destroyed ~16 members before the
+`AudioDevice` that drains the callback thread, so quitting dereferenced a
+dangling vptr from the audio callback. Registration moved into
+`plugSlotsFromSettings()`, and `~MainWindow` now unregisters everything right
+after `controller->stop()`. The mixer finally has a **Printer** row, which its
+own registration comment had been promising all along.
+
+**The print-history PNG encode was on the render thread.** `addPage` expanded a
+Letter page at 144 dpi to a 7.76 MB RGBA buffer and called `stbi_write_png`
+inline, from `pumpImageWriter` — 99-143 ms measured, six to eight dropped
+frames per ejected sheet, and `ImageWriter::tick` allows four ejects in one
+tick, so a form-feed catch-up froze the UI for half a second. That is a
+regression against the budget `ImageWriter.h` already defends (the spool drain
+was moved out of `queueBytes` for exactly this reason). A single writer thread
+now does the conversion and the deflate; the index and the page list stay
+synchronous so the panel sees the row on the next frame, a page still in the
+queue is served straight from it, and the destructor drains rather than
+discards. Deleting flushes first, so a file cannot be removed and then
+recreated as an orphan.
+
+**Smaller ones.** The history panel's texture cache was keyed on a bare list
+index, so archiving a new sheet — which pushes onto the front of a newest-first
+list — left the previous page's pixels under the new page's label, permanently.
+`shutdown()` read `clientFd_` without a lock while `dropPeer()` closed it
+outside one, so the `::shutdown()` could land on a recycled descriptor. And on
+Win32, `GenerateConsoleCtrlEvent` cannot reach a `CREATE_NO_WINDOW` child at
+all (it has its own hidden console), so its ignored return value meant every
+stop burned the full grace period on the UI thread before the hard kill.
+
 ## 2026-08-10 — The printer grew real ImageWriter faces, and learned to print the screen
 
 Three phases of `docs/printer_plan.md`, the gap analysis against

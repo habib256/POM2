@@ -173,8 +173,9 @@ void PrinterSoundDevice::schedule(double durSeconds, double freqHz, double q,
     slot->attackStep = static_cast<float>(peak / attackFrames);
     slot->decayK     = static_cast<float>(
         std::pow(kEnvFloor / std::max(peak, 1e-6), 1.0 / decayFrames));
-    slot->env    = 0.0f;
-    slot->active = true;
+    slot->env       = 0.0f;
+    slot->attacking = true;
+    slot->active    = true;
 }
 
 void PrinterSoundDevice::strike(int pins)
@@ -245,8 +246,18 @@ void PrinterSoundDevice::fillAudioBuffer(float* output, int frameCount)
             if (f >= g.end) { g.active = false; break; }
 
             // Attack to the peak, then exponential decay to the floor.
-            if (g.env < g.peak) {
-                g.env = std::min(g.peak, g.env + g.attackStep);
+            //
+            // The phase is a FLAG, not `env < peak`. Every grain here has an
+            // attack step bigger than one decay step (a char grain gains
+            // 0.0198 per frame and loses 0.0136), so the comparison flipped
+            // straight back to attack the instant a decay step lowered env —
+            // the envelope locked into a two-frame oscillation just under the
+            // peak and every voice became a flat-top burst cut off dead at
+            // `end`. Only a grain shorter than ~7.5 ms would ever have decayed,
+            // and the shortest constant here is 11 ms.
+            if (g.attacking) {
+                g.env += g.attackStep;
+                if (g.env >= g.peak) { g.env = g.peak; g.attacking = false; }
             } else {
                 g.env *= g.decayK;
             }

@@ -46,6 +46,7 @@ bool SpTcpTransport::isOpen() const { return false; }
 bool SpTcpTransport::pollForPeer(int) { return false; }
 bool SpTcpTransport::writeAll(const uint8_t*, std::size_t) { return false; }
 int  SpTcpTransport::readSome(uint8_t*, std::size_t, int) { return -1; }
+bool SpTcpTransport::checkPeerAlive() { return false; }
 void SpTcpTransport::dropPeer() {}
 void SpTcpTransport::shutdown() {}
 std::string SpTcpTransport::describe() const { return "TCP unavailable in this build"; }
@@ -97,6 +98,11 @@ void SpTcpTransport::stopListening()
     // Contract: the worker must already be joined. Closing a listening
     // descriptor a thread is parked in accept() on is the use-after-close
     // race SocketUtil.h rule 1 exists to prevent.
+    //
+    // The lifetime lock covers the exchange AND the close, so a shutdown()
+    // running concurrently on another thread cannot read the number and then
+    // ::shutdown() it after we have handed it back to the kernel.
+    std::lock_guard<std::mutex> life(fdLifeMtx_);
     socket_t fd = listenFd_.exchange(kInvalidSocket);
     closeHostSocketValue(fd);
 }
@@ -141,7 +147,8 @@ bool SpTcpTransport::pollForPeer(int timeoutMs)
     setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
 
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<std::mutex> life(fdLifeMtx_);
+        std::lock_guard<std::mutex> st(statusMtx_);
         clientFd_.store(fd);
         peerText_ = peerAddressText(peer) + ":" +
                     std::to_string(netToHost16(peer.sin_port));
@@ -194,31 +201,71 @@ int SpTcpTransport::readSome(uint8_t* p, std::size_t n, int timeoutMs)
     return -1;
 }
 
+bool SpTcpTransport::checkPeerAlive()
+{
+    // Under the I/O lock, so this cannot run concurrently with a real
+    // readSome() on the CPU thread — MSG_PEEK plus a concurrent recv() would
+    // otherwise be a coin toss over who sees the byte.
+    std::lock_guard<std::mutex> io(mtx_);
+    const socket_t fd = clientFd_.load();
+    if (!isValidSocket(fd)) return false;
+
+    // Zero timeout: a probe, not a wait. Not-readable tells us nothing bad —
+    // an idle-but-live peer looks exactly like that.
+    if (waitSocket(fd, SocketWait::Read, 0) != WaitResult::Ready) return true;
+
+    uint8_t        b   = 0;
+    const iolen_t  got = recvPeekSocket(fd, &b, 1);
+    if (got > 0) return true;      // real data, left in the queue for the CPU
+    if (got == 0) return false;    // orderly close: the peer is gone
+    const int e = lastSocketError();
+    return errInterrupted(e) || errWouldBlock(e);
+}
+
 void SpTcpTransport::dropPeer()
 {
     socket_t fd = kInvalidSocket;
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        // I/O lock first: readSome/writeAll hold it across their syscall, so
+        // taking it here is what guarantees nobody is inside recv() on the
+        // descriptor we are about to close.
+        std::lock_guard<std::mutex> io(mtx_);
+        // Lifetime lock second, and held ACROSS the close: shutdown() runs
+        // without the I/O lock (it must — a read in flight is when it is
+        // called), so this is the only thing that stops it from ::shutdown()ing
+        // a number we have already closed and another socket() has recycled.
+        std::lock_guard<std::mutex> life(fdLifeMtx_);
         fd = clientFd_.exchange(kInvalidSocket);
+        if (isValidSocket(fd)) closeHostSocketValue(fd);
+    }
+    {
+        std::lock_guard<std::mutex> st(statusMtx_);
         peerText_.clear();
     }
-    if (isValidSocket(fd)) {
-        closeHostSocketValue(fd);
+    if (isValidSocket(fd))
         log().info("FujiNet", "SP-over-SLIP peer disconnected");
-    }
 }
 
 void SpTcpTransport::shutdown()
 {
     // Wake, do not close: a descriptor closed under a thread parked in
     // recv()/accept() can be recycled by the next socket() on another thread.
+    //
+    // Under the LIFETIME lock, not the I/O lock: waiting on mtx_ here would
+    // defeat the whole point (this is what wakes a parked reader), but without
+    // any lock the close inside dropPeer()/stopListening() can land between
+    // our load and the syscall.
+    std::lock_guard<std::mutex> life(fdLifeMtx_);
     shutdownBoth(listenFd_.load());
     shutdownBoth(clientFd_.load());
 }
 
 std::string SpTcpTransport::describe() const
 {
-    std::lock_guard<std::mutex> lk(mtx_);
+    // statusMtx_ only — see the header. Taking the I/O mutex here parked the
+    // UI thread (and, through stateMutex, the CPU worker) behind every read
+    // timeout of a peer that had connected but stopped answering.
+    std::lock_guard<std::mutex> st(statusMtx_);
     if (!peerText_.empty()) return peerText_;
     if (isValidSocket(listenFd_.load()))
         return "listening on 127.0.0.1:" + std::to_string(port_);

@@ -106,6 +106,13 @@ private:
         float    env   = 0.0f;
         float    attackStep = 0.0f;
         float    decayK = 0.0f;
+        /// Explicit phase, NOT `env < peak`. Every grain shape here has an
+        /// attack step larger than one decay step, so inferring the phase from
+        /// the envelope made it oscillate two frames below the peak forever:
+        /// each decay step was undone by the next attack step, and the grain
+        /// became a flat-top burst hard-cut at `end` instead of the documented
+        /// exponential decay.
+        bool     attacking = true;
         bool     active = false;
     };
 

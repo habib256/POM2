@@ -116,11 +116,19 @@ struct CliPlan {
     /// candidate if there is exactly one, and otherwise stay idle rather than
     /// guessing — opening the wrong device drives DTR/RTS at whatever else is
     /// plugged in.
+    /// `fujiNetSlot` is only a PREFERENCE unless the user typed
+    /// `--fujinet-slot`. Slot 7's first-run default card is the Le Chat Mauve,
+    /// so a bare `--fujinet` on a stock configuration would otherwise always
+    /// be refused for a slot the user never asked for. When the preference is
+    /// taken, POM2 falls back to the first free slot (7→1) instead — the
+    /// behaviour docs/fujinet_plan.md §"CLI" specifies. An EXPLICIT
+    /// `--fujinet-slot N` that is occupied stays a hard error.
     enum class FujiNetTransport { None, Tcp, Serial };
     FujiNetTransport                fujiNet = FujiNetTransport::None;
     int                             fujiNetPort = 1985;
     std::string                     fujiNetSerialPath;
     int                             fujiNetSlot = 7;
+    bool                            fujiNetSlotExplicit = false;
 
     std::optional<int>              executionSpeed;        // cycles/frame
     std::string                     initialTapePath;       // --tape <path>

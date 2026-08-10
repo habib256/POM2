@@ -79,7 +79,12 @@ void testPersistsAcrossSessions()
 
         const auto page = makePage(64, 48, 3);
         assert(h.addPage(page, /*model*/ 2, /*ribbon*/ 1, 8.5, 11.0, err));
+        // The row is there IMMEDIATELY — the panel draws it on the next
+        // frame. The PNG is not: encoding it costs ~100 ms on a real page and
+        // happens on the writer thread, so the file only has to exist once
+        // the queue has drained.
         assert(h.size() == 1);
+        h.flushPending();
         assert(fs::exists(dir / h.pages()[0].file));
     }
 
@@ -280,6 +285,68 @@ void testFileCounterSurvivesReload()
     std::printf("  ok: the file counter resumes, so a reload cannot clobber\n");
 }
 
+// ── 8. The encode is off the render thread, and nothing is lost ─────────
+//
+// addPage is reached from MainWindow::pumpImageWriter on the ImGui RENDER
+// thread, once per ejected sheet. Encoding a real Letter page at 144 dpi
+// measured 99-143 ms — six to eight dropped frames, and ImageWriter::tick
+// allows four ejects in one tick, so a form feed froze the UI for half a
+// second. So the conversion and the PNG deflate live on a writer thread. What
+// that must NOT cost:
+//
+//   * the panel seeing the row (pages_ is updated synchronously);
+//   * browsing a sheet before its file exists (served from the queue);
+//   * a page ejected just before quit (the destructor drains, not discards).
+void testWritesAreDeferredButNeverLost()
+{
+    const fs::path dir = scratch("async");
+    std::string err;
+    std::string firstFile;
+
+    {
+        PrinterHistory h;
+        assert(h.open(dir.string(), err));
+        for (int i = 0; i < 4; ++i)
+            assert(h.addPage(makePage(64, 48, static_cast<uint8_t>(i)), 0, 0,
+                             8.5, 11.0, err));
+
+        // Metadata is immediate — this is what the panel reads.
+        assert(h.size() == 4);
+        firstFile = h.pages()[0].file;
+
+        // A page the writer has not reached yet still renders: loadRgba
+        // serves it out of the queue rather than failing on a missing file.
+        // (If the writer already drained, this simply reads it from disk —
+        // either way the caller gets the raster.)
+        std::vector<uint8_t> rgba;
+        int w = 0, hh = 0;
+        assert(h.loadRgba(h.pages()[0], rgba, w, hh, err));
+        assert(w == 64 && hh == 48);
+        assert(rgba.size() == static_cast<size_t>(w) * hh * 4);
+
+        h.flushPending();
+        assert(h.pendingWrites() == 0);
+        for (const auto& p : h.pages()) assert(fs::exists(dir / p.file));
+    }
+
+    // Destruction drains: a sheet accepted a frame before quit is on disk.
+    {
+        PrinterHistory h;
+        assert(h.open(dir.string(), err));
+        assert(h.addPage(makePage(64, 48, 9), 0, 0, 8.5, 11.0, err));
+        // deliberately NO flushPending() — the destructor must do it
+    }
+    {
+        PrinterHistory h;
+        assert(h.open(dir.string(), err));
+        assert(h.size() == 5);
+        for (const auto& p : h.pages()) assert(fs::exists(dir / p.file));
+        assert(fs::exists(dir / firstFile));
+    }
+
+    std::printf("  ok: encodes are deferred, and the destructor drains them\n");
+}
+
 } // namespace
 
 int main()
@@ -291,6 +358,7 @@ int main()
     testMissingFileDropsRow();
     testEraseAndClear();
     testFileCounterSurvivesReload();
+    testWritesAreDeferredButNeverLost();
 
     std::puts("printer_history: OK");
     return 0;

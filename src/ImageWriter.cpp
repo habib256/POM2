@@ -1791,6 +1791,17 @@ void ImageWriter::setupEpsonBitImage(int dotsPerInch, uint32_t columns)
 
 bool ImageWriter::processEpsonChar(uint8_t ch)
 {
+    // "The previous byte was a CR we line-fed for" — only an LF landing
+    // immediately after one counts as the guest supplying its own feed.
+    //
+    // processCommandChar() keeps the same latch, but it does so AFTER routing
+    // here (:1271 vs :1275), so this head has to maintain its own copy. While
+    // it did not, every CR+LF stream fed the platen twice per line — bands of
+    // a screen dump landed 2/9" apart instead of the 1/9" they were computed
+    // to abut at — and Auto mode could never latch off.
+    const bool wasCrFed = crJustFed_;
+    crJustFed_ = false;
+
     // ── Parameter collection ────────────────────────────────────────────
     if (epsonNeed_ > 0) {
         epsonParams_[epsonCount_++] = ch;
@@ -1864,9 +1875,28 @@ bool ImageWriter::processEpsonChar(uint8_t ch)
     // ── Control characters ──────────────────────────────────────────────
     switch (ch) {
     case 0x1B: escSeen_ = true;                       return true;   // ESC
-    case 0x0D: curX_ = leftMargin_;                                   // CR
-               if (autoFeedActive()) lineFeed();      return true;
-    case 0x0A: lineFeed();                            return true;   // LF
+    case 0x0D:                                                        // CR
+        curX_ = leftMargin_;
+        if (!autoFeedActive()) return true;
+        lineFeed();
+        crJustFed_ = true;      // an LF right after this one is the guest's
+        return true;            // own — see the LF case
+    case 0x0A:                                                        // LF
+        if (wasCrFed) {
+            // CR+LF from the guest: it manages its own line feeds, so the
+            // feed the CR just did was ours to give and this LF would
+            // double-space. Swallow it — and in Auto mode stop feeding on CR
+            // at all from here on. Same rule as the C. Itoh head at :1411.
+            if (feedMode_ == AutoFeed::Auto && !feedLatchedOff_) {
+                feedLatchedOff_ = true;
+                if (trace_)
+                    traceEvent("auto line-feed OFF — the guest sent its "
+                               "own LF after a CR");
+            }
+            return true;
+        }
+        lineFeed();
+        return true;
     case 0x0C: formFeed();                            return true;   // FF
     case 0x08: curX_ = std::max(leftMargin_, curX_ - 1.0 / actcpi_);  // BS
                return true;
@@ -1930,14 +1960,27 @@ void ImageWriter::execEpsonEscape()
         const double len = (epsonCount_ >= 2)
                                ? static_cast<double>(epsonParams_[1])
                                : lines * lineSpacing_;
-        pageHeightIn_ = std::clamp(len, 1.0, kMaxPaperLengthIn);
+        // Clamped to the PHYSICAL sheet, not to kMaxPaperLengthIn — same rule
+        // and same reason as the C. Itoh `ESC H` at :1610. A form longer than
+        // the mounted paper has everything past the raster dropped silently by
+        // fillDots and its eject deferred to the guest's form length, so a
+        // 14"-fanfold driver on a Letter tray lost ~3" of every page.
+        pageHeightIn_ = std::clamp(len, 1.0, defaultPageHeight_);
         bottomMargin_ = pageHeightIn_;
+        topMargin_    = 0.0;
         break;
     }
-    case 0x4E:                                     // ESC N n  skip perforation
-        bottomMargin_ = std::max(0.0,
-                                 pageHeightIn_ - static_cast<double>(p0) * lineSpacing_);
+    case 0x4E: {                                   // ESC N n  skip perforation
+        // The FX-80 manual restricts n to 1..127 AND to less than the form
+        // length; real firmware ignores anything else. Honour that: an n at or
+        // past the form length collapses the bottom margin to zero, and
+        // lineFeed() then ejects a blank sheet on EVERY feed — the same
+        // failure `ESC H 0000` was guarded against at :1604.
+        const double skip = static_cast<double>(p0) * lineSpacing_;
+        if (p0 == 0 || skip >= pageHeightIn_) break;
+        bottomMargin_ = pageHeightIn_ - skip;
         break;
+    }
     case 0x52: {                                   // ESC R n  charset
         // The FX-80's set numbering is its own; map the ones POM2 has a
         // charset row for and leave the rest at USA.

@@ -490,11 +490,16 @@ int main(int argc, char* argv[])
     if (plan->fujiNet != pom2::CliPlan::FujiNetTransport::None) {
         std::string err;
         const bool serial = plan->fujiNet == pom2::CliPlan::FujiNetTransport::Serial;
-        if (mainWindow.plugFujiNetFromCli(plan->fujiNetSlot, serial,
-                                          plan->fujiNetSerialPath,
+        // `slot` is in/out: without an explicit --fujinet-slot it may be
+        // relocated to the first free slot, and the log line must name the one
+        // actually used. MainWindow remembers the request, so a `--preset`
+        // rebuild below re-plugs the card instead of destroying it.
+        int slot = plan->fujiNetSlot;
+        if (mainWindow.plugFujiNetFromCli(slot, plan->fujiNetSlotExplicit,
+                                          serial, plan->fujiNetSerialPath,
                                           plan->fujiNetPort, err)) {
             pom2::log().info("CLI", "FujiNet card in slot " +
-                                        std::to_string(plan->fujiNetSlot) +
+                                        std::to_string(slot) +
                                         (serial ? " (serial)" : " (TCP :" +
                                             std::to_string(plan->fujiNetPort) + ")"));
         } else {

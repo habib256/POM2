@@ -795,6 +795,16 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
             std::vector<uint8_t> px;
             int hw = 0, hh = 0;
             if (host.loadHistoryPage(row.file, px, hw, hh)) {
+                // Reaching here means the FILE under this row changed, so the
+                // cached texture is stale by definition — invalidate before
+                // uploading. The key alone cannot say so: it is derived from
+                // viewHistory_, and archiving a new sheet pushes it onto the
+                // front of the newest-first list, changing the file under a
+                // FIXED index. That left the previously viewed page's pixels
+                // (and its paper decoration) on screen under the new page's
+                // label, permanently. Same lesson the live-page key learned by
+                // folding droppedPageCount() into its own key.
+                texPage_ = -2;
                 // Negative keys: a stored page can never collide with a live
                 // page index in the texture cache.
                 uploadRgba(px, hw, hh, -1000 - viewHistory_);

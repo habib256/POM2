@@ -98,6 +98,7 @@ void SpOverSlipLink::stop()
 {
     if (!running_.load() && !worker_.joinable()) {
         transport_.reset();
+        rx_.reset();
         return;
     }
     stopFlag_.store(true);
@@ -115,6 +116,13 @@ void SpOverSlipLink::stop()
             tcp->stopListening();
     }
     transport_.reset();
+
+    // Same invariant peerLostLocked() documents, for the same reason: a peer
+    // that left the framer mid-frame (partial packet, then silence past the
+    // timeout) would otherwise have its stale body glue onto the FIRST $C0 of
+    // the next peer after a stop/start, costing that peer one whole frame.
+    // Safe here — the worker is joined, so no other thread is inside the link.
+    rx_.reset();
 
     std::lock_guard<std::mutex> lk(stateMtx_);
     devices_.clear();
@@ -144,9 +152,20 @@ void SpOverSlipLink::workerLoop()
             continue;
         }
 
-        // Peer is attached and the CPU thread owns the conversation. Nothing
-        // for the worker to do but watch for it going away, which it learns
-        // from the CPU thread's failed reads (handlePeerLost) — so idle here.
+        // Peer is attached and the CPU thread owns the conversation. The
+        // worker still owns peer LIFETIME (fujinet_plan.md §6.4), so it has to
+        // probe: relying on the CPU thread's failed reads means a peer that
+        // closes while the guest sits at the BASIC prompt is never noticed —
+        // isOpen() stays true forever, the panel keeps naming a corpse, and
+        // because pollForPeer() is gated behind !isOpen() a replacement peer
+        // waits unaccepted in the listen backlog until the guest happens to
+        // issue a SmartPort call. The probe peeks without consuming, so it
+        // cannot steal a byte from an in-flight transact().
+        if (!t->checkPeerAlive()) {
+            log().info("FujiNet", "SP-over-SLIP peer went away while idle");
+            handlePeerLost();
+            continue;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(kPeerPollMs));
     }
 }

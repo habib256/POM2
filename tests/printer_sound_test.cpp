@@ -246,6 +246,49 @@ void testSampleRateChange()
     std::printf("  ok: a rate change drops grains built for the old rate\n");
 }
 
+// ── 10. A grain DECAYS; it is not a flat-top burst ───────────────────────
+//
+// The envelope is documented as "attack to the peak, then exponential decay
+// to the floor", but the phase used to be inferred from `env < peak` with no
+// flag. Every grain shape here has an attack step larger than one decay step
+// (a char grain gains 0.0198 per frame and loses 0.0136), so the comparison
+// flipped straight back to attack the instant a decay step lowered `env`: the
+// envelope locked into a two-frame oscillation just under the peak and the
+// voice was cut off dead at `end`. Nothing else in this file could see it —
+// the grain still stops, still scales with pin count, still sustains — so it
+// takes a shape assertion.
+void testGrainDecays()
+{
+    PrinterSoundDevice d;
+    d.setSampleRate(kRate);
+    d.strike(9);
+
+    // Collect the whole grain, buffer by buffer, as RMS per block.
+    std::vector<float> rms;
+    for (int i = 0; i < 200; ++i) {
+        std::vector<float> buf(32, 0.0f);
+        d.fillAudioBuffer(buf.data(), 32);
+        double acc = 0.0;
+        for (float v : buf) acc += static_cast<double>(v) * v;
+        const float r = static_cast<float>(std::sqrt(acc / buf.size()));
+        if (r > 1e-6f) rms.push_back(r);
+        else if (!rms.empty()) break;
+    }
+    assert(rms.size() >= 8 && "the grain should span several buffers");
+
+    // The last quarter must be a small fraction of the first quarter. With the
+    // plateau this ratio sat at ~1.0; with a real decay it is well under 0.5.
+    const size_t q = rms.size() / 4;
+    double head = 0.0, tail = 0.0;
+    for (size_t i = 0; i < q; ++i)                 head += rms[i];
+    for (size_t i = rms.size() - q; i < rms.size(); ++i) tail += rms[i];
+    head /= static_cast<double>(q);
+    tail /= static_cast<double>(q);
+    assert(tail < head * 0.5 && "the grain envelope never decays");
+
+    std::printf("  ok: grain decays (head RMS %.4f -> tail %.4f)\n", head, tail);
+}
+
 } // namespace
 
 int main()
@@ -259,6 +302,7 @@ int main()
     testPowerOffSilences();
     testMuteAndVolume();
     testSampleRateChange();
+    testGrainDecays();
 
     std::puts("printer_sound: OK");
     return 0;
