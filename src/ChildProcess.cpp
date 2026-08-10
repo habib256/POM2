@@ -25,6 +25,7 @@
 #    include <cerrno>
 #    include <csignal>
 #    include <sys/stat.h>
+#    include <sys/syscall.h>
 #    include <sys/types.h>
 #    include <sys/wait.h>
 #    include <unistd.h>
@@ -79,6 +80,12 @@ bool ChildProcess::start(const std::string& exePath,
     for (auto& s : owned) argv.push_back(const_cast<char*>(s.c_str()));
     argv.push_back(nullptr);
 
+    // Descriptor ceiling for the child's close loop, queried BEFORE the fork
+    // for the same reason argv is built here: sysconf() is not on the
+    // async-signal-safe list.
+    long maxFd = ::sysconf(_SC_OPEN_MAX);
+    if (maxFd < 3 || maxFd > 65536) maxFd = 65536;
+
     const pid_t pid = ::fork();
     if (pid < 0) { errOut = std::string("fork: ") + std::strerror(errno); return false; }
 
@@ -92,6 +99,29 @@ bool ChildProcess::start(const std::string& exePath,
         if (!workingDir.empty()) {
             if (::chdir(workingDir.c_str()) != 0) ::_exit(127);
         }
+
+        // Close every inherited descriptor above stdio.
+        //
+        // fork() dups the ENTIRE descriptor table, and nothing in POM2 opens
+        // its sockets with SOCK_CLOEXEC. Without this loop the helper holds a
+        // live copy of the SP-over-SLIP listener on 1985, the AI-control
+        // server on 6503 and any SSC telnet listener — and keeps them BOUND
+        // after POM2 closes its own copy. "Drop peer" then fails to re-bind
+        // with EADDRINUSE, and a Ctrl-C on POM2 (which runs no destructor, so
+        // helper_.stop() never fires) leaves an orphan squatting the port for
+        // the next session. That is trap 2 in child_process_test.cpp, and the
+        // header's "nothing is inherited beyond stdio" promise — the Win32
+        // branch keeps it with bInheritHandles=FALSE, this is the POSIX half.
+        //
+        // close_range() is one syscall for the whole range; the loop is the
+        // fallback for kernels older than 5.9. Both are async-signal-safe.
+#if defined(__linux__) && defined(SYS_close_range)
+        if (::syscall(SYS_close_range, 3u, ~0u, 0u) != 0)
+#endif
+        {
+            for (int fd = 3; fd < static_cast<int>(maxFd); ++fd) ::close(fd);
+        }
+
         ::execv(argv[0], argv.data());
         ::_exit(127);                    // exec failed
     }
@@ -285,9 +315,29 @@ void ChildProcess::stop(int graceMs)
     if (!handle_) return;
     // Win32 has no SIGTERM for a windowless console child; the process group
     // Ctrl-Break is the closest thing, and TerminateProcess is the fallback.
-    GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, GetProcessId(H(handle_)));
-    if (WaitForSingleObject(H(handle_), static_cast<DWORD>(graceMs)) != WAIT_OBJECT_0)
-        TerminateProcess(H(handle_), 1);
+    //
+    // The event usually does NOT get through: CREATE_NO_WINDOW gives the child
+    // its own hidden console rather than ours, and GenerateConsoleCtrlEvent
+    // only reaches a group sharing the CALLER's console. Ignoring the return
+    // value meant every stop paid the full grace period on the UI thread
+    // before the hard kill, so check it — a failed signal means nobody is
+    // going to exit politely and there is nothing to wait for.
+    const BOOL signalled =
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, GetProcessId(H(handle_)));
+
+    bool exited = false;
+    if (signalled) {
+        // Poll in short steps like the POSIX branch, so a helper that does
+        // honour the break does not cost the whole grace period either.
+        const DWORD stepMs = 25;
+        for (DWORD waited = 0; waited < static_cast<DWORD>(graceMs); waited += stepMs) {
+            if (WaitForSingleObject(H(handle_), stepMs) == WAIT_OBJECT_0) {
+                exited = true;
+                break;
+            }
+        }
+    }
+    if (!exited) TerminateProcess(H(handle_), 1);
     WaitForSingleObject(H(handle_), 1000);
     exitCode_ = -1;
     reset();

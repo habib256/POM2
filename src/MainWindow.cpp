@@ -483,14 +483,19 @@ MainWindow::MainWindow(bool forceIIPlus)
                                 pom2::ImageWriter::PaperSize::Count))
                 imageWriter->setPaperSize(
                     static_cast<pom2::ImageWriter::PaperSize>(paper));
-            // Mechanical sound. Registered like any other source so it
-            // lands in the mixer panel with its own level and mute.
+            // Mechanical sound. Levels are restored here; the REGISTRATION
+            // lives at the end of plugSlotsFromSettings() instead, because
+            // both slot-rebuild paths (profile switch, Slot Config "Apply")
+            // call unregisterAllAudioSources() and then only re-register
+            // card-owned sources. Registering here meant the printer went
+            // permanently silent after the first profile switch — including
+            // the one the constructor itself performs when the saved profile
+            // differs from the ROM auto-probe.
             printerSound->setVolume(
                 settings->getFloat("printer_sound_volume", 0.35f));
             printerSound->setMuted(
                 settings->getBool("printer_sound_muted", false));
             imageWriter->setSoundSink(printerSound.get());
-            registerAudioSource(printerSound.get());
 
             // Durable printouts, alongside the spool and trace files POM2
             // already writes there.
@@ -827,6 +832,19 @@ MainWindow::~MainWindow()
     // destruction order, but doing it here keeps the dependency obvious.
     aiServer->stop();
     controller->stop();
+
+    // Detach every audio source BEFORE any member is destroyed.
+    //
+    // AudioDevice keeps raw pointers and dereferences them from the miniaudio
+    // callback thread every ~5 ms, and `controller->stop()` only parks the CPU
+    // worker — it never touches audio. Member destruction then runs in reverse
+    // declaration order, and `controller` (which owns the AudioDevice that
+    // finally drains the callback) is the FIRST member, hence the last to go:
+    // everything else, `printerSound` included, dies while the callback is
+    // still live. Card-owned sources were safe by accident, because
+    // ~EmulationController tears down Memory (and the SlotBus) after
+    // audioDev.reset(); the first MainWindow-owned source inverted that.
+    unregisterAllAudioSources();
 
     // Free the paint/sprite editors' GPU textures while the GL context is
     // still current (same window teardown order as the About-photo texture).
@@ -1192,6 +1210,11 @@ void MainWindow::registerAudioSource(AudioSource* src)
 {
     if (!src) return;
     if (!controller->audio().isAvailable()) return;
+    // Idempotent: the printer sound is re-registered from every
+    // plugSlotsFromSettings() pass, and a double entry would mix the source
+    // twice and then leave a dangling pointer behind after one removeSource().
+    for (AudioSource* s : registeredAudioSources_)
+        if (s == src) return;
     controller->audio().addSource(src);
     registeredAudioSources_.push_back(src);
 }
@@ -1980,6 +2003,39 @@ void MainWindow::plugSlotsFromSettings()
                 "Slot " + std::to_string(s) + " has unknown card type '" +
                 kind + "' — leaving empty");
             slotCards[s] = "";
+        }
+    }
+
+    // The printer's mechanical sound is not owned by any card, but it IS
+    // swept away with the card-owned ones: both rebuild paths call
+    // unregisterAllAudioSources() before getting here. Re-registering it on
+    // every rebuild is what keeps it alive across a profile switch and a Slot
+    // Config "Apply" — registerAudioSource() is idempotent, so the
+    // constructor's first pass through here simply arms it.
+    registerAudioSource(printerSound.get());
+
+    // Re-apply a `--fujinet` card requested on the command line.
+    //
+    // It is deliberately not in the settings file (a one-shot CLI card must
+    // not leak into the user's saved slot config), so the re-seed at the top
+    // of this function has just erased it. Doing it here means applyProfile's
+    // step 7 reproduces the card, which matters twice: `--preset` no longer
+    // destroys it moments after the CLI logged success, and because step 7
+    // runs BEFORE step 11's cold boot, the autostart scan still finds a
+    // FujiNet on its first pass.
+    if (cliFujiNetSlot_ > 0 &&
+        !pom2::profileConfig(activeProfile).noPhysicalSlots) {
+        const int s = cliFujiNetSlot_;
+        if (controller->memory().slotBus().peripheral(s) != nullptr) {
+            pom2::log().warn("CLI", "--fujinet: slot " + std::to_string(s) +
+                                        " is taken after the rebuild — card "
+                                        "not restored");
+        } else {
+            std::string err;
+            if (!plugFujiNetUnlocked(s, cliFujiNetSerial_,
+                                     cliFujiNetSerialPath_, cliFujiNetPort_,
+                                     err))
+                pom2::log().warn("CLI", "--fujinet: " + err);
         }
     }
 }
@@ -6624,6 +6680,22 @@ void MainWindow::renderAudioMixerWindow()
         }
     }
 
+    // ── Printer (synthesised head / platen / carriage) ─────────────────
+    // Always shown, like Speaker and Cassette: the source is host-side and
+    // not owned by any card, so there is no slot to gate it on. Before this
+    // row existed the level and mute persisted in state.cfg but had no
+    // in-app control at all — silencing a too-loud printer meant quitting
+    // and hand-editing the file.
+    {
+        float vol  = printerSound->volume();
+        bool  mute = printerSound->muted();
+        channelRow("Printer", vol, mute,
+                   printerSound->lastBufferPeak.load(std::memory_order_relaxed),
+                   "prn", false, printerSound.get());
+        if (vol != printerSound->volume()) printerSound->setVolume(vol);
+        if (mute != printerSound->muted()) printerSound->setMuted(mute);
+    }
+
     ImGui::Spacing();
     ImGui::TextDisabled("Master is post-mix; per-channel knobs are pre-mix.");
     ImGui::TextDisabled("Bars show last-buffer peak with ~100 ms release.");
@@ -8054,7 +8126,7 @@ void MainWindow::renderSmartPortPanelWindow()
     if (dirtySettings) settings->save();
 }
 
-bool MainWindow::plugFujiNetFromCli(int slot, bool serial,
+bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
                                     const std::string& serialDevice,
                                     int tcpPort, std::string& errOut)
 {
@@ -8062,6 +8134,29 @@ bool MainWindow::plugFujiNetFromCli(int slot, bool serial,
 
     std::lock_guard<std::mutex> lk(controller->stateMutex());
     auto& bus = controller->memory().slotBus();
+
+    if (bus.peripheral(slot) != nullptr && !slotExplicit) {
+        // The user never named a slot — 7 is only POM2's preference, and its
+        // own first-run default puts a Le Chat Mauve there, so refusing here
+        // would make the documented bare `--fujinet` fail on a stock install.
+        // Fall back the way docs/fujinet_plan.md specifies. Downwards from 7:
+        // the autostart scan walks slots high to low, so the highest free slot
+        // is the one most likely to be reached before the Disk II in 6.
+        int free = 0;
+        for (int s = 7; s >= 1 && free == 0; --s)
+            if (bus.peripheral(s) == nullptr) free = s;
+        if (free == 0) {
+            errOut = "every slot is occupied — free one, or name it with "
+                     "--fujinet-slot";
+            return false;
+        }
+        pom2::log().info("CLI", "--fujinet: slot " + std::to_string(slot) +
+                                    " holds " +
+                                    std::string(bus.peripheral(slot)->name()) +
+                                    ", using free slot " + std::to_string(free));
+        slot = free;
+    }
+
     if (bus.peripheral(slot) != nullptr) {
         errOut = "slot " + std::to_string(slot) + " already holds " +
                  std::string(bus.peripheral(slot)->name()) +
@@ -8069,6 +8164,22 @@ bool MainWindow::plugFujiNetFromCli(int slot, bool serial,
         return false;
     }
 
+    if (!plugFujiNetUnlocked(slot, serial, serialDevice, tcpPort, errOut))
+        return false;
+
+    // Remember it so every later slot rebuild reproduces it — see the header.
+    cliFujiNetSlot_       = slot;
+    cliFujiNetSerial_     = serial;
+    cliFujiNetSerialPath_ = serialDevice;
+    cliFujiNetPort_       = tcpPort;
+    return true;
+}
+
+bool MainWindow::plugFujiNetUnlocked(int slot, bool serial,
+                                     const std::string& serialDevice,
+                                     int tcpPort, std::string& errOut)
+{
+    auto& bus = controller->memory().slotBus();
     auto card = std::make_unique<pom2::FujiNetCard>(slot);
     card->setMemory(&controller->memory());
     card->setCpu(&controller->cpu());

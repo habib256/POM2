@@ -177,10 +177,21 @@ public:
     /// finds a FujiNet on its first pass. `serialDevice` empty in serial mode
     /// means "auto-pick when exactly one candidate exists".
     ///
-    /// Refuses an occupied slot rather than replacing what is there:
-    /// destroying a live card would race the CPU worker, and silently
-    /// evicting the user's Disk II would be worse than an error message.
-    bool plugFujiNetFromCli(int slot, bool serial, const std::string& serialDevice,
+    /// `slot` is IN/OUT. When `slotExplicit` is false it is only a preference:
+    /// slot 7's first-run default is the Le Chat Mauve, so a bare `--fujinet`
+    /// would otherwise always be refused for a slot the user never chose. In
+    /// that case POM2 falls back to the first free slot (7→1) and writes it
+    /// back. An EXPLICIT `--fujinet-slot N` that is occupied stays an error:
+    /// destroying a live card would race the CPU worker, and silently evicting
+    /// the user's Disk II would be worse than an error message.
+    ///
+    /// The request is REMEMBERED, so `plugSlotsFromSettings()` can re-apply it
+    /// after every slot rebuild. Without that a `--preset` on the same command
+    /// line destroyed the card moments after this returned true: applyProfile
+    /// clears the SlotBus and re-seeds strictly from the `slot_N_card` keys,
+    /// which a one-shot CLI card deliberately never writes.
+    bool plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
+                            const std::string& serialDevice,
                             int tcpPort, std::string& errOut);
 
 #ifdef __EMSCRIPTEN__
@@ -888,6 +899,22 @@ private:
     /// requests log a warning and skip the second instance. Populates the
     /// raw `*Card` pointer fields and the `slotCards[]` index.
     void plugSlotsFromSettings();
+
+    /// The body of `plugFujiNetFromCli` with NO locking, so it can also run
+    /// from inside `plugSlotsFromSettings()` (which is called with the CPU
+    /// worker already stopped, never under stateMutex).
+    bool plugFujiNetUnlocked(int slot, bool serial,
+                             const std::string& serialDevice, int tcpPort,
+                             std::string& errOut);
+
+    /// A `--fujinet` request from the command line, kept so every slot
+    /// rebuild can reproduce it. Slot 0 = no request. Deliberately NOT
+    /// persisted to `slot_N_card`: a one-shot CLI card must not leak into the
+    /// user's saved slot configuration.
+    int         cliFujiNetSlot_ = 0;
+    bool        cliFujiNetSerial_ = false;
+    std::string cliFujiNetSerialPath_;
+    int         cliFujiNetPort_ = 1985;
 
     // ── Audio-source ownership ───────────────────────────────────────────
     // AudioDevice keeps raw AudioSource pointers and dereferences them from

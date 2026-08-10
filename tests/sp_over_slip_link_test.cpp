@@ -428,6 +428,81 @@ void testCleanShutdown()
     link.stop();                   // idempotent
 }
 
+// ── A peer that leaves while the guest is idle must be noticed ───────────
+//
+// The worker owns peer lifetime (fujinet_plan.md §6.4), but for a while it
+// only slept once a peer was attached and left the discovery to the CPU
+// thread's failed reads. So a helper that exited while the guest sat at the
+// BASIC prompt was never noticed: isConnected() stayed true forever, the panel
+// kept naming a corpse, and because pollForPeer() is gated behind !isOpen() a
+// REPLACEMENT peer sat unaccepted in the listen backlog until the guest
+// happened to issue a SmartPort call.
+void testIdlePeerDeathIsNoticed()
+{
+    SpOverSlipLink link;
+    const uint16_t port = startLink(link);
+
+    {
+        FakePeer peer(port, standardHandler);
+        assert(waitFor([&] { return link.deviceCount() == 2; }));
+        assert(link.isConnected());
+        peer.stop();                    // leaves with NO guest traffic in flight
+    }
+
+    // No readBlock()/status() call here on purpose — the worker has to find
+    // this on its own.
+    assert(waitFor([&] { return !link.isConnected(); }));
+    assert(link.deviceCount() == 0);
+
+    // And the slot is genuinely free again: a replacement is accepted without
+    // the guest having to poke the bus first.
+    {
+        FakePeer peer2(port, standardHandler);
+        assert(waitFor([&] { return link.deviceCount() == 2; }));
+        assert(link.isConnected());
+        peer2.stop();
+    }
+
+    link.stop();
+}
+
+// ── stop() must not leave half a frame in the decoder ────────────────────
+//
+// peerLostLocked() resets the framer precisely so a dead peer's bytes cannot
+// glue onto the next peer's first packet. stop() tore the transport down
+// without doing the same, so a peer that went quiet mid-frame left the framer
+// in Body: the NEXT peer's leading $C0 then closed the stale body into a
+// bogus frame and its real response was swallowed as line noise.
+void testStopResetsTheFramer()
+{
+    SpOverSlipLink link;
+    const uint16_t port = startLink(link);
+
+    {
+        // A peer that emits half a frame and then stays connected and silent.
+        FakePeer peer(port, [](const std::vector<uint8_t>&,
+                               std::vector<uint8_t>& wire) {
+            wire.push_back(0xC0);       // frame start
+            wire.push_back(0x00);       // one body byte… and then nothing
+        });
+        assert(waitFor([&] { return link.isConnected(); }));
+        // Let the enumeration time out against the truncated frame.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        link.stop();
+    }
+
+    // A fresh peer on a fresh link must enumerate normally. With a stale body
+    // carried across the restart, its first frame was consumed as garbage and
+    // the INIT sweep lost a reply.
+    const uint16_t port2 = startLink(link);
+    {
+        FakePeer peer(port2, standardHandler);
+        assert(waitFor([&] { return link.deviceCount() == 2; }));
+        peer.stop();
+    }
+    link.stop();
+}
+
 } // namespace
 
 int main()
@@ -439,6 +514,8 @@ int main()
     testNoPeer();
     testGuestResetNotifiesDevices();
     testCleanShutdown();
+    testIdlePeerDeathIsNoticed();
+    testStopResetsTheFramer();
 
     std::puts("sp_over_slip_link: OK");
     return 0;

@@ -35,11 +35,24 @@
 // timeout (250 ms by default), so the worker never waits long to tear down a
 // dead peer.
 //
+// ── …and a THIRD thread that must never wait on it ────────────────────────
+//
+// The UI thread polls `isOpen()` / `describe()` / `lastError()` every frame to
+// draw the FujiNet panel, and it does so WHILE HOLDING EmulationController's
+// stateMutex. If those status reads took the I/O mutex they would block for a
+// whole read timeout whenever a peer went silent — and because the CPU worker
+// needs stateMutex for every budget slice, the emulated machine would drop to
+// a fraction of speed with audible underruns for as long as the dead peer sat
+// there. So status is published SEPARATELY from I/O: atomics where one value
+// suffices, and a `statusMtx_` that is never held across a syscall.
+//
 // `shutdown()` is the ONE method that must be callable from any thread: it
-// wakes a `pollForPeer()` parked in a wait. Destroying the transport (and
-// closing the listening socket / device) is only legal once the worker has
-// been joined — the same rule SuperSerialCard documents at length, for the
-// same reason (close + recv on one fd from two threads is a use-after-free).
+// wakes a `pollForPeer()` parked in a wait. It therefore may not take the I/O
+// mutex either — a read in flight is exactly when it is called. Destroying the
+// transport (and closing the listening socket / device) is only legal once the
+// worker has been joined — the same rule SuperSerialCard documents at length,
+// for the same reason (close + recv on one fd from two threads is a
+// use-after-free).
 
 #ifndef POM2_SP_TRANSPORT_H
 #define POM2_SP_TRANSPORT_H
@@ -78,6 +91,16 @@ public:
     ///   = 0  nothing arrived within the timeout (not an error)
     ///   < 0  the peer died
     virtual int readSome(uint8_t* p, std::size_t n, int timeoutMs) = 0;
+
+    /// Cheap "is the peer still there?" check for the worker to run while the
+    /// guest is idle. Must NOT consume anything the CPU thread is about to
+    /// read, and must not block.
+    ///
+    /// Without it a peer that closes between two SmartPort calls is invisible:
+    /// nothing probes the socket, so `isOpen()` stays true forever, the panel
+    /// keeps naming a dead peer, and a replacement sits unaccepted in the
+    /// listen backlog until the guest happens to issue a call.
+    virtual bool checkPeerAlive() { return isOpen(); }
 
     /// Drop the current peer but stay ready to acquire another one.
     virtual void dropPeer() = 0;
@@ -121,6 +144,7 @@ public:
     bool        pollForPeer(int timeoutMs) override;
     bool        writeAll(const uint8_t* p, std::size_t n) override;
     int         readSome(uint8_t* p, std::size_t n, int timeoutMs) override;
+    bool        checkPeerAlive() override;
     void        dropPeer() override;
     void        shutdown() override;
     std::string describe() const override;
@@ -133,13 +157,22 @@ private:
     /// SuperSerialCard documents). Both are bounded by the caller's timeout,
     /// so the wait is short.
     mutable std::mutex  mtx_;
+    /// Guards the descriptor's LIFETIME, and unlike mtx_ is never held across
+    /// a wait. `shutdown()` cannot take mtx_ (a read in flight is precisely
+    /// when it runs), so this is what stops it from ::shutdown()ing a number
+    /// dropPeer() has already closed and another thread's socket() has already
+    /// recycled.
+    mutable std::mutex  fdLifeMtx_;
+    /// Guards the panel-facing strings only. Short-held by construction, so
+    /// describe() never waits on an I/O timeout. See the header comment.
+    mutable std::mutex  statusMtx_;
 #if POM2_HAS_SOCKETS
     /// Atomic so `shutdown()` can wake a blocked wait from any thread
     /// WITHOUT closing the descriptor under it — same split as the SSC.
     std::atomic<socket_t> listenFd_{kInvalidSocket};
     std::atomic<socket_t> clientFd_{kInvalidSocket};
 #endif
-    std::string         peerText_;        ///< guarded by mtx_
+    std::string         peerText_;        ///< guarded by statusMtx_
 };
 
 // ── Serial (USB CDC-ACM) ──────────────────────────────────────────────────
@@ -156,15 +189,22 @@ public:
                                int baud = SerialPort::kDefaultBaud);
     ~SpSerialTransport() override;
 
-    const std::string& path() const { return path_; }
+    std::string path() const
+    { std::lock_guard<std::mutex> lk(statusMtx_); return path_; }
     void setPath(std::string path);
-    int  baud() const { return baud_; }
-    void setBaud(int b) { baud_ = b; }
+    int  baud() const { return baud_.load(); }
+    void setBaud(int b) { baud_.store(b); }
 
     /// Why the last open() failed, in words the panel can show — including
     /// the permission case, which is the most likely first-contact failure
     /// on Linux ("add your user to the dialout group").
-    const std::string& lastError() const { return lastError_; }
+    ///
+    /// BY VALUE, under the lock. Handing out a `const std::string&` raced the
+    /// worker thread, which rewrites this string every poll: when the text
+    /// changed length the reader's copy-construct could follow a pointer into
+    /// a block the writer had just freed.
+    std::string lastError() const
+    { std::lock_guard<std::mutex> lk(statusMtx_); return lastError_; }
 
     bool        isOpen() const override;
     bool        pollForPeer(int timeoutMs) override;
@@ -175,13 +215,22 @@ public:
     std::string describe() const override;
 
 private:
-    std::string        path_;
-    int                baud_;
-    mutable std::mutex mtx_;          ///< guards port_ + openPath_
-    SerialPort         port_;
+    std::atomic<int>   baud_;
+    mutable std::mutex mtx_;          ///< guards port_ — HELD ACROSS I/O
+    /// Guards the panel-facing strings. Short-held by construction: the UI
+    /// thread reads describe()/lastError()/path() every frame with stateMutex
+    /// held, and must never be parked behind a read timeout. Lock order is
+    /// always mtx_ → statusMtx_.
+    mutable std::mutex statusMtx_;
+    /// Mirrors port_.isOpen() so isOpen() needs no lock at all.
+    std::atomic<bool>  open_{false};
+    /// Atomic so shutdown() — callable from any thread, including while a
+    /// read is in flight — never waits on mtx_.
+    std::atomic<bool>  stopping_{false};
+    SerialPort         port_;         ///< guarded by mtx_
+    std::string        path_;         ///< guarded by statusMtx_
     std::string        openPath_;     ///< the device actually opened
-    std::string        lastError_;
-    bool               stopping_ = false;
+    std::string        lastError_;    ///< guarded by statusMtx_
 };
 
 } // namespace pom2

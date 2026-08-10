@@ -34,8 +34,12 @@ int main()
 
 #else
 
+#include <arpa/inet.h>
 #include <chrono>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 
@@ -178,6 +182,61 @@ void testFindOnPath()
     assert(ChildProcess::findOnPath("pom2-no-such-helper-xyz").empty());
 }
 
+// ── 8. The child inherits NO descriptor beyond stdio ─────────────────────
+//
+// This is trap 2 above, at its root. fork() dups the whole descriptor table
+// and POM2 opens no socket with SOCK_CLOEXEC, so a child that does not close
+// what it inherited keeps POM2's listeners BOUND: "Drop peer" then fails to
+// re-bind with EADDRINUSE, and a Ctrl-C (which runs no destructor, so the
+// helper is never stopped) leaves an orphan squatting the port for the next
+// session. Before the close loop in ChildProcess::start this failed on the
+// first rebind.
+void testChildDoesNotInheritListeners()
+{
+    // A listener on an ephemeral port, so the test never collides with a real
+    // POM2 session — the DEFECT is about descriptor inheritance, not 1985.
+    auto bindListener = [](int& portOut) {
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        assert(fd >= 0);
+        int one = 1;
+        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in a{};
+        a.sin_family      = AF_INET;
+        a.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        a.sin_port        = ::htons(static_cast<uint16_t>(portOut));
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0 ||
+            ::listen(fd, 2) != 0) {
+            ::close(fd);
+            return -1;
+        }
+        socklen_t len = sizeof(a);
+        ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
+        portOut = ::ntohs(a.sin_port);
+        return fd;
+    };
+
+    int port = 0;                       // 0 = let the kernel pick
+    const int listenFd = bindListener(port);
+    assert(listenFd >= 0 && port != 0);
+
+    ChildProcess p;
+    std::string  err;
+    assert(p.start("/bin/sh", { "-c", "sleep 30" }, "", err));
+    sleepMs(50);
+    assert(p.isRunning());
+
+    // Give up OUR copy. If the child inherited one, the port stays in LISTEN
+    // and nothing can take it — which is exactly the wedge users saw.
+    ::close(listenFd);
+
+    const int again = bindListener(port);
+    const bool rebound = again >= 0;
+    if (rebound) ::close(again);
+    p.stop(1000);
+
+    assert(rebound && "the helper inherited POM2's listening socket");
+}
+
 } // namespace
 
 int main()
@@ -189,6 +248,7 @@ int main()
     testStartFailures();
     testRestartReplaces();
     testFindOnPath();
+    testChildDoesNotInheritListeners();
 
     std::puts("child_process: OK");
     return 0;

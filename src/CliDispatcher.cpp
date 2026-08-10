@@ -125,7 +125,9 @@ void printUsage()
         "  --fujinet-serial[=DEV]     Same, but talk to a physical FujiNet\n"
         "                             board over USB CDC-ACM. DEV omitted =\n"
         "                             auto-pick when exactly one is present.\n"
-        "  --fujinet-slot N           Which slot the card goes in (default 7).\n"
+        "  --fujinet-slot N           Which slot the card goes in. Without it,\n"
+        "                             slot 7 is preferred and POM2 falls back\n"
+        "                             to the first free slot if 7 is taken.\n"
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
         "  -p, --preset <ii|ii+|iie|iic|iic+>  System profile to boot into\n"
@@ -233,7 +235,8 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
                 pom2::log().error("CLI", std::string("--fujinet-slot must be 1-7, got ") + v);
                 return std::nullopt;
             }
-            plan.fujiNetSlot = s;
+            plan.fujiNetSlot         = s;
+            plan.fujiNetSlotExplicit = true;
         }
         else if (a == "--display") {
             const char* v = needArg(i, "--display"); if (!v) return std::nullopt;

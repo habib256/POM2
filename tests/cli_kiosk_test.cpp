@@ -38,6 +38,39 @@ std::optional<pom2::CliPlan> parse(const std::vector<std::string>& args,
     return pom2::parseCli(static_cast<int>(argv.size()), argv.data(), help);
 }
 
+// `--fujinet-slot` is what separates "the user chose slot N" from "POM2
+// prefers 7". Without the distinction, a bare `--fujinet` was refused on a
+// stock configuration, because slot 7's own first-run default is the Le Chat
+// Mauve — so the documented headline invocation never worked, and the fallback
+// docs/fujinet_plan.md specifies had nothing to key off.
+void testFujiNetSlotExplicitness()
+{
+    bool help = false;
+
+    auto bare = parse({"POM2", "--fujinet"}, help);
+    assert(bare.has_value());
+    assert(bare->fujiNet == pom2::CliPlan::FujiNetTransport::Tcp);
+    assert(bare->fujiNetSlot == 7);          // still the preference…
+    assert(!bare->fujiNetSlotExplicit);      // …but only a preference
+    assert(bare->fujiNetPort == 1985);
+
+    auto chosen = parse({"POM2", "--fujinet=1990", "--fujinet-slot", "3"}, help);
+    assert(chosen.has_value());
+    assert(chosen->fujiNetSlot == 3);
+    assert(chosen->fujiNetSlotExplicit);     // an occupied 3 must stay an error
+    assert(chosen->fujiNetPort == 1990);
+
+    auto serial = parse({"POM2", "--fujinet-serial=/dev/ttyACM0"}, help);
+    assert(serial.has_value());
+    assert(serial->fujiNet == pom2::CliPlan::FujiNetTransport::Serial);
+    assert(serial->fujiNetSerialPath == "/dev/ttyACM0");
+    assert(!serial->fujiNetSlotExplicit);
+
+    // Out-of-range slots are still rejected outright.
+    assert(!parse({"POM2", "--fujinet", "--fujinet-slot", "8"}, help).has_value());
+    assert(!parse({"POM2", "--fujinet", "--fujinet-slot", "0"}, help).has_value());
+}
+
 void testPositionalDisk()
 {
     bool help = false;
@@ -251,6 +284,8 @@ int main()
     std::printf("parseCli clamps --speed to the 2M cycles/frame ceiling: OK\n");
     testClassifier();
     std::printf("classifyDiskForSlot 5.25/3.5/HDV/unknown: OK\n");
+    testFujiNetSlotExplicitness();
+    std::printf("parseCli --fujinet slot preference vs explicit: OK\n");
 
     std::printf("cli_kiosk OK\n");
     return 0;

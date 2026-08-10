@@ -12,6 +12,12 @@
 // after the emulator quits would hold the loopback port that the next session
 // wants to listen on.
 //
+// "Nothing beyond stdio" is enforced, not assumed: Win32 passes
+// bInheritHandles=FALSE, and the POSIX child closes every descriptor above 2
+// between fork() and execv(). POM2 opens no socket with SOCK_CLOEXEC, so
+// without that loop the helper would inherit — and keep BOUND — the very
+// listeners the sentence above is about.
+//
 // Written for the FujiNet helper (a FujiNet desktop build POM2 can start for
 // the user instead of making them run it by hand), but there is nothing
 // FujiNet-specific here.
@@ -22,10 +28,15 @@
 //      somebody wait()s for it. `isRunning()` therefore does a
 //      `waitpid(WNOHANG)` rather than a bare `kill(pid, 0)` — the latter
 //      reports a dead-but-unreaped child as alive, forever.
-//   2. TERMINATE IS NOT A REQUEST. `stop()` asks politely first (SIGTERM /
-//      console-less TerminateProcess is all Win32 offers), waits a grace
+//   2. TERMINATE IS NOT A REQUEST. `stop()` asks politely first, waits a grace
 //      period, and only then kills. A FujiNet flushing its SD card image
-//      deserves the chance to finish.
+//      deserves the chance to finish. On POSIX the polite ask is a SIGTERM to
+//      the process group. On Win32 there is often no polite ask at all: the
+//      child is created with CREATE_NO_WINDOW, so it has its own hidden
+//      console and GenerateConsoleCtrlEvent — which only reaches the CALLER's
+//      console group — fails. `stop()` checks that return value and skips
+//      straight to TerminateProcess rather than burning the grace period
+//      waiting for a signal nobody received.
 //
 // Not available under Emscripten (no processes in a browser):
 // POM2_HAS_CHILD_PROCESS is 0 there and `start()` fails cleanly.
