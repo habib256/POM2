@@ -45,17 +45,58 @@ jobs:
     outputs:
       pom2_version: ${{ steps.v.outputs.pom2_version }}
     steps:
+      - uses: actions/checkout@v5
+
       - id: v
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -eu
+          PROJECT_VERSION=$(sed -n 's/^project(pom2_imgui VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          test -n "$PROJECT_VERSION" || { echo "Cannot read project version"; exit 1; }
           if [ "$REF_TYPE" = "tag" ]; then
-              echo "pom2_version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+              TAG_VERSION=${REF_NAME#v}
+              test "$TAG_VERSION" = "$PROJECT_VERSION" || {
+                  echo "ERROR: tag $REF_NAME does not match CMake project version $PROJECT_VERSION"
+                  exit 1
+              }
+              echo "pom2_version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
           else
-              echo "pom2_version=" >> "$GITHUB_OUTPUT"
+              echo "pom2_version=$PROJECT_VERSION" >> "$GITHUB_OUTPUT"
           fi
+
+  # --------------------------------------------------------- quality gate ----
+  # Release publication must not rely on a separate, concurrently-running CI
+  # workflow: that workflow can fail after packages have already been attached.
+  # Keep an explicit test gate in this dependency graph. Parallelism is capped
+  # because POM2's large C++ translation units can exhaust RAM at `-j$(nproc)`.
+  quality:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev libslirp-dev
+
+      - name: Fetch Dear ImGui (pinned commit)
+        run: tools/fetch_imgui_pinned.sh
+
+      - name: Configure and build tests
+        run: |
+          cmake -S . -B build-quality \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPOM2_ENABLE_TESTS=ON
+          cmake --build build-quality --parallel 1
+
+      - name: Run complete test suite
+        working-directory: build-quality
+        run: ctest --output-on-failure --parallel 1
 
   # ---------------------------------------------------------------- Linux ----
   # Built INSIDE the pinned bionic (glibc 2.27) image so the AppImage runs on
@@ -379,7 +420,7 @@ jobs:
         shell: cmd
         run: |
           cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DPOM2_ENABLE_TESTS=OFF
-          cmake --build build --config Release -j
+          cmake --build build --config Release --parallel 2
 
       - name: Package ZIP
         shell: cmd
@@ -439,7 +480,7 @@ jobs:
 
   # ------------------------------------------------ attach to the Release ----
   publish:
-    needs: [linux, raspberry, macos, windows]
+    needs: [quality, linux, raspberry, macos, windows]
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:

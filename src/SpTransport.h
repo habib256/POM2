@@ -210,6 +210,7 @@ public:
     bool        pollForPeer(int timeoutMs) override;
     bool        writeAll(const uint8_t* p, std::size_t n) override;
     int         readSome(uint8_t* p, std::size_t n, int timeoutMs) override;
+    bool        checkPeerAlive() override;
     void        dropPeer() override;
     void        shutdown() override;
     std::string describe() const override;

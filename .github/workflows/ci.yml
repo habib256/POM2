@@ -17,7 +17,7 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']   # release tags must gate through the same suite
+    tags: ['v*', '[0-9]*']   # both tag forms accepted by release.yml
   pull_request:
   workflow_dispatch:
 
@@ -61,11 +61,11 @@ jobs:
             -DPOM2_ENABLE_TESTS=ON
 
       - name: Build everything
-        run: cmake --build build -j"$(nproc)"
+        run: cmake --build build --parallel 2
 
       - name: Run ctest
         working-directory: build
-        run: ctest --output-on-failure -j"$(nproc)"
+        run: ctest --output-on-failure --parallel 2
 
       # The GLES 3.0 tier (POM2_GLES=ON) is what the Raspberry Pi release
       # package is built with. It shares every source file with the desktop
@@ -85,7 +85,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DPOM2_ENABLE_TESTS=OFF \
             -DPOM2_GLES=ON
-          cmake --build build-gles -j"$(nproc)"
+          cmake --build build-gles --parallel 2
           # Assert the tier is really engaged: GLESv2 linked, desktop libGL not.
           # Without this the job would happily pass on a build that silently
           # fell back to desktop GL, which is the failure it exists to catch.

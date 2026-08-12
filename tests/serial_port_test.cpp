@@ -238,6 +238,25 @@ void testDisconnectReported()
     p.close();
 }
 
+void testIdleHealthProbeDetectsDisconnect()
+{
+    std::string slave;
+    const int master = openPtyPair(slave);
+    SerialPort p;
+    assert(p.open(slave, 115200));
+    assert(p.isHealthy());
+    ::close(master);
+
+    bool dead = false;
+    for (int i = 0; i < 20; ++i) {
+        if (!p.isHealthy()) { dead = true; break; }
+        ::usleep(1000);
+    }
+    assert(dead);
+    assert(!p.lastError().empty());
+    p.close();
+}
+
 // ── enumerate() must never throw, whatever the host looks like ───────────
 void testEnumerateIsSafe()
 {
@@ -278,6 +297,7 @@ int main()
     testBinaryRoundTrip();
     testReadTimeout();
     testDisconnectReported();
+    testIdleHealthProbeDetectsDisconnect();
     testEnumerateIsSafe();
     testOpenFailureIsExplained();
 

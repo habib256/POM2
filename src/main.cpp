@@ -28,10 +28,18 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 #include <thread>
+
+#ifndef __EMSCRIPTEN__
+namespace {
+volatile std::sig_atomic_t gShutdownRequested = 0;
+void requestShutdown(int) { gShutdownRequested = 1; }
+}
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -490,12 +498,19 @@ int main(int argc, char* argv[])
     if (plan->fujiNet != pom2::CliPlan::FujiNetTransport::None) {
         std::string err;
         const bool serial = plan->fujiNet == pom2::CliPlan::FujiNetTransport::Serial;
+        const bool presetHasNoSlots =
+            plan->preset == pom2::CliPreset::AppleIIc ||
+            plan->preset == pom2::CliPreset::AppleIIcPlus ||
+            plan->preset == pom2::CliPreset::AppleIIcPAL;
         // `slot` is in/out: without an explicit --fujinet-slot it may be
         // relocated to the first free slot, and the log line must name the one
         // actually used. MainWindow remembers the request, so a `--preset`
         // rebuild below re-plugs the card instead of destroying it.
         int slot = plan->fujiNetSlot;
-        if (mainWindow.plugFujiNetFromCli(slot, plan->fujiNetSlotExplicit,
+        if (presetHasNoSlots) {
+            pom2::log().error("CLI", "--fujinet: the selected //c-class "
+                                      "profile has no physical expansion slots");
+        } else if (mainWindow.plugFujiNetFromCli(slot, plan->fujiNetSlotExplicit,
                                           serial, plan->fujiNetSerialPath,
                                           plan->fujiNetPort, err)) {
             pom2::log().info("CLI", "FujiNet card in slot " +
@@ -815,7 +830,11 @@ int main(int argc, char* argv[])
     // Captureless lambda decays to `void(*)(void*)` (em_arg_callback_func).
     emscripten_set_main_loop_arg(iterate, &frameCtx, 0, 1);
 #else
+    std::signal(SIGINT, requestShutdown);
+    std::signal(SIGTERM, requestShutdown);
     while (!glfwWindowShouldClose(window)) {
+        if (gShutdownRequested)
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
         iterate(&frameCtx);
     }
 #endif

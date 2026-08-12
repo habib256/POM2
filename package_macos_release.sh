@@ -28,6 +28,7 @@ cd "$REPO_ROOT"
 BUILD_DIR="build-macos"
 DIST_DIR="dist"
 ARCHS="${POM2_MACOS_ARCHS:-arm64;x86_64}"
+JOBS="${POM2_JOBS:-2}"
 VERSION="${POM2_VERSION:-$(sed -n 's/^project(pom2_imgui VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)}"
 [ -n "$VERSION" ] || VERSION="0.0"
 
@@ -40,8 +41,9 @@ cmake -S . -B "$BUILD_DIR" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_OSX_ARCHITECTURES="$ARCHS" \
       -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+      -DPOM2_ENABLE_SLIRP=OFF \
       -DPOM2_ENABLE_TESTS=OFF
-cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu)"
+cmake --build "$BUILD_DIR" --parallel "$JOBS"
 
 APP="${DIST_DIR}/POM2.app"
 log "Staging ${APP}"

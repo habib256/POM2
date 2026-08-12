@@ -93,6 +93,8 @@ public:
     /// false and fills lastError() on failure.
     bool open(const std::string& path, int baud = kDefaultBaud);
     bool isOpen() const;
+    /// Non-blocking device-presence probe. Does not consume input bytes.
+    bool isHealthy();
     void close();
 
     /// Write everything or fail. false = the device went away.

@@ -125,7 +125,7 @@ if [ "$DO_PGO" = "1" ]; then
 
     echo "[pi-build] PGO pass 1/2 — instrumented pom2_bench"
     configure "-fprofile-generate=$PROFDIR" OFF
-    cmake --build "$BUILD_DIR" -j"$(nproc)" --target pom2_bench
+    cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}" --target pom2_bench
 
     echo "[pi-build] PGO — training run"
     packaging/raspberry/pgo_train.sh "$BUILD_DIR/pom2_bench" "$PWD"
@@ -193,7 +193,7 @@ if [ "$DO_PGO" = "1" ]; then
     # -fprofile-correction: counters from a multi-threaded program can be
     # slightly inconsistent; repair rather than fail.
     configure "-fprofile-use=$PROFDIR -fprofile-correction -fprofile-partial-training -Wno-missing-profile" ON
-    cmake --build "$BUILD_DIR" -j"$(nproc)" 2>&1 | tee /tmp/pom2-pgo-build.log
+    cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}" 2>&1 | tee /tmp/pom2-pgo-build.log
 
     # Belt and braces: the warning is suppressed for every TU, so ask the log
     # about the core sources explicitly. If the profile paths ever drift again,
@@ -228,7 +228,7 @@ if [ "$DO_PGO" = "1" ]; then
 else
     echo "[pi-build] PGO disabled (POM2_PGO=0) — single pass"
     configure "" ON
-    cmake --build "$BUILD_DIR" -j"$(nproc)"
+    cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}"
 fi
 
 test -x "$BUILD_DIR/POM2" || { echo "ERROR: GUI frontend not built (GLFW?)"; exit 1; }

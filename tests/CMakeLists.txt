@@ -11,6 +11,35 @@
 # test would print "OK" regardless of whether its checks actually held.
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
 
+# Download through a temporary file and verify the digest only after a
+# successful transfer. CMake's file(DOWNLOAD EXPECTED_HASH ...) reports a
+# failed transfer as a fatal configure error before STATUS can be inspected,
+# which made a fresh offline build impossible despite the warnings below
+# promising a graceful fallback.
+function(pom2_download_pinned url output sha256 label status_var)
+    set(_timeout 30)
+    if(ARGC GREATER 5)
+        set(_timeout "${ARGV5}")
+    endif()
+    set(_tmp "${output}.download")
+    file(REMOVE "${_tmp}")
+    file(DOWNLOAD "${url}" "${_tmp}" TIMEOUT "${_timeout}" STATUS _status)
+    list(GET _status 0 _code)
+    if(_code EQUAL 0)
+        file(SHA256 "${_tmp}" _actual_sha256)
+        if("${_actual_sha256}" STREQUAL "${sha256}")
+            file(RENAME "${_tmp}" "${output}")
+        else()
+            set(_code 1)
+            set(_status 1 "SHA-256 mismatch for ${label}")
+            file(REMOVE "${_tmp}")
+        endif()
+    else()
+        file(REMOVE "${_tmp}")
+    endif()
+    set(${status_var} "${_status}" PARENT_SCOPE)
+endfunction()
+
 # ─── Klaus Dormann 6502 functional test ───────────────────────────────────
 # Downloads the pre-assembled 64 KB image once at configure time (SHA-256
 # pinned) and registers a ctest target that runs the emulator core against
@@ -22,16 +51,14 @@ set(KLAUS_SHA256 "fa12bfc761e6f9057e4cc01a665a7b800ff01ae91f598af1e39a1201d01953
 
 if(NOT EXISTS "${KLAUS_BIN}")
     message(STATUS "Downloading Klaus 6502 functional test binary (~64 KB)...")
-    file(DOWNLOAD "${KLAUS_URL}" "${KLAUS_BIN}"
-         EXPECTED_HASH SHA256=${KLAUS_SHA256}
-         TIMEOUT 30
-         STATUS DOWNLOAD_STATUS)
+    pom2_download_pinned("${KLAUS_URL}" "${KLAUS_BIN}" "${KLAUS_SHA256}"
+                         "Klaus 6502" DOWNLOAD_STATUS)
     list(GET DOWNLOAD_STATUS 0 DOWNLOAD_CODE)
     if(NOT DOWNLOAD_CODE EQUAL 0)
         list(GET DOWNLOAD_STATUS 1 DOWNLOAD_MSG)
         message(WARNING "Klaus test binary download failed: ${DOWNLOAD_MSG} — "
-                        "test_klaus_6502 will be built but will fail at run time "
-                        "until the file is available at ${KLAUS_BIN}")
+                        "klaus_6502_functional will not be registered until "
+                        "the file is available at ${KLAUS_BIN}")
         file(REMOVE "${KLAUS_BIN}")
     endif()
 endif()
@@ -78,9 +105,11 @@ if(WIN32)
     target_link_libraries(test_klaus_6502 PRIVATE winmm)
 endif()
 
-add_test(NAME klaus_6502_functional
-         COMMAND test_klaus_6502 "${KLAUS_BIN}")
-set_tests_properties(klaus_6502_functional PROPERTIES TIMEOUT 30)
+if(EXISTS "${KLAUS_BIN}")
+    add_test(NAME klaus_6502_functional
+             COMMAND test_klaus_6502 "${KLAUS_BIN}")
+    set_tests_properties(klaus_6502_functional PROPERTIES TIMEOUT 30)
+endif()
 
 
 # ─── Klaus Dormann 65C02 extended opcodes test ────────────────────────────
@@ -100,16 +129,14 @@ set(KLAUS65_SHA256 "10a2a07fa240666fa610c46accebe8d42b1000feef3aae619da15a8d1528
 
 if(NOT EXISTS "${KLAUS65_BIN}")
     message(STATUS "Downloading Klaus 65C02 extended-opcodes test binary (~64 KB)...")
-    file(DOWNLOAD "${KLAUS65_URL}" "${KLAUS65_BIN}"
-         EXPECTED_HASH SHA256=${KLAUS65_SHA256}
-         TIMEOUT 30
-         STATUS DOWNLOAD65_STATUS)
+    pom2_download_pinned("${KLAUS65_URL}" "${KLAUS65_BIN}" "${KLAUS65_SHA256}"
+                         "Klaus 65C02" DOWNLOAD65_STATUS)
     list(GET DOWNLOAD65_STATUS 0 DOWNLOAD65_CODE)
     if(NOT DOWNLOAD65_CODE EQUAL 0)
         list(GET DOWNLOAD65_STATUS 1 DOWNLOAD65_MSG)
         message(WARNING "Klaus 65C02 test binary download failed: ${DOWNLOAD65_MSG} — "
-                        "test_klaus_65c02 will be built but will fail at run time "
-                        "until the file is available at ${KLAUS65_BIN}")
+                        "klaus_65c02_extended will not be registered until "
+                        "the file is available at ${KLAUS65_BIN}")
         file(REMOVE "${KLAUS65_BIN}")
     endif()
 endif()
@@ -134,9 +161,11 @@ if(WIN32)
     target_link_libraries(test_klaus_65c02 PRIVATE winmm)
 endif()
 
-add_test(NAME klaus_65c02_extended
-         COMMAND test_klaus_65c02 "${KLAUS65_BIN}")
-set_tests_properties(klaus_65c02_extended PROPERTIES TIMEOUT 60)
+if(EXISTS "${KLAUS65_BIN}")
+    add_test(NAME klaus_65c02_extended
+             COMMAND test_klaus_65c02 "${KLAUS65_BIN}")
+    set_tests_properties(klaus_65c02_extended PROPERTIES TIMEOUT 60)
+endif()
 
 
 # ─── Tom Harte 65x02 ProcessorTests (cycle-exact CPU validation) ──────────
@@ -174,8 +203,9 @@ if(POM2_FETCH_TOMHARTE)
             endif()
             set(_dst "${destdir}/${CMAKE_MATCH_1}.json")
             if(NOT EXISTS "${_dst}")
-                file(DOWNLOAD "${baseurl}/${CMAKE_MATCH_1}.json" "${_dst}"
-                     EXPECTED_HASH SHA256=${CMAKE_MATCH_2} TIMEOUT 120 STATUS _st)
+                pom2_download_pinned("${baseurl}/${CMAKE_MATCH_1}.json" "${_dst}"
+                                     "${CMAKE_MATCH_2}" "Tom Harte ${CMAKE_MATCH_1}.json"
+                                     _st 120)
                 list(GET _st 0 _code)
                 if(NOT _code EQUAL 0)
                     list(GET _st 1 _msg)
@@ -4155,15 +4185,13 @@ set(ZEXALL_SHA256 "6e2da55147a04f28d303d5da6a1e6b771557ac244653590a0f24a2d39c853
 foreach(zex IN ITEMS ZEXDOC ZEXALL)
     if(NOT EXISTS "${${zex}_BIN}")
         message(STATUS "Downloading ${zex} exerciser (~8.5 KB)...")
-        file(DOWNLOAD "${${zex}_URL}" "${${zex}_BIN}"
-             EXPECTED_HASH SHA256=${${zex}_SHA256}
-             TIMEOUT 30
-             STATUS ZEX_DL_STATUS)
+        pom2_download_pinned("${${zex}_URL}" "${${zex}_BIN}"
+                             "${${zex}_SHA256}" "${zex}" ZEX_DL_STATUS)
         list(GET ZEX_DL_STATUS 0 ZEX_DL_CODE)
         if(NOT ZEX_DL_CODE EQUAL 0)
             list(GET ZEX_DL_STATUS 1 ZEX_DL_MSG)
             message(WARNING "${zex} download failed: ${ZEX_DL_MSG} — the "
-                            "matching ctest will fail at run time until the "
+                            "matching ctest will not be registered until the "
                             "file is available at ${${zex}_BIN}")
             file(REMOVE "${${zex}_BIN}")
         endif()
@@ -4176,10 +4204,14 @@ add_executable(test_z80_zex
 )
 target_include_directories(test_z80_zex PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
-add_test(NAME z80_zexdoc COMMAND test_z80_zex "${ZEXDOC_BIN}")
-set_tests_properties(z80_zexdoc PROPERTIES TIMEOUT 1800 LABELS "slow")
-add_test(NAME z80_zexall COMMAND test_z80_zex "${ZEXALL_BIN}")
-set_tests_properties(z80_zexall PROPERTIES TIMEOUT 1800 LABELS "slow")
+if(EXISTS "${ZEXDOC_BIN}")
+    add_test(NAME z80_zexdoc COMMAND test_z80_zex "${ZEXDOC_BIN}")
+    set_tests_properties(z80_zexdoc PROPERTIES TIMEOUT 1800 LABELS "slow")
+endif()
+if(EXISTS "${ZEXALL_BIN}")
+    add_test(NAME z80_zexall COMMAND test_z80_zex "${ZEXALL_BIN}")
+    set_tests_properties(z80_zexall PROPERTIES TIMEOUT 1800 LABELS "slow")
+endif()
 
 # ─── Microsoft SoftCard Z80 (CP/M Phase 2) ────────────────────────────────
 # Pins the MAME a2softcard.cpp port: dma_r/dma_w window math, the

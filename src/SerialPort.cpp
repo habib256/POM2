@@ -47,6 +47,7 @@ std::vector<SerialPort::Info> SerialPort::enumerate() { return {}; }
 bool SerialPort::open(const std::string&, int)
 { lastError_ = "serial ports are not available in this build"; return false; }
 bool SerialPort::isOpen() const { return false; }
+bool SerialPort::isHealthy() { return false; }
 void SerialPort::close() {}
 bool SerialPort::writeAll(const uint8_t*, std::size_t) { return false; }
 int  SerialPort::readSome(uint8_t*, std::size_t, int) { return -1; }
@@ -240,6 +241,28 @@ bool SerialPort::open(const std::string& path, int baud)
 }
 
 bool SerialPort::isOpen() const { return fd_ >= 0; }
+
+bool SerialPort::isHealthy()
+{
+    if (fd_ < 0) return false;
+    pollfd pfd{};
+    pfd.fd = fd_;
+    // Some BSD poll implementations only report a terminal hangup when an
+    // input condition is requested, even though POLLHUP itself is returned
+    // independently of the requested event mask.
+    pfd.events = POLLIN;
+    const int r = ::poll(&pfd, 1, 0);
+    if (r < 0) {
+        if (errno == EINTR) return true;
+        setError(path_ + ": health poll: " + std::strerror(errno));
+        return false;
+    }
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        setError(path_ + ": device disconnected");
+        return false;
+    }
+    return true;
+}
 
 void SerialPort::close()
 {
@@ -488,6 +511,17 @@ bool SerialPort::open(const std::string& path, int baud)
 
 bool SerialPort::isOpen() const
 { return handle_ != nullptr && H(handle_) != INVALID_HANDLE_VALUE; }
+
+bool SerialPort::isHealthy()
+{
+    if (!isOpen()) return false;
+    DWORD errors = 0;
+    COMSTAT status{};
+    if (ClearCommError(H(handle_), &errors, &status)) return true;
+    setError(path_ + ": device disconnected: " +
+             win32ErrorText(GetLastError()));
+    return false;
+}
 
 void SerialPort::close()
 {

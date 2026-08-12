@@ -43,9 +43,28 @@ if [ ! -f imgui/imgui.cpp ]; then
 fi
 command -v cmake >/dev/null || { echo "cmake not found." >&2; exit 1; }
 
+# Heavy C++ translation units need close to 1 GiB each on some compilers.
+# Core-count parallelism alone can therefore OOM a many-core machine. Allow an
+# explicit override, otherwise cap jobs by both online CPUs and physical RAM.
+CPU_COUNT="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+MEM_MB="$(awk '/MemTotal/{print int($2 / 1024)}' /proc/meminfo 2>/dev/null || true)"
+JOBS="${POM2_JOBS:-}"
+if [ -z "$JOBS" ]; then
+    JOBS="$CPU_COUNT"
+    if [ -n "$MEM_MB" ]; then
+        RAM_JOBS=$((MEM_MB / 900))
+        [ "$RAM_JOBS" -lt 1 ] && RAM_JOBS=1
+        [ "$JOBS" -gt "$RAM_JOBS" ] && JOBS="$RAM_JOBS"
+    fi
+fi
+case "$JOBS" in
+    ''|*[!0-9]*|0) echo "POM2_JOBS must be a positive integer (got '$JOBS')." >&2; exit 2 ;;
+esac
+
 VERSION="$(sed -nE 's/^project\(pom2_imgui VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)"
 ARCH="$(uname -m)"
 log "POM2 v${VERSION} — Linux ${ARCH} release build"
+log "Parallelism: -j${JOBS} (override with POM2_JOBS=N)"
 
 [ "$DO_CLEAN" = 1 ] && { log "Cleaning ${BUILD_DIR}/"; rm -rf "$BUILD_DIR"; }
 mkdir -p "$DIST_DIR"
@@ -59,12 +78,12 @@ cmake -S . -B "$BUILD_DIR" \
       >/dev/null
 
 log "Building POM2"
-cmake --build "$BUILD_DIR" --target pom2_imgui -j"$(nproc)"
+cmake --build "$BUILD_DIR" --target pom2_imgui -j"$JOBS"
 
 if [ "$RUN_TESTS" = 1 ]; then
     log "Running ctest"
-    cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null
-    ( cd "$BUILD_DIR" && ctest --output-on-failure -j"$(nproc)" )
+    cmake --build "$BUILD_DIR" -j"$JOBS" >/dev/null
+    ( cd "$BUILD_DIR" && ctest --output-on-failure -j"$JOBS" )
 fi
 
 # ─── 1. Relocatable tarball (manual staging for a clean, prefix-free tree) ──

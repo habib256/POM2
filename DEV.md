@@ -2932,7 +2932,7 @@ EPROM dump). Pinned: `grappler_card_smoke` — stub ROM fingerprint
 
 Printouts that outlive the session. `ImageWriter`'s own sheet stack is capped
 at 32 and dies with the process; this writes every ejected sheet to
-`printouts/history/` as a PNG plus a tab-separated index carrying the printer,
+the per-user `printouts/history/` as a PNG plus a tab-separated index carrying the printer,
 ribbon, paper size and raster dimensions. The ImageWriter panel lists them
 newest first and puts one back on the canvas when clicked.
 
@@ -3337,7 +3337,7 @@ disagreement, and the only way to see it is the byte stream, decoded.
 escape sequences with their parameters (`CMD`), bit-image setup (`GFX`),
 page ejects (`PAGE`) and host events (`HOST` — queue depth, BUSY
 transitions, watchdog stalls). Enable it from *Printer settings → Log the
-printer stream to a file* (→ `printouts/imagewriter_trace.log`) or set
+printer stream to a file* (→ the per-user printouts directory) or set
 `POM2_TRACE_PRINTER=1` (or `=<path>`) before launch to catch a printout
 that happens during boot.
 
@@ -4485,4 +4485,3 @@ The short version of the tooling:
 Current hot spots, for orientation: `DiskIICard::lssSync` +
 `DiskImage::getNextTransition` dominate any disk-active workload;
 `M6502::executeOpcode` and `Memory::advanceCycles` dominate the rest.
-

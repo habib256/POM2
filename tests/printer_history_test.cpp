@@ -20,10 +20,17 @@
 // lives in Pom2HgrPaintHost.cpp, which is not linked here — same arrangement
 // imagewriter_pdf_test.cpp uses, and the reason this test does not drag the
 // whole paint-host include cone in for a PNG writer.
+#if defined(__clang__)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image.h"
 #include "stb_image_write.h"
+#if defined(__clang__)
+#  pragma clang diagnostic pop
+#endif
 
 #include "PrinterHistory.h"
 
@@ -208,6 +215,28 @@ void testBadIndexIsIgnored()
     std::printf("  ok: a foreign index empties, a truncated one keeps what parsed\n");
 }
 
+void testIndexCannotEscapeStore()
+{
+    const fs::path dir = scratch("path_escape");
+    const fs::path outside = dir.parent_path() / "do-not-delete.txt";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    std::ofstream(outside) << "sentinel";
+    std::ofstream(dir / "index.txt")
+        << "pom2-printer-history\t1\n"
+        << "../../do-not-delete.txt\t2026-01-01 00:00:00\t1\t0\t0\t8\t11\t1\t1\t144\n";
+
+    std::string err;
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+    assert(h.size() == 0);
+    assert(fs::exists(outside));
+    assert(h.clear(err));
+    assert(fs::exists(outside));
+    fs::remove(outside, ec);
+    std::printf("  ok: index paths cannot escape the history directory\n");
+}
+
 // ── 5. A page whose PNG was deleted by hand drops out ────────────────────
 void testMissingFileDropsRow()
 {
@@ -355,6 +384,7 @@ int main()
     testPagesGroupIntoJobs();
     testTrimsToCap();
     testBadIndexIsIgnored();
+    testIndexCannotEscapeStore();
     testMissingFileDropsRow();
     testEraseAndClear();
     testFileCounterSurvivesReload();

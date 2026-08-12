@@ -79,6 +79,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"   // BeginViewportSideBar (status bar)
+#include "Pom2GL.h"
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
@@ -99,9 +100,6 @@
 // the About-dialog photo loader called from this same translation unit.
 // Pulling the platform-correct header once at the top keeps both sites
 // working without duplicating the #if/#else block.
-#include "Pom2GL.h"
-#include <GLFW/glfw3.h>
-
 // stb_image is bundled (single-header public-domain JPEG/PNG decoder)
 // solely for the About-dialog Apple ][+ photo. The implementation macro
 // is defined *here* so symbols land in MainWindow.cpp.o and nowhere else.
@@ -501,7 +499,8 @@ MainWindow::MainWindow(bool forceIIPlus)
             // already writes there.
             {
                 std::string herr;
-                if (!printerHistory->open("printouts/history", herr))
+                const auto historyDir = pom2::userDataDir() / "printouts" / "history";
+                if (!printerHistory->open(historyDir.string(), herr))
                     pom2::log().warn("PrinterHistory", herr);
             }
 
@@ -526,7 +525,8 @@ MainWindow::MainWindow(bool forceIIPlus)
                 if (*t && std::strcmp(t, "0") != 0) {
                     const std::string path =
                         (std::strcmp(t, "1") == 0)
-                            ? std::string("printouts/imagewriter_trace.log")
+                            ? (pom2::userDataDir() / "printouts" /
+                               "imagewriter_trace.log").string()
                             : std::string(t);
                     std::string err;
                     if (imageWriter->startTrace(path, err))
@@ -5385,7 +5385,8 @@ void MainWindow::renderPrinterPanelWindow()
 #endif
         char stamp[32];
         std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
-        printerSavePath = std::string("printouts/spool-") + stamp + ".txt";
+        printerSavePath = (pom2::userDataDir() / "printouts" /
+                           (std::string("spool-") + stamp + ".txt")).string();
     }
 
     char buf[512];
@@ -5635,7 +5636,7 @@ void MainWindow::renderImageWriterWindow()
             host.sourceLabel += (i ? ", " : "") + ignored[i];
         host.sourceLabel += ")";
     }
-    host.saveDir = "printouts";
+    host.saveDir = (pom2::userDataDir() / "printouts").string();
 
     // ── Print history (printer plan phase E) ─────────────────────────────
     // The panel lists and asks; the store stays here. Rebuilt each frame,
@@ -8131,6 +8132,10 @@ bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
                                     int tcpPort, std::string& errOut)
 {
     if (slot < 1 || slot > 7) { errOut = "slot must be 1-7"; return false; }
+    if (pom2::profileConfig(activeProfile).noPhysicalSlots) {
+        errOut = "the active //c-class profile has no physical expansion slots";
+        return false;
+    }
 
     std::lock_guard<std::mutex> lk(controller->stateMutex());
     auto& bus = controller->memory().slotBus();

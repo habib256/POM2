@@ -351,9 +351,7 @@ void FujiNetCard::handleSmartPortCall()
 
     uint16_t ret = static_cast<uint16_t>(readGuest(retLoAddr)) |
                    static_cast<uint16_t>(readGuest(retHiAddr) << 8);
-
-    const uint8_t  command    = readGuest(static_cast<uint16_t>(ret + 1));
-    const uint16_t cmdList    = readGuest16(static_cast<uint16_t>(ret + 2));
+    const uint16_t callRet = ret;
 
     // Step the return address past the three inline bytes so the ROM's RTS
     // lands on the instruction after them.
@@ -361,15 +359,34 @@ void FujiNetCard::handleSmartPortCall()
     writeGuest(retLoAddr, static_cast<uint8_t>(ret & 0xFF));
     writeGuest(retHiAddr, static_cast<uint8_t>(ret >> 8));
 
+    // The three inline bytes and the four-byte command list must be contiguous
+    // guest RAM. Validate before any uint16_t addition can wrap $FFFF->$0000.
+    const uint32_t inlineWide = static_cast<uint32_t>(callRet) + 1;
+    if (inlineWide > 0xFFFF ||
+        !rangeIsSafe(static_cast<uint16_t>(inlineWide), 3)) {
+        finish(kSpIoError);
+        return;
+    }
+    const uint16_t inlineAddr = static_cast<uint16_t>(inlineWide);
+    const uint8_t  command = readGuest(inlineAddr);
+    const uint16_t cmdList = readGuest16(static_cast<uint16_t>(inlineAddr + 1));
+    if (!rangeIsSafe(cmdList, 4)) { finish(kSpIoError); return; }
+
     const uint8_t  unit    = readGuest(static_cast<uint16_t>(cmdList + 1));
     const uint16_t payload = readGuest16(static_cast<uint16_t>(cmdList + 2));
     // Command-specific parameters follow the count/unit/pointer triple.
-    const uint16_t params  = static_cast<uint16_t>(cmdList + 4);
+    const uint32_t paramsWide = static_cast<uint32_t>(cmdList) + 4;
+    const auto paramsSafe = [paramsWide](std::size_t n) {
+        return paramsWide <= 0xFFFF &&
+               FujiNetCard::rangeIsSafe(static_cast<uint16_t>(paramsWide), n);
+    };
+    const uint16_t params = static_cast<uint16_t>(paramsWide);
 
     const bool connected = link_.isConnected();
 
     switch (command) {
     case kSpStatus: {
+        if (!paramsSafe(1)) { finish(kSpIoError); return; }
         const uint8_t code = readGuest(params);
         // Unit 0, status code 0 = "how many devices?". Answered locally so a
         // scanning guest gets a sane answer with no peer attached, and does
@@ -386,6 +403,7 @@ void FujiNetCard::handleSmartPortCall()
     }
 
     case kSpReadBlock: {
+        if (!paramsSafe(3)) { finish(kSpIoError); return; }
         const uint32_t block = static_cast<uint32_t>(readGuest(params)) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 1))) << 8) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
@@ -398,6 +416,7 @@ void FujiNetCard::handleSmartPortCall()
     }
 
     case kSpWriteBlock: {
+        if (!paramsSafe(3)) { finish(kSpIoError); return; }
         const uint32_t block = static_cast<uint32_t>(readGuest(params)) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 1))) << 8) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
@@ -415,13 +434,18 @@ void FujiNetCard::handleSmartPortCall()
     }
 
     case kSpControl: {
+        if (!paramsSafe(1) || !rangeIsSafe(payload, 2)) {
+            finish(kSpIoError);
+            return;
+        }
         const uint8_t code = readGuest(params);
         // The control list is length-prefixed (2 bytes, little-endian) at the
         // pointer the parameter list carries.
         const uint16_t listLen = readGuest16(payload);
         std::vector<uint8_t> list(listLen);
-        if (listLen &&
-            !readGuestBlock(static_cast<uint16_t>(payload + 2), list.data(), listLen)) {
+        const uint32_t listAddr = static_cast<uint32_t>(payload) + 2;
+        if (listLen && (listAddr > 0xFFFF ||
+            !readGuestBlock(static_cast<uint16_t>(listAddr), list.data(), listLen))) {
             finish(kSpIoError);
             return;
         }
@@ -449,6 +473,7 @@ void FujiNetCard::handleSmartPortCall()
     }
 
     case kSpRead: {
+        if (!paramsSafe(5)) { finish(kSpIoError); return; }
         const uint16_t count = readGuest16(params);
         const uint32_t addr  = static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 3))) << 8) |
@@ -463,6 +488,7 @@ void FujiNetCard::handleSmartPortCall()
     }
 
     case kSpWrite: {
+        if (!paramsSafe(5)) { finish(kSpIoError); return; }
         const uint16_t count = readGuest16(params);
         const uint32_t addr  = static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 3))) << 8) |

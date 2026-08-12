@@ -35,6 +35,12 @@ namespace pom2 {
 /// `GetModuleFileNameW` (Windows).
 std::filesystem::path executableDir();
 
+/// Writable per-user POM2 data directory. Unlike resourceSearchDirs(), this
+/// never points at the install tree or the current working directory. The
+/// directory is created best-effort and is suitable for printouts and other
+/// durable application output.
+std::filesystem::path userDataDir();
+
 /// Ordered, de-duplicated base directories searched for bundled assets.
 /// Search order (first hit wins):
 ///   1. CWD                        — dev (run_emulator.sh from repo root)

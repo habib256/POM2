@@ -71,7 +71,7 @@ bool SpTcpTransport::startListening(std::string& errOut)
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = hostToNet16(port_);
-    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);   // loopback ONLY
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // loopback ONLY
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         errOut = "bind(127.0.0.1:" + std::to_string(port_) + "): " +

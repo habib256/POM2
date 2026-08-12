@@ -202,8 +202,8 @@ void testChildDoesNotInheritListeners()
         ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         sockaddr_in a{};
         a.sin_family      = AF_INET;
-        a.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
-        a.sin_port        = ::htons(static_cast<uint16_t>(portOut));
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port        = htons(static_cast<uint16_t>(portOut));
         if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0 ||
             ::listen(fd, 2) != 0) {
             ::close(fd);
@@ -211,7 +211,7 @@ void testChildDoesNotInheritListeners()
         }
         socklen_t len = sizeof(a);
         ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len);
-        portOut = ::ntohs(a.sin_port);
+        portOut = ntohs(a.sin_port);
         return fd;
     };
 

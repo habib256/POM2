@@ -20,17 +20,37 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Resolve the per-user POM2 state directory. Mirrors the XDG basedir
-// convention on Unix; on Windows we'd use %APPDATA%, but POM2 is
-// cross-platform-best-effort and a simple HOME-based path is enough.
+// Resolve the per-user POM2 state directory.
 fs::path resolveStorePath()
 {
+#ifdef _WIN32
+    if (const char* appData = std::getenv("APPDATA"); appData && *appData) {
+        fs::path dir = fs::path(appData) / "POM2";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (!ec) return dir / "state.cfg";
+    }
+    if (const char* local = std::getenv("LOCALAPPDATA"); local && *local) {
+        fs::path dir = fs::path(local) / "POM2";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (!ec) return dir / "state.cfg";
+    }
+#endif
     const char* home = std::getenv("HOME");
     if (!home || !*home) {
         // Fall back to the working directory.
         return fs::path("pom2_state.cfg");
     }
-    fs::path xdg = fs::path(home) / ".config" / "POM2";
+    fs::path xdg;
+#if defined(__APPLE__)
+    xdg = fs::path(home) / "Library" / "Application Support" / "POM2";
+#else
+    if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
+        xdg = fs::path(config) / "POM2";
+    else
+        xdg = fs::path(home) / ".config" / "POM2";
+#endif
     std::error_code ec;
     fs::create_directories(xdg, ec);
     if (!ec && fs::is_directory(xdg, ec)) {

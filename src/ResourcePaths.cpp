@@ -63,6 +63,34 @@ fs::path executableDir()
     return cached;
 }
 
+fs::path userDataDir()
+{
+    static const fs::path cached = [] {
+        fs::path dir;
+#if defined(_WIN32)
+        if (const char* local = std::getenv("LOCALAPPDATA"); local && *local)
+            dir = fs::path(local) / "POM2";
+#elif defined(__APPLE__)
+        if (const char* home = std::getenv("HOME"); home && *home)
+            dir = fs::path(home) / "Library" / "Application Support" / "POM2";
+#else
+        if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+            dir = fs::path(xdg) / "POM2";
+        else if (const char* home = std::getenv("HOME"); home && *home)
+            dir = fs::path(home) / ".local" / "share" / "POM2";
+#endif
+        if (dir.empty()) {
+            std::error_code ec;
+            dir = fs::temp_directory_path(ec) / "POM2";
+            if (ec) dir = fs::path("POM2");
+        }
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        return dir;
+    }();
+    return cached;
+}
+
 const std::vector<fs::path>& resourceSearchDirs()
 {
     static const std::vector<fs::path> cached = [] {

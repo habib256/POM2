@@ -54,7 +54,7 @@ if [ -z "${POM2_APPIMAGE_SKIP_BUILD:-}" ]; then
           ${POM2_CMAKE_EXTRA_ARGS:-}
 
     log "Building"
-    cmake --build "$BUILD_DIR" -j"$(nproc)"
+    cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}"
 else
     log "POM2_APPIMAGE_SKIP_BUILD set — packaging the existing ${BUILD_DIR}"
 fi

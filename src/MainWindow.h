@@ -519,7 +519,7 @@ private:
     /// speed either way. Opt in from the ImageWriter panel.
     bool         printerBackPressure = false;
     // Pending path the user has typed into the "Save spool as…" text box.
-    // Auto-suggested with a timestamped filename under ./printouts/ on
+    // Auto-suggested with a timestamped filename under the per-user printouts
     // first open; reused across save clicks within the same session.
     std::string  printerSavePath;
     // Last save outcome — shown under the Save button, persists until the

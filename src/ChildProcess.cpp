@@ -246,7 +246,9 @@ namespace { HANDLE H(void* h) { return static_cast<HANDLE>(h); } }
 void ChildProcess::reset()
 {
     if (handle_) CloseHandle(H(handle_));
+    if (job_) CloseHandle(H(job_));
     handle_ = nullptr;
+    job_ = nullptr;
 }
 
 bool ChildProcess::start(const std::string& exePath,
@@ -262,10 +264,21 @@ bool ChildProcess::start(const std::string& exePath,
     auto quote = [](const std::string& a) {
         if (a.find_first_of(" \t\"") == std::string::npos) return a;
         std::string q = "\"";
+        std::size_t slashes = 0;
         for (char c : a) {
-            if (c == '"') q += '\\';
-            q += c;
+            if (c == '\\') { ++slashes; continue; }
+            if (c == '"') {
+                q.append(slashes * 2 + 1, '\\');
+                q += '"';
+            } else {
+                q.append(slashes, '\\');
+                q += c;
+            }
+            slashes = 0;
         }
+        // Backslashes immediately before the closing quote must be doubled,
+        // otherwise the CRT treats the last one as escaping that quote.
+        q.append(slashes * 2, '\\');
         q += '"';
         return q;
     };
@@ -279,21 +292,51 @@ bool ChildProcess::start(const std::string& exePath,
     std::vector<char> mutableCmd(cmd.begin(), cmd.end());
     mutableCmd.push_back('\0');
 
+    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    if (!job) {
+        errOut = "CreateJobObject failed (" +
+                 std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits))) {
+        errOut = "SetInformationJobObject failed (" +
+                 std::to_string(GetLastError()) + ")";
+        CloseHandle(job);
+        return false;
+    }
+
     // CREATE_NO_WINDOW: the helper is a console program, and POM2 is not —
     // without this every start pops a console window on the user's desktop.
     // CREATE_NEW_PROCESS_GROUP is the counterpart of setpgid() above.
     if (!CreateProcessA(exePath.c_str(), mutableCmd.data(), nullptr, nullptr,
                         FALSE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                            CREATE_SUSPENDED,
                         nullptr,
                         workingDir.empty() ? nullptr : workingDir.c_str(),
                         &si, &pi)) {
         const DWORD e = GetLastError();
         errOut = exePath + ": CreateProcess failed (" + std::to_string(e) + ")";
+        CloseHandle(job);
         return false;
     }
+    if (!AssignProcessToJobObject(job, pi.hProcess)) {
+        const DWORD e = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(job);
+        errOut = exePath + ": AssignProcessToJobObject failed (" +
+                 std::to_string(e) + ")";
+        return false;
+    }
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     handle_   = pi.hProcess;
+    job_      = job;
     path_     = exePath;
     exitCode_ = -1;
     return true;
@@ -337,7 +380,10 @@ void ChildProcess::stop(int graceMs)
             }
         }
     }
-    if (!exited) TerminateProcess(H(handle_), 1);
+    if (!exited) {
+        if (job_) TerminateJobObject(H(job_), 1);
+        else TerminateProcess(H(handle_), 1);
+    }
     WaitForSingleObject(H(handle_), 1000);
     exitCode_ = -1;
     reset();

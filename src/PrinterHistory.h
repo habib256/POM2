@@ -13,8 +13,8 @@
 //
 // ── Layout on disk ────────────────────────────────────────────────────────
 //
-//   printouts/history/index.txt        one line per page, tab-separated
-//   printouts/history/p000123.png      the page raster, 8-bit greyscale or
+//   <user-data>/printouts/history/index.txt    one line per page, tab-separated
+//   <user-data>/printouts/history/p000123.png  the page raster, 8-bit greyscale or
 //                                      RGB when the ribbon was colour
 //
 // ── Why the index is not JSON ─────────────────────────────────────────────

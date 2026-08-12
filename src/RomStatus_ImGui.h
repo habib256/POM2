@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pom2 {
@@ -53,6 +54,10 @@ public:
 private:
     // ─── One probed file ────────────────────────────────────────────────
     struct FileState {
+        FileState() = default;
+        explicit FileState(std::string candidatePath)
+            : candidate(std::move(candidatePath)) {}
+
         std::string   candidate;    ///< As written in the probe list.
         std::string   resolved;     ///< Absolute path, empty when absent.
         std::uint64_t size = 0;

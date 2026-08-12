@@ -223,7 +223,7 @@ actually send) all land on paper.
 Front panel: **Form feed** ejects the sheet onto the stack (a blank sheet
 is not ejected, like the real button), **Reset printer** returns it to
 factory settings, and **Save sheet as PNG** / **Save all sheets** write to
-`printouts/`. *Printer settings* holds the paper size, the page raster
+the per-user POM2 data directory under `printouts/`. *Printer settings* holds the paper size, the page raster
 resolution, and **Auto line-feed after CR** — leave that on for Apple II
 software (which sends CR and never LF); turn it off if a driver sends both
 and everything double-spaces.

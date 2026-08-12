@@ -101,6 +101,8 @@ const char* shortLocaleLabel(CharRomLocale l) {
         case CharRomLocale::AppleIIeUK_Unenhanced:            return "UK-U";
         case CharRomLocale::AppleIIeGerman:                   return "DE";
         case CharRomLocale::AppleIIeGermanImproved:           return "DE+";
+        case CharRomLocale::AppleIIeFrench8k_FR:              return "FR-8K";
+        case CharRomLocale::AppleIIeFrench8k_US:              return "US-8K";
     }
     return "?";
 }

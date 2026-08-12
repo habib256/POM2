@@ -67,7 +67,7 @@ cmake -S . -B build-appimage \
     -DPOM2_ENABLE_TESTS=OFF \
     -DPOM2_GLES=ON \
     -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
-cmake --build build-appimage -j"$(nproc)"
+cmake --build build-appimage --parallel "${POM2_JOBS:-2}"
 
 # --- Package ----------------------------------------------------------------
 export POM2_APPIMAGE_SKIP_BUILD=1

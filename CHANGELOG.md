@@ -5,6 +5,20 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-12 — Release hardening for 0.8
+
+The release path now caps build concurrency across CI and every native
+packager, with `POM2_JOBS` available as an explicit override.  This prevents
+the all-core builds that could exhaust RAM on development and packaging hosts.
+The release workflow also rejects tags that disagree with CMake's project
+version and runs the quality gate before publishing artifacts.
+
+Runtime hardening in this pass covers writable per-user state directories,
+printer-history path confinement, FujiNet guest-address overflow checks,
+serial hot-unplug detection, clean GUI termination, and Windows helper-process
+quoting/lifetime.  Offline test configuration is now graceful when pinned
+external CPU vectors are unavailable, while using them whenever cached.
+
 ## 2026-08-10 — Bug sweep over the FujiNet relay and the printer stack
 
 A multi-agent review of the previous commit, then an adversarial pass that

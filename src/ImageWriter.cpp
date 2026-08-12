@@ -193,8 +193,6 @@ inline int paramDigit(uint8_t p)
 // unidirectional (the head only prints left-to-right so the dot columns
 // stay in register), which halves the effective rate. Paper transport is
 // quoted as a 5 in/s slew.
-constexpr double kDraftCps = 250.0;
-constexpr double kNlqCps   = 45.0;
 constexpr double kQuotedCpi = 12.0;
 constexpr double kFeedIps  = 5.0;
 /// Never bank more than this much mechanism time: a hidden window or a

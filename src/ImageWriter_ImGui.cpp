@@ -606,7 +606,7 @@ void ImageWriter_ImGui::render(bool* open, ImageWriter& iw,
             ImGui::SetTooltip(
                 "Writes every byte the printer receives, decoded (escape "
                 "sequences, graphics setup, page ejects),\nto "
-                "printouts/imagewriter_trace.log. Turn this on when a "
+                "the per-user printouts folder. Turn this on when a "
                 "printout comes out wrong —\nthe log says whether the guest "
                 "is speaking this printer's language.");
         if (iw.tracing()) {

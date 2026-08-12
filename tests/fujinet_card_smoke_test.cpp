@@ -92,7 +92,7 @@ public:
         sockaddr_in addr{};
         addr.sin_family      = AF_INET;
         addr.sin_port        = hostToNet16(port);
-        addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         assert(::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
         th_ = std::thread(&FakePeer::run, this);
     }
@@ -578,6 +578,24 @@ void testIoPageBufferRefused()
     std::printf("  ok: a buffer inside $C0xx is refused, soft switches untouched\n");
 }
 
+void testControlListCannotWrapAddressSpace()
+{
+    Machine m;
+    // CONTROL payload points at $FFFF. Reading its uint16 length used to read
+    // the high byte from $0000, then payload+2 wrapped to $0001.
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x01);
+    m.mem.memWrite(0x0312, 0xFF);
+    m.mem.memWrite(0x0313, 0xFF);
+    m.mem.memWrite(0x0314, 0x01);
+    placeSmartPortCall(m, kSpControl, 0x0310);
+
+    m.run(20000);
+    assert(m.cpu->getProgramCounter() == 0x0306);
+    assert(m.cpu->getAccumulator() == kSpIoError);
+    std::printf("  ok: CONTROL list at $FFFF cannot wrap into page zero\n");
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // 6. Snapshot blob
 // ═════════════════════════════════════════════════════════════════════════
@@ -677,6 +695,7 @@ int main()
     testDeviceCountWithoutPeer();
     testForwardedCallWithoutPeerIsNoDevice();
     testIoPageBufferRefused();
+    testControlListCannotWrapAddressSpace();
     testSnapshotBlob();
     testPrinterTap();
 

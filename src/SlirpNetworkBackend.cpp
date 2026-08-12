@@ -58,10 +58,13 @@ public:
     {
         SlirpConfig cfg;
         std::memset(&cfg, 0, sizeof(cfg));
-        // Version 1 is all POM2 needs and is the widest compatibility
-        // window (libslirp >= 4.1). Higher versions only add outbound
-        // address binding, DNS/DHCP disable and IPv6 extras.
+        // The socket polling API arrived with libslirp 4.9 / config v6.
+        // Older supported releases retain the fd API below.
+#if SLIRP_CHECK_VERSION(4, 9, 0)
+        cfg.version    = 6;
+#else
         cfg.version    = 1;
+#endif
         cfg.restricted = 0;
         cfg.in_enabled = true;
         cfg.vnetwork.s_addr     = htonl(0x0A000200);  // 10.0.2.0
@@ -78,19 +81,24 @@ public:
         cfg.disable_host_loopback = false;
         cfg.enable_emu = false;
 
-        static const SlirpCb kCallbacks = {
-            /* send_packet        */ &SlirpBackend::cbSendPacket,
-            /* guest_error        */ &SlirpBackend::cbGuestError,
-            /* clock_get_ns       */ &SlirpBackend::cbClockGetNs,
-            /* timer_new          */ &SlirpBackend::cbTimerNew,
-            /* timer_free         */ &SlirpBackend::cbTimerFree,
-            /* timer_mod          */ &SlirpBackend::cbTimerMod,
-            /* register_poll_fd   */ &SlirpBackend::cbRegisterPollFd,
-            /* unregister_poll_fd */ &SlirpBackend::cbUnregisterPollFd,
-            /* notify             */ &SlirpBackend::cbNotify,
-            /* init_completed     */ nullptr,   // version >= 4 only
-            /* timer_new_opaque   */ nullptr,   // version >= 4 only
-        };
+        static const SlirpCb kCallbacks = [] {
+            SlirpCb cb{};
+            cb.send_packet  = &SlirpBackend::cbSendPacket;
+            cb.guest_error  = &SlirpBackend::cbGuestError;
+            cb.clock_get_ns = &SlirpBackend::cbClockGetNs;
+            cb.timer_new    = &SlirpBackend::cbTimerNew;
+            cb.timer_free   = &SlirpBackend::cbTimerFree;
+            cb.timer_mod    = &SlirpBackend::cbTimerMod;
+            cb.notify       = &SlirpBackend::cbNotify;
+#if SLIRP_CHECK_VERSION(4, 9, 0)
+            cb.register_poll_socket   = &SlirpBackend::cbRegisterPollSocket;
+            cb.unregister_poll_socket = &SlirpBackend::cbUnregisterPollSocket;
+#else
+            cb.register_poll_fd   = &SlirpBackend::cbRegisterPollFd;
+            cb.unregister_poll_fd = &SlirpBackend::cbUnregisterPollFd;
+#endif
+            return cb;
+        }();
 
         slirp_ = slirp_new(&cfg, &kCallbacks, this);
         if (!slirp_) {
@@ -153,7 +161,12 @@ public:
         // the CPU thread under stateMutex.
         pollFds_.clear();
         uint32_t timeoutMs = 0;
-        slirp_pollfds_fill(slirp_, &timeoutMs, &SlirpBackend::cbAddPoll, this);
+#if SLIRP_CHECK_VERSION(4, 9, 0)
+        slirp_pollfds_fill_socket(slirp_, &timeoutMs,
+                                  &SlirpBackend::cbAddPollSocket, this);
+#else
+        slirp_pollfds_fill(slirp_, &timeoutMs, &SlirpBackend::cbAddPollFd, this);
+#endif
 
         int rc = 0;
         if (!pollFds_.empty())
@@ -243,11 +256,16 @@ private:
         if (auto* t = static_cast<SlirpTimer*>(timer)) t->expireMs = expireTimeMs;
     }
 
+#if SLIRP_CHECK_VERSION(4, 9, 0)
+    static void cbRegisterPollSocket(slirp_os_socket /*fd*/, void* /*opaque*/) {}
+    static void cbUnregisterPollSocket(slirp_os_socket /*fd*/, void* /*opaque*/) {}
+#else
     static void cbRegisterPollFd(int /*fd*/, void* /*opaque*/) {}
     static void cbUnregisterPollFd(int /*fd*/, void* /*opaque*/) {}
+#endif
     static void cbNotify(void* /*opaque*/) {}
 
-    static int cbAddPoll(int fd, int events, void* opaque)
+    static int addPollFd(int fd, int events, void* opaque)
     {
         auto* self = static_cast<SlirpBackend*>(opaque);
         pollfd p{};
@@ -261,6 +279,18 @@ private:
         self->pollFds_.push_back(p);
         return static_cast<int>(self->pollFds_.size()) - 1;
     }
+
+#if SLIRP_CHECK_VERSION(4, 9, 0)
+    static int cbAddPollSocket(slirp_os_socket fd, int events, void* opaque)
+    {
+        return addPollFd(fd, events, opaque);
+    }
+#else
+    static int cbAddPollFd(int fd, int events, void* opaque)
+    {
+        return addPollFd(fd, events, opaque);
+    }
+#endif
 
     static int cbGetREvents(int idx, void* opaque)
     {

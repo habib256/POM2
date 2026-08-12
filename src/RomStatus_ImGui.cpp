@@ -136,7 +136,7 @@ void RomStatus_ImGui::rescan()
         m.name  = std::string(cfg.displayName);
         m.note  = "The profile cannot start: POM2 falls back to whatever "
                   "generic dump resolves, and warns that it may not match.";
-        for (const auto& c : cfg.romProbeOrder) m.files.push_back({c});
+        for (const auto& c : cfg.romProbeOrder) m.files.emplace_back(c);
         scanProbe(m);
         if (m.usedIndex < 0) ++missingRequired_;
         machine_.push_back(std::move(m));
@@ -145,7 +145,7 @@ void RomStatus_ImGui::rescan()
         c.group = "Character generator";
         c.name  = std::string(cfg.displayName);
         c.note  = "Text mode renders from the built-in fallback glyphs.";
-        for (const auto& cc : cfg.charRomProbeOrder) c.files.push_back({cc});
+        for (const auto& cc : cfg.charRomProbeOrder) c.files.emplace_back(cc);
         scanProbe(c);
         if (c.usedIndex < 0) ++missingOptional_;
         charRom_.push_back(std::move(c));
@@ -166,7 +166,7 @@ void RomStatus_ImGui::rescan()
                   "View \xe2\x86\x92 Character set falls back to the "
                   "profile default.";
         p.requiredSize = e.isIIeClass ? 4096u : 2048u;
-        p.files.push_back({e.path});
+        p.files.emplace_back(e.path);
         scanProbe(p);
         if (p.usedIndex < 0) ++missingOptional_;
         locale_.push_back(std::move(p));
@@ -195,8 +195,8 @@ void RomStatus_ImGui::rescan()
                 p.name  = stem;
                 p.note  = "That mechanical sound is simply not played; the "
                           "rest of the bank still works.";
-                p.files.push_back({ std::string("roms/floppy_samples/") +
-                                    b.prefix + "_" + stem + ".wav" });
+                p.files.emplace_back(std::string("roms/floppy_samples/") +
+                                     b.prefix + "_" + stem + ".wav");
                 scanProbe(p);
                 if (p.usedIndex < 0) ++missingOptional_;
                 sounds_.push_back(std::move(p));

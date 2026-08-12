@@ -26,7 +26,6 @@ namespace {
 // Mockingboard.
 constexpr float kAyClockHz       = static_cast<float>(POM2_CPU_CLOCK_HZ);
 constexpr float kAyToneStepHz    = kAyClockHz / 8.0f;
-constexpr float kAyNoiseStepHz   = kAyClockHz / 8.0f;
 
 // Amplitude table lives in AyPsgSynth.h since 2026-08-01, shared with
 // MockingboardCard (the old "MAME build_single_table" citation on both

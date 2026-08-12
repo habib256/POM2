@@ -40,7 +40,7 @@ cmake -S . -B build-appimage \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DPOM2_ENABLE_TESTS=OFF \
     -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
-cmake --build build-appimage -j"$(nproc)"
+cmake --build build-appimage --parallel "${POM2_JOBS:-2}"
 
 # --- Package the AppImage ----------------------------------------------------
 #     SKIP_BUILD: the binary is already built above with the exact linker flags

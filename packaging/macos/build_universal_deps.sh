@@ -54,7 +54,7 @@ cmake -S "glfw-${GLFW_VER}" -B glfw-build \
       -DBUILD_SHARED_LIBS=OFF \
       -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF \
       -DCMAKE_INSTALL_PREFIX="${OUT_ABS}/glfw"
-cmake --build glfw-build -j"$(sysctl -n hw.ncpu)" --target install
+cmake --build glfw-build --parallel "${POM2_JOBS:-2}" --target install
 
 echo "==> Verifying both slices are present"
 LIB="${OUT_ABS}/glfw/lib/libglfw3.a"

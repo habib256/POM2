@@ -73,6 +73,15 @@ std::string sanitise(std::string s)
     return s;
 }
 
+bool validPageFile(const std::string& name)
+{
+    if (name.size() != 11 || name.front() != 'p' ||
+        name.compare(7, 4, ".png") != 0)
+        return false;
+    return std::all_of(name.begin() + 1, name.begin() + 7,
+                       [](unsigned char c) { return c >= '0' && c <= '9'; });
+}
+
 } // namespace
 
 // ── Open / index ─────────────────────────────────────────────────────────
@@ -127,6 +136,9 @@ bool PrinterHistory::readIndex()
         if (!std::getline(ls, w, '\t'))         continue;
         if (!std::getline(ls, h, '\t'))         continue;
         if (!std::getline(ls, dpi))             continue;
+        // Never let an edited/corrupt index turn erase/trim into deletion
+        // outside the history directory.
+        if (!validPageFile(p.file)) continue;
 
         try {
             p.job    = std::stoull(job);
@@ -149,12 +161,8 @@ bool PrinterHistory::readIndex()
         nextJob_ = std::max(nextJob_, p.job + 1);
         // File names are pNNNNNN.png; recover the counter so a new page never
         // overwrites an old one.
-        if (p.file.size() > 5) {
-            try {
-                nextFile_ = std::max<uint64_t>(
-                    nextFile_, std::stoull(p.file.substr(1)) + 1);
-            } catch (...) { /* non-standard name: leave the counter alone */ }
-        }
+        nextFile_ = std::max<uint64_t>(
+            nextFile_, std::stoull(p.file.substr(1, 6)) + 1);
         pages_.push_back(std::move(p));
     }
 

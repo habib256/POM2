@@ -163,7 +163,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     // a stale screen.
     constexpr size_t kBase = 0x0400, kLen = 0x0800;
     const uint8_t* mainRam = mem.data();
-    const uint8_t* auxRam  = mem.auxData();
+    const uint8_t* auxBytes = mem.auxData();
 
     TextFrameKey k;
     k.valid       = true;
@@ -192,7 +192,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
                   : -1;
     k.vram.resize(kLen * 2 + crom.size());
     std::memcpy(k.vram.data(),            mainRam + kBase, kLen);
-    std::memcpy(k.vram.data() + kLen,     auxRam  + kBase, kLen);
+    std::memcpy(k.vram.data() + kLen,     auxBytes + kBase, kLen);
     if (!crom.empty())
         std::memcpy(k.vram.data() + kLen * 2, crom.data(), crom.size());
 

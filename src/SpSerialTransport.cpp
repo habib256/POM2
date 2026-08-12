@@ -127,6 +127,17 @@ int SpSerialTransport::readSome(uint8_t* p, std::size_t n, int timeoutMs)
     return r;
 }
 
+bool SpSerialTransport::checkPeerAlive()
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!port_.isHealthy()) {
+        std::lock_guard<std::mutex> st(statusMtx_);
+        lastError_ = port_.lastError();
+        return false;
+    }
+    return true;
+}
+
 void SpSerialTransport::dropPeer()
 {
     std::string closed;

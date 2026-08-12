@@ -81,8 +81,9 @@ emcmake cmake -S . -B "$BUILD_DIR" \
     -DPOM2_ENABLE_TESTS=OFF \
     "${CMAKE_EXTRA[@]}"
 
-# Build. -j auto: emmake picks reasonable parallelism.
-cmake --build "$BUILD_DIR" -j
+# Keep large C++ translation units from exhausting RAM. Override explicitly on
+# a builder known to have more headroom.
+cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}"
 
 # Keep accidental --with-data builds from overwriting the tracked wasm/POM2.data
 # with a file GitHub will reject.

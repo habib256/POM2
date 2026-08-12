@@ -98,6 +98,7 @@ private:
 #if POM2_HAS_CHILD_PROCESS
 #  ifdef _WIN32
     void* handle_ = nullptr;      ///< HANDLE, kept void* to keep windows.h out
+    void* job_    = nullptr;      ///< Job Object kills the whole helper tree
 #  else
     int   pid_ = -1;
 #  endif
