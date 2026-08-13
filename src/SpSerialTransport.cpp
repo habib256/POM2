@@ -92,6 +92,10 @@ bool SpSerialTransport::pollForPeer(int timeoutMs)
         lastError_ = port_.lastError();
         return false;
     }
+    if (stopping_.load()) {
+        port_.close();
+        return false;
+    }
 
     {
         std::lock_guard<std::mutex> st(statusMtx_);

@@ -474,6 +474,29 @@ void testCounterBeyondSixDigitsAndOrphanCleanup()
     std::printf("  ok: counters beyond six digits reload; safe orphans clean up\n");
 }
 
+void testRepeatedIndexRowsAreBounded()
+{
+    const fs::path dir = scratch("repeated_rows");
+    std::string err;
+    fs::create_directories(dir);
+    const auto page = makePage(1, 1, 1);
+    std::vector<uint8_t> rgba;
+    ImageWriter::pageToRgba(page, rgba);
+    assert(stbi_write_png((dir / "p000001.png").string().c_str(), 1, 1, 4,
+                          rgba.data(), 4));
+    std::ofstream index(dir / "index.txt");
+    index << "pom2-printer-history\t1\n";
+    for (size_t i = 0; i < PrinterHistory::kMaxPages + 50; ++i)
+        index << "p000001.png\t2026-01-01 00:00:00\t" << (i + 1)
+              << "\t0\t0\t8\t11\t1\t1\t144\n";
+    index.close();
+
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+    assert(h.size() == PrinterHistory::kMaxPages);
+    std::printf("  ok: repeated index rows are capped during parsing\n");
+}
+
 } // namespace
 
 int main()
@@ -491,6 +514,7 @@ int main()
     testRejectsMalformedRaster();
     testIndexFailureRollsBackAndRetries();
     testCounterBeyondSixDigitsAndOrphanCleanup();
+    testRepeatedIndexRowsAreBounded();
 
     std::puts("printer_history: OK");
     return 0;

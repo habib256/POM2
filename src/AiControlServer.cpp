@@ -320,6 +320,20 @@ void applyRecvTimeout(pom2::socket_t fd, int timeoutMs)
 #endif
 }
 
+void applySendTimeout(pom2::socket_t fd, int timeoutMs)
+{
+#ifdef _WIN32
+    const DWORD ms = static_cast<DWORD>(timeoutMs);
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+                 reinterpret_cast<const char*>(&ms), sizeof(ms));
+#else
+    struct timeval tv{};
+    tv.tv_sec  = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+}
+
 bool sendAll(pom2::socket_t fd, const char* buf, size_t n)
 {
     while (n > 0) {
@@ -461,6 +475,10 @@ void AiControlServer::stop()
     // an in-flight accept(), creating a use-after-close window. Mirrors
     // SuperSerialCard::stopListening() exactly.
     pom2::shutdownBoth(listenFd_.load(std::memory_order_acquire));
+    {
+        std::lock_guard<std::mutex> lk(clientFdMtx_);
+        pom2::shutdownBoth(clientFd_);
+    }
     if (worker_.joinable()) worker_.join();
     pom2::closeHostSocketValue(
         listenFd_.exchange(pom2::kInvalidSocket, std::memory_order_acq_rel));
@@ -482,9 +500,17 @@ void AiControlServer::runWorker()
             listenFd_.load(std::memory_order_acquire), 200, fd, peer);
         if (pa == pom2::PollAccept::Retry)    continue;
         if (pa == pom2::PollAccept::Shutdown) break;
-        if (stopRequested_) { pom2::closeHostSocketValue(fd); break; }
+        {
+            std::lock_guard<std::mutex> lk(clientFdMtx_);
+            if (stopRequested_) {
+                pom2::closeHostSocketValue(fd);
+                break;
+            }
+            clientFd_ = fd;
+        }
         pom2::disableSigpipe(fd);
         pom2::setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
+        applySendTimeout(fd, kRecvTimeoutMs);
         {
             std::lock_guard<std::mutex> lk(mtx_);
             lastClient_ = pom2::peerAddressText(peer);
@@ -498,6 +524,10 @@ void AiControlServer::runWorker()
             pom2::log().warn("AICtrl", std::string("handler exception: ") + e.what());
         } catch (...) {
             pom2::log().warn("AICtrl", "handler exception (unknown)");
+        }
+        {
+            std::lock_guard<std::mutex> lk(clientFdMtx_);
+            if (clientFd_ == fd) clientFd_ = pom2::kInvalidSocket;
         }
         pom2::shutdownBoth(fd);
         pom2::closeHostSocketValue(fd);

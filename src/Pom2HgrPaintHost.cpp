@@ -308,10 +308,12 @@ bool Pom2HgrPaintHost::loadImage(const std::string& path, uint16_t baseAddr,
     if (!emu_) { err = "no emulator"; return false; }
     std::ifstream in(path, std::ios::binary);
     if (!in) { err = "cannot open " + path; return false; }
-    std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
+    const size_t maxBytes = static_cast<size_t>(0xC000 - baseAddr);
+    std::vector<char> bytes(maxBytes);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(in.gcount()));
     if (bytes.empty()) { err = "empty file"; return false; }
-    const size_t n = std::min(bytes.size(), static_cast<size_t>(0xC000 - baseAddr));
+    const size_t n = bytes.size();
     std::lock_guard<std::mutex> lk(emu_->stateMutex());
     Memory& mem = emu_->memory();
     for (size_t i = 0; i < n; ++i)
@@ -345,9 +347,10 @@ bool Pom2HgrPaintHost::loadDhgrImage(const std::string& path, uint16_t baseAddr,
     if (!emu_) { err = "no emulator"; return false; }
     std::ifstream in(path, std::ios::binary);
     if (!in) { err = "cannot open " + path; return false; }
-    std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-    if (bytes.size() < 2 * static_cast<size_t>(hgrpaint::kHiresSize)) {
+    const size_t required = 2 * static_cast<size_t>(hgrpaint::kHiresSize);
+    std::vector<char> bytes(required);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (static_cast<size_t>(in.gcount()) < required) {
         err = "not a 16 KB DHGR (A2FC) dump: " + path;
         return false;
     }

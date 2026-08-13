@@ -153,6 +153,10 @@ private:
     // socket_t, not int: Winsock's SOCKET is an unsigned handle whose
     // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
     std::atomic<socket_t>  listenFd_      { kInvalidSocket };
+    // Published only while the worker owns an accepted client. stop() uses
+    // it to interrupt a handler blocked in recv/send before joining.
+    mutable std::mutex     clientFdMtx_;
+    socket_t               clientFd_      = kInvalidSocket;
     uint16_t               port_     = kDefaultPort;
     std::thread            worker_;
     std::string            authToken_;

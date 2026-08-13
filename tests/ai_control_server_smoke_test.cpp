@@ -19,6 +19,7 @@
 // once, so the contract gets pinned line-by-line.
 
 #include "AiControlServer.h"
+#include "Apple2Display.h"
 #include "EmulationController.h"
 #include "Memory.h"
 #include "MouseCard.h"
@@ -384,6 +385,25 @@ void testStartResumesMode(EmulationController& ctrl)
     std::puts("  start-resumes-mode: OK");
 }
 
+void testStopInterruptsBlockedResponse(pom2::AiControlServer& srv)
+{
+    const int fd = connectLoopback(kTestPort);
+    assert(fd >= 0);
+    int tiny = 1024;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &tiny, sizeof(tiny));
+    assert(sendAll(fd,
+        "GET /screen.ppm HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+    // Deliberately never read the ~600 KiB response. stop() must shutdown
+    // the accepted client, not merely the listener, before joining.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto before = std::chrono::steady_clock::now();
+    srv.stop();
+    const auto elapsed = std::chrono::steady_clock::now() - before;
+    assert(elapsed < std::chrono::seconds(1));
+    ::close(fd);
+    std::puts("  stop interrupts blocked response: OK");
+}
+
 // Round 10 #3: the CPU section is a fixed 16 bytes (PC2 + 6 regs + cycles8).
 // The reader consumes 16 unconditionally, so a CPU section declaring fewer
 // bytes must be REJECTED — the old `len>=9` gate processed a short section,
@@ -540,12 +560,13 @@ void testMouseEndpoint(EmulationController& ctrl, pom2::AiControlServer& /*srv*/
 int main()
 {
     EmulationController ctrl;
+    Apple2Display display;
     // Don't actually start the CPU worker — these tests prod state in
     // place and don't need cycles being consumed underneath the assertions.
     ctrl.setMode(EmulationController::Mode::Stopped);
 
     pom2::AiControlServer srv;
-    srv.attach(&ctrl, nullptr, nullptr, nullptr);
+    srv.attach(&ctrl, &display, nullptr, nullptr);
     const bool started = srv.start(kTestPort);
     assert(started && "AiControlServer failed to bind test port — is something else on 36502?");
 
@@ -561,7 +582,7 @@ int main()
     testMouseEndpoint    (ctrl, srv);
     testStartResumesMode (ctrl);   // last: it spawns the CPU worker thread
 
-    srv.stop();
+    testStopInterruptsBlockedResponse(srv);
     std::puts("ai_control_server_smoke_test: OK");
     return 0;
 }

@@ -107,6 +107,65 @@ std::string lowerExtension(const std::string& path)
     return ext;
 }
 
+struct PcmDurationDecoder {
+    uint32_t sampleRate = 0;
+    bool foundSignal = false;
+    bool initialLevel = false;
+    bool currentLevel = false;
+    uint64_t heldSamples = 0;
+    std::vector<uint32_t> durations;
+};
+
+bool emitPcmDuration(PcmDurationDecoder& d, std::string& error,
+                     size_t maxTransitions)
+{
+    if (d.durations.size() >= maxTransitions) {
+        error = "Audio tape exceeds the transition limit";
+        return false;
+    }
+    const long double scaled = static_cast<long double>(d.heldSamples) *
+        static_cast<long double>(POM2_CPU_CLOCK_HZ) /
+        static_cast<long double>(d.sampleRate);
+    const uint64_t rounded = static_cast<uint64_t>(std::llround(scaled));
+    d.durations.push_back(static_cast<uint32_t>(std::max<uint64_t>(
+        1, std::min<uint64_t>(rounded, std::numeric_limits<uint32_t>::max()))));
+    return true;
+}
+
+bool consumePcm(PcmDurationDecoder& d, const float* samples, size_t count,
+                std::string& error, size_t maxTransitions)
+{
+    for (size_t i = 0; i < count; ++i) {
+        const float sample = samples[i];
+        if (!d.foundSignal) {
+            if (sample == 0.0f) continue;
+            d.foundSignal = true;
+            d.initialLevel = d.currentLevel = sample > 0.0f;
+            d.heldSamples = 1;
+            continue;
+        }
+        const bool newLevel = sample == 0.0f ? d.currentLevel : sample > 0.0f;
+        if (newLevel == d.currentLevel) {
+            ++d.heldSamples;
+            continue;
+        }
+        if (!emitPcmDuration(d, error, maxTransitions)) return false;
+        d.currentLevel = newLevel;
+        d.heldSamples = 1;
+    }
+    return true;
+}
+
+bool finishPcm(PcmDurationDecoder& d, std::string& error,
+               size_t maxTransitions)
+{
+    if (!d.foundSignal) {
+        error = "Audio file does not contain a detectable cassette signal";
+        return false;
+    }
+    return emitPcmDuration(d, error, maxTransitions);
+}
+
 } // namespace
 
 std::string CassetteDevice::lookupTapeInfo(const std::string& path)
@@ -660,38 +719,34 @@ bool CassetteDevice::loadAciTape(const std::string& path)
 {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
-    // Same pre-slurp size gate as loadWavTape.
-    constexpr std::streamoff kMaxTapeBytes = 256ll * 1024 * 1024;
-    file.seekg(0, std::ios::end);
-    if (file.tellg() > kMaxTapeBytes) {
-        lastError = ".aci tape exceeds 256 MiB: " + path;
-        return false;
-    }
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
-                                std::istreambuf_iterator<char>());
-    if (bytes.size() < 16 || std::memcmp(bytes.data(), kAciMagic, 8) != 0) {
+    uint8_t header[16]{};
+    file.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        std::memcmp(header, kAciMagic, 8) != 0) {
         lastError = "Invalid .aci tape file";
         return false;
     }
-    if (bytes[8] != 1) {
+    if (header[8] != 1) {
         lastError = "Unsupported .aci tape version";
         return false;
     }
-    const bool initialLevel = bytes[9] != 0;
-    const uint32_t count = readLe32(bytes.data() + 12);
-    if (bytes.size() < 16ull + static_cast<uint64_t>(count) * 4ull) {
-        lastError = "Truncated .aci tape file";
+    const bool initialLevel = header[9] != 0;
+    const uint32_t count = readLe32(header + 12);
+    if (count > kMaxRecordedTransitions) {
+        lastError = ".aci tape exceeds the transition limit";
         return false;
     }
 
     std::vector<uint32_t> durations;
     durations.reserve(count);
-    size_t offset = 16;
     for (uint32_t i = 0; i < count; ++i) {
-        durations.push_back(std::max<uint32_t>(1, readLe32(bytes.data() + offset)));
-        offset += 4;
+        uint8_t raw[4];
+        file.read(reinterpret_cast<char*>(raw), sizeof(raw));
+        if (file.gcount() != static_cast<std::streamsize>(sizeof(raw))) {
+            lastError = "Truncated .aci tape file";
+            return false;
+        }
+        durations.push_back(std::max<uint32_t>(1, readLe32(raw)));
     }
     return loadPlaybackDurations(std::move(durations), initialLevel, path);
 }
@@ -752,7 +807,7 @@ bool CassetteDevice::loadWavTape(const std::string& path)
         const uint8_t* chunk = bytes.data() + offset;
         const uint32_t chunkSize = readLe32(chunk + 4);
         offset += 8;
-        if (offset + chunkSize > bytes.size()) break;
+        if (chunkSize > bytes.size() - offset) break;
         if (std::memcmp(chunk, "fmt ", 4) == 0 && chunkSize >= 16) {
             audioFormat   = readLe16(bytes.data() + offset + 0);
             channels      = readLe16(bytes.data() + offset + 2);
@@ -762,7 +817,9 @@ bool CassetteDevice::loadWavTape(const std::string& path)
             dataChunk = bytes.data() + offset;
             dataSize  = chunkSize;
         }
-        offset += chunkSize + (chunkSize & 1u);
+        const size_t padded = static_cast<size_t>(chunkSize) + (chunkSize & 1u);
+        if (padded > bytes.size() - offset) break;
+        offset += padded;
     }
     if (!dataChunk || channels == 0 || sampleRate == 0) {
         lastError = "WAV file is missing format or data chunks";
@@ -772,6 +829,13 @@ bool CassetteDevice::loadWavTape(const std::string& path)
         lastError = "Unsupported WAV format (only PCM and float are supported)";
         return false;
     }
+    const bool supportedSamples =
+        (audioFormat == 1 && (bitsPerSample == 8 || bitsPerSample == 16)) ||
+        (audioFormat == 3 && bitsPerSample == 32);
+    if (!supportedSamples) {
+        lastError = "Only WAV PCM 8/16-bit and float32 are supported";
+        return false;
+    }
     const size_t bytesPerSample = bitsPerSample / 8;
     if (bytesPerSample == 0 || dataSize < bytesPerSample * channels) {
         lastError = "Unsupported WAV sample format";
@@ -779,8 +843,10 @@ bool CassetteDevice::loadWavTape(const std::string& path)
     }
 
     const size_t frames = dataSize / (bytesPerSample * channels);
-    std::vector<float> samples;
-    samples.reserve(frames);
+    PcmDurationDecoder decoded;
+    decoded.sampleRate = sampleRate;
+    decoded.durations.reserve(std::min<size_t>(frames / 16,
+                                               kMaxRecordedTransitions));
     for (size_t f = 0; f < frames; ++f) {
         float mixed = 0.0f;
         for (uint16_t ch = 0; ch < channels; ++ch) {
@@ -789,17 +855,15 @@ bool CassetteDevice::loadWavTape(const std::string& path)
             if      (audioFormat == 1 && bitsPerSample == 8)  v = (static_cast<int>(p[0]) - 128) / 128.0f;
             else if (audioFormat == 1 && bitsPerSample == 16) v = static_cast<float>(static_cast<int16_t>(readLe16(p))) / 32768.0f;
             else if (audioFormat == 3 && bitsPerSample == 32) std::memcpy(&v, p, 4);
-            else { lastError = "Only WAV PCM 8/16-bit and float32 are supported"; return false; }
             mixed += v;
         }
-        samples.push_back(mixed / static_cast<float>(channels));
+        const float mono = mixed / static_cast<float>(channels);
+        if (!consumePcm(decoded, &mono, 1, lastError,
+                        kMaxRecordedTransitions)) return false;
     }
-
-    std::vector<uint32_t> durations;
-    bool initialLevel = false;
-    if (!pcmToDurations(samples, sampleRate, durations, initialLevel, lastError))
-        return false;
-    return loadPlaybackDurations(std::move(durations), initialLevel, path);
+    if (!finishPcm(decoded, lastError, kMaxRecordedTransitions)) return false;
+    return loadPlaybackDurations(std::move(decoded.durations),
+                                 decoded.initialLevel, path);
 }
 
 bool CassetteDevice::pcmToDurations(const std::vector<float>& mono,
@@ -809,57 +873,15 @@ bool CassetteDevice::pcmToDurations(const std::vector<float>& mono,
                                     std::string& outErr)
 {
     outDurations.clear();
-    if (mono.empty())     { outErr = "Audio file does not contain samples"; return false; }
-    if (sampleRate == 0)  { outErr = "Audio file has an invalid sample rate"; return false; }
-
-    // Sign-based transition detection — matches MAME `apple2.cpp:362`
-    // `(m_cassette->input() > 0.0 ? 0 : 0x80)`. Real hardware reads the
-    // raw sign of the audio comparator at runtime, so faint rips
-    // decode just as well as loud ones. The previous `±0.02` deadband
-    // rejected any file whose first ~16 ms of sync gap had amplitude
-    // under that floor (common with archived `wav` rips that were
-    // normalised long after the master tape demagnetised).
-    size_t firstActive = 0;
-    // Skip exact-zero leading silence so we have a defined initial
-    // sign. The first non-zero sample seeds outInitialLevel.
-    while (firstActive < mono.size() && mono[firstActive] == 0.0f)
-        ++firstActive;
-    if (firstActive == mono.size()) {
-        outErr = "Audio file does not contain a detectable cassette signal";
-        return false;
-    }
-
-    outInitialLevel = mono[firstActive] > 0.0f;
-    bool currentLevel = outInitialLevel;
-    size_t lastTransition = firstActive;
-
-    for (size_t i = firstActive + 1; i < mono.size(); ++i) {
-        bool newLevel = currentLevel;
-        if (mono[i] >  0.0f) newLevel = true;
-        else if (mono[i] < 0.0f) newLevel = false;
-        if (newLevel != currentLevel) {
-            const size_t deltaSamples = i - lastTransition;
-            const uint32_t cycles = std::max<uint32_t>(1, static_cast<uint32_t>(
-                std::llround(static_cast<double>(deltaSamples) *
-                             static_cast<double>(kTapeFileTimebaseHz) /
-                             static_cast<double>(sampleRate))));
-            outDurations.push_back(cycles);
-            currentLevel    = newLevel;
-            lastTransition  = i;
-        }
-    }
-    // Flush the final held segment after the last transition. The loop only
-    // emits a duration ON a sign change, so without this the last pulse (the
-    // trailing leader / final half-bit — saveWavTape appends a 0.1 s trailer)
-    // is dropped, truncating the recovered transition stream by one segment.
-    if (mono.size() > lastTransition) {
-        const size_t deltaSamples = mono.size() - lastTransition;
-        const uint32_t cycles = std::max<uint32_t>(1, static_cast<uint32_t>(
-            std::llround(static_cast<double>(deltaSamples) *
-                         static_cast<double>(kTapeFileTimebaseHz) /
-                         static_cast<double>(sampleRate))));
-        outDurations.push_back(cycles);
-    }
+    if (mono.empty())    { outErr = "Audio file does not contain samples"; return false; }
+    if (sampleRate == 0) { outErr = "Audio file has an invalid sample rate"; return false; }
+    PcmDurationDecoder decoded;
+    decoded.sampleRate = sampleRate;
+    if (!consumePcm(decoded, mono.data(), mono.size(), outErr,
+                    kMaxRecordedTransitions) ||
+        !finishPcm(decoded, outErr, kMaxRecordedTransitions)) return false;
+    outInitialLevel = decoded.initialLevel;
+    outDurations = std::move(decoded.durations);
     return true;
 }
 
@@ -921,17 +943,34 @@ bool CassetteDevice::loadMiniaudioTape(const std::string& path)
         return false;
     }
 
-    std::vector<float> samples;
     constexpr size_t kChunkFrames = 4096;
     float chunk[kChunkFrames];
     uint64_t totalFrames = 0;
+    PcmDurationDecoder decoded;
+    decoded.sampleRate = sampleRate;
     while (totalFrames < kMaxFrames) {
         ma_uint64 framesRead = 0;
         const ma_result r = ma_decoder_read_pcm_frames(&decoder, chunk, kChunkFrames, &framesRead);
-        if (framesRead == 0) break;
-        samples.insert(samples.end(), chunk, chunk + framesRead);
+        if (framesRead == 0) {
+            if (r != MA_SUCCESS && r != MA_AT_END) {
+                ma_decoder_uninit(&decoder);
+                lastError = "Error while decoding audio file: " + path;
+                return false;
+            }
+            break;
+        }
+        if (!consumePcm(decoded, chunk, static_cast<size_t>(framesRead),
+                        lastError, kMaxRecordedTransitions)) {
+            ma_decoder_uninit(&decoder);
+            return false;
+        }
         totalFrames += framesRead;
-        if (r != MA_SUCCESS) break;
+        if (r != MA_SUCCESS && r != MA_AT_END) {
+            ma_decoder_uninit(&decoder);
+            lastError = "Error while decoding audio file: " + path;
+            return false;
+        }
+        if (r == MA_AT_END) break;
     }
     ma_decoder_uninit(&decoder);
 
@@ -940,11 +979,9 @@ bool CassetteDevice::loadMiniaudioTape(const std::string& path)
         return false;
     }
 
-    std::vector<uint32_t> durations;
-    bool initialLevel = false;
-    if (!pcmToDurations(samples, sampleRate, durations, initialLevel, lastError))
-        return false;
-    return loadPlaybackDurations(std::move(durations), initialLevel, path);
+    if (!finishPcm(decoded, lastError, kMaxRecordedTransitions)) return false;
+    return loadPlaybackDurations(std::move(decoded.durations),
+                                 decoded.initialLevel, path);
 }
 
 bool CassetteDevice::saveWavTape(const std::string& path) const

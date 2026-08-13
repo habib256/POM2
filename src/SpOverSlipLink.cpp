@@ -138,6 +138,10 @@ void SpOverSlipLink::workerLoop()
 
         if (!t->isOpen()) {
             if (t->pollForPeer(kPeerPollMs)) {
+                if (stopFlag_.load()) {
+                    t->dropPeer();
+                    break;
+                }
                 // A peer just appeared. Enumerating immediately is safe even
                 // for a board that is still booting: enumerateDevices()
                 // retries the sweep.

@@ -190,6 +190,10 @@ bool PrinterHistory::readIndex()
         } catch (...) {
             continue;
         }
+        // The index is user-editable and may repeat the same existing PNG an
+        // arbitrary number of times. Enforce the documented store cap while
+        // parsing as well as while adding, otherwise open() itself can OOM.
+        if (pages_.size() == kMaxPages) pages_.erase(pages_.begin());
         pages_.push_back(std::move(p));
     }
 

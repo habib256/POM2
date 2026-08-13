@@ -2094,48 +2094,38 @@ bool hgrpaint::HgrPaintEditor::performFileAction(bool forSave, int saveKind,
         return true;
     }
     if (!forSave) {                                       // Load raw page
-        std::snprintf(filePath, sizeof(filePath), "%s", fullPath.c_str());
         std::string err;
-        // Purge the page first: loadImage writes only the file's own length, so a
-        // file shorter than the full page (e.g. an 8184-byte "no screen-hole"
-        // dump) would otherwise leave a stale tail. renderCanvas re-reads VRAM
-        // into `shadow` next frame, so the canvas reflects the load by itself.
-        // (In DHGR the offsets walk both planes via addrOfShadowOff; in GR the
-        // screen holes are skipped — peripheral firmware scratch.)
-        if (host) {
+        std::vector<uint8_t> bytes;
+        std::ifstream in(fullPath, std::ios::binary);
+        if (!in) {
+            err = "cannot open " + fullPath;
+        } else {
+            // Stage and validate before touching VRAM. The old order cleared
+            // an unsaved drawing first, so an empty/truncated replacement
+            // destroyed it even though the UI reported "Load failed".
+            bytes.resize(static_cast<size_t>(pageBytes()) + 1);
+            in.read(reinterpret_cast<char*>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+            bytes.resize(static_cast<size_t>(in.gcount()));
+            if (bytes.empty()) err = "empty file";
+            else if (dhgrMode && bytes.size() < static_cast<size_t>(pageBytes()))
+                err = "not a 16 KB DHGR (A2FC) dump: " + fullPath;
+            else if (!host) err = "no emulator";
+        }
+
+        const bool ok = err.empty();
+        if (ok) {
+            bytes.resize(std::min(bytes.size(), static_cast<size_t>(pageBytes())));
             host->beginBatch();
             for (int off = 0; off < pageBytes(); ++off) {
                 if ((grMode || dlgrMode) && hgrpaint::grIsScreenHole(off & 0x3FF))
                     continue;
-                hostPoke(addrOfShadowOff(off), 0);
+                const uint8_t value = static_cast<size_t>(off) < bytes.size()
+                    ? bytes[static_cast<size_t>(off)] : 0;
+                hostPoke(addrOfShadowOff(off), value);
             }
             host->endBatch();
-        }
-        bool ok = false;
-        if (dhgrMode) {
-            ok = host && host->loadDhgrImage(filePath, baseAddr(), err);
-        } else if (grMode || dlgrMode) {
-            // Text-page loads go byte-by-byte through pokes instead of the
-            // host's raw loader, so the file's screen-hole bytes (stale
-            // scratch from whatever machine saved it) never land in the LIVE
-            // holes. DLGR reads the 2 KB pair (aux plane first, like save).
-            std::ifstream in(fullPath, std::ios::binary);
-            if (!in) {
-                err = "cannot open " + fullPath;
-            } else if (host) {
-                std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-                const int n = std::min<int>(static_cast<int>(bytes.size()), pageBytes());
-                host->beginBatch();
-                for (int off = 0; off < n; ++off) {
-                    if (hgrpaint::grIsScreenHole(off & 0x3FF)) continue;
-                    hostPoke(addrOfShadowOff(off), static_cast<uint8_t>(bytes[off]));
-                }
-                host->endBatch();
-                ok = true;
-            }
-        } else {
-            ok = host && host->loadImage(filePath, baseAddr(), err);
+            std::snprintf(filePath, sizeof(filePath), "%s", fullPath.c_str());
         }
         if (ok) {
             char addr[8];

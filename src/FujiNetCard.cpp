@@ -541,30 +541,45 @@ void FujiNetCard::tapPrinterWrite(uint8_t unit, const uint8_t* p, std::size_t n)
     if (!isPrinter) return;
 
     std::lock_guard<std::mutex> lk(printerMtx_);
-    printerSpool_.insert(printerSpool_.end(), p, p + n);
+    if (n >= kMaxPrinterSpoolBytes) {
+        printerSpool_.assign(p + (n - kMaxPrinterSpoolBytes), p + n);
+        printerSpoolBase_ = printerSpoolTotal_ + n - kMaxPrinterSpoolBytes;
+    } else {
+        const size_t overflow = printerSpool_.size() + n > kMaxPrinterSpoolBytes
+            ? printerSpool_.size() + n - kMaxPrinterSpoolBytes : 0;
+        for (size_t i = 0; i < overflow; ++i) printerSpool_.pop_front();
+        printerSpoolBase_ += overflow;
+        printerSpool_.insert(printerSpool_.end(), p, p + n);
+    }
+    printerSpoolTotal_ += n;
 }
 
 size_t FujiNetCard::bytesWritten() const
 {
     std::lock_guard<std::mutex> lk(printerMtx_);
-    return printerSpool_.size();
+    return printerSpoolTotal_;
 }
 
 size_t FujiNetCard::drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const
 {
     std::lock_guard<std::mutex> lk(printerMtx_);
-    // `from` past the end means the spool was cleared behind the caller's
-    // back — replay from 0, same contract as PrinterCard.
-    if (from > printerSpool_.size()) from = 0;
-    out.assign(printerSpool_.begin() + static_cast<std::ptrdiff_t>(from),
+    // Absolute indices let the UI keep streaming while old preview bytes are
+    // evicted. A cursor from before clear() resynchronises at the new front.
+    const size_t absolute = (from > printerSpoolTotal_)
+        ? printerSpoolBase_ : std::max(from, printerSpoolBase_);
+    const size_t start = absolute - printerSpoolBase_;
+    out.insert(out.end(),
+               printerSpool_.begin() + static_cast<std::ptrdiff_t>(start),
                printerSpool_.end());
-    return printerSpool_.size();
+    return printerSpoolTotal_;
 }
 
 void FujiNetCard::clearPrinterSpool()
 {
     std::lock_guard<std::mutex> lk(printerMtx_);
     printerSpool_.clear();
+    printerSpoolBase_ = 0;
+    printerSpoolTotal_ = 0;
 }
 
 void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)

@@ -77,6 +77,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -102,6 +103,7 @@ public:
     /// completely different places.
     static constexpr uint8_t kMagicSmartPort = 0x65;
     static constexpr uint8_t kMagicProDOS    = 0x66;
+    static constexpr size_t kMaxPrinterSpoolBytes = 4u * 1024u * 1024u;
 
     explicit FujiNetCard(int slot = kDefaultSlot);
     ~FujiNetCard() override;
@@ -236,7 +238,9 @@ private:
     /// call) and drained on the UI thread once per frame, so it needs its
     /// own lock — every other member here is CPU-thread-only.
     mutable std::mutex   printerMtx_;
-    std::vector<uint8_t> printerSpool_;
+    std::deque<uint8_t> printerSpool_;
+    size_t printerSpoolBase_ = 0;
+    size_t printerSpoolTotal_ = 0;
     /// Logged once, not once per access: a program poking a bad parameter
     /// list would otherwise flood the log.
     bool     warnedUnsafeRange_ = false;

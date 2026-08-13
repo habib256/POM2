@@ -2246,8 +2246,11 @@ void MainWindow::pasteFromFile(const std::string& path)
         tapeStatusUntil   = lastFrameTime + 4.0;
         return;
     }
-    std::string text((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
+    std::string text;
+    text.resize(Memory::kPasteMaxChars);
+    f.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(f.gcount()));
+    const bool truncated = f.peek() != std::char_traits<char>::eof();
     if (pasteAutoUppercase) {
         for (char& c : text) {
             if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
@@ -2255,7 +2258,8 @@ void MainWindow::pasteFromFile(const std::string& path)
     }
     const size_t queued = controller->memory().pasteText(text);
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "Paste: %zu chars from %s", queued, path.c_str());
+    std::snprintf(buf, sizeof(buf), "Paste: %zu chars%s from %s", queued,
+                  truncated ? " (file truncated)" : "", path.c_str());
     tapeStatusMessage = buf;
     tapeStatusUntil   = lastFrameTime + 4.0;
 }

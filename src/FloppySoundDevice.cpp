@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 
 namespace {
 // MAME's floppy samples aren't designed for seamless looping — every
@@ -104,6 +105,16 @@ bool FloppySoundDevice::loadOneWav(const std::string& path, Sample& out)
     ma_uint64 totalFrames = 0;
     if (ma_decoder_get_length_in_pcm_frames(&dec, &totalFrames) != MA_SUCCESS
         || totalFrames == 0) {
+        ma_decoder_uninit(&dec);
+        return false;
+    }
+    // These are sub-second mechanical effects. A corrupt WAV header used to
+    // drive assign(totalFrames) directly and could terminate POM2 through a
+    // multi-gigabyte allocation before the decoder discovered truncation.
+    constexpr ma_uint64 kMaxSampleFrames = 10ull * 192000ull;
+    if (totalFrames > kMaxSampleFrames ||
+        totalFrames > static_cast<ma_uint64>(
+            std::numeric_limits<size_t>::max() / sizeof(float))) {
         ma_decoder_uninit(&dec);
         return false;
     }

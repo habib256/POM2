@@ -124,6 +124,23 @@ int main()
     }
     std::printf("OK cassette oversized WAV rejected before allocation\n");
 
+    // ACI's count field is untrusted. Reject it from the 16-byte header,
+    // before reserving count*4 bytes or slurping the remainder of the file.
+    const std::string hostileAci = path + ".hostile.aci";
+    {
+        std::vector<uint8_t> a{'P','O','M','1','A','C','I','1', 1, 0, 0, 0};
+        putU32(a, 0xFFFFFFFFu);
+        std::ofstream out(hostileAci, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(a.data()),
+                  static_cast<std::streamsize>(a.size()));
+    }
+    if (huge.loadTape(hostileAci) ||
+        huge.getLastError().find("transition limit") == std::string::npos) {
+        std::printf("FAIL: hostile ACI count was not bounded\n");
+        return 1;
+    }
+    std::printf("OK cassette ACI count rejected before allocation\n");
+
     // Both output formats publish through a sibling temp and only report
     // success after flush/close/rename.
     CassetteDevice recorded;
