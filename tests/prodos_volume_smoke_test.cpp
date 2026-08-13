@@ -316,6 +316,17 @@ static void testRoundTripFolderToVolumeToFolder()
     assert(dr2.ok);
     assert(fs::exists(dst / "do_not_delete.txt"));
 
+    // A failed host write must fail the decode; it must not be counted as a
+    // successfully persisted guest change. Directories at every temporary
+    // filename make the failure deterministic without permission tricks.
+    fs::path blocked = makeTempDir("round_blocked");
+    fs::create_directory(blocked / "HELLO.bas.tmp");
+    fs::create_directory(blocked / "README.txt.tmp");
+    fs::create_directory(blocked / "GAME.bin.tmp");
+    auto dr3 = pom2::decodeVolumeToFolder(img, blocked.string());
+    assert(!dr3.ok);
+    assert(!dr3.error.empty());
+
     std::printf("prodos_volume_smoke: folder→volume→folder round-trip OK\n");
 }
 

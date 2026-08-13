@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "DiskImage.h"
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 #include "TwoImg.h"
 
@@ -2223,9 +2224,9 @@ bool writeFileAtomic(const std::string& path, std::string& lastError,
         if (!wf) { lastError = "Cannot open " + tmp + " for write"; return false; }
         emit(wf);
         wf.flush();
+        wf.close();
         if (!wf) {
             lastError = "Short write on " + tmp;
-            wf.close();
             std::error_code ec;
             std::filesystem::remove(tmp, ec);
             return false;
@@ -2236,8 +2237,7 @@ bool writeFileAtomic(const std::string& path, std::string& lastError,
         std::filesystem::permissions(tmp, origPerms, ec);
         ec.clear();
     }
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
+    if (!pom2::replaceFileAtomic(tmp, path, ec)) {
         lastError = "Cannot replace " + path + ": " + ec.message();
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);

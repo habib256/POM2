@@ -91,7 +91,12 @@ jobs:
         run: |
           cmake -S . -B build-quality \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPOM2_ENABLE_TESTS=ON
+            -DPOM2_ENABLE_TESTS=ON \
+            -DPOM2_FETCH_TOMHARTE=ON
+          test "$(find build-quality/tests/tomharte/6502 -name '*.json' | wc -l)" \
+            -eq "$(grep -Evc '^[[:space:]]*(#|$)' tests/tomharte_6502.manifest)"
+          test "$(find build-quality/tests/tomharte/wdc65c02 -name '*.json' | wc -l)" \
+            -eq "$(grep -Evc '^[[:space:]]*(#|$)' tests/tomharte_wdc65c02.manifest)"
           cmake --build build-quality --parallel 1
 
       - name: Run complete test suite

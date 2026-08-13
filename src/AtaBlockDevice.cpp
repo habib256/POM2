@@ -84,15 +84,16 @@ void AtaBlockDevice::loadSectorToBuffer()
     wordIdx_ = 0;
 }
 
-void AtaBlockDevice::flushBufferToSector()
+bool AtaBlockDevice::flushBufferToSector()
 {
     uint8_t sector[Block512Backing::kBlockBytes];
     for (size_t i = 0; i < 256; ++i) {
         sector[2 * i]     = static_cast<uint8_t>(wordBuf_[i] & 0xFF);
         sector[2 * i + 1] = static_cast<uint8_t>(wordBuf_[i] >> 8);
     }
-    backing_.writeBlock(lba_, sector); // false (WP / OOR) is silently dropped
+    const bool ok = backing_.writeBlock(lba_, sector);
     wordIdx_ = 0;
+    return ok;
 }
 
 void AtaBlockDevice::fillIdentify()
@@ -177,14 +178,20 @@ void AtaBlockDevice::startCommand(uint8_t cmd)
             // (which returns "success" to ProDOS). The HDV synthetic card
             // surfaces WP via its own status path; the ATA/CFFA path does it
             // here so a WP 2IMG can't be "written" without an error.
-            if (backing_.isWriteProtected()) {
+            const uint32_t requestedLba = currentLba();
+            const uint32_t requestedCount =
+                (sectorCount_ == 0) ? 256u : sectorCount_;
+            const size_t blocks = backing_.blockCount();
+            const bool outside = requestedLba >= blocks ||
+                requestedCount > blocks - static_cast<size_t>(requestedLba);
+            if (backing_.isWriteProtected() || outside) {
                 error_  = kErrABRT;
                 status_ = kStDRDY | kStDSC | kStDF | kStERR;
                 phase_  = Phase::Idle;
                 break;
             }
-            lba_         = currentLba();
-            sectorsLeft_ = (sectorCount_ == 0) ? 256 : sectorCount_;
+            lba_         = requestedLba;
+            sectorsLeft_ = static_cast<uint16_t>(requestedCount);
             wordIdx_     = 0;
             phase_  = Phase::PioOut;
             status_ = kStDRDY | kStDSC | kStDRQ; // host now feeds the first sector
@@ -249,7 +256,13 @@ void AtaBlockDevice::cs0_w(uint8_t reg, uint16_t val)
             if (phase_ != Phase::PioOut) return;
             wordBuf_[wordIdx_++] = val;
             if (wordIdx_ >= 256) {
-                flushBufferToSector();
+                if (!flushBufferToSector()) {
+                    error_       = kErrABRT;
+                    status_      = kStDRDY | kStDSC | kStDF | kStERR;
+                    phase_       = Phase::Idle;
+                    sectorsLeft_ = 0;
+                    return;
+                }
                 if (sectorsLeft_ > 0) --sectorsLeft_;
                 if (sectorsLeft_ > 0) {
                     ++lba_;                    // DRQ stays set for the next sector

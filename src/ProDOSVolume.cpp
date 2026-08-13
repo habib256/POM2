@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "ProDOSVolume.h"
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 
 #include <algorithm>
@@ -659,9 +660,13 @@ inline std::uint32_t rd24(const std::uint8_t* p)
 }
 
 // Atomic overwrite: write to `dest`.tmp then rename — no torn file even on
-// crash. Returns true if the file was actually written (false = identical
-// content already on disk so we skipped the touch).
-bool writeFileAtomic(const fs::path& dest, const std::vector<std::uint8_t>& bytes)
+// crash. Distinguishes a real write, an identical no-op, and an I/O failure so
+// the caller never reports a failed guest-file export as successfully saved.
+enum class FileWriteResult { Unchanged, Written, Error };
+
+FileWriteResult writeFileAtomic(const fs::path& dest,
+                                const std::vector<std::uint8_t>& bytes,
+                                std::string& err)
 {
     std::error_code ec;
     if (fs::exists(dest, ec)) {
@@ -674,7 +679,7 @@ bool writeFileAtomic(const fs::path& dest, const std::vector<std::uint8_t>& byte
                 in.seekg(0, std::ios::beg);
                 in.read(reinterpret_cast<char*>(have.data()),
                         static_cast<std::streamsize>(sz));
-                if (in && have == bytes) return false;   // identical, no-op
+                if (in && have == bytes) return FileWriteResult::Unchanged;
             }
         }
     }
@@ -682,23 +687,29 @@ bool writeFileAtomic(const fs::path& dest, const std::vector<std::uint8_t>& byte
     tmp += ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return true;   // caller's error path will fire
+        if (!out) {
+            err = "cannot open " + tmp.string() + " for write";
+            return FileWriteResult::Error;
+        }
         if (!bytes.empty()) {
             out.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size()));
         }
+        out.flush();
+        out.close();
         if (!out) {
             fs::remove(tmp, ec);
-            return true;
+            err = "write failed on " + tmp.string();
+            return FileWriteResult::Error;
         }
     }
-    fs::rename(tmp, dest, ec);
-    if (ec) {
-        // Cross-device rename can fail; fall back to copy + remove.
-        fs::copy_file(tmp, dest, fs::copy_options::overwrite_existing, ec);
-        fs::remove(tmp, ec);
+    if (!replaceFileAtomic(tmp, dest, ec)) {
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        err = "cannot replace " + dest.string() + ": " + ec.message();
+        return FileWriteResult::Error;
     }
-    return true;
+    return FileWriteResult::Written;
 }
 
 }  // namespace
@@ -716,6 +727,7 @@ struct DecodeWalk {
     std::unordered_set<std::uint16_t> expanded;
     std::size_t                       dirsLeft    = kMaxDecodeDirs;
     ProDOSDecodeResult&               r;
+    bool                              ioFailed    = false;
 };
 
 // Walk one ProDOS directory (volume root or subdir) starting at `firstBlock`
@@ -729,6 +741,7 @@ void decodeOneDir(DecodeWalk& w,
 {
     ProDOSDecodeResult& r           = w.r;
     const std::size_t   totalBlocks = w.totalBlocks;
+    if (w.ioFailed) return;
 
     if (depth > kMaxRecursionDepth) {
         pom2::log().warn("ProDOSVol",
@@ -822,6 +835,7 @@ void decodeOneDir(DecodeWalk& w,
                 --w.dirsLeft;
                 ++r.dirsCreated;
                 decodeOneDir(w, keyPtr, subDest.string(), depth + 1);
+                if (w.ioFailed) return;
                 continue;
             }
 
@@ -902,7 +916,15 @@ void decodeOneDir(DecodeWalk& w,
             const char* typeExt =
                 (name.find('.') == std::string::npos) ? extFromFileType(fileType) : "";
             const fs::path dest = fs::path(hostFolder) / (name + typeExt);
-            if (writeFileAtomic(dest, data)) {
+            std::string writeErr;
+            const FileWriteResult wr = writeFileAtomic(dest, data, writeErr);
+            if (wr == FileWriteResult::Error) {
+                r.error = writeErr;
+                w.ioFailed = true;
+                pom2::log().warn("ProDOSVol", "decode: " + r.error);
+                return;
+            }
+            if (wr == FileWriteResult::Written) {
                 ++r.filesWritten;
             }
         }
@@ -951,8 +973,10 @@ ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
         return r;
     }
 
-    DecodeWalk walk{ image, totalBlocks, {}, kMaxDecodeDirs, r };
+    DecodeWalk walk{ image, totalBlocks, {}, kMaxDecodeDirs, r, false };
     decodeOneDir(walk, /*firstBlock=*/2, hostFolder, /*depth=*/0);
+
+    if (walk.ioFailed) return r;
 
     if (r.aborted) {
         r.error = "volume directory graph exceeded the decode bounds; "

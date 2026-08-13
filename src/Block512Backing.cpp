@@ -227,6 +227,16 @@ bool Block512Backing::saveDirty()
         ++written;
     }
     f.flush();
+    f.close();
+    if (!f) {
+        // A buffered write can fail only at flush/close (disk full, removed
+        // media, quota). Keep every dirty bit set so the caller can retry;
+        // reporting success here used to discard the only record of which
+        // guest blocks had not reached stable storage.
+        lastError_ = "Flush failed on " + path_;
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
     std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
     anyDirty_ = false;
     pom2::log().info("HDV", "Saved " + std::to_string(written) +

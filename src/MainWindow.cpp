@@ -5642,6 +5642,9 @@ void MainWindow::renderImageWriterWindow()
     // The panel lists and asks; the store stays here. Rebuilt each frame,
     // which is cheap — it is a few dozen rows of already-loaded metadata.
     if (printerHistory && printerHistory->isOpen()) {
+        std::string writeErr;
+        if (!printerHistory->pollWriteFailures(writeErr))
+            pom2::log().warn("PrinterHistory", writeErr);
         host.historyDir = printerHistory->dir();
         host.history.reserve(printerHistory->size());
         for (const auto& p : printerHistory->pages()) {
@@ -8217,6 +8220,8 @@ void MainWindow::archiveNewPrinterPages()
     const uint64_t missed = ejected - printerArchivedSheets_;
     const size_t   have   = imageWriter->completedPageCount();
     const size_t   take   = static_cast<size_t>(std::min<uint64_t>(missed, have));
+    const uint64_t irrecoverablyDropped = missed - take;
+    size_t accepted = 0;
 
     for (size_t i = have - take; i < have; ++i) {
         std::string err;
@@ -8228,6 +8233,7 @@ void MainWindow::archiveNewPrinterPages()
             pom2::log().warn("PrinterHistory", err);
             break;
         }
+        ++accepted;
     }
     if (take < missed) {
         pom2::log().warn("PrinterHistory",
@@ -8235,7 +8241,11 @@ void MainWindow::archiveNewPrinterPages()
             std::to_string(missed) + " ejected sheets — the rest had already "
             "fallen off the printer's page stack");
     }
-    printerArchivedSheets_ = ejected;
+    // Advance only past sheets actually archived (plus sheets already fallen
+    // off the bounded live stack). A transient index failure is retried next
+    // frame instead of silently discarding the failed page and the rest of
+    // the batch.
+    printerArchivedSheets_ += irrecoverablyDropped + accepted;
 }
 
 void MainWindow::dumpScreenToPrinter()

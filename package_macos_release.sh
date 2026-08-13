@@ -91,8 +91,8 @@ fi
 # Ad-hoc signature. Not notarised (that needs an Apple Developer account), but
 # an ad-hoc signature is REQUIRED on Apple Silicon: an unsigned arm64 binary is
 # killed by the kernel outright rather than merely warned about by Gatekeeper.
-codesign --force --deep --sign - "$APP" 2>/dev/null || \
-    echo "NOTE: codesign unavailable — the .app will need 'xattr -dr com.apple.quarantine'"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 log "Building the DMG"
 DMG="${DIST_DIR}/POM2-macOS-v${VERSION}.dmg"

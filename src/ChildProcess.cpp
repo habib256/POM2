@@ -186,7 +186,7 @@ void ChildProcess::stop(int graceMs)
     ::kill(-pid_, SIGKILL);
     // Reap the corpse; without this the zombie outlives us until POM2 exits.
     int status = 0;
-    ::waitpid(pid_, &status, 0);
+    while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
     exitCode_ = -1;
     reset();
 }
@@ -241,7 +241,36 @@ std::string ChildProcess::findOnPath(const std::string& name)
 // ═════════════════════════════════════════════════════════════════════════
 #else
 
-namespace { HANDLE H(void* h) { return static_cast<HANDLE>(h); } }
+namespace {
+HANDLE H(void* h) { return static_cast<HANDLE>(h); }
+
+std::wstring utf8ToWide(const std::string& s)
+{
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                      s.data(), static_cast<int>(s.size()),
+                                      nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
+                        static_cast<int>(s.size()), out.data(), n);
+    return out;
+}
+
+std::string wideToUtf8(const std::wstring& s)
+{
+    if (s.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                      s.data(), static_cast<int>(s.size()),
+                                      nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, s.data(),
+                        static_cast<int>(s.size()), out.data(), n,
+                        nullptr, nullptr);
+    return out;
+}
+} // namespace
 
 void ChildProcess::reset()
 {
@@ -261,38 +290,53 @@ bool ChildProcess::start(const std::string& exePath,
 
     // Win32 takes ONE command line, not an argv array, so every argument has
     // to be quoted the way the CRT will re-split it.
-    auto quote = [](const std::string& a) {
-        if (a.find_first_of(" \t\"") == std::string::npos) return a;
-        std::string q = "\"";
+    auto quote = [](const std::wstring& a) {
+        if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos)
+            return a;
+        std::wstring q = L"\"";
         std::size_t slashes = 0;
-        for (char c : a) {
-            if (c == '\\') { ++slashes; continue; }
-            if (c == '"') {
-                q.append(slashes * 2 + 1, '\\');
-                q += '"';
+        for (wchar_t c : a) {
+            if (c == L'\\') { ++slashes; continue; }
+            if (c == L'"') {
+                q.append(slashes * 2 + 1, L'\\');
+                q += L'"';
             } else {
-                q.append(slashes, '\\');
+                q.append(slashes, L'\\');
                 q += c;
             }
             slashes = 0;
         }
         // Backslashes immediately before the closing quote must be doubled,
         // otherwise the CRT treats the last one as escaping that quote.
-        q.append(slashes * 2, '\\');
-        q += '"';
+        q.append(slashes * 2, L'\\');
+        q += L'"';
         return q;
     };
-    std::string cmd = quote(exePath);
-    for (const auto& a : args) { cmd += ' '; cmd += quote(a); }
+    const std::wstring wideExe = utf8ToWide(exePath);
+    const std::wstring wideDir = utf8ToWide(workingDir);
+    if (wideExe.empty() || (!workingDir.empty() && wideDir.empty())) {
+        errOut = "helper path is not valid UTF-8";
+        return false;
+    }
+    std::wstring cmd = quote(wideExe);
+    for (const auto& a : args) {
+        const std::wstring wideArg = utf8ToWide(a);
+        if (!a.empty() && wideArg.empty()) {
+            errOut = "helper argument is not valid UTF-8";
+            return false;
+        }
+        cmd += L' ';
+        cmd += quote(wideArg);
+    }
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
 
-    std::vector<char> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back('\0');
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
 
-    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (!job) {
         errOut = "CreateJobObject failed (" +
                  std::to_string(GetLastError()) + ")";
@@ -311,12 +355,12 @@ bool ChildProcess::start(const std::string& exePath,
     // CREATE_NO_WINDOW: the helper is a console program, and POM2 is not —
     // without this every start pops a console window on the user's desktop.
     // CREATE_NEW_PROCESS_GROUP is the counterpart of setpgid() above.
-    if (!CreateProcessA(exePath.c_str(), mutableCmd.data(), nullptr, nullptr,
+    if (!CreateProcessW(wideExe.c_str(), mutableCmd.data(), nullptr, nullptr,
                         FALSE,
                         CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
                             CREATE_SUSPENDED,
                         nullptr,
-                        workingDir.empty() ? nullptr : workingDir.c_str(),
+                        workingDir.empty() ? nullptr : wideDir.c_str(),
                         &si, &pi)) {
         const DWORD e = GetLastError();
         errOut = exePath + ": CreateProcess failed (" + std::to_string(e) + ")";
@@ -333,7 +377,16 @@ bool ChildProcess::start(const std::string& exePath,
                  std::to_string(e) + ")";
         return false;
     }
-    ResumeThread(pi.hThread);
+    if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+        const DWORD e = GetLastError();
+        TerminateJobObject(job, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(job);
+        errOut = exePath + ": ResumeThread failed (" +
+                 std::to_string(e) + ")";
+        return false;
+    }
     CloseHandle(pi.hThread);
     handle_   = pi.hProcess;
     job_      = job;
@@ -394,11 +447,17 @@ std::string ChildProcess::findOnPath(const std::string& name)
     const std::string exe = (name.size() > 4 &&
                              name.compare(name.size() - 4, 4, ".exe") == 0)
                                 ? name : name + ".exe";
-    char  buf[MAX_PATH] = {};
-    char* filePart = nullptr;
-    const DWORD n = SearchPathA(nullptr, exe.c_str(), nullptr,
-                                MAX_PATH, buf, &filePart);
-    if (n > 0 && n < MAX_PATH) return buf;
+    const std::wstring wideExe = utf8ToWide(exe);
+    if (wideExe.empty()) return {};
+    const DWORD needed = SearchPathW(nullptr, wideExe.c_str(), nullptr,
+                                     0, nullptr, nullptr);
+    if (needed == 0) return {};
+    std::vector<wchar_t> buf(static_cast<size_t>(needed) + 1, L'\0');
+    wchar_t* filePart = nullptr;
+    const DWORD n = SearchPathW(nullptr, wideExe.c_str(), nullptr,
+                                static_cast<DWORD>(buf.size()), buf.data(),
+                                &filePart);
+    if (n > 0 && n < buf.size()) return wideToUtf8(std::wstring(buf.data(), n));
     return {};
 }
 

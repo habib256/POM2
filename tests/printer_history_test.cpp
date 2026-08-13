@@ -155,6 +155,7 @@ void testTrimsToCap()
                          8.0, 11.0, err));
 
     assert(h.size() == PrinterHistory::kMaxPages);
+    h.flushPending();
 
     // The evicted PNGs are gone from disk too — a cap that only trimmed the
     // index would leak files forever, which is the bug worth pinning.
@@ -232,6 +233,16 @@ void testIndexCannotEscapeStore()
     assert(h.size() == 0);
     assert(fs::exists(outside));
     assert(h.clear(err));
+    assert(fs::exists(outside));
+
+    // The public API is confined too; callers cannot manufacture a
+    // HistoryPage that bypasses the index parser's validation.
+    HistoryPage forged;
+    forged.file = "../../do-not-delete.txt";
+    std::vector<uint8_t> rgba;
+    int w = 0, hh = 0;
+    assert(!h.loadRgba(forged, rgba, w, hh, err));
+    assert(!h.erase(forged, err));
     assert(fs::exists(outside));
     fs::remove(outside, ec);
     std::printf("  ok: index paths cannot escape the history directory\n");
@@ -376,6 +387,93 @@ void testWritesAreDeferredButNeverLost()
     std::printf("  ok: encodes are deferred, and the destructor drains them\n");
 }
 
+void testEncodeFailureRemovesDanglingRow()
+{
+    const fs::path dir = scratch("encode_failure");
+    std::string err;
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+
+    // The encoder commits through `<page>.tmp`. A directory at that exact
+    // path is a deterministic, privilege-independent way to make fopen fail.
+    fs::create_directory(dir / "p000001.png.tmp");
+    assert(h.addPage(makePage(16, 16, 1), 0, 0, 8.0, 11.0, err));
+    h.flushPending();
+    assert(h.size() == 0);
+    assert(!fs::exists(dir / "p000001.png"));
+
+    // The repair is durable, not merely an in-memory cosmetic cleanup.
+    PrinterHistory reopened;
+    assert(reopened.open(dir.string(), err));
+    assert(reopened.size() == 0);
+    std::printf("  ok: a failed async encode cannot leave a dangling row\n");
+}
+
+void testRejectsMalformedRaster()
+{
+    const fs::path dir = scratch("bad_raster");
+    std::string err;
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+    auto page = makePage(16, 16, 1);
+    page.pix.pop_back();
+    assert(!h.addPage(page, 0, 0, 8.0, 11.0, err));
+    assert(h.size() == 0);
+    std::printf("  ok: malformed raster dimensions are rejected safely\n");
+}
+
+void testIndexFailureRollsBackAndRetries()
+{
+    const fs::path dir = scratch("index_failure");
+    std::string err;
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+
+    // Block creation of index.txt.tmp without relying on permissions.
+    fs::create_directory(dir / "index.txt.tmp");
+    assert(!h.addPage(makePage(16, 16, 1), 0, 0, 8.0, 11.0, err));
+    assert(h.size() == 0);
+    assert(h.pendingWrites() == 0);
+    assert(!fs::exists(dir / "p000001.png"));
+
+    fs::remove_all(dir / "index.txt.tmp");
+    assert(h.addPage(makePage(16, 16, 2), 0, 0, 8.0, 11.0, err));
+    assert(h.pages()[0].file == "p000001.png"); // counter/job rolled back
+    h.flushPending();
+    assert(fs::exists(dir / "p000001.png"));
+    std::printf("  ok: an index failure is rolled back and remains retryable\n");
+}
+
+void testCounterBeyondSixDigitsAndOrphanCleanup()
+{
+    const fs::path dir = scratch("wide_counter");
+    std::string err;
+    fs::create_directories(dir);
+    const auto page = makePage(8, 8, 7);
+    std::vector<uint8_t> rgba;
+    ImageWriter::pageToRgba(page, rgba);
+    assert(stbi_write_png((dir / "p999999.png").string().c_str(), 8, 8, 4,
+                          rgba.data(), 8 * 4));
+    assert(stbi_write_png((dir / "p888888.png").string().c_str(), 8, 8, 4,
+                          rgba.data(), 8 * 4));
+    std::ofstream(dir / "index.txt")
+        << "pom2-printer-history\t1\n"
+        << "p999999.png\t2026-01-01 00:00:00\t1\t0\t0\t8\t11\t8\t8\t144\n";
+
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+    assert(!fs::exists(dir / "p888888.png")); // safe unreferenced orphan
+    assert(h.addPage(page, 0, 0, 8.0, 11.0, err));
+    assert(h.pages()[0].file == "p1000000.png");
+    h.flushPending();
+
+    PrinterHistory reopened;
+    assert(reopened.open(dir.string(), err));
+    assert(reopened.size() == 2);
+    assert(reopened.pages()[0].file == "p1000000.png");
+    std::printf("  ok: counters beyond six digits reload; safe orphans clean up\n");
+}
+
 } // namespace
 
 int main()
@@ -389,6 +487,10 @@ int main()
     testEraseAndClear();
     testFileCounterSurvivesReload();
     testWritesAreDeferredButNeverLost();
+    testEncodeFailureRemovesDanglingRow();
+    testRejectsMalformedRaster();
+    testIndexFailureRollsBackAndRetries();
+    testCounterBeyondSixDigitsAndOrphanCleanup();
 
     std::puts("printer_history: OK");
     return 0;

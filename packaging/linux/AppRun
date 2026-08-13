@@ -36,6 +36,9 @@ fi
 # Bundled libraries (GLFW and friends staged by linuxdeploy). Graphics-driver
 # libraries are deliberately NOT bundled — per AppImage convention libGL/libEGL
 # come from the host, otherwise the package would override the user's GPU driver.
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+# Do not leave a trailing `:` when the caller had no LD_LIBRARY_PATH: the ELF
+# loader interprets an empty component as the current working directory,
+# allowing an unrelated/libGL.so.1 beside a disk image to hijack startup.
+export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 exec "${HERE}/usr/bin/POM2" "$@"

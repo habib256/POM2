@@ -43,12 +43,11 @@ std::filesystem::path userDataDir();
 
 /// Ordered, de-duplicated base directories searched for bundled assets.
 /// Search order (first hit wins):
-///   1. CWD                        — dev (run_emulator.sh from repo root)
-///   2. ../, ../../               — dev (launched from build/ or build/<cfg>/)
-///   3. per-user data dir          — override a bundled dump (XDG / LOCALAPPDATA)
-///   4. <exeDir>                  — portable bundle (binary beside roms/)
-///   5. <exeDir>/..               — portable bundle (binary in bin/)
-///   6. <exeDir>/../share/POM2    — FHS install (/usr/bin + /usr/share/POM2)
+///   1. per-user data dir          — explicit override (XDG / LOCALAPPDATA)
+///   2. <exeDir>                  — portable bundle (binary beside roms/)
+///   3. <exeDir>/..               — portable bundle (binary in bin/)
+///   4. <exeDir>/../share/POM2    — FHS install (/usr/bin + /usr/share/POM2)
+///   5. CWD, ../, ../../          — development fallback only
 /// Cached after the first call.
 const std::vector<std::filesystem::path>& resourceSearchDirs();
 

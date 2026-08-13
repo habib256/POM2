@@ -195,6 +195,28 @@ int main() {
         std::filesystem::remove(p);
     }
 
+    // ── Out-of-range WRITE aborts before accepting 512 bytes ──────────────
+    {
+        AtaBlockDevice a;
+        assert(a.backing().loadFromBytes(makeImage(4), "oor-write", ""));
+        setLba(a, 4, 1);                 // first block past the image
+        a.cs0_w(7, AtaBlockDevice::kCmdWrite);
+        const uint8_t st = static_cast<uint8_t>(a.cs0_r(7));
+        assert((st & AtaBlockDevice::kStERR) != 0);
+        assert((st & AtaBlockDevice::kStDRQ) == 0);
+        assert((static_cast<uint8_t>(a.cs0_r(1)) &
+                AtaBlockDevice::kErrABRT) != 0);
+        assert(!a.backing().hasUnsavedChanges());
+
+        // A multi-sector request that starts valid but crosses the end must
+        // fail as one command, rather than partially modifying the last block.
+        setLba(a, 3, 2);
+        a.cs0_w(7, AtaBlockDevice::kCmdWriteMulti);
+        assert((a.cs0_r(7) & AtaBlockDevice::kStERR) != 0);
+        assert((a.cs0_r(7) & AtaBlockDevice::kStDRQ) == 0);
+        assert(!a.backing().hasUnsavedChanges());
+    }
+
     // ── CHS addressing (devHead bit 6 clear) ──────────────────────────────
     // MAME `ata_mass_storage_device_base::lba_address()` (atastorage.cpp:
     // 44-53): with IDE_DEVICE_HEAD_L (0x40) clear, the taskfile decodes as

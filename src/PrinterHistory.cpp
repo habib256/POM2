@@ -8,6 +8,7 @@
 
 #include "PrinterHistory.h"
 
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 
 // Declarations only — the single non-static stb implementations live in
@@ -21,6 +22,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 namespace pom2 {
@@ -75,10 +77,12 @@ std::string sanitise(std::string s)
 
 bool validPageFile(const std::string& name)
 {
-    if (name.size() != 11 || name.front() != 'p' ||
-        name.compare(7, 4, ".png") != 0)
+    // `%06llu` is a MINIMUM width, not a cap: after p999999.png the next
+    // valid name has seven digits. Accept the full uint64_t decimal width.
+    if (name.size() < 11 || name.size() > 25 || name.front() != 'p' ||
+        name.compare(name.size() - 4, 4, ".png") != 0)
         return false;
-    return std::all_of(name.begin() + 1, name.begin() + 7,
+    return std::all_of(name.begin() + 1, name.end() - 4,
                        [](unsigned char c) { return c >= '0' && c <= '9'; });
 }
 
@@ -92,6 +96,11 @@ bool PrinterHistory::open(const std::string& dir, std::string& err)
     // job, and swapping the directory under a queued page would file it in
     // the wrong place. Also drains, so nothing pending is dropped.
     stopWriter();
+    std::string priorErr;
+    if (!reconcileWriteFailures(priorErr) && !priorErr.empty())
+        pom2::log().warn("PrinterHistory", priorErr);
+    retryPendingDeletes();
+    pendingDeletes_.clear(); // pending names belong to the previous `dir_`
 
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -104,6 +113,18 @@ bool PrinterHistory::open(const std::string& dir, std::string& err)
     nextJob_ = nextFile_ = 1;
     lastPageEpoch_ = 0;
     readIndex();          // absent / unreadable = empty history, not an error
+    // Clean safe, unreferenced page files left by a prior locked-file delete
+    // or a process killed between PNG creation and index repair.
+    std::vector<std::string> live;
+    live.reserve(pages_.size());
+    for (const auto& p : pages_) live.push_back(p.file);
+    for (const auto& entry : fs::directory_iterator(dir_, ec)) {
+        const std::string file = entry.path().filename().string();
+        std::error_code typeEc;
+        if (entry.is_regular_file(typeEc) && validPageFile(file) &&
+            std::find(live.begin(), live.end(), file) == live.end())
+            removeOrQueue(file);
+    }
     return true;
 }
 
@@ -161,8 +182,14 @@ bool PrinterHistory::readIndex()
         nextJob_ = std::max(nextJob_, p.job + 1);
         // File names are pNNNNNN.png; recover the counter so a new page never
         // overwrites an old one.
-        nextFile_ = std::max<uint64_t>(
-            nextFile_, std::stoull(p.file.substr(1, 6)) + 1);
+        try {
+            const uint64_t fileNo = std::stoull(
+                p.file.substr(1, p.file.size() - 5));
+            if (fileNo != std::numeric_limits<uint64_t>::max())
+                nextFile_ = std::max(nextFile_, fileNo + 1);
+        } catch (...) {
+            continue;
+        }
         pages_.push_back(std::move(p));
     }
 
@@ -188,14 +215,15 @@ bool PrinterHistory::writeIndex(std::string& err) const
                 << it->paperW << '\t' << it->paperL << '\t'
                 << it->w << '\t' << it->h << '\t' << it->dpi << '\n';
         }
+        out.flush();
+        out.close();
         if (!out) { err = "write failed: " + tmp.string(); return false; }
     }
 
     // Rename over the old index: a crash mid-write then leaves the previous
     // index intact rather than a half-truncated one.
     std::error_code ec;
-    fs::rename(tmp, final, ec);
-    if (ec) {
+    if (!replaceFileAtomic(tmp, final, ec)) {
         err = "cannot replace the index: " + ec.message();
         return false;
     }
@@ -204,7 +232,13 @@ bool PrinterHistory::writeIndex(std::string& err) const
 
 // ── Background writer ────────────────────────────────────────────────────
 
-PrinterHistory::~PrinterHistory() { stopWriter(); }
+PrinterHistory::~PrinterHistory()
+{
+    stopWriter();
+    std::string err;
+    if (!reconcileWriteFailures(err) && !err.empty())
+        pom2::log().warn("PrinterHistory", err);
+}
 
 void PrinterHistory::startWriter()
 {
@@ -247,15 +281,25 @@ void PrinterHistory::writerLoop()
         std::vector<uint8_t> rgba;
         ImageWriter::pageToRgba(job.page, rgba);
         const fs::path out = fs::path(dir) / job.file;
-        if (rgba.size() < static_cast<size_t>(job.page.w) * job.page.h * 4 ||
-            !stbi_write_png(out.string().c_str(), job.page.w, job.page.h, 4,
-                            rgba.data(), job.page.w * 4)) {
+        const fs::path tmp = fs::path(dir) / (job.file + ".tmp");
+        bool written = rgba.size() >= static_cast<size_t>(job.page.w) *
+                                      static_cast<size_t>(job.page.h) * 4 &&
+                       stbi_write_png(tmp.string().c_str(), job.page.w,
+                                      job.page.h, 4, rgba.data(),
+                                      job.page.w * 4);
+        std::error_code commitEc;
+        if (written) written = replaceFileAtomic(tmp, out, commitEc);
+        if (!written) {
+            std::error_code ignored;
+            fs::remove(tmp, ignored);
             pom2::log().warn("PrinterHistory",
-                             "cannot write " + out.string());
+                             "cannot write " + out.string() +
+                             (commitEc ? ": " + commitEc.message() : ""));
         }
 
         {
             std::lock_guard<std::mutex> lk(qMtx_);
+            if (!written) failedFiles_.push_back(job.file);
             if (!queue_.empty()) queue_.pop_front();
         }
         qDoneCv_.notify_all();
@@ -263,10 +307,16 @@ void PrinterHistory::writerLoop()
     }
 }
 
-void PrinterHistory::flushPending() const
+void PrinterHistory::flushPending()
 {
-    std::unique_lock<std::mutex> lk(qMtx_);
-    qDoneCv_.wait(lk, [this] { return queue_.empty(); });
+    {
+        std::unique_lock<std::mutex> lk(qMtx_);
+        qDoneCv_.wait(lk, [this] { return queue_.empty(); });
+    }
+    retryPendingDeletes();
+    std::string err;
+    if (!reconcileWriteFailures(err) && !err.empty())
+        pom2::log().warn("PrinterHistory", err);
 }
 
 size_t PrinterHistory::pendingWrites() const
@@ -282,8 +332,16 @@ bool PrinterHistory::addPage(const ImageWriter::Page& page, int model,
                              std::string& err)
 {
     if (dir_.empty()) { err = "history is not open"; return false; }
-    if (page.w <= 0 || page.h <= 0 || page.pix.empty()) {
-        err = "empty page";
+    const bool dimensionsOverflow =
+        page.w > 0 && page.h > 0 &&
+        static_cast<size_t>(page.w) >
+            std::numeric_limits<size_t>::max() / static_cast<size_t>(page.h);
+    const size_t expectedPixels =
+        (page.w > 0 && page.h > 0 && !dimensionsOverflow)
+            ? static_cast<size_t>(page.w) * static_cast<size_t>(page.h)
+            : 0;
+    if (expectedPixels == 0 || page.pix.size() != expectedPixels) {
+        err = "invalid page raster dimensions";
         return false;
     }
 
@@ -291,22 +349,11 @@ bool PrinterHistory::addPage(const ImageWriter::Page& page, int model,
     std::snprintf(name, sizeof(name), "p%06llu.png",
                   static_cast<unsigned long long>(nextFile_));
 
-    // Hand the sheet to the writer thread rather than encoding it here: this
-    // runs on the ImGui render thread, once per ejected sheet, and a Letter
-    // page at 144 dpi costs ~100-140 ms to convert and deflate — six to eight
-    // dropped frames, four of them back to back on a form-feed catch-up.
-    startWriter();
-    {
-        std::unique_lock<std::mutex> lk(qMtx_);
-        // Back-pressure instead of unbounded RAM. Only ever waits when the
-        // disk is genuinely slower than the printer, which is strictly better
-        // than paying the encode on every single sheet.
-        qCv_.wait(lk, [this] { return queue_.size() < kMaxPending; });
-        queue_.push_back(PendingWrite{name, page});
-    }
-    qCv_.notify_all();
-
     const int64_t now = nowEpoch();
+    const auto previousPages = pages_;
+    const uint64_t previousNextJob = nextJob_;
+    const uint64_t previousNextFile = nextFile_;
+    const int64_t previousLastPage = lastPageEpoch_;
     HistoryPage p;
     p.file    = name;
     p.savedAt = nowStamp();
@@ -324,26 +371,106 @@ bool PrinterHistory::addPage(const ImageWriter::Page& page, int model,
     p.h      = page.h;
     p.dpi    = page.dpi;
 
+    // Treat metadata as a transaction. In particular, do not queue the PNG
+    // until the index commit succeeds: a locked index on Windows used to make
+    // addPage return false while the writer still created an unindexed orphan.
     lastPageEpoch_ = now;
     ++nextFile_;
     pages_.insert(pages_.begin(), std::move(p));   // newest first
 
-    trim(err);
-    return writeIndex(err);
-}
-
-void PrinterHistory::trim(std::string& err)
-{
+    std::vector<std::string> evicted;
     while (pages_.size() > kMaxPages) {
-        const HistoryPage& oldest = pages_.back();
-        std::error_code ec;
-        fs::remove(fs::path(dir_) / oldest.file, ec);
-        if (ec)
-            pom2::log().warn("PrinterHistory",
-                             "could not delete " + oldest.file + ": " + ec.message());
+        evicted.push_back(pages_.back().file);
         pages_.pop_back();
     }
-    (void)err;
+
+    if (!writeIndex(err)) {
+        pages_ = previousPages;
+        nextJob_ = previousNextJob;
+        nextFile_ = previousNextFile;
+        lastPageEpoch_ = previousLastPage;
+        return false;
+    }
+
+    // Hand the sheet to the writer thread rather than encoding it here: this
+    // runs on the ImGui render thread, once per ejected sheet, and a Letter
+    // page at 144 dpi costs ~100-140 ms to convert and deflate.
+    startWriter();
+    {
+        std::unique_lock<std::mutex> lk(qMtx_);
+        qCv_.wait(lk, [this] { return queue_.size() < kMaxPending; });
+        queue_.push_back(PendingWrite{name, page});
+    }
+    qCv_.notify_all();
+
+    // The committed index no longer references evicted pages. Deletion is
+    // best effort: a transient Windows file lock may leave an orphan, but can
+    // no longer leave a live row pointing at a missing file.
+    for (const auto& file : evicted) removeOrQueue(file);
+    return true;
+}
+
+bool PrinterHistory::reconcileWriteFailures(std::string& err)
+{
+    std::vector<std::string> failed;
+    {
+        std::lock_guard<std::mutex> lk(qMtx_);
+        failed.swap(failedFiles_);
+    }
+    if (failed.empty()) return true;
+
+    pages_.erase(std::remove_if(pages_.begin(), pages_.end(),
+                                [&](const HistoryPage& p) {
+                                    return std::find(failed.begin(), failed.end(),
+                                                     p.file) != failed.end();
+                                }),
+                 pages_.end());
+
+    std::string indexErr;
+    const bool indexOk = dir_.empty() || writeIndex(indexErr);
+    err = "discarded " + std::to_string(failed.size()) +
+          " print-history page(s) whose PNG could not be written";
+    if (!indexOk) err += "; " + indexErr;
+    return false;
+}
+
+bool PrinterHistory::pollWriteFailures(std::string& err)
+{
+    retryPendingDeletes();
+    return reconcileWriteFailures(err);
+}
+
+void PrinterHistory::removeOrQueue(const std::string& file)
+{
+    if (!validPageFile(file)) return;
+    bool stillQueued = false;
+    {
+        std::lock_guard<std::mutex> lk(qMtx_);
+        stillQueued = std::any_of(queue_.begin(), queue_.end(),
+                                  [&](const PendingWrite& q) {
+                                      return q.file == file;
+                                  });
+    }
+    std::error_code ec;
+    const bool removed = fs::remove(fs::path(dir_) / file, ec);
+    if ((ec || stillQueued) &&
+        std::find(pendingDeletes_.begin(), pendingDeletes_.end(), file) ==
+            pendingDeletes_.end()) {
+        pendingDeletes_.push_back(file);
+        if (ec)
+            pom2::log().warn("PrinterHistory",
+                             "could not delete " + file + ": " + ec.message());
+    } else if (removed) {
+        pendingDeletes_.erase(std::remove(pendingDeletes_.begin(),
+                                          pendingDeletes_.end(), file),
+                              pendingDeletes_.end());
+    }
+}
+
+void PrinterHistory::retryPendingDeletes()
+{
+    const auto pending = pendingDeletes_;
+    for (const auto& file : pending) removeOrQueue(file);
 }
 
 // ── Reading back ─────────────────────────────────────────────────────────
@@ -351,6 +478,10 @@ void PrinterHistory::trim(std::string& err)
 bool PrinterHistory::loadRgba(const HistoryPage& p, std::vector<uint8_t>& rgba,
                               int& w, int& h, std::string& err) const
 {
+    if (!validPageFile(p.file)) {
+        err = "invalid history page filename";
+        return false;
+    }
     // A sheet the writer has not reached yet is served straight from the
     // queue. The panel puts a freshly archived page on screen within a frame,
     // which is well inside the ~100 ms its encode takes.
@@ -391,29 +522,39 @@ std::vector<const HistoryPage*> PrinterHistory::jobPages(uint64_t job) const
 
 bool PrinterHistory::erase(const HistoryPage& p, std::string& err)
 {
+    if (!validPageFile(p.file)) {
+        err = "invalid history page filename";
+        return false;
+    }
     // Never delete a file the writer is still about to create — it would be
     // resurrected moments later as an orphan the index does not mention.
     // A user-paced action can afford the wait; a per-sheet encode could not.
     flushPending();
     const std::string file = p.file;         // `p` may point into pages_
-    std::error_code ec;
-    fs::remove(fs::path(dir_) / file, ec);
+    const auto previousPages = pages_;
     pages_.erase(std::remove_if(pages_.begin(), pages_.end(),
                                 [&](const HistoryPage& q) { return q.file == file; }),
                  pages_.end());
-    return writeIndex(err);
+    if (!writeIndex(err)) {
+        pages_ = previousPages;
+        return false;
+    }
+    removeOrQueue(file);
+    return true;
 }
 
 bool PrinterHistory::clear(std::string& err)
 {
     flushPending();                          // see erase()
-    for (const auto& p : pages_) {
-        std::error_code ec;
-        fs::remove(fs::path(dir_) / p.file, ec);
-    }
+    const auto previousPages = pages_;
     pages_.clear();
+    if (!writeIndex(err)) {
+        pages_ = previousPages;
+        return false;
+    }
+    for (const auto& p : previousPages) removeOrQueue(p.file);
     lastPageEpoch_ = 0;
-    return writeIndex(err);
+    return true;
 }
 
 } // namespace pom2

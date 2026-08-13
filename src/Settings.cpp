@@ -4,6 +4,7 @@
 // Copyright (C) 2026
 
 #include "Settings.h"
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 
 #include <cstdlib>
@@ -180,8 +181,7 @@ bool Settings::save() const
         }
     }
     std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec) {
+    if (!replaceFileAtomic(tmp, path, ec)) {
         pom2::log().warn("Settings",
             "Rename " + tmp.string() + " → " + path.string() + " failed: " + ec.message());
         return false;

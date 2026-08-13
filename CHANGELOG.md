@@ -19,6 +19,14 @@ serial hot-unplug detection, clean GUI termination, and Windows helper-process
 quoting/lifetime.  Offline test configuration is now graceful when pinned
 external CPU vectors are unavailable, while using them whenever cached.
 
+A second adversarial pass closed the failure paths around those fixes:
+printer history now commits its index transaction before queueing a PNG,
+removes failed encodes and retries locked-file cleanup; disk and ProDOS writes
+propagate deferred I/O failures instead of reporting success. Release tooling
+verifies ARM AppImage downloads by SHA-256, treats dependency staging and macOS
+signing failures as fatal, and prevents the current directory from entering
+the dynamic-loader or bundled-resource precedence paths.
+
 ## 2026-08-10 — Bug sweep over the FujiNet relay and the printer stack
 
 A multi-agent review of the previous commit, then an adversarial pass that

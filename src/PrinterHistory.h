@@ -120,6 +120,12 @@ public:
     const std::vector<HistoryPage>& pages() const { return pages_; }
     size_t size() const { return pages_.size(); }
 
+    /// Apply failures reported by the background encoder on the render
+    /// thread. Failed rows are removed from memory and the durable index, so
+    /// the panel never keeps pointing at a PNG that cannot exist. Returns
+    /// false once per failed batch and describes the dropped page(s).
+    bool pollWriteFailures(std::string& err);
+
     /// Decode a stored page back to RGBA for display or re-export.
     bool loadRgba(const HistoryPage& p, std::vector<uint8_t>& rgba,
                   int& w, int& h, std::string& err) const;
@@ -134,17 +140,19 @@ public:
     /// Block until every accepted page is on disk. Called before any deletion
     /// (so a page cannot be removed and then recreated by the writer) and by
     /// the destructor; also what makes a test deterministic.
-    void flushPending() const;
+    void flushPending();
     /// Pages accepted but not yet written. Test/diagnostic hook.
     size_t pendingWrites() const;
 
 private:
     bool writeIndex(std::string& err) const;
     bool readIndex();
-    void trim(std::string& err);
     void writerLoop();
     void startWriter();
     void stopWriter();
+    bool reconcileWriteFailures(std::string& err);
+    void removeOrQueue(const std::string& file);
+    void retryPendingDeletes();
 
     /// One sheet on its way to disk. The Page is carried rather than its RGBA
     /// expansion: ~1.9 MB instead of 7.76 MB, and it moves the conversion off
@@ -165,6 +173,10 @@ private:
     /// The entry being encoded stays at the FRONT until its file exists, so
     /// `loadRgba` can always find a page that is not on disk yet.
     std::deque<PendingWrite>        queue_;
+    /// Files whose PNG encode/commit failed. The writer only appends here;
+    /// the render thread consumes it and is the sole owner of `pages_`.
+    std::vector<std::string>        failedFiles_;
+    std::vector<std::string>        pendingDeletes_;
     std::thread                     writer_;
     bool                            writerQuit_ = false;
 

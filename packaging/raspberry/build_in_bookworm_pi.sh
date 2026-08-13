@@ -75,9 +75,23 @@ echo 'int main(){}' | g++ -x c++ -mcpu="$MCPU" -o /dev/null - \
 TOOLS=/opt/appimage-tools
 mkdir -p "$TOOLS" && (
     cd "$TOOLS"
-    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage" -O appimagetool.AppImage
-    wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" -O linuxdeploy.AppImage
-    wget -q "https://github.com/AppImage/AppImageKit/releases/download/12/runtime-aarch64" -O runtime-aarch64
+    download_verified() {
+        url=$1 out=$2 expected=$3
+        wget -q "$url" -O "$out"
+        echo "$expected  $out" | sha256sum -c -
+    }
+    download_verified \
+      "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage" \
+      appimagetool.AppImage \
+      f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+    download_verified \
+      "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" \
+      linuxdeploy.AppImage \
+      9f04c4c2a8b69c392c4bbcc1a88bdd4d0a8ac03f587cf5242814cb7ae47b78e5
+    download_verified \
+      "https://github.com/AppImage/AppImageKit/releases/download/12/runtime-aarch64" \
+      runtime-aarch64 \
+      207f8955500cfe8dd5b824ca7514787c023975e083b0269fc14600c380111d85
     chmod +x runtime-aarch64 ./*.AppImage
     ./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir
     ./appimagetool.AppImage --appimage-extract >/dev/null && mv squashfs-root appimagetool.AppDir

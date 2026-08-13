@@ -98,7 +98,7 @@ private:
 
     void startCommand(uint8_t cmd);
     void loadSectorToBuffer();   // backing block at lba_ → wordBuf_
-    void flushBufferToSector();  // wordBuf_ → backing block at lba_
+    bool flushBufferToSector();  // wordBuf_ → backing block at lba_
     void fillIdentify();
     uint32_t currentLba() const;
 

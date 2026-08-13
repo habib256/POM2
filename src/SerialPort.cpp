@@ -497,7 +497,12 @@ bool SerialPort::open(const std::string& path, int baud)
     to.ReadTotalTimeoutConstant    = 0;    // return immediately with what's there
     to.WriteTotalTimeoutMultiplier = 0;
     to.WriteTotalTimeoutConstant   = 1000;
-    SetCommTimeouts(h, &to);
+    if (!SetCommTimeouts(h, &to)) {
+        setError(path + ": SetCommTimeouts: " +
+                 win32ErrorText(GetLastError()));
+        CloseHandle(h);
+        return false;
+    }
 
     PurgeComm(h, PURGE_RXCLEAR | PURGE_TXCLEAR);
     EscapeCommFunction(h, CLRDTR);
@@ -560,7 +565,11 @@ int SerialPort::readSome(uint8_t* p, std::size_t n, int timeoutMs)
     to.ReadTotalTimeoutConstant    = static_cast<DWORD>(timeoutMs < 0 ? 0 : timeoutMs);
     to.WriteTotalTimeoutMultiplier = 0;
     to.WriteTotalTimeoutConstant   = 1000;
-    SetCommTimeouts(H(handle_), &to);
+    if (!SetCommTimeouts(H(handle_), &to)) {
+        setError(path_ + ": SetCommTimeouts: " +
+                 win32ErrorText(GetLastError()));
+        return -1;
+    }
 
     DWORD got = 0;
     if (!ReadFile(H(handle_), p, static_cast<DWORD>(n), &got, nullptr)) {

@@ -97,8 +97,8 @@ if run_tool linuxdeploy --appdir "$APPDIR" \
         --icon-file "$APPDIR/POM2.svg" 2>"${BUILD_DIR}/linuxdeploy.log"; then
     log "linuxdeploy staged the dependency libraries"
 else
-    echo "  (linuxdeploy unavailable or failed — see ${BUILD_DIR}/linuxdeploy.log)" >&2
-    echo "  The AppDir is still usable on a host with the same shared libs." >&2
+    echo "ERROR: linuxdeploy unavailable or failed — see ${BUILD_DIR}/linuxdeploy.log" >&2
+    exit 1
 fi
 
 # linuxdeploy re-generates AppRun; put ours back (it owns the ROM-dir seeding).

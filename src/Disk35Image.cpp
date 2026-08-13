@@ -14,6 +14,7 @@
 //     `ap_dsk35.cpp` for ProDOS .2mg loads.
 
 #include "Disk35Image.h"
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 #include "TwoImg.h"
 
@@ -244,9 +245,9 @@ bool Disk35Image::saveDirty()
                     static_cast<std::streamsize>(twoImgTrailerRaw_.size()));
         }
         f.flush();
+        f.close();
         if (!f) {
             lastError_ = "Disk35Image: write failed on " + tmp;
-            f.close();
             std::error_code ec;
             std::filesystem::remove(tmp, ec);
             return false;
@@ -257,8 +258,7 @@ bool Disk35Image::saveDirty()
         std::filesystem::permissions(tmp, origPerms, ec);
         ec.clear();
     }
-    std::filesystem::rename(tmp, path_, ec);
-    if (ec) {
+    if (!replaceFileAtomic(tmp, path_, ec)) {
         lastError_ = "Disk35Image: cannot replace " + path_ + ": " + ec.message();
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);

@@ -107,34 +107,32 @@ const std::vector<fs::path>& resourceSearchDirs()
             dirs.push_back(std::move(p));
         };
 
-        // 1-3: legacy CWD-relative roots (preserve exact dev behaviour).
-        push(fs::path{});            // current working directory
-        push("..");
-        push("../..");
-
-        // 4: per-user data dir — overrides for a bundled dump in a read-only
+        // 1: per-user data dir — explicit overrides for a bundled dump
         // package (AppImage / .deb / .dmg). Searched before the install tree
         // so a file dropped in ~/.local/share/POM2/roms/ wins. Honours
         // $XDG_DATA_HOME, else $HOME/.local/share (XDG basedir); on Windows
         // also %LOCALAPPDATA%\POM2.
-        if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-            push(fs::path(xdg) / "POM2");
-        } else if (const char* home = std::getenv("HOME"); home && *home) {
-            push(fs::path(home) / ".local" / "share" / "POM2");
-        }
-#if defined(_WIN32)
-        if (const char* lad = std::getenv("LOCALAPPDATA"); lad && *lad) {
-            push(fs::path(lad) / "POM2");
-        }
-#endif
+        // Keep this exactly aligned with writable output. The previous
+        // duplicated XDG logic accidentally searched ~/.local/share on macOS
+        // while documentation and writes used ~/Library/Application Support;
+        // user ROM overrides therefore worked on Linux but not in a .app.
+        push(userDataDir());
 
-        // 5-7: executable-relative roots (portable bundle + FHS install).
+        // 2-4: executable-relative roots (portable bundle + FHS install).
         const fs::path exe = executableDir();
         if (!exe.empty()) {
             push(exe);                        // binary beside roms/, fonts/
             push(exe / "..");                 // binary in bin/, assets a level up
             push(exe / ".." / "share" / "POM2");  // /usr/bin + /usr/share/POM2
         }
+
+        // 5-7: legacy development roots. Keep them last: a desktop launch
+        // often inherits the directory containing a disk image, and an
+        // unrelated `roms/apple2e.rom` there must not override the installed
+        // application or the user's explicit override directory.
+        push(fs::path{});
+        push("..");
+        push("../..");
         return dirs;
     }();
     return cached;
