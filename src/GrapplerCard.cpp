@@ -9,6 +9,7 @@
 
 #include "Logger.h"
 
+#include <algorithm>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
@@ -114,7 +115,12 @@ void GrapplerCard::deviceSelectWrite(uint8_t low4, uint8_t v)
             // bit 7 at the latch.
             const uint8_t latched = dipMsb_ ? v : static_cast<uint8_t>(v & 0x7F);
             std::lock_guard<std::mutex> lk(bufferMtx_);
+            if (spool_.size() == kMaxSpoolBytes) {
+                spool_.pop_front();
+                ++spoolBase_;
+            }
             spool_.push_back(latched);
+            ++spoolTotal_;
         }
         // The printer acknowledges as soon as it has room for the byte —
         // instantly unless the host-side ImageWriter reported a full
@@ -209,7 +215,7 @@ void GrapplerCard::updateIrq()
 std::vector<uint8_t> GrapplerCard::spoolBytes() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    return spool_;
+    return {spool_.begin(), spool_.end()};
 }
 
 std::string GrapplerCard::spoolText() const
@@ -229,25 +235,28 @@ std::string GrapplerCard::spoolText() const
 size_t GrapplerCard::drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    // `from` past the end means the spool was cleared behind the caller's
-    // back (the panel's "Clear spool" button) — hand back everything so the
-    // consumer resynchronises instead of silently going deaf.
-    const size_t start = (from > spool_.size()) ? 0 : from;
+    // Absolute cursors survive front eviction; a cursor beyond the new total
+    // denotes clearSpool() and resynchronises from the retained front.
+    const size_t absolute = (from > spoolTotal_) ? spoolBase_
+                                                 : std::max(from, spoolBase_);
+    const size_t start = absolute - spoolBase_;
     out.insert(out.end(), spool_.begin() + static_cast<std::ptrdiff_t>(start),
                spool_.end());
-    return spool_.size();
+    return spoolTotal_;
 }
 
 size_t GrapplerCard::bytesWritten() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    return spool_.size();
+    return spoolTotal_;
 }
 
 void GrapplerCard::clearSpool()
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
     spool_.clear();
+    spoolBase_ = 0;
+    spoolTotal_ = 0;
 }
 
 void GrapplerCard::buildStubRom()

@@ -13,6 +13,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <climits>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -78,6 +79,17 @@ int main()
     }
     std::printf("OK cassette_wav_tail (3 transitions incl. flushed tail)\n");
 
+    // A corrupt replacement must not discard the valid tape already loaded.
+    const std::string badPath = path + ".bad.wav";
+    { std::ofstream bad(badPath, std::ios::binary); bad << "not a wav"; }
+    if (cass.loadTape(badPath) || !cass.hasLoadedTape() ||
+        cass.getLoadedTapePath() != path ||
+        cass.getLoadedTransitionCount() != n) {
+        std::printf("FAIL: invalid replacement destroyed current tape\n");
+        return 1;
+    }
+    std::printf("OK invalid cassette replacement preserves current tape\n");
+
     // Leader auto-rewind (`cassette_auto_rewind`, 3f42efc) — POM2 convenience
     // that re-arms playback when the Monitor READ routine stops polling. It
     // MUST default OFF: a custom loader polling its own way would otherwise get
@@ -97,5 +109,41 @@ int main()
         return 1;
     }
     std::printf("OK cassette auto-rewind (default-off + toggle)\n");
+
+    // A single huge held level used to allocate hundreds of MiB before the
+    // WAV-size guard ran. It must be rejected during the checked size pass.
+    CassetteDevice huge;
+    huge.advanceCycles(1);
+    huge.toggleOutput();
+    huge.advanceCycles(INT_MAX);
+    huge.toggleOutput();
+    const std::string hugePath = path + ".huge.wav";
+    if (huge.saveTape(hugePath)) {
+        std::printf("FAIL: oversized WAV recording was accepted\n");
+        return 1;
+    }
+    std::printf("OK cassette oversized WAV rejected before allocation\n");
+
+    // Both output formats publish through a sibling temp and only report
+    // success after flush/close/rename.
+    CassetteDevice recorded;
+    recorded.advanceCycles(1);
+    recorded.toggleOutput();
+    recorded.advanceCycles(1000);
+    recorded.toggleOutput();
+    const std::string aciPath = path + ".recorded.aci";
+    const std::string wavPath = path + ".recorded.wav";
+    if (!recorded.saveTape(aciPath) || !recorded.saveTape(wavPath) ||
+        std::filesystem::exists(aciPath + ".pom2tmp") ||
+        std::filesystem::exists(wavPath + ".pom2tmp")) {
+        std::printf("FAIL: atomic cassette save failed\n");
+        return 1;
+    }
+    CassetteDevice roundTrip;
+    if (!roundTrip.loadTape(aciPath)) {
+        std::printf("FAIL: atomically saved ACI did not reload\n");
+        return 1;
+    }
+    std::printf("OK cassette ACI/WAV atomic save round-trip\n");
     return 0;
 }

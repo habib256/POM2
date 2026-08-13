@@ -9,6 +9,7 @@
 // Touch any of these only recompiles the MainWindow_*.cpp TUs, not every
 // file that includes MainWindow.h.
 #include "AiControlServer.h"
+#include "AtomicFileReplace.h"
 #include "Apple2Display.h"
 #include "Version.h"
 #include "CassetteDeck_ImGui.h"
@@ -5368,6 +5369,12 @@ void MainWindow::renderPrinterPanelWindow()
     ImGui::SameLine();
     ImGui::TextDisabled("— PR#%d from BASIC sends output here",
                         printerCard->getSlot());
+    if (printerCard->spoolTruncated()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+            "Preview/save retains only the newest %zu bytes; older output "
+            "was already streamed to the virtual printer.",
+            PrinterCard::kMaxSpoolBytes);
+    }
 
     ImGui::Separator();
 
@@ -5416,16 +5423,37 @@ void MainWindow::renderPrinterPanelWindow()
         std::error_code ec;
         const fs::path p = fs::path(printerSavePath);
         if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
-        std::ofstream out(p, std::ios::binary | std::ios::trunc);
+        const fs::path tmp = p.string() + ".pom2tmp";
+        std::error_code permEc;
+        const fs::perms oldPerms = fs::status(p, permEc).permissions();
+        const bool havePerms = !permEc;
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {
             printerLastSaveStatus = "Save failed: cannot open " +
                                     p.string();
         } else {
             const std::string text = printerCard->spoolText();
             out.write(text.data(), static_cast<std::streamsize>(text.size()));
+            out.flush();
             out.close();
-            printerLastSaveStatus = "Saved " + std::to_string(text.size()) +
-                                    " bytes → " + p.string();
+            if (!out) {
+                printerLastSaveStatus = "Save failed: short write to " +
+                                        tmp.string();
+                fs::remove(tmp, ec);
+            } else {
+                if (havePerms) {
+                    fs::permissions(tmp, oldPerms, ec);
+                    ec.clear();
+                }
+                if (!pom2::replaceFileAtomic(tmp, p, ec)) {
+                    printerLastSaveStatus = "Save failed: cannot replace " +
+                                            p.string() + ": " + ec.message();
+                    fs::remove(tmp, ec);
+                } else {
+                    printerLastSaveStatus = "Saved " +
+                        std::to_string(text.size()) + " bytes → " + p.string();
+                }
+            }
         }
     }
 

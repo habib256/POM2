@@ -369,6 +369,13 @@ bool launchConsoleSignalBroker(DWORD childPid)
     DWORD code = 1;
     const bool ok = waited == WAIT_OBJECT_0 &&
                     GetExitCodeProcess(pi.hProcess, &code) && code == 0;
+    if (waited == WAIT_TIMEOUT) {
+        // Do not leave a delayed broker holding only a numeric PID. Once the
+        // helper is killed that PID may be reused, and a late AttachConsole
+        // could otherwise send Ctrl+C to an unrelated process.
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
+    }
     CloseHandle(pi.hProcess);
     return ok;
 }

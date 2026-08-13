@@ -63,6 +63,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -72,6 +73,7 @@ class PrinterCard : public SlotPeripheral
 {
 public:
     static constexpr int kDefaultSlot = 1;
+    static constexpr size_t kMaxSpoolBytes = 4u * 1024u * 1024u;
 
     explicit PrinterCard(int slot = kDefaultSlot);
 
@@ -86,8 +88,8 @@ public:
 
     // ─── Spool access ────────────────────────────────────────────────────
 
-    /// Raw spool bytes since the last clear. High bit NOT stripped — the
-    /// caller decides what to do with Apple II bit-7-set text.
+    /// Retained raw tail since the last clear (at most kMaxSpoolBytes).
+    /// High bit NOT stripped.
     std::vector<uint8_t> spoolBytes() const;
 
     /// Spool rendered as a text string: high bit stripped, CR ($0D) mapped
@@ -95,8 +97,8 @@ public:
     /// .txt file. Form-feed ($0C) preserved as-is.
     std::string spoolText() const;
 
-    /// Append spool bytes at index >= `from` to `out` and return the new
-    /// total. Lets a streaming consumer (the host-side ImageWriter) pick up
+    /// Append spool bytes at absolute index >= `from` and return the new
+    /// monotonic total. Lets a streaming consumer pick up
     /// only what arrived since its last poll instead of re-copying the whole
     /// spool every frame. `from` beyond the end (spool cleared meanwhile)
     /// replays from 0.
@@ -104,6 +106,7 @@ public:
 
     /// Number of bytes written since the last clear.
     size_t bytesWritten() const;
+    bool spoolTruncated() const;
 
     /// Clear the spool buffer. Called by the UI "Clear" button and after
     /// a successful "Save spool as…" if the user asks to start fresh.
@@ -113,11 +116,10 @@ private:
     int slot_;
     std::array<uint8_t, 256> rom_{};
 
-    // The spool is small enough (text, not images) that an unbounded
-    // std::vector is fine — a 100-page report at 80 cols × 60 lines is
-    // ~500 KB. A future hardening pass could cap it.
     mutable std::mutex bufferMtx_;
-    std::vector<uint8_t> spool_;
+    std::deque<uint8_t> spool_;
+    size_t spoolBase_ = 0;   // absolute index of spool_.front()
+    size_t spoolTotal_ = 0;  // accepted bytes since clear
 
     void buildRom();
 };

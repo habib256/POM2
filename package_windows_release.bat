@@ -21,17 +21,17 @@ if "%POM2_VERSION%"=="" set POM2_VERSION=0.0
 set STAGE=dist\POM2-Windows
 echo === Staging %STAGE% (v%POM2_VERSION%) ===
 
-if exist "%STAGE%" rmdir /s /q "%STAGE%"
-mkdir "%STAGE%"
-mkdir "%STAGE%\fonts"
-mkdir "%STAGE%\pic"
-mkdir "%STAGE%\roms"
+if exist "%STAGE%" rmdir /s /q "%STAGE%" || goto :fail
+mkdir "%STAGE%" || goto :fail
+mkdir "%STAGE%\fonts" || goto :fail
+mkdir "%STAGE%\pic" || goto :fail
+mkdir "%STAGE%\roms" || goto :fail
 
 REM --- the binary -----------------------------------------------------------
 if exist build\Release\POM2.exe (
-    copy /y build\Release\POM2.exe "%STAGE%\POM2.exe" >nul
+    copy /y build\Release\POM2.exe "%STAGE%\POM2.exe" >nul || goto :fail
 ) else (
-    copy /y build\POM2.exe "%STAGE%\POM2.exe" >nul
+    copy /y build\POM2.exe "%STAGE%\POM2.exe" >nul || goto :fail
 )
 if not exist "%STAGE%\POM2.exe" (
     echo ERROR: POM2.exe not found in build\Release or build
@@ -39,24 +39,34 @@ if not exist "%STAGE%\POM2.exe" (
 )
 
 REM --- read-only assets (mirrors the FHS install rules, including roms\) -----
-copy /y fonts\DejaVuSans.ttf   "%STAGE%\fonts\" >nul
-copy /y fonts\fa-solid-900.ttf "%STAGE%\fonts\" >nul
-copy /y pic\Apple_II_plus.jpg  "%STAGE%\pic\"   >nul
+copy /y fonts\DejaVuSans.ttf   "%STAGE%\fonts\" >nul || goto :fail
+copy /y fonts\fa-solid-900.ttf "%STAGE%\fonts\" >nul || goto :fail
+copy /y pic\Apple_II_plus.jpg  "%STAGE%\pic\"   >nul || goto :fail
 if exist roms (
-    xcopy /e /i /q /y roms\* "%STAGE%\roms\" >nul
+    xcopy /e /i /q /y roms\* "%STAGE%\roms\" >nul || goto :fail
+) else (
+    echo ERROR: required roms directory is missing
+    exit /b 1
 )
-copy /y packaging\roms_README.txt "%STAGE%\roms\README.txt" >nul
+copy /y packaging\roms_README.txt "%STAGE%\roms\README.txt" >nul || goto :fail
 
 REM --- docs -----------------------------------------------------------------
-copy /y README.md    "%STAGE%\" >nul
-copy /y CHANGELOG.md "%STAGE%\" >nul
-copy /y LICENSE      "%STAGE%\" >nul
+copy /y README.md    "%STAGE%\" >nul || goto :fail
+copy /y CHANGELOG.md "%STAGE%\" >nul || goto :fail
+copy /y LICENSE      "%STAGE%\" >nul || goto :fail
+
+for %%F in (POM2.exe fonts\DejaVuSans.ttf fonts\fa-solid-900.ttf pic\Apple_II_plus.jpg roms\apple2e.rom roms\disk2.rom README.md CHANGELOG.md LICENSE) do (
+    if not exist "%STAGE%\%%F" (
+        echo ERROR: staged package is missing %%F
+        exit /b 1
+    )
+)
 
 REM --- zip ------------------------------------------------------------------
 set ZIP=dist\POM2-Windows-v%POM2_VERSION%.zip
 if exist "%ZIP%" del /q "%ZIP%"
 powershell -NoProfile -Command ^
-  "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%ZIP%' -Force"
+  "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%ZIP%' -Force" || goto :fail
 if not exist "%ZIP%" (
     echo ERROR: Compress-Archive did not produce %ZIP%
     exit /b 1
@@ -65,3 +75,8 @@ if not exist "%ZIP%" (
 echo === Wrote %ZIP% ===
 dir "%ZIP%"
 endlocal
+exit /b 0
+
+:fail
+echo ERROR: Windows release packaging command failed with errorlevel %ERRORLEVEL%
+exit /b 1

@@ -7,6 +7,7 @@
 
 #include "PrinterCard.h"
 
+#include <algorithm>
 #include <initializer_list>
 
 PrinterCard::PrinterCard(int slot) : slot_(slot)
@@ -27,13 +28,18 @@ void PrinterCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // ports on the real card have no host-side meaning).
     if (low4 != 1) return;
     std::lock_guard<std::mutex> lk(bufferMtx_);
+    if (spool_.size() == kMaxSpoolBytes) {
+        spool_.pop_front();
+        ++spoolBase_;
+    }
     spool_.push_back(v);
+    ++spoolTotal_;
 }
 
 std::vector<uint8_t> PrinterCard::spoolBytes() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    return spool_;
+    return {spool_.begin(), spool_.end()};
 }
 
 std::string PrinterCard::spoolText() const
@@ -53,25 +59,35 @@ std::string PrinterCard::spoolText() const
 size_t PrinterCard::drainSpoolFrom(size_t from, std::vector<uint8_t>& out) const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    // `from` past the end means the spool was cleared behind the caller's
-    // back (the panel's "Clear spool" button) — hand back everything so the
-    // consumer resynchronises instead of silently going deaf.
-    const size_t start = (from > spool_.size()) ? 0 : from;
+    // Indices are absolute so evicting old preview bytes cannot make a live
+    // ImageWriter replay the retained tail. A clear resets total to zero;
+    // an older cursor then resynchronises from the new front.
+    const size_t absolute = (from > spoolTotal_) ? spoolBase_
+                                                 : std::max(from, spoolBase_);
+    const size_t start = absolute - spoolBase_;
     out.insert(out.end(), spool_.begin() + static_cast<std::ptrdiff_t>(start),
                spool_.end());
-    return spool_.size();
+    return spoolTotal_;
 }
 
 size_t PrinterCard::bytesWritten() const
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
-    return spool_.size();
+    return spoolTotal_;
+}
+
+bool PrinterCard::spoolTruncated() const
+{
+    std::lock_guard<std::mutex> lk(bufferMtx_);
+    return spoolBase_ != 0;
 }
 
 void PrinterCard::clearSpool()
 {
     std::lock_guard<std::mutex> lk(bufferMtx_);
     spool_.clear();
+    spoolBase_ = 0;
+    spoolTotal_ = 0;
 }
 
 void PrinterCard::buildRom()

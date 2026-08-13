@@ -110,6 +110,24 @@ void testDataPortSpool()
     std::printf("  ok: data port + spool semantics\n");
 }
 
+void testSpoolIsBounded()
+{
+    PrinterCard card(1);
+    for (size_t i = 0; i < PrinterCard::kMaxSpoolBytes + 17; ++i)
+        card.deviceSelectWrite(1, static_cast<uint8_t>(i));
+    assert(card.bytesWritten() == PrinterCard::kMaxSpoolBytes + 17);
+    const auto retained = card.spoolBytes();
+    assert(retained.size() == PrinterCard::kMaxSpoolBytes);
+    assert(retained.front() == static_cast<uint8_t>(17));
+
+    std::vector<uint8_t> fresh;
+    const size_t cursor = card.drainSpoolFrom(
+        PrinterCard::kMaxSpoolBytes + 10, fresh);
+    assert(cursor == PrinterCard::kMaxSpoolBytes + 17);
+    assert(fresh.size() == 7);
+    std::printf("  ok: guest-controlled spool is bounded\n");
+}
+
 // CPU integration: drive the ROM hook + output handler the way `PR#1` +
 // a few COUT calls would on real hardware. Mimics the user-visible
 // "PR#1 : PRINT \"HI\"" flow without needing the Apple ROM (which we'd
@@ -185,6 +203,7 @@ int main()
     std::printf("PrinterCard smoke test\n");
     testRomFingerprint();
     testDataPortSpool();
+    testSpoolIsBounded();
     testCpuPrintFlow();
     std::printf("PASS\n");
     return 0;

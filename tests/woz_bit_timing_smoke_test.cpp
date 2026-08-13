@@ -315,6 +315,49 @@ bool checkFluxTrackPeriod(uint8_t obt) {
     return true;
 }
 
+bool checkHostileFluxExpansionRejected()
+{
+    // 40 KiB of maximum deltas describes >2.5 million synthetic cells at
+    // obt=8. The source is tiny, but the old loader allocated from the delta
+    // sum and could multiply it through 160 duplicate FIDX entries.
+    const std::vector<uint8_t> deltas(40u * 1024u, 0xFF);
+    std::vector<uint8_t> woz;
+    woz.insert(woz.end(), {'W','O','Z','2',0xFF,0x0A,0x0D,0x0A});
+    putU32LE(woz, 0);
+    auto addChunk = [&](const char* id, const std::vector<uint8_t>& payload) {
+        woz.insert(woz.end(), id, id + 4);
+        putU32LE(woz, static_cast<uint32_t>(payload.size()));
+        woz.insert(woz.end(), payload.begin(), payload.end());
+    };
+    std::vector<uint8_t> info(60, 0);
+    info[0] = 3; info[1] = 1; info[37] = 1; info[39] = 8;
+    info[46] = 3; info[48] = 1;
+    addChunk("INFO", info);
+    addChunk("TMAP", std::vector<uint8_t>(160, 0xFF));
+    std::vector<uint8_t> trks(1280, 0);
+    trks[0] = 4; trks[2] = 80; // enough blocks; exact byte length is below
+    const uint32_t n = static_cast<uint32_t>(deltas.size());
+    trks[4] = static_cast<uint8_t>(n);
+    trks[5] = static_cast<uint8_t>(n >> 8);
+    trks[6] = static_cast<uint8_t>(n >> 16);
+    trks[7] = static_cast<uint8_t>(n >> 24);
+    addChunk("TRKS", trks);
+    assert(woz.size() == 1536);
+    std::vector<uint8_t> fidx(160, 0); // repeat the hostile track 160 times
+    addChunk("FLUX", fidx);
+    while (woz.size() < 2048) woz.push_back(0);
+    woz.insert(woz.end(), deltas.begin(), deltas.end());
+
+    const std::string path = writeTempFile(woz, "hostile_flux");
+    DiskImage img;
+    if (img.loadFile(path)) {
+        std::printf("FAIL: hostile FLUX expansion was accepted\n");
+        return false;
+    }
+    std::printf("OK : hostile FLUX expansion rejected before allocation\n");
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -325,5 +368,6 @@ int main() {
     allOk &= checkTimingForObt(28);      // 3.5 µs cells (faster master)
     allOk &= checkFluxTrackPeriod(32);   // FLUX period = tick sum (default)
     allOk &= checkFluxTrackPeriod(40);   // FLUX period independent of obt
+    allOk &= checkHostileFluxExpansionRejected();
     return allOk ? 0 : 1;
 }

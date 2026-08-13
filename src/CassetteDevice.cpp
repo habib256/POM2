@@ -6,6 +6,7 @@
 // Apple II built-in cassette interface, ported from POM1's ACI.
 
 #include "CassetteDevice.h"
+#include "AtomicFileReplace.h"
 
 // miniaudio is compiled via AudioDevice.cpp (MINIAUDIO_IMPLEMENTATION lives
 // there). We only need the function prototypes here.
@@ -32,6 +33,42 @@ namespace {
 constexpr char kAciMagic[] = "POM1ACI1";
 constexpr uint32_t kMaxRealtimeGapCycles = 50000;
 constexpr uint32_t kAudioRampInSamples = 64;
+
+template <typename Emit>
+bool writeTapeAtomic(const std::string& path, std::string& error, Emit&& emit)
+{
+    namespace fs = std::filesystem;
+    const fs::path target(path);
+    const fs::path tmp(path + ".pom2tmp");
+    std::error_code permEc;
+    const fs::perms perms = fs::status(target, permEc).permissions();
+    const bool havePerms = !permEc;
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) { error = "Cannot write tape file: " + tmp.string(); return false; }
+        emit(out);
+        out.flush();
+        out.close();
+        if (!out) {
+            error = "Short write on tape file: " + tmp.string();
+            std::error_code ignored;
+            fs::remove(tmp, ignored);
+            return false;
+        }
+    }
+    std::error_code ec;
+    if (havePerms) {
+        fs::permissions(tmp, perms, ec);
+        ec.clear();
+    }
+    if (!pom2::replaceFileAtomic(tmp, target, ec)) {
+        error = "Cannot replace tape file " + path + ": " + ec.message();
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
+    }
+    return true;
+}
 
 uint16_t readLe16(const uint8_t* d)
 {
@@ -276,6 +313,7 @@ void CassetteDevice::reset()
     recordedInitialLevel = false;
     lastOutputToggleCycle = 0;
     recordedDurations.clear();
+    recordingOverflow = false;
     playbackPaused.store(false, std::memory_order_release);
     resetPlaybackState();
     stopPulseAudio();
@@ -434,8 +472,12 @@ uint8_t CassetteDevice::toggleOutput()
     if (currentCycle > lastOutputToggleCycle) {
         const uint64_t delta = currentCycle - lastOutputToggleCycle;
         if (!(recordedDurations.empty() && delta == 0)) {
-            const uint32_t clamped = static_cast<uint32_t>(std::max<uint64_t>(1, delta));
-            recordedDurations.push_back(clamped);
+            const uint32_t clamped = static_cast<uint32_t>(
+                std::min<uint64_t>(UINT32_MAX, std::max<uint64_t>(1, delta)));
+            if (recordedDurations.size() < kMaxRecordedTransitions)
+                recordedDurations.push_back(clamped);
+            else
+                recordingOverflow = true;
             if (clamped > kMaxRealtimeGapCycles) {
                 clearLiveAudioState();
             } else {
@@ -557,6 +599,7 @@ void CassetteDevice::ejectTape()
 void CassetteDevice::clearRecordedTape()
 {
     recordedDurations.clear();
+    recordingOverflow = false;
     recordedInitialLevel = outputLevel;
     lastOutputToggleCycle = 0;
     clearLiveAudioState();
@@ -570,6 +613,10 @@ bool CassetteDevice::loadPlaybackDurations(std::vector<uint32_t> durations,
         lastError = "Tape file does not contain any signal transitions";
         return false;
     }
+    // Candidate parsing happens before this commit point. Only now retire an
+    // existing streaming decoder, so a corrupt replacement leaves the old
+    // tape fully playable.
+    closeAudioStream();
     stopPulseAudio();
     loadedDurations    = std::move(durations);
     loadedInitialLevel = initialLevel;
@@ -585,25 +632,21 @@ bool CassetteDevice::loadPlaybackDurations(std::vector<uint32_t> durations,
 bool CassetteDevice::loadTape(const std::string& path)
 {
     const std::string ext = lowerExtension(path);
-    loadInfo = lookupTapeInfo(path);
-
-    if (ext == ".aci") {
-        closeAudioStream();
-        audioStreamMode = false;
-        return loadAciTape(path);
-    }
+    const std::string oldInfo = loadInfo;
+    bool ok = false;
+    if (ext == ".aci") ok = loadAciTape(path);
 
     // Default: program tape via pulse extraction. .wav routes through the
     // hand-rolled WAV loader (no decoder dependency); the rest go through
     // miniaudio (mp3/ogg/flac).
-    closeAudioStream();
-    audioStreamMode = false;
-    if (ext == ".wav") return loadWavTape(path);
-    if (ext == ".mp3" || ext == ".ogg" || ext == ".flac")
-        return loadMiniaudioTape(path);
-
-    lastError = "Unsupported tape extension (expected .aci/.wav/.mp3/.ogg/.flac).";
-    return false;
+    else if (ext == ".wav") ok = loadWavTape(path);
+    else if (ext == ".mp3" || ext == ".ogg" || ext == ".flac")
+        ok = loadMiniaudioTape(path);
+    else
+        lastError = "Unsupported tape extension (expected .aci/.wav/.mp3/.ogg/.flac).";
+    if (ok) loadInfo = lookupTapeInfo(path);
+    else loadInfo = oldInfo;
+    return ok;
 }
 
 bool CassetteDevice::saveTape(const std::string& path) const
@@ -659,15 +702,18 @@ bool CassetteDevice::saveAciTape(const std::string& path) const
         lastError = "No cassette output has been recorded yet";
         return false;
     }
-    std::ofstream file(path, std::ios::binary);
-    if (!file.is_open()) { lastError = "Cannot write tape file: " + path; return false; }
-
-    file.write(kAciMagic, 8);
-    file.put(1);
-    file.put(recordedInitialLevel ? 1 : 0);
-    file.put(0); file.put(0);
-    writeLe32(file, static_cast<uint32_t>(recordedDurations.size()));
-    for (uint32_t d : recordedDurations) writeLe32(file, d);
+    if (recordingOverflow) {
+        lastError = "Cassette recording exceeded the transition limit";
+        return false;
+    }
+    if (!writeTapeAtomic(path, lastError, [&](std::ofstream& file) {
+            file.write(kAciMagic, 8);
+            file.put(1);
+            file.put(recordedInitialLevel ? 1 : 0);
+            file.put(0); file.put(0);
+            writeLe32(file, static_cast<uint32_t>(recordedDurations.size()));
+            for (uint32_t d : recordedDurations) writeLe32(file, d);
+        })) return false;
 
     lastError.clear();
     return true;
@@ -907,7 +953,25 @@ bool CassetteDevice::saveWavTape(const std::string& path) const
         lastError = "No cassette output has been recorded yet";
         return false;
     }
+    if (recordingOverflow) {
+        lastError = "Cassette recording exceeded the transition limit";
+        return false;
+    }
+    constexpr uint64_t kMaxWavSamples =
+        static_cast<uint64_t>(kWavFileSampleRate) * 30u * 60u;
+    uint64_t sampleCount = kWavFileSampleRate / 10;
+    for (uint32_t d : recordedDurations) {
+        const uint64_t n = std::max<uint64_t>(1, static_cast<uint64_t>(
+            std::llround(static_cast<double>(d) * kWavFileSampleRate /
+                         static_cast<double>(kTapeFileTimebaseHz))));
+        if (n > kMaxWavSamples - sampleCount) {
+            lastError = "Recording exceeds the 30-minute WAV limit";
+            return false;
+        }
+        sampleCount += n;
+    }
     std::vector<int16_t> pcm;
+    pcm.reserve(static_cast<size_t>(sampleCount));
     bool level = recordedInitialLevel;
     for (uint32_t d : recordedDurations) {
         const uint32_t n = std::max<uint32_t>(1, static_cast<uint32_t>(
@@ -927,18 +991,18 @@ bool CassetteDevice::saveWavTape(const std::string& path) const
     const uint32_t dataSize = static_cast<uint32_t>(fullSize);
     const uint32_t riffSize = 36 + dataSize;
 
-    std::ofstream f(path, std::ios::binary);
-    if (!f.is_open()) { lastError = "Cannot write tape file: " + path; return false; }
-
-    f.write("RIFF", 4); writeLe32(f, riffSize);
-    f.write("WAVE", 4);
-    f.write("fmt ", 4); writeLe32(f, 16);
-    writeLe16(f, 1); writeLe16(f, 1);
-    writeLe32(f, kWavFileSampleRate);
-    writeLe32(f, kWavFileSampleRate * sizeof(int16_t));
-    writeLe16(f, sizeof(int16_t)); writeLe16(f, 16);
-    f.write("data", 4); writeLe32(f, dataSize);
-    f.write(reinterpret_cast<const char*>(pcm.data()), static_cast<std::streamsize>(dataSize));
+    if (!writeTapeAtomic(path, lastError, [&](std::ofstream& f) {
+            f.write("RIFF", 4); writeLe32(f, riffSize);
+            f.write("WAVE", 4);
+            f.write("fmt ", 4); writeLe32(f, 16);
+            writeLe16(f, 1); writeLe16(f, 1);
+            writeLe32(f, kWavFileSampleRate);
+            writeLe32(f, kWavFileSampleRate * sizeof(int16_t));
+            writeLe16(f, sizeof(int16_t)); writeLe16(f, 16);
+            f.write("data", 4); writeLe32(f, dataSize);
+            f.write(reinterpret_cast<const char*>(pcm.data()),
+                    static_cast<std::streamsize>(dataSize));
+        })) return false;
 
     lastError.clear();
     return true;

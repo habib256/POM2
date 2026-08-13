@@ -1039,6 +1039,15 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         }
     }
 
+    // Expanded tracks store one BYTE per bit plus an int per flux event.
+    // Bound both each track and their aggregate before allocating: a compact
+    // FLUX delta stream full of 0xFF can describe hundreds of millions of
+    // synthetic cells even though the source file itself is below 16 MiB.
+    constexpr size_t kMaxTrackBits      = 1u << 20;
+    constexpr size_t kMaxFluxTrackBytes = 1u << 20;
+    constexpr size_t kMaxExpandedBytes  = 64u << 20;
+    size_t expandedBytes = 0;
+
     // Helper: parse one flux track into bitStream[qt] + fluxStream[qt].
     //
     // Flux delta encoding (MAME `as_dsk.cpp:61-81`):
@@ -1069,7 +1078,8 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         if (hdrOff > trksEnd || trksEnd - hdrOff < 8) return false;
         const uint32_t startBlock = readU16LE(hdrOff + 0);
         const uint32_t trackSize  = readU32LE(hdrOff + 4);
-        if (startBlock == 0 || trackSize == 0) return false;
+        if (startBlock == 0 || trackSize == 0 ||
+            trackSize > kMaxFluxTrackBytes) return false;
         const size_t dataOff = static_cast<size_t>(startBlock) * 512;
         if (dataOff > wozSize ||
             static_cast<size_t>(trackSize) > wozSize - dataOff) return false;
@@ -1088,7 +1098,11 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         const uint64_t periodLss = (totalTicks + 3) / 4;
         const size_t   cellCount =
             static_cast<size_t>((periodLss + cyc - 1) / cyc);
-        if (cellCount == 0) return false;
+        if (cellCount == 0 || cellCount > kMaxTrackBits) return false;
+        const size_t allocation = cellCount +
+            static_cast<size_t>(trackSize) * sizeof(int);
+        if (allocation > kMaxExpandedBytes - expandedBytes) return false;
+        expandedBytes += allocation;
 
         auto& bits = bitStream[qt];
         auto& flux = fluxStream[qt];
@@ -1129,7 +1143,6 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // t in 0..34 and lost the inter-track protection data carried
     // at qt%4 != 0 by copy-protected disks.
     int populatedSlots = 0;
-    size_t totalExpandedBits = 0;
     int populatedWholeTracks = 0;
     int populatedFluxSlots = 0;
     for (int qt = 0; qt < kQuarterTracks; ++qt) {
@@ -1174,11 +1187,9 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         // kMaxTrackBits: real 5.25" tracks hold ~50k bits (WOZ1 slots cap
         // at 53,168); 1 Mi-bit is far above any legitimate mastering while
         // stopping a hostile TRKS header from driving a huge expansion
-        // (bitStream stores one BYTE per bit). totalExpandedBits caps the
-        // aggregate across all 160 quarter-track slots — duplicate TMAP
-        // references could otherwise multiply even a legal track.
-        constexpr size_t kMaxTrackBits = 1u << 20;
-        constexpr size_t kMaxImageBits = 32u << 20;   // 32 MB expanded, all slots
+        // (bitStream stores one BYTE per bit). expandedBytes caps the
+        // aggregate across bit-cell and FLUX slots — duplicate map entries
+        // could otherwise multiply even a legal track.
         if (bitCount == 0
             || bitCount > kMaxTrackBits
             || bitCount > bitDataBytes * 8
@@ -1186,11 +1197,11 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             // Defensive: skip malformed track rather than aborting load.
             continue;
         }
-        totalExpandedBits += bitCount;
-        if (totalExpandedBits > kMaxImageBits) {
+        if (bitCount > kMaxExpandedBytes - expandedBytes) {
             lastError = "WOZ TRKS data implausibly large (hostile header?)";
             loaded = false; return false;
         }
+        expandedBytes += bitCount;
 
         auto& bits = bitStream[qt];
         bits.resize(bitCount);

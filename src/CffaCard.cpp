@@ -55,7 +55,7 @@ bool CffaCard::loadImage(const std::string& path)
 {
     const bool ok = ata_.backing().loadImage(path);
     ata_.reset();
-    if (!ok) lastError_ = ata_.backing().lastError();
+    lastError_ = ok ? std::string{} : ata_.backing().lastError();
     return ok;
 }
 
@@ -65,7 +65,14 @@ bool CffaCard::loadImageFromBytes(std::vector<uint8_t> bytes,
 {
     const bool ok = ata_.backing().loadFromBytes(std::move(bytes), label, hostFolder);
     ata_.reset();
-    if (!ok) lastError_ = ata_.backing().lastError();
+    lastError_ = ok ? std::string{} : ata_.backing().lastError();
+    return ok;
+}
+
+bool CffaCard::saveDirty()
+{
+    const bool ok = ata_.backing().saveDirty();
+    lastError_ = ok ? std::string{} : ata_.backing().lastError();
     return ok;
 }
 
@@ -76,12 +83,14 @@ bool CffaCard::ejectImage()
     if (b.isLoaded() && b.hasUnsavedChanges() &&
         b.isWriteBackEnabled() && !b.isWriteProtected()) {
         if (!b.saveDirty()) {
+            lastError_ = b.lastError();
             pom2::log().warn("CFFA", "Save-on-eject failed: " + b.lastError());
             return false;
         }
     }
     b.eject();
     ata_.reset();
+    lastError_.clear();
     return true;
 }
 

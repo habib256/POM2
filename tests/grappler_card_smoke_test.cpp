@@ -266,6 +266,20 @@ void testPrinterBusyHandshake()
     std::printf("  ok: printer BUSY → ACK handshake\n");
 }
 
+void testSpoolIsBounded()
+{
+    GrapplerCard card(1);
+    for (size_t i = 0; i < GrapplerCard::kMaxSpoolBytes + 9; ++i)
+        card.deviceSelectWrite(0, static_cast<uint8_t>(i));
+    assert(card.bytesWritten() == GrapplerCard::kMaxSpoolBytes + 9);
+    assert(card.spoolBytes().size() == GrapplerCard::kMaxSpoolBytes);
+    std::vector<uint8_t> fresh;
+    assert(card.drainSpoolFrom(GrapplerCard::kMaxSpoolBytes + 4, fresh) ==
+           GrapplerCard::kMaxSpoolBytes + 9);
+    assert(fresh.size() == 5);
+    std::printf("  ok: Grappler spool is bounded\n");
+}
+
 } // namespace
 
 int main()
@@ -276,6 +290,7 @@ int main()
     testRomLoadGate();
     testPrinterTypeDip();
     testPrinterBusyHandshake();
+    testSpoolIsBounded();
     std::printf("PASS\n");
     return 0;
 }

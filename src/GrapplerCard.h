@@ -47,6 +47,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -57,6 +58,7 @@ class GrapplerCard : public SlotPeripheral
 public:
     static constexpr int    kDefaultSlot = 1;
     static constexpr size_t kRomBytes    = 0x1000;   // 4 KB EPROM
+    static constexpr size_t kMaxSpoolBytes = 4u * 1024u * 1024u;
 
     explicit GrapplerCard(int slot = kDefaultSlot);
 
@@ -165,7 +167,9 @@ private:
     std::string romSource_;
 
     mutable std::mutex   bufferMtx_;
-    std::vector<uint8_t> spool_;
+    std::deque<uint8_t> spool_;
+    size_t spoolBase_ = 0;
+    size_t spoolTotal_ = 0;
 
     // ─── MAME a2bus_grapplerplus register state (grappler.cpp) ──────────
     bool romBankHigh_ = false;  // A0 write sets; any $CnXX read clears

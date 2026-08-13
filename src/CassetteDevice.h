@@ -188,6 +188,7 @@ private:
     std::atomic<double> realtimeTimebaseHz_{
         static_cast<double>(POM2_CPU_CLOCK_HZ)};
     static constexpr uint32_t kWavFileSampleRate = 44100;
+    static constexpr size_t kMaxRecordedTransitions = 1u << 20;
 
     void queueAudioSegment(uint32_t cycles, bool level);
     void stopPulseAudio();
@@ -254,6 +255,7 @@ private:
     bool     recordedInitialLevel    = false;
     uint64_t lastOutputToggleCycle   = 0;
     std::vector<uint32_t> recordedDurations;
+    bool recordingOverflow = false;
 
     bool     inputLevel        = false;
     bool     loadedInitialLevel = false;
