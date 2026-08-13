@@ -1005,27 +1005,29 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     // Second trailer (see appendSnapshotState): length-prefixed //c-class
     // device sections. Absent in older blobs → live values kept, which is
     // exactly the pre-fix behaviour, so nothing regresses on an old save.
-    // A section whose payload the device rejects is skipped by its length
-    // rather than desynchronising the reader.
-    auto readSection = [&](auto&& apply) {
-        if (!need(4)) return;
+    // Once a section starts, both its framing and device payload must be
+    // valid; failure propagates to MachineSnapshot's transactional rollback.
+    auto readSection = [&](auto&& apply) -> bool {
+        if (pos == n) return true;             // optional trailer absent
+        if (!need(4)) return false;            // torn length prefix
         const uint32_t len = getU32();
-        if (len == 0) return;
-        if (n - pos < len) { pos = n; return; }   // truncated — stop cleanly
-        apply(data + pos, static_cast<size_t>(len));
+        if (len == 0) return true;
+        if (n - pos < len) return false;
+        if (!apply(data + pos, static_cast<size_t>(len))) return false;
         pos += len;
+        return true;
     };
-    readSection([&](const uint8_t* p, size_t k) {
-        if (iwmDevice) iwmDevice->loadSnapshotState(p, k);
-    });
-    readSection([&](const uint8_t* p, size_t k) {
-        if (iicProfile_) iicProfile_->loadSnapshotState(p, k);
-    });
+    if (!readSection([&](const uint8_t* p, size_t k) {
+            return !iwmDevice || iwmDevice->loadSnapshotState(p, k);
+        })) return false;
+    if (!readSection([&](const uint8_t* p, size_t k) {
+            return !iicProfile_ || iicProfile_->loadSnapshotState(p, k) != 0;
+        })) return false;
     // Paging/IOU flip-flops (see appendSnapshotState). Older blobs end
     // before this section and keep the live values — the documented
     // back-compat convention for this trailer.
-    readSection([&](const uint8_t* p, size_t k) {
-        if (k >= 4) {
+    if (!readSection([&](const uint8_t* p, size_t k) {
+            if (k < 4) return false;
             intC8Rom      = p[0] != 0;
             ioudis        = p[1] != 0;
             vblIrqMask    = p[2] != 0;
@@ -1037,8 +1039,8 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
             // //c would spin in its IRQ vector.
             if (iicProfile_ && cpu)
                 cpu->setIrqLine(M6502::IRQ_SRC_VBL, vblIrqPending);
-        }
-    });
+            return true;
+        })) return false;
 
     return true;
 }

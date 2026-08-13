@@ -35,6 +35,14 @@ unchanged tracks with zeroes. WOZ chunk bounds are overflow-safe on 32-bit
 targets, and the Unicode Windows helper launcher builds with the matching
 wide-character startup structure.
 
+Snapshot loading is now transactional across CPU, main/extended RAM and slot
+state: malformed late sections restore a complete pre-load checkpoint and no
+longer discard the valid rewind timeline. POSIX helper startup reports the
+actual `chdir` or `exec` failure synchronously. On Windows, FujiNet-PC runs in
+a dedicated hidden console so POM2 can send its documented Ctrl+C shutdown,
+wait for clean SD-image flushing, and retain Job Object termination only as a
+bounded fallback.
+
 ## 2026-08-10 — Bug sweep over the FujiNet relay and the printer stack
 
 A multi-agent review of the previous commit, then an adversarial pass that

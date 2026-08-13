@@ -218,7 +218,7 @@ bool RewindBuffer::restore(size_t index, M6502& cpu, Memory& mem)
     reconstruct(index, reconstructScratch_);
     SnapshotReader r(reconstructScratch_.data(), reconstructScratch_.size());
     if (!r.good()) return false;
-    return restoreMachineState(r, cpu, mem).ok;
+    return restoreMachineState(r, cpu, mem, /*transactional=*/false).ok;
 }
 
 size_t RewindBuffer::indexForCycle(uint64_t cycle) const

@@ -120,6 +120,10 @@ void testMemoryTrailerCarriesIwm()
     assert(mem3.loadSnapshotState(blob.data(), shortLen));
     assert(iwm3.emuCycles() == 0);   // untouched, exactly as before the fix
 
+    // Once a trailer starts, a torn length prefix is corruption, not the
+    // backward-compatible "trailer absent" case.
+    assert(!mem3.loadSnapshotState(blob.data(), shortLen + 2));
+
     std::printf("  ok: Memory trailer carries IWM; old blobs still load\n");
 }
 

@@ -167,14 +167,14 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 // Backwards cycleCounter jump: flush the speaker (its
                 // cursor only snaps forward — audio would stay muted until
                 // the counter re-passes it) and drop the stale rewind ring.
-                // Even a FAILED restore may have applied CPU + MEM before
-                // the error, so resync unconditionally before bailing.
-                emu.speaker().reset();
-                emu.rewind().clear();
                 if (!res.ok) {
                     pom2::log().error("CLI", "--snapshot-load: " + res.error);
                     break;
                 }
+                // Successful load abandons the former timeline. A failed one
+                // is transactionally rolled back, so preserve audio + rewind.
+                emu.speaker().reset();
+                emu.rewind().clear();
                 pom2::log().info("CLI",
                     "--snapshot-load: restored " + a.pathS);
                 break;

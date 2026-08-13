@@ -63,7 +63,12 @@ struct RestoreResult {
 ///     ok == false so HTTP callers can surface a 400. RewindBuffer feeds its
 ///     own data and never hits this.
 /// Unknown / wrong-length sections are skipped (forward compatibility).
-RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem);
+/// With `transactional=true` (the default for files/API input), the complete
+/// CPU, memory and slot state is checkpointed and restored if a later section
+/// is malformed. Rewind uses false for its trusted in-memory frames to avoid
+/// duplicating a full snapshot on every scrub.
+RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
+                                  bool transactional = true);
 
 }  // namespace pom2
 

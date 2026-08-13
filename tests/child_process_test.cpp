@@ -14,8 +14,8 @@
 //   3. A FAILED LAUNCH MUST SAY SO. A missing or non-executable path has to
 //      come back as a clean error, not a half-started state.
 //
-// POSIX-only harness: it needs /bin/sh to stand in for the helper. The Win32
-// path is exercised by the manual checklist.
+// POSIX uses /bin/sh as the stand-in helper.  Win32 re-launches this test
+// binary in a child mode whose console handler records receipt of Ctrl+C.
 
 #include "ChildProcess.h"
 
@@ -24,11 +24,118 @@
 #include <string>
 #include <vector>
 
-#if !POM2_HAS_CHILD_PROCESS || defined(_WIN32)
+#if !POM2_HAS_CHILD_PROCESS
 
 int main()
 {
-    std::puts("SKIP: child-process harness is POSIX-only");
+    std::puts("SKIP: child processes are unavailable");
+    return 0;
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <chrono>
+#include <thread>
+
+namespace {
+
+char gStoppedMarker[MAX_PATH]{};
+
+BOOL WINAPI ctrlHandler(DWORD type)
+{
+    if (type != CTRL_C_EVENT) return FALSE;
+    HANDLE f = CreateFileA(gStoppedMarker, GENERIC_WRITE, FILE_SHARE_READ,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    ExitProcess(0);
+}
+
+std::string modulePathUtf8()
+{
+    std::vector<wchar_t> path(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, path.data(),
+                                      static_cast<DWORD>(path.size()));
+    assert(n > 0 && n < path.size());
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.data(), n, nullptr,
+                                          0, nullptr, nullptr);
+    assert(bytes > 0);
+    std::string out(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path.data(), n, out.data(), bytes,
+                        nullptr, nullptr);
+    return out;
+}
+
+bool waitForFile(const char* path, int timeoutMs)
+{
+    for (int waited = 0; waited < timeoutMs; waited += 10) {
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+int childMode(const char* stopped, const char* ready)
+{
+    std::snprintf(gStoppedMarker, sizeof(gStoppedMarker), "%s", stopped);
+    if (!SetConsoleCtrlHandler(ctrlHandler, TRUE)) return 2;
+    HANDLE f = CreateFileA(ready, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return 3;
+    CloseHandle(f);
+    Sleep(60000);
+    return 4;
+}
+
+void testGracefulCtrlC(int argc, char** argv)
+{
+    assert(argc > 0 && argv[0]);
+    char temp[MAX_PATH]{};
+    const DWORD n = GetTempPathA(MAX_PATH, temp);
+    assert(n > 0 && n < MAX_PATH);
+    const DWORD pid = GetCurrentProcessId();
+    const std::string stopped = std::string(temp) + "pom2-child-stopped-" +
+                                std::to_string(pid) + ".tmp";
+    const std::string ready = std::string(temp) + "pom2-child-ready-" +
+                              std::to_string(pid) + ".tmp";
+    DeleteFileA(stopped.c_str());
+    DeleteFileA(ready.c_str());
+
+    pom2::ChildProcess p;
+    std::string err;
+    assert(p.start(modulePathUtf8(),
+                   { "--ctrl-child", stopped, ready }, "", err));
+    assert(waitForFile(ready.c_str(), 5000));
+    assert(p.isRunning());
+
+    const auto before = std::chrono::steady_clock::now();
+    p.stop(2000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - before).count();
+    assert(waitForFile(stopped.c_str(), 1000));
+    assert(elapsed < 1500); // hard fallback would consume the full grace period
+    assert(!p.isRunning());
+
+    DeleteFileA(stopped.c_str());
+    DeleteFileA(ready.c_str());
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    if (argc == 4 && std::string(argv[1]) == "--ctrl-child")
+        return childMode(argv[2], argv[3]);
+    testGracefulCtrlC(argc, argv);
+    std::puts("child_process: OK");
     return 0;
 }
 
@@ -37,7 +144,9 @@ int main()
 #include <arpa/inet.h>
 #include <chrono>
 #include <netinet/in.h>
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 
@@ -147,6 +256,28 @@ void testStartFailures()
     err.clear();
     assert(!p.start("/etc/hostname", {}, "", err));
     assert(!p.isRunning());
+
+    // Failures that happen only after fork must be synchronously surfaced
+    // with their stage and OS reason, not reported as a successful launch.
+    err.clear();
+    assert(!p.start("/bin/sh", {}, "/definitely/not/a/directory", err));
+    assert(err.find("chdir") != std::string::npos);
+    assert(!p.isRunning());
+
+    char badExe[] = "/tmp/pom2_bad_exec_XXXXXX";
+    const int fd = ::mkstemp(badExe);
+    assert(fd >= 0);
+    const char bytes[] = "not an executable format\n";
+    assert(::write(fd, bytes, sizeof(bytes) - 1) ==
+           static_cast<ssize_t>(sizeof(bytes) - 1));
+    assert(::fchmod(fd, 0700) == 0);
+    ::close(fd);
+    err.clear();
+    assert(!p.start(badExe, {}, "", err));
+    assert(err.find("exec") != std::string::npos);
+    assert(!err.empty());
+    assert(!p.isRunning());
+    ::unlink(badExe);
 }
 
 // ── 6. Restart replaces the previous child ───────────────────────────────
@@ -254,4 +385,4 @@ int main()
     return 0;
 }
 
-#endif // POSIX
+#endif

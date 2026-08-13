@@ -31,12 +31,11 @@
 //   2. TERMINATE IS NOT A REQUEST. `stop()` asks politely first, waits a grace
 //      period, and only then kills. A FujiNet flushing its SD card image
 //      deserves the chance to finish. On POSIX the polite ask is a SIGTERM to
-//      the process group. On Win32 there is often no polite ask at all: the
-//      child is created with CREATE_NO_WINDOW, so it has its own hidden
-//      console and GenerateConsoleCtrlEvent — which only reaches the CALLER's
-//      console group — fails. `stop()` checks that return value and skips
-//      straight to TerminateProcess rather than burning the grace period
-//      waiting for a signal nobody received.
+//      the process group. FujiNet-PC documents Ctrl+C as its Win32 shutdown
+//      path, so that platform gives the child tree a dedicated hidden console;
+//      `stop()` attaches to it
+//      briefly, sends CTRL_C_EVENT, then falls back to terminating the Job
+//      Object if the helper does not leave within the grace period.
 //
 // Not available under Emscripten (no processes in a browser):
 // POM2_HAS_CHILD_PROCESS is 0 there and `start()` fails cleanly.
@@ -77,8 +76,8 @@ public:
     /// zombies out of the process table — call it periodically.
     bool isRunning();
 
-    /// SIGTERM, wait `graceMs`, then SIGKILL. Safe to call when nothing is
-    /// running. Blocks for at most `graceMs`.
+    /// Ask for a clean exit (SIGTERM on POSIX, Ctrl+C on Win32), wait
+    /// `graceMs`, then kill the process tree. Safe when nothing is running.
     void stop(int graceMs = 2000);
 
     /// Exit status of the last child that finished, or -1 if it was killed /

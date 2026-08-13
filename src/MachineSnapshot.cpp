@@ -78,7 +78,9 @@ int parseSlotSection(const std::string& name)
 }
 }  // namespace
 
-RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
+namespace {
+
+RestoreResult applyMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
 {
     // Disarm any live DMA bus master (SoftCard Z80) BEFORE restoring.
     // File snapshots are captured with includeSlots=false, so the incoming
@@ -164,11 +166,8 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
             disarmDmaOnce();
             std::vector<uint8_t> buf(len);
             if (len) r.readBytes(buf.data(), len);
-            // Surface a malformed MEX honestly: Memory has already been
-            // partially mutated (the MEM section ran before us), so a
-            // transactional rollback isn't possible at this layer — but
-            // returning ok=true after a failed aux/LC/paging restore hid
-            // the desync entirely.
+            // Surface a malformed MEX honestly. The public wrapper restores
+            // its pre-load checkpoint if any section fails after mutation.
             if (!mem.loadSnapshotState(buf.data(), len)) {
                 return { false, "snapshot MEX section truncated or malformed" };
             }
@@ -207,6 +206,39 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
         return { false, "snapshot contains no restorable CPU/MEM sections" };
     }
     return {};
+}
+
+}  // namespace
+
+RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
+                                  bool transactional)
+{
+    if (!transactional)
+        return applyMachineState(r, cpu, mem);
+
+    // A file/API snapshot is untrusted and sections are applied incrementally.
+    // Capture every restorable surface first, including slot/DMA state, so a
+    // late malformed MEX or torn trailing section cannot leave a hybrid of
+    // the old and new machine. Rewind passes transactional=false for its own
+    // in-memory frames, avoiding a full duplicate capture during scrubbing.
+    std::vector<uint8_t> rollback;
+    {
+        SnapshotWriter w(rollback);
+        captureMachineState(w, cpu, mem, /*includeSlots=*/true);
+        if (!w.finish())
+            return { false, "cannot create snapshot rollback checkpoint" };
+    }
+
+    RestoreResult result = applyMachineState(r, cpu, mem);
+    if (result.ok) return result;
+
+    SnapshotReader before(rollback.data(), rollback.size());
+    const RestoreResult rolledBack = applyMachineState(before, cpu, mem);
+    if (!rolledBack.ok) {
+        return { false, result.error + "; rollback failed: " +
+                        rolledBack.error };
+    }
+    return result;
 }
 
 }  // namespace pom2

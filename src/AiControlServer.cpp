@@ -1107,15 +1107,12 @@ void AiControlServer::handleSnapshotLoad(socket_t fd, const Request& req)
     // reconstruction cursor only snaps FORWARD and purges older-stamped
     // toggles as stale, so without this flush audio stays dead until the
     // counter re-passes its pre-load value (minutes of emulated time).
+    if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
     // The rewind ring recorded the abandoned timeline — its stamps would
-    // break indexForCycle's monotonicity — so drop it too. Run BOTH even
-    // when the restore failed: a truncated file may already have applied
-    // CPU + MEM before the error, so the machine is mutated either way —
-    // the old early-return skipped the resync exactly when it was needed
-    // most.
+    // break indexForCycle's monotonicity — so drop it after SUCCESS. Failed
+    // loads roll back completely and must preserve the existing timeline.
     ctrl_->speaker().reset();
     ctrl_->rewind().clear();
-    if (!res.ok) { sendJsonError(fd, 400, res.error); return; }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 

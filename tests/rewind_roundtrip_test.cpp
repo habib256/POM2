@@ -13,12 +13,15 @@
 // capture/restore sequence it rides on.
 
 #include "M6502.h"
+#include "MachineSnapshot.h"
 #include "Memory.h"
 #include "RewindBuffer.h"
+#include "SnapshotIO.h"
 
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -73,6 +76,50 @@ int main()
         setState(cpu, mem, 1, 1000);
         rb.capture(cpu, mem);
         assert(rb.empty());
+    }
+
+    // A late malformed section must roll back CPU, RAM and extended memory,
+    // not leave a hybrid machine after reporting failure.
+    {
+        setState(cpu, mem, 99, 99'000);
+        std::vector<uint8_t> hostile;
+        {
+            pom2::SnapshotWriter w(hostile);
+            auto h = w.beginSection("CPU");
+            w.writeU16(cpu.getProgramCounter());
+            w.writeU8(cpu.getAccumulator());
+            w.writeU8(cpu.getXRegister());
+            w.writeU8(cpu.getYRegister());
+            w.writeU8(cpu.getStatusRegister());
+            w.writeU8(cpu.getStackPointer());
+            w.writeU8(0);
+            w.writeU64(mem.getCycleCounter());
+            w.writeU8(0);
+            w.endSection(h);
+            w.writeSection("MEM", mem.data(), 0x10000);
+            const uint8_t malformedMex = 0xFF;  // bad version + truncated
+            w.writeSection("MEX", &malformedMex, 1);
+            assert(w.finish());
+        }
+
+        setState(cpu, mem, 77, 77'000);
+        std::vector<uint8_t> before;
+        {
+            pom2::SnapshotWriter w(before);
+            pom2::captureMachineState(w, cpu, mem, /*includeSlots=*/true);
+            assert(w.finish());
+        }
+        pom2::SnapshotReader reader(hostile.data(), hostile.size());
+        const auto result = pom2::restoreMachineState(reader, cpu, mem);
+        assert(!result.ok);
+        checkState(cpu, mem, 77, 77'000);
+        std::vector<uint8_t> after;
+        {
+            pom2::SnapshotWriter w(after);
+            pom2::captureMachineState(w, cpu, mem, /*includeSlots=*/true);
+            assert(w.finish());
+        }
+        assert(after == before && "failed restore must be fully transactional");
     }
 
     // ── (1) Bit-for-bit capture → restore ─────────────────────────────────

@@ -24,6 +24,7 @@
 #  else
 #    include <cerrno>
 #    include <csignal>
+#    include <fcntl.h>
 #    include <sys/stat.h>
 #    include <sys/syscall.h>
 #    include <sys/types.h>
@@ -86,10 +87,47 @@ bool ChildProcess::start(const std::string& exePath,
     long maxFd = ::sysconf(_SC_OPEN_MAX);
     if (maxFd < 3 || maxFd > 65536) maxFd = 65536;
 
+    // The write end is closed automatically by a successful exec. On a
+    // pre-exec failure the child sends only fixed-size integers (async-signal
+    // safe), allowing start() to report the actual chdir/exec error instead
+    // of briefly claiming a dead helper was launched.
+    int errorPipe[2] = {-1, -1};
+    if (::pipe(errorPipe) != 0) {
+        errOut = std::string("pipe: ") + std::strerror(errno);
+        return false;
+    }
+    if (::fcntl(errorPipe[1], F_SETFD, FD_CLOEXEC) != 0) {
+        const int e = errno;
+        ::close(errorPipe[0]);
+        ::close(errorPipe[1]);
+        errOut = std::string("fcntl(FD_CLOEXEC): ") + std::strerror(e);
+        return false;
+    }
+
     const pid_t pid = ::fork();
-    if (pid < 0) { errOut = std::string("fork: ") + std::strerror(errno); return false; }
+    if (pid < 0) {
+        const int e = errno;
+        ::close(errorPipe[0]);
+        ::close(errorPipe[1]);
+        errOut = std::string("fork: ") + std::strerror(e);
+        return false;
+    }
 
     if (pid == 0) {
+        ::close(errorPipe[0]);
+        struct LaunchError { int stage; int error; };
+        auto failLaunch = [&](int stage) {
+            const LaunchError detail{stage, errno};
+            const char* p = reinterpret_cast<const char*>(&detail);
+            size_t left = sizeof(detail);
+            while (left != 0) {
+                const ssize_t n = ::write(errorPipe[1], p, left);
+                if (n > 0) { p += n; left -= static_cast<size_t>(n); }
+                else if (n < 0 && errno == EINTR) continue;
+                else break;
+            }
+            ::_exit(127);
+        };
         // Child. Only async-signal-safe calls from here to execv().
         //
         // New process group: POM2 running in a terminal would otherwise pass
@@ -97,7 +135,7 @@ bool ChildProcess::start(const std::string& exePath,
         // leaving the emulator convinced it is still there.
         ::setpgid(0, 0);
         if (!workingDir.empty()) {
-            if (::chdir(workingDir.c_str()) != 0) ::_exit(127);
+            if (::chdir(workingDir.c_str()) != 0) failLaunch(1);
         }
 
         // Close every inherited descriptor above stdio.
@@ -115,22 +153,56 @@ bool ChildProcess::start(const std::string& exePath,
         //
         // close_range() is one syscall for the whole range; the loop is the
         // fallback for kernels older than 5.9. Both are async-signal-safe.
+        bool closedByRange = false;
 #if defined(__linux__) && defined(SYS_close_range)
-        if (::syscall(SYS_close_range, 3u, ~0u, 0u) != 0)
-#endif
         {
-            for (int fd = 3; fd < static_cast<int>(maxFd); ++fd) ::close(fd);
+            const unsigned keep = static_cast<unsigned>(errorPipe[1]);
+            const bool below = keep <= 3 ||
+                ::syscall(SYS_close_range, 3u, keep - 1u, 0u) == 0;
+            const bool above =
+                ::syscall(SYS_close_range, keep + 1u, ~0u, 0u) == 0;
+            closedByRange = below && above;
+        }
+#endif
+        if (!closedByRange) {
+            for (int fd = 3; fd < static_cast<int>(maxFd); ++fd) {
+                if (fd != errorPipe[1]) ::close(fd);
+            }
         }
 
         ::execv(argv[0], argv.data());
-        ::_exit(127);                    // exec failed
+        failLaunch(2);
     }
+
+    ::close(errorPipe[1]);
 
     // Set the group from the PARENT too. The child does it as well, and
     // whichever runs first wins — without this, `stop()` can signal the group
     // in the window before the child's own setpgid() lands, and miss it.
     // EACCES simply means the child already exec'd, which is fine.
     ::setpgid(pid, pid);
+
+    struct LaunchError { int stage; int error; } detail{};
+    char* dst = reinterpret_cast<char*>(&detail);
+    size_t received = 0;
+    while (received < sizeof(detail)) {
+        const ssize_t n = ::read(errorPipe[0], dst + received,
+                                 sizeof(detail) - received);
+        if (n > 0) received += static_cast<size_t>(n);
+        else if (n < 0 && errno == EINTR) continue;
+        else break;  // EOF = exec succeeded
+    }
+    ::close(errorPipe[0]);
+    if (received != 0) {
+        int status = 0;
+        while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        const char* stage = detail.stage == 1 ? "chdir" : "exec";
+        errOut = std::string(stage) + " " +
+                 (detail.stage == 1 ? workingDir : exePath) + ": " +
+                 std::strerror(detail.error);
+        reset();
+        return false;
+    }
 
     pid_      = static_cast<int>(pid);
     path_     = exePath;
@@ -244,6 +316,62 @@ std::string ChildProcess::findOnPath(const std::string& name)
 namespace {
 HANDLE H(void* h) { return static_cast<HANDLE>(h); }
 
+// Deliver the same event as an interactive Ctrl+C to the child's dedicated
+// console.  GenerateConsoleCtrlEvent only addresses processes attached to the
+// caller's console, so a GUI process has to attach briefly.  If the caller
+// already owns a console (the headless binary / unit tests), preserve it by
+// reattaching through another process in that console; when there is no such
+// process, decline the polite path rather than permanently stealing stdout.
+bool sendConsoleCtrlC(DWORD childPid)
+{
+    DWORD consolePids[64]{};
+    constexpr DWORD consolePidCapacity =
+        static_cast<DWORD>(sizeof(consolePids) / sizeof(consolePids[0]));
+    const DWORD count = GetConsoleProcessList(
+        consolePids, consolePidCapacity);
+    const bool hadConsole = count != 0;
+    const bool oldConsoleVisible =
+        hadConsole && GetConsoleWindow() && IsWindowVisible(GetConsoleWindow());
+    DWORD reattachPid = 0;
+    if (hadConsole) {
+        const DWORD self = GetCurrentProcessId();
+        const DWORD available = (std::min)(count, consolePidCapacity);
+        for (DWORD i = 0; i < available; ++i) {
+            if (consolePids[i] != self) {
+                reattachPid = consolePids[i];
+                break;
+            }
+        }
+        if (!FreeConsole()) return false;
+    }
+
+    bool signalled = false;
+    if (AttachConsole(childPid)) {
+        // CTRL_C_EVENT is broadcast within this console.  Ignore our own copy;
+        // the helper and any console children still receive it.  A new console
+        // attachment resets the handler table, so this does not leak back to
+        // the caller's original console.
+        if (SetConsoleCtrlHandler(nullptr, TRUE)) {
+            signalled = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) != FALSE;
+            if (signalled) Sleep(25); // let the asynchronous handler be queued
+        }
+        FreeConsole();
+    }
+
+    if (hadConsole) {
+        // Prefer the exact old console. If this process was its sole member
+        // (typical when a console-subsystem exe is double-clicked), it ceased
+        // to exist at FreeConsole(), so replace it rather than leaving POM2
+        // without valid standard handles for the rest of the session.
+        if (reattachPid == 0 || !AttachConsole(reattachPid)) {
+            if (AllocConsole() && !oldConsoleVisible) {
+                if (HWND console = GetConsoleWindow()) ShowWindow(console, SW_HIDE);
+            }
+        }
+    }
+    return signalled;
+}
+
 std::wstring utf8ToWide(const std::string& s)
 {
     if (s.empty()) return {};
@@ -331,6 +459,10 @@ bool ChildProcess::start(const std::string& exePath,
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    // CREATE_NEW_CONSOLE is required for a later Ctrl+C.  Hide that console so
+    // launching a helper from the GUI does not pop a terminal window.
+    si.dwFlags    = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
 
     std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
@@ -352,13 +484,13 @@ bool ChildProcess::start(const std::string& exePath,
         return false;
     }
 
-    // CREATE_NO_WINDOW: the helper is a console program, and POM2 is not —
-    // without this every start pops a console window on the user's desktop.
-    // CREATE_NEW_PROCESS_GROUP is the counterpart of setpgid() above.
+    // A dedicated console isolates Ctrl+C to the helper tree.  Do not combine
+    // CREATE_NEW_PROCESS_GROUP with this: Windows disables Ctrl+C for the root
+    // of a newly-created process group.  The Job Object below remains the hard
+    // process-tree containment/fallback mechanism.
     if (!CreateProcessW(wideExe.c_str(), mutableCmd.data(), nullptr, nullptr,
                         FALSE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
-                            CREATE_SUSPENDED,
+                        CREATE_NEW_CONSOLE | CREATE_SUSPENDED,
                         nullptr,
                         workingDir.empty() ? nullptr : wideDir.c_str(),
                         &si, &pi)) {
@@ -409,25 +541,20 @@ bool ChildProcess::isRunning()
 void ChildProcess::stop(int graceMs)
 {
     if (!handle_) return;
-    // Win32 has no SIGTERM for a windowless console child; the process group
-    // Ctrl-Break is the closest thing, and TerminateProcess is the fallback.
-    //
-    // The event usually does NOT get through: CREATE_NO_WINDOW gives the child
-    // its own hidden console rather than ours, and GenerateConsoleCtrlEvent
-    // only reaches a group sharing the CALLER's console. Ignoring the return
-    // value meant every stop paid the full grace period on the UI thread
-    // before the hard kill, so check it — a failed signal means nobody is
-    // going to exit politely and there is nothing to wait for.
-    const BOOL signalled =
-        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, GetProcessId(H(handle_)));
+    // FujiNet-PC's documented shutdown is Ctrl+C.  Its dedicated hidden
+    // console makes that event addressable without involving POM2's console.
+    // If attach/signal fails, skip the grace delay and use the Job Object.
+    const bool signalled = sendConsoleCtrlC(GetProcessId(H(handle_)));
 
     bool exited = false;
     if (signalled) {
         // Poll in short steps like the POSIX branch, so a helper that does
         // honour the break does not cost the whole grace period either.
-        const DWORD stepMs = 25;
-        for (DWORD waited = 0; waited < static_cast<DWORD>(graceMs); waited += stepMs) {
-            if (WaitForSingleObject(H(handle_), stepMs) == WAIT_OBJECT_0) {
+        constexpr DWORD stepMs = 25;
+        const DWORD grace = graceMs > 0 ? static_cast<DWORD>(graceMs) : 0;
+        for (DWORD waited = 0; waited < grace; waited += stepMs) {
+            const DWORD wait = (std::min)(stepMs, grace - waited);
+            if (WaitForSingleObject(H(handle_), wait) == WAIT_OBJECT_0) {
                 exited = true;
                 break;
             }
