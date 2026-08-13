@@ -1076,6 +1076,10 @@ void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)
     // is deliberately excluded per CLAUDE.md. See MachineSnapshot for the
     // exact section roster (shared with the rewind ring buffer).
     pom2::captureMachineState(w, ctrl_->cpu(), ctrl_->memory());
+    if (!w.finish()) {
+        sendJsonError(fd, 500, "snapshot write failed for " + *safe);
+        return;
+    }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 

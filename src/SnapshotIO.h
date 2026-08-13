@@ -48,6 +48,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <istream>
 #include <memory>
@@ -76,9 +77,15 @@ public:
     /// written (no intermediate copy). `sink` must outlive the writer.
     /// Always `good()`.
     explicit SnapshotWriter(std::vector<uint8_t>& sink);
-    ~SnapshotWriter() = default;
+    ~SnapshotWriter();
 
-    bool good() const { return out.good(); }
+    bool good() const { return finished_ ? committed_ : out.good(); }
+
+    /// Flush and, for the file backend, atomically publish the completed
+    /// snapshot.  Callers that report success to a user must call this
+    /// explicitly so delayed disk/close/rename failures are observable.
+    /// The destructor calls it as a best-effort fallback.
+    bool finish();
 
     void writeU8 (uint8_t  v);
     void writeU16(uint16_t v);
@@ -105,6 +112,11 @@ private:
     std::ofstream                   fileStream_;   // engaged for the file ctor
     std::unique_ptr<std::streambuf> memBuf_;       // engaged for the memory ctor
     std::ostream                    out;           // bound to the live buffer
+    std::filesystem::path           targetPath_;
+    std::filesystem::path           tempPath_;
+    bool                            fileBacked_ = false;
+    bool                            finished_ = false;
+    bool                            committed_ = false;
 };
 
 class SnapshotReader

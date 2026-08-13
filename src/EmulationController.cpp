@@ -217,6 +217,10 @@ bool EmulationController::mount35(int idx, const std::string& path)
     pom2::Disk35Image*  image = idx == 0 ? image35Int.get() : image35Ext.get();
     pom2::Sony35Drive*  drive = idx == 0 ? drive35Int.get() : drive35Ext.get();
     if (!image || !drive) return false;
+    if (image->isLoaded() && image->hasUnsavedChanges() &&
+        !image->saveDirty()) {
+        return false;  // keep the only in-memory copy mounted for retry
+    }
     image->eject();
     if (!image->loadFile(path)) {
         drive->notifyMediaChange();
@@ -242,7 +246,7 @@ void EmulationController::eject35(int idx)
         // on `saveDirty` failure — the panel surfaces the error on the
         // next mount attempt via `Disk35Image::lastError`.
         if (image->hasUnsavedChanges() && !image->isWriteProtected()) {
-            image->saveDirty();
+            if (!image->saveDirty()) return;
         }
         image->eject();
         if (drive) {
@@ -599,7 +603,8 @@ size_t EmulationController::rewindSeek(size_t index)
     std::lock_guard<std::mutex> lk(stateMtx);
     if (rewind_.empty()) return pom2::RewindBuffer::kNoFrame;
     const size_t clamped = std::min(index, rewind_.size() - 1);
-    rewind_.restore(clamped, processor, mem);
+    if (!rewind_.restore(clamped, processor, mem))
+        return pom2::RewindBuffer::kNoFrame;
     flushAudioForRewind();
     return clamped;
 }
@@ -619,7 +624,10 @@ void EmulationController::rewindEndAndResume(size_t index)
         if (index < rewind_.size()) {
             // Make the live machine exactly the cursor frame, then drop the
             // abandoned future so new captures append from here.
-            rewind_.restore(index, processor, mem);
+            if (!rewind_.restore(index, processor, mem)) {
+                setMode(Mode::Running);
+                return;
+            }
             rewind_.truncateAfter(index);
             flushAudioForRewind();
         }

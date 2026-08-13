@@ -841,8 +841,12 @@ void Sony35Drive::strobeWriteRegister(uint8_t reg)
                 // write, so without this a firmware-issued eject silently
                 // loses everything written since the last save (the UI eject
                 // path in EmulationController::eject35 already does this).
-                if (image_->hasUnsavedChanges() && !image_->isWriteProtected())
-                    image_->saveDirty();
+                if (image_->hasUnsavedChanges() && !image_->isWriteProtected() &&
+                    !image_->saveDirty()) {
+                    pom2::log().warn("Sony35", "eject refused: " +
+                                    image_->lastError());
+                    break;
+                }
                 image_->eject();
                 dskchg_ = false;   // MAME unload(): m_dskchg = 0
                 if (sound_) sound_->click();

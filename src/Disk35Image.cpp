@@ -78,6 +78,13 @@ bool Disk35Image::loadFile(const std::string& imgPath)
         lastError_ = "Disk35Image: empty file " + imgPath;
         return false;
     }
+    // Raw media is 800 KiB.  Allow wrappers/trailers ample headroom, while
+    // rejecting sparse/hostile files before allocating from their length.
+    constexpr std::streamsize kMaxDisk35ImageBytes = 16 * 1024 * 1024;
+    if (sz > kMaxDisk35ImageBytes) {
+        lastError_ = "Disk35Image: file is too large " + imgPath;
+        return false;
+    }
     f.seekg(0, std::ios::beg);
 
     std::vector<uint8_t> buf(static_cast<std::size_t>(sz));

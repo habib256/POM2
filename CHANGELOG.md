@@ -27,6 +27,14 @@ verifies ARM AppImage downloads by SHA-256, treats dependency staging and macOS
 signing failures as fatal, and prevents the current directory from entering
 the dynamic-loader or bundled-resource precedence paths.
 
+A final storage-focused pass prevents oversized sparse disk images from
+driving unbounded allocations, makes HDV and snapshot publication atomic, and
+refuses swaps/ejects when pending guest writes cannot be saved. Sector-image
+write-back now also rejects a missing or truncated source instead of replacing
+unchanged tracks with zeroes. WOZ chunk bounds are overflow-safe on 32-bit
+targets, and the Unicode Windows helper launcher builds with the matching
+wide-character startup structure.
+
 ## 2026-08-10 — Bug sweep over the FujiNet relay and the printer stack
 
 A multi-agent review of the previous commit, then an adversarial pass that

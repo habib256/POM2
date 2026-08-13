@@ -306,6 +306,7 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
         if (!img.saveDirty()) {
             pom2::log().warn("Disk II",
                 "Save-on-swap failed: " + img.getLastError());
+            return false;
         }
     }
     if (!img.loadFile(path)) {
@@ -365,6 +366,7 @@ void DiskIICard::ejectDisk(int drive)
         if (!img.saveDirty()) {
             pom2::log().warn("Disk II",
                 "Save-on-eject failed: " + img.getLastError());
+            return;  // preserve dirty media so the user can retry
         }
     }
     img.eject();

@@ -575,7 +575,18 @@ bool DiskImage::loadFile(const std::string& imgPath)
         return false;
     }
     f.seekg(0, std::ios::end);
-    const auto size = static_cast<std::size_t>(f.tellg());
+    const std::streampos end = f.tellg();
+    // A 5.25-inch image is at most about 1.1 MiB in canonical WOZ1 form.
+    // Leave generous room for WOZ2 chunks and wrappers, but reject sparse
+    // or hostile multi-gigabyte files before converting their size to a
+    // vector allocation.
+    constexpr std::uintmax_t kMaxDiskImageBytes = 16u * 1024u * 1024u;
+    if (end < 0 || static_cast<std::uintmax_t>(end) > kMaxDiskImageBytes) {
+        lastError = "Disk image is too large: " + imgPath;
+        loaded = false;
+        return false;
+    }
+    const auto size = static_cast<std::size_t>(end);
     f.seekg(0, std::ios::beg);
     std::vector<uint8_t> bytes(size);
     if (size > 0) {
@@ -918,10 +929,10 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     };
 
     size_t off = 12;
-    while (off + 8 <= wozSize) {
+    while (off <= wozSize && wozSize - off >= 8) {
         const uint32_t len = readU32LE(off + 4);
         const size_t   dataOff = off + 8;
-        if (dataOff + len > wozSize) {
+        if (static_cast<size_t>(len) > wozSize - dataOff) {
             lastError = "WOZ chunk length runs past EOF";
             loaded = false; return false;
         }
@@ -1021,7 +1032,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         // `img[off_flux*512 + 8 + trkid]` directly without verifying
         // the chunk ID; we add a defensive verification to avoid
         // misreading a non-aligned blob as flux.
-        if (chunkOff + 8 + 160 <= wozSize
+        if (chunkOff <= wozSize && wozSize - chunkOff >= 8 + 160
             && std::memcmp(buf.data() + chunkOff, "FLUX", 4) == 0) {
             std::memcpy(fluxFidx.data(), buf.data() + chunkOff + 8, 160);
             haveFlux = true;
@@ -1054,12 +1065,14 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // LSS via `getNextTransition` without going through bitStream.
     auto loadFluxTrack = [&](int qt, uint8_t fidx) -> bool {
         const size_t hdrOff = trksOff + static_cast<size_t>(fidx) * 8;
-        if (hdrOff + 8 > trksOff + trksLen) return false;
+        const size_t trksEnd = trksOff + trksLen;
+        if (hdrOff > trksEnd || trksEnd - hdrOff < 8) return false;
         const uint32_t startBlock = readU16LE(hdrOff + 0);
         const uint32_t trackSize  = readU32LE(hdrOff + 4);
         if (startBlock == 0 || trackSize == 0) return false;
         const size_t dataOff = static_cast<size_t>(startBlock) * 512;
-        if (dataOff + trackSize > wozSize) return false;
+        if (dataOff > wozSize ||
+            static_cast<size_t>(trackSize) > wozSize - dataOff) return false;
 
         // First pass: sum total ticks to size the synthetic bitStream.
         uint64_t totalTicks = 0;
@@ -1139,7 +1152,8 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         if (isWoz1) {
             // WOZ1 fixed-slot layout. Each TRK is exactly 6656 bytes.
             const size_t slotOff = trksOff + static_cast<size_t>(trkIdx) * 6656;
-            if (slotOff + 6656 > trksOff + trksLen) continue;
+            const size_t trksEnd = trksOff + trksLen;
+            if (slotOff > trksEnd || trksEnd - slotOff < 6656) continue;
             bitDataOff   = slotOff;
             bitDataBytes = 6646;
             bitCount     = readU16LE(slotOff + 6648);
@@ -1147,7 +1161,8 @@ bool DiskImage::loadWoz(const std::string& imgPath)
             // WOZ2: 8-byte TRK headers at the start of TRKS, data at
             // file-absolute block offsets.
             const size_t hdrOff = trksOff + static_cast<size_t>(trkIdx) * 8;
-            if (hdrOff + 8 > trksOff + trksLen) continue;
+            const size_t trksEnd = trksOff + trksLen;
+            if (hdrOff > trksEnd || trksEnd - hdrOff < 8) continue;
             const uint32_t startBlock = readU16LE(hdrOff + 0);
             const uint32_t blockCount = readU16LE(hdrOff + 2);
             const uint32_t bc         = readU32LE(hdrOff + 4);
@@ -1167,7 +1182,7 @@ bool DiskImage::loadWoz(const std::string& imgPath)
         if (bitCount == 0
             || bitCount > kMaxTrackBits
             || bitCount > bitDataBytes * 8
-            || bitDataOff + bitDataBytes > wozSize) {
+            || bitDataOff > wozSize || bitDataBytes > wozSize - bitDataOff) {
             // Defensive: skip malformed track rather than aborting load.
             continue;
         }
@@ -2365,9 +2380,12 @@ bool DiskImage::saveDirty()
         std::vector<uint8_t> bytes(kBytesPerImage13, 0);
         {
             std::ifstream rf(path, std::ios::binary);
-            if (rf) {
-                rf.seekg(static_cast<std::streamoff>(payloadStart13));
-                rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage13);
+            if (!rf ||
+                !rf.seekg(static_cast<std::streamoff>(payloadStart13)) ||
+                !rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage13)) {
+                lastError = "Cannot preserve unchanged tracks: source image "
+                            "is missing or truncated: " + path;
+                return false;
             }
         }
         int decodedTracks = 0;
@@ -2414,12 +2432,13 @@ bool DiskImage::saveDirty()
     std::vector<uint8_t> bytes(kBytesPerImage, 0);
     {
         std::ifstream rf(path, std::ios::binary);
-        if (rf) {
-            rf.seekg(static_cast<std::streamoff>(payloadStart));
-            rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage);
+        if (!rf ||
+            !rf.seekg(static_cast<std::streamoff>(payloadStart)) ||
+            !rf.read(reinterpret_cast<char*>(bytes.data()), kBytesPerImage)) {
+            lastError = "Cannot preserve unchanged tracks: source image "
+                        "is missing or truncated: " + path;
+            return false;
         }
-        // Missing/short read is ok — we'll fill from decode below for
-        // every dirty track, leaving non-dirty tracks at 0 (worst case).
     }
 
     const int* skew = (sectorOrder == SectorOrder::ProDOS)

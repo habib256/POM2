@@ -25,6 +25,8 @@ int main()
         assert(w.good());
         w.writeSection("CPU", cpuPayload.data(), cpuPayload.size());
         w.writeSection("MEM", memPayload.data(), memPayload.size());
+        assert(w.finish());
+        assert(!fs::exists(tmp.string() + ".tmp"));
     }
 
     // Read.

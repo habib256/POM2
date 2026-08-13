@@ -258,6 +258,17 @@ int main() {
         for (size_t i = 0; i < kBlk; ++i) assert(buf[i] == pat(616, i));
     }
 
+    // Bound hostile/sparse HDV files before allocating their apparent size.
+    {
+        const auto p = std::filesystem::temp_directory_path() /
+                       "pom2_oversized_sparse.hdv";
+        { std::ofstream f(p, std::ios::binary); f.put('\0'); }
+        std::filesystem::resize_file(p, 65u * 1024u * 1024u);
+        AtaBlockDevice a;
+        assert(!a.backing().loadImage(p.string()));
+        std::filesystem::remove(p);
+    }
+
     std::printf("ata_block_device_test: OK\n");
     return 0;
 }

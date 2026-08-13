@@ -9,6 +9,8 @@
 
 #include "SnapshotIO.h"
 
+#include "AtomicFileReplace.h"
+
 #include <algorithm>
 #include <cstring>
 #include <ios>
@@ -120,8 +122,11 @@ std::string readFixedName(std::istream& in)
 // vector streambuf), then emit the shared header. The backend members are
 // declared before `out`, so its buffer is fully constructed first.
 SnapshotWriter::SnapshotWriter(const std::string& path)
-    : fileStream_(path, std::ios::binary | std::ios::trunc)
+    : fileStream_(path + ".tmp", std::ios::binary | std::ios::trunc)
     , out(fileStream_.rdbuf())
+    , targetPath_(path)
+    , tempPath_(path + ".tmp")
+    , fileBacked_(true)
 {
     // `out` over a failed-open filebuf still starts good(); surface the open
     // failure so good() reports it (callers gate on it).
@@ -134,6 +139,34 @@ SnapshotWriter::SnapshotWriter(std::vector<uint8_t>& sink)
     , out(memBuf_.get())
 {
     emitHeader();
+}
+
+SnapshotWriter::~SnapshotWriter()
+{
+    (void)finish();
+}
+
+bool SnapshotWriter::finish()
+{
+    if (finished_) return committed_;
+    finished_ = true;
+
+    out.flush();
+    bool ok = out.good();
+    if (fileBacked_) {
+        fileStream_.close();
+        ok = ok && !fileStream_.fail();
+        if (ok) {
+            std::error_code ec;
+            ok = replaceFileAtomic(tempPath_, targetPath_, ec);
+        }
+        if (!ok) {
+            std::error_code ignored;
+            std::filesystem::remove(tempPath_, ignored);
+        }
+    }
+    committed_ = ok;
+    return committed_;
 }
 
 void SnapshotWriter::emitHeader()

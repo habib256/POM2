@@ -18,7 +18,7 @@ SmartPortHdvUnit::~SmartPortHdvUnit()
 {
     // Best-effort write-back on destruction (e.g. card unplugged). No-op when
     // write-back is off, the medium is WP, or nothing is dirty.
-    backing_.saveDirty();
+    (void)backing_.saveDirty();
 }
 
 bool SmartPortHdvUnit::readBlock(uint32_t idx, uint8_t* out) const
@@ -41,7 +41,7 @@ bool SmartPortHdvUnit::loadImage(const std::string& path)
 {
     // Flush pending writes on the outgoing image before swapping, so a
     // mid-session swap doesn't silently drop dirty blocks.
-    backing_.saveDirty();
+    if (!backing_.saveDirty()) return false;
     return backing_.loadImage(path);
 }
 
@@ -50,7 +50,7 @@ void SmartPortHdvUnit::eject()
     // Save-on-eject policy lives here (Block512Backing::eject never auto-
     // saves): flush first (no-op unless write-back is on + dirty + writable),
     // then drop the image.
-    backing_.saveDirty();
+    if (!backing_.saveDirty()) return;
     backing_.eject();
 }
 

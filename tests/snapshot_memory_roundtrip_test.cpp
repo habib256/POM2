@@ -45,6 +45,8 @@ int main()
         assert(w.good());
         w.writeSection("CPU", cpu.data(), cpu.size());
         w.writeSection("MEM", mem.data(), mem.size());
+        assert(w.finish());
+        assert(!fs::exists(tmp.string() + ".tmp"));
     }
     std::vector<uint8_t> fileBytes;
     {

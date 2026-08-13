@@ -140,6 +140,33 @@ int main()
         std::printf("disk_writeback: .nib raw verbatim OK\n");
     }
 
+    // A source removed/truncated after mount must never turn untouched
+    // tracks into zeroes during write-back.  Keep the dirty state retryable.
+    {
+        fs::path p = tmpFile("truncated-source.dsk");
+        writeBlankDsk(p);
+        DiskImage img;
+        assert(img.loadFile(p.string()));
+        const uint8_t cur = img.nibbleAt(2, 50);
+        img.writeNibbleAt(2, 50, static_cast<uint8_t>(cur ^ 1));
+        img.setWriteBackEnabled(true);
+        fs::resize_file(p, 1);
+        assert(!img.saveDirty());
+        assert(img.hasUnsavedChanges());
+        assert(fs::file_size(p) == 1);
+        fs::remove(p);
+    }
+
+    // Reject a sparse hostile image before allocating from its apparent size.
+    {
+        fs::path p = tmpFile("oversized.woz");
+        { std::ofstream f(p, std::ios::binary); f.put('W'); }
+        fs::resize_file(p, 17u * 1024u * 1024u);
+        DiskImage img;
+        assert(!img.loadFile(p.string()));
+        fs::remove(p);
+    }
+
     std::printf("disk_writeback_smoke OK\n");
     return 0;
 }

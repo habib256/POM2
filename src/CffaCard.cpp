@@ -75,8 +75,10 @@ void CffaCard::ejectImage()
     Block512Backing& b = ata_.backing();
     if (b.isLoaded() && b.hasUnsavedChanges() &&
         b.isWriteBackEnabled() && !b.isWriteProtected()) {
-        if (!b.saveDirty())
+        if (!b.saveDirty()) {
             pom2::log().warn("CFFA", "Save-on-eject failed: " + b.lastError());
+            return;
+        }
     }
     b.eject();
     ata_.reset();

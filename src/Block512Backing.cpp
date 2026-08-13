@@ -4,15 +4,21 @@
 // Copyright (C) 2026
 
 #include "Block512Backing.h"
+#include "AtomicFileReplace.h"
 #include "Logger.h"
 #include "TwoImg.h"
 #include "ProDOSVolume.h"
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace pom2 {
+
+namespace {
+constexpr std::uintmax_t kMaxBackingFileBytes = 64u * 1024u * 1024u;
+}
 
 // ProDOS block numbers are 16-bit. The highest block INDEX is $FFFF, so a
 // volume can hold up to 65536 blocks (indices 0..$FFFF); the synthetic HDV
@@ -31,7 +37,15 @@ bool Block512Backing::loadImage(const std::string& path)
     }
 
     f.seekg(0, std::ios::end);
-    const auto fileSize = static_cast<size_t>(f.tellg());
+    const std::streampos end = f.tellg();
+    // The addressable payload is 32 MiB.  Permit a bounded envelope/trailer,
+    // but reject sparse/hostile files before allocating their full size.
+    if (end < 0 || static_cast<std::uintmax_t>(end) > kMaxBackingFileBytes) {
+        lastError_ = "HDV image is too large: " + path;
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
+    const auto fileSize = static_cast<size_t>(end);
     f.seekg(0, std::ios::beg);
     if (fileSize == 0) {
         lastError_ = "HDV image is empty: " + path;
@@ -204,36 +218,71 @@ bool Block512Backing::saveDirty()
         return true;
     }
 
-    // .hdv / .2mg: in-place rewrite of dirty blocks. Open as in|out (no
-    // trunc) so the 2MG header AND any trailing comment / creator chunk
-    // past dataOffset+dataLength are preserved bit-for-bit.
-    std::fstream f(path_, std::ios::binary | std::ios::in | std::ios::out);
-    if (!f) {
-        lastError_ = "Cannot open " + path_ + " for write";
+    // Rewrite a complete sibling copy, preserving the 2IMG envelope and any
+    // trailer.  An in-place series of 512-byte writes could leave the user's
+    // only image half-updated when a later write/flush failed.
+    std::ifstream source(path_, std::ios::binary | std::ios::ate);
+    if (!source) {
+        lastError_ = "Cannot open " + path_ + " for read";
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
+    const std::streampos end = source.tellg();
+    if (end < 0 || static_cast<size_t>(end) < dataOffset_ + dataLength_ ||
+        static_cast<std::uintmax_t>(end) > kMaxBackingFileBytes) {
+        lastError_ = "Source image changed size before save: " + path_;
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
+    source.seekg(0, std::ios::beg);
+    std::vector<uint8_t> output(static_cast<size_t>(end));
+    if (!source.read(reinterpret_cast<char*>(output.data()),
+                     static_cast<std::streamsize>(output.size()))) {
+        lastError_ = "Short read on " + path_;
         pom2::log().warn("HDV", lastError_);
         return false;
     }
     size_t written = 0;
     for (size_t b = 0; b < dirtyBlocks_.size(); ++b) {
         if (!dirtyBlocks_[b]) continue;
-        f.seekp(static_cast<std::streamoff>(dataOffset_ + b * kBlockBytes));
-        f.write(reinterpret_cast<const char*>(&image_[b * kBlockBytes]),
-                static_cast<std::streamsize>(kBlockBytes));
-        if (!f) {
-            lastError_ = "Short write on " + path_;
-            pom2::log().warn("HDV", lastError_);
-            return false;
-        }
+        std::memcpy(output.data() + dataOffset_ + b * kBlockBytes,
+                    image_.data() + b * kBlockBytes, kBlockBytes);
         ++written;
     }
-    f.flush();
-    f.close();
-    if (!f) {
-        // A buffered write can fail only at flush/close (disk full, removed
-        // media, quota). Keep every dirty bit set so the caller can retry;
-        // reporting success here used to discard the only record of which
-        // guest blocks had not reached stable storage.
-        lastError_ = "Flush failed on " + path_;
+
+    const std::filesystem::path tmp = path_ + ".pom2tmp";
+    std::error_code permEc;
+    const auto perms = std::filesystem::status(path_, permEc).permissions();
+    const bool havePerms = !permEc;
+    std::ofstream sink(tmp, std::ios::binary | std::ios::trunc);
+    if (!sink ||
+        !sink.write(reinterpret_cast<const char*>(output.data()),
+                    static_cast<std::streamsize>(output.size()))) {
+        lastError_ = "Write failed on " + tmp.string();
+        sink.close();
+        std::error_code ignored;
+        std::filesystem::remove(tmp, ignored);
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
+    sink.flush();
+    sink.close();
+    if (!sink) {
+        lastError_ = "Flush failed on " + tmp.string();
+        std::error_code ignored;
+        std::filesystem::remove(tmp, ignored);
+        pom2::log().warn("HDV", lastError_);
+        return false;
+    }
+    std::error_code ec;
+    if (havePerms) {
+        std::filesystem::permissions(tmp, perms, ec);
+        ec.clear();
+    }
+    if (!replaceFileAtomic(tmp, path_, ec)) {
+        lastError_ = "Cannot replace " + path_ + ": " + ec.message();
+        std::error_code ignored;
+        std::filesystem::remove(tmp, ignored);
         pom2::log().warn("HDV", lastError_);
         return false;
     }

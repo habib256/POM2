@@ -218,8 +218,7 @@ bool RewindBuffer::restore(size_t index, M6502& cpu, Memory& mem)
     reconstruct(index, reconstructScratch_);
     SnapshotReader r(reconstructScratch_.data(), reconstructScratch_.size());
     if (!r.good()) return false;
-    restoreMachineState(r, cpu, mem);
-    return true;
+    return restoreMachineState(r, cpu, mem).ok;
 }
 
 size_t RewindBuffer::indexForCycle(uint64_t cycle) const
@@ -237,8 +236,7 @@ size_t RewindBuffer::restoreToCycle(uint64_t cycle, M6502& cpu, Memory& mem)
 {
     const size_t idx = indexForCycle(cycle);
     if (idx == kNoFrame) return kNoFrame;
-    restore(idx, cpu, mem);
-    return idx;
+    return restore(idx, cpu, mem) ? idx : kNoFrame;
 }
 
 void RewindBuffer::truncateAfter(size_t index)

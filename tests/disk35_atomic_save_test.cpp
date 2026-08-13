@@ -197,6 +197,16 @@ int main()
         assert(!fs::exists(img.string() + ".pom2tmp"));
     }
 
+    // Apparent file size is attacker-controlled (including sparse files):
+    // reject it before constructing a correspondingly huge vector.
+    {
+        const fs::path img = base / "oversized.po";
+        { std::ofstream f(img, std::ios::binary); f.put('\0'); }
+        fs::resize_file(img, 17u * 1024u * 1024u);
+        pom2::Disk35Image d;
+        assert(!d.loadFile(img.string()));
+    }
+
     fs::remove_all(base);
     std::printf("OK disk35_atomic_save (rename-replace, 2IMG envelope kept%s)\n",
                 ranFailureCase ? ", failed save leaves image intact" : "");

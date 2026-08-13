@@ -329,7 +329,7 @@ bool ChildProcess::start(const std::string& exePath,
         cmd += quote(wideArg);
     }
 
-    STARTUPINFOA si{};
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
 

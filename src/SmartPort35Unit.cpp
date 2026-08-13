@@ -13,7 +13,7 @@ SmartPort35Unit::~SmartPort35Unit()
 {
     // Best-effort write-back on destruction (e.g. card unplugged).
     // No-op when write-back is off or nothing is dirty.
-    img_.saveDirty();
+    (void)img_.saveDirty();
 }
 
 uint32_t SmartPort35Unit::blockCount() const
@@ -38,7 +38,10 @@ bool SmartPort35Unit::loadImage(const std::string& path)
     // Auto-save the outgoing image's dirty blocks so a user-driven
     // swap doesn't quietly lose mid-session writes (same UX as
     // DiskIICard::insertDisk).
-    img_.saveDirty();
+    if (!img_.saveDirty()) {
+        lastError_ = img_.lastError();
+        return false;
+    }
     const bool ok = img_.loadFile(path);
     lastError_ = ok ? std::string{} : img_.lastError();
     return ok;
@@ -52,7 +55,10 @@ void SmartPort35Unit::eject()
     // of the session ("Write-back (save on eject)" checkbox lied).
     // saveDirty() is already a guarded no-op when write-back is off or
     // nothing is dirty.
-    img_.saveDirty();
+    if (!img_.saveDirty()) {
+        lastError_ = img_.lastError();
+        return;
+    }
     lastError_ = img_.lastError();
     img_.eject();
 }

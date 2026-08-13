@@ -68,6 +68,7 @@ void ProDOSHardDiskCard::ejectImage()
         backing_.isWriteBackEnabled() && !backing_.isWriteProtected()) {
         if (!backing_.saveDirty()) {
             pom2::log().warn("HDV", "Save-on-eject failed: " + backing_.lastError());
+            return;
         }
     }
     backing_.eject();

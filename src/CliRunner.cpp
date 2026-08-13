@@ -145,6 +145,11 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 }
                 std::lock_guard<std::mutex> lk(emu.stateMutex());
                 pom2::captureMachineState(w, emu.cpu(), emu.memory());
+                if (!w.finish()) {
+                    pom2::log().error("CLI",
+                        "--snapshot-save: write failed for " + a.pathS);
+                    break;
+                }
                 pom2::log().info("CLI", "--snapshot-save: wrote " + a.pathS);
                 break;
             }
