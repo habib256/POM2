@@ -1943,6 +1943,12 @@ void ImageWriter::execEpsonEscape()
         break;
     case 0x4A:                                     // ESC J n  immediate feed
         curY_ += static_cast<double>(p0) / 216.0;
+        // Same bottom-of-page rule as lineFeed()/VT: without it, a
+        // graphics job pacing itself with `ESC J 24` between bands (the
+        // standard ESC/P idiom — it leaves line spacing alone) walked
+        // curY_ past the bottom margin and fillDots then clipped every
+        // following band silently until the next CR/LF-driven eject.
+        if (curY_ > bottomMargin_ - lineSpacing_) newPage(true, false);
         break;
     case 0x6A:                                     // ESC j n  reverse feed
         curY_ = std::max(topMargin_, curY_ - static_cast<double>(p0) / 216.0);

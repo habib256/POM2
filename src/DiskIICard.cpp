@@ -555,7 +555,26 @@ void DiskIICard::pushIwmFloppy()
 // Read-only / WOZ / empty drives cost one flag byte; the rewind delta codec
 // keeps the media near-zero until a track is actually written. Blob is
 // self-describing (magic + version) so a foreign card on this slot ignores it.
-namespace { constexpr uint8_t kDiskIISnapVersion = 2; }
+namespace {
+constexpr uint8_t kDiskIISnapVersion = 3;
+
+// FNV-1a 64 of the image path — the media identity stamped next to each
+// captured track buffer (v3). Restoring a media snapshot onto a drive
+// that now holds a DIFFERENT image (user swapped disks after the ring
+// frame was recorded) copied disk A's tracks + dirty flags into the
+// DiskImage bound to disk B's path, and the next saveDirty() then wrote
+// A's contents into B's file. The WOZ-swap case was already guarded; the
+// non-WOZ↔non-WOZ swap needs the identity check.
+uint64_t mediaIdentityHash(const std::string& path)
+{
+    uint64_t h = 14695981039346656037ULL;
+    for (unsigned char c : path) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+}
 
 void DiskIICard::appendSnapshotState(std::vector<uint8_t>& out) const
 {
@@ -597,7 +616,10 @@ void DiskIICard::appendSnapshotState(std::vector<uint8_t>& out) const
         const bool cap = images[d].isLoaded() &&
                          !images[d].isFileWriteProtected() && !images[d].isWoz();
         u8(cap ? 1 : 0);
-        if (cap) images[d].appendMediaSnapshot(out);
+        if (cap) {
+            u64(mediaIdentityHash(images[d].getPath()));   // v3 identity
+            images[d].appendMediaSnapshot(out);
+        }
     }
 }
 
@@ -629,13 +651,17 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     // writable-media image. Validate the whole tail before restoring the
     // controller or drive 1; a torn drive-2 tail otherwise left a hybrid.
     if (version >= 2) {
+        // v3 prefixes each captured media block with an 8-byte identity
+        // hash of the image path it was taken from.
+        const std::size_t perCap = DiskImage::kMediaSnapshotBytes +
+                                   (version >= 3 ? 8 : 0);
         std::size_t q = kTotal;
         for (int d = 0; d < kDriveCount; ++d) {
             if (q >= len) return;
             const uint8_t cap = data[q++];
             if (cap) {
-                if (DiskImage::kMediaSnapshotBytes > len - q) return;
-                q += DiskImage::kMediaSnapshotBytes;
+                if (perCap > len - q) return;
+                q += perCap;
             }
         }
     }
@@ -697,7 +723,24 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
                 // drive that NOW holds a WOZ (user swapped disks after the
                 // ring frame was recorded) wiped the WOZ's canonical bit
                 // streams with the old disk's decoded tracks.
-                if (images[d].isLoaded() && !images[d].isWoz())
+                bool apply = images[d].isLoaded() && !images[d].isWoz();
+                if (version >= 3) {
+                    // v3: the media snapshot names the image it was taken
+                    // from — never apply it to a different disk. Without
+                    // this, swap A→B then rewind past the swap copied A's
+                    // tracks into the image bound to B's path, and the
+                    // next saveDirty() overwrote B's FILE with A's data.
+                    const uint64_t want = g64();
+                    if (apply &&
+                        mediaIdentityHash(images[d].getPath()) != want) {
+                        apply = false;
+                        pom2::log().warn("DiskII",
+                            "rewind media snapshot skipped: drive " +
+                            std::to_string(d) +
+                            " holds a different disk than the one recorded");
+                    }
+                }
+                if (apply)
                     images[d].loadMediaSnapshot(data + p, DiskImage::kMediaSnapshotBytes);
                 p += DiskImage::kMediaSnapshotBytes;
             }

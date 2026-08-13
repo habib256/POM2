@@ -88,8 +88,16 @@ std::vector<uint8_t> dataField()
 }
 
 // Write `payload` starting at nibble `startNib` of `track`, flushing every
-// `chunk` transitions the way DiskIICard does. Returns 0 on success.
-int writeAndCheck(const fs::path& img, int track, int startNib, int chunk)
+// `chunk` transitions the way DiskIICard does. `anchor` is the revolution
+// anchor handed to writeFlux — in the live controller it is latched at
+// motor-on (cpuCycleTotal*2, arbitrary mod 8) while the burst origin is
+// latched at Q7-on, so anchor ≢ origin (mod cyc) is the NORMAL case. The
+// hold-back seam test used to run on the anchor grid instead of the
+// write-clock grid, and any anchor not congruent to the origin dropped one
+// bit per flush seam (~345 of 353 data-field nibbles corrupted). Returns 0
+// on success.
+int writeAndCheck(const fs::path& img, int track, int startNib, int chunk,
+                  int64_t anchor)
 {
     DiskImage disk;
     if (!disk.loadFile(img.string())) {
@@ -133,7 +141,7 @@ int writeAndCheck(const fs::path& img, int track, int startNib, int chunk)
         const size_t end = std::min(i + static_cast<size_t>(chunk), tr.size());
         const int64_t winEnd = (end < tr.size()) ? tr[end] : endCycle;
         disk.writeFlux(qt, winStart, winEnd,
-                       static_cast<int>(end - i), tr.data() + i, 0);
+                       static_cast<int>(end - i), tr.data() + i, anchor);
         winStart = winEnd;
         i = end;
     }
@@ -145,9 +153,10 @@ int writeAndCheck(const fs::path& img, int track, int startNib, int chunk)
         const uint8_t got = disk.nibbleAt(track, idx);
         if (got != payload[n]) {
             std::fprintf(stderr,
-                "framing FAIL (start %d, chunk %d): nibble %zu of the data "
-                "field read back $%02X, wrote $%02X\n",
-                startNib, chunk, n, got, payload[n]);
+                "framing FAIL (start %d, chunk %d, anchor %lld): nibble %zu "
+                "of the data field read back $%02X, wrote $%02X\n",
+                startNib, chunk, static_cast<long long>(anchor), n, got,
+                payload[n]);
             rc = 2;
             break;
         }
@@ -158,11 +167,11 @@ int writeAndCheck(const fs::path& img, int track, int startNib, int chunk)
         if (rel < static_cast<int>(payload.size())) continue;
         if (disk.nibbleAt(track, n) != before[static_cast<size_t>(n)]) {
             std::fprintf(stderr,
-                "framing FAIL (start %d, chunk %d): nibble %d OUTSIDE the "
-                "written window changed ($%02X → $%02X) — a sector write "
-                "must not touch its neighbours\n",
-                startNib, chunk, n, before[static_cast<size_t>(n)],
-                disk.nibbleAt(track, n));
+                "framing FAIL (start %d, chunk %d, anchor %lld): nibble %d "
+                "OUTSIDE the written window changed ($%02X → $%02X) — a "
+                "sector write must not touch its neighbours\n",
+                startNib, chunk, static_cast<long long>(anchor), n,
+                before[static_cast<size_t>(n)], disk.nibbleAt(track, n));
             rc = 3;
         }
     }
@@ -177,13 +186,20 @@ int main()
     int rc = 0;
 
     // Several start positions (inside a gap, inside a data field, and one
-    // that wraps the end of the track buffer) and both a chunked and a
-    // single-shot flush.
+    // that wraps the end of the track buffer), both a chunked and a
+    // single-shot flush, and revolution anchors that do / do not share the
+    // write-clock grid's phase mod 8 (anchor 0 is the lucky congruent case
+    // the old code passed; 1/3/5 are the normal live-controller case it
+    // corrupted).
     for (int startNib : {400, 1200, 3000, 6500}) {
         for (int chunk : {30, 4, 100000}) {
-            if (const int r = writeAndCheck(img, 17, startNib, chunk); r != 0) {
-                rc = r;
-                goto done;
+            for (int64_t anchor : {int64_t{0}, int64_t{1}, int64_t{3},
+                                   int64_t{5}}) {
+                if (const int r = writeAndCheck(img, 17, startNib, chunk,
+                                                anchor); r != 0) {
+                    rc = r;
+                    goto done;
+                }
             }
         }
     }

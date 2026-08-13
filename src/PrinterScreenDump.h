@@ -64,8 +64,9 @@ struct ScreenDumpOptions {
 /// Build the byte stream for the ImageWriter / Apple DMP family (`ESC G`,
 /// 72 dpi, bit 0 = topmost dot of the band).
 ///
-/// `pixels` is 32-bit 0xAARRGGBB, `stride` in PIXELS (pass `w` for a packed
-/// buffer). Appends to `out`; does not clear it.
+/// `pixels` is 32-bit 0xAABBGGRR (RGBA little-endian, R in the low byte —
+/// Apple2Display's native framebuffer format), `stride` in PIXELS (pass `w`
+/// for a packed buffer). Appends to `out`; does not clear it.
 void buildScreenDumpImageWriter(const uint32_t* pixels, int w, int h,
                                 int stride, const ScreenDumpOptions& opt,
                                 std::vector<uint8_t>& out);

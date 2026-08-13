@@ -23,11 +23,17 @@ constexpr int kBandRows = 8;
 
 /// Rec. 601 luma, the same weighting POM2's mono display modes use, so a
 /// screen that looks light on screen prints light.
-inline int luminance(uint32_t argb)
+inline int luminance(uint32_t abgr)
 {
-    const int r = static_cast<int>((argb >> 16) & 0xFF);
-    const int g = static_cast<int>((argb >> 8) & 0xFF);
-    const int b = static_cast<int>(argb & 0xFF);
+    // Apple2Display packs 0xAABBGGRR (RGBA little-endian, R in the low
+    // byte — see MainWindow's screenshot swizzle). This used to decode
+    // 0xAARRGGBB, landing the 77/256 red weight on BLUE and the 28/256
+    // blue weight on RED: HGR orange (true luma ≈134) computed ≈90 and
+    // vanished from the dump, medium blue (≈121) computed ≈164 and
+    // printed as ink. Mono/text screens (r==g==b) masked the swap.
+    const int r = static_cast<int>(abgr & 0xFF);
+    const int g = static_cast<int>((abgr >> 8) & 0xFF);
+    const int b = static_cast<int>((abgr >> 16) & 0xFF);
     return (r * 77 + g * 151 + b * 28) >> 8;
 }
 

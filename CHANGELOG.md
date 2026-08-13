@@ -5,6 +5,97 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-13 — Bug sweep across storage, audio, I/O and printer paths
+
+A five-agent subsystem sweep (CPU/memory, storage, audio, network/serial,
+display/printer), each finding verified against the source — and for the
+worst one, against a runnable repro — before being fixed.
+
+**Disk II LSS writes corrupted sectors whenever the revolution anchor and
+the write-clock origin disagreed mod 8.** `DiskImage::writeFlux`'s
+"last cell only partly covered" hold-back at a flush seam was evaluated on
+the revolution-anchor grid (`endMod % cyc`) while the cell windows are
+framed on the write-clock grid (`fr.origin`). The two anchors are latched
+at different moments (motor-on vs Q7-on), so they only agree by luck; on a
+mismatch a COMPLETE cell was held back and then discarded at the next seam
+— one bit lost per ~30-transition flush, shredding ~345 of a data field's
+353 nibbles. The existing framing/anchor tests never caught it because
+their windows are all multiples of 8 from anchor 0. A repro replaying
+`disk_writeflux_framing_test` with anchors 1/3/5 corrupted 344–348 nibbles
+before the fix and zero after. The predicate now tests
+`(endLssCycle - fr.origin) % cyc` — the same grid everything else uses.
+
+**Rewinding past a disk swap overwrote the newly mounted image with the
+old disk's tracks.** The Disk II media snapshot (rewind ring / machine
+snapshots) was applied to whatever non-WOZ image is *currently* in the
+drive; swap A→B, rewind past the swap, and the next `saveDirty()` wrote
+A's decoded tracks into B's file. The snapshot blob is now v3: each
+captured media block carries an FNV-1a hash of the image path it came
+from, and a restore onto a different disk skips the media apply (with a
+warning) instead of cross-writing. v2 blobs still load with the old
+semantics.
+
+**Phasor /RESET missed the 2026-08-02 generator-reset fix Mockingboard
+got.** The Phasor audio thread re-seeded only the noise LFSR on an AY
+reset strobe; tone counters and the envelope machine survived, so a
+finished envelope (holding at step 0) silenced the next envelope note
+where MAME and MockingboardCard play the 15→0 ramp. It now calls the
+shared `ChipSynthState::resetGenerators()`.
+
+**AY register read-back now masks unimplemented bits** (MAME's
+hardware-confirmed table): the write-$FF-read-back probe — the standard
+AY-vs-YM2149 discriminator, and how some Phasor detectors identify the
+board — must see $0F from a 4-bit register, not the raw stored byte.
+
+**Cassette hard-reset semantics existed but were never wired.**
+`CassetteDevice::resetCpuSide()` had zero call sites, so the output
+flip-flop and cycle base survived F12/power-cycle: the first `$C020`
+toggle of a new recording appended the entire across-reset idle gap as
+one duration, and `saveWavTape` then refused the whole tape ("exceeds
+the 30-minute WAV limit"). `hardReset()`/`coldBoot()` now call it, and it
+also re-bases `lastTapeInputCycle` (compared with unsigned subtraction).
+
+**$C068 clamped bit 7 to zero.** The $C061–$C06F mirror block folded
+$C068 to $C060 but the switch had no case for it — a tape-read loop
+polling the $C068 mirror never saw the comparator flip, and entropy loops
+keyed on N were deterministic. It now mirrors the cassette comparator per
+MAME's `.mirror(0x8)`. The dead empty guard above the block is gone.
+
+**CPU reset now drops pending interrupt latches.** Neither reset path
+cleared the pending-NMI edge or the IRQ source mask, while
+`Memory::resetSoftSwitches` documented the opposite assumption. Every
+reset path deasserts devices first (slot-bus reset hooks), so clearing
+the latches keeps CPU and devices in lock-step — and makes the documented
+contract true.
+
+**Telnet SSC: a CR LF split across recv() chunks typed a spurious
+ENTER.** `normalizeLineEndings` kept its saw-a-CR state in a per-call
+local, so the LF opening the next 256-byte chunk became a second CR —
+about one phantom ENTER per 128 pasted lines. The state is now
+caller-owned (`telnetPrevCR_`, reset per connection), the same fix the
+IAC filter got when it became `processTelnetRx`. Pinned with seam tests
+(CR|LF and CR|NUL LF).
+
+**ChildProcess (POSIX): "stop" leaked SIGTERM-resistant grandchildren.**
+The grace loop returned as soon as the *direct* child exited, so the
+group SIGKILL was never reached — a wrapper script (run-fujinet) died
+instantly while its fujinet child trapped SIGTERM, kept the loopback
+port, and contended with the next start. The loop now waits for the whole
+group (probed with `kill(-group, 0)`) and always sweeps the group with
+SIGKILL after the grace.
+
+**Printer fixes.** Screen dump luminance decoded `0xAARRGGBB` but the
+framebuffer is `0xAABBGGRR`, landing the red weight on blue: HGR orange
+vanished from printouts and medium blue printed as ink (mono screens
+masked it — r==g==b). And Epson `ESC J` fed past the bottom margin with
+no eject, silently clipping every band after the crossing on `ESC J 24`
+paced graphics jobs; it now ejects like `lineFeed()`/VT.
+
+**Char-ROM picker: the 342-0274-A French banks didn't survive a
+restart.** `charRomLocaleFromKey` had no cases for the `iie_fr8k_fr` /
+`iie_fr8k_us` keys its own inverse emits, so the selection silently fell
+back to the profile default on every launch.
+
 ## 2026-08-12 — Release hardening for 0.8
 
 The release path now caps build concurrency across CI and every native

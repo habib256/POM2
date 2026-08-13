@@ -159,6 +159,8 @@ CharRomLocale charRomLocaleFromKey(const std::string& key)
     if (key == "iie_uk_unenh")      return CharRomLocale::AppleIIeUK_Unenhanced;
     if (key == "iie_de")            return CharRomLocale::AppleIIeGerman;
     if (key == "iie_de_improved")   return CharRomLocale::AppleIIeGermanImproved;
+    if (key == "iie_fr8k_fr")       return CharRomLocale::AppleIIeFrench8k_FR;
+    if (key == "iie_fr8k_us")       return CharRomLocale::AppleIIeFrench8k_US;
     return CharRomLocale::ProfileDefault;
 }
 

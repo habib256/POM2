@@ -84,10 +84,10 @@ double baudIndexToBytesPerSec(uint8_t idx)
 //   * collapse CR LF → CR (strip the LF after a CR).
 //   * map bare LF → CR.
 // Buffer mutated in place, returns new length.
-size_t SuperSerialCard::normalizeLineEndings(uint8_t* data, size_t n)
+size_t SuperSerialCard::normalizeLineEndings(uint8_t* data, size_t n,
+                                             bool& prevCR)
 {
     size_t w = 0;
-    bool prevCR = false;
     for (size_t r = 0; r < n; ++r) {
         uint8_t c = data[r];
         if (c == 0) continue;                       // drop NUL before prevCR
@@ -332,7 +332,7 @@ void SuperSerialCard::runWorker()
                 // see every byte (including $FF and bare LFs).
                 if (!raw) {
                     n = processTelnetRx(scratch, n);
-                    n = normalizeLineEndings(scratch, n);
+                    n = normalizeLineEndings(scratch, n, telnetPrevCR_);
                 }
                 if (n > 0) {
                     deliverRxBytes(scratch, n);

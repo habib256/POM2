@@ -146,7 +146,12 @@ public:
     /// Public + static so it is unit-testable in isolation; the RX worker
     /// calls it on every non-raw inbound chunk. Mutates `data` in place,
     /// returns the new length. RFC 854: a bare CR arrives as CR NUL.
-    static size_t normalizeLineEndings(uint8_t* data, size_t n);
+    /// `prevCR` is the persistent saw-a-CR state — the CALLER owns it so a
+    /// CR LF pair split across two recv() chunks still collapses (the RX
+    /// worker passes telnetPrevCR_; a per-call local reset the state at
+    /// every ≤256-byte chunk and a split \r|\n delivered CR CR — one
+    /// spurious ENTER per straddled line ending).
+    static size_t normalizeLineEndings(uint8_t* data, size_t n, bool& prevCR);
 
     /// Telnet IAC filter — a PERSISTENT state machine (member state) so an
     /// IAC sequence split across recv() chunks, and the variable-length
@@ -155,7 +160,7 @@ public:
     /// worker calls it on every non-raw inbound chunk). Call resetTelnet()
     /// at the start of each connection.
     size_t processTelnetRx(uint8_t* data, size_t n);
-    void   resetTelnet() { telnetState_ = TelnetState::Text; }
+    void   resetTelnet() { telnetState_ = TelnetState::Text; telnetPrevCR_ = false; }
 
     /// Telnet TX escaping (RFC 854): append `b` to `out`, doubling $FF
     /// (IAC IAC) and following a bare CR with NUL (the Apple II's newline
@@ -213,6 +218,9 @@ private:
     // recv() chunk boundaries so a split IAC / SB sequence parses correctly.
     enum class TelnetState { Text, Iac, Opt, Sb, SbIac };
     TelnetState telnetState_ = TelnetState::Text;
+    /// CR-seen state for normalizeLineEndings, persistent across recv()
+    /// chunks for the same reason telnetState_ is (see resetTelnet()).
+    bool telnetPrevCR_ = false;
 
     // Atomic so the UI/dtor thread can shutdown() these to wake the worker
     // out of accept()/recv() without a torn read, and so close() happens

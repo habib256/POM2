@@ -414,6 +414,7 @@ void EmulationController::hardReset()
     if (spk)    spk->reset();
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
+    if (tape)   tape->resetCpuSide();
     processor.hardReset();
     pom2::log().info("Emul", "Hard reset");
 }
@@ -453,6 +454,7 @@ void EmulationController::coldBoot()
     if (spk)    spk->reset();   // F-1-3: parity with hardReset
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
+    if (tape)   tape->resetCpuSide();
     processor.hardReset();
     rewind_.clear();   // RAM wiped → the recorded timeline is a different machine
     pom2::log().info("Emul", "Cold boot (RAM wiped)");

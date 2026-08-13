@@ -152,9 +152,15 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
         for (int ci = 0; ci < 4; ++ci) {
             if (chip[ci].lastSeenResetCount != resetCountSnap[ci]) {
                 chip[ci].lastSeenResetCount = resetCountSnap[ci];
-                chip[ci].noiseLfsr     = 1;
-                chip[ci].noisePrescale = 0;
-                chip[ci].noiseOut      = 0;
+                // Full generator reset, not just the noise LFSR: tone
+                // counters/flip-flops and the envelope state machine must
+                // also re-seed on /RESET (MAME ay8910_reset_ym), exactly as
+                // MockingboardCard does via resetGenerators(). Re-seeding
+                // only the noise half left a finished envelope holding at
+                // step 0 across the strobe, so the next envelope note came
+                // out silent where the same driver on a Mockingboard (and
+                // on MAME) plays the 15→0 ramp.
+                chip[ci].resetGenerators();
             }
             if (chip[ci].lastSeenEnvWriteCount != envWriteCountSnap[ci]) {
                 chip[ci].lastSeenEnvWriteCount = envWriteCountSnap[ci];

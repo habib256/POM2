@@ -1903,6 +1903,14 @@ void M6502::hardReset(void)
     xRegister = 0;
     yRegister = 0;
     halted = false;
+    // RESET drops any pending NMI edge and clears the IRQ source mask.
+    // Every reset path deasserts the device side first (slotBus().reset()
+    // runs the onReset hooks, resetSoftSwitches clears the VBL source), so
+    // the mask restarts in lock-step with the devices — and
+    // Memory::resetSoftSwitches documents exactly this contract.
+    NMI = 0;
+    irqSourceMask.store(0, std::memory_order_relaxed);
+    IRQ.store(0, std::memory_order_relaxed);
 
     // Don't wipe the stack page on F12. Real 6502 reset only decrements
     // SP (the BRK-emulating reset sequence pushes PC/P without storing),
@@ -1929,6 +1937,12 @@ void M6502::softReset(void)
         statusRegister &= ~M6502::Status::D;
     }
     halted = false;
+    // Same interrupt-latch policy as hardReset: RESET drops a pending NMI
+    // edge and clears the source mask (devices were deasserted by the
+    // slot-bus reset that precedes the CPU reset on every path).
+    NMI = 0;
+    irqSourceMask.store(0, std::memory_order_relaxed);
+    IRQ.store(0, std::memory_order_relaxed);
     // Real 6502 reset sequence is a faked BRK that pushes PC + P
     // WITHOUT writing to the stack page (the read/write line stays
     // high), but decrements SP by 3. POM2 used to snap SP=$FF which

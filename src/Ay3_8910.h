@@ -145,7 +145,21 @@ struct Ay3_8910
             // some Phasor mode detectors identify the board) always saw
             // the VIA's own stale port-A output instead.
             if (edge) ++readStrobeCount;
-            busOut = regs[latchedAddr & 0x0F];
+            // Unimplemented register bits read back as 0 — hardware-
+            // confirmed per-register masks from MAME `ay8910.cpp
+            // ay8910_read_ym` ("Tested and confirmed on hardware: AY-3-
+            // 8910: inaccessible bits read back as 0"). Returning the raw
+            // stored byte defeated the classic write-$FF-read-back probe:
+            // a 4-bit register must answer $0F, or AY-vs-YM2149 detectors
+            // (and Phasor mode sniffers) mis-identify the chip.
+            {
+                static constexpr uint8_t kReadMask[16] = {
+                    0xFF, 0x0F, 0xFF, 0x0F, 0xFF, 0x0F, 0x1F, 0xFF,
+                    0x1F, 0x1F, 0x1F, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF,
+                };
+                const uint8_t r = latchedAddr & 0x0F;
+                busOut = regs[r] & kReadMask[r];
+            }
             result = ApplyResult::Read;
             break;
         case 0b00:

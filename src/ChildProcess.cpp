@@ -250,15 +250,29 @@ void ChildProcess::stop(int graceMs)
     ::kill(-pid_, SIGTERM);
 
     // Give it the grace period to shut down cleanly — a FujiNet flushing an
-    // SD-card image should be allowed to finish.
+    // SD-card image should be allowed to finish. Save the group id up
+    // front: isRunning() reaps the direct child and reset() clears pid_.
+    const pid_t group = pid_;
     const int stepMs = 25;
+    bool exited = false;
     for (int waited = 0; waited < graceMs; waited += stepMs) {
-        if (!isRunning()) return;
+        if (!isRunning()) { exited = true; break; }
         ::usleep(static_cast<useconds_t>(stepMs) * 1000);
     }
 
-    if (pid_ < 0) return;
-    ::kill(-pid_, SIGKILL);
+    // Sweep the whole GROUP with SIGKILL no matter how the direct child
+    // went. Returning as soon as the direct child exited skipped this, so
+    // a wrapper script (run-fujinet) that dies on SIGTERM instantly left
+    // its SIGTERM-trapping fujinet grandchild alive after "stop" — still
+    // holding the loopback port and contending with the next "start".
+    // ESRCH (nothing left) is harmless, zombies awaiting init's reap are
+    // unaffected, and killing survivors at stop's conclusion is exactly
+    // what the Win32 branch's Job Object does when it closes. (A group
+    // liveness probe with kill(-group, 0) is NOT usable as a wait
+    // condition here: a grandchild zombie still counts as a member, which
+    // would stall every stop for the full grace.)
+    ::kill(-group, SIGKILL);
+    if (exited || pid_ < 0) return;
     // Reap the corpse; without this the zombie outlives us until POM2 exits.
     int status = 0;
     while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}

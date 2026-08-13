@@ -1598,17 +1598,13 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         return 0;
     }
 
-    // Push-buttons + paddle inputs at $C061-$C067, mirrored across
-    // $C068-$C06F (MAME `apple2.cpp:554` `.mirror(0x8)` and
-    // `apple2e.cpp:1889/1903/1909/1915/1919/1923/1927`). Real hardware
-    // ORs the floating-bus byte into the low 7 bits (Beagle Bros and
-    // demoscene RNGs depend on this). STATEREG / band-select at
-    // $C068+ are IIgs-only; POM2 (II/II+/IIe-only) shouldn't expose
-    // them.
-    if (low >= 0x61 && low <= 0x6F && low != 0x6A
-        && !(low >= 0x68 && low <= 0x6F && low == 0x68 /* IIc/IIgs */)) {
-        // (Empty guards — see below for the unified handler.)
-    }
+    // Cassette input + push-buttons + paddle inputs at $C060-$C067,
+    // mirrored across $C068-$C06F (MAME `apple2.cpp:554` `.mirror(0x8)`
+    // and `apple2e.cpp:1889/1903/1909/1915/1919/1923/1927`) — $C068
+    // reads the cassette comparator just like $C060. Real hardware ORs
+    // the floating-bus byte into the low 7 bits (Beagle Bros and
+    // demoscene RNGs depend on this). The IIgs STATEREG at $C068 stays
+    // unexposed — POM2 is II/II+/IIe-class only.
     if (low >= 0x61 && low <= 0x6F) {
         const uint8_t mirrored = static_cast<uint8_t>(0x60 | (low & 0x07));
         const uint8_t bit7 = [&]() -> uint8_t {
@@ -1625,7 +1621,18 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
                         static_cast<uint64_t>(paddleValue[idx]) * 11;
                     return (elapsed < threshold) ? 0x80 : 0x00;
                 }
-                default: return 0;  // $C060 already handled above
+                case 0x60:
+                    // $C068 mirrors $C060 (cassette comparator) per the
+                    // same `.mirror(0x8)` cited above — only a literal
+                    // $C060 access takes the dedicated branch earlier.
+                    // Returning a hard 0 here clamped bit 7 low, so a
+                    // tape-read loop polling $C068 never saw the
+                    // comparator flip and entropy loops keyed on N were
+                    // deterministic.
+                    return cassette
+                        ? static_cast<uint8_t>(cassette->readTapeInput() & 0x80)
+                        : uint8_t{0};
+                default: return 0;  // unreachable: mirrored ∈ $60-$67
             }
         }();
         return static_cast<uint8_t>(bit7 | (floatingBus() & 0x7F));

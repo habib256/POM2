@@ -278,7 +278,9 @@ void testTelnetLineEndingNormalisation()
     // NUL in CR NUL LF used to reset prevCR before being dropped, leaking
     // a spurious second CR (CR NUL LF → CR CR instead of CR).
     auto norm = [](std::vector<uint8_t> in) {
-        const size_t m = SuperSerialCard::normalizeLineEndings(in.data(), in.size());
+        bool prevCR = false;
+        const size_t m =
+            SuperSerialCard::normalizeLineEndings(in.data(), in.size(), prevCR);
         in.resize(m);
         return in;
     };
@@ -289,6 +291,31 @@ void testTelnetLineEndingNormalisation()
     assert(norm({0x00}).empty());                                           // lone NUL dropped
     assert((norm({'H','i',0x0D,0x00,0x0A,'!'})
                 == std::vector<uint8_t>{'H','i',0x0D,'!'}));                 // embedded, passthrough
+
+    // Regression: CR LF split across two recv() chunks. The caller-owned
+    // prevCR state must span the seam — a per-call local turned the LF at
+    // the head of chunk 2 into a SECOND CR (one spurious ENTER roughly
+    // every 128 pasted lines through the 256-byte scratch reads).
+    {
+        bool prevCR = false;
+        std::vector<uint8_t> c1{'A', 0x0D};
+        std::vector<uint8_t> c2{0x0A, 'B'};
+        c1.resize(SuperSerialCard::normalizeLineEndings(c1.data(), c1.size(), prevCR));
+        c2.resize(SuperSerialCard::normalizeLineEndings(c2.data(), c2.size(), prevCR));
+        assert((c1 == std::vector<uint8_t>{'A', 0x0D}));
+        assert((c2 == std::vector<uint8_t>{'B'}));   // LF swallowed across the seam
+    }
+    // Same seam with the RFC 854 CR NUL LF spelling: CR ends chunk 1,
+    // NUL LF opens chunk 2.
+    {
+        bool prevCR = false;
+        std::vector<uint8_t> c1{0x0D};
+        std::vector<uint8_t> c2{0x00, 0x0A};
+        c1.resize(SuperSerialCard::normalizeLineEndings(c1.data(), c1.size(), prevCR));
+        c2.resize(SuperSerialCard::normalizeLineEndings(c2.data(), c2.size(), prevCR));
+        assert((c1 == std::vector<uint8_t>{0x0D}));
+        assert(c2.empty());
+    }
     std::printf("  ok: telnet CR/NUL/LF normalisation\n");
 }
 

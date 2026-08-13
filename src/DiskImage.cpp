@@ -1872,7 +1872,6 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
                                                         : int64_t{0};
     const int64_t startMod =
         (((startLssCycle - anchorOrigin) % period) + period) % period;
-    const int64_t endMod = startMod + (endLssCycle - startLssCycle);
 
     // One bit per cell of this window, off the write clock.
     std::vector<bool> newBits(static_cast<size_t>(lastCell - firstCell), false);
@@ -1954,7 +1953,13 @@ void DiskImage::writeFlux(int qt, int64_t startLssCycle, int64_t endLssCycle,
     if (continues && fr.nextCell >= firstCell && fr.nextCell <= lastCell)
         from = fr.nextCell;
     int to = lastCell;                       // exclusive
-    if ((endMod % cyc) != 0 && to > from) {  // last cell only partly covered
+    // Partial-cell test on the WRITE-CLOCK grid — the same grid firstCell/
+    // lastCell were computed on. Testing the revolution-anchor phase here
+    // (`endMod % cyc`) held back a COMPLETE cell whenever the two grids
+    // disagreed mod cyc (anchor is latched at motor-on, origin at Q7-on, so
+    // they only agree by luck), and the next flush seam then discarded it —
+    // one bit lost per ~30-transition chunk shredded the framed nibbles.
+    if (((endLssCycle - fr.origin) % cyc) != 0 && to > from) {
         --to;
         fr.heldValid = true;
         fr.heldCell  = to;

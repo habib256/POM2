@@ -387,6 +387,10 @@ void CassetteDevice::resetCpuSide()
     currentCycle = 0;
     outputLevel  = false;
     lastOutputToggleCycle = 0;
+    // Re-base the input-side stamp too: it is compared against
+    // `currentCycle` with unsigned subtraction (leader-rewind gap check),
+    // so leaving it at the pre-reset value would wrap to a huge gap.
+    lastTapeInputCycle = 0;
 }
 
 void CassetteDevice::setPlaybackPaused(bool paused)
