@@ -37,6 +37,13 @@ constexpr const char* kIndexName = "index.txt";
 /// entries pointing at files that mean something else.
 constexpr const char* kIndexMagic = "pom2-printer-history\t1";
 
+// A normal printer page is only a few megapixels. Keep enough headroom for
+// long paper while refusing compressed image bombs before stb allocates the
+// decoded raster (which is then copied into the caller's RGBA vector).
+constexpr uintmax_t kMaxPagePngBytes = 64u * 1024u * 1024u;
+constexpr int kMaxPageDimension = 8192;
+constexpr uint64_t kMaxPagePixels = 16u * 1024u * 1024u;
+
 /// Sheets ejected within this many seconds of each other belong to the same
 /// print job. A multi-page document ejects its sheets seconds apart; a new
 /// document minutes later is a new job.
@@ -512,10 +519,33 @@ bool PrinterHistory::loadRgba(const HistoryPage& p, std::vector<uint8_t>& rgba,
     }
 
     const fs::path full = fs::path(dir_) / p.file;
+    std::error_code ec;
+    const uintmax_t fileBytes = fs::file_size(full, ec);
+    if (ec || fileBytes > kMaxPagePngBytes) {
+        err = ec ? "cannot stat " + full.string()
+                 : "history page exceeds the encoded-size limit";
+        return false;
+    }
+    int infoW = 0, infoH = 0, infoComp = 0;
+    if (!stbi_info(full.string().c_str(), &infoW, &infoH, &infoComp) ||
+        infoW <= 0 || infoH <= 0 || infoW > kMaxPageDimension ||
+        infoH > kMaxPageDimension ||
+        static_cast<uint64_t>(infoW) * static_cast<uint64_t>(infoH) >
+            kMaxPagePixels) {
+        err = "history page dimensions are invalid or too large";
+        return false;
+    }
     int comp = 0;
     unsigned char* data = stbi_load(full.string().c_str(), &w, &h, &comp, 4);
     if (!data) {
         err = "cannot read " + full.string();
+        return false;
+    }
+    if (w <= 0 || h <= 0 || w > kMaxPageDimension ||
+        h > kMaxPageDimension ||
+        static_cast<uint64_t>(w) * static_cast<uint64_t>(h) > kMaxPagePixels) {
+        stbi_image_free(data);
+        err = "decoded history page dimensions are too large";
         return false;
     }
     rgba.assign(data, data + static_cast<size_t>(w) * h * 4);

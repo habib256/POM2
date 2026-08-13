@@ -207,6 +207,26 @@ int main()
         assert(!d.loadFile(img.string()));
     }
 
+    // A failed replacement must not eject the currently mounted disk. This
+    // exercises the public Disk35Image API directly (not only the UI wrapper).
+    {
+        const fs::path current = base / "current.po";
+        const fs::path invalid = base / "invalid.po";
+        writeFile(current, makeRawImage());
+        writeFile(invalid, std::vector<std::uint8_t>{1, 2, 3});
+
+        pom2::Disk35Image d;
+        assert(d.loadFile(current.string()));
+        std::uint8_t before[kBlk]{};
+        assert(d.readBlock(0, before));
+        assert(!d.loadFile(invalid.string()));
+        assert(d.isLoaded());
+        assert(d.path() == current.string());
+        std::uint8_t after[kBlk]{};
+        assert(d.readBlock(0, after));
+        assert(std::memcmp(before, after, kBlk) == 0);
+    }
+
     fs::remove_all(base);
     std::printf("OK disk35_atomic_save (rename-replace, 2IMG envelope kept%s)\n",
                 ranFailureCase ? ", failed save leaves image intact" : "");

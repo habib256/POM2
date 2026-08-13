@@ -690,7 +690,12 @@ bool AiControlServer::checkAuth(const Request& req) const
         std::lock_guard<std::mutex> lk(mtx_);
         configured = authToken_;
     }
-    if (configured.empty()) return true;
+    // Keep token-less localhost access for native clients, but do not expose
+    // the emulator control plane to arbitrary browser pages. Browsers attach
+    // Origin to cross-origin requests; command-line/native clients do not.
+    // Configuring a token explicitly opts into browser access guarded by that
+    // secret.
+    if (configured.empty()) return req.headerValue("Origin").empty();
     return req.headerValue("X-POM2-Token") == configured;
 }
 

@@ -398,16 +398,47 @@ void MainWindow::renderSlotConfigPanel()
             // user's saved //e-era slot_N_card keys whenever Apply was
             // clicked on a //c-class profile. Same guard as the
             // ~MainWindow shutdown persist path.
+            std::array<std::string, 8> previous{};
+            std::array<bool, 8> changed{};
             for (int s = 1; s <= 7; ++s) {
                 const std::string key = "slot_" + std::to_string(s) + "_card";
                 if (!pom2::slotKeyIsUserChoice(profileCfg, s, draft[s],
                                                settings->getString(key, "")))
                     continue;
+                previous[s] = settings->getString(key, "");
+                changed[s] = true;
                 settings->setString(key, draft[s]);
             }
-            settings->save();
-            restartEmulationFromSettings();
-            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+            if (!settings->save()) {
+                for (int s = 1; s <= 7; ++s) {
+                    if (changed[s]) settings->setString(
+                        "slot_" + std::to_string(s) + "_card", previous[s]);
+                }
+                tapeStatusMessage = "Slot changes not applied — settings could not be saved.";
+                tapeStatusUntil = lastFrameTime + 8.0;
+                pom2::log().warn("Slots", tapeStatusMessage);
+            } else if (!restartEmulationFromSettings()) {
+                // The live machine was deliberately left intact. Restore the
+                // persisted mapping too, otherwise the refused draft would be
+                // applied silently on the next launch.
+                for (int s = 1; s <= 7; ++s) {
+                    if (changed[s]) settings->setString(
+                        "slot_" + std::to_string(s) + "_card", previous[s]);
+                }
+                if (!settings->save())
+                    pom2::log().error("Slots",
+                        "Could not persist the previous slot mapping after a refused rebuild.");
+            } else {
+                // restartEmulationFromSettings also captured live media paths
+                // after the first save; make those refreshed values durable.
+                if (!settings->save()) {
+                    tapeStatusMessage =
+                        "Slots applied, but updated settings could not be saved.";
+                    tapeStatusUntil = lastFrameTime + 8.0;
+                    pom2::log().warn("Slots", tapeStatusMessage);
+                }
+                for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+            }
         }
         ImGui::EndDisabled();
         if (pending > 0 && ImGui::IsItemHovered())
@@ -1218,7 +1249,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     aiServer->setProfileLabel(std::string(cfg.displayName));
 }
 
-void MainWindow::restartEmulationFromSettings()
+bool MainWindow::restartEmulationFromSettings()
 {
     // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
     //    and the HDV/CFFA library mounts update the live cards but NOT the
@@ -1262,16 +1293,15 @@ void MainWindow::restartEmulationFromSettings()
     // 1. Stop the worker thread so card destructors don't race against a
     //    running CPU step, then prove every opted-in dirty medium is durable
     //    before destroying any card.
-    const bool wasRunning =
-        controller->getMode() == EmulationController::Mode::Running;
+    const auto previousMode = controller->getMode();
     controller->stop();
     std::string flushErr;
     if (!flushSlotMedia(flushErr)) {
         tapeStatusMessage = "Slot rebuild refused — save failed: " + flushErr;
         tapeStatusUntil = lastFrameTime + 8.0;
         pom2::log().warn("Slots", tapeStatusMessage);
-        if (wasRunning) controller->start();
-        return;
+        controller->setMode(previousMode);
+        return false;
     }
     // The rebuild is now committed. Its session-local auto-plugged media will
     // be destroyed below, so their shutdown-persistence markers no longer
@@ -1390,6 +1420,7 @@ void MainWindow::restartEmulationFromSettings()
     }
 
     pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
+    return true;
 }
 
 // ─── GUI ↔ kiosk runtime transition ──────────────────────────────────────

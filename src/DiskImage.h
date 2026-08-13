@@ -285,6 +285,9 @@ public:
     void setWriteBackEnabled(bool on) { writeBackEnabled = on; }
 
 private:
+    bool loadFileUnchecked(const std::string& path);
+    bool loadFileUnchecked(const std::string& path, SectorOrder order);
+
     /// Sync-gap rule shared by expandTrackBits (cell-timeline expansion)
     /// and writeFlux (re-pack): a $FF inside a run of ≥ kSyncMinRun is a
     /// 10-cell self-sync nibble, everything else is 8 cells. ONE

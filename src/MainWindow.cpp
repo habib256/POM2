@@ -7664,19 +7664,25 @@ std::vector<pom2::SmartPortCard*> MainWindow::smartPortCards() const
 
 bool MainWindow::flushSlotMedia(std::string& err)
 {
+    err.clear();
+    bool allSaved = true;
+    const auto recordFailure = [&](std::string message) {
+        if (!err.empty()) err += "; ";
+        err += std::move(message);
+        allSaved = false;
+    };
     std::lock_guard<std::mutex> lk(controller->stateMutex());
     for (auto* card : diskCards) {
         if (card && !card->flushPendingWrites()) {
-            err = "Disk II slot " + std::to_string(card->getSlot()) +
-                  ": " + card->getLastError();
-            return false;
+            recordFailure("Disk II slot " + std::to_string(card->getSlot()) +
+                          ": " + card->getLastError());
         }
     }
     for (auto* card : blockCards()) {
         if (card && !card->saveDirty()) {
-            err = "block device slot " + std::to_string(card->getSlot()) +
-                  ": " + card->getLastError();
-            return false;
+            recordFailure("block device slot " +
+                          std::to_string(card->getSlot()) + ": " +
+                          card->getLastError());
         }
     }
     for (auto* card : smartPortCards()) {
@@ -7684,14 +7690,14 @@ bool MainWindow::flushSlotMedia(std::string& err)
         for (size_t bay = 0; bay < pom2::SmartPortCard::kMaxUnits; ++bay) {
             auto* unit = card->unit(bay);
             if (unit && !unit->saveDirty()) {
-                err = "SmartPort slot " + std::to_string(card->getSlot()) +
-                      " bay " + std::to_string(bay + 1) + ": " +
-                      unit->lastError();
-                return false;
+                recordFailure("SmartPort slot " +
+                              std::to_string(card->getSlot()) + " bay " +
+                              std::to_string(bay + 1) + ": " +
+                              unit->lastError());
             }
         }
     }
-    return true;
+    return allSaved;
 }
 
 int MainWindow::ensureHdvCardForBoot()

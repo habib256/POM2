@@ -65,6 +65,22 @@ int Disk35Image::sectorsForTrack(int track)
 
 bool Disk35Image::loadFile(const std::string& imgPath)
 {
+    // Loading a replacement is an implicit eject. First make the outgoing
+    // medium durable, then parse the candidate into a separate object so any
+    // malformed/unreadable file leaves the current disk fully mounted.
+    if (!saveDirty()) return false;
+    Disk35Image replacement;
+    replacement.writeBackEnabled_ = writeBackEnabled_;
+    if (!replacement.loadFileUnchecked(imgPath)) {
+        lastError_ = replacement.lastError_;
+        return false;
+    }
+    *this = std::move(replacement);
+    return true;
+}
+
+bool Disk35Image::loadFileUnchecked(const std::string& imgPath)
+{
     eject();
     path_ = imgPath;
 

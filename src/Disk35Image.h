@@ -105,6 +105,8 @@ public:
     bool isWriteBackEnabled() const   { return writeBackEnabled_; }
 
 private:
+    bool loadFileUnchecked(const std::string& path);
+
     bool         loaded_              = false;
     bool         dirty_               = false;
     bool         writeBackEnabled_    = false;

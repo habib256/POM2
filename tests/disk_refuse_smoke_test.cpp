@@ -130,6 +130,26 @@ bool caseShortWoz()
                    "short-WOZ");
 }
 
+// 6. Refusing a bad replacement must leave the current medium mounted.
+bool caseFailedReplacementIsTransactional()
+{
+    const std::string goodPath = "refuse_current.dsk";
+    const std::string badPath  = "refuse_replacement.bin";
+    if (!writeTemp(goodPath,
+                   std::vector<uint8_t>(DiskImage::kBytesPerImage, 0x00)) ||
+        !writeTemp(badPath, std::vector<uint8_t>{1, 2, 3})) return false;
+
+    DiskImage img;
+    if (!img.loadFile(goodPath)) return false;
+    const uint8_t before = img.nibbleAt(0, 0);
+    const bool refused = !img.loadFile(badPath);
+    const bool preserved = img.isLoaded() && img.getPath() == goodPath &&
+                           img.nibbleAt(0, 0) == before;
+    std::remove(goodPath.c_str());
+    std::remove(badPath.c_str());
+    return refused && preserved;
+}
+
 }  // namespace
 
 int main()
@@ -140,7 +160,8 @@ int main()
     ok &= case2ImgWrongDosSize();
     ok &= caseEmpty();
     ok &= caseShortWoz();
+    ok &= caseFailedReplacementIsTransactional();
     if (!ok) return 1;
-    std::printf("disk_refuse_smoke OK: 5 refusal cases pinned\n");
+    std::printf("disk_refuse_smoke OK: refusal + transactional replacement pinned\n");
     return 0;
 }

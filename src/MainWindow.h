@@ -1074,7 +1074,7 @@ private:
     /// by the Slot Configuration panel's Apply button. Stops the
     /// emulation worker around the rebuild so card destructors / new
     /// constructors don't race against a running CPU thread.
-    void restartEmulationFromSettings();
+    bool restartEmulationFromSettings();
 
     /// Pick the first existing file path in `candidates`. Empty string
     /// when none exists. Used by applyProfile to probe ROM candidates.

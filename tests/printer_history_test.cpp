@@ -497,6 +497,30 @@ void testRepeatedIndexRowsAreBounded()
     std::printf("  ok: repeated index rows are capped during parsing\n");
 }
 
+void testOversizedEncodedPageIsRejectedBeforeDecode()
+{
+    const fs::path dir = scratch("oversized_png");
+    std::string err;
+    PrinterHistory h;
+    assert(h.open(dir.string(), err));
+
+    const fs::path png = dir / "p000001.png";
+    std::ofstream out(png, std::ios::binary | std::ios::trunc);
+    assert(out);
+    out.seekp(64 * 1024 * 1024);
+    out.put('\0');
+    out.close();
+    assert(out);
+
+    HistoryPage page;
+    page.file = "p000001.png";
+    std::vector<uint8_t> rgba;
+    int w = 0, height = 0;
+    assert(!h.loadRgba(page, rgba, w, height, err));
+    assert(rgba.empty());
+    std::printf("  ok: oversized encoded page is refused before decode\n");
+}
+
 } // namespace
 
 int main()
@@ -515,6 +539,7 @@ int main()
     testIndexFailureRollsBackAndRetries();
     testCounterBeyondSixDigitsAndOrphanCleanup();
     testRepeatedIndexRowsAreBounded();
+    testOversizedEncodedPageIsRejectedBeforeDecode();
 
     std::puts("printer_history: OK");
     return 0;

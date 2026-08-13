@@ -566,6 +566,19 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
 
 bool DiskImage::loadFile(const std::string& imgPath)
 {
+    if (!saveDirty()) return false;
+    DiskImage replacement;
+    replacement.writeBackEnabled = writeBackEnabled;
+    if (!replacement.loadFileUnchecked(imgPath)) {
+        lastError = replacement.lastError;
+        return false;
+    }
+    *this = std::move(replacement);
+    return true;
+}
+
+bool DiskImage::loadFileUnchecked(const std::string& imgPath)
+{
     // Slurp the whole file once; detectFormat needs the magic bytes and
     // size, and each per-format loader takes a buffer slice.
     std::ifstream f(imgPath, std::ios::binary);
@@ -709,6 +722,19 @@ bool DiskImage::loadFile(const std::string& imgPath)
 }
 
 bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
+{
+    if (!saveDirty()) return false;
+    DiskImage replacement;
+    replacement.writeBackEnabled = writeBackEnabled;
+    if (!replacement.loadFileUnchecked(imgPath, order)) {
+        lastError = replacement.lastError;
+        return false;
+    }
+    *this = std::move(replacement);
+    return true;
+}
+
+bool DiskImage::loadFileUnchecked(const std::string& imgPath, SectorOrder order)
 {
     // Manual sector-order override (bypasses content sniff). Reads the
     // file and pipes it straight to the sector-image loader regardless

@@ -6,3 +6,4 @@
 // notes in the release documentation) and carries 16/32/48/64/128/256 px.
 
 IDI_ICON1 ICON "POM2.ico"
+1 RT_MANIFEST "POM2.manifest"

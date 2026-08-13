@@ -7,10 +7,10 @@
 
 #include <cstdlib>
 #include <system_error>
+#include <vector>
 
 #if defined(__APPLE__)
 #  include <mach-o/dyld.h>      // _NSGetExecutablePath
-#  include <vector>
 #elif defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -39,10 +39,18 @@ fs::path probeExecutablePath()
     fs::path p = fs::weakly_canonical(fs::path(buf.data()), ec);
     return ec ? fs::path(buf.data()) : p;
 #elif defined(_WIN32)
-    wchar_t buf[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n == MAX_PATH) return {};
-    return fs::path(std::wstring(buf, n));
+    // MAX_PATH is not a valid executable-path bound. Grow until the complete
+    // path fits; the manifest opts the rest of the Win32 filesystem calls
+    // into long-path handling on supported systems.
+    for (DWORD cap = 512; cap <= 32768; cap *= 2) {
+        std::vector<wchar_t> buf(cap, L'\0');
+        SetLastError(ERROR_SUCCESS);
+        const DWORD n = GetModuleFileNameW(nullptr, buf.data(), cap);
+        if (n == 0) return {};
+        if (n < cap - 1 || (n < cap && GetLastError() != ERROR_INSUFFICIENT_BUFFER))
+            return fs::path(std::wstring(buf.data(), n));
+    }
+    return {};
 #else
     std::error_code ec;
     fs::path self = fs::read_symlink("/proc/self/exe", ec);

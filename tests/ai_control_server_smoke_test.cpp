@@ -147,10 +147,18 @@ void testStatusEndpoint(EmulationController& ctrl, pom2::AiControlServer& srv)
 
 void testAuth(EmulationController& /*ctrl*/, pom2::AiControlServer& srv)
 {
+    // Token-less access remains available to native localhost tools, but a
+    // cross-origin browser page must not inherit that trust implicitly.
+    srv.setAuthToken("");
+    HttpResponse r = oneShot(kTestPort,
+        "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Origin: https://attacker.invalid\r\n\r\n");
+    assert(r.status == 401);
+
     srv.setAuthToken("s3cret");
 
     // No header → 401.
-    HttpResponse r = oneShot(kTestPort,
+    r = oneShot(kTestPort,
         "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     assert(r.status == 401);
     assert(contains(r.body, "\"ok\":false"));
