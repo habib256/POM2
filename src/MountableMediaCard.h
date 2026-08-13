@@ -68,7 +68,7 @@ public:
                           std::string& errOut) = 0;
 
     /// Eject `bay` (saves dirty blocks first when write-back is on).
-    virtual void ejectBay(int bay) = 0;
+    virtual bool ejectBay(int bay) = 0;
 
     /// Toggle per-bay write-back (save-on-eject).
     virtual void setBayWriteBack(int bay, bool on) = 0;

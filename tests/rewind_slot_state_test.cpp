@@ -92,7 +92,8 @@ int main()
 
         pom2::SnapshotReader r(full1.data(), full1.size());
         assert(r.good());
-        const auto res = pom2::restoreMachineState(r, cpu2, mem2);
+        const auto res = pom2::restoreMachineState(r, cpu2, mem2,
+                                                   /*transactional=*/false);
         assert(res.ok);
 
         // The restored card must match the source card …
@@ -111,7 +112,8 @@ int main()
         M6502  cpu3(&mem3);
         pom2::SnapshotReader r(full1.data(), full1.size());
         assert(r.good());
-        const auto res = pom2::restoreMachineState(r, cpu3, mem3);
+        const auto res = pom2::restoreMachineState(r, cpu3, mem3,
+                                                   /*transactional=*/false);
         assert(res.ok);   // SLOT6 simply skipped
     }
 

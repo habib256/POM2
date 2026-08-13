@@ -267,16 +267,23 @@ void PhasorCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     if (blobVer != 1 && blobVer != 2) return;
     const std::size_t viaBytes = (blobVer >= 2)
         ? pom2::Via6522::kSnapshotBytes : pom2::Via6522::kSnapshotBytesV1;
-    mode_ = static_cast<Mode>(r.u8());
+    const uint8_t mode = r.u8();
+    if (mode != PH_Mockingboard && mode != PH_Phasor && mode != PH_EchoPlus)
+        return;
     const uint8_t present = r.u8();
+    std::size_t required = 6 +
+        ((present & 0x01) ? viaBytes : 0) +
+        ((present & 0x02) ? viaBytes : 0);
+    for (int i = 0; i < 4; ++i)
+        if (present & (0x04 << i)) required += pom2::Ay3_8910::kSnapshotBytes;
+    if (len < required) return;          // validate before mutating any chip
+    mode_ = static_cast<Mode>(mode);
     auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
-        if (!r.has(viaBytes)) return false;
         if (v) v->loadSnapshot(r.p + r.pos, viaBytes);
         r.pos += viaBytes;
         return true;
     };
     auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
-        if (!r.has(pom2::Ay3_8910::kSnapshotBytes)) return false;
         if (a) a->loadSnapshot(r.p + r.pos);
         r.pos += pom2::Ay3_8910::kSnapshotBytes;
         return true;

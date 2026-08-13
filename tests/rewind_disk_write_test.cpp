@@ -109,7 +109,8 @@ int main()
         // Rewind: restore the pre-write snapshot, re-capture — the write is gone.
         pom2::SnapshotReader r(fullPre.data(), fullPre.size());
         assert(r.good());
-        assert(pom2::restoreMachineState(r, cpu, mem).ok);
+        assert(pom2::restoreMachineState(r, cpu, mem,
+                                         /*transactional=*/false).ok);
         const std::vector<uint8_t> fullAfter = fullCapture(cpu, mem);
         assert(fullAfter == fullPre && "rewind did not undo the disk write");
     }

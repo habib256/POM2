@@ -157,7 +157,7 @@ public:
     int  bayCount() const override { return static_cast<int>(kMaxUnits); }
     MediaBayInfo bayInfo(int bay) const override;
     bool mountBay(int bay, const std::string& path, std::string& errOut) override;
-    void ejectBay(int bay) override;
+    bool ejectBay(int bay) override;
     void setBayWriteBack(int bay, bool on) override;
     std::vector<std::pair<std::string, std::string>>
          bayTypeOptions(int bay) const override;

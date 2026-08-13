@@ -133,9 +133,21 @@ void SmartPortCard::appendSnapshotState(std::vector<uint8_t>& out) const
 void SmartPortCard::loadSnapshotState(const uint8_t* data, std::size_t len)
 {
     constexpr size_t kPerUnit = 6 + kBlockBytes;
-    if (len < 4 + kMaxUnits * kPerUnit ||
+    constexpr size_t kBase = 4 + kMaxUnits * kPerUnit;
+    if (len < kBase ||
         data[0] != 'S' || data[1] != 'P' || data[2] != 1)
         return;
+    // An absent tail is the original v1 layout. Once any tail byte exists,
+    // require its full fixed header and declared result before touching the
+    // live call engine or unit state.
+    const size_t kTailHeader = spCollect_.size() + 3 + 4;
+    if (len != kBase) {
+        if (len - kBase < kTailHeader) return;
+        const size_t rnOff = kBase + spCollect_.size() + 3;
+        const size_t rn = static_cast<size_t>(data[rnOff] |
+                                              (data[rnOff + 1] << 8));
+        if (rn > len - (kBase + kTailHeader)) return;
+    }
     activeUnit_ = std::min<size_t>(data[3], kMaxUnits - 1);
     const uint8_t* p = data + 4;
     for (size_t u = 0; u < kMaxUnits; ++u) {
@@ -158,7 +170,7 @@ void SmartPortCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     spError_     = 0;
     spResult_.clear();
     spResultPos_ = 0;
-    if (len - pos >= spCollect_.size() + 3 + 4) {
+    if (len != kBase) {
         std::memcpy(spCollect_.data(), data + pos, spCollect_.size());
         pos += spCollect_.size();
         spCollectN_  = std::min<size_t>(data[pos++], spCollect_.size());
@@ -874,9 +886,10 @@ bool SmartPortCard::mountBay(int bay, const std::string& path,
     return true;
 }
 
-void SmartPortCard::ejectBay(int bay)
+bool SmartPortCard::ejectBay(int bay)
 {
-    if (SmartPortUnit* u = unit(static_cast<size_t>(bay))) u->eject();
+    if (SmartPortUnit* u = unit(static_cast<size_t>(bay))) return u->eject();
+    return false;
 }
 
 void SmartPortCard::setBayWriteBack(int bay, bool on)

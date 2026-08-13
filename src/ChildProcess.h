@@ -33,8 +33,9 @@
 //      deserves the chance to finish. On POSIX the polite ask is a SIGTERM to
 //      the process group. FujiNet-PC documents Ctrl+C as its Win32 shutdown
 //      path, so that platform gives the child tree a dedicated hidden console;
-//      `stop()` attaches to it
-//      briefly, sends CTRL_C_EVENT, then falls back to terminating the Job
+//      `stop()` starts a tiny broker that attaches to it, sends
+//      CTRL_C_EVENT without disturbing POM2's own console, then falls back
+//      to terminating the Job
 //      Object if the helper does not leave within the grace period.
 //
 // Not available under Emscripten (no processes in a browser):
@@ -90,6 +91,12 @@ public:
     /// the first hit or "" — so the UI can offer a sensible default without
     /// the user hunting for the binary.
     static std::string findOnPath(const std::string& name);
+
+    /// Win32 implementation detail: if argv describes the short-lived
+    /// console-signal broker, deliver Ctrl+C and return its exit status.
+    /// Returns -1 for an ordinary invocation (and on non-Windows builds).
+    /// POM2 and the supervision test call this before normal argument setup.
+    static int runConsoleSignalBrokerIfRequested(int argc, char* argv[]);
 
 private:
     void reset();

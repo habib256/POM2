@@ -570,15 +570,21 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!info.loaded);
                     if (ImGui::Button("Eject")) {
+                        bool ok = false;
+                        std::string err;
                         {
                             std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            media->ejectBay(b);
-                            persistMediaBay(s, b, p);
+                            ok = media->ejectBay(b);
+                            if (ok) persistMediaBay(s, b, p);
+                            else err = media->bayInfo(b).lastError;
                         }
-                        settings->save();
-                        mPrimed[s][b] = false;
-                        tapeStatusMessage = "Slot " + std::to_string(s) + ": ejected";
-                        tapeStatusUntil = lastFrameTime + 3.0;
+                        if (ok) {
+                            settings->save();
+                            mPrimed[s][b] = false;
+                        }
+                        tapeStatusMessage = "Slot " + std::to_string(s) +
+                            (ok ? ": ejected" : ": eject failed: " + err);
+                        tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
 
@@ -676,19 +682,22 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!loaded);
                     if (ImGui::Button("Eject")) {
+                        bool ok = false;
                         {
                             std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            d2->ejectDisk(drv);
+                            ok = d2->ejectDisk(drv);
                         }
-                        if (drv == 0) {
+                        if (ok && drv == 0) {
                             settings->setString(
                                 "disk_path_slot" + std::to_string(s), std::string());
                             settings->save();
                         }
-                        dPrimed[s][drv] = false;
+                        if (ok) dPrimed[s][drv] = false;
                         tapeStatusMessage = "Slot " + std::to_string(s) +
-                            " drive " + std::to_string(drv + 1) + ": ejected";
-                        tapeStatusUntil = lastFrameTime + 3.0;
+                            " drive " + std::to_string(drv + 1) +
+                            (ok ? ": ejected" : ": eject failed: " +
+                                  d2->getLastError(drv));
+                        tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
                     ImGui::Unindent();

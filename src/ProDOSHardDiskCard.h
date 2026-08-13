@@ -62,7 +62,7 @@ public:
     bool loadImageFromBytes(std::vector<uint8_t> bytes,
                             const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
-    void ejectImage() override;
+    bool ejectImage() override;
 
     bool isImageLoaded() const override { return backing_.isLoaded(); }
     const std::string& getImagePath() const override { return backing_.path(); }

@@ -168,8 +168,8 @@ public:
     /// the two-arg form.
     bool insertDisk(int drive, const std::string& path);
     bool insertDisk(const std::string& path) { return insertDisk(0, path); }
-    void ejectDisk(int drive);
-    void ejectDisk() { ejectDisk(0); }
+    bool ejectDisk(int drive);
+    bool ejectDisk() { return ejectDisk(0); }
 
     /// Persist any pending write-back for both drives WITHOUT ejecting.
     /// insertDisk / ejectDisk already flush on the swap, but shutdown and
@@ -192,7 +192,9 @@ public:
     }
     const std::string& getLastError(int drive = 0) const {
         static const std::string kEmpty;
-        return validDrive(drive) ? images[drive].getLastError() : kEmpty;
+        if (!validDrive(drive)) return kEmpty;
+        return mediaErrors[drive].empty() ? images[drive].getLastError()
+                                          : mediaErrors[drive];
     }
 
     int  getCurrentTrack(int drive = 0) const { return validDrive(drive) ? headQuarterTrack[drive] / 4 : 0; }
@@ -259,6 +261,7 @@ private:
     M6502* cpu_ = nullptr;
     FloppySoundSink* sound_ = nullptr;
     std::array<DiskImage, kDriveCount> images{};
+    std::array<std::string, kDriveCount> mediaErrors{};
     /// Drive currently routed to the LSS / legacy gate. Set by control()
     /// in response to $C0nA ($activeDrive=0) or $C0nB ($activeDrive=1).
     /// Persists across onReset() — matches the 74LS259 latch on real

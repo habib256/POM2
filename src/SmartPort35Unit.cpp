@@ -42,12 +42,18 @@ bool SmartPort35Unit::loadImage(const std::string& path)
         lastError_ = img_.lastError();
         return false;
     }
-    const bool ok = img_.loadFile(path);
-    lastError_ = ok ? std::string{} : img_.lastError();
-    return ok;
+    Disk35Image replacement;
+    replacement.setWriteBackEnabled(img_.isWriteBackEnabled());
+    if (!replacement.loadFile(path)) {
+        lastError_ = replacement.lastError();
+        return false;
+    }
+    img_ = std::move(replacement);
+    lastError_.clear();
+    return true;
 }
 
-void SmartPort35Unit::eject()
+bool SmartPort35Unit::eject()
 {
     // Save-on-eject, same policy as SmartPortHdvUnit::eject():
     // Disk35Image::eject() clears blocks_ + dirty_ unconditionally, so
@@ -57,10 +63,11 @@ void SmartPort35Unit::eject()
     // nothing is dirty.
     if (!img_.saveDirty()) {
         lastError_ = img_.lastError();
-        return;
+        return false;
     }
     lastError_ = img_.lastError();
     img_.eject();
+    return true;
 }
 
 } // namespace pom2

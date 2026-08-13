@@ -16,6 +16,7 @@
 #include "Apple2Display.h"
 #include "EmulationController.h"
 #include "CassetteDevice.h"
+#include "ChildProcess.h"
 #include "Disk35Image.h"
 #include "ResourcePaths.h"
 #include "SystemProfile.h"
@@ -150,6 +151,9 @@ static void glfw_drop_callback(GLFWwindow* w, int count, const char** paths)
 
 int main(int argc, char* argv[])
 {
+    if (const int broker = pom2::ChildProcess::runConsoleSignalBrokerIfRequested(
+            argc, argv); broker >= 0)
+        return broker;
     pom2::log().info("POM2", POM2_VERSION_STRING " - Apple II Emulator (Dear ImGui)");
 
     bool helpRequested = false;

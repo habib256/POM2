@@ -281,6 +281,7 @@ void DiskIICard::flushPendingWrites()
         DiskImage& img = images[d];
         if (!img.isLoaded() || !img.hasUnsavedChanges()) continue;
         if (!img.saveDirty()) {
+            mediaErrors[d] = img.getLastError();
             pom2::log().warn("Disk II",
                 "Flush failed for drive " + std::to_string(d + 1) + ": " +
                 img.getLastError());
@@ -304,16 +305,21 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     // Save any pending writes from the previous image before we drop it.
     if (img.isLoaded() && img.hasUnsavedChanges()) {
         if (!img.saveDirty()) {
+            mediaErrors[drive] = img.getLastError();
             pom2::log().warn("Disk II",
                 "Save-on-swap failed: " + img.getLastError());
             return false;
         }
     }
-    if (!img.loadFile(path)) {
-        pom2::log().warn("Disk II", "Insert failed: " + img.getLastError());
+    DiskImage replacement;
+    replacement.setWriteBackEnabled(writeBackEnabled);
+    if (!replacement.loadFile(path)) {
+        mediaErrors[drive] = replacement.getLastError();
+        pom2::log().warn("Disk II", "Insert failed: " + replacement.getLastError());
         return false;
     }
-    img.setWriteBackEnabled(writeBackEnabled);
+    img = std::move(replacement);
+    mediaErrors[drive].clear();
     trackPos[drive] = 0;
     cycleAccum      = 0;
     writeLatch      = 0xFF;
@@ -358,18 +364,20 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     return true;
 }
 
-void DiskIICard::ejectDisk(int drive)
+bool DiskIICard::ejectDisk(int drive)
 {
-    if (drive < 0 || drive >= kDriveCount) return;
+    if (drive < 0 || drive >= kDriveCount) return false;
     DiskImage& img = images[drive];
     if (img.isLoaded() && img.hasUnsavedChanges()) {
         if (!img.saveDirty()) {
+            mediaErrors[drive] = img.getLastError();
             pom2::log().warn("Disk II",
                 "Save-on-eject failed: " + img.getLastError());
-            return;  // preserve dirty media so the user can retry
+            return false;  // preserve dirty media so the user can retry
         }
     }
     img.eject();
+    mediaErrors[drive].clear();
     trackPos[drive] = 0;
     writeLatch      = 0xFF;
     // The 13-sector PROM selection and the WOZ-forced LSS path are functions
@@ -380,6 +388,7 @@ void DiskIICard::ejectDisk(int drive)
     // No click here — symmetric with insertDisk; UI / CLI sites fire
     // their own click when the user triggers the eject.
     pushIwmFloppy();
+    return true;
 }
 
 uint8_t DiskIICard::slotRomRead(uint8_t low8)
@@ -613,6 +622,21 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     const uint8_t version = data[4];
     if (version < 1 || version > kDiskIISnapVersion) return;
 
+    // v2 appends one capture flag per drive and, when set, a fixed-size
+    // writable-media image. Validate the whole tail before restoring the
+    // controller or drive 1; a torn drive-2 tail otherwise left a hybrid.
+    if (version >= 2) {
+        std::size_t q = kTotal;
+        for (int d = 0; d < kDriveCount; ++d) {
+            if (q >= len) return;
+            const uint8_t cap = data[q++];
+            if (cap) {
+                if (DiskImage::kMediaSnapshotBytes > len - q) return;
+                q += DiskImage::kMediaSnapshotBytes;
+            }
+        }
+    }
+
     std::size_t p = 5;
     auto g8  = [&]() -> uint8_t  { return data[p++]; };
     auto g32 = [&]() -> uint32_t { uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(data[p++]) << (8 * i); return v; };
@@ -621,6 +645,7 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     activeDrive   = static_cast<int>(g32());
     if (activeDrive < 0 || activeDrive >= kDriveCount) activeDrive = 0;  // index guard
     active        = static_cast<ActiveMode>(g8());
+    if (active < MODE_IDLE || active > MODE_DELAY) active = MODE_IDLE;
     motorOn       = g8() != 0;
     motorOffDelay = static_cast<int>(g32());
     writeMode     = g8() != 0;
@@ -640,6 +665,14 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     for (int d = 0; d < kDriveCount; ++d) headQuarterTrack[d] = static_cast<int>(g32());
     for (int d = 0; d < kDriveCount; ++d) trackPos[d] = static_cast<int>(g32());
     cycleAccum    = static_cast<int>(g32());
+    for (int d = 0; d < kDriveCount; ++d) {
+        if (headQuarterTrack[d] < 0 ||
+            headQuarterTrack[d] >= DiskImage::kQuarterTracks)
+            headQuarterTrack[d] = 0;
+        if (trackPos[d] < 0 || trackPos[d] >= DiskImage::kNibblesPerTrack)
+            trackPos[d] = 0;
+    }
+    if (cycleAccum < 0 || cycleAccum >= kCyclesPerNibble) cycleAccum = 0;
     dataLatch     = g8();
     byteReady     = g8() != 0;
     serving13_    = g8() != 0;
@@ -654,10 +687,8 @@ void DiskIICard::loadSnapshotState(const uint8_t* data, std::size_t len)
     // when set). Only applied if the live drive actually holds a disk.
     if (version >= 2) {
         for (int d = 0; d < kDriveCount; ++d) {
-            if (p >= len) break;
             const uint8_t cap = g8();
             if (cap) {
-                if (p + DiskImage::kMediaSnapshotBytes > len) break;
                 // Mirror the CAPTURE predicate: media snapshots are taken
                 // only for non-WOZ writable images, so applying one onto a
                 // drive that NOW holds a WOZ (user swapped disks after the

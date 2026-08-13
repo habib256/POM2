@@ -78,6 +78,52 @@ int main()
         assert(rb.empty());
     }
 
+    // External snapshots are strict: a valid CPU paired with a short MEM
+    // section must be rejected before either half is applied.
+    {
+        setState(cpu, mem, 66, 66'000);
+        std::vector<uint8_t> malformed;
+        pom2::SnapshotWriter w(malformed);
+        auto h = w.beginSection("CPU");
+        w.writeU16(0x1234);
+        for (int i = 0; i < 6; ++i) w.writeU8(static_cast<uint8_t>(i));
+        w.writeU64(1234);
+        w.writeU8(0);
+        w.endSection(h);
+        std::vector<uint8_t> shortMem(0xffff, 0xA5);
+        w.writeSection("MEM", shortMem.data(), shortMem.size());
+        assert(w.finish());
+
+        pom2::SnapshotReader reader(malformed.data(), malformed.size());
+        const auto result = pom2::restoreMachineState(reader, cpu, mem);
+        assert(!result.ok);
+        checkState(cpu, mem, 66, 66'000);
+    }
+
+    // SLOT payloads belong only to trusted in-memory rewind frames. An
+    // external file cannot drive host-backed cards or smuggle a pathological
+    // controller state into the next emulation tick.
+    {
+        setState(cpu, mem, 65, 65'000);
+        std::vector<uint8_t> hostile;
+        pom2::SnapshotWriter w(hostile);
+        auto h = w.beginSection("CPU");
+        w.writeU16(0x4321);
+        for (int i = 0; i < 6; ++i) w.writeU8(static_cast<uint8_t>(i + 1));
+        w.writeU64(4321);
+        w.writeU8(0);
+        w.endSection(h);
+        w.writeSection("MEM", mem.data(), 0x10000);
+        const uint8_t slotPayload[] = { 'D', '2', 2, 0xff };
+        w.writeSection("SLOT6", slotPayload, sizeof(slotPayload));
+        assert(w.finish());
+
+        pom2::SnapshotReader reader(hostile.data(), hostile.size());
+        const auto result = pom2::restoreMachineState(reader, cpu, mem);
+        assert(!result.ok);
+        checkState(cpu, mem, 65, 65'000);
+    }
+
     // A late malformed section must roll back CPU, RAM and extended memory,
     // not leave a hybrid machine after reporting failure.
     {

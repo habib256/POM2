@@ -80,7 +80,8 @@ int parseSlotSection(const std::string& name)
 
 namespace {
 
-RestoreResult applyMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
+RestoreResult applyMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
+                                bool allowSlots)
 {
     // Disarm any live DMA bus master (SoftCard Z80) BEFORE restoring.
     // File snapshots are captured with includeSlots=false, so the incoming
@@ -172,6 +173,8 @@ RestoreResult applyMachineState(SnapshotReader& r, M6502& cpu, Memory& mem)
                 return { false, "snapshot MEX section truncated or malformed" };
             }
         } else if (const int slot = parseSlotSection(name)) {
+            if (!allowSlots)
+                return { false, "snapshot SLOT sections are rewind-only" };
             // Per-card state. Bound the alloc (nextSection already rejects
             // len > blob size; cap again so a crafted file can't OOM us — a
             // real card blob is well under this).
@@ -214,26 +217,104 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
                                   bool transactional)
 {
     if (!transactional)
-        return applyMachineState(r, cpu, mem);
+        return applyMachineState(r, cpu, mem, /*allowSlots=*/true);
 
-    // A file/API snapshot is untrusted and sections are applied incrementally.
-    // Capture every restorable surface first, including slot/DMA state, so a
-    // late malformed MEX or torn trailing section cannot leave a hybrid of
-    // the old and new machine. Rewind passes transactional=false for its own
-    // in-memory frames, avoiding a full duplicate capture during scrubbing.
+    // First consume and frame-check the ENTIRE untrusted stream without
+    // touching the machine. File/API snapshots never write SLOT sections;
+    // rejecting them here keeps host-backed cards (TCP sockets, FujiNet link)
+    // out of rollback entirely — those external sessions cannot be replayed.
+    constexpr uint32_t kMaxMexBytes = 16u * 1024u * 1024u;
+    std::vector<uint8_t> staged;
+    SnapshotWriter stagedWriter(staged);
+    std::string name;
+    uint32_t len = 0;
+    bool haveCpu = false;
+    bool haveMem = false;
+    bool haveMex = false;
+    while (r.nextSection(name, len)) {
+        if (parseSlotSection(name))
+            return { false, "snapshot SLOT sections are rewind-only" };
+        if (name == "CPU") {
+            if (haveCpu) return { false, "snapshot contains duplicate CPU sections" };
+            if (len != 16 && len != 17)
+                return { false, "snapshot CPU section has an invalid length" };
+            haveCpu = true;
+        } else if (name == "MEM") {
+            if (haveMem) return { false, "snapshot contains duplicate MEM sections" };
+            if (len != 0x10000)
+                return { false, "snapshot MEM section has an invalid length" };
+            haveMem = true;
+        } else if (name == "MEX") {
+            if (haveMex) return { false, "snapshot contains duplicate MEX sections" };
+            if (len > kMaxMexBytes)
+                return { false, "snapshot MEX section too large" };
+            haveMex = true;
+        }
+
+        const bool keep = name == "CPU" || name == "MEM" ||
+                          name == "MEX";
+        if (!keep) {
+            r.skipCurrentSection();
+            continue;
+        }
+        std::vector<uint8_t> payload(len);
+        if (len) r.readBytes(payload.data(), payload.size());
+        stagedWriter.writeSection(name, payload.data(), payload.size());
+    }
+    if (!r.good()) {
+        return { false, r.error().empty() ? "snapshot truncated or corrupt"
+                                          : r.error() };
+    }
+    if (!haveCpu || !haveMem)
+        return { false, "snapshot must contain one valid CPU and MEM section" };
+    if (!stagedWriter.finish())
+        return { false, "cannot stage snapshot for validation" };
+
+    // Memory's MEX parser includes optional, length-prefixed device state and
+    // can therefore reject a blob whose outer section framing is valid.  Run
+    // that semantic check before touching CPU state or resetting a live DMA
+    // claimant.  The parser is currently apply-oriented, so immediately put
+    // back a private MEX checkpoint; this affects no SLOT/host resources and
+    // makes a rejected file observationally transactional to the machine.
+    if (haveMex) {
+        std::vector<uint8_t> candidateMex;
+        SnapshotReader mexReader(staged.data(), staged.size());
+        while (mexReader.nextSection(name, len)) {
+            if (name != "MEX") { mexReader.skipCurrentSection(); continue; }
+            candidateMex.resize(len);
+            if (len) mexReader.readBytes(candidateMex.data(), len);
+            break;
+        }
+        std::vector<uint8_t> oldMex;
+        mem.appendSnapshotState(oldMex);
+        const bool valid = mem.loadSnapshotState(candidateMex.data(),
+                                                 candidateMex.size());
+        const bool restored = mem.loadSnapshotState(oldMex.data(), oldMex.size());
+        if (!restored)
+            return { false, "snapshot MEX validation checkpoint could not be restored" };
+        if (!valid)
+            return { false, "snapshot MEX section truncated or malformed" };
+    }
+
+    // MEX's nested device payload is semantic rather than framing-only. Keep
+    // one reversible memory checkpoint for that final validation/apply. Slot
+    // state is deliberately excluded, so rollback cannot hang up a live NIC.
     std::vector<uint8_t> rollback;
     {
         SnapshotWriter w(rollback);
-        captureMachineState(w, cpu, mem, /*includeSlots=*/true);
+        captureMachineState(w, cpu, mem, /*includeSlots=*/false);
         if (!w.finish())
             return { false, "cannot create snapshot rollback checkpoint" };
     }
 
-    RestoreResult result = applyMachineState(r, cpu, mem);
+    SnapshotReader stagedReader(staged.data(), staged.size());
+    RestoreResult result = applyMachineState(stagedReader, cpu, mem,
+                                             /*allowSlots=*/false);
     if (result.ok) return result;
 
     SnapshotReader before(rollback.data(), rollback.size());
-    const RestoreResult rolledBack = applyMachineState(before, cpu, mem);
+    const RestoreResult rolledBack = applyMachineState(before, cpu, mem,
+                                                       /*allowSlots=*/false);
     if (!rolledBack.ok) {
         return { false, result.error + "; rollback failed: " +
                         rolledBack.error };

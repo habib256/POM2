@@ -2810,9 +2810,10 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Eject disk", nullptr, false,
                             diskCard && diskCard->isDiskLoaded())) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            diskCard->ejectDisk();
-            tapeStatusMessage = "Disk ejected";
-            tapeStatusUntil   = lastFrameTime + 3.0;
+            const bool ok = diskCard->ejectDisk();
+            tapeStatusMessage = ok ? "Disk ejected"
+                                   : "Disk eject failed: " + diskCard->getLastError();
+            tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
         ImGui::Separator();
@@ -2824,10 +2825,11 @@ void MainWindow::renderMenuBar()
         if (ImGui::MenuItem("Eject HDV", nullptr, false,
                             hdvCard && hdvCard->isImageLoaded())) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            hdvCard->ejectImage();
-            hdvStatus = "no image mounted";
-            tapeStatusMessage = "HDV ejected";
-            tapeStatusUntil   = lastFrameTime + 3.0;
+            const bool ok = hdvCard->ejectImage();
+            if (ok) hdvStatus = "no image mounted";
+            tapeStatusMessage = ok ? "HDV ejected"
+                                   : "HDV eject failed: " + hdvCard->getLastError();
+            tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
@@ -7387,10 +7389,11 @@ void MainWindow::renderDiskPanelWindow()
         }
         if (result.requestEject) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            card->ejectDisk();
-            tapeStatusMessage = "Disk ejected (slot " +
-                std::to_string(card->getSlot()) + ")";
-            tapeStatusUntil   = lastFrameTime + 3.0;
+            const bool ok = card->ejectDisk();
+            tapeStatusMessage = ok
+                ? ("Disk ejected (slot " + std::to_string(card->getSlot()) + ")")
+                : ("Eject failed: " + card->getLastError());
+            tapeStatusUntil   = lastFrameTime + 4.0;
         }
         if (result.requestBoot) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -7467,7 +7470,7 @@ void MainWindow::ejectAllDisks()
             for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
                 pom2::SmartPortUnit* u = sp->unit(k);
                 if (u && u->isLoaded()) {
-                    u->eject();
+                    if (!u->eject()) continue;
                     const std::string base =
                         "smartport_slot" + std::to_string(sp->getSlot()) +
                         "_unit" + std::to_string(k);
@@ -7480,7 +7483,7 @@ void MainWindow::ejectAllDisks()
     }
     controller->eject35(0);
     controller->eject35(1);
-    tapeStatusMessage = "Ejected all disks_5.4";
+    tapeStatusMessage = "Eject completed (failed media remain mounted)";
     tapeStatusUntil   = lastFrameTime + 3.0;
 }
 
@@ -7973,31 +7976,44 @@ void MainWindow::renderDiskLibraryWindow()
     // image plugged into two slots) all clear together.
     if (!r.request525EjectPath.empty()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
+        bool ok = true;
+        std::string err;
         for (auto* c : diskCards) {
             if (!c) continue;
             for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
                 if (c->isDiskLoaded(d) &&
                     c->getDiskPath(d) == r.request525EjectPath) {
-                    c->ejectDisk(d);
+                    if (!c->ejectDisk(d)) {
+                        ok = false;
+                        err = c->getLastError(d);
+                    }
                 }
             }
         }
-        tapeStatusMessage = "Library: 5.25\" disk ejected";
-        tapeStatusUntil   = lastFrameTime + 3.0;
+        tapeStatusMessage = ok ? "Library: 5.25\" disk ejected"
+                               : "Library: 5.25\" eject failed: " + err;
+        tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (r.request35EjectDrive >= 0) {
-        controller->eject35(r.request35EjectDrive);
-        tapeStatusMessage = "Library: 3.5\" drive "
-            + std::string(r.request35EjectDrive == 0 ? "1" : "2") + " ejected";
+        const bool ok = controller->eject35(r.request35EjectDrive);
+        const auto& img = r.request35EjectDrive == 0
+            ? controller->disk35Internal() : controller->disk35External();
+        tapeStatusMessage = ok
+            ? ("Library: 3.5\" drive " +
+               std::string(r.request35EjectDrive == 0 ? "1" : "2") + " ejected")
+            : ("Library: 3.5\" eject failed: " + img.lastError());
         tapeStatusUntil   = lastFrameTime + 3.0;
     }
     if (r.requestHdvEject) {
         if (pom2::ProDOSBlockCard* dev = hdvDevice()) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            dev->ejectImage();
-            hdvPath.clear();
-            hdvStatus = "no image mounted";
-            tapeStatusMessage = "Library: HDV ejected";
+            const bool ok = dev->ejectImage();
+            if (ok) {
+                hdvPath.clear();
+                hdvStatus = "no image mounted";
+            }
+            tapeStatusMessage = ok ? "Library: HDV ejected"
+                                   : "Library: HDV eject failed: " + dev->getLastError();
             tapeStatusUntil   = lastFrameTime + 3.0;
         }
     }
@@ -8119,12 +8135,14 @@ void MainWindow::renderSmartPortPanelWindow()
 
         if (a.eject) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            u->eject();
-            settings->setString(base + "_path", "");
-            dirtySettings = true;
+            const bool ok = u->eject();
+            if (ok) {
+                settings->setString(base + "_path", "");
+                dirtySettings = true;
+            }
             tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                ": ejected";
-            tapeStatusUntil = lastFrameTime + 3.0;
+                (ok ? ": ejected" : ": eject failed: " + u->lastError());
+            tapeStatusUntil = lastFrameTime + 4.0;
         }
     }
     if (dirtySettings) settings->save();
@@ -8562,31 +8580,46 @@ void MainWindow::renderFloppyEmuWindow()
         }
     };
     auto ejectCurrent = [&](Mode m) {
+        bool ok = false;
+        std::string err;
         switch (m) {
             case Mode::Disk525: {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (diskCard) diskCard->ejectDisk();
+                if (diskCard) {
+                    ok = diskCard->ejectDisk();
+                    if (!ok) err = diskCard->getLastError();
+                }
                 break;
             }
             case Mode::Disk35:
             case Mode::Unidisk35:
                 if (smartPortCard) {
                     std::lock_guard<std::mutex> lk(controller->stateMutex());
-                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) u->eject();
+                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) {
+                        ok = u->eject();
+                        if (!ok) err = u->lastError();
+                    }
                 } else {
-                    controller->eject35(0);  // re-locks the state mutex itself
+                    ok = controller->eject35(0);  // re-locks the state mutex itself
+                    if (!ok) err = controller->disk35Internal().lastError();
                 }
                 break;
             case Mode::SmartportHD: {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (pom2::ProDOSBlockCard* dev = hdvDevice()) dev->ejectImage();
+                if (pom2::ProDOSBlockCard* dev = hdvDevice()) {
+                    ok = dev->ejectImage();
+                    if (!ok) err = dev->getLastError();
+                }
                 else if (smartPortCard) {
-                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) u->eject();
+                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) {
+                        ok = u->eject();
+                        if (!ok) err = u->lastError();
+                    }
                 }
                 break;
             }
         }
-        floppyEmuStatus = "Ejected";
+        floppyEmuStatus = ok ? "Ejected" : "Eject failed: " + err;
     };
 
     // ── Build the snapshot. ──────────────────────────────────────────────
@@ -8765,10 +8798,11 @@ void MainWindow::renderHdvPanelWindow()
     }
     if (result.requestEject && hdvCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        hdvCard->ejectImage();
-        hdvStatus = "no image mounted";
-        tapeStatusMessage = "HDV ejected";
-        tapeStatusUntil   = lastFrameTime + 3.0;
+        const bool ok = hdvCard->ejectImage();
+        if (ok) hdvStatus = "no image mounted";
+        tapeStatusMessage = ok ? "HDV ejected"
+                               : "HDV eject failed: " + hdvCard->getLastError();
+        tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (result.requestBoot && hdvCard) {
         bootHdvImage();
@@ -9217,23 +9251,35 @@ void MainWindow::renderDisk35PanelWindow()
 
     for (int d = 0; d < 2; ++d) {
         if (result.requestEject[d]) {
+            bool ok = false;
+            std::string err;
             if (useSmartPort35) {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
                 if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
                         smartPortCard->unit(static_cast<size_t>(d)))) {
-                    u->eject();
+                    ok = u->eject();
+                    if (!ok) err = u->lastError();
                     const std::string base =
                         "smartport_slot" +
                         std::to_string(smartPortCard->getSlot()) +
                         "_unit" + std::to_string(d);
-                    settings->setString(base + "_path", "");
-                    settings->save();
+                    if (ok) {
+                        settings->setString(base + "_path", "");
+                        settings->save();
+                    }
                 }
             } else {
-                controller->eject35(d);
+                ok = controller->eject35(d);
+                if (!ok) {
+                    const auto& img = d == 0 ? controller->disk35Internal()
+                                             : controller->disk35External();
+                    err = img.lastError();
+                }
             }
-            tapeStatusMessage = std::string("3.5\" drive ") +
-                (d == 0 ? "1 (internal)" : "2 (external)") + " ejected";
+            tapeStatusMessage = ok
+                ? (std::string("3.5\" drive ") +
+                   (d == 0 ? "1 (internal)" : "2 (external)") + " ejected")
+                : ("3.5\" eject failed: " + err);
             tapeStatusUntil = lastFrameTime + 4.0;
         }
         // Per-drive write-back toggle. Apply under stateMutex so a save-

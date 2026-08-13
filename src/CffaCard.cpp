@@ -69,7 +69,7 @@ bool CffaCard::loadImageFromBytes(std::vector<uint8_t> bytes,
     return ok;
 }
 
-void CffaCard::ejectImage()
+bool CffaCard::ejectImage()
 {
     // Save-on-eject when the user opted into write-back and the medium allows.
     Block512Backing& b = ata_.backing();
@@ -77,11 +77,12 @@ void CffaCard::ejectImage()
         b.isWriteBackEnabled() && !b.isWriteProtected()) {
         if (!b.saveDirty()) {
             pom2::log().warn("CFFA", "Save-on-eject failed: " + b.lastError());
-            return;
+            return false;
         }
     }
     b.eject();
     ata_.reset();
+    return true;
 }
 
 void CffaCard::onReset()

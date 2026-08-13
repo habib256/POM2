@@ -80,7 +80,7 @@ public:
     bool mount35(int idx, const std::string& path);
 
     /// Unmount whatever is in 3.5" drive `idx` (0/1). No-op when empty.
-    void eject35(int idx);
+    bool eject35(int idx);
 
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
     bool loadTape (const std::string& path);

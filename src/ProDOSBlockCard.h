@@ -35,7 +35,7 @@ public:
     virtual bool loadImageFromBytes(std::vector<uint8_t> bytes,
                                     const std::string& label,
                                     const std::string& hostFolder) = 0;
-    virtual void ejectImage() = 0;
+    virtual bool ejectImage() = 0;
     virtual bool saveDirty() = 0;
 
     virtual bool isImageLoaded() const = 0;
@@ -80,7 +80,7 @@ public:
         return true;
     }
 
-    void ejectBay(int bay) override { if (bay == 0) ejectImage(); }
+    bool ejectBay(int bay) override { return bay == 0 && ejectImage(); }
     void setBayWriteBack(int bay, bool on) override
     {
         if (bay == 0) setWriteBackEnabled(on);

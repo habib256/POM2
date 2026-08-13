@@ -46,6 +46,7 @@ bool ChildProcess::isRunning() { return false; }
 void ChildProcess::stop(int) {}
 void ChildProcess::reset() {}
 std::string ChildProcess::findOnPath(const std::string&) { return {}; }
+int ChildProcess::runConsoleSignalBrokerIfRequested(int, char*[]) { return -1; }
 
 #else
 
@@ -133,7 +134,7 @@ bool ChildProcess::start(const std::string& exePath,
         // New process group: POM2 running in a terminal would otherwise pass
         // its Ctrl-C to the helper as well, killing it out from under us and
         // leaving the emulator convinced it is still there.
-        ::setpgid(0, 0);
+        if (::setpgid(0, 0) != 0) failLaunch(0);
         if (!workingDir.empty()) {
             if (::chdir(workingDir.c_str()) != 0) failLaunch(1);
         }
@@ -196,9 +197,11 @@ bool ChildProcess::start(const std::string& exePath,
     if (received != 0) {
         int status = 0;
         while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-        const char* stage = detail.stage == 1 ? "chdir" : "exec";
+        const char* stage = detail.stage == 0 ? "setpgid" :
+                            detail.stage == 1 ? "chdir" : "exec";
         errOut = std::string(stage) + " " +
-                 (detail.stage == 1 ? workingDir : exePath) + ": " +
+                 (detail.stage == 1 ? workingDir :
+                  detail.stage == 2 ? exePath : std::string{}) + ": " +
                  std::strerror(detail.error);
         reset();
         return false;
@@ -308,6 +311,8 @@ std::string ChildProcess::findOnPath(const std::string& name)
     return {};
 }
 
+int ChildProcess::runConsoleSignalBrokerIfRequested(int, char*[]) { return -1; }
+
 // ═════════════════════════════════════════════════════════════════════════
 // Win32
 // ═════════════════════════════════════════════════════════════════════════
@@ -316,60 +321,69 @@ std::string ChildProcess::findOnPath(const std::string& name)
 namespace {
 HANDLE H(void* h) { return static_cast<HANDLE>(h); }
 
-// Deliver the same event as an interactive Ctrl+C to the child's dedicated
-// console.  GenerateConsoleCtrlEvent only addresses processes attached to the
-// caller's console, so a GUI process has to attach briefly.  If the caller
-// already owns a console (the headless binary / unit tests), preserve it by
-// reattaching through another process in that console; when there is no such
-// process, decline the polite path rather than permanently stealing stdout.
-bool sendConsoleCtrlC(DWORD childPid)
+std::wstring quoteWindowsArg(const std::wstring& a)
 {
-    DWORD consolePids[64]{};
-    constexpr DWORD consolePidCapacity =
-        static_cast<DWORD>(sizeof(consolePids) / sizeof(consolePids[0]));
-    const DWORD count = GetConsoleProcessList(
-        consolePids, consolePidCapacity);
-    const bool hadConsole = count != 0;
-    const bool oldConsoleVisible =
-        hadConsole && GetConsoleWindow() && IsWindowVisible(GetConsoleWindow());
-    DWORD reattachPid = 0;
-    if (hadConsole) {
-        const DWORD self = GetCurrentProcessId();
-        const DWORD available = (std::min)(count, consolePidCapacity);
-        for (DWORD i = 0; i < available; ++i) {
-            if (consolePids[i] != self) {
-                reattachPid = consolePids[i];
-                break;
-            }
+    if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos)
+        return a;
+    std::wstring q = L"\"";
+    std::size_t slashes = 0;
+    for (wchar_t c : a) {
+        if (c == L'\\') { ++slashes; continue; }
+        if (c == L'"') {
+            q.append(slashes * 2 + 1, L'\\');
+            q += L'"';
+        } else {
+            q.append(slashes, L'\\');
+            q += c;
         }
-        if (!FreeConsole()) return false;
+        slashes = 0;
     }
+    q.append(slashes * 2, L'\\');
+    q += L'"';
+    return q;
+}
 
-    bool signalled = false;
-    if (AttachConsole(childPid)) {
-        // CTRL_C_EVENT is broadcast within this console.  Ignore our own copy;
-        // the helper and any console children still receive it.  A new console
-        // attachment resets the handler table, so this does not leak back to
-        // the caller's original console.
-        if (SetConsoleCtrlHandler(nullptr, TRUE)) {
-            signalled = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) != FALSE;
-            if (signalled) Sleep(25); // let the asynchronous handler be queued
-        }
+// GenerateConsoleCtrlEvent can only target the caller's console. Launch this
+// executable in a tiny broker mode so the long-lived POM2 process never calls
+// FreeConsole(), never replaces its console, and never invalidates CRT stdio.
+bool launchConsoleSignalBroker(DWORD childPid)
+{
+    std::vector<wchar_t> self(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, self.data(),
+                                      static_cast<DWORD>(self.size()));
+    if (n == 0 || n >= self.size()) return false;
+    const std::wstring selfPath(self.data(), n);
+    std::wstring cmd = quoteWindowsArg(selfPath) +
+                       L" --pom2-console-signal-broker " +
+                       std::to_wstring(childPid);
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(selfPath.c_str(), mutableCmd.data(), nullptr, nullptr,
+                        FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    const DWORD waited = WaitForSingleObject(pi.hProcess, 2000);
+    DWORD code = 1;
+    const bool ok = waited == WAIT_OBJECT_0 &&
+                    GetExitCodeProcess(pi.hProcess, &code) && code == 0;
+    CloseHandle(pi.hProcess);
+    return ok;
+}
+
+int runConsoleSignalBroker(DWORD childPid)
+{
+    if (!AttachConsole(childPid)) return 2;
+    if (!SetConsoleCtrlHandler(nullptr, TRUE)) {
         FreeConsole();
+        return 3;
     }
-
-    if (hadConsole) {
-        // Prefer the exact old console. If this process was its sole member
-        // (typical when a console-subsystem exe is double-clicked), it ceased
-        // to exist at FreeConsole(), so replace it rather than leaving POM2
-        // without valid standard handles for the rest of the session.
-        if (reattachPid == 0 || !AttachConsole(reattachPid)) {
-            if (AllocConsole() && !oldConsoleVisible) {
-                if (HWND console = GetConsoleWindow()) ShowWindow(console, SW_HIDE);
-            }
-        }
-    }
-    return signalled;
+    const bool sent = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) != FALSE;
+    if (sent) Sleep(25);
+    FreeConsole();
+    return sent ? 0 : 4;
 }
 
 std::wstring utf8ToWide(const std::string& s)
@@ -418,35 +432,13 @@ bool ChildProcess::start(const std::string& exePath,
 
     // Win32 takes ONE command line, not an argv array, so every argument has
     // to be quoted the way the CRT will re-split it.
-    auto quote = [](const std::wstring& a) {
-        if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos)
-            return a;
-        std::wstring q = L"\"";
-        std::size_t slashes = 0;
-        for (wchar_t c : a) {
-            if (c == L'\\') { ++slashes; continue; }
-            if (c == L'"') {
-                q.append(slashes * 2 + 1, L'\\');
-                q += L'"';
-            } else {
-                q.append(slashes, L'\\');
-                q += c;
-            }
-            slashes = 0;
-        }
-        // Backslashes immediately before the closing quote must be doubled,
-        // otherwise the CRT treats the last one as escaping that quote.
-        q.append(slashes * 2, L'\\');
-        q += L'"';
-        return q;
-    };
     const std::wstring wideExe = utf8ToWide(exePath);
     const std::wstring wideDir = utf8ToWide(workingDir);
     if (wideExe.empty() || (!workingDir.empty() && wideDir.empty())) {
         errOut = "helper path is not valid UTF-8";
         return false;
     }
-    std::wstring cmd = quote(wideExe);
+    std::wstring cmd = quoteWindowsArg(wideExe);
     for (const auto& a : args) {
         const std::wstring wideArg = utf8ToWide(a);
         if (!a.empty() && wideArg.empty()) {
@@ -454,7 +446,7 @@ bool ChildProcess::start(const std::string& exePath,
             return false;
         }
         cmd += L' ';
-        cmd += quote(wideArg);
+        cmd += quoteWindowsArg(wideArg);
     }
 
     STARTUPINFOW si{};
@@ -544,7 +536,7 @@ void ChildProcess::stop(int graceMs)
     // FujiNet-PC's documented shutdown is Ctrl+C.  Its dedicated hidden
     // console makes that event addressable without involving POM2's console.
     // If attach/signal fails, skip the grace delay and use the Job Object.
-    const bool signalled = sendConsoleCtrlC(GetProcessId(H(handle_)));
+    const bool signalled = launchConsoleSignalBroker(GetProcessId(H(handle_)));
 
     bool exited = false;
     if (signalled) {
@@ -586,6 +578,17 @@ std::string ChildProcess::findOnPath(const std::string& name)
                                 &filePart);
     if (n > 0 && n < buf.size()) return wideToUtf8(std::wstring(buf.data(), n));
     return {};
+}
+
+int ChildProcess::runConsoleSignalBrokerIfRequested(int argc, char* argv[])
+{
+    if (argc != 3 || !argv || !argv[1] || !argv[2] ||
+        std::strcmp(argv[1], "--pom2-console-signal-broker") != 0)
+        return -1;
+    char* end = nullptr;
+    const unsigned long raw = std::strtoul(argv[2], &end, 10);
+    if (!end || *end != '\0' || raw == 0 || raw > 0xffffffffUL) return 1;
+    return runConsoleSignalBroker(static_cast<DWORD>(raw));
 }
 
 #endif // _WIN32

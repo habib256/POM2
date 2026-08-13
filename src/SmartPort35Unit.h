@@ -42,7 +42,7 @@ public:
     bool     writeBlock(uint32_t idx, const uint8_t* in) override;
 
     bool     loadImage(const std::string& path) override;
-    void     eject() override;
+    bool     eject() override;
     const std::string& path()      const override { return img_.path(); }
     const std::string& lastError() const override { return lastError_; }
 

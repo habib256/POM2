@@ -107,7 +107,8 @@ int main()
 
         pom2::SnapshotReader r(full1.data(), full1.size());
         assert(r.good());
-        assert(pom2::restoreMachineState(r, cpu2, mem2).ok);
+        assert(pom2::restoreMachineState(r, cpu2, mem2,
+                                         /*transactional=*/false).ok);
 
         std::vector<uint8_t> restoredCardBlob;
         mem2.slotBus().peripheral(kSlot)->appendSnapshotState(restoredCardBlob);
@@ -123,7 +124,8 @@ int main()
         M6502  cpu3(&mem3);
         pom2::SnapshotReader r(full1.data(), full1.size());
         assert(r.good());
-        assert(pom2::restoreMachineState(r, cpu3, mem3).ok);
+        assert(pom2::restoreMachineState(r, cpu3, mem3,
+                                         /*transactional=*/false).ok);
     }
 
     // (2b) SSI263 speech state round-trips (Sound II variant). Exercises the
@@ -154,7 +156,8 @@ int main()
             std::make_unique<MockingboardCard>(kSlot, MockingboardCard::Variant::SoundII));
         pom2::SnapshotReader r(full.data(), full.size());
         assert(r.good());
-        assert(pom2::restoreMachineState(r, cpu3, mem3).ok);
+        assert(pom2::restoreMachineState(r, cpu3, mem3,
+                                         /*transactional=*/false).ok);
         std::vector<uint8_t> restored;
         mem3.slotBus().peripheral(kSlot)->appendSnapshotState(restored);
         assert(restored == driven && "SSI263 + AY/VIA state did not round-trip");

@@ -45,13 +45,14 @@ bool SmartPortHdvUnit::loadImage(const std::string& path)
     return backing_.loadImage(path);
 }
 
-void SmartPortHdvUnit::eject()
+bool SmartPortHdvUnit::eject()
 {
     // Save-on-eject policy lives here (Block512Backing::eject never auto-
     // saves): flush first (no-op unless write-back is on + dirty + writable),
     // then drop the image.
-    if (!backing_.saveDirty()) return;
+    if (!backing_.saveDirty()) return false;
     backing_.eject();
+    return true;
 }
 
 } // namespace pom2

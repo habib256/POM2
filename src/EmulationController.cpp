@@ -221,11 +221,10 @@ bool EmulationController::mount35(int idx, const std::string& path)
         !image->saveDirty()) {
         return false;  // keep the only in-memory copy mounted for retry
     }
-    image->eject();
-    if (!image->loadFile(path)) {
-        drive->notifyMediaChange();
-        return false;
-    }
+    pom2::Disk35Image replacement;
+    replacement.setWriteBackEnabled(image->isWriteBackEnabled());
+    if (!replacement.loadFile(path)) return false;
+    *image = std::move(replacement);
     drive->notifyMediaChange();
     // User-initiated mount → one-shot insert click. Same pattern as
     // `DiskIICard::insertDisk` (5.25"). Silent when no FloppySoundDevice
@@ -234,9 +233,9 @@ bool EmulationController::mount35(int idx, const std::string& path)
     return true;
 }
 
-void EmulationController::eject35(int idx)
+bool EmulationController::eject35(int idx)
 {
-    if (idx < 0 || idx > 1) return;
+    if (idx < 0 || idx > 1) return false;
     std::lock_guard<std::mutex> lk(stateMtx);
     pom2::Disk35Image* image = idx == 0 ? image35Int.get() : image35Ext.get();
     pom2::Sony35Drive* drive = idx == 0 ? drive35Int.get() : drive35Ext.get();
@@ -246,7 +245,7 @@ void EmulationController::eject35(int idx)
         // on `saveDirty` failure — the panel surfaces the error on the
         // next mount attempt via `Disk35Image::lastError`.
         if (image->hasUnsavedChanges() && !image->isWriteProtected()) {
-            if (!image->saveDirty()) return;
+            if (!image->saveDirty()) return false;
         }
         image->eject();
         if (drive) {
@@ -256,6 +255,7 @@ void EmulationController::eject35(int idx)
             drive->emitInsertClick();
         }
     }
+    return true;
 }
 
 void EmulationController::start()

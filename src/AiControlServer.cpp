@@ -1032,12 +1032,18 @@ void AiControlServer::handleDiskEject(socket_t fd, const Request& req)
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }
     bool noCard = false;
+    bool ejected = false;
+    std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         if (!disk6_) noCard = true;
-        else         disk6_->ejectDisk(static_cast<int>(drive));
+        else {
+            ejected = disk6_->ejectDisk(static_cast<int>(drive));
+            if (!ejected) errMsg = disk6_->getLastError(static_cast<int>(drive));
+        }
     }
     if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
+    if (!ejected) { sendJsonError(fd, 500, "eject failed: " + errMsg); return; }
     sendJsonOk(fd, "{\"drive\":" + std::to_string(drive) + "}");
 }
 

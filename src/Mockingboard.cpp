@@ -690,20 +690,24 @@ void MockingboardCard::loadSnapshotState(const uint8_t* data, std::size_t len)
         ? pom2::Via6522::kSnapshotBytes : pom2::Via6522::kSnapshotBytesV1;
     (void)r.u8();                       // variant — informational
     const uint8_t present = r.u8();
+    const std::size_t required = 6 +
+        ((present & 0x01) ? viaBytes : 0) +
+        ((present & 0x02) ? viaBytes : 0) +
+        ((present & 0x04) ? pom2::Ay3_8910::kSnapshotBytes : 0) +
+        ((present & 0x08) ? pom2::Ay3_8910::kSnapshotBytes : 0) +
+        ((present & 0x10) ? pom2::Ssi263::kSnapshotBytes : 0);
+    if (len < required) return;          // validate before mutating any chip
     auto loadVia = [&](std::unique_ptr<pom2::Via6522>& v) -> bool {
-        if (!r.has(viaBytes)) return false;
         if (v) v->loadSnapshot(r.p + r.pos, viaBytes);
         r.pos += viaBytes;
         return true;
     };
     auto loadAy = [&](std::unique_ptr<pom2::Ay3_8910>& a) -> bool {
-        if (!r.has(pom2::Ay3_8910::kSnapshotBytes)) return false;
         if (a) a->loadSnapshot(r.p + r.pos);
         r.pos += pom2::Ay3_8910::kSnapshotBytes;
         return true;
     };
     auto loadSsi = [&]() -> bool {
-        if (!r.has(pom2::Ssi263::kSnapshotBytes)) return false;
         if (ssi_) ssi_->loadSnapshot(r.p + r.pos);
         r.pos += pom2::Ssi263::kSnapshotBytes;
         return true;

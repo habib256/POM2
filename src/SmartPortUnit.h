@@ -105,7 +105,7 @@ public:
 
     /// Persist + clear media. Auto-saves dirty blocks when write-back
     /// is enabled. Idempotent on empty drives.
-    virtual void eject() = 0;
+    virtual bool eject() = 0;
 
     /// Current image path; empty when nothing mounted.
     virtual const std::string& path() const = 0;

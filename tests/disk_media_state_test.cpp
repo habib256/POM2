@@ -280,6 +280,25 @@ void testResetStopsMotorSound()
     std::printf("[ OK ] reset emits the matching motor-off to the sound sink\n");
 }
 
+// A bad replacement must not destroy the valid medium already mounted.
+void testFailedSwapKeepsCurrentDisk()
+{
+    const std::string good = make16SectorImage();
+    const std::string bad = tmpPath("pom2_media_state_invalid.dsk");
+    writeFile(bad, std::vector<uint8_t>(37, 0xCC));
+
+    DiskIICard card(6);
+    assert(card.insertDisk(0, good));
+    assert(!card.insertDisk(0, bad));
+    assert(card.isDiskLoaded(0));
+    assert(card.getDiskPath(0) == good);
+    assert(!card.getLastError(0).empty());
+
+    std::filesystem::remove(good);
+    std::filesystem::remove(bad);
+    std::printf("[ OK ] invalid replacement keeps the mounted disk\n");
+}
+
 }  // namespace
 
 int main()
@@ -289,6 +308,7 @@ int main()
     testFlushOnTeardown();
     testSavePreservesPermissions();
     testResetStopsMotorSound();
+    testFailedSwapKeepsCurrentDisk();
     std::printf("disk_media_state OK\n");
     return 0;
 }

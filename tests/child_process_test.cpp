@@ -132,6 +132,10 @@ void testGracefulCtrlC(int argc, char** argv)
 
 int main(int argc, char** argv)
 {
+    if (const int broker =
+            pom2::ChildProcess::runConsoleSignalBrokerIfRequested(argc, argv);
+        broker >= 0)
+        return broker;
     if (argc == 4 && std::string(argv[1]) == "--ctrl-child")
         return childMode(argv[2], argv[3]);
     testGracefulCtrlC(argc, argv);

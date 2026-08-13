@@ -51,7 +51,7 @@ public:
     bool loadImage(const std::string& path) override;
     bool loadImageFromBytes(std::vector<uint8_t> bytes, const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
-    void ejectImage() override;
+    bool ejectImage() override;
     bool saveDirty() override { return ata_.backing().saveDirty(); }
 
     bool isImageLoaded()      const override { return ata_.backing().isLoaded(); }

@@ -59,7 +59,7 @@ bool ProDOSHardDiskCard::loadImageFromBytes(std::vector<uint8_t> bytes,
     return ok;
 }
 
-void ProDOSHardDiskCard::ejectImage()
+bool ProDOSHardDiskCard::ejectImage()
 {
     // Save-on-eject policy lives here (the card owns the user-facing eject):
     // flush dirty blocks first when write-back is on and the medium allows it,
@@ -68,12 +68,13 @@ void ProDOSHardDiskCard::ejectImage()
         backing_.isWriteBackEnabled() && !backing_.isWriteProtected()) {
         if (!backing_.saveDirty()) {
             pom2::log().warn("HDV", "Save-on-eject failed: " + backing_.lastError());
-            return;
+            return false;
         }
     }
     backing_.eject();
     selectedBlock = 0;
     streamOffset  = 0;
+    return true;
 }
 
 void ProDOSHardDiskCard::onReset()
