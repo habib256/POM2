@@ -256,6 +256,37 @@ int main()
         std::printf("hdv_writeback: write-back OFF = RAM-only OK\n");
     }
 
+    // ── Case E: failed save refuses replacement and preserves dirty RAM ──
+    {
+        const fs::path oldPath = tmpFile("replace_old", ".hdv");
+        const fs::path newPath = tmpFile("replace_new", ".hdv");
+        writeFile(oldPath, std::vector<uint8_t>(2 * kBlock, 0));
+        writeFile(newPath, std::vector<uint8_t>(2 * kBlock, 0x55));
+
+        ProDOSHardDiskCard card;
+        assert(card.loadImage(oldPath.string()));
+        card.setWriteBackEnabled(true);
+        uint8_t pattern[kBlock];
+        std::memset(pattern, 0xA7, sizeof(pattern));
+        cardWriteBlock(card, 0, pattern);
+        assert(card.hasUnsavedChanges());
+
+        // Deterministic flush failure on every platform: saveDirty requires
+        // the source envelope to keep its original size.
+        writeFile(oldPath, std::vector<uint8_t>(kBlock, 0));
+        assert(!card.loadImage(newPath.string()));
+        assert(card.getImagePath() == oldPath.string());
+        assert(card.hasUnsavedChanges());
+        card.deviceSelectWrite(0x0, 0);
+        card.deviceSelectWrite(0x1, 0);
+        for (size_t i = 0; i < kBlock; ++i)
+            assert(card.deviceSelectRead(0x2) == 0xA7);
+
+        fs::remove(oldPath);
+        fs::remove(newPath);
+        std::printf("hdv_writeback: failed flush preserves mounted media OK\n");
+    }
+
     std::printf("hdv_writeback_smoke OK\n");
     return 0;
 }

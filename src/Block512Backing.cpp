@@ -29,6 +29,11 @@ static_assert(Block512Backing::kMaxBlocks <= 0x10000u,
 
 bool Block512Backing::loadImage(const std::string& path)
 {
+    // A replacement is an implicit eject. Preserve the current in-memory
+    // medium until its opted-in write-back has succeeded; otherwise a failed
+    // flush followed by loadImage() destroys the only copy of guest writes.
+    if (!saveDirty()) return false;
+
     std::ifstream f(path, std::ios::binary);
     if (!f) {
         lastError_ = "Cannot open HDV image: " + path;
@@ -158,6 +163,7 @@ bool Block512Backing::loadFromBytes(std::vector<uint8_t> bytes,
                                     const std::string& label,
                                     const std::string& hostFolder)
 {
+    if (!saveDirty()) return false;
     if (bytes.empty() || (bytes.size() % kBlockBytes) != 0) {
         lastError_ = "synthesised image is empty or not a multiple of 512";
         pom2::log().warn("HDV", lastError_);

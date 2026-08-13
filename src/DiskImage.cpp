@@ -1272,6 +1272,11 @@ bool DiskImage::loadWoz(const std::string& imgPath)
     // splice modified bitStream[qt] back into these bytes and rewrite
     // the file in one shot. `buf` is no longer needed after this.
     wozRaw = std::move(buf);
+    // POM2 can read WOZ 2.1 FLUX tracks but cannot serialise their delta
+    // streams yet. Mark the whole medium physically WP when any such track
+    // is active; accepting writes and later skipping byteLen==0 reported a
+    // successful save while discarding every modification on that track.
+    if (populatedFluxSlots > 0) fileWriteProtected = true;
     // fileWriteProtected is folded into isWriteProtected(); WOZ now
     // participates in the same writeBackEnabled / fileWriteProtected
     // gate as .dsk/.nib (the `wozFormat ||` blanket was removed when

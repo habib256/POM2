@@ -830,6 +830,18 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     pom2::log().info("Profile",
         std::string("Switching to ") + std::string(cfg.displayName));
 
+    const bool wasRunning =
+        controller->getMode() == EmulationController::Mode::Running;
+    controller->stop();
+    std::string flushErr;
+    if (!flushSlotMedia(flushErr)) {
+        tapeStatusMessage = "Profile switch refused — save failed: " + flushErr;
+        tapeStatusUntil = lastFrameTime + 8.0;
+        pom2::log().warn("Profile", tapeStatusMessage);
+        if (wasRunning) controller->start();
+        return;
+    }
+
     // The session-local auto-plugged HDV (POM2 <image.hdv> one-shot boot) is
     // destroyed by the slot rebuild below; clear its marker so a later real
     // HDV in the same slot number isn't wrongly skipped at shutdown.
@@ -846,9 +858,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    between here and step 7 keys off the local `cfg`/`p`, not the member.
     activeProfile = p;
 
-    // 1. Stop the worker thread (cards' destructors must not race a
-    //    running CPU step or worker idle-loop probe).
-    controller->stop();
+    // 1. The worker was stopped before the media flush above, so card
+    //    destructors cannot race a CPU step or worker idle-loop probe.
     // The rewind ring recorded the PREVIOUS machine: steps below wipe
     // RAM/aux/ROM and rebuild the card set, so an F6 restore after the
     // switch would push the old machine's RAM/CPU/slot state onto the new
@@ -1209,12 +1220,6 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
 void MainWindow::restartEmulationFromSettings()
 {
-    // The session-local auto-plugged HDV is destroyed by the rebuild below;
-    // clear its marker so a later real HDV in the same slot isn't wrongly
-    // skipped at shutdown (the marker is read only in ~MainWindow).
-    autoProvisionedHdvSlot_ = -1;
-    autoProvisionedSmartPortSlot_ = -1;
-
     // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
     //    and the HDV/CFFA library mounts update the live cards but NOT the
     //    settings keys (those are written only at shutdown), so without this a
@@ -1255,8 +1260,24 @@ void MainWindow::restartEmulationFromSettings()
     // (3.5"/SmartPort media is already saved eagerly on mount.)
 
     // 1. Stop the worker thread so card destructors don't race against a
-    //    running CPU step.
+    //    running CPU step, then prove every opted-in dirty medium is durable
+    //    before destroying any card.
+    const bool wasRunning =
+        controller->getMode() == EmulationController::Mode::Running;
     controller->stop();
+    std::string flushErr;
+    if (!flushSlotMedia(flushErr)) {
+        tapeStatusMessage = "Slot rebuild refused — save failed: " + flushErr;
+        tapeStatusUntil = lastFrameTime + 8.0;
+        pom2::log().warn("Slots", tapeStatusMessage);
+        if (wasRunning) controller->start();
+        return;
+    }
+    // The rebuild is now committed. Its session-local auto-plugged media will
+    // be destroyed below, so their shutdown-persistence markers no longer
+    // describe a live card.
+    autoProvisionedHdvSlot_ = -1;
+    autoProvisionedSmartPortSlot_ = -1;
     // Drop the rewind ring: its SLOTn sections describe the card set being
     // torn down; restoring one onto the rebuilt (possibly different) cards
     // would be incoherent. Same rationale as applyProfile.

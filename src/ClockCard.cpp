@@ -418,8 +418,10 @@ void ClockCard::tryLoadDump()
 
     std::ifstream f(resolved, std::ios::binary);
     if (!f) return;
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
+    std::vector<uint8_t> bytes(0x801);
+    f.read(reinterpret_cast<char*>(bytes.data()),
+           static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(f.gcount()));
 
     // Accept 256 B (slot ROM only) or 2 KB (slot ROM + $C800 expansion).
     // Anything else is almost certainly the wrong file — reject so a

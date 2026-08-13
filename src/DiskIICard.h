@@ -177,7 +177,7 @@ public:
     /// worth of guest writes used to die with the process even with
     /// write-back enabled. A no-op when write-back is off or the medium is
     /// physically write-protected.
-    void flushPendingWrites();
+    bool flushPendingWrites();
 
     // All per-drive getters bound-check `drive` (0..kDriveCount-1) and return
     // a safe default out of range — insertDisk/ejectDisk already validate, so

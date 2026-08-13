@@ -962,6 +962,9 @@ private:
     /// Enumerate ALL plugged SmartPort (Liron-class) slot cards, sorted by
     /// slot ascending. Same rationale as `blockCards()`.
     std::vector<pom2::SmartPortCard*> smartPortCards() const;
+    /// Flush every slot-owned medium before a profile/slot rebuild. Returns
+    /// false without destroying cards so dirty RAM remains retryable.
+    bool flushSlotMedia(std::string& err);
     /// Ensure the config can host an HDV image: returns the slot of an
     /// existing HDV or SmartPort card, or plugs a fresh ProDOSHardDiskCard
     /// into a free slot (preferring slot 7) and returns that. Used by the

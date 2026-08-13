@@ -283,6 +283,14 @@ bool checkFluxTrackPeriod(uint8_t obt) {
                     static_cast<unsigned>(obt), img.getLastError().c_str());
         return false;
     }
+    // POM2 can currently read FLUX tracks but cannot encode modified flux
+    // back into the WOZ container.  Such media must therefore stay protected
+    // instead of accepting writes and later reporting a false successful save.
+    img.setWriteBackEnabled(true);
+    if (!img.isWriteProtected()) {
+        std::printf("FAIL: FLUX image became writable without an encoder\n");
+        return false;
+    }
     const int period = img.trackPeriod(0);
     if (period != expectedPeriod) {
         std::printf("FAIL: FLUX obt=%u trackPeriod=%d expected=%d "

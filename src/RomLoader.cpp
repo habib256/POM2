@@ -20,9 +20,16 @@ bool RomLoader::loadBinary(Memory& mem,
     std::ifstream f(path, std::ios::binary);
     if (!f) { error = "Cannot open ROM: " + path; return false; }
 
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
+    const size_t maxBytes = 0x10000u - static_cast<size_t>(addr);
+    std::vector<uint8_t> bytes(maxBytes + 1);
+    f.read(reinterpret_cast<char*>(bytes.data()),
+           static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(f.gcount()));
     if (bytes.empty()) { error = "ROM is empty: " + path; return false; }
+    if (bytes.size() > maxBytes) {
+        error = "ROM is too large for address range: " + path;
+        return false;
+    }
     return loadBytes(mem, bytes, addr, error);
 }
 

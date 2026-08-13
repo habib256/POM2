@@ -906,6 +906,14 @@ void AiControlServer::handleMemSet(socket_t fd, const Request& req)
     if (addr + static_cast<long>(bytes.size()) > 0x10000) {
         sendJsonError(fd, 400, "write overflows address space"); return;
     }
+    // /mem is a RAM editor, not an MMIO bus driver. Writes into $C000-$CFFF
+    // trigger soft switches and $D000-$FFFF is normally ROM-protected; the
+    // old endpoint nevertheless replied `written:N` for bytes that stayed
+    // unchanged. Refuse both ranges explicitly and report honestly.
+    if (addr + static_cast<long>(bytes.size()) > 0xC000) {
+        sendJsonError(fd, 400, "write targets I/O or ROM; RAM ends at $BFFF");
+        return;
+    }
     size_t written = 0;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());

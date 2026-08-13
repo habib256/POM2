@@ -834,6 +834,14 @@ MainWindow::~MainWindow()
     aiServer->stop();
     controller->stop();
 
+    // Flush every mounted medium while all cards are still alive.  The old
+    // teardown only covered Disk II and 3.5-inch drives, so dirty HDV/CFFA
+    // blocks vanished on quit without even attempting a host write.
+    std::string shutdownFlushError;
+    if (!flushSlotMedia(shutdownFlushError)) {
+        pom2::log().error("Disk", "save-on-shutdown failed: " + shutdownFlushError);
+    }
+
     // Detach every audio source BEFORE any member is destroyed.
     //
     // AudioDevice keeps raw pointers and dereferences them from the miniaudio
@@ -884,7 +892,7 @@ MainWindow::~MainWindow()
     // the slot cards without ejecting), but doing it here keeps it ordered
     // before the settings write and inside the same teardown the user can
     // see in the log.
-    for (auto* c : diskCards) if (c) c->flushPendingWrites();
+    for (auto* c : diskCards) if (c) (void)c->flushPendingWrites();
     for (auto* c : diskCards) {
         if (!c) continue;
         const std::string slotKey = "_slot" + std::to_string(c->getSlot());
@@ -7652,6 +7660,38 @@ std::vector<pom2::SmartPortCard*> MainWindow::smartPortCards() const
             out.push_back(sp);
     }
     return out;
+}
+
+bool MainWindow::flushSlotMedia(std::string& err)
+{
+    std::lock_guard<std::mutex> lk(controller->stateMutex());
+    for (auto* card : diskCards) {
+        if (card && !card->flushPendingWrites()) {
+            err = "Disk II slot " + std::to_string(card->getSlot()) +
+                  ": " + card->getLastError();
+            return false;
+        }
+    }
+    for (auto* card : blockCards()) {
+        if (card && !card->saveDirty()) {
+            err = "block device slot " + std::to_string(card->getSlot()) +
+                  ": " + card->getLastError();
+            return false;
+        }
+    }
+    for (auto* card : smartPortCards()) {
+        if (!card) continue;
+        for (size_t bay = 0; bay < pom2::SmartPortCard::kMaxUnits; ++bay) {
+            auto* unit = card->unit(bay);
+            if (unit && !unit->saveDirty()) {
+                err = "SmartPort slot " + std::to_string(card->getSlot()) +
+                      " bay " + std::to_string(bay + 1) + ": " +
+                      unit->lastError();
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 int MainWindow::ensureHdvCardForBoot()

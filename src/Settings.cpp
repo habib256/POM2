@@ -123,6 +123,20 @@ std::string unescapeValue(const std::string& s)
 bool Settings::load()
 {
     const fs::path path = resolveStorePath();
+    std::error_code sizeEc;
+    constexpr std::uintmax_t kMaxSettingsBytes = 4u * 1024u * 1024u;
+    const auto bytes = fs::file_size(path, sizeEc);
+    if (!sizeEc && bytes > kMaxSettingsBytes) {
+        pom2::log().warn("Settings", "Refusing oversized settings file: " +
+                                     path.string());
+        return false;
+    }
+    std::error_code existsEc;
+    if (sizeEc && fs::exists(path, existsEc) && !existsEc) {
+        pom2::log().warn("Settings", "Refusing non-regular settings file: " +
+                                     path.string());
+        return false;
+    }
     std::ifstream f(path);
     if (!f) return false;     // missing → use defaults; not an error
 

@@ -58,15 +58,14 @@ void runLoad(const CliAction& a, EmulationController& emu)
     // Reject oversized sources before allocating, so an unbounded file (e.g.
     // /dev/zero) or a multi-GB file can't exhaust memory. A 6502 image can be
     // at most 64 KiB; the address+size>0x10000 check below still applies.
-    f.seekg(0, std::ios::end);
-    const std::streamoff fsz = f.tellg();
-    f.seekg(0, std::ios::beg);
-    if (fsz > 0x10000) {
+    std::vector<uint8_t> bytes(0x10001);
+    f.read(reinterpret_cast<char*>(bytes.data()),
+           static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(f.gcount()));
+    if (bytes.size() > 0x10000) {
         pom2::log().error("CLI", "--load file exceeds 64 KiB: " + a.pathS);
         return;
     }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
     if (bytes.empty()) {
         pom2::log().error("CLI", "--load file is empty: " + a.pathS);
         return;

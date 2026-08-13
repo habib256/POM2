@@ -197,6 +197,19 @@ void testMemoryRoundtrip(EmulationController& ctrl, pom2::AiControlServer& /*srv
     assert(r.status == 200);
     assert(contains(r.body, "\"data\":\"AB\""));
 
+    // The endpoint is a RAM editor.  It must not claim success for writes
+    // which Memory::memWrite rejects because $D000-$FFFF is ROM by default.
+    const std::string romBody = "{\"data\":\"00\"}";
+    char romReq[512];
+    std::snprintf(romReq, sizeof(romReq),
+        "POST /mem?addr=0xD000 HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n\r\n%s",
+        romBody.size(), romBody.c_str());
+    r = oneShot(kTestPort, romReq);
+    assert(r.status == 400);
+
     std::puts("  memory roundtrip: OK");
 }
 

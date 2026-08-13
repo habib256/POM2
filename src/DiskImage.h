@@ -331,6 +331,8 @@ private:
     /// `isWriteProtected()` so the per-file flag survives once the WOZ
     /// blanket gate is lifted. Stays false for non-WOZ formats.
     bool fileWriteProtected = false;
+    /// WOZ INFO write-protect, also forced for images containing FLUX tracks
+    /// until their delta-stream write encoder exists.
     /// WOZ INFO byte +39 — `optimal_bit_timing`. Measured in 125 ns units.
     /// 32 = 4 µs (the standard 5.25" Apple II cell duration; default for
     /// any WOZ1 image, since INFO version 1 didn't carry the field, and

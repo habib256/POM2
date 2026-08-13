@@ -51,8 +51,10 @@ bool SmartPortCard::loadLironRom(const std::string& path)
         pom2::log().warn("SmartPort", "Cannot open Liron ROM: " + path);
         return false;
     }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
+    std::vector<uint8_t> bytes(4097);
+    f.read(reinterpret_cast<char*>(bytes.data()),
+           static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(f.gcount()));
     if (bytes.size() != 4096) {
         pom2::log().warn("SmartPort",
             "Liron ROM " + path + " has unexpected size " +

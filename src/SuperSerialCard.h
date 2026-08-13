@@ -222,6 +222,9 @@ private:
     // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
     std::atomic<pom2::socket_t> listenFd { pom2::kInvalidSocket };
     std::atomic<pom2::socket_t> clientFd { pom2::kInvalidSocket };
+    // Prevent shutdown/load from acting on a descriptor after closeClient()
+    // closed it and the kernel recycled the numeric handle.
+    mutable std::mutex fdLifeMtx_;
     std::thread worker;
     std::atomic<bool> stopRequested { false };
 

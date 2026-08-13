@@ -26,8 +26,10 @@ bool GrapplerCard::loadRom(const std::string& path)
         pom2::log().warn("Grappler", "Cannot open Grappler+ ROM: " + path);
         return false;
     }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
+    std::vector<uint8_t> bytes(kRomBytes + 1);
+    f.read(reinterpret_cast<char*>(bytes.data()),
+           static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<size_t>(f.gcount()));
     if (bytes.size() != kRomBytes) {
         pom2::log().warn("Grappler",
             "Grappler+ ROM " + path + " has unexpected size " +

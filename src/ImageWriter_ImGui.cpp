@@ -9,6 +9,7 @@
 #include "Pom2Build.h"
 
 #include "IconsFontAwesome6.h"
+#include "AtomicFileReplace.h"
 #include "ImageWriterPdf.h"
 #include "imgui.h"
 
@@ -150,8 +151,20 @@ bool ImageWriter_ImGui::savePagePng(const ImageWriter::Page& p,
 
     std::vector<uint8_t> rgba;
     ImageWriter::pageToRgba(p, rgba);
-    if (stbi_write_png(path.c_str(), p.w, p.h, 4, rgba.data(), p.w * 4) == 0) {
+    const fs::path tmp = out.string() + ".pom2tmp";
+    if (stbi_write_png(tmp.string().c_str(), p.w, p.h, 4,
+                       rgba.data(), p.w * 4) == 0) {
         err = "stbi_write_png failed (is " + out.string() + " writable?)";
+        fs::remove(tmp, ec);
+        return false;
+    }
+    std::error_code permEc;
+    const auto perms = fs::status(out, permEc).permissions();
+    if (!permEc) fs::permissions(tmp, perms, ec);
+    ec.clear();
+    if (!replaceFileAtomic(tmp, out, ec)) {
+        err = "cannot replace " + out.string() + ": " + ec.message();
+        fs::remove(tmp, ec);
         return false;
     }
     return true;

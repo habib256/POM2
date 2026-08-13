@@ -130,7 +130,18 @@ bool PrinterHistory::open(const std::string& dir, std::string& err)
 
 bool PrinterHistory::readIndex()
 {
-    std::ifstream in(fs::path(dir_) / kIndexName);
+    const fs::path path = fs::path(dir_) / kIndexName;
+    std::error_code ec;
+    constexpr std::uintmax_t kMaxIndexBytes = 1024u * 1024u;
+    const auto bytes = fs::file_size(path, ec);
+    std::error_code existsEc;
+    if ((!ec && bytes > kMaxIndexBytes) ||
+        (ec && fs::exists(path, existsEc) && !existsEc)) {
+        pom2::log().warn("PrinterHistory",
+                         "refusing oversized or non-regular index");
+        return false;
+    }
+    std::ifstream in(path);
     if (!in) return false;
 
     std::string line;
@@ -176,8 +187,8 @@ bool PrinterHistory::readIndex()
 
         // Drop entries whose PNG has gone — a user who deleted files by hand
         // should not get a history full of dead rows.
-        std::error_code ec;
-        if (!fs::exists(fs::path(dir_) / p.file, ec)) continue;
+        std::error_code pageEc;
+        if (!fs::exists(fs::path(dir_) / p.file, pageEc)) continue;
 
         nextJob_ = std::max(nextJob_, p.job + 1);
         // File names are pNNNNNN.png; recover the counter so a new page never

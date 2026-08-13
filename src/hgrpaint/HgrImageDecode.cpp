@@ -14,13 +14,30 @@
 // src/third_party/stb in CMakeLists.txt). decl only — impl linked from the app.
 #include "stb_image.h"
 
+#include <filesystem>
+
 namespace hgrpaint {
 
 bool decodeImageFile(const std::string& path, int& w, int& h,
                      std::vector<uint8_t>& rgba, std::string& err)
 {
     w = h = 0;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    constexpr std::uintmax_t kMaxSourceBytes = 64u * 1024u * 1024u;
+    const auto fileBytes = fs::file_size(path, ec);
+    if (ec || fileBytes > kMaxSourceBytes) {
+        err = "image source is not a regular file or exceeds 64 MiB";
+        return false;
+    }
     int channels = 0;
+    if (!stbi_info(path.c_str(), &w, &h, &channels) || w <= 0 || h <= 0 ||
+        w > 2048 || h > 2048 ||
+        static_cast<uint64_t>(w) * static_cast<uint64_t>(h) > 4000000ull) {
+        err = "image dimensions exceed the 4-megapixel import limit";
+        w = h = 0;
+        return false;
+    }
     unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
     if (!pixels) {
         const char* why = stbi_failure_reason();

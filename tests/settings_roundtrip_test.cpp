@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -134,6 +135,20 @@ int main()
             ++bad;
         }
         if (bad) { fs::remove_all(home); return 1; }
+    }
+
+    // A damaged or hostile line-oriented state file must be rejected before
+    // getline can grow a multi-megabyte string during application startup.
+    {
+        pom2::Settings pathProbe;
+        std::ofstream huge(pathProbe.getStorePath(),
+                           std::ios::binary | std::ios::trunc);
+        assert(huge);
+        huge.seekp(4 * 1024 * 1024);
+        huge.put('x');
+        huge.close();
+        pom2::Settings rejected;
+        assert(!rejected.load());
     }
 
     fs::remove_all(home);

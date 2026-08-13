@@ -234,12 +234,18 @@ void SuperSerialCard::stopListening()
     // close() of clientFd is the worker's job (on its exit path), and
     // listenFd is closed here only AFTER join() so nothing recv()s/accept()s
     // a recycled descriptor.
-    pom2::shutdownBoth(clientFd.load());
-    pom2::shutdownBoth(listenFd.load());
+    {
+        std::lock_guard<std::mutex> life(fdLifeMtx_);
+        pom2::shutdownBoth(clientFd.load());
+        pom2::shutdownBoth(listenFd.load());
+    }
     if (worker.joinable()) worker.join();
-    pom2::closeHostSocketValue(listenFd.exchange(pom2::kInvalidSocket));
-    // Worker closed clientFd on exit; exchange() makes a stray close a no-op.
-    pom2::closeHostSocketValue(clientFd.exchange(pom2::kInvalidSocket));
+    {
+        std::lock_guard<std::mutex> life(fdLifeMtx_);
+        pom2::closeHostSocketValue(listenFd.exchange(pom2::kInvalidSocket));
+        // Worker closed clientFd on exit; exchange makes this a no-op.
+        pom2::closeHostSocketValue(clientFd.exchange(pom2::kInvalidSocket));
+    }
     listening = false;
 #endif
 }
@@ -251,6 +257,7 @@ void SuperSerialCard::closeClient()
     return;
 #else
     // exchange() guarantees exactly one close even if called from two paths.
+    std::lock_guard<std::mutex> life(fdLifeMtx_);
     const pom2::socket_t fd = clientFd.exchange(pom2::kInvalidSocket);
     if (pom2::isValidSocket(fd)) {
         pom2::shutdownBoth(fd);
@@ -273,7 +280,6 @@ void SuperSerialCard::runWorker()
         const auto pa = pom2::pollAcceptOnce(listenFd.load(), 200, fd, peer);
         if (pa == pom2::PollAccept::Retry)    continue;
         if (pa == pom2::PollAccept::Shutdown) break;
-        if (stopRequested) { pom2::closeHostSocketValue(fd); break; }
         pom2::disableSigpipe(fd);
         // Disable Nagle so single-character writes from the Apple II
         // appear at the telnet client immediately.
@@ -282,8 +288,19 @@ void SuperSerialCard::runWorker()
         // arrivals without sleeping on input.
         pom2::setNonBlocking(fd);
 
-        clientFd  = fd;
-        connected = true;
+        {
+            // Publish the accepted descriptor under the same lifetime lock
+            // used by stopListening()/closeClient().  Otherwise stop could
+            // observe INVALID, then the worker could publish a client that
+            // missed the shutdown wakeup.
+            std::lock_guard<std::mutex> life(fdLifeMtx_);
+            if (stopRequested) {
+                pom2::closeHostSocketValue(fd);
+                break;
+            }
+            clientFd = fd;
+            connected = true;
+        }
         resetTelnet();   // fresh IAC parser state per connection
         onConnectionEdge(true);
         pom2::log().info("SSC",

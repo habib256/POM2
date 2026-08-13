@@ -7,6 +7,7 @@
 #include "Pom2Build.h"
 
 #include "Apple2Display.h"
+#include "AtomicFileReplace.h"
 #include "EmulationController.h"
 #include "HgrPaintModel.h"        // hgrpaint:: geometry constants
 #include "LeChatMauveCard.h"
@@ -40,6 +41,35 @@
 #endif
 
 namespace {
+
+bool publishBytes(const std::string& path, const uint8_t* data, size_t size,
+                  std::string& err)
+{
+    namespace fs = std::filesystem;
+    const fs::path target(path), tmp(path + ".pom2tmp");
+    std::error_code permEc;
+    const auto perms = fs::status(target, permEc).permissions();
+    const bool havePerms = !permEc;
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out) { err = "cannot create " + tmp.string(); return false; }
+    out.write(reinterpret_cast<const char*>(data),
+              static_cast<std::streamsize>(size));
+    out.flush();
+    out.close();
+    if (!out) {
+        err = "write failed (disk full?): " + tmp.string();
+        fs::remove(tmp, permEc);
+        return false;
+    }
+    std::error_code ec;
+    if (havePerms) { fs::permissions(tmp, perms, ec); ec.clear(); }
+    if (!pom2::replaceFileAtomic(tmp, target, ec)) {
+        err = "cannot replace " + path + ": " + ec.message();
+        fs::remove(tmp, permEc);
+        return false;
+    }
+    return true;
+}
 
 // Opaque handle behind IHgrPaintHost's void* texture API.
 struct GlTex {
@@ -292,12 +322,7 @@ bool Pom2HgrPaintHost::saveDlgrImage(const std::string& path, uint16_t baseAddr,
         std::memcpy(bytes.data(),         mem.auxData() + baseAddr, 0x400);
         std::memcpy(bytes.data() + 0x400, mem.data()    + baseAddr, 0x400);
     }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) { err = "cannot create " + path; return false; }
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!out) { err = "write failed (disk full?)"; return false; }
-    return true;
+    return publishBytes(path, bytes.data(), bytes.size(), err);
 }
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
@@ -333,12 +358,7 @@ bool Pom2HgrPaintHost::saveImage(const std::string& path, uint16_t baseAddr,
         std::lock_guard<std::mutex> lk(emu_->stateMutex());
         std::memcpy(bytes.data(), emu_->memory().data() + baseAddr, bytes.size());
     }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) { err = "cannot create " + path; return false; }
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!out) { err = "write failed (disk full?)"; return false; }
-    return true;
+    return publishBytes(path, bytes.data(), bytes.size(), err);
 }
 
 bool Pom2HgrPaintHost::loadDhgrImage(const std::string& path, uint16_t baseAddr,
@@ -375,12 +395,7 @@ bool Pom2HgrPaintHost::saveDhgrImage(const std::string& path, uint16_t baseAddr,
         std::memcpy(bytes.data() + hgrpaint::kHiresSize, mem.data() + baseAddr,
                     hgrpaint::kHiresSize);
     }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) { err = "cannot create " + path; return false; }
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!out) { err = "write failed (disk full?)"; return false; }
-    return true;
+    return publishBytes(path, bytes.data(), bytes.size(), err);
 }
 
 bool Pom2HgrPaintHost::savePng(const std::string& path, const uint32_t* rgba,
@@ -388,8 +403,22 @@ bool Pom2HgrPaintHost::savePng(const std::string& path, const uint32_t* rgba,
 {
     // rgba is top-down RGBA8, exactly what stbi_write_png expects with
     // stride = w*4.
-    if (stbi_write_png(path.c_str(), w, h, 4, rgba, w * 4) == 0) {
+    namespace fs = std::filesystem;
+    const fs::path tmp(path + ".pom2tmp");
+    if (stbi_write_png(tmp.string().c_str(), w, h, 4, rgba, w * 4) == 0) {
         err = "stbi_write_png failed (directory writable?)";
+        std::error_code removeEc;
+        fs::remove(tmp, removeEc);
+        return false;
+    }
+    std::error_code ec;
+    std::error_code permEc;
+    const auto perms = fs::status(fs::path(path), permEc).permissions();
+    if (!permEc) fs::permissions(tmp, perms, ec);
+    ec.clear();
+    if (!pom2::replaceFileAtomic(tmp, fs::path(path), ec)) {
+        err = "cannot replace " + path + ": " + ec.message();
+        fs::remove(tmp, ec);
         return false;
     }
     return true;

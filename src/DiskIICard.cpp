@@ -275,23 +275,26 @@ void DiskIICard::refreshMediaDerivedState(bool warnMissing13Rom)
 // process even though the user had opted in to write-back. Guarded twice
 // over inside DiskImage::saveDirty (write-back off, or a physically
 // write-protected medium, is a no-op returning success).
-void DiskIICard::flushPendingWrites()
+bool DiskIICard::flushPendingWrites()
 {
+    bool ok = true;
     for (int d = 0; d < kDriveCount; ++d) {
         DiskImage& img = images[d];
         if (!img.isLoaded() || !img.hasUnsavedChanges()) continue;
         if (!img.saveDirty()) {
+            ok = false;
             mediaErrors[d] = img.getLastError();
             pom2::log().warn("Disk II",
                 "Flush failed for drive " + std::to_string(d + 1) + ": " +
                 img.getLastError());
         }
     }
+    return ok;
 }
 
 DiskIICard::~DiskIICard()
 {
-    flushPendingWrites();
+    (void)flushPendingWrites();
 }
 
 bool DiskIICard::insertDisk(int drive, const std::string& path)

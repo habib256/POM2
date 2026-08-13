@@ -778,19 +778,23 @@ bool CassetteDevice::loadWavTape(const std::string& path)
 {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
-    // Size gate BEFORE slurping (the mp3/ogg/flac path already caps at 30
-    // decoded minutes; PCM WAV was unbounded — a mistakenly passed multi-GB
-    // file allocated its full size plus the ~2x float conversion). 256 MiB
-    // ≈ 25 minutes of 44.1 kHz stereo float32, beyond any real tape.
-    constexpr std::streamoff kMaxTapeBytes = 256ll * 1024 * 1024;
-    file.seekg(0, std::ios::end);
-    if (file.tellg() > kMaxTapeBytes) {
-        lastError = "WAV tape exceeds 256 MiB: " + path;
-        return false;
+    // Bounded streaming read, including non-seekable/special files. A prior
+    // seek/tell gate still fed an endless FIFO or /dev/zero to an unbounded
+    // istreambuf_iterator when tellg() returned -1.
+    constexpr size_t kMaxTapeBytes = 64u * 1024u * 1024u;
+    std::vector<uint8_t> bytes;
+    bytes.reserve(64u * 1024u);
+    uint8_t readChunk[64u * 1024u];
+    while (file) {
+        file.read(reinterpret_cast<char*>(readChunk), sizeof(readChunk));
+        const size_t got = static_cast<size_t>(file.gcount());
+        if (got > kMaxTapeBytes - bytes.size()) {
+            lastError = "WAV tape exceeds 64 MiB: " + path;
+            return false;
+        }
+        bytes.insert(bytes.end(), readChunk, readChunk + got);
+        if (got < sizeof(readChunk)) break;
     }
-    file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
-                                std::istreambuf_iterator<char>());
     if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||
         std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) {
         lastError = "Invalid WAV file";
