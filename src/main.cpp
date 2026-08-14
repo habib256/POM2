@@ -177,7 +177,7 @@ int main(int argc, char* argv[])
         plan->bootDiskPath.empty();
     if (wasmPlanWasDefault) {
         plan->preset       = pom2::CliPreset::AppleIIcPlus;
-        plan->bootDiskPath = "floppyemu/Total Replay v5.2.hdv";
+        plan->bootDiskPath = "floppyemu/Total Replay v6.1.hdv";
     }
 #endif
 

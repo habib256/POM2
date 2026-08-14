@@ -67,10 +67,11 @@ int main()
     // SmartPort card in slot 5 with unit 0 = HDV Total Replay.
     const std::string hdvPath = firstExisting({
         "hdv/Total Replay II v1.0-alpha.4.hdv",
-        "hdv/Total Replay v5.2.hdv",
+        "floppyemu/Total Replay v6.1.hdv",
     });
     if (hdvPath.empty()) {
-        std::printf("SKIP: no Total Replay HDV in hdv/\n"); return 0;
+        std::printf("SKIP: no Total Replay HDV in hdv/ or floppyemu/\n");
+        return 0;
     }
     auto card = std::make_unique<pom2::SmartPortCard>(5);
     auto u0   = std::make_unique<pom2::SmartPortHdvUnit>();

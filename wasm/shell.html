@@ -81,7 +81,7 @@
   const _qs = new URLSearchParams(window.location.search);
   const _preset = _qs.get('preset') || 'iic';
   const _disk   = _qs.get('nodisk') === '1' ? null
-                 : (_qs.get('disk') || 'floppyemu/Total Replay v5.2.hdv');
+                 : (_qs.get('disk') || 'floppyemu/Total Replay v6.1.hdv');
   const _args = ['--preset', _preset];
   if (_disk) _args.push(_disk);
 

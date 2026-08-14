@@ -3,7 +3,7 @@
 // dumps the text screen. Set POM2_TRACE_CFFA=1 to log every ATA command.
 //
 // Usage:
-//   POM2_TRACE_CFFA=1 cffa_boot_dump --image "hdv/Total Replay v5.2.hdv" [--slot 6] [--seconds 6]
+//   POM2_TRACE_CFFA=1 cffa_boot_dump --image "floppyemu/Total Replay v6.1.hdv" [--slot 6] [--seconds 6]
 //
 // Not a CTest target — debug aid only.
 

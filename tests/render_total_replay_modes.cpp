@@ -187,7 +187,7 @@ int main(int argc, char** argv)
     }
 
     const std::string hdvPath = firstExisting({
-        "hdv/Total Replay v5.2.hdv",
+        "floppyemu/Total Replay v6.1.hdv",
         "hdv/Total Replay II v1.0-alpha.4.hdv",
     });
     if (hdvPath.empty()) { std::fprintf(stderr, "no Total Replay HDV\n"); return 1; }

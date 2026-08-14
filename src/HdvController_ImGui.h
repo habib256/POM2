@@ -22,8 +22,8 @@ class HdvController_ImGui
 {
 public:
     struct LibraryEntry {
-        std::string displayName;   // e.g. "Total Replay v5.2.hdv"
-        std::string fullPath;      // e.g. "../hdv/Total Replay v5.2.hdv"
+        std::string displayName;   // e.g. "Total Replay v6.1.hdv"
+        std::string fullPath;      // e.g. "../floppyemu/Total Replay v6.1.hdv"
     };
 
     struct DriveSnapshot {
