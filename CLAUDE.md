@@ -10,6 +10,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
 - `docs/PERFORMANCE.md` — core profile (callgrind recipe + `pom2_bench`), the optimisations already done and **why**, and the PGO/LTO build recipe. Read before "optimising" anything on the hot path.
 - `CHANGELOG.md` — resolved items + the **why** behind non-obvious fixes.
+- `docs/releases/v<x.y>.md` — the release notes for that tag, written by hand. The publish job fetches the file matching the tag and uses it as the GitHub Release body (generated commit list only as fallback).
 
 **Conventions**:
 
@@ -67,6 +68,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Printer mechanical sounds (**synthesised** — no sample set exists) | `PrinterSoundDevice.*`, `PrinterSoundSink.h` | [§ Printer sound](DEV.md#printer-sound-printersounddevice) |
 | Slot bus + wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [§ Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | DiskImage / DiskIICard / Snapshot | `DiskImage.*`, `DiskIICard.*`, `SnapshotIO.*` | [§ Storage](DEV.md#storage) |
+| Atomic **+ durable** file commit — every write-back goes through it | `AtomicFileReplace.h` | [§ Write-back commit](DEV.md#how-a-media-write-back-commits-atomicfilereplaceh) |
 | Machine snapshot + Rewind ring (MicroM8-style) | `MachineSnapshot.*`, `RewindBuffer.*` | [§ Rewind](DEV.md#rewind--time-travel) |
 | 3D voxel view (MicroM8-style) + camera math | `Voxel3DRenderer.*`, `Mat4.h` | [§ 3D voxel](DEV.md#3d-voxel-view) |
 | ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodoshardiskcard-hdv-synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
@@ -231,9 +233,12 @@ kVersion[String]`). Consumers — `main.cpp` (banner + window title),
 `MainWindow_Slots.cpp` (runtime title), `MainWindow.cpp` (About) — no longer
 hard-code it. Bumping `project(VERSION)` re-runs CMake and rebuilds them.
 
-To bump a release, edit **`CMakeLists.txt`** then the two prose-only docs that
+To bump a release, edit **`CMakeLists.txt`** then the prose-only files that
 cannot `#include` the header:
 
 - `CMakeLists.txt` (`project(... VERSION x.y ...)`) — **drives all code**
-- `README.md` (title) — manual
+- `README.md` (title, and the package names in § Download) — manual
 - `CLAUDE.md` (this line) — manual
+- `docs/releases/v<x.y>.md` — the release notes; the publish job reads the
+  file whose name matches the tag, so a missing one silently downgrades the
+  Release body to a generated commit list

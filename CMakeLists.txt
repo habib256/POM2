@@ -818,7 +818,7 @@ set(CPACK_PACKAGE_VENDOR          "POM2")
 set(CPACK_PACKAGE_VERSION         "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "Apple II / II+ / //e / //c / //c+ emulator")
-set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/habib256/POM2")
+set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/habib256/pom2")
 set(CPACK_RESOURCE_FILE_LICENSE   "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_CONTACT         "gist974@gmail.com")
 set(CPACK_PACKAGE_FILE_NAME

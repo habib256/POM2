@@ -8,10 +8,11 @@
 
 Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 
+[![⬇ Download for your machine](https://img.shields.io/badge/⬇%20Download-Linux%20•%20macOS%20•%20Windows%20•%20Pi-2ea44f?style=for-the-badge)](https://github.com/habib256/pom2/releases/latest)
 [![▶ Play in browser (no install)](https://img.shields.io/badge/▶%20Play%20in%20browser-WebAssembly-blueviolet?style=for-the-badge)](https://habib256.github.io/pom2/wasm/)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Linux%20•%20macOS%20•%20Windows%20•%20Web-lightgrey.svg)](#-quick-start)
+[![Platform](https://img.shields.io/badge/Linux%20•%20macOS%20•%20Windows%20•%20Web-lightgrey.svg)](#-download)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-orange.svg)](#)
 [![8 machines](https://img.shields.io/badge/Machines-8-success.svg)](#-machine-profiles)
 [![MAME-parity](https://img.shields.io/badge/Hardware-MAME--faithful-yellowgreen.svg)](DEV.md)
@@ -34,7 +35,7 @@ Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 - 🌐 **Online, from 1984.** The **Uthernet II**'s W5100 is a hardware TCP/IP stack, so POM2 runs it straight on host sockets — point a period IRC, telnet or FTP client at the real internet with no extra dependency and no privileges, on Linux, macOS **and Windows**. The **Uthernet I** (CS8900A) is there too for IP65 / Contiki, bridged by optional libslirp (Linux/macOS).
 - 🎵 **A whole sound-card era.** Speaker, cassette, Mockingboard A/C, Mockingboard C **Sound II** with SSI263 speech, the Applied Engineering **Phasor** (2×VIA / 4×AY), and the Cricket / Echo SSI263 line.
 - 🔬 **MAME is the source of truth.** Every hardware port cites the MAME file + line range in a comment and is pinned with a smoke test under `tests/`. CPU → audio/UI events carry a CPU-cycle stamp, never wall-clock.
-- 🌐 **Runs in your browser.** The full emulator builds to WebAssembly — [play it now](https://habib256.github.io/POM2/wasm/), no install.
+- 🌐 **Runs in your browser.** The full emulator builds to WebAssembly — [play it now](https://habib256.github.io/pom2/wasm/), no install.
 
 ---
 
@@ -50,13 +51,64 @@ Five things to try **right after first boot**:
 
 ---
 
+## ⬇️ Download
+
+**[→ Latest release](https://github.com/habib256/pom2/releases/latest)** — pick
+the package for your machine. Each one is self-contained: unpack it, open it,
+and the emulator is ready to boot a disk. Nothing else to install, no runtime
+to add.
+
+| Package | For | Notes |
+| --- | --- | --- |
+| `POM2-v0.8-x86_64.AppImage` | Linux (Intel/AMD) | Runs on Mint 19+, Debian 12, Ubuntu 20.04+ (glibc **2.27** floor) |
+| `POM2-macOS-v0.8.dmg` | macOS 10.15+ | **Universal 2** — Apple Silicon *and* Intel in one file |
+| `POM2-Windows-v0.8.zip` | Windows 10/11 x64 | One `POM2.exe`, no DLL beside it |
+| `POM2-v0.8-aarch64.AppImage` | Raspberry Pi 4 / 5 (64-bit) | OpenGL **ES 3.0** build, Raspberry Pi OS bookworm (glibc **2.36**) |
+| `SHA256SUMS.txt` | everyone | `sha256sum -c SHA256SUMS.txt` to verify what you downloaded |
+
+**🐧 Linux / 🍓 Raspberry Pi**
+
+```bash
+chmod +x POM2-v0.8-x86_64.AppImage
+./POM2-v0.8-x86_64.AppImage
+```
+
+If your distro no longer ships `libfuse2`, either install it or run the image
+without it: `./POM2-v0.8-x86_64.AppImage --appimage-extract-and-run`.
+Pi owners who want the last drop of speed can also fetch the **core-specific
+PGO packages** (CI builds them on an ARM64 runner, so the Pi compiles
+nothing) — recipe under [Releases](#-releases); worth roughly 40 % on the
+emulation core over this generic aarch64 build.
+
+**🍏 macOS** — open the `.dmg`, drag **POM2** into *Applications*. The app is
+signed **ad-hoc** (no paid Developer ID), so the first launch is refused with
+*"POM2 can't be opened because Apple cannot check it for malicious software"*.
+That is Gatekeeper reacting to the absent signature, not to the app. Either:
+
+- **right-click** the app → **Open** → **Open** in the dialog (once), or
+- clear the quarantine flag:
+  `xattr -dr com.apple.quarantine /Applications/POM2.app`
+
+**🪟 Windows** — unzip anywhere and run `POM2.exe`. The binary is unsigned, so
+SmartScreen shows *"Windows protected your PC"*: click **More info** →
+**Run anyway**. Keep `POM2.exe` together with the folder it came in.
+
+**🌐 Nothing to download** — [play it in the
+browser](https://habib256.github.io/pom2/wasm/) instead; the whole emulator
+compiles to WebAssembly.
+
+Building from source instead? That is the [Quick Start](#-quick-start) below.
+Cutting a release is [further down](#-releases).
+
+---
+
 ## 🚀 Quick Start
 
 ### 🐧 Linux / 🍏 macOS
 
 ```bash
-git clone https://github.com/habib256/POM2.git
-cd POM2
+git clone https://github.com/habib256/pom2.git
+cd pom2
 ./setup_imgui.sh                    # fetch Dear ImGui + install deps (one-time)
 cd build && cmake .. && make -j
 cd .. && ./run_emulator.sh          # cwd = repo root so roms/ probes resolve
@@ -69,8 +121,8 @@ cd .. && ./run_emulator.sh          # cwd = repo root so roms/ probes resolve
 Prereqs: [Visual Studio](https://visualstudio.microsoft.com/) (C++ workload), [CMake](https://cmake.org/download/), [Git](https://git-scm.com/download/win), [vcpkg](https://vcpkg.io/).
 
 ```batch
-git clone https://github.com/habib256/POM2.git
-cd POM2
+git clone https://github.com/habib256/pom2.git
+cd pom2
 git clone --depth 1 https://github.com/ocornut/imgui.git
 vcpkg install glfw3:x64-windows
 cmake -B build && cmake --build build --config Release
@@ -82,7 +134,7 @@ hard-fails if `imgui/` is missing.)
 
 ### 🌐 WebAssembly
 
-**Play directly:** [POM2 in your browser](https://habib256.github.io/POM2/wasm/)
+**Play directly:** [POM2 in your browser](https://habib256.github.io/pom2/wasm/)
 
 <details><summary>Build it yourself</summary>
 
@@ -312,9 +364,14 @@ POM2 --kiosk --preset iic --cpu-max game.hdv   # //c profile, run flat-out
 
 ## 📦 Releases
 
-**Cutting a release** — push a version tag and the `Release packages` workflow
-builds every platform natively and attaches the artifacts (plus a
-`SHA256SUMS.txt`) to the GitHub Release:
+*Looking for a build to run? That is [Download](#-download) at the top. This
+section is how a release gets made.*
+
+**Cutting a release** — write the notes for the version in
+`docs/releases/v<ver>.md`, then push a version tag: the `Release packages`
+workflow builds every platform natively, attaches the artifacts (plus a
+`SHA256SUMS.txt`) to the GitHub Release, and uses that file as the release
+body (falling back to auto-generated notes when it is absent):
 
 ```bash
 git tag v0.8 && git push origin v0.8      # `0.8` without the v works too
@@ -390,7 +447,7 @@ the profiling recipe.
 
 - Mouse absolute position can drift under A2Desktop / MGTK.
 - Some anti-//e copy-protected titles refuse to boot on //e/c/c+ hardware.
-- **//c+ 3.5"/SmartPort boot is host-served, not cycle-faithful — by necessity.** POM2 boots 3.5" and HDV images on the //c+ through a host-served SmartPort block device at the built-in slot 5, and that path works. What is *not* modeled is the cycle-faithful on-board IWM/Sony GCR boot: the //c+ firmware's IWM bit-shift state machine is unimplemented, and a faithful path would additionally require the Liron-class SmartPort controller ROM — **which has never been publicly dumped** (MAME lists it as *WANTED*). This is a hardware-preservation gap outside POM2's control, not a planned feature being withheld; the host-served substitute is the deliberate, supported boot path for //c-class 3.5"/HDV.
+- **//c+ 3.5"/SmartPort boot is host-served, not cycle-faithful — deliberately.** POM2 boots 3.5" and HDV images on the //c+ through a host-served SmartPort block device at the built-in slot 5, and that path works. What is *not* modeled is the cycle-faithful on-board IWM/Sony GCR boot: it needs the //c+ firmware's full IWM bit-shift state machine **and** the UniDisk 3.5's drive-side 65C02 firmware, which is a large lift for a path the host-served device already covers. (The Liron-class controller firmware itself is no longer the obstacle it once was — the BMOW/Yellowstone dump is public, POM2 ships it, and the slot card presents its real identity on //e-class machines; MAME's *WANTED* entry is simply stale.)
 
 ---
 
@@ -414,7 +471,7 @@ the profiling recipe.
 
 ## 🔗 Resources
 
-- [POM2 in your browser](https://habib256.github.io/POM2/wasm/) — WebAssembly build.
+- [POM2 in your browser](https://habib256.github.io/pom2/wasm/) — WebAssembly build.
 - **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — French Touch demo anthology (29+ min, GPLv3 sources). The **gold-standard integration test** for cycle-accurate Apple II emulation: vapor lock, mid-scanline video, Mockingboard, 128 KB aux, SmartPort/Unidisk. If DIX runs clean, you're there.
 - Architecture → [CLAUDE.md](CLAUDE.md) · Internals → [DEV.md](DEV.md) · Backlog → [TODO.md](TODO.md) · Edge-case test corpus → [`docs/test_corpus.md`](docs/test_corpus.md).
 

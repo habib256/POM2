@@ -485,7 +485,7 @@ jobs:
 
   # ------------------------------------------------ attach to the Release ----
   publish:
-    needs: [quality, linux, raspberry, macos, windows]
+    needs: [version, quality, linux, raspberry, macos, windows]
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
@@ -497,10 +497,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
           # This job deliberately does NOT check out the repo — it only needs the
           # downloaded artifacts. But `gh release` infers the target repo from the
           # git remote, so without a checkout every call would die with "failed to
           # run git: fatal: not a git repository". GH_REPO states it explicitly.
+          # (The release notes are fetched through the API for the same reason —
+          # see below — so this job still needs no working tree.)
           GH_REPO: ${{ github.repository }}
         run: |
           set -eu
@@ -517,8 +520,33 @@ jobs:
           ( cd staging && sha256sum -- "${FILES[@]#staging/}" > SHA256SUMS.txt )
           cat staging/SHA256SUMS.txt
           FILES+=(staging/SHA256SUMS.txt)
+
+          # Release body: the hand-written notes for this version when the tag
+          # carries them, GitHub's generated commit list otherwise. Read from
+          # the API AT THE TAG rather than from a checkout — the job has no
+          # working tree by design (above), and pinning to the tag means the
+          # notes that ship are the ones that were reviewed with the code.
+          # ⚠ On a 404 `gh api` writes its JSON error to STDOUT, so notes.md is
+          # non-empty even when the file does not exist — the EXIT CODE is what
+          # decides, and the failed body is deleted so a later edit cannot pick
+          # it up by accident.
+          NOTES_PATH="docs/releases/v${POM2_VERSION}.md"
+          NOTES_ARGS=(--generate-notes)
+          if gh api "repos/${GH_REPO}/contents/${NOTES_PATH}?ref=${TAG}" \
+                 -H "Accept: application/vnd.github.raw" > notes.md 2>/dev/null &&
+             [ -s notes.md ]; then
+              NOTES_ARGS=(--notes-file notes.md)
+              echo "Release body from ${NOTES_PATH} ($(wc -l < notes.md) lines)."
+          else
+              rm -f notes.md
+              echo "No ${NOTES_PATH} at ${TAG} — using generated notes."
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
+              # Release already exists (e.g. drafted by hand): only add assets,
+              # never overwrite a body someone has edited.
               gh release upload "$TAG" "${FILES[@]}" --clobber
           else
-              gh release create "$TAG" "${FILES[@]}" --generate-notes --title "POM2 $TAG"
+              gh release create "$TAG" "${FILES[@]}" "${NOTES_ARGS[@]}" \
+                                --title "POM2 $TAG"
           fi
