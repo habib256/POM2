@@ -214,6 +214,25 @@ int main()
         assert(mem.memRead(0x42) == 0xDE && mem.memRead(0x43) == 0xAD &&
                mem.memRead(0x44) == 0xBE && mem.memRead(0x45) == 0xEF);
 
+        // ── //e with INTC8ROM latched ────────────────────────────────────
+        // The dispatch stub jumps into the card's $C800 bank. On a //e with
+        // SLOTC3ROM off, any read in $C300-$C3FF latches INTC8ROM and points
+        // $C800-$CFFF at the MOTHERBOARD ROM — and the 80-column firmware
+        // reads $C3xx all the time, so this is the normal state of a running
+        // machine, not a corner. Without the `BIT $CFFF` that now precedes
+        // the JMP, $CE00 fetched internal ROM bytes and the SmartPort call
+        // ran whatever they happened to decode to. Same call as the very
+        // first STATUS above; the only difference is the MMU state.
+        mem.setIIEMode(true);
+        (void)mem.memRead(0xC300);           // latch INTC8ROM
+        setPlist(mem, {3, 1, kBuf & 0xFF, kBuf >> 8, 0x00});
+        mem.memWrite(kBuf, 0x00);            // no stale payload to pass on
+        r = spCall(cpu, mem, 0x00);
+        assert(r.sentinel == 0x77 && "RA must still advance past the 3 bytes");
+        assert(!r.carry && r.a == 0x00 && "dispatch survives INTC8ROM");
+        assert(mem.memRead(kBuf) == 0xF8 && "real STATUS payload, not ROM");
+        mem.setIIEMode(false);
+
         std::printf("liron_smartport_dispatch: %s pass OK\n",
                     useLiron ? "real-ROM" : "synthetic");
     }

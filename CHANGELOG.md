@@ -5,6 +5,94 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-14 — Three defects cleared before the 0.8 tag
+
+A pre-release audit of what still stood between `main` and a `v0.8` tag. Two
+of the three came from **`claude/printer-two-email-printing-cj6dj8`**, a
+branch from 18 July whose fixes were never merged: it forked before ~500
+files of subsequent work, so merging it would have reverted more than it
+repaired, and the fixes were re-applied by hand instead. Worth recording as
+a process note — a third fix on that branch (the Memory-viewer self-deadlock)
+HAD been re-discovered and fixed independently on `main`, so nobody noticed
+the other two were still outstanding. A stale branch is not a backlog.
+
+**The Paint editor indexed the DLGR shadow through the HGR interleave — out
+of bounds, read and write.** Three sites (`HgrPaintEditor.cpp`: the
+palette-shift tool, the palette-seam overlay, the `POM1HGR` save tag) gated
+themselves on `grMode || dhgrMode`, spelled out by hand. That test was
+correct when it was written and became wrong the day the DLGR page landed
+(2026-07-12): DLGR is neither `grMode` nor `dhgrMode`, so it fell through to
+the 280-HGR path and got indexed at `hgrByteOffset()` offsets running to
+`$1FF7` — while its shadow is the **2 KB** aux+main lo-res pair, four times
+short of that. (GR is excluded from those sites for meaning, not safety: it
+keeps the legacy 8 KB scratch, so the interleave lands inside it. DLGR is
+the only page the arithmetic actually walks off.) The palette tool then fed
+the resulting garbage to `emitShadowEdit`, which POKES THE LIVE MACHINE, so
+a DLGR palette-shift scribbled across text page 2, user RAM and HGR page 1;
+the save tag overran by 8 bytes and stamped `POM1HGR` into `$3F8/$7F8` on
+every DLGR save; the seam overlay read out of bounds once per frame while it
+was on. All three now gate on **`sixteenMode()`**, the member that already
+enumerated the 16-colour pages — the point being that the next mode added
+updates one place, not three. Not pinned: those are private members reached
+only through an ImGui frame, and `hgrpaint/` has no headless harness at all
+— which is exactly why a green 177-test suite never saw this. Logged in
+TODO § Arch.
+
+**Media write-back was atomic but not durable — a power cut could leave a
+0-byte file where the disk image was.** Every write-back path already wrote
+a sibling temp file and committed it with `rename`, which is atomic for a
+*reader*: it never exposes a half-written image. It promises nothing about a
+crash. Nothing anywhere in the tree called `fsync`, so the directory entry
+could reach the journal while the data blocks were still in page cache, and
+the file the user got back was the new name with no contents — the classic
+truncated-image outcome the temp-file dance was adopted to prevent in the
+first place. The flush went into the step they all already share,
+`pom2::replaceFileAtomic` (`AtomicFileReplace.h`): data flushed before the
+rename publishes it, parent directory flushed after, so all ten call sites
+(`DiskImage`, `Disk35Image`, `Block512Backing`, `ProDOSVolume`, `Settings`,
+`PrinterHistory`, `CassetteDevice`, the ImageWriter exports) are covered
+rather than the three copies of `writeFileAtomic` the TODO item named.
+Failure policy matters as much as the flush: a real I/O error (EIO/ENOSPC)
+fails the save so the caller keeps its dirty state and the user can retry,
+while a filesystem that merely *cannot* honour the request (EINVAL /
+EOPNOTSUPP — network mounts, Emscripten's MEMFS) reports success, because
+failing every save over a missing guarantee would lose far more data than
+the crash being guarded against. The directory flush is best-effort for the
+same reason. Pinned `atomic_file_replace`. The three duplicated writers
+still want extracting — that half of the TODO item stands.
+
+**`JSR $Cn0D` on a //e ran motherboard ROM as if it were the SmartPort
+handler.** The SmartPort dispatch stub jumped straight into the card's $C800
+bank (`JMP $CE00`). But on a //e with SLOTC3ROM off — the default — any read
+in `$C300-$C3FF` latches the MMU's INTC8ROM flip-flop, after which
+`$C800-$CFFF` answers from the *internal* ROM (`Memory::memRead`, MAME
+`apple2e.cpp:c300_int_r`). The 80-column firmware reads `$C3xx` constantly,
+so this is the ordinary state of a running machine, not a corner case: the
+JMP landed in motherboard firmware and the guest executed whatever it
+decoded to. The entry is now `BIT $CFFF` **then** `JMP $CE00`, which is what
+the real Liron firmware does — `$CFFF` clears INTC8ROM and releases the
+expansion owner, and fetching the JMP at `$Cn10` re-claims the window for
+this slot (`SlotBus::slotRomRead` latches the owner on any access to the
+slot page), so the target is live by the time the JMP takes it. Two bytes of
+side effect: the real-ROM overlay now stops at `$Cn12` instead of `$Cn1F`,
+which also settles a contradiction — the code claimed to keep the dump's
+`$Cn10-$Cn1F` and was painting NOP padding over them.
+`liron_smartport_dispatch` gained an INTC8ROM-latched pass, and **was shown
+to fail against the reverted fix** before being kept (the standing rule
+after the 2026-08-01 Mockingboard harnesses that passed against the bugs
+they were written for).
+
+Also: the committed WASM bundle (`wasm/POM2.{js,wasm,data}`) was rebuilt from
+current sources — it dated from 2026-08-02 and GitHub Pages serves it as the
+"play in browser" demo, so a tag would have shipped a two-week-old emulator
+to the web. Note for the next rebuild: **two emsdk installs** live on this
+machine and `build_wasm/`'s CMake cache pinned the broken one
+(`~/src/emsdk`, 5.0.4, dangling `$CFGDIR`) even though `emcmake` was handed
+the good one — `./build_wasm.sh --clean` is the fix, and the failure looks
+like a version mismatch rather than a stale cache.
+
+Full suite green: 177/177.
+
 ## 2026-08-13 — Bug sweep across storage, audio, I/O and printer paths
 
 A five-agent subsystem sweep (CPU/memory, storage, audio, network/serial,

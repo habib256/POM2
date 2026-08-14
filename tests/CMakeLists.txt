@@ -5008,3 +5008,16 @@ endif()
 add_test(NAME printer_history COMMAND test_printer_history
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(printer_history PROPERTIES TIMEOUT 30)
+
+
+# ─── Durable atomic file replace ────────────────────────────────────────
+# Header-only: every write-back path commits through replaceFileAtomic, and
+# since the fsync was added to it a platform that reported the flush as a
+# failure would break every save. Pins the success path, the empty payload,
+# and that a failed commit leaves the destination untouched.
+add_executable(test_atomic_file_replace
+    atomic_file_replace_test.cpp
+)
+target_include_directories(test_atomic_file_replace PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME atomic_file_replace COMMAND test_atomic_file_replace)
+set_tests_properties(atomic_file_replace PROPERTIES TIMEOUT 30)

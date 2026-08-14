@@ -1420,6 +1420,33 @@ DOS". Skew tables (physical → logical):
 Write-back via `saveDirty()` (`.dsk`/`.do`/`.po`/`.nib` + `.2mg`
 envelopes + `.woz`) opt-in via `setWriteBackEnabled(true)`.
 
+#### How a media write-back commits (`AtomicFileReplace.h`)
+
+Every write-back path — `DiskImage`, `Disk35Image`, `Block512Backing`,
+`ProDOSVolume`, plus `Settings`, `PrinterHistory`, `CassetteDevice` and the
+ImageWriter exports — writes a **sibling temp file** (`<path>.pom2tmp`, same
+directory ⇒ same filesystem ⇒ the rename cannot fail cross-device), carries
+the original's permissions onto it, then commits through
+`pom2::replaceFileAtomic`. Never `trunc` the user's own file: an ENOSPC /
+removable-media / network-share failure part-way through would leave the
+ONLY copy of the disk truncated, since the rest of it lives in RAM.
+
+`replaceFileAtomic` is where **durability** lives, not just atomicity
+(2026-08-14). A rename is atomic for a *reader*; it promises nothing about a
+power cut. So the helper: (1) `fsync`s the temp file's contents **before**
+the rename publishes them — otherwise the directory entry can reach the
+journal while the data blocks are still in page cache, and the user finds a
+0-byte file where their disk image was; (2) renames (Windows:
+`MoveFileExW` + `MOVEFILE_WRITE_THROUGH`); (3) `fsync`s the parent directory
+so the rename itself survives, best-effort because plenty of filesystems
+refuse that and none of those refusals invalidate step 1.
+
+Failure policy: a real I/O error (EIO/ENOSPC) fails the save so the caller
+keeps its dirty state and the user can retry; a filesystem that merely
+*cannot* honour the flush (EINVAL/EOPNOTSUPP — network mounts, Emscripten's
+MEMFS) reports success, because failing every save over a missing guarantee
+is worse than saving without it. Pinned by `atomic_file_replace`.
+
 ### Format detection
 
 `detectFormat()` + `enum ImageKind`. `loadFile(path)` slurps once,
@@ -1734,6 +1761,17 @@ error latching), FORMAT $03 (no-op success on a block store), CONTROL $04
 (code 0 only), INIT $05. Errors per the ProDOS/SmartPort set: $01 bad
 cmd (incl. extended $4x), $04 bad pcount, $21 bad status/control code,
 $27 I/O, $28 no device, $2B write-protected, $2D bad block, $2F offline.
+
+The entry itself is `BIT $CFFF` **then** `JMP $CE00` (2026-08-14), which is
+what the real Liron firmware does and is load-bearing on a //e: with
+SLOTC3ROM off (the default) any read in `$C300-$C3FF` latches the MMU's
+INTC8ROM flip-flop, and `$C800-$CFFF` then answers from the *internal* ROM
+instead of the slot's expansion bank (`Memory::memRead`, MAME
+`apple2e.cpp:c300_int_r`). The 80-column firmware reads `$C3xx` constantly,
+so a bare `JMP $CE00` regularly fetched motherboard bytes and ran them as
+the SmartPort handler. `$CFFF` clears INTC8ROM and releases the expansion
+owner; fetching the `JMP` at `$Cn10` re-claims the window for this slot
+(`SlotBus::slotRomRead` latches the owner on any access to the slot page).
 Pinned by `liron_smartport_dispatch` (runs the whole matrix through a
 real 6502, synthetic AND real-ROM identity passes).
 
@@ -1744,8 +1782,11 @@ MIG). When present on a slot-having machine, `loadLironRom` re-bases the
 slot page on the real dump — authentic identity `$Cn07=$00` (SmartPort
 class), `$CnFB=$00`, `$CnFE=$BF`, `$CnFF=$0A` (the real fixed ProDOS
 entry `$Cn0A` the DIX fix documented) — and overlays the HLE entries on
-top ($Cn00 boot, $Cn0A→$Cn50, $Cn0D→$CE00, $Cn20-$CnE2 driver block): the
-real firmware's IWM/UniDisk code cannot run without the drive-side 65C02.
+top ($Cn00 boot, $Cn0A→$Cn50, the $Cn0D-$Cn12 dispatch stub, $Cn20-$CnE2
+driver block): the real firmware's IWM/UniDisk code cannot run without the
+drive-side 65C02. The overlay stops at `$Cn12` — where the stub ends — so
+the dump's own `$Cn13-$Cn1F` survive; it used to run to `$Cn1F` and paint
+NOP padding over them, contradicting the "kept real" list.
 **Never loaded on //c-class** (plug-site gate on `noPhysicalSlots`): the
 on-board $C500 stub keeps the synthetic `$Cn07=$01` so the //c boot scan
 never SmartPort-enumerates it (project_iic_smartport_boot).
@@ -1762,9 +1803,13 @@ $Cn05     $03
 $Cn07     $01                    ProDOS non-removable block device
                                   (NOT $3C — that is the Disk II marker;
                                   see "Stub fixes" below)
-$CnFE     $13                    features/units mask (2 units)
+$CnFE     $17                    features/units mask: read+WRITE+status,
+                                  2 units (was $13 = read-only to a
+                                  capability-inspecting utility)
 $CnFF     $50                    driver entry offset
 $Cn0A     JMP $Cn50              (real-HW driver entry, see below)
+$Cn0D     BIT $CFFF              SmartPort entry: drop INTC8ROM first…
+$Cn10     JMP $CE00              …then into the $C800-bank handler
 $Cn20-..  boot (load blk 0 of drv 1 → $0800)
 $Cn50-..  ProDOS driver
 $CnE0-..  error halt
@@ -3942,7 +3987,22 @@ save via `loadDhgrImage`/`saveDhgrImage`). The nibble↔colour mapping is
 `dhgr_paint_model`** against the real `renderDhgr` in ColorComp4Bit AND
 ColorNTSC plus a lo-res palette cross-pin. Undo entries carry a 17-bit
 address (bit 16 = aux plane); selection/text/palette-shift are 280-HGR-only
-and disabled in GR/DHGR.
+and disabled on every 16-colour page.
+
+**One gate for "is this an HGR page", `sixteenMode()`.** `switchPage` sizes
+the shadow per mode: DHGR takes the 16 KB pair, **DLGR the 2 KB pair**, and
+everything else (HGR *and* GR) keeps the legacy 8 KB scratch. The HGR byte
+interleave (`hgrByteOffset`) runs to `$1FF7`, so DLGR is the one page whose
+buffer that overruns — GR is excluded from the interleave sites for meaning,
+DLGR for memory safety. Anything indexing the shadow through the interleave
+must therefore gate on `!sixteenMode()`, the single member enumerating the
+16-colour pages. Three sites (palette-shift paint, the palette-seam overlay,
+the `POM1HGR` save tag) spelled the test out as `grMode || dhgrMode`, which
+the later-added DLGR page satisfied: out-of-bounds reads and writes on its
+2 KB shadow, plus `emitShadowEdit` / the save tag poking the live machine
+across text page 2, user RAM and HGR page 1 (fixed 2026-08-14). Unpinned —
+those three are private members reachable only through `render()`, and
+`hgrpaint/` has no headless harness; see TODO § Arch.
 
 **DHGR image import — two models** (combo in the import preview):
 
@@ -3993,7 +4053,9 @@ scorer now carries row 0 (pinned byte-identical to `renderHiRes` in
   mode-tagged `Clip::sixteen`), MacPaint 8×8 patterns (page-anchored;
   brush + filled shapes + 16-colour floods), X/Y mirror symmetry (only
   `applyPlot` — region ops use `applyPlotRaw`), DHGR text (fat 140-px
-  glyphs), palette-shift & HGR-parity logic untouched.
+  glyphs), palette-shift & HGR-parity logic untouched — but DLGR joins the
+  other 16-colour pages behind `sixteenMode()` at the three interleave
+  sites (see the gate note above).
 - **Canvas**: pipeline selector (host `canvasPipelines()` — NTSC / Medium /
   4-bit / Chat Mauve RGB; ChatMauve HGR's native 560-wide frame80 output is
   pair-averaged to the 280 canvas), 4:3 aspect option (all X maths goes

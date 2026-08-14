@@ -686,7 +686,16 @@ void hgrpaint::HgrPaintEditor::pasteFloatingAt(int destX, int destY)
 
 void hgrpaint::HgrPaintEditor::paintPaletteByte(int lx, int ly)
 {
-    if (grMode || dhgrMode) return;   // per-byte palette bit is a 280-HGR concept
+    // Per-byte palette bit is a 280-HGR concept — excluded on every
+    // 16-colour page, and on DLGR it is a memory-safety matter too: the
+    // code below indexes the shadow through the HGR interleave (to 0x1FF7)
+    // and the DLGR shadow is the 0x800 aux+main pair (GR and DHGR keep a
+    // buffer large enough to absorb it). The gate used to be spelled out as
+    // `grMode || dhgrMode`, which the later DLGR page slipped through:
+    // out-of-bounds read AND write, after which emitShadowEdit poked the
+    // live machine across text page 2, user RAM and HGR page 1. Gate on
+    // `sixteenMode()` — the one member that enumerates the 16-colour pages.
+    if (sixteenMode()) return;
     if (lx < 0 || lx > 279 || ly < 0 || ly > 191) return;
     const int byteCol = lx / 7;
     const int off = hgrpaint::hgrByteOffset(0, ly) + byteCol;
@@ -1363,7 +1372,11 @@ void hgrpaint::HgrPaintEditor::renderCanvas(const std::vector<uint8_t>& memory,
     // ── Palette-seam overlay (HGR-07): mark adjacent lit bytes that disagree
     // on the shared high bit — where NTSC artifact-colour bleed happens. Scan
     // only the visible/scrolled region for perf.
-    if (showConflicts && !grMode && !dhgrMode) {   // palette seams are a 280-HGR concept
+    // 280-HGR concept, and the scan reads the shadow at HGR interleave
+    // offsets — out of bounds on DLGR's 0x800 shadow, once per frame for
+    // as long as the overlay is on. Gated on sixteenMode() for the same
+    // reason as paintPaletteByte (DLGR slipped through the old spelling).
+    if (showConflicts && !sixteenMode()) {
         const float sx = ImGui::GetScrollX(), sy = ImGui::GetScrollY();
         const ImVec2 vis = ImGui::GetContentRegionAvail();
         const int y0 = std::clamp(static_cast<int>(sy / scale), 0, kHiresHeight - 1);
@@ -2162,8 +2175,12 @@ bool hgrpaint::HgrPaintEditor::performFileAction(bool forSave, int saveKind,
         // 280-HIRES only: bake the POM1HGR tag into the unused screen-hole bytes
         // ($1FF8-$1FFF) — past the last displayed byte, so invisible. The lo-res
         // page is just 1 KB and has no such screen hole; DHGR dumps stay pristine
-        // A2FC (both planes' screen holes belong to the picture format).
-        if (!grMode && !dhgrMode) {
+        // A2FC (both planes' screen holes belong to the picture format). Same
+        // sixteenMode() gate as the two other interleave sites: DLGR is a
+        // lo-res pair too, and its 0x800 shadow ends well before $1FF8, so
+        // the old `!grMode && !dhgrMode` spelling overran it by 8 bytes AND
+        // stamped "POM1HGR" into live RAM at $3F8/$7F8 on every DLGR save.
+        if (!sixteenMode()) {
             static const char kTag[8] = { 'P','O','M','1','H','G','R','\0' };
             for (int i = 0; i < 8; ++i) {
                 const int off = 0x1FF8 + i;

@@ -477,11 +477,26 @@ void SmartPortCard::buildRom()
     // call handler in the $C800 bank (see buildC800) — STATUS/DIB, READ,
     // WRITE, FORMAT, CONTROL, INIT with real error codes. Callers that
     // hardcode entry+3 used to fall through NOP padding INTO the boot
-    // routine at $Cn20 (booting block 0 over $0800). Fetching $Cn0D also
-    // selects this card's expansion bank, so the JMP target is live.
-    rom_[0x0D] = 0x4C;                           // JMP $CE00
-    rom_[0x0E] = 0x00;
-    rom_[0x0F] = 0xCE;
+    // routine at $Cn20 (booting block 0 over $0800).
+    //
+    // `BIT $CFFF` first, exactly like the real Liron firmware, and it is not
+    // decoration: on a //e with SLOTC3ROM off (the default), ANY read in
+    // $C300-$C3FF latches the MMU's INTC8ROM flip-flop, after which
+    // $C800-$CFFF answers from the INTERNAL ROM instead of the slot's
+    // expansion bank (Memory::memRead, MAME `apple2e.cpp:c300_int_r`). The
+    // 80-column firmware touches $C3xx constantly, so a bare `JMP $CE00`
+    // would regularly fetch motherboard bytes and run them as if they were
+    // the SmartPort handler. Reading $CFFF clears INTC8ROM and releases the
+    // expansion owner; fetching the JMP that follows, at $Cn10, re-claims
+    // the window for THIS slot (SlotBus::slotRomRead latches the owner on
+    // any access to the slot's page), so the target is live by the time the
+    // JMP takes it.
+    rom_[0x0D] = 0x2C;                           // BIT $CFFF
+    rom_[0x0E] = 0xFF;
+    rom_[0x0F] = 0xCF;
+    rom_[0x10] = 0x4C;                           // JMP $CE00
+    rom_[0x11] = 0x00;
+    rom_[0x12] = 0xCE;
 
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
     uint8_t pc = kBootOff;
@@ -653,7 +668,7 @@ void SmartPortCard::buildRom()
     // $CnFE=$BF, $CnFF=$0A — then overlay POM2's HLE service entries on
     // top: the real firmware's IWM/UniDisk code can't run without the
     // drive-side 65C02, so every serviceable entry routes to the block
-    // backend instead. Kept real: $03-$09 (signature/class), $10-$1F,
+    // backend instead. Kept real: $03-$09 (signature/class), $13-$1F,
     // $E3-$FF (ID bytes). The synthetic $Cn00 "JMP $Cn20" reproduces the
     // real page's own $Cn01=$20 signature byte by construction.
     if (lironLoaded_ && slot_ >= 1 && slot_ <= 7) {
@@ -661,7 +676,11 @@ void SmartPortCard::buildRom()
         std::memcpy(rom_.data(),
                     lironRom_.data() + static_cast<size_t>(slot_) * 256, 256);
         rom_[0x00] = 0x4C; rom_[0x01] = kBootOff; rom_[0x02] = kSlotRomHi;
-        for (int i = 0x0A; i <= 0x1F; ++i) rom_[i] = synth[i];  // $Cn0A/$Cn0D
+        // $Cn0A (ProDOS driver) + $Cn0D-$Cn12 (BIT $CFFF / JMP $CE00). The
+        // overlay used to run to $1F and so covered the dump's own bytes
+        // there with NOP padding, contradicting the "kept real" line above;
+        // it now stops where the dispatch stub actually ends.
+        for (int i = 0x0A; i <= 0x12; ++i) rom_[i] = synth[i];
         for (int i = kBootOff; i <= 0xE2; ++i) rom_[i] = synth[i];
     }
 

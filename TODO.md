@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-07-12. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
+Status as of 2026-08-14. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
@@ -825,20 +825,38 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   also retire the two findings that could not be pinned (`saveScreenshot`'s
   `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
 - 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
-  divergent copies now: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
+  divergent copies still: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
   namespace), `Disk35Image.cpp:214` (added 2026-08-02) and
-  `ProDOSVolume.cpp:664-702`. `DiskImage`'s copy caught up on permission
-  preservation 2026-08-08 (it was silently resetting the image's mode to the
-  umask default on every write-back); `ProDOSVolume`'s still hasn't.
-  Extract to `src/FileAtomicWrite.h`. **None of the three `fsync` before the
-  `rename`**, so a power cut can still land an empty file where the user's
-  disk image was — fold that in when extracting.
+  `ProDOSVolume.cpp:664-702` — the temp-file naming, the permission carry-over
+  and the error strings are hand-repeated in each. `DiskImage`'s copy caught
+  up on permission preservation 2026-08-08 (it was silently resetting the
+  image's mode to the umask default on every write-back); `ProDOSVolume`'s
+  still hasn't. Extract to `src/FileAtomicWrite.h`.
+  - ✅ **The durability half is closed** (2026-08-14): the `fsync` went into
+    the COMMIT step they already share, `pom2::replaceFileAtomic`
+    (`AtomicFileReplace.h`) — data flushed before the rename, parent
+    directory flushed after it, best-effort — so a power cut can no longer
+    land an empty file where the user's disk image was, on any of the ten
+    call sites rather than the three this item names. Pinned
+    `atomic_file_replace`. What remains here is duplication, not data loss.
+- 🟡 **`hgrpaint/` has no headless harness** *(2026-08-14)* — the editor's
+  state (mode flags, shadow buffer, tools) is private and only reachable
+  through `render()`, i.e. through an ImGui frame, so nothing in `ctest`
+  can exercise it: `dhgr_paint_model` pins the free functions in
+  `HgrPaintModel.h`, not `HgrPaintEditor`. That is how three
+  out-of-bounds accesses on the DLGR shadow survived from the DLGR page's
+  arrival (2026-07-12) to 2026-08-14 with a green suite. Cheapest fix: a
+  test-only seam (a friend fixture, or a small `EditorTestAccess` struct)
+  driving the tools against a stub `IHgrPaintHost` — bearing in mind
+  `hgrpaint/` is shared verbatim with POM1, so the seam must be additive.
+  *~1 d.*
 - 🟢 **Run the `SnapshotIO` fuzzer** *(2026-08-02)* — built during the ASan
   sweep but never executed, so that parser is the one untrusted-input surface
   in the tree with no dynamic coverage. The disk-image and WOZ parsers came
   through 4 200 + 13 270 mutations clean; snapshots are loaded from
   user-supplied files on the same trust footing.
-- 🟠 **`MainWindow.cpp` god-object (~6700 lines)** *(audit 2026-05-31)* — biggest
+- 🟠 **`MainWindow.cpp` god-object (~10 200 lines)** *(audit 2026-05-31, count
+  re-measured 2026-08-14 — it was ~6700 then, so the file is still growing)* — biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
   `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
   groups into dedicated TUs (aim for < 3000 lines/file, like POM1's `MainWindow_*`
