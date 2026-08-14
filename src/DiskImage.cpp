@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -2578,6 +2579,39 @@ void DiskImage::writeDataField(uint8_t*& dst, const uint8_t* src)
     *dst++ = 0xDE; *dst++ = 0xAA; *dst++ = 0xEB;
 }
 
+// Read a 2IMG envelope's payload length (header bytes 28-31, little-endian),
+// validating the magic and that the declared window actually fits the file.
+// Returns nullopt when the file is not a readable 2IMG — callers then fall
+// back to size heuristics rather than refusing the image. Mirrors the header
+// parse in Block512Backing::loadImage.
+static std::optional<uint64_t> read2mgPayloadLength(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return std::nullopt;
+    unsigned char hdr[32] = {0};
+    f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (f.gcount() != static_cast<std::streamsize>(sizeof(hdr)))
+        return std::nullopt;
+    if (std::memcmp(hdr, "2IMG", 4) != 0) return std::nullopt;
+    const auto rd32 = [&hdr](int o) -> uint64_t {
+        return static_cast<uint64_t>(hdr[o])
+             | (static_cast<uint64_t>(hdr[o + 1]) <<  8)
+             | (static_cast<uint64_t>(hdr[o + 2]) << 16)
+             | (static_cast<uint64_t>(hdr[o + 3]) << 24);
+    };
+    const uint64_t off = rd32(24);
+    const uint64_t len = rd32(28);
+    std::error_code ec;
+    const uint64_t total =
+        static_cast<uint64_t>(std::filesystem::file_size(path, ec));
+    if (ec) return std::nullopt;
+    // A declared window that runs past the end of the file is a malformed
+    // envelope — let the size heuristics have it rather than trusting it.
+    if (off < 64 || len == 0 || off > total || off + len > total)
+        return std::nullopt;
+    return len;
+}
+
 DiskSlotClass classifyDiskForSlot(const std::string& path)
 {
     namespace fs = std::filesystem;
@@ -2590,26 +2624,50 @@ DiskSlotClass classifyDiskForSlot(const std::string& path)
     std::string ext = fs::path(path).extension().string();
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
+    // ── 2IMG: classify from the HEADER, never from the file size ────────
+    // The envelope carries an arbitrary data offset and an optional comment
+    // / creator trailer, so `sz` says nothing reliable about the payload —
+    // exactly what the loaders key off (`Block512Backing` parses dataOff /
+    // dataLen and only requires the PAYLOAD to be 512-aligned). Guessing by
+    // size refused ordinary CiderPress output (a hard-disk .2mg with a
+    // comment block landed in no bucket at all) and dead-ended every
+    // ProDOS volume between 143 KB and 800 KB into the 5.25" loader, which
+    // rejects it with "larger volumes belong on the HDV card" — a route
+    // classification then made unreachable.
+    if (ext == ".2mg") {
+        if (const auto payload = read2mgPayloadLength(path)) {
+            const uint64_t len = *payload;
+            if (len == 143360 || len == 232960 || len == 223440)
+                return DiskSlotClass::Floppy525;   // ProDOS/DOS floppy, or NIB
+            if (len == 819200)
+                return DiskSlotClass::Sony35;
+            if (len >= 512 && (len % 512) == 0)
+                return DiskSlotClass::Hdv;
+            return DiskSlotClass::Unknown;
+        }
+        // Unreadable or not actually a 2IMG — fall through to the
+        // size heuristics below so behaviour degrades rather than breaks.
+    }
+
     // 5.25" Disk II — mirrors accept525(). The 800K `.po` is NOT caught
     // here (only the 143360-byte 5.25" ProDOS size); it falls through to
-    // the Sony35 bucket below.
+    // the Sony35 bucket below. A `.dsk` is likewise only 5.25" at a 5.25"
+    // size: `Disk35Image` accepts a bare 800K payload under .po, .dsk AND
+    // .image (it even special-cases .dsk for write protection), so an 800K
+    // .dsk used to be handed to the 5.25" loader and refused with a message
+    // listing only 5.25" sizes.
     if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz"
-        || ext == ".d13")
+        || ext == ".d13") {
+        if (ext == ".dsk" && sz == 819200) return DiskSlotClass::Sony35;
         return DiskSlotClass::Floppy525;
+    }
     if (ext == ".po" && (sz == 143360 || sz == 143360 + 64))
         return DiskSlotClass::Floppy525;
-    // 2IMG-wrapped 5.25" floppy (the common Asimov distribution format):
-    // anything .2mg clearly smaller than an 800K Sony image is a 5.25"
-    // candidate — the magic-based DiskImage loader then validates the
-    // payload (143360 DOS/ProDOS, 232960/223440 NIB) and yields a precise
-    // error for malformed files. This used to fall through to Unknown
-    // even though the loader fully supports it (envelope-preserving
-    // write-back included).
     if (ext == ".2mg" && sz < 819200)
         return DiskSlotClass::Floppy525;
 
     // 800K Sony 3.5" — mirrors accept35() (819200 ± 2IMG header slack).
-    if ((ext == ".po" || ext == ".2mg") &&
+    if ((ext == ".po" || ext == ".2mg" || ext == ".image") &&
         (sz == 819200 || sz == 819200 + 64 ||
          (sz > 819200 && sz < 819200 + 4096)))
         return DiskSlotClass::Sony35;

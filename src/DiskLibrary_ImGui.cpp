@@ -25,7 +25,14 @@ namespace fs = std::filesystem;
 // on the .po here — the dedicated 3.5" scanner sees the 800K bucket. `.d13`
 // is the 13-sector (DOS 3.1/3.2/3.2.1) raw image (35×13×256 = 116480 B).
 // `ext` arrives already lower-cased from rescanInto.
+// NOTE on `.2mg`: classifyDiskForSlot classifies that envelope by PARSING its
+// header, which these filters cannot afford — they run over every file of a
+// directory scan. The size rules below stay a deliberate cheap approximation
+// of it; the other extensions mirror it exactly.
 bool accept525(const std::string& ext, uint64_t sz) {
+    // An 800K `.dsk` is a Sony 3.5" payload, not a 5.25" one — accept35
+    // takes it, matching classifyDiskForSlot.
+    if (ext == ".dsk" && sz == 819200) return false;
     if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz"
         || ext == ".d13")
         return true;
@@ -41,6 +48,8 @@ bool accept525(const std::string& ext, uint64_t sz) {
 }
 
 bool accept35(const std::string& ext, uint64_t sz) {
+    // Disk35Image takes a bare 800K payload under .po, .dsk and .image alike.
+    if ((ext == ".dsk" || ext == ".image") && sz == 819200) return true;
     if (ext != ".po" && ext != ".2mg") return false;
     // 800 K = 1600 × 512 = 819 200. 2IMG envelope adds ≤ 4 KB.
     return sz == 819200 || sz == 819200 + 64
@@ -48,10 +57,17 @@ bool accept35(const std::string& ext, uint64_t sz) {
 }
 
 bool acceptHdv(const std::string& ext, uint64_t sz) {
-    if (ext != ".hdv" && ext != ".2mg") return false;
-    // Anything > 800 K and a whole multiple of 512 B (or 2IMG with the
-    // standard 64-byte header). Hard caps left to ProDOSHardDiskCard's
-    // 32 MB ceiling.
+    // `.hdv` is UNAMBIGUOUSLY a hard-disk volume at ANY valid 512-aligned
+    // size, exactly 800K included (1600 blocks, e.g. AppleWorks_AW.hdv).
+    // The old `sz > 819200` bound hid those from every Library tab — they
+    // fail accept525 and accept35 too — while drag-drop and the kiosk scan
+    // (both classifyDiskForSlot) mounted and booted them fine.
+    if (ext == ".hdv")
+        return sz >= 512 &&
+               ((sz % 512 == 0) || (sz > 64 && (sz - 64) % 512 == 0));
+    // A `.2mg` IS ambiguous, so it only reaches the HDV tab above 800K —
+    // accept35 has already claimed the ones at or below it.
+    if (ext != ".2mg") return false;
     if (sz <= 819200) return false;
     return (sz % 512 == 0) || ((sz - 64) % 512 == 0);
 }

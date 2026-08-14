@@ -269,6 +269,29 @@ void DiskIICard::refreshMediaDerivedState(bool warnMissing13Rom)
     }
 }
 
+// Splice the write burst the controller is part-way through into the ACTIVE
+// drive's image. selectDrive() already does this when a drive swap abandons
+// a write (see its `mon_w(true) → commit_image` block); the other paths that
+// abandon one outside the normal Q7 falling edge — insertDisk,
+// flushPendingWrites — used to just zero the cursor, losing the sector.
+void DiskIICard::commitInFlightWrite()
+{
+    if (active == MODE_IDLE || !writeMode || !writeBackEnabled) return;
+    if (writePosition <= 0) return;
+    DiskImage& img = images[activeDrive];
+    if (!img.isLoaded()) return;
+    // Same call, same anchors as the drive-swap splice in selectDrive():
+    // the burst is timed against the drive's own revolution start.
+    img.writeFlux(headQuarterTrack[activeDrive],
+                  writeStartTime,
+                  static_cast<int64_t>(lssCycle),
+                  writePosition, writeBuffer,
+                  revolutionStartLssCycle[activeDrive]);
+    ++writeFlushCount;
+    writePosition   = 0;
+    writeLineActive = false;
+}
+
 // Flush every drive's pending write-back without ejecting. The eject and
 // swap paths already do this, but process shutdown / profile switch tears
 // the card down without either — a session's DOS SAVEs then died with the
@@ -277,6 +300,10 @@ void DiskIICard::refreshMediaDerivedState(bool warnMissing13Rom)
 // write-protected medium, is a no-op returning success).
 bool DiskIICard::flushPendingWrites()
 {
+    // Fold the burst the controller is part-way through into its image
+    // first, so a shutdown / profile switch mid-`SAVE` persists it like a
+    // completed sector rather than dropping it on the floor.
+    commitInFlightWrite();
     bool ok = true;
     for (int d = 0; d < kDriveCount; ++d) {
         DiskImage& img = images[d];
@@ -304,6 +331,11 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
             "insertDisk: invalid drive index " + std::to_string(drive));
         return false;
     }
+    // Commit the in-flight write burst BEFORE saveDirty() below, and before
+    // the LSS reset further down drops the buffer. Dropping a new disk on the
+    // window while the guest is mid-`SAVE`/`INIT` used to lose the sector the
+    // controller was writing, even with write-back on.
+    commitInFlightWrite();
     DiskImage& img = images[drive];
     // Save any pending writes from the previous image before we drop it.
     if (img.isLoaded() && img.hasUnsavedChanges()) {

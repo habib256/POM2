@@ -449,6 +449,14 @@ private:
     /// eject has to be able to clear them again.
     void refreshMediaDerivedState(bool warnMissing13Rom);
 
+    /// Splice the in-flight LSS write burst into the ACTIVE drive's image and
+    /// clear the buffer. `selectDrive` does this on a drive swap; the media
+    /// paths that abandon a write outside the normal Q7 falling edge —
+    /// `insertDisk`, `flushPendingWrites` — must do it too, or the sector the
+    /// controller is mid-way through writing is lost. No-op unless a write
+    /// session is actually open on a loaded, write-back-enabled drive.
+    void commitInFlightWrite();
+
     void handleSwitchAccess(uint8_t low4);
     /// MAME `floppy_image_device::seek_phase_w`: settle the head into the
     /// well of the current 4-bit magnet pattern, capped at ±4 quarter-

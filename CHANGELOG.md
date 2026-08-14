@@ -5,6 +5,94 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-14 — Drag-and-drop autoboot: seven defects on the drop → boot path
+
+The promise in README § "Boot a disk in one drag" is that dropping a disk
+image on the window mounts it in the right controller and boots it. The
+callback had been wired since 2026-05-31 and the plumbing was sound — what
+had rotted was everything downstream of it. Seven defects, three of them
+silent data loss.
+
+**A dropped 3.5" image was refused on the machines most people run.**
+`insertAndBootImage`'s HDV branch auto-plugs a block card when the config
+has none; its 3.5" branch did not, and failed with "no 3.5" device in this
+config". The stock `Apple ][+` / `//e` configurations ship no SmartPort, so
+dropping an 800K `.po`/`.2mg` — the single most common 3.5" distribution
+format — never booted on the default profile. The fix is not new code: the
+Floppy Emu panel already had an `ensureSmartPort` lambda doing exactly this,
+scoped to that one window. It is now the member `ensureSmartPortCardForBoot()`
+alongside its `ensureHdvCardForBoot()` sibling, and the panel calls it too.
+Session-local like the HDV one: the saved slot config is never touched.
+
+**"Dropped + booted" was printed without anyone checking that it booted.**
+`bootFromSlot` validates the Apple II JSR-dispatch trio at `$Cn01/03/05` and,
+when it fails, logs a warning and degrades to a plain cold boot — but it
+returned `void`, so `insertAndBootImage` returned `true` regardless and the
+status bar claimed success while the user watched a BASIC prompt or a hung
+loader. It now returns `bool` and every "booted" message honours it. Two
+reachable cases the lie covered: **no ROM loaded** (the drop is now refused
+up front, pointing at Help → Welcome, instead of jumping `PC` into firmware
+that does not exist), and a `.d13` with no `roms/disk2_13.rom`, which spins
+in the boot loop forever. The //c+ on-board Sony hub gets the same honesty:
+its IWM boot path is deliberately unmodelled, so a 3.5" image routed there
+now reports "mounted, cannot boot from it" rather than "booted".
+
+**The 2IMG envelope was classified by guessing at the file size.** 2IMG
+carries an arbitrary data offset plus an optional comment/creator trailer,
+and `Block512Backing` has always parsed the header and required only the
+*payload* to be 512-aligned. `classifyDiskForSlot` instead did arithmetic on
+the total file size, so ordinary CiderPress output — a hard-disk `.2mg` with
+a comment block — matched no bucket at all and the drop was rejected as "not
+a disk image", though mounting the same file from the Library worked. It
+also dead-ended every ProDOS volume between 143 KB and 800 KB into the 5.25"
+loader, which rejects it with "larger volumes belong on the HDV card" — a
+route the classifier then made unreachable. It now reads the header
+(`read2mgPayloadLength`) and falls back to the old heuristics only when the
+file is not a readable 2IMG, so a malformed envelope degrades rather than
+breaks. Pinned by `cli_kiosk`.
+
+**An 800K `.dsk`/`.image` went to the 5.25" loader.** `Disk35Image` accepts a
+bare 819200-byte payload under `.po`, `.dsk` *and* `.image` (it even
+special-cases `.dsk` for write protection), but the classifier sent every
+`.dsk` to Disk II by extension alone, so the drop failed with a message
+listing only 5.25" sizes. Also pinned.
+
+**The Disk Library hid `.hdv` files that drag-and-drop booted fine.**
+`acceptHdv` still carried the `sz > 819200` bound that `classifyDiskForSlot`
+had already documented as a bug — and an `.hdv` fails `accept525`/`accept35`
+too, so an exactly-800K image (`AppleWorks_AW.hdv`) appeared in **no** tab
+while the drop path and the kiosk scan mounted it. The comment claiming the
+two lists mirror each other is now true for every extension except `.2mg`,
+where the Library's size rules stay a deliberate cheap approximation of the
+header parse — it filters a whole directory scan and cannot open every file.
+
+**Three silent-data-loss defects, all on paths a drop takes.** (1) A card
+auto-plugged by `ensureHdvCardForBoot` never received the stored
+`hdv_writeback` preference, so a dropped `.hdv` accepted every ProDOS write
+into RAM and discarded the lot at exit — and worse, `~MainWindow` persisted
+that card's write-back flag with no auto-provision guard (unlike the sibling
+`hdv_path` block twelve lines above), so **one drag-and-drop permanently
+disarmed write-back for the user's real HDV.** (2) `routeMount35` /
+`routeMountHdv` replace a SmartPort bay's unit when the kind differs; the
+fresh unit comes up write-back off while the persisted `_writeback` stayed
+`true`, so the session's writes vanished and the next launch re-armed the bay
+— making the loss look like a fluke rather than a config change. They now
+write the flag alongside the unit, as the SmartPort panel's own type swap
+does. (3) That same replacement discarded `setUnit`'s returned old unit,
+leaving `~SmartPortUnit`'s best-effort `(void)saveDirty()` as the only flush;
+if it failed (read-only file, unplugged volume, disk full) the dirty blocks
+were freed with no error anywhere. Every other eject/insert path in POM2
+treats a failed flush as fatal-and-preserve, and these two now do as well.
+
+**Dropping a disk mid-`SAVE` lost the sector being written.**
+`DiskIICard::insertDisk` zeroed `writePosition`/`writeLineActive` with no
+splice, while `selectDrive` — the other path that abandons a write outside
+the normal Q7 falling edge — commits the burst through `writeFlux` first.
+`flushPendingWrites` had the same gap, so a profile switch or shutdown mid-
+write dropped it too. Both now call a shared `commitInFlightWrite()`, and in
+`insertDisk` it runs *before* `saveDirty()` so the spliced sector actually
+reaches the file.
+
 ## 2026-08-14 — Three defects cleared before the 0.8 tag
 
 A pre-release audit of what still stood between `main` and a `v0.8` tag. Two
