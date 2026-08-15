@@ -55,6 +55,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     ca-certificates git wget file desktop-file-utils \
     build-essential cmake pkg-config binutils \
+    zlib1g-dev \
     libglfw3-dev \
     libgles2-mesa-dev libegl1-mesa-dev \
     libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
@@ -68,35 +69,15 @@ echo 'int main(){}' | g++ -x c++ -mcpu="$MCPU" -o /dev/null - \
     || { echo "ERROR: -mcpu=$MCPU rejected by $(g++ --version | head -1)"; exit 1; }
 
 # --- AppImage tooling -------------------------------------------------------
-# Same block, same reasoning, as packaging/linux/build_in_bookworm_arm64.sh:
-# extracted rather than run through FUSE (CI containers have none), and the
-# runtime PINNED to AppImageKit release 12 because `continuous/runtime-aarch64`
-# is ET_DYN and AppImageLauncher rejects it as "type -1".
+# Shared with packaging/linux/build_in_bookworm_arm64.sh — pinned digests and
+# the appimagetool/runtime pairing rationale live in the fetch script.
+#
+# This block used to be a fourth hand-kept copy of that list, and it cost a
+# release cycle: when the other three moved to AppImageKit-12's appimagetool
+# (the only one whose compressor the pinned ET_EXEC runtime can read), this one
+# stayed on 1.9.1 and produced a zstd image that could not open itself.
 TOOLS=/opt/appimage-tools
-mkdir -p "$TOOLS" && (
-    cd "$TOOLS"
-    download_verified() {
-        url=$1 out=$2 expected=$3
-        wget -q "$url" -O "$out"
-        echo "$expected  $out" | sha256sum -c -
-    }
-    download_verified \
-      "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage" \
-      appimagetool.AppImage \
-      f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
-    download_verified \
-      "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" \
-      linuxdeploy.AppImage \
-      9f04c4c2a8b69c392c4bbcc1a88bdd4d0a8ac03f587cf5242814cb7ae47b78e5
-    download_verified \
-      "https://github.com/AppImage/AppImageKit/releases/download/12/runtime-aarch64" \
-      runtime-aarch64 \
-      207f8955500cfe8dd5b824ca7514787c023975e083b0269fc14600c380111d85
-    chmod +x runtime-aarch64 ./*.AppImage
-    ./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir
-    ./appimagetool.AppImage --appimage-extract >/dev/null && mv squashfs-root appimagetool.AppDir
-    rm -f ./*.AppImage
-)
+ARCH=aarch64 /work/packaging/linux/fetch_appimage_tools.sh "$TOOLS"
 export POM2_APPIMAGE_TOOLS_DIR="$TOOLS"
 
 # --- Dear ImGui (pinned COMMIT from imgui_pin.env) --------------------------

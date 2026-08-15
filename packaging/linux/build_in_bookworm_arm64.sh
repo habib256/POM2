@@ -24,6 +24,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates git wget file desktop-file-utils \
     build-essential cmake pkg-config \
+    zlib1g-dev \
     libglfw3-dev \
     libgles2-mesa-dev libegl1-mesa-dev \
     libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \

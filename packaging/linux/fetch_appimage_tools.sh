@@ -75,8 +75,28 @@ download_verified \
 
 chmod +x runtime-aarch64
 chmod +x ./*.AppImage
-./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir
-./appimagetool.AppImage --appimage-extract >/dev/null && mv squashfs-root appimagetool.AppDir
+
+# `A --appimage-extract && mv B` looks like it fails loudly under `set -e`, and
+# does not: POSIX exempts every command of an AND-OR list except the last, so a
+# failed extraction left NO AppDir and this script still exited 0. The caller
+# then built happily until appimagetool turned out to be "not available", one
+# hundred log lines away from the real message — which was
+# `libz.so: cannot open shared object file` (AppImageKit-12's appimagetool
+# links the unversioned soname, so the build image needs zlib1g-dev, not just
+# zlib1g). Separate statements, then assert the result.
+extract_tool() {   # extract_tool <file.AppImage> <dest.AppDir>
+    local img="$1" dir="$2"
+    rm -rf squashfs-root
+    if ! "./$img" --appimage-extract >/dev/null; then
+        echo "ERROR: $img could not extract itself." >&2
+        echo "       Missing a shared library? Try: ./$img --appimage-extract" >&2
+        exit 1
+    fi
+    mv squashfs-root "$dir"
+    [ -x "${dir}/AppRun" ] || { echo "ERROR: ${dir}/AppRun missing after extraction" >&2; exit 1; }
+}
+extract_tool linuxdeploy.AppImage  linuxdeploy.AppDir
+extract_tool appimagetool.AppImage appimagetool.AppDir
 rm -f ./*.AppImage
 
 echo "$DEST"
