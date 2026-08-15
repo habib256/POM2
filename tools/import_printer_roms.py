@@ -168,7 +168,12 @@ def emit_overrides(name, per_locale):
             rows.append("    { IwLocale::%s, 0x%02X, %s },"
                         % (loc, code, emit_glyph(table[code])))
     if not rows:
-        return ("inline constexpr IwOverride %s[] = {};\n"
+        # ONE value-initialised placeholder, not `[] = {}`. A zero-length array
+        # is a GCC/Clang extension that MSVC rejects outright (C2466: "cannot
+        # allocate an array of constant size 0"), which broke the Windows
+        # release build. Consumers iterate to `...Count`, which stays 0, so the
+        # placeholder is never read.
+        return ("inline constexpr IwOverride %s[1] = {};\n"
                 "inline constexpr size_t %sCount = 0;" % (name, name))
     return ("inline constexpr IwOverride %s[] = {\n%s\n};\n"
             "inline constexpr size_t %sCount =\n"

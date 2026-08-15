@@ -148,12 +148,46 @@ rm -f "$OUTFILE"
 AT_ARGS=()
 if [ -n "${POM2_APPIMAGE_RUNTIME:-}" ]; then
     AT_ARGS+=(--runtime-file "$POM2_APPIMAGE_RUNTIME")
+    # …and force a squashfs compressor that runtime can actually read.
+    #
+    # The two halves have to agree and nothing checks that they do. The
+    # AppImageKit-12 runtime pinned above (the last ET_EXEC ARM one) supports
+    # only xz and zlib, while appimagetool 1.9.1 defaults to **zstd** — so the
+    # image it produces cannot be opened by the runtime embedded in it. The
+    # package looks perfect: right name, right ELF type, right magic, and it
+    # dies on the first `--appimage-extract` with "Squashfs image uses (null)
+    # compression". It was latent from the day the tooling moved off
+    # AppImageKit's `continuous` appimagetool (whose default was gzip) and only
+    # surfaced on the next ARM release run.
+    AT_ARGS+=(--comp "${POM2_APPIMAGE_COMP:-xz}")
 fi
 
 if ARCH="$ARCH" run_tool appimagetool "${AT_ARGS[@]}" "$APPDIR" "$OUTFILE"; then
     log "Wrote ${OUTFILE}"
 else
     echo "ERROR: appimagetool not available — AppDir left at ${APPDIR}" >&2
+    exit 1
+fi
+
+# ─── Can the image open itself? ─────────────────────────────────────────────
+# The runtime is embedded in the file, and the payload was compressed by a
+# separate tool: nothing upstream checks that the compressor the tool chose is
+# one the runtime understands. When they disagree the package is still the
+# right size, the right ELF type and carries the right magic — it simply cannot
+# be unpacked, by anyone, ever. Ask it here, where the answer costs a second
+# and points straight at the cause, rather than discovering it in a CI verify
+# step twenty minutes later or in a user's bug report.
+EXTRACT_PROBE="${BUILD_DIR}/extract-probe"
+rm -rf "$EXTRACT_PROBE"; mkdir -p "$EXTRACT_PROBE"
+if (cd "$EXTRACT_PROBE" && "${REPO_ROOT}/${OUTFILE}" --appimage-extract >/dev/null 2>&1) \
+   && [ -x "${EXTRACT_PROBE}/squashfs-root/AppRun" ]; then
+    log "Self-extraction OK (runtime and payload compressor agree)"
+    rm -rf "$EXTRACT_PROBE"
+else
+    echo "ERROR: ${OUTFILE} cannot extract itself." >&2
+    echo "       Its embedded runtime does not understand the payload's" >&2
+    echo "       compression. Set POM2_APPIMAGE_COMP to one it supports" >&2
+    echo "       (the pinned AppImageKit-12 ARM runtime: xz or zlib)." >&2
     exit 1
 fi
 
