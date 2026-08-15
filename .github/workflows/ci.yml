@@ -128,3 +128,17 @@ jobs:
           done
           echo "WASM artifacts OK:"
           ls -lh wasm/POM2.wasm wasm/POM2.js wasm/index.html
+
+      # The online demo IS the committed wasm/ folder — GitHub Pages serves it
+      # straight from the branch — so it is published content, not a build
+      # artifact that can lag harmlessly. This job rebuilds the bundle to prove
+      # the sources still compile for the browser, but it does NOT deploy; a
+      # forgotten rebuild would leave a stale demo online with nothing failing.
+      # Compares SOURCE fingerprints rather than bytes: emcc output is not
+      # reproducible across emsdk versions, so a byte diff would fail forever.
+      #
+      # If this trips: the build above already produced a fresh bundle, so copy
+      # wasm/{index.html,POM2.js,POM2.wasm,POM2.data} out of the run (or rebuild
+      # locally), then `tools/wasm_stamp.sh --write` and commit wasm/.
+      - name: Is the committed wasm/ bundle up to date?
+        run: tools/wasm_stamp.sh --check

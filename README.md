@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍏 POM2 v0.8 — Apple II Emulator
+# 🍏 POM2 v0.8.2 — Apple II Emulator
 
 ### *Eight machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
 
@@ -60,25 +60,34 @@ to add.
 
 | Package | For | Notes |
 | --- | --- | --- |
-| `POM2-v0.8-x86_64.AppImage` | Linux (Intel/AMD) | Runs on Mint 19+, Debian 12, Ubuntu 20.04+ (glibc **2.27** floor) |
-| `POM2-macOS-v0.8.dmg` | macOS 10.15+ | **Universal 2** — Apple Silicon *and* Intel in one file |
-| `POM2-Windows-v0.8.zip` | Windows 10/11 x64 | One `POM2.exe`, no DLL beside it |
-| `POM2-v0.8-aarch64.AppImage` | Raspberry Pi 4 / 5 (64-bit) | OpenGL **ES 3.0** build, Raspberry Pi OS bookworm (glibc **2.36**) |
+| `POM2-v0.8.2-x86_64.AppImage` | Linux (Intel/AMD) | Runs on Mint 19+, Debian 12, Ubuntu 20.04+ (glibc **2.27** floor) |
+| `POM2-v0.8.2-aarch64.AppImage` | Linux on ARM64 (desktop/server) | Desktop OpenGL, glibc **2.39** — Ubuntu 24.04+, Fedora 40+, Debian trixie |
+| `POM2-v0.8.2-raspberry-aarch64.AppImage` | Raspberry Pi 3 → 5 | OpenGL **ES 3.0**, Raspberry Pi OS bookworm (glibc **2.36**). **Take this one on a Pi** |
+| `POM2-v0.8.2-pi400-aarch64.AppImage` | Raspberry Pi 4 / Pi 400 only | Same, plus `-mcpu=cortex-a72` + PGO/LTO (**≈ −39 %** CPU). Will **not** start on an older core |
+| `POM2-macOS-v0.8.2.dmg` | macOS 10.15+ | **Universal 2** — Apple Silicon *and* Intel in one file |
+| `POM2-Windows-v0.8.2.zip` | Windows 10/11 x64 | One `POM2.exe`, no DLL beside it |
+| `POM2-v0.8.2-web-wasm.zip` | any static web host | The browser build — unzip, serve the folder, open `index.html` |
 | `SHA256SUMS.txt` | everyone | `sha256sum -c SHA256SUMS.txt` to verify what you downloaded |
+
+Every package carries the emulator's ROM set, its fonts and its artwork, so it
+boots with nothing else installed. None of them carries a disk library — bring
+your own images (§ Disk images).
 
 **🐧 Linux / 🍓 Raspberry Pi**
 
 ```bash
-chmod +x POM2-v0.8-x86_64.AppImage
-./POM2-v0.8-x86_64.AppImage
+chmod +x POM2-v0.8.2-x86_64.AppImage
+./POM2-v0.8.2-x86_64.AppImage
 ```
 
 If your distro no longer ships `libfuse2`, either install it or run the image
-without it: `./POM2-v0.8-x86_64.AppImage --appimage-extract-and-run`.
-Pi owners who want the last drop of speed can also fetch the **core-specific
-PGO packages** (CI builds them on an ARM64 runner, so the Pi compiles
-nothing) — recipe under [Releases](#-releases); worth roughly 40 % on the
-emulation core over this generic aarch64 build.
+without it: `./POM2-v0.8.2-x86_64.AppImage --appimage-extract-and-run`.
+On a **Pi 4 or Pi 400**, take `-pi400-aarch64` rather than `-raspberry-`: it is
+the same build compiled for that exact core with two profile-guided passes and
+LTO, worth roughly **40 %** on the emulation core. It will not start on a Pi 3
+or on a Pi 5, which is why both packages ship. Other cores (Pi 5's cortex-a76,
+Pi 3's cortex-a53) and the Pi OS Lite tarball are built on demand — recipe
+under [Releases](#-releases).
 
 **🍏 macOS** — open the `.dmg`, drag **POM2** into *Applications*. The app is
 signed **ad-hoc** (no paid Developer ID), so the first launch is refused with
@@ -175,9 +184,11 @@ POM2 --kiosk path/to/game.dsk       # exclusive full-screen, chrome-free
 | Arrows | Apple II arrows | `Ctrl-A..Z` | `$01..$1A` |
 | Esc | ESC | F9 | Screenshot → `screenshot_NNN.ppm` |
 | F10 | **Full screen ⇄ windowed** (kiosk toggle) | F11 | Soft reset / Ctrl-Reset |
-| F12 | Hard reset / power-cycle | | |
+| F12 | Hard reset / power-cycle | `Ctrl+Alt+G` | **Capture / release the mouse** |
 
-F9 / F10 / F11 / F12 and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
+F9 / F10 / F11 / F12, `Ctrl+Alt+G` and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
+
+**Mouse capture.** With a Mouse Card plugged (`mouse` or `mouseaw`), clicking the Apple II screen hands the host pointer to the guest: the OS cursor disappears and motion becomes unbounded, so the emulated cursor can always reach the edges of its own clamp window instead of stalling when your real pointer runs out of screen. That first click is swallowed — it captures rather than clicking. **`Ctrl+Alt+G` or a middle click (wheel) gives the pointer back**; so does Alt-Tabbing away. The status bar shows a `GRAB` badge while captured. `View → Capture mouse` toggles it from the menu, and `View → Click screen to capture` turns the click-to-capture half off if you prefer clicks to always reach the guest.
 
 ---
 
@@ -374,7 +385,7 @@ workflow builds every platform natively, attaches the artifacts (plus a
 body (falling back to auto-generated notes when it is absent):
 
 ```bash
-git tag v0.8 && git push origin v0.8      # `0.8` without the v works too
+git tag v0.8.2 && git push origin v0.8.2  # `0.8.2` without the v works too
 ```
 
 Use **Run workflow** on the Actions tab for a dry run: same builds, artifacts
@@ -383,9 +394,12 @@ uploaded, no Release created.
 | Package | Runner | Notes |
 | --- | --- | --- |
 | `POM2-v<ver>-x86_64.AppImage` | `ubuntu-latest` + pinned **bionic** container | glibc floor **2.27** — runs on Mint 19+, Debian 12, Ubuntu 20.04+ |
+| `POM2-v<ver>-aarch64.AppImage` | `ubuntu-24.04-arm`, native | ARM desktops/servers — desktop GL, glibc floor **2.39** |
+| `POM2-v<ver>-raspberry-aarch64.AppImage` | `ubuntu-24.04-arm` + **bookworm** container | Raspberry Pi 3→5 — GLES 3.0, glibc floor **2.36**, no desktop libGL |
+| `POM2-v<ver>-pi400-aarch64.AppImage` | same + `-mcpu=cortex-a72`, PGO + LTO | Pi 4 / Pi 400 only — will not start on an older core |
 | `POM2-macOS-v<ver>.dmg` | `macos-15` | **Universal 2** (arm64 + x86_64), static GLFW, ad-hoc signed |
 | `POM2-Windows-v<ver>.zip` | `windows-latest` + vcpkg static triplet | one self-contained `POM2.exe`, **no DLL** beside it |
-| `POM2-v<ver>-aarch64.AppImage` | `ubuntu-24.04-arm` + **bookworm** container | Raspberry Pi — GLES 3.0, glibc floor **2.36**, no desktop libGL |
+| `POM2-v<ver>-web-wasm.zip` | `ubuntu-latest` + emsdk | the browser bundle, for any static host |
 
 The Linux package is built inside a frozen container on purpose: an AppImage
 never bundles glibc, so its floor is whatever the *build* machine had. Building
@@ -393,6 +407,26 @@ on `ubuntu-latest` stamps `GLIBC_2.38`, which will not start on Debian 12 or
 Ubuntu 22.04. POM2 **reuses POM1's** `pom1-bionic-builder` image (pinned by
 digest) — the requirements are identical, so there is one image to maintain
 rather than two. Rebuild it from POM1, then re-pin the digest in both repos.
+
+The three aarch64 packages are not redundancy: each targets a floor the others
+cannot serve, and the file name says which to take. The variant tag in the
+name is enforced per job — the publish step flattens every artifact into one
+directory, so two same-named packages would overwrite each other in silence.
+
+**What ships inside a package** is declared once, in
+`packaging/bundle.manifest`: the ROM set, the two UI fonts, and the About
+photo. CMake reads it for the `install()` rules *and* for the WASM
+`--preload-file` list; `packaging/stage_data.sh` reads it for the macOS `.app`
+and the Windows `.zip`. Every release job then runs
+`stage_data.sh --verify` on the staged tree — everything the manifest promises
+is there, and nothing from its `deny` list (the disk libraries, your snapshots
+and printouts) leaked in. Both failures are otherwise silent.
+
+Past `--help`, each job also runs a **boot smoke** against the packaged
+binary: `pom2_headless --frames 300 --screenshot` boots the bundled ROM,
+executes 300 frames and fails if the captured frame is a single flat colour.
+That is what proves a package resolved its *own* ROMs and ran 6502 code —
+`--help` would pass just as happily with an empty `roms/`.
 
 **Local builds** (no CI needed):
 

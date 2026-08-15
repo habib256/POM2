@@ -23,6 +23,8 @@
 #   POM2_APPIMAGE_TOOLS_DIR  dir holding linuxdeploy.AppDir/ and appimagetool.AppDir/
 #   POM2_APPIMAGE_SKIP_BUILD build/ is already configured+built; only package
 #   POM2_CMAKE_EXTRA_ARGS    extra configure args (e.g. -DPOM2_GLES=ON for the Pi)
+#   POM2_APPIMAGE_VARIANT    name tag inserted before the arch (e.g. "raspberry",
+#                            "pi400") — see the naming note at the packaging step
 #   ARCH                     target arch for appimagetool (default: uname -m)
 #
 # Usage: packaging/linux/build_appimage.sh [<build-dir>] [<out-dir>]
@@ -91,8 +93,18 @@ run_tool() {   # run_tool <name> [args...] — prefers the extracted AppDir copy
     fi
 }
 
+# pom2_headless is deployed alongside the GUI when the install rules put it
+# there: the release jobs run it as their boot smoke from inside the package, so
+# its own dependencies have to be resolved too. Its needs are a subset of the
+# GUI's (no GLFW, no GL), but stating it costs nothing and stops a future
+# dependency of the console binary from silently going unbundled.
+LD_EXTRA=()
+[ -x "$APPDIR/usr/bin/pom2_headless" ] && \
+    LD_EXTRA+=(--executable "$APPDIR/usr/bin/pom2_headless")
+
 if run_tool linuxdeploy --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/POM2" \
+        "${LD_EXTRA[@]}" \
         --desktop-file "$APPDIR/POM2.desktop" \
         --icon-file "$APPDIR/POM2.svg" 2>"${BUILD_DIR}/linuxdeploy.log"; then
     log "linuxdeploy staged the dependency libraries"
@@ -114,7 +126,16 @@ done
 
 # ─── Squash into the final AppImage ─────────────────────────────────────────
 mkdir -p "$OUT_DIR"
-OUTFILE="${OUT_DIR}/POM2-v${VERSION}-${ARCH}.AppImage"
+# The variant tag is not cosmetic. Three aarch64 packages now come out of this
+# script — the generic ARM64 one (runner glibc, desktop GL), the Raspberry Pi
+# one (bookworm glibc 2.36, GLES) and the core-specific Pi 4/400 one
+# (-mcpu=cortex-a72, PGO+LTO) — and the publish job flattens every artifact into
+# ONE directory. Without the tag all three would be POM2-v<ver>-aarch64.AppImage
+# and two of them would be silently overwritten: users would download a package
+# that either refuses to start on their Pi or runs the software rasteriser.
+VARIANT="${POM2_APPIMAGE_VARIANT:-}"
+[ -z "$VARIANT" ] || VARIANT="${VARIANT}-"
+OUTFILE="${OUT_DIR}/POM2-v${VERSION}-${VARIANT}${ARCH}.AppImage"
 rm -f "$OUTFILE"
 
 # ARCH is what appimagetool stamps into the runtime; it refuses to guess.

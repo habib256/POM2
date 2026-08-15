@@ -101,13 +101,19 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
         // F10 (GUI ↔ kiosk) joins the unconditional set for the same
         // reason as F11/F12: entering kiosk from a focused widget must
         // work, and leaving it must ALWAYS work.
+        // Ctrl+Alt+G (release the captured mouse) is unconditional for the
+        // strongest form of that reason: while the pointer is captured the
+        // user cannot click their way to any other control.
         const bool isGlobalKey = (key == GLFW_KEY_F11 || key == GLFW_KEY_F12 ||
                                   key == GLFW_KEY_F9 || key == GLFW_KEY_F10 ||
                                   key == GLFW_KEY_LEFT_ALT ||
                                   key == GLFW_KEY_RIGHT_ALT ||
                                   (key == GLFW_KEY_P &&
                                    (mods & GLFW_MOD_CONTROL) &&
-                                   (mods & GLFW_MOD_SHIFT)));
+                                   (mods & GLFW_MOD_SHIFT)) ||
+                                  (key == GLFW_KEY_G &&
+                                   (mods & GLFW_MOD_CONTROL) &&
+                                   (mods & GLFW_MOD_ALT)));
         if (!ImGui::GetIO().WantCaptureKeyboard || isGlobalKey) {
             mw->onKey(key, sc, action, mods);
         }
@@ -136,6 +142,20 @@ static void glfw_mouse_button_callback(GLFWwindow* w, int button, int action, in
         // Apple II Screen is itself an ImGui window, so clicks inside
         // the screen widget would otherwise be swallowed by ImGui.
         mw->onMouseButton(button, action);
+    }
+}
+
+static void glfw_window_focus_callback(GLFWwindow* w, int focused)
+{
+    // Chain ImGui's own handler first (same pattern as the key / cursor /
+    // button callbacks above): installing ours replaces the one
+    // ImGui_ImplGlfw_InitForOpenGL registered.
+    ImGui_ImplGlfw_WindowFocusCallback(w, focused);
+    if (auto* mw = static_cast<MainWindow*>(glfwGetWindowUserPointer(w))) {
+        // Drop a Mouse Card pointer capture on the way out: a grab that
+        // survived Alt-Tab would keep eating the desktop's pointer with no
+        // visible owner and no window to press Ctrl+Alt+G in.
+        mw->onWindowFocus(focused != 0);
     }
 }
 
@@ -566,6 +586,7 @@ int main(int argc, char* argv[])
     glfwSetKeyCallback (window, glfw_key_callback);
     glfwSetCursorPosCallback  (window, glfw_cursor_pos_callback);
     glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
+    glfwSetWindowFocusCallback(window, glfw_window_focus_callback);
     glfwSetDropCallback       (window, glfw_drop_callback);
 
     // ─── Phase B: apply boot-time overrides on the live emulator ─────────

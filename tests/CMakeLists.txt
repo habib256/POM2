@@ -3058,6 +3058,19 @@ add_test(NAME mouse_card_applewin_smoke COMMAND test_mouse_card_applewin)
 set_tests_properties(mouse_card_applewin_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Mouse Card pointer-capture ("mouse grab") policy test ──────────────
+# Pins src/MouseGrab.h: the Ctrl+Alt+G chord and middle-button release that
+# keep a captured pointer escapable, the swallow-the-capturing-click rule,
+# release-always-passes-through, capture bypassing the widget-rect gate on
+# motion, and absolute sync being off while captured. Header-only and
+# GLFW-free, so it links nothing but itself.
+add_executable(test_mouse_grab_policy mouse_grab_policy_test.cpp)
+target_include_directories(test_mouse_grab_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME mouse_grab_policy COMMAND test_mouse_grab_policy)
+set_tests_properties(mouse_grab_policy PROPERTIES TIMEOUT 5)
+
+
 # ─── MouseCard quadrature edge smoke test ───────────────────────────────
 # Pins MouseCard::updateAxis against MAME mouse.cpp's update_axis<>: each
 # call emits at most one quadrature edge (CLK toggle + conditional DIR
@@ -5021,3 +5034,41 @@ add_executable(test_atomic_file_replace
 target_include_directories(test_atomic_file_replace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME atomic_file_replace COMMAND test_atomic_file_replace)
 set_tests_properties(atomic_file_replace PROPERTIES TIMEOUT 30)
+
+
+# ─── Package payload manifest ───────────────────────────────────────────
+# Not a C++ test: what needs pinning here is packaging/bundle.manifest and its
+# reader, packaging/stage_data.sh. Both failure modes it guards are SILENT —
+# a package that lost fonts/ drops the UI to ImGui's bitmap face with blank
+# icon boxes, and one that gained disks_5.4/ turns a 2 MB download into a
+# 200 MB one carrying media that is not ours to redistribute. The self-test
+# stages the payload into a temp dir, verifies it, then plants a deny-listed
+# folder and requires the verifier to REJECT it — a guard that always passes
+# is worse than no guard, because it reads as a guarantee.
+#
+# UNIX-only: the Windows release job builds with -DPOM2_ENABLE_TESTS=OFF, and
+# the script is bash.
+if(UNIX)
+    add_test(NAME bundle_manifest
+             COMMAND bash ${CMAKE_SOURCE_DIR}/packaging/stage_data.sh --self-test)
+    set_tests_properties(bundle_manifest PROPERTIES TIMEOUT 60)
+endif()
+
+
+# ─── Headless boot capture (the release packages' smoke) ────────────────
+# Runs the SAME command every release job runs against its packaged binary:
+# boot the bundled apple2.rom for 300 frames with no disk, render a frame, and
+# fail if it came out a single flat colour. What it pins is the smoke ITSELF —
+# if this drifts (a ROM probe path changes, tickFrame stops advancing, the
+# display returns an empty buffer) every package job would start failing at
+# once, on real hardware paths, with no local way to reproduce it.
+#
+# Needs roms/apple2.rom, which a source checkout has; skipped when it is absent
+# rather than failing, since a tree without dumps still configures.
+if(UNIX AND EXISTS "${CMAKE_SOURCE_DIR}/roms/apple2.rom")
+    add_test(NAME headless_boot_capture
+             COMMAND pom2_headless --frames 300
+                     --screenshot ${CMAKE_BINARY_DIR}/headless_boot.ppm
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    set_tests_properties(headless_boot_capture PROPERTIES TIMEOUT 120)
+endif()

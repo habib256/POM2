@@ -3,20 +3,43 @@
 # verify-then-smoke-launch discipline), minus POM1's cc65 bundling: POM2 has no
 # in-app assembler, so there is no toolchain to stage.
 #
-# Machines, and why each is what it is:
-#   linux    ubuntu-latest + a PINNED bionic container  → AppImage x86_64
-#   macos    macos-15 (arm64)                           → Universal 2 .dmg
-#   windows  windows-latest + vcpkg static triplet      → self-contained .zip
-#   publish  ubuntu-latest                              → Release + SHA256SUMS
+# SEVEN packages, and why each is what it is:
+#   linux       ubuntu-latest + PINNED bionic container → AppImage x86_64
+#   linux-arm64 ubuntu-24.04-arm (native)               → AppImage aarch64
+#   raspberry   ubuntu-24.04-arm + debian:bookworm      → AppImage raspberry-aarch64 (GLES)
+#   pi400       ubuntu-24.04-arm + bookworm + PGO/LTO   → AppImage pi400-aarch64 (cortex-a72)
+#   macos       macos-15 (arm64)                        → Universal 2 .dmg
+#   windows     windows-latest + vcpkg static triplet   → self-contained .zip
+#   wasm        ubuntu-latest + emsdk                   → web-wasm .zip
+#   publish     ubuntu-latest                           → Release + SHA256SUMS
 #
-#   pi       ubuntu-24.04-arm + debian:bookworm         → AppImage aarch64 (GLES)
+# THREE aarch64 AppImages, which is not redundancy — each targets a floor the
+# others cannot serve, and the file NAME is what tells a user which to take:
+#   ·  -aarch64            glibc 2.39, desktop GL — current ARM desktops/servers
+#   ·  -raspberry-aarch64  glibc 2.36, GLES       — Pi OS, generic Pi 3 → Pi 5
+#   ·  -pi400-aarch64      as above + -mcpu=cortex-a72 + PGO/LTO; will NOT start
+#                          on an older core. That is the price of the ~-39 % it
+#                          buys (docs/PERFORMANCE.md).
+# The variant tag is enforced by a name check in each job: the publish step
+# flattens every artifact into one directory, so two same-named packages would
+# overwrite each other in silence.
 #
-# The Pi job builds with -DPOM2_GLES=ON: Mesa's V3D caps *desktop* GL at 3.1 on
+# The Pi jobs build with -DPOM2_GLES=ON: Mesa's V3D caps *desktop* GL at 3.1 on
 # Pi 4/5, so POM2's default GL 3.2 core request fails outright there. GLES 3.0 is
 # what the hardware exposes, and POM2 compiles for it from the same sources
 # (Pom2Build.h's POM2_GL_ES). CI can prove it BUILDS, links GLESv2 and not
 # desktop libGL, and starts — it cannot prove it renders correctly on a Pi. Do
 # that on real hardware before announcing the package.
+#
+# Every package job runs the SAME two checks past "does it start":
+#   · payload   packaging/stage_data.sh --verify — the manifest's assets are all
+#               there, and nothing deny-listed (disks_5.4, hdv, …) leaked in.
+#               Both failures are silent otherwise: a missing font drops the UI
+#               to blank icon boxes, a leaked library turns a 6 MB download into
+#               a 200 MB one carrying media that is not ours to redistribute.
+#   · boot      pom2_headless --frames 300 --screenshot — the PACKAGED binary
+#               resolves its own bundled roms/, runs 6502 code and draws a
+#               frame that is not one flat colour. `--help` proves none of that.
 #
 # Triggers: push a version tag to cut a release; "Run workflow" for a dry run
 # (artifacts only, no Release). Both tag conventions fire, matching POM1: the
@@ -234,9 +257,129 @@ jobs:
             || { echo "ERROR: no version banner — Version.h did not get stamped"; exit 1; }
           echo "OK: packaged AppImage launches"
 
+      - name: Verify the package payload (manifest present, nothing leaked)
+        run: packaging/stage_data.sh --verify squashfs-root/usr/share/POM2
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          # From usr/, pom2_headless resolves roms/ the way the INSTALLED
+          # binary does (<exe>/../share/POM2/roms) — so this exercises the
+          # package's asset resolution, not a CWD accident.
+          cd squashfs-root/usr
+          bin/pom2_headless --version
+          bin/pom2_headless --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          bin/pom2_headless --frames 300 --screenshot boot.ppm
+          rm -f boot.ppm
+
       - uses: actions/upload-artifact@v5
         with:
           name: POM2-linux-AppImage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  # ------------------------------------------------- Linux ARM64 (generic) ----
+  # Built on GitHub's NATIVE arm64 runner with NO container, which is the whole
+  # difference from the `raspberry` job below: the glibc floor becomes the
+  # runner's (2.39), and the GL tier stays desktop OpenGL. That serves current
+  # ARM desktops and servers — Ubuntu 24.04+, Fedora 40+, Debian trixie — where
+  # a GLES build would be the wrong tier and the Pi's 2.36 floor buys nothing.
+  #
+  # Pi users take the `raspberry` package. The names say which is which, and the
+  # name check below makes sure they stay distinguishable.
+  linux-arm64:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config file desktop-file-utils wget \
+            libglfw3-dev libgl1-mesa-dev libslirp-dev
+
+      - name: Build + AppImage (native arm64, desktop GL)
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+          POM2_JOBS: 2
+        run: packaging/linux/build_native_arm64.sh
+
+      - name: Verify the AppImage — name, aarch64, ET_EXEC, no bundled GL
+        run: |
+          set -euo pipefail
+          APP=$(ls dist/*.AppImage | head -1)
+          echo "Package: $APP"
+          # Bare `-aarch64`: the Pi packages carry their own tags. A collision
+          # here would silently replace one of them in the publish staging dir.
+          case "$APP" in
+            *-raspberry-aarch64.AppImage|*-pi400-aarch64.AppImage)
+              echo "ERROR: $APP carries a Pi variant tag — this is the generic build"; exit 1 ;;
+            *-aarch64.AppImage) ;;
+            *) echo "ERROR: $APP is not named -aarch64.AppImage"; exit 1 ;;
+          esac
+          TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
+          test "$TYPE" = "EXEC" \
+            || { echo "ERROR: runtime is $TYPE, not EXEC"; exit 1; }
+          MAGIC=$(xxd -s 8 -l 3 -p "$APP")
+          test "$MAGIC" = "414902" \
+            || { echo "ERROR: bad AppImage magic $MAGIC"; exit 1; }
+          "$APP" --appimage-extract >/dev/null
+          BIN=squashfs-root/usr/bin/POM2
+          readelf -h "$BIN" | grep -q AArch64 \
+            || { echo "ERROR: POM2 is not an AArch64 binary"; exit 1; }
+          # libstdc++ must be STATIC — linuxdeploy blacklists libstdc++.so.6 and
+          # will never bundle it, so a dynamic GLIBCXX dependency is an
+          # unsatisfiable requirement on any host older than this runner.
+          GXX=$(objdump -T "$BIN" | grep -oE 'GLIBCXX_[0-9.]+' | sort -V | tail -1 || true)
+          test -z "$GXX" || { echo "ERROR: libstdc++ is dynamically linked ($GXX)"; exit 1; }
+          # Graphics drivers come from the HOST, never the bundle.
+          if ls squashfs-root/usr/lib/ 2>/dev/null | grep -qE '^lib(GL|EGL|GLX|OpenGL|GLdispatch)\.'; then
+            echo "ERROR: the AppImage bundles a graphics-driver library:"
+            ls squashfs-root/usr/lib/ | grep -E '^lib(GL|EGL|GLX|OpenGL|GLdispatch)\.'
+            exit 1
+          fi
+          echo "OK: generic aarch64 AppImage"
+
+      - name: Install runtime GL/X libs for the launch smoke
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libopengl0 libglx0 libgl1 \
+            libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+      - name: Smoke-launch the packaged AppImage (--help)
+        run: |
+          set -euo pipefail
+          test -x squashfs-root/AppRun || { echo "ERROR: squashfs-root/AppRun missing"; exit 1; }
+          OUT=$(./squashfs-root/AppRun --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: AppImage did not print its usage"; exit 1; }
+          echo "OK: packaged aarch64 AppImage launches"
+
+      - name: Verify the package payload (manifest present, nothing leaked)
+        run: packaging/stage_data.sh --verify squashfs-root/usr/share/POM2
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          cd squashfs-root/usr
+          bin/pom2_headless --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          bin/pom2_headless --frames 300 --screenshot boot.ppm
+          rm -f boot.ppm
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-linux-arm64-AppImage
           path: dist/*.AppImage
           if-no-files-found: error
 
@@ -278,12 +421,15 @@ jobs:
           set -euo pipefail
           APP=$(ls dist/*.AppImage | head -1)
           echo "Package: $APP"
-          # The name must carry the arch: the publish job flattens every artifact
-          # into one directory, so an x86_64-named aarch64 build would silently
-          # overwrite the Intel package.
+          # The name must carry the `raspberry` VARIANT, not just the arch: the
+          # release also publishes a generic aarch64 AppImage and a pi400 one,
+          # and the publish job flattens every artifact into one directory. Two
+          # same-named files would silently overwrite each other — handing Pi
+          # users a package that will not start, or ARM desktop users the GLES
+          # build.
           case "$APP" in
-            *-aarch64.AppImage) ;;
-            *) echo "ERROR: $APP is not named -aarch64.AppImage"; exit 1 ;;
+            *-raspberry-aarch64.AppImage) ;;
+            *) echo "ERROR: $APP is not named -raspberry-aarch64.AppImage"; exit 1 ;;
           esac
           TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
           test "$TYPE" = "EXEC" \
@@ -335,10 +481,127 @@ jobs:
             || { echo "ERROR: AppImage did not print its usage"; exit 1; }
           echo "OK: packaged aarch64 AppImage launches"
 
+      - name: Verify the package payload (manifest present, nothing leaked)
+        run: packaging/stage_data.sh --verify squashfs-root/usr/share/POM2
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          # glibc is forward-compatible, so the 2.36-built binary runs on this
+          # 2.39 runner. The GLES linkage is irrelevant here: pom2_headless has
+          # no display back-end at all, it renders into a CPU buffer.
+          cd squashfs-root/usr
+          bin/pom2_headless --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          bin/pom2_headless --frames 300 --screenshot boot.ppm
+          rm -f boot.ppm
+
       - uses: actions/upload-artifact@v5
         with:
           name: POM2-raspberry-arm64-AppImage
           path: dist/*.AppImage
+          if-no-files-found: error
+
+  # -------------------------------------------- Raspberry Pi 4 / Pi 400 -------
+  # The core-specific twin of `raspberry`, and that is the entire difference:
+  # `raspberry` is GENERIC aarch64 (no -mcpu) because it must run from a Pi 3 to
+  # a Pi 5; this one compiles -mcpu=cortex-a72 and will NOT start on an older
+  # core. Both are published; the name says which to take.
+  #
+  # It also compiles in TWO profile-guided passes and then with LTO — measured
+  # −39 % on a CPU-bound load and −29 % on a disk-active one, same sources, same
+  # output (docs/PERFORMANCE.md). That is where the 120-minute budget goes. The
+  # training runs HERE, on the ARM64 runner, so a Pi never pays for it.
+  #
+  # Promoted from pi400.yml (which stays, as the on-demand per-core builder for
+  # cortex-a76 / a53 and the Pi OS Lite tarball) into the release so the package
+  # ships on every tag rather than needing someone to remember a manual run.
+  pi400:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build -mcpu=cortex-a72 + PGO + LTO in a bookworm arm64 container
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+          POM2_MCPU: cortex-a72
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e POM2_VERSION -e POM2_MCPU \
+            debian:bookworm \
+            bash /work/packaging/raspberry/build_in_bookworm_pi.sh
+
+      - name: Verify the AppImage — name, aarch64, glibc <= 2.36, GLES-only
+        run: |
+          set -euo pipefail
+          APP=$(ls dist/*-pi400-aarch64.AppImage | head -1)
+          echo "Package: $APP"
+          TYPE=$(readelf -h "$APP" | awk -F'[ :]+' '/^ *Type:/ {print $3; exit}')
+          test "$TYPE" = "EXEC" || { echo "ERROR: runtime is $TYPE, not EXEC"; exit 1; }
+          MAGIC=$(xxd -s 8 -l 3 -p "$APP")
+          test "$MAGIC" = "414902" || { echo "ERROR: bad AppImage magic $MAGIC"; exit 1; }
+          "$APP" --appimage-extract >/dev/null
+          BIN=squashfs-root/usr/bin/POM2
+          readelf -h "$BIN" | grep -q AArch64 \
+            || { echo "ERROR: POM2 is not an AArch64 binary"; exit 1; }
+          MAX=$(objdump -T "$BIN" 2>/dev/null \
+                | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1)
+          echo "Highest glibc symbol required by POM2: ${MAX:-none}"
+          test "$(printf '%s\nGLIBC_2.36\n' "$MAX" | sort -V | tail -1)" = "GLIBC_2.36" \
+            || { echo "ERROR: requires ${MAX} > GLIBC_2.36 — will not run on Pi OS"; exit 1; }
+          if ldd "$BIN" | grep -qE 'lib(GL|OpenGL)\.so'; then
+            echo "ERROR: packaged POM2 links desktop libGL"; ldd "$BIN" | grep -E 'GL|EGL'; exit 1
+          fi
+          ldd "$BIN" | grep -E 'GLES|EGL' \
+            || { echo "ERROR: POM2 does not link GLESv2 — is POM2_GLES really on?"; exit 1; }
+          echo "OK: pi400 AppImage (-mcpu=cortex-a72, glibc <= 2.36, GLES-only)"
+
+      - name: Install runtime GLES/X libs for the launch smoke
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgles2 libegl1 libglx0 \
+            libx11-6 libxext6 libxrandr2 libxinerama1 libxcursor1 libxi6
+
+      - name: Smoke-launch the packaged AppImage (--help)
+        run: |
+          set -euo pipefail
+          # The ubuntu-24.04-arm runner is a Neoverse: it EXECUTES cortex-a72
+          # code (same ARMv8-A ISA; -mcpu only schedules and picks extensions
+          # that are already present). So this is a real launch, not a symbolic
+          # one — the same reason NeoST's pi400 job trusts its own smoke.
+          test -x squashfs-root/AppRun || { echo "ERROR: squashfs-root/AppRun missing"; exit 1; }
+          OUT=$(./squashfs-root/AppRun --help 2>&1)
+          echo "$OUT"
+          grep -q "Usage: POM2" <<<"$OUT" \
+            || { echo "ERROR: AppImage did not print its usage"; exit 1; }
+          echo "OK: packaged pi400 AppImage launches"
+
+      - name: Verify the package payload (manifest present, nothing leaked)
+        run: packaging/stage_data.sh --verify squashfs-root/usr/share/POM2
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          cd squashfs-root/usr
+          bin/pom2_headless --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          bin/pom2_headless --frames 300 --screenshot boot.ppm
+          rm -f boot.ppm
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-pi400-arm64-AppImage
+          path: dist/*-pi400-aarch64.AppImage
           if-no-files-found: error
 
   # ---------------------------------------------------------------- macOS ----
@@ -389,6 +652,25 @@ jobs:
           grep -q "Usage: POM2" <<<"$OUT" \
             || { echo "ERROR: .app binary did not print its usage"; exit 1; }
           echo "OK: packaged .app binary launches"
+
+      - name: Verify the package payload (manifest present, nothing leaked)
+        run: packaging/stage_data.sh --verify dist/POM2.app/Contents/Resources
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          # From Contents/, ResourcePaths probes <exe>/../share/POM2/roms, which
+          # the packager's `share -> Resources` and `Resources/POM2 -> .`
+          # symlinks resolve to Contents/Resources/roms. So this also proves
+          # those two symlinks survived into the bundle.
+          cd dist/POM2.app/Contents
+          MacOS/pom2_headless --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          MacOS/pom2_headless --frames 300 --screenshot boot.ppm
+          # The .dmg is already built, but do not leave a capture in the .app.
+          rm -f boot.ppm
 
       - uses: actions/upload-artifact@v5
         with:
@@ -477,15 +759,101 @@ jobs:
             || { echo "ERROR: POM2.exe did not print its usage"; exit 1; }
           echo "OK: packaged POM2.exe launches"
 
+      - name: Verify the package payload (manifest present, nothing leaked)
+        shell: bash
+        run: packaging/stage_data.sh --verify dist/POM2-Windows
+
+      - name: Boot smoke — the packaged binary runs an Apple II and draws a frame
+        shell: bash
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          cd dist/POM2-Windows
+          ./pom2_headless.exe --version | grep -qF "v${POM2_VERSION}" \
+            || { echo "ERROR: packaged binary does not announce v${POM2_VERSION}"; exit 1; }
+          ./pom2_headless.exe --frames 300 --screenshot boot.ppm
+          rm -f boot.ppm
+
       - uses: actions/upload-artifact@v5
         with:
           name: POM2-Windows-zip
           path: dist/*.zip
           if-no-files-found: error
 
+  # ----------------------------------------------------------------- WASM ----
+  # The browser bundle, shipped as a downloadable zip so the demo can be run
+  # from any static host (or offline) rather than only from the project's own
+  # Pages deployment.
+  #
+  # Payload note: the WASM bundle is the one package that carries floppyemu/ —
+  # `wasm/shell.html` boots `floppyemu/Total Replay v6.1.hdv` by default, so it
+  # IS the demo's boot disk. Desktop packages skip it (packaging/bundle.manifest
+  # marks it `wasm`), which is why they weigh ~6 MB and this weighs ~35 MB.
+  wasm:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Build the WASM bundle
+        run: ./build_wasm.sh
+
+      - name: Verify the bundle — files present, size bounded
+        run: |
+          set -euo pipefail
+          for f in index.html POM2.js POM2.wasm POM2.data; do
+            test -s "wasm/$f" || { echo "ERROR: wasm/$f is missing or empty"; exit 1; }
+          done
+          # Size bound. The manifest payload plus floppyemu/ lands near 35 MB;
+          # a jump past 60 MB means a deny-listed folder (disks_5.4 at 192 MB,
+          # hdv at 130 MB) found its way into POM2.data — which nothing else
+          # here would notice, since a fat bundle still works locally and only
+          # fails once it meets GitHub Pages' limits and a user's bandwidth.
+          TOTAL=$(du -cb wasm/index.html wasm/POM2.js wasm/POM2.wasm wasm/POM2.data \
+                  | tail -1 | cut -f1)
+          echo "Bundle size: $TOTAL bytes"
+          test "$TOTAL" -lt 60000000 \
+            || { echo "ERROR: bundle > 60 MB — did a large folder leak into POM2.data?"; exit 1; }
+
+      - name: Zip the bundle
+        env:
+          POM2_VERSION: ${{ needs.version.outputs.pom2_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          (cd wasm && zip -9 "../dist/POM2-v${POM2_VERSION}-web-wasm.zip" \
+                index.html POM2.js POM2.wasm POM2.data)
+          ls -lh dist/*.zip
+
+      # Uploaded BEFORE the freshness guard below, so it is uploaded even when
+      # that guard fails: when it does fire, the zip just built IS the bundle
+      # that needs committing. Grab it from the artifacts, drop the four files
+      # into wasm/, run tools/wasm_stamp.sh --write — no emsdk needed locally.
+      - uses: actions/upload-artifact@v5
+        with:
+          name: POM2-web-wasm
+          path: dist/*-web-wasm.zip
+          if-no-files-found: error
+
+      # FRESHNESS GUARD — the online demo IS the committed wasm/ folder (Pages
+      # serves it from the branch). This job rebuilds the bundle for the
+      # package, but it is not what deploys; a forgotten rebuild would leave a
+      # stale demo online in silence. Compares SOURCE fingerprints, not bytes:
+      # emcc is not reproducible across emsdk versions.
+      - name: Is the committed wasm/ bundle up to date?
+        run: tools/wasm_stamp.sh --check
+
   # ------------------------------------------------ attach to the Release ----
   publish:
-    needs: [version, quality, linux, raspberry, macos, windows]
+    needs: [version, quality, linux, linux-arm64, raspberry, pi400, macos, windows, wasm]
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
@@ -515,7 +883,19 @@ jobs:
                -exec cp -v {} staging/ \;
           shopt -s nullglob
           FILES=(staging/*.AppImage staging/*.dmg staging/*.zip)
-          if [ "${#FILES[@]}" -eq 0 ]; then echo "No packages found to publish."; exit 1; fi
+          # Exactly SEVEN, not "at least one". The staging directory is flat, so
+          # two packages that ended up with the same name would leave six here
+          # and the Release would quietly ship one platform twice and another
+          # not at all — the precise failure the per-job name checks guard
+          # against upstream, caught again at the last possible moment.
+          printf '%s\n' "${FILES[@]}"
+          if [ "${#FILES[@]}" -ne 7 ]; then
+            echo "ERROR: ${#FILES[@]} package(s) staged, expected 7."
+            echo "       Expected: x86_64 / aarch64 / raspberry-aarch64 /"
+            echo "                 pi400-aarch64 AppImages, macOS .dmg,"
+            echo "                 Windows .zip, web-wasm .zip"
+            exit 1
+          fi
           # SHA-256 manifest so downloaders can verify with `sha256sum -c`.
           ( cd staging && sha256sum -- "${FILES[@]#staging/}" > SHA256SUMS.txt )
           cat staging/SHA256SUMS.txt

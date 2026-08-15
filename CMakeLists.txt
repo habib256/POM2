@@ -8,11 +8,86 @@ cmake_minimum_required(VERSION 3.16)
 # link exists to prevent. Must be set before project().
 cmake_policy(SET CMP0091 NEW)
 
-project(pom2_imgui VERSION 0.8 LANGUAGES CXX)
+project(pom2_imgui VERSION 0.8.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ─── Package payload manifest ──────────────────────────────────────────────
+# `packaging/bundle.manifest` is the SINGLE list of what ships inside a POM2
+# package, read here once and consumed twice: by the WASM --preload-file block
+# (browser) and by the install() rules (every desktop package, since the
+# AppImage is staged with `cmake --install`). packaging/stage_data.sh parses the
+# same file for the macOS .app and the Windows .zip. Format documented in the
+# manifest itself; parse it here rather than in each consumer so a fifth
+# consumer cannot start its own drifting copy.
+#
+# Outputs, all CMake lists:
+#   POM2_BUNDLE_DIRS   folders copied whole            ("roms" "fonts")
+#   POM2_BUNDLE_FILES  "<src>|<dst>" pairs             ("pic/x.jpg|pic/x.jpg")
+#   POM2_BUNDLE_WASM   browser-only folders            ("floppyemu")
+set(POM2_BUNDLE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/bundle.manifest")
+set(POM2_BUNDLE_DIRS  "")
+set(POM2_BUNDLE_FILES "")
+set(POM2_BUNDLE_WASM  "")
+set(POM2_BUNDLE_DENYGLOB "")
+if(EXISTS "${POM2_BUNDLE_MANIFEST}")
+    # Re-run CMake when the manifest changes: it decides install() rules and
+    # link options, and a stale configure would package the previous list.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 "${POM2_BUNDLE_MANIFEST}")
+    # ENCODING UTF-8 is REQUIRED, not decoration: plain file(STRINGS) extracts
+    # runs of printable ASCII and treats anything else as binary to skip, so it
+    # SPLITS every comment line at its em-dash and hands back the tail as if it
+    # were another line — which then parses as a bogus entry.
+    file(STRINGS "${POM2_BUNDLE_MANIFEST}" _pom2_manifest_lines ENCODING UTF-8)
+    foreach(_line IN LISTS _pom2_manifest_lines)
+        # Strip the comment with FIND/SUBSTRING, NOT a regex: CMake's `.` does
+        # not match the bytes of a multi-byte UTF-8 character, so `#.*$` stops
+        # dead at the first em-dash and leaves the tail of a prose comment
+        # behind — which then parses as a manifest entry ("unknown entry kind
+        # 'the'"). No manifest path may contain a '#'.
+        string(FIND "${_line}" "#" _hash)
+        if(NOT _hash EQUAL -1)
+            string(SUBSTRING "${_line}" 0 ${_hash} _line)
+        endif()
+        string(STRIP "${_line}" _line)
+        if(_line STREQUAL "")
+            continue()
+        endif()
+        separate_arguments(_fields UNIX_COMMAND "${_line}")
+        list(GET _fields 0 _kind)
+        list(LENGTH _fields _n)
+        if(_n LESS 2)
+            message(FATAL_ERROR "bundle.manifest: '${_line}' has no path")
+        endif()
+        list(GET _fields 1 _src)
+        if(_kind STREQUAL "dir")
+            list(APPEND POM2_BUNDLE_DIRS "${_src}")
+        elseif(_kind STREQUAL "file")
+            set(_dst "${_src}")
+            if(_n GREATER 2)
+                list(GET _fields 2 _dst)
+            endif()
+            list(APPEND POM2_BUNDLE_FILES "${_src}|${_dst}")
+        elseif(_kind STREQUAL "wasm")
+            list(APPEND POM2_BUNDLE_WASM "${_src}")
+        elseif(_kind STREQUAL "denyglob")
+            # `dir` entries copy the WORKING TREE, so an archive dropped into
+            # roms/ and never committed would ship. Excluded from both the
+            # install rules and the WASM preload below.
+            list(APPEND POM2_BUNDLE_DENYGLOB "${_src}")
+        elseif(_kind STREQUAL "deny")
+            # Enforced by stage_data.sh --verify against a STAGED tree; nothing
+            # to do at configure time (CMake never copies these folders).
+        else()
+            message(FATAL_ERROR "bundle.manifest: unknown entry kind '${_kind}'")
+        endif()
+    endforeach()
+else()
+    message(WARNING "packaging/bundle.manifest missing — packages will ship no assets")
+endif()
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -428,39 +503,55 @@ if(EMSCRIPTEN)
         "-sEXPORTED_RUNTIME_METHODS=['FS','IDBFS','ccall','cwrap']"
         "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/wasm/shell.html"
     )
-    # Preload host folders into POM2.data. Each clause maps an
-    # on-disk source folder to a virtual path the binary's std::ifstream
-    # / ResourcePaths probes will resolve against (`./roms/...`,
-    # `./disks_5.4/...`, etc — exactly what the CWD-based search finds on
-    # native).
-    # Apple ROMs are always bundled — without them the emulator can't boot,
-    # and the browser build has no drag-and-drop ROM upload path yet. The
-    # user is responsible for populating `roms/` before building WASM
-    # (same constraint as native); we just guarantee the folder ships
-    # inside POM2.data when it exists.
+    # Preload the package payload into POM2.data. Each clause maps an on-disk
+    # source to the virtual path the binary's std::ifstream / ResourcePaths
+    # probes resolve against (`./roms/...`, `./fonts/...` — exactly what the
+    # CWD-based search finds on native), so the browser build reads its assets
+    # through the same code path as every desktop package.
     #
-    # Default extras: fonts (~1 MB), pic/ artwork, and floppyemu/
-    # (curated BMOW SD images).
-    # `disks_5.4/` (hundreds of MB of 5.25" library) and `hdv/` (hundreds of
-    # MB of ProDOS hard-disk images) are NEVER bundled under WASM — they'd
-    # blow past GitHub Pages' per-file limits and choke browser preload.
-    # The small 3.5" library is opt-in via `-DPOM2_WASM_BUNDLE_DISKS=ON`.
+    # The LIST comes from packaging/bundle.manifest, parsed once at the top of
+    # this file — the same list the install() rules use. `wasm` entries are the
+    # browser-only extras: today that is floppyemu/, which `wasm/shell.html`
+    # boots by default (`floppyemu/Total Replay v6.1.hdv`) and which desktop
+    # packages deliberately skip rather than charge every download 33 MB for a
+    # single HDV. `deny` entries (disks_5.4, hdv, …) are hundreds of MB and
+    # would blow past GitHub Pages' per-file limits and choke browser preload.
     #
-    # --preload-file: pass src+dst as ONE token via SHELL: so CMake
-    # doesn't try to interpret the bare `@` as a response-file marker.
-    set(POM2_WASM_BUNDLE "fonts;pic;floppyemu" CACHE STRING
-        "Extra asset folders to preload into POM2.data (semicolon-separated). roms/ is always included.")
+    # Apple ROMs are always bundled — without them the emulator can't boot, and
+    # the browser build has no drag-and-drop ROM upload path yet. Populating
+    # `roms/` before building WASM is the user's job (same constraint as
+    # native); we just guarantee the folder ships when it exists.
+    #
+    # --preload-file: pass src+dst as ONE token via SHELL: so CMake doesn't try
+    # to interpret the bare `@` as a response-file marker.
+    set(POM2_WASM_PRELOAD "")
+    foreach(_pom2_dir ${POM2_BUNDLE_DIRS} ${POM2_BUNDLE_WASM})
+        list(APPEND POM2_WASM_PRELOAD "${_pom2_dir}|${_pom2_dir}")
+    endforeach()
+    list(APPEND POM2_WASM_PRELOAD ${POM2_BUNDLE_FILES})
+    # Opt-in extra kept from the previous hand-written list: the small 3.5"
+    # library. `deny`-listed for packages, so it is a build-time choice here
+    # and never a default.
     option(POM2_WASM_BUNDLE_DISKS
         "Include disks_3.5 in the WASM bundle (disks_5.4 + hdv are excluded — too large)" OFF)
-    set(POM2_WASM_PRELOAD roms ${POM2_WASM_BUNDLE})
     if(POM2_WASM_BUNDLE_DISKS)
-        list(APPEND POM2_WASM_PRELOAD disks_3.5)
+        list(APPEND POM2_WASM_PRELOAD "disks_3.5|disks_3.5")
     endif()
-    foreach(_pom2_asset ${POM2_WASM_PRELOAD})
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}")
+    foreach(_pom2_pair ${POM2_WASM_PRELOAD})
+        string(REPLACE "|" ";" _pom2_parts "${_pom2_pair}")
+        list(GET _pom2_parts 0 _pom2_src)
+        list(GET _pom2_parts 1 _pom2_dst)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_src}")
             list(APPEND POM2_WASM_LINK
-                "SHELL:--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_asset}@/${_pom2_asset}")
+                "SHELL:--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_src}@/${_pom2_dst}")
         endif()
+    endforeach()
+    # emcc's --exclude-file applies to every --preload-file above. Same reason
+    # as the install() PATTERN EXCLUDE: a preloaded folder is the working tree,
+    # and an uncommitted archive in roms/ would otherwise be downloaded by every
+    # visitor to the browser demo.
+    foreach(_g ${POM2_BUNDLE_DENYGLOB})
+        list(APPEND POM2_WASM_LINK "SHELL:--exclude-file ${_g}")
     endforeach()
     target_link_options(${PROJECT_NAME} PRIVATE ${POM2_WASM_LINK})
     # Match shell.html's <canvas id="canvas"> ID convention.
@@ -573,6 +664,12 @@ endif()
 if(NOT EMSCRIPTEN)
 add_executable(pom2_headless
     src/pom2_headless.cpp
+    # Display + its char-ROM catalogue and the two colour back-ends it can call
+    # into: --frames/--screenshot renders a real frame (the release packages'
+    # boot smoke). No GL anywhere — Apple2Display decodes into a CPU buffer.
+    src/Apple2Display.cpp
+    src/AppleWinNtsc.cpp
+    src/CharRomCatalog.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp
     src/ClockCard.cpp
@@ -766,26 +863,54 @@ set(CMAKE_INSTALL_DOCDIR "${CMAKE_INSTALL_DATADIR}/doc/POM2")
 install(TARGETS ${PROJECT_NAME}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
-# Bundled UI fonts (DejaVu Sans + Font Awesome Free — both redistributable).
-install(FILES fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf
-        DESTINATION "${POM2_DATADIR}/fonts")
-
-# Apple ][+ photo shown in Help → About POM2. Resolved at runtime via
-# ResourcePaths → `<share/POM2>/pic/Apple_II_plus.jpg`.
-install(FILES pic/Apple_II_plus.jpg DESTINATION "${POM2_DATADIR}/pic")
-
-# Full roms/ tree: system firmware, character generators, peripheral dumps,
-# and MAME floppy mechanical samples (BSD-3-Clause — see floppy_samples/
-# README.txt). Optional only in the sense that a tree without roms/ still
-# configures; release builds always have it.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/roms")
-    install(DIRECTORY roms/
-            DESTINATION "${POM2_DATADIR}/roms")
+# The console binary ships too. Two reasons, and the second is why it is not
+# optional: it gives users a display-less way to drive the machine (telnet), and
+# it is what every release job runs as its BOOT SMOKE — `pom2_headless --frames
+# 300 --screenshot` against the packaged tree proves the package resolved its
+# own bundled roms/ and executed 6502 code. `POM2 --help` proves neither, and a
+# package whose ROMs did not land looks perfectly healthy to it.
+if(TARGET pom2_headless)
+    install(TARGETS pom2_headless
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 
-# Inventory note alongside the dumps (overrides any README already in roms/).
-install(FILES packaging/roms_README.txt
-        DESTINATION "${POM2_DATADIR}/roms" RENAME README.txt)
+# ─── Package payload, driven by packaging/bundle.manifest ──────────────────
+# The manifest is the single source of truth for what ships inside a package
+# (see pom2_read_bundle_manifest above). These install() rules and the WASM
+# --preload-file list are both generated from it, so a folder can no longer be
+# in the browser bundle and missing from the desktop packages — which is what
+# happened to fonts/, pic/ and floppyemu/ while four hand-written lists drifted.
+foreach(_pom2_dir ${POM2_BUNDLE_DIRS})
+    # A tree without roms/ still configures (source checkouts without the
+    # dumps); release builds always have it, and stage_data.sh --verify is
+    # what fails a package that lost it.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_dir}")
+        # PATTERN ... EXCLUDE for every denyglob: install(DIRECTORY) copies the
+        # working tree, so an uncommitted archive in roms/ would otherwise be
+        # packaged (it happened — see packaging/bundle.manifest).
+        set(_pom2_excl "")
+        foreach(_g ${POM2_BUNDLE_DENYGLOB})
+            list(APPEND _pom2_excl PATTERN "${_g}" EXCLUDE)
+        endforeach()
+        install(DIRECTORY "${_pom2_dir}/"
+                DESTINATION "${POM2_DATADIR}/${_pom2_dir}"
+                ${_pom2_excl})
+    endif()
+endforeach()
+foreach(_pom2_pair ${POM2_BUNDLE_FILES})
+    # "<src>|<dst>" — split, then install with the destination's own name so a
+    # manifest rename (packaging/roms_README.txt -> roms/README.txt) works.
+    string(REPLACE "|" ";" _pom2_parts "${_pom2_pair}")
+    list(GET _pom2_parts 0 _pom2_src)
+    list(GET _pom2_parts 1 _pom2_dst)
+    get_filename_component(_pom2_dst_dir  "${_pom2_dst}" DIRECTORY)
+    get_filename_component(_pom2_dst_name "${_pom2_dst}" NAME)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_pom2_src}")
+        install(FILES "${_pom2_src}"
+                DESTINATION "${POM2_DATADIR}/${_pom2_dst_dir}"
+                RENAME "${_pom2_dst_name}")
+    endif()
+endforeach()
 
 # Docs + desktop integration.
 install(FILES README.md CHANGELOG.md DEV.md TODO.md LICENSE

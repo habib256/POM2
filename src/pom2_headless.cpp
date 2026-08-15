@@ -18,11 +18,14 @@
 // Designed for headless self-test: launch in the background, telnet in,
 // type DOS 3.3 commands, observe behaviour. Exits cleanly on SIGINT.
 
+#include "Apple2Display.h"
 #include "ClockCard.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
 #include "Memory.h"
+#include "ResourcePaths.h"
 #include "SuperSerialCard.h"
+#include "Version.h"
 
 #include <atomic>
 #include <chrono>
@@ -31,10 +34,13 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -47,9 +53,21 @@ bool fileExists(const std::string& p)
     return std::filesystem::is_regular_file(p, ec);
 }
 
-std::string findFirst(std::initializer_list<const char*> candidates)
+// Resolve a bundled asset. Tries POM2's real resolver first — the one the GUI
+// uses, which knows the INSTALLED layouts (`<exe>/../share/POM2/...`, the macOS
+// `Contents/Resources`, `$XDG_DATA_HOME`) — then falls back to the historic
+// CWD-relative probes for a plain source checkout.
+//
+// Going through findResource is what lets the release jobs run the boot capture
+// against the PACKAGED binary: inside an AppImage the ROMs live at
+// usr/share/POM2/roms, which no amount of "../roms" ever finds. That also makes
+// the smoke test the package's asset resolution, not just its CPU core.
+std::string findAsset(const std::string& rel,
+                      std::initializer_list<const char*> legacy = {})
 {
-    for (const char* c : candidates) if (fileExists(c)) return c;
+    const std::string viaResolver = pom2::findResource(rel);
+    if (!viaResolver.empty() && fileExists(viaResolver)) return viaResolver;
+    for (const char* c : legacy) if (fileExists(c)) return c;
     return {};
 }
 
@@ -70,8 +88,58 @@ void usage(const char* prog)
         "                        Use \\r for RETURN, \\n is left as-is.\n"
         "  --no-setup            Don't autopaste anything.\n"
         "\n"
-        "Once running, telnet to 127.0.0.1:<port> to interact.\n",
+        "Capture mode (no telnet listener, no threads, deterministic):\n"
+        "  --frames <N>          Run N emulated frames, then exit.\n"
+        "  --screenshot <path>   Write the screen as a binary PPM (P6) after\n"
+        "                        those frames. Exits non-zero if the capture is\n"
+        "                        a single flat colour — see the note below.\n"
+        "  --version             Print the version and exit.\n"
+        "\n"
+        "Once running (without --frames), telnet to 127.0.0.1:<port> to interact.\n",
         prog);
+}
+
+// Binary PPM (P6). Chosen over PNG because it needs no encoder: the point of
+// this format is that a CI step can parse it in three lines of Python.
+bool writePpm(const std::string& path, int w, int h, const uint32_t* rgba)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    f << "P6\n" << w << " " << h << "\n255\n";
+    std::vector<uint8_t> rgb(static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
+    for (int i = 0; i < w * h; ++i) {
+        const uint32_t p = rgba[i];
+        rgb[i*3 + 0] = static_cast<uint8_t>( p        & 0xFF);
+        rgb[i*3 + 1] = static_cast<uint8_t>((p >>  8) & 0xFF);
+        rgb[i*3 + 2] = static_cast<uint8_t>((p >> 16) & 0xFF);
+    }
+    f.write(reinterpret_cast<const char*>(rgb.data()),
+            static_cast<std::streamsize>(rgb.size()));
+    return static_cast<bool>(f);
+}
+
+// How much of the frame differs from its top-left pixel, and how many distinct
+// colours it holds. Zero differing pixels = one flat colour = the machine never
+// drew anything, which is the failure this capture mode exists to catch (a ROM
+// that failed to load, a CPU that never ran, a display that produced nothing).
+//
+// Deliberately content-agnostic: it makes no claim about WHAT is on screen.
+// Note the counts are of COLOURS, not bytes — POM2's Apple II text screen is
+// legitimately two colours, so a byte-value count would have almost no room
+// between "booted" and "blank".
+struct FrameStats { size_t colours = 0; size_t differing = 0; };
+
+FrameStats frameStats(int w, int h, const uint32_t* rgba)
+{
+    FrameStats s;
+    std::set<uint32_t> seen;
+    const uint32_t first = (w > 0 && h > 0) ? rgba[0] : 0u;
+    for (int i = 0; i < w * h; ++i) {
+        seen.insert(rgba[i]);
+        if (rgba[i] != first) ++s.differing;
+    }
+    s.colours = seen.size();
+    return s;
 }
 
 std::string unescape(const std::string& in)
@@ -98,9 +166,10 @@ std::string unescape(const std::string& in)
 
 int main(int argc, char** argv)
 {
-    std::string romArg, promArg, diskArg, setupOverride;
+    std::string romArg, promArg, diskArg, setupOverride, shotPath;
     int  port        = SuperSerialCard::kDefaultPort;
     int  pasteAfter  = 6;     // emulated seconds before pasting setup
+    int  frames      = 0;     // >0 = capture mode (see below)
     bool doSetup     = true;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -110,21 +179,51 @@ int main(int argc, char** argv)
         else if (a == "--port"  && i+1 < argc) port     = std::atoi(argv[++i]);
         else if (a == "--paste-after" && i+1 < argc) pasteAfter = std::atoi(argv[++i]);
         else if (a == "--setup" && i+1 < argc) setupOverride = argv[++i];
+        else if (a == "--frames" && i+1 < argc) frames   = std::atoi(argv[++i]);
+        else if (a == "--screenshot" && i+1 < argc) shotPath = argv[++i];
         else if (a == "--no-setup") doSetup = false;
+        else if (a == "--version") {
+            // The release workflow greps this to prove the package's version
+            // is the tag's — a binary that announces a stale number makes every
+            // bug report unattachable to a release.
+            // kVersionString already carries the leading 'v'. Same shape as
+            // the GUI banner ("POM2: v0.8"), which the release workflow greps.
+            std::printf("POM2 headless: %s\n", pom2::kVersionString);
+            return 0;
+        }
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); usage(argv[0]); return 1; }
     }
+    // Capture mode: run a fixed number of frames and photograph the screen.
+    // This is the SMOKE the release packages run — it proves the packaged
+    // binary found its bundled roms/, executed 6502 code and drew a frame,
+    // which `--help` cannot. Deterministic by construction: no worker thread
+    // (tickFrame drives the CPU inline), no sleeps, no TCP listener.
+    const bool captureMode = frames > 0 || !shotPath.empty();
+    if (captureMode && frames <= 0) frames = 300;   // ~5 s: past the boot beep
 
-    const std::string romPath = !romArg.empty() ? romArg : findFirst({
-        "roms/apple2.rom", "../roms/apple2.rom", "../../roms/apple2.rom" });
-    const std::string promPath = !promArg.empty() ? promArg : findFirst({
-        "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom" });
-    const std::string diskPath = !diskArg.empty() ? diskArg : findFirst({
-        "disks_5.4/dos33_master.dsk", "../disks_5.4/dos33_master.dsk",
-        "../../disks_5.4/dos33_master.dsk" });
+    const std::string romPath = !romArg.empty() ? romArg : findAsset(
+        "roms/apple2.rom", { "../roms/apple2.rom", "../../roms/apple2.rom" });
+    const std::string promPath = !promArg.empty() ? promArg : findAsset(
+        "roms/disk2.rom", { "../roms/disk2.rom", "../../roms/disk2.rom" });
+    // Disk images are never packaged (see packaging/bundle.manifest), so this
+    // one only ever resolves in a source checkout — which is exactly where the
+    // telnet console is used.
+    const std::string diskPath = !diskArg.empty() ? diskArg : findAsset(
+        "disks_5.4/dos33_master.dsk", { "../disks_5.4/dos33_master.dsk",
+                                        "../../disks_5.4/dos33_master.dsk" });
 
-    if (romPath.empty() || promPath.empty() || diskPath.empty()) {
-        std::fprintf(stderr, "missing rom/prom/disk; try --help\n");
+    if (romPath.empty()) {
+        std::fprintf(stderr, "missing apple2.rom; try --help\n");
+        return 1;
+    }
+    // Outside capture mode the disk IS the point (the telnet console drives
+    // DOS 3.3), so its absence stays fatal. In capture mode the machine boots
+    // the ROM to the Applesoft prompt on its own — and packages deliberately
+    // ship no disk images, so requiring one would make the smoke untestable
+    // against the very artifact it is meant to check.
+    if (!captureMode && (promPath.empty() || diskPath.empty())) {
+        std::fprintf(stderr, "missing prom/disk; try --help\n");
         return 1;
     }
     std::fprintf(stderr,
@@ -139,35 +238,49 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "loadAppleIIRom failed\n"); return 1;
     }
 
-    auto disk = std::make_unique<DiskIICard>();
-    if (!disk->loadBootRom(promPath))         { std::fprintf(stderr, "PROM load failed\n");   return 1; }
-    // Optional: load the bit-level LSS PROM if available. Falls back to
-    // the legacy 32-cycle gate when missing.
-    {
-        namespace fs = std::filesystem;
-        for (const char* p : { "roms/diskii_p6.rom",
-                                "../roms/diskii_p6.rom",
-                                "../../roms/diskii_p6.rom" }) {
-            std::error_code ec;
-            if (fs::is_regular_file(p, ec)) { (void)disk->loadLssRom(p); break; }
+    DiskIICard* diskRaw = nullptr;
+    // A Disk II with an EMPTY drive is worse than no Disk II at all for the
+    // capture smoke: the II+ autostart ROM hands control to the boot PROM,
+    // which spins forever waiting for a disk that is never coming, and the
+    // capture is the uninitialised text page. With no controller the same ROM
+    // falls through to Applesoft and draws its banner — which is what we want
+    // to photograph. Packages ship roms/ and no disk images, so this is the
+    // normal path there.
+    const bool plugDiskII = !promPath.empty() && (!captureMode || !diskPath.empty());
+    if (plugDiskII) {
+        auto disk = std::make_unique<DiskIICard>();
+        if (!disk->loadBootRom(promPath))     { std::fprintf(stderr, "PROM load failed\n");   return 1; }
+        // Optional: load the bit-level LSS PROM if available. Falls back to
+        // the legacy 32-cycle gate when missing.
+        {
+            const std::string lss = findAsset(
+                "roms/diskii_p6.rom", { "../roms/diskii_p6.rom",
+                                        "../../roms/diskii_p6.rom" });
+            if (!lss.empty()) (void)disk->loadLssRom(lss);
         }
+        if (!diskPath.empty() && !disk->insertDisk(diskPath)) {
+            std::fprintf(stderr, "insertDisk failed: %s\n", disk->getLastError().c_str());
+            return 1;
+        }
+        diskRaw = disk.get();
+        controller.memory().slotBus().plug(6, std::move(disk));
     }
-    if (!disk->insertDisk(diskPath))          {
-        std::fprintf(stderr, "insertDisk failed: %s\n", disk->getLastError().c_str()); return 1;
-    }
-    DiskIICard* diskRaw = disk.get();
-    controller.memory().slotBus().plug(6, std::move(disk));
 
-    auto ssc = std::make_unique<SuperSerialCard>(SuperSerialCard::kDefaultSlot);
-    ssc->setKeyboardSink(
-        [&mem = controller.memory()](uint8_t b) {
-            const char buf[1] = { static_cast<char>(b) };
-            mem.pasteText(buf, 1);
-        });
-    if (!ssc->startListening(static_cast<uint16_t>(port))) {
-        std::fprintf(stderr, "SSC listener failed (port busy?)\n"); return 1;
+    // No TCP listener in capture mode: it is the one part of this binary that
+    // can fail for reasons that have nothing to do with the package (a busy
+    // port on a shared CI runner), and nothing in capture mode talks to it.
+    if (!captureMode) {
+        auto ssc = std::make_unique<SuperSerialCard>(SuperSerialCard::kDefaultSlot);
+        ssc->setKeyboardSink(
+            [&mem = controller.memory()](uint8_t b) {
+                const char buf[1] = { static_cast<char>(b) };
+                mem.pasteText(buf, 1);
+            });
+        if (!ssc->startListening(static_cast<uint16_t>(port))) {
+            std::fprintf(stderr, "SSC listener failed (port busy?)\n"); return 1;
+        }
+        controller.memory().slotBus().plug(SuperSerialCard::kDefaultSlot, std::move(ssc));
     }
-    controller.memory().slotBus().plug(SuperSerialCard::kDefaultSlot, std::move(ssc));
 
     // ThunderClock+-compatible RTC in slot 4 — uPD1990AC bit-bang chip
     // emulation; ProDOS auto-detects and links its driver to it.
@@ -182,11 +295,56 @@ int main(int argc, char** argv)
     // is set up by the Apple II ROM to land in slot 6.
     controller.cpu().hardReset();
     controller.memory().slotBus().reset();
-    diskRaw->seekTrack0();
+    if (diskRaw) diskRaw->seekTrack0();
     // The boot vector in stock apple2.rom auto-jumps to $C600 via the
-    // Autostart Monitor's PR#6 path; just to be safe we also poke PC.
-    controller.cpu().setProgramCounter(0xC600);
+    // Autostart Monitor's PR#6 path; just to be safe we also poke PC. With no
+    // Disk II plugged (capture mode against a package, which ships no disk
+    // images) there is nothing at $C600, so let the ROM's own reset vector
+    // take the machine to the Applesoft prompt instead.
+    if (diskRaw) controller.cpu().setProgramCounter(0xC600);
     controller.setMode(EmulationController::Mode::Running);
+
+    // ─── Capture mode ──────────────────────────────────────────────────────
+    // tickFrame() runs one frame's cycles INLINE — the same single-threaded
+    // path the WASM build uses. No worker thread and no wall-clock pacing, so
+    // the run is deterministic and takes as long as the host needs rather than
+    // N/60 seconds: 300 frames land in well under a second on any runner.
+    if (captureMode) {
+        std::fprintf(stderr, "[POM2 headless] capture: running %d frames\n", frames);
+        for (int i = 0; i < frames; ++i) controller.tickFrame();
+
+        Apple2Display display;
+        if (controller.memory().isIIE())
+            display.setAuxMemory(controller.memory().auxData());
+        display.render(controller.memory());
+        const int w = display.width();
+        const int h = display.height();
+        const FrameStats st = frameStats(w, h, display.pixels());
+        std::fprintf(stderr,
+            "[POM2 headless] capture: %dx%d, %zu colours, %zu/%d pixels differ "
+            "from the background\n",
+            w, h, st.colours, st.differing, w * h);
+
+        if (!shotPath.empty()) {
+            if (!writePpm(shotPath, w, h, display.pixels())) {
+                std::fprintf(stderr, "ERROR: cannot write %s\n", shotPath.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "[POM2 headless] wrote %s\n", shotPath.c_str());
+        }
+        // A single flat colour means the machine never drew anything — a ROM
+        // that failed to load, a CPU that never ran, a display that produced
+        // nothing. That is precisely the class of failure a packaged binary
+        // hits and `--help` sails straight past, so it is an ERROR here, not a
+        // remark. Distinct exit code: a CI log should say which check failed.
+        if (st.differing == 0) {
+            std::fprintf(stderr,
+                "ERROR: capture is a single flat colour — the machine did not boot\n");
+            return 3;
+        }
+        return 0;
+    }
+
     controller.start();
 
     std::signal(SIGINT,  onSignal);

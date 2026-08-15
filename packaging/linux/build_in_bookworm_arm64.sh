@@ -33,39 +33,10 @@ apt-get install -y --no-install-recommends \
 git config --global --add safe.directory '*'
 
 # --- AppImage tooling (aarch64 builds) --------------------------------------
-#     Extracted rather than run through FUSE, which CI containers do not have.
+#     Pinned digests + the ET_EXEC runtime rationale live in the fetch script,
+#     shared with the generic ARM64 job so there is one list to update.
 TOOLS=/opt/appimage-tools
-mkdir -p "$TOOLS" && cd "$TOOLS"
-download_verified() {
-    url=$1 out=$2 expected=$3
-    wget -q "$url" -O "$out"
-    echo "$expected  $out" | sha256sum -c -
-}
-download_verified \
-  "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage" \
-  appimagetool.AppImage \
-  f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
-download_verified \
-  "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" \
-  linuxdeploy.AppImage \
-  9f04c4c2a8b69c392c4bbcc1a88bdd4d0a8ac03f587cf5242814cb7ae47b78e5
-# The ET_EXEC runtime, pinned to AppImageKit release **12**. This is not the
-# `continuous` one: upstream never rebuilt the old-style runtime for ARM, so
-#   continuous/runtime-x86_64  -> ET_EXEC
-#   continuous/runtime-aarch64 -> ET_DYN   (static-pie; AppImageLauncher rejects
-#                                           it as "type -1")
-#   12/runtime-aarch64         -> ET_EXEC  (the last ET_EXEC ARM release)
-# The type-2 format is unchanged — only the small bootstrap binary differs — so
-# pinning 12 costs nothing and keeps the ET_EXEC contract release.yml verifies.
-download_verified \
-  "https://github.com/AppImage/AppImageKit/releases/download/12/runtime-aarch64" \
-  runtime-aarch64 \
-  207f8955500cfe8dd5b824ca7514787c023975e083b0269fc14600c380111d85
-chmod +x runtime-aarch64
-chmod +x ./*.AppImage
-./linuxdeploy.AppImage  --appimage-extract >/dev/null && mv squashfs-root linuxdeploy.AppDir
-./appimagetool.AppImage --appimage-extract >/dev/null && mv squashfs-root appimagetool.AppDir
-rm -f ./*.AppImage
+ARCH=aarch64 /work/packaging/linux/fetch_appimage_tools.sh "$TOOLS"
 export POM2_APPIMAGE_TOOLS_DIR="$TOOLS"
 cd /work
 
@@ -84,8 +55,14 @@ cmake -S . -B build-appimage \
 cmake --build build-appimage --parallel "${POM2_JOBS:-2}"
 
 # --- Package ----------------------------------------------------------------
+# `raspberry` in the name, not bare `-aarch64`: since the release also publishes
+# a GENERIC aarch64 AppImage (runner glibc, desktop GL, recent ARM distros), two
+# same-named files would land in the publish job's single staging directory and
+# one would overwrite the other in silence — handing Pi users a package that
+# will not start, or desktop-ARM users the GLES build.
 export POM2_APPIMAGE_SKIP_BUILD=1
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=aarch64
 export POM2_APPIMAGE_RUNTIME="$TOOLS/runtime-aarch64"
+export POM2_APPIMAGE_VARIANT=raspberry
 packaging/linux/build_appimage.sh build-appimage dist

@@ -20,6 +20,7 @@
 #include "M6502.h"
 #include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
 #include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
+#include "MouseGrab.h"      // pom2::mousegrab::Context (mouseGrabContext)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
 #include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
 
@@ -151,6 +152,19 @@ public:
     /// the Apple II Screen widget; otherwise no-op (ImGui handles it).
     void onMouseMove  (double x, double y);
     void onMouseButton(int button, int action);
+    /// GLFW window-focus callback. Releases a captured pointer when the
+    /// window loses focus — a grab that survives Alt-Tab would keep
+    /// swallowing the desktop's pointer with no visible owner.
+    void onWindowFocus(bool focused);
+
+    /// Host-pointer capture for the Mouse Card. `setMouseGrab(true)` puts
+    /// GLFW in GLFW_CURSOR_DISABLED (unbounded relative deltas, OS cursor
+    /// hidden) and takes the mouse away from ImGui; false restores both.
+    /// Refused with a status message when no Mouse Card is plugged.
+    /// Release: Ctrl+Alt+G, middle click, focus loss, or card unplug.
+    void setMouseGrab(bool on);
+    void toggleMouseGrab();
+    bool mouseGrabbed() const { return mouseGrabbed_; }
 
     /// GLFW file-drop callback (installed by main.cpp). Routes the first
     /// recognised disk image among `paths` through `insertAndBootImage`
@@ -891,6 +905,30 @@ private:
     int  lastSyncHoleX  = -1;
     int  lastSyncHoleY  = -1;
     bool mouseSyncActive = false;   // true while in absolute mode (mouse on)
+
+    // ── Host-pointer capture ("mouse grab") ───────────────────────────
+    // Policy in `MouseGrab.h`; this pair is the runtime state it reads.
+    // Like kiosk, a grab is a pure host-side mode: the machine never sees
+    // it, so nothing about it is snapshotted. `clickToGrab_` IS persisted
+    // (`mouse_click_to_grab`) — it changes what a click on the screen
+    // does, which is exactly the kind of thing a user sets once.
+    bool mouseGrabbed_ = false;
+    bool clickToGrab_  = true;
+    /// `lastFrameTime` deadline for the "how to get out" caption on the
+    /// Apple II screen. Kiosk ignores it and keeps the caption up — it has
+    /// no status bar to carry the permanent reminder.
+    double mouseGrabHintUntil_ = 0.0;
+
+    /// Screen-overlay captions for the capture contract ("click to capture"
+    /// / "Ctrl+Alt+G to release"). Called from `drawScreenImage`, so both
+    /// the windowed and the kiosk path get them.
+    void drawMouseGrabOverlay();
+
+    /// Snapshot the host/UI state the grab policy decides on (card plugged,
+    /// captured, cursor-in-screen-rect, voxel view, preference). Uses
+    /// `lastMouseHostX/Y` + `screenRectMin/Max`, both refreshed before any
+    /// caller needs them (cursor callback / previous frame's render).
+    pom2::mousegrab::Context mouseGrabContext() const;
 
     /// Populate the SlotBus from `slot_1_card`..`slot_7_card` settings,
     /// instantiating each card with its slot number. Falls back to legacy

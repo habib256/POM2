@@ -51,20 +51,21 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BUILD_DIR/POM2" "$APP/Contents/MacOS/POM2"
+# The console binary rides along: it is what the release job runs as its boot
+# smoke (`--frames 300 --screenshot`) against this very bundle, which proves the
+# .app resolves its own Resources/roms — something `--help` cannot show.
+[ -f "$BUILD_DIR/pom2_headless" ] && \
+    cp "$BUILD_DIR/pom2_headless" "$APP/Contents/MacOS/pom2_headless"
 cp packaging/macos/POM2.icns "$APP/Contents/Resources/POM2.icns"
 sed "s/@POM2_VERSION@/${VERSION}/g" packaging/macos/Info.plist.in \
     > "$APP/Contents/Info.plist"
 
-# Read-only assets. Mirrors the FHS install rules (including the full roms/).
-mkdir -p "$APP/Contents/Resources/fonts" \
-         "$APP/Contents/Resources/pic" \
-         "$APP/Contents/Resources/roms"
-cp fonts/DejaVuSans.ttf fonts/fa-solid-900.ttf "$APP/Contents/Resources/fonts/"
-cp pic/Apple_II_plus.jpg                       "$APP/Contents/Resources/pic/"
-if [ -d roms ]; then
-    cp -R roms/. "$APP/Contents/Resources/roms/"
-fi
-cp packaging/roms_README.txt                   "$APP/Contents/Resources/roms/README.txt"
+# Read-only assets, straight from packaging/bundle.manifest — the same list the
+# CMake install() rules (AppImage, .deb) and the WASM --preload-file block use.
+# This used to be a hand-written copy of that list and had already drifted from
+# it; stage_data.sh both stages and verifies, so a package that lost a font or
+# gained a deny-listed folder fails here rather than reaching a user.
+packaging/stage_data.sh "$APP/Contents/Resources"
 
 # ResourcePaths probes <exe>/.. (= Contents/) and <exe>/../share/POM2. Give the
 # Apple layout a home by ALSO exposing Resources/ under the name the FHS probe

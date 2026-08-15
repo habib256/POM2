@@ -89,7 +89,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Screen dump → printer (synthesised `ESC G` stream) | `PrinterScreenDump.h/.cpp` | [§ Screen dump](DEV.md#screen-dump-printerscreendump) |
 | Print history (durable printouts, `printouts/history/`) | `PrinterHistory.h/.cpp` | [§ Print history](DEV.md#print-history-printerhistory) |
 | ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
-| Mouse Card (MAME + AppleWin HLE) | `MouseCard.*`, `MouseCardAppleWin.*` | [§ Mouse](DEV.md#mouse-card) |
+| Mouse Card (MAME + AppleWin HLE) + host pointer capture | `MouseCard.*`, `MouseCardAppleWin.*`, `MouseGrab.h` | [§ Mouse](DEV.md#mouse-card), [§ Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |
 | UI (ImGui) | `MainWindow.*`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui) |
 | UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
@@ -203,7 +203,8 @@ Keyboard wiring:
 - **Left Alt = Open-Apple** → $C061 bit 7
 - **Right Alt = Solid-Apple** → $C062 bit 7
 - **F10 = full screen ⇄ windowed** (kiosk toggle — see CLI section)
-- F9 / F10 / F11 / F12 / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
+- **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (middle click also releases; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
+- F9 / F10 / F11 / F12 / Ctrl+Alt+G / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI
 
@@ -225,7 +226,7 @@ can't disturb your desktop setup" promise.
 
 ## Version string locations
 
-Current release: **v0.8**. **Single source of truth = `CMakeLists.txt`
+Current release: **v0.8.2**. **Single source of truth = `CMakeLists.txt`
 `project(pom2_imgui VERSION x.y ...)`.** A `configure_file` expands it into
 `build/generated/Version.h` (from `src/Version.h.in`); all C++ pulls the
 version from there (`POM2_VERSION` / `POM2_VERSION_STRING` macros + `pom2::
@@ -242,3 +243,15 @@ cannot `#include` the header:
 - `docs/releases/v<x.y>.md` — the release notes; the publish job reads the
   file whose name matches the tag, so a missing one silently downgrades the
   Release body to a generated commit list
+
+## Package payload
+
+**`packaging/bundle.manifest` is the single list of what ships inside a
+package** — `roms/` + `fonts/` + the About photo, `wasm floppyemu` as the
+browser-only extra (it holds the demo's boot disk), and a `deny` list
+(`disks_5.4`, `hdv`, `snapshots`, …) that must never appear in one. CMake
+parses it at configure time for **both** the `install()` rules and the WASM
+`--preload-file` arguments; `packaging/stage_data.sh` parses it for the macOS
+`.app` and the Windows `.zip`, and `--verify` is the guard every release job
+runs against its staged tree. Pinned by `bundle_manifest`. Adding an asset
+means editing the manifest, nothing else. → [DEV § Package payload](DEV.md#package-payload--packagingbundlemanifest)

@@ -5,6 +5,138 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-15 — Seven packages from one payload manifest (v0.8.2)
+
+**The list of what ships inside a package was written down four times, and the
+four copies had already drifted.** `CMakeLists.txt`'s `install()` rules, the
+macOS packager, the Windows packager and the WASM `--preload-file` block each
+carried their own version of it. The browser bundle shipped `floppyemu/` and
+the *whole* `fonts/` and `pic/` folders — 4 MB of reference photography no code
+path reads — while the desktop packages shipped neither the folder nor, of
+course, the extra. Nothing was wrong in any single place; the arrangement was
+wrong, because anything that has to be repeated four times will eventually be
+repeated incorrectly, and no test could see it.
+
+`packaging/bundle.manifest` is now the one list. CMake parses it at configure
+time and derives *both* the install rules (which the AppImage inherits, being
+staged with `cmake --install`) and the WASM preload arguments;
+`packaging/stage_data.sh` parses the same file for the macOS `.app` and the
+Windows `.zip`. Two CMake parsing details turned out to be load-bearing and are
+commented where they matter: `file(STRINGS)` needs `ENCODING UTF-8` — without
+it, a line containing a multi-byte character is treated as binary and *split*,
+so the tail of a prose comment comes back as a manifest entry — and the comment
+strip must use `FIND`/`SUBSTRING`, because CMake's regex `.` does not match the
+bytes of a multi-byte character and `#.*$` stops dead at the first em-dash.
+
+**Packages now have to prove themselves, twice.** `stage_data.sh --verify`
+asserts the manifest's payload is present and that nothing from its `deny` list
+came along; both failures are silent otherwise — a missing font drops the UI to
+ImGui's bitmap face with blank icon boxes, and a leaked `disks_5.4/` turns a
+6 MB download into a 200 MB one carrying media that is not ours to
+redistribute. Then `pom2_headless --frames 300 --screenshot` boots the bundled
+ROM *through the packaged binary* and fails if the frame it draws is a single
+flat colour. That last one is the check the release pipeline was missing:
+`POM2 --help` passes just as happily with an empty `roms/`, so every package
+job could go green around a package that could not boot. It resolves ROMs
+through `pom2::findResource`, so running it from the package's `usr/` exercises
+the package's own asset resolution rather than a CWD accident. Two details the
+capture mode learned the hard way: with a Disk II plugged and no disk, the II+
+autostart parks in the boot PROM forever and photographs the uninitialised text
+page (so no disk ⇒ no controller), and "distinct byte values" is the wrong
+uniformity metric for an Apple II — a white-on-black text screen legitimately
+has two, leaving no room between "booted" and "blank"; it counts pixels that
+differ from the background instead.
+
+**Three new packages, and the naming that keeps them apart.** A generic
+`aarch64` AppImage (native runner, desktop GL, glibc 2.39 — current ARM
+desktops), the `pi400` PGO/LTO build promoted out of its manual workflow into
+the release, and a `web-wasm` zip. That takes the aarch64 count to three, and
+`build_appimage.sh` named every one of them `POM2-v<ver>-aarch64.AppImage`.
+Since the publish job flattens every artifact into one directory, two of the
+three would have been overwritten in silence — a Pi user handed a package that
+will not start, or an ARM desktop user handed the GLES build.
+`POM2_APPIMAGE_VARIANT` inserts the tag, each job asserts its own name, and
+publish now requires exactly seven packages rather than "at least one". The Pi
+job previously produced its distinct name by folding the tag into
+`POM2_VERSION` (`0.8-pi400`), which got the file name right while stamping a
+bogus version into the binary — and the release asserts that a package
+announces the tag's version, so the honest seam was the one that only touches
+the name.
+
+**A `dir` entry copies the working tree, not what git tracks** — and building
+the bundle with the new manifest is what surfaced it: two untracked ROM `.zip`
+archives sitting in `roms/` went straight into `POM2.data`. Nothing would have
+caught them. CI builds from a clean checkout, so *its* bundle would not have
+had them, meaning the committed bundle (the one GitHub Pages actually serves)
+silently differed from what the pipeline produced, and every visitor to the
+demo would have downloaded two archives the emulator cannot even read. The
+manifest gained a `denyglob` kind, excluded three ways — `install(DIRECTORY …
+PATTERN … EXCLUDE)`, emcc's `--exclude-file`, and a prune inside
+`stage_data.sh` — with `--verify` failing on any survivor.
+
+**The online demo can no longer go stale in silence.** GitHub Pages serves the
+committed `wasm/` folder, so that folder is published content, not a build
+artifact that can lag harmlessly — a forgotten rebuild leaves an old demo
+online with nothing failing. `tools/wasm_stamp.sh` (ported from NeoST, same
+problem) fingerprints the *sources* that determine the bundle rather than the
+bundle itself, because emcc is not reproducible across emsdk versions and a
+byte diff would fail forever, for nothing.
+
+Android is deliberately absent. POM2's GUI is GLFW + desktop OpenGL; an APK is
+a port, not a packaging job, and pretending otherwise would have held the
+release for weeks.
+
+## 2026-08-15 — Host pointer capture for the Mouse Card
+
+**The Mouse Card is a relative device, and POM2 was feeding it a bounded
+pointer.** Both variants (MAME `mouse`, AppleWin HLE `mouseaw`) are quadrature
+devices: `onMouseMove` converts host-pixel deltas into Apple mouse units and
+the guest firmware clamps them at the edges of its own window. The host
+pointer, meanwhile, stops at the edge of the Apple II Screen widget — the
+`shouldRouteMotion` gate is what let the user still reach the ImGui panels —
+and every delta past that edge was simply dropped. The two cursors therefore
+drift apart in absolute terms, and once the guest cursor lags behind it can
+become unable to reach its own clamp edges at all: an MGTK menu bar or a
+scroll gutter that the host pointer has no screen left to travel toward. The
+closed-loop absolute sync added earlier only papers over this for `mouseaw`,
+and only while the firmware's clamp window is readable.
+
+Capturing the pointer removes the boundary rather than compensating for it.
+`GLFW_CURSOR_DISABLED` hides the OS cursor and unbounds the reported
+position, so deltas keep flowing in every direction for as long as the user
+keeps moving; `GLFW_RAW_MOUSE_MOTION` rides along on native so the desktop's
+pointer-acceleration curve (tuned for a screen-sized target area) stops
+deciding how fast the guest cursor travels. In: a click on the screen, or
+`Ctrl+Alt+G`, or View ▸ Capture mouse. Out: **`Ctrl+Alt+G` or a middle
+click** — the pair every VM viewer and PC emulator already trained into the
+user's fingers — plus focus loss and card removal.
+
+Three decisions worth keeping the reasons for. **The capturing click is
+swallowed**: the guest cursor sits wherever its firmware left it, not under
+the host pointer, so forwarding that first click would fire a button-down at
+an arbitrary spot — a stray dot in MousePaint, the wrong menu in A2Desktop.
+**`ImGuiConfigFlags_NoMouse` while captured**: `io.MousePos` follows the
+virtual cursor, which would otherwise hover and click panels the user cannot
+see. (The GLFW backend already skips its own cursor-shape updates under
+`GLFW_CURSOR_DISABLED`, so the two never fight over the input mode.) **The
+absolute sync is disabled while captured**: it projects the host cursor's
+position-in-widget onto the firmware clamp window, and a virtual position
+corresponds to no point on screen.
+
+An escape hatch nobody can find is not an escape hatch, so the way out is
+stated three times over: `Ctrl+Alt+G` joins F9/F10/F11/F12 in the
+unconditional key set (it must work with an ImGui text field focused), a
+caption on the screen says how to leave for four seconds after capture — and
+for the whole capture in kiosk, which has no status bar — and a `GRAB` badge
+sits in the status bar for as long as it lasts. Releasing also clears a held
+button, so the guest can never be left holding one down.
+
+The policy (which chord, which button, what a click means, when motion is
+routed) lives in `MouseGrab.h`, GLFW-free so `mouse_grab_policy` can pin it
+with no windowing stack; `MainWindow.cpp` static_asserts its mirrored GLFW
+tokens against the real header. Like kiosk, a grab is purely host-side: the
+machine never sees it and nothing about it is snapshotted.
+
 ## 2026-08-14 — Three defects cleared before the 0.8 tag
 
 A pre-release audit of what still stood between `main` and a `v0.8` tag. Two

@@ -52,6 +52,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
+#include "MouseGrab.h"
 #include "NtscPostProcessor.h"
 #include "CrtEffectStack.h"
 #include "Voxel3DRenderer.h"
@@ -463,6 +464,8 @@ MainWindow::MainWindow(bool forceIIPlus)
                               joystick->binding().squareGate);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
+        clickToGrab_       = settings->getBool ("mouse_click_to_grab",
+                                                 clickToGrab_);
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
@@ -1063,6 +1066,7 @@ MainWindow::~MainWindow()
     settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
+    settings->setBool  ("mouse_click_to_grab",  clickToGrab_);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
     settings->setBool  ("show_phasor",       showPhasorPanel);
@@ -2154,6 +2158,20 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         return;
     }
 
+    // Ctrl+Alt+G toggles the Mouse Card pointer capture. Placed above every
+    // other branch — including the kiosk-menu gate below — for the same
+    // reason F10/F11/F12 are routed unconditionally: a captured pointer with
+    // no reachable way out is a trap. PRESS only, so holding the chord can't
+    // flip capture ~30×/s on auto-repeat. Note the Left-Alt half also sets
+    // Open-Apple (handled above, and cleared when the user lifts it) — the
+    // guest sees a modifier press it would have seen anyway.
+    // Tested before the Ctrl-letter path further down, which would otherwise
+    // also inject Ctrl-G ($07) into the keyboard latch.
+    if (pom2::mousegrab::isToggleChord(key, mods)) {
+        if (action == GLFW_PRESS) toggleMouseGrab();
+        return;
+    }
+
     // Kiosk menu open: its arrows/Enter/Esc fallbacks are polled with
     // ImGui::IsKeyPressed and the menu window never captures the keyboard,
     // so everything below would double-deliver — Enter on the key band
@@ -2411,6 +2429,10 @@ void MainWindow::renderCommandPalette()
     add("view.kiosk", "View",
         kiosk_ ? "Leave full screen (kiosk)" : "Full screen (kiosk)",
         "F10", true, kiosk_);
+    add("view.mousegrab", "View",
+        mouseGrabbed_ ? "Release mouse capture" : "Capture mouse",
+        "Ctrl+Alt+G", (mouseCard != nullptr) || (mouseAwCard != nullptr),
+        mouseGrabbed_);
 
     // Speed buckets, labelled with the real clock so "2x" isn't abstract.
     {
@@ -2551,6 +2573,7 @@ void MainWindow::runCommand(const std::string& id)
     if (id == "machine.screenshot") { saveScreenshot();         return; }
     if (id == "printer.dumpscreen") { dumpScreenToPrinter();    return; }
     if (id == "view.kiosk")        { toggleKioskMode();        return; }
+    if (id == "view.mousegrab")    { toggleMouseGrab();        return; }
 
     if (id.rfind("speed.", 0) == 0) {
         const VideoTiming& vt = pom2VideoTiming(controller->getVideoStandard());
@@ -3281,6 +3304,36 @@ void MainWindow::renderMenuBar()
                 "F10 toggles back; the emulated machine keeps running\n"
                 "across the switch, so nothing is lost.\n"
                 "Settings are not written while in kiosk.");
+
+        // ── Mouse capture ───────────────────────────────────────────────
+        // Greyed with no Mouse Card on the bus: capturing the pointer with
+        // nothing to feed it is the one state this feature must not reach.
+        {
+            const bool haveCard = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+            if (ImGui::MenuItem(ICON_FA_ARROW_POINTER " Capture mouse",
+                                "Ctrl+Alt+G", mouseGrabbed_, haveCard)) {
+                toggleMouseGrab();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    haveCard
+                    ? "Give the host pointer to the Apple II Mouse Card.\n"
+                      "Captured, motion is unbounded (the guest cursor can\n"
+                      "always reach its own clamp edges) and the OS cursor\n"
+                      "is hidden. Ctrl+Alt+G or a middle click releases it."
+                    : "No Mouse Card plugged — add 'mouse' (MAME, needs both\n"
+                      "ROMs) or 'mouseaw' (AppleWin HLE) in Slot Configuration.");
+            if (ImGui::MenuItem("Click screen to capture", nullptr,
+                                clickToGrab_)) {
+                clickToGrab_ = !clickToGrab_;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "On: a click on the Apple II screen captures the pointer\n"
+                    "(that first click is swallowed, not sent to the guest).\n"
+                    "Off: clicks always reach the Mouse Card and capture is\n"
+                    "reachable only from Ctrl+Alt+G or this menu.");
+        }
         ImGui::Separator();
 
         // ── Docking layout ──────────────────────────────────────────────
@@ -3583,6 +3636,22 @@ void MainWindow::renderStatusBar()
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("%s", row.tip.c_str());
                 }
+            }
+
+            // ── Mouse capture ────────────────────────────────────────────
+            // The permanent half of the capture contract (the on-screen
+            // caption fades). Only ever shown while captured — this is the
+            // badge a user looks for when the pointer "disappeared".
+            if (mouseGrabbed_ && roomFor(9.0f)) {
+                pom2::verticalRule();
+                ImGui::TextColored(u32(pal.accent),
+                                   ICON_FA_ARROW_POINTER " GRAB");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "The host pointer is captured and feeding the Mouse\n"
+                        "Card: motion no longer stops at the edge of the\n"
+                        "screen widget, and the OS cursor is hidden.\n"
+                        "Ctrl+Alt+G or a middle click gives it back.");
             }
 
             // ── Host caps-lock ───────────────────────────────────────────
@@ -3970,6 +4039,52 @@ void MainWindow::drawScreenImage()
             voxelCam_.distance =
                 std::clamp(voxelCam_.distance * std::pow(0.9f, wheel), 0.6f, 20.0f);
     }
+
+    // Drawn last, over the screen image, from both the windowed and the
+    // kiosk path (they share this function).
+    drawMouseGrabOverlay();
+}
+
+// Two one-line captions on the Apple II screen, both drawn straight into the
+// window draw list (no ImGui items — an item here would steal the hover /
+// drag state the voxel camera and the title-bar drag read from the Image):
+//
+//   • not captured, hovering, a card plugged → "Click to capture the mouse",
+//     the discoverability half: a click that silently changes what the mouse
+//     does needs to announce itself BEFORE the user makes it.
+//   • just captured → how to get back out, for a few seconds. The permanent
+//     reminder is the status-bar chip, which kiosk does not have — so in
+//     kiosk this caption stays up for as long as the capture lasts.
+void MainWindow::drawMouseGrabOverlay()
+{
+    const float w = screenRectMax.x - screenRectMin.x;
+    const float h = screenRectMax.y - screenRectMin.y;
+    if (w <= 0.0f || h <= 0.0f) return;
+    if (!mouseCard && !mouseAwCard) return;
+
+    const char* text = nullptr;
+    if (mouseGrabbed_) {
+        if (kiosk_ || lastFrameTime < mouseGrabHintUntil_)
+            text = "Mouse captured " ICON_FA_ARROW_RIGHT
+                   " Ctrl+Alt+G or middle click to release";
+    } else if (clickToGrab_ && !show3dVoxel_ && mouseGrabContext().insideScreen) {
+        text = "Click to capture the mouse";
+    }
+    if (!text) return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 pad(ImGui::GetFontSize() * 0.5f, ImGui::GetFontSize() * 0.25f);
+    const ImVec2 sz  = ImGui::CalcTextSize(text);
+    // Bottom-centre: out of the way of an Apple II menu bar (top) and of the
+    // status line most software puts on the last text row.
+    const ImVec2 p1(screenRectMin.x + (w - sz.x) * 0.5f - pad.x,
+                    screenRectMax.y - sz.y - pad.y * 2.0f - 8.0f);
+    const ImVec2 p2(p1.x + sz.x + pad.x * 2.0f, p1.y + sz.y + pad.y * 2.0f);
+    dl->AddRectFilled(p1, p2, IM_COL32(0, 0, 0, 170), 4.0f);
+    dl->AddRect(p1, p2, IM_COL32(255, 255, 255, 40), 4.0f);
+    dl->AddText(ImVec2(p1.x + pad.x, p1.y + pad.y),
+                mouseGrabbed_ ? pom2::palette().accent : pom2::palette().textDim,
+                text);
 }
 
 void MainWindow::renderKiosk()
@@ -4826,6 +4941,106 @@ bool MainWindow::kioskPruneRomDirs()
 
 // ─── Mouse Card input routing ───────────────────────────────────────────
 
+// `MouseGrab.h` stays GLFW-free so a headless test can link it. Prove its
+// mirrored tokens still match the real ones here, where <GLFW/glfw3.h> is
+// in scope — an upstream renumbering becomes a compile error, not a chord
+// that silently stops working.
+static_assert(pom2::mousegrab::kKeyG         == GLFW_KEY_G);
+static_assert(pom2::mousegrab::kModControl   == GLFW_MOD_CONTROL);
+static_assert(pom2::mousegrab::kModAlt       == GLFW_MOD_ALT);
+static_assert(pom2::mousegrab::kButtonLeft   == GLFW_MOUSE_BUTTON_LEFT);
+static_assert(pom2::mousegrab::kButtonMiddle == GLFW_MOUSE_BUTTON_MIDDLE);
+
+pom2::mousegrab::Context MainWindow::mouseGrabContext() const
+{
+    pom2::mousegrab::Context c;
+    c.cardPlugged = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+    c.grabbed     = mouseGrabbed_;
+    c.voxelView   = show3dVoxel_;
+    c.clickToGrab = clickToGrab_;
+    const float w = screenRectMax.x - screenRectMin.x;
+    const float h = screenRectMax.y - screenRectMin.y;
+    c.insideScreen =
+        w > 0.0f && h > 0.0f &&
+        lastMouseHostX >= double(screenRectMin.x) &&
+        lastMouseHostX <= double(screenRectMax.x) &&
+        lastMouseHostY >= double(screenRectMin.y) &&
+        lastMouseHostY <= double(screenRectMax.y);
+    return c;
+}
+
+void MainWindow::setMouseGrab(bool on)
+{
+    if (on == mouseGrabbed_) return;
+    if (on && !mouseCard && !mouseAwCard) {
+        // Capturing the pointer with nothing to feed would strand the user
+        // in a hidden-cursor mode for no gain.
+        tapeStatusMessage = "Mouse capture: no Mouse Card plugged "
+                            "(Slot Configuration → mouse / mouseaw)";
+        tapeStatusUntil   = lastFrameTime + 4.0;
+        return;
+    }
+    mouseGrabbed_ = on;
+
+    if (window) {
+        // GLFW_CURSOR_DISABLED hides the OS cursor AND unbounds it: the
+        // reported position keeps accumulating past the window edges, which
+        // is exactly the infinite-delta source a relative quadrature mouse
+        // wants. GLFW restores the pre-grab cursor position on the way out.
+        glfwSetInputMode(window, GLFW_CURSOR,
+                         on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+#ifndef __EMSCRIPTEN__
+        // Raw (unaccelerated, unscaled) motion while captured — the desktop's
+        // pointer-acceleration curve is tuned for a screen-sized target area,
+        // and it makes the guest cursor's speed depend on how fast the user
+        // flicks. Only meaningful under GLFW_CURSOR_DISABLED. The browser has
+        // no equivalent knob (pointer lock already delivers raw movementX/Y).
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION,
+                             on ? GLFW_TRUE : GLFW_FALSE);
+        }
+#endif
+    }
+
+    // Take the mouse away from ImGui for the duration: under a captured
+    // pointer io.MousePos tracks the virtual cursor, which would hover and
+    // click panels the user cannot see. The GLFW backend already skips its
+    // own cursor-shape updates while GLFW_CURSOR_DISABLED is set
+    // (imgui_impl_glfw.cpp `ImGui_ImplGlfw_UpdateMouseCursor`), so the two
+    // do not fight over the input mode.
+    ImGuiIO& io = ImGui::GetIO();
+    if (on) io.ConfigFlags |=  ImGuiConfigFlags_NoMouse;
+    else    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+
+    // Both edges warp the reported cursor position (into the virtual space on
+    // entry, back to the real one on exit). Re-seed the delta baseline so the
+    // first event after the transition doesn't inject that jump as motion,
+    // and drop sub-pixel residue accumulated under the other regime.
+    mouseInited    = false;
+    mouseSubAppleX = 0.0;
+    mouseSubAppleY = 0.0;
+
+    // Never leave the guest holding a button it can no longer release.
+    if (!on && mouseButtonHeld) {
+        mouseButtonHeld = false;
+        if (mouseCard)   mouseCard  ->setHostMouse(mouseAppleX, mouseAppleY, false);
+        if (mouseAwCard) mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, false);
+    }
+
+    tapeStatusMessage = on
+        ? "Mouse captured — Ctrl+Alt+G or middle click to release"
+        : "Mouse released";
+    tapeStatusUntil     = lastFrameTime + (on ? 4.0 : 2.0);
+    mouseGrabHintUntil_ = on ? lastFrameTime + 4.0 : 0.0;
+}
+
+void MainWindow::toggleMouseGrab() { setMouseGrab(!mouseGrabbed_); }
+
+void MainWindow::onWindowFocus(bool focused)
+{
+    if (!focused) setMouseGrab(false);
+}
+
 void MainWindow::onMouseMove(double x, double y)
 {
     // First call after startup just seeds last-position; no delta yet.
@@ -4845,7 +5060,10 @@ void MainWindow::onMouseMove(double x, double y)
     // `setHostMouse(rawX, rawY, button)` + `getSlot()` API; route through
     // tiny lambdas so the absolute / relative cursor logic below stays
     // variant-agnostic.
-    if (!mouseCard && !mouseAwCard) return;
+    const pom2::mousegrab::Context grabCtx = mouseGrabContext();
+    // Card plugged + (pointer captured, or hovering the screen widget).
+    // Uncaptured motion outside the widget belongs to ImGui — see MouseGrab.h.
+    if (!pom2::mousegrab::shouldRouteMotion(grabCtx)) return;
     auto pushMouse = [&](uint8_t rx, uint8_t ry, bool btn) {
         if (mouseCard)   mouseCard  ->setHostMouse(rx, ry, btn);
         if (mouseAwCard) mouseAwCard->setHostMouse(rx, ry, btn);
@@ -4875,7 +5093,7 @@ void MainWindow::onMouseMove(double x, double y)
     // large gaps (first event after re-entry, big window resize) converge
     // over several events.
     bool absoluteHandled = false;
-    if (mouseAwCard) {
+    if (mouseAwCard && pom2::mousegrab::allowAbsoluteSync(grabCtx)) {
         const auto s = mouseAwCard->debugSnapshot();
         const bool mouseOn = (s.byMode & 0x01) != 0;
         const int rangeX = s.iMaxX - s.iMinX;
@@ -4906,16 +5124,13 @@ void MainWindow::onMouseMove(double x, double y)
     }
     if (absoluteHandled) return;
 
-    // ── Relative drive (fallback) ───────────────────────────────────
+    // ── Relative drive (fallback, and the only path while captured) ──
     // Used by the MAME-faithful MouseCard (no iX/iY exposed — firmware
-    // lives inside the 68705P3 MCU's internal RAM) and by the AppleWin
-    // HLE card before the firmware enables MOUSE_ON. Gate on cursor
-    // inside the widget so the host can still drive ImGui menus/panels
-    // outside the screen.
-    if (x < screenRectMin.x || x > screenRectMax.x ||
-        y < screenRectMin.y || y > screenRectMax.y) {
-        return;
-    }
+    // lives inside the 68705P3 MCU's internal RAM), by the AppleWin HLE
+    // card before the firmware enables MOUSE_ON, and by BOTH whenever the
+    // pointer is captured (a grabbed cursor has no meaningful position in
+    // the widget, only deltas — see MouseGrab.h). The cursor-inside-widget
+    // gate was already applied by `shouldRouteMotion` above.
 
     // ── Speed mapping (relative drive — the only path) ──────────────
     // The closed-loop absolute sync was an experiment that didn't survive
@@ -4961,24 +5176,36 @@ void MainWindow::onMouseMove(double x, double y)
 
 void MainWindow::onMouseButton(int button, int action)
 {
-    // Only the primary button is wired to the Apple Mouse Card (PB7 of
-    // the MCU). GLFW button 0 = left.
-    if (button != 0) return;
-    // Gate on cursor-in-screen-rect: clicks outside the Apple II Screen
-    // widget belong to ImGui (menus, panels, etc.). Inside the screen
-    // widget, we route to the Mouse Card. PRESS uses the current cursor
-    // position; RELEASE always passes through so a button pressed inside
-    // the screen but released outside still gets cleared on the card.
-    const bool press = (action != 0);
-    if (press) {
-        const double x = lastMouseHostX;
-        const double y = lastMouseHostY;
-        if (x < screenRectMin.x || x > screenRectMax.x ||
-            y < screenRectMin.y || y > screenRectMax.y) {
-            return;
-        }
+    const bool press = (action != 0);   // GLFW_RELEASE = 0, others = press/repeat
+    const pom2::mousegrab::Context grabCtx = mouseGrabContext();
+
+    // Middle click = the release half of the capture contract, matching what
+    // every VM viewer trains into the user's fingers. Checked first and on
+    // PRESS only: releasing the wheel button must not re-enter anything, and
+    // while captured ImGui has no mouse, so nothing else wants this event.
+    if (pom2::mousegrab::isReleaseButton(button)) {
+        if (press && mouseGrabbed_) setMouseGrab(false);
+        return;
     }
-    mouseButtonHeld = press;             // GLFW_RELEASE = 0, others = press/repeat
+
+    // First left press inside the screen takes the pointer instead of
+    // reaching the guest — the capturing click is swallowed on purpose (the
+    // guest cursor is wherever its firmware left it, not under the host
+    // pointer, so forwarding it would click at an arbitrary spot). Every
+    // press after that goes through.
+    if (pom2::mousegrab::shouldGrabOnPress(grabCtx, button) && press) {
+        setMouseGrab(true);
+        return;
+    }
+
+    // Only the primary button is wired to the Apple Mouse Card (PB7 of the
+    // MCU). Captured, every press is the guest's; uncaptured, only presses
+    // over the Apple II Screen widget are (the rest belong to ImGui —
+    // menus, panels). A RELEASE always passes through, so a button pressed
+    // inside the screen but released outside still gets cleared on the card.
+    if (!pom2::mousegrab::shouldRouteButton(grabCtx, button, press)) return;
+
+    mouseButtonHeld = press;
     if (mouseCard)
         mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
     if (mouseAwCard)
@@ -6279,6 +6506,15 @@ void MainWindow::renderMouseInspectorWindow()
             hostInside ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f)
                        : ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
             "Inside Apple II Screen widget: %s", hostInside ? "YES" : "no");
+        // Captured, "Window coords" above is GLFW's *virtual* unbounded
+        // position — it walks past the window edges and the widget-local /
+        // fraction rows below it stop meaning anything. Say so rather than
+        // letting the numbers read as a bug.
+        ImGui::TextColored(
+            mouseGrabbed_ ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f)
+                          : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "Pointer captured (grab)     : %s",
+            mouseGrabbed_ ? "YES — coords above are virtual" : "no");
     }
 
     // ── Apple II Screen widget rect ───────────────────────────────────
@@ -9979,6 +10215,15 @@ void MainWindow::render()
     lastFrameTime = now;
 
     pollJoystickAndPushToMemory();
+
+    // A pointer capture only makes sense while a Mouse Card is on the bus.
+    // Every path that can take one away — Slot Configuration, a profile
+    // switch, a snapshot restore — nulls `mouseCard`/`mouseAwCard`, so
+    // releasing here covers all of them at one point instead of chasing
+    // each call site. Kiosk deliberately keeps the grab (it is the mode
+    // most likely to want it), which is why this sits above the kiosk
+    // early-out below.
+    if (mouseGrabbed_ && !mouseCard && !mouseAwCard) setMouseGrab(false);
 
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).

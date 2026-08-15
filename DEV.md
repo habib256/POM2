@@ -3549,6 +3549,42 @@ computes deltas via 8-bit subtraction with wrap; POM2 emits **at most
 one quadrature edge per axis per MCU PortB read** (matches MAME
 `m_last`/`m_count`).
 
+#### Pointer capture ("mouse grab") — `MouseGrab.h`
+
+Both cards are **relative** quadrature devices, so uncaptured the host
+pointer hits the edge of the screen widget long before the guest cursor
+reaches the edge of its firmware clamp window — every further delta is
+dropped and the guest cursor can end up unable to reach a menu bar.
+Capturing fixes it at the source: `GLFW_CURSOR_DISABLED` hides the OS
+cursor and unbounds the reported position, so deltas keep flowing
+forever. `glfwSetInputMode(GLFW_RAW_MOUSE_MOTION)` rides along on native
+(the desktop's acceleration curve is tuned for a screen-sized target;
+the browser's pointer lock already delivers raw `movementX/Y`).
+
+- **In**: a left click on the screen (`mouse_click_to_grab`, default on
+  — the capturing click is **swallowed**: the guest cursor is not under
+  the host pointer, so forwarding it would click at an arbitrary spot),
+  `Ctrl+Alt+G`, View ▸ Capture mouse, or `view.mousegrab` in the palette.
+- **Out**: `Ctrl+Alt+G` (in the unconditional key set in `main.cpp`, and
+  tested in `onKey` above the Ctrl-letter path that would inject $07),
+  **middle click**, window focus loss (`glfw_window_focus_callback`), or
+  the card going away (`render()` releases when both pointers are null,
+  which covers slot config / profile switch / snapshot restore at once).
+- **While captured**: `ImGuiConfigFlags_NoMouse` — io.MousePos tracks the
+  virtual cursor and would hover panels the user can't see. The GLFW
+  backend skips its own cursor-shape updates under `GLFW_CURSOR_DISABLED`
+  (`ImGui_ImplGlfw_UpdateMouseCursor`), so the two never fight over the
+  input mode. The AppleWin **absolute closed-loop sync is off** (a virtual
+  position projects onto nothing) — capture is always the relative path.
+  Both edges reset `mouseInited` + the sub-pixel accumulators, and leaving
+  clears a held button so the guest can't be stranded with one down.
+
+A grab is host-side only, like kiosk: the machine never sees it, so
+nothing about it is snapshotted. The policy itself lives in
+`MouseGrab.h` — GLFW-free, so `mouse_grab_policy` pins it with no
+windowing stack; `MainWindow.cpp` static_asserts its mirrored GLFW
+tokens against the real header.
+
 **ROM gating**: BOTH ROMs required. Slot-config UI greys entry when
 missing; `plugSlotsFromSettings` refuses with a Mouse log warn.
 Defaults: `roms/mouse_341-0270-c.bin` + `roms/mouse_341-0269.bin`.
@@ -4444,6 +4480,84 @@ bumps the CPU to ~60×, which collapses wall-clock gaps to zero
 across an audio-buffer tick). Canonical example:
 `FloppySoundDevice::drainCommands` uses the cycle stamp passed by
 `DiskIICard::seekPhaseW`.
+
+## Package payload — `packaging/bundle.manifest`
+
+**One list, four consumers.** What ships inside a package used to be spelled
+out by hand in four places — `CMakeLists.txt`'s `install()` rules,
+`package_macos_release.sh`, `package_windows_release.bat` and the WASM
+`--preload-file` block — and they had already drifted: the browser bundle
+carried `floppyemu/` and the whole `fonts/` + `pic/` folders (4 MB of
+photography nothing reads), the desktop packages carried neither.
+
+`packaging/bundle.manifest` is now the single source. Format is
+`<kind> <source> [<destination>]`:
+
+| kind | meaning |
+|---|---|
+| `dir`  | copy the whole tree (`roms`, `fonts`) |
+| `file` | copy one file, optionally renaming (`packaging/roms_README.txt roms/README.txt`) |
+| `wasm` | browser build ONLY — never in a desktop package |
+| `deny` | must NEVER appear in any package; the guard asserts it |
+| `denyglob` | same, by file-name pattern, *inside* a copied `dir` |
+
+`denyglob` exists because a `dir` entry copies the **working tree**, not what
+git tracks: two untracked ROM `.zip` archives sitting in `roms/` shipped in a
+locally-built WASM bundle, where nothing would have noticed them (CI builds
+from a clean checkout, so its bundle differed from the committed one). The
+patterns are excluded three ways — `install(DIRECTORY ... PATTERN … EXCLUDE)`,
+emcc's `--exclude-file`, and a prune inside `stage_data.sh` — and `--verify`
+fails on any survivor.
+
+Consumers:
+
+- **CMake** parses it near the top of `CMakeLists.txt` into
+  `POM2_BUNDLE_DIRS` / `POM2_BUNDLE_FILES` / `POM2_BUNDLE_WASM`, then derives
+  *both* the `install()` rules (so the AppImage, staged with
+  `cmake --install`, and the `.deb` inherit it) and the WASM
+  `--preload-file` list. Two parsing gotchas are load-bearing and commented at
+  the call site: `file(STRINGS)` needs **`ENCODING UTF-8`** (it otherwise
+  treats a multi-byte character as binary and *splits the line*, handing back
+  the tail of a prose comment as an entry), and the comment is stripped with
+  `FIND`/`SUBSTRING` rather than a regex (CMake's `.` does not match the bytes
+  of a multi-byte character, so `#.*$` stops at the first em-dash).
+- **`packaging/stage_data.sh <dest>`** stages the same list for the packagers
+  that do not go through `cmake --install` — the macOS `.app`, the Windows
+  `.zip` (which calls it through Git Bash).
+- **`packaging/stage_data.sh --verify <dest>`** is the CI guard, run in every
+  release job. Both failure modes it catches are silent: a missing font drops
+  the UI to ImGui's bitmap face with blank icon boxes, and a leaked
+  `disks_5.4/` turns a 6 MB download into a 200 MB one carrying media that is
+  not ours to redistribute.
+
+Pinned by **`bundle_manifest`** (`--self-test`): stage into a temp dir, verify,
+then plant a deny-listed folder and require the verifier to *reject* it — a
+guard that always passes is worse than none, because it reads as a guarantee.
+
+**Why `floppyemu` is `wasm`-only**: it is 33 MB and `wasm/shell.html` boots
+`floppyemu/Total Replay v6.1.hdv` by default, so it *is* the live demo's boot
+disk. Desktop users mount their own media, so charging every download 33 MB
+for one HDV would be a poor trade.
+
+**Boot smoke.** `pom2_headless --frames 300 --screenshot out.ppm` runs N frames
+inline through `tickFrame()` (no worker thread, no sleeps, deterministic),
+renders one `Apple2Display` frame and fails with exit 3 if every pixel matches
+the top-left one. It resolves ROMs through `pom2::findResource`, so running it
+from a package's `usr/` exercises the package's *own* asset resolution —
+which is why every release job runs it against the packaged binary, and why
+`POM2 --help` (which passes just as happily with an empty `roms/`) is not
+enough. Pinned locally by `headless_boot_capture`. With no disk it also skips
+plugging the Disk II: an empty drive parks the II+ autostart in the boot PROM
+forever and photographs the uninitialised text page.
+
+**`tools/wasm_stamp.sh`** fingerprints the *sources* that determine the
+committed `wasm/` bundle (GitHub Pages serves that folder straight from the
+branch, so it is published content, not a build artifact). `--check` runs in
+both CI and the release `wasm` job. Sources, not bytes: emcc is not
+reproducible across emsdk versions. The file list comes from `git ls-files`
+(tracked files only, byte-sorted regardless of locale) and each line is
+recomposed locally, because `sha256sum` / `shasum` / `openssl` all format
+their output differently.
 
 ## WebAssembly (browser build)
 

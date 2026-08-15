@@ -284,11 +284,16 @@ echo "[pi-build] OK: $TGZ"
 # generic aarch64, Pi 3 → Pi 5): this one is compiled for ONE core. The name
 # must differ — a release's publish job flattens every artifact into one
 # directory, and two same-named packages would overwrite each other in silence.
-# The version string is the tagging seam build_appimage.sh already offers.
+# Tagged through POM2_APPIMAGE_VARIANT, which build_appimage.sh inserts before
+# the arch. This used to be done by folding the tag into POM2_VERSION
+# (`0.8-pi400`), which produced the right FILE name but also stamped a bogus
+# version into the artifact — and the release workflow asserts that the binary
+# announces the tag's version, so the honest seam is the one that only touches
+# the name.
 export POM2_APPIMAGE_SKIP_BUILD=1
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=aarch64
 export POM2_APPIMAGE_RUNTIME="$TOOLS/runtime-aarch64"
-POM2_VERSION="${VERSION}-${PKG_TAG}" packaging/linux/build_appimage.sh "$BUILD_DIR" dist
+POM2_APPIMAGE_VARIANT="$PKG_TAG" packaging/linux/build_appimage.sh "$BUILD_DIR" dist
 
 ls -lh dist/*.AppImage "$TGZ"

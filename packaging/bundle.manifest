@@ -1,0 +1,78 @@
+# POM2 package payload — the SINGLE source of truth for what ships inside a
+# package, on every platform.
+#
+# Before this file the same list was spelled out by hand in four places —
+# CMakeLists.txt's install() rules, package_macos_release.sh,
+# package_windows_release.bat and the WASM --preload-file block — and they had
+# already drifted: the browser build shipped floppyemu/ and the WHOLE fonts/ and
+# pic/ folders (4 MB of photos nothing reads), the desktop packages shipped
+# neither. Anything that has to be repeated four times will be repeated wrong.
+#
+# Consumers (all of them parse this file, none of them keep their own list):
+#   CMakeLists.txt              install() rules  +  the WASM --preload-file list
+#   packaging/stage_data.sh     the .app / .zip / any hand-staged tree
+#   packaging/stage_data.sh --verify   the CI guard, run in every package job
+#
+# Format — one entry per line, `<kind> <source> [<destination>]`:
+#
+#   dir      <path>        copy the whole tree; destination defaults to <path>
+#   file     <src> [<dst>] copy one file; <dst> is relative to the payload root
+#   wasm     <path>        browser build ONLY — never in a desktop package
+#   deny     <path>        must NEVER appear in any package (the guard asserts it)
+#   denyglob <pattern>     same, by file-name pattern, inside a copied `dir`
+#
+# Paths are relative to the repository root. Blank lines and #-comments ignored.
+
+# ─── Firmware and dumps ─────────────────────────────────────────────────────
+# The full tree: system ROMs, character generators, peripheral card dumps, and
+# the MAME floppy mechanical samples (BSD-3-Clause, see floppy_samples/
+# README.txt). Without it the emulator cannot boot at all, so it is never
+# optional. ~800 KB.
+dir  roms
+
+# The inventory note, which deliberately OVERWRITES any README already sitting
+# in roms/ — it describes what a *package* contains, not the work tree.
+file packaging/roms_README.txt  roms/README.txt
+
+# ─── UI assets ──────────────────────────────────────────────────────────────
+# DejaVu Sans + Font Awesome Free, both redistributable. Without them main.cpp
+# falls back to ImGui's bitmap font and every icon renders as an empty box —
+# including buttons that carry no text label at all. The fallback is silent, so
+# only a structural check catches a package that lost them.
+dir  fonts
+
+# The Apple ][+ photo in Help → About. ONE file, not the folder: pic/ holds
+# 4 MB of reference photography that no code path reads.
+file pic/Apple_II_plus.jpg
+
+# ─── Browser-only extras ────────────────────────────────────────────────────
+# floppyemu/ is 33 MB, and `wasm/shell.html` boots
+# `floppyemu/Total Replay v6.1.hdv` by default — it IS the live demo's boot
+# disk, so the browser bundle cannot drop it. Desktop users mount their own
+# media, so paying 33 MB per download to ship one HDV would be a poor trade:
+# hence `wasm`, not `dir`.
+wasm floppyemu
+
+# ─── Never packaged ─────────────────────────────────────────────────────────
+# Large libraries and user state. These live in the work tree and must never
+# leak into a package — `stage_data.sh --verify` fails the build if one does.
+# disks_5.4 alone is 192 MB and hdv 130 MB; the rest is session output that
+# would ship someone's saved games and printouts to every user.
+deny disks_5.4
+deny hdv
+deny disks_3.5
+deny snapshots
+deny printouts
+deny cassettes
+deny prodos_folder
+
+# `dir roms` copies the WORKING TREE, not what git tracks — so an archive you
+# downloaded into roms/ and never unpacked ships to every user. That is not
+# hypothetical: two untracked ROM .zip archives sitting in roms/ went into a
+# locally-built WASM bundle, where nothing would have noticed them. Archives
+# are also useless to the emulator, which reads raw dumps.
+denyglob *.zip
+denyglob *.7z
+denyglob *.rar
+denyglob *.tar.gz
+denyglob *.tgz
