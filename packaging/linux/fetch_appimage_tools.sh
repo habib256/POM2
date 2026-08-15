@@ -37,10 +37,25 @@ download_verified() {
     echo "$expected  $out" | sha256sum -c -
 }
 
+# appimagetool from AppImageKit release **12** — the SAME release as the
+# runtime below, and that is the whole point.
+#
+# The obvious modern choice, appimagetool 1.9.1, cannot be used here: its
+# bundled mksquashfs supports **zstd only**, while the ET_EXEC runtime this
+# packaging needs (see below) reads only xz and zlib. The two cannot be made to
+# agree — `--comp xz` fails with "Compressor xz is not supported", and the
+# default zstd produces an image whose own runtime cannot open it ("Squashfs
+# image uses (null) compression"). That mismatch shipped silently: the package
+# has the right name, ELF type and magic, and dies on first extraction.
+#
+# Taking both halves from release 12 makes them compatible by construction, and
+# both are immutable release assets rather than a moving `continuous` tag.
+# build_appimage.sh proves the pairing after every build by asking the image to
+# extract itself.
 download_verified \
-  "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage" \
+  "https://github.com/AppImage/AppImageKit/releases/download/12/appimagetool-aarch64.AppImage" \
   appimagetool.AppImage \
-  f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+  c9d058310a4e04b9fbbd81340fff2b5fb44943a630b31881e321719f271bd41a
 download_verified \
   "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" \
   linuxdeploy.AppImage \

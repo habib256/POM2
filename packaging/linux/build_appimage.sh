@@ -148,18 +148,17 @@ rm -f "$OUTFILE"
 AT_ARGS=()
 if [ -n "${POM2_APPIMAGE_RUNTIME:-}" ]; then
     AT_ARGS+=(--runtime-file "$POM2_APPIMAGE_RUNTIME")
-    # …and force a squashfs compressor that runtime can actually read.
-    #
-    # The two halves have to agree and nothing checks that they do. The
-    # AppImageKit-12 runtime pinned above (the last ET_EXEC ARM one) supports
-    # only xz and zlib, while appimagetool 1.9.1 defaults to **zstd** — so the
-    # image it produces cannot be opened by the runtime embedded in it. The
-    # package looks perfect: right name, right ELF type, right magic, and it
-    # dies on the first `--appimage-extract` with "Squashfs image uses (null)
-    # compression". It was latent from the day the tooling moved off
-    # AppImageKit's `continuous` appimagetool (whose default was gzip) and only
-    # surfaced on the next ARM release run.
-    AT_ARGS+=(--comp "${POM2_APPIMAGE_COMP:-xz}")
+    # Compressor: the tool's own default unless overridden. The runtime and the
+    # compressor have to agree and nothing upstream checks that they do — the
+    # ET_EXEC AppImageKit-12 runtime reads only xz and zlib, and an appimagetool
+    # whose mksquashfs writes zstd yields an image its own runtime cannot open.
+    # fetch_appimage_tools.sh therefore takes BOTH halves from release 12, whose
+    # default (gzip) the runtime reads; this knob is the escape hatch if that
+    # pairing ever has to change, and the self-extraction probe below is what
+    # actually enforces the invariant.
+    if [ -n "${POM2_APPIMAGE_COMP:-}" ]; then
+        AT_ARGS+=(--comp "$POM2_APPIMAGE_COMP")
+    fi
 fi
 
 if ARCH="$ARCH" run_tool appimagetool "${AT_ARGS[@]}" "$APPDIR" "$OUTFILE"; then
@@ -179,7 +178,11 @@ fi
 # step twenty minutes later or in a user's bug report.
 EXTRACT_PROBE="${BUILD_DIR}/extract-probe"
 rm -rf "$EXTRACT_PROBE"; mkdir -p "$EXTRACT_PROBE"
-if (cd "$EXTRACT_PROBE" && "${REPO_ROOT}/${OUTFILE}" --appimage-extract >/dev/null 2>&1) \
+# Resolve OUTFILE to an absolute path from its own directory: the probe runs
+# with a different cwd, and `$OUT_DIR` may be given either relative (CI passes
+# `dist`) or absolute. Prefixing REPO_ROOT blindly breaks the absolute case.
+OUTFILE_ABS="$(cd "$(dirname "$OUTFILE")" && pwd)/$(basename "$OUTFILE")"
+if (cd "$EXTRACT_PROBE" && "$OUTFILE_ABS" --appimage-extract >/dev/null 2>&1) \
    && [ -x "${EXTRACT_PROBE}/squashfs-root/AppRun" ]; then
     log "Self-extraction OK (runtime and payload compressor agree)"
     rm -rf "$EXTRACT_PROBE"
