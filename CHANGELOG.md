@@ -59,10 +59,31 @@ clean under `-Wall -Wextra -Wshadow`.
   blobs restored into a machine that is then run: paging state cannot be
   driven out of bounds by a crafted blob.
 - **Static analysis.** clang-analyzer core/cplusplus/unix + the bugprone
-  subset over all 113 first-party TUs: two dead stores and three
-  `bugprone-incorrect-roundings` hits that are false positives (the value is
-  clamped to `[0,1]` before `× 255 + 0.5`, so truncation IS round-half-up).
-  Nothing actionable.
+  subset over all 113 first-party TUs: **28 hits, none actionable**, in four
+  clusters, each dismissed on its own evidence rather than in bulk.
+  - 12 × `bugprone-incorrect-roundings` (`(int)(x + 0.5)`). The check fires
+    on the negative half, where that idiom rounds the wrong way — and every
+    site here clamps first: colour channels to `[0,1]` before `× 255`, the
+    joystick axis to `[0, 255]` before the cast, `fracX/fracY` to `[0,1]`
+    before scaling the mouse clamp window. Non-negative input makes
+    truncate-after-`+0.5` exactly round-half-up.
+  - 7 × `deadcode.DeadStores` — initialisers overwritten by the switch that
+    follows. Style, not behaviour.
+  - 3 × `core.CallAndMessage` "called null pointer": `M6502::memReadAbsolute`
+    off the default constructor (which sets `memory = nullptr`; its one user,
+    `diskii_lss_smoke_test`, uses that CPU purely as a cycle source and never
+    executes an instruction on it), and two on `HgrPaintEditor::host`. The
+    latter is a real inconsistency worth knowing about: `beginStroke` guards
+    with `batch && host`, so it treats a null host as possible, while the
+    render path calls `host->textureToImTexture()` unguarded. Both hosts that
+    exist (POM2, POM1) always pass one, and an editor with no host can
+    neither render nor poke, so nothing is broken today — the guard is what
+    is wrong, not the call.
+  - 2 × `misplaced-widening-cast` (`kTracks * kNibblesPerTrack` = 232 960 and
+    a 0..5 register offset, both computed in `int` and cast after — no
+    overflow reachable) and 2 × `signed-char-misuse` on `clip.idx`, an
+    `int8_t` buffer written only as `static_cast<int8_t>(std::max(v, 0))`
+    from a 0..15 palette index, so the sign bit is never set.
 - **One parity claim re-checked against its source.** The CS8900A multicast
   hash index — `(~crc32(dest, 6) >> 26) & 0x3F` — looked like a double
   complement (POM2's CRC-32 already applies the final XOR). MAME's
