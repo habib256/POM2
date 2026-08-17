@@ -536,7 +536,10 @@ void PhasorCard::onViaPortBChange(int viaIdx)
             // the selected register onto the bus and the card latches it
             // onto the driving VIA's port-A input. Phasor mode detectors
             // write-then-read an AY register to identify the board.
-            const int viaIdx = chipIdx >> 1;   // 2 AYs per VIA
+            // The driving VIA is the one this call is about. `chipIdx` is
+            // `ayBase` or `ayBase + 1` and `ayBase` came from `viaIdx`
+            // (2 AYs per VIA), so the old `chipIdx >> 1` re-derivation
+            // only shadowed the parameter with its own value (-Wshadow).
             if (viaIdx >= 0 && viaIdx < 2)
                 via_[viaIdx]->setPortAInput(ay_[chipIdx]->busOut);
         } else if (res == pom2::Ay3_8910::ApplyResult::ResetOnly) {

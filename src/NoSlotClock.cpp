@@ -2,6 +2,7 @@
 
 #include "NoSlotClock.h"
 
+#include <algorithm>
 #include <ctime>
 
 namespace pom2 {
@@ -46,8 +47,10 @@ void NoSlotClock::loadClockSnapshot()
 {
     const std::tm tm = timeFn_();
     auto packBcd = [](int lsb, int msb) -> uint8_t {
-        if (lsb < 0)  lsb = 0;   if (lsb > 9) lsb = 9;
-        if (msb < 0)  msb = 0;   if (msb > 9) msb = 9;
+        // Clamped, not asserted: a leap-second `tm_sec == 60` is a legal
+        // value the C library really does hand out.
+        lsb = std::clamp(lsb, 0, 9);
+        msb = std::clamp(msb, 0, 9);
         // The chip shifts out LSB-first per byte (D0 of byte 0 first),
         // so we pack the low BCD nibble in bits 0-3 and the high BCD
         // nibble in bits 4-7. Mirrors AppleWin's WriteNibble(low) then

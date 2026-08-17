@@ -5,6 +5,74 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-17 (later) — Bug hunt 7: no functional defects; the build is warning-clean again
+
+A sweep over everything that landed since the 2026-08-13 hunt — the mouse-grab
+feature, the bundle manifest + AppImage packaging scripts, and the same
+morning's `pom2::StateAccess` refactor — plus a fresh pass over the untrusted-
+input surfaces. **No functional defect survived verification.** Two compiler
+warnings did, and they were the whole yield:
+
+- **`PhasorCard::onViaPortBChange` shadowed its own `viaIdx` parameter.** The AY
+  read-bus latch re-derived the VIA index as `chipIdx >> 1` inside a lambda
+  nested in a function whose parameter is already `viaIdx`. The two always
+  agree — `chipIdx` is `ayBase` or `ayBase + 1`, and `ayBase` comes from
+  `viaIdx` — so the shadow was benign, but it was the ONE `-Wshadow` hit in
+  110 first-party translation units, and a shadow that happens to be equal
+  today is a bug waiting for the day the mapping changes. The local is gone;
+  the parameter is used directly, guard included.
+- **`NoSlotClock::loadClockSnapshot`'s BCD clamp read as a bug it wasn't.**
+  `if (lsb < 0) lsb = 0;   if (lsb > 9) lsb = 9;` on one line is correct C++
+  and correct behaviour, and `-Wmisleading-indentation` flags it precisely
+  because a reader parses it as one guarded statement. Now `std::clamp`, which
+  says the same thing with no room to misread. (The clamp itself earns its
+  keep: `tm_sec == 60` is a legal leap-second value the C library really
+  hands out.)
+
+Both were the only warnings in the whole first-party build, which is again
+clean under `-Wall -Wextra -Wshadow`.
+
+**What was actually swept, and what came back clean:**
+
+- **Lock discipline after the `StateAccess` refactor.** `stateMtx` is a plain
+  `std::mutex`, so one nested `lockState()` anywhere is a hard deadlock. Every
+  lock site in `src/` was walked with a brace-accurate scanner that follows the
+  held scope and flags any call back into an `EmulationController` method that
+  re-locks (`hardReset`, `coldBoot`, `bootFromSlot`, `mount35`, the whole
+  cassette + rewind transport, `lockState`/`stateMutex` themselves): **zero
+  nestings**. The four apparent hits are all `if`/`else` arms — the lock is in
+  the branch not taken. The `stateMutex → demodMutex` order also holds in both
+  directions at all four sites that take both.
+- **Disk-image loaders, fuzzed.** 2 050 mutated/truncated WOZ1, WOZ2, WOZ2+FLUX,
+  `.dsk`, `.nib`, CNib2, `.d13` and 2IMG-wrapped images through `loadFile`
+  under ASan+UBSan, each survivor then driven through `trackBitLength` /
+  `bitAt` / `trackPeriod` / `fluxEvents` / `getNextTransition` past the end of
+  the track / `nibbleAt` / media-snapshot round-trip. No crash, no UB.
+- **Guest-driven chip register files, fuzzed.** 600 000 random W5100 ops
+  (register writes, socket commands, RMSR/TMSR ring geometry changes mid-
+  stream, indirect-window traffic, corrupted snapshot restores) and 450 000
+  CS8900A I/O-port ops with a frame-generating backend, plus 400 000 SmartPort
+  `$C0nX` ops with the medium ejected and remounted underneath the stream.
+  Clean — the ring math holds under a geometry rewrite with data staged, which
+  is the case the arithmetic is most exposed to.
+- **`Memory` snapshot restore, fuzzed.** 4 500 corrupted / truncated / extended
+  blobs restored into a machine that is then run: paging state cannot be
+  driven out of bounds by a crafted blob.
+- **Static analysis.** clang-analyzer core/cplusplus/unix + the bugprone
+  subset over all 113 first-party TUs: two dead stores and three
+  `bugprone-incorrect-roundings` hits that are false positives (the value is
+  clamped to `[0,1]` before `× 255 + 0.5`, so truncation IS round-half-up).
+  Nothing actionable.
+- **One parity claim re-checked against its source.** The CS8900A multicast
+  hash index — `(~crc32(dest, 6) >> 26) & 0x3F` — looked like a double
+  complement (POM2's CRC-32 already applies the final XOR). MAME's
+  `cs8900a.cpp` spells it exactly the same way, so the port is right and the
+  oddity belongs upstream.
+
+The fuzz harnesses are not committed, matching the precedent set in hunt 5:
+they link against test-target objects rather than a build-system target, which
+is a CI decision rather than a bug fix.
+
 ## 2026-08-17 — A menu drawn over the screen owns its own clicks
 
 **Clicking an item in a dropdown that overlapped the Apple II screen fired the
