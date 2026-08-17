@@ -204,8 +204,8 @@ MainWindow::MainWindow(bool forceIIPlus)
     // so a byte poked from the UI passes through ROM-write protection and
     // any future I/O hooks just like a CPU store would.
     memViewer->setWriteCallback([this](uint16_t a, uint8_t v) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        controller->memory().memWrite(a, v);
+        auto st = controller->lockState();
+        st.memory().memWrite(a, v);
     });
 
     // Load any persisted runtime config. Missing/malformed file → use
@@ -289,6 +289,10 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
     }
 
+    // Constructor: the CPU worker is not running yet (controller->start()
+    // comes later), so the raw accessor is correct here — there is no
+    // second thread to be raced by. Everything past start() uses
+    // lockState().
     if (iiePresent) {
         controller->memory().setIIEMode(true);
         const int banks = settings->getInt("ramworks_banks", 1);
@@ -386,7 +390,13 @@ MainWindow::MainWindow(bool forceIIPlus)
     // mapping is read from `slot_1_card`..`slot_7_card` settings; absent
     // keys fall back to the legacy defaults (DiskII=6, HDV=5, SSC=2,
     // Clock=4, ChatMauve=7) so first-run users see no regression.
-    plugSlotsFromSettings();
+    // The lock is free here (the worker starts later in this ctor), but
+    // plugSlotsFromSettings takes the handle rather than the mutex on
+    // purpose — its other two callers are already holding it.
+    {
+        auto st = controller->lockState();
+        plugSlotsFromSettings(st);
+    }
 
     // ── Restore display + UI prefs from previous session ─────────────
     {
@@ -785,10 +795,9 @@ MainWindow::MainWindow(bool forceIIPlus)
             // CPU mode override. Apply it.
             const auto& cfg = pom2::profileConfig(activeProfile);
             const M6502::CpuMode resolved = resolveCpuMode(cfg.defaultCpu);
-            if (resolved != controller->cpu().getCpuMode()) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                controller->cpu().setCpuMode(resolved);
-            }
+            auto st = controller->lockState();
+            if (resolved != st.cpu().getCpuMode())
+                st.cpu().setCpuMode(resolved);
         }
     }
     // Profile-specific floppy motor pitch — applies only to the 5.25"
@@ -1241,7 +1250,7 @@ void MainWindow::unregisterAllAudioSources()
     registeredAudioSources_.clear();
 }
 
-void MainWindow::plugSlotsFromSettings()
+void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 {
     namespace fs = std::filesystem;
 
@@ -1424,7 +1433,7 @@ void MainWindow::plugSlotsFromSettings()
         // MMIO reads/writes (cycle-precise copy protections rely on the
         // LSS state at the exact sub-cycle of the data fetch, not at
         // instruction-start). See DiskIICard::setCpu doc for context.
-        card->setCpu(&controller->cpu());
+        card->setCpu(&st.cpu());
         card->setFloppySound(&controller->floppySound525());
         // //c+ on-board IWM — only the slot-6 card pushes its drive
         // pointer to the IWM, mirroring the //c+ wiring. Multi-instance
@@ -1458,7 +1467,7 @@ void MainWindow::plugSlotsFromSettings()
         }
         diskPanels.push_back(std::make_unique<pom2::DiskController_ImGui>());
         if (!diskPanel) diskPanel = diskPanels.front().get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugHdv = [&](int s) {
@@ -1483,7 +1492,7 @@ void MainWindow::plugSlotsFromSettings()
         }
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
         if (!hdvCard) hdvCard = card.get();   // primary = lowest slot
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugCffa = [&](int s) {
@@ -1503,7 +1512,7 @@ void MainWindow::plugSlotsFromSettings()
             return std::string();
         };
         const bool cmos =
-            controller->cpu().getCpuMode() == M6502::CpuMode::CMOS;
+            st.cpu().getCpuMode() == M6502::CpuMode::CMOS;
         const std::string cffaRomPath = cmos
             ? probe("cffa20eec02.bin", "cffa20ee02.bin")
             : probe("cffa20ee02.bin", "cffa20eec02.bin");
@@ -1528,7 +1537,7 @@ void MainWindow::plugSlotsFromSettings()
         }
         card->setWriteBackEnabled(settings->getBool(key + "_writeback", false));
         if (!cffaCard) cffaCard = card.get();   // primary = lowest slot
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugChatMauve = [&](int s) {
@@ -1542,7 +1551,7 @@ void MainWindow::plugSlotsFromSettings()
             chatMauveCard->setHgrDuochromeEnabled(
                 settings->getBool("chatmauve_hgr_duochrome", false));
         }
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
         display->setChatMauveCard(chatMauveCard);
     };
 
@@ -1553,13 +1562,13 @@ void MainWindow::plugSlotsFromSettings()
         // queue, so a stream of bytes from telnet doesn't clobber earlier
         // characters that BASIC hasn't picked up yet.
         raw->setKeyboardSink(
-            [&mem = controller->memory()](uint8_t b) {
+            [&mem = st.memory()](uint8_t b) {
                 const char buf[1] = { static_cast<char>(b) };
                 mem.pasteText(buf, 1);
             });
         // IRQ routing is auto-wired by SlotBus's installed router (see
         // Memory::setCpu) — no per-card setup needed.
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
         sscCards.push_back(raw);
         if (sscCard == nullptr) sscCard = raw;     // primary alias = lowest slot
         // Per-slot persistence; fall back to legacy global keys (the
@@ -1587,7 +1596,7 @@ void MainWindow::plugSlotsFromSettings()
     auto plugClock = [&](int s) {
         auto card = std::make_unique<ClockCard>(s);
         clockCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugSoftCard = [&](int s) {
@@ -1596,15 +1605,15 @@ void MainWindow::plugSlotsFromSettings()
         // side effects, LC paging) and the 6502 so its $CnXX toggle can
         // halt the in-flight run() chunk at an instruction boundary.
         auto card = std::make_unique<SoftCardZ80>();
-        card->setMemory(&controller->memory());
-        card->setCpu(&controller->cpu());
-        controller->memory().slotBus().plug(s, std::move(card));
+        card->setMemory(&st.memory());
+        card->setCpu(&st.cpu());
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugPrinter = [&](int s) {
         auto card = std::make_unique<PrinterCard>(s);
         printerCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     // Both Ethernet cards share one host-transport decision, so the
@@ -1646,7 +1655,7 @@ void MainWindow::plugSlotsFromSettings()
         auto card = std::make_unique<pom2::UthernetCard>(s);
         card->setBackend(makeEthernetBackend("Uthernet"));
         uthernetCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugUthernetII = [&](int s) {
@@ -1662,7 +1671,7 @@ void MainWindow::plugSlotsFromSettings()
         card->chip().setVirtualDnsEnabled(
             settings->getBool("uthernet2_virtual_dns", true));
         uthernetIICard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugFujiNet = [&](int s) {
@@ -1671,8 +1680,8 @@ void MainWindow::plugSlotsFromSettings()
         // — a machine with this card and no FujiNet running behaves like a
         // machine with an empty drive, not a broken one.
         auto card = std::make_unique<pom2::FujiNetCard>(s);
-        card->setMemory(&controller->memory());
-        card->setCpu(&controller->cpu());
+        card->setMemory(&st.memory());
+        card->setCpu(&st.cpu());
 
         const std::string sk = "_slot" + std::to_string(s);
         auto& link = card->link();
@@ -1699,7 +1708,7 @@ void MainWindow::plugSlotsFromSettings()
         }
 
         fujiNetCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
 
         fujiNetHelperPath_ = settings->getString("fujinet_helper_path" + sk, "");
         fujiNetHelperResolved_ = pom2::ChildProcess::findOnPath(
@@ -1716,12 +1725,12 @@ void MainWindow::plugSlotsFromSettings()
         // until the 4-AY mix lands (TODO 🟡 [Phasor] audio synth).
         auto card = std::make_unique<PhasorCard>(s);
         card->setSampleRate(controller->audio().getActualSampleRate());
-        card->setCpu(&controller->cpu());
+        card->setCpu(&st.cpu());
         card->setVolume(settings->getFloat("phasor_volume", 0.5f));
         card->setMuted (settings->getBool ("phasor_muted",  false));
         registerAudioSource(card->audioSource());
         phasorCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugEchoPlus = [&](int s) {
@@ -1731,12 +1740,12 @@ void MainWindow::plugSlotsFromSettings()
         // commit pending license review of AppleWin's data).
         auto card = std::make_unique<EchoPlusCard>(s);
         card->setSampleRate(controller->audio().getActualSampleRate());
-        card->setCpu(&controller->cpu());
+        card->setCpu(&st.cpu());
         card->setVolume(settings->getFloat("echoplus_volume", 0.7f));
         card->setMuted (settings->getBool ("echoplus_muted",  false));
         registerAudioSource(card->audioSource());
         echoPlusCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugEchoPlusTms = [&](int s) {
@@ -1747,7 +1756,7 @@ void MainWindow::plugSlotsFromSettings()
         // sourcing notes.
         auto card = std::make_unique<EchoPlusTMS5220Card>(s);
         echoPlusTmsCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugGrappler = [&](int s) {
@@ -1781,7 +1790,7 @@ void MainWindow::plugSlotsFromSettings()
         card->setMsbSoftwareControl(
             settings->getBool("grappler_msb_software", true));
         grapplerCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugMockingboard = [&](int s, MockingboardCard::Variant variant) {
@@ -1809,7 +1818,7 @@ void MainWindow::plugSlotsFromSettings()
             pom2VideoTiming(controller->getVideoStandard()).cpuClockHz));
         // CPU pointer feeds the lazy-sync timer back-channel
         // (getCycleCountNow); IRQ routing is auto-wired via SlotBus.
-        card->setCpu(&controller->cpu());
+        card->setCpu(&st.cpu());
         // Default volume is conservative — the card's three-channel mix
         // can dwarf the speaker at peak; the user can crank via the
         // Mockingboard panel (TODO).
@@ -1817,7 +1826,7 @@ void MainWindow::plugSlotsFromSettings()
         card->setMuted(settings->getBool ("mockingboard_muted",  false));
         registerAudioSource(card->audioSource());
         mockingboardCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugSmartPort35 = [&](int s) {
@@ -1891,7 +1900,7 @@ void MainWindow::plugSlotsFromSettings()
             card->setUnit(k, std::move(unit));
         }
         if (!smartPortCard) smartPortCard = card.get();   // primary = lowest slot
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     auto plugMouse = [&](int s) {
@@ -1933,7 +1942,7 @@ void MainWindow::plugSlotsFromSettings()
         // assertIrq, which fans out through M6502::setIrqLine(slot, …).
         mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
         mouseCard = card.get();
-        controller->memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(card));
     };
 
     // Dispatch: walk slots 1..7 and plug whichever card the settings ask
@@ -1999,7 +2008,7 @@ void MainWindow::plugSlotsFromSettings()
                 card->setVblCycles(vt.scanlinesPerFrame * vt.cyclesPerScanline);
             }
             mouseAwCard = card.get();
-            controller->memory().slotBus().plug(s, std::move(card));
+            st.memory().slotBus().plug(s, std::move(card));
         }
         else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
         else if (kind == "mockingboard_c") plugMockingboard(s, MockingboardCard::Variant::SoundII);
@@ -2039,13 +2048,13 @@ void MainWindow::plugSlotsFromSettings()
     if (cliFujiNetSlot_ > 0 &&
         !pom2::profileConfig(activeProfile).noPhysicalSlots) {
         const int s = cliFujiNetSlot_;
-        if (controller->memory().slotBus().peripheral(s) != nullptr) {
+        if (st.memory().slotBus().peripheral(s) != nullptr) {
             pom2::log().warn("CLI", "--fujinet: slot " + std::to_string(s) +
                                         " is taken after the rebuild — card "
                                         "not restored");
         } else {
             std::string err;
-            if (!plugFujiNetUnlocked(s, cliFujiNetSerial_,
+            if (!plugFujiNetUnlocked(st, s, cliFujiNetSerial_,
                                      cliFujiNetSerialPath_, cliFujiNetPort_,
                                      err))
                 pom2::log().warn("CLI", "--fujinet: " + err);
@@ -2120,6 +2129,12 @@ void MainWindow::saveScreenshot()
 
 void MainWindow::injectAscii(uint8_t apple2Code)
 {
+    // Not under lockState(), on purpose: queueKey takes `Memory::kbMutex`,
+    // the finer-grained lock that lets the UI and the AI server inject keys
+    // without contending with the worker on every keystroke. Same for
+    // pasteText / pendingPasteSize / cancelPaste and the kiosk key path;
+    // the Open/Solid-Apple setters are plain atomics. Those are the only
+    // Memory entry points in this file that may be reached unlocked.
     controller->memory().queueKey(apple2Code);
 }
 
@@ -2339,9 +2354,9 @@ void MainWindow::uploadScreenTexture()
         // Render under stateMutex so we get a consistent snapshot of RAM
         // (otherwise the CPU may be mid-frame with the text screen half
         // updated, producing tearing).
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
         demodLk.lock();
-        display->render(controller->memory());
+        display->render(st.memory());
     }
     display->finishPendingCpuDemod();
 
@@ -2888,9 +2903,9 @@ void MainWindow::renderMenuBar()
             {
                 // Must hold the emulation lock: loadAppleIIRom rewrites
                 // $D000-$FFFF and can race with the CPU thread otherwise.
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                ok = controller->memory().loadAppleIIRom(romPath.c_str());
-                if (!ok) err = controller->memory().getLastError();
+                auto st = controller->lockState();
+                ok = st.memory().loadAppleIIRom(romPath.c_str());
+                if (!ok) err = st.memory().getLastError();
             }
             // hardReset() re-acquires stateMutex internally, so it MUST run
             // outside the lock_guard scope above — calling it while the lock
@@ -2991,7 +3006,8 @@ void MainWindow::renderMenuBar()
         //   * 65C02 — force CMOS (e.g. run NMOS-era software on 65C02)
         // Persisted to settings as `cpu_mode_override` so the choice
         // survives a relaunch. A profile switch re-applies the override.
-        const auto curCpu = controller->cpu().getCpuMode();
+        M6502::CpuMode curCpu;
+        { auto st = controller->lockState(); curCpu = st.cpu().getCpuMode(); }
         const std::string curOverride = settings->getString("cpu_mode_override", "auto");
         if (ImGui::BeginMenu("CPU")) {
             const auto& cfg = pom2::profileConfig(activeProfile);
@@ -3007,8 +3023,8 @@ void MainWindow::renderMenuBar()
             if (ImGui::MenuItem(autoLabel, nullptr, curOverride == "auto")) {
                 settings->setString("cpu_mode_override", "auto");
                 settings->save();
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                controller->cpu().setCpuMode(cfg.defaultCpu);
+                auto st = controller->lockState();
+                st.cpu().setCpuMode(cfg.defaultCpu);
             }
             ImGui::BeginDisabled(cmosOnly);
             // On a CMOS-only profile the NMOS override is inert (clamped), so
@@ -3020,8 +3036,8 @@ void MainWindow::renderMenuBar()
                                   && curOverride != "65c02")))) {
                 settings->setString("cpu_mode_override", "nmos");
                 settings->save();
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                controller->cpu().setCpuMode(M6502::CpuMode::NMOS);
+                auto st = controller->lockState();
+                st.cpu().setCpuMode(M6502::CpuMode::NMOS);
             }
             ImGui::EndDisabled();
             if (ImGui::MenuItem("65C02 (CMOS)", nullptr,
@@ -3030,8 +3046,8 @@ void MainWindow::renderMenuBar()
                                  && curOverride != "nmos"))) {
                 settings->setString("cpu_mode_override", "65c02");
                 settings->save();
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                controller->cpu().setCpuMode(M6502::CpuMode::CMOS);
+                auto st = controller->lockState();
+                st.cpu().setCpuMode(M6502::CpuMode::CMOS);
             }
             ImGui::Separator();
             ImGui::TextDisabled("NMOS = original 1975. Disables");
@@ -3521,7 +3537,11 @@ void MainWindow::renderStatusBar()
                 case EmulationController::Mode::Step:
                     modeStr = "STEP"; modeCol = pal.info; break;
             }
-            const auto state = controller->memory().getDisplayState();
+            // Under the lock: this is live soft-switch state the worker
+            // rewrites as the guest flips $C050-$C057, and it is copied out
+            // as a struct, so an unlocked read can straddle a change.
+            Memory::DisplayState state;
+            { auto st = controller->lockState(); state = st.memory().getDisplayState(); }
             const char* gfx = state.textMode ? "TEXT"
                             : state.hiRes    ? (state.mixedMode ? "HGR+TXT" : "HGR")
                                              : (state.mixedMode ? "LGR+TXT" : "LGR");
@@ -3572,10 +3592,10 @@ void MainWindow::renderStatusBar()
                 auto baseName = [](const std::string& p) {
                     return std::filesystem::path(p).filename().string();
                 };
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                auto st = controller->lockState();
                 for (int slot = 1; slot <= 7; ++slot) {
                     SlotPeripheral* per =
-                        controller->memory().slotBus().peripheral(slot);
+                        st.memory().slotBus().peripheral(slot);
                     if (!per) continue;
 
                     if (auto* d2 = dynamic_cast<DiskIICard*>(per)) {
@@ -4005,16 +4025,27 @@ void MainWindow::drawScreenImage()
 
     ImGui::Image(static_cast<ImTextureID>(presentTex), size);
     // Capture the screen widget's screen-space rect so the GLFW
-    // cursor-pos callback (Phase 5) can route motion over the
-    // screen to the Mouse Card.
+    // cursor-pos callback (Phase 5) can map a host position onto Apple
+    // pixels. The rect answers "*where* in the screen", never "is the
+    // screen the one being pointed at" — see screenHovered_ below.
     screenRectMin = ImGui::GetItemRectMin();
     screenRectMax = ImGui::GetItemRectMax();
+    // ...and ImGui's own z-order aware verdict on whether the pointer is
+    // actually on the screen widget, which is what decides *ownership* of a
+    // click (mouseGrabContext). Unlike the rect, this is false while a
+    // dropdown, popup or panel is drawn over the screen, so a click aimed at
+    // an open menu no longer doubles as a click into the guest — nor as the
+    // capturing press that would steal the pointer behind that menu.
+    // Recomputed every frame; renderFrame clears it first so a collapsed or
+    // hidden screen window cannot leave a stale `true` behind.
+    const bool screenHovered = ImGui::IsItemHovered();
+    screenHovered_ = screenHovered;
 
     // 3D voxel view camera: left-drag orbits, middle-drag strafes (pan),
     // wheel zooms (MicroM8-style). All reference the Image item above
     // (IsItemHovered), so this must stay right after it. Mutates the
     // persistent `voxelCam_` the renderer reads.
-    if (show3dVoxel_ && ImGui::IsItemHovered()) {
+    if (show3dVoxel_ && screenHovered) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
             const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
             ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
@@ -4067,7 +4098,7 @@ void MainWindow::drawMouseGrabOverlay()
         if (kiosk_ || lastFrameTime < mouseGrabHintUntil_)
             text = "Mouse captured " ICON_FA_ARROW_RIGHT
                    " Ctrl+Alt+G or middle click to release";
-    } else if (clickToGrab_ && !show3dVoxel_ && mouseGrabContext().insideScreen) {
+    } else if (clickToGrab_ && !show3dVoxel_ && mouseGrabContext().screenHovered) {
         text = "Click to capture the mouse";
     }
     if (!text) return;
@@ -4958,14 +4989,16 @@ pom2::mousegrab::Context MainWindow::mouseGrabContext() const
     c.grabbed     = mouseGrabbed_;
     c.voxelView   = show3dVoxel_;
     c.clickToGrab = clickToGrab_;
-    const float w = screenRectMax.x - screenRectMin.x;
-    const float h = screenRectMax.y - screenRectMin.y;
-    c.insideScreen =
-        w > 0.0f && h > 0.0f &&
-        lastMouseHostX >= double(screenRectMin.x) &&
-        lastMouseHostX <= double(screenRectMax.x) &&
-        lastMouseHostY >= double(screenRectMin.y) &&
-        lastMouseHostY <= double(screenRectMax.y);
+    // Hover, NOT rect containment. `screenHovered_` is ImGui's own z-order
+    // aware verdict, captured next to the screen Image (renderScreenWindow).
+    // A raw "is the cursor between screenRectMin and screenRectMax" test
+    // cannot see what is drawn on top: an open dropdown, a popup or a panel
+    // docked over the screen all sit *inside* that rect, so every click the
+    // user aimed at the menu also reached the Mouse Card — and, worse, armed
+    // `shouldGrabOnPress` into capturing the pointer behind the menu.
+    // The rect itself is still the right tool for the *coordinate* mapping
+    // in onMouseMove; it is only wrong as an ownership test.
+    c.screenHovered = screenHovered_;
     return c;
 }
 
@@ -5324,9 +5357,9 @@ void MainWindow::pollJoystickAndPushToMemory()
     }
     const bool suppressGame = menuActive || kioskSwallowPad_;
 
-    Memory& mem = controller->memory();
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
+        Memory& mem = st.memory();
         for (int i = 0; i < 4; ++i)
             mem.setPaddle(i, menuActive ? 128 : joystick->paddleValue(i));
 
@@ -5347,6 +5380,13 @@ void MainWindow::pollJoystickAndPushToMemory()
     // Keyboard routing for the digital controls — outside stateMutex, since
     // queueKey has its own keyboard lock. Only in-game (menu closed, swallow
     // drained) and only for a gamepad-mapped pad whose layout we can trust.
+    //
+    // Its own reference, deliberately: the paddle block above reaches Memory
+    // through the state lock, this one must NOT hold that lock (queueKey
+    // takes `Memory::kbMutex`, the finer-grained one). Sharing a single
+    // reference across the two, as this function used to, is what made the
+    // split invisible.
+    Memory& mem = controller->memory();
     if (suppressGame || !play.valid) {
         // Drop the auto-repeat history so a direction still held from menu
         // navigation re-arms cleanly (press-then-delay) once released.
@@ -6604,8 +6644,8 @@ void MainWindow::renderMouseInspectorWindow()
             int holeXlo = 0, holeXhi = 0, holeYlo = 0, holeYhi = 0;
             int holeMode = 0, holeStatus = 0;
             {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                Memory& mem = controller->memory();
+                auto st = controller->lockState();
+                Memory& mem = st.memory();
                 holeXlo   = mem.peekMainRam(uint16_t(0x0478 + activeSlot));
                 holeXhi   = mem.peekMainRam(uint16_t(0x0578 + activeSlot));
                 holeYlo   = mem.peekMainRam(uint16_t(0x04F8 + activeSlot));
@@ -6678,8 +6718,8 @@ void MainWindow::renderMouseInspectorWindow()
                 mouseCard   ? mouseCard  ->getSlot() : 0;
             int holeX = 0, holeY = 0, holeMode = 0;
             if (activeSlot >= 1 && activeSlot <= 7) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                Memory& mem = controller->memory();
+                auto st = controller->lockState();
+                Memory& mem = st.memory();
                 holeX = mem.peekMainRam(uint16_t(0x0478 + activeSlot)) |
                        (mem.peekMainRam(uint16_t(0x0578 + activeSlot)) << 8);
                 holeY = mem.peekMainRam(uint16_t(0x04F8 + activeSlot)) |
@@ -7672,11 +7712,11 @@ void MainWindow::renderDiskPanelWindow()
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         if (result.requestBoot) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            auto st = controller->lockState();
             card->seekTrack0();
             const uint16_t pc = static_cast<uint16_t>(
                 0xC000 + (card->getSlot() << 8));
-            controller->cpu().setProgramCounter(pc);
+            st.cpu().setProgramCounter(pc);
             controller->setMode(EmulationController::Mode::Running);
             char msg[64];
             std::snprintf(msg, sizeof(msg), "Boot: PC → $%04X", pc);
@@ -7870,6 +7910,11 @@ pom2::ProDOSBlockCard* MainWindow::hdvDevice() const
     return nullptr;
 }
 
+// Bus *topology* reads (which slot holds which card) are UI-thread-confined:
+// every writer — plugSlotsFromSettings, applyProfile, the slot-config
+// rebuild — runs on this thread, and the worker only ever reads the table.
+// A lock here would protect nothing while reading as though it did; per-card
+// *state* is a different matter and does go through lockState().
 std::vector<pom2::ProDOSBlockCard*> MainWindow::blockCards() const
 {
     // Walk the bus (slots 1..7) and cross-cast each plugged peripheral to
@@ -7965,10 +8010,10 @@ int MainWindow::ensureHdvCardForBoot()
     // Plug under the state lock (the slot is empty, so no card destructor
     // races the worker — a held lock is enough; no stop/start needed).
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
         auto card = std::make_unique<ProDOSHardDiskCard>(slot);
         hdvCard = card.get();
-        controller->memory().slotBus().plug(slot, std::move(card));
+        st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
         autoProvisionedHdvSlot_ = slot;   // session-local; ~MainWindow won't persist it
     }
@@ -8472,8 +8517,8 @@ bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
         return false;
     }
 
-    std::lock_guard<std::mutex> lk(controller->stateMutex());
-    auto& bus = controller->memory().slotBus();
+    auto  st  = controller->lockState();
+    auto& bus = st.memory().slotBus();
 
     if (bus.peripheral(slot) != nullptr && !slotExplicit) {
         // The user never named a slot — 7 is only POM2's preference, and its
@@ -8504,7 +8549,7 @@ bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
         return false;
     }
 
-    if (!plugFujiNetUnlocked(slot, serial, serialDevice, tcpPort, errOut))
+    if (!plugFujiNetUnlocked(st, slot, serial, serialDevice, tcpPort, errOut))
         return false;
 
     // Remember it so every later slot rebuild reproduces it — see the header.
@@ -8515,14 +8560,15 @@ bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
     return true;
 }
 
-bool MainWindow::plugFujiNetUnlocked(int slot, bool serial,
+bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
+                                     int slot, bool serial,
                                      const std::string& serialDevice,
                                      int tcpPort, std::string& errOut)
 {
-    auto& bus = controller->memory().slotBus();
+    auto& bus = st.memory().slotBus();
     auto card = std::make_unique<pom2::FujiNetCard>(slot);
-    card->setMemory(&controller->memory());
-    card->setCpu(&controller->cpu());
+    card->setMemory(&st.memory());
+    card->setCpu(&st.cpu());
     auto& link = card->link();
     if (serial)
         link.setSerialMode(serialDevice, pom2::SerialPort::kDefaultBaud);
@@ -8790,7 +8836,7 @@ void MainWindow::renderFloppyEmuWindow()
             for (int s = 7; s >= 1; --s)
                 if (!bus.isPlugged(s)) { slot = s; break; }
         if (slot < 0) return -1;
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
         auto card = std::make_unique<pom2::SmartPortCard>(slot);
         card->setFloppySound(&controller->floppySound35());
         if (!pom2::profileConfig(activeProfile).noPhysicalSlots) {
@@ -8798,7 +8844,7 @@ void MainWindow::renderFloppyEmuWindow()
             if (!r.empty()) card->loadLironRom(r);
         }
         smartPortCard = card.get();
-        controller->memory().slotBus().plug(slot, std::move(card));
+        st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";
         autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
         pom2::log().info("FloppyEmu",
@@ -9844,7 +9890,7 @@ void MainWindow::renderWelcomePanelWindow()
         if (ImGui::Button("Reload ROM (re-probe folders)")) {
             bool ok = false;
             {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
+                auto st = controller->lockState();
                 // Re-resolve from the active profile so dropping the
                 // profile-specific dump in is picked up without a relaunch.
                 std::string newRom;
@@ -9853,7 +9899,7 @@ void MainWindow::renderWelcomePanelWindow()
                     if (!r.empty()) { newRom = r; break; }
                 }
                 if (newRom.empty()) newRom = romPath;  // last-known path
-                ok = controller->memory().loadAppleIIRom(newRom.c_str());
+                ok = st.memory().loadAppleIIRom(newRom.c_str());
                 if (ok) romPath = newRom;
             }
             if (ok) {
@@ -9989,9 +10035,9 @@ void MainWindow::renderMemoryViewerWindow()
         {
             // Hold the state mutex briefly so the snapshot the viewer reads
             // (Memory::data()) is consistent — no torn writes mid-row.
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            auto st = controller->lockState();
             memViewer->setCmosMode(
-                controller->cpu().getCpuMode() == M6502::CpuMode::CMOS);
+                st.cpu().getCpuMode() == M6502::CpuMode::CMOS);
             memViewer->render();
         }
         // Byte edits / Undo / Redo are only STAGED by render(); apply them
@@ -10056,8 +10102,8 @@ void MainWindow::renderHgrPaintWindow()
     // 64 KB main-RAM (+ IIe aux) snapshot under stateMutex — the editor's
     // per-frame canvas/shadow read source (same idiom as the deck snapshot).
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const Memory& mem = controller->memory();
+        auto st = controller->lockState();
+        const Memory& mem = st.memory();
         hgrPaintMem_.assign(mem.data(), mem.data() + 0x10000);
         if (mem.isIIE())
             hgrPaintAux_.assign(mem.auxData(), mem.auxData() + 0x10000);
@@ -10078,8 +10124,8 @@ void MainWindow::renderHgrSpriteWindow()
 {
     if (!showHgrSpriteEditor) return;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const Memory& mem = controller->memory();
+        auto st = controller->lockState();
+        const Memory& mem = st.memory();
         hgrPaintMem_.assign(mem.data(), mem.data() + 0x10000);
         if (mem.isIIE())
             hgrPaintAux_.assign(mem.auxData(), mem.auxData() + 0x10000);
@@ -10213,6 +10259,13 @@ void MainWindow::render()
     const double now = std::chrono::duration<double>(clock::now() - t0).count();
     const float deltaSeconds = static_cast<float>(std::max(0.0, now - lastFrameTime));
     lastFrameTime = now;
+
+    // Screen-widget hover is re-established by renderScreenWindow() further
+    // down, if it draws at all. Clearing it here is what makes "the screen
+    // window is collapsed / hidden / not reached this frame" mean "the
+    // pointer is not the guest's" — a latched `true` would keep feeding the
+    // Mouse Card from a widget that is no longer on screen.
+    screenHovered_ = false;
 
     pollJoystickAndPushToMemory();
 
@@ -10356,8 +10409,8 @@ void MainWindow::render()
             }
             namespace fs = std::filesystem;
             if (!newPath.empty() && fs::exists(newPath)) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (controller->memory().loadCharRom(
+                auto st = controller->lockState();
+                if (st.memory().loadCharRom(
                         newPath.c_str(), pom2::charRomBank(charRomLocale))) {
                     charRomPath = newPath;
                     settings->setString("char_rom_locale",

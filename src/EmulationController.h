@@ -31,6 +31,8 @@
 #include <string>
 #include <thread>
 
+namespace pom2 { class StateAccess; }
+
 class EmulationController
 {
 public:
@@ -39,6 +41,11 @@ public:
     EmulationController();
     ~EmulationController();
 
+    /// Unchecked access to the emulated state. Correct ONLY on the worker
+    /// thread, during construction before the worker starts, or for the
+    /// handful of Memory entry points that carry their own finer-grained
+    /// lock (the keyboard latch / paste queue guard `Memory::kbMutex`).
+    /// Every other caller wants `lockState()` — see the note there.
     Memory&         memory()   { return mem; }
     M6502&          cpu()      { return processor; }
 
@@ -202,9 +209,26 @@ public:
     // Block for up to `timeoutMs` until the CPU is paused at an
     // instruction boundary. Cheap: the worker holds `stateMutex` only
     // while running a slice, releases it on every iteration.
+    //
+    // Two spellings, one mutex, and the choice is not stylistic:
+    //   • `lockState()`  — "I need to read or write the emulated state."
+    //                      Hands back Memory and the CPU *through* the lock,
+    //                      so the access cannot be written without it.
+    //   • `stateMutex()` — "I need mutual exclusion against the worker, but
+    //                      I am not touching Memory or the CPU" (serialising
+    //                      a card pointer against a profile switch, say).
+    // Reaching `memory()` / `cpu()` below while holding a bare
+    // `stateMutex()` is the old spelling of the first case; prefer
+    // `lockState()` in new code so the lock and the access stay welded.
     std::mutex& stateMutex() { return stateMtx; }
 
+    /// Take the state lock and the state together — see `pom2::StateAccess`
+    /// below. `[[nodiscard]]` because discarding the handle locks and unlocks
+    /// in the same expression, which is never what the caller meant.
+    [[nodiscard]] pom2::StateAccess lockState();
+
 private:
+    friend class pom2::StateAccess;
     Memory                          mem;
     M6502                           processor;
     std::unique_ptr<CassetteDevice>    tape;
@@ -267,5 +291,59 @@ private:
     void waitUntilParked();      // block (bounded) until workerParked_ is set
     void flushAudioForRewind();  // silence the speaker after a time jump
 };
+
+namespace pom2 {
+
+/// RAII handle over `EmulationController::stateMtx` that also *carries* the
+/// emulated state.
+///
+/// The invariant that mutex exists for — "never touch Memory or the CPU off
+/// the worker thread without holding it" — was otherwise enforced by nothing
+/// but care, across ~120 call sites in the UI, the AI control server and the
+/// CLI runner, none of which run on the worker thread. Reaching the state
+/// *through* the lock welds the two: there is no way to spell `st.memory()`
+/// without having taken the lock to obtain `st`, and no way to keep the
+/// reference past the unlock without deliberately storing it.
+///
+///     auto st = controller->lockState();
+///     st.memory().memWrite(0x300, 0xEA);
+///     st.cpu().setProgramCounter(0x300);
+///
+/// **Non-recursive.** `stateMtx` is a plain `std::mutex`, so a second
+/// `lockState()` on a thread that already holds one deadlocks. A helper that
+/// needs the state but runs from both locked and unlocked callers must NOT
+/// lock for itself — it takes a `const StateAccess&` and lets the caller
+/// prove ownership by passing its handle. `MainWindow::plugSlotsFromSettings`
+/// is that shape, and the reason this class is a namespace-scope type rather
+/// than a member of EmulationController: `MainWindow.h` deliberately stays
+/// outside the EmulationController include cone (see the note on
+/// `MainWindow::emul()`), and only a non-nested class can be forward-declared
+/// there.
+class StateAccess
+{
+public:
+    Memory& memory() const { return ctl_->mem; }
+    M6502&  cpu()    const { return ctl_->processor; }
+
+    StateAccess(StateAccess&&) noexcept            = default;
+    StateAccess& operator=(StateAccess&&) noexcept = default;
+    StateAccess(const StateAccess&)                = delete;
+    StateAccess& operator=(const StateAccess&)     = delete;
+
+private:
+    friend class ::EmulationController;
+    explicit StateAccess(EmulationController* c)
+        : ctl_(c), lk_(c->stateMtx) {}
+
+    EmulationController*         ctl_;
+    std::unique_lock<std::mutex> lk_;
+};
+
+} // namespace pom2
+
+inline pom2::StateAccess EmulationController::lockState()
+{
+    return pom2::StateAccess(this);
+}
 
 #endif // POM2_EMULATION_CONTROLLER_H

@@ -234,6 +234,9 @@ int main(int argc, char** argv)
     // apple2e.rom here even if present so the headless target stays
     // simple; switch via --rom if you need the IIe ROM.
     EmulationController controller;
+    // Everything from here to `controller.start()` below runs before the
+    // CPU worker exists, so the raw accessor is correct: there is no second
+    // thread to race. The one access inside the run loop takes lockState().
     if (!controller.memory().loadAppleIIRom(romPath.c_str())) {
         std::fprintf(stderr, "loadAppleIIRom failed\n"); return 1;
     }
@@ -383,8 +386,8 @@ int main(int argc, char** argv)
         // `pasteText` below takes Memory's own kbMutex, so it stays outside.
         uint64_t cycles = 0;
         {
-            std::lock_guard<std::mutex> lk(controller.stateMutex());
-            cycles = controller.memory().getCycleCounter();
+            auto st = controller.lockState();
+            cycles = st.memory().getCycleCounter();
         }
         const int  seconds = static_cast<int>(cycles / 1'022'727);
         if (!pasted && seconds >= pasteAfter) {

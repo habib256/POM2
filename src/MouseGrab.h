@@ -55,7 +55,15 @@ inline bool isReleaseButton(int button) { return button == kButtonMiddle; }
 struct Context {
     bool cardPlugged  = false;  ///< MouseCard or MouseCardAppleWin on the bus
     bool grabbed      = false;  ///< host pointer currently captured
-    bool insideScreen = false;  ///< host cursor within the Apple II Screen rect
+    /// Host cursor over the Apple II Screen widget **and nothing of the UI's
+    /// on top of it**. This MUST come from a z-order-aware hover test
+    /// (`ImGui::IsItemHovered()` on the screen image), never from a raw
+    /// "is the cursor between screenRectMin and screenRectMax" containment
+    /// test: a dropdown menu, a popup or a docked panel drawn over the
+    /// screen is geometrically *inside* that rect, so a rect test hands the
+    /// guest — and `shouldGrabOnPress` — every click the user aims at the
+    /// menu sitting on top of it.
+    bool screenHovered = false;
     bool voxelView    = false;  ///< 3D voxel view owns the drag gestures
     bool clickToGrab  = true;   ///< user preference (mouse_click_to_grab)
 };
@@ -74,27 +82,28 @@ struct Context {
 inline bool shouldGrabOnPress(const Context& c, int button)
 {
     return button == kButtonLeft && c.clickToGrab && !c.grabbed &&
-           c.cardPlugged && c.insideScreen && !c.voxelView;
+           c.cardPlugged && c.screenHovered && !c.voxelView;
 }
 
 /// Motion routing. Grabbed: every delta is the guest's, wherever GLFW's
-/// virtual cursor has wandered to — the widget rect is meaningless once the
+/// virtual cursor has wandered to — hover stops meaning anything once the
 /// pointer is captured. Not grabbed: the pre-grab contract, i.e. only motion
-/// over the screen widget, so the host can still drive ImGui panels.
+/// actually hovering the screen widget, so the host can still drive ImGui
+/// panels — including the ones drawn *over* the screen.
 inline bool shouldRouteMotion(const Context& c)
 {
-    return c.cardPlugged && (c.grabbed || c.insideScreen);
+    return c.cardPlugged && (c.grabbed || c.screenHovered);
 }
 
 /// Button routing to the card. Only the primary button is wired (PB7 of the
-/// MCU). A release ALWAYS passes through even from outside the widget, so a
-/// button pressed inside the screen and released elsewhere still clears on
+/// MCU). A release ALWAYS passes through even from off the widget, so a
+/// button pressed over the screen and released elsewhere still clears on
 /// the card instead of sticking down in the guest.
 inline bool shouldRouteButton(const Context& c, int button, bool press)
 {
     if (button != kButtonLeft || !c.cardPlugged) return false;
     if (!press)                                  return true;
-    return c.grabbed || c.insideScreen;
+    return c.grabbed || c.screenHovered;
 }
 
 /// The AppleWin HLE card's absolute closed-loop sync projects the host

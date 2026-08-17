@@ -40,6 +40,10 @@ class AudioSource;
 class ClockCard;
 class DiskIICard;
 class EmulationController;
+// The state-lock handle (EmulationController.h). Forward-declared rather
+// than included for the same reason as EmulationController itself — this
+// header stays outside that include cone; see `emul()` below.
+namespace pom2 { class StateAccess; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -859,10 +863,22 @@ private:
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
     // Apple II Screen widget rect, window-relative. Updated every
     // frame by `renderScreenWindow()` so the GLFW cursor-pos callback
-    // (which fires async to the render loop) can decide whether to
-    // route motion to the Mouse Card.
+    // (which fires async to the render loop) can map a host position
+    // onto Apple pixels. Geometry only — see `screenHovered_` for who
+    // *owns* the pointer.
     ImVec2 screenRectMin{ 0, 0 };
     ImVec2 screenRectMax{ 0, 0 };
+    // ImGui's z-order aware verdict on the screen widget, captured next
+    // to the Image in `renderScreenWindow()` and cleared at the top of
+    // every `render()` so a collapsed / hidden / never-drawn screen
+    // window cannot leave a stale `true` behind.
+    //
+    // This — not the rect — is what `mouseGrabContext()` feeds to
+    // `mousegrab::Context::screenHovered`. A rect containment test cannot
+    // see an open dropdown, popup or docked panel drawn over the screen:
+    // they all sit inside the rect, so clicks aimed at them were reaching
+    // the guest *and* arming the click-to-grab capture underneath.
+    bool screenHovered_ = false;
     // Running 8-bit Apple II "mouse units" counter — mirrors MAME's
     // IPT_MOUSE_X/Y (0..0xFF wrapping). The MCU firmware computes
     // deltas with 8-bit subtraction.
@@ -936,12 +952,25 @@ private:
     /// slot key is absent. Validates uniqueness — duplicate card-type
     /// requests log a warning and skip the second instance. Populates the
     /// raw `*Card` pointer fields and the `slotCards[]` index.
-    void plugSlotsFromSettings();
+    ///
+    /// **The caller owns the state lock and proves it by passing its handle.**
+    /// This must not lock for itself: `stateMutex` is a plain `std::mutex`, so
+    /// re-entering it deadlocks, and two of the three callers already hold it
+    /// — `applyProfile()` over its steps 5-7 and the slot-config rebuild
+    /// (both in `MainWindow_Slots.cpp`). The third, the MainWindow
+    /// constructor, takes one for the call; the worker has not started there,
+    /// so it is free.
+    ///
+    /// That contract used to live in a comment which said the opposite
+    /// ("never under stateMutex"), so anyone adding the "missing" lock here
+    /// would have deadlocked the profile switch on the spot. It is a
+    /// parameter now: the only way to call this is to already hold the lock.
+    void plugSlotsFromSettings(const pom2::StateAccess& st);
 
-    /// The body of `plugFujiNetFromCli` with NO locking, so it can also run
-    /// from inside `plugSlotsFromSettings()` (which is called with the CPU
-    /// worker already stopped, never under stateMutex).
-    bool plugFujiNetUnlocked(int slot, bool serial,
+    /// The body of `plugFujiNetFromCli`, on the same caller-owns-the-lock
+    /// contract, so it can also run from inside `plugSlotsFromSettings()`.
+    bool plugFujiNetUnlocked(const pom2::StateAccess& st,
+                             int slot, bool serial,
                              const std::string& serialDevice, int tcpPort,
                              std::string& errOut);
 

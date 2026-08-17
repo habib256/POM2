@@ -43,6 +43,9 @@ void runPasteFile(const std::string& path, EmulationController& emu)
     char buf[kMaxPaste];
     f.read(buf, sizeof(buf));
     const std::string content(buf, static_cast<size_t>(f.gcount()));
+    // Unlocked on purpose: pasteText takes `Memory::kbMutex`, not the state
+    // lock (see Memory.cpp:1147). Every other access here goes through
+    // `emu.lockState()`.
     const size_t queued = emu.memory().pasteText(content);
     pom2::log().info("CLI", "--paste queued " + std::to_string(queued) +
                             " chars from " + path);
@@ -75,9 +78,9 @@ void runLoad(const CliAction& a, EmulationController& emu)
         return;
     }
     {
-        std::lock_guard<std::mutex> lk(emu.stateMutex());
+        auto st = emu.lockState();
         for (size_t i = 0; i < bytes.size(); ++i) {
-            emu.memory().memWrite(static_cast<uint16_t>(a.addressI + i), bytes[i]);
+            st.memory().memWrite(static_cast<uint16_t>(a.addressI + i), bytes[i]);
         }
     }
     char buf[128];
@@ -98,8 +101,8 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 runLoad(a, emu);
                 break;
             case CliAction::Kind::Run: {
-                std::lock_guard<std::mutex> lk(emu.stateMutex());
-                emu.cpu().setProgramCounter(static_cast<uint16_t>(a.addressI));
+                auto st = emu.lockState();
+                st.cpu().setProgramCounter(static_cast<uint16_t>(a.addressI));
                 emu.setMode(EmulationController::Mode::Running);
                 char buf[64];
                 std::snprintf(buf, sizeof(buf), "--run jumped to $%04X", a.addressI);
@@ -142,8 +145,8 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                         "--snapshot-save: cannot open " + a.pathS);
                     break;
                 }
-                std::lock_guard<std::mutex> lk(emu.stateMutex());
-                pom2::captureMachineState(w, emu.cpu(), emu.memory());
+                auto st = emu.lockState();
+                pom2::captureMachineState(w, st.cpu(), st.memory());
                 if (!w.finish()) {
                     pom2::log().error("CLI",
                         "--snapshot-save: write failed for " + a.pathS);
@@ -160,9 +163,9 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                         ": " + r.error());
                     break;
                 }
-                std::lock_guard<std::mutex> lk(emu.stateMutex());
+                auto st = emu.lockState();
                 const auto res =
-                    pom2::restoreMachineState(r, emu.cpu(), emu.memory());
+                    pom2::restoreMachineState(r, st.cpu(), st.memory());
                 // Backwards cycleCounter jump: flush the speaker (its
                 // cursor only snaps forward — audio would stay muted until
                 // the counter re-passes it) and drop the stale rewind ring.

@@ -499,6 +499,15 @@ void MainWindow::renderMediaPanel()
         static std::array<std::array<bool, 2>, 8> dPrimed{};
 
         bool any = false;
+        // Unlocked on purpose, and one of the few places `memory()` is the
+        // right accessor. What is read here is the bus *topology* (which slot
+        // holds which card), and that is UI-thread-confined: every writer —
+        // plugSlotsFromSettings, applyProfile, the slot-config rebuild — runs
+        // on this thread. The worker only ever reads it, from memRead
+        // dispatch. Taking `lockState()` for the reference would protect
+        // nothing (it is released before the loop below uses `bus`) while
+        // reading as though it did. Per-card *state* is a different matter,
+        // and each bay snapshot below does take the lock.
         SlotBus& bus = controller->memory().slotBus();
 
         for (int s = 1; s <= 7; ++s) {
@@ -963,7 +972,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    card (the audio thread's next callback would dereference a
     //    freed source otherwise — same gotcha as restartEmulationFromSettings).
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
         // First: null the AI control server's card pointers under the
         // same lock that handlers grab. A request that already passed
         // its lock acquisition is using the still-alive card; later
@@ -1008,7 +1017,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // card that is mid-teardown.
         fujiNetCard      = nullptr;
         smartPortCard    = nullptr;
-        controller->memory().slotBus().clear();
+        st.memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
 
         // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
@@ -1021,9 +1030,9 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         //    (b) loadAppleIIRom (step 5) populates internalIORom only when
         //        iieMode is true for a 16/32 KB dump, so the mode must be set
         //        before the load too.
-        controller->memory().setIIEMode(cfg.iieMode);
-        controller->memory().clearRam();
-        controller->memory().resetSoftSwitches();
+        st.memory().setIIEMode(cfg.iieMode);
+        st.memory().clearRam();
+        st.memory().resetSoftSwitches();
 
         // RamWorks III — Applied Engineering aux-slot RAM expansion.
         // Plugs into the IIe aux slot, present on BOTH the 1983 Unenhanced
@@ -1037,13 +1046,13 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             p == pom2::SystemProfile::AppleIIeUnenhanced ||
             p == pom2::SystemProfile::AppleIIePAL) {
             const int banks = settings->getInt("ramworks_banks", 1);
-            controller->memory().setRamWorksBanks(
+            st.memory().setRamWorksBanks(
                 static_cast<uint32_t>(banks > 0 ? banks : 1));
         } else if (cfg.iieMode) {
             // //c / //c+ — force RamWorks off (might be left over from a
             // prior IIe-profile session). setRamWorksBanks(1) releases
             // the backing.
-            controller->memory().setRamWorksBanks(1);
+            st.memory().setRamWorksBanks(1);
         }
     }
 
@@ -1057,7 +1066,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // stays OUTSIDE: it re-acquires stateMtx internally.
     std::string newRomPath;   // read by the "Profile: Active" log below
     {
-    std::lock_guard<std::mutex> rebuildLk(controller->stateMutex());
+    auto st = controller->lockState();
 
     // 5. Resolve and load the new main ROM.
     //    //c / //c+ 32 KB dumps are two firmware banks (bank 0 lower,
@@ -1070,7 +1079,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
          p == pom2::SystemProfile::AppleIIcPAL);
     newRomPath = firstExistingPath(cfg.romProbeOrder);
     if (!newRomPath.empty()
-        && controller->memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
+        && st.memory().loadAppleIIRom(newRomPath.c_str(), pickLowerHalf)) {
         romPath  = newRomPath;
         romStatus = std::string(cfg.iieMode ? "IIe/IIc: " : "loaded: ") + newRomPath;
         romLoaded_ = true;
@@ -1114,17 +1123,17 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     }
     charRomPath = newCharPath;
     if (!newCharPath.empty()) {
-        controller->memory().loadCharRom(newCharPath.c_str(),
+        st.memory().loadCharRom(newCharPath.c_str(),
                                          pom2::charRomBank(charRomLocale));
     }
-    if (cfg.iieMode) display->setAuxMemory(controller->memory().auxData());
+    if (cfg.iieMode) display->setAuxMemory(st.memory().auxData());
     else             display->setAuxMemory(nullptr);
 
     // 7. Re-plug slot cards. plugSlotsFromSettings honours user's
     //    persisted slot config; the profile choice doesn't override that
     //    (e.g. a user who put SSC in slot 4 keeps it across profile
     //    switches).
-    plugSlotsFromSettings();
+    plugSlotsFromSettings(st);
     // Force the Slot Config panel to re-seed its draft from the rebuilt
     // slotCards[] on its next render (stale-draft-after-profile-switch fix).
     slotDraftInited_ = false;
@@ -1190,9 +1199,13 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     }
 
     // 9. CPU mode (profile default with optional user override).
+    bool cpuIsCmos = false;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        controller->cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
+        auto st = controller->lockState();
+        st.cpu().setCpuMode(resolveCpuMode(cfg.defaultCpu));
+        // Capture it here rather than re-reading unlocked for the log
+        // below, which is outside this scope.
+        cpuIsCmos = (st.cpu().getCpuMode() == M6502::CpuMode::CMOS);
     }
 
     // 10. Default CPU pacing + video standard (NTSC 60 Hz / PAL 50 Hz). The
@@ -1235,7 +1248,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         std::string("Active = ") + std::string(cfg.displayName) +
         ", ROM = " + (newRomPath.empty() ? "<missing>" : newRomPath) +
         ", CPU = " +
-        (controller->cpu().getCpuMode() == M6502::CpuMode::CMOS ? "65C02" : "NMOS"));
+        (cpuIsCmos ? "65C02" : "NMOS"));
 
     // Re-bind the AI control server to the freshly rebuilt slot pointers.
     // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
@@ -1322,7 +1335,7 @@ bool MainWindow::restartEmulationFromSettings()
     //    lock to safely null disk6_/hdv5_ before slotBus.clear()
     //    destroys their pointees.
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto st = controller->lockState();
         aiServer->detach();
         // Every card that owns an AudioSource (Mockingboard / Phasor /
         // Echo+) must be unregistered from the audio device BEFORE the
@@ -1354,7 +1367,7 @@ bool MainWindow::restartEmulationFromSettings()
         uthernetIICard   = nullptr;
         fujiNetCard      = nullptr;   // owns a socket + worker thread
         smartPortCard    = nullptr;
-        controller->memory().slotBus().clear();
+        st.memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the
         // next plug call will set it again.
         display->setChatMauveCard(nullptr);
@@ -1365,10 +1378,10 @@ bool MainWindow::restartEmulationFromSettings()
     // controller/memory (detach() nulled only its card pointers), so the
     // SlotBus rebuild + remounts must be atomic w.r.t. their lock.
     {
-    std::lock_guard<std::mutex> rebuildLk(controller->stateMutex());
+    auto st = controller->lockState();
 
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
-    plugSlotsFromSettings();
+    plugSlotsFromSettings(st);
     // Re-seed the Slot Config draft from the rebuilt slotCards[] next render.
     slotDraftInited_ = false;
 

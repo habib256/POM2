@@ -760,7 +760,6 @@ void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
     }
     // Snapshot the CPU/memory state under stateMutex so we don't sample a
     // half-written PC or A register mid-instruction.
-    M6502& cpu = ctrl_->cpu();
     EmulationController::Mode mode = ctrl_->getMode();
     int cpf = ctrl_->getCyclesPerFrame();
 
@@ -773,14 +772,15 @@ void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
     std::string cpuMode;
     std::string disks = "[]";
     {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+        auto st = ctrl_->lockState();
+        M6502& cpu = st.cpu();
         pc = cpu.getProgramCounter();
         a  = cpu.getAccumulator();
         x  = cpu.getXRegister();
         y  = cpu.getYRegister();
         p  = cpu.getStatusRegister();
         sp = cpu.getStackPointer();
-        cycles = ctrl_->memory().getCycleCounter();
+        cycles = st.memory().getCycleCounter();
         cpuMode = cpuModeName(cpu.getCpuMode());
         if (disk6_) {
             std::ostringstream oss;
@@ -835,8 +835,8 @@ void AiControlServer::handleReset(socket_t fd, const Request& req)
 
 void AiControlServer::handleCpuGet(socket_t fd, const Request& /*req*/)
 {
-    M6502& cpu = ctrl_->cpu();
-    std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+    auto st = ctrl_->lockState();
+    M6502& cpu = st.cpu();
     std::ostringstream oss;
     oss << "{"
         << "\"pc\":"     << cpu.getProgramCounter() << ","
@@ -846,7 +846,7 @@ void AiControlServer::handleCpuGet(socket_t fd, const Request& /*req*/)
         << "\"p\":"      << +cpu.getStatusRegister()<< ","
         << "\"sp\":"     << +cpu.getStackPointer()  << ","
         << "\"cpu_mode\":\"" << cpuModeName(cpu.getCpuMode()) << "\","
-        << "\"cycles\":" << ctrl_->memory().getCycleCounter()
+        << "\"cycles\":" << st.memory().getCycleCounter()
         << "}";
     sendJsonOk(fd, oss.str());
 }
@@ -854,8 +854,8 @@ void AiControlServer::handleCpuGet(socket_t fd, const Request& /*req*/)
 void AiControlServer::handleCpuSet(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
-    M6502& cpu = ctrl_->cpu();
-    std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+    auto st = ctrl_->lockState();
+    M6502& cpu = st.cpu();
     long v = 0;
     // Full register set — the setters exist on M6502 (M6502.h:133-137,
     // added for snapshot restore), so the documented POST /cpu API accepts
@@ -884,9 +884,9 @@ void AiControlServer::handleMemGet(socket_t fd, const Request& req)
 
     std::vector<uint8_t> buf(static_cast<size_t>(len));
     {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        const uint8_t* mem = useAux ? ctrl_->memory().auxData()
-                                    : ctrl_->memory().data();
+        auto st = ctrl_->lockState();
+        const uint8_t* mem = useAux ? st.memory().auxData()
+                                    : st.memory().data();
         std::memcpy(buf.data(), mem + addr, static_cast<size_t>(len));
     }
     std::ostringstream oss;
@@ -921,8 +921,8 @@ void AiControlServer::handleMemSet(socket_t fd, const Request& req)
     }
     size_t written = 0;
     {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        Memory& mem = ctrl_->memory();
+        auto st = ctrl_->lockState();
+        Memory& mem = st.memory();
         for (size_t i = 0; i < bytes.size(); ++i) {
             // memWrite respects ROM protection and routes through soft-
             // switches; that's exactly what we want for "drive the Apple
@@ -946,6 +946,12 @@ void AiControlServer::handleKeyboard(socket_t fd, const Request& req)
         sendJsonError(fd, 400, "supply \"text\" or \"raw\""); return;
     }
     size_t n = 0;
+    // Deliberately NOT under `lockState()`: the keyboard latch and paste
+    // queue have their own finer-grained `Memory::kbMutex`, taken inside
+    // pasteText / pasteRawKeys (Memory.cpp:1147,1166). That is what lets the
+    // UI and this HTTP thread inject keys without contending with the worker
+    // on every keystroke — see the note at Memory.cpp:1260. The raw
+    // `memory()` accessor is correct here and nowhere else in this file.
     if (!text.empty()) n += ctrl_->memory().pasteText(text);
     if (!raw.empty())  n += ctrl_->memory().pasteRawKeys(raw.data(), raw.size());
     sendJsonOk(fd, "{\"queued\":" + std::to_string(n) + "}");
@@ -979,8 +985,8 @@ void AiControlServer::handleMouse(socket_t fd, const Request& req)
     uint8_t outX = 0, outY = 0;
     bool outBtn = false;
     {
-        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        SlotBus& bus = ctrl_->memory().slotBus();
+        auto st = ctrl_->lockState();
+        SlotBus& bus = st.memory().slotBus();
         // Two interchangeable mouse cards exist: the MAME-LLE MouseCard
         // (MC68705 mask ROM) and the AppleWin-HLE MouseCardAppleWin — a
         // SIBLING class, not a subclass, and the default built-in mouse on
@@ -1120,11 +1126,11 @@ void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)
 
     SnapshotWriter w(*safe);
     if (!w.good()) { sendJsonError(fd, 400, "cannot open " + *safe); return; }
-    std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+    auto st = ctrl_->lockState();
     // CPU regs (compact) + 64 KiB main RAM + MEX extended state. Disk state
     // is deliberately excluded per CLAUDE.md. See MachineSnapshot for the
     // exact section roster (shared with the rewind ring buffer).
-    pom2::captureMachineState(w, ctrl_->cpu(), ctrl_->memory());
+    pom2::captureMachineState(w, st.cpu(), st.memory());
     if (!w.finish()) {
         sendJsonError(fd, 500, "snapshot write failed for " + *safe);
         return;
@@ -1147,11 +1153,11 @@ void AiControlServer::handleSnapshotLoad(socket_t fd, const Request& req)
 
     SnapshotReader r(*safe);
     if (!r.good()) { sendJsonError(fd, 400, "cannot read " + *safe + ": " + r.error()); return; }
-    std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+    auto st = ctrl_->lockState();
     // Shared with the rewind ring buffer. Preserves the CPU-section length
     // gate (crafted-snapshot over-read hardening) and the MEX size cap; an
     // oversized MEX aborts the restore with a 400.
-    const auto res = pom2::restoreMachineState(r, ctrl_->cpu(), ctrl_->memory());
+    const auto res = pom2::restoreMachineState(r, st.cpu(), st.memory());
     // The restore usually rewinds mem's cycleCounter; the speaker's
     // reconstruction cursor only snaps FORWARD and purges older-stamped
     // toggles as stale, so without this flush audio stays dead until the
@@ -1216,9 +1222,9 @@ void AiControlServer::handleScreen(socket_t fd, const Request& /*req*/)
         std::unique_lock<std::mutex> demodLk(display_->demodMutex(),
                                              std::defer_lock);
         {
-            std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+            auto st = ctrl_->lockState();
             demodLk.lock();
-            display_->render(ctrl_->memory());
+            display_->render(st.memory());
         }
         // OE-GPU mode demodulates in a GLSL pass MainWindow owns; pixels()
         // would return the LUT fallback framebuffer, not the composite image

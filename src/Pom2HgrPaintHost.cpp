@@ -84,15 +84,15 @@ Pom2HgrPaintHost::Pom2HgrPaintHost(EmulationController* emu)
     : emu_(emu),
       writer_([this](const PaintCardBatcher::Writes& w) {
           if (!emu_) return;
-          std::lock_guard<std::mutex> lk(emu_->stateMutex());
-          Memory& mem = emu_->memory();
+          auto st = emu_->lockState();
+          Memory& mem = st.memory();
           for (const auto& [addr, val] : w)
               if (addr < 0xC000) mem.writeRamUnchecked(addr, val);
       }),
       auxWriter_([this](const PaintCardBatcher::Writes& w) {
           if (!emu_) return;
-          std::lock_guard<std::mutex> lk(emu_->stateMutex());
-          uint8_t* aux = emu_->memory().auxDataMutable();
+          auto st = emu_->lockState();
+          uint8_t* aux = st.memory().auxDataMutable();
           for (const auto& [addr, val] : w)
               if (addr < 0xC000) aux[addr] = val;
       })
@@ -116,8 +116,8 @@ void Pom2HgrPaintHost::endBatch()   { auxWriter_.end(); writer_.end(); }
 void Pom2HgrPaintHost::setDisplayMode(bool grMode, bool page2)
 {
     if (!emu_) return;
-    std::lock_guard<std::mutex> lk(emu_->stateMutex());
-    Memory& mem = emu_->memory();
+    auto st = emu_->lockState();
+    Memory& mem = st.memory();
     mem.memWrite(0xC050, 0);                       // GRAPHICS
     mem.memWrite(0xC052, 0);                       // full screen (MIXED off)
     mem.memWrite(page2 ? 0xC055 : 0xC054, 0);      // page select
@@ -131,8 +131,8 @@ void Pom2HgrPaintHost::setDisplayMode(bool grMode, bool page2)
 void Pom2HgrPaintHost::setDisplayModeDhgr(bool page2)
 {
     if (!emu_) return;
-    std::lock_guard<std::mutex> lk(emu_->stateMutex());
-    Memory& mem = emu_->memory();
+    auto st = emu_->lockState();
+    Memory& mem = st.memory();
     if (!mem.isIIE()) return;
     mem.memWrite(0xC050, 0);                       // GRAPHICS
     mem.memWrite(0xC052, 0);                       // full screen
@@ -145,8 +145,8 @@ void Pom2HgrPaintHost::setDisplayModeDhgr(bool page2)
 void Pom2HgrPaintHost::setDisplayModeDlgr(bool page2)
 {
     if (!emu_) return;
-    std::lock_guard<std::mutex> lk(emu_->stateMutex());
-    Memory& mem = emu_->memory();
+    auto st = emu_->lockState();
+    Memory& mem = st.memory();
     if (!mem.isIIE()) return;
     mem.memWrite(0xC050, 0);                       // GRAPHICS
     mem.memWrite(0xC052, 0);                       // full screen
@@ -158,7 +158,20 @@ void Pom2HgrPaintHost::setDisplayModeDlgr(bool page2)
 
 bool Pom2HgrPaintHost::supportsDhgr() const
 {
-    return emu_ && emu_->memory().isIIE();
+    // Read under the state lock like every other machine-state query here.
+    // `isIIE()` is a profile-switch-time flag rather than live emulation
+    // state, so the old unlocked read never misbehaved in practice — but it
+    // was still a read racing `applyProfile`'s write, and the editors call
+    // this from their per-frame paths (HgrPaintEditor.cpp:180, :833), which
+    // is exactly where an unsynchronised read is least visible. The cost is
+    // one uncontended acquire: the worker only holds the lock for a
+    // 4096-cycle slice at a time.
+    //
+    // Safe from the editors: MainWindow closes its own lock scope before
+    // calling `render()` (MainWindow.cpp:10079), so this never re-enters.
+    if (!emu_) return false;
+    auto st = emu_->lockState();
+    return st.memory().isIIE();
 }
 
 // The ProDOS host-folder convention (`prodos_folder/`, same probe ladder as
@@ -317,8 +330,8 @@ bool Pom2HgrPaintHost::saveDlgrImage(const std::string& path, uint16_t baseAddr,
     if (!emu_) { err = "no emulator"; return false; }
     std::vector<uint8_t> bytes(0x800);
     {
-        std::lock_guard<std::mutex> lk(emu_->stateMutex());
-        const Memory& mem = emu_->memory();
+        auto st = emu_->lockState();
+        const Memory& mem = st.memory();
         std::memcpy(bytes.data(),         mem.auxData() + baseAddr, 0x400);
         std::memcpy(bytes.data() + 0x400, mem.data()    + baseAddr, 0x400);
     }
@@ -339,8 +352,8 @@ bool Pom2HgrPaintHost::loadImage(const std::string& path, uint16_t baseAddr,
     bytes.resize(static_cast<size_t>(in.gcount()));
     if (bytes.empty()) { err = "empty file"; return false; }
     const size_t n = bytes.size();
-    std::lock_guard<std::mutex> lk(emu_->stateMutex());
-    Memory& mem = emu_->memory();
+    auto st = emu_->lockState();
+    Memory& mem = st.memory();
     for (size_t i = 0; i < n; ++i)
         mem.writeRamUnchecked(static_cast<uint16_t>(baseAddr + i),
                               static_cast<uint8_t>(bytes[i]));
@@ -355,8 +368,8 @@ bool Pom2HgrPaintHost::saveImage(const std::string& path, uint16_t baseAddr,
     sizeBytes = std::min<int>(sizeBytes, 0xC000 - baseAddr);
     std::vector<uint8_t> bytes(static_cast<size_t>(sizeBytes));
     {
-        std::lock_guard<std::mutex> lk(emu_->stateMutex());
-        std::memcpy(bytes.data(), emu_->memory().data() + baseAddr, bytes.size());
+        auto st = emu_->lockState();
+        std::memcpy(bytes.data(), st.memory().data() + baseAddr, bytes.size());
     }
     return publishBytes(path, bytes.data(), bytes.size(), err);
 }
@@ -374,8 +387,8 @@ bool Pom2HgrPaintHost::loadDhgrImage(const std::string& path, uint16_t baseAddr,
         err = "not a 16 KB DHGR (A2FC) dump: " + path;
         return false;
     }
-    std::lock_guard<std::mutex> lk(emu_->stateMutex());
-    Memory& mem = emu_->memory();
+    auto st = emu_->lockState();
+    Memory& mem = st.memory();
     std::memcpy(mem.auxDataMutable() + baseAddr, bytes.data(), hgrpaint::kHiresSize);
     for (int i = 0; i < hgrpaint::kHiresSize; ++i)
         mem.writeRamUnchecked(static_cast<uint16_t>(baseAddr + i),
@@ -389,8 +402,8 @@ bool Pom2HgrPaintHost::saveDhgrImage(const std::string& path, uint16_t baseAddr,
     if (!emu_) { err = "no emulator"; return false; }
     std::vector<uint8_t> bytes(2 * static_cast<size_t>(hgrpaint::kHiresSize));
     {
-        std::lock_guard<std::mutex> lk(emu_->stateMutex());
-        const Memory& mem = emu_->memory();
+        auto st = emu_->lockState();
+        const Memory& mem = st.memory();
         std::memcpy(bytes.data(), mem.auxData() + baseAddr, hgrpaint::kHiresSize);
         std::memcpy(bytes.data() + hgrpaint::kHiresSize, mem.data() + baseAddr,
                     hgrpaint::kHiresSize);

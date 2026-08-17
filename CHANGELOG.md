@@ -5,6 +5,90 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-17 — A menu drawn over the screen owns its own clicks
+
+**Clicking an item in a dropdown that overlapped the Apple II screen fired the
+menu item *and* handed the press to the Mouse Card — and, with click-to-grab
+on, captured the pointer behind the still-open menu.** The cursor vanished with
+no visible cause and the way back was a chord the user had no reason to know
+they now needed.
+
+The cause was one predicate. `MainWindow::mouseGrabContext()` filled
+`mousegrab::Context::insideScreen` by rect containment — *is the cursor between
+`screenRectMin` and `screenRectMax`?* — and a menu drawn on top of the screen
+is geometrically **inside** that rect. ImGui's z-order was never consulted, so
+the policy in `MouseGrab.h` was answering a question about pixels when the
+question was about ownership. Nothing in the policy itself was wrong; it was
+being fed a fact that did not mean what its name said.
+
+It now reads `ImGui::IsItemHovered()`, captured next to the screen `Image()`
+into `MainWindow::screenHovered_` and cleared at the top of every `render()` so
+a collapsed or never-drawn screen window cannot latch a stale `true`. The
+correct primitive was always two lines away — the 3D voxel camera right below
+the same `Image()` had been using `IsItemHovered()` all along.
+
+The `Context` field is renamed `insideScreen` → `screenHovered`, deliberately:
+the change is one of *meaning*, so every call site had to fail to compile
+rather than keep quietly passing a rect test. Its doc comment now states that a
+containment test is not an acceptable source. Pinned by
+`mouse_grab_policy_test.cpp::testUiOverlayOwnsItsClicks`, which also fixes the
+release half — a button pressed on the screen and released after a menu opened
+over it must still clear on the card instead of sticking down in the guest.
+
+**`EmulationController::lockState()` — the state lock now carries the state.**
+An audit of all 123 `->memory()` / `->cpu()` call sites found no live race: the
+38 that sit in bodies which never lock `stateMutex` are safe, the keyboard
+family by way of `Memory::kbMutex` (the finer-grained lock that lets the UI and
+the HTTP thread inject keys without contending with the worker) and
+`plugSlotsFromSettings()` because two of its three callers hold the lock for
+it. The invariant holds today — it just holds by care alone, across ~120 sites
+on threads that are not the worker.
+
+`lockState()` returns an RAII `pom2::StateAccess` that hands back `Memory` and
+the CPU *through* the lock, so `st.memory()` cannot be spelled without having
+taken it. `stateMutex()` stays for the other case — mutual exclusion with no
+state access, e.g. serialising a card pointer against a profile switch — and
+the two now mean different things on purpose; 85 of the locks are that second
+kind and were left alone. It is a namespace-scope class rather than a member of
+EmulationController because `MainWindow.h` deliberately stays outside that
+header's include cone, and only a non-nested class can be forward-declared
+there.
+
+**The sweep is complete**: 123 raw `->memory()` / `->cpu()` sites became 63
+`lockState()` handles plus 38 that are *correct* unlocked and now say so at the
+call site. Those fall in exactly three categories, and nothing else qualifies:
+
+  1. **Before the worker exists** — the MainWindow constructor and
+     `pom2_headless`'s setup, both of which run before `controller.start()`.
+  2. **A finer-grained lock owns it** — the keyboard latch and paste queue
+     (`Memory::kbMutex`), which is what lets the UI, the CLI and the HTTP
+     thread inject keys without contending with the worker on every keystroke;
+     plus `setOpenAppleKey`/`setSolidAppleKey`, which are plain atomics.
+  3. **Bus topology, UI-thread-confined** — *which slot holds which card* is
+     written only by plugSlotsFromSettings / applyProfile / the slot-config
+     rebuild, all on the UI thread; the worker only reads it. Locking to grab
+     the `SlotBus&` would protect nothing, since the reference outlives the
+     scope, while reading as though it did. Per-card *state* is a different
+     matter and does take the lock.
+
+Three genuinely unsynchronised reads turned up on the way and are now locked:
+`renderStatusBar` copied the live `DisplayState` struct while the worker was
+rewriting the soft switches, and both `renderMenuBar` and `applyProfile`'s
+"Profile: Active" log read `getCpuMode()` outside the scope that had just set
+it. `pollJoystickAndPushToMemory` bound one `Memory&` before the lock and used
+it on both sides — the paddle half wants the state lock, the `queueKey` half
+must not hold it; they have separate references now, because sharing one is
+what made the split invisible.
+
+One landmine defused on the way. `plugSlotsFromSettings()` and everything it
+reaches must **not** take `stateMutex` — `applyProfile()` steps 5-7 and the
+slot-config rebuild both call in already holding it, and it is a plain
+`std::mutex`. The header claimed the opposite ("called with the CPU worker
+already stopped, never under stateMutex"), so anyone tightening that function
+by adding the "missing" lock would have deadlocked the profile switch
+instantly. The comment now states the real contract: the caller owns the lock,
+the callee never locks.
+
 ## 2026-08-15 — Seven packages from one payload manifest (v0.8.2)
 
 **The list of what ships inside a package was written down four times, and the

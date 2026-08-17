@@ -190,6 +190,8 @@ F9 / F10 / F11 / F12, `Ctrl+Alt+G` and both Alt keys are routed unconditionally 
 
 **Mouse capture.** With a Mouse Card plugged (`mouse` or `mouseaw`), clicking the Apple II screen hands the host pointer to the guest: the OS cursor disappears and motion becomes unbounded, so the emulated cursor can always reach the edges of its own clamp window instead of stalling when your real pointer runs out of screen. That first click is swallowed — it captures rather than clicking. **`Ctrl+Alt+G` or a middle click (wheel) gives the pointer back**; so does Alt-Tabbing away. The status bar shows a `GRAB` badge while captured. `View → Capture mouse` toggles it from the menu, and `View → Click screen to capture` turns the click-to-capture half off if you prefer clicks to always reach the guest.
 
+Clicks that land on POM2's own interface stay POM2's, even where it sits on top of the screen: an open dropdown, a popup or a panel docked over the Apple II display owns its clicks, so picking a menu item neither reaches the guest nor captures the pointer behind the menu.
+
 ---
 
 ## 🖥️ Machine Profiles
@@ -492,7 +494,7 @@ the profiling recipe.
 - [`TODO.md`](TODO.md) — active backlog + MAME ↔ POM2 parity dashboard.
 - [`CHANGELOG.md`](CHANGELOG.md) — resolved items and the **why** behind non-obvious fixes.
 
-**Conventions**: one concern per `.cpp/.h` pair · MAME = source of truth (cite the file + line range, pin a smoke test under `tests/`) · `emuCycles` everywhere — CPU → audio/UI events carry a cycle stamp, never wall-clock.
+**Conventions**: one concern per `.cpp/.h` pair · MAME = source of truth (cite the file + line range, pin a smoke test under `tests/`) · `emuCycles` everywhere — CPU → audio/UI events carry a cycle stamp, never wall-clock · reach the emulated state through `controller->lockState()`, which hands back `Memory` and the CPU *through* the state lock, so the access cannot be written without it (bare `stateMutex()` is for mutual exclusion that touches neither).
 
 ---
 

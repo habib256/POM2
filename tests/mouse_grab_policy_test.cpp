@@ -11,10 +11,13 @@
 //     host pointer, so forwarding it would click at an arbitrary spot);
 //   • a button RELEASE always reaches the card, from anywhere, so the guest
 //     can never be left holding a button down;
-//   • capture bypasses the widget-rect gate on motion (that gate is the
+//   • capture bypasses the hover gate on motion (that gate is the
 //     whole reason to capture: it is what makes the guest cursor unable to
 //     reach its own clamp edges) while a non-captured pointer keeps the
 //     pre-grab contract;
+//   • an open dropdown / popup / docked panel drawn OVER the screen owns
+//     its own clicks — `screenHovered` is a z-order aware hover, not a rect
+//     containment test (see testUiOverlayOwnsItsClicks);
 //   • absolute closed-loop sync is off while captured — under
 //     GLFW_CURSOR_DISABLED the reported position is virtual and maps to no
 //     point on screen.
@@ -38,7 +41,7 @@ mg::Context hovering()
 {
     mg::Context c;
     c.cardPlugged  = true;
-    c.insideScreen = true;
+    c.screenHovered = true;
     return c;
 }
 
@@ -87,7 +90,7 @@ void testGrabOnPress()
     assert(!mg::shouldGrabOnPress(already, mg::kButtonLeft));
     mg::Context noCard = c; noCard.cardPlugged = false;
     assert(!mg::shouldGrabOnPress(noCard, mg::kButtonLeft));
-    mg::Context outside = c; outside.insideScreen = false;
+    mg::Context outside = c; outside.screenHovered = false;
     assert(!mg::shouldGrabOnPress(outside, mg::kButtonLeft));
     // The voxel view owns left-drag (orbit) and middle-drag (pan); capturing
     // would swallow both. Ctrl+Alt+G still works there.
@@ -102,7 +105,7 @@ void testMotionRouting()
 
     // Uncaptured and off the widget: ImGui's, so the user can still reach
     // the menus and panels.
-    mg::Context outside = c; outside.insideScreen = false;
+    mg::Context outside = c; outside.screenHovered = false;
     assert(!mg::shouldRouteMotion(outside));
 
     // Captured: the widget rect stops meaning anything — this is the whole
@@ -126,7 +129,7 @@ void testButtonRouting()
     assert(!mg::shouldRouteButton(c, 1, false));
 
     // A press outside the widget belongs to ImGui...
-    mg::Context outside = c; outside.insideScreen = false;
+    mg::Context outside = c; outside.screenHovered = false;
     assert(!mg::shouldRouteButton(outside, mg::kButtonLeft, true));
     // ...but its RELEASE still passes through: pressed inside, released
     // outside must not leave the button stuck down in the guest.
@@ -140,6 +143,53 @@ void testButtonRouting()
     mg::Context noCard = c; noCard.cardPlugged = false;
     assert(!mg::shouldRouteButton(noCard, mg::kButtonLeft, true));
     assert(!mg::shouldRouteButton(noCard, mg::kButtonLeft, false));
+}
+
+// Regression: a dropdown menu, popup or docked panel drawn over the Apple II
+// screen must own every click aimed at it.
+//
+// The bug this pins was NOT in the policy below — it was in how MainWindow
+// filled the Context. `screenHovered` used to be computed as raw rect
+// containment ("is the cursor between screenRectMin and screenRectMax?"),
+// and a menu drawn on top of the screen is geometrically *inside* that rect.
+// So opening the Machine menu and picking an item that happened to overlap
+// the screen fired the menu item AND handed the press to the Mouse Card —
+// and, with click-to-grab on, captured the pointer behind the still-open
+// menu, hiding the cursor with no visible cause.
+//
+// The contract is therefore on the *field*: `screenHovered` means "ImGui
+// says the pointer is on the screen widget", which is false whenever
+// anything of the UI is on top. Everything below is what that buys, and it
+// is only reachable if the caller honours the field's documented meaning —
+// which is why `Context::screenHovered` is documented as a hover, why the
+// name no longer says "inside", and why MainWindow.cpp feeds it from
+// `ImGui::IsItemHovered()` next to the screen Image.
+void testUiOverlayOwnsItsClicks()
+{
+    // The user opens a menu that overlaps the screen and clicks an item.
+    // Same cursor coordinates as `hovering()` — only the ownership differs.
+    mg::Context menuOverScreen = hovering();
+    menuOverScreen.screenHovered = false;
+
+    // The press is ImGui's: it must not reach the card...
+    assert(!mg::shouldRouteButton(menuOverScreen, mg::kButtonLeft, true));
+    // ...and above all must not capture the pointer behind the menu.
+    assert(!mg::shouldGrabOnPress(menuOverScreen, mg::kButtonLeft));
+    // Moving along the menu items is the UI's too — otherwise the guest
+    // cursor tracks the user's menu navigation.
+    assert(!mg::shouldRouteMotion(menuOverScreen));
+
+    // The release still passes through, exactly as for any other off-widget
+    // release: a button pressed on the screen and released after a menu
+    // opened over it must not stick down in the guest.
+    assert(mg::shouldRouteButton(menuOverScreen, mg::kButtonLeft, false));
+
+    // Already captured, the UI has no pointer at all (GLFW_CURSOR_DISABLED),
+    // so nothing can be drawn "over" anything as far as the guest cares —
+    // the grab keeps winning and the escape hatch stays the chord.
+    mg::Context grabbed = menuOverScreen; grabbed.grabbed = true;
+    assert(mg::shouldRouteButton(grabbed, mg::kButtonLeft, true));
+    assert(mg::shouldRouteMotion(grabbed));
 }
 
 void testAbsoluteSyncGate()
@@ -171,6 +221,7 @@ int main()
     testGrabOnPress();
     testMotionRouting();
     testButtonRouting();
+    testUiOverlayOwnsItsClicks();
     testAbsoluteSyncGate();
     testGlfwTokenMirrors();
     std::printf("OK\n");

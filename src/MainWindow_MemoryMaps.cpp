@@ -200,9 +200,9 @@ void MainWindow::renderMemoryBarWindow()
     std::array<uint8_t, 0x10000> ramSnap;
     uint16_t pc;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
-        pc = controller->cpu().getProgramCounter();
+        auto st = controller->lockState();
+        std::memcpy(ramSnap.data(), st.memory().data(), 0x10000);
+        pc = st.cpu().getProgramCounter();
     }
 
     PageInfo pageMap[256];
@@ -504,9 +504,9 @@ void MainWindow::renderMemoryBarHorizontalWindow()
     std::array<uint8_t, 0x10000> ramSnap;
     uint16_t pc;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
-        pc = controller->cpu().getProgramCounter();
+        auto st = controller->lockState();
+        std::memcpy(ramSnap.data(), st.memory().data(), 0x10000);
+        pc = st.cpu().getProgramCounter();
     }
 
     PageInfo pageMap[256];
@@ -753,10 +753,10 @@ void MainWindow::renderMemoryGridWindow()
     uint16_t pc;
     uint8_t  sp;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        std::memcpy(ramSnap.data(), controller->memory().data(), 0x10000);
-        pc = controller->cpu().getProgramCounter();
-        sp = controller->cpu().getStackPointer();
+        auto st = controller->lockState();
+        std::memcpy(ramSnap.data(), st.memory().data(), 0x10000);
+        pc = st.cpu().getProgramCounter();
+        sp = st.cpu().getStackPointer();
     }
     const int pcPage = pc >> 8;
     const int spPage = 1;  // stack always lives in page 1
