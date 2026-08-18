@@ -183,6 +183,7 @@ set(SOURCES
     src/HdvController_ImGui.cpp
     src/IWMDevice.cpp
     src/SmartPortHub.cpp
+    src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
     src/CharRomCatalog.cpp
     src/JoystickInput.cpp
@@ -680,6 +681,7 @@ add_executable(pom2_headless
     src/FloppySoundDevice.cpp
     src/IWMDevice.cpp
     src/SmartPortHub.cpp
+    src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
     src/LeChatMauveCard.cpp
     src/M6502.cpp
@@ -759,6 +761,7 @@ add_executable(pom2_bench
     src/SlotBus.cpp
     src/SmartPortHub.cpp
     src/SnapshotIO.cpp
+    src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
     src/SpeakerDevice.cpp
 )

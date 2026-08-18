@@ -59,13 +59,20 @@ public:
         Unknown,
         Raw800k,       // bare 819 200-byte payload (.po, .dsk-as-prodos)
         TwoImg800k,    // .2mg with 2IMG header wrapping a 819 200 payload
+        Woz35,         // WOZ2 flux dump, GCR-decoded to blocks at load
     };
 
     Disk35Image() = default;
 
-    /// Load a 3.5" image. Currently accepts:
+    /// Load a 3.5" image. Accepts:
     ///  * 819 200-byte raw images (assumed ProDOS block order)
     ///  * 2IMG-wrapped 819 200-byte ProDOS images
+    ///  * WOZ2 flux dumps of 800K disks (`INFO.disk_type == 2`), which are
+    ///    GCR-decoded to blocks once, here, through the same `Sony35Gcr`
+    ///    walk the drive uses — POM2 has no GCR *encoder*, so a flux image
+    ///    has nothing to be mounted as otherwise. Such an image is always
+    ///    write-protected: handing blocks back would mean re-encoding the
+    ///    original flux.
     /// On failure, returns false and populates `lastError`.
     bool loadFile(const std::string& path);
 
@@ -106,6 +113,8 @@ public:
 
 private:
     bool loadFileUnchecked(const std::string& path);
+    /// WOZ2 chunk walk + GCR decode into `blocks_`. See the .cpp.
+    bool loadWoz(const std::vector<uint8_t>& buf, const std::string& path);
 
     bool         loaded_              = false;
     bool         dirty_               = false;
