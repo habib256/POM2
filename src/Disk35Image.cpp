@@ -14,6 +14,8 @@
 //     `ap_dsk35.cpp` for ProDOS .2mg loads.
 
 #include "Disk35Image.h"
+
+#include "Sony35Gcr.h"
 #include "AtomicFileReplace.h"
 #include "Logger.h"
 #include "TwoImg.h"
@@ -166,6 +168,27 @@ bool Disk35Image::loadFileUnchecked(const std::string& imgPath)
         return true;
     }
 
+    // WOZ flux dump (Applesauce & co). A `.woz` holds bit CELLS, not
+    // blocks, and POM2 stores 3.5" media as a flat block array — it has no
+    // GCR encoder, so there is nothing to mount a flux image *as*. What it
+    // does have is the decoder: the same `Sony35Gcr` walk `Sony35Drive`
+    // uses to fold guest-written tracks back into the image. So a `.woz` is
+    // decoded ONCE here, at load, and mounts as an ordinary 800K volume.
+    //
+    // Read-only by construction: giving the blocks back would mean
+    // re-encoding GCR into the original flux, which POM2 cannot do. The
+    // user's dump is therefore never at risk from a write-back.
+    if (n >= 12 && buf[0] == 'W' && buf[1] == 'O' && buf[2] == 'Z' &&
+        (buf[3] == '1' || buf[3] == '2'))
+    {
+        if (!loadWoz(buf, imgPath)) return false;
+        fileWriteProtected_ = true;
+        kind_   = ImageKind::Woz35;
+        loaded_ = true;
+        dirty_  = false;
+        return true;
+    }
+
     // Bare 800K payload (.po, .dsk, .image).
     if (n == kBytesPerImage) {
         // Cheap "looks like ProDOS" sniff: block 2 should be the volume
@@ -288,6 +311,108 @@ bool Disk35Image::saveDirty()
         return false;
     }
     dirty_ = false;
+    return true;
+}
+
+
+// ─── WOZ 3.5" (flux) → blocks ─────────────────────────────────────────────
+//
+// WOZ2 layout: 12-byte header, then `ID(4) size(4) payload` chunks. We need
+// TMAP (160 bytes: one track-index per track*2+side on a double-sided 3.5")
+// and TRKS (160 x 8-byte entries: startBlock u16, blockCount u16, bitCount
+// u32, data at startBlock*512). WOZ1's TRKS is a different, fixed-size shape
+// and its 3.5" support is not a thing in the wild, so only WOZ2 is decoded.
+bool Disk35Image::loadWoz(const std::vector<uint8_t>& buf,
+                          const std::string& imgPath)
+{
+    if (buf[3] != '2') {
+        lastError_ = "Disk35Image: " + imgPath +
+                     " is WOZ1; only WOZ2 3.5\" images are supported";
+        return false;
+    }
+
+    std::size_t infoOff = 0, tmapOff = 0, trksOff = 0;
+    std::size_t infoLen = 0, tmapLen = 0, trksLen = 0;
+    for (std::size_t i = 12; i + 8 <= buf.size();) {
+        const uint32_t len = rd32(buf.data() + i + 4);
+        const std::size_t payload = i + 8;
+        if (len > buf.size() - payload) break;          // truncated chunk
+        if (!std::memcmp(buf.data() + i, "INFO", 4)) { infoOff = payload; infoLen = len; }
+        if (!std::memcmp(buf.data() + i, "TMAP", 4)) { tmapOff = payload; tmapLen = len; }
+        if (!std::memcmp(buf.data() + i, "TRKS", 4)) { trksOff = payload; trksLen = len; }
+        i = payload + len;
+    }
+    if (!infoOff || infoLen < 2 || !tmapOff || tmapLen < 160 || !trksOff) {
+        lastError_ = "Disk35Image: " + imgPath + " has no usable WOZ2 "
+                     "INFO/TMAP/TRKS chunks";
+        return false;
+    }
+    const uint8_t diskType = buf[infoOff + 1];          // 1 = 5.25", 2 = 3.5"
+    if (diskType != 2) {
+        lastError_ = "Disk35Image: " + imgPath + " is a 5.25\" WOZ "
+                     "(INFO.disk_type " + std::to_string(diskType) +
+                     "); mount it as a Disk II image";
+        return false;
+    }
+
+    blocks_.assign(kBytesPerImage, 0);
+    std::vector<uint8_t> seen(kBlockCount, 0);
+    int decoded = 0;
+
+    for (int slot = 0; slot < 160; ++slot) {
+        const uint8_t ti = buf[tmapOff + slot];
+        if (ti == 0xFF) continue;                        // unformatted
+        const std::size_t e = trksOff + static_cast<std::size_t>(ti) * 8;
+        if (e + 8 > trksOff + trksLen) continue;
+        const uint32_t startBlk = rd16(buf.data() + e);
+        const uint32_t blkCount = rd16(buf.data() + e + 2);
+        const uint32_t bitCount = rd32(buf.data() + e + 4);
+        if (!blkCount || !bitCount) continue;
+        const std::size_t off = static_cast<std::size_t>(startBlk) * 512u;
+        const std::size_t len = static_cast<std::size_t>(blkCount) * 512u;
+        if (off >= buf.size() || len > buf.size() - off) continue;
+
+        // The track is a CIRCLE. Walking it once leaves the sector that
+        // straddles the seam undecodable — worth ~1 sector per track-side,
+        // which is a lot of missing blocks. Walk it once plus an overlap so
+        // a wrap-crossing sector appears whole; duplicates are dropped by
+        // `seen` below.
+        std::vector<uint8_t> cells =
+            sony35::cellsFromPackedBits(buf.data() + off, len, bitCount);
+        const std::size_t once = cells.size();
+        if (once == 0) continue;
+        cells.insert(cells.end(), cells.begin(),
+                     cells.begin() + static_cast<std::ptrdiff_t>(
+                         std::min<std::size_t>(once, 40000)));
+
+        const int track = slot / 2;
+        sony35::decodeSectors(sony35::nibblesFromCells(cells),
+                              /*expectTrack=*/track,
+            [&](int tr, int head, int sec, const uint8_t* data) {
+                const int bi = sony35::blockIndexFor(tr, head, sec);
+                if (bi < 0 || bi >= kBlockCount || seen[bi]) return;
+                std::memcpy(blocks_.data() +
+                                static_cast<std::size_t>(bi) * kBlockBytes,
+                            data, kBlockBytes);
+                seen[bi] = 1;
+                ++decoded;
+            });
+    }
+
+    if (decoded < kBlockCount) {
+        // Report rather than refuse: a dump with a few unreadable sectors is
+        // still worth mounting, and saying WHICH is the difference between
+        // "POM2 can't read this" and "this dump has holes".
+        pom2::log().warn("Disk35",
+            "WOZ " + imgPath + ": decoded " + std::to_string(decoded) +
+            " of " + std::to_string(kBlockCount) +
+            " blocks; the rest read as zeros");
+    }
+    if (decoded == 0) {
+        lastError_ = "Disk35Image: " + imgPath +
+                     " yielded no Sony GCR sectors (not an 800K 3.5\" disk?)";
+        return false;
+    }
     return true;
 }
 

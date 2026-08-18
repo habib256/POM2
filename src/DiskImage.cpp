@@ -2590,10 +2590,44 @@ DiskSlotClass classifyDiskForSlot(const std::string& path)
     std::string ext = fs::path(path).extension().string();
     for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
+    // A WOZ says which drive it came off, so ask it rather than guessing:
+    // `INFO.disk_type` is 1 for 5.25" and 2 for 3.5". Every other extension
+    // below is sniffed by size, which cannot work for flux — the file size
+    // is a property of the DUMP. Sending an 800K 3.5" WOZ to the Disk II
+    // (which is what a bare `.woz` rule did) fails at mount time with an
+    // error about the wrong drive.
+    if (ext == ".woz") {
+        std::ifstream f(path, std::ios::binary);
+        char hdr[12] = {};
+        if (f && f.read(hdr, sizeof(hdr)) &&
+            hdr[0] == 'W' && hdr[1] == 'O' && hdr[2] == 'Z')
+        {
+            // Walk the chunks for INFO; its second byte is the disk type.
+            char id[8];
+            while (f.read(id, 8)) {
+                const uint32_t len =
+                    static_cast<uint8_t>(id[4])
+                  | (static_cast<uint32_t>(static_cast<uint8_t>(id[5])) << 8)
+                  | (static_cast<uint32_t>(static_cast<uint8_t>(id[6])) << 16)
+                  | (static_cast<uint32_t>(static_cast<uint8_t>(id[7])) << 24);
+                if (!std::memcmp(id, "INFO", 4)) {
+                    char info[2] = {};
+                    if (f.read(info, 2) && info[1] == 2)
+                        return DiskSlotClass::Sony35;
+                    break;
+                }
+                if (len > (1u << 30)) break;
+                f.seekg(static_cast<std::streamoff>(len), std::ios::cur);
+                if (!f) break;
+            }
+        }
+        return DiskSlotClass::Floppy525;
+    }
+
     // 5.25" Disk II — mirrors accept525(). The 800K `.po` is NOT caught
     // here (only the 143360-byte 5.25" ProDOS size); it falls through to
     // the Sony35 bucket below.
-    if (ext == ".dsk" || ext == ".do" || ext == ".nib" || ext == ".woz"
+    if (ext == ".dsk" || ext == ".do" || ext == ".nib"
         || ext == ".d13")
         return DiskSlotClass::Floppy525;
     if (ext == ".po" && (sz == 143360 || sz == 143360 + 64))

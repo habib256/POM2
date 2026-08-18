@@ -9572,11 +9572,14 @@ void MainWindow::renderDisk35PanelWindow()
                 }
                 if (!entry.is_regular_file(ec)) continue;
                 const std::string ext = entry.path().extension().string();
-                if (ext != ".po" && ext != ".2mg") continue;
+                if (ext != ".po" && ext != ".2mg" && ext != ".woz") continue;
                 const auto sz = entry.file_size(ec);
                 if (ec) continue;
-                // 800K raw or 2IMG-wrapped (header + 819 200).
-                if (sz != 819200 && sz != 819200 + 64 &&
+                // 800K raw or 2IMG-wrapped (header + 819 200). A `.woz` is
+                // FLUX, so its size says nothing about the payload — the
+                // 3.5" loader decodes it and refuses a 5.25" one by name.
+                if (ext != ".woz" &&
+                    sz != 819200 && sz != 819200 + 64 &&
                     !(sz > 819200 && sz < 819200 + 4096)) continue;
                 pom2::Disk35Controller_ImGui::LibraryEntry e;
                 e.displayName = fs::relative(entry.path(), root, ec).string();
@@ -9757,7 +9760,7 @@ void MainWindow::renderDisk35FileDialog()
         for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_regular_file()) continue;
             const std::string ext = entry.path().extension().string();
-            if (ext != ".po" && ext != ".2mg") continue;
+            if (ext != ".po" && ext != ".2mg" && ext != ".woz") continue;
             const std::string name = entry.path().filename().string();
             if (ImGui::Selectable(name.c_str()))
                 disk35Panel->dialogPath = entry.path().string();

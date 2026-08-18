@@ -2259,12 +2259,40 @@ MODE_DELAY entry in non-timer mode, `update_timer_tick` exit);
 `Disk35Image` + `Sony35Drive` + `SmartPortHub` — full Sony GCR
 read+write for //c+.
 
-*Image+drive*. `Disk35Image` loads 800 K `.po`/`.2mg`. `Sony35Drive`
+*Image+drive*. `Disk35Image` loads 800 K `.po`/`.2mg` **and `.woz`**.
+`Sony35Drive`
 responds to IWM phase-as-command bus (MAME
 `mac_floppy.cpp::seek_phase_w` + Apple //gs HW ref) and to
 MIG-driven `m_35sel/m_intdrive/m_hdsel` (MAME `apple2e.cpp:638-679
 recalc_active_device`). `senseR()` returns active-low register file
 (`/INSERTED`, `/TRACK0`, `/READY`, `/MOTOR ON`, `/SWITCHED`, …).
+
+*WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
+stores 3.5" media as a flat block array with no GCR *encoder* — so a flux
+dump has nothing to be mounted as unless it is decoded at LOAD time.
+`Disk35Image::loadWoz` walks the WOZ2 chunks (TMAP indexes `track*2+side`
+on a double-sided 3.5"; TRKS entries give startBlock/blockCount/bitCount)
+and runs each track through `Sony35Gcr` — the **same** decoder
+`Sony35Drive::decodeAndCommit` uses when the guest writes a track, moved
+out of `Sony35Drive.cpp` so there is one copy of MAME's tables and
+checksum walk rather than two.
+
+Three things that decide whether it works:
+
+* The track is a **circle**. Walking it once loses the sector straddling
+  the seam — ~1 per track-side, ~150 blocks on an 800K disk. The loader
+  walks one revolution plus an overlap and de-duplicates by block.
+* A WOZ mounts **write-protected**, and `setWriteBackEnabled` does not
+  override it: handing blocks back means re-encoding the user's flux.
+* `classifyDiskForSlot` reads `INFO.disk_type` rather than sniffing size
+  (flux size describes the dump, not the payload), so an 800K 3.5" WOZ
+  reaches the Sony bay instead of the Disk II. A 5.25" WOZ mounted in the
+  3.5" bay is refused by name, and vice versa.
+
+Pinned by `woz35_load`: a synthetic WOZ2 built with an INDEPENDENT
+encoder (written from MAME `build_mac_track_gcr`, not POM2's tables — a
+test sharing them could not catch a bad table), round-tripped byte-exact
+across a zone boundary on both heads.
 
 *IWM wiring*. `IWMDevice` exposes `phasesCb_/devselCb_/sel35Cb_`
 (MAME `iwm_device::phases_cb/devsel_cb/sel35_cb`); wired via

@@ -40,6 +40,8 @@
 // `senseR()` returns the raw line level exactly as MAME's wpt_r does.
 
 #include "Sony35Drive.h"
+
+#include "Sony35Gcr.h"
 #include "CpuClock.h"
 #include "Disk35Image.h"
 #include "FloppySoundSink.h"
@@ -370,195 +372,36 @@ std::vector<uint8_t> Sony35Drive::debugCellStream() const
 
 namespace {
 
-// Verbatim port of MAME `flopimg.cpp:1530-1569 generate_nibbles_from
-// _bitstream`. The IWM is a self-clocking GCR data separator: it
-// shifts in cells MSB-first and emits an 8-bit "disk byte" once the
-// top of the shift register is 1 (= the most recent transition was 8
-// cells ago). MAME's algorithm:
-//
-//   1. Initial alignment: walk forward across the entire bitstream,
-//      jumping `pos += 8` from each 1-bit. Whatever cell `pos` lands
-//      on after wrapping is "where the byte boundary is" relative to
-//      cell 0 of the buffer.
-//   2. Reader loop: read 8 cells from `pos` (with wrap), emit a byte,
-//      then skip trailing zero cells (the self-sync gap stretches
-//      $FF runs by 2 cells per byte).
-//   3. Terminate when `pos < 8` after the skip — meaning we've
-//      wrapped past cell 0, so the byte we just emitted closes the
-//      revolution.
-std::vector<uint8_t> nibblesFromCells(const std::vector<uint8_t>& cells)
-{
-    std::vector<uint8_t> out;
-    const int n = static_cast<int>(cells.size());
-    if (n < 8) return out;
-
-    // ─── Initial alignment (MAME line 1535-1551) ──────────────────────
-    int pos = 0;
-    while (pos < n) {
-        while (pos < n && !cells[pos]) ++pos;
-        if (pos == n) {
-            pos = 0;
-            while (pos < n && !cells[pos]) ++pos;
-            if (pos == n) return out;                  // unformatted track
-            goto found;
-        }
-        pos += 8;
-    }
-    while (pos >= n) pos -= n;
-    while (pos < n && !cells[pos]) ++pos;
-    if (pos == n) return out;   // alignment wrap landed in an all-zero tail;
-                                // without this, the found: reader dereferences
-                                // cells[n] (1-byte heap over-read). Mirrors the
-                                // guard on the goto-found path above.
- found:
-
-    out.reserve(static_cast<size_t>(n) / 8 + 8);
-    for (;;) {
-        uint8_t v = 0;
-        for (int i = 0; i < 8; ++i) {
-            if (cells[pos]) v |= static_cast<uint8_t>(0x80 >> i);
-            ++pos;
-            if (pos == n) pos = 0;
-        }
-        out.push_back(v);
-        if (pos < 8) return out;                       // wrapped past cell 0
-        while (pos < n && !cells[pos]) ++pos;
-        if (pos == n) return out;
-    }
-}
-
 }  // namespace
 
 int Sony35Drive::decodeAndCommit() const
 {
-    // Port of MAME `flopimg.cpp:2107 extract_sectors_from_track_mac_gcr6`.
-    // Walks the nibblised cell stream looking for D5AA96 address
-    // fields and matching D5AAAD data fields; decoded sectors are
-    // written back to the attached `Disk35Image` block at the index
-    // computed from (track, head, logicalSec).
+    // The GCR walk itself lives in `Sony35Gcr` — shared with the WOZ loader
+    // in `Disk35Image`, which has to turn the same cells into the same
+    // blocks when a flux image is mounted. What stays here is the part that
+    // is about THIS drive: which track the head is on, and how a decoded
+    // sector meets the mounted image.
     if (!image_ || !image_->isLoaded()) return 0;
     if (cells_.empty()) return 0;
     if (track_ < 0 || track_ >= 80) return 0;
-    const int head    = side1_ ? 1 : 0;
-    const int sectors = sectorsForTrack35(track_);
 
-    auto nib = nibblesFromCells(cells_);
-    if (nib.size() < 300) return 0;
-
-    // Find every D5AA96 address-prologue position (MAME line 2133-2138).
-    std::vector<int> hpos;
-    uint32_t hstate = (static_cast<uint32_t>(nib[nib.size() - 2]) << 8) |
-                      nib[nib.size() - 1];
-    for (int p = 0; p < static_cast<int>(nib.size()); ++p) {
-        hstate = ((hstate << 8) | nib[p]) & 0xFFFFFF;
-        if (hstate == 0xD5AA96) {
-            hpos.push_back(p == static_cast<int>(nib.size()) - 1 ? 0 : p + 1);
-        }
-    }
+    const auto nib = sony35::nibblesFromCells(cells_);
 
     int written = 0;
-    const int nibSz = static_cast<int>(nib.size());
-    auto wrap = [nibSz](int p) { return p % nibSz; };
-
-    for (int startPos : hpos) {
-        int pos = startPos;
-        uint8_t h[7];
-        for (int i = 0; i < 7; ++i) {
-            h[i] = nib[wrap(pos)];
-            pos = wrap(pos + 1);
-        }
-
-        // Address-field decode (MAME line 2152-2161).
-        const uint8_t v2 = kGcr6bw[h[2]];
-        const uint8_t v3 = kGcr6bw[h[3]];
-        const uint8_t tr = static_cast<uint8_t>(
-            kGcr6bw[h[0]] | ((v2 & 1) ? 0x40 : 0x00));
-        const uint8_t se  = kGcr6bw[h[1]];
-        const uint8_t c1  = (tr ^ se ^ v2 ^ v3) & 0x3f;
-        const uint8_t chk = kGcr6bw[h[4]];
-        if (chk != c1 || se >= sectors ||
-            h[5] != 0xDE || h[6] != 0xAA) continue;
-        if (static_cast<int>(tr) != track_) continue;
-
-        // Scan ahead for the matching D5AAAD data prologue (line 2165-2179).
-        uint32_t st = (static_cast<uint32_t>(nib[wrap(pos)]) << 8);
-        pos = wrap(pos + 1);
-        st |= nib[wrap(pos)];
-        pos = wrap(pos + 1);
-        bool foundData = false;
-        for (int guard = 0; guard < nibSz; ++guard) {
-            st = ((st << 8) | nib[wrap(pos)]) & 0xFFFFFF;
-            pos = wrap(pos + 1);
-            if (st == 0xD5AA96) break;             // ran into next sector
-            if (st == 0xD5AAAD) { foundData = true; break; }
-        }
-        if (!foundData) continue;
-
-        // Skip the sector-number duplicate byte (MAME line 2182).
-        pos = wrap(pos + 1);
-
-        // Decode 175 groups of 4-in/3-out (line 2187-2210).
-        uint8_t sdata[524];
-        std::memset(sdata, 0, sizeof(sdata));
-        uint8_t ca = 0, cb = 0, cc = 0;
-        bool decodeOk = true;
-        for (int i = 0; i < 175 && decodeOk; ++i) {
-            uint8_t e0 = nib[wrap(pos)]; pos = wrap(pos + 1);
-            uint8_t e1 = nib[wrap(pos)]; pos = wrap(pos + 1);
-            uint8_t e2 = nib[wrap(pos)]; pos = wrap(pos + 1);
-            uint8_t e3 = (i < 174) ? nib[wrap(pos)] : 0x96;
-            if (i < 174) pos = wrap(pos + 1);
-            uint8_t va, vb, vc;
-            gcr6Decode(e0, e1, e2, e3, va, vb, vc);
-            cc = static_cast<uint8_t>((cc << 1) | (cc >> 7));
-            va = static_cast<uint8_t>(va ^ cc);
-            const uint16_t suma = static_cast<uint16_t>(ca + va + (cc & 1));
-            ca = static_cast<uint8_t>(suma);
-            vb = static_cast<uint8_t>(vb ^ ca);
-            const uint16_t sumb = static_cast<uint16_t>(cb + vb + (suma >> 8));
-            cb = static_cast<uint8_t>(sumb);
-            vc = static_cast<uint8_t>(vc ^ cb);
-            sdata[3 * i + 0] = va;
-            sdata[3 * i + 1] = vb;
-            if (i != 174) {
-                cc = static_cast<uint8_t>(cc + vc + (sumb >> 8));
-                sdata[3 * i + 2] = vc;
+    sony35::decodeSectors(nib, /*expectTrack=*/track_,
+        [&](int tr, int head, int sec, const uint8_t* data) {
+            const int blkIdx = sony35::blockIndexFor(tr, head, sec);
+            if (blkIdx < 0 ||
+                blkIdx >= static_cast<int>(Disk35Image::kBlockCount)) return;
+            // Only write if the block actually differs — avoids dirtying
+            // the image when the firmware just re-writes the same data.
+            uint8_t existing[Disk35Image::kBlockBytes];
+            if (image_->readBlock(blkIdx, existing) &&
+                std::memcmp(existing, data, Disk35Image::kBlockBytes) == 0) {
+                return;
             }
-        }
-        if (!decodeOk) continue;
-
-        // Data-field checksum + DE AA epilogue (line 2213-2220).
-        uint8_t epi[6];
-        for (int i = 0; i < 6; ++i) {
-            epi[i] = nib[wrap(pos)];
-            pos = wrap(pos + 1);
-        }
-        uint8_t va, vb, vc;
-        gcr6Decode(epi[0], epi[1], epi[2], epi[3], va, vb, vc);
-        if (va != ca || vb != cb || vc != cc ||
-            epi[4] != 0xDE || epi[5] != 0xAA) {
-            continue;
-        }
-
-        // sdata[0..11] are tag bytes (zero in .po files), sdata[12..523]
-        // is the 512-byte ProDOS block payload.
-        const int blkIdx = blockIndexFor(track_, head, se);
-        if (blkIdx < 0 ||
-            blkIdx >= static_cast<int>(Disk35Image::kBlockCount)) {
-            continue;
-        }
-        // Only write if the block actually differs — avoids dirtying
-        // the image when the firmware just re-writes the same data.
-        uint8_t existing[Disk35Image::kBlockBytes];
-        if (image_->readBlock(blkIdx, existing) &&
-            std::memcmp(existing, sdata + 12,
-                        Disk35Image::kBlockBytes) == 0) {
-            continue;
-        }
-        if (image_->writeBlock(blkIdx, sdata + 12)) {
-            ++written;
-        }
-    }
+            if (image_->writeBlock(blkIdx, data)) ++written;
+        });
     return written;
 }
 

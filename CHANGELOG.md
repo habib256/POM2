@@ -5,6 +5,52 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later) — 3.5" WOZ images mount
+
+A `.woz` holds bit CELLS; POM2 stores 3.5" media as a flat block array and has
+no GCR encoder, so a flux dump had nothing to be mounted *as* — `Disk35Image`
+took `.po`/`.2mg` only and the 5.25" WOZ loader rejects `INFO.disk_type = 2`.
+That is what stopped *The New Print Shop 800K.woz* (Applesauce, the format 3.5"
+preservation actually ships in) from being usable at all, and it had to be
+converted offline before the colour test above could run.
+
+**It mounts now**, because the hard part was already in the tree: the Sony 800K
+GCR read path `Sony35Drive` uses to fold guest-written tracks back into the
+image. It moved to `src/Sony35Gcr.{h,cpp}` unchanged — same tables, same
+checksum walk, same MAME `flopimg.cpp:2107` lineage — and both callers now
+share it: the drive decoding what the guest wrote, and `Disk35Image::loadWoz`
+decoding a file at load. One copy, because a second transcription of that table
+is a second thing to get quietly wrong.
+
+Checked against the real disk: POM2's own load of `The New Print Shop 800K.woz`
+is **byte-identical, all 1 600 blocks**, to an independent offline conversion —
+and booting straight from the `.woz` prints the same colour test page,
+`5 194` bytes and the same three ribbon bands.
+
+Details worth keeping:
+
+- **A WOZ mounts write-protected, always.** Giving blocks back would mean
+  re-encoding the user's flux, which POM2 cannot do; accepting writes and
+  dropping them at flush is the failure that forecloses. `setWriteBackEnabled`
+  does not override it.
+- **The track is a CIRCLE.** Walking it once loses the sector straddling the
+  seam — about one per track-side, ~150 blocks on an 800K disk. The loader
+  walks one revolution plus an overlap and de-duplicates.
+- **Refusals say which drive they wanted.** A 5.25" WOZ gets "mount it as a
+  Disk II image" rather than "not an 800K image"; a WOZ1 says so by name.
+- **`classifyDiskForSlot` asks the file, not its size.** Flux file size is a
+  property of the DUMP, so the old "any `.woz` → Disk II" rule sent an 800K
+  3.5" image to the wrong drive. It now reads `INFO.disk_type`. The 3.5" bay,
+  the Disk Library and the mount dialog all offer `.woz` too.
+- Pinned by `woz35_load`, which builds a synthetic WOZ2 with its **own**
+  encoder written from MAME's `build_mac_track_gcr` rather than reusing POM2's
+  tables — a test that shared them could not catch a bad table — and asserts a
+  byte-exact round trip across a zone boundary on both heads, the
+  write-protection, and both refusals.
+- `iic_printer_port`'s CTest budget went 60 s → 240 s: 6.9 s native but 56 s
+  under ASan+UBSan, so a parallel sanitizer run tripped it while it passed
+  alone. Same reasoning as `disk_writeflux_framing` earlier in this hunt.
+
 ## 2026-08-18 — The Print Shop printed nothing, and said it had
 
 Asked to check that the ImageWriter II prints **in colour** with The Print

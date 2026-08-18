@@ -41,6 +41,11 @@ bool accept525(const std::string& ext, uint64_t sz) {
 }
 
 bool accept35(const std::string& ext, uint64_t sz) {
+    // A `.woz` is FLUX: its file size is a property of the dump, not of the
+    // payload, so it cannot be sniffed by size and is offered to BOTH bays.
+    // The loaders sort it out and say which they wanted — `Disk35Image`
+    // refuses a 5.25" WOZ by name, `DiskImage` refuses a 3.5" one.
+    if (ext == ".woz") return true;
     if (ext != ".po" && ext != ".2mg") return false;
     // 800 K = 1600 × 512 = 819 200. 2IMG envelope adds ≤ 4 KB.
     return sz == 819200 || sz == 819200 + 64

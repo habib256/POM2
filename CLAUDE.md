@@ -74,7 +74,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | 3D voxel view (MicroM8-style) + camera math | `Voxel3DRenderer.*`, `Mat4.h` | [§ 3D voxel](DEV.md#3d-voxel-view) |
 | ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodoshardiskcard-hdv-synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
 | IWM (//c, //c+, Mac, IIgs) | `IWMDevice.*` | [§ IWM](DEV.md#iwm-c-on-board) |
-| SmartPort 3.5" //c+ on-board | `Disk35Image.*`, `Sony35Drive.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
+| SmartPort 3.5" //c+ on-board (`.po`/`.2mg`/`.woz`) | `Disk35Image.*`, `Sony35Drive.*`, `Sony35Gcr.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | Uthernet I (CS8900A NIC) | `UthernetCard.*`, `Cs8900aDevice.*` | [§ Uthernet I](DEV.md#uthernet-i-cs8900a) |

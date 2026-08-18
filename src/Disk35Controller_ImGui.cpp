@@ -64,7 +64,7 @@ void renderDriveBlock(int                                       driveIdx,
     }
 
     // ── Buttons row ─────────────────────────────────────────────────────
-    if (ImGui::Button("Mount .po / .2mg...")) {
+    if (ImGui::Button("Mount .po / .2mg / .woz...")) {
         r.openMountDialog         = true;
         r.openMountDialogForDrive = driveIdx;
     }
@@ -133,7 +133,7 @@ Disk35Controller_ImGui::FrameResult Disk35Controller_ImGui::render(
                         "right-click: more options)");
 
     if (snap.library.empty()) {
-        ImGui::TextDisabled("  (drop .po / .2mg files into disks_3.5/ to populate)");
+        ImGui::TextDisabled("  (drop .po / .2mg / .woz files into disks_3.5/ to populate)");
     } else {
         // Match the Disk II library height — same panel layout, same
         // breathing room for one-click access without scrolling unless

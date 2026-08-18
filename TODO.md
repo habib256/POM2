@@ -793,22 +793,16 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Media] formats
 
-- 🟠 **3.5" WOZ images cannot be mounted** *(2026-08-18)* — `Disk35Image`
-  takes `.po` / `.2mg` (raw 819 200-byte payloads) only, and `DiskImage`'s
-  WOZ loader rejects `INFO.disk_type = 2`, so an Applesauce 800K flux dump —
-  the format 3.5" preservation actually ships in — fails to mount anywhere.
-  Hit for real with `disks_3.5/The New Print Shop 800K.woz`, which had to be
-  converted offline before the ImageWriter colour test could run at all.
-  **The hard part is already in the tree**: `Sony35Drive::decodeAndCommit`
-  decodes exactly this GCR (D5AA96 address / D5AAAD data, 4-in-3 groups,
-  MAME `flopimg.cpp extract_sectors_from_track_mac_gcr6`) — it just consumes
-  the drive's live cell buffer instead of a file. A loader that nibblises
-  WOZ TRKS bit streams and runs them through the same decoder gets `.woz`
-  mounting for the SmartPort/3.5" path. Two notes from doing it by hand: the
-  track is a CIRCLE (walk it once plus an overlap or the sector straddling
-  the seam is lost — that alone cost ~1 sector per track-side), and TMAP
-  indexes track*2+side on a double-sided 3.5". Write-back would stay `.po`
-  only; re-encoding GCR is a separate job. *~1 d.*
+- ✅ **3.5" WOZ images mount** — DONE (2026-08-18). The Sony 800K GCR read
+  path moved to `src/Sony35Gcr.{h,cpp}`, shared by `Sony35Drive` (guest
+  writes) and `Disk35Image::loadWoz` (file loads), so a `.woz` is decoded to
+  blocks once at mount. Read-only: POM2 has no GCR encoder, so handing blocks
+  back to flux is not something it can honour. Verified byte-identical (1 600
+  /1 600 blocks) against an independent conversion of
+  `disks_3.5/The New Print Shop 800K.woz`; pinned by `woz35_load`.
+  **Remaining**: write-back to `.woz` needs the encoder (`buildTrackBits` is
+  right there in `Sony35Drive`, still file-local) plus a WOZ writer that
+  preserves the container — a separate job, and one nobody has asked for.
 
 ### [Arch] refactor & tooling
 
