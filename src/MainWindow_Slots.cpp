@@ -341,6 +341,53 @@ void MainWindow::renderSlotConfigPanel()
                         "Move it to slot 1 (or 2/4/5/7) — same as on real "
                         "hardware.");
             }
+
+            // Slot 3 on a //e is not merely awkward, it is DEAD for almost
+            // every card: with SLOTC3ROM off (the reset default) the
+            // motherboard owns $C300-$C3FF outright and slot 3's I/O SELECT
+            // never asserts. Any card that decodes anything in its $Cs00
+            // page is unreachable there — which is most of them, and not
+            // only the ones with firmware: a Mockingboard addresses its
+            // VIAs through that window too (see MockingboardCard::
+            // slotRomRead), so it is as invisible as a mouse.
+            //
+            // Real hardware behaves the same way, which is why Apple sold
+            // the mouse for slot 4 and why the //e manual tells you to leave
+            // slot 3 to the 80-column card. Warned, not forbidden: a user
+            // who knows to flip SLOTC3ROM can still have it.
+            if (s == 3 && profileCfg.iieMode && !draft[s].empty() &&
+                draft[s] != "grappler" && draft[s] != "printer") {
+                const bool isMouse =
+                    (draft[s] == "mouse" || draft[s] == "mouseaw");
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f),
+                                   isMouse
+                                       ? "(invisible in slot 3 — use 4)"
+                                       : "(slot 3 $C300 window is dead)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        isMouse
+                        ? "On a //e the internal 80-column firmware owns "
+                          "$C300-$C3FF, so a card there has NO $Cs00 page the "
+                          "guest can reach.\nSoftware finds the mouse by "
+                          "scanning slots for the Apple signature ($Cn05=$38, "
+                          "$Cn07=$18, $Cn0B=$01, $Cn0C=$20) — at $C300 it "
+                          "reads the 80-column firmware instead and decides "
+                          "there is no mouse.\nA2DeskTop, MousePaint and "
+                          "MultiScribe then run keyboard-only.\nMove it to "
+                          "slot 4 (Apple's own slot for it), or 5/7 — same as "
+                          "on real hardware."
+                        : "On a //e the internal 80-column firmware owns "
+                          "$C300-$C3FF, so slot 3's I/O SELECT never asserts "
+                          "and NOTHING in the card's $C300 page is "
+                          "reachable.\nThat kills any card that needs it — "
+                          "firmware the guest scans for, and registers too: a "
+                          "Mockingboard addresses its VIAs through that "
+                          "window, so it goes silent there.\nA card that "
+                          "only uses its $C0nX soft switches still works.\n"
+                          "On real hardware slot 3 belongs to the 80-column "
+                          "card.");
+            }
         }
 
         ImGui::Spacing();

@@ -3640,6 +3640,23 @@ computes deltas via 8-bit subtraction with wrap; POM2 emits **at most
 one quadrature edge per axis per MCU PortB read** (matches MAME
 `m_last`/`m_count`).
 
+**Put it in slot 4, not slot 3.** On a //e with `SLOTC3ROM` off (the
+reset default) the motherboard owns `$C300-$C3FF` and slot 3's I/O
+SELECT never asserts, so a card there has no `$Cs00` page at all —
+`Memory.cpp` models this exactly and `iie_memory_smoke_test` pins it.
+Software finds the mouse by scanning slots for the Apple signature
+(`$Cn05=$38`, `$Cn07=$18`, `$Cn0B=$01`, `$Cn0C=$20`); measured with the
+same card and ROM, slot 3 reads `00 00 00 00` and slot 4 reads
+`38 18 01 20`. So A2DeskTop / MousePaint / MultiScribe find the
+80-column firmware where the signature should be, decide there is no
+mouse and run keyboard-only. Real hardware is identical — Apple sold the
+mouse for slot 4. The same window kills anything else that needs it: a
+Mockingboard addresses its VIAs through `$Cs00`
+(`MockingboardCard::slotRomRead`) and goes silent in slot 3; a card that
+only uses its `$C0nX` soft switches is unaffected. Slot Config flags it
+inline on the row, seeded from the live config so an existing setup is
+marked as soon as the panel opens.
+
 #### Pointer capture ("mouse grab") — `MouseGrab.h`
 
 Both cards are **relative** quadrature devices, so uncaptured the host

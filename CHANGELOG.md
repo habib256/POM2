@@ -5,6 +5,52 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later still, 4) — Slot 3 on a //e is a trap, and now it says so
+
+Reported: *"why doesn't the mouse work with A2 Desktop?"* Because the mouse
+card was in **slot 3** on a `//e PAL` profile, and on a //e slot 3 does not
+exist as far as a card's `$Cs00` page is concerned.
+
+With `SLOTC3ROM` off — the reset default, so where every machine starts — the
+motherboard owns `$C300-$C3FF` outright and slot 3's I/O SELECT never asserts.
+POM2 already models this exactly (`Memory.cpp`, pinned by
+`iie_memory_smoke_test`), including refusing to forward *writes* to the slot
+bus so a deselected card cannot latch the `$C800` window. The emulation was
+never wrong. The **configuration** was, and nothing said so.
+
+What that does to a GUI: software finds the mouse by scanning slots for the
+Apple signature — `$Cn05=$38`, `$Cn07=$18`, `$Cn0B=$01`, `$Cn0C=$20`. Measured
+with the same card and the same ROM in two slots:
+
+```
+slot 3 ($C300): 00 00 00 00  -> mouse signature NOT FOUND
+slot 4 ($C400): 38 18 01 20  -> mouse signature FOUND
+```
+
+So A2DeskTop scans, finds the 80-column firmware where the signature should
+be, concludes there is no mouse, and runs keyboard-only. MousePaint and
+MultiScribe do the same. Real hardware behaves identically — which is why
+Apple sold the mouse for slot 4 and why the //e manual reserves slot 3 for the
+80-column card.
+
+Slot Configuration now flags it inline, in red, on the offending row, seeded
+from the live slot config so an existing setup is marked the moment the panel
+opens rather than only after the user touches the combo.
+
+**The warning is not mouse-specific, because the problem is not.** The panel
+already warned about slot 3 for printer cards, but for a different and much
+milder reason (they share the 80-column firmware's screen holes and wrap every
+line — degraded, not dead). Checking what else lives in that window turned up
+a worse case: **a Mockingboard addresses its VIAs through `$Cs00`**
+(`MockingboardCard::slotRomRead`), so it is as silent in slot 3 as the mouse
+is invisible. The SoftCard finds itself by toggling slot-ROM windows. So the
+warning covers every card, with the mouse getting the specific "use slot 4"
+wording and everything else getting the general one — and it deliberately says
+that a card using only its `$C0nX` soft switches is still fine, because
+claiming otherwise would be false.
+
+Warned, not forbidden: a user who knows to flip `SLOTC3ROM` can still have it.
+
 ## 2026-08-18 (later still, 3) — A left click no longer takes your mouse
 
 Three changes to pointer capture, all from the same complaint: it happened
