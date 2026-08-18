@@ -1242,6 +1242,15 @@ Source: markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+ (index.md
 states "two AY-3-8913 Programmable Sound Generator chips and a TMS5220
 Speech Synthesizer chip").
 
+**Snapshot/rewind** (added 2026-08-17, bug hunt 8). Being a scaffold does
+not exempt it: the stub decode is *read back* by the guest — `$Cs00`
+returns the TMS status and `$Cs04-$Cs07` the selected AY register — so the
+card serializes TMS status + last write, both address latches and both full
+AY-3-8913 banks, magic-tagged (`'E' 'T' 'S'` + version) and validated whole
+before it mutates a chip, exactly like `MockingboardCard` / `PhasorCard`.
+Without it a rewind put the guest back on registers from the timeline it had
+just left. Pinned by `card_snapshot_state`.
+
 ### Phasor (Applied Engineering)
 
 `PhasorCard` (`PhasorCard.h/.cpp`) — dual-mode successor to the
@@ -1941,6 +1950,22 @@ entry. Click → `buildVolumeFromFolder` →
 boots ProDOS elsewhere, then `/HOST/` appears as slot 5 drive
 (`CAT,S5,D1`). Read-only: driver returns `$2B` on writes. Pinned:
 `prodos_volume_smoke_test`.
+
+**Two ProDOS entries can want one host name** (2026-08-17, bug hunt 8
+round 3). `decodeVolumeToFolder` strips trailing dots before composing a
+host filename — legal in ProDOS, awkward-to-illegal on the host — so
+`README` and `README.` both came out as `README` and the second write
+silently REPLACED the first, with both halves reporting success. The
+build path manufactures that pair without trying: `sanitiseProDOSName`
+maps everything outside `A-Z 0-9 .` to `.`, so a host folder holding
+`README` and `README!` becomes `README` + `README.` in the volume, and
+`uniqueName` correctly sees two distinct ProDOS names. The guest can
+create both directly too, so the decode is where the guard belongs.
+Host names are now reserved per decoded directory (`reserveHostName`),
+a clash taking a numeric suffix rather than overwriting, and the
+reservation covers THIS pass only — never what is already on disk —
+so a repeated write-back stays idempotent instead of accreting a fresh
+`.1` on every eject. Subdirectory names go through the same gate.
 
 ### Snapshot
 
@@ -2865,15 +2890,36 @@ $Cn22  85 36      STA CSWL
 $Cn24  A9 ss      LDA #slotHi
 $Cn26  85 37      STA CSWH
 $Cn28  60         RTS
-$Cn31  8D 90 c0   STA $C0(8+s)0        ; data port write
+$Cn31  8D 91 c0   STA $C0(8+s)1        ; data port write
 $Cn34  60         RTS
 ```
 
-Data port at `$C0(8+s)0` (decoded on `!(low4 & 0x03)` → offsets
-$0/$4/$8/$C): write enqueues the byte verbatim (no high-bit strip —
-the UI/spoolText() does that), read returns $FF (always ready). A
-write with `low4 & 0x01` set also flips `romBankHigh_` (see below).
-Other device-select offsets read $FF / writes ignored.
+Data port at `$C0(8+s)0` **and** `$C0(8+s)1`: write enqueues the byte
+verbatim (no high-bit strip — the UI/spoolText() does that), read returns
+$FF (always ready) on every offset. Other device-select offsets ignore
+writes.
+
+Two offsets, because there are two ways in, and this section used to
+describe neither correctly (it claimed offset 0 with a `!(low4 & 0x03)`
+mirror mask, and a `romBankHigh_` flip that belongs to the Grappler):
+
+* **Offset 1** is what the trampoline above writes — the `PR#n` + COUT
+  path, i.e. how BASIC, DOS and the Monitor print. For a long time it was
+  the only offset the card decoded.
+* **Offset 0** is the data latch on the real Apple Parallel Printer
+  Interface, and it is where software that drives the card DIRECTLY
+  writes. Graphics software does exactly that: The Print Shop's "Apple
+  Parallel Interface" driver never reads our ROM at all — character to
+  offset 0, a copy to offset 2 as the strobe, poll offset 4 for ready. With
+  offset 1 alone its whole `ESC G` page was dropped while offset 4 answered
+  "ready", so it reported the job printed and nothing came out
+  (2026-08-18).
+
+**Offset 2 is deliberately NOT a data port**: the strobe carries a copy of
+the byte, so decoding it too would double every character. Pinned by
+`printer_card_smoke::testDirectDriveParallelStream`, which replays the
+traced Print Shop access pattern and requires exactly one spooled byte per
+character.
 
 The full Pascal 1.1 entry block (PINIT/PREAD/PWRITE/PSTATUS at
 $Cn0D-$Cn10) is **not** implemented — BASIC `PR#n` is the only
@@ -3197,6 +3243,23 @@ so magenta|yellow = red, cyan|yellow = green, all three = black; index 0
 is blank paper. `ESC K n` picks the band. `pageToRgba()` expands through
 `indexToRgb()`, which is `FillPalette` (`imagewriter.cpp:101-114`) in
 closed form.
+
+**The carriage stops at the right margin — in graphics too** (2026-08-17,
+bug hunt 8 round 2). `printBitGraph` used to advance `curX_` per dot column
+with no margin test, unlike every other head-motion path here (the text
+advance wraps on `rightMargin_`; `ESC F`/`ESC '` refuse to cross it), so an
+over-long bit-image run walked the head off the sheet: `ESC V 9060 <col>` at
+80 dpi parks it 113 inches out on an 8.5-inch page, and the pacing model
+charged carriage travel for all 9 060 columns — 22 emulated seconds of BUSY
+printing nothing, since `fillDots` clips to the raster. A column starting at
+or past `rightMargin_` is now **discarded** (never wrapped — wrapping a bit
+image corrupts it; the hardware loses the excess of an over-long graphics
+line), the head parks against the stop, and `byteCost` charges nothing for a
+carriage that is not moving. `rightMargin_` is only ever the paper width, so
+this drops exactly what the raster clip was already dropping: the ink on the
+page is unchanged, which is the property `imagewriter_smoke` pins (an
+over-long run must produce the byte-identical page an exactly-fitting run
+produces).
 
 **Colour is a ribbon, not a mode.** `Ribbon::FourColour` (default) /
 `Ribbon::Black` models which cartridge is fitted: with the black one the

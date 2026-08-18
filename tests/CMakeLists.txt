@@ -4005,7 +4005,13 @@ add_executable(test_disk_writeflux_framing
 )
 target_include_directories(test_disk_writeflux_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disk_writeflux_framing COMMAND test_disk_writeflux_framing)
-set_tests_properties(disk_writeflux_framing PROPERTIES TIMEOUT 10)
+# 60, not 10. The test is the suite's most instrumentation-sensitive one:
+# 0.6 s native, 10.3 s under ASan+UBSan — just over the old budget, so the
+# project's own sanitizer sweeps reported it as a failure while it was
+# passing. The timeout is there to catch a HANG in the write-back framing,
+# and 60 s still does that with two orders of magnitude of margin over the
+# native cost (bug hunt 8).
+set_tests_properties(disk_writeflux_framing PROPERTIES TIMEOUT 60)
 
 # ─── ProDOSHardDiskCard slot-ROM STATUS X/Y + no-media read ───────────────
 # Executes the real slot ROM on a 6502: STATUS returns block count in X/Y
@@ -4121,6 +4127,27 @@ if(WIN32)
 endif()
 add_test(NAME dhgr_paint_model COMMAND test_dhgr_paint_model)
 set_tests_properties(dhgr_paint_model PROPERTIES TIMEOUT 15)
+
+# ─── HGR sprite blit (the byte layer under the sprite editor) ─────────────
+# `HgrSpriteBlit.h` has always documented itself as "unit-tests standalone
+# (hgr_sprite_blit_smoke)"; POM2 never had that test, and hgrsprite/ was the
+# one module in the tree with no coverage at all. Pins extract/stamp against
+# the row interleave, their edge clipping, magnifyColor2x's colour clock, and
+# the DHGR-target ca65 export helpers — the last of which is where bug hunt 8
+# found a heap over-read (the export sized its rows from the un-clipped shape
+# width while the rasteriser clips at the 140-pixel DHGR line).
+# Pure: no ImGui, no GL, no emulator.
+add_executable(test_hgr_sprite_blit
+    hgr_sprite_blit_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrsprite/HgrSpriteBlit.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrPaintModel.cpp
+)
+target_include_directories(test_hgr_sprite_blit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint    # HgrSpriteBlit.h includes it unqualified
+    ${CMAKE_SOURCE_DIR}/src/hgrsprite)
+add_test(NAME hgr_sprite_blit COMMAND test_hgr_sprite_blit)
+set_tests_properties(hgr_sprite_blit PROPERTIES TIMEOUT 10)
 
 # ─── DHGR 560-dot converter vs real renderDhgr ────────────────────────────
 # Pins (1) the converter's internal ColorNTSC DHGR decode byte-identical to
@@ -4540,6 +4567,7 @@ add_executable(test_card_snapshot_state
     ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
     ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/ClockCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/EchoPlusTMS5220Card.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
     ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp

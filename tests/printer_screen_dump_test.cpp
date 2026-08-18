@@ -541,6 +541,66 @@ void testEpsonFormLengthGuards()
 
 } // namespace
 
+// ── A dump wider than the paper is CROPPED, never wrapped or re-timed ────
+//
+// POM2's own screen dump is the in-tree producer of long `ESC G` runs: an
+// 80-column screen is 560 columns at 72 dpi = 7.78 in, which is wider than
+// ISO B5's 6.93 in page. Bug hunt 8 round 2 made `printBitGraph` stop the
+// carriage at the right margin (it used to walk arbitrarily far off the sheet
+// and charge mechanism time for columns `fillDots` was already discarding), so
+// this is the case where that change is observable on real output.
+//
+// The property it must preserve — and the one that fails the moment the excess
+// is wrapped to the next line, shifted, or dropped a column early — is that
+// the narrow page is the wide page CROPPED: same dots, same places, for every
+// column B5 has room for.
+void testDumpWiderThanPaperIsCropped()
+{
+    const int W = 560, H = 192;
+    std::vector<uint32_t> fb(static_cast<size_t>(W) * H, kBlack);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (((x / 3) ^ (y / 5)) & 1)
+                fb[static_cast<size_t>(y) * W + x] = kWhite;
+
+    ScreenDumpOptions opt;
+    std::vector<uint8_t> stream;
+    pom2::buildScreenDumpImageWriter(fb.data(), W, H, W, opt, stream);
+
+    auto printOn = [&](ImageWriter::PaperSize sz) {
+        ImageWriter iw(144, sz);
+        iw.setPowered(true);
+        iw.setOnline(true);
+        iw.queueBytes(stream.data(), stream.size());
+        int ticks = 0;
+        while ((iw.pendingBytes() || iw.pendingRepeats()) && ticks < 400000) {
+            iw.tick(0.05);
+            ++ticks;
+        }
+        assert(!iw.pendingBytes() && !iw.pendingRepeats());
+        assert(iw.completedPageCount() >= 1);
+        return iw.completedPage(0);
+    };
+
+    const ImageWriter::Page letter = printOn(ImageWriter::PaperSize::Letter);
+    const ImageWriter::Page b5     = printOn(ImageWriter::PaperSize::B5);
+    assert(letter.w > b5.w);            // the case is only interesting if so
+
+    long lit = 0;
+    const int rows = (letter.h < b5.h) ? letter.h : b5.h;
+    for (int y = 0; y < rows; ++y)
+        for (int x = 0; x < b5.w; ++x) {
+            const uint8_t a = letter.pix[static_cast<size_t>(y) * letter.w + x];
+            const uint8_t b = b5.pix[static_cast<size_t>(y) * b5.w + x];
+            assert(a == b && "narrow page must equal the wide page, cropped");
+            if (b) ++lit;
+        }
+    assert(lit > 100000 && "the comparison has to be over real ink");
+
+    std::printf("  ok: an over-wide dump crops (%ld lit dots identical across "
+                "%d x %d)\n", lit, b5.w, rows);
+}
+
 int main()
 {
     testStreamShape();
@@ -554,6 +614,7 @@ int main()
     testEscPSlashCItohCollision();
     testEpsonCrLfDoesNotDoubleFeed();
     testEpsonFormLengthGuards();
+    testDumpWiderThanPaperIsCropped();
 
     std::puts("printer_screen_dump: OK");
     return 0;

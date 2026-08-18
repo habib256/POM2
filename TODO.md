@@ -824,6 +824,18 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   polling `/screen.ppm`, slot reconfiguration, and rewind under load. Would
   also retire the two findings that could not be pinned (`saveScreenshot`'s
   `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
+  - **The controller half is done and clean** (2026-08-17, bug hunt 8): a TSan
+    harness drove the real thread shape without a GUI — CPU worker, a UI thread
+    running the transport verbs (rewind scrub/seek/resume, cassette, 3.5"
+    mount/eject, speed, mode toggles, a `lockState()` read per frame), an
+    AI-server thread doing `lockState()` reads + snapshot capture/restore + key
+    injection through `kbMutex`, the live miniaudio callback, and a Mockingboard
+    in slot 4 fed by a guest loop so the emuCycles AY queue (the one real
+    CPU↔audio producer/consumer) is exercised. Zero races. **Caveat worth
+    keeping**: TSan instruments every load/store in the interpreter's hot loop,
+    so the CPU manages only ~400-1 400 emulated cycles/s — the *lock protocol*
+    is covered thoroughly, *emulated execution* thinly. What remains is the GUI
+    half: ImGui panels, `demodMutex`, slot re-plug under load.
 - 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
   divergent copies still: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
   namespace), `Disk35Image.cpp:214` (added 2026-08-02) and
@@ -850,11 +862,33 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   driving the tools against a stub `IHgrPaintHost` — bearing in mind
   `hgrpaint/` is shared verbatim with POM1, so the seam must be additive.
   *~1 d.*
-- 🟢 **Run the `SnapshotIO` fuzzer** *(2026-08-02)* — built during the ASan
-  sweep but never executed, so that parser is the one untrusted-input surface
-  in the tree with no dynamic coverage. The disk-image and WOZ parsers came
-  through 4 200 + 13 270 mutations clean; snapshots are loaded from
-  user-supplied files on the same trust footing.
+  - **`hgrsprite/` had the same shape and cost the same kind of bug**
+    (2026-08-17, bug hunt 8): no test at all, and its ca65 DHGR export read
+    32 bytes past the pair buffer at the UI maxima. The byte layer is now
+    pinned by `hgr_sprite_blit` — including the two helpers the export's
+    clipping moved into (`dhgrExportRowBytes`, `extractDhgrPlanes`) — but
+    `HgrSpriteEditor` itself is still only reachable through an ImGui frame,
+    exactly like `HgrPaintEditor`. One seam would serve both.
+- ✅ **Run the `SnapshotIO` fuzzer** — DONE (2026-08-17, bug hunt 8 round 2).
+  It had been built during the 2026-08-02 ASan sweep and never executed, which
+  left snapshots as the one untrusted-input surface with no dynamic coverage
+  (the disk-image and WOZ parsers had 4 200 + 13 270 mutations behind them).
+  **40 000 mutated blobs** — bit flips, truncation, extension, corrupted
+  section lengths and names, duplicated sections, absurd lengths, random tails
+  behind a valid magic — through `restoreMachineState` under ASan+UBSan: 6 915
+  accepted (each then RUN, so a crafted paging state has to survive execution),
+  33 085 rejected, no diagnostic. It also pins the property `MachineSnapshot`
+  states in prose — a rejected file is observationally transactional to the
+  machine — by re-capturing after every rejection: **0 violations**.
+  - Two more surfaces got the same treatment in that round and were also
+    clean: the **AI control server** (6 000 hostile HTTP requests, plus a
+    `GET /status` liveness probe so a wedged worker thread would show) and the
+    **cassette loader** (12 000 mutated `.wav`/`.aci` tapes, 2 493 of them
+    loaded and then played/seeked/re-saved). The **printer** control-stream
+    fuzzer from the same round is the one that found a defect — see CHANGELOG.
+  - Not committed, matching the precedent from hunt 5: the harnesses link
+    against source files rather than a build-system target, which is a CI
+    decision rather than a bug fix.
 - 🟠 **`MainWindow.cpp` god-object (~10 200 lines)** *(audit 2026-05-31, count
   re-measured 2026-08-14 — it was ~6700 then, so the file is still growing)* — biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/

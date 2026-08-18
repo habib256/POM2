@@ -55,6 +55,30 @@ void stamp(const uint8_t* sprite, int wBytes, int hRows,
 void magnifyColor2x(const hgrpaint::HgrColor* cells, int wBytes, int hRows,
                     uint8_t* out);
 
+// ── DHGR-target export helpers ──────────────────────────────────────────────
+// A DHGR-target sprite rasterises one lit shape pixel into one DHGR COLOUR
+// pixel (4 dots) of a 16 KB aux+main pair, so a shape `shapePxWide` pixels wide
+// occupies shapePxWide*4 dots — but a DHGR line only holds hgrpaint::kDhgrWidth
+// (140) colour pixels / 560 dots, and the rasteriser clips there. These two
+// keep the ca65 export clipping with it.
+
+// Bytes per PLANE row a ca65 DHGR export emits for that shape. Clips the width
+// at kDhgrWidth first, so the result is never above kByteCols — the real length
+// of a plane row. (Deriving it from the un-clipped width put it as high as 80,
+// which walked the export off the end of the row and, on the last row, off the
+// end of the pair.)
+int dhgrExportRowBytes(int shapePxWide);
+
+// Slice a page-relative 16 KB DHGR pair ([aux 8 KB][main 8 KB], both on the
+// HIRES row interleave) into two row-major byte tables of `nPer` bytes per row
+// for rows [0,hRows). `auxOut`/`mainOut` must each hold nPer*hRows bytes —
+// `nPer` is the caller's stride and is written as given. What the function
+// clamps is what it READS: at most one kByteCols plane row per row and at most
+// kRows rows, so no argument can take it outside `pair` (columns/rows past
+// those bounds are simply left as the caller initialised them).
+void extractDhgrPlanes(const uint8_t* pair, int nPer, int hRows,
+                       uint8_t* auxOut, uint8_t* mainOut);
+
 } // namespace hgrsprite
 
 #endif // HGRSPRITE_BLIT_H

@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 using pom2::ImageWriter;
@@ -1119,6 +1120,171 @@ void testRepeatIsPacedNotAtomic()
 
 } // namespace
 
+// The carriage stops at the right margin — including in GRAPHICS.
+//
+// Found by fuzzing the control stream (bug hunt 8 round 2). `printBitGraph`
+// advanced `curX_` per dot column with no margin test, while every other
+// head-motion path in the file has one, so an over-long bit-image run walked
+// the head off the sheet: `ESC V 9060 <col>` at 80 dpi parked it 113 inches
+// out on an 8.5-inch page and the mechanism charged the full dot-column rate
+// for all 9 060 columns — 22 emulated seconds of BUSY, printing nothing,
+// because fillDots had already clipped every one of those dots away.
+//
+// Two properties, and the first is what makes the second safe:
+//   1. OUTPUT NEUTRALITY. An over-long run must produce EXACTLY the page an
+//      exactly-fitting run produces. Discarded, never wrapped — a wrapped bit
+//      image is a corrupted one.
+//   2. The head stops on the paper, and the run drains in about the time one
+//      line of travel costs rather than fifteen.
+void testGraphicsStopsAtTheRightMargin()
+{
+    const int    dpi      = 144;
+    const double paperW   = 8.5;
+    // ESC V nnnn c: repeat column `c` nnnn times. At the default pitch the
+    // graphics density is 80 dpi, so a full 8.5" line is ~680 columns; ask
+    // for 9999 and 4000, both far past it.
+    auto runV = [&](const char* count, uint8_t col) {
+        ImageWriter iw(dpi, ImageWriter::PaperSize::Letter);
+        iw.setSpeed(ImageWriter::Speed::Draft);
+        std::vector<uint8_t> job = { 0x1B, 'V' };
+        for (const char* p = count; *p; ++p) job.push_back(static_cast<uint8_t>(*p));
+        job.push_back(col);
+        iw.queueBytes(job.data(), job.size());
+        int ticks = 0;
+        while ((iw.pendingBytes() || iw.pendingRepeats()) && ticks < 100000) {
+            iw.tick(0.05);
+            ++ticks;
+        }
+        assert(!iw.pendingBytes() && !iw.pendingRepeats());
+        return std::make_pair(iw.currentPage().pix, ticks);
+    };
+
+    const auto huge  = runV("9999", 0xFF);
+    const auto large = runV("4000", 0xFF);
+
+    // 1. Same ink, both times: everything past the margin was already being
+    //    thrown away by the raster clip, so dropping it earlier cannot move a
+    //    single dot. (This is the assertion that would fail if the excess were
+    //    wrapped to the next line instead of discarded.)
+    assert(huge.first == large.first);
+    // …and the page is not blank, so the comparison means something.
+    bool anyInk = false;
+    for (uint8_t v : huge.first) if (v) { anyInk = true; break; }
+    assert(anyInk);
+
+    // 2. Bounded time. One 8.5" line at 80 dpi Draft is well under a second of
+    //    mechanism time; before the fix this took 454 ticks (22.7 s) for the
+    //    9 060-column case and scaled with the count. Both counts must now
+    //    cost the same — the head stops in the same place either way.
+    assert(huge.second == large.second);
+    assert(huge.second < 100);            // < 5 emulated seconds
+
+    // 3. The head is on the paper.
+    {
+        ImageWriter iw(dpi, ImageWriter::PaperSize::Letter);
+        const uint8_t job[] = { 0x1B, 'V', '9', '9', '9', '9', 0xFF };
+        iw.queueBytes(job, sizeof job);
+        for (int i = 0; i < 200 && (iw.pendingBytes() || iw.pendingRepeats()); ++i)
+            iw.tick(0.05);
+        assert(iw.status().headX <= paperW);
+    }
+
+    std::printf("  ok: bit-image runs stop at the right margin (same ink, "
+                "bounded time)\n");
+}
+
+// ── A Print Shop-shaped COLOUR job prints in colour, on one line ─────────
+//
+// This is the shape the 2026-07-26 trace captured from the real Print Shop's
+// colour page, and the thing a user means by "does the ImageWriter II print
+// in colour": three graphics passes, each preceded by its own `ESC K` band
+// and separated by a BARE CR so they overprint the same line.
+//
+//   ESC T16 CR LF          advance one line
+//   ESC K1 CR ESC G….      yellow  pass
+//   ESC K3 CR ESC G….      cyan    pass   — bare CR: SAME line
+//   ESC K2 CR ESC G….      magenta pass   — bare CR: SAME line
+//
+// Run in the DEFAULT AutoFeed::Auto, because that is what a user gets and
+// because the whole point of Auto is to settle "does CR feed paper?" from
+// the stream — get it wrong and the passes come out as a coloured staircase
+// instead of one picture.
+void testPrintShopColourPass()
+{
+    ImageWriter iw(144, ImageWriter::PaperSize::Letter);
+    iw.setPowered(true);
+    iw.setOnline(true);
+    iw.setRibbon(ImageWriter::Ribbon::FourColour);
+
+    std::vector<uint8_t> job;
+    auto put = [&](const char* t) { for (const char* p = t; *p; ++p)
+                                        job.push_back(uint8_t(*p)); };
+    auto pass = [&](const char* escK, int cols) {
+        put(escK);
+        job.push_back(0x0D);                       // bare CR — same line
+        char hdr[16];
+        std::snprintf(hdr, sizeof(hdr), "\x1b" "G%04d", cols);
+        put(hdr);
+        for (int i = 0; i < cols; ++i) job.push_back(0xFF);
+    };
+
+    put("\x1b" "T16");
+    put("\r\n");                                   // the CR+LF Auto learns from
+    pass("\x1b" "K1", 396);                        // yellow
+    pass("\x1b" "K3", 442);                        // cyan
+    pass("\x1b" "K2", 326);                        // magenta
+    job.push_back(0x0C);
+
+    iw.queueBytes(job.data(), job.size());
+    int ticks = 0;
+    while ((iw.pendingBytes() || iw.pendingRepeats()) && ticks < 200000) {
+        iw.tick(0.05);
+        ++ticks;
+    }
+    assert(!iw.pendingBytes() && !iw.pendingRepeats());
+    assert(iw.completedPageCount() >= 1);
+    const ImageWriter::Page& page = iw.completedPage(0);
+
+    // Which bands landed, and on which rows?
+    long dots[8] = {0};
+    int firstRow = 1 << 30, lastRow = -1;
+    for (int y = 0; y < page.h; ++y)
+        for (int x = 0; x < page.w; ++x) {
+            const uint8_t v = page.pix[static_cast<size_t>(y) * page.w + x];
+            if (!v) continue;
+            ++dots[v >> 5];
+            if (y < firstRow) firstRow = y;
+            if (y > lastRow)  lastRow  = y;
+        }
+
+    // 1. ONE line. A staircase is the documented failure: 8 dots at 72 dpi
+    //    is 16 rows on a 144 dpi page, so all three passes must share them.
+    assert(lastRow - firstRow + 1 <= 16 &&
+           "the three colour passes must overprint one line, not staircase");
+
+    // 2. Real colour, mixed subtractively. Cyan is the widest pass, so it
+    //    covers the other two: the page must show cyan alone where only it
+    //    reaches, cyan|yellow = GREEN where the yellow pass ends, and all
+    //    three = BLACK in the middle. Any of these missing means a band was
+    //    dropped or the passes did not land on top of each other.
+    assert(dots[2] > 0 && "cyan-only region missing");
+    assert(dots[6] > 0 && "cyan|yellow (green) overprint missing");
+    assert(dots[7] > 0 && "three-band (black) overprint missing");
+
+    // 3. …and the palette turns those bands into actual colours.
+    uint8_t r = 0, g = 0, b = 0;
+    ImageWriter::indexToRgb(static_cast<uint8_t>((2 << 5) | 0x1F), r, g, b);
+    assert(r == 0 && g == 255 && b == 255);          // cyan
+    ImageWriter::indexToRgb(static_cast<uint8_t>((6 << 5) | 0x1F), r, g, b);
+    assert(r == 0 && g == 255 && b == 0);            // green
+    ImageWriter::indexToRgb(static_cast<uint8_t>((7 << 5) | 0x1F), r, g, b);
+    assert(r == 0 && g == 0 && b == 0);              // black
+
+    std::printf("  ok: Print Shop colour passes overprint one line "
+                "(cyan %ld, green %ld, black %ld dots)\n",
+                dots[2], dots[6], dots[7]);
+}
+
 int main()
 {
     std::printf("ImageWriter smoke test\n");
@@ -1139,6 +1305,8 @@ int main()
     testParserHardening();
     testEjectInvalidatesSheetReferences();
     testRepeatIsPacedNotAtomic();
+    testGraphicsStopsAtTheRightMargin();
+    testPrintShopColourPass();
     std::printf("PASS\n");
     return 0;
 }

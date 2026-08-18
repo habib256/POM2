@@ -13,12 +13,17 @@
 //   * SuperSerialCard — ACIA command/control decode + sticky errors
 //   * ClockCard     — uPD1990AC 48-bit shift register + TP/IRQ timer
 //
+// A sixth joined them in bug hunt 8 — `EchoPlusTMS5220Card`, which landed
+// after that sweep and inherited the same gap: TMS status + both AY-3-8913
+// register banks, all read back by the guest at $Cs00/$Cs04-$Cs07.
+//
 // Each case: drive the card into a distinctive non-default state, snapshot,
 // build a FRESH card, restore, and assert the observable state came across.
 // Every loader must also ignore a foreign blob rather than misparse it.
 
 #include "CffaCard.h"
 #include "ClockCard.h"
+#include "EchoPlusTMS5220Card.h"
 #include "ProDOSHardDiskCard.h"
 #include "SmartPortCard.h"
 #include "SmartPortHdvUnit.h"
@@ -243,6 +248,59 @@ void testClockShiftRegister()
     std::printf("  ok: ThunderClock shift register + TP state round-trips\n");
 }
 
+/// Sixth case, added by bug hunt 8. `EchoPlusTMS5220Card` landed after the
+/// 2026-07-29 sweep and inherited the same gap it fixed: it serialized
+/// nothing, while every byte it owns is guest-readable — `$Cs00` returns the
+/// TMS status and `$Cs04-$Cs07` return the selected AY register. A rewind
+/// therefore restored the machine around a card still holding the abandoned
+/// timeline's registers.
+void testEchoPlusTms5220Registers()
+{
+    EchoPlusTMS5220Card a(2);
+    a.slotRomWrite(0x00, 0x5A);          // TMS data byte (tracked)
+    a.slotRomWrite(0x04, 0x07);          // AY#1 address latch → R7
+    a.slotRomWrite(0x05, 0x3E);          // AY#1 R7 = $3E
+    a.slotRomWrite(0x06, 0x0B);          // AY#2 address latch → R11
+    a.slotRomWrite(0x07, 0xC4);          // AY#2 R11 = $C4
+    assert(a.slotRomRead(0x04) == 0x3E);
+    assert(a.slotRomRead(0x06) == 0xC4);
+
+    std::vector<uint8_t> blob;
+    a.appendSnapshotState(blob);
+    assert(!blob.empty());
+
+    EchoPlusTMS5220Card b(2);
+    b.loadSnapshotState(blob.data(), blob.size());
+    // Guest-visible read-back must come across…
+    assert(b.slotRomRead(0x04) == 0x3E);
+    assert(b.slotRomRead(0x06) == 0xC4);
+    assert(b.slotRomRead(0x00) == a.slotRomRead(0x00));
+    // …and re-serialising must reproduce the blob, which is the only way to
+    // assert the private halves (the selected-register latches, the last TMS
+    // write, the rest of both banks) travelled too.
+    std::vector<uint8_t> blob2;
+    b.appendSnapshotState(blob2);
+    assert(blob2 == blob);
+
+    EchoPlusTMS5220Card c(2);
+    std::vector<uint8_t> fresh;
+    c.appendSnapshotState(fresh);
+    c.loadSnapshotState(kForeign.data(), kForeign.size());
+    std::vector<uint8_t> blob3;
+    c.appendSnapshotState(blob3);
+    assert(blob3 == fresh);              // foreign blob ignored
+    // A TRUNCATED own-format blob must be ignored whole, not applied halfway.
+    EchoPlusTMS5220Card d(2);
+    std::vector<uint8_t> freshD;
+    d.appendSnapshotState(freshD);
+    d.loadSnapshotState(blob.data(), blob.size() - 1);
+    std::vector<uint8_t> blob4;
+    d.appendSnapshotState(blob4);
+    assert(blob4 == freshD);
+
+    std::printf("  ok: Echo+ (TMS5220) status + both AY banks round-trip\n");
+}
+
 }  // namespace
 
 int main()
@@ -253,6 +311,7 @@ int main()
     testSmartPortCallEngine();
     testSscAciaRegisters();
     testClockShiftRegister();
+    testEchoPlusTms5220Registers();
     std::printf("PASS\n");
     return 0;
 }

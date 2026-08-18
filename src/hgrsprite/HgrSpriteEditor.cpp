@@ -575,22 +575,29 @@ bool HgrSpriteEditor::performFileAction(FileAction a, const std::string& fullPat
         if (dhgrTarget_) {
             std::vector<uint8_t> pair;
             buildDhgrPair(pair, 0);
-            const int dotCols  = (wpx() * 4 + 6) / 7;          // 7-dot byte columns
-            const int nPer     = (dotCols + 1) / 2;            // bytes per plane/row
+            // One lit shape pixel rasterises to ONE DHGR colour pixel, and a DHGR
+            // line holds only kDhgrWidth (140) of them — buildDhgrPair already
+            // drops the rest (plotDhgrPixel range-checks x). The export has to
+            // clip with it, which is what dhgrExportRowBytes does. Deriving the
+            // row length from the un-clipped wpx() here instead put it above the
+            // 40 bytes a plane row actually has, so every row read on past its
+            // own end (garbage tables from W = 21 bytes up), and on the last
+            // row — y = 191, page offset $1FD0 — it ran past the end of
+            // the 16 KB pair itself: a heap over-read from W = 25 bytes, up to 32
+            // bytes at the UI maximum W = 40 / H = 192.
+            const int nPer = dhgrExportRowBytes(wpx());        // bytes per plane/row
             std::vector<uint8_t> auxB(static_cast<size_t>(nPer) * hRows_, 0);
             std::vector<uint8_t> mainB(auxB.size(), 0);
-            for (int y = 0; y < hRows_; ++y) {
-                const int rowBase = hgrpaint::hgrByteOffset(0, y);
-                for (int i = 0; i < nPer; ++i) {
-                    auxB [static_cast<size_t>(y) * nPer + i] = pair[rowBase + i];
-                    mainB[static_cast<size_t>(y) * nPer + i] =
-                        pair[hgrpaint::kHiresSize + rowBase + i];
-                }
-            }
+            extractDhgrPlanes(pair.data(), nPer, hRows_, auxB.data(), mainB.data());
             const std::string name = sanitizeAsmName(asmName_);
+            const bool clipped = wpx() > hgrpaint::kDhgrWidth;
             const std::string note =
                 "DHGR pair; colour " + std::to_string(dhgrColor_) +
-                "; blit aux+main at an aligned byte-column pair";
+                "; blit aux+main at an aligned byte-column pair" +
+                (clipped ? "; CLIPPED to the " +
+                           std::to_string(hgrpaint::kDhgrWidth) +
+                           "-pixel DHGR line width"
+                         : "");
             const std::string text =
                 formatSpriteAsm(name + "_aux",  nPer, hRows_, auxB.data(),  note) +
                 "\n" +
@@ -599,8 +606,9 @@ bool HgrSpriteEditor::performFileAction(FileAction a, const std::string& fullPat
             if (!f) { status = "Cannot write file"; return false; }
             const size_t n = std::fwrite(text.data(), 1, text.size(), f);
             std::fclose(f);
-            status = (n == text.size()) ? "Exported ca65 DHGR sprite (aux+main)"
-                                        : "Write failed";
+            status = (n != text.size()) ? "Write failed"
+                   : clipped ? "Exported ca65 DHGR sprite (aux+main) \xE2\x80\x94 clipped to 140 px"
+                             : "Exported ca65 DHGR sprite (aux+main)";
             return n == text.size();
         }
         // Write the dev-catalogue ca65 format — parseable back by the host's

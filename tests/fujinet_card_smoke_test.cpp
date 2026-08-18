@@ -505,17 +505,25 @@ void testDeviceCountWithoutPeer()
     m.mem.memWrite(0x0314, 0x00);        // status code 0 = device count
     placeSmartPortCall(m, kSpStatus, 0x0310);
 
-    const auto t0 = std::chrono::steady_clock::now();
     m.run(20000);
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0).count();
 
     assert(m.cpu->getProgramCounter() == 0x0306);
     assert(m.cpu->getAccumulator() == 0x00);     // success...
     assert(m.mem.memRead(0x4000) == 0x00);       // ...with zero devices
     assert(m.cpu->getXRegister() == 8);
-    // Answered locally: a bus scan must not pay a network timeout per probe.
-    assert(ms < 100);
+    // Answered locally: a bus-scan probe must never become a link call.
+    //
+    // This was a stopwatch (`assert(ms < 100)` around the run above), and the
+    // stopwatch could not measure what its comment claimed: with no peer
+    // attached, `SpOverSlipLink::transact` returns on `!transport_->isOpen()`
+    // BEFORE the 250 ms wait, so the "network timeout per probe" failure mode
+    // is unreachable in this test. All the bound could ever react to was host
+    // speed — and it duly fired under a valgrind run of the suite, on a path
+    // with nothing network about it. The link's own counters state the
+    // intended property directly, and no slowdown can perturb them.
+    const auto stats = m.card->link().stats();
+    assert(stats.calls == 0);
+    assert(stats.timeouts == 0);
     assert(m.card->localCount() == 1);
 
     m.card->link().stop();

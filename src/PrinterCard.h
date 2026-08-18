@@ -15,9 +15,22 @@
 //
 // Wire model
 // ----------
-// One data port at $C0(8+s)1 — write = enqueue the byte to the spool;
-// read = always 0xFF (printer permanently "ready"). All other device-
-// select offsets read 0xFF / writes ignored.
+// Data port at $C0(8+s)0 AND $C0(8+s)1 — write = enqueue the byte to the
+// spool; read = always 0xFF (printer permanently "ready"). All other
+// device-select offsets read 0xFF / writes ignored.
+//
+// TWO offsets, because there are two ways in. Offset 1 is what our own slot
+// ROM's trampoline writes (the `PR#n` + COUT path below). Offset 0 is the
+// data latch on the real Apple Parallel Printer Interface, and it is what
+// software that drives the card DIRECTLY writes — which is what graphics
+// programs do instead of going through COUT. The Print Shop's "Apple
+// Parallel Interface" driver never reads our ROM at all: character to
+// offset 0, same byte to offset 2 as the strobe, poll offset 4 for ready.
+// With offset 1 alone, its whole `ESC G` page went into the void while
+// offset 4 kept answering "ready", so it reported the job printed and
+// nothing came out (bug hunt, 2026-08-18). Offset 2 stays ignored on
+// purpose: the strobe carries a copy of the byte, and taking it too would
+// double every character.
 //
 // PR#n protocol (minimal — DOS/BASIC works, no Pascal driver needed)
 // ------------------------------------------------------------------

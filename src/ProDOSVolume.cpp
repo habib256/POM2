@@ -730,6 +730,36 @@ struct DecodeWalk {
     bool                              ioFailed    = false;
 };
 
+// Reserve `name` as a host filename inside one decoded directory, returning
+// the name actually to use.
+//
+// TWO ProDOS entries can want ONE host name. The decode strips trailing dots
+// before composing the host path (a name ending in '.' is legal in ProDOS and
+// awkward-to-illegal on the host), so `README` and `README.` both come out as
+// `README` — and the second write silently REPLACED the first, reporting both
+// as written. The build path manufactures exactly that pair without trying:
+// `sanitiseProDOSName` maps every character outside A-Z 0-9 '.' to '.', so a
+// host folder holding `README` and `README!` becomes `README` and `README.`
+// in the volume, `uniqueName` sees two distinct ProDOS names, and the
+// write-back merges them back into one file. The guest can do it directly too
+// — nothing stops it creating both names inside the volume.
+//
+// So: names are unique per decoded directory, and a clash gets a numeric
+// suffix rather than overwriting. `used` covers THIS decode pass only, never
+// what is already on disk, so re-decoding an unchanged volume still lands on
+// the same names (writeFileAtomic's Unchanged path) instead of growing a new
+// `.1` every time.
+std::string reserveHostName(std::unordered_set<std::string>& used,
+                            const std::string& name)
+{
+    if (used.insert(name).second) return name;
+    for (int i = 1; i < 10000; ++i) {
+        std::string cand = name + "." + std::to_string(i);
+        if (used.insert(cand).second) return cand;
+    }
+    return name;                      // pathological — 10 000 clashing entries
+}
+
 // Walk one ProDOS directory (volume root or subdir) starting at `firstBlock`
 // and recreate its contents under `hostFolder`. Recurses into subdir entries
 // (storage_type $D) by creating a host subdirectory and calling itself.
@@ -753,6 +783,9 @@ void decodeOneDir(DecodeWalk& w,
     auto blockPtr = [&](std::size_t b) -> const std::uint8_t* {
         return w.image.data() + b * kBlockBytes;
     };
+
+    // Host names already emitted in THIS directory during THIS pass.
+    std::unordered_set<std::string> usedHostNames;
 
     std::uint16_t curBlock = firstBlock;
     std::size_t   guard    = 0;
@@ -822,7 +855,8 @@ void decodeOneDir(DecodeWalk& w,
                     r.aborted = true;
                     return;
                 }
-                const fs::path subDest = fs::path(hostFolder) / name;
+                const fs::path subDest =
+                    fs::path(hostFolder) / reserveHostName(usedHostNames, name);
                 std::error_code ec;
                 fs::create_directories(subDest, ec);
                 if (ec) {
@@ -915,7 +949,9 @@ void decodeOneDir(DecodeWalk& w,
             // must NOT accrete a spurious ".bin" on every save cycle.
             const char* typeExt =
                 (name.find('.') == std::string::npos) ? extFromFileType(fileType) : "";
-            const fs::path dest = fs::path(hostFolder) / (name + typeExt);
+            const fs::path dest =
+                fs::path(hostFolder) / reserveHostName(usedHostNames,
+                                                       name + typeExt);
             std::string writeErr;
             const FileWriteResult wr = writeFileAtomic(dest, data, writeErr);
             if (wr == FileWriteResult::Error) {

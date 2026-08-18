@@ -467,6 +467,75 @@ static void testMetadataTagParsing()
     std::printf("prodos_volume_smoke: metadata tags OK\n");
 }
 
+// ── Two ProDOS entries must never land on ONE host file ──────────────────
+//
+// Found by fuzzing the build/decode round trip (bug hunt 8 round 3). The
+// decode strips trailing dots before composing a host name — legal in ProDOS,
+// awkward-to-illegal on the host — so `README` and `README.` both came out as
+// `README`, and the SECOND write silently replaced the first while both
+// halves reported success (build: 2 included, 0 skipped; decode: 2 written).
+// The user's file was simply gone after a write-back.
+//
+// The build path manufactures that pair without anyone trying:
+// sanitiseProDOSName maps every character outside A-Z 0-9 '.' to '.', so a
+// host folder holding `README` and `README!` becomes `README` + `README.` in
+// the volume. The guest can also create both names inside the volume itself,
+// so the decode has to be safe on its own.
+static void testDecodeNeverMergesTwoEntriesOntoOneFile()
+{
+    const fs::path src = makeTempDir("merge_src");
+    const fs::path dst = makeTempDir("merge_dst");
+
+    const std::vector<std::uint8_t> a = { 'A','A','A','A','A','A','A','A' };
+    const std::vector<std::uint8_t> b = { 'B','B','B','B','B','B','B','B','B' };
+    writeFile(src / "README",  a);
+    writeFile(src / "README!", b);          // sanitises to "README."
+
+    std::vector<std::uint8_t> image;
+    const pom2::ProDOSBuildResult br =
+        pom2::buildVolumeFromFolder(src.string(), "TEST", image);
+    assert(br.ok);
+    assert(br.filesIncluded == 2 && br.filesSkipped == 0);
+
+    const pom2::ProDOSDecodeResult dr =
+        pom2::decodeVolumeToFolder(image, dst.string());
+    assert(dr.ok);
+
+    // BOTH bodies must exist on the host — the count AND the contents, since
+    // the failure mode was one file holding the other's bytes.
+    int files = 0;
+    bool sawA = false, sawB = false;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(dst, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        ++files;
+        std::ifstream in(e.path(), std::ios::binary);
+        const std::vector<std::uint8_t> got(
+            (std::istreambuf_iterator<char>(in)),
+            std::istreambuf_iterator<char>());
+        if (got == a) sawA = true;
+        if (got == b) sawB = true;
+    }
+    assert(files == 2 && "two volume entries must not collapse to one file");
+    assert(sawA && sawB && "neither file's contents may be overwritten");
+
+    // …and a second write-back must be STABLE, not grow a fresh suffix every
+    // time: the disambiguation tracks names used in this pass, never what is
+    // already on disk.
+    const pom2::ProDOSDecodeResult again =
+        pom2::decodeVolumeToFolder(image, dst.string());
+    assert(again.ok);
+    assert(again.filesWritten == 0 && "an unchanged volume rewrites nothing");
+    int filesAgain = 0;
+    for (const auto& e : fs::directory_iterator(dst, ec))
+        if (e.is_regular_file(ec)) ++filesAgain;
+    assert(filesAgain == 2 && "repeated write-back must not accrete files");
+
+    fs::remove_all(src, ec);
+    fs::remove_all(dst, ec);
+    std::printf("prodos_volume_smoke: colliding host names stay distinct OK\n");
+}
+
 int main()
 {
     testEmptyFolder();
@@ -475,6 +544,7 @@ int main()
     testRoundTripFolderToVolumeToFolder();
     testSubdirsBuildAndDecode();
     testMetadataTagParsing();
+    testDecodeNeverMergesTwoEntriesOntoOneFile();
     std::printf("prodos_volume_smoke: PASS\n");
     return 0;
 }

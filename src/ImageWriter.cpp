@@ -1034,6 +1034,11 @@ double ImageWriter::byteCost(uint8_t ch) const
     // Bit-image data: the byte is a dot column (or a third of one on the
     // LQ's 24-pin pitches), not a glyph. Same head, half the sweep rate.
     if (bitGraph_.remBytes > 0) {
+        // Past the right margin the carriage is against the stop and the
+        // column is discarded (printBitGraph), so it costs no head travel.
+        // Charging for it is what made an over-long `ESC V`/`ESC U` run hold
+        // the guest's BUSY line for tens of emulated seconds printing nothing.
+        if (curX_ >= rightMargin_) return 0.0;
         const double colsPerSec = (ips * 0.5) * bitGraph_.horizDens;
         const double perColumn  = (colsPerSec > 0.0) ? 1.0 / colsPerSec : 0.0;
         const uint8_t perCol    = bitGraph_.bytesColumn ? bitGraph_.bytesColumn : 1;
@@ -1221,6 +1226,28 @@ void ImageWriter::printBitGraph(uint8_t ch)
 
     // Only paint once a whole column has arrived.
     if (bitGraph_.readBytesColumn < bitGraph_.bytesColumn) return;
+
+    // The carriage stops at the right margin. Every other head-motion path in
+    // this file honours it — the text advance wraps on it (printCharInternal
+    // below), ESC F / ESC ' refuse a move past it — but the graphics advance
+    // did not, so a long bit-image run walked `curX_` arbitrarily far off the
+    // sheet: `ESC V 9060 <col>` parks the head 113 inches out on an 8.5-inch
+    // page. Nothing reached the paper (fillDots clips to the raster), and yet
+    // the mechanism model charged the full dot-column rate for every one of
+    // those columns — ~22 emulated seconds of BUSY for a line the hardware
+    // finishes in two, with a status line reporting a head position no
+    // ImageWriter can reach. `rightMargin_` is only ever the paper width (no
+    // command narrows it), so discarding here removes exactly the columns
+    // `fillDots` was already throwing away: the ink on the sheet is
+    // unchanged, which is what `imagewriter_smoke` now pins.
+    //
+    // DISCARDED, not wrapped: wrapping a bit image would corrupt it, and an
+    // over-long graphics line on the real printer loses its excess columns.
+    if (curX_ >= rightMargin_) {
+        curX_ = rightMargin_;          // parked against the stop, not past it
+        bitGraph_.readBytesColumn = 0;
+        return;
+    }
 
     if (sound_) {
         int pins = 0;

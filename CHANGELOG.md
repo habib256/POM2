@@ -5,6 +5,361 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 — The Print Shop printed nothing, and said it had
+
+Asked to check that the ImageWriter II prints **in colour** with The Print
+Shop. Driving the real disk (`disks_5.4/gist/PrintShop.dsk`) headlessly —
+boot, Setup, printer = *Apple DMP/Imagewriter/Scribe*, interface = *Apple
+Parallel Interface*, slot 1, then its own **PRESS RETURN TO TEST PRINTER** —
+found something worse than a colour problem first.
+
+**The synthetic `PrinterCard` captured nothing, and the guest was told it
+worked.** Print Shop's parallel driver never touches our slot ROM: it writes
+the character to the card's data latch at `$C0n0`, pulses the strobe by
+writing the same byte to `$C0n2`, and polls `$C0n4` for ready. The card
+decoded **only `$C0n1`** — the offset its own `PR#n` COUT trampoline uses —
+so all 702 bytes of a real `ESC G` page went into the void while `$C0n4` kept
+answering `0xFF`, and Print Shop advanced to "IF WELCOME MESSAGE WAS PRINTED,
+THEN PRINTER TEST WAS SUCCESSFUL". A printer that reports success and prints
+nothing is the worst of the available behaviours.
+
+That gap is invisible to every existing test because `PR#n` + COUT — how
+BASIC, DOS and the Monitor print — goes through offset 1 and works fine. It
+only bites software that drives the interface DIRECTLY, which is what
+graphics programs do.
+
+The card now takes data on `$C0n0` as well: that is the data latch on the
+real Apple Parallel Printer Interface it is modelled on, so accepting it costs
+nothing. `$C0n2` stays ignored **on purpose** — the strobe carries a copy of
+the byte, and taking it too would double every character. Same job after the
+fix: **702 bytes spooled, page printed**, byte-identical to what the Grappler+
+(which has a real ROM dump and was already fine) produces.
+
+**And the colour answer: this Print Shop cannot print in colour, and the
+emulator is not why.** It is the 1984 original, which predates the
+ImageWriter II's colour ribbon by a year. Its Setup offers a single Apple
+entry — "APPLE DMP, IMAGEWRITER, SCRIBE" — with no `(C)` variant, and the
+captured byte stream proves it: the escape sequences it emits are `ESC T`,
+`ESC >`, `ESC P` and `ESC G`, and there is **no `ESC K`** anywhere in the job.
+Colour is a *New Print Shop* feature, whose Setup names "Apple Imagewriter II
+**(C)**" — the same note DEV.md already carries on `Ribbon`.
+
+POM2's colour path itself is correct, and is now pinned against the shape the
+2026-07-26 trace recorded from a real colour driver: three `ESC G` passes,
+each with its own `ESC K` band, separated by **bare CRs** so they overprint.
+`imagewriter_smoke` asserts they land on ONE line (a staircase was the
+original bug), that the bands OR into the right subtractive mixes — cyan
+alone, cyan|yellow = green, all three = black — and that the palette turns
+those into real RGB. It runs in the default `AutoFeed::Auto`, since deciding
+"does CR feed paper?" from the stream is exactly what makes the overprint
+work.
+
+## 2026-08-17 (later still) — Bug hunt 8: two things that ran off the end of the page
+
+Hunt 7 swept what had recently changed. This one went the other way and asked
+which module had never been swept **at all**: `src/hgrsprite/` — 1 850 lines,
+landed in one commit, the only source directory with no test of its own, and its
+header claiming a `hgr_sprite_blit_smoke` which exists in POM1
+(`tests/hgr_sprite_blit_smoke_test.cpp`) and never existed here. The defect was
+in it.
+
+**`HgrSpriteEditor`'s ca65 DHGR export read past the end of the 16 KB pair it
+was slicing.** With the DHGR target on, Export ASM rasterises the shape into an
+aux+main pair and emits two `.byte` tables, `nPer` bytes per row per plane. It
+derived `nPer` from the **un-clipped** shape width:
+
+```
+dotCols = (wpx() * 4 + 6) / 7;   nPer = (dotCols + 1) / 2;   // = 2 x wBytes
+```
+
+But one lit shape pixel rasterises to one DHGR **colour pixel**, and a DHGR line
+holds 140 of them — `buildDhgrPair` drops the rest, because `plotDhgrPixel`
+range-checks `x`. So past 20 bytes of width the export kept counting bytes the
+picture no longer had:
+
+- **W ≥ 21 bytes** — `nPer` exceeds the 40 bytes a plane row actually holds, so
+  each row runs on past its own end into whatever the interleave puts there
+  (screen holes, other rows). Silently wrong tables, no crash.
+- **W ≥ 25 bytes with H = 192** — the last row starts at page offset `$1FD0`,
+  48 bytes short of the plane end, so `pair[kHiresSize + rowBase + i]` leaves
+  the vector. At the UI maxima (W = 40, H = 192, both plain `InputInt`s clamped
+  only by `clampGeom` to 40/192) it reads **32 bytes past a 16 KB heap block**,
+  confirmed under ASan.
+
+W and H are ordinary numeric fields in the top bar and the DHGR checkbox is
+offered on every IIe-class profile, so this is a few clicks away, not a
+contrived state.
+
+The fix does not add a bounds check at the read — it removes the disagreement.
+The clipping now lives in two pure functions next to the rest of the byte layer,
+`hgrsprite::dhgrExportRowBytes()` (clip the width at `kDhgrWidth` FIRST, which
+lands the row length at exactly one 40-byte plane row) and
+`extractDhgrPlanes()` (whose READS clamp to one plane row and 192 rows, so no
+argument can take it outside the pair — the caller's stride is still its own).
+The editor calls both, and says so in the status line and the exported `.byte`
+header when a sprite was wider than the DHGR line: a clip you cannot see is the
+reason the arithmetic could disagree for this long.
+
+Both additions are **additive** to `HgrSpriteBlit.{h,cpp}`, which was still
+byte-identical with POM1's copy (as is `HgrSpriteAsmExport.cpp`), so the module
+stays resyncable. `HgrSpriteEditor.cpp` had already diverged — the DHGR target
+is a POM2-only addition, 1 323 lines here against POM1's 1 110 — which is also
+why POM1 does not carry this bug.
+
+`tests/hgr_sprite_blit_test.cpp` is the test the header always promised: extract /
+stamp round-tripping through the row interleave, their edge clipping,
+`magnifyColor2x`'s colour clock + palette bit, and the two new helpers — with
+the regression pinned as a property (`dhgrExportRowBytes` never exceeds a plane
+row for **any** width the editor can be set to; the old formula returned 80 at
+the maximum, twice the row).
+
+**Three smaller things, all real:**
+
+- **`EchoPlusTMS5220Card` serialized nothing, and unlike the other card in that
+  position it had something to lose.** The 2026-07-29 workflow hunt fixed five
+  cards that carried no snapshot state; this one landed afterwards and inherited
+  the gap. Scaffold or not, every byte it owns is guest-READABLE — `$Cs00`
+  returns the TMS5220 status, `$Cs04-$Cs07` return the selected register of
+  either AY-3-8913 — so a rewind restored the machine around a card still
+  holding the abandoned timeline's registers, and a driver polling status across
+  the jump read a value from a future that no longer happens. It now emits the
+  same magic-tagged, version-prefixed, validate-before-mutate blob as its
+  siblings (TMS status + last write + both address latches + both full AY
+  banks). `card_snapshot_state` grows its sixth case — which, being an
+  `assert(!blob.empty())` on the capture, fails outright against the old card.
+- **`PrinterHistory::nowStamp` formatted a timestamp into a buffer that could
+  not hold it.** `char buf[32]` for `"%04d-%02d-%02d %02d:%02d:%02d"` — `%04d`
+  is a minimum width, and nothing stops `tm_year + 1900` (an `int`) needing 11
+  characters, so the worst case is 72 bytes. GCC 13 says so under `-O3` +
+  `_FORTIFY_SOURCE` and it is right: the only way a 32-byte buffer answers is by
+  truncating, which would put a malformed timestamp in the durable print-history
+  index rather than fail. Now 80 bytes. It was the ONE warning in the whole
+  first-party build under `-Wall -Wextra -Wshadow`, which is otherwise clean on
+  GCC 13.3 too — this one only fires with optimisation and fortification on, so
+  hunt 7's warning-clean measurement was not wrong, just taken elsewhere.
+- **A test assertion that could only ever fail for the wrong reason.**
+  `fujinet_card_smoke_test.cpp::testDeviceCountWithoutPeer` timed the run with a
+  stopwatch and asserted `ms < 100`, commented "a bus scan must not pay a
+  network timeout per probe". It cannot measure that: with no peer attached —
+  which is the whole point of that test — `SpOverSlipLink::transact` returns on
+  `!transport_->isOpen()` **before** the 250 ms wait, so the failure mode named
+  is unreachable and the only thing the bound reacts to is host speed. It duly
+  fired under the valgrind sweep below, on a path with nothing network about it,
+  and it would fire the same way on a loaded CI runner. It now asserts the
+  link's own counters (`stats().calls == 0`, `timeouts == 0`), which state the
+  intended property directly and no slowdown can perturb. Its cousin
+  `disk_writeflux_framing` had the same shape one level up — 0.6 s native,
+  10.3 s under ASan+UBSan against a 10 s CTest `TIMEOUT`, so the sweep reported
+  a failure on a test that was passing. Now 60 s, which still catches the hang
+  the budget exists for.
+
+**What was swept, and what came back clean:**
+
+- **The whole suite under ASan + UBSan** (GCC 13.3, RelWithDebInfo): **180/180
+  green, zero sanitizer diagnostics** — no out-of-bounds, no UB, including
+  every path this hunt changed. (The 181st, `disk_skew_sniff`, wants the repo
+  root as its working directory and passes there; the sweep ran from an
+  out-of-tree build dir.) The build is warning-free under the sanitizers too.
+- **The whole suite under valgrind memcheck** (`--track-origins=yes`), 164 test
+  binaries, **zero diagnostics** on the 162 that finish. This is not a repeat of
+  hunts 5 and 7: those ran ASan+UBSan, and ASan cannot see a read of
+  *uninitialised* memory at all. Memcheck can, and found none — no uninitialised
+  branch, no invalid access, no bad free, across every device, parser and
+  snapshot path the suite reaches. The two exceptions are the tool, not the
+  code: `iic_printer_port` needs more than a 15 min budget at ~30× slowdown, and
+  `fujinet_card` tripped the stopwatch fixed above (and passes cleanly since).
+- **A ThreadSanitizer pass over `EmulationController`** — the item TODO.md calls
+  "the highest-yield gap we know of" — driving the real concurrency shape
+  without a GUI: the CPU worker, a UI thread running the transport verbs a user
+  clicks (rewind scrub/seek/resume, cassette, 3.5" mount/eject, speed, mode
+  toggles, a `lockState()` read per frame), an AI-server thread doing
+  `lockState()` reads plus snapshot capture/restore and key injection through
+  `Memory::kbMutex`, a live miniaudio callback thread, and a Mockingboard in
+  slot 4 with a guest loop writing its VIA and toggling the speaker so the
+  emuCycles AY queue — the one genuine producer/consumer pair between the CPU
+  and the audio thread — is fed for the whole run. **Zero races** across five
+  runs totalling ~9 minutes of wall clock. Honest limit: TSan instruments every
+  load and store in an interpreter whose hot loop is nothing else, so the CPU
+  manages only ~400-1 400 emulated cycles per wall-clock second (the 7-minute
+  run retired 175 404 of them). The run therefore covers the *lock protocol* —
+  park/unpark, mode flapping, scrub under load, snapshot under the lock, audio
+  callbacks against worker chunks — thoroughly, and *emulated execution*
+  thinly. The GUI half of that TODO item is still open.
+- **Bounds re-derived by hand, not by tool, on the parsers a crafted file
+  reaches**: `ProDOSVolume`'s build + decode walk (the block/bitmap arithmetic
+  and the path-traversal guards), `SnapshotIO` + `MachineSnapshot`'s
+  transactional restore, `Memory`'s MEX trailer, `IWMDevice` and
+  `IIcClassProfile`'s nested device blobs, and `Sony35Drive::decodeAndCommit`'s
+  GCR sector walk. All hold.
+- **Snapshot field coverage per card.** Every `SlotPeripheral` was checked for
+  members that are guest-visible but unserialised — which is how the Echo+ gap
+  above surfaced. The other card with no snapshot at all, `PrinterCard`, owns
+  only its ROM and the host-side spool (printer output is deliberately outside
+  the machine snapshot — a rewind must not un-print);
+  `LeChatMauveCard::invertBit7_` and `GrapplerCard`'s DIP/BUSY
+  fields are host settings, correctly excluded on the same grounds as
+  `MachineSnapshot`'s CPU-mode byte; `GrapplerCard::irqAsserted_` is re-derived
+  by `updateIrq()` on load. No gaps.
+
+### Round 2 — fuzzing the surfaces that had never been fuzzed
+
+Round 1 read code and ran sanitizers over the existing suite. Round 2 built
+harnesses for the three input surfaces with no dynamic coverage at all. One of
+them came back with a defect.
+
+**The print head walked off the paper.** `ImageWriter::printBitGraph` advanced
+`curX_` one dot column at a time with **no right-margin test**, while every
+other head-motion path in that file has one — the text advance wraps on it, the
+`ESC F` / `ESC '` absolute moves refuse to cross it. So an over-long bit-image
+run just kept going: `ESC V 9060 <col>` at 80 dpi parks the head **113 inches
+out on an 8.5-inch page**, and the pacing model charged the full dot-column
+rate for all 9 060 columns — **22 emulated seconds of BUSY, printing nothing**,
+because `fillDots` had already clipped every one of those dots away. A guest
+polling the printer waits out all of it, and the status line reports a head
+position no ImageWriter can reach.
+
+Columns whose start is at or past `rightMargin_` are now **discarded** — not
+wrapped, which would corrupt a bit image, and which is what the hardware does
+with the excess of an over-long graphics line — the head parks against the stop
+rather than sailing past it, and `byteCost` stops charging carriage travel for
+a carriage that is not moving. The same 7-byte job now drains in **1.7 s**.
+
+The fix is **output-neutral by construction**, which is what makes it safe:
+`rightMargin_` is only ever the paper width (no command narrows it), so every
+column this drops was already being thrown away by the raster clip. The new
+`imagewriter_smoke` case asserts exactly that — an over-long run must produce
+the byte-identical page an exactly-fitting run produces — plus the bounded
+drain and the head position. It fails on the old code.
+
+Found by fuzzing, and worth recording honestly: the fuzzer's first report was
+**wrong**. Its liveness predicate compared the outstanding count against the
+running minimum, and a repeat run legitimately *grows* that count when it is
+armed (7 queued bytes become 9 060 owed columns), so the harness read a
+perfectly healthy drain as a stall in 15 of 60 streams. Delta-debugging the
+"stall" down to 7 bytes is what exposed the real defect underneath — a 113-inch
+head position — and the corrected predicate (compare against the previous tick)
+reports zero stalls across 3 000 streams against the fixed code, along with no
+sanitizer report and no page-geometry fault.
+
+**The two that came back clean:**
+
+- **`SnapshotIO` + `MachineSnapshot`, 40 000 mutated blobs.** This closes the
+  TODO item that had stood since 2026-08-02 ("built during the ASan sweep but
+  never executed, so that parser is the one untrusted-input surface in the tree
+  with no dynamic coverage"). Bit flips, truncation, extension, corrupted
+  section lengths and names, duplicated sections, absurd lengths and random
+  tails behind a valid magic: 6 915 accepted (and then RUN, so a crafted paging
+  state has to survive execution), 33 085 rejected, no sanitizer report. The
+  fuzzer also asserts the property `MachineSnapshot.cpp` claims in prose —
+  "makes a rejected file observationally transactional to the machine" — by
+  re-capturing after every rejection and requiring the blob to be identical:
+  **0 violations**.
+- **The AI control server, 6 000 hostile requests.** The only surface in POM2
+  that parses bytes off a socket, and only well-formed requests had ever
+  reached it. Random binary, headerless requests, absurd and negative
+  `Content-Length`, 60-header soup, 200-parameter query strings, lying content
+  lengths, truncated JSON, `\`-terminated strings, path traversal, and
+  byte-at-a-time dribbling: no sanitizer report, and the liveness probe
+  (`GET /status` must still answer 200) never failed — a wedged worker thread
+  is as much a defect as an over-read, and only a probe catches it.
+- **The cassette, 12 000 mutated tapes.** `loadTape` is an untrusted-FILE
+  surface — the `.wav` path hands the bytes to vendored miniaudio — that disk
+  images, WOZ and snapshots had all had a mutation pass ahead of. Malformed
+  RIFF/WAVE (bad channel counts, 0 Hz, 4- and 0-bit samples, float PCM, lying
+  chunk sizes), `.aci` blobs with absurd transition counts, and pure noise;
+  2 493 loaded and then played, seeked, rewound, re-saved and re-loaded. Clean.
+
+### Round 3 — the guest-driven surfaces, and a write-back that ate a file
+
+Rounds 1-2 covered files and sockets. Round 3 went after the surfaces the
+GUEST drives — soft switches, the display decoders, the Disk II head — plus the
+one path where guest-writable bytes become host filesystem operations. That
+last one is where the defect was.
+
+**A ProDOS write-back could merge two files into one and report success.**
+`decodeVolumeToFolder` strips trailing dots before composing a host filename —
+a name ending in `.` is legal in ProDOS and awkward-to-illegal on the host — so
+`README` and `README.` both came out as `README`, and the second write silently
+REPLACED the first. Both halves reported success throughout: the build said
+2 files included / 0 skipped, the decode said 2 written, and the user was left
+with one file holding the other's bytes.
+
+Nobody has to go looking for that pair. `sanitiseProDOSName` maps every
+character outside `A-Z 0-9 .` to `.`, so a host folder holding `README` and
+`README!` becomes `README` + `README.` inside the volume, `uniqueName` sees two
+perfectly distinct ProDOS names, and the write-back merges them back. `NOTES` /
+`NOTES?`, `DATA` / `DATA-`, any such pair does it — and the guest can create
+both names inside the volume directly, so the decode has to be safe on its own
+rather than relying on what the builder emits.
+
+Host names are now reserved per decoded directory, and a clash takes a numeric
+suffix instead of overwriting (`README`, `README.1`). The reservation covers
+**this decode pass only**, never what is already on disk, so re-decoding an
+unchanged volume still lands on the same names and rewrites nothing — a
+write-back happens on every eject, and a set that consulted the directory
+would grow a fresh `.1` each time. Subdirectory names go through the same
+gate: two ProDOS directories merging into one host directory would take their
+contents with them. Pinned by `prodos_volume_smoke`, which asserts both files'
+CONTENTS survive (the failure mode was one file holding the other's bytes) and
+that a second write-back writes nothing; it fails on the old code.
+
+**Round 2's printer fix, checked against POM2's own graphics producer.** The
+screen dump is the in-tree source of long `ESC G` runs — an 80-column screen is
+560 columns at 72 dpi = 7.78 in, wider than ISO B5's 6.93 in page — so it is
+exactly where "the carriage now stops at the right margin" could have changed
+real output. Printing the same dump on all seven paper sizes, before and after:
+**ink identical on every one**, including B5, where the dump legitimately loses
+its right-hand 11 % either way (184 700 lit dots vs 215 032 on the wide papers).
+Only the time moved, and only where it should have: B5 went 548 -> 477 ticks,
+every paper wide enough to hold the dump unchanged to the tick. The property is
+now pinned in `printer_screen_dump` as "the narrow page is the wide page
+CROPPED" — 1.4 M dots compared, which fails the moment the excess is wrapped,
+shifted or dropped a column early. A separate check confirmed the clip does not
+strand the MSB that `ESC V` forces through for its run: text printed after a
+clipped run has the same 1 238 lit dots as text printed alone.
+
+**What was swept, and what came back clean:**
+
+- **Soft-switch + display chaos, 6 000 machines / 12 000 frames.** Between them
+  `Memory` (2 480 lines of paging dispatch) and `Apple2Display` (2 651 lines of
+  scanline decoders, plus AppleWinNtsc and the OE demod) hold most of the index
+  arithmetic in the emulator, and every display test sets up ONE deliberate
+  state. This one builds a machine per iteration — II+ or IIe, NTSC or PAL,
+  RamWorks banks on or off — fills the display pages with the patterns the
+  artifact-colour paths key on, throws 20-400 random `$C0xx` accesses and RAM
+  writes at it, reads all 64 KB back, then renders twice in a random one of the
+  ten display modes and touches every pixel. No sanitizer report, and the
+  framebuffer contract (non-null, 280 or 560 x 192) held on every frame.
+- **Disk II guest chaos, 300 guests, 28.4 M nibble write flushes.** Every disk
+  test drives a DELIBERATE sequence (a DOS 3.3 write loop, a real RWTS). This
+  one pulses the phase magnets in any order, at pacings from back-to-back to a
+  full revolution apart, flips Q6/Q7 mid-nibble, swaps drives and ejects
+  mid-write, and interleaves well-formed write bursts so the write-back path is
+  genuinely exercised rather than merely reachable. Clean on all three
+  properties: the head never left `[0, kTracks)` whatever order the magnets
+  were pulsed in, every written-back image stayed exactly 143 360 bytes, and
+  every one still LOADED afterwards.
+- **ProDOS volume build/decode, 1 200 random host trees.** Weird names (spaces,
+  dots, `#`, accents, 40-character randoms), nested subdirectories, and images
+  corrupted between build and decode — scrambled key pointers, crafted `../..`
+  and `/etc/pw` entry names, self-referential subdirectory chains. **Zero
+  containment breaches**: with sentinels planted outside the destination and
+  the whole sandbox re-verified after every decode, nothing the image claimed
+  ever produced a file outside the folder it was decoded into.
+- **The file-write audit.** Every `save`/`export`/`write` function in `src/`
+  was checked for a path that writes user data and reports success without
+  testing the stream. None found: the three that looked like candidates
+  (`Block512Backing::saveDirty`, both cassette savers) check through helpers.
+
+**Three harness bugs, recorded because they are the interesting part.** Round
+2's stall report was a fuzzer artifact; this round's Disk II head-position
+property first targeted `getTrackPosition` (the nibble cursor) instead of
+`getCurrentTrack`, reporting 223 303 phantom faults, and the ProDOS mutator
+indexed 1024+4095 into a 4 608-byte volume and was rightly shot by ASan. A
+fuzzer that reports a defect has said something about the fuzzer until the
+defect is reduced to a reproducer — which is how both real findings of this
+hunt were confirmed, and how these three were dismissed.
+
 ## 2026-08-17 (later) — Bug hunt 7: no functional defects; the build is warning-clean again
 
 A sweep over everything that landed since the 2026-08-13 hunt — the mouse-grab

@@ -65,7 +65,13 @@ std::string nowStamp()
 #else
     localtime_r(&t, &tm);
 #endif
-    char buf[32];
+    // 72, not 20: `%04d` is a MINIMUM width, and nothing in the type system
+    // stops `tm_year + 1900` (an int) from needing 11 characters, so the
+    // fields' worst case is 72 bytes. GCC 13 says so out loud under -O3 +
+    // _FORTIFY_SOURCE (-Wformat-truncation), and it is right that a 32-byte
+    // buffer can only answer by truncating — which would put a malformed
+    // timestamp in the durable print-history index rather than fail loudly.
+    char buf[80];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                   tm.tm_hour, tm.tm_min, tm.tm_sec);

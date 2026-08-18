@@ -57,6 +57,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string_view>
+#include <vector>
 
 class EchoPlusTMS5220Card : public SlotPeripheral
 {
@@ -72,6 +73,16 @@ public:
     uint8_t slotRomRead  (uint8_t low8) override;
     void    slotRomWrite (uint8_t low8, uint8_t v) override;
     void    onReset() override;
+
+    /// Rewind / snapshot state. Scaffold or not, every byte this card owns is
+    /// GUEST-VISIBLE: `$Cs00` reads the TMS status and `$Cs04-$Cs07` read back
+    /// the selected AY register, so a rewind that left them at the live values
+    /// would drop a restored driver onto registers from a timeline it never
+    /// executed. (Serialising nothing was the 2026-07-29 workflow hunt's
+    /// finding about five other cards; this one arrived later and inherited
+    /// the same gap — see bug hunt 8.) Foreign blobs are ignored via the magic.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
     // ─── Test / UI hooks ─────────────────────────────────────────────────
     struct Snap {

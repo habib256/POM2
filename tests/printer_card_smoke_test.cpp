@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -88,11 +89,21 @@ void testDataPortSpool()
     assert(raw.size() == 3);
     assert(raw[0] == 0xC8 && raw[1] == 0xC9 && raw[2] == 0x8D);
 
-    // Writes to other offsets are ignored (no-op).
-    card.deviceSelectWrite(0, 0xFF);
-    card.deviceSelectWrite(2, 0xFF);
+    // Offset 0 is ALSO a data port: it is the data latch on the real Apple
+    // Parallel Printer Interface, and it is where software that drives the
+    // card directly (rather than through PR#n + COUT) writes its bytes.
+    card.deviceSelectWrite(0, 0xD4);    // 'T'
+    assert(card.bytesWritten() == 4);
+    assert(card.spoolBytes().back() == 0xD4);
+
+    // Everything else is strobe/status and carries no payload. Offset 2 in
+    // particular must stay ignored: a real driver pulses the strobe by
+    // writing a COPY of the data byte there, so taking it would double
+    // every character.
+    card.deviceSelectWrite(2, 0xD4);
+    card.deviceSelectWrite(4, 0xFF);
     card.deviceSelectWrite(15, 0xFF);
-    assert(card.bytesWritten() == 3);
+    assert(card.bytesWritten() == 4);
 
     // spoolText: bit 7 stripped, CR → LF, NULs dropped.
     card.clearSpool();
@@ -198,11 +209,40 @@ void testCpuPrintFlow()
 
 } // namespace
 
+// The access pattern The Print Shop's "Apple Parallel Interface" driver
+// really makes, traced off the disk (bug hunt, 2026-08-18): the character
+// goes to the data latch at offset 0, a copy to offset 2 as the strobe, and
+// offset 4 is polled for ready. The card never sees our slot ROM at all.
+//
+// With offset 1 as the only data port this spooled NOTHING — 702 bytes of a
+// real ESC G page dropped — while offset 4 kept answering 0xFF, so Print Shop
+// reported the job printed. Each character must land exactly ONCE.
+void testDirectDriveParallelStream()
+{
+    PrinterCard card(1);
+    const uint8_t job[] = { 0x0D, 0x0D, 0x1B, 'T', '2', '4', 0x0A,
+                            0x1B, '>', 0x1B, 'P',
+                            0x1B, 'G', '0', '0', '0', '4',
+                            0x18, 0x3C, 0x7E, 0xFF };
+    for (uint8_t b : job) {
+        (void)card.deviceSelectRead(4);      // poll ready
+        card.deviceSelectWrite(0, b);        // data latch
+        card.deviceSelectWrite(2, b);        // strobe carries a copy
+    }
+    assert(card.bytesWritten() == sizeof job);
+    const auto spool = card.spoolBytes();
+    assert(spool.size() == sizeof job);
+    assert(std::memcmp(spool.data(), job, sizeof job) == 0);
+
+    std::printf("  ok: a direct-drive parallel stream spools once per byte\n");
+}
+
 int main()
 {
     std::printf("PrinterCard smoke test\n");
     testRomFingerprint();
     testDataPortSpool();
+    testDirectDriveParallelStream();
     testSpoolIsBounded();
     testCpuPrintFlow();
     std::printf("PASS\n");

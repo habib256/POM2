@@ -24,9 +24,28 @@ uint8_t PrinterCard::deviceSelectRead(uint8_t /*low4*/)
 
 void PrinterCard::deviceSelectWrite(uint8_t low4, uint8_t v)
 {
-    // Data port at $C0(8+s)1; ignore all other writes (status / strobe
-    // ports on the real card have no host-side meaning).
-    if (low4 != 1) return;
+    // Data on $C0(8+s)0 OR $C0(8+s)1; every other offset is strobe/status
+    // and carries no payload.
+    //
+    // Offset 1 is what this card's own slot-ROM trampoline writes, and for a
+    // long time it was the ONLY offset decoded. That is enough for `PR#n` +
+    // COUT — which is how BASIC, DOS and the Monitor print — and silently
+    // wrong for every program that drives the interface DIRECTLY, which is
+    // what graphics software does. The Print Shop's "Apple Parallel
+    // Interface" driver never touches our ROM at all: it writes the
+    // character to the card's data latch at offset 0, pulses the strobe by
+    // writing the same byte to offset 2, and polls offset 4 for ready. So a
+    // whole `ESC G` page — 702 bytes, traced — went into the void while
+    // offset 4 kept answering 0xFF, and Print Shop reported the job printed.
+    // A printer that reports success and prints nothing is the worst of the
+    // available behaviours.
+    //
+    // Offset 0 is the data latch on the real Apple Parallel Printer
+    // Interface this card is modelled on, so accepting it costs nothing and
+    // makes the direct-drive path work. Offset 2 is deliberately NOT taken:
+    // the same byte appears there as the strobe, and spooling both would
+    // double every character.
+    if (low4 != 0 && low4 != 1) return;
     std::lock_guard<std::mutex> lk(bufferMtx_);
     if (spool_.size() == kMaxSpoolBytes) {
         spool_.pop_front();

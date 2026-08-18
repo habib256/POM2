@@ -9,6 +9,8 @@
 
 #include "EchoPlusTMS5220Card.h"
 
+#include "ByteIO.h"
+
 #include <cstring>
 
 EchoPlusTMS5220Card::EchoPlusTMS5220Card(int slot) : slot_(slot)
@@ -85,6 +87,48 @@ void EchoPlusTMS5220Card::slotRomWrite(uint8_t low8, uint8_t v)
         break;
     default:
         break;                      // open bus
+    }
+}
+
+// ─── Rewind / snapshot state ────────────────────────────────────────────────
+// Layout: 'E' 'T' 'S' ver(1) | tmsStatus | tmsLastWrite | aySel0 | aySel1 |
+//         AY#1 (Ay3_8910::kSnapshotBytes) | AY#2. The AY blocks carry the full
+// register bank the card exposes at $Cs04-$Cs07, so a restore puts back what a
+// read-back would see. Same shape as MockingboardCard / PhasorCard: validate
+// the whole length BEFORE touching a chip, so a short blob leaves the card
+// untouched rather than half-restored.
+namespace {
+constexpr std::size_t kEchoTmsHeaderBytes = 8;
+}
+
+void EchoPlusTMS5220Card::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    using namespace pom2::byteio;
+    std::lock_guard<std::mutex> lk(mtx_);
+    putU8(out, 'E'); putU8(out, 'T'); putU8(out, 'S'); putU8(out, 1);
+    putU8(out, tmsStatus_);
+    putU8(out, tmsLastWrite_);
+    putU8(out, aySelected_[0]);
+    putU8(out, aySelected_[1]);
+    ay_[0].appendSnapshot(out);
+    ay_[1].appendSnapshot(out);
+}
+
+void EchoPlusTMS5220Card::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    pom2::byteio::Reader r(data, len);
+    if (!r.has(kEchoTmsHeaderBytes)) return;
+    if (r.u8() != 'E' || r.u8() != 'T' || r.u8() != 'S') return;
+    if (r.u8() != 1) return;
+    if (len < kEchoTmsHeaderBytes + 2 * pom2::Ay3_8910::kSnapshotBytes) return;
+    tmsStatus_     = r.u8();
+    tmsLastWrite_  = r.u8();
+    aySelected_[0] = r.u8() & 0x0F;
+    aySelected_[1] = r.u8() & 0x0F;
+    for (int i = 0; i < 2; ++i) {
+        ay_[i].loadSnapshot(r.p + r.pos);
+        r.pos += pom2::Ay3_8910::kSnapshotBytes;
     }
 }
 
