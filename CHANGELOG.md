@@ -5,6 +5,56 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later still) — F10 killed the browser build
+
+Reported from the demo: pressing F10 to leave full screen made POM2 die with
+*"POM2 failed while loading or initializing: glfwSetWindowMonitor not
+implemented."*
+
+`setKioskModeRuntime` drives full screen through `glfwSetWindowMonitor` — the
+correct call on a desktop, and the only one that gets *exclusive* full screen.
+In Emscripten's GLFW port that entry point is neither a no-op nor a stub that
+returns failure: it is `abort('glfwSetWindowMonitor not implemented.')`
+(upstream `src/lib/libglfw.js`), and `abort()` tears the whole module down. So
+the toggle did not degrade, it **killed the running machine** — and because the
+page reports any abort through its load handler, the message named a phase the
+emulator was long past, which is why it reads like a startup failure.
+
+Not a regression: the same four call sites are in v0.8.2, so every published
+demo has had this. `MainWindow_Slots.cpp` was simply the one UI file in the
+tree with no `__EMSCRIPTEN__` guard anywhere in it, and kiosk is the only
+feature it owns that touches the window/monitor pair.
+
+The fix reuses the fallback the function already had designed for a host with
+no usable monitor — *"stay windowed but still enter the chrome-free path, the
+user asked for it"*. On wasm that is not a degraded mode, it is the correct
+one: a canvas already fills its page, and real full screen inside a page
+belongs to the browser (F11, or `requestFullscreen`), not to the application.
+So kiosk in the browser is chrome-free with the canvas untouched, both
+entering and leaving.
+
+**How it is verified is worth recording**: not by a test, but by absence.
+Emscripten only emits a JS stub for a GLFW function something actually
+references, so the built bundle is the oracle — `glfwSetWindowMonitor` appears
+**once** in the shipped `wasm/POM2.js` (as the abort) before the fix and
+**zero** times after. There is no reachable path left to test.
+
+Swept for the same shape while there: of the 28 GLFW entry points Emscripten
+`abort()`s on, POM2 references exactly two. The other, `glfwJoystickIsGamepad`,
+sits inside `JoystickInput::poll`'s native-only `#else` branch (the browser
+half uses `emscripten_get_gamepad_status`), so it never reaches a wasm build.
+One landmine, now defused, and no others.
+
+**Full screen also has a toolbar button now.** It was reachable by F10, the
+View menu and the `view.kiosk` palette command — three routes, none of them
+visible on screen. `ICON_FA_EXPAND` next to the screenshot and memory-grid
+buttons, same wording as the View item, and routed through the same
+`toggleKioskMode()` so the four ways in cannot drift apart. Deliberately not
+drawn as a toggle: the toolbar does not exist in kiosk (`renderFrame`
+early-outs above the menu bar), so an "on" state is unreachable and painting
+one would be a lie.
+
+
 ## 2026-08-18 (later) — 3.5" WOZ images mount
 
 A `.woz` holds bit CELLS; POM2 stores 3.5" media as a flat block array and has

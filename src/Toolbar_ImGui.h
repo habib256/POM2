@@ -67,6 +67,10 @@ public:
         bool requestScreenshot       = false;
         bool requestInsertDisk       = false;   // open Insert-disk popup
         bool requestMemoryGridToggle = false;
+        // Full screen IS kiosk mode — there is no separate full-screen view
+        // (same action as the View menu item and F10). The toolbar is not
+        // drawn in kiosk, so this button only ever means "enter".
+        bool requestKioskToggle      = false;
         bool requestAbout            = false;   // open the About dialog
         bool requestMonoColorToggle  = false;   // flip color ↔ monochrome
         // -1 = no change. Set to the new cyclesPerFrame on speed dropdown

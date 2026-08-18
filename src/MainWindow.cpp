@@ -10369,6 +10369,9 @@ void MainWindow::render()
             controller->setCyclesPerFrame(tr.setCyclesPerFrame);
         if (tr.setProfileRequested)    applyProfile(tr.setProfile);
         if (tr.requestMemoryGridToggle) showMemoryGrid = !showMemoryGrid;
+        // Same entry point as F10 and the View menu item, so the three
+        // routes into kiosk cannot drift apart.
+        if (tr.requestKioskToggle)      toggleKioskMode();
         if (tr.requestAbout)            showAbout = true;
         if (tr.requestMonoColorToggle) {
             // Flip color ↔ monochrome, remembering each side's submode so a

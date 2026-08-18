@@ -1507,6 +1507,19 @@ void MainWindow::setKioskModeRuntime(bool k)
         // with --kiosk was read-only from the start and stays that way —
         // see settingsReadOnly().)
         if (window) {
+#ifdef __EMSCRIPTEN__
+            // The browser build must not touch the window/monitor pair at
+            // all: Emscripten's GLFW port defines glfwSetWindowMonitor as
+            // `abort('glfwSetWindowMonitor not implemented.')` (upstream
+            // src/lib/libglfw.js), and an abort() tears the whole module
+            // down — the page reports it as a load/init failure and the
+            // machine is gone. So the canvas keeps its size and we take the
+            // same path as a host with no usable monitor: chrome-free, and
+            // nothing else. Real full-screen inside a page belongs to the
+            // browser (F11, or the page's own control), not to us.
+            pom2::log().info("Kiosk",
+                "browser build — chrome-free; canvas size unchanged");
+#else
             // Record the windowed geometry to come back to. A MAXIMIZED
             // window reports its maximized size here, so remember the flag
             // separately and re-maximize on the way out — otherwise the
@@ -1524,6 +1537,7 @@ void MainWindow::setKioskModeRuntime(bool k)
                 pom2::log().warn("Kiosk",
                     "no primary monitor / video mode — kiosk stays windowed");
             }
+#endif
         }
         // Persist AFTER measuring, and BEFORE the flag flips: kiosk never
         // writes state.cfg, so this is the last chance to record both the
@@ -1550,6 +1564,14 @@ void MainWindow::setKioskModeRuntime(bool k)
         // user-initiated pause intact (see kioskPauseWasAlreadyStopped_).
         kioskSetPaused(false);
         if (window) {
+#ifdef __EMSCRIPTEN__
+            // Nothing to restore: entering kiosk never moved the canvas (see
+            // the matching guard above), and glfwSetWindowMonitor would
+            // abort() the module here exactly as it does there. This is the
+            // path the user actually hits — F10 to leave full-screen — so it
+            // is the one that used to kill the emulator mid-session.
+            pom2::log().info("Kiosk", "browser build — canvas size unchanged");
+#else
             if (savedWinW_ > 0) {
                 glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
                                      savedWinW_, savedWinH_, GLFW_DONT_CARE);
@@ -1591,6 +1613,7 @@ void MainWindow::setKioskModeRuntime(bool k)
                 glfwSetWindowPos (window, x, y);
                 savedWinX_ = x; savedWinY_ = y; savedWinW_ = w; savedWinH_ = h;
             }
+#endif
         }
         kiosk_ = false;
         // A session LAUNCHED with --kiosk stays read-only for life (the

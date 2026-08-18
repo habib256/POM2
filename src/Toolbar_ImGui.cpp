@@ -361,6 +361,16 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
         }
         t.end();
     }
+    ImGui::SameLine();
+    // Full screen = kiosk. Deliberately NOT a ToggleStyle button: the
+    // toolbar is never drawn in kiosk (renderFrame early-outs before the
+    // menu bar), so an "on" state is unreachable here and painting one
+    // would be a lie. ICON_FA_EXPAND matches the View menu item, which is
+    // the same action under a different name.
+    if (iconButton({ ICON_FA_EXPAND, "Kiosk",
+                     "Full screen (kiosk) — no UI chrome  (F10)" })) {
+        r.requestKioskToggle = true;
+    }
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
     if (iconButton({ ICON_FA_CIRCLE_INFO, "About",
                      "About POM2" })) {
