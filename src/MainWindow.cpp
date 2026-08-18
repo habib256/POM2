@@ -8196,7 +8196,9 @@ void MainWindow::renderDiskLibraryWindow()
                                   &r.request35MountAndBoot,
                                   &r.request35MountOnly,
                                   &r.requestHdvMountAndBoot,
-                                  &r.requestHdvMountOnly }) {
+                                  &r.requestHdvMountOnly,
+                                  &r.requestFloppyEmuMountAndBoot,
+                                  &r.requestFloppyEmuMountOnly }) {
         if (p->empty()) continue;
         noteLibraryRecent(*p);
     }
@@ -8326,6 +8328,54 @@ void MainWindow::renderDiskLibraryWindow()
         } else {
             tapeStatusMessage = "Library: HDV mount failed: " + err;
         }
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+
+    // ── Floppy Emu SD card (floppyemu/) ───────────────────────────────
+    // The SD card is not a bay: it holds 5.25", 3.5" and Smartport images
+    // side by side, because the device emulates all of them. So a click
+    // here is FILE-driven and goes through the same helper the CLI
+    // positional disk uses — which also auto-plugs an HDV card when the
+    // saved config has none. (The OLED panel stays MODE-driven: that is
+    // what a Floppy Emu *is*. See DiskLibrary_ImGui.h.)
+    if (!r.requestFloppyEmuMountAndBoot.empty()) {
+        const std::string path = r.requestFloppyEmuMountAndBoot;
+        std::string err;
+        tapeStatusMessage = insertAndBootImage(path, err)
+            ? ("Library: Floppy Emu booted: " + path)
+            : ("Library: Floppy Emu boot failed: " + err);
+        tapeStatusUntil = lastFrameTime + 4.0;
+    }
+    if (!r.requestFloppyEmuMountOnly.empty()) {
+        const std::string path = r.requestFloppyEmuMountOnly;
+        std::string err;
+        bool ok = false;
+        switch (classifyDiskForSlot(path)) {
+            case DiskSlotClass::Floppy525:
+                if (diskCard) {
+                    std::lock_guard<std::mutex> lk(controller->stateMutex());
+                    ok = diskCard->insertDisk(path);
+                    if (!ok) err = diskCard->getLastError(0);
+                } else {
+                    err = "no Disk II card in the current config";
+                }
+                break;
+            case DiskSlotClass::Sony35:
+                ok = routeMount35(0, path, err);
+                break;
+            case DiskSlotClass::Hdv: {
+                int bootSlot = 0;
+                ok = routeMountHdv(path, bootSlot, err);
+                break;
+            }
+            case DiskSlotClass::Unknown:
+            default:
+                err = "unrecognised disk image (extension/size)";
+                break;
+        }
+        tapeStatusMessage = ok
+            ? ("Library: Floppy Emu mounted: " + path)
+            : ("Library: Floppy Emu mount failed: " + err);
         tapeStatusUntil = lastFrameTime + 4.0;
     }
 
@@ -8907,6 +8957,20 @@ void MainWindow::renderFloppyEmuWindow()
     auto mountImage = [&](const std::string& path, Mode m) {
         std::string err;
         int bootSlot = 0;
+        // Selecting an image BOOTS it, like a left-click in the Disk Library
+        // ("left-click = insert + boot"). Mounting alone left the user
+        // staring at whatever was already on screen with a status line
+        // telling them to go and reboot the machine themselves — the image
+        // was in the drive and nothing had happened, which reads as "the
+        // click did nothing". Routing stays MODE-driven, not
+        // extension-driven: the Floppy Emu emulates the device its mode
+        // says, so a .2mg selected in Smartport mode must boot from the
+        // SmartPort slot even though insertAndBootImage would classify the
+        // same file by its extension. -1 = mount succeeded but no explicit
+        // boot slot (cold-boot instead); -2 = nothing mounted.
+        constexpr int kNoMount   = -2;
+        constexpr int kColdBoot  = -1;
+        int bootTarget = kNoMount;
         switch (m) {
             case Mode::Disk525: {
                 if (!diskCard) { floppyEmuStatus = controllerHint(m); break; }
@@ -8917,26 +8981,46 @@ void MainWindow::renderFloppyEmuWindow()
                 {
                     std::lock_guard<std::mutex> lk(controller->stateMutex());
                     ok = diskCard->insertDisk(path);
+                    // Park the head before the boot PROM reads: the same
+                    // step insertAndBootImage does for a library click.
+                    if (ok) diskCard->seekTrack0();
                 }
+                if (ok) bootTarget = diskCard->getSlot();
                 floppyEmuStatus = ok
-                    ? ("Inserted " + baseName(path) +
-                       " — reboot the Apple II to boot it.")
+                    ? ("Booting " + baseName(path))
                     : ("5.25 mount failed: " + baseName(path));
                 break;
             }
             case Mode::Disk35:
             case Mode::Unidisk35:
                 if (!controllerReady(m)) ensureSmartPort();
-                floppyEmuStatus = routeMount35(0, path, err)
-                    ? ("3.5\" mounted: " + baseName(path))
-                    : ("3.5\" mount failed: " + err);
+                if (routeMount35(0, path, err)) {
+                    // With a SmartPort card, boot its slot explicitly;
+                    // without one the mount landed on the //c+ on-board hub,
+                    // which has no slot to jump to — cold boot instead.
+                    bootTarget = smartPortCard ? smartPortCard->getSlot()
+                                               : kColdBoot;
+                    floppyEmuStatus = "Booting " + baseName(path);
+                } else {
+                    floppyEmuStatus = "3.5\" mount failed: " + err;
+                }
                 break;
             case Mode::SmartportHD:
                 if (!controllerReady(m)) ensureSmartPort();
-                floppyEmuStatus = routeMountHdv(path, bootSlot, err)
-                    ? ("Smartport mounted: " + baseName(path))
-                    : ("Smartport mount failed: " + err);
+                if (routeMountHdv(path, bootSlot, err)) {
+                    // bootSlot is what routeMountHdv resolved. It was being
+                    // filled and then dropped on the floor here.
+                    bootTarget = bootSlot;
+                    floppyEmuStatus = "Booting " + baseName(path);
+                } else {
+                    floppyEmuStatus = "Smartport mount failed: " + err;
+                }
                 break;
+        }
+        if (bootTarget != kNoMount) {
+            if (bootTarget == kColdBoot) controller->coldBoot();
+            else                        controller->bootFromSlot(bootTarget);
+            controller->setMode(EmulationController::Mode::Running);
         }
     };
     auto ejectCurrent = [&](Mode m) {

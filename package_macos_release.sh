@@ -103,8 +103,30 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cp README.md "$STAGE/README.md"
-hdiutil create -volname "POM2 ${VERSION}" -srcfolder "$STAGE" \
-        -ov -format UDZO "$DMG"
+# `hdiutil create` intermittently fails with "Resource busy" on CI: a
+# diskimages-helper from an earlier attach can still hold the staging tree
+# (the runner even reports "Terminate orphan process: (diskimages-help)" in
+# its own cleanup). Nothing about the inputs is wrong when it happens, and a
+# second attempt a few seconds later succeeds — so retry rather than sink an
+# eight-package release on a race inside someone else's daemon. Bounded and
+# loud: four tries, then fail for real, because a genuine problem here (no
+# space, a corrupt stage) must not be retried into a timeout.
+dmg_attempts=4
+for attempt in $(seq 1 $dmg_attempts); do
+    if hdiutil create -volname "POM2 ${VERSION}" -srcfolder "$STAGE" \
+                      -ov -format UDZO "$DMG"; then
+        break
+    fi
+    if [ "$attempt" -eq "$dmg_attempts" ]; then
+        echo "ERROR: hdiutil create failed ${dmg_attempts}x — not transient." >&2
+        exit 1
+    fi
+    echo "hdiutil create failed (attempt ${attempt}/${dmg_attempts}) —" \
+         "retrying in $((attempt * 5))s"
+    # A partial .dmg would make the next -ov overwrite ambiguous.
+    rm -f "$DMG"
+    sleep $((attempt * 5))
+done
 
 log "Wrote ${DMG}"
 ls -lh "$DMG"

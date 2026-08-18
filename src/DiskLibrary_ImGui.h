@@ -4,8 +4,9 @@
 // Copyright (C) 2026
 //
 // DiskLibrary_ImGui — unified browser over every disk image POM2 can
-// mount: 5.25" floppies (disks_5.4/), 3.5" Sony disks (disks_3.5/), and
-// ProDOS HDV / 2IMG (hdv/). One panel, three tabs. Replaces the
+// mount: 5.25" floppies (disks_5.4/), 3.5" Sony disks (disks_3.5/),
+// ProDOS HDV / 2IMG (hdv/) and the Floppy Emu's SD card (floppyemu/).
+// One panel, four tabs. Replaces the
 // per-card "Library:" child-list section (which each card duplicated)
 // with a single search-and-sort UI.
 //
@@ -17,6 +18,14 @@
 //     3.5"  right-click → context menu (drive 1/2 × mount-only/boot)
 //   • HDV   left-click  → mount + boot
 //     HDV   right-click → mount only
+//   • Emu   left-click  → insert + boot, drive chosen from the FILE
+//     Emu   right-click → mount only
+//
+// The Floppy Emu tab lists the same folder its OLED browses, so an image
+// on the SD card can be booted with one click instead of walked to with
+// PREV/NEXT/SELECT. The two disagree on purpose about WHERE an image
+// goes: the OLED honours the emulated device mode (that is what a Floppy
+// Emu *is*), a library click classifies the file like every other tab.
 //
 // Filesystem scan happens here (mtime + size sniff for size-bucketed
 // dispatch), so the per-card panels can drop their own scans once this
@@ -81,6 +90,12 @@ public:
         std::string requestHdvMountAndBoot;
         std::string requestHdvMountOnly;
         bool        requestHdvEject      = false;
+        // Floppy Emu SD card (floppyemu/). The host routes these through the
+        // same insert-and-boot path a positional CLI disk takes, so the file
+        // decides the drive — a library click is file-driven, unlike the OLED
+        // panel where the DEVICE MODE decides.
+        std::string requestFloppyEmuMountAndBoot;
+        std::string requestFloppyEmuMountOnly;
         // Eject every loaded image at once (header-row "Eject All" button).
         bool        requestEjectAllDisks = false;
         // Path whose favourite state the user flipped (right-click menu).
@@ -124,6 +139,7 @@ private:
     std::vector<Entry> disk525_;
     std::vector<Entry> disk35_;
     std::vector<Entry> hdv_;
+    std::vector<Entry> floppyEmu_;
 
     // UI state — survive between frames so search input / sort choice
     // stick.
@@ -207,6 +223,8 @@ private:
     void on35Ctx     (const std::string& path, int mountedMask, Result& r);
     void onHdvLeft   (const std::string& path, Result& r);
     void onHdvCtx    (const std::string& path, int mountedMask, Result& r);
+    void onFloppyEmuLeft(const std::string& path, Result& r);
+    void onFloppyEmuCtx (const std::string& path, int mountedMask, Result& r);
 };
 
 } // namespace pom2

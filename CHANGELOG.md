@@ -5,6 +5,54 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later still, 2) — Clicking a Floppy Emu image does something now
+
+Reported: *"I can't boot disks by clicking in floppyemu."* Exactly right, and
+the panel said so itself — selecting a 5.25" image set the status line to
+*"Inserted X — reboot the Apple II to boot it."* The click mounted and stopped.
+
+That is faithful to the hardware (a real Floppy Emu does not reboot your Apple
+when you pick an image) and it is still the wrong behaviour here, because the
+rest of POM2 has already made the opposite promise: the Disk Library's own
+header says *"left-click = insert + boot"*. Two disk browsers a tab apart, one
+booting and one not, is not a defensible distinction — it just reads as the
+second one being broken.
+
+Selecting an image now boots it. Routing stays **mode-driven**, which is the
+part worth keeping: the Floppy Emu emulates whatever its mode says, so a `.2mg`
+picked in Smartport mode boots from the SmartPort slot even though the same
+file classified by extension would land elsewhere. Per mode: Disk II boots its
+own slot (and parks the head at track 0 first, the step the library click
+already did), 3.5" boots the SmartPort slot or cold-boots when the mount landed
+on the //c+ on-board hub, and Smartport HD boots `routeMountHdv`'s slot — which
+was already being computed into a local and then **dropped on the floor**.
+
+**The SD card is also a Disk Library tab now**, after HDV. It lists the same
+`floppyemu/` folder the OLED browses, so an image can be booted with one click
+instead of walked to with PREV/NEXT/SELECT. The two disagree on purpose about
+where an image goes: the OLED honours the device mode, a library click
+classifies the file like every other tab and goes through `insertAndBootImage`
+— the helper whose comment already invited "any future single-call boot entry
+point", and which auto-plugs an HDV card when the config has none.
+
+The tab accepts every extension the other three do **without their size
+sniffing**: the sniff exists to route a file to the right bay, and an SD card
+legitimately holds 5.25", 3.5" and Smartport images side by side because the
+device emulates all of them. Its `*` marker is the union of the other tabs'
+mounted paths — the SD card is not a bay of its own, so "mounted" can only mean
+"currently in some drive". Note `floppyemu/` ships **only** in the WASM bundle
+(`packaging/bundle.manifest`), so the tab is populated in the browser demo and
+empty on a desktop package until the user makes the folder.
+
+**And the macOS DMG step got a retry.** Two consecutive release runs failed on
+macOS for two *different* transient reasons — first `curl: (28)` fetching GLFW,
+then `hdiutil: create failed - Resource busy`, with the runner reporting an
+orphaned `diskimages-help` process on its way out. Nothing about the inputs is
+wrong when that happens. `hdiutil create` had one shot, so a race inside
+someone else's daemon could sink an eight-package release; it now retries four
+times with a backoff and fails loudly after that, because a genuine problem
+(no space, a corrupt stage) must not be retried into a timeout.
+
 ## 2026-08-18 (later still) — F10 killed the browser build
 
 Reported from the demo: pressing F10 to leave full screen made POM2 die with

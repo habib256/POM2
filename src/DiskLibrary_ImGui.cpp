@@ -61,6 +61,17 @@ bool acceptHdv(const std::string& ext, uint64_t sz) {
     return (sz % 512 == 0) || ((sz - 64) % 512 == 0);
 }
 
+// The Floppy Emu's SD card is not one medium: the device emulates 5.25",
+// 3.5", UniDisk and Smartport HD, so its folder legitimately holds all of
+// them side by side. Accept anything the three tabs above would, WITHOUT
+// their size sniffing — the sniff exists to route a file to the right bay,
+// and here the bay is decided per click by the file's own classification.
+bool acceptFloppyEmu(const std::string& ext, uint64_t sz) {
+    (void)sz;
+    return ext == ".dsk" || ext == ".do"  || ext == ".po"  || ext == ".nib"
+        || ext == ".woz" || ext == ".d13" || ext == ".2mg" || ext == ".hdv";
+}
+
 // Case-insensitive substring scan — `needle` should already be lower-
 // cased. ASCII-only, which is fine for filenames in this scope.
 bool containsCi(const std::string& hay, const std::string& needleLower) {
@@ -166,6 +177,9 @@ void DiskLibrary_ImGui::rescan()
     rescanInto(hdv_,
                { "hdv", "../hdv", "../../hdv" },
                &acceptHdv);
+    rescanInto(floppyEmu_,
+               { "floppyemu", "../floppyemu", "../../floppyemu" },
+               &acceptFloppyEmu);
     needsRescan_ = false;
 }
 
@@ -296,6 +310,22 @@ void DiskLibrary_ImGui::onHdvCtx(const std::string& path, int mountedMask, Resul
         if (ImGui::MenuItem("Eject")) {
             r.requestHdvEject = true;
         }
+    }
+}
+
+void DiskLibrary_ImGui::onFloppyEmuLeft(const std::string& path, Result& r)
+{
+    r.requestFloppyEmuMountAndBoot = path;
+}
+void DiskLibrary_ImGui::onFloppyEmuCtx(const std::string& path,
+                                       int mountedMask, Result& r)
+{
+    (void)mountedMask;
+    if (ImGui::MenuItem("Insert + boot")) {
+        r.requestFloppyEmuMountAndBoot = path;
+    }
+    if (ImGui::MenuItem("Insert only (no boot)")) {
+        r.requestFloppyEmuMountOnly = path;
     }
 }
 
@@ -626,6 +656,24 @@ DiskLibrary_ImGui::Result DiskLibrary_ImGui::render(
                       "  (drop .hdv / .2mg into hdv/)",
                       &DiskLibrary_ImGui::onHdvLeft,
                       &DiskLibrary_ImGui::onHdvCtx,
+                      r);
+            ImGui::EndTabItem();
+        }
+        std::snprintf(tabLabel, sizeof(tabLabel),
+                      ICON_FA_SD_CARD " Floppy Emu  (%zu)", floppyEmu_.size());
+        if (ImGui::BeginTabItem(tabLabel)) {
+            // The SD card is not a bay of its own — a click routes the
+            // image into a real Disk II / SmartPort / HDV. So "mounted"
+            // here means "this SD image is currently in SOME drive",
+            // which is exactly the union of the other three tabs' marks.
+            std::vector<std::string> marksEmu = mounted.diskII;
+            marksEmu.push_back(mounted.disk35Internal);
+            marksEmu.push_back(mounted.disk35External);
+            marksEmu.push_back(mounted.hdv);
+            renderTab(floppyEmu_, marksEmu,
+                      "  (the Floppy Emu's SD card — drop any image into floppyemu/)",
+                      &DiskLibrary_ImGui::onFloppyEmuLeft,
+                      &DiskLibrary_ImGui::onFloppyEmuCtx,
                       r);
             ImGui::EndTabItem();
         }
