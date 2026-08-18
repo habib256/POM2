@@ -44,6 +44,29 @@ captured byte stream proves it: the escape sequences it emits are `ESC T`,
 Colour is a *New Print Shop* feature, whose Setup names "Apple Imagewriter II
 **(C)**" — the same note DEV.md already carries on `Ribbon`.
 
+**Confirmed on the real colour driver.** With *The New Print Shop* now in the
+tree, its own **Test Printer** was driven end to end: Setup already reads
+`Printer: Apple Imagewriter II (C)` / `Interface Card: Apple ][ Parallel` /
+`Slot: 2`, and the job it emits is **5 194 bytes carrying 13 `ESC K` band
+selects** — K1, K2 and K3, the yellow/magenta/cyan passes — each followed by a
+bare CR and its own `ESC G` block. POM2 prints it as
+"Welcome to The New Print Shop" in magenta, green (yellow over cyan) and cyan:
+three ribbon bands and one subtractive overprint on the page.
+
+That run is also what the fix above buys. The same job on the pre-fix card:
+**5 194 bytes written, 0 spooled**, because "Apple ][ Parallel" is exactly the
+direct-drive path — every byte went to `$C0n0`, never to `$C0n1`. Colour
+printing with The New Print Shop did not work in POM2 before today, and the
+reason had nothing to do with colour.
+
+One thing it needed that POM2 cannot do yet: the disk is an **800K 3.5" WOZ**
+(Applesauce flux, `INFO.disk_type = 2`), and nothing in the tree mounts one —
+`Disk35Image` takes `.po`/`.2mg` only, and the 5.25" WOZ loader rejects a 3.5"
+image. It was converted offline for this test (WOZ → GCR-decoded 819 200-byte
+`.po`, 1 600/1 600 blocks, volume `NPS`) using POM2's own decode tables from
+`Sony35Drive`. See TODO — the decoder already exists in the tree, it is just
+not wired to a file loader.
+
 POM2's colour path itself is correct, and is now pinned against the shape the
 2026-07-26 trace recorded from a real colour driver: three `ESC G` passes,
 each with its own `ESC K` band, separated by **bare CRs** so they overprint.
