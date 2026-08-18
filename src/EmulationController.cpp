@@ -460,9 +460,9 @@ void EmulationController::coldBoot()
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
 
-void EmulationController::bootFromSlot(int slot)
+bool EmulationController::bootFromSlot(int slot)
 {
-    if (slot < 1 || slot > 7) return;
+    if (slot < 1 || slot > 7) return false;
     std::lock_guard<std::mutex> lk(stateMtx);
     // Explicit GUI/CLI boot — arm the //c-class on-board SmartPort so its
     // $C500 firmware stub becomes visible for the signature check + boot
@@ -512,7 +512,7 @@ void EmulationController::bootFromSlot(int slot)
         workerParked_.store(false);  // same setter-thread invariant as setMode()
         mode.store(Mode::Running);
         wakeCv.notify_all();
-        return;
+        return false;   // the machine is running, but NOT off this card
     }
     // Prime text page 1 with $A0 (space + high bit set) — what the Monitor
     // ROM's HOME routine would write. We force PC into the slot ROM here
@@ -553,6 +553,7 @@ void EmulationController::bootFromSlot(int slot)
     pom2::log().info("Emul",
         "Boot via slot " + std::to_string(slot) + " ROM ($C" +
         std::to_string(slot) + "00)");
+    return true;
 }
 
 void EmulationController::requestStep(int n)

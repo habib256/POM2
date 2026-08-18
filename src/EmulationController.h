@@ -161,7 +161,13 @@ public:
     void hardReset();
     void softReset();
     void coldBoot();
-    void bootFromSlot(int slot);
+    /// Returns true when the machine really was launched into that slot's
+    /// ROM. False means the card carried no Apple-II JSR-dispatch signature,
+    /// so this degraded to a plain cold boot: the emulator is running, but
+    /// off the F8 ROM's own slot scan, not off this card. Callers that
+    /// report "booted <image>" to the user MUST honour it — the drop / CLI /
+    /// Library paths used to claim success on that fallback.
+    bool bootFromSlot(int slot);
     void requestStep(int n = 1);   // queue n single-instruction steps
 
     void setMode(Mode m);

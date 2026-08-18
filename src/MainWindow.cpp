@@ -933,7 +933,13 @@ MainWindow::~MainWindow()
         controller->disk35External().isLoaded()
             ? controller->disk35External().path() : std::string());
 
-    if (hdvCard) {
+    // Same auto-provision guard as `hdv_path` above: a card that
+    // ensureHdvCardForBoot plugged for a one-shot drag-drop / CLI boot is
+    // session-local, so its write-back flag must not overwrite the one the
+    // user configured for their real HDV card. Without the guard, a single
+    // dropped .hdv persisted `hdv_writeback = false` and silently disarmed
+    // write-back for unrelated media on the next launch.
+    if (hdvCard && !hdvIsAutoProvisioned) {
         settings->setBool("hdv_writeback", hdvCard->isWriteBackEnabled());
     }
 
@@ -7785,24 +7791,42 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
     // renderDiskLibraryWindow so the CLI insert+boot path shares it.)
     if (smartPortCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        pom2::SmartPortUnit* u =
-            smartPortCard->unit(static_cast<size_t>(driveIdx));
+        const size_t      idx  = static_cast<size_t>(driveIdx);
+        const std::string base =
+            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "_unit" + std::to_string(driveIdx);
+        pom2::SmartPortUnit* u = smartPortCard->unit(idx);
+        bool replaced = false;
         if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
+            // setUnit destroys the outgoing unit, and ~SmartPortUnit's
+            // write-back is a best-effort `(void)saveDirty()` whose failure
+            // nobody sees. Flush it here instead, so a failed write aborts
+            // the mount and leaves the dirty medium retryable — the rule
+            // every other eject/insert path in POM2 follows.
+            if (u && !u->saveDirty()) {
+                errOut = "unsaved changes on SmartPort unit " +
+                         std::to_string(driveIdx + 1) +
+                         " could not be written: " + u->lastError();
+                return false;
+            }
             smartPortCard->setUnit(
-                static_cast<size_t>(driveIdx),
-                std::make_unique<pom2::SmartPort35Unit>());
-            u = smartPortCard->unit(static_cast<size_t>(driveIdx));
+                idx, std::make_unique<pom2::SmartPort35Unit>());
+            u = smartPortCard->unit(idx);
+            replaced = true;
         }
         if (!u->loadImage(path)) {
             errOut = u->lastError();
             return false;
         }
-        const std::string base =
-            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
-            "_unit" + std::to_string(driveIdx);
         settings->setString(base + "_type",
             std::string(pom2::SmartPort35Unit::kKindKey));
         settings->setString(base + "_path", path);
+        // A fresh unit comes up with write-back OFF. Keep the persisted flag
+        // in step with it — as the SmartPort panel's own type swap does —
+        // otherwise a stale `_writeback = true` re-arms the bay on the next
+        // launch and makes this session's silently-dropped writes look like
+        // a fluke rather than a configuration change.
+        if (replaced) settings->setBool(base + "_writeback", false);
         if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
         return true;
     }
@@ -7849,22 +7873,32 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
     }
     if (smartPortCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
+        const std::string base =
+            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "_unit0";
         pom2::SmartPortUnit* u = smartPortCard->unit(0);
+        bool replaced = false;
         if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
+            // Flush before setUnit destroys it — see routeMount35 above for
+            // why the destructor's best-effort save is not good enough.
+            if (u && !u->saveDirty()) {
+                errOut = "unsaved changes on SmartPort unit 1 could not be "
+                         "written: " + u->lastError();
+                return false;
+            }
             smartPortCard->setUnit(
                 0, std::make_unique<pom2::SmartPortHdvUnit>());
             u = smartPortCard->unit(0);
+            replaced = true;
         }
         if (!u->loadImage(path)) {
             errOut = u->lastError();
             return false;
         }
-        const std::string base =
-            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
-            "_unit0";
         settings->setString(base + "_type",
             std::string(pom2::SmartPortHdvUnit::kKindKey));
         settings->setString(base + "_path", path);
+        if (replaced) settings->setBool(base + "_writeback", false);
         if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
         bootSlotOut = smartPortCard->getSlot();
         return true;
@@ -7982,6 +8016,11 @@ int MainWindow::ensureHdvCardForBoot()
     {
         auto st = controller->lockState();
         auto card = std::make_unique<ProDOSHardDiskCard>(slot);
+        // Honour the user's stored write-back preference, exactly as the
+        // normal plug path does. Left at the backing default (off), a
+        // dropped .hdv accepted every ProDOS write into RAM and discarded
+        // the lot at eject/exit without a word.
+        card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
         hdvCard = card.get();
         st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
@@ -7993,6 +8032,41 @@ int MainWindow::ensureHdvCardForBoot()
     return slot;
 }
 
+int MainWindow::ensureSmartPortCardForBoot()
+{
+    if (smartPortCard) return smartPortCard->getSlot();
+    // A `noPhysicalSlots` machine (//c class) has nowhere to plug one: its
+    // only SmartPort is the built-in, which would already have answered
+    // above. //c+ 3.5" media goes to the on-board Sony hub instead, so the
+    // callers special-case that profile before reaching here.
+    if (pom2::profileConfig(activeProfile).noPhysicalSlots) return -1;
+    SlotBus& bus = controller->memory().slotBus();
+    // Prefer slot 5, the conventional Liron/UniDisk slot; else highest free.
+    int slot = (!bus.isPlugged(5)) ? 5 : -1;
+    if (slot < 0)
+        for (int s = 7; s >= 1; --s)
+            if (!bus.isPlugged(s)) { slot = s; break; }
+    if (slot < 0) return -1;
+
+    // Plug under the state lock — same rationale as ensureHdvCardForBoot:
+    // the slot is empty, so no card destructor races the worker.
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        auto card = std::make_unique<pom2::SmartPortCard>(slot);
+        card->setFloppySound(&controller->floppySound35());
+        const std::string r = pom2::findResource("roms/liron.rom");
+        if (!r.empty()) card->loadLironRom(r);
+        smartPortCard = card.get();
+        controller->memory().slotBus().plug(slot, std::move(card));
+        slotCards[slot] = "smartport35";
+        autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
+    }
+    pom2::log().info("Slots",
+        "auto-plugged SmartPort card in slot " + std::to_string(slot) +
+        " (saved slot config unchanged)");
+    return slot;
+}
+
 bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut)
 {
     // Classify by extension + size, route into the matching slot under the
@@ -8000,6 +8074,15 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
     // positional-disk / --kiosk launcher and (potentially) any future
     // single-call boot entry point. Mirrors the Disk Library "insert +
     // boot" buttons but with no UI surface.
+    //
+    // No ROM means no Monitor and no Applesoft: the boot PROM would still
+    // pull sector 0 and jump into a loader that calls firmware entry points
+    // backed by nothing, hanging on a garbage screen. Say so instead of
+    // mounting and then reporting a boot that cannot happen.
+    if (!romLoaded_) {
+        errOut = "no Apple II ROM loaded — see Help > Welcome / Quick Start";
+        return false;
+    }
     switch (classifyDiskForSlot(path)) {
         case DiskSlotClass::Floppy525: {
             // Prefer the Disk II in the conventional boot slot 6; fall back
@@ -8019,7 +8102,11 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
                 else    errOut = target->getLastError(0);
             }
             if (!ok) return false;
-            controller->bootFromSlot(target->getSlot());
+            if (!controller->bootFromSlot(target->getSlot())) {
+                errOut = "slot " + std::to_string(target->getSlot()) +
+                         " did not boot the image (cold-booted instead)";
+                return false;
+            }
             controller->setMode(EmulationController::Mode::Running);
             return true;
         }
@@ -8029,19 +8116,40 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             // //c+. On any other machine the image would "mount" into
             // hardware the guest can't see and the cold boot below would
             // land at the BASIC prompt with no error at all.
+            //
+            // When neither exists, auto-plug a Liron-class SmartPort the
+            // same way the HDV branch below auto-plugs a block card: a
+            // dropped 800K .po/.2mg is explicit "boot this" intent, and
+            // failing it on the stock II+/IIe config (which ships no
+            // SmartPort) made drag-and-drop refuse the single most common
+            // 3.5" distribution format. Session-local, never persisted.
             if (!smartPortCard &&
-                activeProfile != pom2::SystemProfile::AppleIIcPlus) {
-                errOut = "no 3.5\" device in this config — add a SmartPort "
-                         "3.5\" card in Slot Configuration";
+                activeProfile != pom2::SystemProfile::AppleIIcPlus &&
+                ensureSmartPortCardForBoot() < 0) {
+                errOut = "no 3.5\" device in this config, and no free slot "
+                         "to plug a SmartPort 3.5\" card into";
                 return false;
             }
             if (!routeMount35(0, path, errOut)) return false;
             // SmartPort card present (incl. //c-class built-in slot 5) →
             // boot it explicitly; otherwise cold-boot (//c+ on-board hub).
             if (smartPortCard) {
-                controller->bootFromSlot(smartPortCard->getSlot());
+                if (!controller->bootFromSlot(smartPortCard->getSlot())) {
+                    errOut = "slot " + std::to_string(smartPortCard->getSlot()) +
+                             " did not boot the image (cold-booted instead)";
+                    return false;
+                }
             } else {
+                // //c+ on-board Sony hub. The IWM bit-shift state machine is
+                // deliberately unmodelled (CLAUDE.md), so this cold boot does
+                // NOT reach the mounted 3.5" disk — the image is mounted and
+                // the machine restarted, nothing more. Don't call it a boot.
                 controller->coldBoot();
+                controller->setMode(EmulationController::Mode::Running);
+                errOut = "mounted on the //c+ on-board 3.5\" drive, which "
+                         "POM2 cannot boot from (unmodelled IWM) — use a "
+                         "SmartPort 3.5\" card to boot this image";
+                return false;
             }
             controller->setMode(EmulationController::Mode::Running);
             return true;
@@ -8055,7 +8163,11 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             }
             int bootSlot = 0;
             if (!routeMountHdv(path, bootSlot, errOut)) return false;
-            controller->bootFromSlot(bootSlot);
+            if (!controller->bootFromSlot(bootSlot)) {
+                errOut = "slot " + std::to_string(bootSlot) +
+                         " did not boot the image (cold-booted instead)";
+                return false;
+            }
             controller->setMode(EmulationController::Mode::Running);
             return true;
         }
@@ -8200,10 +8312,11 @@ void MainWindow::renderDiskLibraryWindow()
         }
         if (ok && target) {
             // Boot the target card's slot (its boot PROM boots drive 1).
-            controller->bootFromSlot(target->getSlot());
+            const bool booted = controller->bootFromSlot(target->getSlot());
             controller->setMode(EmulationController::Mode::Running);
-            tapeStatusMessage = "Library: inserted + booted (slot " +
-                std::to_string(target->getSlot()) + " drive " +
+            tapeStatusMessage = std::string("Library: inserted") +
+                (booted ? " + booted" : " (slot did not boot — cold-booted)") +
+                " (slot " + std::to_string(target->getSlot()) + " drive " +
                 std::to_string(drive + 1) + "): " + path;
         } else {
             tapeStatusMessage = "Library: boot failed: " + err;
@@ -8242,16 +8355,20 @@ void MainWindow::renderDiskLibraryWindow()
                          r.request35MountAndBoot, err)) {
             // Slot-aware boot: explicit `bootFromSlot(N)` whenever a
             // SmartPort card is plugged — now including the //c-class
-            // built-in SmartPort (slot 5). Falls back to `coldBoot()`
-            // only when there is no SmartPort card at all.
+            // built-in SmartPort (slot 5). No SmartPort card at all means
+            // the //c+ on-board Sony hub, whose IWM boot path POM2
+            // deliberately does not model: the cold boot below restarts the
+            // machine but never reaches the disk, so don't call it a boot.
+            bool booted = false;
             if (smartPortCard) {
-                controller->bootFromSlot(smartPortCard->getSlot());
+                booted = controller->bootFromSlot(smartPortCard->getSlot());
             } else {
                 controller->coldBoot();
             }
             tapeStatusMessage = "Library: 3.5\" drive "
                 + std::string(r.request35BootDrive == 0 ? "1" : "2")
-                + " booted: " + r.request35MountAndBoot;
+                + (booted ? " booted: " : " mounted (did not boot): ")
+                + r.request35MountAndBoot;
         } else {
             tapeStatusMessage = "Library: 3.5\" boot failed: " + err;
         }
@@ -8282,9 +8399,10 @@ void MainWindow::renderDiskLibraryWindow()
         int bootSlot = 0;
         std::string err;
         if (routeMountHdv(path, bootSlot, err)) {
-            controller->bootFromSlot(bootSlot);
+            const bool booted = controller->bootFromSlot(bootSlot);
             tapeStatusMessage = "Library: HDV (slot " +
-                std::to_string(bootSlot) + ") booted: " + path;
+                std::to_string(bootSlot) +
+                (booted ? ") booted: " : ") mounted, did not boot: ") + path;
         } else {
             tapeStatusMessage = "Library: HDV mount failed: " + err;
         }
@@ -8845,32 +8963,6 @@ void MainWindow::renderFloppyEmuWindow()
         if (b >= 1024)           return std::to_string(b / 1024) + "K";
         return std::to_string(b) + "B";
     };
-    // Live-plug a SmartPort (Liron-class) card into a free slot, mirroring
-    // ensureHdvCardForBoot — the empty slot means no card destructor races
-    // the worker, so a held lock suffices (no stop/start). Returns slot/-1.
-    auto ensureSmartPort = [&]() -> int {
-        if (smartPortCard) return smartPortCard->getSlot();
-        SlotBus& bus = controller->memory().slotBus();
-        int slot = (!bus.isPlugged(5)) ? 5 : -1;
-        if (slot < 0)
-            for (int s = 7; s >= 1; --s)
-                if (!bus.isPlugged(s)) { slot = s; break; }
-        if (slot < 0) return -1;
-        auto st = controller->lockState();
-        auto card = std::make_unique<pom2::SmartPortCard>(slot);
-        card->setFloppySound(&controller->floppySound35());
-        if (!pom2::profileConfig(activeProfile).noPhysicalSlots) {
-            const std::string r = pom2::findResource("roms/liron.rom");
-            if (!r.empty()) card->loadLironRom(r);
-        }
-        smartPortCard = card.get();
-        st.memory().slotBus().plug(slot, std::move(card));
-        slotCards[slot] = "smartport35";
-        autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
-        pom2::log().info("FloppyEmu",
-            "auto-plugged SmartPort card in slot " + std::to_string(slot));
-        return slot;
-    };
     auto controllerReady = [&](Mode m) -> bool {
         switch (m) {
             case Mode::Disk525:   return diskCard != nullptr;
@@ -8963,7 +9055,7 @@ void MainWindow::renderFloppyEmuWindow()
             }
             case Mode::Disk35:
             case Mode::Unidisk35:
-                if (!controllerReady(m)) ensureSmartPort();
+                if (!controllerReady(m)) ensureSmartPortCardForBoot();
                 if (routeMount35(0, path, err)) {
                     // With a SmartPort card, boot its slot explicitly;
                     // without one the mount landed on the //c+ on-board hub,
@@ -8976,7 +9068,7 @@ void MainWindow::renderFloppyEmuWindow()
                 }
                 break;
             case Mode::SmartportHD:
-                if (!controllerReady(m)) ensureSmartPort();
+                if (!controllerReady(m)) ensureSmartPortCardForBoot();
                 if (routeMountHdv(path, bootSlot, err)) {
                     // bootSlot is what routeMountHdv resolved. It was being
                     // filled and then dropped on the floor here.
@@ -9092,7 +9184,7 @@ void MainWindow::renderFloppyEmuWindow()
         if (mode == Mode::Disk525)
             floppyEmuStatus = "Add a Disk II card via the Slot Manager (Apply restarts).";
         else {
-            const int s = ensureSmartPort();
+            const int s = ensureSmartPortCardForBoot();
             floppyEmuStatus = (s >= 0)
                 ? ("Added SmartPort card in slot " + std::to_string(s))
                 : "No free slot for a SmartPort card.";
@@ -9898,7 +9990,8 @@ void MainWindow::onFileDrop(int count, const char** paths)
     // Nothing usable in the drop — tell the user rather than silently
     // ignoring it (the most common case is dropping a ROM or a .zip).
     tapeStatusMessage =
-        "Dropped file not a disk image (.dsk/.do/.po/.nib/.woz/.hdv/.2mg)";
+        "Dropped file not a disk image "
+        "(.dsk/.do/.d13/.po/.nib/.woz/.hdv/.2mg)";
     tapeStatusUntil = lastFrameTime + 4.0;
 }
 

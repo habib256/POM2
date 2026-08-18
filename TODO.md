@@ -713,6 +713,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   wired in `main.cpp`, routes the first recognized file via `insertAndBootImage`
   (auto-route Disk II / SmartPort 3.5" / ProDOS HDV) and reports the result in
   the status bar; unrecognized extensions are flagged. Detail → `CHANGELOG.md`.
+  - ✅ **Autoboot hardened (2026-08-14)** — seven defects downstream of the
+    callback: 3.5" drops now auto-plug a SmartPort card like HDV already did
+    (`ensureSmartPortCardForBoot`); `bootFromSlot` returns `bool` so "booted"
+    is never claimed for a silent cold-boot fallback (and a drop with no ROM
+    is refused up front); `.2mg` is classified by **parsing its header**, not
+    by guessing from the file size; an 800K `.dsk`/`.image` routes to 3.5";
+    the Library's `acceptHdv` no longer hides `.hdv` files the drop boots;
+    plus three write-back data-loss fixes and an LSS write-splice on
+    `insertDisk`. Pinned by `cli_kiosk`. Detail → `CHANGELOG.md`.
 - ✅ **Onboarding: Welcome / no-ROM panel** — DONE (2026-05-31).
   `renderWelcomePanelWindow`: no-ROM banner with probed dirs, expected ROM name
   for the active profile, "Reload ROM (re-probe)" button, plus quick-start;

@@ -1039,6 +1039,14 @@ private:
     /// config has only Disk II cards. Returns -1 if no free slot exists.
     /// NOT persisted — the saved slot configuration is left untouched.
     int  ensureHdvCardForBoot();
+    /// Same contract for 3.5" media: returns the slot of an existing
+    /// SmartPort card, or plugs a fresh Liron-class SmartPortCard into a
+    /// free slot (preferring the conventional slot 5) and returns that.
+    /// Returns -1 when no free slot exists, or on a `noPhysicalSlots`
+    /// profile that has no built-in SmartPort to speak of. Shared by the
+    /// Floppy Emu panel and the drag-drop / CLI insert+boot path.
+    /// NOT persisted — the saved slot configuration is left untouched.
+    int  ensureSmartPortCardForBoot();
 
     void renderMenuBar();
     void renderStatusBar();

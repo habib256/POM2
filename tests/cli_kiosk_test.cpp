@@ -15,6 +15,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -191,6 +192,73 @@ std::string makeFile(const fs::path& dir, const std::string& name, uint64_t size
     return p.string();
 }
 
+// Write a REAL 2IMG envelope: 64-byte header declaring `payload` bytes of
+// data at offset 64, then the payload, then `trailer` bytes of comment.
+// `makeFile` above produces all-zero files, so a `.2mg` built by it carries
+// no magic and exercises the size-heuristic fallback instead — both paths
+// matter, hence the two helpers.
+std::string make2mg(const fs::path& dir, const std::string& name,
+                    uint64_t payload, uint64_t trailer = 0,
+                    uint64_t declaredLenOverride = 0)
+{
+    const fs::path p = dir / name;
+    std::ofstream f(p, std::ios::binary);
+    unsigned char hdr[64] = {0};
+    std::memcpy(hdr, "2IMG", 4);
+    std::memcpy(hdr + 4, "POM2", 4);
+    hdr[8] = 64;                                    // header length
+    const auto put32 = [&hdr](int o, uint64_t v) {
+        hdr[o]     = static_cast<unsigned char>( v        & 0xFF);
+        hdr[o + 1] = static_cast<unsigned char>((v >>  8) & 0xFF);
+        hdr[o + 2] = static_cast<unsigned char>((v >> 16) & 0xFF);
+        hdr[o + 3] = static_cast<unsigned char>((v >> 24) & 0xFF);
+    };
+    put32(24, 64);                                  // data offset
+    put32(28, declaredLenOverride ? declaredLenOverride : payload);
+    f.write(reinterpret_cast<const char*>(hdr), sizeof(hdr));
+    const std::vector<char> body(static_cast<size_t>(payload), '\0');
+    f.write(body.data(), static_cast<std::streamsize>(body.size()));
+    const std::vector<char> tail(static_cast<size_t>(trailer), 'C');
+    if (trailer) f.write(tail.data(), static_cast<std::streamsize>(tail.size()));
+    f.close();
+    return p.string();
+}
+
+// The 2IMG envelope is classified by PARSING its header, not by guessing
+// from the file size: the format allows an arbitrary data offset plus a
+// comment/creator trailer, so size arithmetic mis-buckets ordinary
+// CiderPress output. Pins the three payload sizes that pick a slot class,
+// each with a trailer that used to push the file into no bucket at all.
+void test2mgHeaderClassification()
+{
+    fs::path dir = fs::temp_directory_path() / "pom2_cli_kiosk_2mg";
+    fs::create_directories(dir);
+
+    // 800K payload + a comment block → still a 3.5" disk. Before the header
+    // parse, `sz = 64 + 819200 + 900` fell past the `< 819200 + 4096` window
+    // only for large comments, and any comment ≥ 4 KB was refused outright.
+    assert(classifyDiskForSlot(make2mg(dir, "c35.2mg", 819200, 5000))
+           == DiskSlotClass::Sony35);
+    // Hard-disk payload + comment: `sz % 512` and `(sz - 64) % 512` both
+    // non-zero → the old rules returned Unknown and the drop was refused.
+    assert(classifyDiskForSlot(make2mg(dir, "chd.2mg", 4u * 1024 * 1024, 100))
+           == DiskSlotClass::Hdv);
+    // 5.25" ProDOS payload.
+    assert(classifyDiskForSlot(make2mg(dir, "c525.2mg", 143360, 100))
+           == DiskSlotClass::Floppy525);
+    // A ProDOS volume between 143 KB and 800 KB belongs on the HDV card —
+    // the 5.25" loader rejects it by size, so routing it there dead-ended.
+    assert(classifyDiskForSlot(make2mg(dir, "mid.2mg", 400 * 512))
+           == DiskSlotClass::Hdv);
+    // A payload window running past EOF is a malformed envelope: fall back
+    // to the size heuristics rather than trusting the header.
+    assert(classifyDiskForSlot(
+               make2mg(dir, "bad.2mg", 819200, 0, /*declaredLen=*/99u << 20))
+           == DiskSlotClass::Sony35);
+
+    fs::remove_all(dir);
+}
+
 void testClassifier()
 {
     fs::path dir = fs::temp_directory_path() / "pom2_cli_kiosk_test";
@@ -215,6 +283,13 @@ void testClassifier()
     assert(classifyDiskForSlot(makeFile(dir, "h.2mg", 4 * 1024 * 1024)) == DiskSlotClass::Hdv);
     // A `.2mg` stays ambiguous: exactly 800K is a 3.5" disk (asserted above),
     // not an HDV — only LARGER .2mg reach the HDV bucket.
+    // An 800K `.dsk` / `.image` is a Sony 3.5" payload, NOT a 5.25" one:
+    // Disk35Image takes a bare 819200-byte image under either name. Routing
+    // them to the 5.25" loader made a droppable disk fail with a message
+    // that listed only 5.25" sizes.
+    assert(classifyDiskForSlot(makeFile(dir, "big.dsk",   819200)) == DiskSlotClass::Sony35);
+    assert(classifyDiskForSlot(makeFile(dir, "s.image",   819200)) == DiskSlotClass::Sony35);
+    assert(classifyDiskForSlot(makeFile(dir, "small.dsk", 143360)) == DiskSlotClass::Floppy525);
     // Unknown: wrong extension, wrong size, or missing file.
     assert(classifyDiskForSlot(makeFile(dir, "x.txt", 143360)) == DiskSlotClass::Unknown);
     assert(classifyDiskForSlot(makeFile(dir, "odd.po", 999))   == DiskSlotClass::Unknown);
@@ -284,6 +359,8 @@ int main()
     std::printf("parseCli clamps --speed to the 2M cycles/frame ceiling: OK\n");
     testClassifier();
     std::printf("classifyDiskForSlot 5.25/3.5/HDV/unknown: OK\n");
+    test2mgHeaderClassification();
+    std::printf("classifyDiskForSlot 2IMG header (trailer/offset): OK\n");
     testFujiNetSlotExplicitness();
     std::printf("parseCli --fujinet slot preference vs explicit: OK\n");
 

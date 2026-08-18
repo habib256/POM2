@@ -1485,8 +1485,34 @@ Pinned: `disk_image_smoke`, `disk_skew_sniff_smoke`, `disk_2mg_smoke`,
 `disk_refuse_smoke`.
 
 `classifyDiskForSlot` (`DiskImage.*` — `DiskSlotClass` =
-`Floppy525/Sony35/Hdv`) routes positional disk CLI by content. `.hdv`
-is HDV at any 512-aligned size; `.2mg` shares 3.5"/HDV by size.
+`Floppy525/Sony35/Hdv`) picks the controller for the positional-disk CLI,
+the kiosk scan and the **drag-and-drop autoboot**. `.hdv` is HDV at any
+512-aligned size. `.dsk`/`.image` at exactly 819200 are Sony 3.5", not
+5.25" — `Disk35Image` takes a bare 800K payload under those names too.
+
+**`.2mg` is classified by PARSING the header, never by the file size**
+(`read2mgPayloadLength` — magic + `dataOff`/`dataLen` at bytes 24/28,
+validated against the real file length). The envelope allows an arbitrary
+data offset and a comment/creator trailer, which is what `Block512Backing`
+has always parsed; size arithmetic refused ordinary CiderPress output
+outright. Payload 143360/232960/223440 → 5.25", 819200 → 3.5", any other
+512-multiple → HDV. A file that is not a readable 2IMG falls back to the
+old size heuristics, so a malformed envelope degrades instead of breaking.
+Pinned: `cli_kiosk`.
+
+The Disk Library's own `accept525/accept35/acceptHdv`
+(`DiskLibrary_ImGui.cpp`) mirror these rules exactly — **except** for
+`.2mg`, where they keep cheap size rules on purpose: they filter every file
+of a directory scan and cannot afford to open each one.
+
+`insertAndBootImage` (`MainWindow.*`) is the single mount+boot entry point
+behind all three. It auto-plugs a controller when the config lacks one —
+`ensureHdvCardForBoot()` / `ensureSmartPortCardForBoot()`, both
+session-local and never persisted — and it **honours `bootFromSlot`'s
+`bool`**: that call degrades to a plain cold boot when the card carries no
+`$Cn01/03/05` JSR-dispatch trio, so reporting "booted" without checking it
+was a lie the user saw as a BASIC prompt. A drop with no main ROM loaded is
+refused up front for the same reason.
 
 ### 13-sector (5-and-3, pre-DOS-3.3)
 
