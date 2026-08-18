@@ -109,9 +109,16 @@ public:
     bool is13Sector() const { return sectorsPerTrack_ == kSectorsPerTrack13; }
     /// True iff the image was loaded from a .woz file. WOZ images are
     /// bit-cell-native: the legacy 32-cycle nibble gate cannot decode
-    /// them; DiskIICard forces the LSS path on insert. Always reported
-    /// write-protected for now (write-back to .woz is not yet
-    /// implemented — incoming flux events get dropped).
+    /// them; DiskIICard forces the LSS path on insert.
+    ///
+    /// Write-back IS implemented (saveDirty splices the dirty quarter-
+    /// tracks back into wozRaw and zeroes the header CRC32 per the
+    /// Applesauce 2.1 "not computed by the imager" sentinel), and WOZ
+    /// sits under the same writeBackEnabled / fileWriteProtected gate as
+    /// .dsk/.nib. The one exception is a WOZ carrying **FLUX** tracks:
+    /// POM2 cannot serialise their delta streams, so such a medium is
+    /// forced physically write-protected at load rather than accepting
+    /// writes and dropping them at save time.
     bool isWoz() const { return wozFormat; }
 
     /// Discard the loaded image. After eject, isLoaded() returns false

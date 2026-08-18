@@ -5,6 +5,53 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later still, 5) — Read/write audit: every format, and one convention removed
+
+Asked for a state of play: can every format POM2 mounts be written back?
+The answer is in DEV.md § Storage as a table. Everything can, except two
+formats that refuse **by design** — and one that was refusing for no reason.
+
+**An 800 K `.dsk` or `.image` mounted read-only, and `.po` did not.** Same
+819 200-byte bare ProDOS payload, same loader branch, same save path — the
+only difference was the name, on the grounds that such dumps are "sometimes
+read-only by convention".
+
+That is the wrong layer for a convention. `fileWriteProtected_` is the
+*physical* write tab: it outranks `setWriteBackEnabled`, so a user could
+open Slot Config, tick write-back on an 800 K `.dsk`, get silently refused,
+and be told nothing — while the byte-identical payload under a `.po` name
+wrote fine. Writability now comes from the file: the host permission bit and
+the 2IMG flag, both of which describe what the file actually *is*.
+
+Nothing is loosened. Writes still need the `writeBackEnabled` opt-in, which
+is off by default, and a host file that is genuinely writable — the test
+asserts both, including that a `chmod -w` `.dsk` still mounts WP. It fails on
+the old code at `"extension must not force WP"`, verified by reverting.
+
+**Two other findings from the audit:**
+
+- **`isWoz()`'s documentation said the opposite of the code.** It claimed
+  WOZ images are "always reported write-protected for now (write-back to
+  .woz is not yet implemented — incoming flux events get dropped)". Write-back
+  landed a while ago: `saveDirty` splices the dirty quarter-tracks back into
+  `wozRaw` and zeroes the header CRC32 per the Applesauce 2.1 "not computed
+  by the imager" sentinel, and WOZ sits under the same gate as `.dsk`/`.nib`.
+  The comment survived the change that falsified it. Corrected, with the one
+  real exception spelled out: a WOZ carrying **FLUX** tracks is still forced
+  physically WP, because POM2 cannot serialise delta streams and accepting
+  the writes would report a successful save while discarding them.
+- **CNib2 write-back was unpinned.** `disk_cnib2_smoke` covered the load path
+  only. It works — verified by round trip — and now has a case, which matters
+  more than it sounds: CNib2 is detected **by file size**, so if `saveDirty`
+  failed to truncate the 6656-byte runtime pad back to the 6384-byte source
+  width, the file would grow by 9 520 bytes and the *next* load would no
+  longer recognise the format. The test asserts the size, not just the byte.
+
+**The two remaining ❌ are refusals, not gaps**: 3.5" WOZ, and 5.25" WOZ with
+FLUX tracks. Both would require re-encoding the user's flux to give blocks
+back. Refusing at mount is the honest behaviour; accepting writes and dropping
+them at flush is the failure that forecloses on the only copy.
+
 ## 2026-08-18 (later still, 4) — Slot 3 on a //e is a trap, and now it says so
 
 Reported: *"why doesn't the mouse work with A2 Desktop?"* Because the mouse

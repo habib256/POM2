@@ -1417,6 +1417,55 @@ MouseCard and SSC dropped `cpu_`.
 
 ## Storage
 
+### Read / write matrix by format
+
+Every media format POM2 mounts, and whether it can be written back.
+"Write" means a guest (or host) modification survives `saveDirty()` into
+the *source file*; every one of them commits through the atomic +
+durable path (§ Write-back commit), never an in-place `trunc`.
+
+| Format | Bay / backend | Read | Write back | Pinned by |
+|---|---|---|---|---|
+| `.dsk` / `.do` 143 360 (DOS 3.3 skew) | 5.25" `DiskImage` | ✅ | ✅ | `disk_writeback_smoke`, `dos33_save_smoke` (real DOS 3.3 SAVE) |
+| `.po` 143 360 (ProDOS skew) | 5.25" `DiskImage` | ✅ | ✅ | `prodos_save_smoke` (real ProDOS 2.4.3 SAVE) |
+| `.nib` 232 960 (35 × 6656) | 5.25" `DiskImage` | ✅ | ✅ | `disk_writeback_smoke` (verbatim re-save) |
+| `.nib` CNib2 223 440 (35 × 6384) | 5.25" `DiskImage` | ✅ | ✅ | `disk_cnib2_smoke` (load **and** write-back: the 6656 pad must truncate back to 6384, or the next load misdetects the format) |
+| `.d13` 116 480 (13-sector, 5-and-3) | 5.25" `DiskImage` | ✅ | ✅ | `d13_roundtrip_smoke` |
+| `.2mg` wrapping DOS / ProDOS / nib | 5.25" `DiskImage` | ✅ | ✅ | `disk_2mg_writeback_smoke` (header + trailer preserved byte-for-byte) |
+| `.woz` 5.25" (WOZ1 / WOZ2, bit cells) | 5.25" `DiskImage` | ✅ | ✅ | `woz_writeback_smoke` — dirty quarter-tracks spliced back, header CRC32 zeroed per Applesauce 2.1 |
+| `.woz` 5.25" **carrying FLUX tracks** | 5.25" `DiskImage` | ✅ | ❌ **by design** | forced WP at load: POM2 cannot serialise delta streams, and accepting writes would report a successful save while discarding them |
+| `.po` / `.2mg` 819 200 (800 K) | 3.5" `Disk35Image` | ✅ | ✅ | `disk35_atomic_save` (both kinds; 2IMG envelope preserved) |
+| `.dsk` / `.image` 819 200 (800 K) | 3.5" `Disk35Image` | ✅ | ✅ | `disk35_atomic_save` — writability comes from the FILE, never the extension (the old "read-only by convention" rule overrode the user's own opt-in) |
+| `.woz` 3.5" (`INFO.disk_type = 2`) | 3.5" `Disk35Image` | ✅ | ❌ **by design** | `woz35_load::testWriteProtected` — giving blocks back would mean re-encoding the user's flux, which POM2 cannot do |
+| `.hdv` (any 512-aligned size) | `Block512Backing` | ✅ | ✅ | `hdv_writeback_smoke` |
+| `.2mg` hard disk (> 800 K) | `Block512Backing` | ✅ | ✅ | `hdv_writeback_smoke` (header + creator/comment trailer survive) |
+| CFFA / IDE volumes | `CffaCard` → `Block512Backing` | ✅ | ✅ | shares the backing above |
+| SmartPort units (`.po`/`.2mg`/`.hdv`) | `SmartPort*Unit` | ✅ | ✅ | `smartport_write_dispatch`, `smartport_mixed_units_smoke` |
+| Host folder → ProDOS volume | `ProDOSVolume` | ✅ | ✅ | `prodos_volume_smoke` (decode → host files, collision-safe, idempotent) |
+| `.wav` cassette | `CassetteDevice` | ✅ | ✅ | `cassette_wav_tail_smoke` |
+| `.aci` cassette | `CassetteDevice` | ✅ | ✅ | `cassette_wav_tail_smoke` |
+
+**Write-protect is the union of four independent sources**, and any one
+of them alone makes a medium read-only: the user's `writeBackEnabled`
+opt-in (off by default), the 2IMG header's write-protect flag, the host
+file being read-only on disk, and a per-format "physically WP" rule (the
+two ❌ rows above). `isWriteProtected()` folds them together, so nothing
+can be written by accident and nothing is silently dropped.
+
+Note what is NOT in that list: the file's **extension**. It used to be —
+a bare 800 K `.dsk`/`.image` was marked *physically* WP because such
+dumps are "sometimes read-only by convention". That is the wrong layer
+for a convention: the physical tab outranks `setWriteBackEnabled`, so a
+user could ask for write-back on a `.dsk`, be refused, and be told
+nothing — while the byte-identical payload under a `.po` name wrote
+fine. Conventions belong in what a *user* sets, not in what the format
+layer decides for them.
+
+**The two ❌ rows are refusals, not gaps.** Both are cases where POM2
+could accept the write and lose it at flush — the failure mode that
+forecloses on the user's only copy. Refusing at mount is the honest
+behaviour; re-encoding flux is the work that would lift either.
+
 ### DiskImage
 
 143 360-byte 5.25": `.dsk`/`.do` (DOS 3.3 skew) or `.po` (ProDOS).

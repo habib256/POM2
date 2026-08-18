@@ -197,6 +197,53 @@ int main()
         assert(!fs::exists(img.string() + ".pom2tmp"));
     }
 
+    // ── Part 4: writability comes from the FILE, not the extension ──────
+    // All three names holding a bare 819 200-byte payload (.po, .dsk,
+    // .image) take the identical save path, so all three must be writable
+    // under the user's opt-in. `.dsk`/`.image` used to be marked PHYSICALLY
+    // write-protected on the grounds that such dumps are "read-only by
+    // convention" — which overrode setWriteBackEnabled, so the user could
+    // ask for write-back, get it silently refused, and be told nothing.
+    for (const char* name : { "bare.dsk", "bare.image", "bare.po" }) {
+        const fs::path img = base / name;
+        const std::vector<std::uint8_t> original = makeRawImage();
+        writeFile(img, original);
+
+        pom2::Disk35Image d;
+        assert(d.loadFile(img.string()));
+        assert(d.kind() == pom2::Disk35Image::ImageKind::Raw800k);
+        // Still write-protected until the user opts in — that gate is the
+        // one that must survive; only the extension rule went away.
+        assert(d.isWriteProtected() && "opt-in must still be required");
+        d.setWriteBackEnabled(true);
+        assert(!d.isWriteProtected() && "extension must not force WP");
+        assert(d.writeBlock(11, block.data()));
+        assert(d.saveDirty());
+
+        const std::vector<std::uint8_t> saved = readFile(img);
+        assert(saved.size() == kImageBytes);
+        assert(std::memcmp(saved.data() + 11 * kBlk, block.data(), kBlk) == 0
+               && "write-back lost for this extension");
+    }
+
+    // A host file that is genuinely read-only still forces WP, whatever the
+    // extension — that is the check the convention was standing in for.
+#ifndef _WIN32
+    if (::geteuid() != 0) {
+        const fs::path img = base / "readonly.dsk";
+        writeFile(img, makeRawImage());
+        fs::permissions(img, fs::perms::owner_write | fs::perms::group_write |
+                             fs::perms::others_write,
+                        fs::perm_options::remove);
+        pom2::Disk35Image d;
+        assert(d.loadFile(img.string()));
+        d.setWriteBackEnabled(true);
+        assert(d.isWriteProtected() &&
+               "a read-only host file must still mount write-protected");
+        fs::permissions(img, fs::perms::owner_write, fs::perm_options::add);
+    }
+#endif
+
     // Apparent file size is attacker-controlled (including sparse files):
     // reject it before constructing a correspondingly huge vector.
     {

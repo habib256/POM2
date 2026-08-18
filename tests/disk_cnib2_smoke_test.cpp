@@ -121,6 +121,81 @@ bool runSizeOnlyDetection()
     return true;
 }
 
+// Write-back. The load path pads each 6384-nibble source track up to the
+// 6656 runtime width; saveDirty has to truncate back, or the round trip
+// grows the user's file by 9 520 bytes and the next load — which detects
+// CNib2 BY SIZE — no longer recognises it. So the size assertion below is
+// not cosmetic: getting it wrong converts the image to an unreadable one.
+bool runWriteBackRoundTrip()
+{
+    std::vector<uint8_t> buf(static_cast<std::size_t>(kCNib2TotalBytes));
+    for (int t = 0; t < DiskImage::kTracks; ++t)
+        for (int i = 0; i < kSrcBytesPerTrack; ++i)
+            buf[static_cast<std::size_t>(t) * kSrcBytesPerTrack + i] =
+                static_cast<uint8_t>((t * 13 + i) & 0xFF);
+
+    const std::string path = "cnib2_writeback.nib";
+    {
+        std::ofstream wf(path, std::ios::binary | std::ios::trunc);
+        if (!wf) return false;
+        wf.write(reinterpret_cast<const char*>(buf.data()),
+                 static_cast<std::streamsize>(buf.size()));
+    }
+
+    {
+        DiskImage img;
+        if (!img.loadFile(path)) {
+            std::fprintf(stderr, "writeback: load failed: %s\n",
+                         img.getLastError().c_str());
+            std::remove(path.c_str());
+            return false;
+        }
+        // A .nib mounts writable only under the user's opt-in.
+        if (!img.isWriteProtected()) {
+            std::fprintf(stderr, "writeback: expected WP before opt-in\n");
+            std::remove(path.c_str());
+            return false;
+        }
+        img.setWriteBackEnabled(true);
+        img.writeNibbleAt(7, 100, 0xA5);
+        if (!img.saveDirty()) {
+            std::fprintf(stderr, "writeback: saveDirty failed: %s\n",
+                         img.getLastError().c_str());
+            std::remove(path.c_str());
+            return false;
+        }
+    }
+
+    std::ifstream rf(path, std::ios::binary | std::ios::ate);
+    const auto sz = static_cast<long long>(rf.tellg());
+    rf.close();
+    if (sz != kCNib2TotalBytes) {
+        std::fprintf(stderr,
+            "writeback: file is %lld bytes after save, want %d "
+            "(pad not truncated → next load misdetects the format)\n",
+            sz, kCNib2TotalBytes);
+        std::remove(path.c_str());
+        return false;
+    }
+
+    DiskImage back;
+    const bool reloaded = back.loadFile(path);
+    const uint8_t got = reloaded ? back.nibbleAt(7, 100) : 0x00;
+    std::remove(path.c_str());
+    if (!reloaded) {
+        std::fprintf(stderr, "writeback: reload failed: %s\n",
+                     back.getLastError().c_str());
+        return false;
+    }
+    if (got != 0xA5) {
+        std::fprintf(stderr,
+            "writeback: track 7 nibble 100 = 0x%02X after round trip, "
+            "want 0xA5\n", got);
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int main()
@@ -128,7 +203,9 @@ int main()
     bool ok = true;
     ok &= runSyntheticLoad();
     ok &= runSizeOnlyDetection();
+    ok &= runWriteBackRoundTrip();
     if (!ok) return 1;
-    std::printf("disk_cnib2_smoke OK: 35 × 6384 → padded 35 × 6656\n");
+    std::printf("disk_cnib2_smoke OK: 35 × 6384 → padded 35 × 6656, "
+                "write-back truncates back\n");
     return 0;
 }

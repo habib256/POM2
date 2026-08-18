@@ -32,20 +32,6 @@ namespace {
 
 constexpr int kSectorsPerTrackByZone[5] = { 12, 11, 10, 9, 8 };
 
-bool endsWithCi(const std::string& s, const char* suffix)
-{
-    const std::size_t sl = std::strlen(suffix);
-    if (s.size() < sl) return false;
-    for (std::size_t i = 0; i < sl; ++i) {
-        const char a = static_cast<char>(std::tolower(
-            static_cast<unsigned char>(s[s.size() - sl + i])));
-        const char b = static_cast<char>(std::tolower(
-            static_cast<unsigned char>(suffix[i])));
-        if (a != b) return false;
-    }
-    return true;
-}
-
 uint16_t rd16(const uint8_t* p) {
     return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
@@ -204,11 +190,22 @@ bool Disk35Image::loadFileUnchecked(const std::string& imgPath)
                 " doesn't look ProDOS-formatted at block 2");
         }
         blocks_ = std::move(buf);
-        // Plain `.po` ext: file is editable by default; user opts in
-        // via setWriteBackEnabled. `.dsk` 800K dumps are sometimes
-        // marked read-only by convention — we keep the same default.
-        fileWriteProtected_ = (!endsWithCi(imgPath, ".po") &&
-                               !endsWithCi(imgPath, ".2mg")) || hostReadOnly;
+        // Writability is decided by the FILE, not by its extension. All
+        // three names reaching here (.po, .dsk, .image) hold the identical
+        // bare 819 200-byte ProDOS block payload and take the identical
+        // save path, so there was never a technical reason to treat them
+        // differently — the old rule marked .dsk/.image physically WP on
+        // the grounds that such dumps are "sometimes read-only by
+        // convention".
+        //
+        // That is the wrong layer for a convention. `fileWriteProtected_`
+        // is the PHYSICAL tab: it overrides the user's own
+        // `setWriteBackEnabled` opt-in, so an 800K .dsk stayed read-only
+        // even after the user explicitly asked for write-back and got no
+        // explanation why. Nothing is loosened by dropping it — writes
+        // still require that opt-in, which is off by default, plus a
+        // host file that is actually writable.
+        fileWriteProtected_ = hostReadOnly;
         kind_   = ImageKind::Raw800k;
         loaded_ = true;
         dirty_  = false;
