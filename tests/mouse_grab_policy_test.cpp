@@ -65,37 +65,64 @@ void testToggleChord()
     assert(!mg::isToggleChord(mg::kKeyG - 1, mg::kModControl | mg::kModAlt));
 }
 
-void testReleaseButton()
+void testToggleButton()
 {
-    assert(mg::isReleaseButton(mg::kButtonMiddle));
-    assert(!mg::isReleaseButton(mg::kButtonLeft));
-    assert(!mg::isReleaseButton(1));   // right
-    assert(!mg::isReleaseButton(3));   // thumb buttons and beyond
+    // The middle button is the only button that carries the toggle. The
+    // LEFT button is the point of this test: it must never appear here, so
+    // no left click can capture the pointer.
+    assert(mg::isToggleButton(mg::kButtonMiddle));
+    assert(!mg::isToggleButton(mg::kButtonLeft));
+    assert(!mg::isToggleButton(1));   // right
+    assert(!mg::isToggleButton(3));   // thumb buttons and beyond
 }
 
-void testGrabOnPress()
+void testToggleGrab()
 {
+    // Capture: needs a card to capture for. Hover is NOT required — the
+    // gesture is explicit, and refusing it a few pixels off the widget
+    // would read as the toggle being broken.
     mg::Context c = hovering();
-    assert(mg::shouldGrabOnPress(c, mg::kButtonLeft));
+    assert(mg::shouldToggleGrab(c));
+    mg::Context offWidget = c; offWidget.screenHovered = false;
+    assert(mg::shouldToggleGrab(offWidget));
 
-    // Only the left button ever captures — middle is release-only (it would
-    // collide with the 3D voxel view's middle-drag pan), right does nothing.
-    assert(!mg::shouldGrabOnPress(c, mg::kButtonMiddle));
-    assert(!mg::shouldGrabOnPress(c, 1));
-
-    // Every gate, one at a time.
-    mg::Context off = c; off.clickToGrab = false;
-    assert(!mg::shouldGrabOnPress(off, mg::kButtonLeft));
-    mg::Context already = c; already.grabbed = true;
-    assert(!mg::shouldGrabOnPress(already, mg::kButtonLeft));
+    // No card: nothing to capture for.
     mg::Context noCard = c; noCard.cardPlugged = false;
-    assert(!mg::shouldGrabOnPress(noCard, mg::kButtonLeft));
-    mg::Context outside = c; outside.screenHovered = false;
-    assert(!mg::shouldGrabOnPress(outside, mg::kButtonLeft));
-    // The voxel view owns left-drag (orbit) and middle-drag (pan); capturing
-    // would swallow both. Ctrl+Alt+G still works there.
+    assert(!mg::shouldToggleGrab(noCard));
+
+    // The voxel view owns middle-drag (pan), so a middle click must not arm
+    // a grab there. Ctrl+Alt+G still can — it cannot be confused with a drag.
     mg::Context voxel = c; voxel.voxelView = true;
-    assert(!mg::shouldGrabOnPress(voxel, mg::kButtonLeft));
+    assert(!mg::shouldToggleGrab(voxel));
+
+    // RELEASE is never refused, whatever the state. An escape hatch that
+    // any condition can block is not an escape hatch: each of these would
+    // otherwise strand a captured pointer with the OS cursor hidden.
+    mg::Context grabbed = c;            grabbed.grabbed = true;
+    assert(mg::shouldToggleGrab(grabbed));
+    mg::Context grabbedNoCard = grabbed; grabbedNoCard.cardPlugged = false;
+    assert(mg::shouldToggleGrab(grabbedNoCard));
+    mg::Context grabbedVoxel = grabbed;  grabbedVoxel.voxelView = true;
+    assert(mg::shouldToggleGrab(grabbedVoxel));
+    mg::Context grabbedOff = grabbed;    grabbedOff.screenHovered = false;
+    assert(mg::shouldToggleGrab(grabbedOff));
+}
+
+// A left press must reach the CARD, never the capture. This is the
+// regression the removal of click-to-grab exists to pin: with the old
+// policy the first left press over the screen was swallowed to arm a grab,
+// so the guest never saw it.
+void testLeftClickNeverCaptures()
+{
+    // The left button carries no toggle, in any state — the policy has no
+    // path at all from a left press to a capture.
+    assert(!mg::isToggleButton(mg::kButtonLeft));
+
+    // Hovering, card plugged, not grabbed — the exact state the old policy
+    // captured in, where the press used to be swallowed. It reaches the
+    // card now.
+    mg::Context c = hovering();
+    assert(mg::shouldRouteButton(c, mg::kButtonLeft, /*press=*/true));
 }
 
 void testMotionRouting()
@@ -171,10 +198,10 @@ void testUiOverlayOwnsItsClicks()
     mg::Context menuOverScreen = hovering();
     menuOverScreen.screenHovered = false;
 
-    // The press is ImGui's: it must not reach the card...
+    // The press is ImGui's: it must not reach the card. (It cannot capture
+    // the pointer either, but that is now true of every left press
+    // everywhere — see testLeftClickNeverCaptures.)
     assert(!mg::shouldRouteButton(menuOverScreen, mg::kButtonLeft, true));
-    // ...and above all must not capture the pointer behind the menu.
-    assert(!mg::shouldGrabOnPress(menuOverScreen, mg::kButtonLeft));
     // Moving along the menu items is the UI's too — otherwise the guest
     // cursor tracks the user's menu navigation.
     assert(!mg::shouldRouteMotion(menuOverScreen));
@@ -217,8 +244,9 @@ void testGlfwTokenMirrors()
 int main()
 {
     testToggleChord();
-    testReleaseButton();
-    testGrabOnPress();
+    testToggleButton();
+    testToggleGrab();
+    testLeftClickNeverCaptures();
     testMotionRouting();
     testButtonRouting();
     testUiOverlayOwnsItsClicks();

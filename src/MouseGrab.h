@@ -19,9 +19,22 @@
 // GLFW reports an unbounded virtual position, so deltas keep flowing in every
 // direction for as long as the user keeps moving.
 //
-// The escape hatch is deliberately the one every VM viewer and PC emulator
-// uses, so it is already in the user's fingers: **Ctrl+Alt+G**, or a click on
-// the **middle button (wheel)**.
+// Capture is entered and left by exactly two deliberate gestures, the ones
+// every VM viewer and PC emulator already trains into the user's fingers:
+// **Ctrl+Alt+G**, or a click on the **middle button (wheel)**. Both TOGGLE.
+//
+// A left click deliberately does NOT capture. It used to, which is the
+// classic "click the screen to give the guest your mouse" contract, but it
+// makes an ordinary click silently change what every later click means — and
+// the capturing click has to be swallowed to avoid firing the guest's button
+// at an arbitrary spot, so the user's first click just vanishes. Left clicks
+// now always mean what they look like: a click for the guest when the screen
+// is hovered (or captured), an ImGui click otherwise.
+//
+// A useful consequence: capture can only be ENTERED by the same gesture that
+// LEAVES it, so anyone who is captured already knows how to get out. That is
+// what lets the on-screen caption go away — the reminder lives in the status
+// bar, and discoverability no longer has to be solved before a stray click.
 
 namespace pom2 {
 namespace mousegrab {
@@ -46,10 +59,8 @@ inline bool isToggleChord(int key, int mods)
     return key == kKeyG && (mods & kModControl) != 0 && (mods & kModAlt) != 0;
 }
 
-/// Middle button (wheel click) — release only, never grabs. Entering on a
-/// middle click would collide with the 3D voxel view's middle-drag pan, and
-/// an escape hatch that can also *arm* the trap is a worse escape hatch.
-inline bool isReleaseButton(int button) { return button == kButtonMiddle; }
+/// Middle button (wheel click) — the button that carries the toggle.
+inline bool isToggleButton(int button) { return button == kButtonMiddle; }
 
 /// Everything the policy needs to know about the current host/UI state.
 struct Context {
@@ -61,28 +72,26 @@ struct Context {
     /// "is the cursor between screenRectMin and screenRectMax" containment
     /// test: a dropdown menu, a popup or a docked panel drawn over the
     /// screen is geometrically *inside* that rect, so a rect test hands the
-    /// guest — and `shouldGrabOnPress` — every click the user aims at the
-    /// menu sitting on top of it.
+    /// guest every click the user aims at the menu sitting on top of it.
     bool screenHovered = false;
     bool voxelView    = false;  ///< 3D voxel view owns the drag gestures
-    bool clickToGrab  = true;   ///< user preference (mouse_click_to_grab)
 };
 
-/// A left press inside the screen widget captures the pointer — the classic
-/// "click the screen to give the guest your mouse" contract.
+/// What a middle click should do. Releasing is ALWAYS allowed — an escape
+/// hatch that can be blocked by state is not an escape hatch, so nothing
+/// here (no card, no hover, voxel view up) may refuse to give the pointer
+/// back. Capturing is narrower: it needs a card to capture *for*, and is
+/// suppressed under the 3D voxel view, where middle-drag pans the camera and
+/// arming a grab would swallow the gesture. Ctrl+Alt+G still captures there,
+/// because that one cannot be confused with a drag.
 ///
-/// The caller must test this BEFORE `shouldRouteButton` and swallow the press
-/// when it returns true: the guest cursor is wherever its firmware left it,
-/// not under the host pointer, so forwarding the capturing click would fire a
-/// button-down at an arbitrary spot (a stray dot in MousePaint, a wrong menu
-/// pick in A2Desktop). Every press after the grab does reach the card.
-///
-/// Suppressed while the 3D voxel view is up: there, left-drag orbits the
-/// camera and grabbing would swallow the gesture. Ctrl+Alt+G still works.
-inline bool shouldGrabOnPress(const Context& c, int button)
+/// Screen hover is deliberately NOT required: the user is asking for the
+/// pointer by an explicit gesture, and refusing because it happened a few
+/// pixels off the widget would read as the toggle being broken.
+inline bool shouldToggleGrab(const Context& c)
 {
-    return button == kButtonLeft && c.clickToGrab && !c.grabbed &&
-           c.cardPlugged && c.screenHovered && !c.voxelView;
+    if (c.grabbed) return true;              // release: never refused
+    return c.cardPlugged && !c.voxelView;    // capture: needs a target
 }
 
 /// Motion routing. Grabbed: every delta is the guest's, wherever GLFW's

@@ -3652,15 +3652,32 @@ forever. `glfwSetInputMode(GLFW_RAW_MOUSE_MOTION)` rides along on native
 (the desktop's acceleration curve is tuned for a screen-sized target;
 the browser's pointer lock already delivers raw `movementX/Y`).
 
-- **In**: a left click on the screen (`mouse_click_to_grab`, default on
-  — the capturing click is **swallowed**: the guest cursor is not under
-  the host pointer, so forwarding it would click at an arbitrary spot),
-  `Ctrl+Alt+G`, View ▸ Capture mouse, or `view.mousegrab` in the palette.
+- **In**: `Ctrl+Alt+G`, a **middle click**, View ▸ Capture mouse, or
+  `view.mousegrab` in the palette. A **left click never captures**. It
+  used to (`mouse_click_to_grab`), and the capturing press then had to be
+  **swallowed** — the guest cursor is not under the host pointer, so
+  forwarding it would click at an arbitrary spot — which meant an
+  ordinary click both vanished and silently changed what every later
+  click meant. The setting is gone with the behaviour: it could no longer
+  gate anything, and a preference that changes nothing is worse than
+  none. Stale `mouse_click_to_grab` keys in an existing `state.cfg` are
+  simply never read.
 - **Out**: `Ctrl+Alt+G` (in the unconditional key set in `main.cpp`, and
   tested in `onKey` above the Ctrl-letter path that would inject $07),
   **middle click**, window focus loss (`glfw_window_focus_callback`), or
   the card going away (`render()` releases when both pointers are null,
   which covers slot config / profile switch / snapshot restore at once).
+  `shouldToggleGrab` refuses to *capture* without a card, and under the
+  3D voxel view where middle-drag pans the camera — but it never refuses
+  to *release*: an escape hatch any state can block is not one.
+- **Nothing is drawn on the emulated screen.** Two captions used to be
+  ("Click to capture the mouse", and a how-to-get-out reminder), both
+  there to paper over click-to-grab: a click that silently changed the
+  mouse had to announce itself, and an accidentally-captured user had to
+  be told the way out. Capture is now only reachable by the same two
+  gestures that leave it, so whoever is captured already knows the way
+  out. The indicator is the status bar's `GRAB` chip, with the way out
+  spelled out beside it for 30 s (`mouseGrabHintUntil_`).
 - **While captured**: `ImGuiConfigFlags_NoMouse` — io.MousePos tracks the
   virtual cursor and would hover panels the user can't see. The GLFW
   backend skips its own cursor-shape updates under `GLFW_CURSOR_DISABLED`

@@ -923,22 +923,22 @@ private:
     bool mouseSyncActive = false;   // true while in absolute mode (mouse on)
 
     // ── Host-pointer capture ("mouse grab") ───────────────────────────
-    // Policy in `MouseGrab.h`; this pair is the runtime state it reads.
-    // Like kiosk, a grab is a pure host-side mode: the machine never sees
-    // it, so nothing about it is snapshotted. `clickToGrab_` IS persisted
-    // (`mouse_click_to_grab`) — it changes what a click on the screen
-    // does, which is exactly the kind of thing a user sets once.
+    // Policy in `MouseGrab.h`; this is the runtime state it reads. Like
+    // kiosk, a grab is a pure host-side mode: the machine never sees it, so
+    // nothing about it is snapshotted. There is no click-to-grab preference
+    // any more — a left click never captures, so the setting it used to
+    // gate (`mouse_click_to_grab`) could no longer change anything, and a
+    // preference that does nothing is worse than no preference. Stale keys
+    // left in an existing state.cfg are simply never read.
     bool mouseGrabbed_ = false;
-    bool clickToGrab_  = true;
-    /// `lastFrameTime` deadline for the "how to get out" caption on the
-    /// Apple II screen. Kiosk ignores it and keeps the caption up — it has
-    /// no status bar to carry the permanent reminder.
+    /// `lastFrameTime` deadline for the status bar's spelled-out "how to
+    /// get out" hint beside the GRAB chip. Nothing is drawn over the
+    /// emulated screen any more.
     double mouseGrabHintUntil_ = 0.0;
 
     /// Screen-overlay captions for the capture contract ("click to capture"
     /// / "Ctrl+Alt+G to release"). Called from `drawScreenImage`, so both
     /// the windowed and the kiosk path get them.
-    void drawMouseGrabOverlay();
 
     /// Snapshot the host/UI state the grab policy decides on (card plugged,
     /// captured, cursor-in-screen-rect, voxel view, preference). Uses

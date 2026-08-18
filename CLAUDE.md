@@ -204,7 +204,7 @@ Keyboard wiring:
 - **Left Alt = Open-Apple** → $C061 bit 7
 - **Right Alt = Solid-Apple** → $C062 bit 7
 - **F10 = full screen ⇄ windowed** (kiosk toggle — see CLI section)
-- **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (middle click also releases; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
+- **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (a middle click toggles it too; a left click never captures; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
 - F9 / F10 / F11 / F12 / Ctrl+Alt+G / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI

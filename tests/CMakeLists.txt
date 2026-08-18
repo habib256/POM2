@@ -3082,8 +3082,9 @@ set_tests_properties(mouse_card_applewin_smoke PROPERTIES TIMEOUT 5)
 
 
 # ─── Mouse Card pointer-capture ("mouse grab") policy test ──────────────
-# Pins src/MouseGrab.h: the Ctrl+Alt+G chord and middle-button release that
-# keep a captured pointer escapable, the swallow-the-capturing-click rule,
+# Pins src/MouseGrab.h: the two gestures that toggle a capture (Ctrl+Alt+G
+# and a middle click) and the rule that RELEASING is never refused by any
+# state, that a LEFT click never captures (it always routes to the card),
 # release-always-passes-through, capture bypassing the widget-rect gate on
 # motion, and absolute sync being off while captured. Header-only and
 # GLFW-free, so it links nothing but itself.

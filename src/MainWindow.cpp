@@ -474,8 +474,6 @@ MainWindow::MainWindow(bool forceIIPlus)
                               joystick->binding().squareGate);
         showMouseInspector = settings->getBool ("show_mouse_inspector",
                                                  showMouseInspector);
-        clickToGrab_       = settings->getBool ("mouse_click_to_grab",
-                                                 clickToGrab_);
         showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
         showMockingboardPanel = settings->getBool ("show_mockingboard",
                                                   showMockingboardPanel);
@@ -1075,7 +1073,6 @@ MainWindow::~MainWindow()
     settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
     settings->setBool  ("show_joystick",   showJoystickPanel);
     settings->setBool  ("show_mouse_inspector", showMouseInspector);
-    settings->setBool  ("mouse_click_to_grab",  clickToGrab_);
     settings->setBool  ("show_chatmauve",  showChatMauvePanel);
     settings->setBool  ("show_mockingboard", showMockingboardPanel);
     settings->setBool  ("show_phasor",       showPhasorPanel);
@@ -3339,16 +3336,6 @@ void MainWindow::renderMenuBar()
                       "is hidden. Ctrl+Alt+G or a middle click releases it."
                     : "No Mouse Card plugged — add 'mouse' (MAME, needs both\n"
                       "ROMs) or 'mouseaw' (AppleWin HLE) in Slot Configuration.");
-            if (ImGui::MenuItem("Click screen to capture", nullptr,
-                                clickToGrab_)) {
-                clickToGrab_ = !clickToGrab_;
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(
-                    "On: a click on the Apple II screen captures the pointer\n"
-                    "(that first click is swallowed, not sent to the guest).\n"
-                    "Off: clicks always reach the Mouse Card and capture is\n"
-                    "reachable only from Ctrl+Alt+G or this menu.");
         }
         ImGui::Separator();
 
@@ -3659,9 +3646,9 @@ void MainWindow::renderStatusBar()
             }
 
             // ── Mouse capture ────────────────────────────────────────────
-            // The permanent half of the capture contract (the on-screen
-            // caption fades). Only ever shown while captured — this is the
-            // badge a user looks for when the pointer "disappeared".
+            // The ONLY capture indicator now that the on-screen caption is
+            // gone — this is the badge a user looks for when the pointer
+            // "disappeared". Only ever shown while captured.
             if (mouseGrabbed_ && roomFor(9.0f)) {
                 pom2::verticalRule();
                 ImGui::TextColored(u32(pal.accent),
@@ -3672,6 +3659,18 @@ void MainWindow::renderStatusBar()
                         "Card: motion no longer stops at the edge of the\n"
                         "screen widget, and the OS cursor is hidden.\n"
                         "Ctrl+Alt+G or a middle click gives it back.");
+                // Spell the way out in full, in the bar, for a good while
+                // after the capture — long enough to read without hunting
+                // for a tooltip, and it costs nothing but bar width. It is
+                // written out rather than left to the tooltip above because
+                // a user who cannot find their pointer is not in a mood to
+                // go hovering things to find out why.
+                if (lastFrameTime < mouseGrabHintUntil_ && roomFor(30.0f)) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(u32(pal.textDim),
+                                       ICON_FA_ARROW_RIGHT
+                                       " Ctrl+Alt+G or middle click to release");
+                }
             }
 
             // ── Host caps-lock ───────────────────────────────────────────
@@ -4071,52 +4070,20 @@ void MainWindow::drawScreenImage()
                 std::clamp(voxelCam_.distance * std::pow(0.9f, wheel), 0.6f, 20.0f);
     }
 
-    // Drawn last, over the screen image, from both the windowed and the
-    // kiosk path (they share this function).
-    drawMouseGrabOverlay();
 }
 
-// Two one-line captions on the Apple II screen, both drawn straight into the
-// window draw list (no ImGui items — an item here would steal the hover /
-// drag state the voxel camera and the title-bar drag read from the Image):
+// The Apple II screen carries NO capture caption. It used to carry two — a
+// "Click to capture the mouse" hint and a how-to-get-out reminder — and both
+// existed to paper over the click-to-grab contract that is now gone: a click
+// that silently changed what the mouse did had to announce itself, and a user
+// who got captured by accident had to be told the way out.
 //
-//   • not captured, hovering, a card plugged → "Click to capture the mouse",
-//     the discoverability half: a click that silently changes what the mouse
-//     does needs to announce itself BEFORE the user makes it.
-//   • just captured → how to get back out, for a few seconds. The permanent
-//     reminder is the status-bar chip, which kiosk does not have — so in
-//     kiosk this caption stays up for as long as the capture lasts.
-void MainWindow::drawMouseGrabOverlay()
-{
-    const float w = screenRectMax.x - screenRectMin.x;
-    const float h = screenRectMax.y - screenRectMin.y;
-    if (w <= 0.0f || h <= 0.0f) return;
-    if (!mouseCard && !mouseAwCard) return;
-
-    const char* text = nullptr;
-    if (mouseGrabbed_) {
-        if (kiosk_ || lastFrameTime < mouseGrabHintUntil_)
-            text = "Mouse captured " ICON_FA_ARROW_RIGHT
-                   " Ctrl+Alt+G or middle click to release";
-    } else if (clickToGrab_ && !show3dVoxel_ && mouseGrabContext().screenHovered) {
-        text = "Click to capture the mouse";
-    }
-    if (!text) return;
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 pad(ImGui::GetFontSize() * 0.5f, ImGui::GetFontSize() * 0.25f);
-    const ImVec2 sz  = ImGui::CalcTextSize(text);
-    // Bottom-centre: out of the way of an Apple II menu bar (top) and of the
-    // status line most software puts on the last text row.
-    const ImVec2 p1(screenRectMin.x + (w - sz.x) * 0.5f - pad.x,
-                    screenRectMax.y - sz.y - pad.y * 2.0f - 8.0f);
-    const ImVec2 p2(p1.x + sz.x + pad.x * 2.0f, p1.y + sz.y + pad.y * 2.0f);
-    dl->AddRectFilled(p1, p2, IM_COL32(0, 0, 0, 170), 4.0f);
-    dl->AddRect(p1, p2, IM_COL32(255, 255, 255, 40), 4.0f);
-    dl->AddText(ImVec2(p1.x + pad.x, p1.y + pad.y),
-                mouseGrabbed_ ? pom2::palette().accent : pom2::palette().textDim,
-                text);
-}
+// Neither problem exists any more. Capture is entered only by Ctrl+Alt+G or a
+// middle click, and each of those is also the way out, so anyone captured got
+// there deliberately and already knows the gesture. The standing reminder is
+// the status-bar GRAB chip (with a long-lived hint beside it); painting over
+// the emulated screen to say the same thing is exactly the clutter the chip
+// exists to avoid.
 
 void MainWindow::renderKiosk()
 {
@@ -4988,7 +4955,6 @@ pom2::mousegrab::Context MainWindow::mouseGrabContext() const
     c.cardPlugged = (mouseCard != nullptr) || (mouseAwCard != nullptr);
     c.grabbed     = mouseGrabbed_;
     c.voxelView   = show3dVoxel_;
-    c.clickToGrab = clickToGrab_;
     // Hover, NOT rect containment. `screenHovered_` is ImGui's own z-order
     // aware verdict, captured next to the screen Image (renderScreenWindow).
     // A raw "is the cursor between screenRectMin and screenRectMax" test
@@ -5064,7 +5030,12 @@ void MainWindow::setMouseGrab(bool on)
         ? "Mouse captured — Ctrl+Alt+G or middle click to release"
         : "Mouse released";
     tapeStatusUntil     = lastFrameTime + (on ? 4.0 : 2.0);
-    mouseGrabHintUntil_ = on ? lastFrameTime + 4.0 : 0.0;
+    // The bar-side "how to get out" hint. 4 s was tuned for a caption
+    // painted over the emulated screen, where it had to get out of the way
+    // fast; in the status bar it costs only bar width, and the person who
+    // needs it is the one still working out where their pointer went. Long
+    // enough to notice, read and act on without it becoming furniture.
+    mouseGrabHintUntil_ = on ? lastFrameTime + 30.0 : 0.0;
 }
 
 void MainWindow::toggleMouseGrab() { setMouseGrab(!mouseGrabbed_); }
@@ -5212,22 +5183,21 @@ void MainWindow::onMouseButton(int button, int action)
     const bool press = (action != 0);   // GLFW_RELEASE = 0, others = press/repeat
     const pom2::mousegrab::Context grabCtx = mouseGrabContext();
 
-    // Middle click = the release half of the capture contract, matching what
-    // every VM viewer trains into the user's fingers. Checked first and on
-    // PRESS only: releasing the wheel button must not re-enter anything, and
-    // while captured ImGui has no mouse, so nothing else wants this event.
-    if (pom2::mousegrab::isReleaseButton(button)) {
-        if (press && mouseGrabbed_) setMouseGrab(false);
-        return;
-    }
-
-    // First left press inside the screen takes the pointer instead of
-    // reaching the guest — the capturing click is swallowed on purpose (the
-    // guest cursor is wherever its firmware left it, not under the host
-    // pointer, so forwarding it would click at an arbitrary spot). Every
-    // press after that goes through.
-    if (pom2::mousegrab::shouldGrabOnPress(grabCtx, button) && press) {
-        setMouseGrab(true);
+    // Middle click TOGGLES the capture, matching what every VM viewer trains
+    // into the user's fingers, and it is one of exactly two gestures that
+    // can — Ctrl+Alt+G is the other. Checked first and on PRESS only:
+    // releasing the wheel button must not toggle back, and while captured
+    // ImGui has no mouse, so nothing else wants this event.
+    //
+    // A left press does NOT capture. That contract is gone on purpose: it
+    // made an ordinary click silently change the meaning of every later
+    // click, and the capturing press had to be swallowed (the guest cursor
+    // is wherever its firmware left it, not under the host pointer), so the
+    // user's first click simply vanished. Left presses now always route by
+    // shouldRouteButton below and mean what they look like.
+    if (pom2::mousegrab::isToggleButton(button)) {
+        if (press && pom2::mousegrab::shouldToggleGrab(grabCtx))
+            setMouseGrab(!mouseGrabbed_);
         return;
     }
 

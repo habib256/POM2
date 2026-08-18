@@ -5,6 +5,65 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-18 (later still, 3) — A left click no longer takes your mouse
+
+Three changes to pointer capture, all from the same complaint: it happened
+when you did not ask for it, and it explained itself in the wrong place.
+
+**A left click never captures.** The old contract was the classic one — click
+the emulated screen and the guest gets your mouse — and it has a real cost
+that is easy to miss when writing it and impossible to miss when using it. The
+capturing press has to be **swallowed**: the guest cursor is wherever its
+firmware left it, not under the host pointer, so forwarding the click would
+fire the guest's button at an arbitrary spot (a stray dot in MousePaint, the
+wrong pick in A2Desktop). So an ordinary click both disappeared *and* silently
+changed what every later click meant. Left presses now always route to the
+card by `shouldRouteButton`, and mean what they look like.
+
+**Middle click toggles instead of only releasing.** It was release-only, on
+the reasoning that "an escape hatch that can also arm the trap is a worse
+escape hatch" — sound while a left click was the way in, and pointless once it
+is not. Capture is now reachable by exactly two deliberate gestures, and each
+is also the way out.
+
+Which buys the property the rest of this entry rests on: **you can only get
+captured by the same gesture that releases you.** Nobody arrives in the
+captured state by accident, so nobody needs to be told the way out before they
+get there.
+
+`shouldToggleGrab` still refuses to *capture* with no card on the bus, and
+under the 3D voxel view where middle-drag pans the camera (Ctrl+Alt+G still
+works there — a chord cannot be confused with a drag). It never refuses to
+*release*, whatever the state: an escape hatch that any condition can block is
+not an escape hatch, and each refusal would strand a captured pointer with the
+OS cursor hidden. The test asserts all four of those release cases one at a
+time.
+
+**Nothing is drawn on the emulated screen any more.** Both captions are gone —
+"Click to capture the mouse" and the how-to-get-out reminder. They existed to
+paper over click-to-grab: a click that silently changed the mouse had to
+announce itself first, and a user captured by surprise had to be told the way
+out. Neither problem survives the change above. The standing indicator is the
+status bar's `GRAB` chip, and the way out is now **spelled out in full beside
+it for 30 s** rather than 4 — the old budget was tuned for a caption painted
+over the Apple II screen, where it had to get out of the way fast. In the bar
+it costs only width, and the person who needs it is the one still working out
+where their pointer went, who is not in a mood to go hovering things for a
+tooltip.
+
+**The `mouse_click_to_grab` setting is gone**, along with its View-menu item.
+It gated the behaviour that no longer exists, so it could not change anything
+— and a preference that does nothing is worse than no preference. Stale keys
+in an existing `state.cfg` are simply never read.
+
+Worth being precise about the test: "a left click never captures" is now a
+**structural** property, not a behavioural one. There is no longer any
+function in the policy that maps a left press to a capture, so the test pins
+it by asserting the left button carries no toggle and that the same context
+which used to capture now routes the press to the card. That is a weaker kind
+of pin than a case that fails on the old code, and it is the strongest one
+available once the path is deleted rather than disabled.
+
 ## 2026-08-18 (later still, 2) — Clicking a Floppy Emu image does something now
 
 Reported: *"I can't boot disks by clicking in floppyemu."* Exactly right, and
