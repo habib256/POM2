@@ -29,6 +29,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - [Reset architecture](#reset-architecture)
 - [CLI](#cli)
 - [Version string locations](#version-string-locations)
+- [Package payload](#package-payload)
 
 ## Build & run
 
@@ -62,7 +63,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Phasor (2×VIA, 4×AY) | `PhasorCard.h/.cpp` + `AyPsgSynth.h` | [§ Phasor](DEV.md#phasor-applied-engineering) |
 | AY PSG audio-thread synth (shared: generators, mixer, band-limiting, DC) | `AyPsgSynth.h` | [§ Mockingboard](DEV.md#mockingboard) |
 | SSI263 speech chip | `Ssi263.h/.cpp` + `Ssi263PhonemeData.h/.cpp` | [§ SSI263](DEV.md#ssi263--echo-street-electronics) |
-| Cricket / Echo (SSI263) — catalog `echoplus` | `EchoPlusCard.h/.cpp` | [§ EchoPlusCard](DEV.md#echopluscard) |
+| Cricket / Echo (SSI263) — catalog `echoplus` | `EchoPlusCard.h/.cpp` | [§ EchoPlusCard](DEV.md#echopluscard-cricket--ssi263-class--catalog-echoplus) |
 | Echo+ (TMS5220 + 2×AY, scaffold) — catalog `echoplus_tms` | `EchoPlusTMS5220Card.h/.cpp` | [§ EchoPlusTMS5220Card](DEV.md#echoplustms5220card) |
 | Grappler+ (Orange Micro, ROM-gated) — catalog `grappler` | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
 | Floppy mechanical sounds (MAME WAV samples) | `FloppySoundDevice.h/.cpp` | [§ Floppy sounds](DEV.md#floppy-mechanical-sounds) |
@@ -72,7 +73,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Atomic **+ durable** file commit — every write-back goes through it | `AtomicFileReplace.h` | [§ Write-back commit](DEV.md#how-a-media-write-back-commits-atomicfilereplaceh) |
 | Machine snapshot + Rewind ring (MicroM8-style) | `MachineSnapshot.*`, `RewindBuffer.*` | [§ Rewind](DEV.md#rewind--time-travel) |
 | 3D voxel view (MicroM8-style) + camera math | `Voxel3DRenderer.*`, `Mat4.h` | [§ 3D voxel](DEV.md#3d-voxel-view) |
-| ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodoshardiskcard-hdv-synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
+| ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodosharddiskcard-hdv--synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
 | IWM (//c, //c+, Mac, IIgs) | `IWMDevice.*` | [§ IWM](DEV.md#iwm-c-on-board) |
 | SmartPort 3.5" //c+ on-board (`.po`/`.2mg`/`.woz`) | `Disk35Image.*`, `Sony35Drive.*`, `Sony35Gcr.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
@@ -144,13 +145,17 @@ $C0(8+s)X    Per-slot device select (e.g. Phasor mode soft-switch
              4-register indirect window — mode / addr-hi / addr-lo /
              data — repeated 4× when it's an Uthernet II)
 $C100-$C5FF  Slot ROMs (or IIe internal I/O ROM when INTCXROM=on).
-             When MockingboardCard SoundII is in slot s, $Cs40-$Cs44
-             routes to the SSI263; when EchoPlusCard is in slot s,
-             $Cs00-$Cs04 routes to its SSI263.
+             When MockingboardCard SoundII is in slot s, $Cs40-$Cs4F
+             writes shadow into the SSI263 (reads stay VIA); when
+             EchoPlusCard is in slot s, $Cs00-$Cs04 routes to its
+             SSI263.
 $C300-$C3FF  IIe 80-col firmware (internal when SLOTC3ROM=off)
 $C400-$C4FF  ProDOS clock card slot ROM
-$C600-$C6FF  Disk II boot PROM (when roms/disk2.rom present)
-$C700-$C7FF  Slot ROMs (currently empty)
+$C600-$C6FF  Disk II boot PROM (341-0027-A embedded; roms/disk2.rom
+             overrides)
+$C700-$C7FF  Slot 7 ROM (free by default; //c PAL forces Le Chat
+             Mauve here, and the CLI prefers it for FujiNet / the
+             HDV auto-plug)
 $D000-$F7FF  Applesoft BASIC ROM
 $F800-$FFFF  Monitor ROM + 6502 vectors ($FFFA-$FFFF)
 ```
@@ -163,30 +168,30 @@ In IIe mode the same map applies but most of `$0000-$BFFF` can route to aux 64 K
 |---|---|---|---|---|
 | Apple ][ Original (1977)  | NMOS  | off | `apple2o.rom`, `apple2.rom` | — |
 | Apple ][+ (1979)          | NMOS  | off | `apple2p.rom`, `apple2.rom` | — |
-| Apple //e Unenh. (1983)   | NMOS  | on  | `apple2e_unenh.rom`, `apple2e.rom` | — (AUX = ext80) |
+| Apple //e Unenh. (1983)   | NMOS  | on  | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | — (AUX = ext80) |
 | Apple //e Enh. (1985)     | 65C02 | on  | `apple2e.rom` | — (AUX = ext80) |
-| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1 SSC (printer port) · sl2 SSC (modem port) · sl4 Mouse · sl5 SmartPort · sl6 Disk II |
-| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom` | sl1 SSC (printer port) · sl2 SSC (modem port) · sl4 Mouse · sl5 SmartPort 3.5" (IWM) · sl6 Disk II |
+| Apple //c (1984)          | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | sl1 SSC (printer port) · sl2 SSC (modem port) · sl4 Mouse (AppleWin HLE) · sl5 SmartPort · sl6 Disk II |
+| Apple //c Plus (1988)     | 65C02 | on  | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1 SSC (printer port) · sl2 SSC (modem port) · sl4 Mouse (AppleWin HLE) · sl5 SmartPort 3.5" · sl6 Disk II (IWM) |
 | Apple //e Enh. PAL (50 Hz) | 65C02 | on  | `apple2e.rom` | — (AUX = ext80) · **PAL timing** |
-| Apple //c PAL (Le Chat Mauve) | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | same as //c **+ sl7 built-in Le Chat Mauve RGB** (Adaptateur IIc) · **PAL timing** |
+| Apple //c PAL (Le Chat Mauve) | 65C02 | on  | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | same as //c **+ sl7 built-in Le Chat Mauve RGB** (Adaptateur IIc) · **PAL timing** |
 
 Built-in slots force their listed card onto the SlotBus on profile load (overriding `slot_N_card` settings) and grey out their row in Slot Config. Detail → [DEV § Profile switching](DEV.md#profile-switching-internals).
 
 **//c-class CPU + Chat Mauve rules.** The //c/+/enhanced-//e/PAL profiles have a **65C02 soldered** (`defaultCpu = CMOS`); an `cpu_mode_override = nmos` is *ignored* there (`resolveCpuMode` clamp) — forcing NMOS made their 65C02 ROMs hit KIL opcodes and freeze. The **Le Chat Mauve RGB** card is the one peripheral allowed on a `noPhysicalSlots` //c (it's the rear DB-15 "Adaptateur IIc", not a slot card): user-pluggable on plain //c/+ via a `{empty, Le Chat Mauve}` Slot-Config combo, and a **fixed sl7 built-in on the //c PAL profile**. Profile-forced slots are no longer persisted to `slot_N_card` on exit (quitting on //c used to clobber the user's //e card config).
 
-**Video standard (NTSC/PAL).** Each profile carries a `VideoStandard` (`CpuClock.h`): NTSC (262 lines, 60 Hz, 1.0227 MHz) for US machines, **PAL (312 lines, ~50 Hz, ~1.0156 MHz)** for the two PAL profiles. The European //c PAL is the machine that took the **Le Chat Mauve** RGB Péritel adapter on its DB-15 port; French Touch / DIX demos are PAL-timed, so their beam-raced effects and Mockingboard-T2 frame sync only land correctly under PAL. MAME oracles for European PAL: **`apple2eefr`** (//e enhanced France) and **`apple2cfr`** / **`apple2c0fr`** (//c France, UniDisk variant) — all 312 vtotal, 50.146 Hz, 14.2375 MHz pixclock. Not the US `apple2ee` / `apple2c`. Note: MAME's //c FR still has no usable 3.5" media path for an 800K `.po`; DIX on MAME stays on `apple2eefr -sl5 superdrive`. `applyProfile` calls `controller->setVideoStandard()`, which sets the worker's 50/60 Hz pacing (`frameIntervalUs`) and the 262/312-line geometry in `Memory` (`pushVideoEventLocked`) + `Apple2Display::frameCycleToPos`. The CPU budget `defaultCyclesPerFrame` (17045 NTSC / 20313 PAL) × refresh = the effective clock. Device clocks (AY/IWM/SSI263) stay at the NTSC nominal — the 0.7 % delta is an inaudible audio-pitch approximation, not retimed — but the **speaker and cassette realtime audio ARE retimed** (`setCpuClock` from `setVideoStandard`): their cycles→samples queues starve under a wrong clock, which is audible. Pinned by `pal_timing`. CLI: `--preset iie-pal|iic-pal` (alias `chatmauve`).
+**Video standard (NTSC/PAL).** Each profile carries a `VideoStandard` (`CpuClock.h`): NTSC (262 lines, 60 Hz, 1.0227 MHz) for US machines, **PAL (312 lines, ~50 Hz, ~1.0156 MHz)** for the two PAL profiles. The European //c PAL is the machine that took the **Le Chat Mauve** RGB Péritel adapter on its DB-15 port; French Touch / DIX demos are PAL-timed, so their beam-raced effects and Mockingboard-T2 frame sync only land correctly under PAL. MAME oracles for European PAL: **`apple2eefr`** (//e enhanced France) and **`apple2cfr`** / **`apple2c0fr`** (//c France, UniDisk variant) — all 312 vtotal, 50.146 Hz, 14.2375 MHz pixclock. Not the US `apple2ee` / `apple2c`. Note: MAME's //c FR still has no usable 3.5" media path for an 800K `.po`; DIX on MAME stays on `apple2eefr -sl5 superdrive`. `applyProfile` calls `controller->setVideoStandard()`, which sets the worker's 50/60 Hz pacing (`frameIntervalUs`) and the 262/312-line geometry in `Memory` (`pushVideoEventLocked`) + `Apple2Display::frameCycleToPos`. The CPU budget `defaultCyclesPerFrame` (17045 NTSC / 20313 PAL) × refresh = the effective clock. Device *generator* clocks (AY/IWM/SSI263) stay at the NTSC nominal — the 0.7 % delta is an inaudible audio-pitch approximation — but `setVideoStandard` calls `setCpuClock` on **every slot card plus speaker and cassette**: their emuCycles replay cursors and cycles→samples queues starve under a wrong clock, which is audible. Pinned by `pal_timing`. CLI: `--preset iie-pal|iic-pal` (alias `chatmauve`).
 
 **ROM identity check**: when the generic `apple2.rom` fallback resolves (no profile-specific dump present), the loader warns the ROM may not match the selected machine.
 
 Default `cyclesPerFrame` = 17045 for II/II+/IIe/IIc; **//c+ defaults to 68180 (4×)** for its on-board Zip-style accelerator. `$C036` 1 MHz fall-back during disk I/O not modelled (event-driven disk LSS keeps nibbles cycle-correct anyway). `cpu_mode_override = auto|nmos|65c02` (Machine → CPU menu).
 
-**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. POM2 implements enough for cold boot (banner + 5.25" auto-boot); the full IWM bit-shift state machine is **not** modelled, so the firmware's IWM/Sony 3.5" boot path never reaches a bootable disk. This is owned, not a TODO — but the ROM-availability rationale changed in 2026-07: the Liron controller ROM **has been publicly dumped** (BMOW/Yellowstone `LIRONALL.bin`, 4 KB, [github.com/steve-chamberlin/fpga-disk-controller](https://github.com/steve-chamberlin/fpga-disk-controller), with full disassembly; MAME still lists it *WANTED* only because it never ingested the dump). A cycle-faithful 3.5" boot is therefore implementable in principle, but still needs the full IWM bit-shift state machine + the UniDisk 3.5 drive-side 65C02 firmware — deliberately out of scope. The supported path is the host-served SmartPort block device at built-in slot 5, which boots 3.5"/HDV on all //c-class machines. → [DEV](DEV.md#profile-switching-internals).
+**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. The IWM state machine **is** ported (`IWMDevice`, verbatim MAME, incl. the bit-cell read walker and write windows) and the Sony GCR drives exist (`Sony35Drive`, `--35-disk1/2`); what remains unfinished is the //c+ firmware's on-board 3.5" **boot** through them — it does not yet reach a bootable disk (TODO § //c+/IWM boot). The Liron controller ROM **has been publicly dumped** (BMOW/Yellowstone `LIRONALL.bin`, 4 KB, [github.com/steve-chamberlin/fpga-disk-controller](https://github.com/steve-chamberlin/fpga-disk-controller), with full disassembly; MAME still lists it *WANTED* only because it never ingested the dump) and POM2 ships it as `roms/liron.rom`; the UniDisk 3.5 drive-side 65C02 firmware stays deliberately out of scope. The supported path is the host-served SmartPort block device at built-in slot 5, which boots 3.5"/HDV on all //c-class machines. → [DEV](DEV.md#profile-switching-internals).
 
-**//c-class on-board SmartPort (3.5" + HDV boot)**: real IWM/Sony GCR boot is unmodelled, and MAME doesn't emulate 3.5"/SmartPort on the plain //c. POM2 boots 3.5" and HDV on //c/+/c+ through a host-served SmartPort block device at built-in slot 5. `Memory::memRead` punches a hole at `$C500-$C5FF` for the SmartPort firmware iff the slot is **armed** + holds media. `bootFromSlot` arms it; every reset disarms it, so the //c ROM's autostart always sees its real `$C500` firmware (avoids the "garbled //c banner" bug). Pinned by `iic_onboard_smartport_test`. → [DEV § Storage](DEV.md#c-class-on-board-smartport-35--hdv-boot).
+**//c-class on-board SmartPort (3.5" + HDV boot)**: the firmware's IWM/Sony GCR boot doesn't reach a bootable disk (see above), and MAME doesn't emulate 3.5"/SmartPort on the plain //c. POM2 boots 3.5" and HDV on //c/+/c+ through a host-served SmartPort block device at built-in slot 5. `Memory::memRead` punches a hole at `$C500-$C5FF` for the SmartPort firmware iff the slot is **armed** + holds media. `bootFromSlot` arms it; every reset disarms it, so the //c ROM's autostart always sees its real `$C500` firmware (avoids the "garbled //c banner" bug). Pinned by `iic_onboard_smartport_smoke`. → [DEV § Storage](DEV.md#c-class-on-board-smartport-35--hdv-boot).
 
-Profile switching is a full cold reset with strict ordering — 13-step `applyProfile` sequence detailed in [DEV](DEV.md#profile-switching-internals).
+Profile switching is a full cold reset with strict ordering — 14-step (0-13) `applyProfile` sequence detailed in [DEV](DEV.md#profile-switching-internals).
 
-CLI `--preset` triggers the same path. Aliases: `apple2`, `apple2plus`, `iie-u`, `apple2e`, `apple2c`, `apple2cplus`, `//e`, `//c`, `//c+`.
+CLI `--preset` triggers the same path. Canonical keys: `ii`, `ii+`, `iie-u`, `iie`, `iic`, `iic+`, `iie-pal`, `iic-pal`; `parsePresetName` (`CliDispatcher.cpp`) carries the full alias table (`apple2`, `apple2plus`, `apple2e`, `apple2c`, `apple2cplus`, `//e`, `//c`, `//c+`, `chatmauve`, …).
 
 ## Reset architecture
 
@@ -194,10 +199,10 @@ Three classes of reset (+ one boot shortcut), mirroring MAME's split:
 
 | POM2 verb | Trigger | Behaviour | MAME analogue |
 |---|---|---|---|
-| `softReset()` | F11, toolbar, AI `/reset?kind=soft`, `applyProfile` | RAM survives. IIe-class wipes full MMU/IOU/LC; II/II+ leaves LC + display untouched (kbd strobe only). CPU `SP -= 3`, I flag set, PC = $FFFC. | `reset_w(true→false)` |
-| `hardReset()` | F12, toolbar, AI `/reset?kind=hard`, `applyProfile` step 11 | RAM survives; CPU additionally zeros A/X/Y. **II/II+**: display/LC preserved (same as soft reset). **IIe-class**: full MMU wipe → TEXT. | `reset_w` + register wipe |
+| `softReset()` | F11, toolbar, AI `/reset?kind=soft` | RAM survives. IIe-class wipes full MMU/IOU/LC; II/II+ leaves LC + display untouched (kbd strobe only). CPU `SP -= 3`, I flag set, PC = $FFFC. | `reset_w(true→false)` |
+| `hardReset()` | F12, toolbar, AI `/reset?kind=hard`, `applyProfile` step 11 | RAM survives; CPU additionally zeros A/X/Y, SP = $FF, P = $24 \| I. **II/II+**: display/LC preserved (same as soft reset). **IIe-class**: full MMU wipe → TEXT. | `reset_w` + register wipe |
 | `coldBoot()` | Toolbar power, AI `/reset?kind=cold`, MainWindow ctor, "Insert + boot" | Wipes user RAM + LC + aux with `00 FF 00 FF…` MAME pattern; full reset; hard reset CPU. | `machine_start` + `machine_reset` |
-| `bootFromSlot(N)` | HDV / SmartPort / Disk II Library "Boot" | `coldBoot` then `PC = $C000 + N*256` after validating JSR-dispatch trio ($Cn01=$20, $Cn03=$00, $Cn05=$03 — Apple II Ref Manual Appx C). $Cn07 NOT validated (HDV cards have $Cn07=$01). Mismatch → falls back to `coldBoot`. | Synthetic shortcut |
+| `bootFromSlot(N)` | HDV / SmartPort / Disk II Library "Boot" | coldBoot-equivalent (inlined; also arms the //c on-board SmartPort iff N=5) then `PC = $C000 + N*256` after validating JSR-dispatch trio ($Cn01=$20, $Cn03=$00, $Cn05=$03 — Apple II Ref Manual Appx C). $Cn07 NOT validated (HDV cards have $Cn07=$01). Mismatch → falls back to `coldBoot`. | Synthetic shortcut |
 
 Keyboard wiring:
 
@@ -205,13 +210,13 @@ Keyboard wiring:
 - **Right Alt = Solid-Apple** → $C062 bit 7
 - **F10 = full screen ⇄ windowed** (kiosk toggle — see CLI section)
 - **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (a middle click toggles it too; a left click never captures; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
-- F9 / F10 / F11 / F12 / Ctrl+Alt+G / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
+- F9 / F10 / F11 / F12 / Ctrl+Alt+G / Ctrl+Shift+P / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI
 
-`CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner` (Phase-C runner). Three phases: parse → pre-boot (preset/ROM/snapshot-load/`--load addr:file`) → post-boot (tape ops/paste/run/step).
+`CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner` (Phase-C runner). Three phases: parse → pre-boot (preset / ROM / display / speed) → post-boot Phase C (deferred actions: `--load addr:file`, `--snapshot-load`/`--snapshot-save`, tape ops, paste, run, step).
 
-Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`, `--tape`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`.
+Flags: `--preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal`, `--speed`, `--cpu-max`, `--display`, `--tape`, `--save-tape`/`--save-tape-format aci|wav`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`, `--fujinet[=PORT]`/`--fujinet-serial[=DEV]`/`--fujinet-slot N`, `--rgb-card-invert-bit7[=on|off]`, `--kiosk`. `printUsage()` in `CliDispatcher.cpp` is the source of truth.
 
 **Kiosk is a runtime mode, not just a flag**: `MainWindow::toggleKioskMode()`
 (F10, View menu, `view.kiosk` palette command, or the in-kiosk menu's
@@ -223,12 +228,12 @@ writes — so no snapshot round-trip is involved. A session LAUNCHED with
 the GUI (`settingsReadOnly()`), preserving the documented "a kiosk session
 can't disturb your desktop setup" promise.
 
-**Positional disk + kiosk**: `POM2 <disk-image>` mounts the image into the slot its type maps to (`classifyDiskForSlot`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the saved profile + slot config, then cold-boots. `--kiosk` adds exclusive full-screen with a chrome-free render path. Kiosk is read-only (no settings writes). An HDV with no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard` into a free slot. Pinned: `cli_kiosk_test`.
+**Positional disk + kiosk**: `POM2 <disk-image>` mounts the image into the slot its type maps to (`classifyDiskForSlot`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the saved profile + slot config, then cold-boots. `--kiosk` adds exclusive full-screen with a chrome-free render path. Kiosk is read-only (no settings writes). An HDV with no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard` into a free slot. Pinned: `cli_kiosk`.
 
 ## Version string locations
 
 Current release: **v0.8.3**. **Single source of truth = `CMakeLists.txt`
-`project(pom2_imgui VERSION x.y ...)`.** A `configure_file` expands it into
+`project(pom2_imgui VERSION x.y.z ...)`.** A `configure_file` expands it into
 `build/generated/Version.h` (from `src/Version.h.in`); all C++ pulls the
 version from there (`POM2_VERSION` / `POM2_VERSION_STRING` macros + `pom2::
 kVersion[String]`). Consumers — `main.cpp` (banner + window title),
@@ -238,7 +243,7 @@ hard-code it. Bumping `project(VERSION)` re-runs CMake and rebuilds them.
 To bump a release, edit **`CMakeLists.txt`** then the prose-only files that
 cannot `#include` the header:
 
-- `CMakeLists.txt` (`project(... VERSION x.y ...)`) — **drives all code**
+- `CMakeLists.txt` (`project(... VERSION x.y.z ...)`) — **drives all code**
 - `README.md` (title, and the package names in § Download) — manual
 - `CLAUDE.md` (this line) — manual
 - `docs/releases/v<x.y>.md` — the release notes; the publish job reads the
@@ -249,8 +254,9 @@ cannot `#include` the header:
 
 **`packaging/bundle.manifest` is the single list of what ships inside a
 package** — `roms/` + `fonts/` + the About photo, `wasm floppyemu` as the
-browser-only extra (it holds the demo's boot disk), and a `deny` list
-(`disks_5.4`, `hdv`, `snapshots`, …) that must never appear in one. CMake
+browser-only extra (it holds the demo's boot disk), a `deny` list
+(`disks_5.4`, `hdv`, `snapshots`, …) that must never appear in one, and a
+`denyglob` archive filter (`*.zip`, `*.7z`, …) applied inside copied dirs. CMake
 parses it at configure time for **both** the `install()` rules and the WASM
 `--preload-file` arguments; `packaging/stage_data.sh` parses it for the macOS
 `.app` and the Windows `.zip`, and `--verify` is the guard every release job

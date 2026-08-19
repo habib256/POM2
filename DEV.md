@@ -15,7 +15,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [Display](#display)
 - [Audio](#audio) · [Mockingboard](#mockingboard) · [Floppy mechanical sounds](#floppy-mechanical-sounds)
 - [Slot bus & IRQ aggregation](#slot-bus--irq-aggregation)
-- [Storage](#storage) · [ProDOSHardDiskCard](#prodoshardiskcard-hdv-synthetic-block-model) · [CffaCard](#cffacard-cffa-20--mame-faithful-ide) · [SmartPortCard](#smartportcard-e-liron-class)
+- [Storage](#storage) · [ProDOSHardDiskCard](#prodosharddiskcard-hdv--synthetic-block-model) · [CffaCard](#cffacard-cffa-20--mame-faithful-ide) · [SmartPortCard](#smartportcard-e-liron-class)
 - [IWM (//c+ on-board)](#iwm-c-on-board)
 - [SmartPort 3.5" stack](#smartport-35-stack)
 - [Peripherals](#peripherals) · [SSC](#super-serial-card-slot-2--telnet-bridge) · [Network backends](#network-backends) · [Uthernet I](#uthernet-i-cs8900a) · [Uthernet II](#uthernet-ii-w5100) · [ClockCard](#prodos-clock-card-slot-4) · [MouseCard](#mouse-card) · [Joystick / paddles](#joystick--paddles)
@@ -33,8 +33,10 @@ Full NMOS 6502 + 65C02 (STZ / BRA / INA / DEA / PHX-PLY / BIT-imm /
 TSB / TRB / JMP (abs,X), zp-indirect) + Rockwell RMB/SMB/BBR/BBS +
 WDC WAI/STP (PC parks, IRQ wakes). Klaus Dormann clean.
 `setCpuMode(NMOS)` re-overrides four KIL column-2 entries
-($02/$22/$42/$62) back to halt, and remaps `$0B/$2B/$EB` as
-`UnoffImm` (2-byte NOPs). 65C02 undoc-NOP cycles: imm=2, zp,X=4,
+($02/$22/$42/$62) back to halt, remaps the eight $xB-column
+immediates ($0B/$2B/$4B/$6B/$8B/$AB/$CB/$EB) as `UnoffImm`
+(2-byte NOPs), and re-points `$5C/$DC/$FC` to `UnoffAbsX`
+(page-cross penalty). 65C02 undoc-NOP cycles: imm=2, zp,X=4,
 abs,X=4, zp=3 ($5C left at 8). Pinned: `cmos_6502_smoke_test`,
 `klaus_65c02_extended_test` (PASSES @ `$24F1`),
 `cpu_cycle_count_test`. `setProgramCounter()` is the Klaus harness
@@ -367,11 +369,11 @@ $B000-$DFFF windows = 6502 $D000-$FFFF Language Card RAM.
 
 ### //c-class detection (MAME `apple2e.cpp:1275-1299` content probe)
 
-- `payload[0x3BC0]==0x00` → `isIIcClass=true` (forces INTCXROM on
-  every reset; //c has no physical slots). Fires for both 16 KB
-  rev-255 AND 32 KB rev-0/3/4/X //c+ dumps.
-- `payload[0x3BBF]==0x05` (after //c match) → `isIIcPlus=true`
-  (gates on-board IWM + MIG). Plain //c uses `A2BUS_DISKIING` at
+- `payload[0x3BC0]==0x00` → //c-class (`Memory::iicProfile_` set;
+  forces INTCXROM on every reset; //c has no physical slots). Fires
+  for both 16 KB rev-255 AND 32 KB rev-0/3/4/X //c+ dumps.
+- `payload[0x3BBF]==0x05` (after //c match) → //c+
+  (`IIcClassProfile::isPlus_`; gates on-board IWM + MIG). Plain //c uses `A2BUS_DISKIING` at
   slot 6 (MAME `apple2c()` `apple2e.cpp:5168-5188`).
 - `IIcClassProfile::hasAltBank_` is narrower: true only on 32 KB dumps
   providing an alt-firmware bank. 16 KB rev-255 //c has `isIIcClass=true`
@@ -409,7 +411,7 @@ Pinned: `iie_memory_smoke_test`.
 ### RamWorks III
 
 Verbatim port of MAME `bus/a2bus/a2eramworks3.cpp`. Tiers 1/4/8/16/
-48/128 (8 MB cap, MAME `:99-107`). Bus (MAME `:108-115`): writes to
+48/128 (8 MB cap). Bus (MAME `:108-115`): writes to
 `$C0n1/3/5/7` (predicate `(low & 0x09) == 0x01` over
 `$C070-$C07F`) latch `bank = data & 0x7F`. Same accesses still
 pulse paddle one-shot mirror.
@@ -444,9 +446,11 @@ joystick buttons (MAME `apple2e.cpp:2157-2169`); wired to host
 Left/Right Alt (`Memory::setOpenAppleKey/setSolidAppleKey`); GLFW
 key callback routes those even when ImGui has focus.
 
-**IOUDIS** (`$C07E` SET / `$C07F` CLR + //c mirrors `$C078/$C079`).
-Init `true` every reset (MAME `apple2e.cpp:1224`). Writes effective
-only on `isIIcClass` (MAME `:2569-2587` gates `m_isiic`). Read
+**IOUDIS** (`$C07E` SET / `$C07F` CLR; on //c the whole
+`$C078-$C07F` range decodes SET/CLR by parity — every even address
+sets, every odd clears). Init `true` every reset (MAME
+`apple2e.cpp:1224`). Writes effective only on //c-class
+(`Memory::iicProfile_` non-null; MAME `:2569-2587` gates `m_isiic`). Read
 `$C07E` on any IIe-class returns bit-7 = ioudis state (MAME
 `:2276-2278`).
 
@@ -476,7 +480,7 @@ stays high until `$C010`.
 
 - **`resetSoftSwitches()`** — full reset: display state, LC flags,
   `iieMemMode`, `intC8Rom`, `iicRomBank`, IOUDIS=true, RamWorks
-  bank 0. Forces `MF_INTCXROM` when `isIIcClass`. Called by
+  bank 0. Forces `MF_INTCXROM` on //c-class (`iicProfile_`). Called by
   `coldBoot()`, `applyProfile` step 4, and
   `resetSoftSwitchesWarm()` when `iieMode` is on.
 - **`resetSoftSwitchesWarm()`** — Ctrl-Reset / F12 on II/II+; F11/F12
@@ -505,8 +509,11 @@ UI uploads via `glTex(Sub)Image2D`. Text flash via
 `frame_number() & 0x10` (MAME parity).
 
 Ten `HiResMode`:
-- `ColorNTSC` — 14 KB LUT `(parity<<8)|byte`, 39 seam fix-ups,
-  glow (MAME `composite_color_mode=0`).
+- `ColorNTSC` — 7-bit sliding artifact window →
+  `kArtifactColorLut[2][128]` (verbatim MAME
+  `apple2video.cpp:376-419`) rotated by `rotl4b(absX)` → lo-res
+  palette; 560 sub-pixels pair-averaged to 280 (MAME
+  `composite_color_mode=0`).
 - `ColorCompMedium` (=1), `ColorComp4Bit` (=2, no artifact).
 - `ChatMauveRGB` — only with `LeChatMauveCard`.
 - `ColorCompositeOE` — OpenEmulator-style true NTSC simulation
@@ -631,7 +638,7 @@ TEXT waveform right, same line).
 
 **Horizontal (mid-scanline-column) splits** *(RGBA done 2026-06-09; composite
 done 2026-06-09)*. Both replays now resolve switches **per byte column**.
-`VideoEvent.emuCycle` (`Memory.h:272`) already carries the CPU cycle — only the
+`VideoEvent.emuCycle` (`Memory.h:320`) already carries the CPU cycle — only the
 horizontal position was discarded — so `Apple2Display::frameCycleToPos(emuCycle)`
 maps it to `{scanline, byteCol}` with `byteCol = clamp((emuCycle % 65) − 25, 0,
 40)` (the 40-byte visible window opens at horizontal cycle 25). The shared
@@ -676,8 +683,7 @@ right, same line" split in *both* the RGBA framebuffer and the composite signal.
 **Scope-out:** a split that MIXES a 40-col (280, `frame`) and an 80-col (560,
 `frame80`) segment on one scanline targets different buffers and is undefined
 (the last segment's `useFrame80` wins); and the exact transition cycle within a
-character clock is a later refinement. Full plan → `TODO.md` § [Display] *Split
-horizontal mid-scanline*.
+character clock is a later refinement.
 
 ### 80-col text
 

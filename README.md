@@ -30,7 +30,7 @@ Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 - 🎞️ **Beam-raced to the scanline.** Soft-switch flips mid-frame land on the exact scanline the CPU touched them — split-screen demos, hi-res/text mode swaps and AN3 DHGR toggles render correctly. The composite NTSC path beam-races too, so artifact colour follows the same event log the RGBA path does.
 - 🧊 **Tilt the screen into 3D.** A MicroM8-style **voxel view** lifts the Apple II framebuffer off the glass into an orbiting 3D scene — pixels become extruded voxels you can fly around with a real camera.
 - ⏪ **Rewind time.** A snapshot ring buffer records the machine as it runs; scrub backwards through your last seconds of execution and resume from any point. Same serializer feeds the AI-control HTTP `/snapshot` endpoints, so they can never drift.
-- 📺 **CRT you can dial in.** OpenEmulator-style composite NTSC shader *and* AppleWin's CPU IIR-LUT NTSC, plus mono phosphor with an adjustable **phosphor curve** (luminance γ) and **persistence** (temporal glow), barrel distortion, hue/BCS — the full *View → CRT Settings* panel.
+- 📺 **CRT you can dial in.** OpenEmulator-style composite NTSC shader *and* AppleWin's CPU IIR-LUT NTSC, plus mono phosphor with an adjustable **phosphor curve** (luminance γ) and **persistence** (temporal glow), barrel distortion, hue/BCS — the full *Display → CRT Settings* panel.
 - 💾 **Disks that sound right.** Cycle-stamped mechanical floppy samples: the Disk II head step and the Sony 3.5" drive whir, timed off the CPU clock — disk-turbo collapses wall-clock gaps but the nibble stream stays cycle-correct via an event-driven LSS.
 - 🌐 **Online, from 1984.** The **Uthernet II**'s W5100 is a hardware TCP/IP stack, so POM2 runs it straight on host sockets — point a period IRC, telnet or FTP client at the real internet with no extra dependency and no privileges, on Linux, macOS **and Windows**. The **Uthernet I** (CS8900A) is there too for IP65 / Contiki, bridged by optional libslirp (Linux/macOS).
 - 🎵 **A whole sound-card era.** Speaker, cassette, Mockingboard A/C, Mockingboard C **Sound II** with SSI263 speech, the Applied Engineering **Phasor** (2×VIA / 4×AY), and the Cricket / Echo SSI263 line.
@@ -47,7 +47,7 @@ Five things to try **right after first boot**:
 2. **Switch machines live** → `Machine → Profile` (or `--preset iie`). Each switch is a clean cold reset that re-plugs built-in cards and re-mounts your disks.
 3. **Tilt into 3D** → open the **3D voxel view** and orbit the running framebuffer with the camera. Lo-res, hi-res and text all extrude into voxels.
 4. **Rewind** → let something run, then scrub the rewind ring backwards and resume from an earlier instant (a UI feature — note the CLI `--rewind` is unrelated: it rewinds the cassette tape).
-5. **Tune the CRT** → `View → CRT Settings`: swap composite NTSC ↔ mono phosphor, push the phosphor curve and persistence, add scanline glow and barrel.
+5. **Tune the CRT** → `Display → CRT Settings`: swap composite NTSC ↔ mono phosphor, push the phosphor curve and persistence, add scanline glow and barrel.
 
 ---
 
@@ -84,10 +84,10 @@ If your distro no longer ships `libfuse2`, either install it or run the image
 without it: `./POM2-v0.8.3-x86_64.AppImage --appimage-extract-and-run`.
 On a **Pi 4 or Pi 400**, take `-pi400-aarch64` rather than `-raspberry-`: it is
 the same build compiled for that exact core with two profile-guided passes and
-LTO, worth roughly **40 %** on the emulation core. It will not start on a Pi 3
-or on a Pi 5, which is why both packages ship. Other cores (Pi 5's cortex-a76,
-Pi 3's cortex-a53) and the Pi OS Lite tarball are built on demand — recipe
-under [Releases](#-releases).
+LTO, worth roughly **40 %** on the emulation core. It will not start on a
+Pi 3's older cortex-a53 — take `-raspberry-` there. Other cores (a PGO build
+tuned for the Pi 5's cortex-a76, the Pi 3's cortex-a53) and the Pi OS Lite
+tarball are built on demand — recipe under [Releases](#-releases).
 
 **🍏 macOS** — open the `.dmg`, drag **POM2** into *Applications*. The app is
 signed **ad-hoc** (no paid Developer ID), so the first launch is refused with
@@ -133,9 +133,15 @@ Prereqs: [Visual Studio](https://visualstudio.microsoft.com/) (C++ workload), [C
 git clone https://github.com/habib256/pom2.git
 cd pom2
 git clone --depth 1 https://github.com/ocornut/imgui.git
-vcpkg install glfw3:x64-windows
-cmake -B build && cmake --build build --config Release
+vcpkg install --triplet x64-windows-static
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static
+cmake --build build --config Release
 ```
+
+Dependencies come from the repo's `vcpkg.json` manifest, so `vcpkg install`
+takes **no package argument**. The `x64-windows-static` triplet matches POM2's
+static CRT and yields the self-contained no-DLL `POM2.exe`; the default
+`x64-windows` triplet would put DLLs back beside it.
 
 (`setup_imgui.sh` does the Dear ImGui clone and `build/` creation on
 Linux/macOS; on Windows do them manually as shown — the CMake configure
@@ -153,19 +159,21 @@ hard-fails if `imgui/` is missing.)
 ./build_wasm.sh --with-data         # also bundle the disks_3.5/ library
 ```
 
-The browser build preloads `roms/`, `fonts/`, `pic/` and `floppyemu/` — including the shipped firmware dumps. Telnet and the AI-control HTTP server are compiled out under WASM.
+The browser build preloads `roms/`, `fonts/`, the About photo and `floppyemu/` — including the shipped firmware dumps. Telnet and the AI-control HTTP server are unreachable under WASM (the browser sandbox has no listening sockets), so their UI entries are hidden.
 </details>
 
 ### 💿 ROMs and media
 
-Release packages (and the repo) ship the full `roms/` tree. Disk / HDV media stays yours:
+Release packages (and the repo) ship the full `roms/` tree; `floppyemu/` is
+created on first run. The media folders are a convention POM2 reads when
+present — create the ones you use, no package ships them:
 
 ```text
 roms/         Apple II firmware dumps (bundled in releases)
-disks_5.4/    5.25" disk images
-disks_3.5/    3.5" disk images
-hdv/          ProDOS hard-disk images
-floppyemu/    Floppy Emu / BMOW media
+disks_5.4/    5.25" disk images (yours)
+disks_3.5/    3.5" disk images (yours)
+hdv/          ProDOS hard-disk images (yours)
+floppyemu/    Floppy Emu / BMOW media (auto-created)
 ```
 
 ```bash
@@ -185,8 +193,10 @@ POM2 --kiosk path/to/game.dsk       # exclusive full-screen, chrome-free
 | Esc | ESC | F9 | Screenshot → `screenshot_NNN.ppm` |
 | F10 | **Full screen ⇄ windowed** (kiosk toggle) | F11 | Soft reset / Ctrl-Reset |
 | F12 | Hard reset / power-cycle | `Ctrl+Alt+G` | **Capture / release the mouse** |
+| F6 | **Hold to rewind** (time-travel) | `Ctrl+Shift+P` | **Command palette** |
+| `Ctrl+V` | Paste clipboard into the Apple II | Tab | `$09` |
 
-F9 / F10 / F11 / F12, `Ctrl+Alt+G` and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
+`Ctrl-V` is the one exception in the `Ctrl-A..Z` range — the host intercepts it for clipboard paste; the Apple II's own Ctrl-V stays reachable through the Edit menu. F9 / F10 / F11 / F12, `Ctrl+Alt+G`, `Ctrl+Shift+P` and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
 
 **Mouse capture.** Put the card in **slot 4** — on a //e the internal 80-column firmware owns `$C300`, so a mouse card in slot 3 is invisible to software (A2DeskTop, MousePaint and MultiScribe all decide there is no mouse and run keyboard-only); Slot Configuration flags it. With a Mouse Card plugged (`mouse` or `mouseaw`), **`Ctrl+Alt+G` or a middle click (wheel)** hands the host pointer to the guest and takes it back again: the OS cursor disappears and motion becomes unbounded, so the emulated cursor can always reach the edges of its own clamp window instead of stalling when your real pointer runs out of screen. Alt-Tabbing away also releases it. A left click never captures — it always goes to the guest, so clicks mean what they look like. The status bar shows a `GRAB` badge while captured, and spells out the way back for half a minute after; nothing is drawn over the Apple II screen. `View → Capture mouse` toggles it from the menu.
 
@@ -202,12 +212,12 @@ Eight one-click machines spanning the line — six NTSC plus two **PAL (50 Hz)**
 |---|---|---|---|---|
 | **Apple ][ Original** (1977) | NMOS 6502 | — | `apple2o.rom`, `apple2.rom` | — |
 | **Apple ][+** (1979) | NMOS 6502 | — | `apple2p.rom`, `apple2.rom` | — |
-| **Apple //e Unenhanced** (1983) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `apple2e.rom` | AUX = ext80 |
-| **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = ext80 |
-| **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort · sl6 Disk II |
-| **Apple //c+** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom` | sl1/2 SSC · sl4 Mouse · sl5 SmartPort 3.5" · sl6 Disk II |
-| **Apple //e Enhanced PAL** (50 Hz) | 65C02 | IIe | `apple2e.rom` | AUX = ext80 · **PAL timing** |
-| **Apple //c PAL** (Le Chat Mauve) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom` | same as //c **+ sl7 built-in Le Chat Mauve RGB** · **PAL timing** |
+| **Apple //e** (1983, Unenhanced) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | AUX = Ext. 80-col (built-in) |
+| **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) |
+| **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort · sl6 Disk II |
+| **Apple //c Plus** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort 3.5" · sl6 Disk II |
+| **Apple //e Enhanced PAL** (50 Hz) | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) · **PAL timing** |
+| **Apple //c PAL** (Le Chat Mauve) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | same as //c **+ sl7 built-in Le Chat Mauve RGB** · **PAL timing** |
 
 Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`, `iie-pal`, `iic-pal`/`chatmauve`.
 
@@ -227,9 +237,9 @@ Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`i
 | 🧊 **3D voxel view** | MicroM8-style — framebuffer extruded into orbiting voxels with a real camera (`Voxel3DRenderer` + `Mat4`). |
 | ⏪ **Rewind** | MicroM8-style snapshot ring buffer; scrub back and resume. Shares its serializer with the AI-control `/snapshot` endpoints. |
 | 🔊 **Audio** | Speaker · cassette · Mockingboard A/C · Mockingboard C **Sound II** (SSI263 speech) · Applied Engineering **Phasor** (2×VIA / 4×AY) · Cricket / Echo SSI263 · Echo+ TMS5220 scaffold · cycle-stamped Disk II + Sony 3.5" mechanical sounds. |
-| 💾 **Storage** | `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv` · DOS 3.x · ProDOS · SmartPort · CFFA 2.0. WOZ uses the real Disk II P6 LSS sequencer; detection is content-driven (MacBinary, DOS/ProDOS skew, WOZ/2IMG write-protect handled). |
+| 💾 **Storage** | `.dsk` `.do` `.d13` `.po` `.nib` `.2mg` `.woz` `.hdv` · DOS 3.x · ProDOS · SmartPort · CFFA 2.0. WOZ uses the real Disk II P6 LSS sequencer; detection is content-driven (MacBinary, DOS/ProDOS skew, WOZ/2IMG write-protect handled). |
 | 🌐 **Ethernet** | **Uthernet II** (WIZnet W5100 hardware TCP/IP — runs on host sockets, so period IRC / telnet / FTP clients work with no extra dependency and no root; Linux, macOS and Windows) · **Uthernet I** (CS8900A NIC, raw frames, bridged to the host by optional libslirp user-mode NAT — Linux and macOS only, see below). |
-| 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · **Apple ImageWriter II** printer with a rendered paper tray (colour ribbon, bit-image graphics, PNG export) · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
+| 🔌 **Peripherals** | Super Serial (+ telnet bridge) · parallel printer with host spool · Orange Micro Grappler+ · **Apple ImageWriter II** printer with a rendered paper tray (colour ribbon, bit-image graphics, PNG + multi-page PDF export) · ProDOS Clock / ThunderClock+ · Mouse Card (MAME + AppleWin HLE) · joystick / paddles · Floppy Emu (BMOW) · on-board //c devices. |
 | 🛠️ **Tools** | Disk Library · Slot Configuration · screenshots · memory viewer · snapshots · kiosk mode · CLI · AI-control HTTP server. |
 
 ---
@@ -287,7 +297,8 @@ actually send) all land on paper.
 
 Front panel: **Form feed** ejects the sheet onto the stack (a blank sheet
 is not ejected, like the real button), **Reset printer** returns it to
-factory settings, and **Save sheet as PNG** / **Save all sheets** write to
+factory settings, and **Save sheet as PNG** / **Save all sheets** /
+**Save PDF** (the whole job as one multi-page PDF) write to
 the per-user POM2 data directory under `printouts/`. *Printer settings* holds the paper size, the page raster
 resolution, and **Auto line-feed after CR** — leave that on for Apple II
 software (which sends CR and never LF); turn it off if a driver sends both
@@ -305,6 +316,7 @@ POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carr
 - **RGB cards** — Video-7 and Le Chat Mauve for IIe-class machines.
 - **3D voxel view** — lift the whole framebuffer into an orbiting voxel scene.
 - **HGR/DHGR Paint editor** (*Tools → HGR Paint Editor*) — MacPaint-style painting straight into live video RAM (HGR, GR lo-res, and DHGR on IIe-class machines), rendered through the real NTSC pipeline. Imports PNG/JPG with ii-pix-style CAM16-UCS perceptual dithering; loads/saves raw pages (8 KB HGR, 1 KB GR, 16 KB A2FC DHGR) and PNG exports.
+- **HGR Sprite Editor** (*Tools → HGR Sprite Editor*) — draw hi-res sprites over live video RAM and export them as ca65 `.byte` tables.
 
 ---
 
@@ -318,7 +330,7 @@ The output is **stereo**, wired the way the hardware is: a Mockingboard puts AY1
 
 ## 💾 Storage — disks, SmartPort, CFFA
 
-Supported images: `.dsk` `.do` `.po` `.nib` `.2mg` `.2img` `.woz` `.hdv`. Detection is **content-driven** — MacBinary wrappers, DOS/ProDOS sector skew and WOZ/2IMG write-protect flags are all handled. WOZ playback runs the genuine Disk II **P6 LSS sequencer** (`diskii_p6.rom` required). ProDOS block devices back the HDV / CFFA 2.0 / SmartPort paths.
+Supported images: `.dsk` `.do` `.d13` `.po` `.nib` `.2mg` `.woz` `.hdv`. Detection is **content-driven** — MacBinary wrappers, DOS/ProDOS sector skew and WOZ/2IMG write-protect flags are all handled. WOZ playback runs the genuine Disk II **P6 LSS sequencer** (`diskii_p6.rom` optional — the embedded 341-0028-A default is used when absent). ProDOS block devices back the HDV / CFFA 2.0 / SmartPort paths.
 
 Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), and 32 KB system+video ROMs.
 
@@ -326,11 +338,15 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 |---|---|
 | `apple2e.rom` | //e firmware (+ optional charset) |
 | `apple2cp.rom` | //c+ banks 0 + 1 |
-| `apple2_char.rom` | Character ROM |
-| `disk2.rom` / `disk2_13.rom` | Disk II boot PROMs |
-| `diskii_p6.rom` | Disk II P6 LSS sequencer (required for WOZ) |
+| `apple2_char.rom` | II/II+ character ROM (also the IIe-class fallback) |
+| `apple2e_char.rom` / `apple2e_char_2k.rom` | //e character ROMs — Enhanced 4 KB (mousetext) / Unenhanced 2 KB |
+| `disk2.rom` / `disk2_13.rom` | Disk II boot PROMs (16- / 13-sector; embedded 341-0027-A default for 16-sector) |
+| `diskii_p6.rom` / `diskii_p6_13.rom` | Disk II P6 LSS sequencer PROMs (embedded default when absent) |
+| `liron.rom` | Liron / SmartPort controller firmware (real $Cn0D dispatch identity) |
 | `cffa20ee02.bin` / `cffa20eec02.bin` | CFFA 2.0 firmware |
 | `mouse_341-0270-c.bin` / `mouse_341-0269.bin` | Mouse Card slot ROM / 68705 MCU mask ROM |
+| `grappler_plus.bin` | Grappler+ EPROM |
+| `thunderclock_u9_v1.3.bin` | ThunderClock+ firmware |
 | `roms/floppy_samples/*.wav` | Mechanical drive samples |
 
 ---
@@ -339,7 +355,7 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 
 ```bash
 POM2 <disk-image>                   # mount into the right slot + cold-boot
-POM2 --kiosk <disk-image>           # exclusive full-screen, chrome-free, read-only
+POM2 --kiosk <disk-image>           # exclusive full-screen, chrome-free, settings-read-only
 POM2 --preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal
 POM2 --snapshot-save out.pom2snap
 POM2 --snapshot-load in.pom2snap
@@ -425,7 +441,7 @@ is there, and nothing from its `deny` list (the disk libraries, your snapshots
 and printouts) leaked in. Both failures are otherwise silent.
 
 Past `--help`, each job also runs a **boot smoke** against the packaged
-binary: `pom2_headless --frames 300 --screenshot` boots the bundled ROM,
+binary: `pom2_headless --frames 300 --screenshot boot.ppm` boots the bundled ROM,
 executes 300 frames and fails if the captured frame is a single flat colour.
 That is what proves a package resolved its *own* ROMs and ran 6502 code —
 `--help` would pass just as happily with an empty `roms/`.
@@ -441,9 +457,11 @@ package_windows_release.bat         # staged folder + .zip (on Windows, after a 
 ```
 
 Every artifact bundles the full `roms/` tree. To override a dump in a read-only
-package (AppImage/.dmg/.deb), drop a replacement into
-`~/.local/share/POM2/roms/` — the AppImage creates that folder with a README on
-first run; `ResourcePaths` also probes beside the executable.
+package (AppImage/.dmg/.deb), drop a replacement into the per-user data
+directory — `~/.local/share/POM2/roms/` on Linux (`$XDG_DATA_HOME` honoured),
+`~/Library/Application Support/POM2/roms/` on macOS,
+`%LOCALAPPDATA%\POM2\roms\` on Windows. The AppImage creates the Linux folder
+with a README on first run; `ResourcePaths` also probes beside the executable.
 
 **Raspberry Pi** builds on the OpenGL **ES 3.0** tier — Mesa's V3D caps
 *desktop* GL at 3.1 on Pi 4/5, so the default GL 3.2 core request cannot
@@ -483,7 +501,7 @@ the profiling recipe.
 
 - Mouse absolute position can drift under A2Desktop / MGTK.
 - Some anti-//e copy-protected titles refuse to boot on //e/c/c+ hardware.
-- **//c+ 3.5"/SmartPort boot is host-served, not cycle-faithful — deliberately.** POM2 boots 3.5" and HDV images on the //c+ through a host-served SmartPort block device at the built-in slot 5, and that path works. What is *not* modeled is the cycle-faithful on-board IWM/Sony GCR boot: it needs the //c+ firmware's full IWM bit-shift state machine **and** the UniDisk 3.5's drive-side 65C02 firmware, which is a large lift for a path the host-served device already covers. (The Liron-class controller firmware itself is no longer the obstacle it once was — the BMOW/Yellowstone dump is public, POM2 ships it, and the slot card presents its real identity on //e-class machines; MAME's *WANTED* entry is simply stale.)
+- **//c+ 3.5"/SmartPort boot is host-served, not cycle-faithful — deliberately.** POM2 boots 3.5" and HDV images on the //c+ through a host-served SmartPort block device at the built-in slot 5, and that path works. The IWM state machine and the Sony GCR drives *are* ported (`IWMDevice`, `Sony35Drive` — `--35-disk1/2` mounts 800K images in the //c+ Sony bays), but the //c+ firmware's on-board boot path through them does not yet reach a bootable disk, and the UniDisk 3.5's drive-side 65C02 firmware stays out of scope. (The Liron-class controller firmware itself is no longer the obstacle it once was — the BMOW/Yellowstone dump is public, POM2 ships it, and the slot card presents its real identity on //e-class machines; MAME's *WANTED* entry is simply stale.)
 
 ---
 
