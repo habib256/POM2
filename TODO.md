@@ -23,8 +23,11 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | #  | Subsystem                  | Parity           | MAME / AppleWin refs                                                     | Known gaps                                                                              |
 | --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte on all 178 documented opcodes; 🟢 WDC decimal SBC now silicon-exact (interdigit carry, 2026-07-30); 🟢 $5C 8-cyc = deliberate (matches MAME, not Harte) |
+| 1bis | Z80 core (standalone)          | POM2-original (L0) | z80.info/decoding.htm field decomposition (same structure MAME's `z80.cpp` flattens) | — (zexdoc + zexall clean; MEMPTR + X/Y flags modelled, not approximated; pinned `z80_core`, `z80_zexdoc`, `z80_zexall`, `z80_block_io_flags`) |
+| 1ter | SoftCard Z80 (key `softcard`)  | Verbatim         | MAME `bus/a2bus/a2softcard.cpp` (R. Belmont, 176 lines; line-cited)      | — (real DMA bus arbitration, 6502 halted per instruction slice; CP/M 2.2 boots MAME-oracle-identical; pinned `softcard_toggle`, `softcard_cpm_boot`, `softcard_cpm_boot_iie`) |
 | 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs to extract)                                         |
 | 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, floating bus `$C05x`, page-flip DROL, Chat Mauve RGB: done) |
+| 3bis | Le Chat Mauve RGB (key `chatmauve`) | POM2 + AppleWin | AppleWin `RGBMonitor.cpp` pixel rules + the Eve/Chat Mauve brevet (MAME has no model) | 🟢 AN3 pulse FIFO decode, Eve Color text `$C0B8/9` + HGR Duochrome `$C0BA/B`, snapshot v2; pinned `le_chat_mauve_smoke` |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
 | 5  | CassetteDevice                 | POM2-original    | `apple2.cpp:362`                                                         | —                                                                                        |
 | 6  | Mockingboard A/C (6522 + AY)   | Partial-verbatim | `ay8910.cpp:998-1015`, `:1077-1104`, `1309`; `6522via.cpp:959`          | 🟢 Port A read mask by DDR; 6522 subset (SR/PCR; T2 one-shot done, IRQ N+3 MAME)      |
@@ -37,7 +40,9 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 12 | SmartPortCard (//e Liron)      | POM2-original (real EPROM → L2) | SmartPort spec + Apple Tech Note; real Liron firmware `roms/liron.rom` (BMOW 4 KB) + real `$Cn0D` dispatch, pinned `liron_smartport_dispatch` | 🟢 multi-partition ProDOS (CFFA3000)                                                     |
 | 13 | SmartPortHub + Sony35Drive     | Verbatim         | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | —                                                                                        |
 | 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2; no media preservation on profile switch                         |
+| 14bis | ProDOSHardDiskCard (key `hdv`) | POM2-original (H1) | No MAME/AppleWin analogue — hand-assembled 256 B slot ROM + an invented 4-register streaming port | 🟢 deliberate: mounts `.hdv`/`.2mg` with **no card ROM dump required**; no GCR/flux/ATA below it; `$Cn07 = $01` so the F8 autostart never scans it (use `PR#n` / `bootFromSlot`); pinned `hdv_card_smoke`, `hdv_writeback_smoke`, `hdv_mass_storage_smoke` |
 | 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`; Thunderware Rev 1.3 EPROM (`roms/thunderclock_u9_v1.3.bin`) | 🟡 MODE_SHIFT lax; 🟡 DATA_OUT live vs MAME latch; 🟢 real EPROM loads from the ctor (synth ROM = fallback, untested from `$C800`) |
+| 15bis | NoSlotClock (DS1216E, no slot used) | Verbatim | MAME `ds1216.cpp`; protocol verified against AppleWin `NoSlotClock.cpp` (Nick Westgate csa2 + Dallas datasheet) | 🟢 full 64-bit pattern-match state machine on reads **and** writes (key bit rides on the address); window follows the machine — `$F800-$FFFF` on II/II+, `$C300`/`$C800` on //e + //c-class; injectable time source; pinned `no_slot_clock_smoke` |
 | 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
@@ -51,6 +56,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 23  | UthernetCard + Cs8900aDevice (key `uthernet`) | Verbatim | MAME `machine/cs8900a.cpp` (VICE lineage) + `bus/a2bus/uthernet.cpp`, line-cited | 🟢 pull-mode RX (POM2 has no `device_network_interface` push bus); inbound frame queue out of snapshot deliberate |
 | 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
 | 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path; 🟡 libslirp is Linux/macOS only, so Uthernet I has no transport on Windows |
+| 24 | FujiNetCard (key `fujinet`)    | POM2-original (relay) | No MAME device — published SmartPort/SP-over-SLIP spec + the FujiNet AppleWin fork | 🟢 not an emulation: the device is real and off-box, every SmartPort call is forwarded verbatim; no peer → bounded 250 ms stall then SmartPort `$27`; 🟡 **rewind cannot rewind it**; 🟡 not on //c-class (forced INTCXROM masks slot ROM); pinned `fujinet_card` |
 
 ## Quick wins
 
@@ -509,10 +515,14 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   Architect **P3**: hide from the catalog until the chip exists, or ship
   it — a detect-only stub is the wrong third option.
 - ✅ **No-Slot Clock (NSC, DS1216E)** — DONE. `src/NoSlotClock.{h,cpp}`
-  is a full DS1216E SmartWatch state machine, hooked into `Memory`
-  read paths (`interceptRead` under the $F800 ROM window) for machines
-  with no free slot (//c). MAME refs `ds1216.cpp`. Pinned by
-  `no_slot_clock_smoke` (`tests/no_slot_clock_test.cpp`).
+  is a full DS1216E SmartWatch state machine for machines with no free
+  slot (//c), hooked into `Memory`'s read **and** write paths — the key
+  bit rides on the address, so `STA`-driven drivers unlock it too. The
+  watched window follows the ROM the era's drivers probe: `$F800-$FFFF`
+  on II/II+, `$C300-$C3FF` + `$C800-$C8FF` on //e and //c-class (where
+  ProDOS 8 ≥ 2.0.3 and GS/OS actually scan). MAME refs `ds1216.cpp`.
+  Pinned by `no_slot_clock_smoke` (`tests/no_slot_clock_test.cpp`).
+  Detail → `DEV.md` § No-Slot Clock.
 - 🟢 **SSC IRQ gate SW2:6 DIP** not implemented (MAME `a2ssc.cpp:373`).
 - ✅ **Real ClockCard slot ROM** — DONE (2026-07-30, shipped in `f7af757`).
   `roms/thunderclock_u9_v1.3.bin` (Thunderware Rev 1.3, 2 KB, source

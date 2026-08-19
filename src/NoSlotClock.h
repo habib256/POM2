@@ -31,12 +31,22 @@
 //   read (or until system reset clears state). This is the Dallas
 //   datasheet pattern-recognition spec: a bad pattern is sticky.
 //
-// ProDOS 8 ≥ 2.0.3 + GS/OS scan for a No-Slot Clock by deliberately
-// stepping the magic key against the Monitor ROM at $F800-$FFFF and
-// observing the readback. POM2 hooks this class into `Memory::memRead`
-// for that range when `nsclock_enable` is true (default on; the
-// pass-through path is a no-op for software that doesn't trigger the
-// magic key).
+// Where the chip is probed depends on the machine, because it hides
+// under whichever ROM the era's drivers walk:
+//
+//   II / II+        $F800-$FFFF (Monitor ROM), only while the LC maps
+//                   ROM — they have no internal slot-3/8 ROM to sit
+//                   under. Matches AppleWin's `!SW_HIGHRAM &&
+//                   !SW_WRITERAM` gate.
+//   //e, //c-class  $C300-$C3FF and $C800-$C8FF, inside the
+//                   INTCXROM / SLOTC3ROM branches — this is where
+//                   ProDOS 8 ≥ 2.0.3 and GS/OS actually step the magic
+//                   key (AppleWin `IsPotentialNoSlotClockAccess`).
+//
+// POM2 hooks this class into `Memory::memRead` / `memWrite` for those
+// windows when `nsclock_enable` is true (default on; the pass-through
+// path is a no-op for software that doesn't trigger the magic key).
+// Detail → DEV.md § No-Slot Clock.
 
 #include <cstdint>
 #include <ctime>

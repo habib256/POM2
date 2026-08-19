@@ -2589,6 +2589,92 @@ remaining ordering hazard — a TU that pulled `windows.h` in first, so
 winsock v1 is already loaded — into a single `#error` instead of fifty
 redefinition errors.
 
+### No-Slot Clock (`NoSlotClock` — DS1216E SmartWatch)
+
+The DS1216E is a 28-pin socket that physically sits *under* a ROM chip and
+intercepts reads to it — the canonical "clock without using a slot" for a //c
+(no expansion slots) or for any //e / II+ owner out of slots. POM2 models the
+full chip: `src/NoSlotClock.h/.cpp`, MAME ref `ds1216.cpp`, protocol verified
+against AppleWin's `NoSlotClock.cpp`. On by default (`nsclock_enable`), and a
+no-op for software that never walks the magic key.
+
+**Protocol.** The host drives the chip through *addresses*, not data. A2
+selects the operation and A0 carries the payload bit:
+
+- **A2 = 0** — "write" cycle: feed the next bit of the 64-bit magic key, taken
+  from A0 (so `$F800` sends 0, `$F801` sends 1, …). 64 consecutive matches
+  move the chip into clock-readout phase.
+- **A2 = 1** — "read" cycle: emit the next clock-register bit on D0. During
+  pattern-matching a read instead **resets** the matcher.
+- A single wrong A0 bit **disables further writes** and the matcher stays dead
+  until a read (or a reset) clears it — the Dallas datasheet's sticky
+  bad-pattern rule.
+
+Reads and writes drive the *same* matcher, because the key bit rides on the
+address and R/W is irrelevant to it (AppleWin's `CNoSlotClock::Write(address)`
+calls the identical pair). POM2 hooks both: some NSC drivers feed the key with
+`STA`, and with only a read hook they never unlock the clock.
+
+**Where the hook sits depends on the machine** — the chip is under whichever
+ROM the era's drivers probe:
+
+| Machine | Window | Why |
+|---|---|---|
+| II / II+ | `$F800-$FFFF` (Monitor ROM), gated on LC-ROM-mapped | no internal slot-3/8 ROM to hide under; matches AppleWin's `!SW_HIGHRAM && !SW_WRITERAM` |
+| //e, //c-class | `$C300-$C3FF` and `$C800-$C8FF` | where ProDOS 8 ≥ 2.0.3 and GS/OS actually scan (AppleWin `IsPotentialNoSlotClockAccess`) |
+
+That split is why `Memory`'s inline ROM-read fast path carries
+`!(noSlotClock_ && !iieMode && addr >= 0xF800)` (`Memory.h:204`) — it only has
+to step aside for the II/II+ window; the //e / //c hooks live inside the
+INTCXROM / SLOTC3ROM branches that were already on the slow path.
+
+Time source is injectable (`NoSlotClock::TimeFn`) so the test can pin a
+deterministic clock. Pinned by `no_slot_clock_smoke`
+(`tests/no_slot_clock_test.cpp`).
+
+### AI control server (`AiControlServer`)
+
+An HTTP/1.1 listener on **loopback only** (`INADDR_LOOPBACK`, default port
+**6503** — deliberately one off the SSC's 6502) that lets an external process
+drive POM2 the way a human drives the UI. Written for AI agents: `curl` or an
+MCP driver types at the keyboard, resets, mounts disks, peeks/pokes RAM, takes
+snapshots and grabs the framebuffer. Inspired by `paleotronic/microm8-cln`
+(`remint/`, `fastserv/`).
+
+**Off by default** — three settings keys gate it: `ai_control_enable`,
+`ai_control_port`, `ai_control_token`. Authentication is an optional shared
+secret in an `X-POM2-Token` header; with an empty token configured, requests
+are accepted unauthenticated, on the grounds that a loopback-only listener
+already limits exposure to local processes.
+
+Endpoints (the header comment on `AiControlServer.h` is the source of truth
+for the exact JSON shapes):
+
+| Route | Verb(s) | Does |
+|---|---|---|
+| `/status` | GET | profile, cpu_mode, mode, cycles_per_frame, CPU regs, mounted disks |
+| `/cpu` | GET / POST | register dump / set `pc`,`a`,`x`,`y` |
+| `/mem?addr=N&len=N` | GET / POST | hex read (len ≤ 4096) / bulk RAM write |
+| `/reset` | POST | `{"kind":"soft\|hard\|cold"}` — the three verbs in [CLAUDE § Reset](CLAUDE.md#reset-architecture) |
+| `/keyboard` | POST | `{"text":…}` / `{"raw":…}` → the paste queue |
+| `/disk`, `/eject` | POST | insert / eject by `{slot, drive, path}` |
+| `/snapshot/save`, `/snapshot/load` | POST | save path **must** end `.pom2snap` so an agent cannot clobber an unrelated file; load magic-byte-checks the blob |
+| `/speed` | POST | `{"cycles_per_frame":N}` or `{"preset":"1x\|2x\|max"}` |
+| `/screen.ppm` | GET | binary PPM of the live framebuffer |
+| `/mouse` | POST | signed delta (±127/call) or absolute counter + button, straight into the Mouse Card's host-motion input |
+
+**Threading**: one worker thread, one client at a time. Each request takes
+`EmulationController`'s state lock for exactly the slice that touches
+CPU/Memory/slot state — the same rule the UI thread follows. `/keyboard` is
+the exception and needs no state lock: `Memory`'s own paste-queue mutex covers
+it.
+
+The JSON parser is hand-rolled (`AiControlServer.cpp` `jsonParseValueAt`) — a
+request reader, not a document parser, on the same "minimum external deps"
+policy that kept the SSC's TCP listener to 200 lines. On Emscripten the whole
+listener degrades to a stub (`start()` returns false) — see
+[§ WASM socket stubs](#webassembly-browser-build).
+
 ### Host serial ports (`SerialPort`)
 
 `src/SerialPort.h/.cpp` is to serial what `SocketCompat.h` is to sockets: one
