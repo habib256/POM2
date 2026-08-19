@@ -434,8 +434,8 @@ void MainWindow::renderSlotConfigPanel()
         ImGui::BeginDisabled(anyDuplicate || pending == 0);
         char applyLabel[64];
         std::snprintf(applyLabel, sizeof(applyLabel),
-                      pending > 0 ? "Apply %d change%s (restarts emulator)"
-                                  : "Apply (restarts emulator)",
+                      pending > 0 ? "Apply %d change%s (cold-boots the machine)"
+                                  : "Apply (cold-boots the machine)",
                       pending, pending == 1 ? "" : "s");
         if (ImGui::Button(applyLabel)) {
             // Persist ONLY user-editable slots. The panel force-feeds the
@@ -490,7 +490,10 @@ void MainWindow::renderSlotConfigPanel()
         ImGui::EndDisabled();
         if (pending > 0 && ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "Restarts the emulated machine with the new cards.\n"
+                "Cold-boots the emulated machine with the new cards —\n"
+                "RAM is wiped, exactly as if you had powered it off,\n"
+                "swapped the cards and powered it back on. Anything\n"
+                "running or loaded in memory is gone.\n"
                 "Mounted media is preserved where the card still exists.\n"
                 "Only affects the slot list above — anything mounted from\n"
                 "Internal Disks & Media has already taken effect.");
@@ -1457,16 +1460,30 @@ bool MainWindow::restartEmulationFromSettings()
 
     }   // end stateMutex scope over steps 3-4
 
-    // 5. Hard reset + restart worker. Route through `controller->hardReset()`
-    //    rather than `cpu().hardReset()` + `slotBus().reset()` — the
-    //    controller path additionally disarms `iicSmartPortArmed_` (via
-    //    `Memory::setIicSmartPortArmed(false)`) and resets the speaker /
-    //    IWM / SmartPort hub. Pre-fix: on //c-class, the $C500 firmware
-    //    punch stayed armed after `bootFromSlot(5)`, so the post-Apply
-    //    reset vector fetched while the punch was live → //c F8 autostart
-    //    re-booted SmartPort instead of leaving the user at the BASIC
-    //    prompt the Apply was meant to give them.
-    controller->hardReset();
+    // 5. COLD BOOT + restart worker. `coldBoot()`, not `hardReset()`: the
+    //    card set just changed, and hardReset preserves RAM — so everything
+    //    the guest had built around the OLD hardware survived into the new
+    //    machine. DOS 3.3 stays hooked to a slot whose Disk II is gone,
+    //    ProDOS keeps a device table describing cards that no longer exist,
+    //    a player keeps poking a Mockingboard that was unplugged, and the
+    //    warm `resetSoftSwitchesWarm()` even leaves a II/II+'s display and
+    //    Language Card banks as they were. The user asked for different
+    //    hardware; on a real machine that means opening the lid and powering
+    //    back on, which is exactly `coldBoot`: `clearRam()` with the MAME
+    //    00/FF pattern, the FULL `resetSoftSwitches()`, and a hard CPU
+    //    reset. It matches what `applyProfile` (step 4 + step 11) has always
+    //    done for a profile switch — the same event, one rebuild smaller.
+    //
+    //    Route through the controller rather than `cpu().hardReset()` +
+    //    `slotBus().reset()`: the controller path additionally disarms
+    //    `iicSmartPortArmed_` (via `Memory::setIicSmartPortArmed(false)`)
+    //    and resets the speaker / IWM / SmartPort hub. Pre-fix: on
+    //    //c-class, the $C500 firmware punch stayed armed after
+    //    `bootFromSlot(5)`, so the post-Apply reset vector was fetched while
+    //    the punch was live → //c F8 autostart re-booted SmartPort instead
+    //    of leaving the user at the BASIC prompt the Apply was meant to
+    //    give them. `coldBoot()` disarms it too.
+    controller->coldBoot();
     controller->start();
 
     // 6. Re-attach the AI control server with the freshly rebuilt card
@@ -1479,7 +1496,8 @@ bool MainWindow::restartEmulationFromSettings()
         aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
     }
 
-    pom2::log().info("Slots", "Emulator restarted with new slot mapping.");
+    pom2::log().info("Slots",
+                     "Cold-booted with the new slot mapping (RAM wiped).");
     return true;
 }
 
@@ -1601,7 +1619,18 @@ void MainWindow::setKioskModeRuntime(bool k)
         pom2::log().info("Kiosk", "entered (full-screen, chrome-free, "
                                   "settings read-only)");
     } else {
-        // Leaving kiosk. Close the in-kiosk menu first so its captured
+        // Leaving kiosk. Release the host pointer first, before anything
+        // touches the window. Kiosk is the mode where a captured pointer is
+        // least of a problem (there is no UI to click), and the GUI is the
+        // mode where it is most of one: the user comes back to menus, panels
+        // and a docked layout, and every one of those needs a real cursor.
+        // Doing it here rather than leaving it to the user also avoids a
+        // GLFW_CURSOR_DISABLED pointer riding through the full-screen →
+        // windowed monitor change, where the OS re-warps it. Entering kiosk
+        // deliberately does NOT touch the grab — a captured mouse is what a
+        // game in full screen wants.
+        setMouseGrab(false);
+        // Close the in-kiosk menu next so its captured
         // key handling doesn't leak into the GUI frame — and un-pause: the
         // menu pauses the machine while it is up, and leaving kiosk from an
         // open menu would otherwise strand the user in the GUI with a

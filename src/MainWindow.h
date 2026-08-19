@@ -91,6 +91,8 @@ namespace pom2 {
     class Toolbar_ImGui;
     class CommandPalette_ImGui;
     class RomStatus_ImGui;
+    class AbstractionLevels_ImGui;
+    class Keyboard_ImGui;
     enum class SystemProfile;
     enum class CharRomLocale : uint8_t;
 }
@@ -517,8 +519,10 @@ private:
     bool         showNoSlotClockPanel = false;
     // Printer panel — view spool buffer, save as .txt, clear.
     bool         showPrinterPanel   = false;
-    // ImageWriter II paper-tray window (rendered printout).
-    bool         showImageWriterPanel = false;
+    // ImageWriter II paper-tray window (rendered printout). Visible by
+    // default: it is one of the three tabs the default dock layout seeds to
+    // the right of the screen (see `applyDockLayout`, DockLayout::Reset).
+    bool         showImageWriterPanel = true;
     // How many spool bytes have already been fed to `imageWriter`, so a
     // poll only picks up what arrived since the previous frame. Re-seated
     // whenever the source card changes or its spool is cleared — see
@@ -574,8 +578,9 @@ private:
     double       mouseInspectorLastLogTime = 0.0;
     // Slot Configuration: per-slot card assignment (built-ins greyed out).
     // Staged — edits take effect on Apply, which restarts the machine.
-    // Persisted as `show_slot_config`.
-    bool         showSlotConfigPanel = false;
+    // Persisted as `show_slot_config`. Visible by default: one of the three
+    // tabs the default dock layout seeds right of the screen.
+    bool         showSlotConfigPanel = true;
     // Internal disks + mountable ports of the plugged storage cards. Split
     // out of Slot Configuration 2026-07-28: the two ran opposite interaction
     // models in one window (staged vs immediate), which is exactly the
@@ -588,6 +593,13 @@ private:
     // Persisted as `show_rom_status`; Help → ROM Status.
     bool         showRomStatusPanel = false;
     std::unique_ptr<pom2::RomStatus_ImGui> romStatusPanel;
+    // Abstraction Levels: which subsystems POM2 emulates as silicon (LLE) and
+    // which as a service (HLE), which level is running RIGHT NOW (a missing
+    // dump degrades several of them silently), and the four boundaries the
+    // user can move. Companion to docs/lle_vs_hle.md.
+    // Persisted as `show_abstraction`; Help → Abstraction Levels.
+    bool         showAbstractionPanel = false;
+    std::unique_ptr<pom2::AbstractionLevels_ImGui> abstractionPanel;
     // BMOW Floppy Emu panel. Off by default; Devices → Floppy Emu.
     // Persisted as `show_floppy_emu`. `floppyEmuFavActive_` tracks the
     // Favorites-vs-File-Explorer toggle; `floppyEmuStatus` is the last
@@ -713,6 +725,18 @@ private:
     int      aboutImageW_   = 0;
     int      aboutImageH_   = 0;
     bool     aboutImageTried_ = false;
+
+    // Clickable Apple //e keyboard (pic/Keyboard_AppleIIe.jpeg + the measured
+    // hotspot table). Same lazy-load-once contract as the About photo, and
+    // the texture is freed in the same place. Persisted as `show_keyboard`;
+    // Devices → Apple //e Keyboard.
+    bool         showKeyboardPanel = false;
+    std::unique_ptr<pom2::Keyboard_ImGui> keyboardPanel;
+    unsigned     kbImageTex_   = 0;
+    int          kbImageW_     = 0;
+    int          kbImageH_     = 0;
+    bool         kbImageTried_ = false;
+    std::string  kbImageError_;
 
     // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
     // screen, full-viewport, with no menu bar / toolbar / panels.
@@ -1110,6 +1134,21 @@ private:
     /// Parallel cards outrank it in pumpImageWriter().
     SuperSerialCard* printerTapSsc() const;
     void renderNoSlotClockPanelWindow();
+    /// Apple //e keyboard window: lazy-loads the photo, draws it, and turns
+    /// a clicked cap into a keystroke on the emulated machine.
+    void renderKeyboardPanel();
+    /// Lazy-load `pic/Keyboard_AppleIIe.jpeg` into `kbImageTex_`. Same
+    /// once-only contract as `ensureAboutImageLoaded`.
+    void ensureKeyboardImageLoaded();
+    /// Abstraction Levels window: builds the live snapshot from the slot map
+    /// + the card ROM-state accessors, draws it, and executes whatever
+    /// boundary switch came back.
+    void renderAbstractionPanel();
+    /// Swap one slot card for its other-abstraction-level twin, in place.
+    /// Finds the slot currently holding `fromKey`, persists `toKey` there and
+    /// rebuilds the machine. False when `fromKey` is not plugged or the
+    /// rebuild was refused (the live machine is left intact either way).
+    bool swapSlotCardVariant(const char* fromKey, const char* toKey);
     void renderJoystickPanelWindow();
     /// Mouse Inspector — diagnostic panel for cursor-alignment tuning.
     /// Live host cursor position + Apple II Screen widget rect + Mouse
@@ -1180,6 +1219,17 @@ private:
     // Eject every loaded image (Disk II, HDV, SmartPort units, 3.5").
     // Shared by the Disk Library header-row button.
     void ejectAllDisks();
+    /// Eject ONE bay, addressed by slot + index (Disk II drive, or media bay
+    /// on a MountableMediaCard). Re-resolves the card through the SlotBus
+    /// rather than trusting a cached pointer, clears whatever settings key
+    /// would otherwise remount the image next launch, and leaves the medium
+    /// mounted if its write-back save failed. Drives the status-bar chips.
+    bool ejectMediaBay(int slot, int index, bool diskII);
+    /// Write a read-only 3.5" WOZ out as a writable `.po` beside it, then
+    /// mount the copy in the same drive with write-back on. The WOZ is left
+    /// untouched. `useSmartPort35` picks the source the 3.5" panel is
+    /// showing (SmartPort card units vs the //c+ on-board pair).
+    bool convertWoz35ToPo(int drive, bool useSmartPort35);
 
     void uploadScreenTexture();
 

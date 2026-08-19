@@ -12,6 +12,7 @@ emulation at the same time (`ImageWriter`), or POM2-original **and** low-level
 
 ## Table of contents
 
+- [The panel in the GUI](#the-panel-in-the-gui)
 - [The two axes](#the-two-axes)
 - [The POM2 scale](#the-pom2-scale)
 - [Master table](#master-table)
@@ -20,6 +21,34 @@ emulation at the same time (`ImageWriter`), or POM2-original **and** low-level
 - [The decision rule POM2 actually follows](#the-decision-rule-pom2-actually-follows)
 - [Candidates to move down the stack](#candidates-to-move-down-the-stack)
 - [Orthogonal: host-side machinery](#orthogonal-host-side-machinery)
+
+## The panel in the GUI
+
+`Help → Abstraction Levels (LLE / HLE)` renders this document's master table
+**live** (`AbstractionLevels_ImGui.*`, catalog + window; `MainWindow::
+renderAbstractionPanel` supplies the machine state). It adds the two things a
+Markdown file cannot:
+
+- **Which level is running right now.** The "Now" column reads *live*,
+  *degraded* or *not plugged* per subsystem, sourced from the card ROM-state
+  accessors (`DiskIICard::usingBitLss`, `ClockCard::romFromDump`,
+  `GrapplerCard::isRomLoaded`, `SmartPortCard::isLironRomLoaded`). This is the
+  first of the two mitigations proposed under
+  [Keeping a level once you have it](#keeping-a-level-once-you-have-it) — the
+  panel says *degraded*, not merely *missing*, which is the distinction that
+  was invisible.
+- **The switchable boundaries.** The four subsystems that ship both levels are
+  presented as a choice of *level*, not of catalog key: Mouse Card (L0 MAME ⇄
+  H1 AppleWin), ProDOS block storage (L2 CFFA ⇄ H1 HDV), printer interface
+  (L2 Grappler+ ⇄ H1 synthetic) and the colour pipeline (L1 OpenEmulator ⇄ H1
+  artifact LUT). The first three swap the card **in place, in its own slot**
+  and restart the machine; the fourth is a render-path change and is instant.
+  Each side is greyed when the dump it needs is missing — offering a switch
+  that would silently land on the fallback would repeat the exact mistake the
+  panel exists to expose.
+
+The catalog is static data mirroring the master table below. **Edit the two
+together**: the doc carries the evidence, the panel carries the conclusion.
 
 ## The two axes
 
@@ -68,6 +97,7 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **Memory / MMU / IOU / RamWorks** | **L1** | Soft switches, aux paging, LC banks, power-on `00 FF` pattern, **per-cycle floating bus** (vapor lock) | God-object split pending; behaviour already at L1 |
 | **Display** (`Apple2Display`) | **L1** | Beam-raced per-byte column reconstruction from a cycle-stamped video-event log; mid-scanline mode splits at 280/560 px | A true per-scanline incremental renderer (MAME style) is the remaining L0 step — see the unidirectional page-flip limit |
 | **Composite NTSC** (`ColorCompositeOE`) | **L1** | 14.318 MHz 1-bit signal → FIR demod (Y @ 2.0, C @ 0.6 MHz) → YUV→RGB, PAL line-phase | Pure-analog IIR-on-signal deferred as academic (TODO, *5–10 d*) |
+| **Artifact-colour LUT modes** (`ColorNTSC`, `ColorCompMedium`, `ColorComp4Bit`, `ColorAppleWin`) | **H1** | MAME's composite colour tables indexed per dot pattern — the *result* of NTSC artifacting, tabulated, with no signal in between | Not a defect but the other end of a deliberate pair: the OE pipeline beside it *is* the low-level one, and the two are switchable at runtime. A table shows only what it has an entry for |
 | **Speaker** (`SpeakerDevice`) | **L0** | Verbatim MAME `spkrdev.cpp:74-327`: 4× oversample, 64-tap windowed sinc, 0.995-pole DC blocker | — |
 | **Cassette** (`CassetteDevice`) | **L1** | Real `$C020` flip-flop / `$C060` comparator sign; the guest's Monitor loops time real zero-crossings out of a host WAV | — |
 | **Mockingboard / Phasor** (`Via6522`, `Ay3_8910`) | **L1** | T1/T2, IFR/IER, port latches + DDR, CA1 edges, AY counters/LFSR/envelope | Documented skips: SR, CA2/CB1/CB2 handshake, PB6 pulse counting — no POM2 card wires them |

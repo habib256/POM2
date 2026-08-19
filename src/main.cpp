@@ -98,9 +98,11 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
         // Ctrl+Shift+P (command palette) joins the unconditional set so the
         // palette is reachable even from a focused text field — same rationale
         // as F11/F12: the user must always have a way out.
-        // F10 (GUI ↔ kiosk) joins the unconditional set for the same
-        // reason as F11/F12: entering kiosk from a focused widget must
-        // work, and leaving it must ALWAYS work.
+        // F10 and Ctrl+Alt+F (GUI ↔ kiosk — two bindings for one action,
+        // because F10 is swallowed by the window manager on several
+        // desktops) join the unconditional set for the same reason as
+        // F11/F12: entering kiosk from a focused widget must work, and
+        // leaving it must ALWAYS work.
         // Ctrl+Alt+G (release the captured mouse) is unconditional for the
         // strongest form of that reason: while the pointer is captured the
         // user cannot click their way to any other control.
@@ -112,6 +114,9 @@ static void glfw_key_callback(GLFWwindow* w, int key, int sc, int action, int mo
                                    (mods & GLFW_MOD_CONTROL) &&
                                    (mods & GLFW_MOD_SHIFT)) ||
                                   (key == GLFW_KEY_G &&
+                                   (mods & GLFW_MOD_CONTROL) &&
+                                   (mods & GLFW_MOD_ALT)) ||
+                                  (key == GLFW_KEY_F &&
                                    (mods & GLFW_MOD_CONTROL) &&
                                    (mods & GLFW_MOD_ALT)));
         if (!ImGui::GetIO().WantCaptureKeyboard || isGlobalKey) {

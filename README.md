@@ -191,12 +191,12 @@ POM2 --kiosk path/to/game.dsk       # exclusive full-screen, chrome-free
 | Backspace | Left arrow | Right Alt | Solid-Apple (`$C062`) |
 | Arrows | Apple II arrows | `Ctrl-A..Z` | `$01..$1A` |
 | Esc | ESC | F9 | Screenshot → `screenshot_NNN.ppm` |
-| F10 | **Full screen ⇄ windowed** (kiosk toggle) | F11 | Soft reset / Ctrl-Reset |
+| `Ctrl+Alt+F` / F10 | **Full screen ⇄ windowed** (kiosk toggle) | F11 | Soft reset / Ctrl-Reset |
 | F12 | Hard reset / power-cycle | `Ctrl+Alt+G` | **Capture / release the mouse** |
 | F6 | **Hold to rewind** (time-travel) | `Ctrl+Shift+P` | **Command palette** |
 | `Ctrl+V` | Paste clipboard into the Apple II | Tab | `$09` |
 
-`Ctrl-V` is the one exception in the `Ctrl-A..Z` range — the host intercepts it for clipboard paste; the Apple II's own Ctrl-V stays reachable through the Edit menu. F9 / F10 / F11 / F12, `Ctrl+Alt+G`, `Ctrl+Shift+P` and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
+`Ctrl-V` is the one exception in the `Ctrl-A..Z` range — the host intercepts it for clipboard paste; the Apple II's own Ctrl-V stays reachable through the Edit menu. F9 / F10 / F11 / F12, `Ctrl+Alt+F`, `Ctrl+Alt+G`, `Ctrl+Shift+P` and both Alt keys are routed unconditionally — even when ImGui holds keyboard focus. GLFW gamepads are hot-plugged and auto-bound.
 
 **Mouse capture.** Put the card in **slot 4** — on a //e the internal 80-column firmware owns `$C300`, so a mouse card in slot 3 is invisible to software (A2DeskTop, MousePaint and MultiScribe all decide there is no mouse and run keyboard-only); Slot Configuration flags it. With a Mouse Card plugged (`mouse` or `mouseaw`), **`Ctrl+Alt+G` or a middle click (wheel)** hands the host pointer to the guest and takes it back again: the OS cursor disappears and motion becomes unbounded, so the emulated cursor can always reach the edges of its own clamp window instead of stalling when your real pointer runs out of screen. Alt-Tabbing away also releases it. A left click never captures — it always goes to the guest, so clicks mean what they look like. The status bar shows a `GRAB` badge while captured, and spells out the way back for half a minute after; nothing is drawn over the Apple II screen. `View → Capture mouse` toggles it from the menu.
 
@@ -216,10 +216,18 @@ Eight one-click machines spanning the line — six NTSC plus two **PAL (50 Hz)**
 | **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) |
 | **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort · sl6 Disk II |
 | **Apple //c Plus** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort 3.5" · sl6 Disk II |
-| **Apple //e Enhanced PAL** (50 Hz) | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) · **PAL timing** |
+| **Apple //e Enhanced PAL** (50 Hz) ← *default* | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) · **PAL timing** |
 | **Apple //c PAL** (Le Chat Mauve) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | same as //c **+ sl7 built-in Le Chat Mauve RGB** · **PAL timing** |
 
 Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`, `iie-pal`, `iic-pal`/`chatmauve`.
+
+**First launch** boots **Apple //e Enhanced PAL** with **Composite (OpenEmulator)** video and this slot map — a European //e with the peripherals most software expects:
+
+| sl1 | sl2 | sl3 | sl4 | sl5 | sl6 | sl7 |
+|---|---|---|---|---|---|---|
+| Grappler+ | Mouse (AppleWin HLE) | *empty* | Mockingboard A/C | SmartPort 3.5" | Disk II | Le Chat Mauve |
+
+Slot 3 is empty because the //e's 80-column card isn't a slot card: the firmware is internal ROM at `$C300` and the Extended 80-Column Text Card sits on the AUX connector — both come with the profile. Everything here is a *default*: change any slot in Slot Configuration (or the profile in `Machine → Profile`) and your choice is what loads next time. POM2 falls back to **Apple ][+** if no //e ROM is found.
 
 > The two PAL profiles carry 312-line / ~50 Hz timing — the cadence French Touch / DIX demos and the Le Chat Mauve RGB Péritel adapter were built for.
 
@@ -365,11 +373,13 @@ More flags: `--speed`, `--cpu-max`, `--tape`, `--35-disk1`, `--35-disk2` (//c+ S
 
 ### 🕹️ Kiosk mode
 
-**Full screen *is* kiosk mode.** Press **F10** (or View → Full screen, or the
-command palette) to switch between the windowed GUI and the chrome-free
-full-screen view, in either direction, at any time. The emulated machine is
-never touched by the switch — kiosk changes only the window, the render path
-and settings-writing — so a game keeps playing across it and nothing is lost.
+**Full screen *is* kiosk mode.** Press **Ctrl+Alt+F** — or **F10**, View →
+Full screen, or the command palette — to switch between the windowed GUI and
+the chrome-free full-screen view, in either direction, at any time. (Both
+bindings do the same thing: F10 is claimed by the window manager on some
+desktops and never reaches POM2 there.) The emulated machine is never touched
+by the switch — kiosk changes only the window, the render path and
+settings-writing — so a game keeps playing across it and nothing is lost.
 From inside kiosk, the in-game menu also offers **EXIT KIOSK (WINDOWED)** for
 anyone who doesn't know the shortcut.
 

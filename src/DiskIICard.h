@@ -149,6 +149,13 @@ public:
     /// Plus that scans for sync-gap-shifted byte boundaries).
     bool loadLssRom(const std::string& path);
     bool hasLssRom() const { return p6RomLoaded; }
+    /// Is the bit-level LSS actually driving the head right now? Distinct
+    /// from `hasLssRom()`: a mounted WOZ forces the bit-level path even with
+    /// no `diskii_p6.rom` on disk (the embedded default P6 suffices), and
+    /// with neither the card runs the legacy 32-cycle nibble gate. The
+    /// Abstraction Levels panel reports exactly this difference — it is the
+    /// L0-vs-fallback line for the whole 5.25" stack.
+    bool usingBitLss() const { return useBitLss; }
 
     /// Number of drives the controller models. The Disk II Interface
     /// has two slots in the daisy chain (drive 1 = images[0], drive 2 =

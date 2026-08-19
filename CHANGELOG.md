@@ -5,6 +5,259 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-19 (later, 8) — A 3.5" WOZ can be converted to a writable .po
+
+**Reported as "why can't I save to a WOZ?", from a real case: The New Print
+Shop on an 800K WOZ, which keeps its printer configuration — the colour ribbon
+setup — on its own program disk.** The diagnosis is worth writing down because
+the obvious suspects were both innocent: that image's INFO chunk says
+`write_protected: 0` and it carries no FLUX tracks, so neither of the two
+5.25"-side reasons applied. It is read-only because it is a **3.5"** WOZ, and
+POM2 has the Sony GCR *decoder* but no encoder — a `.woz` at 800K is decoded to
+blocks once at load and has nothing for guest writes to be folded back into.
+
+So the panel now offers the way out it always could have: **Convert to writable
+`.po`**. `Disk35Image::exportRawTo` writes the 1600 decoded blocks beside the
+WOZ (temp file + atomic rename + fsync, refusing to overwrite and
+auto-numbering ` (2).po`), and `MainWindow::convertWoz35ToPo` mounts the copy in
+the same drive **with write-back already on**. Both halves matter: leaving the
+WOZ mounted would mean the user converts, sees nothing change and still cannot
+save, and mounting the copy with write-back off would refuse the writes for a
+second reason — which is exactly the confusion the feature exists to end. The
+`.woz` is never touched: it stays the archival master, which is the right split
+anyway, since a program saving its configuration has no business re-mastering
+flux.
+
+The panel also now **names the reason** on any mounted 3.5" WOZ instead of
+showing a bare "(write-protected)". A user who ticks write-back and gets
+refused has no way to tell which of several write-protect rules caught them —
+and that is how "why can't I save?" starts.
+
+Verified against the actual image: 1600/1600 blocks byte-identical between the
+WOZ decode and the reloaded `.po`, valid ProDOS volume `NPS`, and a write to
+the copy survives save + reload.
+
+## 2026-08-19 (later, 7) — Eject from the status bar
+
+The mounted-media chips at the bottom of the window are controls now, not
+labels: click one and it offers to eject that bay. They brighten under the
+pointer, because a status bar reads as read-only furniture until something
+reacts to the cursor.
+
+**A menu, not eject-on-click.** The bar is a dense strip of small targets
+directly under the emulated screen, and a stray click would pull a disk out
+from under a running program. The extra click also buys room to name the bay
+and to warn when the medium has unsaved changes.
+
+`ejectMediaBay(slot, index, diskII)` addresses the bay by **slot number**, not
+by a card pointer: the status bar builds its rows as a value snapshot taken
+under `stateMutex` and released before drawing, so a pointer captured then
+could belong to a card a Slot-Config Apply has since destroyed. It re-resolves
+through the SlotBus, clears whichever settings key would otherwise remount the
+image on the next launch (`disk_path_slotN`, `smartport_slotN_unitK_path`,
+`hdv_path`, `cffa_slotN_path` — the SmartPort one is written eagerly at mount,
+so an eject that skipped it would silently resurrect the image), and leaves the
+medium **mounted** when its write-back save fails, rather than losing the
+writes.
+
+## 2026-08-19 (later, 6) — Slot Config Apply cold-boots instead of hard-resetting
+
+**Reported as "Apply doesn't really reset the machine", and it didn't.**
+`restartEmulationFromSettings` ended on `controller->hardReset()`, and
+hardReset **preserves RAM** by design (CLAUDE.md § Reset architecture: RAM
+survives, registers are wiped, `resetSoftSwitchesWarm` applies the
+profile-appropriate soft-switch policy). So the card set changed underneath a
+memory image built for the *old* one: DOS 3.3 still hooked to a slot whose
+Disk II had just been unplugged, ProDOS still holding a device table for cards
+that no longer existed, a player still poking a Mockingboard that was gone —
+and on II/II+ even the display mode and Language Card banks survived, because
+the warm path deliberately leaves those alone.
+
+Now `controller->coldBoot()`: `clearRam()` with the MAME 00/FF pattern, the
+FULL `resetSoftSwitches()`, a hard CPU reset. Which is simply what the real
+event is — you open the lid, change cards, and power back on. It also matches
+what `applyProfile` has always done for a profile switch (step 4 wipes RAM,
+step 11 hard-resets the CPU); Apply is the same event, one rebuild smaller.
+
+**The three-verb split itself checks out.** `EmulationController` implements
+exactly what CLAUDE.md documents — `softReset` (RAM + registers survive,
+SP -= 3, warm soft switches), `hardReset` (RAM survives, registers wiped, warm
+soft switches), `coldBoot` (RAM wiped, full soft switches, rewind ring
+dropped) — and F11/F12/toolbar-power route to the right one. The bug was one
+call site picking the wrong verb, not a broken distinction. The Apply button
+now says "cold-boots the machine" and its tooltip says RAM is wiped, because a
+button that power-cycles your machine should say so before you click it.
+
+## 2026-08-19 (later, 5) — Two new windows: Abstraction Levels, and a clickable //e keyboard
+
+**Abstraction Levels (LLE / HLE)** — `Help → Abstraction Levels`.
+`docs/lle_vs_hle.md`'s master table, live. Two things the document cannot do:
+
+- **It says which level is running right now.** Every ROM-driven low level in
+  POM2 degrades *silently* to a working higher one when its dump is absent —
+  Disk II to the legacy 32-cycle nibble gate, the Mouse Card from an executing
+  M68705 mask ROM to a C++ state machine, ClockCard and Grappler+ to synthetic
+  ROMs. The machine still works, which is correct product behaviour and
+  exactly why nobody notices. The doc named this a structural hole and
+  proposed reporting *degraded* rather than merely *missing*; the "Now" column
+  is that report, sourced from the card ROM-state accessors (one of which,
+  `DiskIICard::usingBitLss`, was added for it — `hasLssRom()` alone lies,
+  because a mounted WOZ forces the bit-level path with no dump on disk).
+- **It lets you move the boundary.** The four subsystems that ship both levels
+  are presented as a choice of *level*, not of catalog key — you no longer have
+  to know that `mouseaw` is the HLE one. A side whose dump is missing is greyed
+  out: offering a switch that would silently land on the fallback would repeat
+  the exact mistake the panel exists to expose.
+
+**Apple //e Keyboard** — `Devices → Apple //e Keyboard`. A photo of the real
+keyboard with one hotspot per cap, so Open-Apple, Solid-Apple and the //e's own
+Reset are reachable with the real legends on them.
+
+The hotspots are **measured off the photo**, not drawn:
+`tools/gen_keyboard_layout.py` takes a 75th-percentile column profile through
+each key row and cuts at the dark valleys between caps. The percentile is the
+whole trick — this is a European //e whose caps carry two legends (French over
+US), and under a *median* the glyphs put enough dark pixels mid-cap to split
+one key into two. Rects are stored as fractions of the 2578x908 image, so they
+track the picture at any window size; `Show hitboxes` is the visual check, and
+it is how the Reset key was caught sitting in its own recess **lower** than the
+row-1 caps and given an absolute rect instead of the row band.
+
+Two fidelity decisions worth recording. **Reset refuses to fire without
+Control** — RESET is wired through the keyboard encoder's Ctrl line on every
+Apple II precisely so a knock cannot reboot the machine, so the panel is no
+more dangerous than the hardware; Ctrl+Reset warm-resets, Open-Apple+Ctrl+Reset
+cold-boots. And the photo draws **both** horizontal arrow caps pointing left,
+which is an error in the picture: the table follows the hardware.
+
+The Apple keys are levels, not events — pushed to `$C061`/`$C062` every frame
+while latched, and released when the window closes, so a latched Open-Apple
+cannot outlive the window that shows it as down.
+
+## 2026-08-19 (later, 4) — Status bar says how to capture the mouse
+
+When the pointer is over the emulated screen, a Mouse Card is plugged and
+nothing is captured, the status bar now spells out `Ctrl+Alt+G or middle click
+to capture`. That is the exact moment the user is about to wonder why the guest
+cursor will not follow theirs — the card is a relative device, so uncaptured
+the host pointer stops at the edge of the screen widget while the guest cursor
+still has clamp window left, and the two drift apart.
+
+In the status bar rather than on the screen: the on-screen captions were
+removed for being noise over a running game, and this is the same information
+in a place that is already a status surface. Gated on `screenHovered_` (ImGui's
+z-order-aware verdict, so a menu drawn over the screen suppresses it) and on a
+card actually being plugged — `shouldToggleGrab` refuses to capture without
+one, and advertising a shortcut that does nothing is worse than silence.
+
+## 2026-08-19 (later, 3) — Leaving kiosk releases the mouse
+
+`setKioskModeRuntime` now calls `setMouseGrab(false)` on the way out, before
+it touches the window. Kiosk is the mode where a captured pointer costs
+nothing — there is no UI to click — and the windowed GUI is the mode where it
+costs the user their menus, panels and docked tabs; coming back to a full UI
+you cannot click is the worst of the two states. Doing it before the monitor
+change also keeps a `GLFW_CURSOR_DISABLED` pointer out of the full-screen →
+windowed transition, which the OS re-warps it across.
+
+**Entering** kiosk deliberately does not touch the grab: a game in full screen
+is exactly what a captured mouse is for.
+
+## 2026-08-19 (later, 2) — New default machine: //e Enhanced PAL, loaded
+
+**A fresh install now boots an Apple //e Enhanced PAL** with Composite
+(OpenEmulator) video and seven slots that mean something, instead of a bare
+Apple ][+ with an SSC, a clock card and an HDV:
+
+| sl1 | sl2 | sl3 | sl4 | sl5 | sl6 | sl7 |
+|---|---|---|---|---|---|---|
+| `grappler` | `mouseaw` | *empty* | `mockingboard` | `smartport35` | `diskii` | `chatmauve` |
+
+**Slot 3 stays empty on purpose**, and it is the one entry worth spelling out:
+the //e's 80-column card is *not* a slot card in POM2 or on real hardware. The
+80-col firmware is internal ROM at `$C300` and the Extended 80-Column Text
+Card lives on the AUX connector — both arrive with `iieMode`, which the //e
+profiles set. Putting a card in slot 3 would also fight the SLOTC3ROM switch.
+
+**The default profile is expressed as a `getString` default, not as an
+`activeProfile` initialiser** — the non-obvious part. `activeProfile` comes
+from the ROM auto-probe, and the catch-up branch under it only calls
+`applyProfile` when the resolved profile *differs* from that probe. Feeding
+`"iie-pal"` in as the stand-in for a saved key makes it differ, so
+`applyProfile` runs — and `applyProfile` is what installs the PAL video
+standard, the 20313-cycle frame budget and the `setCpuClock` sweep across
+every slot card. Assigning `activeProfile` directly would have skipped all of
+it and left a //e running 60 Hz timing while the UI said PAL. Falls back to
+the auto-probe when no //e ROM resolves; `--ii-plus` still wins.
+
+Verified end-to-end rather than by inspection: a run under a scratch `$HOME`
+with `POM2_AUTO_QUIT` logs `Profile: Active = Apple //e Enhanced PAL`, plugs
+all six cards with no warning (the Grappler+ and Liron ROMs both resolve), and
+writes exactly the intended keys to a virgin `state.cfg`.
+
+**Display defaults to `ColorCompositeOE`.** It degrades safely — with no GL
+shader `NtscPostProcessor` falls back to the NTSC LUT — so this can't strand
+anyone on a black screen. Restoring the mode now also seeds
+`lastColorHiResMode_`, or the first mono → colour round-trip on the toolbar
+would have snapped back to that member's `ColorNTSC` initialiser instead of
+the mode the user was looking at. Invisible while the default *was*
+ColorNTSC; a bug the moment it wasn't.
+
+One knock-on: slot 4 no longer defaults to `clock`, which makes the legacy
+`clock_card_enable=false` opt-out in `plugSlotsFromSettings` inert unless the
+settings file also names `clock` there. Left in place, commented.
+
+## 2026-08-19 (later) — Ctrl+Alt+F toggles kiosk
+
+**Second binding for GUI ⇄ full-screen (kiosk), alongside F10.** F10 is not
+POM2's to claim on every desktop: GNOME and KDE both bind it to "open the
+focused window's menu", so it is swallowed before GLFW ever sees it and the
+documented way in and out of kiosk simply does nothing there. `Ctrl+Alt+F`
+joins the same chord family as `Ctrl+Alt+G` (mouse capture) and is reachable
+everywhere. F10 still works — removing it would break fingers and every
+screenshot in the README.
+
+Handled next to the mouse-grab chord, **above** every other branch in
+`MainWindow::onKey`, for the two reasons that placement always encodes here:
+leaving full screen must never be blocked by state (the in-kiosk menu gate
+sits below it), and the chord must be tested before the `Ctrl-A..Z` path or
+it would *also* inject Ctrl-F (`$06`) into the keyboard latch. PRESS only —
+on `GLFW_REPEAT` a held chord would flip full-screen ⇄ windowed ~30×/s, each
+flip doing a monitor change plus a synchronous `settings->save()`. Added to
+`isGlobalKey` in `main.cpp` so it fires even while ImGui holds keyboard focus.
+
+**Two stale F10 references fixed while in here.** The kiosk Start menu's
+keyboard fallback has been **F1**, not F10, since the day it was written (F10
+entering kiosk would have opened the menu in the same frame) — but the joystick
+log line and DEV.md both still said F10.
+
+## 2026-08-19 — CRT panel: presets removed, gentler default curve; new startup layout
+
+**The look presets are gone.** The CRT Settings panel led with a
+*Clean / Composite TV / Trinitron / Arcade* row, and each button overwrote the
+whole glass block in one click — every slider below it jumped at once, with no
+record of what had changed or what it had been. Reported as the panel being
+confusing to use, and it is: a control whose effect is "eleven other controls
+move" is hard to reason about. The sliders are the panel now, under an
+`Advanced` header opened by default (with the presets removed, a collapsed
+header would open on an empty window). `Reset to defaults` remains the one
+way back to a known state.
+
+**Default barrel is `0.02`, was `0.05`.** `NtscParams::barrel`
+(`NtscPostProcessor.h`) — the shipped tube curvature was a visible warp on a
+flat panel. `0.02` reads as a hint of glass instead. Existing `ntsc_barrel`
+values in `settings.json` are untouched; this only moves what a fresh install
+and `Reset to defaults` land on.
+
+**New default dock layout.** `DockLayout::Reset` — which is also what a fresh
+install seeds — now tabs **Disk Library / Slot Configuration / ImageWriter II**
+to the right of the centred screen: what you mount, what the machine is made
+of, what it prints. `showSlotConfigPanel` and `showImageWriterPanel` flipped to
+`true` by default to match (docking a hidden panel places its tab but shows
+nothing). Cassette Deck and Floppy Emu moved into the bottom-right inspector
+group — still assigned to a node, so they never float over the screen, just
+not part of the opening set.
+
 ## 2026-08-18 (later still, 5) — Read/write audit: every format, and one convention removed
 
 Asked for a state of play: can every format POM2 mounts be written back?

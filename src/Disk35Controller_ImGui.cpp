@@ -54,6 +54,20 @@ void renderDriveBlock(int                                       driveIdx,
                     drv.track, drv.side1 ? 1 : 0,
                     drv.writeProtected ? "(write-protected)" : "");
         ImGui::TextWrapped("Image: %s", drv.diskPath.c_str());
+        // A 3.5" WOZ is write-protected for a reason that has nothing to do
+        // with the checkbox below or with the image's own flags, so say which
+        // reason it is. Otherwise the user ticks write-back, gets refused,
+        // and has no way to tell that this particular format simply cannot
+        // take writes — which is exactly how "why can't I save?" starts.
+        if (drv.isWoz) {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 155, 100, 255));
+            ImGui::TextWrapped(
+                "Read-only because it is a 3.5\" WOZ: POM2 decodes Sony GCR "
+                "but cannot re-encode it, so there is nothing to write guest "
+                "changes back into. Convert to a .po to make it writable — "
+                "the WOZ is left untouched as your master.");
+            ImGui::PopStyleColor();
+        }
     } else {
         ImGui::TextDisabled("No disk inserted.");
         if (!drv.lastError.empty()) {
@@ -74,6 +88,22 @@ void renderDriveBlock(int                                       driveIdx,
         r.requestEject[driveIdx] = true;
     }
     ImGui::EndDisabled();
+
+    if (drv.diskLoaded && drv.isWoz) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(drv.convertTargetPath.empty());
+        if (ImGui::Button("Convert to writable .po..."))
+            r.requestConvertDrive = driveIdx;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Writes the decoded 800K payload next to the WOZ as\n"
+                "%s\nand mounts it here with write-back on. The .woz is\n"
+                "not modified, and an existing file is never overwritten.",
+                drv.convertTargetPath.empty()
+                    ? "(no free filename)"
+                    : drv.convertTargetPath.c_str());
+    }
 
     // ── Write-back checkbox — mirrors Disk II ──────────────────────────
     bool writeBack = drv.writeBackEnabled;
