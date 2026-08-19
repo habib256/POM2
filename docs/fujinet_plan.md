@@ -620,10 +620,11 @@ option(POM2_WITH_FUJINET_EMBEDDED "Build and embed the FujiNet firmware" OFF)
 dependency tree (mbedtls, expat, …), a pinned submodule, and a patch set
 anchored to exact upstream text — `fujinet-go-apple2-desktop` maintains
 `build-fujinet-desktop.sh` patches and a `FUJINET_COMMIT` pin precisely because
-that coupling is brittle. It also complicates the release packaging that
-`project_release_infra` is still working through. The Phase 1 relay against a
-separately-installed FujiNet desktop build gives 100 % of the functionality
-with 0 % of that maintenance burden.
+that coupling is brittle. It also complicates the release packaging
+(`packaging/bundle.manifest` + the per-platform jobs in
+`.github/workflows/release.yml`), which is still settling. The Phase 1
+relay against a separately-installed FujiNet desktop build gives 100 % of
+the functionality with 0 % of that maintenance burden.
 
 Revisit only if user feedback says "having to install a second program is the
 blocker".

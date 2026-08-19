@@ -1940,6 +1940,10 @@ Pinned: `smartport_card_smoke_test`, `smartport_mixed_units_smoke_test`.
 
 ### //c-class on-board SmartPort (3.5" + HDV boot)
 
+> **`project_iic_smartport_boot`** — the working name this body of work
+> carries in code comments (`SmartPortCard`, `Memory`, `MainWindow`) and in
+> `TODO.md`. It refers to this section; there is no tracker behind it.
+
 //c / //c rev0/3/4 / //c+ all boot 3.5" **and** HDV through a
 host-served SmartPort block device — the **same `SmartPortCard`** as
 //e, but built into slot 5. Why not faithful IWM/Sony:

@@ -39,7 +39,7 @@ cd build && cmake .. && make # → build/POM2
 ./run_emulator.sh            # cwd = repo root so roms/ probes resolve
 ```
 
-**Dear ImGui is pinned** — `imgui_pin.env` is the single source of truth (repo + branch + commit), shared by `setup_imgui.sh`, `tools/fetch_imgui_pinned.sh` (the release + packaging path) and both CI jobs. POM2 requires the **`docking`** branch: the DockSpace that hosts its ~33 panels needs `ImGuiConfigFlags_DockingEnable`, which does not exist on `master`. The branch is force-pushed on every upstream rebase, hence the commit pin. Multi-viewport stays off. → [DEV § Docking](DEV.md#docking--layout-presets)
+**Dear ImGui is pinned** — `imgui_pin.env` is the single source of truth (repo + branch + commit), shared by `setup_imgui.sh`, `tools/fetch_imgui_pinned.sh` (the release + packaging path) and both CI jobs. POM2 requires the **`docking`** branch: the DockSpace that hosts its ~36 panels needs `ImGuiConfigFlags_DockingEnable`, which does not exist on `master`. The branch is force-pushed on every upstream rebase, hence the commit pin. Multi-viewport stays off. → [DEV § Docking](DEV.md#docking--layout-presets)
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
 
