@@ -4,7 +4,8 @@ Status as of 2026-08-19. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.m
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
-[Quick wins](#quick-wins) then [Backlog by subsystem](#backlog).
+[Architect attack order](#architect-attack-order) (sequencing), then
+[Quick wins](#quick-wins), then [Backlog by subsystem](#backlog).
 
 ## MAME ↔ POM2 parity (dashboard)
 
@@ -53,17 +54,50 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 
 ## Quick wins
 
-Suggested attack order — items with high impact/effort ratio.
+High impact/effort ratio. For **what to do next among architecture items**,
+see [Architect attack order](#architect-attack-order) (P0 freeze of
+`MainWindow.cpp` outranks every row here).
 
 | # | Item                                    | Effort  | Why                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
 | 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
-| 3 | Memory god-object split                 | 2 d     | cuts recompiles (IIgs itself lives in the separate pom2gs project) |
-| 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView) |
+| 3 | Memory god-object split                 | 2 d     | cuts recompiles; architect **P2** (after an I/O test net; not merged with the `memRead` dispatch) |
+| 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView); architect **P2** |
 | 4b | ~~Digidream 1 tempo regression~~ ✅ DONE | — | cause measured (`caughtUp` paced against the last write, not CPU-now) and fixed 2026-08-01 (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (182 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
+
+## Architect attack order
+
+Sequencing constraint from a 2026-08-19 architecture pass — **not a second
+backlog**. Feature items stay under [Backlog](#backlog); this list says what
+to do **next when choosing among them**, and what not to pick instead.
+Cross-links point at the detailed items. Two of the original P1s had already
+landed; they stay in the order so the ranking is auditable.
+
+Standing rule while P0 is open: **do not grow the god-objects.** A new card
+gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
+`MainWindow.cpp`.
+
+| Pri | Item | Status | Detail |
+| --- | ---- | ------ | ------ |
+| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | 🟠 open (`MainWindow.cpp` **10 669** lines, still growing since the 2026-05-31 ~6700 audit) | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object |
+| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟠 open (controller TSan clean 2026-08-17; GUI / `demodMutex` / slot re-plug under load remain). OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
+| **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
+| **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
+| **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟠 open | [Arch](#arch-refactor--tooling); Quick wins #4 |
+| **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
+| **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
+| **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `FileAtomicWrite.h` |
+
+**Explicitly not architecture** — do not pick these ahead of P0–P4. They stay
+in the backlog as features:
+
+- Analog IIR-on-signal composite pipeline (academic, *5–10 d*)
+- Saturn 128K Language Card
+- ayumi-grade FIR resampling (deliberate MAME departure + WASM cost)
+- Apple IIgs (already a separate **pom2gs** project — see [Out of scope](#out-of-scope))
 
 ## Backlog
 
@@ -76,13 +110,17 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   `IIcClassProfile` already done (`MemoryProfile`/`MemoryProfile_IIcClass.h`).
   *Cuts recompiles + readability; any IIgs reuse happens in the separate
   pom2gs project, not here. ~2 d.*
+  Architect order: **P2** — after an I/O-path test net, and **not** merged
+  with the `memRead` dispatch table below ([Architect attack order](#architect-attack-order)).
 - 🟡 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB on LC
   `$D000-$FFFF`, switches `$C080-$C08F` slot-relative. MAME refs
   `bus/a2bus/a2memexp.cpp`. *2-3 d.*
+  Feature, not architecture — do not pick ahead of P0–P4.
 - 🟡 **`Memory::memRead` hot path** — the multi-level `if` cascade is
   `Memory::memReadSlow` (`Memory.cpp:2096`); `memRead` itself is now the
   inline fast path (`Memory.h:186-207`). 256-entry dispatch table per
   high page. Prerequisite: `IIcClassProfile` extraction (done).
+  Perf job, orthogonal to the Keyboard/Paddle split — do not merge the two.
 - 🟢 **Dedicated Pascal LC** — 16 KB variant shipped with Apple Pascal,
   minor differences vs IIe LC (write-protect DIP). *1 d.*
 
@@ -120,6 +158,7 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   `CHANGELOG.md` / `DEV.md`.
   - 🟢 Remaining *(deferred, academic)*: pure-analog signal-level pipeline (IIR
     on the signal itself before demod) vs the current 1-bit signal + FIR, *5-10 d*.
+    Feature, not architecture — do not pick ahead of P0–P4.
 - ✅ **Beam-racing per-scanline composite** — DONE (2026-05-31).
   `fillCompositeSignal(mem, events)` replays the event log band by band so
   mid-scanline switches reach the composite modes (OE GPU/CPU, AppleWin), not
@@ -315,6 +354,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   Every register write inside a buffer still collapses to its last value,
   and PAL clocks its AYs 0.7 % fast. Now the only divergence from
   Mockingboard rather than a hidden one.
+  Architect order: **P3** — until this lands, « verbatim » is an audio lie
+  ([Architect attack order](#architect-attack-order)).
 - 🟢 **ayumi-grade resampling** (native clock/8 → 8× quadratic interp →
   192-tap FIR decimation + moving-average DC filter,
   `true-grue/ayumi`, MIT). Strictly better than the box filter and what
@@ -323,13 +364,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   delay — a real cost on the **WASM** target. Only worth it if listening
   shows the box filter is insufficient. Note this would be a deliberate
   departure from "MAME = source of truth" for the audio path.
+  Feature, not architecture — do not pick ahead of P0–P4.
 - 🟢 **Analog output stage.** The real Sweet Micro board's LM386 pair
   makes the output *triangular*, not square (deater's scope capture:
   `deater.net/weave/vmwprod/chiptune/mock_problem/`). No emulator models
   it and there is no MAME oracle, so it would have to be an off-by-default
   toggle labelled non-authoritative — and only after band-limiting, since
   a low-pass over an aliased signal muffles rather than removes.
-- 🟢 **Mutex contention.** `advanceCycles` takes the card mutex on every
+- 🟢 **Mutex contention.** Architect **P1** (SPSC handoff *if* a profile
+  still shows it after TSan-GUI). `advanceCycles` takes the card mutex on every
   emulated instruction (~1 M/s) and the realtime audio callback needs the
   same one, holding it across the whole SSI263 render on Sound II.
   Classic priority inversion; wants an SPSC handoff.
@@ -451,6 +494,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   interpolation) and AY-3-8913 audio synth — the shared AY core it
   needs already exists (`src/AyPsgSynth.h`, extracted 2026-08-01,
   see [Audio]). *~3-5 d.*
+  Architect **P3**: hide from the catalog until the chip exists, or ship
+  it — a detect-only stub is the wrong third option.
 - ✅ **No-Slot Clock (NSC, DS1216E)** — DONE. `src/NoSlotClock.{h,cpp}`
   is a full DS1216E SmartWatch state machine, hooked into `Memory`
   read paths (`interceptRead` under the $F800 ROM window) for machines
@@ -835,7 +880,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `index.html` are produced. Both jobs shallow-clone Dear ImGui (gitignored); no
   test depends on the user-supplied ROMs.
 - 🟠 **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
-  audio thread** *(2026-08-02 bug-hunt follow-up)* — the highest-yield gap we
+  audio thread** *(2026-08-02 bug-hunt follow-up)* — architect **P1**
+  ([Architect attack order](#architect-attack-order)). The highest-yield gap we
   know of. That sweep's ASan+UBSan build (156 test binaries, ~24 000
   hostile-input cases, ~6 M random instructions) returned **zero**
   diagnostics, yet code reading found a UI deadlock, two use-after-frees and
@@ -864,7 +910,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   and the error strings are hand-repeated in each. `DiskImage`'s copy caught
   up on permission preservation 2026-08-08 (it was silently resetting the
   image's mode to the umask default on every write-back); `ProDOSVolume`'s
-  still hasn't. Extract to `src/FileAtomicWrite.h`.
+  still hasn't. Extract to `src/FileAtomicWrite.h`. Architect **P4**.
   - ✅ **The durability half is closed** (2026-08-14): the `fsync` went into
     the COMMIT step they already share, `pom2::replaceFileAtomic`
     (`AtomicFileReplace.h`) — data flushed before the rename, parent
@@ -911,19 +957,37 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     against source files rather than a build-system target, which is a CI
     decision rather than a bug fix.
 - 🟠 **`MainWindow.cpp` god-object (10 669 lines)** *(audit 2026-05-31, count
-  re-measured 2026-08-19 — it was ~6700 then, so the file is still growing)* — biggest
+  re-measured 2026-08-19 — it was ~6700 then, so the file is still growing)* —
+  architect **P0** ([Architect attack order](#architect-attack-order)). Biggest
   single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
   `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
-  groups into dedicated TUs (aim for < 3000 lines/file, like POM1's `MainWindow_*`
-  discipline). *3-5 d.*
+  groups (storage / audio / network / debug) into dedicated TUs (aim for
+  &lt; 3000 lines/file, like POM1's `MainWindow_*` discipline). Standing rule:
+  new cards ship their panel in `*_ImGui.cpp` with zero business logic in
+  `MainWindow.cpp`. *3-5 d.*
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
-  list env vars in `--help`. *1 d.*
+  list env vars in `--help`. *1 d.* Architect **P4**.
 - 🟡 **`stateMutex` shared CPU+UI** (`EmulationController.h:229`) —
   `MainWindow_Slots` takes this lock during plug/unplug, audio jitter
-  risk. Partition long-term.
+  risk. Partition long-term. Architect **P1** grain (GUI TSan first).
+- 🟠 **Debugger runtime glue (BP / watch / step)** — architect **P2**.
+  `Disassembler6502` + the memory-viewer windows exist; nothing wires
+  breakpoints, watches, or a step that the worker honours. An emulator
+  at this fidelity with no BP/step is a simulator you watch, not one
+  you interrogate — and it blocks contribs. *3-5 d.* → Quick wins #4.
+- 🟡 **`POM2_IWM_LEGACY_DATA_PATH` / IWM vs Disk II shadow** —
+  architect **P3**. `Memory::setIWMAuthoritative` (`Memory.h`) still
+  offers a dual data path. Either IWM is the truth and the shadow goes,
+  or the env var is a documented debug mode. Leaving both as product
+  behaviour is the scaffold tax.
+- 🟡 **CI `ctest -L rom` + ROM Status « degraded »** — architect **P3**.
+  Tests SKIP when a dump is absent, so the L0 path can rot behind a
+  green suite. ROM Status reports missing, not « running the synthetic
+  fallback ». Detail → [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md)
+  § Keeping a level once you have it.
 - 🟡 **Inconsistent `pom2::` namespace** — 163/233 top-level files,
-  `tests/` does not use it. Mechanical migration.
+  `tests/` does not use it. Mechanical migration. Architect **P4**.
 - 🟢 **Legacy M6502 style** — FR/EN comments, C-style casts,
   `void(void)`. Targeted `clang-format` + `clang-tidy modernize-*`.
 - 🟢 **`*Card` raw pointers in MainWindow** (`MainWindow.h:320-358`) —
