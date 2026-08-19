@@ -5,8 +5,9 @@
 //
 // SocketCompat.h — the ONE place that answers "POSIX sockets or Winsock?".
 //
-// POM2's three networking translation units (AiControlServer's HTTP control
-// API, SuperSerialCard's telnet bridge, W5100Device's Uthernet II host TCP/IP)
+// POM2's four networking translation units (AiControlServer's HTTP control
+// API, SuperSerialCard's telnet bridge, W5100Device's Uthernet II host TCP/IP,
+// SpTcpTransport's FujiNet SP-over-SLIP pipe)
 // were written against BSD sockets. Winsock2 is the same protocol stack behind
 // a gratuitously different API, and the differences are *silent* ones — code
 // that compiles clean against Winsock can still be wrong. The seven traps, all

@@ -5,9 +5,10 @@
 // a "reprint the whole spool" bug lived, so it has to be pinnable without
 // an ImGui context.
 //
-// Three sources can feed the printer — PrinterCard, GrapplerCard, and the
-// SuperSerialCard's TX printer tap (the //c's printer port) — but only one
-// at a time, and the pump keeps ONE cursor. Everything hard about it is in
+// Four sources can feed the printer — PrinterCard, GrapplerCard, a
+// FujiNet printer unit, and the SuperSerialCard's TX printer tap (the
+// //c's printer port) — but only one at a time, and the pump keeps ONE
+// cursor. Everything hard about it is in
 // the handover.
 
 #include <cstddef>

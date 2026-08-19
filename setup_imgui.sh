@@ -90,8 +90,8 @@ Build:
 Run from the repo root (so roms/ probes resolve):
   ./build/POM2
 
-ROM placement:
-  Drop an Apple II / II+ ROM image at roms/apple2.rom (12 KB = \$D000-\$FFFF
-  or 16 KB = \$C000-\$FFFF). Optional 2 KB character ROM at roms/apple2_char.rom
-  (current build falls back to a built-in 5x7 ASCII font when missing).
+ROMs:
+  The repo ships the full roms/ tree, so a source build boots out of the
+  box. To override a dump, replace the file in roms/ (or drop one in the
+  per-user data dir — see README § ROMs and media).
 MSG

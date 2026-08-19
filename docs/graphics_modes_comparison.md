@@ -1,15 +1,17 @@
 # POM2 graphics modes — deep comparison with the original sources
 
 POM2 offers **ten hi-res render modes** (`Apple2Display::HiResMode`,
-[`src/Apple2Display.h:56-96`](../src/Apple2Display.h)). Each mode is
+[`src/Apple2Display.h:57-101`](../src/Apple2Display.h)). Each mode is
 ported from a reference emulator (MAME, AppleWin, OpenEmulator) or
 models a hardware behaviour (Le Chat Mauve, monochrome phosphors).
 
 For each mode, this document lists: the exact algorithm as implemented
 in POM2, the original source with URL, the intentional deviations, the
-pinned tests, and the capture of the **ARCHON** intro screen (Total Replay
-v5.2, 15 M instructions after //e boot) produced by
-`build/tests/render_total_replay_modes`.
+pinned tests, and the capture of the intro screen produced by
+`build/tests/render_total_replay_modes` (probes
+`floppyemu/Total Replay v6.1.hdv`, then
+`hdv/Total Replay II v1.0-alpha.4.hdv`; default 60 M instructions after
+//e boot).
 
 ---
 
@@ -21,8 +23,8 @@ v5.2, 15 M instructions after //e boot) produced by
 | 2 | `ColorCompMedium` | MAME `apple2video.cpp` row 1 | 7-bit LUT | 280×192 | `dhgr_render_smoke` | [↓](#2-colorcompmedium) |
 | 3 | `ColorComp4Bit` | MAME `apple2video.cpp` square filter | nibble→palette | 280×192 | `dhgr_render_smoke` | [↓](#3-colorcomp4bit) |
 | 4 | `ChatMauveRGB` | AppleWin `RGBMonitor.cpp` (PR #837) + Péritel hardware | direct RGB | 560×192 | `le_chat_mauve_smoke`, `video7_parity_smoke` | [↓](#4-chatmauvergb) |
-| 5 | `ColorCompositeOE` | OpenEmulator + apple2shader | GLSL shader | 560×384 | (integration via MainWindow) | [↓](#5-colorcompositeoe) |
-| 5b | `ColorCompositeOECpu` | OpenEmulator (same demod, on the CPU) | CPU demod → RGBA framebuffer | 560×192 | (integration via MainWindow) | [↓](#5-colorcompositeoe) |
+| 5 | `ColorCompositeOE` | OpenEmulator + apple2shader | GLSL shader | 560×384 | `oe_demod_gpu_cpu_parity`, `text_oecpu_crisp` | [↓](#5-colorcompositeoe) |
+| 5b | `ColorCompositeOECpu` | OpenEmulator (same demod, on the CPU) | CPU demod → RGBA framebuffer | 560×192 | `oe_demod_gpu_cpu_parity`, `text_oecpu_crisp` | [↓](#5-colorcompositeoe) |
 | 6 | `MonoWhite` | AppleWin VT_MONO_WHITE (empirical palette) | luminance | 280/560×192 | `display_persistence_smoke` | [↓](#6-monowhite) |
 | 7 | `MonoGreen` | AppleWin VT_MONO_GREEN (P31 phosphor) | luminance×tint+decay | 280/560×192 | `display_persistence_smoke` | [↓](#7-monogreen) |
 | 8 | `MonoAmber` | AppleWin VT_MONO_AMBER (long-persistence) | luminance×tint+decay 0.96 | 280/560×192 | `display_persistence_smoke` | [↓](#8-monoamber) |
@@ -32,7 +34,7 @@ Captures generated with:
 
 ```bash
 cmake --build build --target render_total_replay_modes
-POM2_RENDER_INSTRS=15000000 ./build/tests/render_total_replay_modes mode_captures
+./build/tests/render_total_replay_modes mode_captures   # default 60 M instructions
 ```
 
 ---
@@ -55,11 +57,11 @@ refined by [PR #10792](https://github.com/mamedev/mame/pull/10792)
 2. Sliding 7-bit window (3 left-context bits + 1 center + 3 right)
    over the stream.
 3. Index `kArtifactColorLut[0][w & 0x7F]` (128 entries copied verbatim
-   from MAME, [`:759-789`](../src/Apple2Display.cpp)).
+   from MAME, [`src/Apple2VideoDecode.h:53`](../src/Apple2VideoDecode.h)).
 4. `rotl4b(lutEntry, absX)` extracts the 4-bit palette index for the
    current NTSC phase (4 phases every 4 dots).
 5. `kLoResPalette[16]` (IIGS-corrected palette) yields the final RGB
-   color ([`:611-628`](../src/Apple2Display.cpp)).
+   color ([`:1356`](../src/Apple2Display.cpp)).
 6. Downsample 560 → 280 by averaging pairs (the optical low-pass of a
    real CRT; otherwise the 14 MHz pattern aliases against the 7 MHz grid).
 
@@ -162,7 +164,7 @@ The card taps the pre-modulation digital stream at the slot connector:
     at indices 5 and 10 — the Chat Mauve "signature", where MAME collapses
     the two indices to a single neutral gray).
 - **Colored fg/bg text** (`renderTextChatMauveFgBg`,
-  [`:520-587`](../src/Apple2Display.cpp)): active on IIe in 40-col text
+  [`:1305`](../src/Apple2Display.cpp)): active on IIe in 40-col text
   + DHGR (AN3) on. Char code from main RAM, fg/bg colors from aux RAM
   (hi/lo nibble). 7-bit glyph doubled into 14 dots. Port of MAME
   `apple2video.cpp:788-791`.
@@ -194,9 +196,10 @@ GLSL fragment shader. WebGL port by Zellyn Hunter
 POM2 **reimplements** the public NTSC spec (FCC §73.682) — no
 OpenEmulator code copied, POM2 stays under its own license.
 
-**POM2 algorithm** ([`NtscPostProcessor.cpp:141-286`](../src/NtscPostProcessor.cpp)):
+**POM2 algorithm** (fragment shader at
+[`NtscPostProcessor.cpp:148-253`](../src/NtscPostProcessor.cpp)):
 
-1. `Apple2Display::fillCompositeSignal` ([`:1526-1727`](../src/Apple2Display.cpp))
+1. `Apple2Display::fillCompositeSignal` ([`:2373`](../src/Apple2Display.cpp))
    serializes the current mode into 1-bit luminance at 14.318 MHz (560×192 R8).
    HGR/DHGR/40-col/80-col text/40-col lo-res all supported.
 2. Upload R8 texture, ping-pong FBO for persistence.
@@ -225,10 +228,15 @@ OpenEmulator code copied, POM2 stays under its own license.
 | Lo-res supported in v2 | Initially OE-only, v2 adds lo-res signal generation via `(nibble >> (absX & 3)) & 1`. |
 | Sharp text bypass | UX-only toggle: skip the shader in text mode for legibility (would otherwise lose authentic composite fringing). |
 
-**Tests**: integration via MainWindow (no dedicated smoke test — the
-shader requires a GL context). The CPU port in
-[`tests/render_total_replay_modes.cpp:64-148`](../tests/render_total_replay_modes.cpp)
-serves as an offline oracle for the captures.
+**Tests**: pinned by the ctests `oe_demod_gpu_cpu_parity` and
+`text_oecpu_crisp` — the demod exists in three copies (GLSL, the CPU twin
+`Apple2Display::renderCompositeOeCpu`, and the test's C++ re-simulation)
+under the three-way PARITY CONTRACT stated at
+[`NtscPostProcessor.cpp:143-147`](../src/NtscPostProcessor.cpp). The CPU
+port in
+[`tests/render_total_replay_modes.cpp`](../tests/render_total_replay_modes.cpp)
+(`renderCompositeShader`, line 69) also serves as an offline oracle for the
+captures.
 
 ![ColorCompositeOE](img/total_replay_05_ColorCompositeOE_shader.png)
 
@@ -374,7 +382,8 @@ Pins on:
 *TV sub-mode — first frame, blend with an initially black buffer (in a continuous capture the result is brighter at equilibrium)*
 
 ![AppleWin Idealized](img/total_replay_11_ColorAppleWin_Idealized.png)
-*Idealized sub-mode — 4-bit × 4-phase palette, "modern flat panel" look*
+*Idealized sub-mode — same 4-phase × 4096-history hue LUT as Monitor/Tv,
+chroma ×1.6 (`AppleWinNtsc.cpp:75,193-197`), "modern flat panel" look*
 
 ---
 
@@ -403,7 +412,7 @@ HGR byte is set (74LS74 flip-flop in the hardware).
 | MAME | Static lookup-symmetry in the 128 LUT. |
 | AppleWin | Implicit transient in the IIR filter + phase offset. |
 | OpenEmulator | Bitstream timing (the sample arrives 1/14 MHz later). |
-| **POM2** | **Pre-stream** in `buildHgrWordRow` ([`:804-817`](../src/Apple2Display.cpp)): if MSB=1, shift word by 1 + carry from the last bit of the previous word. Consistent with MAME, applicable to all 4 color modes via the common stream. |
+| **POM2** | **Pre-stream** in `buildHgrWordRow` ([`src/Apple2VideoDecode.h:91`](../src/Apple2VideoDecode.h)): if MSB=1, shift word by 1 + carry from the last bit of the previous word. Consistent with MAME, applicable to all 4 color modes via the common stream. |
 
 ### Measured performance (single x86-64 core, Release -O3)
 
@@ -416,12 +425,12 @@ Approximate measurements on a recent i7, rendering one ARCHON frame (HGR
 | ColorCompMedium | ~0.30 ms | identical, row 1 |
 | ColorComp4Bit | ~0.25 ms | square filter, faster |
 | ChatMauveRGB | ~0.40 ms | native 560-dot |
-| ColorCompositeOE (CPU) | ~25 ms | CPU port in `render_total_replay_modes` |
+| ColorCompositeOE (CPU) | ~25 ms | first-class mode `ColorCompositeOECpu` (`pom2_bench --mode oecpu`), no longer only an offline oracle |
 | ColorCompositeOE (GPU) | ~0.05 ms | frag shader (negligible) |
 | MonoWhite/Green/Amber | ~0.40 ms | persistence buffer |
 | ColorAppleWin Monitor | ~0.50 ms | LUT lookup + 6-sample delay |
 | ColorAppleWin Tv | ~0.55 ms | + 50% line blend |
-| ColorAppleWin Idealized | ~0.30 ms | LUT 16 entries only |
+| ColorAppleWin Idealized | ~0.30 ms | same 4-phase × 4096-history hue LUT as Monitor with chroma ×1.6 — the figure dates from a mistaken "16-entry LUT" description; expect Monitor-class cost |
 
 All CPU modes are well under the 16.6 ms / 60 FPS budget.
 
@@ -460,7 +469,7 @@ All CPU modes are well under the 16.6 ms / 60 FPS budget.
 ```bash
 cd build && cmake --build . --target render_total_replay_modes
 cd ..
-POM2_RENDER_INSTRS=15000000 ./build/tests/render_total_replay_modes mode_captures
+./build/tests/render_total_replay_modes mode_captures   # default 60 M instructions
 for f in mode_captures/total_replay_*.ppm; do
   base="${f%.ppm}"
   if [[ "$base" == *shader* ]]; then
@@ -472,7 +481,8 @@ done
 cp mode_captures/*.png docs/img/
 ```
 
-The capture targets a precise cycle of the Total Replay carousel (15 M
-instructions ≈ ARCHON screen). To target another game, adjust
-`POM2_RENDER_INSTRS` (earlier trials: 11M = Mr. Robot, 17M = Pitfall
-II, 22M = HERO, 30M = Bruce Lee).
+The default (60 M instructions) stops on the title splash of the probed
+image. To target another moment, set `POM2_RENDER_INSTRS=N`. The old
+cue-sheet (11M = Mr. Robot, 15M ≈ ARCHON, 17M = Pitfall II, 22M = HERO,
+30M = Bruce Lee) was tied to the retired Total Replay v5.2 image and no
+longer lands on those screens.

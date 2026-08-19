@@ -45,7 +45,7 @@ scanner (TTL capacitive effect). See
 | **deater — "megademos"** (Vince "deater" Weaver, `deater.net/weave/vmwprod`) | Vapor lock: detects VBL by looping on an undriven `$C0xx` read until it reads a marker byte written into video RAM. | If video is a framebuffer rendered asynchronously at end-of-frame instead of interleaving CPU reads and the scanner cycle-by-cycle, the loop never "locks" → frozen / glitched screen. | ✅ **Proven (2026-06-09)**: `Memory::floatingBus()` = verbatim MAME port of `apple2video.cpp:124-201 scanner_address`, indexed on `cycleCounter`. The `vapor_lock` test *runs a real 6502 loop* (`LDA $C058 / CMP marker / BNE`) and **it locks** onto the marker placed in video RAM. The scanner geometry now follows the **video standard** (262 NTSC / **312 PAL**) — it was hard-coded to 262, which made the per-frame lock of PAL demos drift; fixed. **Sub-instruction accuracy fixed**: the `$C0xx` CPU read samples the bus at the **access cycle** (`cycleCounter + getCurrentInstructionCycles()` = last cycle of an `LDA`/`CMP`/`BIT`, consistent with the event-log timestamp) instead of the **start** cycle of the instruction. **All undriven `$C0xx` reads return the bus**: `$C040`, **`$C050-$C057`** (2026-06-10) and `$C030-$C03F` used to be 0. Pinned `vapor_lock` (§(d) = DROL cut-scene) + `floatingbus_page2_smoke`. *(Still 🟢: non-last-cycle `$C0xx` accesses, e.g. RMW — not used for vapor lock.)* |
 | **DROL** (Brøderbund 1983; `disks_5.4/woz/Drol*.woz`, `disks_5.4/gist/Drol.dsk`) | Real game, double edge case: (1) **unsynchronized double-buffer page-flip** (`$C054/$C055` every ~4 frames at drifting positions) for animation; (2) **vapor-lock cut-scene** via `LDA $C050 / CMP #$80`. | (1) A naive beam-raced replay paints the band above the flip from the page **currently being redrawn** (RAM read at render time, not at the beam) → half-erased sprites. (2) A `$C050` read returning 0 instead of the bus → the loop never locks → freeze (historical LinApple hang). | ✅ **DONE (2026-06-10)**, diagnosed via `tests/drol_probe.cpp` (boots the real WOZ). (1) `forEachBeamSegment` distinguishes unidirectional flip (= buffer → final full-frame page, anti-flicker) vs bidirectional (= exact beam-racing, DIX MODPAGE). Pinned `drol_pageflip_render`. (2) reading `$C050-$C057` toggles the mode AND returns `floatingBus()`. Pinned `vapor_lock` §(d). Bonus: the 6 560-wide painters now take the band state (the bug that masked the flicker under Chat Mauve). |
 | **[DIX](https://github.com/Fr3nchT0uch/DIX/)** — French Touch anthology (29+ min, //e / //c PAL, GPLv3 sources) | **All-in-one integration suite**: vapor lock, mid-scanline, DHGR/NTSC, Mockingboard, 128 KB aux, 800 KB Unidisk via Liron/SmartPort. Bundles *Mad Effect*, *Plasmagical*, *Wave* and the other recent FT productions. | A single disk that chains the edge cases of §1–4; the reference to hit before declaring the emulation "perfect." **Requires PAL 50 Hz (not NTSC).** MAME oracle = `apple2eefr` (312 vtotal, 50.146 Hz, 14.2375 MHz) — not US `apple2ee`. | 🟡 **Priority #1**. Mid-scanline rendering ✅ (see next row). PAL 50 Hz timing ✅ (`iie-pal`/`iic-pal` profiles, 312-line geometry everywhere: scanner, `$C019`, events). **50/60 Hz hand-off ✅ (2026-06-10)**: the event log is published **per video frame** (65×312 cycles) and consumed by *copy* by the 60 Hz UI — the old per-worker-tick bracketing lost events between the UI take and the next tick (~1 empty log in 6 under PAL → 10 Hz flicker of the splits; invisible to the tests, which bracket synchronously). **Headless end-to-end run ✅ (2026-07-31)**: DIX boots from `disks_3.5/DIX.po` on //e PAL through a slot-5 Liron-class SmartPort + slot-4 Mockingboard and reaches its **main menu** — FRENCH TOUCH HGR logo, particle spiral, and the beam-raced bottom text scroller all animating. Beam-racing census over 2500 frames: **1858 frames carry mid-frame video events, 14 211 events total, peak 330 in one frame** (~1 switch per PAL scanline = the MODPAGE signature). Note `DIX.po` is a **raw-boot** image, not a ProDOS volume (block 2 is 6502 code), so POM2's "doesn't look ProDOS-formatted at block 2" warning is correct and cosmetic. **MAME cannot serve as the oracle for this**, established by control runs against MAME 0.287: `apple2eefr`+DiskII boots DOS 3.3 fine (machine + PAL ROMs are sane), but `apple2eefr` + `-sl4 mockingboard` + `-sl5 superdrive -sl5:superdrive:fdc:0 35dd` fails to boot DIX **and** a plain bootable ProDOS 800 K image (3000 frames) — so it is neither DIX-specific nor a missing-Mockingboard artefact; `apple2c0fr` has the //c UniDisk 3.5 ROM but MAME attaches **no 3.5 drive** (no such slot); and MAME has **no Liron/SmartPort device at all**. Remaining: **visual validation on a real screen** (audio/tempo unverified headlessly). Probes: `dix_modpage_split`, `horizontal_split*`, `dhgr_phase_signal`, `floatingbus_page2_smoke`, `pal_timing`, `video_event_publish`. |
-| **"French Touch" productions** (e.g. *Mad Effect*, *Plasmagical*, *Wave* — included in DIX) | **Mid-scanline video mode changes** (TEXT↔HGR, PAGE1↔2, lo↔hi-res between two cycles of the same line). | Requires a 6502 split into **real per-access sub-cycles**: an opcode executed atomically (effects applied in one block) shifts the switch by 1-2 cycles → mis-placed color bands. | ✅ **Intra-line rendering done (2026-06-09)**: `Apple2Display::renderBeamRacing` replays the event log at the **byte-column** level (`frameCycleToPos`), horizontal TEXT/HGR/LORES/DHGR/80-col **and** PAGE1↔2 / ALTCHAR splits on the same line, in RGBA *and* composite signal. Probes: `horizontal_split`, `horizontal_split_composite`, `horizontal_split_560`, `dix_modpage_split`, `dhgr_phase_signal`, `artifact_phase_probe`. *The exact transition cycle at the character-clock remains a refinement.* Detail → `DEV.md` § Beam-racing. |
+| **"French Touch" productions** (e.g. *Mad Effect*, *Plasmagical*, *Wave* — included in DIX) | **Mid-scanline video mode changes** (TEXT↔HGR, PAGE1↔2, lo↔hi-res between two cycles of the same line). | Requires a 6502 split into **real per-access sub-cycles**: an opcode executed atomically (effects applied in one block) shifts the switch by 1-2 cycles → mis-placed color bands. | ✅ **Intra-line rendering done (2026-06-09)**: `Apple2Display::renderBeamRacing` replays the event log at the **byte-column** level (`frameCycleToPos`), horizontal TEXT/HGR/LORES/DHGR/80-col **and** PAGE1↔2 / ALTCHAR splits on the same line, in RGBA *and* composite signal. Probes: `horizontal_split`, `horizontal_split_composite`, `horizontal_split_560`, `dix_modpage_split`, `dhgr_phase_signal` (registered pins); `artifact_phase_probe` is a build-only diagnostic (no `add_test`). *The exact transition cycle at the character-clock remains a refinement.* Detail → `DEV.md` § Beam-racing. |
 | **DHGR demos / `dapple`-like + NTSC artifact tests** | DHGR soft-switch evaluation order (`80STORE`/`PAGE2`/`HIRES`/`AN3`) and color fringing (NTSC artifacting via signal interleaving). | Validates the exact Le Chat Mauve switch order (AN3 FIFO → `$C05E/F`) and composite demodulation. | ✅/🟡 Composite NTSC pipeline (`NtscPostProcessor`, `AppleWinNtsc`) + CPU/GPU paths. Covered by `dhgr_render_smoke_test`, `oe_demod_gpu_cpu_parity_test`, `display_golden_hash_test`. Residual gap: 1-px mono DHGR, floating-TTL (`#3`). |
 
 ### Source-level DIX analysis — 2026-06-09
@@ -75,14 +75,12 @@ Consequences for POM2, cleanly separated:
    on the right, same line).
 2. **Mockingboard Timer-2 IRQ — ✅ supported** (`Via6522` T2 one-shot phase-2,
    `IFR_T2`/`t2Counter`). The sync IRQ *fires*.
-3. **PAL 50 Hz machine timing — ❌ BLOCKER #1.** POM2 is **NTSC only**
-   (`kScanlinesPerFrame = 262`, 17045 cyc/frame; the `NtscPostProcessor`'s "PAL"
-   is only a shader color mode, not machine timing). `DEFAULT_SYNC_TIMER=7479`
-   and the 312-line PAL geometry place the effect vertically and pace the music
-   for 50 Hz; on 262 NTSC lines, the effect is mis-positioned / rolls and the
-   tempo is ~20 % too fast. **This is the prerequisite for true end-to-end DIX
-   validation** (to be added to the backlog as PAL machine timing: 312 lines,
-   1.0157 MHz, 50 Hz refresh).
+3. **PAL 50 Hz machine timing — ✅ DONE.** The `iie-pal` / `iic-pal` profiles
+   carry true PAL machine timing (312 lines, 20313 cyc/frame, ~50 Hz refresh,
+   ~1.0156 MHz), and the geometry follows the video standard everywhere
+   (scanner, `$C019`, event log). `DEFAULT_SYNC_TIMER=7479` and the 312-line
+   PAL geometry now place the effect vertically and pace the music correctly.
+   Pinned by `pal_timing`.
 
 ### DIX boot on //e PAL — DONE (SmartPort `$Cn0A` entry, 2026-06-09)
 
@@ -193,7 +191,7 @@ the **raw magnetic flux** (`.woz`) + the behavior of the stepper motor and the
 |---|---|---|---|
 | **Captain Goodnight and the Islands of Fear** (Broderbund) | **Spiradisc**: data written on a **continuous spiral** (track `$01`→`$0E`), not in concentric circles. | The controller must follow head moves **"on the fly"** while the flux streams by; an LSS that resyncs per track crashes at boot. | 🟡 Event-driven LSS + WOZ bit-stream present (`DiskIICard`, `DiskImage`, `#9/#10`). Half-tracks handled; continuous spiral tracking **to validate** on a real WOZ image. Nearby tests: `woz_bit_timing_smoke_test`, `diskii_lss_smoke_test`. |
 | **Prince of Persia** (Broderbund / Roland Gustafsson) | **RWTS18**: quarter-tracks, modified sync bytes, timing bits / weak bits. | The rotation speed, the sync-nibble spacing and the weak-bit interpretation must be consistent with the 6502 cycles → otherwise the protected tracks fail to read. | 🟡 WOZ + event-driven bit-cell timing (cf. `CLAUDE.md` *"disk-turbo"* + `emuCycles`). Weak/fake bits depend on the WOZ master. Pinned on the flux side: `woz_writeflux_smoke_test`, `woz_bit_timing_smoke_test`. `Gap #9`: WOZ1 splice TRK+6650. |
-| **"Floating bus as RNG" disks** (Beagle Bros protections, some demos) | Use the floating-bus byte as a random seed. | Requires a **bit-exact** replication of the scanner counter (HBL included, "$1000 phantom row"). | ✅ Handled by the verbatim `floatingBus()` port (cf. comment `Memory.cpp:1572`). This is precisely the use case cited in the code. |
+| **"Floating bus as RNG" disks** (Beagle Bros protections, some demos) | Use the floating-bus byte as a random seed. | Requires a **bit-exact** replication of the scanner counter (HBL included, "$1000 phantom row"). | ✅ Handled by the verbatim `floatingBus()` port (cf. comments `Memory.cpp:1605-1606` / `:1905`). This is precisely the use case cited in the code. |
 
 ---
 
@@ -203,12 +201,13 @@ The foundation must be flawless **before** the video demos can pass.
 
 | Program | What it validates | POM2 status |
 |---|---|---|
-| **Klaus Dormann — `6502_functional_test`** | 6502 arbiter: page crossing (+1 cycle), exact decimal (D) flag, etc. | ✅ `test_klaus_6502` **PASSES**. Binary auto-downloaded + SHA256 verified (`tests/CMakeLists.txt`). |
-| **Klaus Dormann — `65C02_extended_opcodes_test`** | 65C02 extended opcodes (BBR/BBS/RMB/SMB, `STZ`, `(zp)`, etc.). | ✅ `test_klaus_65c02` **PASSES** @ `$24F1` (cf. `DEV.md` §CPU). |
-| **NMOS "illegal opcodes" suites** (visual6502-derived) | Behavior of the undocumented 6502 NMOS opcodes. | 🟢 Partially — `#1` notes a *"$5C 8-cyc residual"*. Mainly covers the subset used in practice. Complete via `cpu_cycle_count_test`. |
+| **Klaus Dormann — `6502_functional_test`** | 6502 arbiter: page crossing (+1 cycle), exact decimal (D) flag, etc. | ✅ `klaus_6502_functional` **PASSES**. Binary auto-downloaded + SHA256 verified (`tests/CMakeLists.txt`). |
+| **Klaus Dormann — `65C02_extended_opcodes_test`** | 65C02 extended opcodes (BBR/BBS/RMB/SMB, `STZ`, `(zp)`, etc.). | ✅ `klaus_65c02_extended` **PASSES** @ `$24F1` (cf. `DEV.md` §CPU). |
+| **NMOS "illegal opcodes" suites** (visual6502-derived) | Behavior of the undocumented 6502 NMOS opcodes. | 🟢 Partially — the `#1` dashboard row now records the $5C 8-cyc delta as **deliberate** (matches MAME, not Harte). Mainly covers the subset used in practice. Complete via `cpu_cycle_count_test`. |
 
-> ~130 `ctest`s in total (Klaus 6502+65C02, `cpu_cycle_count`, disk, video,
-> audio…). Cf. `TODO.md` Quick-win #5 (headless CI GitHub Actions).
+> 182 `ctest`s in total (Klaus 6502+65C02, `cpu_cycle_count`, disk, video,
+> audio…). `TODO.md` Quick-win #5 (headless CI GitHub Actions) is ✅ DONE —
+> `.github/workflows/ci.yml` runs the suite on every push.
 
 ---
 
@@ -248,13 +247,14 @@ mechanics, from the physics to the POM2 C++:
    the scanner and the lock slips after a few scanlines → glitches/crash. The
    alignment must be **perfect**.
 
-**On the POM2 side.** `Memory::floatingBus()` (`src/Memory.cpp:1561+`) computes
-the scanner address from the global `cycleCounter` (65 cycles/line × 262
-lines/frame), a **verbatim** port of MAME `apple2video.cpp scanner_address`.
-Reads of undriven soft-switches (`floatingBus()` call sites at
-`Memory.cpp:1132/1141/1192/1218/1235/1299/1339/1347`) return this byte. It is the
-foundation that makes vapor lock *possible*; it remains to prove it end-to-end on
-a megademo (integration test to add).
+**On the POM2 side.** `Memory::floatingBus()` (`src/Memory.cpp:1888/1897`)
+computes the scanner address from the global `cycleCounter` (65 cycles/line ×
+the video standard's line count — 262 NTSC / 312 PAL), a **verbatim** port of
+MAME `apple2video.cpp scanner_address`. Reads of undriven soft-switches return
+this byte (a dozen call sites — `grep floatingBus src/Memory.cpp`). It is the
+foundation that makes vapor lock *possible*, and it is proven end-to-end: the
+`vapor_lock` test locks a real 6502 loop (2026-06-09) and the headless DIX run
+reaches its animated menu (2026-07-31) — see §1.
 
 ---
 

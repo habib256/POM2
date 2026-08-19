@@ -14,7 +14,7 @@ NeoST's were the 68000 bus and its scheduler.
 
 **Non-negotiable constraint for everything below**: POM2 is a cycle-accurate
 emulator. None of these optimisations changes a single value it produces. Each
-was validated by the full test suite (`ctest`, 166 tests) *and* by
+was validated by the full test suite (`ctest`, 182 tests) *and* by
 `pom2_bench`'s output hashes — RAM and framebuffer, byte-identical before and
 after, on every workload measured here.
 
@@ -137,7 +137,8 @@ index.
 cases and delegates everything else to `memReadSlow` (the original body,
 untouched):
 
-* `$0000-$BFFF` on a non-//e machine → main RAM;
+* `$0000-$BFFF` → main RAM (on a //e, the shared `iieReadFromAux` helper
+  picks aux vs main inline — `Memory.h:186-197`);
 * `$D000-$FFFF` with the language card mapped to ROM → ROM.
 
 > **The trap, and it is the same one NeoST hit.** The first instinct is to
@@ -212,8 +213,8 @@ gh run download <run-id> -n POM2-pi400-aarch64
 On the Pi itself — for iterating on the source — the same recipe is:
 
 ```sh
-packaging/raspberry/build_native_pi.sh --pgo            # 2 passes + LTO
-packaging/raspberry/build_native_pi.sh --pgo --install  # + /opt/POM2
+packaging/raspberry/build_native_pi.sh --pgo                 # 2 passes + LTO
+sudo packaging/raspberry/build_native_pi.sh --pgo --install  # + /opt/POM2 (hard-fails without root)
 ```
 
 The two scripts (`build_native_pi.sh` on the Pi, `build_in_bookworm_pi.sh` in
@@ -262,5 +263,9 @@ In order of weight in the final profile, with the reason it was left alone:
 | `Memory::advanceCycles` | 14 % (banner) | already incremental (the `% scanlinesPerFrame` division was removed in 2026-07); the rest is the per-instruction VBL edge, which is the model |
 | `SlotBus::advanceCycles` | 5 % | already dispatches through a cached active-card array; the cost is the virtual calls themselves |
 
-One measurable lead with no semantic risk: `Memory::advanceCycles` calls
-`cassette->advanceCycles` unconditionally, even with no tape loaded.
+One lead listed here has since been **taken** (2026-07-30 callgrind pass):
+`Memory::advanceCycles` used to call `cassette->advanceCycles`
+unconditionally, even with no tape loaded — measured at 4.1 % of the core.
+It is now gated (`if (cassette)`, `Memory.cpp:377`) and the call is an inline
+fast path (`CassetteDevice.h:86-95`) that only takes the out-of-line playback
+route when the deck is actually moving.

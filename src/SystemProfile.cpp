@@ -9,8 +9,9 @@ namespace pom2 {
 
 namespace {
 
-// ROMs are user-provided (Apple's copyright). POM2 ships with no ROM —
-// the user drops their dumps into roms/. Each profile's probe list
+// The repo and release packages ship a full roms/ tree (see
+// packaging/bundle.manifest); a user can still override any dump in the
+// per-user data dir. Each profile's probe list
 // supports a few historical filenames so a user who downloaded a
 // "system_rom_pack" from anywhere reasonable still gets a match. The
 // candidate order is: machine-specific first (apple2o = original,
@@ -130,13 +131,10 @@ const ProfileConfig& cfgAppleIIc()
         /*iieMode=*/true,        // same paging as IIe
         M6502::CpuMode::CMOS,    // //c always shipped 65C02
         17045,
-        // builtInSlots: [_, printer, ssc, _, mouse, smartport35, diskii, _]
-        // sl1 = built-in printer (POM2-synthetic parallel-style). On real
-        // //c hardware $C100 was a *second* SSC (firmware labelled it the
-        // "printer port" but it was serial); we substitute a synthetic
-        // parallel printer that spools to a host file (.txt / .pdf) so
-        // PR#1 from BASIC has a useful sink out of the box — the same
-        // "print to PDF" affordance macOS bakes into its print dialog.
+        // builtInSlots: [_, ssc, ssc, _, mouse, smartport35, diskii, _]
+        // sl1 + sl2 = the //c's two on-board serial ports, both plugged
+        // as `ssc` ("printer port" / "modem port" — see the detailed
+        // comment on the sl1 entry below).
         // sl5 = built-in SmartPort (the 32 KB ROM 0/3/4 //c shipped with
         // SmartPort firmware here for an external 3.5"/hard disk). POM2
         // serves it as a host-backed block device so 3.5" + HDV boot via

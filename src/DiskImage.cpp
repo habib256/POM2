@@ -832,12 +832,10 @@ bool DiskImage::loadFileUnchecked(const std::string& imgPath, SectorOrder order)
 //          block_count    (LE u16)
 //          bit_count      (LE u32)
 //
-// POM2 only resolves whole tracks (35), pulling each from TMAP[track*4]
-// — the canonical "centre of the track" quarter-track slot. Distinct
-// per-quarter-track bit data (used by some advanced protections like
-// David-DOS or Locksmith) is collapsed; that's a deliberate first-cut
-// shortcut. Once we extend DiskIICard's head-position interface to
-// quarter-track resolution, this can be lifted.
+// All 160 TMAP quarter-track slots are unpacked (FLUX takes precedence
+// over TMAP for a populated slot), so per-quarter-track bit data used by
+// protections like David-DOS or Locksmith is preserved — see the loader
+// body below.
 bool DiskImage::loadWoz(const std::string& imgPath)
 {
     std::ifstream f(imgPath, std::ios::binary);

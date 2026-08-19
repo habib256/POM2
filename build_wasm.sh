@@ -20,7 +20,7 @@
 #   ./build_wasm.sh                # release build
 #   ./build_wasm.sh --clean        # nuke build_wasm/ first
 #   ./build_wasm.sh --serve        # build + launch dev server on :8080
-#   ./build_wasm.sh --with-data    # also bundle disks_5.4/disks_3.5/hdv into POM2.data
+#   ./build_wasm.sh --with-data    # also bundle the disks_3.5/ library into POM2.data
 #   POM2_WASM_ALLOW_LARGE_DATA=1 ./build_wasm.sh --with-data
 #                                 # allow a local POM2.data over GitHub's 100 MiB limit
 

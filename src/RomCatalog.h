@@ -5,8 +5,10 @@
 //
 // RomCatalog — what every ROM POM2 looks for actually IS.
 //
-// ROMs are user-provided (POM2 ships none), so "it doesn't boot" and "that
-// card won't plug" are usually a missing or mis-named dump. The probe order
+// The repo and release packages ship a full roms/ tree (see
+// packaging/bundle.manifest); user overrides drop into the per-user data
+// dir. A missing or mis-named dump there is still why "it doesn't boot"
+// or "that card won't plug". The probe order
 // for the MACHINE firmware + character generator already lives in
 // `SystemProfile.h` (`romProbeOrder` / `charRomProbeOrder`) and the ROM
 // Status panel reads it straight from there — one source of truth, so a new

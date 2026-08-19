@@ -21,22 +21,23 @@ features POM2 never grew.
 
 ## Table of contents
 
-- [1. Where POM2 is today](#1-where-pom2-is-today)
-- [2. The gaps, ranked](#2-the-gaps-ranked)
+- [1. Where POM2 was (pre-plan, 2026-08)](#1-where-pom2-was-pre-plan-2026-08)
+- [2. The gaps, ranked (pre-plan)](#2-the-gaps-ranked-pre-plan)
 - [3. Licensing and provenance](#3-licensing-and-provenance)
-- [4. Phase A — real character ROMs](#4-phase-a--real-character-roms)
-- [5. Phase B — screen dump](#5-phase-b--screen-dump)
-- [6. Phase C — more printer models](#6-phase-c--more-printer-models)
-- [7. Phase D — paper geometry, power and online](#7-phase-d--paper-geometry-power-and-online)
-- [8. Phase E — print history](#8-phase-e--print-history)
-- [9. Phase F — printer sound](#9-phase-f--printer-sound)
+- [4. Phase A — real character ROMs](#4-phase-a--real-character-roms--shipped)
+- [5. Phase B — screen dump](#5-phase-b--screen-dump--shipped)
+- [6. Phase C — more printer models](#6-phase-c--more-printer-models--shipped)
+- [7. Phase D — paper geometry, power and online](#7-phase-d--paper-geometry-power-and-online--shipped)
+- [8. Phase E — print history](#8-phase-e--print-history--shipped)
+- [9. Phase F — printer sound](#9-phase-f--printer-sound--shipped)
 - [10. What NOT to take from web-a2e](#10-what-not-to-take-from-web-a2e)
 - [11. Effort and ordering](#11-effort-and-ordering)
 - [12. What implementation changed](#12-what-implementation-changed)
 
-## 1. Where POM2 is today
+## 1. Where POM2 was (pre-plan, 2026-08)
 
-Honest inventory, from `src/ImageWriter.h/.cpp` (541 + 1459 lines):
+Historical inventory — every row below has since shipped (§ 4-§ 9).
+From `src/ImageWriter.h/.cpp` (719 + 2141 lines today):
 
 | Area | State |
 |---|---|
@@ -55,8 +56,9 @@ Honest inventory, from `src/ImageWriter.h/.cpp` (541 + 1459 lines):
 | Print history | None beyond the in-session sheet stack |
 | Printer sound | None |
 
-## 2. The gaps, ranked
+## 2. The gaps, ranked (pre-plan)
 
+The pre-plan ranking — all six gaps have since shipped (§ 4-§ 9).
 Ranked by visible fidelity per unit of work, not by size.
 
 1. **Character ROMs.** Everything POM2 prints as text is drawn with a generic
@@ -114,7 +116,7 @@ The headline change. Two glyph tiers, from web-a2e's data:
 **Work.**
 
 1. `tools/import_printer_roms.py` — transcode the JS tables to a generated
-   C++ header (`src/printer/ImageWriterRom.h`, `constexpr uint16_t[]`). The
+   C++ header (`src/ImageWriterRom.h`, `constexpr uint16_t[]`). The
    data is a plain `{code: [12 numbers]}` map, so this is a 40-line script.
    Keep the script in-repo: it is the provenance record, and re-running it is
    how a future locale gets added.
@@ -159,7 +161,7 @@ bytes → `imageWriter->queueBytes()`. Threshold + invert options, auto-picking
 invert by lit density as web-a2e does. UI: a button in the ImageWriter panel
 and a `printer.dumpscreen` command-palette entry.
 
-**Test.** `printer_screen_dump_test`: a synthetic 560×384 buffer with a known
+**Test.** `printer_screen_dump_test`: a synthetic 560×192 buffer with a known
 pattern → assert the emitted stream is a well-formed `ESC G` sequence and that
 running it back through `ImageWriter` reproduces the pattern. That round trip
 is the real assertion — it pins scanner and parser against each other.
@@ -189,7 +191,7 @@ not divergent behaviour.
 
 So POM2 has `IwModelProfile`: one struct, one table of three. Adding a
 difference is adding a member; it is not adding a code path. That kept a
-1459-line, heavily-tested class intact — the whole 174-test suite stayed green
+2141-line, heavily-tested class intact — the whole 174-test suite stayed green
 through the change — where a hierarchy refactor would have touched every
 method to gain nothing the table does not give.
 
@@ -330,8 +332,8 @@ already documents for its step cadence.
 may run (0.2 s). A full-black screen dump is tens of thousands of strikes in
 one UI frame; scheduled naively at 5 ms apart that is *100 seconds* of buzz
 still playing long after the page is done. With the cap the burst simply
-THINS. The test fires 20 000 strikes and asserts the noise is over in 37
-buffers (~0.2 s) rather than 17 000.
+THINS. The test fires 20 000 strikes and asserts the noise is over in under
+100 buffers (~0.58 s) rather than 17 000.
 
 Pinned by `printer_sound`, which has no ears and therefore asserts structure:
 the cap, that dense print sustains where one character ticks, that pin count
@@ -356,14 +358,14 @@ sample-rate change drops grains built for the old rate.
 
 | Phase | Deliverable | Estimate |
 |---|---|---|
-| A | Character ROMs: import script, draft + NLQ + proportional banks, locales, glyph test | 3.5 d |
-| B | Screen dump + round-trip test | 1 d |
-| D | Paper geometry, power, online | 1 d |
+| A | Character ROMs: import script, draft + NLQ + proportional banks, locales, glyph test ✅ | 3.5 d |
+| B | Screen dump + round-trip test ✅ | 1 d |
+| D | Paper geometry, power, online ✅ | 1 d |
 | C1 | ~~`DotMatrixPrinter` base extraction~~ → `IwModelProfile` table ✅ | 0.5 d (was 1.5) |
 | C2 | ImageWriter I + Apple DMP ✅ | 1 d |
 | C3 | Epson FX-80 (own ESC/P parser + ROM) ✅ | 3 d |
-| E | Print history | 1.5 d |
-| F | Printer sound | 1 d |
+| E | Print history ✅ | 1.5 d |
+| F | Printer sound ✅ | 1 d |
 | | **Total** | **~13.5 d** |
 
 **Ordering rationale.** A first: it improves *every* page POM2 already prints,
@@ -422,6 +424,7 @@ the input path and touches nothing else.
 `saveScreenshot` the same way (F9 / palette / toolbar), so `printer.dumpscreen`
 follows that rather than inventing a menu.
 
-Not done from the phases marked shipped: per-model paper ranges (there is one
-model, so one range), and the `printerSetup`-style AI control commands — POM2's
+Not done from the phases marked shipped: per-model paper ranges (four models
+exist now, but the paper range is still a single set of file-scope constants
+shared by all of them), and the `printerSetup`-style AI control commands — POM2's
 equivalent belongs in the AI control API, which is Phase C's neighbourhood.

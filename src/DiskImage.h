@@ -97,8 +97,9 @@ public:
     /// `src/lib/formats/woz_dsk.cpp` chunk parser). When `order` is
     /// omitted, falls back to extension sniffing: `.po` → ProDOS,
     /// `.nib` → raw, `.woz` → WOZ1/WOZ2, anything else → DOS 3.3.
-    /// Returns true on success. On failure `getLastError()` has details.
-    /// Mounting a new image discards any previously loaded buffer.
+    /// Returns true on success. On failure `getLastError()` has details
+    /// and the previously loaded image is left intact (the load goes
+    /// into a scratch object and commits only on success).
     bool loadFile(const std::string& path);
     bool loadFile(const std::string& path, SectorOrder order);
     SectorOrder getSectorOrder() const { return sectorOrder; }

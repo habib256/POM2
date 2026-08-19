@@ -473,9 +473,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # ─── Platform deps ───────────────────────────────────────────────────────
 if(EMSCRIPTEN)
     # Browser build: Emscripten ships GLFW3 + WebGL2 ports built-in. The
-    # POSIX socket bridges (telnet, AI control HTTP) are compiled out
-    # via #ifdef __EMSCRIPTEN__ guards in SuperSerialCard.cpp /
-    # AiControlServer.cpp — symbols stay declared so callers still link.
+    # host-socket bridges (telnet, AI control HTTP) are compiled out via
+    # the POM2_HAS_SOCKETS gate (Pom2Build.h — 0 under Emscripten) in
+    # SuperSerialCard.cpp / AiControlServer.cpp — symbols stay declared
+    # so callers still link.
     #
     # Single-threaded build by design — runs on any static host
     # (GitHub Pages, Cloudflare Pages, plain S3, etc.) without the

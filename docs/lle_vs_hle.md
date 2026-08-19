@@ -80,7 +80,7 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **SmartPortHub / Sony35Drive** | **L0/L1** | Zoned GCR, LSTRB register strobes, DSKCHG latch polarity per MAME `floppy.cpp:560/672/723` | — |
 | **CFFA 2.0** (`CffaCard` + `AtaBlockDevice`) | **L2** | **Real 4 KB firmware dump executes** over an ATA taskfile model isomorphic to MAME's `cs0_r/cs0_w` | ATA layer skips DMA / IRQ / SMART; CHD backing is phase 2 |
 | **HDV card** (`ProDOSHardDiskCard`) | **H1** | Hand-assembled 256 B slot ROM + an invented 4-register streaming port; `deviceSelectRead/Write` = host `memcpy`. No GCR, no flux, no ATA | Deliberate: mounts `.hdv`/`.2mg` directly with **no card ROM dump required** |
-| **SmartPort card** (`SmartPortCard`, Liron-class) | **H1 + L2 veneer** | Real Liron ROM identity bytes, POM2's own 168-byte `$CE00` 6502 SmartPort handler overlaid on top; block moves are host memcpy | Full Liron LLE needs the IWM bit-shifter **and** the UniDisk drive-side 65C02 — out of scope |
+| **SmartPort card** (`SmartPortCard`, Liron-class) | **H1 + L2 veneer** | The whole 256 B slot page **and** the full 2 KB `$C800` bank come from `roms/liron.rom`; only the HLE service entries (`$Cn00-02`, `$Cn0A-12`, `$Cn20-E2` — `SmartPortCard.cpp:665-717`) are overlaid, routing to POM2's own `$CE00` 6502 SmartPort handler; block moves are host memcpy | Full Liron LLE needs the IWM bit-shifter **and** the UniDisk drive-side 65C02 — out of scope |
 | **//c-class on-board SmartPort** | **H1 + machine-level lie** | A `$C500-$C5FF` hole punched through the //c's forced INTCXROM, armed only by an explicit GUI/CLI boot | Real //c masks all slot ROM; MAME models no 3.5" on plain //c |
 | **ProDOS host folder** (`ProDOSVolume`) | **H1 authoring / L0 runtime** | POM2 *fabricates* a valid ProDOS volume image once; from then on the guest does genuine block reads through the real filesystem code | The fabrication is the abstraction; nothing below it is faked |
 | **Super Serial Card** | **L1 chip / H1 firmware** | 6551 ACIA register-faithful; the slot ROM is synthetic (PR#n/IN#n hooks + Pascal 1.1 ID block), real SSC ROM not shipped | Chip is right; firmware is a stub because no dump is bundled |
@@ -88,15 +88,15 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **Uthernet II** (`W5100Device`) | **L1 — and see below** | Register/socket model per AppleWin + WIZnet datasheet; each W5100 socket owns a real host BSD socket | **The chip is itself an offload engine** — host sockets *are* the faithful model, not a shortcut |
 | **FujiNet card** (`FujiNetCard`) | **H1 + relay** | Synthetic 256 B slot ROM whose only job is to trap into the host; every SmartPort call is forwarded verbatim to a real FujiNet over SP-over-SLIP (loopback TCP, or USB CDC-ACM to a physical board) | Nothing below the protocol exists to model — **the device is real and off-box**. MAME has no FujiNet device, so the source of truth is the published spec + the FujiNet AppleWin fork |
 | **Network transport** (`NetworkBackend`) | **H2** | Null / Loopback / libslirp user-mode NAT | Outbound-only by design: no root, no TAP/pcap |
-| **Clock card** (`ClockCard`) | **L2** | uPD1990AC bit-bang state machine per MAME `upd1990a.cpp`, driving the **real Thunderware Rev 1.3 EPROM** — `roms/thunderclock_u9_v1.3.bin` is in-repo and `tryLoadDump()` runs from the ctor (`ClockCard.cpp:78`), 2 KB mirrored into `$C800-$CFFF`. Synthetic ROM is the fallback only | Already there. The dump even settled the 40-bit-vs-48-bit shift-register question by disassembly (`$CACF` emits 4 CLK × 10 = 40) |
+| **Clock card** (`ClockCard`) | **L2** | uPD1990AC bit-bang state machine per MAME `upd1990a.cpp`, driving the **real Thunderware Rev 1.3 EPROM** — `roms/thunderclock_u9_v1.3.bin` is in-repo and `tryLoadDump()` runs from the ctor (`ClockCard.cpp:89`), 2 KB mirrored into `$C800-$CFFF`. Synthetic ROM is the fallback only | Already there. The dump even settled the 40-bit-vs-48-bit shift-register question by disassembly (`$CACF` emits 4 CLK × 10 = 40) |
 | **No-Slot Clock** (`NoSlotClock`) | **L1** | Full DS1216E SmartWatch 64-bit pattern-match state machine on `Memory::interceptRead` | — |
-| **Printer card** (`PrinterCard`) | **H1** | Synthetic ROM whose entire job is the PR#n CSWL/CSWH hook + a 4-byte trampoline; the data port spools to a `std::vector` | No PROM dump; Pascal entry block deliberately absent (`PrinterCard.h:48`) |
+| **Printer card** (`PrinterCard`) | **H1** | Synthetic ROM whose entire job is the PR#n CSWL/CSWH hook + a 4-byte trampoline; the data port spools to a `std::vector` | No PROM dump; Pascal entry block deliberately absent (`PrinterCard.h:35`) |
 | **Grappler+** (`GrapplerCard`) | **L2** | **Real 4 KB Orange Micro EPROM executes**; status byte, register decode, `$C800` banking, S1 DIPs line-cited against MAME `grappler.cpp` | `/STROBE` 7-clock pulse collapsed to instant — the synthetic printer consumes at latch time, so no observer exists |
-| **ImageWriter II** (`ImageWriter`) | **H2** | Host-side printer: full control language, 4-band ribbon, 8/24-pin bit images, PNG/PDF export. **Not a bus device at all** | There is no Apple II hardware here to emulate — the printer sat on the far side of a cable |
+| **ImageWriter II** (`ImageWriter` — the class now covers `IwModel` {ImageWriterII, ImageWriterI, AppleDMP, EpsonFX80}) | **H2** | Host-side printer: full control language, 4-band ribbon, 8/24-pin bit images, PNG/PDF export. **Not a bus device at all** | There is no Apple II hardware here to emulate — the printer sat on the far side of a cable |
 | **Mouse card — MAME** (`MouseCard`) | **L0** | **M68705P3 MCU executing its real 2 KB mask ROM** at 2× CPU clock + MC6821 PIA + quadrature edge generation | Only the PAL16R4 chip-select sequencer is skipped (firmware-invisible) |
 | **Mouse card — AppleWin** (`MouseCardAppleWin`) | **H1** | Same slot EPROM, but the MCU is a C++ command-byte state machine (`$00 SET` … `$90 TIME`); position copied from the host delta | Ships *because* the MCU mask ROM is not always available |
 | **Joystick / paddles** | **L1** | Real `$C070` RC discharge timing sampled at `$C064-$C067` bit 7 | — |
-| **Le Chat Mauve** (`LeChatMauveCard`) | **L1** | AN3 pulse FIFO decode (real register state machine) + AppleWin `RGBMonitor.cpp` pixel rules | Eve Color text mode `$C0B9` still a stub |
+| **Le Chat Mauve** (`LeChatMauveCard`) | **L1** | AN3 pulse FIFO decode (real register state machine) + AppleWin `RGBMonitor.cpp` pixel rules; Eve Color text (`$C0B8/9`) and HGR Duochrome (`$C0BA/B`) decoded (`LeChatMauveCard.cpp:48-58`, rendered by `Apple2Display::renderTextChatMauveFgBg`, snapshot v2) | — |
 
 ## The interesting cases
 
@@ -116,7 +116,7 @@ That makes the trade-off measurable rather than theoretical:
 - The H1 path **copies the host delta** into the HLE'd MCU's `iX/iY` (see
   `CHANGELOG.md`), so it never drops motion — and needs a
   compensating absolute closed-loop cursor sync in `MainWindow` that the L0
-  path does not need at all (`MainWindow.cpp:~4611`).
+  path does not need at all (`MainWindow.cpp:5087-5135`).
 
 The HLE variant is *smoother* and *less correct*. It exists for one reason: the
 `mouse_341-0269.bin` MCU dump is not always available, and a user with only the
@@ -191,7 +191,7 @@ Every one of these is documented in-repo. They are the price list.
 | HDV `$Cn07 = $01` | F8 Autostart only scans `$3C` — HDV needs `PR#n` / `bootFromSlot` |
 | HDV / SmartPort synthetic block model | Real CFFA/SCSI firmware cannot execute; multi-partition CFFA3000 images unsupported |
 | //c on-board SmartPort "armed" gate | Persisted SmartPort media does **not** auto-reboot; the stub must stay hidden during the //c ROM's own autostart or the banner garbles |
-| `SmartPortCard` CONTROL calls | Only code 0 works — the stub has no guest→device control-list copy; extended `$4x` calls return `$01`; empty bay reports `$2B` where `$28` is honest |
+| `SmartPortCard` CONTROL calls | Only code 0 works — the stub has no guest→device control-list copy; extended `$4x` calls return `$01` |
 | Grappler `/STROBE` collapsed | The 7-clock pulse timer is invisible; anything timing the strobe would see zero width |
 | `PrinterCard` Pascal block absent | Pascal printer drivers (PINIT/PREAD/PWRITE/PSTATUS) cannot bind — BASIC `PR#n` only |
 | `MouseCardAppleWin` delta copy | No quadrature rate limit; needs a compensating cursor sync the L0 card does not |
@@ -202,7 +202,7 @@ Every one of these is documented in-repo. They are the price list.
 | FujiNet relay: **no peer** | A third failure category, distinct from LLE-incomplete and HLE-out-of-contract: the device is *elsewhere*. Absent or slow shows up as a bounded stall (250 ms) then SmartPort `$27`; the boot path falls back to continuing the slot scan |
 | FujiNet relay: **rewind does not rewind** | The peer's clock never moves backwards. Blocks it wrote stay written, HTTP requests stay made; the card only resynchronises its sequence number on snapshot load |
 | FujiNet relay: not on //c-class | Forced INTCXROM masks slot ROM; the real //c wires FujiNet to the disk port instead, which needs the on-board `$C500` path |
-| `bootFromSlot` | Labelled a "synthetic shortcut" in `EmulationController.h:147`: cold boot + forced `PC = $Cn00` after validating the JSR trio. No real firmware scan happens |
+| `bootFromSlot` | Labelled a "synthetic shortcut" in `EmulationController.h:154`: cold boot + forced `PC = $Cn00` after validating the JSR trio. No real firmware scan happens |
 
 And the mirror-image failure, worth keeping in view: the **//c+ IWM 3.5" boot**
 is the one place where LLE is *present but incomplete*. The IWM itself is
@@ -244,7 +244,7 @@ Ordered by how much the gate has changed since the original decision.
 
 | Candidate | Current | Target | Gate |
 |---|---|---|---|
-| **Liron / UniDisk 3.5** | H1 (`SmartPortCard`) | L0 | **The gate has moved**: the ROM *is* dumped (BMOW/Yellowstone `LIRONALL.bin`, 4 KB, with disassembly) — MAME's *WANTED* is stale. Still needs the IWM bit-shifter + drive-side 65C02 firmware. Deliberately out of scope, but no longer blocked on sourcing |
+| **Liron / UniDisk 3.5** | ~~H1~~ **H1 + L2 veneer — ROM half done** | L0 | The dump has landed in-repo: `roms/liron.rom` (BMOW/Yellowstone `LIRONALL.bin`, 4 KB) is loaded by `SmartPortCard::loadLironRom`, so the slot page and `$C800` bank are the real firmware. Remaining: the IWM bit-shifter in a slot + the UniDisk drive-side 65C02 firmware. Deliberately out of scope, but no longer blocked on sourcing |
 | **SSC firmware** | H1 synthetic ROM | L2 | The real SSC ROM (341-0065-A) is publicly dumped and disassembled (6502disassembly.com/a2-rom/SSC — already POM2's reference for the Pascal ID block). The 6551 underneath is already L1, so this is a sourcing + wiring job, not a modelling one — the same shape as the ClockCard move that already landed |
 | **ClockCard slot ROM** | ~~H1 fallback~~ | **L2 — done** | The dump is in-repo and loads from the ctor. Residual: `clock_card_smoke` tolerates its absence (CI-safe), so nothing *fails* if the real path silently stops being taken — see the degradation hole below |
 | **Echo+ TMS5220** | H1 scaffold | L1 | TMS5220 LPC10 decoder (chirp ROM + K-parameter interpolation) + AY-3-8913 synth, once the Mockingboard/Phasor AY core is extracted into a shared helper. *~3–5 d* |
@@ -265,10 +265,14 @@ falls back to its synthetic ROM, `GrapplerCard` to `buildStubRom()`. That is
 correct product behaviour — the user still gets a working machine. But it means
 **the L path can stop being exercised without anything failing**.
 
-CI cannot cover the gap by construction: the ~130-test ctest gate deliberately
-depends on no user-supplied ROM, so exactly the paths that define the L levels
-are the ones outside it. `clock_card_smoke` is explicit about this ("the ctor
-loads the dump *when the user has it*").
+CI does not cover the gap either: several dumps are in fact git-tracked and
+used by tests (`diskii_p6.rom`, the mouse ROMs, `liron.rom`,
+`grappler_plus.bin`, the ThunderClock EPROM), but the real guard in the
+182-test ctest gate is that tests **SKIP rather than fail** when a dump is
+absent (e.g. `tests/mouse_card_axis_parity_test.cpp:69-72`) — so nothing
+asserts the real-ROM path is taken, and exactly the paths that define the L
+levels can degrade unnoticed. `clock_card_smoke` is explicit about this ("the
+ctor loads the dump *when the user has it*").
 
 Two cheap mitigations, neither implemented:
 

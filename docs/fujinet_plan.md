@@ -1,9 +1,12 @@
 # FujiNet in POM2 — implementation plan
 
-**Status: Phase 1 SHIPPED (2026-08-10).** Both transports, the card, the panel,
-the CLI flags and four pinned tests are in the tree — see `DEV.md` § FujiNet
-for what the code actually does. Phases 2 and 3 remain as written below, and
-are tracked in `TODO.md` § [Network].
+**Status: ALL PHASES SHIPPED (2026-08-10).** Both transports, the card, the
+panel, the CLI flags and four pinned tests are in the tree — see `DEV.md`
+§ FujiNet for what the code actually does. Phase 2 shipped partially (two
+items deliberately dropped — [§ 7](#7-phase-2--pom2-native-integrations)) and
+Phase 3 shipped by a different route than proposed
+([§ 8](#8-phase-3--helper-process-and-why-not-embedded-firmware)); both are
+recorded as ✅ DONE in `TODO.md`.
 
 This document was the design + work-breakdown, and is kept as the rationale
 record: why a relay rather than a port, why blocking on the CPU thread is the
@@ -112,7 +115,7 @@ comment so the deviation is deliberate and visible.
 ```
   guest 6502              POM2 host                              external
   ──────────              ─────────                              ────────
-  JSR $Cn0D    FujiNetCard      SpOverSlipLink    SpTransport
+  JSR $Cn63    FujiNetCard      SpOverSlipLink    SpTransport
   (SP call)    ├ synth. ROM     ├ seq numbers     ├ TcpTransport ─► FujiNet
        │       ├ $C0n2 trap     ├ 250 ms timeout  │  (listen :1985)  desktop
        │       ├ RAM marshal    ├ enumeration     └ SerialTransport─► FujiNet
@@ -160,11 +163,15 @@ verbatim to a real FujiNet over SP-over-SLIP | Nothing below the protocol
 exists to model — the device is real and off-box |
 ```
 
+*Discharged — the row is in `docs/lle_vs_hle.md`'s master table.*
+
 ### 4.3 One SmartPort call, end to end
 
-1. Guest: `JSR $Cn0D`, followed inline by `cmd` byte and a 2-byte pointer to
-   the parameter list.
-2. ROM at `$Cn0D` jumps to the driver body, which is three instructions:
+1. Guest: `JSR` to the SmartPort entry — the driver sits at `$Cn60` (found
+   via `$CnFF`), SmartPort entry = ProDOS entry + 3, i.e. `$Cn63`
+   (`FujiNetCard.cpp:220`) — followed inline by `cmd` byte and a 2-byte
+   pointer to the parameter list.
+2. ROM at `$Cn63` jumps to the driver body, which is three instructions:
    `LDA #$65` / `STA $C0n2` / `CMP #$01` / `RTS`.
 3. `SlotBus` dispatches the write → `FujiNetCard::deviceSelectWrite(0x2, 0x65)`.
 4. Card reads the pushed return address from page 1, decodes `cmd`,
@@ -201,18 +208,18 @@ New tests under `tests/`:
 | `slip_framer_test.cpp` | Escaping of `$C0`/`$DB`, round trip, truncated-frame rejection. |
 | `sp_over_slip_link_test.cpp` | Round trip against an in-process fake TCP peer; stale-response discard; timeout path. |
 | `serial_port_test.cpp` | POSIX pty loopback: raw mode round trip, timeout, DTR/RTS left de-asserted on open. Skipped on Windows (no pty). |
-| `fujinet_card_smoke_test.cpp` | ROM signature bytes; a real 6502 executing the boot path and a `JSR $Cn0D` against a fake peer; stack fixup; A/X/Y/flags. |
+| `fujinet_card_smoke_test.cpp` | ROM signature bytes; a real 6502 executing the boot path and a `JSR` to the SmartPort entry (`$Cn63` = driver + 3) against a fake peer; stack fixup; A/X/Y/flags. |
 
 Modified files:
 
 | File | Change |
 |---|---|
 | `SlotCardCatalog.h` | Add `{ "fujinet", "FujiNet (SP over SLIP)" }` with the usual rationale comment. |
-| `MainWindow.cpp` | `plugFujiNet(s)` lambda next to `plugUthernetII` / `plugSmartPort35`; dispatch entry in the `kind ==` chain (~line 1885). |
-| `MainWindow.cpp` (settings) | Per-slot keys `fujinet_listen_port<sk>`, `fujinet_enabled<sk>`, `fujinet_timeout_ms<sk>` — same `+ sk` suffix pattern the SSC uses. |
+| `MainWindow.cpp` | `plugFujiNet(s)` lambda next to `plugUthernetII` / `plugSmartPort35`; dispatch entry in the `kind ==` chain (line 2025). |
+| `MainWindow.cpp` (settings) | Per-slot keys `fujinet_port<sk>`, `fujinet_enabled<sk>`, `fujinet_timeout_ms<sk>` — same `+ sk` suffix pattern — plus `fujinet_helper_path<sk>` (`MainWindow.cpp:991`). |
 | `MainWindow.cpp` (panels) | Register the FujiNet panel in the DockSpace + View menu. |
 | `CliDispatcher.cpp` | `--fujinet[=port]` → plug the card into the first free slot (or slot 7) and start listening. |
-| `tests/CMakeLists.txt` | Four `add_executable` + `add_test` blocks, modelled on `test_smartport_card` (lines 1473-1492); `serial_port_test` guarded to non-Windows. |
+| `tests/CMakeLists.txt` | Four `add_executable` + `add_test` blocks, modelled on `test_smartport_card` (lines 1513-1533); `serial_port_test` guarded to non-Windows. |
 | `CLAUDE.md`, `DEV.md`, `TODO.md`, `docs/lle_vs_hle.md`, `CHANGELOG.md` | See [12](#12-documentation-duties). |
 
 ## 6. Phase 1 — the relay
@@ -373,7 +380,7 @@ selector switches modes and re-establishes.
 ### 6.5 The slot ROM
 
 POM2 **synthesises** its own 256-byte ROM in a `buildRom()` following
-`SmartPortCard::buildRom()` (`SmartPortCard.cpp:414`) and
+`SmartPortCard::buildRom()` (`SmartPortCard.cpp:429`) and
 `ProDOSHardDiskCard`. No third-party binary is shipped, no ROM dump is
 required, and the H1 pattern is the house style.
 
@@ -417,7 +424,7 @@ deliberately exposes neither.
 
 There is already a precedent to copy — `SoftCardZ80` (`SoftCardZ80.h:62,67`)
 takes `setMemory(Memory*)` and `setCpu(M6502*)`, injected by the host at plug
-time (`MainWindow.cpp:1514-1515`), and does all its bus work through
+time (`MainWindow.cpp:1611-1612`), and does all its bus work through
 `Memory::memRead` / `memWrite` — *"the real bus"* — so paging is honoured.
 `FujiNetCard` does the same:
 
@@ -495,13 +502,13 @@ reasoning, not the code.
 - **Catalog** (`SlotCardCatalog.h`): `{ "fujinet", "FujiNet (SP over SLIP)" }`,
   with a comment saying it needs an external FujiNet (desktop build over TCP,
   or a real board over USB) and no ROM dump.
-- **Plug** (`MainWindow.cpp`, beside `plugUthernetII` at line 1567): construct,
-  `setMemory` / `setCpu`, apply settings, plug on the bus, remember the pointer
-  for the panel.
-- **Settings**: per-slot suffix keys, the pattern `MainWindow.cpp:890-905` uses
-  for the SSC — `fujinet_transport` (`tcp` | `serial`), `fujinet_listen_port`,
-  `fujinet_serial_path`, `fujinet_serial_baud`, `fujinet_timeout_ms`,
-  `fujinet_enabled`.
+- **Plug** (`MainWindow.cpp`, beside `plugUthernetII` at line 1664 —
+  `plugFujiNet` sits at 1680): construct, `setMemory` / `setCpu`, apply
+  settings, plug on the bus, remember the pointer for the panel.
+- **Settings**: per-slot suffix keys — `fujinet_transport` (`tcp` | `serial`),
+  `fujinet_port`, `fujinet_serial_path`, `fujinet_serial_baud`,
+  `fujinet_timeout_ms`, `fujinet_enabled`, plus `fujinet_helper_path`
+  (`MainWindow.cpp:991`).
 - **CLI** (`CliDispatcher`, pre-boot phase):
   - `--fujinet[=PORT]` — TCP mode, default 1985.
   - `--fujinet-serial[=DEV]` — serial mode; with no argument, auto-pick when
@@ -509,7 +516,7 @@ reasoning, not the code.
     error rather than guessing.
   - `--fujinet-slot N` — override the default slot 7.
 - **Multi-instance**: **no.** One card per machine, like the real thing. Follow
-  the `hdv` precedent in `MainWindow.cpp:1265` (single-instance keys), not the
+  the `hdv` precedent (single-instance keys), not the
   `cffa`/`smartport35` multi-instance list — a second listener on the same port
   or a second opener of the same device would just fail.
 
@@ -694,7 +701,7 @@ connected). The user understands "the internet doesn't rewind".
 
 Per the project convention, every ported behaviour gets a smoke test under
 `tests/`, registered in `tests/CMakeLists.txt` the way `test_smartport_card`
-(lines 1473-1492) is, with a `TIMEOUT`. Socket tests have precedent:
+(lines 1513-1533) is, with a `TIMEOUT`. Socket tests have precedent:
 `socket_compat_test.cpp`, `ssc_acia_smoke_test.cpp`,
 `uthernet2_w5100_smoke_test.cpp`.
 
@@ -738,7 +745,7 @@ TCP. The transport abstraction is what makes that split safe.
 - With a fake peer serving block 0: run a real `M6502` from `$Cn00`, assert
   `$0800` holds the block and PC reaches `$0801` (this is also the
   `bootFromSlot` path).
-- Hand-assemble `JSR $Cn0D` + inline `cmd`/pointer in guest RAM, run it, and
+- Hand-assemble `JSR $Cn63` (the SmartPort entry, driver + 3) + inline `cmd`/pointer in guest RAM, run it, and
   assert (a) the response landed at the payload address, (b) `A`/`X`/`Y` and
   the Z/C flags are right, (c) **the PC after `RTS` is the instruction after
   the 3 inline bytes** — the stack fixup.
@@ -750,6 +757,8 @@ The stack-fixup and page-1-wrap assertions are the ones that will actually
 catch a regression; write them first.
 
 ## 12. Documentation duties
+
+*Discharged — every item below landed with Phase 1 (2026-08-10).*
 
 - `CLAUDE.md` — two rows in the subsystem map: `FujiNet (SP-over-SLIP relay,
   TCP + USB CDC) | FujiNetCard.*, SpOverSlipLink.*, Sp*Transport.*,
@@ -903,6 +912,10 @@ surfaces the address for the user rather than shelling out to a browser.
 **6. `SerialPort::enumerate()` prefers `/dev/serial/by-id/`.** Not in the plan,
 but `ttyACM0` does not survive a replug and a user who saved that path in
 settings would silently target somebody else's device after a reboot.
+
+**7. The page-1 wrap is pinned at `SP = $01` only.** [§ 11](#11-pinned-tests)
+asked for both `SP = $01` and `SP = $FE`; the smoke test covers only the `$01`
+case.
 
 Line counts came in close to the estimate: `SlipFramer.h` ~180,
 `SerialPort.*` ~600, the transports ~430, `SpOverSlipLink.*` ~640,

@@ -1038,8 +1038,9 @@ continuous), **T2 (one-shot, timed phase-2)**, IFR/IER (T1/T2 bits
 `IFR.T1` (MAME `6522via.cpp` VIA_T1LH: `m_t1lh = data;
 clear_int(INT_T1)` — no counter transfer, no restart; an earlier
 POM2 note claimed the opposite). IER bit 7 set-vs-
-clear (`$C0` enables, `$40` disables). SR/PCR/CB1 + T2 PB6-count
-mode not modelled. **T2 underflow IRQ fires at `TIMER2_VALUE +
+clear (`$C0` enables, `$40` disables). SR, CB1/CB2 outputs + T2
+PB6-count mode not modelled (PCR is partly: CA1 edge select and
+CA2-mode IFR masking are honoured). **T2 underflow IRQ fires at `TIMER2_VALUE +
 IFR_DELAY` (= N+3)** matching MAME `6522via.cpp:959` (POM2's
 `advance()` crosses < 0 at N+1, so T2CH pre-biases the counter by
 `IFR_DELAY-1 = 2`). This is the per-frame sync French Touch / DIX
@@ -1053,9 +1054,8 @@ and band-limiting live in **`AyPsgSynth.h`, shared with `PhasorCard`**
 (extracted 2026-08-01 — the two cards had carried verbatim copies and
 drifted). 17-bit LFSR `x^17 + x^14 + 1`; MAME-verbatim 4-flag envelope
 state machine (all 16 shapes pinned against MAME's step sequence).
-Both chips → mono; MAME's Mockingboard is stereo (AY1 L, AY2 R,
-`a2mockingboard.cpp:161-165`) and POM2 is not, because `AudioDevice`
-is a mono bus.
+Both chips sit on the stereo bus — AY1 left, AY2 right, matching
+MAME `a2mockingboard.cpp:161-165` → [§ Stereo bus](#stereo-bus-2026-08-01).
 
 Three properties the audio path depends on, each of which was broken
 until 2026-08-01 (full reasoning + numbers → `CHANGELOG.md`):
@@ -1349,11 +1349,12 @@ floppy_sound_device`. 20 source WAVs (10 × 5.25" + 10 × 3.5") in
 `roms/floppy_samples/`, BSD-3-Clause.
 
 **`FloppySoundSink` interface** (header-only): `DiskIICard` calls
-`sound_->motor()/step()/click()` through it so smoke tests don't
-drag miniaudio.
+`sound_->motor()/step()` through it so smoke tests don't drag
+miniaudio (`click()` is only fired by `Sony35Drive` today — the
+5.25" insert/eject click has no live call site).
 
 **Step/seek decision** (MAME parity): `step(newTrack, emuCycles)`
-measures gap in emulated CPU cycles (MAME `floppy.cpp:1532-1620`).
+measures gap in emulated CPU cycles (MAME `floppy.cpp:~1532-1540`).
 Wall-clock audio frames would be wrong under disk turbo (~60×):
 PROM's full phase sweep lands in one audio buffer → gap=0 → buzz.
 
@@ -1379,8 +1380,7 @@ wall-clock. Device defers audible transition by `kMotorOffHoldMs`
 **Hook points in `DiskIICard`**: `seekPhaseW` end → `step(head/4)`;
 `control()` `$C0E9` MODE_IDLE→ACTIVE → `motor(true)`;
 `advanceCycles()` when `motorOffDelay` expires → `motor(false)`;
-`handleSwitchAccess()` legacy 32-cyc gate immediate motor toggle;
-`insertDisk`/`ejectDisk` → `click()`.
+`handleSwitchAccess()` legacy 32-cyc gate immediate motor toggle.
 
 Owned by `EmulationController` (audio shutdown drains thread).
 Persisted: `floppy_sound_volume`, `floppy_sound_muted`. Pinned:
@@ -1597,9 +1597,9 @@ Verbatim port of MAME `lib/formats/woz_dsk.cpp`. WOZ stores raw bit
 cells — survives copy protections that tweak timing. WOZ1 (160 ×
 6656-byte slots, `bit_count` @+6648 u16) and WOZ2 (160 × 8-byte TRK
 headers, data at `starting_block × 512`, `bit_count` u32). Bits
-MSB-first. Each track 0..34 sources bits from `TMAP[track*4]`
-(centre qt); sub-qt positions (Locksmith, David-DOS) not yet
-preserved.
+MSB-first. All 160 TMAP quarter-track slots are unpacked (FLUX
+takes precedence over TMAP for a populated slot), so sub-qt
+protection positions (Locksmith, David-DOS) are preserved.
 
 **Write-back**: `loadWoz()` snapshots file to `wozRaw` +
 per-qt-track `(byteOff, byteLen, bitCount)`; `writeFlux()` splices
@@ -1830,6 +1830,8 @@ $C0n2 write  block HI byte
 $C0n3 read   next byte (auto-incr 512 B)
 $C0n3 write  next byte INTO current block (WB-gated)
 $C0n4 read   status: bit7 = no disk, bit6 = WP, bit0 = latched I/O error
+$C0n5 read   STATUS block-count LO (ROM driver reads via LDX)
+$C0n6 read   STATUS block-count HI (ROM driver reads via LDY)
 $C0n7 write  SmartPort-call param push (cmd, then 10 param-list bytes)
 $C0n9 read   SmartPort result stream (STATUS payloads, READ data)
 $C0nB/C read result count lo / hi
@@ -1881,8 +1883,8 @@ NOP padding over them, contradicting the "kept real" list.
 on-board $C500 stub keeps the synthetic `$Cn07=$01` so the //c boot scan
 never SmartPort-enumerates it (project_iic_smartport_boot).
 
-Per-drive `streamOffset_[2]` wraps every 512 B; drive-select latches
-`activeDrive_` and resets stream offset.
+Per-unit `streamOffset_` (one per unit, 2 units) wraps every 512 B;
+drive-select latches `activeUnit_` and resets stream offset.
 
 **Slot ROM** (`buildRom`, 256 B with slot baked in):
 ```
@@ -2148,7 +2150,8 @@ at the restored head.
 **Sound chips** (`rewind_audio_state`): `MockingboardCard` and
 `PhasorCard` serialize their `Via6522` + `Ay3_8910` (+ `Ssi263` on the
 Sound II variant) register/timer state through the same `SlotPeripheral`
-hook — `Via6522::append/loadSnapshot` (24 B), `Ay3_8910` (34 B),
+hook — `Via6522::append/loadSnapshot` (25 B; v1 blobs are 24 B,
+`portAIn` absent), `Ay3_8910` (34 B),
 `Ssi263` (30 B: 5 registers + phoneme playback cursor) — shared across
 cards, with LE packing in `ByteIO.h`. So music *and* speech survive a
 rewind, not just the speaker flush. The AY/SSI here are register/cursor
@@ -2279,7 +2282,8 @@ via `DiskImage::getNextTransition` (5.25") or
 1. `EmulationController` constructs the IWM, hands it to
    `Memory::setIWM`. Reset paths (`hardReset`, `coldBoot`,
    `bootFromSlot`) call `iwm.reset()`.
-2. Memory routes `$C0E0-$C0EF` on `isIIcPlus` through IWM (MAME
+2. Memory routes `$C0E0-$C0EF` on //c+ (`IIcClassProfile::isPlus_`)
+   through IWM (MAME
    `apple2e.cpp:2798-2801` gating on `m_isiicplus && slot == 6`).
    Plain //c uses `A2BUS_DISKIING` at sl6. On //c+ slot-6 DiskIICard
    still observes the access (motor sound / turbo / head tracking).
@@ -2533,15 +2537,16 @@ even tick — the IWM; //c+ must still route to it).
 ### Host sockets (POSIX / Winsock)
 
 `src/SocketCompat.h` is the ONE place that answers "POSIX or Winsock?".
-Three TUs consume it — `W5100Device` (Uthernet II TCP/UDP),
-`SuperSerialCard` (telnet bridge), `AiControlServer` (HTTP control API) —
+Four TUs consume it — `W5100Device` (Uthernet II TCP/UDP),
+`SuperSerialCard` (telnet bridge), `AiControlServer` (HTTP control API),
+`SpTcpTransport` (the FujiNet SP-over-SLIP TCP pipe) —
 and `SocketUtil.h` (the accept/SIGPIPE idioms) is built on top of it.
 `POM2_HAS_SOCKETS` is now 0 for **Emscripten only**; Windows is a full
 host-socket target since 2026-08-01.
 
 Winsock is the same stack behind a different API, and its differences are
 **silent** — code that compiles clean against it can still be wrong.
-Five traps, each removed by a helper rather than by remembering:
+Seven traps, each removed by a helper rather than by remembering:
 
 | # | Trap | Helper |
 |---|---|---|
@@ -2550,6 +2555,8 @@ Five traps, each removed by a helper rather than by remembering:
 | 3 | `close()` closes a CRT fd, not a socket; no `fcntl(O_NONBLOCK)` | `closeHostSocket()`, `setNonBlocking()`, `shutdownBoth()` |
 | 4 | The stack needs `WSAStartup` before the first call | `ensureSocketStack()` |
 | 5 | A member `closeSocket()` shadows a namespace-scope one — class scope wins, `socket_t`→`size_t` converts silently, infinite recursion | the helper is named `closeHostSocket`, deliberately |
+| 6 | `SO_REUSEADDR` on Winsock lets another local process hijack a listener | `setListenerBindPolicy()` |
+| 7 | Winsock reports datagram-scoped errors (`WSAEMSGSIZE`, ICMP-derived `WSAECONNRESET`) on unconnected UDP | `errDatagramDiscard()`, `disableUdpConnReset()` |
 
 Trap 5 is not Winsock's fault and bit this port anyway: `W5100Device`
 already had a chip-level `closeSocket(size_t)` (the CLOSE command), so
@@ -2660,8 +2667,8 @@ Firmware Reference ch. 7 for the call convention the spec supplements.
 | `FujiNetCard.*` | `SlotPeripheral`: synthetic slot ROM, the `$C0n2` trap, RAM/register marshalling. |
 
 **The trap.** The synthesised slot ROM does almost nothing — both entry points
-are three instructions: `LDA #$65` (or `#$66` for ProDOS) / `STA $C0n2` /
-`CMP #$01` / `RTS`. `deviceSelectWrite` sees that store and does everything on
+funnel into the same four-instruction tail: `LDA #$65` (or `#$66` for ProDOS) /
+`STA $C0n2` / `CMP #$01` / `RTS` (a `SEC`/`BCS` preamble picks the magic byte). `deviceSelectWrite` sees that store and does everything on
 the host: decode the parameter list out of emulated RAM, **rewrite the return
 address on the stack** past the three inline bytes a SmartPort call carries, do
 the round trip, write the response back into RAM, set A/X/Y. The trailing
@@ -3039,11 +3046,11 @@ enough to keep ProDOS's device scanner happy.
 **Free-slot pick on II / II+ / //e** via the Slot Configuration panel.
 It is **not** a //c/+ built-in: those profiles place a real serial
 `ssc` at slot 1 ("printer port") and slot 2 ("modem port"), matching
-the //c hardware (`SystemProfile.cpp:146,200`, `cfgAppleIIc /
+the //c hardware (`SystemProfile.cpp:155,209`, `cfgAppleIIc /
 cfgAppleIIcPlus`). POM2 *used to* substitute a synthetic parallel
 PrinterCard at the //c slot-1 built-in, but that diverged from the
 real //c serial printer port (and from MAME's `apple2c`) and was
-reverted — see the comment at `SystemProfile.cpp:127`.
+reverted — see the comment at `SystemProfile.cpp:152`.
 
 Pinned: `printer_card_smoke` — ROM fingerprint + data-port spool
 semantics + CPU-driven `PR#1` + 3 COUT-style writes flow.
@@ -3097,8 +3104,8 @@ printer's input-buffer state is what throttles a printing guest.
 **Bank switching is modelled.** Real Grappler+ exposes the upper
 2 KB of its 4 KB EPROM via a bank-select write. POM2 mirrors this:
 a data-port write with `low4 & 0x01` set raises `romBankHigh_`
-(`GrapplerCard.cpp:78`); the expansion window then serves the upper
-2 KB (`rom_[(offset & 0x7FF) | 0x800]`, `GrapplerCard.cpp:114`).
+(`GrapplerCard.cpp:134`); the expansion window then serves the upper
+2 KB (`rom_[(offset & 0x7FF) | 0x800]`, `GrapplerCard.cpp:172`).
 Any `$CnXX` **read or write** drops the bank low; the flag round-trips
 through snapshot. `grappler_card_smoke` asserts both banks are
 distinguishable.
@@ -3136,8 +3143,9 @@ the per-user `printouts/history/` as a PNG plus a tab-separated index carrying t
 ribbon, paper size and raster dimensions. The ImageWriter panel lists them
 newest first and puts one back on the canvas when clicked.
 
-**Not JSON**, deliberately: POM2 has no JSON *parser* (the AI control server
-only writes it), and adding one to read a few dozen index lines is not worth
+**Not JSON**, deliberately: POM2 has only a flat one-level JSON *extractor*
+(`AiControlServer.cpp` `jsonParseValueAt`), not a document parser, and growing
+one to read a few dozen index lines is not worth
 it. Tab-separated text also survives a truncated final line and can be read in
 a terminal.
 
@@ -3244,10 +3252,10 @@ steps.
 
 **Character ROMs (2026-08-10).** Glyphs no longer come from POM2's bundled
 CP437 font. `src/ImageWriterRom.h` is GENERATED by
-`tools/import_printer_roms.py` and carries seven banks — ImageWriter II
+`tools/import_printer_roms.py` and carries ten banks — ImageWriter II
 correspondence / draft / NLQ, each fixed and proportional where the hardware
-had one, plus the ImageWriter I pair — with the seven locale substitutions per
-bank. Consequences:
+had one, plus the ImageWriter I pair, the Apple DMP pair and the Epson FX-80
+face — with the seven locale substitutions per bank. Consequences:
 
 - **`ESC a n` now changes the page** (0 = correspondence, 1 = draft, 2 = NLQ,
   Table 4-1). It used to be swallowed, and "NLQ" was only the host's *pacing*
@@ -3274,9 +3282,11 @@ a backslash ending a `//` comment continues it onto the next line (`$5C` is
 `\`), which silently dropped one glyph per bank into a fixed-size array; and
 the row comments contain `{` and `}`, which broke a brace-walk parser.
 
-**Three heads (phase C).** `IwModelProfile` is a three-row table —
-ImageWriter II, ImageWriter I, Apple DMP — and `setModel()` power-cycles into
-one. They share the C. Itoh 8510 command set (the II is a backward-compatible
+**Four heads (phase C).** `IwModelProfile` is a four-row table —
+ImageWriter II, ImageWriter I, Apple DMP, plus the Epson FX-80 (whose row
+exists mainly to carry `escP` and its own bank — see below) — and
+`setModel()` power-cycles into one. The three C. Itoh heads share the
+8510 command set (the II is a backward-compatible
 superset), so what varies is DATA, not code paths: which ROM banks exist,
 whether there is a four-band colour ribbon, which ESC codes the head has no
 hardware for, the power-on pitch (the DMP comes up at Pica 10 cpi, the two
@@ -3293,7 +3303,7 @@ byte-identical to the II's upstream — web-a2e seeds them from it. POM2 keeps
 them as separate banks anyway so a future divergence lands automatically, and
 `printer_glyph` deliberately does not assert that the faces differ.
 
-**The Epson FX-80 is a fourth head but NOT a fourth row's worth of data.** It
+**The Epson FX-80 row is NOT another C. Itoh data variation.** It
 is a different lineage, so `IwModelProfile::escP` routes it to a SECOND PARSER
 (`processEpsonChar` / `execEpsonEscape`) over the same page, dot plotter,
 ribbon, pacing and paper. The two grammars collide outright — `ESC G` is
@@ -3379,15 +3389,17 @@ most drivers only do so when their own setup names a colour printer
 (M) driver never does). Persisted as `imagewriter_ribbon`.
 
 **Text is dot-matrix, not TrueType.** The reference needs SDL 1.2 +
-FreeType; POM2 links neither, so glyphs come from the repo's own 8×8
-CP437 font (`hgrpaint::kBBFontCp437`, 7 px + 1 px gap). That is *closer*
-to the hardware, not further: an ImageWriter draft cell really is 8 dots
-wide at the pitch's density and 8 pins tall at 1/72 in, so a character
-and a graphics column go through the same plotter (`fillDots`). Bold =
-1.5× dot width (what a half-dot-offset second pass leaves on paper);
-italics shear one dot over the cell height; double-width halves `actcpi`.
-Proportional mode (`ESC p` / `ESC P`) selects the stated pitch but keeps
-the fixed cell — the font has no per-glyph advance table.
+FreeType; POM2 links neither — glyphs come from the transcribed character
+ROM banks (`ImageWriter::romGlyph` / `currentBank()`, see § Character ROMs
+above), with the repo's 8×8 CP437 font as the fallback for anything a
+bank does not carry. That is *closer* to the hardware, not further: an
+ImageWriter draft cell really is 8 dots wide at the pitch's density and
+8 pins tall at 1/72 in, so a character and a graphics column go through
+the same plotter (`fillDots`). Bold = 1.5× dot width (what a
+half-dot-offset second pass leaves on paper); italics shear one dot over
+the cell height; double-width halves `actcpi`. Proportional mode
+(`ESC p` / `ESC P`) advances by the glyph's own ROM escapement
+(`ImageWriter::glyphAdvance`), not a fixed cell.
 
 **Dots are painted as the page-pixel interval they cover**, replacing the
 reference's `pixsize` + "Primative scaling function" fudge
@@ -3530,9 +3542,10 @@ outruns even the catch-up rate must not grow the heap without bound.
 Truncating a printout is bad; freezing the emulator is worse. Pinned by
 `testBoundedCatchUp`.
 
-**One printer, three possible feeds.** `pumpImageWriter()` arbitrates —
-parallel cards outrank the SSC tap, `PrinterCard` outranks `GrapplerCard`
-— and keeps ONE drain cursor. Everything hard about that is the handover,
+**One printer, four possible feeds.** `pumpImageWriter()` arbitrates —
+`PrinterCard` outranks `GrapplerCard`, the parallel cards outrank the
+FujiNet printer unit, which outranks the SSC tap — and keeps ONE drain
+cursor. Everything hard about that is the handover,
 so it lives in `printerFeedCursor()` (`PrinterFeedCursor.h`), header-only
 and dependency-free so it can be pinned without an ImGui context. A
 changed source re-seats the cursor at the new source's **current total**,
@@ -4171,7 +4184,9 @@ tall-enough toolbar can end up behind the Apple II Screen window. Docking
 
 `MainWindow.h` is forward-decl-only for every plugin/panel/controller
 — includes only `M6502.h`, `Apple2Display.h` (HiResMode), `Mat4.h`
-(`OrbitCamera` member) and `imgui.h`. 21 owning members behind
+(`OrbitCamera` member), `MouseGrab.h`, `Pom2Theme.h`,
+`PrinterScreenDump.h` (each for a by-value member) and `imgui.h`.
+32 owning members behind
 `std::unique_ptr<T>` (plus a `vector<unique_ptr<>>` of disk panels);
 ctor/dtor/accessor bodies out-of-line so
 unique_ptr destruction sees a complete type. Compile-time: `touch
@@ -4497,15 +4512,16 @@ to cassette. Pinned: `system_profile_smoke::testIicRomBankSwitch`.
 
 **//c-class INTCXROM override**: //c/+ have no physical slots →
 internal ROM always at `$C100-$CFFF`. POM2 gates `internalIORom`
-dispatch on `(MF_INTCXROM || isIIcClass)` (MAME `apple2e.cpp:1619-1631
+dispatch on `(MF_INTCXROM || //c-class)` (MAME `apple2e.cpp:1619-1631
 update_slotrom_banks`). `loadAppleIIRom` and `resetSoftSwitches` set
-`iieMemMode |= MF_INTCXROM` when `isIIcClass`. Pinned:
+`iieMemMode |= MF_INTCXROM` on //c-class. Pinned:
 `testIicInternalRomAlwaysMapped`.
 
 **Built-in slot locks** (`ProfileConfig::builtInSlots`): each profile
-carries `std::array<std::optional<BuiltInSlot>, 8>`. //c locks sl2
-(SSC), sl4 (Mouse), sl6 (Disk II). //c+ adds sl5 (SmartPort 3.5" via
-IWM). `plugSlotsFromSettings` overrides `slotCards[s]` with forced
+carries `std::array<std::optional<BuiltInSlot>, 8>`. //c and //c+ both
+lock the same five slots — sl1 + sl2 (the two on-board serial ports as
+`ssc`), sl4 (`mouseaw`), sl5 (`smartport35`) and sl6 (`diskii`); sl3
+and sl7 stay free. `plugSlotsFromSettings` overrides `slotCards[s]` with forced
 cardKey regardless of persisted `slot_N_card`. `renderSlotConfigPanel`
 renders locked slots disabled with "built-in" badge. Pinned:
 `testBuiltInSlots`.
@@ -4560,20 +4576,27 @@ drives a MIG gate-array + IWM. POM2 models the minimum for cold boot:
 CLI `--preset` triggers the same path (after legacy auto-probe —
 wins). Aliases: `apple2`, `apple2plus`, `iie-u` / `iieunenhanced` /
 `apple2e-1983`, `apple2e`, `apple2c`, `apple2cplus`, `//e-u`, `//e`,
-`//c`, `//c+`. `cpu_mode_override` = `auto|nmos|65c02`.
+`//c`, `//c+`, plus the PAL keys `iie-pal` / `iiepal` / `apple2e-pal` /
+`//e-pal` and `iic-pal` / `iicpal` / `apple2c-pal` / `//c-pal` /
+`chatmauve`. `cpu_mode_override` = `auto|nmos|65c02`.
 
 ## CLI (CliDispatcher)
 
 `CliDispatcher` (parser, no `EmulationController` dep) + `CliRunner`
 (Phase-C runner — split out so parser is unit-testable). Three
-phases: **A** parse, **B** pre-boot
-(preset/ROM/snapshot-load/`--load addr:file`), **C** post-boot
-(tape ops/paste/run/step).
+phases: **A** parse, **B** pre-boot (preset / ROM / display / speed),
+**C** post-boot deferred actions (`--load addr:file`,
+`--snapshot-load`/`--snapshot-save`, tape ops, paste, run, step).
 
-Flags: `--preset ii|ii+|iie-u|iie|iic|iic+`, `--speed`, `--cpu-max`,
-`--tape`, `--35-disk1 path`/`--35-disk2 path`, `--load addr:file`,
+Flags: `--preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal`, `--speed`,
+`--cpu-max`, `--display`, `--ii-plus`,
+`--tape`, `--save-tape`/`--save-tape-format aci|wav`,
+`--35-disk1 path`/`--35-disk2 path`, `--load addr:file`,
 `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`,
-`--snapshot-save`/`--snapshot-load`.
+`--snapshot-save`/`--snapshot-load`,
+`--fujinet[=PORT]`/`--fujinet-serial[=DEV]`/`--fujinet-slot N`,
+`--rgb-card-invert-bit7[=on|off]`, `--trace-brk` (logged no-op).
+`printUsage()` is the source of truth.
 
 **Positional disk + `--kiosk`**. First non-flag arg → `CliPlan::
 bootDiskPath`; `--kiosk` → `CliPlan::kiosk`. `main.cpp`:
@@ -4767,10 +4790,10 @@ their output differently.
 
 ## WebAssembly (browser build)
 
-Driver: `build_wasm.sh` → `dist/wasm/{index.html, POM2.js, POM2.wasm,
-POM2.data, serve.py}`. Per-folder doc: `dist/wasm/README.md` (build,
-deploy, caching hints). User-facing summary lives in `README.md`
-§ "WebAssembly (browser)".
+Driver: `build_wasm.sh` → `wasm/{index.html, POM2.js, POM2.wasm,
+POM2.data, serve.py, SOURCE_STAMP}` (the shell template is
+`wasm/shell.html`). User-facing summary lives in `README.md`
+§ "🌐 WebAssembly".
 
 **Single-threaded by design**. No `std::thread`, no `SharedArrayBuffer`,
 no COOP/COEP — runs on any static host (GitHub Pages, Cloudflare
@@ -4781,7 +4804,7 @@ native build: no parallel audio thread, but miniaudio's Web Audio
 backend runs in a browser-managed worklet anyway, so the difference
 is invisible in practice.
 
-**CMake Emscripten branch** at `CMakeLists.txt:262-326`:
+**CMake Emscripten branch** at `CMakeLists.txt:474-560`:
 
 - `-sUSE_GLFW=3 -sUSE_WEBGL2=1 -sFULL_ES3=1` — Emscripten ships
   GLFW3 + WebGL2 ports built-in, so the ImGui GLFW/OpenGL3 backends
@@ -4799,22 +4822,25 @@ is invisible in practice.
   `-DPOM2_WASM_BUNDLE_DISKS=ON` (appends `disks_3.5`; `disks_5.4` +
   `hdv` are excluded — too large).
 - `pom2_headless` target is skipped under EMSCRIPTEN
-  (`if(NOT EMSCRIPTEN)` at `CMakeLists.txt:390`) — no TCP listener,
+  (`if(NOT EMSCRIPTEN)` at `CMakeLists.txt:665`) — no TCP listener,
   no terminal.
 
-**Compile-out gates** (sandbox-incompatible POSIX bridges, guarded
-by `#ifdef __EMSCRIPTEN__`):
+**Compile-out gates** (host-socket bridges, guarded by
+`#if POM2_HAS_SOCKETS` — defined in `Pom2Build.h`; 0 only under
+Emscripten now that Windows is a full host-socket target):
 
 | Subsystem | Stub behaviour | Apple II side |
 |---|---|---|
-| Super Serial Card TCP listener (`SuperSerialCard.cpp:153`, `:203`, `:227`, `:241`, `:366`) | `startListening` returns false + logs; `acceptClient`/`pollRx`/`writeTx` no-op | ACIA still emulated — software inside the Apple II can still PR#2 / read $C0A9; just no host network bridge |
-| AiControlServer HTTP listener (`AiControlServer.cpp:381-430`) | `start()` returns false; `stop()` no-op | None — entire feature is a host-side control plane |
+| Super Serial Card TCP listener (`SuperSerialCard.cpp:168`, `:225`, `:255`, `:270`, `:451`) | `startListening` returns false + logs; `acceptClient`/`pollRx`/`writeTx` no-op | ACIA still emulated — software inside the Apple II can still PR#2 / read $C0A9; just no host network bridge |
+| AiControlServer HTTP listener (`AiControlServer.cpp:305+`) | `start()` returns false; `stop()` no-op | None — entire feature is a host-side control plane |
 
 The symbols stay declared so every caller still links — only the
-implementation degrades. **Rule for editors of these two files**:
-keep the `#ifdef __EMSCRIPTEN__` guards intact; new socket calls
-must have a no-op WASM branch returning a safe sentinel
-(`false`/0/empty), not `#error`.
+implementation degrades. **Rule for editors of these two files**
+(`Pom2Build.h:70-78`): guard host-socket code with
+`#if POM2_HAS_SOCKETS`, **not** `#ifndef __EMSCRIPTEN__` (the latter
+silently assumed "not a browser therefore POSIX", which broke the
+Windows build); new socket calls must have a no-socket branch
+returning a safe sentinel (`false`/0/empty), not `#error`.
 
 **Asset resolution**. `ResourcePaths` searches CWD-relative paths
 (`./roms/apple2.rom`, etc.). Under Emscripten the CWD is `/` and
