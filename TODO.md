@@ -89,7 +89,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 | **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟠 open | [Arch](#arch-refactor--tooling); Quick wins #4 |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
-| **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `FileAtomicWrite.h` |
+| **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
 
 **Explicitly not architecture** — do not pick these ahead of P0–P4. They stay
 in the backlog as features:
@@ -449,6 +449,18 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   still missing from `classifyDiskForSlot` / `accept525`.
 - 🟢 **Floppy Emu Dual-5.25" + Smartport-Unit-2 modes** — out of scope
   for v1 (4 main modes covered).
+- 🟡 **//c+ on-board 3.5" boot through the real IWM** — the pieces are all
+  there and individually pinned: `IWMDevice` is a verbatim MAME port
+  (dashboard #11) including the bit-cell read walker and the write windows,
+  `Sony35Drive` + `Sony35Gcr` serve zoned 800 K GCR, and the //c+ alt
+  firmware's MIG gate-array windows (`$CC00-$CCFF` / `$CE00-$CEFF`) are
+  decoded. What does **not** work is the //c+ ROM's own boot path *through*
+  them: a cold //c+ with only a 3.5" image mounted never reaches a bootable
+  disk. The supported route is the host-served SmartPort block device at
+  built-in slot 5 (`iic_onboard_smartport_smoke`), which boots 3.5"/HDV on
+  every //c-class profile — so this is a fidelity gap, not a functional one,
+  and it is **owned-out-of-scope for 1.0**. Referenced from `CLAUDE.md`
+  § System profiles and from [WASM](#wasm) below.
 
 ### [Cards] slot cards & peripherals
 
@@ -606,6 +618,27 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   is tab-separated text, not JSON (POM2 has no JSON parser and this is a few
   dozen lines). Pinned `printer_history`. **This completes
   `docs/printer_plan.md` — all six phases.**
+- ✅ **ImageWriter II printer** — DONE (2026-07-26). Host-side
+  `ImageWriter` (ported from greg-kennedy/ImageWriter) + paper-tray
+  window: full control language, four-band colour ribbon with subtractive
+  overprint, `ESC G`/`ESC C` bit-image graphics, page stack, PNG export.
+  Fed from `PrinterCard` / `GrapplerCard` spools by
+  `MainWindow::pumpImageWriter()`. Pinned `imagewriter_smoke`.
+  Detail → `DEV.md` § ImageWriter / `CHANGELOG.md`.
+- ✅ **ImageWriter on the Super Serial Card** — DONE (2026-07-28).
+  `SuperSerialCard::setPrinterTap` mirrors accepted-TX bytes into a
+  `drainSpoolFrom`-shaped spool `pumpImageWriter()` consumes (parallel
+  cards outrank it); defaults ON for slot 1 (//c printer port), persisted
+  `ssc_printer_tap_slotN`. Also fixed en route: the synthetic SSC ROM's
+  PR#n/IN#n entries now init the ACIA (cmd=$0B) like the real firmware —
+  before, `PR#n : PRINT` bytes were DTR-dropped and only Pascal could
+  transmit. Pinned in `ssc_acia_smoke`. Detail → `DEV.md` § ImageWriter.
+- ✅ **PDF export** — DONE (2026-07-28). `ImageWriterPdf.{h,cpp}`:
+  "Save PDF" writes all sheets as one multi-page PDF (8-bit Indexed
+  images, FlateDecode via in-repo `stbi_zlib_compress`, per-sheet
+  `/MediaBox` from the new `Page::dpi`). Chosen over the reference's
+  PostScript route — same one-image-per-page idea, universally viewable.
+  Pinned `imagewriter_pdf`. Detail → `DEV.md` § ImageWriter.
 
 ### [Network]
 
@@ -689,30 +722,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   Emscripten build). A websocket-proxied backend would fix both cards'
   raw modes in the browser. *2-3 d.*
 
-### [Printer]
-
-- ✅ **ImageWriter II printer** — DONE (2026-07-26). Host-side
-  `ImageWriter` (ported from greg-kennedy/ImageWriter) + paper-tray
-  window: full control language, four-band colour ribbon with subtractive
-  overprint, `ESC G`/`ESC C` bit-image graphics, page stack, PNG export.
-  Fed from `PrinterCard` / `GrapplerCard` spools by
-  `MainWindow::pumpImageWriter()`. Pinned `imagewriter_smoke`.
-  Detail → `DEV.md` § ImageWriter / `CHANGELOG.md`.
-- ✅ **ImageWriter on the Super Serial Card** — DONE (2026-07-28).
-  `SuperSerialCard::setPrinterTap` mirrors accepted-TX bytes into a
-  `drainSpoolFrom`-shaped spool `pumpImageWriter()` consumes (parallel
-  cards outrank it); defaults ON for slot 1 (//c printer port), persisted
-  `ssc_printer_tap_slotN`. Also fixed en route: the synthetic SSC ROM's
-  PR#n/IN#n entries now init the ACIA (cmd=$0B) like the real firmware —
-  before, `PR#n : PRINT` bytes were DTR-dropped and only Pascal could
-  transmit. Pinned in `ssc_acia_smoke`. Detail → `DEV.md` § ImageWriter.
-- ✅ **PDF export** — DONE (2026-07-28). `ImageWriterPdf.{h,cpp}`:
-  "Save PDF" writes all sheets as one multi-page PDF (8-bit Indexed
-  images, FlateDecode via in-repo `stbi_zlib_compress`, per-sheet
-  `/MediaBox` from the new `Page::dpi`). Chosen over the reference's
-  PostScript route — same one-image-per-page idea, universally viewable.
-  Pinned `imagewriter_pdf`. Detail → `DEV.md` § ImageWriter.
-
 ### [Input] joystick / paddles / mouse
 
 - ✅ **Apple II square-gate stick** — DONE (2026-07-10).
@@ -720,7 +729,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   the full square so the corners (255/255) are reachable (Wings of Fury
   take-off); radial deadzone; toggle + persisted `joystick_square_gate`.
   Pinned `joystick_square_gate`. Detail → `DEV.md` § Joystick / `CHANGELOG.md`.
-- ✅ **Kiosk gamepad disk selector** — DONE (2026-07-10). Start (or F10) opens
+- ✅ **Kiosk gamepad disk selector** — DONE (2026-07-10). Start (or F1) opens
   a name-proximity-filtered picker of sibling disks; A mounts in-place, with
   Reset/Quit action rows. Detail → `DEV.md` § Host control (kiosk) /
   `CHANGELOG.md`.
@@ -841,8 +850,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   **licensing**: shipping Apple ROM dumps + non-free media in a public web
   demo vs sourcing royalty-free replacements. A marketing prerequisite
   before pushing to r/apple2 + Hacker News; aim in parallel for a
-  **stable 1.0** (the //c+/IWM 3.5" boot stays owned-out-of-scope, cf.
-  parity dashboard). *decision + media sourcing.*
+  **stable 1.0** (the //c+/IWM 3.5" boot stays owned-out-of-scope — see
+  [Storage](#storage-disks--images) above). *decision + media sourcing.*
 
 ### [Media] formats
 
@@ -910,7 +919,9 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   and the error strings are hand-repeated in each. `DiskImage`'s copy caught
   up on permission preservation 2026-08-08 (it was silently resetting the
   image's mode to the umask default on every write-back); `ProDOSVolume`'s
-  still hasn't. Extract to `src/FileAtomicWrite.h`. Architect **P4**.
+  still hasn't. The home for the extracted helper is the header the three
+  already share for the COMMIT step — `AtomicFileReplace.h`, next to
+  `pom2::replaceFileAtomic` — not a new file. Architect **P4**.
   - ✅ **The durability half is closed** (2026-08-14): the `fsync` went into
     the COMMIT step they already share, `pom2::replaceFileAtomic`
     (`AtomicFileReplace.h`) — data flushed before the rename, parent

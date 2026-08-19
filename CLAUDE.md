@@ -39,7 +39,7 @@ cd build && cmake .. && make # → build/POM2
 ./run_emulator.sh            # cwd = repo root so roms/ probes resolve
 ```
 
-**Dear ImGui is pinned** — `imgui_pin.env` is the single source of truth (repo + branch + commit), shared by `setup_imgui.sh` and both CI jobs. POM2 requires the **`docking`** branch: the DockSpace that hosts its ~33 panels needs `ImGuiConfigFlags_DockingEnable`, which does not exist on `master`. The branch is force-pushed on every upstream rebase, hence the commit pin. Multi-viewport stays off. → [DEV § Docking](DEV.md#docking--layout-presets)
+**Dear ImGui is pinned** — `imgui_pin.env` is the single source of truth (repo + branch + commit), shared by `setup_imgui.sh`, `tools/fetch_imgui_pinned.sh` (the release + packaging path) and both CI jobs. POM2 requires the **`docking`** branch: the DockSpace that hosts its ~33 panels needs `ImGuiConfigFlags_DockingEnable`, which does not exist on `master`. The branch is force-pushed on every upstream rebase, hence the commit pin. Multi-viewport stays off. → [DEV § Docking](DEV.md#docking--layout-presets)
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
 
@@ -97,7 +97,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
 | Command palette (Ctrl+Shift+P) | `CommandPalette_ImGui.h/.cpp` | [§ Palette](DEV.md#command-palette-commandpalette_imgui) |
 | Docking + layout presets | `MainWindow.cpp` (`renderDockSpace`/`applyDockLayout`), `imgui_pin.env` | [§ Docking](DEV.md#docking--layout-presets) |
-| HGR/DHGR Paint editor (portable, shared w/ POM1) | `hgrpaint/*`, `Pom2HgrPaintHost.*` | [§ Paint editor](DEV.md#hgr--dhgr-paint-editor-hgrpaint-shared-with-pom1) |
+| HGR/DHGR Paint editor + sprite editor (portable, shared w/ POM1) | `hgrpaint/*`, `hgrsprite/*`, `Pom2HgrPaintHost.*` | [§ Paint editor](DEV.md#hgr--dhgr-paint-editor-hgrpaint-shared-with-pom1) |
 | Slot Config + Internal Disks & Media (2 windows) | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
 | ROM inventory panel (present / missing / identity) | `RomStatus_ImGui.*`, `RomCatalog.h` | [§ ROM Status](DEV.md#rom-status-panel) |
 | Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
@@ -134,7 +134,8 @@ $C061-$C063  Push-buttons (negative when pressed)
 $C064-$C067  Paddle inputs (negative while RC discharging)
 $C070        Paddle reset latch (mirrored $C070-$C07F)
 $C071/3/5/7  RamWorks III aux-bank select (write `data & 0x7F`)
-$C078/$C079  //c mouse-firmware IOUDIS SET/CLR mirrors (of $C07E/F)
+$C078-$C07D  //c IOUDIS mirrors of $C07E/F (even = SET, odd = CLR;
+             //c-class writes only)
 $C07E/$C07F  IOUDIS SET/CLR (writes effective on //c/c+ only)
 $C0A8-$C0AB  SSC ACIA (slot 2)
 $C0C0        ThunderClock+ uPD1990AC bit-bang (slot 4)
@@ -185,7 +186,7 @@ Built-in slots force their listed card onto the SlotBus on profile load (overrid
 
 Default `cyclesPerFrame` = 17045 for II/II+/IIe/IIc; **//c+ defaults to 68180 (4×)** for its on-board Zip-style accelerator. `$C036` 1 MHz fall-back during disk I/O not modelled (event-driven disk LSS keeps nibbles cycle-correct anyway). `cpu_mode_override = auto|nmos|65c02` (Machine → CPU menu).
 
-**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. The IWM state machine **is** ported (`IWMDevice`, verbatim MAME, incl. the bit-cell read walker and write windows) and the Sony GCR drives exist (`Sony35Drive`, `--35-disk1/2`); what remains unfinished is the //c+ firmware's on-board 3.5" **boot** through them — it does not yet reach a bootable disk (TODO § //c+/IWM boot). The Liron controller ROM **has been publicly dumped** (BMOW/Yellowstone `LIRONALL.bin`, 4 KB, [github.com/steve-chamberlin/fpga-disk-controller](https://github.com/steve-chamberlin/fpga-disk-controller), with full disassembly; MAME still lists it *WANTED* only because it never ingested the dump) and POM2 ships it as `roms/liron.rom`; the UniDisk 3.5 drive-side 65C02 firmware stays deliberately out of scope. The supported path is the host-served SmartPort block device at built-in slot 5, which boots 3.5"/HDV on all //c-class machines. → [DEV](DEV.md#profile-switching-internals).
+**//c+ MIG + IWM**: //c+ alt firmware (bank 1) drives the Apple MIG gate-array at `$CC00-$CCFF` / `$CE00-$CEFF` + IWM at `$C0E0-$C0EF`. The IWM state machine **is** ported (`IWMDevice`, verbatim MAME, incl. the bit-cell read walker and write windows) and the Sony GCR drives exist (`Sony35Drive`, `--35-disk1/2`); what remains unfinished is the //c+ firmware's on-board 3.5" **boot** through them — it does not yet reach a bootable disk (TODO § Backlog § [Storage]). The Liron controller ROM **has been publicly dumped** (BMOW/Yellowstone `LIRONALL.bin`, 4 KB, [github.com/steve-chamberlin/fpga-disk-controller](https://github.com/steve-chamberlin/fpga-disk-controller), with full disassembly; MAME still lists it *WANTED* only because it never ingested the dump) and POM2 ships it as `roms/liron.rom`; the UniDisk 3.5 drive-side 65C02 firmware stays deliberately out of scope. The supported path is the host-served SmartPort block device at built-in slot 5, which boots 3.5"/HDV on all //c-class machines. → [DEV](DEV.md#profile-switching-internals).
 
 **//c-class on-board SmartPort (3.5" + HDV boot)**: the firmware's IWM/Sony GCR boot doesn't reach a bootable disk (see above), and MAME doesn't emulate 3.5"/SmartPort on the plain //c. POM2 boots 3.5" and HDV on //c/+/c+ through a host-served SmartPort block device at built-in slot 5. `Memory::memRead` punches a hole at `$C500-$C5FF` for the SmartPort firmware iff the slot is **armed** + holds media. `bootFromSlot` arms it; every reset disarms it, so the //c ROM's autostart always sees its real `$C500` firmware (avoids the "garbled //c banner" bug). Pinned by `iic_onboard_smartport_smoke`. → [DEV § Storage](DEV.md#c-class-on-board-smartport-35--hdv-boot).
 

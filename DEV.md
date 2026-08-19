@@ -24,6 +24,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [Profile switching internals](#profile-switching-internals)
 - [CLI (CliDispatcher)](#cli-clidispatcher)
 - [Clock & threading](#clock--threading)
+- [Package payload](#package-payload--packagingbundlemanifest)
 - [WebAssembly (browser build)](#webassembly-browser-build)
 - [Performance & profiling](#performance--profiling)
 
@@ -4556,21 +4557,30 @@ drives a MIG gate-array + IWM. POM2 models the minimum for cold boot:
   banner.
 
 **Profile switching = full cold reset** via
-`MainWindow::applyProfile(SystemProfile)`. Order matters:
+`MainWindow::applyProfile(SystemProfile)`. Order matters. The steps below are
+numbered as the `applyProfile` body numbers them (**0-13**), so a "step N" in
+this file, in `CLAUDE.md` or in a code comment always means the same step:
 
-1. Stop worker.
-2. Tear down slot cards under state mutex (Mockingboard's
+0. Commit `activeProfile` — **before** step 7, which reads it to force the
+   profile's built-in locked slots.
+1. Stop worker (already stopped above the numbered block, before the media
+   flush) and clear the rewind ring: the ring recorded the previous machine.
+2. Snapshot the currently-mounted media so step 8 can re-mount it.
+3. Tear down slot cards under state mutex (Mockingboard's
    `AudioSource` detached from `AudioDevice` FIRST).
-3. Wipe RAM/aux/LC + reset soft switches.
-4. **`setIIEMode(...)` BEFORE `loadAppleIIRom`**.
-5. Load ROMs (with `pickLower16KFor32K`).
-6. Re-plug slots from settings.
-7. Re-mount previously inserted disks/HDVs.
-8. `resolveCpuMode()` (honours `cpu_mode_override`).
-9. Reset cycles/frame.
-10. `hardReset()`.
-11. Restart worker.
-12. Persist `system_profile`.
+4. Cold-reset memory: wipe RAM/aux/LC + reset soft switches, with
+   **`setIIEMode(...)` FIRST** (so `clearRam()` sees the right aux
+   configuration, and so `loadAppleIIRom` at step 5 lands in the right map).
+5. Load the main ROM (with `pickLower16KFor32K` for the //c / //c+ 32 KB
+   two-bank dumps).
+6. Char ROM — the toolbar's `charRomLocale` wins over the profile probe.
+7. Re-plug slots from settings (built-in locked slots override
+   `slot_N_card`).
+8. Re-mount the media preserved at step 2.
+9. `resolveCpuMode()` (honours `cpu_mode_override`, clamped on //c-class).
+10. Default cycles/frame **+ `setVideoStandard()`** (NTSC 60 Hz / PAL 50 Hz).
+11. `hardReset()`, then restart the worker.
+12. Persist `system_profile` (skipped under kiosk, which is read-only).
 13. Refresh GLFW window title.
 
 CLI `--preset` triggers the same path (after legacy auto-probe —

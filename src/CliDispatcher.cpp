@@ -153,7 +153,7 @@ void printUsage()
         "  --run <addr>               Jump to addr\n"
         "  --paste <file>             Feed file contents to keyboard (<=4096)\n"
         "  --step <N>                 Single-step N instructions\n"
-        "  --trace-brk                Enable BRK register dump\n"
+        "  --trace-brk                (accepted, not yet wired in M6502)\n"
         "  --play / --rec / --rewind  Cassette transport\n"
         "  --snapshot-save <path>     Write snapshot\n"
         "\n"

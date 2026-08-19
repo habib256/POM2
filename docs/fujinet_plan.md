@@ -24,6 +24,7 @@ run. **What changed during implementation** is recorded in
 - [6. Phase 1 — the relay](#6-phase-1--the-relay)
 - [7. Phase 2 — POM2-native integrations](#7-phase-2--pom2-native-integrations)
 - [8. Phase 3 — helper process (and why NOT embedded firmware)](#8-phase-3--helper-process-and-why-not-embedded-firmware)
+- [8b. Embedded firmware (rejected)](#8b-embedded-firmware-rejected)
 - [9. Threading and the frame-hitch budget](#9-threading-and-the-frame-hitch-budget)
 - [10. Reset, snapshot and rewind semantics](#10-reset-snapshot-and-rewind-semantics)
 - [11. Pinned tests](#11-pinned-tests)
