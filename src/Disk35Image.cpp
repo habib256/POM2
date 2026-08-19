@@ -248,6 +248,53 @@ bool Disk35Image::writeBlock(uint32_t idx, const uint8_t in[kBlockBytes])
     return true;
 }
 
+bool Disk35Image::exportRawTo(const std::string& outPath,
+                             std::string& errOut) const
+{
+    if (!loaded_ || blocks_.size() != kBytesPerImage) {
+        errOut = "no 800K image loaded";
+        return false;
+    }
+    // Refuse to overwrite: the caller picks the name, and silently replacing
+    // an existing image with a different disk is the one mistake this feature
+    // could make that the user cannot undo.
+    std::error_code ec;
+    if (std::filesystem::exists(outPath, ec)) {
+        errOut = outPath + " already exists";
+        return false;
+    }
+    // Same temp-then-rename discipline as saveDirty: a partial 800 KB write
+    // must never be left behind looking like a mountable image.
+    const std::string tmp = outPath + ".pom2tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!f) { errOut = "cannot open " + tmp + " for write"; return false; }
+        f.write(reinterpret_cast<const char*>(blocks_.data()),
+                static_cast<std::streamsize>(blocks_.size()));
+        f.flush();
+        f.close();
+        if (!f) {
+            errOut = "write failed on " + tmp;
+            std::error_code rmEc;
+            std::filesystem::remove(tmp, rmEc);
+            return false;
+        }
+    }
+    // A converted image is a NEW file, not a write-back, but it earns the
+    // same durability: the user is about to mount it and let a program write
+    // its configuration into it.
+    ec.clear();
+    (void)syncFileContents(tmp, ec);
+    ec.clear();
+    if (!replaceFileAtomic(tmp, outPath, ec)) {
+        errOut = "cannot create " + outPath + ": " + ec.message();
+        std::error_code rmEc;
+        std::filesystem::remove(tmp, rmEc);
+        return false;
+    }
+    return true;
+}
+
 bool Disk35Image::saveDirty()
 {
     if (!loaded_ || !dirty_) return true;

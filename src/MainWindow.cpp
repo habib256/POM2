@@ -30,6 +30,8 @@
 #include "ImageWriter.h"
 #include "ImageWriter_ImGui.h"
 #include "RomStatus_ImGui.h"
+#include "AbstractionLevels_ImGui.h"
+#include "Keyboard_ImGui.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "PrinterFeedCursor.h"
@@ -400,7 +402,14 @@ MainWindow::MainWindow(bool forceIIPlus)
 
     // ── Restore display + UI prefs from previous session ─────────────
     {
-        const std::string mode = settings->getString("hi_res_mode", "");
+        // Default when the key is absent (fresh install) is the
+        // OpenEmulator GPU composite: it is POM2's best-looking colour
+        // pipeline and the one the CRT Settings panel is built around. It
+        // degrades safely — with no GL shader available `NtscPostProcessor`
+        // falls back to the NTSC LUT, so this can't leave a user with a
+        // black screen.
+        const std::string mode =
+            settings->getString("hi_res_mode", "ColorCompositeOE");
         if      (mode == "ColorNTSC")       display->setHiResMode(Apple2Display::HiResMode::ColorNTSC);
         else if (mode == "ColorCompMedium") display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
         else if (mode == "ColorComp4Bit")   display->setHiResMode(Apple2Display::HiResMode::ColorComp4Bit);
@@ -416,6 +425,21 @@ MainWindow::MainWindow(bool forceIIPlus)
         // legacy applewin_submode value left in the settings file.
         display->setAppleWinSubMode(Apple2Display::AppleWinSubMode::Tv);
 
+        // Seed the toolbar's colour-side memory from what was just restored,
+        // so the first mono → colour round-trip returns to the mode the user
+        // is actually looking at rather than to this member's ColorNTSC
+        // initialiser. Mattered the moment the default stopped being
+        // ColorNTSC.
+        {
+            const auto m = display->getHiResMode();
+            if (m == Apple2Display::HiResMode::MonoWhite ||
+                m == Apple2Display::HiResMode::MonoGreen ||
+                m == Apple2Display::HiResMode::MonoAmber)
+                lastMonoHiResMode_ = m;
+            else
+                lastColorHiResMode_ = m;
+        }
+
         showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
         showDisk35Panel    = settings->getBool ("show_disk35_panel", showDisk35Panel);
         showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
@@ -425,6 +449,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         showSlotConfigPanel = settings->getBool ("show_slot_config", showSlotConfigPanel);
         showMediaPanel      = settings->getBool ("show_media_panel", showMediaPanel);
         showRomStatusPanel  = settings->getBool ("show_rom_status", showRomStatusPanel);
+        showAbstractionPanel = settings->getBool ("show_abstraction", showAbstractionPanel);
+        showKeyboardPanel   = settings->getBool ("show_keyboard", showKeyboardPanel);
         showFloppyEmu      = settings->getBool ("show_floppy_emu", showFloppyEmu);
         // Floppy Emu: restore the emulation mode + SD-card root (its NVRAM).
         {
@@ -780,8 +806,21 @@ MainWindow::MainWindow(bool forceIIPlus)
     // saved-profile catch-up below would re-apply a saved iie/iic/iic+ and
     // silently defeat the flag. (forceIIPlus already suppressed the IIe ROM
     // probe above, so activeProfile is AppleIIPlus here.)
+    //
+    // A fresh install (no `system_profile` key) defaults to **//e Enhanced
+    // PAL**: 50 Hz European timing is what the French Touch / DIX demo corpus
+    // POM2 benchmarks against is written for, and it is a superset machine —
+    // 128 K, 65C02, 80 columns, all seven slots free. It is expressed as a
+    // default for `getString` rather than as a new `activeProfile` initialiser
+    // so the catch-up below runs `applyProfile` for it, which is what actually
+    // installs the PAL video standard, the 20313-cycle frame budget and the
+    // per-card clock updates. Falls back to the auto-probed profile when no
+    // //e ROM was found (a PAL //e with no //e ROM would just fail to boot).
+    const std::string defaultProfile =
+        iiePresent ? std::string("iie-pal") : std::string();
     const std::string savedProfile =
-        forceIIPlus ? std::string() : settings->getString("system_profile", "");
+        forceIIPlus ? std::string()
+                    : settings->getString("system_profile", defaultProfile);
     if (!savedProfile.empty()) {
         const pom2::SystemProfile saved = pom2::profileFromKey(savedProfile);
         if (saved != activeProfile) {
@@ -1058,6 +1097,8 @@ MainWindow::~MainWindow()
     settings->setBool  ("show_slot_config", showSlotConfigPanel);
     settings->setBool  ("show_media_panel", showMediaPanel);
     settings->setBool  ("show_rom_status", showRomStatusPanel);
+    settings->setBool  ("show_abstraction", showAbstractionPanel);
+    settings->setBool  ("show_keyboard", showKeyboardPanel);
     settings->setBool  ("show_floppy_emu", showFloppyEmu);
     settings->setString("floppyemu_mode",
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
@@ -1194,6 +1235,11 @@ MainWindow::~MainWindow()
         glDeleteTextures(1, &t);
         aboutImageTex_ = 0;
     }
+    if (kbImageTex_) {
+        GLuint t = kbImageTex_;
+        glDeleteTextures(1, &t);
+        kbImageTex_ = 0;
+    }
 }
 
 // ─── Slot configuration ─────────────────────────────────────────────────
@@ -1257,23 +1303,33 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 {
     namespace fs = std::filesystem;
 
-    // Default mapping when no `slot_N_card` keys are present. Matches the
-    // historical hard-wired layout from before the slot-config refactor.
+    // Default mapping when no `slot_N_card` keys are present — the machine a
+    // fresh install boots into, alongside the //e Enhanced PAL default
+    // profile. A period-plausible European //e: printer, mouse, sound, and
+    // both disk sizes.
+    //
+    // Slot 3 stays EMPTY on purpose. The //e's 80-column card is not a slot
+    // card in POM2: the 80-col firmware is internal ROM at $C300 and the
+    // Extended 80-Column Text Card lives on the AUX connector, both of which
+    // come with `iieMode` (Memory owns the aux 64 KB + the paging switches).
+    // Putting anything in slot 3 on a //e also fights the SLOTC3ROM switch.
     static const char* kDefaults[8] = {
-        "",          // slot 0 (Language Card — owned by Memory, not us)
-        "",          // slot 1
-        "ssc",       // slot 2
-        "",          // slot 3
-        "clock",     // slot 4
-        "hdv",       // slot 5
-        "diskii",    // slot 6
-        "chatmauve"  // slot 7
+        "",             // slot 0 (Language Card — owned by Memory, not us)
+        "grappler",     // slot 1 — Grappler+ parallel printer
+        "mouseaw",      // slot 2 — Mouse, AppleWin HLE (no MC68705 ROMs needed)
+        "",             // slot 3 — see above: 80-col is internal, not a card
+        "mockingboard", // slot 4 — Mockingboard A/C
+        "smartport35",  // slot 5 — SmartPort 3.5"
+        "diskii",       // slot 6 — Disk II
+        "chatmauve"     // slot 7 — Le Chat Mauve RGB (unchanged)
     };
 
     // Resolve each slot from settings, with the legacy `clock_card_enable`
     // flag as a one-shot fallback: if the user has clock_card_enable=false
     // AND no slot_4_card key, slot 4 stays empty. Once any slot_N_card key
-    // is set in the file, that key is the source of truth.
+    // is set in the file, that key is the source of truth. (Inert since
+    // slot 4 stopped defaulting to the clock card — it now only fires for a
+    // settings file that pairs the old flag with an explicit clock in 4.)
     for (int s = 1; s <= 7; ++s) {
         const std::string key = "slot_" + std::to_string(s) + "_card";
         slotCards[s] = settings->getString(key, kDefaults[s]);
@@ -2190,6 +2246,26 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         return;
     }
 
+    // Ctrl+Alt+F — the second GUI ⇄ kiosk toggle, alongside F10. Sits with
+    // Ctrl+Alt+G above every other branch for the same two reasons: leaving
+    // kiosk must ALWAYS work, and the chord has to be tested before the
+    // Ctrl-letter path further down or it would also inject Ctrl-F ($06)
+    // into the keyboard latch. Matched on either Alt and regardless of
+    // Shift/Super (GLFW folds both Alts into GLFW_MOD_ALT), so a stray
+    // modifier can never strand a full-screen session. PRESS only: on
+    // GLFW_REPEAT a held chord would flip full-screen ⇄ windowed ~30×/s,
+    // each flip doing a window-monitor change AND a synchronous
+    // settings->save() to disk.
+    //
+    // Why a second binding at all: F10 is claimed by the window manager on
+    // several desktops (GNOME/KDE open the focused window's menu with it),
+    // where it never reaches GLFW. A chord in the same family as Ctrl+Alt+G
+    // is reachable everywhere.
+    if (key == GLFW_KEY_F && (mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_ALT)) {
+        if (action == GLFW_PRESS) toggleKioskMode();
+        return;
+    }
+
     // Kiosk menu open: its arrows/Enter/Esc fallbacks are polled with
     // ImGui::IsKeyPressed and the menu window never captures the keyboard,
     // so everything below would double-deliver — Enter on the key band
@@ -2197,7 +2273,8 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
     // type $1B into the game on resume.
     if (kioskMenuOpen_) {
         // F10 still leaves kiosk with the in-kiosk menu open — the user
-        // must always have a way back to the GUI.
+        // must always have a way back to the GUI. (Ctrl+Alt+F is handled
+        // above, so it works here too.)
         if (key == GLFW_KEY_F10 && action == GLFW_PRESS) toggleKioskMode();
         return;
     }
@@ -2236,7 +2313,8 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
         case GLFW_KEY_ESCAPE:       injectAscii(0x1B); break;
         case GLFW_KEY_TAB:          injectAscii(0x09); break;
         case GLFW_KEY_F9:           saveScreenshot(); break;
-        // F10 = GUI <-> kiosk. "Full screen" in the GUI IS kiosk mode:
+        // F10 = GUI <-> kiosk (Ctrl+Alt+F does the same, handled above).
+        // "Full screen" in the GUI IS kiosk mode:
         // exclusive full-screen with the chrome-free render path. The
         // machine keeps running across the switch (no snapshot needed —
         // kiosk touches only windowing / rendering / settings-writes).
@@ -2446,7 +2524,7 @@ void MainWindow::renderCommandPalette()
     add("printer.dumpscreen","Machine","Print screen (dump to printer)");
     add("view.kiosk", "View",
         kiosk_ ? "Leave full screen (kiosk)" : "Full screen (kiosk)",
-        "F10", true, kiosk_);
+        "Ctrl+Alt+F / F10", true, kiosk_);
     add("view.mousegrab", "View",
         mouseGrabbed_ ? "Release mouse capture" : "Capture mouse",
         "Ctrl+Alt+G", (mouseCard != nullptr) || (mouseAwCard != nullptr),
@@ -2537,6 +2615,9 @@ void MainWindow::renderCommandPalette()
     panel("panel.slotconfig",  "Slot configuration",      &showSlotConfigPanel);
     panel("panel.media",       "Internal disks & media",  &showMediaPanel);
     panel("panel.romstatus",   "ROM status",              &showRomStatusPanel);
+    panel("panel.abstraction", "Abstraction levels (LLE/HLE)",
+          &showAbstractionPanel);
+    panel("panel.keyboard",    "Apple //e keyboard",      &showKeyboardPanel);
     panel("panel.mockingboard","Mockingboard",            &showMockingboardPanel);
     panel("panel.phasor",      "Phasor",                  &showPhasorPanel,
           phasorCard != nullptr);
@@ -2657,6 +2738,8 @@ void MainWindow::runCommand(const std::string& id)
         { "panel.slotconfig",   &showSlotConfigPanel   },
         { "panel.media",        &showMediaPanel        },
         { "panel.romstatus",    &showRomStatusPanel    },
+        { "panel.abstraction",  &showAbstractionPanel  },
+        { "panel.keyboard",     &showKeyboardPanel     },
         { "panel.mockingboard", &showMockingboardPanel },
         { "panel.phasor",       &showPhasorPanel       },
         { "panel.echoplus",     &showEchoPlusPanel     },
@@ -2785,10 +2868,18 @@ void MainWindow::applyDockLayout(DockLayout preset)
 
     switch (preset) {
         case DockLayout::Reset:
+            // The default startup trio, tabbed to the right of the screen:
+            // what you mount (Disk Library), what the machine is made of
+            // (Slot Configuration), what it prints (ImageWriter II). All
+            // three default to visible, so a fresh install opens on exactly
+            // this arrangement. Disk Library is docked first, so it is the
+            // selected tab.
             dock("Disk Library", right);
-            dock("Cassette Deck", right);
-            dock("Floppy Emu (BMOW)", right);
+            dock("Slot Configuration", right);
+            dock(ICON_FA_PRINT " ImageWriter II###imageWriterPanel", right);
             // Inspector tab group, bottom right.
+            dock("Cassette Deck", rightLower);
+            dock("Floppy Emu (BMOW)", rightLower);
             dock("Memory viewer", rightLower);
             dock("Mockingboard (VIA + AY state)", rightLower);
             dock("Mouse Inspector", rightLower);
@@ -3209,6 +3300,10 @@ void MainWindow::renderMenuBar()
                 "Le Chat Mauve RGB / Eve video card controls.");
         devItem("Joystick", &showJoystickPanel,
                 "Analog paddles / joystick mapping + push-buttons.");
+        devItem("Apple //e Keyboard", &showKeyboardPanel,
+                "A photo of the real //e keyboard, clickable. The keys a host\n"
+                "keyboard has nowhere to put — Open-Apple, Solid-Apple, the\n"
+                "//e's own Reset — are here, with the real legends.");
 
         ImGui::SeparatorText("Inspectors & tools");
         ImGui::MenuItem("Rewind (time-travel)", "F6", &showRewindBar);
@@ -3313,15 +3408,15 @@ void MainWindow::renderMenuBar()
         // There is no separate "full screen": going full screen IS kiosk
         // mode (exclusive full-screen, chrome-free, settings read-only).
         // The machine keeps running across the switch — no state is lost.
-        if (ImGui::MenuItem(ICON_FA_EXPAND " Full screen (kiosk)", "F10",
-                            kiosk_)) {
+        if (ImGui::MenuItem(ICON_FA_EXPAND " Full screen (kiosk)",
+                            "Ctrl+Alt+F", kiosk_)) {
             toggleKioskMode();
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "Exclusive full screen with no UI chrome — the kiosk view.\n"
-                "F10 toggles back; the emulated machine keeps running\n"
-                "across the switch, so nothing is lost.\n"
+                "Ctrl+Alt+F (or F10) toggles back; the emulated machine\n"
+                "keeps running across the switch, so nothing is lost.\n"
                 "Settings are not written while in kiosk.");
 
         // ── Mouse capture ───────────────────────────────────────────────
@@ -3359,7 +3454,8 @@ void MainWindow::renderMenuBar()
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
             };
             layoutItem("Reset to default", DockLayout::Reset,
-                       "Screen centre, storage right, inspectors as a tab\n"
+                       "Screen centre; Disk Library, Slot Configuration and\n"
+                       "ImageWriter II tabbed right; inspectors as a tab\n"
                        "group bottom-right.");
             ImGui::Separator();
             layoutItem("Emulation", DockLayout::Emulation,
@@ -3478,6 +3574,14 @@ void MainWindow::renderMenuBar()
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Where to put ROMs/disks, keys, and signature features.");
         ImGui::MenuItem("ROM Status...", nullptr, &showRomStatusPanel);
+        ImGui::MenuItem("Abstraction Levels (LLE / HLE)...", nullptr,
+                        &showAbstractionPanel);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "What POM2 emulates as silicon and what it emulates as a\n"
+                "service, subsystem by subsystem — plus which level is\n"
+                "actually running (a missing ROM dump quietly demotes\n"
+                "several of them) and the four boundaries you can move.");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Every ROM POM2 probes: present or missing, which\n"
                               "dump resolved, and what breaks without it.");
@@ -3579,6 +3683,12 @@ void MainWindow::renderStatusBar()
                 const char* icon   = nullptr;
                 std::string label;
                 std::string tip;
+                // Identity, so a click on the chip can act on the exact bay
+                // it names. `index` is the Disk II drive or the media bay.
+                int         slot   = 0;
+                int         index  = 0;
+                bool        diskII = false;
+                bool        dirty  = false;   // unsaved changes pending
             };
             std::vector<MediaRow> mediaRows;
             {
@@ -3606,7 +3716,9 @@ void MainWindow::renderStatusBar()
                                       ", drive " + std::to_string(drv + 1) +
                                       " — track " +
                                       std::to_string(d2->getCurrentTrack(drv)) +
-                                      "\n" + path });
+                                      "\n" + path,
+                                  d2->getSlot(), drv, /*diskII=*/true,
+                                  d2->hasUnsavedChanges(drv) });
                         }
                         continue;
                     }
@@ -3629,12 +3741,15 @@ void MainWindow::renderStatusBar()
                         tip += "\n" + info.path;
                         mediaRows.push_back({ info.busy, ICON_FA_HARD_DRIVE,
                                               baseName(info.path),
-                                              std::move(tip) });
+                                              std::move(tip),
+                                              slot, bay, /*diskII=*/false,
+                                              /*dirty=*/false });
                     }
                 }
             }
             {
                 const float lineH = ImGui::GetFrameHeight();
+                int rowIdx = 0;
                 for (const MediaRow& row : mediaRows) {
                     // 6 ems of chrome (rule + dot + icon + padding) plus the
                     // label itself, measured rather than guessed so a long
@@ -3642,12 +3757,46 @@ void MainWindow::renderStatusBar()
                     const float need =
                         6.0f * em + ImGui::CalcTextSize(row.label.c_str()).x;
                     if (ImGui::GetContentRegionAvail().x <= need) break;
+                    ImGui::PushID(rowIdx++);
                     pom2::verticalRule();
                     pom2::indicatorDot(row.active, pal.warn, 4.0f, lineH);
-                    ImGui::TextColored(u32(row.active ? pal.text : pal.textDim),
-                                       "%s %s", row.icon, row.label.c_str());
+                    // Each chip is a control, not a label: clicking it opens
+                    // an eject menu for THAT bay. Brightening on hover is what
+                    // says so — a status bar is read as read-only furniture
+                    // until something under the pointer reacts.
+                    const bool hot = ImGui::IsMouseHoveringRect(
+                        ImGui::GetCursorScreenPos(),
+                        ImVec2(ImGui::GetCursorScreenPos().x +
+                                   ImGui::CalcTextSize(row.label.c_str()).x +
+                                   2.0f * em,
+                               ImGui::GetCursorScreenPos().y + lineH));
+                    ImGui::TextColored(
+                        u32(hot ? pal.accent : (row.active ? pal.text
+                                                           : pal.textDim)),
+                        "%s %s", row.icon, row.label.c_str());
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", row.tip.c_str());
+                        ImGui::SetTooltip("%s\n\nClick to eject.",
+                                          row.tip.c_str());
+                    // A menu rather than eject-on-click: the bar is a dense
+                    // strip of small targets right under the screen, and an
+                    // accidental click would pull a disk out from under a
+                    // running program. One extra click also buys room to name
+                    // the bay and to warn about unsaved changes.
+                    if (ImGui::IsItemClicked()) ImGui::OpenPopup("##ejectmenu");
+                    if (ImGui::BeginPopup("##ejectmenu")) {
+                        ImGui::TextDisabled("%s", row.tip.c_str());
+                        ImGui::Separator();
+                        if (row.dirty)
+                            ImGui::TextColored(
+                                u32(pal.warn),
+                                "Unsaved changes — ejecting writes them back\n"
+                                "if write-back is on for this drive, and drops\n"
+                                "them if it is not.");
+                        if (ImGui::MenuItem(ICON_FA_EJECT " Eject"))
+                            ejectMediaBay(row.slot, row.index, row.diskII);
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
                 }
             }
 
@@ -3677,6 +3826,35 @@ void MainWindow::renderStatusBar()
                                        ICON_FA_ARROW_RIGHT
                                        " Ctrl+Alt+G or middle click to release");
                 }
+            } else if (!mouseGrabbed_ && screenHovered_ &&
+                       (mouseCard || mouseAwCard) && roomFor(30.0f)) {
+                // Not captured, but the pointer is over the emulated screen
+                // with a Mouse Card on the bus — the exact moment the user is
+                // about to wonder why the guest cursor won't follow theirs.
+                // Say how to hand it over, here rather than on the screen:
+                // the on-screen captions were removed for being noise over a
+                // running game, and this is the same information in the one
+                // place that is already a status surface.
+                //
+                // `screenHovered_` is ImGui's z-order-aware verdict from
+                // renderScreenWindow(), which runs earlier this frame — so a
+                // menu or a docked panel drawn over the screen correctly
+                // suppresses the hint. Gated on a card being plugged because
+                // `shouldToggleGrab` would refuse to capture without one, and
+                // advertising a shortcut that then does nothing is worse than
+                // silence.
+                pom2::verticalRule();
+                ImGui::TextColored(u32(pal.textDim),
+                                   ICON_FA_ARROW_POINTER
+                                   " Ctrl+Alt+G or middle click to capture");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "The Mouse Card is a relative device: uncaptured, "
+                        "your pointer\nstops at the edge of the screen "
+                        "widget while the guest cursor\nstill has clamp "
+                        "window left, and the two drift apart.\n"
+                        "Capturing hides the OS cursor and feeds every delta "
+                        "to the guest.");
             }
 
             // ── Host caps-lock ───────────────────────────────────────────
@@ -4738,7 +4916,7 @@ void MainWindow::renderKioskMenu()
         actionRow(1, ImVec4(0.55f, 0.80f, 1.0f, 1.0f), ICON_FA_KEYBOARD " KEYBOARD");
         actionRow(2, ImVec4(0.60f, 0.95f, 0.60f, 1.0f), ICON_FA_FOLDER_OPEN " ROM FOLDERS");
         // Exit to the windowed GUI. Discoverable here because a kiosk user
-        // has no menu bar and may not know about F10.
+        // has no menu bar and may not know about Ctrl+Alt+F / F10.
         actionRow(3, ImVec4(0.80f, 0.80f, 1.0f, 1.0f),
                   ICON_FA_COMPRESS " EXIT KIOSK (WINDOWED)");
         actionRow(4, ImVec4(1.0f, 0.50f, 0.40f, 1.0f), ICON_FA_RIGHT_FROM_BRACKET " QUIT");
@@ -5291,7 +5469,7 @@ void MainWindow::pollJoystickAndPushToMemory()
                     "Joystick", "bound #" + std::to_string(hi + 1) + " '" +
                     joystick->activeName() + "' gamepad-mapped=" +
                     (gp ? "yes (Start opens kiosk disk menu)"
-                        : "no (use F10 for the kiosk disk menu)"));
+                        : "no (use F1 for the kiosk disk menu)"));
             } else {
                 pom2::log().info("Joystick", "no pad bound");
             }
@@ -6055,6 +6233,305 @@ void MainWindow::renderAiControlPanelWindow()
     ImGui::End();
 }
 
+// ─── Abstraction Levels (LLE / HLE) ──────────────────────────────────────
+//
+// The window is `AbstractionLevels_ImGui` and the catalog of subsystems is
+// static data beside it; what lives here is the part only MainWindow can
+// answer — which cards are on the bus, and which of them are running their
+// real ROM versus a fallback. That distinction is the panel's reason to
+// exist: `docs/lle_vs_hle.md` § "Keeping a level once you have it" names
+// silent degradation as a structural hole, because every ROM-driven low
+// level in POM2 falls back to a working higher one when its dump is absent
+// and nothing anywhere says so.
+
+bool MainWindow::swapSlotCardVariant(const char* fromKey, const char* toKey)
+{
+    // In place, in the slot the card already occupies: the two keys are the
+    // same peripheral at two abstraction levels, so moving it would be a
+    // second, unasked-for change (and would break any software that has the
+    // slot number baked in, which for a mouse or a printer is most of it).
+    int slot = -1;
+    for (int s = 1; s <= 7; ++s)
+        if (slotCards[s] == fromKey) { slot = s; break; }
+    if (slot < 0) return false;
+
+    const std::string key      = "slot_" + std::to_string(slot) + "_card";
+    const std::string previous = settings->getString(key, "");
+    settings->setString(key, toKey);
+    if (!settings->save()) {
+        settings->setString(key, previous);
+        tapeStatusMessage = "Could not save the slot change.";
+        tapeStatusUntil   = lastFrameTime + 6.0;
+        return false;
+    }
+    if (!restartEmulationFromSettings()) {
+        // Rebuild refused — the live machine was deliberately left intact, so
+        // the persisted key has to go back too or the refused change would
+        // apply silently on the next launch. Same contract as Slot Config's
+        // Apply.
+        settings->setString(key, previous);
+        settings->save();
+        return false;
+    }
+    settings->save();
+    pom2::log().info("Abstraction",
+                     "slot " + std::to_string(slot) + ": " + fromKey +
+                     " -> " + toKey);
+    return true;
+}
+
+void MainWindow::renderAbstractionPanel()
+{
+    if (!showAbstractionPanel) return;
+    if (!abstractionPanel)
+        abstractionPanel = std::make_unique<pom2::AbstractionLevels_ImGui>();
+
+    using Panel = pom2::AbstractionLevels_ImGui;
+    using Live  = Panel::Live;
+    Panel::Snapshot snap;
+
+    // Plug state comes from the live slot map rather than from the dozen
+    // `*Card` pointers: one uniform test that covers every catalogued card,
+    // including the ones MainWindow keeps no pointer to.
+    auto plugged = [&](const char* key) {
+        for (int s = 1; s <= 7; ++s)
+            if (slotCards[s] == key) return true;
+        return false;
+    };
+    auto row = [&](const char* id, Live live, const char* detail = "") {
+        Panel::Row r;
+        r.id     = id;
+        r.live   = live;
+        r.detail = detail;
+        snap.rows.push_back(std::move(r));
+    };
+    // A card that is plugged but running its fallback ROM: still working,
+    // still wrong about its level. `actual` is where it really sits.
+    auto degradable = [&](const char* id, bool isPlugged, bool atFullLevel,
+                          pom2::AbsLevel fallback, const char* why) {
+        Panel::Row r;
+        r.id = id;
+        if      (!isPlugged)   r.live = Live::NotPlugged;
+        else if (atFullLevel)  r.live = Live::Active;
+        else                 { r.live = Live::Degraded; r.actual = fallback;
+                               r.detail = why; }
+        snap.rows.push_back(std::move(r));
+    };
+
+    // ── Storage ─────────────────────────────────────────────────────────
+    // Disk II is the sharpest case in the whole table: no P6 dump and no WOZ
+    // mounted means the legacy 32-cycle nibble gate, which reads stock DOS
+    // 3.3 fine and loses every bitstream-reading protection. `usingBitLss()`
+    // is the honest test — a mounted WOZ forces the L0 path even with no
+    // roms/diskii_p6.rom, using the embedded default P6.
+    degradable("diskii", diskCard != nullptr,
+               diskCard && diskCard->usingBitLss(), pom2::AbsLevel::H1,
+               "roms/diskii_p6.rom absent and no WOZ mounted — running the "
+               "legacy 32-cycle nibble gate, which cannot decode "
+               "bitstream-level copy protection.");
+    row("diskimage", diskCard ? Live::Active : Live::NotPlugged);
+    row("cffa", plugged("cffa")        ? Live::Active : Live::NotPlugged);
+    row("hdv",  plugged("hdv")         ? Live::Active : Live::NotPlugged);
+    degradable("smartportcard", plugged("smartport35"),
+               smartPortCard && smartPortCard->isLironRomLoaded(),
+               pom2::AbsLevel::H1,
+               "roms/liron.rom absent — the slot page and the $C800 bank are "
+               "POM2's synthetic firmware instead of the real Liron ROM.");
+    {
+        const bool iicClass =
+            activeProfile == pom2::SystemProfile::AppleIIc ||
+            activeProfile == pom2::SystemProfile::AppleIIcPlus ||
+            activeProfile == pom2::SystemProfile::AppleIIcPAL;
+        row("iicsp", iicClass ? Live::Active : Live::NotPlugged,
+            iicClass ? "Armed only by an explicit boot from slot 5; every "
+                       "reset disarms it." : "");
+        row("iwm", activeProfile == pom2::SystemProfile::AppleIIcPlus
+                       ? Live::Active : Live::NotPlugged);
+        row("sony35", (iicClass || plugged("smartport35"))
+                       ? Live::Active : Live::NotPlugged);
+    }
+    row("prodosvol", Live::NotApplicable);
+
+    // ── Input, clocks, printing ─────────────────────────────────────────
+    row("mouse",   mouseCard   ? Live::Active : Live::NotPlugged);
+    row("mouseaw", mouseAwCard ? Live::Active : Live::NotPlugged);
+    degradable("clock", plugged("clock"),
+               clockCard && clockCard->romFromDump(), pom2::AbsLevel::H1,
+               "roms/thunderclock_u9_v1.3.bin absent — running the synthetic "
+               "ProDOS-signature stub, so tools that pull the driver off the "
+               "card find nothing.");
+    degradable("grappler", plugged("grappler"),
+               grapplerCard && grapplerCard->isRomLoaded(),
+               pom2::AbsLevel::H1,
+               "roms/grappler_plus.bin absent — running buildStubRom(), so "
+               "the real Orange Micro firmware is not executing.");
+    row("printercard", plugged("printer") ? Live::Active : Live::NotPlugged);
+    row("nsclock", controller->noSlotClock().isEnabled()
+                       ? Live::Active : Live::NotPlugged);
+
+    // ── Video ───────────────────────────────────────────────────────────
+    // Exactly one of the two colour paths is running, which makes this pair
+    // the clearest live illustration of the axis in the whole panel.
+    {
+        const auto hi = display->getHiResMode();
+        const bool oe = (hi == Apple2Display::HiResMode::ColorCompositeOE ||
+                         hi == Apple2Display::HiResMode::ColorCompositeOECpu);
+        row("oe",  oe ? Live::Active : Live::NotPlugged,
+            oe ? "Signal-level demodulation of the 14.318 MHz 1-bit stream."
+               : "Pick a Composite (OpenEmulator) mode in Display to run it.");
+        row("lut", oe ? Live::NotPlugged : Live::Active,
+            oe ? "" : "Artifact colours are read from a table; no signal is "
+                      "synthesised.");
+    }
+    row("chatmauve", chatMauveCard ? Live::Active : Live::NotPlugged);
+
+    // ── Audio, network, CPU ─────────────────────────────────────────────
+    row("mockingboard", (plugged("mockingboard") || plugged("mockingboard_c") ||
+                         plugged("phasor")) ? Live::Active : Live::NotPlugged);
+    row("ssi263", (plugged("echoplus") || plugged("mockingboard_c"))
+                      ? Live::Active : Live::NotPlugged);
+    row("tms5220", plugged("echoplus_tms") ? Live::Active : Live::NotPlugged);
+    row("ssc",       plugged("ssc")       ? Live::Active : Live::NotPlugged);
+    row("uthernet",  plugged("uthernet")  ? Live::Active : Live::NotPlugged);
+    row("uthernet2", plugged("uthernet2") ? Live::Active : Live::NotPlugged);
+    row("fujinet",   plugged("fujinet")   ? Live::Active : Live::NotPlugged);
+    row("softcard",  plugged("softcard")  ? Live::Active : Live::NotPlugged);
+    row("z80",       plugged("softcard")  ? Live::Active : Live::NotPlugged);
+
+    // ── The switchable boundaries ───────────────────────────────────────
+    // Availability is gated on the dump each low side needs, because the
+    // whole point of the panel is that a missing dump silently costs you a
+    // level — offering a switch that would land on the fallback would repeat
+    // the exact mistake it exists to expose.
+    auto have = [](const char* rel) {
+        return !pom2::findResource(rel).empty();
+    };
+    {
+        Panel::ToggleState t;
+        t.id           = pom2::AbsToggle::MouseCard;
+        t.title        = "Mouse Card";
+        t.needsRestart = true;
+        t.low.label    = "MAME — the M68705 MCU executes its mask ROM";
+        t.low.level    = pom2::AbsLevel::L0;
+        t.low.available = have("roms/mouse_341-0270-c.bin") &&
+                          have("roms/mouse_341-0269.bin");
+        t.low.blockedBy = "both roms/mouse_341-0270-c.bin (slot EPROM) and "
+                          "roms/mouse_341-0269.bin (MCU mask ROM) are needed";
+        t.low.why      = "Decodes real quadrature edges: at most one edge per\n"
+                         "axis per MCU PortB read, so fast host motion is\n"
+                         "rate-limited exactly as the hardware limits it.";
+        t.high.label   = "AppleWin HLE — the MCU is a C++ state machine";
+        t.high.level   = pom2::AbsLevel::H1;
+        t.high.available = have("roms/mouse_341-0270-c.bin");
+        t.high.blockedBy = "roms/mouse_341-0270-c.bin (slot EPROM) is needed";
+        t.high.why     = "Copies the host delta straight into the HLE'd MCU,\n"
+                         "so it never drops motion — smoother, and less\n"
+                         "correct. Needs a compensating absolute cursor sync\n"
+                         "the L0 card does not.";
+        t.selected     = mouseCard ? 0 : (mouseAwCard ? 1 : -1);
+        if (t.selected < 0)
+            t.note = "Neither is plugged — add a mouse in Slot Configuration "
+                     "first, then switch levels here.";
+        snap.toggles.push_back(std::move(t));
+    }
+    {
+        Panel::ToggleState t;
+        t.id           = pom2::AbsToggle::BlockStorage;
+        t.title        = "ProDOS block storage";
+        t.needsRestart = true;
+        t.low.label    = "CFFA 2.0 — the real 4 KB firmware executes over ATA";
+        t.low.level    = pom2::AbsLevel::L2;
+        t.low.available = have("roms/cffa20ee02.bin") ||
+                          have("roms/cffa20eec02.bin");
+        t.low.blockedBy = "roms/cffa20ee02.bin (or the 65C02 variant) is needed";
+        t.low.why      = "An ATA taskfile model isomorphic to MAME's\n"
+                         "cs0_r/cs0_w, driven by the card's own firmware.\n"
+                         "Skips DMA / IRQ / SMART.";
+        t.high.label   = "HDV card — synthetic ROM, 4-register port, memcpy";
+        t.high.level   = pom2::AbsLevel::H1;
+        t.high.why     = "H1 IS the feature here: it mounts .hdv/.2mg\n"
+                         "directly with no card ROM dump at all. The ProDOS\n"
+                         "block corpus has no protection to lose.";
+        t.selected     = plugged("cffa") ? 0 : (plugged("hdv") ? 1 : -1);
+        if (t.selected < 0)
+            t.note = "Neither is plugged — add one in Slot Configuration "
+                     "first, then switch levels here.";
+        snap.toggles.push_back(std::move(t));
+    }
+    {
+        Panel::ToggleState t;
+        t.id           = pom2::AbsToggle::PrinterIface;
+        t.title        = "Printer interface";
+        t.needsRestart = true;
+        t.low.label    = "Grappler+ — the real Orange Micro EPROM executes";
+        t.low.level    = pom2::AbsLevel::L2;
+        t.low.available = have("roms/grappler_plus.bin");
+        t.low.blockedBy = "roms/grappler_plus.bin is needed";
+        t.low.why      = "Status byte, register decode, $C800 banking and the\n"
+                         "S1 DIPs, line-cited against MAME grappler.cpp.\n"
+                         "What AppleWorks and the graphics dumps expect.";
+        t.high.label   = "Printer card — synthetic ROM, PR#n hook only";
+        t.high.level   = pom2::AbsLevel::H1;
+        t.high.why     = "A CSWL/CSWH hook and a 4-byte trampoline. No PROM\n"
+                         "dump exists to run, and the Pascal entry block is\n"
+                         "deliberately absent, so BASIC PR#n only.";
+        t.selected     = plugged("grappler") ? 0 : (plugged("printer") ? 1 : -1);
+        if (t.selected < 0)
+            t.note = "Neither is plugged — add one in Slot Configuration "
+                     "first, then switch levels here.";
+        snap.toggles.push_back(std::move(t));
+    }
+    {
+        Panel::ToggleState t;
+        t.id         = pom2::AbsToggle::CompositeVideo;
+        t.title      = "Colour pipeline";
+        t.low.label  = "Composite (OpenEmulator) — demodulate a real signal";
+        t.low.level  = pom2::AbsLevel::L1;
+        t.low.why    = "The display emits a 14.318 MHz 1-bit luminance\n"
+                       "stream; the shader demodulates Y/I/Q off the\n"
+                       "subcarrier. Artifact colour is EMERGENT.";
+        t.high.label = "Artifact LUT — look the colour up per dot pattern";
+        t.high.level = pom2::AbsLevel::H1;
+        t.high.why   = "MAME's composite colour tables: the RESULT of NTSC\n"
+                       "artifacting, tabulated. Cheap, sharp, and unable to\n"
+                       "show anything the table has no entry for.";
+        const auto hi = display->getHiResMode();
+        t.selected   = (hi == Apple2Display::HiResMode::ColorCompositeOE ||
+                        hi == Apple2Display::HiResMode::ColorCompositeOECpu)
+                           ? 0 : 1;
+        t.note       = "Mono modes are neither — they bypass colour entirely.";
+        snap.toggles.push_back(std::move(t));
+    }
+
+    const Panel::Request req = abstractionPanel->render(&showAbstractionPanel,
+                                                       snap);
+    switch (req.toggle) {
+        case pom2::AbsToggle::None:
+            break;
+        case pom2::AbsToggle::MouseCard:
+            swapSlotCardVariant(req.option == 0 ? "mouseaw" : "mouse",
+                                req.option == 0 ? "mouse" : "mouseaw");
+            break;
+        case pom2::AbsToggle::BlockStorage:
+            swapSlotCardVariant(req.option == 0 ? "hdv" : "cffa",
+                                req.option == 0 ? "cffa" : "hdv");
+            break;
+        case pom2::AbsToggle::PrinterIface:
+            swapSlotCardVariant(req.option == 0 ? "printer" : "grappler",
+                                req.option == 0 ? "grappler" : "printer");
+            break;
+        case pom2::AbsToggle::CompositeVideo:
+            // No restart: the colour pipeline is a render-path choice, and
+            // the machine never sees it. Persisted by the dtor's hi_res_mode
+            // write, exactly like a View-menu pick.
+            display->setHiResMode(
+                req.option == 0 ? Apple2Display::HiResMode::ColorCompositeOE
+                                : Apple2Display::HiResMode::ColorNTSC);
+            lastColorHiResMode_ = display->getHiResMode();
+            break;
+    }
+}
+
 void MainWindow::renderNoSlotClockPanelWindow()
 {
     if (!showNoSlotClockPanel) return;
@@ -6184,11 +6661,13 @@ void MainWindow::renderVoxelSettingsWindow()
 
 // ─── CRT Settings (Composite NTSC mode) ──────────────────────────────────
 //
-// Eight sliders that drive the OpenEmulator-style shader: standard four
-// TV knobs (B/C/S/H), sharpness (chroma bandwidth), persistence (CRT
-// afterglow), and two pure post-effects (scanlines + barrel). All
-// values are persisted to settings.json under the `ntsc_*` keys so the
-// look survives across sessions.
+// Sliders that drive the OpenEmulator-style shader: standard four TV knobs
+// (B/C/S/H), sharpness (chroma bandwidth), persistence (CRT afterglow), and
+// the pure post-effects (scanlines, barrel, vignette, shadow mask). All
+// values are persisted to settings.json under the `ntsc_*` keys so the look
+// survives across sessions. No look presets: they overwrote the whole glass
+// block in one click, which made the panel hard to reason about — the
+// defaults plus "Reset to defaults" are the only starting points now.
 void MainWindow::renderNtscSettingsWindow()
 {
     if (!showNtscSettings) return;
@@ -6231,73 +6710,6 @@ void MainWindow::renderNtscSettingsWindow()
     pom2::NtscParams p = ntscFx ? ntscFx->getParams() : pom2::NtscParams{};
     bool changed = false;
 
-    // ── Presets ──────────────────────────────────────────────────────────
-    // The panel used to open on 13 bare numeric knobs with no starting
-    // points. Almost nobody wants to dial a luminance gain; they want to pick
-    // a look. Presets are the primary control now and the sliders moved
-    // behind "Advanced".
-    //
-    // Each preset only sets the CRT *glass*. `palMode` and `textSharp` are
-    // deliberately preserved: PAL is a property of the machine being emulated
-    // (the two PAL profiles), not of a look, and sharp text is a legibility
-    // preference. Silently flipping either from a look picker would be wrong.
-    ImGui::SeparatorText("Look");
-    {
-        auto preset = [&](const char* label, const char* tip,
-                          const pom2::NtscParams& np) {
-            if (ImGui::Button(label)) {
-                const bool keepPal   = p.palMode;
-                const bool keepSharp = p.textSharp;
-                p = np;
-                p.palMode   = keepPal;
-                p.textSharp = keepSharp;
-                changed = true;
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-        };
-
-        // Clean: no glass at all. Same as the master toggle off, except the
-        // stack still runs — useful for A/B against a single knob.
-        pom2::NtscParams clean{};
-        clean.sharpness = 1.0f; clean.persistence = 0.0f;
-        clean.scanlines = 0.0f; clean.barrel = 0.0f;
-        clean.shadowMask = pom2::NtscParams::ShadowMask::Off;
-        clean.luminanceGain = 1.0f; clean.centerLighting = 1.0f;
-        clean.phosphorGamma = 1.0f;
-
-        // Composite TV: the stock look — a consumer set of the era.
-        pom2::NtscParams tv{};   // struct defaults are already this look
-
-        // Trinitron: aperture grille, flat glass, crisper.
-        pom2::NtscParams trin{};
-        trin.sharpness = 0.70f; trin.persistence = 0.25f;
-        trin.scanlines = 0.18f; trin.barrel = 0.0f;
-        trin.shadowMask = pom2::NtscParams::ShadowMask::ApertureGrille;
-        trin.shadowMaskStrength = 0.45f;
-        trin.luminanceGain = 1.35f; trin.centerLighting = 0.95f;
-        trin.phosphorGamma = 1.10f;
-
-        // Arcade: heavy glass — deep scanlines, curved tube, dot mask.
-        pom2::NtscParams arc{};
-        arc.sharpness = 0.40f; arc.persistence = 0.55f;
-        arc.scanlines = 0.55f; arc.barrel = 0.16f;
-        arc.shadowMask = pom2::NtscParams::ShadowMask::Dot;
-        arc.shadowMaskStrength = 0.70f;
-        arc.luminanceGain = 1.60f; arc.centerLighting = 0.80f;
-        arc.phosphorGamma = 1.35f;
-
-        preset("Clean", "No glass: flat, sharp, no scanlines or mask.\n"
-                        "The reference for A/B-ing a single knob.", clean);
-        ImGui::SameLine();
-        preset("Composite TV", "Stock POM2 look — a consumer set of the era.\n"
-                               "Mild scanlines, slight tube curve, phosphor\n"
-                               "persistence.", tv);
-        ImGui::SameLine();
-        preset("Trinitron", "Aperture grille, flat glass, crisper image.", trin);
-        ImGui::SameLine();
-        preset("Arcade", "Heavy glass: deep scanlines, curved tube, dot mask.", arc);
-    }
-
     // ── Scope notes ──────────────────────────────────────────────────────
     // What actually applies right now. Kept terse and dim: it is reference
     // material, not a warning.
@@ -6331,13 +6743,17 @@ void MainWindow::renderNtscSettingsWindow()
     }
 
     // ── Advanced ─────────────────────────────────────────────────────────
-    // Collapsed by default. Labels lead, sliders fill the rest of the row:
+    // Open by default: the look presets that used to be the panel's primary
+    // control are gone, so the sliders are the only controls left and hiding
+    // them behind a collapsed header would leave the panel empty on open.
+    // Labels lead, sliders fill the rest of the row:
     // ImGui's native SliderFloat puts its label on the RIGHT, which made the
     // panel read "bar → number → name" and clipped the longest label
     // ("Phosphor curve (ga…"). Two decimals, not three — these are perceptual
     // knobs and 0.055 was false precision.
     ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Advanced")) {
+    if (ImGui::CollapsingHeader("Advanced",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
         // Widest label sets the column, so it can never clip. Measured rather
         // than hardcoded so it survives the UI zoom.
         const float labelW = ImGui::CalcTextSize("Phosphor gamma").x +
@@ -6405,8 +6821,8 @@ void MainWindow::renderNtscSettingsWindow()
 
         ImGui::SeparatorText("Demodulation (OpenEmulator pipelines only)");
         // PAL composite — line-phase alternation. Off by default (POM2 ships
-        // with the NTSC look most users associate with the Apple II). Left out
-        // of the presets on purpose: it describes the machine, not a look.
+        // with the NTSC look most users associate with the Apple II). It
+        // describes the machine being emulated, not a look.
         changed |= ImGui::Checkbox("PAL composite (line-phase alternation)",
                                    &p.palMode);
         // Sharp-text bypass: keep glyphs crisp in TEXT mode by skipping the
@@ -7744,6 +8160,74 @@ void MainWindow::renderDiskPanelWindow()
 }
 
 // ─── Disk Library (unified browser: 5.25 / 3.5 / HDV) ───────────────────
+
+bool MainWindow::ejectMediaBay(int slot, int index, bool diskII)
+{
+    // Addressed by SLOT + bay rather than by a card pointer: the status bar
+    // builds its rows from a value snapshot taken under the lock and released
+    // before drawing, so by the time the user clicks, any pointer captured
+    // back then could belong to a card a Slot-Config Apply has since deleted.
+    // Re-resolving through the bus here is what makes the click safe.
+    std::string label;
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        SlotPeripheral* per = controller->memory().slotBus().peripheral(slot);
+        if (!per) return false;
+
+        if (diskII) {
+            auto* d2 = dynamic_cast<DiskIICard*>(per);
+            if (!d2) return false;
+            // ejectDisk() saves dirty tracks first when write-back is on and
+            // returns false if that save failed — in which case the medium
+            // deliberately stays mounted rather than losing the writes.
+            ok = d2->ejectDisk(index);
+            label = "slot " + std::to_string(slot) + " drive " +
+                    std::to_string(index + 1);
+            if (ok) {
+                // Match the shutdown-persist keys so the disk does not come
+                // back on the next launch (the same pair `restartEmulation
+                // FromSettings` snapshots).
+                const std::string k = "_slot" + std::to_string(slot);
+                settings->setString("disk_path" + k, "");
+                if (index == 0 && d2 == diskCard) settings->setString("disk_path", "");
+            }
+        } else {
+            auto* media = dynamic_cast<pom2::MountableMediaCard*>(per);
+            if (!media) return false;
+            ok = media->ejectBay(index);
+            label = "slot " + std::to_string(slot);
+            if (media->bayCount() > 1)
+                label += " bay " + std::to_string(index + 1);
+            if (ok) {
+                // SmartPort units persist their own per-unit key, and it is
+                // written eagerly on mount (not at shutdown), so an eject that
+                // did not clear it would remount the image on the next launch.
+                if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(per)) {
+                    settings->setString(
+                        "smartport_slot" + std::to_string(sp->getSlot()) +
+                        "_unit" + std::to_string(index) + "_path", "");
+                }
+                if (dynamic_cast<ProDOSHardDiskCard*>(per))
+                    settings->setString("hdv_path", "");
+                if (auto* cffa = dynamic_cast<pom2::CffaCard*>(per)) {
+                    settings->setString(
+                        "cffa_slot" + std::to_string(cffa->getSlot()) + "_path",
+                        "");
+                }
+            }
+        }
+    }
+    if (ok) settings->save();
+
+    tapeStatusMessage = ok ? ("Ejected " + label)
+                           : ("Eject refused for " + label +
+                              " — the image could not be saved, so it stays "
+                              "mounted");
+    tapeStatusUntil = lastFrameTime + (ok ? 3.0 : 8.0);
+    if (!ok) pom2::log().warn("Media", tapeStatusMessage);
+    return ok;
+}
 
 void MainWindow::ejectAllDisks()
 {
@@ -9632,6 +10116,111 @@ void MainWindow::renderHdvFileDialog()
 
 // ─── //c+ SmartPort 3.5" ─────────────────────────────────────────────────
 
+namespace {
+// Where a 3.5" WOZ's writable twin should go: same directory, same stem,
+// `.po`. Never overwrites — appends " (2)", " (3)" … until the name is free,
+// and gives up rather than looping if a hundred already exist. Returns ""
+// when no free name could be found, which greys the button out.
+std::string freePoNameFor(const std::string& wozPath)
+{
+    if (wozPath.empty()) return {};
+    namespace fs = std::filesystem;
+    const fs::path src(wozPath);
+    const fs::path dir  = src.parent_path();
+    const std::string stem = src.stem().string();
+    std::error_code ec;
+    for (int n = 1; n <= 99; ++n) {
+        const std::string name =
+            (n == 1) ? stem + ".po"
+                     : stem + " (" + std::to_string(n) + ").po";
+        const fs::path cand = dir / name;
+        if (!fs::exists(cand, ec)) return cand.string();
+    }
+    return {};
+}
+}  // namespace
+
+bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
+{
+    // The way out of a read-only 3.5" WOZ, and the reason it exists: POM2
+    // decodes Sony GCR but cannot encode it, so a `.woz` mounted at 800K can
+    // never take a guest write — which breaks any program that keeps its
+    // configuration on its own program disk (The New Print Shop's printer
+    // setup is the canonical case). The decode already produced the exact
+    // 1600 blocks a `.po` holds, so the conversion is a file write and
+    // nothing more. The WOZ is never touched: it stays the archival master.
+    std::string outPath, err;
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        pom2::Disk35Image* img = nullptr;
+        if (useSmartPort35 && smartPortCard) {
+            if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
+                    smartPortCard->unit(static_cast<size_t>(drive))))
+                img = &u->image();
+        } else {
+            img = (drive == 0) ? &controller->disk35Internal()
+                               : &controller->disk35External();
+        }
+        if (!img || img->kind() != pom2::Disk35Image::ImageKind::Woz35) {
+            tapeStatusMessage = "Convert: that drive does not hold a 3.5\" WOZ";
+            tapeStatusUntil   = lastFrameTime + 4.0;
+            return false;
+        }
+        outPath = freePoNameFor(img->path());
+        if (outPath.empty()) {
+            tapeStatusMessage = "Convert: no free .po filename beside the WOZ";
+            tapeStatusUntil   = lastFrameTime + 6.0;
+            return false;
+        }
+        ok = img->exportRawTo(outPath, err);
+    }
+    if (!ok) {
+        tapeStatusMessage = "Convert failed: " + err;
+        tapeStatusUntil   = lastFrameTime + 8.0;
+        pom2::log().warn("Disk 3.5", tapeStatusMessage);
+        return false;
+    }
+    pom2::log().info("Disk 3.5", "converted WOZ to " + outPath);
+
+    // Mount the copy in the same drive and turn write-back ON. Both halves
+    // matter: leaving the WOZ mounted would mean the user converts, sees
+    // nothing change and still cannot save; and mounting the .po with
+    // write-back off would refuse the writes for a SECOND reason, which is
+    // precisely the confusion this feature exists to end. `routeMount35`
+    // takes the lock itself, so this runs unlocked.
+    if (!routeMount35(drive, outPath, err)) {
+        tapeStatusMessage = "Converted to " + outPath +
+                            ", but mounting it failed: " + err;
+        tapeStatusUntil   = lastFrameTime + 8.0;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        if (useSmartPort35 && smartPortCard) {
+            if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
+                    smartPortCard->unit(static_cast<size_t>(drive)))) {
+                u->setWriteBackEnabled(true);
+                const std::string base =
+                    "smartport_slot" +
+                    std::to_string(smartPortCard->getSlot()) +
+                    "_unit" + std::to_string(drive);
+                settings->setBool(base + "_writeback", true);
+            }
+        } else {
+            pom2::Disk35Image& img = (drive == 0)
+                ? controller->disk35Internal() : controller->disk35External();
+            img.setWriteBackEnabled(true);
+        }
+    }
+    settings->save();
+    tapeStatusMessage = "Converted to " +
+        std::filesystem::path(outPath).filename().string() +
+        " and mounted with write-back on — the .woz is untouched";
+    tapeStatusUntil = lastFrameTime + 8.0;
+    return true;
+}
+
 void MainWindow::renderDisk35PanelWindow()
 {
     if (!showDisk35Panel) return;
@@ -9674,6 +10263,8 @@ void MainWindow::renderDisk35PanelWindow()
                 s.lastError         = u->lastError();
                 s.hasUnsavedChanges = img.hasUnsavedChanges();
                 s.writeBackEnabled  = u->isWriteBackEnabled();
+                s.isWoz = (img.kind() == pom2::Disk35Image::ImageKind::Woz35);
+                if (s.isWoz) s.convertTargetPath = freePoNameFor(u->path());
             }
         } else {
             const pom2::Sony35Drive* drives[2] = {
@@ -9693,6 +10284,10 @@ void MainWindow::renderDisk35PanelWindow()
                 s.lastError         = images[i]->lastError();
                 s.hasUnsavedChanges = images[i]->hasUnsavedChanges();
                 s.writeBackEnabled  = images[i]->isWriteBackEnabled();
+                s.isWoz = (images[i]->kind() ==
+                           pom2::Disk35Image::ImageKind::Woz35);
+                if (s.isWoz)
+                    s.convertTargetPath = freePoNameFor(images[i]->path());
             }
         }
     }
@@ -9757,6 +10352,9 @@ void MainWindow::renderDisk35PanelWindow()
     }
     auto result = disk35Panel->render(
         disk35Title, showDisk35Panel, snap);
+
+    if (result.requestConvertDrive >= 0)
+        convertWoz35ToPo(result.requestConvertDrive, useSmartPort35);
 
     for (int d = 0; d < 2; ++d) {
         if (result.requestEject[d]) {
@@ -9935,6 +10533,140 @@ void MainWindow::renderDisk35FileDialog()
     ImGui::EndPopup();
 }
 
+// ─── Apple //e keyboard (clickable photo) ────────────────────────────────
+
+void MainWindow::ensureKeyboardImageLoaded()
+{
+    if (kbImageTried_) return;
+    kbImageTried_ = true;
+
+    const std::string path = pom2::findResource("pic/Keyboard_AppleIIe.jpeg");
+    if (path.empty()) {
+        kbImageError_ = "not found in any resource search dir";
+        return;
+    }
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    if (!pixels) {
+        kbImageError_ = stbi_failure_reason() ? stbi_failure_reason()
+                                              : "decode failed";
+        return;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    // LINEAR both ways: the photo is 2578 px wide and the window is usually
+    // narrower, so it is nearly always minified — GL_NEAREST turned the key
+    // legends into aliased mush at every size but 1:1.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    stbi_image_free(pixels);
+
+    kbImageTex_ = tex;
+    kbImageW_   = w;
+    kbImageH_   = h;
+}
+
+void MainWindow::renderKeyboardPanel()
+{
+    if (!showKeyboardPanel) {
+        // A latched Open-Apple must not outlive the window that shows it as
+        // down: with the panel closed there is nothing to un-latch it with,
+        // and the guest would see a key held forever.
+        if (keyboardPanel) {
+            keyboardPanel->releaseAll();
+            controller->memory().setOpenAppleKey(false);
+            controller->memory().setSolidAppleKey(false);
+        }
+        return;
+    }
+    ensureKeyboardImageLoaded();
+    if (!keyboardPanel)
+        keyboardPanel = std::make_unique<pom2::Keyboard_ImGui>();
+
+    const auto ev = keyboardPanel->render(&showKeyboardPanel, kbImageTex_,
+                                          kbImageW_, kbImageH_, kbImageError_);
+
+    // The Apple keys are LEVELS, not events: $C061/$C062 bit 7 reads the
+    // switch, so the latch has to be pushed every frame for as long as it is
+    // down, exactly like the host's Left/Right Alt in onKey.
+    const auto& lat = keyboardPanel->latches();
+    controller->memory().setOpenAppleKey(lat.openApple);
+    controller->memory().setSolidAppleKey(lat.solidApple);
+
+    if (!ev.key) return;
+
+    const pom2::KeyHotspot& k = *ev.key;
+    bool consumedOneShots = false;
+
+    if (k.kind == pom2::KeyKind::Char) {
+        char c = ev.latches.shift ? k.shift : k.base;
+        // Caps Lock is a LETTER latch on the //e, not a shift: it uppercases
+        // A-Z and leaves the digit row alone (which is why the number keys
+        // still need Shift for their symbols on a real machine).
+        if (ev.latches.caps && c >= 'a' && c <= 'z')
+            c = static_cast<char>(c - 'a' + 'A');
+        uint8_t code = static_cast<uint8_t>(c);
+        if (ev.latches.control) {
+            // Ctrl-A..Ctrl-Z = $01..$1A, on either case of the letter.
+            const char up = (c >= 'a' && c <= 'z')
+                                ? static_cast<char>(c - 'a' + 'A') : c;
+            if (up >= 'A' && up <= 'Z')
+                code = static_cast<uint8_t>(up - 'A' + 1);
+        }
+        injectAscii(code);
+        consumedOneShots = true;
+    } else {
+        switch (k.action) {
+            case pom2::KeyAction::Esc:    injectAscii(0x1B); break;
+            case pom2::KeyAction::Tab:    injectAscii(0x09); break;
+            case pom2::KeyAction::Return: injectAscii(0x0D); break;
+            // $7F is what the //e's DELETE cap actually generates. It is NOT
+            // the $08 the host Backspace injects — that one is the left
+            // arrow's code, which is what a II/II+ had instead of a DELETE
+            // key. The cap in the photo says Del, so it sends Del.
+            case pom2::KeyAction::Delete: injectAscii(0x7F); break;
+            case pom2::KeyAction::Left:   injectAscii(0x08); break;
+            case pom2::KeyAction::Right:  injectAscii(0x15); break;
+            case pom2::KeyAction::Down:   injectAscii(0x0A); break;
+            case pom2::KeyAction::Up:     injectAscii(0x0B); break;
+            case pom2::KeyAction::Reset:
+                // Faithful: RESET alone does nothing on any Apple II — the
+                // key is wired through the keyboard encoder's Ctrl line
+                // precisely so a stray knock cannot reboot the machine. So
+                // the panel refuses too, and says why, rather than quietly
+                // being more dangerous than the hardware.
+                if (!ev.latches.control) {
+                    tapeStatusMessage =
+                        "Reset needs Control — latch CONTROL, then click Reset "
+                        "(Open-Apple too for a cold boot).";
+                    tapeStatusUntil = lastFrameTime + 6.0;
+                    break;
+                }
+                // Open-Apple+Ctrl+Reset is the //e's cold boot; Ctrl+Reset
+                // alone is the warm one. Same two verbs as F12 / F11.
+                if (ev.latches.openApple) {
+                    controller->hardReset();
+                    tapeStatusMessage = "Open-Apple + Ctrl + Reset — cold boot";
+                } else {
+                    controller->softReset();
+                    tapeStatusMessage = "Ctrl + Reset";
+                }
+                tapeStatusUntil  = lastFrameTime + 3.0;
+                consumedOneShots = true;
+                break;
+            default: break;
+        }
+        if (k.action != pom2::KeyAction::Reset) consumedOneShots = true;
+    }
+
+    if (consumedOneShots) keyboardPanel->clearOneShots();
+}
+
 void MainWindow::ensureAboutImageLoaded()
 {
     if (aboutImageTried_) return;
@@ -10085,6 +10817,7 @@ void MainWindow::renderWelcomePanelWindow()
     ImGui::BulletText("F11  Reset (Ctrl-Reset)        F12  Hard reset");
     ImGui::BulletText("F9   Screenshot                F6   Hold to rewind");
     ImGui::BulletText("Left Alt = Open-Apple          Right Alt = Solid-Apple");
+    ImGui::BulletText("Ctrl+Alt+F  Full screen (kiosk) \xe2\x87\x84 windowed  (F10 too)");
     ImGui::BulletText("Ctrl+V pastes clipboard text as keystrokes");
 
     ImGui::Spacing();
@@ -10635,6 +11368,8 @@ void MainWindow::render()
             &showRomStatusPanel,
             std::string(pom2::profileConfig(activeProfile).displayName));
     }
+    renderAbstractionPanel();
+    renderKeyboardPanel();
     renderFloppyEmuWindow();
     renderAboutDialog();
     renderWelcomePanelWindow();

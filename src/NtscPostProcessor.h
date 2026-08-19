@@ -43,7 +43,7 @@ struct NtscParams
 
     // Scanlines + barrel are pure post-effects (no NTSC physics).
     float scanlines   = 0.25f;  // 0 = off, 1 = black between every line
-    float barrel      = 0.05f;  // 0 = flat, 0.2 = old curved CRT
+    float barrel      = 0.02f;  // 0 = flat, 0.2 = old curved CRT
 
     // Shadow-mask emulation (post-effect, after demodulation). The mask
     // is a multiplicative pattern in RGB space — triad (3-stripe RGB

@@ -261,6 +261,9 @@ set(SOURCES
     src/CommandPalette_ImGui.cpp
     src/Pom2Theme.cpp
     src/RomStatus_ImGui.cpp
+    src/AbstractionLevels_ImGui.cpp
+    src/AppleIIeKeyboardLayout.cpp
+    src/Keyboard_ImGui.cpp
     src/Toolbar_ImGui.cpp
     src/main.cpp
 )

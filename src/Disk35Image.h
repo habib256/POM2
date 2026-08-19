@@ -105,6 +105,20 @@ public:
     /// user's image exactly as it was rather than truncated.
     bool saveDirty();
 
+    /// Write the decoded 800K payload out as a bare ProDOS-order image
+    /// (`.po`), leaving the source file untouched. Returns false and fills
+    /// `errOut` on failure.
+    ///
+    /// This is the way OUT of a read-only 3.5" WOZ. A WOZ mounts write-
+    /// protected because POM2 has the Sony GCR *decoder* but no encoder, so
+    /// there is nothing to fold guest writes back into (see `loadFile`) —
+    /// but the decode already produced exactly the 1600 blocks a `.po`
+    /// holds, so converting costs nothing and the result is fully writable.
+    /// The user keeps the capture as an archival master and works on a copy,
+    /// which is the right split anyway: a WOZ describes flux, and a program
+    /// saving its configuration does not want to be re-mastering flux.
+    bool exportRawTo(const std::string& outPath, std::string& errOut) const;
+
     bool isWriteProtected() const {
         return fileWriteProtected_ || !writeBackEnabled_;
     }

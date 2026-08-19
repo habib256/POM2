@@ -268,6 +268,69 @@ void testWriteProtected()
     std::printf("  ok: a WOZ mounts read-only, writes refused\n");
 }
 
+// The way OUT of the read-only WOZ above: convert to a .po. Pinned because
+// the whole point is that the copy is byte-identical AND writable — a
+// conversion that quietly dropped a block, or produced another read-only
+// image, would look like it worked.
+void testConvertToPo()
+{
+    std::vector<std::vector<uint8_t>> tracks(160);
+    std::vector<std::pair<int, std::vector<uint8_t>>> expect;
+    for (int t : { 0, 16 })
+        for (int head = 0; head < 2; ++head) {
+            const int n = sectorsFor(t);
+            std::vector<uint8_t> payload(size_t(n) * 512);
+            for (int s = 0; s < n; ++s) {
+                const int bi = blockIndex(t, head, s);
+                fillBlock(payload.data() + s * 512, bi);
+                expect.push_back({ bi, std::vector<uint8_t>(
+                    payload.begin() + s * 512, payload.begin() + (s + 1) * 512) });
+            }
+            tracks[t * 2 + head] = encodeTrack(t, head, payload.data());
+        }
+
+    const fs::path p = writeTemp("pom2_woz35_convert.woz", buildWoz(tracks));
+    const fs::path out = fs::temp_directory_path() / "pom2_woz35_convert.po";
+    std::error_code ec; fs::remove(out, ec);
+
+    pom2::Disk35Image woz;
+    assert(woz.loadFile(p.string()));
+    std::string err;
+    assert(woz.exportRawTo(out.string(), err) && "export must succeed");
+    assert(fs::file_size(out, ec) == pom2::Disk35Image::kBytesPerImage &&
+           "a converted 3.5\" image is exactly 819200 bytes");
+
+    // Never clobber: a second export to the same name must refuse rather
+    // than replace a disk the user may have been working in.
+    assert(!woz.exportRawTo(out.string(), err));
+    assert(err.find("already exists") != std::string::npos);
+
+    pom2::Disk35Image po;
+    assert(po.loadFile(out.string()));
+    assert(po.kind() == pom2::Disk35Image::ImageKind::Raw800k);
+    for (const auto& [bi, want] : expect) {
+        uint8_t got[512];
+        assert(po.readBlock(uint32_t(bi), got));
+        assert(std::memcmp(got, want.data(), 512) == 0 &&
+               "the .po must carry the WOZ's decoded blocks unchanged");
+    }
+    // And, unlike its source, it takes writes once the user opts in.
+    po.setWriteBackEnabled(true);
+    assert(!po.isWriteProtected());
+    uint8_t mark[512];
+    std::memset(mark, 0xA5, sizeof(mark));
+    assert(po.writeBlock(9, mark));
+    assert(po.saveDirty());
+    pom2::Disk35Image again;
+    assert(again.loadFile(out.string()));
+    uint8_t got[512];
+    assert(again.readBlock(9, got));
+    assert(std::memcmp(got, mark, 512) == 0 && "the write must be durable");
+
+    fs::remove(p, ec); fs::remove(out, ec);
+    std::printf("  ok: WOZ converts to an identical, writable .po\n");
+}
+
 void testRefusals()
 {
     std::vector<std::vector<uint8_t>> tracks(160);
@@ -300,6 +363,7 @@ int main()
     std::printf("woz35_load\n");
     testRoundTrip();
     testWriteProtected();
+    testConvertToPo();
     testRefusals();
     std::printf("PASS\n");
     return 0;

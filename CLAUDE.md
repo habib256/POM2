@@ -43,7 +43,7 @@ cd build && cmake .. && make # → build/POM2
 
 `POM2_CPU_CLOCK_HZ = 1 022 727` (14.31818 MHz / 14). UI 60 Hz; CPU worker runs `cyclesPerFrame=17045` per tick. Single `stateMutex` guards CPU + Memory.
 
-Release packages ship the full `roms/` tree; a source build uses the same in-repo dumps. Default profile is `Apple ][+`; see [System profiles](#system-profiles) for ROM probe order.
+Release packages ship the full `roms/` tree; a source build uses the same in-repo dumps. Default profile is **`Apple //e Enhanced PAL`** (`Apple ][+` only when no //e ROM is found); see [System profiles](#system-profiles) for ROM probe order and the default slot map.
 
 ## Subsystem map
 
@@ -105,6 +105,8 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | HGR/DHGR Paint editor + sprite editor (portable, shared w/ POM1) | `hgrpaint/*`, `hgrsprite/*`, `Pom2HgrPaintHost.*` | [§ Paint editor](DEV.md#hgr--dhgr-paint-editor-hgrpaint-shared-with-pom1) |
 | Slot Config + Internal Disks & Media (2 windows) | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
 | ROM inventory panel (present / missing / identity) | `RomStatus_ImGui.*`, `RomCatalog.h` | [§ ROM Status](DEV.md#rom-status-panel) |
+| Abstraction levels panel (LLE/HLE per subsystem, live + switchable) | `AbstractionLevels_ImGui.*` | [§ Abstraction Levels](DEV.md#abstraction-levels-panel-lle--hle) |
+| Clickable Apple //e keyboard (photo + measured hotspots) | `Keyboard_ImGui.*`, `AppleIIeKeyboardLayout.*` (generated), `tools/gen_keyboard_layout.py` | [§ Keyboard panel](DEV.md#apple-e-keyboard-panel) |
 | Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
 | Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
@@ -183,6 +185,22 @@ In IIe mode the same map applies but most of `$0000-$BFFF` can route to aux 64 K
 
 Built-in slots force their listed card onto the SlotBus on profile load (overriding `slot_N_card` settings) and grey out their row in Slot Config. Detail → [DEV § Profile switching](DEV.md#profile-switching-internals).
 
+**Fresh-install defaults** — no `system_profile` / `slot_N_card` / `hi_res_mode` keys in `state.cfg`:
+
+| | |
+|---|---|
+| Profile | `Apple //e Enhanced PAL (50 Hz)` — falls back to `Apple ][+` if no //e ROM resolves |
+| Display | `Composite (OpenEmulator)` GPU pipeline |
+| sl1 | `grappler` — Grappler+ parallel printer |
+| sl2 | `mouseaw` — Mouse, AppleWin HLE |
+| sl3 | *empty* — the //e's 80 columns are **internal** ($C300 firmware + AUX ext80 under `iieMode`), never a slot card |
+| sl4 | `mockingboard` — Mockingboard A/C |
+| sl5 | `smartport35` — SmartPort 3.5" |
+| sl6 | `diskii` — Disk II |
+| sl7 | `chatmauve` — Le Chat Mauve RGB |
+
+The map lives in `kDefaults[]` in `MainWindow::plugSlotsFromSettings`; any `slot_N_card` key in the settings file wins over it.
+
 **//c-class CPU + Chat Mauve rules.** The //c/+/enhanced-//e/PAL profiles have a **65C02 soldered** (`defaultCpu = CMOS`); an `cpu_mode_override = nmos` is *ignored* there (`resolveCpuMode` clamp) — forcing NMOS made their 65C02 ROMs hit KIL opcodes and freeze. The **Le Chat Mauve RGB** card is the one peripheral allowed on a `noPhysicalSlots` //c (it's the rear DB-15 "Adaptateur IIc", not a slot card): user-pluggable on plain //c/+ via a `{empty, Le Chat Mauve}` Slot-Config combo, and a **fixed sl7 built-in on the //c PAL profile**. Profile-forced slots are no longer persisted to `slot_N_card` on exit (quitting on //c used to clobber the user's //e card config).
 
 **Video standard (NTSC/PAL).** Each profile carries a `VideoStandard` (`CpuClock.h`): NTSC (262 lines, 60 Hz, 1.0227 MHz) for US machines, **PAL (312 lines, ~50 Hz, ~1.0156 MHz)** for the two PAL profiles. The European //c PAL is the machine that took the **Le Chat Mauve** RGB Péritel adapter on its DB-15 port; French Touch / DIX demos are PAL-timed, so their beam-raced effects and Mockingboard-T2 frame sync only land correctly under PAL. MAME oracles for European PAL: **`apple2eefr`** (//e enhanced France) and **`apple2cfr`** / **`apple2c0fr`** (//c France, UniDisk variant) — all 312 vtotal, 50.146 Hz, 14.2375 MHz pixclock. Not the US `apple2ee` / `apple2c`. Note: MAME's //c FR still has no usable 3.5" media path for an 800K `.po`; DIX on MAME stays on `apple2eefr -sl5 superdrive`. `applyProfile` calls `controller->setVideoStandard()`, which sets the worker's 50/60 Hz pacing (`frameIntervalUs`) and the 262/312-line geometry in `Memory` (`pushVideoEventLocked`) + `Apple2Display::frameCycleToPos`. The CPU budget `defaultCyclesPerFrame` (17045 NTSC / 20313 PAL) × refresh = the effective clock. Device *generator* clocks (AY/IWM/SSI263) stay at the NTSC nominal — the 0.7 % delta is an inaudible audio-pitch approximation — but `setVideoStandard` calls `setCpuClock` on **every slot card plus speaker and cassette**: their emuCycles replay cursors and cycles→samples queues starve under a wrong clock, which is audible. Pinned by `pal_timing`. CLI: `--preset iie-pal|iic-pal` (alias `chatmauve`).
@@ -214,9 +232,9 @@ Keyboard wiring:
 
 - **Left Alt = Open-Apple** → $C061 bit 7
 - **Right Alt = Solid-Apple** → $C062 bit 7
-- **F10 = full screen ⇄ windowed** (kiosk toggle — see CLI section)
+- **Ctrl+Alt+F = full screen ⇄ windowed** (kiosk toggle — see CLI section). **F10** does the same; the chord exists because F10 is swallowed by the window manager on several desktops.
 - **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (a middle click toggles it too; a left click never captures; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
-- F9 / F10 / F11 / F12 / Ctrl+Alt+G / Ctrl+Shift+P / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
+- F9 / F10 / F11 / F12 / Ctrl+Alt+F / Ctrl+Alt+G / Ctrl+Shift+P / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).
 
 ## CLI
 
@@ -225,7 +243,7 @@ Keyboard wiring:
 Flags: `--preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal`, `--speed`, `--cpu-max`, `--display`, `--tape`, `--save-tape`/`--save-tape-format aci|wav`, `--35-disk1 path`/`--35-disk2 path` (//c+ Sony 3.5"), `--load addr:file`, `--run`, `--paste`, `--step`, `--play`/`--rec`/`--rewind`, `--snapshot-save`/`--snapshot-load`, `--fujinet[=PORT]`/`--fujinet-serial[=DEV]`/`--fujinet-slot N`, `--rgb-card-invert-bit7[=on|off]`, `--kiosk`. `printUsage()` in `CliDispatcher.cpp` is the source of truth.
 
 **Kiosk is a runtime mode, not just a flag**: `MainWindow::toggleKioskMode()`
-(F10, View menu, `view.kiosk` palette command, or the in-kiosk menu's
+(Ctrl+Alt+F, F10, View menu, `view.kiosk` palette command, or the in-kiosk menu's
 EXIT KIOSK action) moves the GLFW window between exclusive full-screen and
 its saved windowed geometry and flips `kiosk_`. The machine is untouched —
 kiosk is only windowing + the chrome-free render path + suppressed settings

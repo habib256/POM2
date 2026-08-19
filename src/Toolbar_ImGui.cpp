@@ -368,7 +368,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     // would be a lie. ICON_FA_EXPAND matches the View menu item, which is
     // the same action under a different name.
     if (iconButton({ ICON_FA_EXPAND, "Kiosk",
-                     "Full screen (kiosk) — no UI chrome  (F10)" })) {
+                     "Full screen (kiosk) — no UI chrome  (Ctrl+Alt+F)" })) {
         r.requestKioskToggle = true;
     }
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());

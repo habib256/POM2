@@ -1443,7 +1443,7 @@ durable path (§ Write-back commit), never an in-place `trunc`.
 | `.woz` 5.25" **carrying FLUX tracks** | 5.25" `DiskImage` | ✅ | ❌ **by design** | forced WP at load: POM2 cannot serialise delta streams, and accepting writes would report a successful save while discarding them |
 | `.po` / `.2mg` 819 200 (800 K) | 3.5" `Disk35Image` | ✅ | ✅ | `disk35_atomic_save` (both kinds; 2IMG envelope preserved) |
 | `.dsk` / `.image` 819 200 (800 K) | 3.5" `Disk35Image` | ✅ | ✅ | `disk35_atomic_save` — writability comes from the FILE, never the extension (the old "read-only by convention" rule overrode the user's own opt-in) |
-| `.woz` 3.5" (`INFO.disk_type = 2`) | 3.5" `Disk35Image` | ✅ | ❌ **by design** | `woz35_load::testWriteProtected` — giving blocks back would mean re-encoding the user's flux, which POM2 cannot do |
+| `.woz` 3.5" (`INFO.disk_type = 2`) | 3.5" `Disk35Image` | ✅ | ❌ **by design** — but see *Convert* | `woz35_load::testWriteProtected` — giving blocks back would mean re-encoding the user's flux, which POM2 cannot do. **Convert to writable `.po`**: the 3.5" panel offers it on any mounted WOZ (`Disk35Image::exportRawTo` → `MainWindow::convertWoz35ToPo`). The decode already produced the 1600 blocks a `.po` holds, so the copy costs nothing, mounts with write-back on, and the `.woz` is left untouched as the master |
 | `.hdv` (any 512-aligned size) | `Block512Backing` | ✅ | ✅ | `hdv_writeback_smoke` |
 | `.2mg` hard disk (> 800 K) | `Block512Backing` | ✅ | ✅ | `hdv_writeback_smoke` (header + creator/comment trailer survive) |
 | CFFA / IDE volumes | `CffaCard` → `Block512Backing` | ✅ | ✅ | shares the backing above |
@@ -3866,9 +3866,16 @@ the browser's pointer lock already delivers raw `movementX/Y`).
   simply never read.
 - **Out**: `Ctrl+Alt+G` (in the unconditional key set in `main.cpp`, and
   tested in `onKey` above the Ctrl-letter path that would inject $07),
-  **middle click**, window focus loss (`glfw_window_focus_callback`), or
-  the card going away (`render()` releases when both pointers are null,
-  which covers slot config / profile switch / snapshot restore at once).
+  **middle click**, window focus loss (`glfw_window_focus_callback`),
+  **leaving kiosk for the windowed GUI** (`setKioskModeRuntime`, first
+  thing in the else branch — kiosk is where a captured pointer costs
+  nothing, the GUI is where it costs the user their menus and panels;
+  doing it before the monitor change also keeps a `GLFW_CURSOR_DISABLED`
+  pointer out of the full-screen → windowed transition the OS re-warps
+  it across), or the card going away (`render()` releases when both
+  pointers are null, which covers slot config / profile switch /
+  snapshot restore at once). **Entering** kiosk deliberately leaves the
+  grab alone — a full-screen game wants the mouse.
   `shouldToggleGrab` refuses to *capture* without a card, and under the
   3D voxel view where middle-drag pans the camera — but it never refuses
   to *release*: an escape hatch any state can block is not one.
@@ -4122,17 +4129,20 @@ Groups by size first and hashes only within same-size buckets, so a
 
 ### CRT Settings panel UX
 
-`MainWindow::renderNtscSettingsWindow`. The panel opened on **13 bare numeric
-knobs** with no starting points and a single "Reset to defaults". Restructured
-so the primary control is a **look**, not a number:
+`MainWindow::renderNtscSettingsWindow`. The panel is a master ON/OFF toggle
+plus the 13 glass/demodulation knobs:
 
-- **Preset row** (Clean / Composite TV / Trinitron / Arcade) sets the CRT glass.
-  `palMode` and `textSharp` are explicitly **preserved** across a preset:
-  PAL describes the machine being emulated (the two PAL profiles), and sharp
-  text is a legibility preference. A look picker silently flipping either would
-  be wrong.
-- The 13 sliders moved behind a collapsed **`Advanced`** header, grouped
+- **No look presets.** A preset row (Clean / Composite TV / Trinitron / Arcade)
+  used to be the primary control; it was removed because one click overwrote
+  the entire glass block, which made the panel's state hard to reason about.
+  The struct defaults plus **"Reset to defaults"** are the only starting
+  points now.
+- The 13 sliders sit under an **`Advanced`** header opened by default
+  (`ImGuiTreeNodeFlags_DefaultOpen`) — with the presets gone they are the only
+  controls, so a collapsed header would leave the panel empty on open. Grouped
   `Picture` / `Phosphor` / `Glass` / `Demodulation`.
+- **Default barrel is `0.02`** (`NtscParams::barrel`, `NtscPostProcessor.h`) —
+  a hint of tube curvature rather than the visible `0.05` warp it shipped with.
 - **Labels lead the sliders.** ImGui's native `SliderFloat` puts its label on
   the *right*, so the panel read "bar → number → name" and clipped the longest
   one ("Phosphor curve (ga…"). Now: `TextUnformatted(label)` +
@@ -4209,12 +4219,22 @@ rect lands on the node's tab bar and `SetWindowPos` fights the node every
 frame: the screen jitters and the tab won't drag out. Hence the
 `if (!ImGui::IsWindowDocked())` guard.
 
-Presets: **Reset** (screen centre, storage right, inspector tab group
-bottom-right), **Emulation** (widest screen, one storage column, no debug
+Presets: **Reset** (screen centre; **Disk Library / Slot Configuration /
+ImageWriter II** tabbed top-right; inspector tab group bottom-right),
+**Emulation** (widest screen, one storage column, no debug
 tools), **Debug** (memory viewer + maps right, horizontal map along the bottom),
 **Audio** (Mockingboard/Phasor/Echo+ right, mixer + tape bottom-right). The
 menu entries are actions with no checkmarks — the moment a tab is dragged, the
 "active" preset stops describing what's on screen.
+
+**Reset is also the fresh-install startup layout**, so its top-right trio is
+what a first launch opens on: all three of `showDiskLibrary`,
+`showSlotConfigPanel` and `showImageWriterPanel` default to `true`
+(`MainWindow.h`) — seeding a dock node for a panel that is hidden would place
+the tab but show nothing. `Disk Library` is docked first, which makes it the
+selected tab. Cassette Deck and Floppy Emu moved down into the inspector
+group: still assigned (so they never float over the screen), just not part of
+the opening set.
 
 Known gap: kiosk mode bypasses the dockspace entirely (it returns before
 `renderDockSpace`), which is correct — kiosk is chrome-free by definition.
@@ -4503,6 +4523,89 @@ Settings: `show_slot_config` + `show_media_panel` (both persisted;
 both cleared in kiosk). Command palette: `panel.slotconfig`,
 `panel.media`. Pinned: `slot_multi_card_smoke_test`.
 
+### Abstraction Levels panel (LLE / HLE)
+
+`AbstractionLevels_ImGui.{h,cpp}` (Help → Abstraction Levels,
+`show_abstraction`, palette `panel.abstraction`), fed by
+`MainWindow::renderAbstractionPanel`. It is the live face of
+[`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) — read that for the taxonomy; what
+follows is only the split.
+
+**Static catalog vs live state.** The subsystem table (id, group, level, what
+is modelled, why not lower, files) is static data next to the window, mirroring
+the doc's master table. Everything machine-dependent comes in as a `Snapshot`
+the caller fills, so the panel needs no emulator headers and takes no lock.
+Plug state is read from `slotCards[]` rather than from the dozen `*Card`
+pointers: one uniform test that also covers the cards MainWindow keeps no
+pointer to.
+
+**The "Now" column is the reason it exists.** Every ROM-driven low level in
+POM2 degrades *silently* to a working higher one when its dump is absent, and
+`docs/lle_vs_hle.md` § "Keeping a level once you have it" names that as a
+structural hole. The column reports **degraded**, not merely missing, from the
+card accessors: `DiskIICard::usingBitLss` (the honest test — a mounted WOZ
+forces the bit-level path even with no `diskii_p6.rom`, using the embedded
+default P6), `ClockCard::romFromDump`, `GrapplerCard::isRomLoaded`,
+`SmartPortCard::isLironRomLoaded`.
+
+**Four switchable boundaries**, expressed as a choice of *level* rather than of
+catalog key: Mouse Card (L0 MAME ⇄ H1 AppleWin), ProDOS block storage (L2 CFFA
+⇄ H1 HDV), printer interface (L2 Grappler+ ⇄ H1 synthetic), colour pipeline
+(L1 OpenEmulator ⇄ H1 artifact LUT). The first three go through
+`MainWindow::swapSlotCardVariant`, which swaps the card **in place, in the slot
+it already occupies** (moving it would be a second unasked-for change, and slot
+numbers are baked into most software) and then rebuilds via
+`restartEmulationFromSettings` under the same persist/rollback contract as Slot
+Config's Apply. The fourth is a render-path change and is instant. A side whose
+dump is missing is greyed: offering a switch that would silently land on the
+fallback would repeat the exact mistake the panel exists to expose.
+
+### Apple //e keyboard panel
+
+`Keyboard_ImGui.{h,cpp}` + the generated `AppleIIeKeyboardLayout.{h,cpp}`
+(Devices → Apple //e Keyboard, `show_keyboard`, palette `panel.keyboard`).
+A photo of a real //e keyboard (`pic/Keyboard_AppleIIe.jpeg`, shipped via
+`packaging/bundle.manifest`) with one hotspot per cap. Point: the keys a host
+keyboard has nowhere to put — Open-Apple, Solid-Apple, the //e's own Reset —
+are reachable with the real legends on them.
+
+**The hotspots are measured, not drawn.** `tools/gen_keyboard_layout.py` reads
+the photo, takes a **75th-percentile** column profile through the middle of
+each key row and cuts at the dark valleys between caps. The percentile matters:
+this is a European //e whose caps carry two legends (French over US), and the
+glyphs put enough dark pixels mid-cap to split one key into two under a median.
+Rects are stored as **fractions of the 2578×908 image**, so they track the
+picture at any window size and a re-crop means re-running the script instead of
+nudging constants. `Show hitboxes` in the panel is the visual check.
+
+Three details the layout encodes:
+
+- The **L-shaped Return** is two rects sharing one `id` — hover tests per rect,
+  highlights per id, so either arm lights both.
+- The extra **ISO key** at the left of row 4 (legends `> |` / `< \`) is the US
+  backslash; **Reset** gets an absolute rect because it sits in its own recess,
+  mounted lower than the row-1 caps.
+- The photo draws **both** horizontal arrow caps pointing left. That is an
+  error in the picture: the table follows the hardware (← then →) and the
+  tooltips name each one.
+
+**Latches, not chords** — a mouse has one pointer, so Ctrl+Reset cannot be
+clicked simultaneously. Shift and Control are one-shot (cleared by the next
+character); Caps Lock and the two Apple keys stay down until clicked again.
+Caps Lock defaults **on**, like the real machine's mechanical latch, and
+uppercases only A-Z (it is a letter latch, not a shift — which is why the
+number row still needs Shift for its symbols). The Apple keys are *levels*:
+`renderKeyboardPanel` pushes them to `$C061`/`$C062` every frame while latched,
+and releases them when the window closes, so a latched Open-Apple cannot
+outlive the window that shows it as down.
+
+**Reset refuses to fire without Control**, exactly as the hardware does — RESET
+is wired through the encoder's Ctrl line so a stray knock cannot reboot the
+machine. Ctrl+Reset → `softReset()`, Open-Apple+Ctrl+Reset → `hardReset()`,
+the same two verbs as F11 / F12. The Del cap sends **$7F**, which is what the
+//e's DELETE key generates — not the $08 the host Backspace injects (that is
+the left arrow's code, which is what a II/II+ had instead of a DELETE key).
+
 ### ROM Status panel
 
 `RomStatus_ImGui.{h,cpp}` + `RomCatalog.h` (Help → ROM Status,
@@ -4577,6 +4680,29 @@ Pinned: `floppy_emu_smoke_test`.
 ## Profile switching internals
 
 `SystemProfile.h/.cpp`. Pinned: `system_profile_smoke_test`.
+
+**Fresh-install default: `iie-pal`.** With no `system_profile` key in
+`state.cfg`, `MainWindow`'s ctor feeds `"iie-pal"` as the *default value* of
+that `getString` rather than initialising `activeProfile` to it. That is
+deliberate: `activeProfile` is set from the ROM auto-probe (//e if an //e ROM
+resolved, else II+), and the branch below it only runs `applyProfile` when the
+resolved key **differs** from the probe. Expressing the default as a saved-key
+stand-in makes it differ, so `applyProfile` runs — and `applyProfile` is what
+actually installs the PAL video standard, the 20313-cycle frame budget and the
+`setCpuClock` sweep over every slot card. Setting `activeProfile =
+AppleIIePAL` directly would skip all of that and leave a //e running at 60 Hz
+while the UI claimed PAL. The default degrades to the auto-probe when no //e
+ROM was found (`iiePresent == false`), and `--ii-plus` still wins over both.
+
+The matching **default slot map** is `kDefaults[]` in
+`MainWindow::plugSlotsFromSettings` (sl1 `grappler`, sl2 `mouseaw`, sl3 empty,
+sl4 `mockingboard`, sl5 `smartport35`, sl6 `diskii`, sl7 `chatmauve`) — a
+default only, overridden by any `slot_N_card` key. **Slot 3 is empty by
+design**: on a //e the 80-column card is not a slot card at all (internal
+`$C300` firmware + the AUX-connector ext80, both carried by `iieMode`), and a
+card there also fights the SLOTC3ROM switch. One consequence of moving slot 4
+off `clock`: the legacy `clock_card_enable=false` opt-out in the same function
+is now inert unless the settings file also names `clock` in slot 4.
 
 **32 KB ROM disambiguation**: //e and //c dumps share 32 KB but
 encode firmware in OPPOSITE halves. `loadAppleIIRom` takes a
@@ -4762,8 +4888,10 @@ bootDiskPath`; `--kiosk` → `CliPlan::kiosk`. `main.cpp`:
 - **Kiosk in-game menu** (`openKioskStartMenu` / `updateKioskMenu` /
   `renderKioskMenu`, MainWindow; pages `KioskPage::{List,Keys,RomDirs,
   Browse,Quit}`). The pad's **Start** (standard GLFW gamepad mapping via
-  `JoystickInput::UiNav`) — or **F10** as a fallback when the pad has no SDL
-  mapping — opens a two-zone Start menu: **GAMES** lists every image
+  `JoystickInput::UiNav`) — or **F1** as a fallback when the pad has no SDL
+  mapping (F10/Ctrl+Alt+F are the full-screen toggle, so using either here
+  would open the menu in the same frame the user entered kiosk) — opens a
+  two-zone Start menu: **GAMES** lists every image
   `classifyDiskForSlot` recognises (5.25"/3.5"/HDV) across the booted
   disk's folder + the persisted extra ROM folders (`kiosk_romdirs.txt`,
   outside the read-only `state.cfg`), sorted by name-proximity so the
