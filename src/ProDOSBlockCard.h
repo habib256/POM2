@@ -69,6 +69,7 @@ public:
         info.blockCount        = static_cast<uint32_t>(getBlockCount());
         info.writeProtected    = isWriteProtected();
         info.writeBackEnabled  = isWriteBackEnabled();
+        info.hasUnsavedChanges = hasUnsavedChanges();
         info.supportsWriteBack = canWriteBack();
         return info;
     }

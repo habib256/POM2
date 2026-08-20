@@ -182,8 +182,13 @@ int decodeSectors(const std::vector<uint8_t>& nib, int expectTrack,
         uint8_t sdata[524];
         std::memset(sdata, 0, sizeof(sdata));
         uint8_t ca = 0, cb = 0, cc = 0;
-        bool decodeOk = true;
-        for (int i = 0; i < 175 && decodeOk; ++i) {
+        // No early-out here on purpose: `gcr6Decode` maps every one of the
+        // 256 possible nibbles through `kGcr6bw`, so there is no "invalid
+        // byte" for it to report — a corrupt group decodes to garbage and is
+        // caught below by the running checksum plus the DE AA epilogue.
+        // (This loop used to carry a `decodeOk` flag that nothing ever
+        // cleared, which read as if bad GCR were rejected here. It wasn't.)
+        for (int i = 0; i < 175; ++i) {
             uint8_t e0 = nib[wrap(pos)]; pos = wrap(pos + 1);
             uint8_t e1 = nib[wrap(pos)]; pos = wrap(pos + 1);
             uint8_t e2 = nib[wrap(pos)]; pos = wrap(pos + 1);
@@ -206,8 +211,6 @@ int decodeSectors(const std::vector<uint8_t>& nib, int expectTrack,
                 sdata[3 * i + 2] = vc;
             }
         }
-        if (!decodeOk) continue;
-
         // Data-field checksum + DE AA epilogue (line 2213-2220).
         uint8_t epi[6];
         for (int i = 0; i < 6; ++i) {
@@ -226,7 +229,6 @@ int decodeSectors(const std::vector<uint8_t>& nib, int expectTrack,
         sink(tr, head, se, sdata + 12);
         ++written;
     }
-    return written;
     return written;
 }
 

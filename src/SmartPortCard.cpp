@@ -887,6 +887,7 @@ MediaBayInfo SmartPortCard::bayInfo(int bay) const
     info.busy              = u->isBusy();
     info.writeProtected    = u->isWriteProtected();
     info.writeBackEnabled  = u->isWriteBackEnabled();
+    info.hasUnsavedChanges = u->hasUnsavedChanges();
     info.supportsWriteBack = true;
     info.supportsTypeSelect = true;
     return info;

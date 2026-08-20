@@ -5159,3 +5159,77 @@ if(UNIX AND EXISTS "${CMAKE_SOURCE_DIR}/roms/apple2.rom")
              WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
     set_tests_properties(headless_boot_capture PROPERTIES TIMEOUT 120)
 endif()
+
+# ─────────────────────────────────────────────────────────────────────────
+# Open-Apple / Solid-Apple source arbitration
+# ─────────────────────────────────────────────────────────────────────────
+# Pins src/AppleKeyLatch.h: $C061/$C062 bit 7 is one wire with two things
+# pressing it — the host's Left/Right Alt and the on-screen //e keyboard's
+# latches — and the sources must be INDEPENDENT. Regression pinned: the
+# keyboard panel republishes its latches every frame and its closed branch
+# kept firing for the whole session, so a direct assignment from either side
+# stamped the other back to false. Opening the keyboard window once and
+# closing it used to disable Left/Right Alt for good (Open-Apple+Ctrl+Reset
+# stopped cold-booting), and it read as an emulator fault because Memory ORs
+# the paddle buttons into the same case. Header-only and emulator-free.
+add_executable(test_apple_key_latch apple_key_latch_test.cpp)
+target_include_directories(test_apple_key_latch PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME apple_key_latch COMMAND test_apple_key_latch)
+set_tests_properties(apple_key_latch PROPERTIES TIMEOUT 5)
+
+# ─────────────────────────────────────────────────────────────────────────
+# Parser fuzz smokes (bounded, deterministic, self-contained)
+# ─────────────────────────────────────────────────────────────────────────
+# The two widest untrusted-input surfaces in POM2: a disk image and a
+# snapshot are both "a file the user got from somewhere". Each loader walks a
+# structure driven by lengths and offsets that came out of that file, which is
+# the classic place to trust a number you shouldn't.
+#
+# Both harnesses SYNTHESISE their seeds. Not one file under `disks_5.4/`,
+# `disks_3.5/` or `hdv/` is tracked by git, so a corpus-reading fuzzer would
+# silently test nothing on a fresh clone or in CI — passing for the worst
+# possible reason. Both also seed from a VALID container: random bytes are
+# rejected at the magic and never reach the walker where the bugs would be.
+#
+# Fixed seeds keep them deterministic (a failure reproduces exactly, and CI
+# does not flake). Both accept `<seed> <iters>` for a longer soak when
+# touching a parser:
+#
+#   ./tests/test_fuzz_disk_image 99 20000
+#
+# Run them under sanitizers after any change to a loader — that is where they
+# earn their keep, since a plain build only catches an outright crash:
+#
+#   cmake -B build_asan -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined" \
+#         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+#   cmake --build build_asan -j8 --target test_fuzz_disk_image test_fuzz_snapshot
+#   (cd build_asan && ctest -R fuzz_)
+#
+# Provenance: 72 000 mutants across both surfaces found nothing on 2026-08-20,
+# which is the result these pin — the parsers were already right, and the
+# point is to keep them that way.
+add_executable(test_fuzz_disk_image
+    fuzz_disk_image_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_fuzz_disk_image PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME fuzz_disk_image COMMAND test_fuzz_disk_image)
+set_tests_properties(fuzz_disk_image PROPERTIES TIMEOUT 120)
+
+add_executable(test_fuzz_snapshot
+    fuzz_snapshot_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_fuzz_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+add_test(NAME fuzz_snapshot COMMAND test_fuzz_snapshot)
+set_tests_properties(fuzz_snapshot PROPERTIES TIMEOUT 120)

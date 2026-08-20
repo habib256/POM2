@@ -425,9 +425,17 @@ bool Disk35Image::loadWoz(const std::vector<uint8_t>& buf,
             sony35::cellsFromPackedBits(buf.data() + off, len, bitCount);
         const std::size_t once = cells.size();
         if (once == 0) continue;
-        cells.insert(cells.end(), cells.begin(),
-                     cells.begin() + static_cast<std::ptrdiff_t>(
-                         std::min<std::size_t>(once, 40000)));
+        // Reserve, then append from an INDEX range rather than from
+        // iterators into `cells` itself. `insert(end(), begin(), begin()+n)`
+        // takes its input range from the very container it is resizing,
+        // which [sequence.reqmts] leaves undefined — it happens to work on
+        // today's libstdc++/libc++ because the reallocation path copies out
+        // of the still-live old buffer, but that is an implementation
+        // detail, not a guarantee, and a hardened or checked-iterator build
+        // is entitled to trap it.
+        const std::size_t overlap = std::min<std::size_t>(once, 40000);
+        cells.reserve(once + overlap);
+        for (std::size_t k = 0; k < overlap; ++k) cells.push_back(cells[k]);
 
         const int track = slot / 2;
         sony35::decodeSectors(sony35::nibblesFromCells(cells),

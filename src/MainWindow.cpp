@@ -2223,12 +2223,16 @@ void MainWindow::onKey(int key, int /*scancode*/, int action, int mods)
     // decides cold-reboot vs self-test on Ctrl+Reset. We just source the
     // bits; observe both press and release so the firmware sees the key
     // released after Reset like on real hardware.
+    // Through `pushAppleKeys()`, never straight to Memory: the on-screen
+    // keyboard presses the same two wires and would otherwise clear this.
     if (key == GLFW_KEY_LEFT_ALT) {
-        controller->memory().setOpenAppleKey(action != GLFW_RELEASE);
+        appleKeys_.hostOpen = (action != GLFW_RELEASE);
+        pushAppleKeys();
         return;
     }
     if (key == GLFW_KEY_RIGHT_ALT) {
-        controller->memory().setSolidAppleKey(action != GLFW_RELEASE);
+        appleKeys_.hostSolid = (action != GLFW_RELEASE);
+        pushAppleKeys();
         return;
     }
 
@@ -3743,7 +3747,7 @@ void MainWindow::renderStatusBar()
                                               baseName(info.path),
                                               std::move(tip),
                                               slot, bay, /*diskII=*/false,
-                                              /*dirty=*/false });
+                                              info.hasUnsavedChanges });
                     }
                 }
             }
@@ -3764,17 +3768,29 @@ void MainWindow::renderStatusBar()
                     // an eject menu for THAT bay. Brightening on hover is what
                     // says so — a status bar is read as read-only furniture
                     // until something under the pointer reacts.
-                    const bool hot = ImGui::IsMouseHoveringRect(
-                        ImGui::GetCursorScreenPos(),
-                        ImVec2(ImGui::GetCursorScreenPos().x +
-                                   ImGui::CalcTextSize(row.label.c_str()).x +
-                                   2.0f * em,
-                               ImGui::GetCursorScreenPos().y + lineH));
-                    ImGui::TextColored(
-                        u32(hot ? pal.accent : (row.active ? pal.text
-                                                           : pal.textDim)),
-                        "%s %s", row.icon, row.label.c_str());
-                    if (ImGui::IsItemHovered())
+                    //
+                    // Reserved as a REAL item (an InvisibleButton the exact
+                    // size of the text) and painted through the draw list,
+                    // rather than drawn as text with a hand-rolled
+                    // IsMouseHoveringRect. That call is not z-order aware, so
+                    // the chip lit up through anything drawn over it — its own
+                    // eject popup included — while the click, which goes
+                    // through IsItemClicked, correctly did not. One item now
+                    // answers hover, tooltip and click alike.
+                    const std::string chip =
+                        std::string(row.icon) + " " + row.label;
+                    const ImVec2 chipSz  = ImGui::CalcTextSize(chip.c_str());
+                    const ImVec2 chipPos = ImGui::GetCursorScreenPos();
+                    ImGui::InvisibleButton(
+                        "##chip", ImVec2(ImMax(chipSz.x, 1.0f), lineH));
+                    const bool hot = ImGui::IsItemHovered();
+                    ImGui::GetWindowDrawList()->AddText(
+                        ImVec2(chipPos.x,
+                               chipPos.y + (lineH - chipSz.y) * 0.5f),
+                        hot ? pal.accent
+                            : (row.active ? pal.text : pal.textDim),
+                        chip.c_str());
+                    if (hot)
                         ImGui::SetTooltip("%s\n\nClick to eject.",
                                           row.tip.c_str());
                     // A menu rather than eject-on-click: the bar is a dense
@@ -6268,12 +6284,15 @@ bool MainWindow::swapSlotCardVariant(const char* fromKey, const char* toKey)
         // Rebuild refused — the live machine was deliberately left intact, so
         // the persisted key has to go back too or the refused change would
         // apply silently on the next launch. Same contract as Slot Config's
-        // Apply.
+        // Apply. Say so: the panel's radio snaps back to the old side next
+        // frame, and an unexplained snap-back reads as a dead control.
         settings->setString(key, previous);
         settings->save();
+        tapeStatusMessage = std::string("Could not rebuild the machine with ") +
+                            toKey + " — kept " + fromKey + ".";
+        tapeStatusUntil   = lastFrameTime + 6.0;
         return false;
     }
-    settings->save();
     pom2::log().info("Abstraction",
                      "slot " + std::to_string(slot) + ": " + fromKey +
                      " -> " + toKey);
@@ -6394,6 +6413,21 @@ void MainWindow::renderAbstractionPanel()
     row("ssc",       plugged("ssc")       ? Live::Active : Live::NotPlugged);
     row("uthernet",  plugged("uthernet")  ? Live::Active : Live::NotPlugged);
     row("uthernet2", plugged("uthernet2") ? Live::Active : Live::NotPlugged);
+    // The one entry in this group that used to report nothing, so it
+    // defaulted to NotApplicable ("always present") — which is exactly the
+    // silent-degradation blind spot the panel exists to close. libslirp is
+    // an OPTIONAL build dependency: without it `SlirpNetworkBackend`
+    // compiles to a stub that always fails, so Uthernet I has no transport
+    // at all and Uthernet II is confined to its own hardware stack.
+#ifdef POM2_HAVE_SLIRP
+    row("netbackend", Live::Active,
+        "libslirp linked — user-mode NAT available to both Uthernet cards.");
+#else
+    row("netbackend", Live::NotPlugged,
+        "Built without libslirp: no user-mode NAT. Uthernet I (raw frames) "
+        "has no transport; Uthernet II still does TCP/UDP through its own "
+        "W5100 hardware stack.");
+#endif
     row("fujinet",   plugged("fujinet")   ? Live::Active : Live::NotPlugged);
     row("softcard",  plugged("softcard")  ? Live::Active : Live::NotPlugged);
     row("z80",       plugged("softcard")  ? Live::Active : Live::NotPlugged);
@@ -10264,7 +10298,6 @@ void MainWindow::renderDisk35PanelWindow()
                 s.hasUnsavedChanges = img.hasUnsavedChanges();
                 s.writeBackEnabled  = u->isWriteBackEnabled();
                 s.isWoz = (img.kind() == pom2::Disk35Image::ImageKind::Woz35);
-                if (s.isWoz) s.convertTargetPath = freePoNameFor(u->path());
             }
         } else {
             const pom2::Sony35Drive* drives[2] = {
@@ -10286,10 +10319,24 @@ void MainWindow::renderDisk35PanelWindow()
                 s.writeBackEnabled  = images[i]->isWriteBackEnabled();
                 s.isWoz = (images[i]->kind() ==
                            pom2::Disk35Image::ImageKind::Woz35);
-                if (s.isWoz)
-                    s.convertTargetPath = freePoNameFor(images[i]->path());
             }
         }
+    }
+
+    // Convert-target names are resolved OUTSIDE the lock and memoised on the
+    // source path. `freePoNameFor` stats the filesystem (up to 99 times when
+    // earlier candidates are taken), and this panel re-snapshots every frame
+    // — doing that under `stateMutex` put blocking I/O on the lock the CPU
+    // worker needs 60x/s. The answer only changes when the medium changes,
+    // so the path is the whole cache key.
+    for (int i = 0; i < 2; ++i) {
+        auto& s = snap.drives[i];
+        if (!s.isWoz) { convertSrc_[i].clear(); convertDst_[i].clear(); continue; }
+        if (convertSrc_[i] != s.diskPath) {
+            convertSrc_[i] = s.diskPath;
+            convertDst_[i] = freePoNameFor(s.diskPath);
+        }
+        s.convertTargetPath = convertDst_[i];
     }
 
     // Library scan — mirrors the Disk II library scan but only picks
@@ -10571,19 +10618,41 @@ void MainWindow::ensureKeyboardImageLoaded()
     kbImageH_   = h;
 }
 
+void MainWindow::pushAppleKeys()
+{
+    // $C061/$C062 bit 7 is one wire with two things pressing it: the host's
+    // Left/Right Alt and the on-screen keyboard's latches. Either alone is
+    // enough, so the sources are OR'd rather than assigned — an assignment
+    // from one source silently releases the other, which is how the panel
+    // used to disable Alt for the whole session (it runs every frame).
+    // `openAppleKey`/`solidAppleKey` are atomics, so no lock is needed
+    // (CLAUDE.md's unlocked-Memory carve-out).
+    controller->memory().setOpenAppleKey (appleKeys_.openApple());
+    controller->memory().setSolidAppleKey(appleKeys_.solidApple());
+}
+
 void MainWindow::renderKeyboardPanel()
 {
     if (!showKeyboardPanel) {
         // A latched Open-Apple must not outlive the window that shows it as
         // down: with the panel closed there is nothing to un-latch it with,
         // and the guest would see a key held forever.
-        if (keyboardPanel) {
+        //
+        // EDGE-TRIGGERED on the close, not run every frame the window is
+        // shut. `keyboardPanel` is never destroyed once built, so the
+        // unconditional form kept firing for the rest of the session — and
+        // since it wrote $C061/$C062 directly, it also stamped the host's
+        // Left/Right Alt back to false 60x/s. Dropping only THIS source and
+        // letting `pushAppleKeys()` re-OR is what keeps Alt working.
+        if (keyboardPanel && kbPanelWasOpen_) {
             keyboardPanel->releaseAll();
-            controller->memory().setOpenAppleKey(false);
-            controller->memory().setSolidAppleKey(false);
+            appleKeys_.releasePanel();
+            pushAppleKeys();
         }
+        kbPanelWasOpen_ = false;
         return;
     }
+    kbPanelWasOpen_ = true;
     ensureKeyboardImageLoaded();
     if (!keyboardPanel)
         keyboardPanel = std::make_unique<pom2::Keyboard_ImGui>();
@@ -10595,8 +10664,8 @@ void MainWindow::renderKeyboardPanel()
     // switch, so the latch has to be pushed every frame for as long as it is
     // down, exactly like the host's Left/Right Alt in onKey.
     const auto& lat = keyboardPanel->latches();
-    controller->memory().setOpenAppleKey(lat.openApple);
-    controller->memory().setSolidAppleKey(lat.solidApple);
+    appleKeys_.setPanel(lat.openApple, lat.solidApple);
+    pushAppleKeys();
 
     if (!ev.key) return;
 
