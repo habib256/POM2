@@ -122,6 +122,11 @@ public:
     /// nothing is dirty. Returns false on I/O failure.
     virtual bool saveDirty() = 0;
 
+    /// Blocks written by the guest that `saveDirty` has not yet committed.
+    /// With write-back off they never will be — they are dropped at eject —
+    /// which is what the status bar's eject menu warns about.
+    virtual bool hasUnsavedChanges() const = 0;
+
 private:
     // Matches Block512Backing::kBusyHysteresisFrames so a SmartPort volume
     // and an HDV card light for the same duration on the same transfer.

@@ -956,6 +956,52 @@ in [`docs/graphics_modes_comparison.md`](docs/graphics_modes_comparison.md).
 Tests inherit parent's `-O3 -DNDEBUG` → would strip `assert()`.
 `tests/CMakeLists.txt` adds `-UNDEBUG`.
 
+### Parser fuzz smokes — `fuzz_disk_image`, `fuzz_snapshot`
+
+The two widest untrusted-input surfaces: a disk image and a snapshot are both
+"a file the user got from somewhere", and each loader walks a structure driven
+by lengths and offsets that came out of that file. Both tests are bounded
+(~2.0 s and ~0.1 s), deterministic (fixed seed → a failure reproduces exactly),
+and take `<seed> <iters>` for a longer soak.
+
+Three design points, each learned the hard way:
+
+- **Seeds are synthesised, never read from `disks_5.4/` or `hdv/`.** Not one
+  disk file is tracked by git, so a corpus-reading fuzzer tests *nothing* on a
+  fresh clone or in CI — and passes, which is the worst possible failure.
+- **Seeds are valid containers, not noise.** Random bytes are rejected at the
+  magic and never reach the walker where a bug would be. `fuzz_snapshot`
+  prints its acceptance rate and asserts a floor on it, so a change that starts
+  rejecting every mutant is visible instead of quietly turning the test into a
+  no-op.
+- **Mutation is STRUCTURE-AWARE, and this is what makes them bite.** The first
+  version scattered byte-flips and could not catch a deliberately removed
+  bounds check even in hundreds of rounds — the fields that matter are four
+  bytes each in a 160–250 KB file, so blind flipping never lands on one. Both
+  harnesses now parse the container and aim at the numbers the loader trusts:
+  WOZ chunk lengths, TMAP indices and the TRKS start/count/bit-count triple;
+  snapshot section lengths and names.
+
+Verified by sabotage, which is the only evidence that matters for a fuzzer:
+removing `Disk35Image::loadWoz`'s payload bounds check is caught as an ASan
+fault in `cellsFromPackedBits`, and disabling `Memory::loadSnapshotState`'s
+`need()` length check is caught as a heap-buffer-overflow. Note what the
+snapshot one *cannot* prove: every read in `SnapshotReader` goes through an
+istream over a bounded streambuf, so that layer cannot over-read by
+construction — its guards exist to stop unbounded *allocation*. The real
+raw-pointer parser downstream is `Memory::loadSnapshotState`, reached through
+the MEX section.
+
+They earn their keep under sanitizers; a plain build only catches an outright
+crash. Run that way after touching any loader:
+
+```bash
+cmake -B build_asan -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build_asan -j8 --target test_fuzz_disk_image test_fuzz_snapshot
+(cd build_asan && ctest -R fuzz_)
+```
+
 ## Audio
 
 `AudioDevice`: miniaudio **interleaved stereo** float32
@@ -4598,6 +4644,21 @@ number row still needs Shift for its symbols). The Apple keys are *levels*:
 `renderKeyboardPanel` pushes them to `$C061`/`$C062` every frame while latched,
 and releases them when the window closes, so a latched Open-Apple cannot
 outlive the window that shows it as down.
+
+**Two sources on one wire — `AppleKeyLatch.h`.** `$C061`/`$C062` bit 7 is
+pressed by both the host's Left/Right Alt (`onKey`) and this panel's latches,
+so the two halves are stored apart and OR'd in `pushAppleKeys()`; no writer can
+express "…and release the other one". They used to assign the shared latch
+directly, and because the panel republishes every frame — and because
+`keyboardPanel` is never destroyed once built, so its *closed* branch went on
+clearing both wires for the rest of the session — **opening the keyboard window
+once and closing it disabled Left/Right Alt permanently**: Open-Apple+Ctrl+Reset
+stopped cold-booting and every title reading bit 7 as button 0/1 stopped seeing
+the keys. It read as an emulator fault rather than a UI one because
+`Memory::memRead` ORs the paddle buttons into the same case, so a real joystick
+kept working throughout. The close-time release is now edge-triggered on
+`kbPanelWasOpen_` as well. Header-only and emulator-free, pinned by
+`apple_key_latch`.
 
 **Reset refuses to fire without Control**, exactly as the hardware does — RESET
 is wired through the encoder's Ctrl line so a stray knock cannot reboot the

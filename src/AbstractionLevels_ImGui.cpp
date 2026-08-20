@@ -428,22 +428,37 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
             else
                 ImGui::TextColored(u32(pal.ok), "(takes effect immediately)");
 
+            // Neither side is live (`selected == -1`) means the peripheral is
+            // not on the bus at all, so there is nothing to switch the LEVEL
+            // of: the host's `swapSlotCardVariant` would find no slot holding
+            // either key and return false without a word. Disable the pair and
+            // let `t.note` ("add one in Slot Configuration first") be the
+            // answer, rather than offering a click that does nothing.
+            const bool switchable = (t.selected >= 0);
             auto side = [&](const ToggleOption& o, int idx) {
                 const bool on = (t.selected == idx);
-                ImGui::BeginDisabled(!o.available);
+                ImGui::BeginDisabled(!o.available || !switchable);
                 char label[160];
                 std::snprintf(label, sizeof(label), "%s  %s",
                               levelBadge(o.level), o.label.c_str());
                 // Radio-style: the two sides are exclusive and one is live,
                 // so a pair of buttons would leave "which am I on?" to colour
                 // alone. RadioButton says it structurally.
-                if (ImGui::RadioButton(label, on) && !on && o.available) {
+                if (ImGui::RadioButton(label, on) && !on && o.available &&
+                    switchable) {
                     req.toggle = t.id;
                     req.option = idx;
                 }
                 ImGui::EndDisabled();
-                if (ImGui::IsItemHovered()) {
-                    if (!o.available && !o.blockedBy.empty())
+                // AllowWhenDisabled: the whole point of these two tooltips is
+                // to explain why a side is greyed, and a plain IsItemHovered()
+                // reports false for a disabled item — so the explanation for
+                // the greying was the one thing you could never read.
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    if (!switchable)
+                        ImGui::SetTooltip("Nothing to switch — neither side is "
+                                          "plugged.");
+                    else if (!o.available && !o.blockedBy.empty())
                         ImGui::SetTooltip("Unavailable — %s", o.blockedBy.c_str());
                     else if (!o.why.empty())
                         ImGui::SetTooltip("%s", o.why.c_str());

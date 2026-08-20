@@ -106,7 +106,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Slot Config + Internal Disks & Media (2 windows) | `MainWindow_Slots.cpp`, `MountableMediaCard.h`, `SlotCardCatalog.h` | [§ Host control](DEV.md#host-control-center-slot-configuration--floppy-emu) |
 | ROM inventory panel (present / missing / identity) | `RomStatus_ImGui.*`, `RomCatalog.h` | [§ ROM Status](DEV.md#rom-status-panel) |
 | Abstraction levels panel (LLE/HLE per subsystem, live + switchable) | `AbstractionLevels_ImGui.*` | [§ Abstraction Levels](DEV.md#abstraction-levels-panel-lle--hle) |
-| Clickable Apple //e keyboard (photo + measured hotspots) | `Keyboard_ImGui.*`, `AppleIIeKeyboardLayout.*` (generated), `tools/gen_keyboard_layout.py` | [§ Keyboard panel](DEV.md#apple-e-keyboard-panel) |
+| Clickable Apple //e keyboard (photo + measured hotspots) | `Keyboard_ImGui.*`, `AppleIIeKeyboardLayout.*` (generated), `AppleKeyLatch.h`, `tools/gen_keyboard_layout.py` | [§ Keyboard panel](DEV.md#apple-e-keyboard-panel) |
 | Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
 | Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
@@ -231,7 +231,7 @@ Three classes of reset (+ one boot shortcut), mirroring MAME's split:
 Keyboard wiring:
 
 - **Left Alt = Open-Apple** → $C061 bit 7
-- **Right Alt = Solid-Apple** → $C062 bit 7
+- **Right Alt = Solid-Apple** → $C062 bit 7 — both wires have **two** sources (host Alt + the on-screen //e keyboard's latches), held apart and OR'd in `AppleKeyLatch.h`; a source that assigned the wire directly released the other one. Pinned by `apple_key_latch`.
 - **Ctrl+Alt+F = full screen ⇄ windowed** (kiosk toggle — see CLI section). **F10** does the same; the chord exists because F10 is swallowed by the window manager on several desktops.
 - **Ctrl+Alt+G = capture / release the host pointer** for the Mouse Card (a middle click toggles it too; a left click never captures; policy in `MouseGrab.h`) → [DEV § Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh)
 - F9 / F10 / F11 / F12 / Ctrl+Alt+F / Ctrl+Alt+G / Ctrl+Shift+P / Left Alt / Right Alt routed unconditionally (even when ImGui captures keyboard focus).

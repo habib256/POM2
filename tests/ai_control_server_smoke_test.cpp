@@ -350,11 +350,14 @@ void testSpeed(EmulationController& ctrl, pom2::AiControlServer& /*srv*/)
     assert(r.status == 200);
     assert(ctrl.getCyclesPerFrame() == 34090);
 
-    auto postSpeed = [](const std::string& body) {
+    // `payload`, not `body`: the enclosing scope already has a `body` and
+    // shadowing it here made the lambda read as if it reused that one.
+    auto postSpeed = [](const std::string& payload) {
         char rq[512];
         std::snprintf(rq, sizeof(rq),
             "POST /speed HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-            "Content-Length: %zu\r\n\r\n%s", body.size(), body.c_str());
+            "Content-Length: %zu\r\n\r\n%s",
+            payload.size(), payload.c_str());
         return oneShot(kTestPort, rq);
     };
 

@@ -62,6 +62,7 @@ public:
     bool     isWriteBackEnabled() const override { return backing_.isWriteBackEnabled(); }
     void     setWriteBackEnabled(bool on) override { backing_.setWriteBackEnabled(on); }
     bool     saveDirty() override { return backing_.saveDirty(); }
+    bool     hasUnsavedChanges() const override { return backing_.hasUnsavedChanges(); }
 
 private:
     Block512Backing backing_;

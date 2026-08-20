@@ -5,6 +5,214 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-20 (later still) — Bug hunt 3: no defects, two fuzzers landed
+
+A third pass found **nothing**, and the tooling that failed to find it is the
+deliverable. Recorded because a negative result is only worth anything if you
+can say what it ruled out.
+
+What was run: **72 000 mutated files** through the image and snapshot parsers
+under ASan+UBSan; **ThreadSanitizer** over every test that touches threading,
+including the one that stands up a real `EmulationController` worker plus an
+HTTP server (0 races); and four invariants checked by hand — the kiosk
+settings promise, the //c PAL built-in Chat Mauve vs `noPhysicalSlots`, the
+command palette's id dispatch, and the Voxel3D render targets. All correct.
+Two were already-fixed bugs whose comments document the exact failure being
+looked for.
+
+The pattern across three rounds is worth stating: every real defect found (six,
+in rounds 1 and 2) was **semantic**, in the UI/host layer, and invisible to
+every tool used here — a panel clobbering a shared latch, a warning that could
+never fire, a control that silently no-opped. Three rounds of tooling aimed at
+the emulation core found nothing, because the core is in good shape.
+
+### The fuzzers are now ctest targets — and the first version was useless
+
+`fuzz_disk_image` (~2.0 s) and `fuzz_snapshot` (~0.1 s), both bounded and
+deterministic. Two things nearly made them worthless, and both are the kind of
+mistake that leaves a green test protecting nothing:
+
+**They must synthesise their seeds.** The throwaway versions read
+`disks_5.4/woz` — 719 real images, an excellent corpus, and not one byte of it
+tracked by git. A corpus-reading fuzzer finds zero seeds on a fresh clone or in
+CI and passes for the worst possible reason. Both harnesses now build their own
+WOZ2 (5.25" and 3.5"), 2IMG, bare DSK/PO, NIB and HDV containers.
+
+**Blind mutation cannot find a parser bug.** The first version scattered
+byte-flips over the header region and, tested against a deliberately removed
+bounds check in `Disk35Image::loadWoz`, did not catch it in 600 rounds — the
+fields that matter are four bytes each in a 250 KB file, so random flipping
+essentially never lands on one. Both mutators now parse the container and aim
+at the numbers the loader trusts: WOZ chunk lengths, TMAP track indices and the
+TRKS start/count/bit-count triple; snapshot section lengths and names. The same
+sabotage is then caught in under a second.
+
+Both are verified by sabotage, which is the only evidence that means anything
+for a fuzzer: removing `loadWoz`'s payload bounds check surfaces as an ASan
+fault in `cellsFromPackedBits`; disabling `Memory::loadSnapshotState`'s
+`need()` check surfaces as a heap-buffer-overflow. One useful thing learned on
+the way: `SnapshotReader` cannot over-read *at all*, because every read goes
+through an istream over a bounded streambuf — its guards are there to stop
+unbounded allocation, and the genuine raw-pointer parser is
+`Memory::loadSnapshotState` behind the MEX section. Two sabotage attempts
+failed to produce anything observable before that became clear, which is why
+it is written down.
+
+### One nit, not fixed
+
+`MainWindow.cpp:3313` labels the checkable menu item
+`MenuItem("Rewind (time-travel)", "F6", &showRewindBar)`. The checkbox toggles
+the *bar*; F6 holds *rewind*. On a checkable item the shortcut hint implies the
+key toggles the check. Left alone — the wording is a matter of taste, not a
+defect.
+
+## 2026-08-20 (later) — Bug hunt 2: the media layer
+
+A second pass, widened past the UI commit. Three things were run at the whole
+tree rather than at a diff, and the negative results are worth recording:
+
+- **ASan + UBSan over the entire suite** — all 179 test binaries plus the six
+  heavy CPU vector suites (Klaus 6502/65C02, TomHarte, zexdoc, zexall) pass
+  clean. No out-of-bounds, no UB, no leaks reported.
+- **A stricter warning pass** than the build's `-Wall -Wextra -Wshadow`, adding
+  `-Wunreachable-code-aggressive`, `-Wconditional-uninitialized`,
+  `-Wloop-analysis`, `-Wcomma`, `-Wshadow-all` and friends across all 320 of
+  our own translation units — `src/` **and** the 203 files in `tests/`. It
+  found the dead code below plus one shadowed lambda parameter in
+  `ai_control_server_smoke_test.cpp` (a lambda taking `body` inside a scope
+  that already had a `body`, which made it read as if it reused the outer
+  one). Both trees are now clean under the whole set; the only warnings left
+  anywhere are in vendored `third_party/`.
+- **A lock-discipline scan** for `stateMutex` taken recursively — every
+  self-locking `EmulationController` and `MainWindow` method checked against
+  every scope that already holds the lock. Nothing. The non-recursive mutex is
+  being respected.
+
+The conclusion mirrors the first pass: the emulation core is in good shape, and
+what defects remain live in the host layer that no test reaches.
+
+### The eject warning was dead for every bay except a Disk II
+
+The status bar's eject menu warns "Unsaved changes — ejecting writes them back
+if write-back is on for this drive, and drops them if it is not". It could
+never fire for an HDV, a CFFA or a SmartPort 3.5" unit: those rows are built
+from `MountableMediaCard::bayInfo`, and the status bar hardcoded `dirty=false`
+for all of them because `MediaBayInfo` had no field to carry it.
+
+That is exactly backwards from where the warning is needed. A Disk II at least
+has a panel of its own; a SmartPort 3.5" unit with write-back off silently
+drops every guest write at eject, and the one place that promised to say so
+said nothing. The data was never missing — `Disk35Image::hasUnsavedChanges()`
+and `ProDOSBlockCard::hasUnsavedChanges()` both exist and are already shown in
+the 3.5" and HDV panels — it simply had no route to the bay abstraction.
+`MediaBayInfo` now carries `hasUnsavedChanges`, `SmartPortUnit` gained the
+accessor its two subclasses could already answer, and both `bayInfo`
+implementations fill it in.
+
+### Undefined behaviour in the WOZ track walker
+
+`Disk35Image::loadWoz` closed the track circle with
+
+    cells.insert(cells.end(), cells.begin(), cells.begin() + n);
+
+— an insert whose *input range points into the very vector being resized*,
+which [sequence.reqmts] leaves undefined. It works on today's libstdc++ and
+libc++ because the reallocation path copies out of the still-live old buffer,
+but that is an implementation detail rather than a guarantee, and the
+allocation always reallocates here (the vector was sized exactly `once`). Now a
+`reserve` plus an index-based append, which is defined and also avoids the
+double copy.
+
+### Dead code in the Sony GCR decoder
+
+Three findings, all confirmed by the compiler once the right flags were on:
+
+- `sony35::decodeSectors` ended with `return written;` **twice**.
+- The same function carried a `decodeOk` flag that nothing ever cleared, so
+  both its loop guard and its `if (!decodeOk) continue;` were dead. It read as
+  if invalid GCR were rejected there. It is not — `gcr6Decode` maps all 256
+  nibbles, and a corrupt group is caught by the running checksum and the DE AA
+  epilogue instead. Said so in a comment rather than leaving the flag.
+- `Sony35Drive.cpp` held a private duplicate of the read-side `kGcr6bw` table
+  **and** of `gcr6Decode`, both entirely unused — that file needs only the
+  write side. A dead duplicate of a MAME-cited routine is worse than none: it
+  is the copy nobody remembers to correct when the original is.
+
+### Abstraction Levels under-reported the network transport
+
+`netbackend` was the only entry in its group that pushed no live state, so it
+fell through to `NotApplicable` — "always present, no plug state to report".
+libslirp is an optional build dependency: without it `SlirpNetworkBackend` is a
+stub that always fails, Uthernet I has no transport at all, and Uthernet II is
+confined to its own W5100 stack. A panel whose stated purpose is catching
+silently-degraded subsystems should not have had that particular blind spot.
+It now reports the `POM2_HAVE_SLIRP` state and says what is lost without it.
+
+## 2026-08-20 — Bug hunt over the new UI panels
+
+Four defects found by review of `1afe203`; the build was clean and 182/182
+tests passed throughout, because every one of them lives in a UI path no test
+reaches. That is the lesson as much as the fixes are.
+
+### The keyboard panel disabled Open-Apple / Solid-Apple for the whole session
+
+`$C061`/`$C062` bit 7 is one wire, and POM2 grew a **second** thing pressing it
+when the clickable //e keyboard landed: the host's Left/Right Alt (`onKey`) and
+the panel's own latches. Both *assigned* the shared latch. The panel
+republishes every frame — the Apple keys are levels, not events — so it stamped
+whatever Alt had just set back to its own value 60x/s. Worse, `keyboardPanel`
+is never destroyed once built, so the panel's **closed** branch went on calling
+`setOpenAppleKey(false)` for the rest of the session.
+
+Net effect: **open Devices → Apple //e Keyboard once, close it, and Left/Right
+Alt are dead until you restart.** Open-Apple+Ctrl+Reset stopped cold-booting;
+every //e title reading bit 7 as button 0/1 stopped seeing the keys. And it
+looked like an *emulator* fault rather than a UI one, because
+`Memory::memRead` ORs `paddleButton[]` into the same case (`Memory.cpp:1612`) —
+so a real joystick kept working the whole time. Persisted `show_keyboard` meant
+a user who quit with the window open was broken from the first frame of the
+next launch.
+
+Fixed structurally rather than by ordering: `AppleKeyLatch.h` holds the two
+sources apart and ORs them at the point of use, so no writer *can* express
+"…and release the other one". The close-time release is edge-triggered on
+`kbPanelWasOpen_` and now drops only the panel's half. Pinned by
+`apple_key_latch` — which fails on the old assignment, verified by
+re-introducing it.
+
+### Filesystem stats under `stateMutex`, 60x a second
+
+`renderDisk35PanelWindow` called `freePoNameFor()` **inside** the state lock,
+once per WOZ drive per frame, and that helper stats the filesystem up to 99
+times. Blocking I/O on the lock the CPU worker needs is the exact shape of the
+`disk_turbo` UI freeze we already paid for once. The answer only changes when
+the medium changes, so it now resolves outside the lock, memoised on the source
+path. Display only: `convertWoz35ToPo` re-resolves the name at conversion time,
+so a stale memo can never misdirect a write.
+
+### Abstraction Levels: two dead controls
+
+With neither side of a switchable boundary plugged (`selected == -1`), the
+radio pair stayed enabled; clicking it called `swapSlotCardVariant`, which
+found no slot holding either key and returned `false` **without a word**. The
+pair is now disabled, with the "add one in Slot Configuration first" note as
+the answer. The `restartEmulationFromSettings` failure path was equally silent
+— the radio just snapped back — and now says why.
+
+Separately, the `blockedBy` tooltips ("Unavailable — roms/… is needed") could
+never be read: `IsItemHovered()` reports false for a disabled item, and
+explaining the greying is the entire point of those two strings. They now pass
+`ImGuiHoveredFlags_AllowWhenDisabled`.
+
+### Status-bar media chips lit up through their own popup
+
+The hover tint came from `IsMouseHoveringRect`, which is clip-rect aware but
+not **z-order** aware, while the click went through `IsItemClicked`, which is —
+so a chip highlighted as interactive underneath anything drawn over it, its own
+eject menu included. The chip is now a real item (an `InvisibleButton` the size
+of the text, painted through the draw list), so one item answers hover, tooltip
+and click alike.
+
 ## 2026-08-19 (later, 8) — A 3.5" WOZ can be converted to a writable .po
 
 **Reported as "why can't I save to a WOZ?", from a real case: The New Print

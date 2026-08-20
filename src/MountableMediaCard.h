@@ -46,6 +46,11 @@ struct MediaBayInfo
     bool        writeProtected   = false;
     bool        writeBackEnabled  = false;
     bool        supportsWriteBack = true;
+    /// Guest writes are held in memory and not yet on disk. With write-back
+    /// OFF they are DROPPED at eject, which is the one thing a user needs
+    /// warning about before pulling a bay — so the status bar's eject menu
+    /// asks for it. Cards whose backing cannot report it leave it false.
+    bool        hasUnsavedChanges = false;
     // True when the user may CHOOSE the media kind for this bay (SmartPort
     // units: empty / 3.5" / HDV). Block cards have a fixed kind → false.
     bool        supportsTypeSelect = false;

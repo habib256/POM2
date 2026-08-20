@@ -20,6 +20,7 @@
 #include "M6502.h"
 #include "Apple2Display.h"  // HiResMode (toolbar color/mono toggle remembers submode)
 #include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
+#include "AppleKeyLatch.h"
 #include "MouseGrab.h"      // pom2::mousegrab::Context (mouseGrabContext)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
 #include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
@@ -737,6 +738,29 @@ private:
     int          kbImageH_     = 0;
     bool         kbImageTried_ = false;
     std::string  kbImageError_;
+    /// Was the keyboard window open last frame? The close-time latch release
+    /// is edge-triggered on this: `keyboardPanel` is never destroyed once
+    /// built, so a "release on close" that ran every frame the window is shut
+    /// would keep firing for the rest of the session.
+    bool         kbPanelWasOpen_ = false;
+
+    // ── Open-Apple / Solid-Apple: TWO independent sources ────────────────
+    // $C061/$C062 bit 7 is one wire, but POM2 has two things pressing it —
+    // the host's Left/Right Alt (onKey) and the on-screen keyboard's latches
+    // (renderKeyboardPanel). The two halves are held apart and OR'd at the
+    // point of use so neither writer can release the other; the rules, and
+    // the regression they pin, are in `AppleKeyLatch.h`.
+    pom2::AppleKeyLatch appleKeys_;
+
+    /// Memo for the 3.5" panel's "Convert to writable .po" target name, one
+    /// entry per drive: `convertSrc_` is the mounted WOZ path the answer was
+    /// computed for, `convertDst_` the free `.po` name it resolved to.
+    /// `freePoNameFor` stats the filesystem, and the panel re-snapshots every
+    /// frame, so the result is cached and recomputed only when the medium
+    /// changes. Display only — `convertWoz35ToPo` re-resolves the name at
+    /// conversion time, so a stale memo can never misdirect a write.
+    std::string  convertSrc_[2];
+    std::string  convertDst_[2];
 
     // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
     // screen, full-viewport, with no menu bar / toolbar / panels.
@@ -1137,6 +1161,10 @@ private:
     /// Apple //e keyboard window: lazy-loads the photo, draws it, and turns
     /// a clicked cap into a keystroke on the emulated machine.
     void renderKeyboardPanel();
+    /// Push the OR of the host-Alt and on-screen-keyboard sources to
+    /// $C061/$C062. Every writer of either source calls this instead of
+    /// touching `Memory::setOpenAppleKey` / `setSolidAppleKey` directly.
+    void pushAppleKeys();
     /// Lazy-load `pic/Keyboard_AppleIIe.jpeg` into `kbImageTex_`. Same
     /// once-only contract as `ensureAboutImageLoaded`.
     void ensureKeyboardImageLoaded();
