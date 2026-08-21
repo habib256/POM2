@@ -530,6 +530,122 @@ void testDeviceCountWithoutPeer()
     std::printf("  ok: device-count probe answered locally, no peer needed\n");
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+//  The built-in N: has to be FINDABLE, and it must not shadow anything
+// ═════════════════════════════════════════════════════════════════════════
+//
+// A SmartPort chain is contiguous 1..N and what unit 0 answers is a COUNT,
+// not a highest-unit number. Every standard chain walk stops at the first
+// unit that answers "no device", so a device parked past the peer's last one
+// is invisible to the very scan meant to find it — which is what a fixed unit
+// 11 did: with no peer the guest probed unit 1, got nothing, and stopped.
+void testBuiltInNetworkIsInsideTheChain()
+{
+    Machine m;
+    m.card->setBuiltInNetwork(true);
+    m.startLink();                       // listening, but nobody connects
+
+    // Unit 0 / code 0 — the bus scan.
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x00);
+    m.mem.memWrite(0x0312, 0x00);
+    m.mem.memWrite(0x0313, 0x40);
+    m.mem.memWrite(0x0314, 0x00);
+    placeSmartPortCall(m, kSpStatus, 0x0310);
+    m.run(20000);
+
+    assert(m.cpu->getAccumulator() == 0x00);
+    // ONE device, not eleven: the count must be a count.
+    assert(m.mem.memRead(0x4000) == 0x01);
+
+    // And unit 1 must be the network device — the DIB names it, so a guest
+    // that walks the chain finds it on the first probe.
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x01);        // unit 1
+    m.mem.memWrite(0x0312, 0x00);
+    m.mem.memWrite(0x0313, 0x41);        // DIB buffer at $4100
+    m.mem.memWrite(0x0314, 0x03);        // status code 3 = DIB
+    placeSmartPortCall(m, kSpStatus, 0x0310);
+    m.run(20000);
+
+    assert(m.cpu->getAccumulator() == 0x00);
+    char name[8] = {};
+    for (int i = 0; i < 7; ++i) name[i] = static_cast<char>(m.mem.memRead(0x4105 + i));
+    assert(std::string(name) == "NETWORK");
+    // b7 is "block device" and this is a character device. 0xF8 claimed block
+    // device, zero blocks and formattable all at once.
+    assert((m.mem.memRead(0x4100) & 0x80) == 0);
+    assert((m.mem.memRead(0x4100) & 0x10) != 0);   // b4 online
+
+    // The GENERAL status call is not the network status. Answering the latter
+    // put $00 in byte 0 whenever nothing was open, and byte 0 is the status
+    // byte: b4 clear reads as "offline, no read, no write", so a chain walker
+    // concluded the device was dead before ever opening anything.
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x01);
+    m.mem.memWrite(0x0312, 0x00);
+    m.mem.memWrite(0x0313, 0x42);
+    m.mem.memWrite(0x0314, 0x00);        // status code 0 = general status
+    placeSmartPortCall(m, kSpStatus, 0x0310);
+    m.run(20000);
+
+    assert(m.cpu->getAccumulator() == 0x00);
+    assert((m.mem.memRead(0x4200) & 0x10) != 0);   // online, even with nothing open
+
+    // None of it involved the link: no peer, no calls, no timeouts.
+    const auto stats = m.card->link().stats();
+    assert(stats.calls == 0);
+    assert(stats.timeouts == 0);
+
+    m.card->link().stop();
+    std::printf("  ok: built-in N: sits at unit 1 and answers a scan with no peer\n");
+}
+
+// With a peer attached, the built-in device must step out of the way of the
+// peer's own chain rather than answer for one of its units.
+void testBuiltInNetworkDoesNotShadowThePeer()
+{
+    Machine m;
+    m.card->setBuiltInNetwork(true);
+    m.startLink();
+    FakePeer peer(m.port, standardHandler);
+    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+
+    // The fake peer publishes two devices, neither of them a network device,
+    // so the built-in one belongs at unit 3 — past them, not on top of them.
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x00);
+    m.mem.memWrite(0x0312, 0x00);
+    m.mem.memWrite(0x0313, 0x40);
+    m.mem.memWrite(0x0314, 0x00);
+    placeSmartPortCall(m, kSpStatus, 0x0310);
+    m.run(20000);
+
+    assert(m.cpu->getAccumulator() == 0x00);
+    assert(m.mem.memRead(0x4000) == 0x03);   // the peer's 2 + ours
+
+    // Unit 1 is the PEER's. Its DIB must come from the peer, not from us —
+    // a network device answering a disk's block reads is ProDOS reporting an
+    // I/O error on a perfectly good volume.
+    const auto before = m.card->link().stats().calls;
+    m.mem.memWrite(0x0310, 0x03);
+    m.mem.memWrite(0x0311, 0x01);
+    m.mem.memWrite(0x0312, 0x00);
+    m.mem.memWrite(0x0313, 0x41);
+    m.mem.memWrite(0x0314, 0x03);
+    placeSmartPortCall(m, kSpStatus, 0x0310);
+    m.run(20000);
+
+    // Forwarded: the call reached the link instead of being answered here.
+    assert(m.card->link().stats().calls > before);
+    char name[8] = {};
+    for (int i = 0; i < 7; ++i) name[i] = static_cast<char>(m.mem.memRead(0x4105 + i));
+    assert(std::string(name) != "NETWORK");
+
+    m.card->link().stop();
+    std::printf("  ok: built-in N: steps aside for the peer's own units\n");
+}
+
 void testForwardedCallWithoutPeerIsNoDevice()
 {
     Machine m;
@@ -701,6 +817,8 @@ int main()
     testSmartPortReadBlock();
     testStackWrapAtPageBoundary();
     testDeviceCountWithoutPeer();
+    testBuiltInNetworkIsInsideTheChain();
+    testBuiltInNetworkDoesNotShadowThePeer();
     testForwardedCallWithoutPeerIsNoDevice();
     testIoPageBufferRefused();
     testControlListCannotWrapAddressSpace();
