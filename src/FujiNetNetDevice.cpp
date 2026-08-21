@@ -18,6 +18,48 @@
 #include <sys/socket.h>
 #endif
 
+// No host sockets under Emscripten: the browser build has no TCP to offer, so
+// the whole fetch path compiles out and the device politely refuses. The
+// guest sees an open that fails, which is the truth there.
+#if !POM2_HAS_SOCKETS
+
+namespace pom2 {
+
+FujiNetNetDevice::~FujiNetNetDevice() = default;
+
+bool FujiNetNetDevice::fetchHttp(const std::string&, uint16_t, const std::string&)
+{
+    return false;
+}
+
+bool FujiNetNetDevice::open(const std::string& devicespec)
+{
+    close();
+    error_       = 144;                       // general failure
+    description_ = devicespec + " — no host network in this build";
+    log().warn("FujiNet", "built-in N: unavailable — this build has no host sockets");
+    return false;
+}
+
+void FujiNetNetDevice::close()
+{
+    open_ = false;
+    body_.clear();
+    cursor_ = 0;
+}
+
+void FujiNetNetDevice::status(uint8_t out[4]) const
+{
+    out[0] = out[1] = out[2] = 0;
+    out[3] = error_;
+}
+
+std::size_t FujiNetNetDevice::read(uint8_t*, std::size_t) { return 0; }
+
+}  // namespace pom2
+
+#else   // POM2_HAS_SOCKETS
+
 namespace pom2 {
 
 namespace {
@@ -341,3 +383,5 @@ std::size_t FujiNetNetDevice::read(uint8_t* dst, std::size_t n)
 }
 
 }  // namespace pom2
+
+#endif  // POM2_HAS_SOCKETS

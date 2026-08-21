@@ -12,6 +12,8 @@
 #include "IconsFontAwesome6.h"
 #include "imgui.h"
 
+#include <cstdint>   // intptr_t for the ImTextureID cast — libc++ pulls it
+                     // in transitively, libstdc++ does not (CI, GCC).
 #include <cstring>
 
 namespace pom2 {
