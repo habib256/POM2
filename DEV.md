@@ -1727,6 +1727,19 @@ from live cards before tear-down. **IWM wiring**: only slot-6
   nibble every 32 cycles, `byteReady` toggles for BPL spins.
   2–3× faster than LSS in stock boots.
 
+**An empty drive delivers noise, not silence.** Both gates have to answer a
+guest that polls `LDA $C08C,X / BPL -3` on a drive with nothing in it — every
+multi-disk game does this on drive 2. The legacy gate returns `$FF`
+(`deviceSelectRead`); the LSS branch in `lssSync`'s `!isLoaded()` case
+synthesises one pseudo-random byte per 8 bit cells (64 LSS cycles) with bit 7
+set, hashed from the cycle cursor so snapshot restore and rewind replay it
+identically. Freezing the data register instead — what POM2 did until
+2026-08-21 — hangs the machine outright: bit 7 never comes up, so the guest
+never reaches the timeout that would have turned this into an I/O error.
+Ultima V's *Save Music Configuration* (which targets the BRITANNIA disk in
+drive 2) froze at `$D407` on any `.woz` for exactly this reason, while
+erroring out cleanly from a `.dsk`. Pinned: `diskii_empty_drive`.
+
 ### Bit-stream expansion
 
 `DiskImage::bitAt(track, idx)` lazily walks nibble buffer, emits 8

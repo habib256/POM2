@@ -5,6 +5,71 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-21 — An empty drive froze the machine: the Ultima V "save" hang was never a WOZ-write bug
+
+**Symptom**: Ultima V's *Save Music Configuration* wedged POM2 solid — no
+error, no timeout, a dead machine. It looked like WOZ write-back failing,
+because it only happened on `.woz`.
+
+**It was not.** WOZ write-back works; the guest-side round-trip is now pinned
+twice over (below). What actually happened is three separate things stacked:
+
+1. **Ultima V saves to the BRITANNIA disk (disk 2 of 8), in DRIVE 2.** Not to
+   the Program disk it booted from. With drive 2 empty the game polls the
+   empty drive at `$D407` — the universal nibble wait, `LDA $C08C,X / BPL -3`,
+   followed by its own 16-bit timeout at `$79/$7A`.
+2. **`DiskIICard::lssSync` froze `lssData` for an unloaded drive** (`if
+   (!img.isLoaded()) { lssCycle = …; return; }`). A data register that never
+   changes keeps bit 7 clear forever, so the `BPL` never falls through and the
+   guest never even *reaches* its timeout counter. Hang, not error.
+   The legacy 32-cycle nibble gate never had the bug — `deviceSelectRead`
+   returns `$FF` for an empty drive — which is exactly why the same game
+   errors out cleanly from a `.dsk` and froze from a `.woz`. The asymmetry is
+   what made this read as "WOZ writing is broken".
+3. **The Program disk dump is physically write-protected** (WOZ `INFO+2` = 1,
+   Applesauce v1.0.6), so POM2 mounts it read-only — correct, and a red
+   herring. The BRITANNIA dump has `INFO+2` = 0: it is the disk meant to be
+   written.
+
+**The fix**: an empty drive now delivers *noise*, as the real read amplifier
+does — one pseudo-random byte per 8 bit cells (4 µs each = 64 LSS cycles),
+high bit set as on every byte the LSS ever hands the CPU. Bit 7 comes up, the
+loop exits, RWTS times out into a clean I/O error. The byte is derived from
+the LSS cycle cursor by hash rather than from a PRNG member, so it stays
+deterministic across snapshot restore and rewind — both replay that cursor.
+Ultima V now shows *"Please insert BRITANNIA disk:"* and stays responsive.
+
+Note the branch is reachable at all because `$C0n9` sets `active =
+MODE_ACTIVE` unconditionally while gating only `lssStart()` on media — the
+motor spins whether or not there is a disk under it, which is also what the
+drive does.
+
+**Pinned** by `tests/diskii_empty_drive_test.cpp`: five cases (bit-LSS ×
+empty drive 1 / empty drive 2 / both empty, plus the two legacy-gate cases as
+a regression guard), each running the real `LDA $C0EC / BPL` loop as 6502
+code and asserting it exits. Verified to fail on the three bit-LSS cases with
+the fix reverted.
+
+**WOZ write-back, proven end to end** while chasing this:
+
+- Ultima V writes its music configuration to the BRITANNIA `.woz` (346 write
+  flushes, one quarter-track spliced back, header CRC32 zeroed per the
+  Applesauce 2.1 "not computed by the imager" sentinel), and a *fresh boot*
+  reads the setting back — slot 4 = Mockingboard C.
+- `dos33_save_smoke` now takes the image as `argv[1]`, so the same guest-side
+  SAVE → LOAD → LIST round-trip runs against any 5.25" container; a WOZ1
+  built from `dos33_master.dsk` passes it.
+
+**Also fixed**: `dos33_save_smoke` looked for `disks_5.4/dos33_master.dsk`,
+but the image lives in `disks_5.4/dsk/`. The test had been silently SKIPping.
+
+**Diagnostic harness**: `tests/u5_woz_save_probe.cpp` (built, not in ctest —
+it needs the game disk) boots a disk on a //e with a Mockingboard in slot 4,
+drives the guest through a key script (`esc cr down up left right space
+sleepN`, plus `shot` to dump both HGR pages and `dumpXXXX` to dump memory +
+CPU + disk state), and reports write flushes per keystroke. That is how the
+`drive=1` in the disk state was spotted — the single fact that unlocked this.
+
 ## 2026-08-20 (evening) — Second performance campaign, and the bench's //e was a BRK loop
 
 Full write-up with the profiles, the reasoning and the numbers:

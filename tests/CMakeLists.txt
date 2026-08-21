@@ -2311,6 +2311,29 @@ if(WIN32)
     target_link_libraries(madef_phase_probe PRIVATE winmm)
 endif()
 
+# Ultima V WOZ "Save Music Configuration" probe — diagnostic only (needs the
+# game disk), so it is built but NOT registered with ctest.
+add_executable(u5_woz_save_probe EXCLUDE_FROM_ALL
+    u5_woz_save_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(u5_woz_save_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(u5_woz_save_probe PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(u5_woz_save_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(u5_woz_save_probe PRIVATE winmm)
+endif()
+
 # DIGIDREAM 2 AY register trace — diagnostic only (needs the demo disk +
 # roms/), so it is built but NOT registered with ctest.
 add_executable(dd2_ay_trace EXCLUDE_FROM_ALL
@@ -2612,6 +2635,33 @@ endif()
 
 add_test(NAME display_dirty_skip COMMAND test_display_dirty_skip)
 set_tests_properties(display_dirty_skip PROPERTIES TIMEOUT 30)
+
+# An empty drive must not hang the guest: the bit-level LSS used to freeze
+# its data register for an unloaded drive, so the universal
+# `LDA $C08C,X / BPL` nibble wait never exited (Ultima V $D407, drive 2).
+# See diskii_empty_drive_test.cpp header.
+add_executable(test_diskii_empty_drive
+    diskii_empty_drive_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_diskii_empty_drive PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_diskii_empty_drive PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_diskii_empty_drive PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_diskii_empty_drive PRIVATE winmm)
+endif()
+
+add_test(NAME diskii_empty_drive COMMAND test_diskii_empty_drive
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(diskii_empty_drive PROPERTIES TIMEOUT 60)
 
 # Differential pin of the inline Memory::memRead()/memWrite() fast paths
 # against memReadSlow()/memWriteSlow(): every address × every paging state

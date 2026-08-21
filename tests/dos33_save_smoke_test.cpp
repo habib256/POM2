@@ -85,12 +85,16 @@ bool waitForText(M6502& cpu, const uint8_t* ram, const char* needle,
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const std::string romPath  = findFirst({
         "../roms/apple2.rom", "roms/apple2.rom", "../../roms/apple2.rom" });
     const std::string promPath = findFirst({
         "../roms/disk2.rom", "roms/disk2.rom", "../../roms/disk2.rom" });
-    const std::string masterPath = findFirst({
+    // argv[1] overrides the image — the same SAVE/LOAD round-trip is the
+    // guest-side check for every 5.25" container (.dsk, .nib, .woz).
+    const std::string masterPath = (argc > 1) ? std::string(argv[1]) : findFirst({
+        "../disks_5.4/dsk/dos33_master.dsk", "disks_5.4/dsk/dos33_master.dsk",
+        "../../disks_5.4/dsk/dos33_master.dsk",
         "../disks_5.4/dos33_master.dsk", "disks_5.4/dos33_master.dsk",
         "../../disks_5.4/dos33_master.dsk" });
 
@@ -99,7 +103,8 @@ int main() {
         return 0;
     }
 
-    fs::path scratch = fs::temp_directory_path() / "pom2_dos33_save_scratch.dsk";
+    fs::path scratch = fs::temp_directory_path() /
+        ("pom2_dos33_save_scratch" + fs::path(masterPath).extension().string());
     if (!copyFile(masterPath, scratch)) {
         std::fprintf(stderr, "cannot copy master to %s\n", scratch.string().c_str());
         return 1;
