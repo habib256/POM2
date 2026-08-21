@@ -679,6 +679,56 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   different route than planned: POM2 launches and reaps an EXISTING FujiNet
   desktop binary (`ChildProcess`) instead of vendoring the firmware. See
   `docs/fujinet_plan.md` § 8 for why the vendored build was rejected.
+- 🔵 **[FujiNet] built-in FujiNet, native in POM2 — DECIDED 2026-08-21.**
+  Chosen architecture: a **native `FujiNetDevice` in POM2's own C++ covering
+  the disk perimeter** (host slots, drive slots, a TNFS client, images served
+  as SmartPort block devices), driven from the FujiNet panel, **coexisting**
+  with the existing SP-over-SLIP relay for a real USB board or a full external
+  firmware. The panel gets a source selector: *Built-in / USB board / External
+  firmware* — the same "choose the level, not the catalog key" shape as the
+  Abstraction Levels panel.
+  Why this over the alternatives: hosting the vendor firmware (prebuilt or
+  built from source) does **not** fix the CONFIG bug above, because the guest
+  still reaches it through the relay's control plane; when POM2 *is* the
+  device, that class of bug cannot exist. Building the firmware into POM2's
+  build was re-costed and re-rejected (`docs/fujinet_plan.md` § 8).
+  Out of scope for the native path, deliberately: the `N:` network device
+  (HTTP/SSH/JSON), the modem and CP/M — those stay the relay's job.
+  Phases: (1) TNFS client + tests; (2) the Fuji control device (host/drive
+  slots) so CONFIG sees real state; (3) block serving of a mounted image;
+  (4) the panel's source selector.
+- ✅ **[FujiNet] CONFIG works from the Apple II** — DONE (2026-08-21). It
+  never was a peer problem: **three POM2 bugs** stood between the guest and
+  the FujiNet, all now fixed and detailed in `DEV.md` § FujiNet.
+  (1) `SpOverSlipLink::control` sent the control list WITHOUT its mandatory
+  2-byte length prefix, so a short list ran the peer's parser past the end of
+  the packet and **aborted the FujiNet process** — that was every "the
+  firmware keeps dying" symptom — while a long one had its first two bytes
+  eaten, which is why CONFIG read empty host and drive slots.
+  (2) The DIB name arrived malformed from upstream (`FUJINET_DISK_48` for
+  `_0`) and is now repaired in the relayed status.
+  (3) `kMaxUnits` was 8, so the enumeration stopped after the disk slots and
+  never reached the Fuji device, `NETWORK`, the clock or the printer — and
+  since POM2 answers the guest's "how many devices?" locally, the guest never
+  probed past 8 either. Raised to 32.
+  Verified: NETCAT now reports `NET DEV IS 11` and reaches
+  `CONNECTED to N:HTTP://THEOLDNET.COM/`; the panel lists all 13 devices.
+- 🟡 **[FujiNet] a `CONTROL` to the peer's PRINTER unit kills it** — measured
+  2026-08-21, reproducible three runs out of three. The packet is
+  byte-identical in shape to the ones units 10-12 answer normally
+  (`04 03 0D 00 00 00 …`, an empty control list), yet the peer throws
+  `std::length_error` out of `Request::from_packet` and aborts. Upstream bug
+  in the printer device — the same unit whose DIB already advertises the
+  modem's type byte. POM2 relays faithfully and now REPORTS the death
+  (`peer LOST after N s — M call(s) served`), which is what localised it in a
+  single run. Worth reporting upstream; POM2 has nothing to fix.
+- 🟡 **[FujiNet] the desktop firmware's `N:` device never opens a socket** —
+  it answers the guest's open with success (`CONNECTED to
+  N:HTTP://THEOLDNET.COM/` appears on the Apple II) and then no outbound TCP
+  is ever created, watched live on the peer's own descriptors. NOT POM2: the
+  same firmware, same machine, opens real TCP for TNFS. Its WiFi is a
+  `DummyWiFiManager` and giving it an SSID does not help. A real FujiNet
+  board over USB is the path for `N:`; the relay is unchanged for it.
 - 🟡 **[FujiNet] the 250 ms relay timeout is sized for local media only** —
   measured 2026-08-21. `SpOverSlipLink::kDefaultTimeoutMs` is fine while the
   peer answers out of its own SPIFFS (booting `autorun.po` never approaches

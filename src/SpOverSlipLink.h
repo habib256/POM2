@@ -58,6 +58,7 @@
 #include "SpTransport.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -138,9 +139,25 @@ public:
     static constexpr int kMinTimeoutMs     = 50;
     static constexpr int kMaxTimeoutMs     = 5000;
 
-    /// The most units a SmartPort chain can carry, and the ceiling on the
-    /// INIT enumeration sweep.
-    static constexpr uint8_t kMaxUnits = 8;
+    /// Ceiling on the INIT enumeration sweep.
+    ///
+    /// This was 8, and 8 is wrong for the device POM2 exists to talk to. A
+    /// FujiNet's SmartPort chain is not "up to eight drives": it is the disk
+    /// slots FOLLOWED BY the Fuji control device, the `N:` network device,
+    /// the clock, the printer, the modem and CP/M (lib/device/iwm/ in the
+    /// firmware — disk, iwmFuji, network, clock, modem, cpm). With the sweep
+    /// stopping at 8 the enumeration saw eight FUJINET_DISK_* units and
+    /// nothing else, and — because the guest's "how many devices?" call is
+    /// answered locally from that count — the guest never probed past unit 8
+    /// either. Every non-disk FujiNet function was therefore invisible to
+    /// guest software: NETCAT got as far as "NETWORK NOT FOUND".
+    ///
+    /// The sweep stops on the first unit whose INIT does not answer $00, so
+    /// this is only a safety ceiling, not a cost: a chain of two still costs
+    /// two round trips. SmartPort itself addresses up to 127 units; 32 is far
+    /// past anything a FujiNet presents while still bounding a peer that
+    /// answers $00 to everything.
+    static constexpr uint8_t kMaxUnits = 32;
 
     struct Response {
         bool                 replied = false;  ///< a matching frame came back
@@ -264,6 +281,14 @@ private:
     std::atomic<bool>          running_{false};
     std::atomic<bool>          stopFlag_{false};
     std::atomic<int>           timeoutMs_{kDefaultTimeoutMs};
+
+    /// Lifetime tracking for the CURRENT peer, so peerLostLocked() can say
+    /// how long it held and how much it served. Written by the worker thread
+    /// only (connect and loss both happen there).
+    std::chrono::steady_clock::time_point peerSince_{};
+    uint64_t peerCallsAtConnect_    = 0;
+    uint64_t peerTimeoutsAtConnect_ = 0;
+    void notePeerConnected();
 
     /// Serialises whole request/response exchanges. Held by transact() for
     /// its entire duration, so the worker's enumeration and the CPU thread's

@@ -2663,6 +2663,28 @@ add_test(NAME diskii_empty_drive COMMAND test_diskii_empty_drive
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(diskii_empty_drive PROPERTIES TIMEOUT 60)
 
+# TNFS client against an in-process stub server (no network needed): session
+# id adopted from the MOUNT response header, multi-chunk reads, a READ reply
+# split across TCP segments, and the UDP fallback when TCP is refused.
+# Phase 1 of the built-in FujiNet — see TODO § [Network].
+add_executable(test_tnfs_client
+    tnfs_client_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/TnfsClient.cpp
+)
+target_include_directories(test_tnfs_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_tnfs_client PRIVATE Threads::Threads)
+endif()
+if(APPLE)
+    target_link_libraries(test_tnfs_client PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(test_tnfs_client PRIVATE ws2_32)
+endif()
+
+add_test(NAME tnfs_client COMMAND test_tnfs_client)
+set_tests_properties(tnfs_client PROPERTIES TIMEOUT 60)
+
 # Differential pin of the inline Memory::memRead()/memWrite() fast paths
 # against memReadSlow()/memWriteSlow(): every address × every paging state
 # that feeds the fast-path conditions (INTCXROM/SLOTC3ROM/INTC8ROM, LC RAM,
