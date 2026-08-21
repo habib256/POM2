@@ -46,6 +46,7 @@ int main()
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -503,6 +504,66 @@ void testStopResetsTheFramer()
     link.stop();
 }
 
+/// A CONTROL request must carry the control list WITH its 2-byte
+/// little-endian length prefix. The peer's parser skips exactly 11 header
+/// bytes + 2 length bytes before reading the list
+/// (FujiNetWIFI/AppleWin, source/devrelay/types/Request.cpp), so a bare list
+/// is not merely misread: for a list SHORTER than two bytes the peer's
+/// iterator runs past the end of the packet, it throws std::length_error,
+/// does not catch it, and the whole FujiNet process aborts. A one-byte
+/// control list is a real request (that is a FujiNet device-control call),
+/// which is why this used to kill the peer in normal use.
+void testControlListFraming()
+{
+    SpOverSlipLink link;
+    std::vector<uint8_t> seen;          // the raw request the peer received
+    std::mutex seenMtx;
+
+    const uint16_t port = startLink(link);
+    FakePeer peer(port, [&](const std::vector<uint8_t>& req,
+                            std::vector<uint8_t>& wire) {
+        if (req.size() >= 11 && req[1] == kSpControl) {
+            std::lock_guard<std::mutex> lk(seenMtx);
+            seen = req;
+        }
+        standardHandler(req, wire);
+    });
+    assert(waitFor([&] { return link.deviceCount() == 2; }));
+
+    const uint8_t oneByte[1] = { 0x42 };
+    const auto r = link.control(1, 0xD6, oneByte, sizeof oneByte);
+    assert(r.replied);
+
+    // Copy and RELEASE: the peer runs on its own thread and takes this mutex
+    // to record each request, so holding it across the next call would
+    // deadlock the reply and look like a timeout.
+    std::vector<uint8_t> got;
+    { std::lock_guard<std::mutex> lk(seenMtx); got = seen; }
+
+    // 11-byte header, then the length prefix, then the list itself.
+    assert(got.size() == 11 + 2 + 1);
+    assert(got[1] == kSpControl);
+    assert(got[6] == 0xD6);             // control code rides in the fields
+    assert(got[11] == 0x01);            // length low
+    assert(got[12] == 0x00);            // length high
+    assert(got[13] == 0x42);            // the list
+    // The invariant the peer actually relies on: there IS a byte at 11+2.
+    assert(got.size() > 11 + 2);
+
+    // A longer list keeps its prefix too — otherwise its first two bytes get
+    // eaten as the length, which is what made the guest-side CONFIG program
+    // read empty host and drive slots.
+    const uint8_t five[5] = { 1, 2, 3, 4, 5 };
+    const auto r2 = link.control(2, 0xE0, five, sizeof five);
+    assert(r2.replied);
+    { std::lock_guard<std::mutex> lk(seenMtx); got = seen; }
+    assert(got.size() == 11 + 2 + 5);
+    assert(got[11] == 0x05 && got[12] == 0x00);
+    for (int i = 0; i < 5; ++i) assert(got[13 + i] == static_cast<uint8_t>(i + 1));
+
+    std::puts("[ OK ] CONTROL carries the 2-byte control-list length prefix");
+}
+
 } // namespace
 
 int main()
@@ -516,6 +577,7 @@ int main()
     testCleanShutdown();
     testIdlePeerDeathIsNoticed();
     testStopResetsTheFramer();
+    testControlListFraming();
 
     std::puts("sp_over_slip_link: OK");
     return 0;

@@ -2943,6 +2943,54 @@ the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
   `fujinet_desktop_copy_recent_log()` on a timer to tail its log — doing so
   killed the runtime a few seconds after every start, right after it answered
   the device enumeration.
+- **Three POM2 bugs used to stand between the guest and the FujiNet.** All
+  fixed 2026-08-21; recorded because each was invisible from the guest side
+  and looked like a broken peer.
+  - **`CONTROL` went out without the control list's 2-byte length prefix.**
+    The peer skips exactly `11+2` bytes before reading the list, so a list
+    shorter than two bytes ran its iterator past the end of the packet: it
+    threw `std::length_error`, did not catch it, and **aborted the whole
+    FujiNet process**. That was every "the firmware keeps dying" symptom in
+    this subsystem. A longer list did not crash it but lost its first two
+    bytes to the length field, which is why CONFIG showed empty host and
+    drive slots while the peer's web UI showed them populated. Fixed in
+    `SpOverSlipLink::control`, pinned by `sp_over_slip_link`.
+  - **The DIB name arrives malformed from upstream.** `disk.cpp:106` builds
+    it as `"FUJINET_DISK_" + std::to_string(disk_num)` where `disk_num` is a
+    `char` holding an ASCII digit, so `std::to_string` promotes it to int and
+    the device that means to be `FUJINET_DISK_0` calls itself
+    **`FUJINET_DISK_48`**. Guest software looks for the exact name, so NETCAT
+    printed "FUJINET_DISK_0 NOT FOUND" and stopped. Repaired in the relayed
+    status (`repairDibName`), narrowly enough that it evaporates when
+    upstream fixes the `to_string`.
+  - **`kMaxUnits` was 8, and 8 is not a FujiNet.** Its SmartPort chain is the
+    disk slots FOLLOWED BY the Fuji control device, `NETWORK`, the clock, the
+    printer and CP/M. The sweep stopped after the disks, and because the
+    guest's "how many devices?" is answered locally from that count the guest
+    never probed further either — so every non-disk function was invisible.
+    Raised to 32; the sweep still stops at the first unit that does not
+    answer, so a short chain costs nothing.
+  Verified end to end afterwards: NETCAT reports `NET DEV IS 11` and reaches
+  `CONNECTED to N:HTTP://THEOLDNET.COM/`, and the panel lists all 13 devices.
+- **`POM2_TRACE_FUJINET=1` traces every call, and peer death is now loud.**
+  Three moving parts in two processes means the only question that matters
+  when something breaks is which one went quiet, and a peer dying used to
+  slip past as one INFO line among hundreds. The loss is now a WARNING
+  carrying the session's lifetime and how much it served —
+  `peer LOST after 22 s — 40 call(s) served, 0 timeout(s)` — because a peer
+  that dies after two calls is a different bug from one that dies after ten
+  thousand. That line plus the per-call trace localised the printer-unit
+  crash below in a single run.
+- **A `CONTROL` to the peer's PRINTER unit kills it** (upstream). The packet
+  is byte-identical in shape to the ones the neighbouring units answer
+  normally, yet the peer aborts out of `Request::from_packet`. Same unit
+  whose DIB already carries the modem's type byte. Nothing to fix here — but
+  expect it, and expect the trace to name it.
+- **The desktop firmware's `N:` device answers "connected" without
+  connecting.** The Apple II gets `CONNECTED to N:HTTP://…` and no outbound
+  socket is ever opened, watched live on the peer's descriptors. Not the
+  relay: the same firmware opens real TCP for TNFS on the same machine. Its
+  WiFi is a `DummyWiFiManager`. `N:` wants a real board over USB.
 - **Its web admin UI (127.0.0.1:64001) is the reliable way to mount media**,
   far more so than driving the guest-side CONFIG program: `/browse/host/N`
   walks a TNFS host and `?action=newmount&slot=N&mode=r` fills a drive slot.

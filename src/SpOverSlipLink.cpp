@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -32,6 +34,39 @@ constexpr std::size_t kResponseHeaderBytes = 2;
 /// out: 4 bytes general status (status byte + 3-byte block count), a 1-byte
 /// ID string length, 16 bytes of ID string, then type/subtype/version.
 constexpr std::size_t kDibMinBytes = 21;
+
+/// POM2_TRACE_FUJINET=1 turns on a per-call trace of everything crossing the
+/// relay. This subsystem has three moving parts in two processes — the guest,
+/// POM2, and a peer that may be a desktop build or a board on USB — and when
+/// something does not work the only question that matters is WHICH of them
+/// went quiet. Resolved once: the check is on the per-call path.
+bool traceEnabled()
+{
+    static const bool on = [] {
+        const char* v = std::getenv("POM2_TRACE_FUJINET");
+        return v && *v && *v != '0';
+    }();
+    return on;
+}
+
+/// Names for the commands the trace prints, so a log line reads as protocol
+/// rather than as hex.
+const char* commandName(uint8_t c)
+{
+    switch (c) {
+    case kSpStatus:     return "STATUS";
+    case kSpReadBlock:  return "READ_BLOCK";
+    case kSpWriteBlock: return "WRITE_BLOCK";
+    case kSpFormat:     return "FORMAT";
+    case kSpControl:    return "CONTROL";
+    case kSpInit:       return "INIT";
+    case kSpOpen:       return "OPEN";
+    case kSpClose:      return "CLOSE";
+    case kSpRead:       return "READ";
+    case kSpWrite:      return "WRITE";
+    default:            return "?";
+    }
+}
 
 } // namespace
 
@@ -176,6 +211,10 @@ void SpOverSlipLink::workerLoop()
 
 void SpOverSlipLink::enumerateDevices()
 {
+    // The worker calls this the moment a peer appears, so it is the natural
+    // place to start the clock on that peer's session.
+    notePeerConnected();
+
     // SmartPort daisy-chain enumeration: INIT unit 1, then 2, … until a
     // non-zero status says "no more devices". Same sweep the FujiNet AppleWin
     // fork does in Listener::create_connection.
@@ -223,6 +262,11 @@ void SpOverSlipLink::enumerateDevices()
             if (dib.data.size() >= 22) dev.type    = dib.data[21];
             if (dib.data.size() >= 23) dev.subtype = dib.data[22];
         }
+        if (traceEnabled())
+            log().info("FujiNet",
+                       "  unit " + std::to_string(unit) + " \"" + dev.name +
+                       "\" type=" + std::to_string(dev.type) +
+                       " blocks=" + std::to_string(dev.blocks));
         found.push_back(dev);
     }
 
@@ -236,12 +280,43 @@ void SpOverSlipLink::enumerateDevices()
 
 void SpOverSlipLink::peerLostLocked()
 {
+    // A peer dying is the single most consequential event in this subsystem
+    // and it used to slip past as one INFO line among hundreds: every symptom
+    // downstream (the guest's "FujiNet not found", a boot that reads no
+    // blocks, a control call answered "no device") is really this, seen
+    // later and from further away. So say it LOUDLY and say how long it
+    // lasted and how much work it did — a peer that dies after two calls is a
+    // different bug from one that dies after ten thousand.
+    if (peerSince_ != std::chrono::steady_clock::time_point{}) {
+        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - peerSince_).count();
+        uint64_t calls = 0, timeouts = 0;
+        {
+            std::lock_guard<std::mutex> sl(statsMtx_);
+            calls    = stats_.calls    - peerCallsAtConnect_;
+            timeouts = stats_.timeouts - peerTimeoutsAtConnect_;
+        }
+        log().warn("FujiNet",
+                   "peer LOST after " + std::to_string(secs) + " s — " +
+                   std::to_string(calls) + " call(s) served, " +
+                   std::to_string(timeouts) + " timeout(s)");
+        peerSince_ = {};
+    }
+
     if (transport_) transport_->dropPeer();
     // Bytes from the dead peer must not glue themselves to the first packet
     // of the next one.
     rx_.reset();
     std::lock_guard<std::mutex> lk(stateMtx_);
     devices_.clear();
+}
+
+void SpOverSlipLink::notePeerConnected()
+{
+    peerSince_ = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> sl(statsMtx_);
+    peerCallsAtConnect_    = stats_.calls;
+    peerTimeoutsAtConnect_ = stats_.timeouts;
 }
 
 void SpOverSlipLink::handlePeerLost()
@@ -337,6 +412,22 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
     packet.insert(packet.end(), header, header + kRequestHeaderBytes);
     if (data && dataLen) packet.insert(packet.end(), data, data + dataLen);
 
+    if (traceEnabled()) {
+        // The packet bytes, not just a summary: when a peer dies mid-session
+        // the only useful question is what the LAST request looked like, and
+        // a summary cannot answer it.
+        std::string hex;
+        for (std::size_t i = 0; i < packet.size() && i < 24; ++i) {
+            char b[4];
+            std::snprintf(b, sizeof b, "%02X ", packet[i]);
+            hex += b;
+        }
+        log().info("FujiNet", std::string("-> ") + commandName(command) +
+                   " unit=" + std::to_string(unit) +
+                   " code=" + std::to_string(fields[0]) +
+                   " len=" + std::to_string(packet.size()) + " : " + hex);
+    }
+
     txBuf_.clear();
     SlipFramer::encode(packet, txBuf_);
 
@@ -403,6 +494,12 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                 out.replied = true;
                 out.status  = f[1];
                 out.data.assign(f.begin() + kResponseHeaderBytes, f.end());
+                if (traceEnabled())
+                    log().info("FujiNet",
+                               "<- " + std::string(commandName(command)) +
+                               " unit=" + std::to_string(unit) +
+                               " status=" + std::to_string(out.status) +
+                               " data=" + std::to_string(out.data.size()) + "o");
                 return out;
             }
             }
@@ -416,10 +513,64 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
 // they are what the guest's own parameter list carries, and the peer checks
 // them.
 
+namespace {
+
+/// Repair an upstream malformation in the DIB name, in place.
+///
+/// fujinet-firmware builds a disk's SmartPort ID string as
+///
+///     char disk_num;                                        // disk.h:33
+///     std::string name = "FUJINET_DISK_" + std::to_string(disk_num);
+///                                                           // disk.cpp:106
+///
+/// `disk_num` holds an ASCII DIGIT ('0'..'7'), and `std::to_string` has no
+/// `char` overload, so the char promotes to int: the device that means to
+/// call itself FUJINET_DISK_0 goes on the wire as **FUJINET_DISK_48**, and
+/// 1..7 as 49..55. Guest software finds the FujiNet by that exact name, so
+/// against an affected build it simply does not: NETCAT prints
+/// "FUJINET_DISK_0 NOT FOUND" and stops.
+///
+/// POM2 relays verbatim as a rule, and this is the documented exception —
+/// the same call the printer unit already gets, where the firmware advertises
+/// it with the modem's type byte and POM2 matches on the name instead (see
+/// DEV.md § FujiNet). Both are upstream bugs that would otherwise make the
+/// relay look broken. The rewrite is deliberately narrow: only the exact
+/// shape "FUJINET_DISK_" + two decimal digits whose value is 48..55, which
+/// no correct firmware can emit, so this evaporates on its own the day
+/// upstream fixes the `to_string`.
+void repairDibName(std::vector<uint8_t>& dib)
+{
+    // status(1) + blocks(3) + name_len(1) + name(16) …
+    if (dib.size() < 22) return;
+    const std::size_t nameLen = dib[4];
+    if (nameLen != 15 || dib.size() < 5 + 16) return;
+
+    static const char kPrefix[] = "FUJINET_DISK_";
+    constexpr std::size_t kPrefixLen = sizeof(kPrefix) - 1;   // 13
+    if (std::memcmp(dib.data() + 5, kPrefix, kPrefixLen) != 0) return;
+
+    const uint8_t d0 = dib[5 + kPrefixLen];
+    const uint8_t d1 = dib[5 + kPrefixLen + 1];
+    if (d0 < '0' || d0 > '9' || d1 < '0' || d1 > '9') return;
+    const int value = (d0 - '0') * 10 + (d1 - '0');
+    if (value < '0' || value > '7') return;      // 48..55 only
+
+    dib[5 + kPrefixLen] = static_cast<uint8_t>(value);   // the digit it meant
+    dib[5 + kPrefixLen + 1] = ' ';                       // pad, name is fixed
+    dib[4] = static_cast<uint8_t>(kPrefixLen + 1);       // …and shorten it
+}
+
+} // namespace
+
 SpOverSlipLink::Response SpOverSlipLink::status(uint8_t unit, uint8_t statusCode)
 {
     const uint8_t fields[5] = { statusCode, 0, 0, 0, 0 };
-    return transact(kSpStatus, 0x03, unit, fields, nullptr, 0);
+    Response r = transact(kSpStatus, 0x03, unit, fields, nullptr, 0);
+    // Status code $03 is the DIB. Repaired here rather than at either call
+    // site so POM2's own device table and the bytes the guest reads cannot
+    // disagree about what a device is called.
+    if (statusCode == 0x03 && r.ok()) repairDibName(r.data);
+    return r;
 }
 
 SpOverSlipLink::Response SpOverSlipLink::readBlock(uint8_t unit, uint32_t block)
@@ -455,7 +606,34 @@ SpOverSlipLink::control(uint8_t unit, uint8_t controlCode,
                         const uint8_t* list, std::size_t n)
 {
     const uint8_t fields[5] = { controlCode, 0, 0, 0, 0 };
-    return transact(kSpControl, 0x03, unit, fields, list, n);
+
+    // The control list goes on the wire WITH its 2-byte little-endian length
+    // prefix — the shape the guest already laid out in its own memory, and
+    // what the peer expects. The reference parser is explicit about it:
+    //
+    //     case CMD_CONTROL:
+    //         // +2 for control list length bytes we need to skip
+    //         std::vector<uint8_t> payload(packet.begin() + 11+2, packet.end());
+    //
+    // (FujiNetWIFI/AppleWin, source/devrelay/types/Request.cpp.)
+    //
+    // Sending the bare list was a protocol bug with two faces, and it cost
+    // most of a day to corner. A list SHORTER than two bytes made that
+    // iterator run past the end of the packet, so the peer threw
+    // std::length_error, did not catch it, and **aborted the whole FujiNet
+    // process** — every "the firmware keeps dying" symptom in this subsystem
+    // traced back to exactly this packet (`cmd=04 unit=00 len=12`, a 1-byte
+    // control list). A longer list did not crash it but had its first two
+    // bytes eaten as the length, which is why the guest-side CONFIG program
+    // showed empty host and drive slots while the peer's own web UI showed
+    // them populated. Pinned by sp_over_slip_link's control-framing case.
+    std::vector<uint8_t> framed;
+    framed.reserve(2 + n);
+    framed.push_back(static_cast<uint8_t>(n & 0xFF));
+    framed.push_back(static_cast<uint8_t>((n >> 8) & 0xFF));
+    if (list && n) framed.insert(framed.end(), list, list + n);
+
+    return transact(kSpControl, 0x03, unit, fields, framed.data(), framed.size());
 }
 
 SpOverSlipLink::Response SpOverSlipLink::init(uint8_t unit)
