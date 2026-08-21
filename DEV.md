@@ -2997,6 +2997,28 @@ the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
   normally, yet the peer aborts out of `Request::from_packet`. Same unit
   whose DIB already carries the modem's type byte. Nothing to fix here — but
   expect it, and expect the trace to name it.
+- **POM2 serves `N:` ITSELF now** (`FujiNetNetDevice`, on by default;
+  `fujinet_builtin_network<slot> = false` turns it off). The peer's own `N:`
+  is inert on the desktop build (below), so relaying faithfully to it means
+  the guest can never fetch anything — this is the difference between a
+  machine that browses and one that does not. Disks, CONFIG and the clock
+  still go to the peer.
+  It is a real device to the guest, not a shim over one: it answers the DIB
+  as "NETWORK" and is counted in the unit-0 device count, so a guest finds it
+  **even with no peer attached at all** — which matters, because the peer
+  dies easily and the device list is cleared when it does. The unit it
+  answers on is whatever the peer called its network device, remembered, or
+  11 when nothing has enumerated.
+  Two things cost debugging time and are worth knowing. The devicespec is NOT
+  the whole control list: the guest sends aux1 (open mode), aux2
+  (translation), THEN the spec — `04 00 4E 3A 68 74 74 70 …` off the wire
+  from the FujiNet Contiki browser — and taking the list verbatim put two
+  binary bytes in front of every URL. And guest read loops end when STATUS
+  stops saying "connected", so that flag has to track "bytes remaining", not
+  "socket open". Scope is HTTP over plain TCP, which is what the retro web
+  serves; no TLS, no SSH, no JSON. Pinned by `fujinet_net_device`.
+  Verified: the FujiNet Contiki browser fetches theoldnet.com through it,
+  77 169 bytes, with no peer running.
 - **The desktop firmware's `N:` device answers "connected" without
   connecting.** The Apple II gets `CONNECTED to N:HTTP://…` and no outbound
   socket is ever opened, watched live on the peer's descriptors. Not the

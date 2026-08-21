@@ -9,6 +9,8 @@
 
 #include "FujiNetCard.h"
 
+#include <cstdlib>
+
 #include "Logger.h"
 #include "M6502.h"
 #include "Memory.h"
@@ -384,6 +386,19 @@ void FujiNetCard::handleSmartPortCall()
 
     const bool connected = link_.isConnected();
 
+    // Trace what the GUEST asks for, not only what POM2 forwards. Without
+    // this, a call served locally — or refused before it ever reached the
+    // link — leaves no trace at all, and the log shows POM2 talking to itself
+    // while the guest's real conversation is invisible.
+    if (std::getenv("POM2_TRACE_FUJINET"))
+        log().info("FujiNet", "guest: cmd=" + std::to_string(command) +
+                              " unit=" + std::to_string(unit) +
+                              " code=" + std::to_string(readGuest(params)));
+
+    // POM2's own N:, when enabled, answers for the peer's NETWORK unit.
+    if (builtInNetwork_ && serveBuiltInNetwork(command, unit, params, payload))
+        return;
+
     switch (command) {
     case kSpStatus: {
         if (!paramsSafe(1)) { finish(kSpIoError); return; }
@@ -621,7 +636,14 @@ void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)
     // Status list for the unit-0 / code-0 call: device count, then reserved
     // bytes. Eight bytes total, which is what X/Y report.
     uint8_t list[8] = {};
-    list[0] = static_cast<uint8_t>(std::min<std::size_t>(link_.deviceCount(), 255));
+    std::size_t count = link_.deviceCount();
+    // The built-in N: is a device the guest must be able to FIND. The count
+    // comes from the peer's chain, and that chain is empty whenever no peer
+    // is attached — so without this the guest is told "no devices", never
+    // probes, and reports a network failure that is really an absent peer.
+    // Claim at least up to our own unit so the scan reaches it.
+    if (builtInNetwork_) count = std::max<std::size_t>(count, builtInNetUnit());
+    list[0] = static_cast<uint8_t>(std::min<std::size_t>(count, 255));
     if (!writeGuestBlock(payloadAddr, list, sizeof(list))) { finish(kSpIoError); return; }
     finish(kSpOk, static_cast<uint8_t>(sizeof(list)), 0x00);
 }
@@ -630,6 +652,141 @@ void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)
 // ProDOS entry
 // ─────────────────────────────────────────────────────────────────────────
 
+
+// ─────────────────────────────────────────────────────────────────────────
+// Built-in N:
+// ─────────────────────────────────────────────────────────────────────────
+
+uint8_t FujiNetCard::builtInNetUnit() const
+{
+    for (const auto& d : link_.devices())
+        if (d.name == "NETWORK" || d.type == kSpTypeNetwork) {
+            const_cast<FujiNetCard*>(this)->netUnit_ = d.unit;
+            break;
+        }
+    return netUnit_ ? netUnit_ : uint8_t{11};
+}
+
+bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
+                                      uint16_t params, uint16_t payload)
+{
+    // `params` already fits 16 bits here (the caller narrowed it), so the
+    // guard the relay path spells as a lambda is just a range check.
+    const auto paramsSafe = [params](std::size_t n) {
+        return FujiNetCard::rangeIsSafe(params, n);
+    };
+
+    // Only the unit the PEER calls its network device. Keyed on the device
+    // table rather than a fixed number because the unit is wherever the
+    // FujiNet's chain happens to put it (11 on the desktop build) — and if no
+    // peer has enumerated yet there is nothing to shadow, so the call falls
+    // through to the normal path and fails the way it always did.
+    if (unit != builtInNetUnit()) return false;
+
+    switch (command) {
+    case kSpControl: {
+        if (!paramsSafe(1) || !rangeIsSafe(payload, 2)) { finish(kSpIoError); return true; }
+        const uint8_t  code    = readGuest(params);
+        const uint16_t listLen = readGuest16(payload);
+        std::vector<uint8_t> list(listLen);
+        const uint32_t listAddr = static_cast<uint32_t>(payload) + 2;
+        if (listLen && (listAddr > 0xFFFF ||
+            !readGuestBlock(static_cast<uint16_t>(listAddr), list.data(), listLen))) {
+            finish(kSpIoError);
+            return true;
+        }
+        switch (code) {
+        case kNetOpen: {
+            if (std::getenv("POM2_TRACE_FUJINET")) {
+                std::string hex;
+                for (std::size_t i = 0; i < list.size() && i < 40; ++i) {
+                    char b[4]; std::snprintf(b, sizeof b, "%02X ", list[i]); hex += b;
+                }
+                log().info("FujiNet", "N: OPEN listLen=" + std::to_string(listLen) +
+                                      " payload=$" + std::to_string(payload) + " : " + hex);
+            }
+            // The control list is aux1 (open mode), aux2 (translation), THEN
+            // the devicespec — measured off the wire from the FujiNet Contiki
+            // browser: `04 00 4E 3A 68 74 74 70 ...` = mode 4, translation 0,
+            // "N:http://…". Taking the whole list as the spec put two binary
+            // bytes in front of the URL and every open failed with an empty
+            // host. The guest may or may not terminate the spec, so trim at
+            // the first NUL rather than trusting the declared length.
+            const std::size_t specOff = (list.size() >= 2) ? 2 : 0;
+            std::string spec(reinterpret_cast<const char*>(list.data() + specOff),
+                             list.size() - specOff);
+            const std::size_t nul = spec.find('\0');
+            if (nul != std::string::npos) spec.resize(nul);
+            finish(net_.open(spec) ? kSpOk : kSpIoError);
+            return true;
+        }
+        case kNetClose:
+            net_.close();
+            finish(kSpOk);
+            return true;
+        default:
+            // Everything else the guest asks of N: — channel mode, EOL
+            // translation, parse/query — is accepted and ignored. Saying "no"
+            // makes guest code give up on the device entirely; saying "fine"
+            // costs a plain HTTP fetch nothing.
+            finish(kSpOk);
+            return true;
+        }
+    }
+
+    case kSpStatus: {
+        if (!paramsSafe(1)) { finish(kSpIoError); return true; }
+        const uint8_t code = readGuest(params);
+        if (code == 0x03) {
+            // The DIB, answered here so the device exists for a guest that is
+            // scanning the chain — including when no peer ever attached.
+            // Layout as the spec lays it out: general status, 3-byte block
+            // count (zero, this is a character device), name length, 16-byte
+            // name, type, subtype, version.
+            static const char kName[] = "NETWORK";
+            uint8_t dib[25] = {};
+            dib[0] = 0xF8;                       // online, character device
+            dib[4] = static_cast<uint8_t>(sizeof(kName) - 1);
+            std::memset(dib + 5, ' ', 16);
+            std::memcpy(dib + 5, kName, sizeof(kName) - 1);
+            dib[21] = kSpTypeNetwork;
+            dib[23] = 0x01;
+            if (!writeGuestBlock(payload, dib, sizeof dib)) { finish(kSpIoError); return true; }
+            finish(kSpOk, static_cast<uint8_t>(sizeof dib), 0x00);
+            return true;
+        }
+        uint8_t st[4];
+        net_.status(st);
+        if (!writeGuestBlock(payload, st, sizeof st)) { finish(kSpIoError); return true; }
+        finish(kSpOk, static_cast<uint8_t>(sizeof st), 0x00);
+        return true;
+    }
+
+    case kSpRead: {
+        if (!paramsSafe(5)) { finish(kSpIoError); return true; }
+        const uint16_t count = readGuest16(params);
+        std::vector<uint8_t> buf(count);
+        const std::size_t n = net_.read(buf.data(), count);
+        if (n && !writeGuestBlock(payload, buf.data(), n)) { finish(kSpIoError); return true; }
+        finish(kSpOk, static_cast<uint8_t>(n & 0xFF), static_cast<uint8_t>(n >> 8));
+        return true;
+    }
+
+    case kSpInit:
+    case kSpOpen:
+    case kSpClose:
+        finish(kSpOk);
+        return true;
+
+    default:
+        // Writes and anything else: not served here, and NOT forwarded
+        // either — the peer's idea of this unit's state and ours would
+        // diverge. Reported as a clean I/O error instead.
+        finish(kSpIoError);
+        return true;
+    }
+}
+
 void FujiNetCard::handleProDosCall()
 {
     if (!cpu_ || !mem_) return;
@@ -637,6 +794,9 @@ void FujiNetCard::handleProDosCall()
 
     const uint8_t  command  = readGuest(kZpCommand);
     const uint8_t  unitByte = readGuest(kZpUnit);
+    if (std::getenv("POM2_TRACE_FUJINET"))
+        log().info("FujiNet", "guest(ProDOS): cmd=" + std::to_string(command) +
+                              " unit=" + std::to_string(unitByte));
     const uint16_t buffer   = readGuest16(kZpBufLo);
     const uint16_t block    = readGuest16(kZpBlkLo);
 

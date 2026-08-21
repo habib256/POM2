@@ -2685,6 +2685,24 @@ endif()
 add_test(NAME tnfs_client COMMAND test_tnfs_client)
 set_tests_properties(tnfs_client PROPERTIES TIMEOUT 60)
 
+# POM2's built-in N: against an in-process HTTP stub (no network in CI):
+# devicespec parsing, body-only delivery, the 512-byte status cap and the
+# connected flag guest read loops end on. See the test header.
+add_executable(test_fujinet_net_device
+    fujinet_net_device_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/FujiNetNetDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_fujinet_net_device PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(NOT WIN32)
+    target_link_libraries(test_fujinet_net_device PRIVATE Threads::Threads)
+else()
+    target_link_libraries(test_fujinet_net_device PRIVATE ws2_32)
+endif()
+
+add_test(NAME fujinet_net_device COMMAND test_fujinet_net_device)
+set_tests_properties(fujinet_net_device PROPERTIES TIMEOUT 60)
+
 # Differential pin of the inline Memory::memRead()/memWrite() fast paths
 # against memReadSlow()/memWriteSlow(): every address × every paging state
 # that feeds the fast-path conditions (INTCXROM/SLOTC3ROM/INTC8ROM, LC RAM,
