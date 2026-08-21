@@ -2981,6 +2981,17 @@ the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
   that dies after two calls is a different bug from one that dies after ten
   thousand. That line plus the per-call trace localised the printer-unit
   crash below in a single run.
+- **POM2's own guest-reset broadcast was killing the peer.**
+  `notifyGuestReset()` sends Control $00 to every device — the courtesy the
+  spec asks for, so a modem drops its line and a printer ejects its page. The
+  printer unit ABORTS on it (below), and POM2 sends that broadcast on EVERY
+  guest reset, so every Ctrl-Reset and every boot killed the FujiNet a moment
+  later. The guest then reported whatever it was doing when the corpse
+  stopped answering — "connection error", "FujiNet not found", a browser that
+  loads and then cannot fetch — and none of those point at a reset that
+  happened seconds earlier. The printer is now skipped in the broadcast, and
+  a guest-issued reset to it is answered locally: `isPrinter()` matches on the
+  DIB name, so a fixed firmware needs no change here.
 - **A `CONTROL` to the peer's PRINTER unit kills it** (upstream). The packet
   is byte-identical in shape to the ones the neighbouring units answer
   normally, yet the peer aborts out of `Request::from_packet`. Same unit

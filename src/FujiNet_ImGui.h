@@ -100,6 +100,11 @@ public:
         std::string helperPathTo;
         bool        requestHelperStart = false;
         bool        requestHelperStop  = false;
+        /// Stop the FujiNet program and start it again. Its own button
+        /// because the peer can die without POM2 being at fault — the
+        /// firmware aborts on device calls POM2 has no business withholding —
+        /// and the fix is always the same two clicks. See DEV.md § FujiNet.
+        bool        requestHelperRestart = false;
     };
 
     Result render(const char* title, bool& open, const Snapshot& snap);

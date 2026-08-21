@@ -706,6 +706,25 @@ void SpOverSlipLink::notifyGuestReset()
     // A live peer answers each of these in microseconds.
     const auto list = devices();
     for (const auto& d : list) {
+        // NOT the printer. Sending it the reset the spec asks for ABORTS the
+        // peer: measured three runs out of three, the firmware throws
+        // std::length_error out of Request::from_packet on this exact call
+        // and the whole FujiNet process dies, while units either side answer
+        // a byte-identical request normally. Same unit whose DIB already
+        // advertises the modem's type byte — its device code is shaky
+        // upstream.
+        //
+        // This mattered far more than a skipped courtesy: POM2 sends this
+        // broadcast on EVERY guest reset, so every Ctrl-Reset and every boot
+        // killed the peer a moment later. The guest then reported whatever it
+        // was doing when the corpse stopped answering — "connection error",
+        // "FujiNet not found", a browser that loads and then cannot fetch —
+        // and none of those point here. Skipping one no-op reset for a
+        // printer that has printed nothing costs the guest nothing.
+        //
+        // Remove once upstream stops aborting; `isPrinter()` already matches
+        // on the DIB name so a fixed firmware needs no change here.
+        if (d.isPrinter()) continue;
         const Response r = control(d.unit, 0x00, nullptr, 0);
         if (!r.replied) break;
     }

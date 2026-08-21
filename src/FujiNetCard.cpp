@@ -439,6 +439,39 @@ void FujiNetCard::handleSmartPortCall()
             return;
         }
         const uint8_t code = readGuest(params);
+
+        // RESET ($00) to the peer's PRINTER unit is answered here instead of
+        // being forwarded, and that is a deliberate, narrow exception to
+        // "relay everything".
+        //
+        // The peer ABORTS on it. Measured 2026-08-21, three runs out of
+        // three: the request is byte-identical in shape to the ones its
+        // neighbouring units answer normally (`04 03 0D 00 00 00 …`, empty
+        // control list), yet the firmware throws std::length_error out of
+        // Request::from_packet, does not catch it, and the whole FujiNet
+        // process dies. It is the same unit whose DIB already advertises the
+        // modem's type byte, so its device code is known-shaky upstream.
+        //
+        // Why this matters more than it looks: EVERY FujiNet program sweeps
+        // the SmartPort chain with exactly this call at start-up — CONFIG,
+        // NETCAT, the Contiki browser. So the peer died a few seconds into
+        // every single session, and the guest then reported whatever it was
+        // doing at the time ("connection error", "FujiNet not found") rather
+        // than the truth. Answering the reset locally with success costs the
+        // guest nothing — resetting a printer that has printed nothing is a
+        // no-op — and keeps the peer alive for the rest of the session.
+        //
+        // Scoped to the printer unit AND to code $00 so every other control
+        // call, including the printer's own, still goes to the peer
+        // untouched. Remove it once upstream stops aborting.
+        if (code == 0x00) {
+            for (const auto& d : link_.devices()) {
+                if (d.unit == unit && d.isPrinter()) {
+                    finish(kSpOk);
+                    return;
+                }
+            }
+        }
         // The control list is length-prefixed (2 bytes, little-endian) at the
         // pointer the parameter list carries.
         const uint16_t listLen = readGuest16(payload);
