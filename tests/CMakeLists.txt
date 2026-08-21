@@ -2685,6 +2685,24 @@ endif()
 add_test(NAME tnfs_client COMMAND test_tnfs_client)
 set_tests_properties(tnfs_client PROPERTIES TIMEOUT 60)
 
+# The same client against a server that LIES: a READ declaring more bytes
+# than were asked for, a directory that never ends, replies answering another
+# command. Every case below was a live defect — TnfsClient talks to public
+# servers POM2 neither owns nor audits, so its bounds are load-bearing.
+add_executable(test_tnfs_client_hostile
+    tnfs_client_hostile_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/TnfsClient.cpp
+)
+target_include_directories(test_tnfs_client_hostile PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(NOT WIN32)
+    target_link_libraries(test_tnfs_client_hostile PRIVATE Threads::Threads)
+else()
+    target_link_libraries(test_tnfs_client_hostile PRIVATE ws2_32)
+endif()
+
+add_test(NAME tnfs_client_hostile COMMAND test_tnfs_client_hostile)
+set_tests_properties(tnfs_client_hostile PROPERTIES TIMEOUT 90)
+
 # POM2's built-in N: against an in-process HTTP stub (no network in CI):
 # devicespec parsing, body-only delivery, the 512-byte status cap and the
 # connected flag guest read loops end on. See the test header.
@@ -5112,6 +5130,7 @@ set_tests_properties(sp_over_slip_link PROPERTIES TIMEOUT 60)
 add_executable(test_fujinet_card
     fujinet_card_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/FujiNetCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FujiNetNetDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp
     ${CMAKE_SOURCE_DIR}/src/SpTcpTransport.cpp

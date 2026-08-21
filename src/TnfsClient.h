@@ -72,6 +72,19 @@ public:
     /// most data one round trip can carry is 525.
     static constexpr int      kMaxReadChunk  = kMaxPayload - 3;
 
+    // ── Bounds on what a REMOTE server can make this client do ────────────
+    //
+    // Every loop below is driven by replies from a server POM2 does not own
+    // (tnfs.fujinet.online and friends), so each one carries a hard cap. They
+    // are not tuning knobs: without them a hostile or merely broken server
+    // hangs the caller, floods the network, or grows the heap without bound.
+
+    /// Out-of-sequence datagrams tolerated per attempt before re-sending.
+    static constexpr int      kMaxStragglers = 8;
+    /// Directory entries accepted before a listing is called truncated. No
+    /// real folder of disk images approaches this.
+    static constexpr std::size_t kMaxDirEntries = 4096;
+
     ~TnfsClient();
 
     /// Mount `path` (usually "/") on `host`. Tries TCP, then UDP. On failure

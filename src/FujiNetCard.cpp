@@ -396,7 +396,12 @@ void FujiNetCard::handleSmartPortCall()
                               " code=" + std::to_string(readGuest(params)));
 
     // POM2's own N:, when enabled, answers for the peer's NETWORK unit.
-    if (builtInNetwork_ && serveBuiltInNetwork(command, unit, params, payload))
+    // `paramsWide <= 0xFFFF` before the narrowing, exactly as the relay path
+    // below checks it: a cmdList of $FFFE wraps to $0002, and without this the
+    // built-in device would read its byte count out of zero page and answer
+    // kSpOk with a bogus length where the relay answers kSpIoError.
+    if (builtInNetwork_ && paramsWide <= 0xFFFF &&
+        serveBuiltInNetwork(command, unit, params, payload))
         return;
 
     switch (command) {
@@ -657,14 +662,37 @@ void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)
 // Built-in N:
 // ─────────────────────────────────────────────────────────────────────────
 
+namespace {
+/// General-status byte for the built-in N:. Bits, per the IIgs Firmware
+/// Reference ch. 7: b6 write allowed, b5 read allowed, b4 online. b7 (block
+/// device) and b3 (format allowed) stay CLEAR — this is a character device
+/// and there is nothing to format.
+constexpr uint8_t kGeneralStatusChar = 0x70;
+}  // namespace
+
 uint8_t FujiNetCard::builtInNetUnit() const
 {
+    // A SmartPort chain is CONTIGUOUS 1..N: what unit 0 answers is a COUNT,
+    // not a highest-unit-number, and every standard chain walk — POM2's own
+    // included (SpOverSlipLink::enumerateDevices) — stops at the first unit
+    // that answers "no device". So the built-in device has to sit INSIDE the
+    // chain. Parking it at a fixed 11 made it unreachable by the very scan
+    // meant to find it: with no peer, the guest probed unit 1, got nothing,
+    // and never looked further.
     for (const auto& d : link_.devices())
         if (d.name == "NETWORK" || d.type == kSpTypeNetwork) {
-            const_cast<FujiNetCard*>(this)->netUnit_ = d.unit;
-            break;
+            const_cast<FujiNetCard*>(this)->netUnit_ = d.unit;   // override in place
+            return netUnit_;
         }
-    return netUnit_ ? netUnit_ : uint8_t{11};
+    // The peer has no network device (or there is no peer): take the slot just
+    // past its last one. Held steady while the guest has a session open,
+    // though — moving the unit under its feet because the peer died mid-fetch
+    // would strand it mid-page.
+    if (net_.isOpen() && netUnit_) return netUnit_;
+    const std::size_t next = link_.deviceCount() + 1;
+    const_cast<FujiNetCard*>(this)->netUnit_ =
+        static_cast<uint8_t>(std::min<std::size_t>(next, 254));
+    return netUnit_;
 }
 
 bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
@@ -682,6 +710,15 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
     // peer has enumerated yet there is nothing to shadow, so the call falls
     // through to the normal path and fails the way it always did.
     if (unit != builtInNetUnit()) return false;
+
+    // And never shadow a device the PEER really has at that unit. The chosen
+    // unit is remembered across a peer loss, so a peer that comes back with a
+    // different chain — a disk where our network device used to sit — would
+    // otherwise have its blocks answered by a network device, and ProDOS
+    // would report an I/O error on a perfectly good volume.
+    for (const auto& d : link_.devices())
+        if (d.unit == unit && d.name != "NETWORK" && d.type != kSpTypeNetwork)
+            return false;
 
     switch (command) {
     case kSpControl: {
@@ -745,7 +782,12 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
             // name, type, subtype, version.
             static const char kName[] = "NETWORK";
             uint8_t dib[25] = {};
-            dib[0] = 0xF8;                       // online, character device
+            // General status bits (IIgs Firmware Ref. ch. 7): b7 block device,
+            // b6 write allowed, b5 read allowed, b4 online, b3 format allowed.
+            // This is a CHARACTER device, so b7 must be CLEAR — 0xF8 told the
+            // guest it was a block device with a zero block count that could
+            // be formatted, which is three claims at once and all wrong.
+            dib[0] = kGeneralStatusChar;
             dib[4] = static_cast<uint8_t>(sizeof(kName) - 1);
             std::memset(dib + 5, ' ', 16);
             std::memcpy(dib + 5, kName, sizeof(kName) - 1);
@@ -753,6 +795,17 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
             dib[23] = 0x01;
             if (!writeGuestBlock(payload, dib, sizeof dib)) { finish(kSpIoError); return true; }
             finish(kSpOk, static_cast<uint8_t>(sizeof dib), 0x00);
+            return true;
+        }
+        if (code == 0x00) {
+            // The STANDARD general-status call, which is not the network
+            // status. Answering the network reply here put a $00 in byte 0
+            // whenever nothing was open, and byte 0 is the status byte: bit 4
+            // clear reads as "device offline, no read, no write", so a chain
+            // walker concluded N: was dead before ever opening anything.
+            const uint8_t gen[4] = { kGeneralStatusChar, 0x00, 0x00, 0x00 };
+            if (!writeGuestBlock(payload, gen, sizeof gen)) { finish(kSpIoError); return true; }
+            finish(kSpOk, static_cast<uint8_t>(sizeof gen), 0x00);
             return true;
         }
         uint8_t st[4];
@@ -765,8 +818,14 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
     case kSpRead: {
         if (!paramsSafe(5)) { finish(kSpIoError); return true; }
         const uint16_t count = readGuest16(params);
-        std::vector<uint8_t> buf(count);
-        const std::size_t n = net_.read(buf.data(), count);
+        // Check the DESTINATION before touching the cursor. net_.read()
+        // CONSUMES, and a write refused afterwards left those bytes gone for
+        // good: the guest retried at a good address, received the NEXT chunk,
+        // and the page silently lost a piece with no error anywhere in sight.
+        const std::size_t want = std::min<std::size_t>(count, net_.available());
+        if (want && !rangeIsSafe(payload, want)) { finish(kSpIoError); return true; }
+        std::vector<uint8_t> buf(want);
+        const std::size_t n = net_.read(buf.data(), want);
         if (n && !writeGuestBlock(payload, buf.data(), n)) { finish(kSpIoError); return true; }
         finish(kSpOk, static_cast<uint8_t>(n & 0xFF), static_cast<uint8_t>(n >> 8));
         return true;

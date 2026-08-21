@@ -5,6 +5,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <cstring>
 
 #ifndef _WIN32
@@ -69,6 +74,119 @@ bool parseSpec(const std::string& spec, std::string& host, uint16_t& port,
     return !host.empty();
 }
 
+
+// ── Bounded host I/O ──────────────────────────────────────────────────────
+//
+// This runs on the CPU thread INSIDE a SmartPort call, and the emulation
+// worker holds the state mutex for the whole slice (EmulationController.cpp,
+// `runCpuSlice` under `stateMtx`). So every wait here is bounded, and the
+// whole exchange shares ONE deadline: otherwise the emulated machine — UI,
+// menus and the FujiNet panel's own Restart button included — freezes solid
+// for as long as some host on the internet feels like stalling.
+//
+// SO_SNDTIMEO/SO_RCVTIMEO are not enough for that, twice over:
+//   * They do not bound connect(). Measured 2026-08-21 on macOS against
+//     192.0.2.1 (TEST-NET-1, swallows SYNs): connect() returned after 75 s
+//     with the option asking for 8. That is 75 s of frozen emulator.
+//   * A per-recv timeout bounds each call, never the transfer. A server
+//     drip-feeding one byte just inside the timeout keeps the loop alive
+//     forever — an unbounded freeze, not a slow page.
+constexpr int kConnectTimeoutMs = 5000;
+
+/// A guard, not a policy: the guest has 128 KB of RAM and STATUS can only
+/// announce 512 bytes at a time, so a runaway response must not grow POM2's
+/// heap without bound.
+constexpr std::size_t kMaxBody = 512u * 1024u;
+
+using SteadyPoint = std::chrono::steady_clock::time_point;
+
+/// Milliseconds left before `deadline`, never negative.
+int msLeft(SteadyPoint deadline)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return 0;
+    return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                deadline - now).count());
+}
+
+/// A DNS lookup that cannot outlive the deadline.
+///
+/// There is no portable async resolver, and getaddrinfo() itself blocks for
+/// as long as the resolver chain takes — resolv.conf timeout x attempts x
+/// servers, tens of seconds against an unreachable DNS server. On the CPU
+/// thread under the emulator's state mutex that is the whole window frozen,
+/// unpaintable, with the panel's own Stop button out of reach. So the lookup
+/// runs on its own thread and is ABANDONED if it overruns: the thread frees
+/// its own result and exits whenever the resolver finally answers.
+struct Lookup {
+    std::mutex mtx;
+    bool       abandoned = false;
+    addrinfo*  res       = nullptr;
+};
+
+bool resolveBounded(const std::string& host, const std::string& portStr,
+                    int timeoutMs, addrinfo** out)
+{
+    *out = nullptr;
+    if (timeoutMs <= 0) return false;
+
+    auto shared = std::make_shared<Lookup>();
+    std::promise<bool> ready;
+    std::future<bool>  fut = ready.get_future();
+
+    std::thread([shared, host, portStr, p = std::move(ready)]() mutable {
+        addrinfo hints{};
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        addrinfo* r  = nullptr;
+        const bool ok = (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &r) == 0) && r;
+
+        std::lock_guard<std::mutex> lk(shared->mtx);
+        if (shared->abandoned) {           // nobody is waiting any more
+            if (r) ::freeaddrinfo(r);
+            return;
+        }
+        shared->res = r;
+        p.set_value(ok);
+    }).detach();
+
+    if (fut.wait_for(std::chrono::milliseconds(timeoutMs)) != std::future_status::ready) {
+        std::lock_guard<std::mutex> lk(shared->mtx);
+        shared->abandoned = true;
+        if (shared->res) { ::freeaddrinfo(shared->res); shared->res = nullptr; }
+        return false;
+    }
+
+    const bool ok = fut.get();
+    std::lock_guard<std::mutex> lk(shared->mtx);
+    *out = shared->res;
+    shared->res = nullptr;
+    return ok && *out;
+}
+
+/// connect() bounded by an explicit wait — the same non-blocking pattern
+/// W5100Device already uses. Leaves the socket NON-BLOCKING on success,
+/// which is what the transfer below wants.
+bool connectBounded(const addrinfo* a, int timeoutMs, socket_t& out)
+{
+    socket_t s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (!isValidSocket(s)) return false;
+    disableSigpipe(s);
+    if (!setNonBlocking(s)) { closeHostSocketValue(s); return false; }
+
+    if (::connect(s, a->ai_addr, static_cast<socklen_c>(a->ai_addrlen)) != 0) {
+        if (!errInProgress(lastSocketError()) ||
+            waitSocket(s, SocketWait::Write, timeoutMs) != WaitResult::Ready ||
+            connectResult(s) != 0) {
+            closeHostSocketValue(s);
+            return false;
+        }
+    }
+    out = s;
+    return true;
+}
+
 }  // namespace
 
 FujiNetNetDevice::~FujiNetNetDevice() { close(); }
@@ -76,35 +194,20 @@ FujiNetNetDevice::~FujiNetNetDevice() { close(); }
 bool FujiNetNetDevice::fetchHttp(const std::string& host, uint16_t port,
                                  const std::string& path)
 {
-    addrinfo hints{};
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+    const SteadyPoint deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(deadlineMs_);
 
     addrinfo* res = nullptr;
-    const std::string portStr = std::to_string(port);
-    if (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) {
+    if (!resolveBounded(host, std::to_string(port), msLeft(deadline), &res)) {
         error_ = kErrFileNotFound;          // the guest reads this as "no such host"
+        log().warn("FujiNet", "built-in N: cannot resolve \"" + host + "\"");
         return false;
     }
 
     socket_t fd = kInvalidSocket;
     for (addrinfo* a = res; a; a = a->ai_next) {
-        socket_t s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (!isValidSocket(s)) continue;
-        disableSigpipe(s);
-        // Bounded: this runs on the CPU thread inside a SmartPort call, so an
-        // unreachable host must not wedge the emulated machine for the
-        // stack's own retry budget.
-        timeval tv{};
-        tv.tv_sec = 8;
-        ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof tv);
-        ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof tv);
-        if (::connect(s, a->ai_addr, static_cast<socklen_c>(a->ai_addrlen)) == 0) {
-            fd = s;
-            break;
-        }
-        closeHostSocketValue(s);
+        const int budget = std::min(kConnectTimeoutMs, msLeft(deadline));
+        if (connectBounded(a, budget, fd)) break;
     }
     ::freeaddrinfo(res);
     if (!isValidSocket(fd)) { error_ = kErrGeneral; return false; }
@@ -112,28 +215,63 @@ bool FujiNetNetDevice::fetchHttp(const std::string& host, uint16_t port,
     // HTTP/1.0 on purpose: it ends the body at EOF, so there is no chunked
     // transfer-encoding to unpick. `Connection: close` says the same thing to
     // a server that answers 1.1 anyway.
-    std::string req = "GET " + path + " HTTP/1.0\r\n"
-                      "Host: " + host + "\r\n"
-                      "User-Agent: POM2-FujiNet/1.0\r\n"
-                      "Connection: close\r\n\r\n";
-    if (sendNoSignal(fd, req.data(), req.size()) != static_cast<iolen_t>(req.size())) {
-        closeHostSocketValue(fd);
-        error_ = kErrGeneral;
-        return false;
+    const std::string req = "GET " + path + " HTTP/1.0\r\n"
+                            "Host: " + host + "\r\n"
+                            "User-Agent: POM2-FujiNet/1.0\r\n"
+                            "Connection: close\r\n\r\n";
+
+    // The socket is non-blocking, so a send can be short or refuse outright.
+    std::size_t sent = 0;
+    while (sent < req.size()) {
+        const int left = msLeft(deadline);
+        if (left <= 0 || waitSocket(fd, SocketWait::Write, left) != WaitResult::Ready) {
+            closeHostSocketValue(fd);
+            error_ = kErrGeneral;
+            return false;
+        }
+        const iolen_t w = sendNoSignal(fd, req.data() + sent, req.size() - sent);
+        if (w > 0) { sent += static_cast<std::size_t>(w); continue; }
+        const int e = lastSocketError();
+        if (!errWouldBlock(e) && !errInterrupted(e)) {
+            closeHostSocketValue(fd);
+            error_ = kErrGeneral;
+            return false;
+        }
     }
 
     std::vector<uint8_t> raw;
     uint8_t buf[4096];
+    bool truncated = false;
     for (;;) {
+        const int left = msLeft(deadline);
+        if (left <= 0) { truncated = true; break; }
+        const WaitResult wr = waitSocket(fd, SocketWait::Read, left);
+        if (wr != WaitResult::Ready) { truncated = true; break; }
+
         const iolen_t r = ::recv(fd, reinterpret_cast<char*>(buf), sizeof buf, 0);
-        if (r <= 0) break;
-        raw.insert(raw.end(), buf, buf + r);
-        // A guard, not a policy: the guest has 128 KB of RAM and the status
-        // reply can only ever announce 512 bytes at a time, so a runaway
-        // response must not grow POM2's heap without bound.
-        if (raw.size() > 512u * 1024u) break;
+        if (r == 0) break;                  // clean EOF — the body is complete
+        if (r < 0) {
+            const int e = lastSocketError();
+            if (errWouldBlock(e) || errInterrupted(e)) continue;
+            truncated = true;
+            break;
+        }
+        raw.insert(raw.end(), buf, buf + static_cast<std::size_t>(r));
+        if (raw.size() > kMaxBody) { truncated = true; break; }
     }
     closeHostSocketValue(fd);
+
+    // A short read is NOT a short page. Handing the guest half a document it
+    // cannot tell from a whole one is the one failure nobody can diagnose from
+    // the Apple II side, so say so instead.
+    if (truncated) {
+        error_ = kErrGeneral;
+        log().warn("FujiNet", "built-in N: incomplete response from " + host + path +
+                              " — " + std::to_string(raw.size()) +
+                              " bytes before the deadline or the size cap; refusing to"
+                              " hand the guest a half page");
+        return false;
+    }
 
     // Hand the guest the BODY only. Guest-side browsers parse HTML, not
     // response headers, and the FujiNet's own N: does the same split.
@@ -163,6 +301,9 @@ bool FujiNetNetDevice::open(const std::string& devicespec)
 
     const bool ok = fetchHttp(host, port, path);
     open_ = ok;
+    // available()/read() are public and do not consult open_; a failed fetch
+    // must not leave partial bytes reachable.
+    if (!ok) { body_.clear(); cursor_ = 0; }
     description_ = devicespec + (ok ? " — " + std::to_string(body_.size()) + " B"
                                     : " — failed");
     log().info("FujiNet", std::string("built-in N: ") + (ok ? "fetched " : "failed ") +

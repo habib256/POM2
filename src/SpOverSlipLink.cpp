@@ -228,10 +228,11 @@ void SpOverSlipLink::enumerateDevices()
     for (uint8_t unit = 1; unit <= kMaxUnits; ++unit) {
         Response r = init(unit);
 
-        if (!r.replied && unit == 1) {
+        if (!r.replied) {
             // A board that just enumerated its USB endpoint may not have its
-            // firmware up yet. Retry the first unit a couple of times before
-            // concluding there is nothing there.
+            // firmware up yet, and a live board can be slow on ONE unit while
+            // it brings its own device stack up. Retry before concluding
+            // anything — for every unit, not just the first.
             for (int attempt = 0; attempt < 2 && !r.replied; ++attempt) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 if (stopFlag_.load()) return;
@@ -239,9 +240,26 @@ void SpOverSlipLink::enumerateDevices()
             }
         }
         if (!r.replied) {
-            // Peer is not answering at all — not "no more devices".
-            handlePeerLost();
-            return;
+            if (found.empty()) {
+                // Nothing answered at all — there is no peer to talk to.
+                handlePeerLost();
+                return;
+            }
+            // Units already answered, so the peer is ALIVE and merely slow on
+            // this one. Dropping the connection here used to throw away every
+            // device found so far (the publish below is never reached), after
+            // which the worker reconnected, hit the same slow unit and dropped
+            // again — a livelock where the panel and the guest both saw ZERO
+            // devices for ever, and where the serial transport reopened the
+            // CDC device several times a second, driving the ESP32's
+            // auto-reset line. Raising kMaxUnits 8 -> 32 made this far easier
+            // to hit. Keep what answered and stop the sweep.
+            log().warn("FujiNet", "unit " + std::to_string(unit) +
+                                  " did not answer within " +
+                                  std::to_string(timeoutMs()) + " ms — keeping the " +
+                                  std::to_string(found.size()) +
+                                  " device(s) already enumerated");
+            break;
         }
         if (r.status != kSpOk) break;      // end of the chain
 
@@ -287,20 +305,31 @@ void SpOverSlipLink::peerLostLocked()
     // later and from further away. So say it LOUDLY and say how long it
     // lasted and how much work it did — a peer that dies after two calls is a
     // different bug from one that dies after ten thousand.
-    if (peerSince_ != std::chrono::steady_clock::time_point{}) {
-        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-                              std::chrono::steady_clock::now() - peerSince_).count();
-        uint64_t calls = 0, timeouts = 0;
-        {
-            std::lock_guard<std::mutex> sl(statsMtx_);
+    // Snapshot and clear the whole triple under ONE lock: the worker can be
+    // in notePeerConnected() at the same moment (this path runs on the CPU
+    // thread too, via transact()), and reading the timestamp outside the
+    // mutex that guards its counters is what paired one peer's connect with
+    // another's loss.
+    bool     hadPeer  = false;
+    long long secs    = 0;
+    uint64_t calls    = 0;
+    uint64_t timeouts = 0;
+    {
+        std::lock_guard<std::mutex> sl(statsMtx_);
+        if (peerSince_ != std::chrono::steady_clock::time_point{}) {
+            hadPeer  = true;
+            secs     = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - peerSince_).count();
             calls    = stats_.calls    - peerCallsAtConnect_;
             timeouts = stats_.timeouts - peerTimeoutsAtConnect_;
+            peerSince_ = {};
         }
+    }
+    if (hadPeer) {
         log().warn("FujiNet",
                    "peer LOST after " + std::to_string(secs) + " s — " +
                    std::to_string(calls) + " call(s) served, " +
                    std::to_string(timeouts) + " timeout(s)");
-        peerSince_ = {};
     }
 
     if (transport_) transport_->dropPeer();
@@ -313,8 +342,15 @@ void SpOverSlipLink::peerLostLocked()
 
 void SpOverSlipLink::notePeerConnected()
 {
-    peerSince_ = std::chrono::steady_clock::now();
+    // Under statsMtx_ with the counters it is reported next to. The worker
+    // writes it here while the CPU thread can be reading and clearing it in
+    // peerLostLocked() (transact() calls that path when a write to a
+    // just-reset connection fails), so an unlocked store was a real race —
+    // and the symptom was a "peer LOST after <nonsense> s" line pairing one
+    // peer's connect with another's loss.
+    const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> sl(statsMtx_);
+    peerSince_             = now;
     peerCallsAtConnect_    = stats_.calls;
     peerTimeoutsAtConnect_ = stats_.timeouts;
 }

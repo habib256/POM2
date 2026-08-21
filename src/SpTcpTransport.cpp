@@ -20,6 +20,8 @@
 #include "SpTransport.h"
 
 #include "Logger.h"
+
+#include <chrono>
 #include "SocketUtil.h"
 
 #include <cstring>
@@ -145,6 +147,15 @@ bool SpTcpTransport::pollForPeer(int timeoutMs)
     // 6502 is stalled waiting for each one, so Nagle's delayed-ACK pairing
     // would add up to 40 ms to every single disk block.
     setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
+    // NON-BLOCKING, and this is load-bearing rather than tidy. writeAll()
+    // runs on the CPU thread holding both callMtx_ and the emulator's state
+    // mutex; on a blocking socket a peer that stops draining (suspended,
+    // deadlocked, under a debugger) parks send() for ever once the send and
+    // receive buffers fill — a ~131 KB SLIP-escaped write is enough. The UI
+    // thread then blocks on the state mutex the moment it paints the FujiNet
+    // panel and can never reach the Stop button, so the only way out was to
+    // kill POM2. readSome() already treats EWOULDBLOCK as "nothing yet".
+    setNonBlocking(fd);
 
     {
         std::lock_guard<std::mutex> life(fdLifeMtx_);
@@ -163,20 +174,40 @@ bool SpTcpTransport::writeAll(const uint8_t* p, std::size_t n)
     const socket_t fd = clientFd_.load();
     if (!isValidSocket(fd)) return false;
 
+    // ONE deadline for the whole write, not one per wait. A peer that accepts
+    // a trickle of bytes just often enough keeps a per-wait timeout alive for
+    // ever, and this runs on the CPU thread under the emulator's state mutex:
+    // "slow" and "hung" look identical from the Apple II, and both freeze the
+    // window. SpOverSlipLink's header promises every call is bounded by
+    // timeoutMs(); this is where TCP keeps that promise.
+    //
+    // Generous next to a SmartPort call's 250 ms budget: this is the "the peer
+    // has stopped reading" line, not a latency knob.
+    constexpr int kWriteDeadlineMs = 2000;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(kWriteDeadlineMs);
+
     std::size_t sent = 0;
     while (sent < n) {
         const iolen_t w = sendNoSignal(fd, p + sent, n - sent);
         if (w > 0) { sent += static_cast<std::size_t>(w); continue; }
         const int e = lastSocketError();
-        if (errInterrupted(e)) continue;
-        if (errWouldBlock(e)) {
-            // The socket is blocking, so this is rare; wait for room rather
-            // than spinning.
-            if (waitSocket(fd, SocketWait::Write, 250) == WaitResult::Ready)
-                continue;
+        if (!errInterrupted(e) && !errWouldBlock(e)) return false;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            log().warn("FujiNet", "peer stopped accepting data — " +
+                                  std::to_string(sent) + " of " +
+                                  std::to_string(n) + " bytes written before the "
+                                  "write deadline; dropping the connection");
             return false;
         }
-        return false;
+        const int left = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        if (waitSocket(fd, SocketWait::Write, left) != WaitResult::Ready) {
+            // Timeout or error: either way this peer is not taking the packet.
+            return false;
+        }
     }
     return true;
 }
