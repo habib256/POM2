@@ -296,6 +296,18 @@ void SpOverSlipLink::enumerateDevices()
                               " SmartPort device(s) on " + describe());
 }
 
+namespace {
+/// Say it once, with the count, on the way out of a call. Logging per bad
+/// byte turned a garbling peer into hundreds of stderr writes under the
+/// Logger mutex while the emulator's state mutex was held.
+void noteTruncatedFrames(unsigned n)
+{
+    if (!n) return;
+    log().warn("FujiNet", "discarded " + std::to_string(n) +
+                          " truncated SP-over-SLIP frame(s) during one call");
+}
+}  // namespace
+
 void SpOverSlipLink::peerLostLocked()
 {
     // A peer dying is the single most consequential event in this subsystem
@@ -485,9 +497,11 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                           std::chrono::milliseconds(budgetMs);
 
     uint8_t buf[1024];
+    unsigned truncated = 0;                  // reported once, when we leave
     for (;;) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
+            noteTruncatedFrames(truncated);
             std::lock_guard<std::mutex> sl(statsMtx_);
             ++stats_.timeouts;
             return out;                      // replied = false
@@ -497,7 +511,7 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                 .count());
 
         const int got = t->readSome(buf, sizeof(buf), waitMs > 0 ? waitMs : 1);
-        if (got < 0) { peerLostLocked(); return out; }
+        if (got < 0) { noteTruncatedFrames(truncated); peerLostLocked(); return out; }
         if (got == 0) continue;              // nothing yet; deadline re-checked
 
         {
@@ -513,7 +527,16 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
             case SlipFramer::Feed::Truncated:
                 // A frame cut short — exactly what a guest reset mid-transfer
                 // looks like. Not fatal: resync and keep waiting for ours.
-                log().warn("FujiNet", "discarded a truncated SP-over-SLIP frame");
+                //
+                // Counted always, logged ONCE per call. The framer reports
+                // this for every $DB not followed by an escape byte, so a
+                // garbling peer sending `C0 DB 00` over and over produced one
+                // unthrottled stderr write per three bytes — each under
+                // Logger's mutex while callMtx_ and the emulator's state mutex
+                // are both held, for the whole 250 ms budget. Hundreds of
+                // syscalls stalling the emulated CPU, to say the same sentence
+                // hundreds of times.
+                ++truncated;
                 break;
 
             case SlipFramer::Feed::Frame: {
@@ -536,6 +559,7 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                                " unit=" + std::to_string(unit) +
                                " status=" + std::to_string(out.status) +
                                " data=" + std::to_string(out.data.size()) + "o");
+                noteTruncatedFrames(truncated);
                 return out;
             }
             }
