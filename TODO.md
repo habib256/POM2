@@ -679,6 +679,28 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   different route than planned: POM2 launches and reaps an EXISTING FujiNet
   desktop binary (`ChildProcess`) instead of vendoring the firmware. See
   `docs/fujinet_plan.md` § 8 for why the vendored build was rejected.
+- 🟡 **[FujiNet] the 250 ms relay timeout is sized for local media only** —
+  measured 2026-08-21. `SpOverSlipLink::kDefaultTimeoutMs` is fine while the
+  peer answers out of its own SPIFFS (booting `autorun.po` never approaches
+  it), but every block read of a TNFS-hosted image crosses the internet and
+  overruns it, so the guest gets `FN ERROR` instead of a boot. Workaround
+  today is the per-slot `fujinet_timeout_ms_slot<N>` key (3000 works); it has
+  no UI and nothing tells the user it is why their network disk will not
+  boot. Options: raise the default, or measure the peer's round-trip at
+  enumeration and size the timeout from it. *~2 h.* → `DEV.md` § FujiNet.
+- 🟡 **[FujiNet] a network-backed SmartPort call freezes the emulator** —
+  `transact()` blocks the CPU thread under `stateMutex` by design (see the
+  threading note in `SpOverSlipLink.h`, and § 9 of the plan for why that was
+  the right call). Invisible at 250 ms over loopback; very visible once the
+  timeout is raised for a peer whose media lives on the internet — the UI and
+  the AI control server both stall for the length of every read. Wants at
+  least a "waiting on FujiNet" indication, and possibly a bounded pump of the
+  UI while a call is outstanding.
+- 🟢 **[FujiNet] `PR#n` before the peer attaches prints `FN ERROR`** — the
+  autostart slot scan handles the no-peer case correctly (the card steps
+  aside and the scan carries on to slot 6), but a manual `PR#n` in the same
+  state just fails. The card could wait briefly for a peer, or say *why* it
+  failed. Cosmetic, but it is the first thing anyone hits.
 - 🟢 **[FujiNet] media bays + modem bridge — DECIDED AGAINST.** Surfacing
   the peer's block units as `MountableMediaCard` bays would add rows whose
   Mount/Eject cannot work (the images live on the FujiNet's own SD/TNFS
