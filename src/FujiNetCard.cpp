@@ -711,6 +711,15 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
     // through to the normal path and fails the way it always did.
     if (unit != builtInNetUnit()) return false;
 
+    // While a CONNECTED peer is still enumerating, its chain is unknown and
+    // devices() is empty — the list is cleared on peer loss and only
+    // republished at the end of the whole INIT sweep. Claiming a unit in that
+    // window would shadow whatever the peer is about to publish there, so
+    // wait rather than guess. With no peer at all there is nothing to shadow
+    // and the built-in device answers immediately, which is the case it
+    // exists for.
+    if (link_.isConnected() && link_.deviceCount() == 0) return false;
+
     // And never shadow a device the PEER really has at that unit. The chosen
     // unit is remembered across a peer loss, so a peer that comes back with a
     // different chain — a disk where our network device used to sit — would
