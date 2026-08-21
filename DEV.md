@@ -3006,9 +3006,24 @@ the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
   It is a real device to the guest, not a shim over one: it answers the DIB
   as "NETWORK" and is counted in the unit-0 device count, so a guest finds it
   **even with no peer attached at all** — which matters, because the peer
-  dies easily and the device list is cleared when it does. The unit it
-  answers on is whatever the peer called its network device, remembered, or
-  11 when nothing has enumerated.
+  dies easily and the device list is cleared when it does.
+
+  **Where it sits in the chain is not a free choice.** A SmartPort chain is
+  contiguous `1..N` — what unit 0 answers is a COUNT, not a highest-unit
+  number — and every standard chain walk, including POM2's own
+  (`SpOverSlipLink::enumerateDevices`), stops at the first unit that answers
+  "no device". Parking the device at a fixed unit 11 therefore made it
+  invisible to the very scan meant to find it: with no peer the guest probed
+  unit 1, got nothing, and never looked further. So: the peer's NETWORK unit
+  when it has one (overridden in place), otherwise the slot just past its
+  last device. Three rules follow, each of which was a live bug —
+  · never answer for a unit the peer really holds (a remembered unit plus a
+  peer that came back with a different chain = ProDOS reporting an I/O error
+  on a good volume);
+  · never claim a unit while a CONNECTED peer is still enumerating — its list
+  is empty for the whole sweep and it is about to publish;
+  · hold the unit steady while the guest has a session open, so a peer dying
+  mid-fetch does not move the device under its feet.
   Two things cost debugging time and are worth knowing. The devicespec is NOT
   the whole control list: the guest sends aux1 (open mode), aux2
   (translation), THEN the spec — `04 00 4E 3A 68 74 74 70 …` off the wire
@@ -3016,7 +3031,22 @@ the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
   binary bytes in front of every URL. And guest read loops end when STATUS
   stops saying "connected", so that flag has to track "bytes remaining", not
   "socket open". Scope is HTTP over plain TCP, which is what the retro web
-  serves; no TLS, no SSH, no JSON. Pinned by `fujinet_net_device`.
+  serves; no TLS, no SSH, no JSON.
+
+  **Every wait is bounded, and one deadline covers the whole exchange** — DNS,
+  connect, request and body together. This is not tidiness: the fetch runs on
+  the CPU thread inside `runCpuSlice`, which holds `stateMtx`, and the UI
+  thread needs that mutex to paint anything. An unbounded fetch is a frozen,
+  unpaintable window whose own Stop button is out of reach. Two traps, both
+  measured rather than assumed: `SO_SNDTIMEO` does **not** bound `connect()`
+  (macOS, 192.0.2.1 — 75 s against an 8 s request), and a per-recv timeout
+  never bounds a *transfer*, so a server drip-feeding one byte just inside it
+  holds on for ever. `getaddrinfo` is unbounded too and there is no portable
+  async resolver, so the lookup runs on its own thread and is abandoned if it
+  overruns. Finally, a short read is reported as an ERROR, never as a short
+  page: a truncated document the guest cannot distinguish from a whole one is
+  the one failure nobody can diagnose from the Apple II side. Pinned by
+  `fujinet_net_device`, including a stalled server and a blackholed host.
   Verified: the FujiNet Contiki browser fetches theoldnet.com through it,
   77 169 bytes, with no peer running.
 - **The desktop firmware's `N:` device answers "connected" without
