@@ -5,6 +5,47 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-21 (later) — The app icon, redrawn, and generated from one source
+
+The macOS icon was ugly, and three of the reasons were structural rather than
+a matter of taste.
+
+**It was drawn with a font.** The old SVG set the "][" as `<text
+font-family="monospace">`, so every renderer picked a different face: the
+committed `.icns` and macOS QuickLook disagreed about the same file. The
+brackets are now `<path>` outlines. Nothing in the icon uses text any more.
+
+**Four hand-made binaries, no generator.** `POM2.svg`, six hicolor PNGs, the
+`.icns` and the `.ico` were each maintained by hand and free to drift.
+`tools/gen_icons.sh` now rasterises all of them from the SVG, which is the
+only source. `packaging/windows/POM2.rc` pointed at "packaging/regen_icons
+notes in the release documentation" — a file that never existed; it now points
+at the script.
+
+**The `.icns` stopped at 256 px** and carried non-standard 48/64 slots, so
+Retina Finder and the Dock upscaled. It now carries the full modern iconset,
+`@2x` included, up to 1024.
+
+The drawing itself: a rounder apple with real shoulders and a stem dip, a soft
+wide specular instead of the hard bubble, a leaf with a vein, and a badge
+gradient with a hairline top rim rather than the glass band. The "][" bar
+thickness is 14/256 — measured, not guessed: 11 breaks into dashes at 32 px,
+17 reads as one block at 512.
+
+**At 16 physical pixels no bar thickness survives** — the mark becomes bright
+mush that swallows the apple. That one slot is rendered from the master with
+the bracket group stripped, derived inside the generator rather than kept as a
+second file, so the simplified art cannot drift from the master.
+
+`tools/png2ico.py` assembles the `.ico`, because `magick a.png b.png … out.ico`
+stores every entry as an uncompressed DIB: 25 KB became 370 KB, all of it
+embedded into `POM2.exe` by `POM2.rc`. Entries are PNG throughout, which is
+what the `.ico` this replaces already did (checked entry by entry first).
+
+Regenerating needs `rsvg-convert` (`brew install librsvg`): ImageMagick's
+built-in MSVG renderer silently drops `fill="url(#gradient)"` and would
+flatten the badge and the apple to black.
+
 ## 2026-08-21 — An empty drive froze the machine: the Ultima V "save" hang was never a WOZ-write bug
 
 **Symptom**: Ultima V's *Save Music Configuration* wedged POM2 solid — no
