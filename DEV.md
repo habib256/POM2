@@ -2906,6 +2906,53 @@ helper's `fnconfig.ini` (WiFi credentials live there, and the firmware's Apple
 default for Bus-over-IP is already 127.0.0.1:1985). Vendoring the firmware into
 POM2's build was considered and rejected — see docs/fujinet_plan.md § 8.
 
+**Driving it against a real peer — what bites** (measured 2026-08-21, against
+the `fujinet-go-apple2-desktop` firmware serving a TNFS-hosted image):
+
+- **250 ms is not enough for network-backed media.** `SpOverSlipLink`'s
+  default response timeout (`kDefaultTimeoutMs`) is sized for a FujiNet
+  answering out of its own SPIFFS — booting its `autorun.po` never comes close
+  to it. A disk mounted from a TNFS server travels Apple → POM2 → firmware →
+  the internet → back, and every block read blows straight through 250 ms: the
+  card reports `kSpNoDevice`/IO error, its boot block never lands, and the
+  guest sees **`FN ERROR`**. Raise it per slot with
+  `fujinet_timeout_ms_slot<N>` (accepted range 50–5000; 3000 made a TNFS boot
+  read reliably).
+- **`FN ERROR` is OUR message, not BASIC's.** The card ROM prints it at
+  `$Cn42` when the boot read fails (`buildRom`, text stored reversed at
+  `$CnF0`). Seeing it means the `JSR $Cn60` came back with carry set — no
+  peer, or a read that failed — *not* that the guest mistyped `PR#n`.
+- **A network-backed SmartPort call freezes the whole emulator.** `transact()`
+  runs on the CPU thread inside the call, under `stateMutex` (deliberate — see
+  the threading note in `SpOverSlipLink.h`). While a read is in flight neither
+  the UI nor the AI control server can take the lock, so POM2 looks hung for
+  the duration. At the 250 ms default that is invisible; at 3000 ms over a real
+  network it very much is not.
+- **Attach the peer BEFORE booting from the card.** The //e autostart scans
+  slot 7 at power-on; with no peer yet the card correctly steps aside and lets
+  the scan carry on to slot 6, but a later `PR#7` then prints `FN ERROR`
+  instead of booting. The order that works: reset to the BASIC prompt, attach
+  the FujiNet, *then* `PR#7`.
+- **The desktop peer is a shared library, not a daemon.** The "FujiNet Go
+  Apple II" bundle ships `libfujinet.dylib` plus a runtime tree
+  (`fnconfig.ini` + `SD/` + `data/`); the entry point is
+  `fujinet_desktop_start_runtime(root, config, sd, data, port)` (non-zero =
+  started), with `fujinet_desktop_stop_runtime()` to match. Its stock
+  `fnconfig.ini` already carries `[BOIP] host=127.0.0.1 port=1985`, which is
+  exactly what this card listens on. Do NOT poll
+  `fujinet_desktop_copy_recent_log()` on a timer to tail its log — doing so
+  killed the runtime a few seconds after every start, right after it answered
+  the device enumeration.
+- **Its web admin UI (127.0.0.1:64001) is the reliable way to mount media**,
+  far more so than driving the guest-side CONFIG program: `/browse/host/N`
+  walks a TNFS host and `?action=newmount&slot=N&mode=r` fills a drive slot.
+- **A host-side per-application firewall can look exactly like a relay bug.**
+  On a Mac running Little Snitch, every outbound *UDP* datagram from the
+  firmware process was dropped while TCP was allowed. TNFS tries TCP first and
+  falls back to UDP, so the visible symptom was a 28 s stall and
+  "File System error" — with POM2 nowhere in the path. Isolate it by browsing
+  from the firmware's own web UI, which never touches the emulator.
+
 CLI: `--fujinet[=PORT]`, `--fujinet-serial[=DEVICE]`, `--fujinet-slot N`.
 Panel: View ▸ FujiNet. Design notes and the remaining phases:
 [docs/fujinet_plan.md](docs/fujinet_plan.md).
