@@ -1747,6 +1747,17 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         link.setTimeoutMs(settings->getInt("fujinet_timeout_ms" + sk,
                                            pom2::SpOverSlipLink::kDefaultTimeoutMs));
 
+        // Built-in N:, on by default. The FujiNet desktop build's own network
+        // device answers the guest's open with success and then never opens a
+        // socket, so relaying faithfully to it means the guest can never
+        // fetch anything; POM2 serving N: itself is the difference between a
+        // machine that browses and one that does not. Everything else still
+        // goes to the peer. Set `fujinet_builtin_network<slot> = false` for a
+        // real FujiNet board over USB, whose N: works and does far more than
+        // plain HTTP.
+        card->setBuiltInNetwork(
+            settings->getBool("fujinet_builtin_network" + sk, true));
+
         const std::string transport =
             settings->getString("fujinet_transport" + sk, "tcp");
         if (transport == "serial") {

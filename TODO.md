@@ -722,6 +722,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   modem's type byte. POM2 relays faithfully and now REPORTS the death
   (`peer LOST after N s — M call(s) served`), which is what localised it in a
   single run. Worth reporting upstream; POM2 has nothing to fix.
+- ✅ **[FujiNet] built-in `N:` — DONE (2026-08-21).** `FujiNetNetDevice`
+  serves the network device from POM2's own host sockets, so the Apple II
+  browses the web through the FujiNet card even though the desktop firmware's
+  own `N:` is inert (below) — and even with no peer attached, since it
+  answers the DIB and is counted in the device count itself. Phase 2 of the
+  native FujiNet decided above, arriving before the Fuji control device
+  because it is what the machine actually needed. HTTP over plain TCP only.
+  Pinned by `fujinet_net_device`; verified against theoldnet.com in the
+  FujiNet Contiki browser.
 - 🟡 **[FujiNet] the desktop firmware's `N:` device never opens a socket** —
   it answers the guest's open with success (`CONNECTED to
   N:HTTP://THEOLDNET.COM/` appears on the Apple II) and then no outbound TCP

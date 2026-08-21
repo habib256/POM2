@@ -73,6 +73,7 @@
 
 #include "ChildProcess.h"
 #include "SlotPeripheral.h"
+#include "FujiNetNetDevice.h"
 #include "SpOverSlipLink.h"
 
 #include <array>
@@ -119,6 +120,20 @@ public:
     /// can configure the transport, read counters and enumerate devices.
     SpOverSlipLink&       link()       { return link_; }
     const SpOverSlipLink& link() const { return link_; }
+
+    // ── Built-in N: (POM2's own network device) ───────────────────────────
+    //
+    // With this on, calls addressed to the peer's NETWORK unit are served by
+    // POM2 out of host sockets instead of being forwarded. Everything else —
+    // disks, CONFIG, the clock — still goes to the peer.
+    //
+    // It exists because the FujiNet desktop build's own N: answers the
+    // guest's open with success and then never opens a socket, so relaying
+    // faithfully to it means the guest can never fetch anything. A real
+    // FujiNet board over USB has a working N:; leave this OFF for one.
+    void setBuiltInNetwork(bool on) { builtInNetwork_ = on; }
+    bool builtInNetwork() const     { return builtInNetwork_; }
+    const FujiNetNetDevice& netDevice() const { return net_; }
 
     // ── Printer tap (phase 2) ─────────────────────────────────────────────
     //
@@ -187,6 +202,26 @@ public:
     uint64_t localCount() const { return localCount_; }
 
 private:
+    /// Which unit the built-in N: answers on: whatever the peer calls its
+    /// network device, or 11 — where every current FujiNet build puts it —
+    /// when no peer has enumerated. Sticky, because the device list is
+    /// cleared when a peer dies and the built-in N: must not die with it.
+    uint8_t builtInNetUnit() const;
+
+    /// Serve one SmartPort call from the built-in N: instead of the peer.
+    /// Returns false when this call is not ours to answer.
+    bool serveBuiltInNetwork(uint8_t command, uint8_t unit, uint16_t params,
+                             uint16_t payload);
+
+    FujiNetNetDevice net_;
+    bool             builtInNetwork_ = false;
+    /// Which unit the peer called its network device, REMEMBERED. The device
+    /// list is cleared when a peer dies, and the peer dies easily; without
+    /// this the built-in N: would stop answering at exactly the moment it is
+    /// most needed, and the guest would report a network failure that is
+    /// really a bookkeeping one. 0 = not seen yet.
+    uint8_t          netUnit_ = 0;
+
     // ── ROM ───────────────────────────────────────────────────────────────
     void buildRom();
 

@@ -250,6 +250,7 @@ set(SOURCES
     src/SpTcpTransport.cpp
     src/SpSerialTransport.cpp
     src/FujiNetCard.cpp
+    src/FujiNetNetDevice.cpp
     src/FujiNet_ImGui.cpp
     src/SmartPortHdvUnit.cpp
     src/SmartPortUnit.cpp
