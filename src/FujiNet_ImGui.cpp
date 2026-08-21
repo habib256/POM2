@@ -255,6 +255,17 @@ FujiNet_ImGui::Result FujiNet_ImGui::render(const char* title, bool& open,
         ImGui::SameLine();
         if (snap.helperRunning) {
             if (ImGui::Button("Stop program")) r.requestHelperStop = true;
+            ImGui::SameLine();
+            if (ImGui::Button("Restart program")) r.requestHelperRestart = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Stop it and start it again.\n"
+                    "A FujiNet peer can die mid-session through no fault of "
+                    "POM2's — the firmware aborts on some device calls — and "
+                    "the guest then reports whatever it was doing rather than "
+                    "the truth. Watch the log for\n"
+                    "  peer LOST after N s — M call(s) served\n"
+                    "and press this.");
         } else {
             ImGui::BeginDisabled(snap.helperPath.empty() &&
                                  snap.helperResolved.empty());

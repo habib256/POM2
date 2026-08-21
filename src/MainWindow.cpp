@@ -9456,6 +9456,18 @@ void MainWindow::renderFujiNetPanelWindow()
     }
     if (r.requestHelperStop) fujiNetCard->helper().stop();
 
+    if (r.requestHelperRestart) {
+        // Stop, then start. The stop terminates the whole process GROUP (see
+        // the note on startHelper) — leaving a grandchild holding the
+        // loopback port is exactly what would make the restart fail to bind.
+        fujiNetCard->helper().stop();
+        std::string err;
+        if (!fujiNetCard->startHelper(fujiNetHelperPath_, err))
+            fujiNetStatus_ = err;
+        else
+            fujiNetStatus_ = "FujiNet program restarted.";
+    }
+
     if (r.requestOpenWebUi) {
         // The FujiNet web UI is on port 80 of the peer's host; over the
         // loopback transport that is simply localhost. No portable
