@@ -400,6 +400,18 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Storage] disks & images
 
+- 🔵 **Empty Disk II drive: the two write-protect answers disagree.**
+  `$C0nE` after Q6H returns `0x80` (write-protected) for an empty drive,
+  which is right and is what the canonical
+  `LDA $C08D,X / LDA $C08E,X / BMI` sequence reads. POM2's own non-MAME
+  shortcut at `$C0nD` returns `0x00` (writable) when `!isLoaded()`. A
+  guest probing with `LDA $C08D,X / BMI` alone is therefore told an empty
+  drive is writable. Pre-existing (`be6d8be`, 2026-05-27), found during
+  the 2026-08-22 bug hunt while auditing the empty-drive noise fix. No
+  title is known to use the single-read idiom, so this is recorded rather
+  than fixed — the impact is unsubstantiated and the fix would touch a
+  path every disk read goes through.
+
 - 🟢 **//c+ 5.25" dual-controller — ✅ RESOLVED 2026-07-29.** The repro
   (headless //c+ cold boot, `tests/iicplus_boot_probe`) exposed that the
   visible failure was upstream of the dual controller: (1) IWM status

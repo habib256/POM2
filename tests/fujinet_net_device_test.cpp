@@ -22,6 +22,7 @@
 #include "FujiNetNetDevice.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -48,11 +49,16 @@ void check(bool cond, const char* what)
 /// `Connection: close` asks for and what the device relies on to find EOF.
 struct HttpStub {
     std::string  body;
+    /// Answer with headers and HALF the body, then hold the connection open
+    /// and say nothing more — a server that stalls mid-page, which is the
+    /// case a per-recv timeout cannot bound.
+    bool         stall = false;
     int          listenFd = -1;
     uint16_t     port     = 0;
     std::thread  th;
     std::string  seenRequest;
     std::atomic<bool> done{false};
+    std::atomic<bool> stopping{false};
 
     bool start()
     {
@@ -75,11 +81,19 @@ struct HttpStub {
             char buf[2048];
             const ssize_t r = ::recv(c, buf, sizeof buf - 1, 0);
             if (r > 0) { buf[r] = '\0'; seenRequest = buf; }
-            const std::string resp =
+            std::string resp =
                 "HTTP/1.0 200 OK\r\n"
                 "Content-Type: text/html\r\n"
-                "Server: stub\r\n\r\n" + body;
+                "Server: stub\r\n\r\n";
+            resp += stall ? body.substr(0, body.size() / 2) : body;
             ::send(c, resp.data(), resp.size(), 0);
+            if (stall) {
+                // Outlive the device's deadline without ever sending EOF.
+                while (!stopping.load()) {
+                    struct timespec ts{0, 20 * 1000 * 1000};
+                    ::nanosleep(&ts, nullptr);
+                }
+            }
             ::close(c);
             done.store(true);
         });
@@ -88,6 +102,7 @@ struct HttpStub {
 
     void stop()
     {
+        stopping.store(true);
         if (listenFd >= 0) { ::shutdown(listenFd, SHUT_RDWR); ::close(listenFd); listenFd = -1; }
         if (th.joinable()) th.join();
     }
@@ -167,6 +182,55 @@ int main()
               "refuses https (no TLS here) instead of pretending");
         check(!net.open("N:FTP://example.invalid/"), "refuses an unknown scheme");
         check(!net.open("N:"), "refuses an empty spec");
+    }
+
+    // ── A stalled server must not become a half page ──────────────────────
+    //
+    // This runs on the CPU thread with the emulator's state mutex held, so the
+    // fetch carries ONE deadline for the whole exchange. Two things are pinned
+    // here: the deadline is honoured at all (a per-recv timeout never bounds a
+    // server that drip-feeds just inside it), and what comes out is an ERROR —
+    // never the bytes that did arrive. A truncated document the guest cannot
+    // tell from a whole one is the failure nobody can diagnose from the Apple
+    // II side.
+    {
+        HttpStub stub;
+        stub.stall = true;
+        stub.body.assign(4000, 'y');
+        if (!stub.start()) { std::printf("FAIL: cannot start the HTTP stub\n"); return 1; }
+
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(600);
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = net.open("N:HTTP://127.0.0.1:" + std::to_string(stub.port) + "/");
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+
+        check(!ok, "a stalled server fails the open instead of succeeding short");
+        check(ms < 5000, "the whole fetch is bounded by its deadline");
+        check(net.available() == 0, "no partial body is left reachable after a failure");
+        check(!net.isOpen(), "and the device does not report itself open");
+        stub.stop();
+    }
+
+    // ── A blackholed host must not freeze the machine ─────────────────────
+    //
+    // 192.0.2.1 is TEST-NET-1: it swallows SYNs rather than refusing them.
+    // SO_SNDTIMEO does NOT bound connect() — measured 2026-08-21 on macOS, a
+    // connect asking for 8 s returned after 75. With the state mutex held that
+    // is 75 s of frozen emulator, so the connect now gets an explicit wait.
+    {
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(800);
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = net.open("N:HTTP://192.0.2.1/");
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        check(!ok, "an unreachable host fails rather than hanging");
+        // Generous on purpose: a host that RSTs instead of dropping fails
+        // instantly and passes too. What must never happen is the OS default.
+        check(ms < 30000, "a blackholed host is bounded by the deadline, not by the OS");
+        if (ms >= 30000) std::printf("      (took %lld ms)\n", (long long)ms);
     }
 
     if (failures) { std::printf("fujinet_net_device: %d failure(s)\n", failures); return 2; }

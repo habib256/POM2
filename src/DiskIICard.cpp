@@ -949,8 +949,14 @@ void DiskIICard::lssSync(uint64_t extraCycles)
         // an I/O error. Model that: one pseudo-random byte per 8 bit cells
         // (4 us each → 64 LSS cycles), high bit set as on every byte the
         // LSS ever hands the CPU. Derived from the cycle cursor by hash
-        // rather than from a PRNG member, so it stays deterministic across
-        // snapshot restore and rewind — both replay this cursor.
+        // rather than from a PRNG member: no hidden generator state to
+        // serialise, so REWIND reproduces the byte exactly (RewindBuffer
+        // captures with includeSlots=true and restores this cursor). A FILE
+        // save-state does NOT — it captures with includeSlots=false, so no
+        // slot section is written and the cursor keeps its free-running value
+        // across a load. Nothing here makes that worse (the rest of the LSS
+        // timing is equally unrestored), but do not read the hash as a promise
+        // of save-state determinism.
         // Pinned by tests/diskii_empty_drive_test.cpp.
         const uint64_t target = cpuCycleTotal * 2 + extraCycles;
         if (target > lssCycle) {

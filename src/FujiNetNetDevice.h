@@ -94,10 +94,19 @@ public:
     /// What the panel shows. Empty when nothing has been opened.
     const std::string& describe() const { return description_; }
 
+    /// Wall-clock budget for a whole fetch — DNS, connect, request and body
+    /// together. It exists because this runs on the CPU thread with the
+    /// emulator's state mutex held, so it is really "how long may the emulated
+    /// machine freeze". Lowered by the tests so the truncation rule can be
+    /// pinned in under a second.
+    void setFetchDeadlineMs(int ms) { deadlineMs_ = ms; }
+    int  fetchDeadlineMs() const    { return deadlineMs_; }
+
 private:
     bool fetchHttp(const std::string& host, uint16_t port,
                    const std::string& path);
 
+    int                  deadlineMs_ = 12000;
     bool                 open_   = false;
     uint8_t              error_  = 1;      ///< 1 = SUCCESS in the firmware's table
     std::vector<uint8_t> body_;

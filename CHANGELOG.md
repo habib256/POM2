@@ -5,6 +5,88 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-22 — Bug hunt: what the network code does when the far end lies
+
+A sweep over the ~1 400 lines of FujiNet/TNFS code written the day before,
+none of which had been read cold. Thirteen defects, all verified against a
+stub built to reproduce them rather than by reading alone. The theme is one
+mistake repeated: **trusting the far end**, whether that end is a public TNFS
+server, a FujiNet peer process, or an HTTP host — and doing it on the CPU
+thread, which holds the emulator's state mutex.
+
+**A TNFS server could write past the end of the caller's buffer.** `readAt`
+took the byte count from the reply and `memcpy`'d that many bytes into the
+caller's block, checking only that the reply really contained them — never
+that they fit what was asked for. A server answering an 8-byte request with
+525 bytes wrote 517 attacker-chosen bytes past the end (confirmed under ASan).
+`TnfsClient` exists to mount `tnfs.fujinet.online`, so the far end is nobody
+we audit. Now the count is bounded by the request, and `tnfs_client_hostile`
+holds a canary past the buffer to prove nothing lands there.
+
+**A wrong sequence byte was an infinite loop and a packet storm.** The UDP
+straggler drop did `--attempt; continue;`, which the loop's `++attempt` undid
+immediately — so a server answering every request with the wrong sequence kept
+the loop alive for ever *and* re-sent on every pass: 446 000 requests in 6 s
+against a 0.6 s budget. It now drains a bounded number of stragglers per
+attempt. Measured after: 2 requests.
+
+Also in TNFS: a `STAT` guard that asked for 9 bytes to protect a field ending
+at byte 11 (so a short reply read off the end and returned a size built from
+adjacent heap); a `READDIR` loop with no cap, where a server that always
+returns one more name grew the heap until it ran out; a listing cut short by a
+dead connection reported as a *complete* listing; and no check that a reply
+answered the command that was sent — which over TCP desynchronises the stream
+permanently, since the framing keys on that byte.
+
+**A blackholed host froze the whole emulator for 75 seconds.** The built-in
+`N:` set `SO_SNDTIMEO` and a comment claiming the fetch was bounded. It is
+not: `SO_SNDTIMEO` does not bound `connect()`. Measured on macOS against
+192.0.2.1 (TEST-NET-1, swallows SYNs): 75 s for an 8 s request. And a
+per-recv timeout never bounds a *transfer* — a server drip-feeding one byte
+just inside the timeout held it open indefinitely. All of it runs on the CPU
+thread inside `runCpuSlice`, under `stateMtx`, which the UI thread needs to
+paint anything: the window was unpaintable and the panel's own buttons out of
+reach. The whole exchange now shares one deadline, DNS included — `getaddrinfo`
+is unbounded too, and there is no portable async resolver, so the lookup runs
+on its own thread and is abandoned if it overruns.
+
+**A short read is not a short page.** That fetch used to hand the guest
+whatever bytes had arrived and report success. A truncated document the guest
+cannot distinguish from a whole one is the one failure nobody can diagnose from
+the Apple II side, so it is an error now.
+
+**A peer that was merely slow was declared dead.** The device sweep treated
+"no answer within 250 ms" as "the peer is gone" for every unit — and tearing
+the connection down skipped the publish at the end, discarding every device
+already enumerated. The worker then reconnected, hit the same slow unit and
+dropped again: a livelock in which the panel and the guest both saw *zero*
+devices for ever, and in which the serial transport reopened the CDC device
+several times a second, driving the ESP32's auto-reset line. Raising
+`kMaxUnits` 8 → 32 the day before had made it far easier to hit. This is the
+"the FujiNet dies easily" complaint, and it is now: retry any unit, and if
+units already answered, keep them and stop the sweep.
+
+**A peer that stopped reading hung POM2 unrecoverably.** The accepted TCP
+socket was left blocking, so `writeAll`'s wait-for-room branch was dead code
+that could never run. A peer alive but not draining parked `send()` for ever
+with `callMtx_` *and* the state mutex held — UI blocked, Stop button
+unreachable, kill-only. The socket is non-blocking now and one deadline covers
+the whole packet.
+
+Smaller, same sweep: the built-in `N:` sat at a fixed unit 11 while a
+SmartPort chain is contiguous 1..N, so a standard scan stopped at unit 1 and
+never found it (it now takes the slot past the peer's last device, and never
+shadows a unit the peer really has); its READ consumed the body *before*
+validating the guest address, so a refused write silently ate a chunk and the
+retry got the *next* one; its DIB claimed to be a block device and its
+general-status call answered with the network status, whose first byte reads
+as "offline"; and the `$FFFF`-wrap guard the relay path has was missing.
+
+`test_fujinet_card` had not linked since the built-in `N:` landed — ctest was
+running a stale binary and reporting a pass. Two new pinned suites:
+`tnfs_client_hostile` (a server that lies) and, in `fujinet_net_device`, a
+stalled server and a blackholed host.
+
 ## 2026-08-21 (later) — The app icon, redrawn, and generated from one source
 
 The macOS icon was ugly, and three of the reasons were structural rather than

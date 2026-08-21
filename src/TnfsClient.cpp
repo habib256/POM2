@@ -15,6 +15,14 @@ namespace pom2 {
 
 namespace {
 
+/// Two-digit hex, for naming a protocol byte in an error message.
+std::string hex8(uint8_t v)
+{
+    static const char* d = "0123456789ABCDEF";
+    return std::string(1, d[(v >> 4) & 0xF]) + std::string(1, d[v & 0xF]);
+}
+
+
 void put16(std::vector<uint8_t>& v, uint16_t x)
 {
     v.push_back(static_cast<uint8_t>(x & 0xFF));
@@ -191,14 +199,24 @@ bool TnfsClient::sendRecvUdp(const uint8_t* pkt, std::size_t n,
             errOut = "TNFS send failed: " + lastSocketErrorText();
             return false;
         }
-        const iolen_t r = ::recv(fd_, reinterpret_cast<char*>(buf),
-                                 static_cast<iolen_t>(sizeof buf), 0);
-        if (r < kHeaderSize) continue;                    // timeout, retry
-        // A reply carrying an older sequence number is a straggler from a
-        // previous attempt: drop it and keep waiting on this one.
-        if (buf[2] != pkt[2]) { --attempt; continue; }
-        raw.assign(buf, buf + r);
-        return true;
+        // A reply carrying another sequence number is a straggler from an
+        // earlier attempt: drop it and KEEP LISTENING on this one, without
+        // re-sending and without spending an attempt.
+        //
+        // Bounded, though. This used to be `--attempt; continue;`, which the
+        // loop's `++attempt` undid immediately: a server that answers every
+        // request with the wrong sequence byte kept the loop alive forever
+        // AND re-sent on every pass. Measured against a hostile stub: 446 000
+        // requests in 6 s on a 0.6 s budget — a hang and an outbound packet
+        // storm at once, reachable from any mounted public server.
+        for (int straggler = 0; straggler < kMaxStragglers; ++straggler) {
+            const iolen_t r = ::recv(fd_, reinterpret_cast<char*>(buf),
+                                     static_cast<iolen_t>(sizeof buf), 0);
+            if (r < kHeaderSize) break;                   // timeout -> re-send
+            if (buf[2] != pkt[2]) continue;               // not ours
+            raw.assign(buf, buf + r);
+            return true;
+        }
     }
     errOut = "TNFS: no response after " + std::to_string(retries_) +
              " attempts (UDP)";
@@ -233,6 +251,22 @@ bool TnfsClient::transact(uint8_t command, const uint8_t* payload,
     // hand back the whole packet and this is the one place that knows what
     // the header means.
     replySession_ = get16(raw.data());
+    // The header echoes the command and the session id, and both must match
+    // what went out. Over TCP this is not a nicety: sendRecvTcp keys its
+    // "top up to the declared count" framing on the command byte, so one reply
+    // carrying a different command leaves its tail in the socket buffer and
+    // every later request parses it as a fresh header. From then on the
+    // handles, sizes and byte counts the client acts on are read at whatever
+    // stream offset the server chose.
+    if (raw[3] != command) {
+        errOut = "TNFS: reply for command 0x" + hex8(raw[3]) +
+                 " answering 0x" + hex8(command);
+        return false;
+    }
+    if (mounted_ && replySession_ != session_) {
+        errOut = "TNFS: reply for another session";
+        return false;
+    }
     reply.assign(raw.begin() + kHeaderSize, raw.end());
     return true;
 }
@@ -331,9 +365,18 @@ bool TnfsClient::listDir(const std::string& path, std::vector<DirEntry>& out,
 
     // READDIR yields one NUL-terminated name per call and ends with a
     // non-zero status (EOF is reported as an error code, not a flag).
-    for (;;) {
+    // Bounded: every exit condition below is the SERVER's to choose, so a
+    // server that answers each READDIR with one more name never returns and
+    // grows `out` until the host runs out of memory (measured: 273 000 round
+    // trips in 5 s). No real directory of disk images comes near this.
+    bool truncated = false;
+    for (std::size_t guard = 0; ; ++guard) {
+        if (guard >= kMaxDirEntries) { truncated = true; break; }
         std::vector<uint8_t> r;
-        if (!transact(kTnfsReadDir, &handle, 1, r, errOut)) break;
+        // A transport failure is NOT the end of the directory. Telling the two
+        // apart matters: otherwise a server that drops the connection after
+        // one entry yields a one-entry listing the caller believes is whole.
+        if (!transact(kTnfsReadDir, &handle, 1, r, errOut)) { truncated = true; break; }
         if (r.size() < 2 || r[0] != 0x00) break;          // end of directory
         const char* name = reinterpret_cast<const char*>(r.data() + 1);
         const std::size_t max = r.size() - 1;
@@ -354,7 +397,10 @@ bool TnfsClient::listDir(const std::string& path, std::vector<DirEntry>& out,
     std::vector<uint8_t> r;
     std::string ignored;
     transact(kTnfsCloseDir, &handle, 1, r, ignored);
-    return true;
+    if (truncated && errOut.empty())
+        errOut = "READDIR " + path + ": listing truncated at " +
+                 std::to_string(out.size()) + " entries";
+    return !truncated;
 }
 
 // ── Files ─────────────────────────────────────────────────────────────────
@@ -388,7 +434,11 @@ bool TnfsClient::fileSize(const std::string& path, uint32_t& out,
 
     std::vector<uint8_t> reply;
     if (!transact(kTnfsStat, body.data(), body.size(), reply, errOut)) return false;
-    if (reply.size() < 9 || reply[0] != 0x00) {
+    // The size field lives at payload offsets 7..10, so ELEVEN bytes are
+    // needed. The guard used to say 9 and a 9- or 10-byte STAT reply read off
+    // the end of the vector — and the bogus size it returned then sized the
+    // buffer that READ fills.
+    if (reply.size() < 11 || reply[0] != 0x00) {
         errOut = "STAT " + path + ": " +
                  (reply.empty() ? "empty reply" : statusText(reply[0]));
         return false;
@@ -444,7 +494,17 @@ bool TnfsClient::readAt(int handle, uint32_t offset, uint8_t* dst, uint32_t n,
             return false;
         }
         const uint16_t got = get16(reply.data() + 1);
-        if (got == 0 || reply.size() < static_cast<std::size_t>(3 + got)) {
+        // `got` is the SERVER's number and `dst` is the caller's buffer, so it
+        // is bounded by what we asked for, not merely by what arrived. Without
+        // this a public TNFS server answering a 8-byte request with 525 bytes
+        // writes 517 bytes past the end of the caller's heap block — every one
+        // of them server-chosen. Pinned by tnfs_client_hostile.
+        if (got == 0 || got > chunk) {
+            errOut = "READ: server declared " + std::to_string(got) +
+                     " bytes for a " + std::to_string(chunk) + "-byte request";
+            return false;
+        }
+        if (reply.size() < static_cast<std::size_t>(3 + got)) {
             errOut = "READ: short reply (" + std::to_string(got) + " declared, " +
                      std::to_string(reply.size()) + " bytes)";
             return false;
