@@ -2613,6 +2613,31 @@ endif()
 add_test(NAME display_dirty_skip COMMAND test_display_dirty_skip)
 set_tests_properties(display_dirty_skip PROPERTIES TIMEOUT 30)
 
+# Differential pin of the inline Memory::memRead()/memWrite() fast paths
+# against memReadSlow()/memWriteSlow(): every address × every paging state
+# that feeds the fast-path conditions (INTCXROM/SLOTC3ROM/INTC8ROM, LC RAM,
+# RAMRD/RAMWRT/ALTZP/80STORE/PAGE2/HIRES). See bus_fastpath_test.cpp header.
+add_executable(test_bus_fastpath
+    bus_fastpath_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_bus_fastpath PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_bus_fastpath PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_bus_fastpath PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_bus_fastpath PRIVATE winmm)
+endif()
+add_test(NAME bus_fastpath COMMAND test_bus_fastpath WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(bus_fastpath PROPERTIES TIMEOUT 120)
+
 # Video-7 / Le Chat Mauve RGB parity (4 rgbmodes + fg/bg colored text)
 # against a self-contained MAME apple2video.cpp dhgr_update() oracle.
 add_executable(test_video7_parity

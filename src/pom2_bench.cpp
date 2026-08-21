@@ -149,6 +149,7 @@ int main(int argc, char** argv)
     bool hashFrameForce = false;
     bool hashAll        = false;
     bool quiet          = false;
+    bool dumpText       = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -165,6 +166,7 @@ int main(int argc, char** argv)
         else if (a == "--hash-frame") hashFrameForce = true;
         else if (a == "--hash-all")   hashAll = true;
         else if (a == "--quiet")      quiet = true;
+        else if (a == "--dump-text")  dumpText = true;
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
                usage(argv[0]); return 1; }
@@ -191,11 +193,17 @@ int main(int argc, char** argv)
     }
 
     Memory mem;
+    // setIIEMode BEFORE loadAppleIIRom: the loader only splits a 16/32 KB
+    // //e dump into the internal $C100-$CFFF I/O ROM when iieMode is already
+    // on (same ordering rule as MainWindow::applyProfile step 4/5). With
+    // the two swapped the //e booted into an empty $C300, executed BRK ($00)
+    // forever, and every "//e" measurement — and PGO training run — was of
+    // a BRK loop. `--dump-text` exists to catch exactly that.
+    mem.setIIEMode(iie);
     if (!mem.loadAppleIIRom(romPath.c_str())) {
         std::fprintf(stderr, "loadAppleIIRom(%s) failed\n", romPath.c_str());
         return 1;
     }
-    mem.setIIEMode(iie);
     mem.setVideoStandard(pal ? VideoStandard::PAL : VideoStandard::NTSC);
 
     // 17045 / 20313 — the same per-frame budget EmulationController uses, so
@@ -281,6 +289,21 @@ int main(int argc, char** argv)
     const double secs = std::chrono::duration<double>(t1 - t0).count();
 
     const uint64_t ramHash = fnv1a(mem.data(), 0xC000);
+
+    if (dumpText) {
+        std::printf("PC=$%04X\n", cpu.getProgramCounter());
+        for (int r = 0; r < 24; ++r) {
+            const uint16_t base = static_cast<uint16_t>(
+                0x0400 + (r & 7) * 0x80 + (r >> 3) * 0x28);
+            char line[41];
+            for (int c = 0; c < 40; ++c) {
+                const uint8_t ch = mem.peekMainRam(static_cast<uint16_t>(base + c)) & 0x7F;
+                line[c] = (ch >= 0x20 && ch < 0x7F) ? static_cast<char>(ch) : '.';
+            }
+            line[40] = '\0';
+            std::printf("|%s|\n", line);
+        }
+    }
     const double   mhz     = secs > 0 ? (double)cycles / secs / 1e6 : 0.0;
     const double   ratio   = mhz * 1e6 / POM2_CPU_CLOCK_HZ;
 

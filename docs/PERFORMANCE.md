@@ -263,9 +263,167 @@ In order of weight in the final profile, with the reason it was left alone:
 | `Memory::advanceCycles` | 14 % (banner) | already incremental (the `% scanlinesPerFrame` division was removed in 2026-07); the rest is the per-instruction VBL edge, which is the model |
 | `SlotBus::advanceCycles` | 5 % | already dispatches through a cached active-card array; the cost is the virtual calls themselves |
 
+Two of these have since moved — see § 7 for `Memory::advanceCycles`; the
+`lssSync` / `getNextTransition` entries stand.
+
 One lead listed here has since been **taken** (2026-07-30 callgrind pass):
 `Memory::advanceCycles` used to call `cassette->advanceCycles`
 unconditionally, even with no tape loaded — measured at 4.1 % of the core.
 It is now gated (`if (cassette)`, `Memory.cpp:377`) and the call is an inline
 fast path (`CassetteDevice.h:86-95`) that only takes the out-of-line playback
 route when the deck is actually moving.
+
+---
+
+## 7. Second campaign — 2026-08-20, Apple M1, `sample`
+
+Same discipline as §§ 1-5, different host: no valgrind on macOS/arm64, so the
+profiles are `sample <pid> 5 1 -mayDie` over a long `pom2_bench` run of the
+profiling build (`build-prof`, § 1 recipe), and the comparisons are wall time
+(best of 5) on the release build. The subject is unchanged, and so is the
+rule: **every change below leaves both `pom2_bench` hashes byte-identical on
+every workload, and `ctest` green (186 tests)**. A new test,
+`bus_fastpath`, is part of that — see 7.2.
+
+### 7.0 The bench's //e workload was a BRK loop
+
+Before any optimisation: `pom2_bench --iie` called `loadAppleIIRom()` *before*
+`setIIEMode(true)`. The loader only splits a 16/32 KB //e dump into the
+internal `$C100-$CFFF` I/O ROM when `iieMode` is already on
+(`MainWindow_Slots.cpp:1074-1083` documents the ordering rule), so the //e
+booted into an empty `$C300`, executed `BRK` (`$00`) forever, and every "//e"
+number this file ever quoted — and **three of the PGO training runs in
+`pgo_train.sh`** — measured a BRK loop. `M6502::BRK` at 13 % of a banner
+profile was the tell. The order is fixed, and `pom2_bench --dump-text`
+prints text page 1 + the PC after the run so the next person can *see* what a
+workload is doing before profiling it. The corrected //e banner is ~2×
+slower than the BRK loop was, which is why the //e row below starts from
+0.403 s and not the 0.187 s a stale note might show.
+
+### 7.1 What the profiles said
+
+| Shape | Top of stack | Share | Cause |
+|---|---|---|---|
+| //e banner | `Memory::memReadSlow` | **33 %** | the //e's keyboard loop, 80-col firmware and Monitor glue execute from the internal `$C100-$CFFF` ROM, which `memRead()`'s fast path did not cover — the exact "ROM window" trap of § 3.2, one machine later |
+| 5.25" boot + game (Lode Runner in HGR, 20 000 frames) | `Apple2Display::renderHiRes` | **34 %** | three lookups + a `rotl4b` per sub-pixel, an `avgRgb` per pixel, 560 × 192 per frame, every frame, even when the screen has not changed |
+| ][+ banner | `Memory::advanceCycles` | 15 % | the whole VBL/frame-publication body ran once per emulated instruction, including a 64-bit division with a runtime divisor (`cycleCounter / frameCycles`) that had been added after the 2026-07 `%` removal |
+| ][+ banner | `pthread_mutex_lock` + unlock | ~5 % | `softSwitchAccess` took `kbMutex` on **every** `$C000-$C07F` access — speaker, paddles, display switches included — and the Monitor's `KEYIN` loop reads `$C000` continuously |
+| //e banner | `Memory::memWrite` + `iieMemWrite` | 8 % | entirely out of line; the //e routing ran as a second call |
+
+### 7.2 The changes, and what each pays for
+
+**//e internal-ROM read fast path** (`Memory.h`, `memRead`). The inline
+function now returns `internalIORom[addr - 0xC000]` directly in exactly the
+cases where `memReadSlow()` would have done so *with no side effect*: no
+//c-class profile, no NoSlotClock, not `$CFFF`, and either INTCXROM on
+(except a `$C3xx` read that would still latch INTC8ROM) or INTCXROM off with
+the latch already set. The latch edge itself, `$CFFF`, and everything
+//c-shaped still take the slow path, so the side effects keep living in one
+place. **−33 % on the //e banner.**
+
+> **The bug this shipped with, and the test that now pins it.** The first
+> version had no `addr < 0xD000` bound. Everything above `$C000` that is not
+> the ROM window falls through to this block — which includes a `$D000+`
+> read with the language card mapping RAM. CP/M maps LC RAM; the //e banner
+> does not; `pom2_bench`'s hashes were identical and `softcard_cpm_boot_iie`
+> failed. A hash check only covers the states the bench visits.
+> `tests/bus_fastpath_test.cpp` is the differential answer: over **every
+> address × every paging state** that feeds the fast-path conditions
+> (INTCXROM / SLOTC3ROM / INTC8ROM / LC RAM / RAMRD / RAMWRT / ALTZP /
+> 80STORE / PAGE2 / HIRES, 1024 states), `memRead(a)` must equal
+> `memReadSlow(a)` and must not leave a side effect for the slow call to
+> perform; `memWrite` must land in the same bank as `memWriteSlow`. Its own
+> first version also let the bug through — all banks were zero, so the wrong
+> bank read the same bytes — so it now seeds main, aux and both LC banks with
+> distinct patterns, and was checked to FAIL on the bug before being kept.
+> That is the habit worth keeping: a pin test that has never been seen to
+> fail has not been shown to pin anything.
+
+**Inline `memWrite` fast path** (`Memory.h`). Mirrors `memRead`: writable RAM
+below `$C000` is handled inline, on the //e through `iieWriteToAux()`, the
+write-side twin of `iieReadFromAux()` (`iieMemWrite()` uses the same helper —
+one routing table, not two). Everything else — and writes to `$0400-$0427`,
+which carry an opt-in trace hook — goes to `memWriteSlow()`, the old body.
+
+**`advanceCycles` split** (`Memory.h` / `Memory.cpp`). The per-instruction
+part is now inline and does only what genuinely happens per instruction:
+`cycleCounter += cycles`, the cassette and slot fan-outs (the latter skipped
+on an empty bus via `SlotBus::hasActiveCards()`). The video-timing body —
+VBL edge, frame rollover, per-video-frame event publication — is
+`advanceCyclesVideo()`, unchanged, and runs only when `cycleCounter` reaches
+`vblNextEventCycle_`: the VBL edge of the current frame, then its end. It
+recomputes that threshold every time it runs. The per-instruction division
+is gone too: the frame boundary is "`vblFrameBase_` moved", which the
+incremental scheme already knows, so the publication compares that instead
+of dividing. **Anyone moving `cycleCounter` or the frame period behind its
+back must zero the threshold** — `setCycleCounter()`, `setVideoStandard()`
+and the snapshot restore do; the slow path already self-heals from any jump,
+the gate just has to let it run.
+
+**Keyboard latch mirror** (`Memory.h`, `kbLatchMirror_`). `lastKey |
+keyReady << 7` is republished — under `kbMutex`, by every writer, through
+`publishKbLatch()` — into one `std::atomic<uint8_t>`, and the `$C000-$C01F`
+read takes a relaxed load instead of the lock. Non-keyboard soft switches
+never touch it at all. A reader that lands between a writer's member stores
+and its publish sees the previous pair, which is what it would have seen had
+it taken the lock a moment earlier.
+
+**`renderHiRes` tables + row cache** (`Apple2Display.cpp`/`.h`). The NTSC-LUT
+branch folds artifact LUT + `rotl4b` phase select + palette into
+`phaseIdx[row][w & 0x7F][absX & 3]`, and `avgRgb` of two palette entries
+into `pairAvg[16][16]` — both tables computed once *with the original
+functions*, which is why the framebuffer hash does not move. On top of that,
+`hgrRowCache_[192]` remembers each row's 40 doubled words, the decode flavour
+and its 280 output pixels: a row whose words have not changed costs an
+80-byte compare and a 1 KB `memcpy`. The cache maps *input → output* (never
+"the framebuffer already holds this"), so it stays correct whatever else
+painted the row since — mixed-mode text, a beam-raced column split, a
+capture demod. Partial-column writes decode the full row, as before, and
+clip only the write-back.
+
+**Diagnostic statics hoisted** (`M6502.cpp`, `DiskIICard.cpp`). The opt-in
+trace switches (`POM2_TRACE_HANG`, `POM2_TRACE_ILLEGAL`, `POM2_TRACE_PC`,
+`POM2_DEBUG_DISK`, `POM2_TRACE_LSS`) were function-local statics inside
+`step()`, `executeOpcode()` and `lssSync()`. A function-local static costs an
+initialisation-guard check — an acquire load and a branch — on *every* call,
+and those three functions run per instruction / per LSS sync: ~3 % of a
+banner profile for switches that are off. They are namespace-scope constants
+now, resolved at load. Same behaviour, plain loads.
+
+**Idle Disk II early-out** (`DiskIICard::advanceCycles`). With the motor off
+and the spin-down elapsed the function did nothing but reach `lssSync()` and
+return; it is called once per instruction through the slot fan-out for as
+long as a Disk II is plugged, which is always. It now returns right after
+bumping `cpuCycleTotal`. **−6 % on the disk shapes.**
+
+> **A negative result worth keeping.** Caching `memRead()`'s ROM-window
+> condition (`!lcReadRam && !iicProfile_ && !noSlotClock_`) in one bool
+> measured **4 % slower** on the M1, reproducibly, and was removed. The three
+> members are adjacent loads the compiler already schedules well; the extra
+> bool added a line and an update obligation for nothing. Measure, do not
+> assume — the § 1 rule, applied to one's own change.
+
+### 7.3 Results (release build, `-O3` + LTO, Apple M1, best of 5)
+
+| Workload | Before | After | Gain |
+|----------|--------|-------|------|
+| ][+ ROM banner, 3000 frames | 0.266 s | **0.216 s** | −19 % |
+| 5.25" boot, 900 frames | 0.254 s | **0.188 s** | −26 % |
+| 5.25" boot + OE-CPU demod, 400 frames | 0.139 s | 0.134 s | −4 % |
+| //e banner (corrected workload), 3000 frames | 0.403 s | **0.261 s** | −35 % |
+| //e PAL, no render, 3000 frames | 0.460 s | **0.290 s** | −37 % |
+| 5.25" boot + game in HGR, 20 000 frames (profiling build) | 3.93 s | **2.80 s** | −29 % |
+| same, release build, after the Disk II early-out | — | **1.96 s** | |
+
+RAM and framebuffer hashes identical on all six, before and after each step.
+
+### 7.4 What is left on the table, second look
+
+| Item | Share (after) | Why it stayed |
+|---|---|---|
+| `M6502::executeOpcode` + `step` | ~30 % (banner) | the interpreter and its two indirect calls per instruction — PGO's job, not source changes (§ 5) |
+| `Memory::memRead` condition chain | ~15 % (banner) | four loads and branches before the ROM-window hit. The next step is the per-page dispatch table in `TODO.md`, which trades them for one indexed load at the price of an invalidation at every paging-state writer — the class of bug § 3.1 was designed to avoid. Not worth it below ~10 % |
+| `DiskIICard::lssSync` | ~15 % (disk, motor on) | unchanged from § 6 — the per-bit-cell model |
+| `SlotBus::advanceCycles` fan-out | ~4 % (disk) | one virtual call per plugged card per instruction; a "needs ticking" mask would save the idle ones at the cost of every card having to keep it honest |
+| `renderText` + `glyphRows7` | ~3 % (banner) | the full-frame static-text skip already covers the static case |
+

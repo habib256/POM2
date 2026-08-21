@@ -200,12 +200,71 @@ public:
         // alt-firmware bank can override it; the last clause is the exact
         // NoSlotClock intercept condition ($F800+ on a II/II+ with a chip
         // fitted), which is the only other reader of this range.
+        // (Tried 2026-08-20: caching these three tests in one bool measured
+        // 4 % SLOWER on an M1 — they are adjacent loads the compiler already
+        // schedules well. Leave the condition written out.)
         if (addr >= 0xD000 && !lcReadRam && !iicProfile_
             && !(noSlotClock_ && !iieMode && addr >= 0xF800))
             return mem[addr];
+        // //e internal $C100-$CFFF I/O ROM. The //e executes its keyboard
+        // input loop, the 80-column firmware and much of its Monitor glue
+        // from here (INTCXROM on, or $C3xx/$C8xx via INTC8ROM), so on a //e
+        // this window carries the opcode-fetch traffic the ROM window
+        // carries on a ][+ — measured at a third of a //e banner profile
+        // when it went through memReadSlow(). The conditions below are
+        // exactly the cases where memReadSlow() returns
+        // `internalIORom[addr - 0xC000]` with NO side effect:
+        //   * no //c-class profile (alt-firmware banks, slot-ROM punches)
+        //     and no NoSlotClock (its $C3xx/$C8xx intercept is stateful);
+        //   * not $CFFF (releases the expansion-ROM owner / INTC8ROM);
+        //   * INTCXROM on: whole window, except a $C3xx read that would
+        //     LATCH intC8Rom (only when it is still clear and SLOTC3ROM off);
+        //   * INTCXROM off: $C3xx with SLOTC3ROM off, or $C800-$CFFE,
+        //     both only once intC8Rom is already latched.
+        // Anything else — including the latch edge itself — still goes
+        // through memReadSlow(), which is the one place those side effects
+        // live. Pinned by tests/iie_internal_rom_fastpath_test.cpp.
+        // (`addr < 0xD000` matters: a $D000+ read that was NOT the ROM window
+        // above — the language card mapping RAM — must not land here.)
+        if (iieMode && addr >= 0xC100 && addr < 0xD000 && addr != 0xCFFF
+            && !iicProfile_ && !noSlotClock_) {
+            const bool c3 = (addr & 0xFF00u) == 0xC300u;
+            const bool slotC3 = (iieMemMode & MF_SLOTC3ROM) != 0;
+            if (iieMemMode & MF_INTCXROM) {
+                if (!c3 || intC8Rom || slotC3)
+                    return internalIORom[addr - 0xC000];
+            } else if (intC8Rom && (addr >= 0xC800 || (c3 && !slotC3))) {
+                return internalIORom[addr - 0xC000];
+            }
+        }
         return memReadSlow(addr);
     }
-    void    memWrite(uint16_t addr, uint8_t value);
+
+    // memWrite() mirrors memRead(): the hot case — a write into writable
+    // RAM below $C000 — is decided here, everything else (soft switches,
+    // slot I/O, the language card, the //e write-trace diagnostics) falls
+    // through to memWriteSlow(), the original body. On a //e the aux/main
+    // routing is the shared inline helper iieWriteToAux(), the write-side
+    // twin of iieReadFromAux(); iieMemWrite() uses the same one.
+    //
+    // The one fast-path exclusion that is not a routing rule: writes to
+    // $0400-$0427 (text row 0) take the slow path unconditionally, because
+    // memWriteSlow() carries an opt-in reboot-trace hook on exactly that
+    // range. Forty addresses out of 48 K — cheaper to exclude than to test
+    // the env flag here.
+    void memWrite(uint16_t addr, uint8_t value)
+    {
+        if (addr < 0xC000 && !testMode && writable[addr]
+            && static_cast<uint16_t>(addr - 0x0400u) > 0x27u) {
+            if (!iieMode) { mem[addr] = value; return; }
+            if (!bankTrace_) {
+                if (iieWriteToAux(addr)) aux[addr] = value;
+                else                     mem[addr] = value;
+                return;
+            }
+        }
+        memWriteSlow(addr, value);
+    }
 
     // Diagnostic — used by M6502's BRK trace.
     std::string busStateSummary() const;
@@ -327,7 +386,7 @@ public:
     /// Video standard (NTSC 262 lines / PAL 312 lines). Set on profile load.
     /// Used by pushVideoEventLocked to stamp each soft-switch edge with the
     /// correct scanline geometry, so beam-racing positions PAL effects right.
-    void          setVideoStandard(VideoStandard s) { videoStandard_.store(s); }
+    void          setVideoStandard(VideoStandard s) { videoStandard_.store(s); vblNextEventCycle_ = 0; }
     VideoStandard videoStandard() const { return videoStandard_.load(); }
 
     /// LEGACY synchronous bracket (tests only): snapshot display state and
@@ -470,9 +529,28 @@ public:
     // count returned by M6502::run() so the paddle RC discharge timer
     // ticks against the real CPU clock instead of wallclock. Forwards to
     // the cassette device too (so its pulse advance stays cycle-aligned).
-    void advanceCycles(int cycles);
+    // Once per emulated instruction (M6502::step). Only the bookkeeping that
+    // genuinely happens every instruction lives here — the cycle counter, the
+    // cassette and slot-card fan-outs — and the video-timing part
+    // (VBL edge, frame rollover, per-video-frame event publication) is
+    // skipped until `vblNextEventCycle_`, the first cycle at which it can
+    // have anything to do. advanceCyclesVideo() is the former body,
+    // unchanged; it recomputes that threshold on every run. Anyone moving
+    // `cycleCounter` or the frame period behind its back must zero the
+    // threshold (setCycleCounter / setVideoStandard / snapshot restore do)
+    // so the next call re-derives everything from scratch — the slow path
+    // already self-heals from an arbitrary jump, the gate must just let it
+    // run. Measured at ~15 % of a ][+ banner profile before the split.
+    void advanceCycles(int cycles)
+    {
+        if (cycles <= 0) return;
+        cycleCounter += cycles;
+        if (cassette) cassetteAdvanceCycles(cycles);
+        if (slots.hasActiveCards()) slots.advanceCycles(cycles);
+        if (cycleCounter >= vblNextEventCycle_) advanceCyclesVideo();
+    }
     uint64_t getCycleCounter() const { return cycleCounter; }
-    void     setCycleCounter(uint64_t c) { cycleCounter = c; }
+    void     setCycleCounter(uint64_t c) { cycleCounter = c; vblNextEventCycle_ = 0; }
 
     // ── Snapshot state (de)serialization ────────────────────────────────
     // The main 64 KB (mem) is the caller's "MEM" section; these cover
@@ -568,7 +646,10 @@ private:
     std::vector<VideoEvent> publishedEvents_;     // last completed frame
     bool videoEventFrameOpen_ = true;
     bool legacyEventBracket_  = false;
-    uint64_t lastVideoFrameIndex_ = 0;
+    // Start cycle of the video frame whose events were last published by
+    // advanceCycles(). Compared against `vblFrameBase_` (same quantity,
+    // tracked incrementally) — NOT derived with a division per call.
+    uint64_t lastVideoFrameStart_ = 0;
     std::atomic<VideoStandard> videoStandard_{VideoStandard::NTSC};
 
     void recordVideoEvent(VideoEventKind kind, bool value);
@@ -579,6 +660,19 @@ private:
     mutable std::mutex kbMutex;
     uint8_t lastKey   = 0;
     bool    keyReady  = false;
+    // `lastKey | (keyReady << 7)` republished (under kbMutex) after every
+    // mutation of the pair, so the CPU's $C000-$C01F reads take one relaxed
+    // load instead of the mutex. The ][+ Monitor's keyboard loop and every
+    // game's input poll hit $C000 continuously: the uncontended lock/unlock
+    // pair was ~5 % of a banner profile. Writers still serialise on kbMutex;
+    // a reader that lands between the member writes and the publish simply
+    // observes the previous pair — the same thing it would have seen had it
+    // taken the lock a moment earlier.
+    std::atomic<uint8_t> kbLatchMirror_{0};
+    void publishKbLatch() {
+        kbLatchMirror_.store(static_cast<uint8_t>(lastKey | (keyReady ? 0x80 : 0x00)),
+                             std::memory_order_relaxed);
+    }
     // Paste queue — drains one byte into `lastKey` each time the CPU
     // clears the strobe via $C010. See pasteText().
     std::deque<uint8_t> pasteQueue;
@@ -620,6 +714,9 @@ private:
     // 0 = unaligned, which forces the first advanceCycles() call to derive it.
     // Also NOT snapshotted, for the same reason as the base.
     uint64_t vblFrameCycles_  = 0;
+    // First cycle at which advanceCyclesVideo() has work (the VBL edge of the
+    // current frame, then its end). 0 = run it on the next call.
+    uint64_t vblNextEventCycle_ = 0;
     uint64_t cycleCounter     = 0;       // hand-rolled, see advanceCycles()
 
     // Cassette: non-owning pointer set by EmulationController.
@@ -761,10 +858,23 @@ private:
     /// Floating bus at an explicit absolute cycle (the scanner address math).
     uint8_t floatingBus(uint64_t absCycle) const;
 
+    /// tests/bus_fastpath_test.cpp — differential check of the inline
+    /// memRead()/memWrite() fast paths against the slow paths over every
+    /// address and paging state. The only reason the slow paths are reachable
+    /// from outside.
+    friend struct MemoryFastPathProbe;
+
     /// Everything memRead()'s inline fast path does not handle. This IS the
     /// former body of memRead(), moved wholesale — see the comment on
     /// memRead() for why the split exists.
     uint8_t memReadSlow(uint16_t addr);
+    /// Video-timing half of advanceCycles() — see the inline part.
+    void    advanceCyclesVideo();
+    /// Out-of-line so Memory.h needs only the CassetteDevice forward decl.
+    void    cassetteAdvanceCycles(int cycles);
+    /// Everything memWrite()'s inline fast path does not handle — the
+    /// former body of memWrite(), moved wholesale.
+    void    memWriteSlow(uint16_t addr, uint8_t value);
 
     /// Aux-vs-main routing for $0000-$BFFF reads under //e paging. ONE
     /// definition, shared by memRead()'s inline fast path and iieMemRead()'s
@@ -795,6 +905,21 @@ private:
             return ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2
                                                                 : ramrd;
         return ramrd;
+    }
+
+    /// Write-side twin of iieReadFromAux(): same table with RAMWRT in
+    /// place of RAMRD (UTAIIe 4-22; MAME `apple2e.cpp` auxbank_update).
+    /// Shared by memWrite()'s inline fast path and iieMemWrite().
+    bool iieWriteToAux(uint16_t addr) const
+    {
+        const bool ramwrt = (iieMemMode & MF_RAMWRT) != 0;
+        if (addr < 0x0200) return (iieMemMode & MF_ALTZP) != 0;
+        if (addr >= 0x0400 && addr <= 0x07FF)
+            return (iieMemMode & MF_80STORE) ? display.page2 : ramwrt;
+        if (addr >= 0x2000 && addr <= 0x3FFF)
+            return ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2
+                                                                : ramwrt;
+        return ramwrt;
     }
 
     // IIe-only routing helpers. Selected per address range based on the

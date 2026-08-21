@@ -123,10 +123,16 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   `bus/a2bus/a2memexp.cpp`. *2-3 d.*
   Feature, not architecture — do not pick ahead of P0–P4.
 - 🟡 **`Memory::memRead` hot path** — the multi-level `if` cascade is
-  `Memory::memReadSlow` (`Memory.cpp:2096`); `memRead` itself is now the
-  inline fast path (`Memory.h:186-207`). 256-entry dispatch table per
-  high page. Prerequisite: `IIcClassProfile` extraction (done).
-  Perf job, orthogonal to the Keyboard/Paddle split — do not merge the two.
+  `Memory::memReadSlow`; `memRead` itself is the inline fast path (RAM, ROM
+  window, and since 2026-08-20 the //e internal `$C100-$CFFF` ROM;
+  `memWrite` has the same split). What remains is the condition chain in
+  front of the ROM-window hit (~15 % of a ][+ banner, `PERFORMANCE.md` § 7.4):
+  a 256-entry dispatch table per high page would replace it with one indexed
+  load, at the price of an invalidation at every paging-state writer. Any
+  change here must keep `tests/bus_fastpath_test.cpp` green — it is the
+  differential oracle for the fast paths. Prerequisite: `IIcClassProfile`
+  extraction (done). Perf job, orthogonal to the Keyboard/Paddle split — do
+  not merge the two.
 - 🟢 **Dedicated Pascal LC** — 16 KB variant shipped with Apple Pascal,
   minor differences vs IIe LC (write-protect DIP). *1 d.*
 
