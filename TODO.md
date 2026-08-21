@@ -1032,6 +1032,18 @@ unit `ctest`s. Curated list + POM2 status + cross-refs to the dashboard's
   anthology**. **Priority reference** for emulation perfection: chains vapor
   lock, mid-scanline, Mockingboard, 128 KB aux, Unidisk/Liron. Validate DIX
   first before any other corpus title. Full description → `docs/test_corpus.md`.
+  - ⚠️ **French Touch demos expect the Mockingboard in slot 4** — MAD EFFECT
+    (`disks_5.4/demo/madef/Sources/main.a:176-218`) and the DIX productions
+    address the 6522 in hard-coded `$C4xx` with no slot scan; the whole
+    frame sync is the T1 IRQ. With the card anywhere else (or a Mouse Card in
+    slot 4) the demo arms a timer that never fires and waits forever — a
+    frozen screen after the loader, no code regression. Diagnosed 2026-08-20
+    from a `slot_4_card=mouse` / `slot_7_card=mockingboard` config; the
+    `madef_phase_probe` shows 0 page-flips/frame in slot 7 vs ~191 in slot
+    4. Slot 3 is no alternative: the //e's internal 80-column firmware owns
+    `$C300-$C3FF` (SLOTC3ROM off) so a Mockingboard there is silent. Open
+    idea: a Slot Config hint ("DIX / French Touch → MB in slot 4") next to
+    the existing slot-3 warnings in `MainWindow_Slots.cpp`.
 - ✅ **Vapor lock** — DONE/proven (2026-06-09, extended 2026-06-10). Test
   `vapor_lock`: a real 6502 `LDA $C058 / CMP marker / BNE` loop locks on the
   marker in video RAM; `floatingBus()` tracks the beam per cycle. Scanner

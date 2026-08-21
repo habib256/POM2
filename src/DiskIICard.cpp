@@ -932,7 +932,35 @@ void DiskIICard::lssSync(uint64_t extraCycles)
     if (active == MODE_IDLE) return;
     DiskImage& img = images[activeDrive];
     if (!img.isLoaded()) {
-        lssCycle = cpuCycleTotal * 2 + extraCycles;
+        // Empty drive — or, for drive 2 on a one-drive machine, an absent
+        // one. Freezing `lssData` here HUNG THE MACHINE: the universal
+        // "wait for a nibble" idiom is `LDA $C08C,X / BPL -3`, and a data
+        // register that never changes keeps bit 7 clear forever, so the
+        // guest never even reaches the timeout counter that follows its
+        // own loop. Ultima V's "Save Music Configuration" does exactly
+        // this at $D407 — it targets drive 2, where the BRITANNIA disk
+        // belongs — and POM2 froze there on any WOZ. The legacy nibble
+        // gate never had the bug: `deviceSelectRead` returns $FF for an
+        // empty drive, which is why the same game errors out cleanly from
+        // a .dsk and hangs from a .woz.
+        //
+        // Real hardware leaves the read amplifier on noise, so the latch
+        // keeps shifting garbage, bit 7 comes up, and RWTS times out into
+        // an I/O error. Model that: one pseudo-random byte per 8 bit cells
+        // (4 us each → 64 LSS cycles), high bit set as on every byte the
+        // LSS ever hands the CPU. Derived from the cycle cursor by hash
+        // rather than from a PRNG member, so it stays deterministic across
+        // snapshot restore and rewind — both replay this cursor.
+        // Pinned by tests/diskii_empty_drive_test.cpp.
+        const uint64_t target = cpuCycleTotal * 2 + extraCycles;
+        if (target > lssCycle) {
+            uint64_t h = (target / 64) * 0x9E3779B97F4A7C15ull;
+            h ^= h >> 29;
+            h *= 0xBF58476D1CE4E5B9ull;
+            h ^= h >> 32;
+            lssData = static_cast<uint8_t>(static_cast<uint8_t>(h) | 0x80);
+        }
+        lssCycle = target;
         return;
     }
 
