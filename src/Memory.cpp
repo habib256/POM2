@@ -239,14 +239,14 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
         iicProfile_ = std::make_unique<IIcClassProfile>(
             payload, payloadSize, altBankSrc,
             iwmDevice, smartPortHub, iwmAuthoritative);
-        // //c boots with INTCXROM forced on. applyProfile calls
+            // //c boots with INTCXROM forced on. applyProfile calls
         // resetSoftSwitches BEFORE loadAppleIIRom, so its MF_INTCXROM
         // hook (now gated on iicProfile_) doesn't catch the just-detected
         // class — set it here too.
         iieMemMode |= MF_INTCXROM;
     } else {
         iicProfile_.reset();
-    }
+        }
 
     if (iieMode && payloadSize == 16 * 1024) {
         // IIe split: bytes 0x0000-0x00FF map to $C000-$C0FF (I/O page,
@@ -370,13 +370,13 @@ int Memory::loadCharRom(const char* filename, int bank)
     return 1;
 }
 
-void Memory::advanceCycles(int cycles)
+void Memory::cassetteAdvanceCycles(int cycles)
 {
-    if (cycles <= 0) return;
-    cycleCounter += cycles;
-    if (cassette) cassette->advanceCycles(cycles);
-    slots.advanceCycles(cycles);
+    cassette->advanceCycles(cycles);
+}
 
+void Memory::advanceCyclesVideo()
+{
     // Scanline-accurate VBL transition detection. Apple II video timing:
     // 65 CPU cycles/line; 262 lines NTSC / 312 PAL. Visible: 0..191. VBL is
     // 192..261 (NTSC) / 192..311 (PAL) → the VBL/frame period must follow the
@@ -384,8 +384,12 @@ void Memory::advanceCycles(int cycles)
     // detect PAL vs NTSC sees the wrong machine. The "long cycle" (1 extra
     // every 65) isn't modelled; nominal 65/line is close enough.
     constexpr uint64_t kCyclesPerScanline = 65;
+    // Relaxed: the standard is a plain enum flipped by the UI under the
+    // state lock; the derived `frameCycles` is re-checked every call below,
+    // so no ordering is needed — and this runs once per emulated instruction.
     const uint64_t kScanlinesPerFrame =
-        static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+        static_cast<uint64_t>(pom2VideoTiming(
+            videoStandard_.load(std::memory_order_relaxed)).scanlinesPerFrame);
     constexpr uint64_t kVisibleScanlines  = 192;
     // Track the start-of-frame cycle incrementally instead of deriving the
     // scanline with `(cycleCounter / 65) % scanlinesPerFrame` every time.
@@ -479,12 +483,17 @@ void Memory::advanceCycles(int cycles)
     // take and the next tick (~1 empty take in 6 under PAL → mid-scanline
     // effects like French Touch *Mad Effect* flickered at ~10 Hz).
     // Legacy mode: tests bracket synchronously via beginVideoEventFrame().
-    const uint64_t frameIndex =
-        cycleCounter / (kCyclesPerScanline * kScanlinesPerFrame);
-    if (!legacyEventBracket_ && frameIndex != lastVideoFrameIndex_) {
-        lastVideoFrameIndex_ = frameIndex;
-        const uint64_t newFrameStart =
-            frameIndex * kCyclesPerScanline * kScanlinesPerFrame;
+    //
+    // The frame boundary is `vblFrameBase_` moving — it IS
+    // `cycleCounter - cycleCounter % frameCycles`, maintained incrementally
+    // above, so compare it rather than divide again: `cycleCounter /
+    // frameCycles` here was a second runtime-divisor 64-bit division per
+    // emulated instruction (the first one was removed in 2026-07; this one
+    // arrived with the per-video-frame publication and measured ~2 % of the
+    // core on an M1, more on a Cortex-A72 where `udiv` is slower).
+    if (!legacyEventBracket_ && vblFrameBase_ != lastVideoFrameStart_) {
+        lastVideoFrameStart_ = vblFrameBase_;
+        const uint64_t newFrameStart = vblFrameBase_;
         std::lock_guard<std::mutex> lk(stateMutex);
         publishedFrameStart_ = displayAtFrameStart_;
         // An instruction can straddle the frame boundary: its soft-switch
@@ -505,6 +514,12 @@ void Memory::advanceCycles(int cycles)
         videoEvents_         = std::move(carry);
         displayAtFrameStart_ = display;   // state at scanline 0 of the new frame
     }
+
+    // Nothing above can change again before the VBL edge of this frame (if
+    // it is still ahead) or, failing that, the frame boundary — so that is
+    // the next cycle the inline gate lets this function run.
+    const uint64_t edge = vblFrameBase_ + kVisibleScanlines * kCyclesPerScanline;
+    vblNextEventCycle_ = (cycleCounter < edge) ? edge : vblFrameBase_ + frameCycles;
 }
 
 void Memory::beginVideoEventFrame()
@@ -578,6 +593,7 @@ void Memory::resetSoftSwitchesWarm()
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
     pasteQueue.clear();   // a reset abandons any in-flight host paste
+    publishKbLatch();
     // NB: cnxx-slot tracker analogue lives in SlotBus, which the caller
     // (EmulationController::softReset) drives via slotBus().reset();
     // nothing else needs touching here on II/II+.
@@ -652,6 +668,7 @@ void Memory::resetSoftSwitches()
     std::lock_guard<std::mutex> kb(kbMutex);
     keyReady = false;
     pasteQueue.clear();   // a reset abandons any in-flight host paste
+    publishKbLatch();
 }
 
 void Memory::clearRam()
@@ -919,6 +936,7 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     ds.hiRes       = getU8() != 0; ds.eightyCol = getU8() != 0; ds.an3   = getU8() != 0;
     ds.altChar     = getU8() != 0; ds.dhgr      = getU8() != 0; ds.eightyStore = getU8() != 0;
     cycleCounter     = getU64();
+    vblNextEventCycle_ = 0;     // re-derive the VBL/frame gate from the new counter
     paddleLatchCycle = getU64();
     {
         std::lock_guard<std::mutex> lk(stateMutex);
@@ -942,7 +960,7 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
             kCyclesPerScanline *
             static_cast<uint64_t>(
                 pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
-        lastVideoFrameIndex_ = cycleCounter / kCyclesPerFrame;
+        lastVideoFrameStart_ = cycleCounter - (cycleCounter % kCyclesPerFrame);
     }
 
     if (!need(lcBank1.size() + lcBank2.size() + lcHigh.size())) return false;
@@ -1067,6 +1085,7 @@ void Memory::queueKey(uint8_t apple2Key)
         // wins (fast typing overwrites an unread key, as on real hardware).
         lastKey  = b;
         keyReady = true;
+        publishKbLatch();
     }
 }
 
@@ -1086,6 +1105,7 @@ void Memory::clearKeyStrobe()
         keyReady = true;
         pasteQueue.pop_front();
     }
+    publishKbLatch();
 }
 
 size_t Memory::pasteText(const char* data, size_t length)
@@ -1133,6 +1153,7 @@ size_t Memory::pasteText(const char* data, size_t length)
         if (!keyReady && pasteQueue.empty()) {
             lastKey  = b;
             keyReady = true;
+            publishKbLatch();
         } else {
             pasteQueue.push_back(b);
         }
@@ -1153,6 +1174,7 @@ size_t Memory::pasteRawKeys(const char* data, size_t length)
         if (!keyReady && pasteQueue.empty()) {
             lastKey  = b;
             keyReady = true;
+            publishKbLatch();
         } else {
             pasteQueue.push_back(b);
         }
@@ -1188,13 +1210,15 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // Soft-switch byte is in $C000-$C07F. Many switches respond to either
     // a read OR a write (both edges work as toggles). We snapshot the
     // current keyboard latch under kbMutex on every $C000/$C010 access.
-    uint8_t kbLatch = 0;
-    {
-        std::lock_guard<std::mutex> lk(kbMutex);
-        kbLatch = lastKey | (keyReady ? 0x80 : 0x00);
-    }
-
+    // Only the keyboard addresses ($C000-$C01F: latch, strobe, the //e
+    // status reads) consume the latch — every other soft switch in this page
+    // (speaker $C030, display $C050-$C05F, paddles $C06x/$C070) used to take
+    // the lock too, for nothing. A speaker-driven tune toggles $C030 tens of
+    // thousands of times a second, so the uncontended lock/unlock pair was
+    // ~5 % of a banner profile on its own.
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
+    const uint8_t kbLatch =
+        (low < 0x20) ? kbLatchMirror_.load(std::memory_order_relaxed) : uint8_t{0};
 
     // Keyboard latch + IIe paging soft switches at $C000-$C00F.
     //
@@ -1817,17 +1841,7 @@ uint8_t Memory::iieMemRead(uint16_t addr)
 
 void Memory::iieMemWrite(uint16_t addr, uint8_t value)
 {
-    const bool ramwrt = (iieMemMode & MF_RAMWRT) != 0;
-    bool toAux;
-    if (addr < 0x0200) {
-        toAux = (iieMemMode & MF_ALTZP) != 0;
-    } else if (addr >= 0x0400 && addr <= 0x07FF) {
-        toAux = (iieMemMode & MF_80STORE) ? display.page2 : ramwrt;
-    } else if (addr >= 0x2000 && addr <= 0x3FFF) {
-        toAux = ((iieMemMode & MF_80STORE) && display.hiRes) ? display.page2 : ramwrt;
-    } else {
-        toAux = ramwrt;
-    }
+    const bool toAux = iieWriteToAux(addr);
     if (toAux) aux[addr] = value;
     else       mem[addr] = value;
     if (bankTrace_) {
@@ -2323,7 +2337,7 @@ uint8_t Memory::memReadSlow(uint16_t addr)
     return slots.expansionRomRead(addr);
 }
 
-void Memory::memWrite(uint16_t addr, uint8_t value)
+void Memory::memWriteSlow(uint16_t addr, uint8_t value)
 {
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) { mem[addr] = value; return; }

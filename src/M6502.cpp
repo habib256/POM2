@@ -1765,6 +1765,27 @@ PcEdge   g_pcTrace[kPcTraceSize] = {};
 int      g_pcTraceIdx = 0;
 uint16_t g_prevPc = 0;
 bool     g_prevValid = false;
+
+// Opt-in diagnostics, resolved once at load. They used to be function-local
+// statics inside step()/executeOpcode(); a function-local static costs an
+// initialisation-guard check (an acquire load + branch) on EVERY call, and
+// these sit on the per-instruction path — measured at ~3 % of a banner
+// profile for the three of them together. Namespace scope = plain loads.
+const bool  g_crashTrap    = std::getenv("POM2_TRACE_HANG") != nullptr;
+const bool  g_traceIllegal = std::getenv("POM2_TRACE_ILLEGAL") != nullptr;
+FILE* const g_pcTrace_file = [] {
+    const char* p = std::getenv("POM2_TRACE_PC");
+    return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
+}();
+// Cap so a forgotten trace can't fill the disk. 3M instructions is ~130 MB
+// and about 10 s of emulated time — raise it with POM2_TRACE_PC_MAX when
+// the interesting window sits further in (a print after a boot + menu walk).
+const long  g_pcTraceMax = [] {
+    const char* m = std::getenv("POM2_TRACE_PC_MAX");
+    const long v = m ? std::strtol(m, nullptr, 10) : 0;
+    return v > 0 ? v : 3000000L;
+}();
+long        g_pcTraceN = 0;
 }
 void M6502::executeOpcode(void)
 {
@@ -1816,22 +1837,10 @@ void M6502::executeOpcode(void)
 
     // DIAGNOSTIC (POM2_TRACE_PC=path): log every instruction (PC, opcode,
     // A/X/Y) to a file for trace-diffing against a MAME reference. Capped.
-    {
-        static FILE* pcTrace = [] {
-            const char* p = std::getenv("POM2_TRACE_PC");
-            return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
-        }();
-        static long pcTraceN = 0;
-        // Cap so a forgotten trace can't fill the disk. 3M instructions is
-        // ~130 MB and about 10 s of emulated time — raise it with
-        // POM2_TRACE_PC_MAX when the interesting window sits further in
-        // (e.g. a print that only starts after a boot + menu walk).
-        static const long pcTraceMax = [] {
-            const char* m = std::getenv("POM2_TRACE_PC_MAX");
-            const long v = m ? std::strtol(m, nullptr, 10) : 0;
-            return v > 0 ? v : 3000000L;
-        }();
-        if (pcTrace && pcTraceN < pcTraceMax) {
+    if (g_pcTrace_file) {
+        FILE* const pcTrace  = g_pcTrace_file;
+        long&       pcTraceN = g_pcTraceN;
+        if (pcTraceN < g_pcTraceMax) {
             // cum = cumulative CPU cycles BEFORE this instruction (memory's
             // counter is bumped by advanceCycles after each opcode). Lets us
             // diff cycle accounting against a MAME totalcycles trace.
@@ -1851,8 +1860,7 @@ void M6502::executeOpcode(void)
     // KIL (Hang). Used to find whether a crack's loader depends on an
     // illegal opcode POM2 doesn't model. Cheap when off.
     {
-        static const bool kTraceIllegal =
-            std::getenv("POM2_TRACE_ILLEGAL") != nullptr;
+        const bool kTraceIllegal = g_traceIllegal;
         if (kTraceIllegal &&
             (entry.addrMode == &M6502::Unoff     ||
              entry.addrMode == &M6502::Unoff1    ||
@@ -1987,7 +1995,7 @@ void M6502::step(void)
     // jump/return after the city decompression. Catch the first such PC and
     // dump the trail of the last 32 PCs so we see WHERE the bad jump came from.
     {
-        static const bool crashTrap = std::getenv("POM2_TRACE_HANG") != nullptr;
+        const bool crashTrap = g_crashTrap;
         if (crashTrap) {
             static const int RN = 512;
             static uint16_t ring[512] = {0};

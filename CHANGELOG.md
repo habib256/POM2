@@ -5,6 +5,46 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-20 (evening) — Second performance campaign, and the bench's //e was a BRK loop
+
+Full write-up with the profiles, the reasoning and the numbers:
+`docs/PERFORMANCE.md` § 7. The short version, most recent host Apple M1,
+release build, output hashes identical throughout, `ctest` green (186):
+][+ banner **−19 %**, 5.25" boot **−26 %**, //e banner **−35 %**, //e PAL
+no-render **−37 %**, a game running in HGR **−29 %** (profiling build; the
+release build runs the same 20 000 frames in 1.96 s).
+
+**The finding that matters beyond the numbers**: `pom2_bench --iie` called
+`loadAppleIIRom()` before `setIIEMode(true)`, the loader only maps the
+internal `$C100-$CFFF` ROM when the mode is already on, and the //e booted
+into an empty `$C300` and executed `BRK` forever. Every "//e" measurement in
+the previous campaign, and three of the PGO training runs, profiled a BRK
+loop. Fixed, and `pom2_bench --dump-text` now shows text page 1 + the PC so
+a workload can be eyeballed before it is trusted.
+
+The changes: `memRead()` covers the //e internal ROM inline (the //e
+executes its keyboard loop from there — the § 3.2 "ROM window" trap one
+machine later); `memWrite()` gets the same inline/slow split with a shared
+`iieWriteToAux()`; `advanceCycles()` runs its VBL/frame body only at the next
+event cycle instead of per instruction (and loses a second per-instruction
+64-bit division); the keyboard latch is mirrored into an atomic so `$C000`
+reads no longer take `kbMutex` — and non-keyboard soft switches never did
+need it; `renderHiRes` precomputes its phase/palette/average tables and
+caches each row's decode (input → output, so always safe to reuse). A second
+pass hoisted the opt-in trace switches out of function-local statics (each
+cost a guard check per instruction) and gave `DiskIICard::advanceCycles` an
+idle early-out; caching `memRead`'s ROM-window condition in one bool was
+tried, measured 4 % slower, and dropped.
+
+**The pitfall**: the //e read fast path shipped without an `addr < 0xD000`
+bound, so language-card RAM reads took the internal-ROM shortcut. Both bench
+hashes stayed identical — no bench workload maps LC RAM on a //e — and
+`softcard_cpm_boot_iie` caught it. New `bus_fastpath` test: differential
+`memRead`/`memWrite` vs the slow paths over every address × 1024 paging
+states, with all four RAM banks seeded distinctly (its first version, with
+zeroed banks, let the bug through too) and checked to fail on the bug before
+being kept.
+
 ## 2026-08-20 (later still) — Bug hunt 3: no defects, two fuzzers landed
 
 A third pass found **nothing**, and the tooling that failed to find it is the

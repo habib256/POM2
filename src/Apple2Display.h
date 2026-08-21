@@ -372,6 +372,25 @@ private:
     //                            than out of scattered invalidations.
     TextFrameKey textFrameKey_;
     TextFrameKey nextTextFrameKey_;
+
+    // Per-scanline decode cache for the NTSC-LUT hi-res path (renderHiRes).
+    // The 280 output pixels of a row are a pure function of its 40 doubled
+    // words (bit7Mask already folded in) and the decode flavour (`key` =
+    // LUT row | square-filter); so the decode is skipped when both match
+    // the previous call and the cached pixels are copied instead. It caches
+    // INPUT → OUTPUT, never "the framebuffer already holds this", so it is
+    // correct no matter who else painted the row since (mixed-mode text,
+    // beam-raced column splits, a capture demod): the copy is made every
+    // time, only the decode is elided. Lode Runner's attract screen
+    // measured renderHiRes at a third of the whole disk-boot profile; with
+    // the cache a static row costs an 80-byte compare and a 1 KB memcpy.
+    struct HgrRowCache {
+        uint16_t words[40];
+        uint8_t  key   = 0;
+        bool     valid = false;
+        std::array<uint32_t, 280> out;
+    };
+    std::array<HgrRowCache, 192> hgrRowCache_{};
     /// Publishes this frame's candidate key. Called on every exit from
     /// render() (RAII), so a future early return cannot leave the previous
     /// frame's key describing pixels that have since been repainted.

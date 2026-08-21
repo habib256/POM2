@@ -85,14 +85,20 @@ constexpr uint8_t kP6RomDefault[256] = {
 // each milestone of the Disk II boot sequence. Cheap when off (one bool
 // check on hot-path reads, but only inside the diagnostic state struct's
 // guard).
-bool debugEnabled()
-{
-    static const bool on = []{
-        const char* v = std::getenv("POM2_DEBUG_DISK");
-        return v && *v && *v != '0';
-    }();
-    return on;
-}
+// Namespace-scope (not function-local) statics: a function-local static
+// pays an initialisation-guard check on every call, and both of these sit
+// on the per-LSS-sync path while the motor runs.
+const bool g_debugDisk = []{
+    const char* v = std::getenv("POM2_DEBUG_DISK");
+    return v && *v && *v != '0';
+}();
+FILE* const g_lssTraceFile = [] {
+    const char* p = std::getenv("POM2_TRACE_LSS");
+    return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
+}();
+long g_lssTraceCalls = 0, g_lssTraceKept = 0;
+
+bool debugEnabled() { return g_debugDisk; }
 
 }  // namespace
 
@@ -788,6 +794,13 @@ void DiskIICard::advanceCycles(int cycles)
 {
     cpuCycleTotal += static_cast<uint64_t>(cycles);
 
+    // Idle drive on the bit-level path (motor off AND spin-down elapsed):
+    // nothing below would do anything — lssSync() returns on MODE_IDLE, the
+    // spin-down countdown is over — so skip straight out. A plugged Disk II
+    // is the common case and its drive is idle most of the time, yet this is
+    // called once per emulated instruction through the slot fan-out.
+    if (useBitLss && active == MODE_IDLE && motorOffDelay <= 0) return;
+
     // The DATA path (nibble/LSS) only runs with media present. The motor
     // spin-down delay, however, must tick REGARDLESS of media: a motor-off on
     // an empty selected drive still has to time out and stop, otherwise
@@ -970,13 +983,11 @@ void DiskIICard::lssSync(uint64_t extraCycles)
     // DIAGNOSTIC (POM2_TRACE_LSS=path): sampled LSS state to see whether
     // lssCycle / nextFlux / qt advance during a stuck read. Every 80th
     // call, capped, so the window spans the whole boot.
-    {
-        static FILE* lf = [] {
-            const char* p = std::getenv("POM2_TRACE_LSS");
-            return p ? std::fopen(p, "w") : static_cast<FILE*>(nullptr);
-        }();
-        static long lc = 0, kept = 0;
-        if (lf && (lc++ % 80) == 0 && kept < 4000) {
+    if (g_lssTraceFile) {
+        FILE* const lf = g_lssTraceFile;
+        long& lc = g_lssTraceCalls;
+        long& kept = g_lssTraceKept;
+        if ((lc++ % 80) == 0 && kept < 4000) {
             std::fprintf(lf,
                 "cyc=%llu lss=%lld qt=%d rev=%lld nextFlux=%lld nflen=%d data=%02X\n",
                 static_cast<unsigned long long>(cpuCycleTotal),

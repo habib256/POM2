@@ -1832,59 +1832,108 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
         constexpr int kContextBits = 3;
         const int lutRow = (effMode == HiResMode::ColorCompMedium) ? 1 : 0;
         const bool squareFilter = (effMode == HiResMode::ColorComp4Bit);
+        const uint8_t cacheKey = static_cast<uint8_t>(lutRow | (squareFilter ? 2 : 0));
+
+        // Decode tables, built once. They fold the three per-sub-pixel
+        // steps of the original loop — artifact LUT, `rotl4b` phase select,
+        // lo-res palette — and the per-pixel `avgRgb` pair average into two
+        // lookups, and are computed WITH those same functions so the output
+        // is bit-identical (pom2_bench framebuffer hash is the check):
+        //   phaseIdx[row][w & 0x7F][absX & 3] = rotl4b(LUT[row][w], absX)
+        //   squareIdx[nibble][(absX - 1) & 3] = rotl4b(nibble | nibble << 4, absX - 1)
+        //   pairAvg[a][b]                     = avgRgb(palette[a], palette[b])
+        // rotl4b only looks at `count & 3`, which is why the phase dimension
+        // is 4 — and why absX - 1 at absX = 0 (wraps to 3) needs no special
+        // case: (unsigned)(-1) & 3 == 3 in both the table and the original.
+        struct Tables {
+            uint8_t  phaseIdx[2][128][4];
+            uint8_t  squareIdx[16][4];
+            uint32_t pairAvg[16][16];
+            Tables() {
+                for (int r = 0; r < 2; ++r)
+                    for (unsigned w = 0; w < 128; ++w)
+                        for (unsigned ph = 0; ph < 4; ++ph)
+                            phaseIdx[r][w][ph] = static_cast<uint8_t>(
+                                rotl4b(kArtifactColorLut[r][w], ph));
+                for (unsigned n = 0; n < 16; ++n)
+                    for (unsigned ph = 0; ph < 4; ++ph)
+                        squareIdx[n][ph] = static_cast<uint8_t>(
+                            rotl4b(static_cast<uint8_t>(n | (n << 4)), ph));
+                for (unsigned a = 0; a < 16; ++a)
+                    for (unsigned b = 0; b < 16; ++b)
+                        pairAvg[a][b] = avgRgb(kLoResPalette[a], kLoResPalette[b]);
+            }
+        };
+        static const Tables T;
+
         uint16_t words[40];
-        std::array<uint32_t, kStreamLen> subPixels;
+        uint8_t  idx[kStreamLen];   // lo-res palette index per sub-pixel
 
         for (int y = firstScanline; y < lastScanline; ++y) {
             const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
             buildHgrWordRow(ram, rowAddr, words, bit7Mask);
 
+            uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
+            HgrRowCache& rc = hgrRowCache_[static_cast<size_t>(y)];
+            if (rc.valid && rc.key == cacheKey
+                && std::memcmp(rc.words, words, sizeof(words)) == 0) {
+                std::memcpy(outRow + px0, rc.out.data() + px0,
+                            static_cast<size_t>(px1 - px0) * sizeof(uint32_t));
+                continue;
+            }
+
             // Scanline's 560 sub-pixels via incremental window. `w`
             // accumulates up to (3 + 14 + 14) = 31 bits — fits in a
             // uint32_t. Each iteration consumes one bit (`>>= 1`).
             uint32_t w = static_cast<uint32_t>(words[0]) << kContextBits;
-            for (int col = 0; col < 40; ++col) {
-                if (col + 1 < 40) {
-                    w |= static_cast<uint32_t>(words[col + 1])
-                         << (14 + kContextBits);
-                }
-                for (int b = 0; b < 14; ++b) {
-                    const int absX = col * 14 + b;
-                    unsigned loresIdx;
-                    if (squareFilter) {
-                        // 4-bit square filter — literal port of MAME
-                        // composite_color_mode 2: rotl4(w & 0x0f,
-                        // x + is_80_column - 1) (apple2video.cpp:487-494).
-                        // is_80_column = 0 for HGR, so the rotation is
-                        // absX - 1. POM2's window carries kContextBits of LEFT
-                        // context; MAME's current 4 dots sit one bit lower than
-                        // the LUT window, so the nibble is (w >> kContextBits-1)
-                        // — NOT (w >> kContextBits). The two corrections must go
-                        // together: matched against a MAME oracle this is
-                        // bit-exact (0/2.2M dots), whereas (>>kContextBits,absX)
-                        // diverged on ~50% of interior dots.
+            if (squareFilter) {
+                // 4-bit square filter — literal port of MAME
+                // composite_color_mode 2: rotl4(w & 0x0f,
+                // x + is_80_column - 1) (apple2video.cpp:487-494).
+                // is_80_column = 0 for HGR, so the rotation is
+                // absX - 1. POM2's window carries kContextBits of LEFT
+                // context; MAME's current 4 dots sit one bit lower than
+                // the LUT window, so the nibble is (w >> kContextBits-1)
+                // — NOT (w >> kContextBits). The two corrections must go
+                // together: matched against a MAME oracle this is
+                // bit-exact (0/2.2M dots), whereas (>>kContextBits,absX)
+                // diverged on ~50% of interior dots.
+                for (int col = 0; col < 40; ++col) {
+                    if (col + 1 < 40)
+                        w |= static_cast<uint32_t>(words[col + 1]) << (14 + kContextBits);
+                    for (int b = 0; b < 14; ++b) {
+                        const int absX = col * 14 + b;
                         const unsigned nibble = (w >> (kContextBits - 1)) & 0x0Fu;
-                        loresIdx = rotl4b(static_cast<uint8_t>(nibble | (nibble << 4)),
-                                          static_cast<unsigned>(absX - 1));
-                    } else {
-                        const uint8_t lutEntry = kArtifactColorLut[lutRow][w & 0x7Fu];
-                        loresIdx = rotl4b(lutEntry, static_cast<unsigned>(absX));
+                        idx[absX] = T.squareIdx[nibble][static_cast<unsigned>(absX - 1) & 3u];
+                        w >>= 1;
                     }
-                    subPixels[absX] = kLoResPalette[loresIdx];
-                    w >>= 1;
+                }
+            } else {
+                const auto& phase = T.phaseIdx[lutRow];
+                for (int col = 0; col < 40; ++col) {
+                    if (col + 1 < 40)
+                        w |= static_cast<uint32_t>(words[col + 1]) << (14 + kContextBits);
+                    for (int b = 0; b < 14; ++b) {
+                        const int absX = col * 14 + b;
+                        idx[absX] = phase[w & 0x7Fu][static_cast<unsigned>(absX) & 3u];
+                        w >>= 1;
+                    }
                 }
             }
 
             // Downsample 560 sub-pixels → 280 framebuffer pixels by
             // pair averaging. This is the optical chroma-bandwidth-limit
             // a real CRT applies — without it, the 14 MHz bit pattern
-            // would alias against the 7 MHz pixel grid.
-            for (int x = px0; x < px1; ++x) {
-                raw[x] = avgRgb(subPixels[2 * x], subPixels[2 * x + 1]);
-            }
+            // would alias against the 7 MHz pixel grid. The full row is
+            // decoded (the cache holds whole rows); only the write-back
+            // below is clipped to [px0, px1).
+            for (int x = 0; x < kWidth; ++x)
+                rc.out[static_cast<size_t>(x)] = T.pairAvg[idx[2 * x]][idx[2 * x + 1]];
+            std::memcpy(rc.words, words, sizeof(words));
+            rc.key   = cacheKey;
+            rc.valid = true;
 
-            uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
-            std::memcpy(outRow + px0, raw.data() + px0,
+            std::memcpy(outRow + px0, rc.out.data() + px0,
                         static_cast<size_t>(px1 - px0) * sizeof(uint32_t));
         }
         return;

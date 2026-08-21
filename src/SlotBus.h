@@ -87,6 +87,10 @@ public:
 
     /// CPU pacing — forwarded from Memory::advanceCycles().
     void advanceCycles(int cycles);
+    /// True when at least one card is plugged — lets Memory::advanceCycles()
+    /// skip the out-of-line fan-out call on an empty bus (the
+    /// pom2_bench banner shape, and a ][+ with nothing plugged).
+    bool hasActiveCards() const { return activeCount_ > 0; }
 
     /// The card currently claiming DMA bus mastery (SoftCard Z80), or
     /// nullptr when the 6502 owns the bus — consulted by
