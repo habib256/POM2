@@ -67,6 +67,19 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure --parallel 2
 
+      # The binary this job just built and tested, kept so a run can be
+      # checked out rather than only read about. Not a release package (no
+      # roms/, no fonts/ — packaging/bundle.manifest and release.yml own that);
+      # this is the CI build itself, for bisecting a regression or handing
+      # someone the exact binary a run produced.
+      - name: Upload the Linux build
+        uses: actions/upload-artifact@v5
+        with:
+          name: POM2-linux-x86_64-ci
+          path: build/POM2
+          if-no-files-found: error
+          retention-days: 14
+
       # The GLES 3.0 tier (POM2_GLES=ON) is what the Raspberry Pi release
       # package is built with. It shares every source file with the desktop
       # build and differs only in the headers, the shader prologue and the
@@ -137,8 +150,25 @@ jobs:
       # Compares SOURCE fingerprints rather than bytes: emcc output is not
       # reproducible across emsdk versions, so a byte diff would fail forever.
       #
-      # If this trips: the build above already produced a fresh bundle, so copy
-      # wasm/{index.html,POM2.js,POM2.wasm,POM2.data} out of the run (or rebuild
-      # locally), then `tools/wasm_stamp.sh --write` and commit wasm/.
+      # Uploaded BEFORE the staleness check below, deliberately: that check's
+      # own remedy is "take the freshly built bundle out of the run", which was
+      # impossible while nothing was published — the instruction pointed at
+      # files no one could reach. Ordering it first means the bundle is there
+      # precisely on the run where the check fails.
+      - name: Upload the WASM bundle
+        uses: actions/upload-artifact@v5
+        with:
+          name: POM2-wasm-bundle
+          path: |
+            wasm/index.html
+            wasm/POM2.js
+            wasm/POM2.wasm
+            wasm/POM2.data
+          if-no-files-found: error
+          retention-days: 14
+
+      # If this trips: the build above already produced a fresh bundle, so take
+      # the POM2-wasm-bundle artifact from this run (or rebuild locally), then
+      # `tools/wasm_stamp.sh --write` and commit wasm/.
       - name: Is the committed wasm/ bundle up to date?
         run: tools/wasm_stamp.sh --check
