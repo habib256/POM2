@@ -685,6 +685,11 @@ FileWriteResult writeFileAtomic(const fs::path& dest,
     }
     fs::path tmp = dest;
     tmp += ".tmp";
+    std::error_code tmpEc;
+    if (!prepareTempPath(tmp, tmpEc)) {
+        err = "cannot prepare " + tmp.string() + ": " + tmpEc.message();
+        return FileWriteResult::Error;
+    }
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {

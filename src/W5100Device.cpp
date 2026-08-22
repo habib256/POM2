@@ -24,6 +24,7 @@
 // naming <arpa/inet.h>'s htons / SOCK_STREAM directly here broke the WASM
 // build for code that opens no socket at all.
 #include "SocketCompat.h"
+#include "SocketUtil.h"
 
 #if POM2_HAS_SOCKETS
 // Under Emscripten there is no usable BSD-socket API, so the TCP/UDP paths
@@ -360,6 +361,15 @@ void W5100Device::openSystemSocket(size_t i, int type, int protocol, uint8_t sta
         log().warn("W5100", "socket() failed: " + lastSocketErrorText());
         return;
     }
+    // SIGPIPE is FATAL by default, and this socket writes to a peer that can
+    // vanish at any moment. `sendData` deliberately keeps sending in
+    // CLOSE_WAIT (our direction is still open), so the ordinary HTTP/1.0 or
+    // IRC shape — server answers, server closes, guest sends again — has the
+    // peer answer RST and the next send kill the whole POM2 process: no log
+    // line, no dialog, the emulated machine and any un-written-back disk
+    // state simply gone. Every other socket owner in POM2 arms this; this one
+    // did not.
+    disableSigpipe(fd);
     // Non-blocking is mandatory — every call below runs on the CPU thread
     // under stateMutex and must not wait on the network.
     if (!setNonBlocking(fd)) {
@@ -596,9 +606,24 @@ uint16_t W5100Device::txDataSize(size_t i) const
 
 uint8_t W5100Device::txFreeSizeRegister(size_t i, unsigned shift) const
 {
-    const uint16_t size = sockets_[i].transmitSize;
+    const Socket& s = sockets_[i];
+    const uint16_t size    = s.transmitSize;
     const uint16_t present = txDataSize(i);
-    return indexByte(static_cast<uint16_t>(size - present), shift);
+    uint16_t free = static_cast<uint16_t>(size - present);
+
+    // Sn_TX_FSR is the ONLY backpressure signal the chip gives the guest, and
+    // the ring pointers alone do not tell the whole story: sendData advances
+    // Sn_TX_RD to Sn_TX_WR BEFORE knowing whether the host socket accepted the
+    // bytes, parking the remainder in pendingTx. So the ring read "empty" on
+    // every poll while a host-side backlog piled up — a guest that polls FSR
+    // exactly as the datasheet says, before every chunk, was told to keep
+    // going, and lost up to a megabyte before flushPendingTx gave up and closed
+    // the connection on it. Counting the backlog is what turns "the peer is
+    // slower than the emulated CPU" from silent data loss into ordinary flow
+    // control; poll() drains pendingTx, so the value recovers on its own.
+    const std::size_t backlog = s.pendingTx.size();
+    free = (backlog >= free) ? 0 : static_cast<uint16_t>(free - backlog);
+    return indexByte(free, shift);
 }
 
 uint8_t W5100Device::rxDataSizeRegister(size_t i, unsigned shift) const
@@ -711,9 +736,22 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
     const uint16_t freeRoom = ringFreeRoom(i);
     // Never fill the ring: rxWrite meeting the read pointer reads as empty
     // (see ringHasRoomFor). Below a couple of bytes the read is not worth
-    // the syscall either. For UDP this is only a "come back later" gate —
-    // the datagram stays queued in the host socket until the guest drains
-    // the ring, which is better than reading it out and dropping it.
+    // the syscall either.
+    //
+    // For UDP this gate does NOT keep a datagram safe, and an earlier comment
+    // here claiming it did was wrong: the read below is sized at a whole
+    // datagram, so any freeRoom above 32 consumes one, and a datagram too big
+    // for the remaining room is then dropped by ringHasRoomFor — gone from the
+    // host socket too.
+    //
+    // That is faithful, and deliberately kept. A real W5100 has nowhere to
+    // put a frame that does not fit its ring either; it loses it on the wire,
+    // and a guest streaming MTU-sized datagrams into the 2 KB power-on carve
+    // loses them on real hardware for the same reason. Peeking first so the
+    // host socket holds the datagram until the ring drains was tried
+    // (2026-08-22) and rejected twice over: it emulates a buffer the chip does
+    // not have, and leaving datagrams queued across socket teardown made the
+    // receive-path tests flaky (20/20 -> 17/20). See TODO § [Network].
     if (freeRoom <= 32) return;
 
     uint8_t buffer[kMaxDatagram];
@@ -963,11 +1001,11 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
         return;
     }
 
-    const iolen_t res = ::sendto(s.fd,
-                                 reinterpret_cast<const char*>(data.data()),
-                                 static_cast<int>(data.size()), 0,
-                                 reinterpret_cast<const sockaddr*>(&destination),
-                                 sizeof(destination));
+    // sendToSocket, not ::sendto: MSG_NOSIGNAL where the platform has it,
+    // paired with the SO_NOSIGPIPE armed at creation where it does not.
+    const iolen_t res = sendToSocket(s.fd, data.data(), data.size(),
+                                     reinterpret_cast<const sockaddr*>(&destination),
+                                     static_cast<socklen_c>(sizeof(destination)));
     if (res >= 0) {
         bytesSent_ += static_cast<uint64_t>(res);
         if (isTcp && static_cast<size_t>(res) < data.size())
@@ -1077,6 +1115,14 @@ void W5100Device::macForAddress(uint32_t ipv4, MacAddress& out)
         }
     }
 
+    // Capped like dnsCache_ next door, and for the same reason: a guest doing
+    // an IPRAW subnet or ICMP sweep — an ordinary Apple II network-utility
+    // workload — inserts one node per destination address it ever touches, and
+    // nothing here evicts. Clearing wholesale rather than evicting one entry
+    // also lets a peer that only became resolvable later pick up a real
+    // destination MAC, instead of keeping the broadcast fallback that a single
+    // early miss cached for the rest of the session.
+    if (arpCache_.size() >= 512) arpCache_.clear();
     arpCache_[ipv4] = mac;
     out = mac;
 }

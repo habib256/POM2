@@ -5,6 +5,98 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-22 (later) — Bug hunt 2: five subsystems, and a process that died silently
+
+A second sweep, this time over code that had nothing to do with the previous
+day's work: disk-image parsing and write-back, the AI control server, the
+snapshot and rewind machinery, the Uthernet II TCP/IP offload, and the
+state-lock discipline across every thread. Five adversarial reviewers, then
+each finding reproduced before it was fixed.
+
+**POM2 was being killed by SIGPIPE during ordinary web browsing.** `SIGPIPE`
+is fatal by default, and `W5100Device` was the only socket owner in the tree
+that never armed `SO_NOSIGPIPE`/`MSG_NOSIGNAL`. The chip deliberately keeps
+sending in `CLOSE_WAIT` — our direction is still open, per the datasheet — so
+the ordinary shape of the retro web (server answers, server closes, guest
+writes again) had the peer answer `RST` and the next write take the whole
+process down: no log line, no dialog, the emulated machine and any
+un-written-back disk simply gone. Reproduced at exit code 141 and pinned.
+
+**A guest upload could lose a megabyte in silence.** `Sn_TX_FSR` is the only
+backpressure signal the chip gives, and it was computed from the ring pointers
+alone — but `sendData` advances `Sn_TX_RD` before knowing whether the host
+socket took the bytes, parking the rest in a host-side backlog. So a guest
+polling FSR exactly as the datasheet says was told "ring empty" every time,
+kept sending, and had the connection killed after 1 MiB of its data was
+dropped. It now counts the backlog, which turns "the peer is slower than the
+emulated CPU" from data loss into ordinary flow control.
+
+**One reported defect turned out not to be one, and the investigation is
+worth more than the fix would have been.** A reviewer found that an MTU-sized
+UDP stream loses every other datagram into the 2 KB power-on ring: the "come
+back later" gate's comment claimed the datagram stayed queued in the host
+socket, while the read that followed consumed it and the ring-room check then
+dropped it. Peeking first made the comment true — and was reverted. A real
+W5100 has nowhere to put a frame that does not fit its ring either; it loses
+it on the wire, so the loss is FAITHFUL, and buffering it in the host socket
+emulates memory the chip does not have. The peek also left datagrams queued
+across socket teardown, which took the receive-path test file from 20/20 to
+17/20 runs — measured both ways, twice. What shipped is the corrected comment
+and a test that pins the loss as deliberate, so the next person to "fix" it
+finds the reasoning first.
+
+**Three ways a disk write could vanish without a word.** `saveDirty()` skipped
+a dirty track whose nibble stream no longer decoded, then cleared the dirty
+flags and returned success, logging "Saved 0 modified track(s)" — the guest's
+sector silently reverted. `ejectDisk()` did not commit the burst the
+controller was mid-way through, so clicking Eject during a `SAVE` dropped it
+(both `insertDisk` and `flushPendingWrites` had always committed first; eject
+was the one that did not). And on a CNib2 `.nib`, whose 6384-byte tracks are
+padded to the 6656-nibble runtime width, everything written past 6384 was
+discarded on save. All three now refuse rather than lie, keeping the changes
+in memory so nothing is thrown away.
+
+**A snapshot missing its `MEX` section restored half a machine and said it
+worked.** `MEX` is the only carrier of the IIe paging mode, the language-card
+latches, all 64 KB of aux and the display state: without it, main RAM, the CPU
+and the clock are replaced while every soft switch keeps the *live* session's
+values. On the default //e profile with ALTZP set, zero page and the stack then
+resolve to the wrong 64 KB and the machine dies instantly. Required now for v2
+files, loudly warned for v1. Relatedly, section order comes from the FILE and
+was never constrained, so a file putting `CPU` last applied the clock jump
+*after* the beam-race log was cleaned up — the log then published empty every
+frame for the whole rewound span while its stale tail grew without bound. The
+invalidation moved to the end of the restore, where order cannot matter.
+
+**A planted symlink at `<target>.tmp` redirected any write-back.** Callers vet
+the target — the AI control server refuses paths outside the working
+directory, refuses symlinks, demands a `.pom2snap` extension — but the temp
+path is derived afterwards and inherited none of it, while `ofstream(trunc)`
+follows symlinks. The write landed on the victim and the rename then moved the
+symlink away, leaving no trace. `AtomicFileReplace.h` now owns a
+`prepareTempPath()` that clears a symlink and refuses anything else
+non-regular, used by all five write-back paths.
+
+Smaller, same sweep: a single aborted connection (any local process can make
+one) permanently retired the accept loop of both the AI control server and the
+SSC telnet bridge, while `isRunning()` kept saying yes — the shared
+`pollAcceptOnce` now distinguishes a dead listener from a transient failure and
+backs off on resource exhaustion. `jsonGetInt` accepted a partial parse, so
+`{"cycles_per_frame":2.5e6}` — legal JSON — became 2, passed the range check
+and set the machine to ~120 cycles per second while answering 200 OK. `/eject`
+ignored its documented `slot` field and always ejected slot 6, flushing and
+dropping the wrong medium. A same-origin GET carries no `Origin` header, so the
+token-less default was readable by any DNS-rebound page; the `Host` header is
+checked now. A 3.5" WOZ had none of the size caps its 5.25" sibling carries — a
+15 MB file froze the emulator for 31 s at 294 MB, with the state mutex held.
+The MacBinary sniff is four bytes wide and false-positived on ordinary disk
+images, making them unloadable with a misleading diagnostic. And re-enabling
+the rewind ring spliced two disjoint timelines together.
+
+The whole suite also runs clean under ASan+UBSan, which is how the previous
+sweep's TNFS overflow was caught; this time it found nothing new, which is
+worth knowing.
+
 ## 2026-08-22 — Bug hunt: what the network code does when the far end lies
 
 A sweep over the ~1 400 lines of FujiNet/TNFS code written the day before,

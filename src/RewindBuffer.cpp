@@ -97,6 +97,18 @@ RewindBuffer::RewindBuffer(size_t maxFrames)
     : maxFrames_(maxFrames ? maxFrames : 1)
 {}
 
+void RewindBuffer::setEnabled(bool on)
+{
+    const bool was = enabled_.exchange(on);
+    // Re-enabling starts a new timeline. Force the next capture to be a
+    // KEYFRAME rather than a delta against a base from before the pause —
+    // see the header for what that splice did to the timeline.
+    if (on && !was) {
+        sinceKeyframe_ = 0;
+        prevBlob_.clear();
+    }
+}
+
 void RewindBuffer::setMaxFrames(size_t n)
 {
     maxFrames_ = n ? n : 1;

@@ -119,6 +119,55 @@ inline void syncParentDirectory(const std::filesystem::path& p) noexcept
 #endif
 }
 
+/// Make a sibling temporary path safe to create-and-truncate.
+///
+/// Every write-back path here writes `<target>.tmp` and then renames it over
+/// the target. The CALLER validates the target — refuses a path outside the
+/// working directory, refuses a symlink, checks the extension — but the temp
+/// path is derived afterwards and gets none of that scrutiny, while
+/// `ofstream(..., trunc)` follows symlinks like any other open.
+///
+/// So a file planted at `<target>.tmp` beforehand redirects the write: the
+/// bytes land on whatever it points at, and the rename then moves the symlink
+/// away, leaving the destroyed target behind with nothing to show what
+/// happened. The temp name is ours by construction, so anything already
+/// sitting there is either our own debris from a crashed run or somebody
+/// else's doing — remove it either way, and refuse to proceed if it will not
+/// go, rather than writing through it.
+///
+/// Returns false only when the path is still unusable afterwards; a missing
+/// temp (the normal case) is success.
+inline bool prepareTempPath(const std::filesystem::path& tmp,
+                            std::error_code& ec)
+{
+    ec.clear();
+    std::error_code probe;
+    // symlink_status, NOT status: status() follows the link and would report
+    // on the victim, which is exactly the thing being hidden here.
+    const auto st = std::filesystem::symlink_status(tmp, probe);
+    if (probe || st.type() == std::filesystem::file_type::not_found)
+        return true;                       // nothing in the way
+
+    if (st.type() == std::filesystem::file_type::regular)
+        return true;                       // our own leftover; trunc is fine
+
+    // ONLY a symlink is removed. It is the one entry that redirects the write
+    // somewhere else, and the temp name is ours by construction, so nothing
+    // legitimate is being destroyed. Everything else non-regular — a
+    // directory, a fifo, a device node — is refused rather than deleted:
+    // removing it would be a bigger act than this function is entitled to,
+    // and the open would fail on its own anyway.
+    if (st.type() != std::filesystem::file_type::symlink) {
+        ec = std::make_error_code(std::errc::file_exists);
+        return false;
+    }
+
+    std::error_code rm;
+    std::filesystem::remove(tmp, rm);
+    if (rm) { ec = rm; return false; }
+    return true;
+}
+
 inline bool replaceFileAtomic(const std::filesystem::path& from,
                               const std::filesystem::path& to,
                               std::error_code& ec)

@@ -158,6 +158,17 @@ public:
     /// a server that says "here's your data, now finish up" does.
     void shutdownWrite() { ::shutdown(client_, SHUT_WR); }
 
+    /// Abort: SO_LINGER{on,0} makes close() send a RST instead of a FIN.
+    /// Rate limiters, load balancers and NAT rebinds all do this, and it is
+    /// what turns the guest's next write into an EPIPE.
+    void closeAbruptly()
+    {
+        linger lg{ 1, 0 };
+        ::setsockopt(client_, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+        ::close(client_);
+        client_ = -1;
+    }
+
 private:
     int      fd_     = -1;
     int      client_ = -1;
@@ -509,6 +520,51 @@ uint16_t connectSocket0(UthernetIICard& card, LocalListener& listener)
     return base;
 }
 
+// Writing to a peer that has RESET the connection must not take POM2 down
+// with it.
+//
+// SIGPIPE's default disposition is FATAL, and this is the ordinary shape of
+// the retro web: the server answers, the server goes away, the guest writes
+// again. The chip deliberately keeps sending in CLOSE_WAIT (our direction is
+// still open, datasheet 5.2.1), so the second write lands on a socket the
+// peer has already reset. Every other socket owner in POM2 arms SO_NOSIGPIPE
+// / MSG_NOSIGNAL; this one did not, and the whole process died — no log line,
+// no dialog, the emulated machine and any un-written-back disk simply gone.
+//
+// The assertion here is really "we are still running", which is why the test
+// keeps writing after the peer is gone rather than checking a status byte.
+void testSendAfterPeerResetSurvives()
+{
+    LocalListener listener;
+    UthernetIICard card(3);
+    const uint16_t base = connectSocket0(card, listener);
+
+    listener.closeAbruptly();
+
+    // Two rounds: the first write is often absorbed by the local send buffer
+    // and only draws the RST; it is the second that used to kill us.
+    const std::string msg = "GET / HTTP/1.0\r\n\r\n";
+    for (int round = 0; round < 4; ++round) {
+        const uint16_t txRd = readWordAt(card,
+            static_cast<uint16_t>(base + pom2::kW5100SnTxRd0));
+        for (size_t i = 0; i < msg.size(); ++i)
+            writeAt(card, static_cast<uint16_t>(pom2::kW5100TxBase +
+                        ((txRd + i) % 2048)), static_cast<uint8_t>(msg[i]));
+        writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnTxWr0),
+                    static_cast<uint16_t>(txRd + msg.size()));
+        writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr),
+                pom2::kW5100SnCrSend);
+        pumpCard(card);
+        ::usleep(2000);
+    }
+
+    // Reaching here at all is the point. The socket may be CLOSED or still
+    // report CLOSE_WAIT depending on when the RST is observed — either is
+    // fine, being alive is not optional.
+    (void)readAt(card, static_cast<uint16_t>(base + pom2::kW5100SnSr));
+    std::printf("  ok: a write to a reset peer does not kill the process\n");
+}
+
 // A peer FIN is a half-close: the real chip parks in SOCK_CLOSE_WAIT
 // ($1C) and still lets the guest SEND before DISCON (datasheet §5.2.1).
 // Collapsing straight to CLOSED broke every drain-then-disconnect driver.
@@ -634,6 +690,7 @@ int main()
     testMacRaw();
     testSnapshotRoundTrip();
     testHalfCloseWait();
+    testSendAfterPeerResetSurvives();
     testRmsrShrinkUnderStagedData();
     testConnectGating();
     testMirrorWriteSymmetry();

@@ -122,12 +122,21 @@ std::string readFixedName(std::istream& in)
 // vector streambuf), then emit the shared header. The backend members are
 // declared before `out`, so its buffer is fully constructed first.
 SnapshotWriter::SnapshotWriter(const std::string& path)
-    : fileStream_(path + ".tmp", std::ios::binary | std::ios::trunc)
-    , out(fileStream_.rdbuf())
+    : out(nullptr)
     , targetPath_(path)
     , tempPath_(path + ".tmp")
     , fileBacked_(true)
 {
+    // Clear the temp path BEFORE opening it. Callers vet the target — the
+    // AI control server refuses a path outside the working directory, refuses
+    // a symlink and demands a .pom2snap extension — but `path + ".tmp"` is
+    // derived here and inherits none of that, and trunc follows symlinks.
+    // See prepareTempPath().
+    std::error_code ec;
+    if (!prepareTempPath(tempPath_, ec)) { out.setstate(std::ios::badbit); return; }
+
+    fileStream_.open(tempPath_, std::ios::binary | std::ios::trunc);
+    out.rdbuf(fileStream_.rdbuf());
     // `out` over a failed-open filebuf still starts good(); surface the open
     // failure so good() reports it (callers gate on it).
     if (!fileStream_.good()) { out.setstate(std::ios::badbit); return; }

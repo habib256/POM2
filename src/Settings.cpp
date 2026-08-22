@@ -171,6 +171,12 @@ bool Settings::save() const
     if (readOnly_) return true;
     const fs::path path = resolveStorePath();
     const fs::path tmp  = path.string() + ".tmp";
+    std::error_code tmpEc;
+    if (!pom2::prepareTempPath(tmp, tmpEc)) {
+        pom2::log().warn("Settings",
+            "Cannot prepare " + tmp.string() + ": " + tmpEc.message());
+        return false;
+    }
     {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f) {

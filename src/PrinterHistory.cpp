@@ -231,6 +231,14 @@ bool PrinterHistory::writeIndex(std::string& err) const
     const fs::path tmp   = fs::path(dir_) / (std::string(kIndexName) + ".tmp");
     const fs::path final = fs::path(dir_) / kIndexName;
 
+    // Anything already at the temp path is ours to clear or a plant to
+    // refuse — trunc would otherwise write through a symlink. See
+    // prepareTempPath().
+    std::error_code tmpEc;
+    if (!prepareTempPath(tmp, tmpEc)) {
+        err = "cannot prepare " + tmp.string() + ": " + tmpEc.message();
+        return false;
+    }
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) { err = "cannot write " + tmp.string(); return false; }
@@ -310,7 +318,10 @@ void PrinterHistory::writerLoop()
         ImageWriter::pageToRgba(job.page, rgba);
         const fs::path out = fs::path(dir) / job.file;
         const fs::path tmp = fs::path(dir) / (job.file + ".tmp");
-        bool written = rgba.size() >= static_cast<size_t>(job.page.w) *
+        std::error_code tmpEc;
+        const bool tmpOk = prepareTempPath(tmp, tmpEc);
+        bool written = tmpOk &&
+                       rgba.size() >= static_cast<size_t>(job.page.w) *
                                       static_cast<size_t>(job.page.h) * 4 &&
                        stbi_write_png(tmp.string().c_str(), job.page.w,
                                       job.page.h, 4, rgba.data(),

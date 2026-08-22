@@ -550,7 +550,22 @@ public:
         if (cycleCounter >= vblNextEventCycle_) advanceCyclesVideo();
     }
     uint64_t getCycleCounter() const { return cycleCounter; }
+    /// Set the clock. Deliberately NOT invalidating the beam-race event log:
+    /// the display tests use this as a plain "put the beam here" primitive and
+    /// push events around it. A restore that MOVES the clock has to invalidate
+    /// separately — see resetVideoEventLogForClockJump().
     void     setCycleCounter(uint64_t c) { cycleCounter = c; vblNextEventCycle_ = 0; }
+
+    /// Throw away the beam-race event log and re-derive the frame start from
+    /// the clock. Every event carries an emuCycle stamp, so moving the clock
+    /// BACKWARDS leaves stamps in the future and breaks the non-decreasing
+    /// invariant advanceCycles() publishes on: the log then publishes empty
+    /// every frame for the whole rewound span — beam-raced effects freeze at
+    /// the frame-start state — while the stale tail is carried forward for
+    /// ever and grows without bound. loadSnapshotState() has always done this;
+    /// a snapshot whose sections happened to put CPU last (section order comes
+    /// from the FILE and was never constrained) bypassed it.
+    void     resetVideoEventLogForClockJump();
 
     // ── Snapshot state (de)serialization ────────────────────────────────
     // The main 64 KB (mem) is the caller's "MEM" section; these cover

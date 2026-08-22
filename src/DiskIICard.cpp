@@ -408,6 +408,14 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
 bool DiskIICard::ejectDisk(int drive)
 {
     if (drive < 0 || drive >= kDriveCount) return false;
+    // Same reason insertDisk and flushPendingWrites do it: fold the burst the
+    // controller is part-way through into the image BEFORE saving, or
+    // `img.eject()` below wipes tracks[] and writeFraming[] and takes the
+    // sector the guest was writing with it. Clicking Eject during a `SAVE`
+    // dropped ~30 buffered transitions plus the partly framed nibble, and the
+    // truncated data field then failed to decode — so the sector silently
+    // reverted to its old contents while the save reported success.
+    commitInFlightWrite();
     DiskImage& img = images[drive];
     if (img.isLoaded() && img.hasUnsavedChanges()) {
         if (!img.saveDirty()) {

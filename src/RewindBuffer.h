@@ -62,7 +62,15 @@ public:
 
     explicit RewindBuffer(size_t maxFrames = kDefaultMaxFrames);
 
-    void setEnabled(bool on) { enabled_.store(on); }
+    /// Turning recording off and on again starts a NEW timeline, so the ring
+    /// must not delta the first frame back against the last one before the
+    /// pause. The blob size does not change across a pause (it depends only on
+    /// the RamWorks bank count and the card blob shapes), so the keyframe test
+    /// used to pass and the resumed frame was stored as a delta against a base
+    /// minutes old, spliced straight onto the stale tail: the timeline claimed
+    /// a contiguous history, and scrubbing one frame left across the join
+    /// teleported the machine back to the pause.
+    void setEnabled(bool on);
     bool enabled() const     { return enabled_.load(); }
 
     /// Cap on retained frames. Shrinking drops the oldest immediately.

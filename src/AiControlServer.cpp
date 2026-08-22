@@ -237,7 +237,13 @@ bool jsonGetInt(const std::string& body, const std::string& key, long& out)
         const int base = (s.size() > 2 && s[0] == '0' && (s[1]=='x'||s[1]=='X'))
                        ? 16 : 10;
         out = std::stol(s, &pos, base);
-        return pos > 0;
+        // The WHOLE token has to be a number. `pos > 0` accepted a partial
+        // parse, and the value was mangled BEFORE the careful range checks
+        // downstream ever saw it: `{"cycles_per_frame":2.5e6}` — legal JSON —
+        // parsed as 2, passed the [1, 2000000] check, and set the machine to
+        // ~120 emulated cycles per second while answering 200 OK. Same shape
+        // for `{"pc":1e3}` -> $0001 and `{"drive":"1x"}` -> 1.
+        return pos == s.size();
     } catch (...) {
         return false;
     }
@@ -294,8 +300,19 @@ std::string jsonEscape(const std::string& in)
                     char buf[8];
                     std::snprintf(buf, sizeof(buf), "\\u%04X", c);
                     out += buf;
-                } else {
+                } else if (c < 0x80) {
                     out.push_back(static_cast<char>(c));
+                } else {
+                    // Escape everything above ASCII rather than passing the
+                    // raw byte through. Filenames on macOS and Linux may hold
+                    // bytes that are not valid UTF-8, and one of them inside a
+                    // mounted image's path made every subsequent /status reply
+                    // undecodable — the agent's polling broke permanently,
+                    // until the disk was ejected, with nothing to point at.
+                    // \u00XX is valid JSON and round-trips the byte value.
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04X", c);
+                    out += buf;
                 }
         }
     }
@@ -683,6 +700,33 @@ void AiControlServer::sendJsonOk(socket_t fd, const std::string& body)
     sendResponse(fd, 200, "application/json", merged);
 }
 
+namespace {
+
+/// Strip the ":port" from a Host header value, leaving the host part.
+/// IPv6 literals are bracketed, so the last colon only counts outside them.
+std::string hostPartOf(const std::string& host)
+{
+    if (!host.empty() && host.front() == '[') {
+        const std::size_t close = host.find(']');
+        return (close == std::string::npos) ? host : host.substr(1, close - 1);
+    }
+    const std::size_t colon = host.rfind(':');
+    return (colon == std::string::npos) ? host : host.substr(0, colon);
+}
+
+}  // namespace
+
+bool AiControlServer::hostHeaderIsLoopback(const Request& req)
+{
+    const std::string host = hostPartOf(req.headerValue("Host"));
+    // No Host at all: HTTP/1.0 native clients omit it, and a browser never
+    // does — so an empty one cannot be a rebound page.
+    if (host.empty()) return true;
+    // A literal loopback address only. A NAME is refused even if it currently
+    // resolves to 127.0.0.1: resolving it again is precisely the attack.
+    return host == "127.0.0.1" || host == "::1" || host == "0:0:0:0:0:0:0:1";
+}
+
 bool AiControlServer::checkAuth(const Request& req) const
 {
     std::string configured;
@@ -695,7 +739,21 @@ bool AiControlServer::checkAuth(const Request& req) const
     // Origin to cross-origin requests; command-line/native clients do not.
     // Configuring a token explicitly opts into browser access guarded by that
     // secret.
-    if (configured.empty()) return req.headerValue("Origin").empty();
+    //
+    // The Origin test alone is NOT enough, and only for reads. Per Fetch, a
+    // browser attaches Origin when the response tainting is `cors` or the
+    // method is anything other than GET/HEAD — so a SAME-ORIGIN GET carries no
+    // Origin at all. That is exactly the request a DNS-rebound page issues:
+    // the victim loads attacker.example, its name is re-pointed at 127.0.0.1,
+    // and the page then reads /mem, /screen.ppm and /status same-origin with
+    // no Origin header to give it away. POSTs were always safe (Origin is
+    // unconditional for non-GET); reads were not.
+    //
+    // Host is the discriminator: a rebound page sends the attacker's hostname,
+    // a native client sends the loopback address it dialled (or nothing at
+    // all, on HTTP/1.0).
+    if (configured.empty())
+        return req.headerValue("Origin").empty() && hostHeaderIsLoopback(req);
     return req.headerValue("X-POM2-Token") == configured;
 }
 
@@ -1075,8 +1133,16 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
 void AiControlServer::handleDiskEject(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
+    // `slot` is documented and its sibling /disk validates it — this handler
+    // used to parse only `drive` and silently EJECT SLOT 6 whatever the caller
+    // asked for. An agent unmounting SmartPort media with {"slot":5,"drive":1}
+    // got a 200 saying so, while the Disk II in slot 6 was flushed to disk and
+    // dropped instead: the wrong medium written back, and nothing to see.
+    long slot  = 6;
     long drive = 0;
+    jsonGetInt(req.body, "slot",  slot);
     jsonGetInt(req.body, "drive", drive);
+    if (slot != 6) { sendJsonError(fd, 400, "only slot 6 is implemented"); return; }
     if (drive < 0 || drive >= DiskIICard::kDriveCount) {
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }

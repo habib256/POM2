@@ -18,6 +18,7 @@
 #include "AtomicFileReplace.h"
 
 #include <cassert>
+#include <iterator>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -126,6 +127,54 @@ int main()
     // ── 7. Best-effort directory flush never throws or aborts ───────────
     pom2::syncParentDirectory(dest);
     pom2::syncParentDirectory(fs::path("relative-name-with-no-parent"));
+
+    // ── 8. A symlink planted at the TEMP path must not be written through ─
+    //
+    // Callers vet the TARGET — the AI control server refuses a path outside
+    // the working directory, refuses a symlink and demands a .pom2snap
+    // extension — but `<target>.tmp` is derived afterwards and inherits none
+    // of it, while ofstream(trunc) follows symlinks like any other open. A
+    // file planted there redirected the write onto whatever it pointed at,
+    // and the rename then moved the symlink away, leaving the destroyed
+    // victim behind with nothing to show what had happened.
+    {
+        const fs::path victim  = dir / "precious.txt";
+        const fs::path tmpLink = dir / "target.bin.tmp";
+        {
+            std::ofstream v(victim, std::ios::binary | std::ios::trunc);
+            v << "do not overwrite me";
+        }
+        ec.clear();
+        fs::remove(tmpLink, ec);
+        ec.clear();               // a missing file is not a failure here
+        fs::create_symlink(victim, tmpLink, ec);
+        if (ec) {
+            std::printf("  (skipped: this filesystem has no symlinks)\n");
+        } else {
+            std::error_code guard;
+            const bool ok = pom2::prepareTempPath(tmpLink, guard);
+            assert(ok && "a symlink at the temp path must be cleared, not honoured");
+            assert(!fs::is_symlink(fs::symlink_status(tmpLink)));
+
+            // And the victim is untouched — that is the whole point.
+            std::ifstream in(victim, std::ios::binary);
+            std::string kept((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+            assert(kept == "do not overwrite me");
+        }
+
+        // A DIRECTORY there is refused, not deleted: it redirects nothing, and
+        // removing it would be a bigger act than this is entitled to. Callers
+        // (PrinterHistory's encoder among them) rely on the open failing.
+        const fs::path tmpDir = dir / "target2.bin.tmp";
+        ec.clear();
+        fs::remove_all(tmpDir, ec);
+        ec.clear();
+        assert(fs::create_directory(tmpDir, ec) && !ec);
+        std::error_code guard2;
+        assert(!pom2::prepareTempPath(tmpDir, guard2));
+        assert(fs::is_directory(tmpDir));
+    }
 
     fs::remove_all(dir, ec);
     std::printf("atomic_file_replace: all assertions passed\n");

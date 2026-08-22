@@ -287,6 +287,53 @@ void testZeroLengthDatagramKeepsSocket()
     std::puts("OK zero_length_datagram_keeps_socket");
 }
 
+// ─── 5: a full ring loses the next datagram, exactly as the chip does ─
+//
+// This pins a DELIBERATE loss, which is unusual enough to be worth stating.
+// A real W5100 has nowhere to put a frame that does not fit its RX ring: it
+// is lost on the wire. A guest streaming MTU-sized datagrams into the 2 KB
+// power-on carve therefore loses them on real hardware too, and POM2 matches.
+//
+// The alternative — peek at the host socket and leave the datagram there
+// until the guest drains the ring — was tried on 2026-08-22 and reverted: it
+// emulates a buffer the chip does not have, and holding datagrams across
+// socket teardown made this very file flaky (20/20 -> 17/20 runs). The test
+// exists so the next person to "fix" this reads that first.
+void testFullRingLosesTheNextDatagram()
+{
+    LocalPeer peer;
+    W5100Device dev;
+    openUdpSocket(dev, peer, 0x01);           // 2 KB ring: one datagram fits
+    assert(dev.socketInfo(0).rxCapacity == 2048);
+
+    constexpr size_t kDatagram = 1400;
+    peer.sendToGuest(kDatagram);
+    const uint16_t first = pollForData(dev, 2000);
+    assert(first == kUdpHeader + kDatagram);
+
+    // Whatever happens to the second one, the socket must survive it and the
+    // FIRST one must still be intact and correctly described — a datagram the
+    // ring cannot take may cost a packet, never the guest's socket or the
+    // packet already staged.
+    peer.sendToGuest(kDatagram);
+    for (int i = 0; i < 20; ++i) {
+        (void)dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnRxRsr0));
+        (void)dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnRxRsr1));
+        sleepMs(5);
+    }
+    const uint16_t stillPending = static_cast<uint16_t>(
+        (dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnRxRsr0)) << 8) |
+         dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnRxRsr1)));
+    assert(stillPending == first && "the staged datagram must not be disturbed");
+
+    const auto staged = drainRing(dev, first);
+    assert(((staged[6] << 8) | staged[7]) == static_cast<int>(kDatagram));
+    assert(dev.readValueAt(static_cast<uint16_t>(kS0 + kW5100SnSr)) == kW5100SnSrUdp);
+    assert(dev.socketInfo(0).hasHostSocket);
+
+    std::puts("OK full_ring_loses_the_next_datagram");
+}
+
 // ─── 4: the $8000 mirror decodes on the read side too ─────────────────
 void testHighMirrorReads()
 {
@@ -321,6 +368,7 @@ int main()
     testOversizedDatagramIsDropped();
     testFittingDatagramLandsWhole();
     testZeroLengthDatagramKeepsSocket();
+    testFullRingLosesTheNextDatagram();
     testHighMirrorReads();
     std::puts("All W5100 receive-path tests passed.");
     return 0;

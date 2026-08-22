@@ -403,6 +403,18 @@ bool Disk35Image::loadWoz(const std::vector<uint8_t>& buf,
     std::vector<uint8_t> seen(kBlockCount, 0);
     int decoded = 0;
 
+    // Caps on what a FILE may make this loader allocate and chew through.
+    // DiskImage::loadWoz has carried these since it was written; this loader
+    // did not, and the omission is a hang rather than a crash, which is why
+    // the fuzzer never flagged it. A WOZ2 claiming bitCount 0xFFFFFFFF over a
+    // 15 MB payload, with all 160 TMAP slots pointing at that one track, took
+    // 31 s and 294 MB before failing anyway — and mount35() holds the
+    // emulator's state mutex across the call, so the CPU worker and the whole
+    // UI are frozen for the duration. A real 3.5" track is ~75 000 bits.
+    constexpr uint32_t    kMaxTrackBits     = 1u << 20;    // 12x the real thing
+    constexpr std::size_t kMaxExpandedBytes = 64u << 20;
+    std::size_t expandedBytes = 0;
+
     for (int slot = 0; slot < 160; ++slot) {
         const uint8_t ti = buf[tmapOff + slot];
         if (ti == 0xFF) continue;                        // unformatted
@@ -412,9 +424,14 @@ bool Disk35Image::loadWoz(const std::vector<uint8_t>& buf,
         const uint32_t blkCount = rd16(buf.data() + e + 2);
         const uint32_t bitCount = rd32(buf.data() + e + 4);
         if (!blkCount || !bitCount) continue;
+        if (bitCount > kMaxTrackBits) continue;          // not a real track
         const std::size_t off = static_cast<std::size_t>(startBlk) * 512u;
         const std::size_t len = static_cast<std::size_t>(blkCount) * 512u;
         if (off >= buf.size() || len > buf.size() - off) continue;
+        // Aggregate budget: 160 slots may all point at the same TRK, so a
+        // per-track cap alone still lets the file multiply the work by 160.
+        if (bitCount > kMaxExpandedBytes - expandedBytes) break;
+        expandedBytes += bitCount;
 
         // The track is a CIRCLE. Walking it once leaves the sector that
         // straddles the seam undecodable — worth ~1 sector per track-side,

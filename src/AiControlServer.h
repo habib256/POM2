@@ -186,6 +186,11 @@ private:
         std::string headerValue(const std::string& name) const;
     };
 
+    /// True when the request's Host header names the loopback interface (or
+    /// is absent). The token-less path needs this on top of the Origin test:
+    /// a same-origin GET from a DNS-rebound page carries no Origin.
+    static bool hostHeaderIsLoopback(const Request& req);
+
     /// Drain a single HTTP request from `fd` into `req`. Returns false if
     /// the peer closed before a full request landed, or if the request
     /// looks malformed (oversized body, missing terminator, etc.) — in
