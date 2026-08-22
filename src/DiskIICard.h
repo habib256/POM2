@@ -173,8 +173,49 @@ public:
     /// drive 1 (= index 0) for backwards compatibility with existing UI
     /// and test call sites; pass an explicit drive index (0 or 1) for
     /// the two-arg form.
+    ///
+    /// insertDisk() reads and decodes the file INLINE, so a caller holding
+    /// `stateMutex` holds it across the whole file read — 12.8 ms for a 32 MB
+    /// image with a warm cache, most of a PAL frame, during which the CPU
+    /// worker and the UI paint are both blocked. Callers on the UI thread
+    /// should use the two-phase form below instead; this one stays for the
+    /// single-threaded callers (CLI, headless, tests) where it reads better.
     bool insertDisk(int drive, const std::string& path);
     bool insertDisk(const std::string& path) { return insertDisk(0, path); }
+
+    /// ── Two-phase mount ──────────────────────────────────────────────────
+    /// Phase 1, to be called WITHOUT `stateMutex`: read and decode `path`
+    /// into a detached image. This is the expensive half — all of the file
+    /// I/O lives here and none of it touches card state, so nothing needs
+    /// serialising against the CPU worker.
+    ///
+    /// Returns false with `error` filled in if the file cannot be used; the
+    /// caller should report it and NOT proceed to phase 2.
+    static bool prepareDisk(const std::string& path, bool writeBackEnabled,
+                            DiskImage& out, std::string& error);
+
+    /// Phase 2, to be called WITH `stateMutex` held: take over an image
+    /// prepared by phase 1. Cheap — a move plus the LSS re-anchor — with one
+    /// documented exception: if the OUTGOING medium has unsaved changes it is
+    /// still flushed inline here, and a failed flush still refuses the swap.
+    /// That is deliberate. Moving the flush out of the lock would mean either
+    /// swapping before knowing whether the old medium could be written (which
+    /// loses the user's changes when it cannot) or handing the dirty image
+    /// back for the caller to commit (which loses them if the caller drops
+    /// it). Latency is worth less than the only copy of somebody's disk. The
+    /// case is rare in practice: write-back is opt-in, so a clean medium —
+    /// the default — takes the fully unlocked path.
+    bool installDisk(int drive, DiskImage&& prepared);
+
+private:
+    /// Commit a drive's pending write-back before its medium is dropped.
+    /// False (with `mediaErrors[drive]` set) means the swap must be refused.
+    bool flushOutgoingForSwap(int drive);
+    /// The state mutation shared by insertDisk() and installDisk(): adopt the
+    /// image and re-anchor the LSS, track position and derived media state.
+    bool installPreparedLocked(int drive, DiskImage&& replacement);
+
+public:
     bool ejectDisk(int drive);
     bool ejectDisk() { return ejectDisk(0); }
 

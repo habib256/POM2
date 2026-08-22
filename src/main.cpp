@@ -7,6 +7,7 @@
 #include "Pom2Build.h"
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
+#include "ThreadGuard.h"
 #include "MainWindow.h"
 #include "Pom2Theme.h"
 #include "Version.h"
@@ -705,15 +706,11 @@ int main(int argc, char* argv[])
                 // Guard the worker: an uncaught exception escaping a
                 // std::thread callable calls std::terminate(). Deferred
                 // actions touch user-named files, so an I/O or alloc failure
-                // must not crash the whole emulator.
-                try {
+                // must not crash the whole emulator. Same barrier every other
+                // POM2 thread wears — ThreadGuard.h.
+                pom2::runGuarded("CLI", [&] {
                     pom2::runDeferredActions(actions, *emu);
-                } catch (const std::exception& e) {
-                    pom2::log().error("CLI",
-                        std::string("deferred action failed: ") + e.what());
-                } catch (...) {
-                    pom2::log().error("CLI", "deferred action failed (unknown exception)");
-                }
+                });
             });
     }
 #endif
@@ -741,7 +738,8 @@ int main(int argc, char* argv[])
             // it. Sliced 100 ms sleeps + a cancel flag (same pattern as
             // deferredThread) so closing the window early doesn't stall
             // shutdown in join() for the rest of the delays.
-            autoBootThread = std::thread([&, abDelay, aqDelay]() {
+            autoBootThread = pom2::guardedThread("CLI",
+                                            [&, abDelay, aqDelay]() {
                 auto sleepSeconds = [&](int sec) {
                     for (int t = 0; t < sec * 10 && !autoBootCancelled; ++t)
                         std::this_thread::sleep_for(

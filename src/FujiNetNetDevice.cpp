@@ -1,6 +1,7 @@
 #include "FujiNetNetDevice.h"
 
 #include "Logger.h"
+#include "ThreadGuard.h"
 #include "SocketUtil.h"
 
 #include <algorithm>
@@ -176,21 +177,33 @@ bool resolveBounded(const std::string& host, const std::string& portStr,
     std::promise<bool> ready;
     std::future<bool>  fut = ready.get_future();
 
+    // Guarded: an exception escaping a detached thread calls std::terminate().
+    // The promise needs the same care — leaving it unset makes the waiter's
+    // fut.get() below throw future_error on the CALLING thread, so a lookup
+    // that dies has to answer "false" rather than answer nothing. `settled`
+    // also covers the abandoned path, where by contract nobody is waiting and
+    // the promise is deliberately left alone.
     std::thread([shared, host, portStr, p = std::move(ready)]() mutable {
-        addrinfo hints{};
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        addrinfo* r  = nullptr;
-        const bool ok = (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &r) == 0) && r;
+        bool settled = false;
+        pom2::runGuarded("FujiNet", [&] {
+            addrinfo hints{};
+            hints.ai_family   = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_protocol = IPPROTO_TCP;
+            addrinfo* r  = nullptr;
+            const bool ok = (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &r) == 0) && r;
 
-        std::lock_guard<std::mutex> lk(shared->mtx);
-        if (shared->abandoned) {           // nobody is waiting any more
-            if (r) ::freeaddrinfo(r);
-            return;
-        }
-        shared->res = r;
-        p.set_value(ok);
+            std::lock_guard<std::mutex> lk(shared->mtx);
+            if (shared->abandoned) {           // nobody is waiting any more
+                if (r) ::freeaddrinfo(r);
+                settled = true;
+                return;
+            }
+            shared->res = r;
+            p.set_value(ok);
+            settled = true;
+        });
+        if (!settled) p.set_value(false);
     }).detach();
 
     if (fut.wait_for(std::chrono::milliseconds(timeoutMs)) != std::future_status::ready) {

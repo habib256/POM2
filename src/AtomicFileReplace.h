@@ -4,7 +4,9 @@
 #ifndef POM2_ATOMIC_FILE_REPLACE_H
 #define POM2_ATOMIC_FILE_REPLACE_H
 
+#include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
 
 #ifdef _WIN32
@@ -190,6 +192,50 @@ inline bool replaceFileAtomic(const std::filesystem::path& from,
     syncParentDirectory(to);   // ...then the directory entry that names them
     return true;
 #endif
+}
+
+/// Write `bytes` to `path` through the same durable temp + rename commit
+/// every other write-back in POM2 uses: sibling temp file, contents synced to
+/// the medium, then an atomic rename that publishes them.
+///
+/// Exists so a caller that has already SERIALISED something into memory can
+/// commit it without a second format-aware writer. That split is the point:
+/// the AI control server builds a snapshot blob under `stateMutex` (RAM only,
+/// microseconds) and then lands it here with the lock released, instead of
+/// holding the emulator and the window still across the write and its two
+/// fsyncs.
+///
+/// Returns false with `ec` set; the target is untouched on every failure path.
+inline bool writeFileAtomic(const std::filesystem::path& path,
+                            const void* bytes, std::size_t length,
+                            std::error_code& ec)
+{
+    ec.clear();
+    const std::filesystem::path tmp = path.string() + ".tmp";
+    if (!prepareTempPath(tmp, ec)) return false;
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+        if (length)
+            f.write(static_cast<const char*>(bytes),
+                    static_cast<std::streamsize>(length));
+        f.close();
+        if (!f) {
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);
+            ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+    }
+    if (!replaceFileAtomic(tmp, path, ec)) {
+        std::error_code rm;
+        std::filesystem::remove(tmp, rm);
+        return false;
+    }
+    return true;
 }
 
 } // namespace pom2

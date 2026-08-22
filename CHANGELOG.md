@@ -5,6 +5,115 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-22 (latest) — Architecture audit: the crashes you cannot report, and the freezes you cannot cancel
+
+An audit pass over stability and solidity rather than over any one subsystem.
+The micro-quality bar came out clean and stayed untouched: 114 first-party
+translation units, **zero warnings** at `-Wall -Wextra -Wshadow`, and only four
+benign ones under a much stricter set (`-Wduplicated-branches`, `-Wlogical-op`,
+`-Wnull-dereference`, `-Wsuggest-override`, `-Wnon-virtual-dtor`,
+`-Wcast-align`, `-Wformat=2`) — the other 215 all sit in vendored stb/miniaudio
+or in `SocketCompat.h`'s macro branches. One raw `new` in the whole tree,
+against 106 `unique_ptr`. Performance was left alone on purpose: `PERFORMANCE.md`
+documents two profiling campaigns and, more usefully, what was deliberately
+left on the table and why. The findings were all structural.
+
+**Six of seven long-lived threads could kill the process in silence.** An
+exception escaping a `std::thread` callable calls `std::terminate()` — no log
+line, no message, nothing the user can report or you can diagnose. The rule was
+already written down, verbatim, in `main.cpp`'s CLI deferred-action thread, and
+applied at two sites out of eight. The unguarded one that mattered was the CPU
+worker: `workerLoop()` drives `rewind_.capture()`, which grows multi-MB vectors
+against a 256 MiB budget, so `bad_alloc` there was a live possibility. Factored
+the barrier into `ThreadGuard.h` and put it on all of them. Two of the detached
+threads needed more than a wrapper: `FujiNetNetDevice`'s lookup left its
+`std::promise` unset on the failure path, which turns the waiter's `fut.get()`
+into a `future_error` thrown on the *calling* thread, and `W5100Device`'s
+leaked an `inFlight` count that pinned the guest on "DNS still in flight" for
+the rest of the session. Both now settle on every path. Pinned by
+`thread_guard`, which forks a child so a regression fails a test instead of
+killing the test runner — verified falsifiable by removing the barrier from a
+copy of the header (exit 1, `child died on signal 6`).
+
+**Mounting a disk froze the machine and the window together — at ~20 sites,
+not the four already known.** `stateMutex` is held by the CPU worker every
+4096-cycle chunk and by the UI thread to paint every frame, so slow work inside
+it stops both, cancel button included. The cause was the API's shape, not any
+one call site: `insertDisk(drive, path)` flushes, reads, decodes and installs
+in one call, so a caller needing the install serialised had to serialise the
+read too. Measured floors, warm cache: 12.8 ms to read a 32 MB image (0.6 of a
+PAL frame), 30.1 ms for a 4 MB write plus one `fsync`, and a commit does two.
+Split into `prepareDisk()` (unlocked, all the I/O) and `installDisk()` (locked,
+a move), wrapped as `pom2::mountDiskII` in its own TU so call sites shrank
+rather than grew — `MainWindow.cpp` lost 25 lines to the migration.
+`EmulationController::mount35` got the same treatment for 800K media, and the
+AI server's `/snapshot/save` now serialises into RAM under the lock and commits
+through a new `pom2::writeFileAtomic` outside it, while `/snapshot/load` reads
+the file before taking the lock (the file-backed `SnapshotReader` pulls its
+bytes lazily from *inside* `restoreMachineState`, so constructing it early was
+not enough). Two costs were kept deliberately, both documented at the call
+site: the outgoing medium's write-back still commits under the lock, because
+swapping before knowing whether the old medium could be written loses the
+user's changes; and re-inserting the *same* file while it has unsaved changes
+re-reads under the lock, because phase 1 read before phase 2 flushed and
+installing the stale image would roll the guest's writes back.
+
+That last one is pinned by `two_phase_mount`, and writing it was instructive:
+the obvious assertions — the file changed, the card reports no unsaved changes
+— pass whether or not the collision is detected, because a clean medium is
+never written back. The test only discriminates once it asks what the *guest*
+would see: step the head to another track, write there, flush, and check that
+track 0 still carries the first burst. A stale mounted image writes its whole
+self back on that second flush and silently reverts track 0 — save a file,
+re-insert the disk, save a second file, and the first one is gone. Verified
+falsifiable by forcing the collision check to `false`.
+
+The HDV / block-device mount is **not** converted and is now the biggest
+remaining stall (up to 32 MiB). It is recorded in `TODO.md` with the trap
+spelled out: `ProDOSBlockCard::loadImageFromBytes` looks like a ready-made
+phase 2 and is not — it is for synthesised volumes, skips the 2IMG parse and
+ties write-back to `synth_`, so routing a real image through it would quietly
+disable write-back and write-protect.
+
+**The test suite was green because CI ran it two-wide.** 132 of the 189
+declared `TIMEOUT`s were 5 or 10 seconds. At `--parallel 8` on an idle 16-core
+box, `diskii_lss_smoke` and `printer_history` blew budgets they clear in 0.30 s
+and 1.24 s alone. That is not a gate, it is a coin that happens to be landing
+heads, and it would have turned red the day CI moved to a wider runner. Fixed
+at the source rather than per-test: one policy block at the end of
+`tests/CMakeLists.txt` applies a 30 s floor to every test and an integer
+`POM2_TEST_TIMEOUT_SCALE` for environments that are slower by a known factor.
+The thirteen tests whose assertions are *about* elapsed wall-clock time — plus
+`ai_control_server_smoke`, which binds a fixed loopback port — are marked
+`RUN_SERIAL`, because no budget makes a timing assertion robust against
+contention. CI now runs `--parallel $(nproc)`: using the runner's real width is
+what keeps the fix honest. 191/191 green at `-j8` and at `-j16`.
+
+**Windows and macOS only ever compiled on a tag push.** The `windows` and
+`macos` jobs live in `release.yml`, which triggers on tags — so the 62 `_WIN32`
+directives in the tree (29 in `SocketCompat.h` alone) were compiled once per
+release, and a break on either platform surfaced *during* a release with the
+version already cut. Added build-only jobs for both to `ci.yml` (packaging and
+signing stay a release concern; macOS also runs `ctest`, being a genuine second
+platform for the suite — different libc++, filesystem and scheduler). Added a
+nightly ASan+UBSan and TSan matrix: `POM2_SANITIZE` had been a CMake option
+that CI never once used, which left the "controller TSan clean" result in
+`TODO.md` with nothing keeping it true. The sanitizer job sets
+`POM2_TEST_TIMEOUT_SCALE=6`, since instrumented code runs 2-5x slower and would
+otherwise report timeouts instead of findings.
+
+**`MainWindow.cpp` grew 74 % *after* the rule against growing it.** The
+standing instruction in `TODO.md` is "do not grow the god-objects", target
+< 3000 lines. The measurement: 5590 lines on 2026-05-27, 6622 at the audit that
+set the target, 11511 today. A rule with no mechanism is a wish, so it has one
+now — `tools/check_file_sizes.sh` is a ratchet over
+`tools/file_size_budget.txt`, recording a ceiling for every first-party file
+already above 2000 lines. Ceilings may go down freely and never up, a new file
+crossing 3000 lines without one fails, and a stale entry fails too. Growing
+`MainWindow.cpp` now requires editing the budget in the same commit — which is
+precisely the moment to ask whether the code belongs in a new translation unit.
+It does not shrink anything; it stops the bleeding while the split is planned.
+
 ## 2026-08-22 (later) — Bug hunt 2: five subsystems, and a process that died silently
 
 A second sweep, this time over code that had nothing to do with the previous

@@ -1531,6 +1531,82 @@ DOS". Skew tables (physical → logical):
 Write-back via `saveDirty()` (`.dsk`/`.do`/`.po`/`.nib` + `.2mg`
 envelopes + `.woz`) opt-in via `setWriteBackEnabled(true)`.
 
+#### Two-phase media mount (`MediaMount.h/.cpp`)
+
+`stateMutex` is taken by the CPU worker for every 4096-cycle chunk **and** by
+the UI thread to paint every frame. Anything slow held inside it therefore
+freezes the machine and the window together — including the button that would
+cancel it, because rendering that button needs the same lock.
+
+Mounting a disk used to do all of its file I/O in there. Not by oversight: the
+API gave the caller no choice. `DiskIICard::insertDisk(drive, path)` flushes
+the outgoing medium, reads the new file, decodes it and installs it in one
+call, so a caller that needed the install serialised had to serialise the read
+too. A 2026-08-22 audit counted ~20 such sites across `MainWindow.cpp`,
+`MainWindow_Slots.cpp` and `AiControlServer.cpp`.
+
+Measured on a warm cache, so these are optimistic floors:
+
+| Operation | Cost | In PAL frames (20 ms) |
+|---|---|---|
+| read a 32 MB `.hdv` | 12.8 ms | 0.6 |
+| write 4 MB + one `fsync` | 30.1 ms | 1.5 |
+| `AtomicFileReplace` commit | two `fsync` | — |
+
+The fix is the API shape, and it dissolves every site at once:
+
+- **Phase 1**, unlocked — `DiskIICard::prepareDisk(path, writeBack, out, err)`
+  reads and decodes into a detached `DiskImage`. Touches no card state.
+- **Phase 2**, locked — `DiskIICard::installDisk(drive, std::move(prepared))`
+  swaps the finished object in and re-anchors the LSS. A move plus arithmetic.
+
+`pom2::mountDiskII()` wraps the pair so a call site is one line — which also
+keeps the logic out of `MainWindow.cpp`, the god-object the file-size ratchet
+is now holding still. `insertDisk(path)` stays as the inline form for the
+single-threaded callers (CLI, headless, tests) where it reads better.
+
+Two things are deliberately **not** optimised:
+
+1. **The outgoing flush stays under the lock.** If the medium being ejected has
+   unsaved changes, `installDisk` still commits it inline and still refuses the
+   swap when that commit fails. Moving it out would mean either swapping before
+   knowing whether the old medium could be written — losing the user's changes
+   when it cannot — or handing the dirty image back for the caller to commit,
+   which loses them if the caller drops it. Latency is worth less than the only
+   copy of somebody's disk. Rare in practice: write-back is opt-in, so the
+   default clean medium takes the fully unlocked path.
+2. **Same-file re-insert degrades to the inline cost.** Phase 1 reads *before*
+   phase 2 flushes, so re-inserting a file the guest has written to would
+   install pre-flush bytes and roll the writes back. `installDisk` detects the
+   collision (`getPath()` match + `hasUnsavedChanges()`), flushes, then re-reads
+   under the lock. Correctness first; the case needs write-back on *and* an
+   exact path match.
+
+One caller keeps the old inline form on purpose: the profile-switch remount in
+`MainWindow_Slots.cpp`, where the SlotBus rebuild and the remounts must be one
+atomic step against the AI server's handlers. The stall is invisible there —
+the CPU worker is already stopped and a cold boot follows.
+
+Pinned by `two_phase_mount`. Its case 3 is the one that earns its keep, and it
+took two attempts to write: the obvious assertions (the file changed, the card
+has no unsaved changes) pass whether or not the collision is detected, because
+a clean medium is never written back. What discriminates is what the *guest*
+would see — step the head to another track, write there, flush, and check that
+track 0 still carries the first burst. A stale mounted image writes its whole
+self back on that second flush and silently reverts track 0. Verified
+falsifiable: with the collision check forced to `false`, the test fails on
+exactly that assertion.
+
+The HDV / block-device mount is **not** converted yet and is the last big one
+(up to 32 MiB under the lock) — see `TODO.md`. Note for whoever takes it: the
+`ProDOSBlockCard::loadImageFromBytes` already on the interface looks like the
+ready-made phase 2 and is not. It is for **synthesised** volumes — it skips the
+2IMG header parse, sets `synth_`, and ties write-back to it — so mounting a
+real `.hdv`/`.2mg` through it would quietly disable write-back and
+write-protect. The shape that works is a `readImageFile` / `adoptImageBytes`
+split on `Block512Backing`, which `CffaCard` and `ProDOSHardDiskCard` both
+already delegate to.
+
 #### How a media write-back commits (`AtomicFileReplace.h`)
 
 Every write-back path — `DiskImage`, `Disk35Image`, `Block512Backing`,
@@ -5169,6 +5245,41 @@ bumps the CPU to ~60×, which collapses wall-clock gaps to zero
 across an audio-buffer tick). Canonical example:
 `FloppySoundDevice::drainCommands` uses the cycle stamp passed by
 `DiskIICard::seekPhaseW`.
+
+### Thread exception barrier (`ThreadGuard.h`)
+
+An exception that escapes the callable of a `std::thread` propagates nowhere:
+it calls `std::terminate()`, which kills the process with **no log line, no
+message and no snapshot**. To the user that is indistinguishable from a
+segfault, and to you it is a bug report with nothing in it.
+
+POM2 runs seven long-lived threads — the CPU worker, the SSC telnet listener,
+the FujiNet SP link, the print-history writer, the AI control server, and two
+detached DNS lookups (`W5100Device`, `FujiNetNetDevice`). An audit on
+2026-08-22 found the rule written down at exactly one of them, in `main.cpp`'s
+CLI deferred-action thread, and applied at two. The most exposed was the one
+with no guard at all: `workerLoop()` calls `rewind_.capture()`, which grows
+multi-MB vectors against a 256 MiB budget, so `bad_alloc` there is a live
+possibility rather than a theoretical one.
+
+`ThreadGuard.h` is that rule factored out. Spawn through
+`pom2::guardedThread(tag, fn)`, or wrap an existing body in
+`pom2::runGuarded(tag, fn)` when the thread is constructed some other way (the
+two detached lookups need this: both have a promise or a refcount to settle on
+the failure path, which the guard cannot do for them).
+
+What it does **not** do: restart the thread, or repair state the dying thread
+was halfway through mutating. It converts an unobservable process death into a
+logged, observable dead thread. A caller with a coherent "this subsystem is
+stopped" state to publish should do so right after the guard returns — the CPU
+worker sets `Mode::Stopped` and `workerParked_`, so `waitUntilParked()` returns
+at once instead of burning its 200-step poll on a thread that will never park.
+
+Pinned by `thread_guard`. That test cannot assert the usual way — a regression
+kills the process rather than failing an assertion — so the throwing cases run
+in a **forked child** whose exit status the parent checks. Verified falsifiable:
+with the barrier removed from a copy of the header, the test exits 1 and
+reports `child died on signal 6`.
 
 ## Package payload — `packaging/bundle.manifest`
 

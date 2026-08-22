@@ -7,10 +7,13 @@
 #include "Pom2Build.h"
 
 #include "Apple2Display.h"
+#include "AtomicFileReplace.h"
 #include "CpuClock.h"
 #include "DiskIICard.h"
+#include "DiskImage.h"
 #include "EmulationController.h"
 #include "Logger.h"
+#include "ThreadGuard.h"
 #include "M6502.h"
 #include "MachineSnapshot.h"
 #include "Memory.h"
@@ -25,6 +28,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <filesystem>
 #include <optional>
 #include <sstream>
@@ -470,7 +475,11 @@ bool AiControlServer::start(uint16_t port)
     port_           = port;
     stopRequested_  = false;
     running_        = true;
-    worker_         = std::thread(&AiControlServer::runWorker, this);
+    // Outer barrier. The per-request handlers inside runWorker() already
+    // catch (a bad request must not kill the server); this covers the loop
+    // scaffolding around them, so no path out of this thread reaches
+    // std::terminate().
+    worker_         = pom2::guardedThread("AI", [this] { runWorker(); });
     pom2::log().info("AICtrl",
         "listening on 127.0.0.1:" + std::to_string(port_) +
         " — POST/GET to drive the emulator from an AI agent");
@@ -1112,15 +1121,40 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
             "working directory (received \"" + path + "\")");
         return;
     }
+    // Two-phase mount: the file read stays OUT of stateMutex. An agent pushing
+    // a 32 MB image used to freeze the emulator and the window for the whole
+    // read, and the HTTP handler is exactly the caller with no way for the
+    // user to see why.
+    //
+    // Spelled out here rather than through pom2::mountDiskII because this
+    // handler runs on the SERVER's thread, not the UI's. `disk6_` is a card
+    // pointer that a profile switch nulls under `stateMutex` (see
+    // MainWindow_Slots.cpp's applyProfile steps 3-4), so it may not be read
+    // once and trusted across an unlocked phase 1 — it is re-checked under the
+    // lock before the install. The UI callers get that guarantee for free from
+    // the SlotBus topology rule, being on the thread that does the swapping.
+    bool writeBack = false;
+    {
+        std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
+        if (!disk6_) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
+        writeBack = disk6_->isWriteBackEnabled();
+    }
+
+    DiskImage   prepared;
+    std::string errMsg;
+    if (!DiskIICard::prepareDisk(*safe, writeBack, prepared, errMsg)) {
+        sendJsonError(fd, 400, "insert failed: " + errMsg);
+        return;
+    }
+
     bool noCard = false;
     bool ok     = false;
-    std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         if (!disk6_) {
             noCard = true;
         } else {
-            ok = disk6_->insertDisk(static_cast<int>(drive), *safe);
+            ok = disk6_->installDisk(static_cast<int>(drive), std::move(prepared));
             if (!ok) errMsg = disk6_->getLastError(static_cast<int>(drive));
         }
     }
@@ -1190,15 +1224,30 @@ void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)
         return;
     }
 
-    SnapshotWriter w(*safe);
-    if (!w.good()) { sendJsonError(fd, 400, "cannot open " + *safe); return; }
-    auto st = ctrl_->lockState();
-    // CPU regs (compact) + 64 KiB main RAM + MEX extended state. Disk state
-    // is deliberately excluded per CLAUDE.md. See MachineSnapshot for the
-    // exact section roster (shared with the rewind ring buffer).
-    pom2::captureMachineState(w, st.cpu(), st.memory());
-    if (!w.finish()) {
-        sendJsonError(fd, 500, "snapshot write failed for " + *safe);
+    // Serialise under the lock, WRITE outside it. The capture is RAM-only —
+    // CPU regs, 64 KiB main RAM, the MEX extended state — and takes
+    // microseconds; the file write and its two fsyncs are what used to hold
+    // `stateMutex` (30 ms for 4 MB on the measured host), freezing the
+    // emulator and the window for an agent's snapshot request.
+    //
+    // Disk state is deliberately excluded per CLAUDE.md. See MachineSnapshot
+    // for the exact section roster (shared with the rewind ring buffer).
+    std::vector<uint8_t> blob;
+    bool captured = false;
+    {
+        SnapshotWriter mem(blob);
+        auto st = ctrl_->lockState();
+        pom2::captureMachineState(mem, st.cpu(), st.memory());
+        captured = mem.finish();
+    }
+    if (!captured) {
+        sendJsonError(fd, 500, "snapshot capture failed");
+        return;
+    }
+    std::error_code ec;
+    if (!pom2::writeFileAtomic(*safe, blob.data(), blob.size(), ec)) {
+        sendJsonError(fd, 500,
+            "snapshot write failed for " + *safe + ": " + ec.message());
         return;
     }
     sendJsonOk(fd, "{\"path\":\"" + jsonEscape(*safe) + "\"}");
@@ -1217,7 +1266,25 @@ void AiControlServer::handleSnapshotLoad(socket_t fd, const Request& req)
         return;
     }
 
-    SnapshotReader r(*safe);
+    // Read the whole file BEFORE taking the lock, then parse from memory. The
+    // file-backed reader pulls its bytes lazily from inside
+    // restoreMachineState(), so constructing it here and restoring under the
+    // lock still put the disk read inside the critical section.
+    std::vector<uint8_t> blob;
+    {
+        std::ifstream in(*safe, std::ios::binary);
+        if (!in) {
+            sendJsonError(fd, 400, "cannot read " + *safe);
+            return;
+        }
+        blob.assign(std::istreambuf_iterator<char>(in),
+                    std::istreambuf_iterator<char>());
+        if (!in && !in.eof()) {
+            sendJsonError(fd, 400, "read error on " + *safe);
+            return;
+        }
+    }
+    SnapshotReader r(blob.data(), blob.size());
     if (!r.good()) { sendJsonError(fd, 400, "cannot read " + *safe + ": " + r.error()); return; }
     auto st = ctrl_->lockState();
     // Shared with the rewind ring buffer. Preserves the CPU-section length

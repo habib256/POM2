@@ -12,6 +12,7 @@
 #include "Pom2Build.h"
 
 #include "Logger.h"
+#include "ThreadGuard.h"
 
 #include <algorithm>
 #include <cstring>
@@ -1193,11 +1194,24 @@ void W5100Device::resolveDns(size_t i)
                 std::lock_guard<std::mutex> lk(mailbox->mutex);
                 ++mailbox->inFlight;
             }
+            // Guarded: future::get() rethrows whatever the lookup task threw,
+            // and push_back can throw bad_alloc — either would escape a
+            // detached thread and call std::terminate(). The inFlight slot has
+            // to be released on both paths too: leaking it would pin the guest
+            // on "still in flight" for the rest of the session.
             std::thread([name, shared, mailbox]() {
-                const uint32_t late = shared->get();
-                std::lock_guard<std::mutex> lk(mailbox->mutex);
-                mailbox->pending.push_back({ name, late });
-                --mailbox->inFlight;
+                bool counted = false;
+                pom2::runGuarded("W5100", [&] {
+                    const uint32_t late = shared->get();
+                    std::lock_guard<std::mutex> lk(mailbox->mutex);
+                    mailbox->pending.push_back({ name, late });
+                    --mailbox->inFlight;
+                    counted = true;
+                });
+                if (!counted) {
+                    std::lock_guard<std::mutex> lk(mailbox->mutex);
+                    --mailbox->inFlight;
+                }
             }).detach();
             log().info("W5100", "DNS lookup for '" + name +
                                 "' still in flight — retry the connection");

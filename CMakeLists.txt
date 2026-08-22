@@ -174,6 +174,7 @@ set(SOURCES
     src/Disk35Controller_ImGui.cpp
     src/DiskController_ImGui.cpp
     src/DiskIICard.cpp
+    src/MediaMount.cpp
     src/DiskImage.cpp
     src/DiskLibrary_ImGui.cpp
     src/EchoPlusCard.cpp
@@ -275,6 +276,7 @@ set(HEADERS
     src/SoftCardZ80.h
     src/ByteIO.h
     src/Memory.h
+    src/MediaMount.h
     src/MemoryProfile.h
     src/MemoryProfile_IIcClass.h
     src/MachineSnapshot.h
@@ -362,6 +364,7 @@ set(HEADERS
     src/SpeakerDevice.h
     src/StatusLed.h
     src/SuperSerialCard.h
+    src/ThreadGuard.h
 )
 
 # Strict warnings on POM2 first-party sources only. Vendored Dear ImGui

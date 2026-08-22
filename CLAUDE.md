@@ -17,6 +17,22 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - **One concern per file** — each `.cpp/.h` pair owns one subsystem.
 - **MAME = source of truth** — when porting hardware, cite the MAME file + line range in a comment and pin with a smoke test under `tests/`.
 - **`emuCycles` everywhere** — CPU → audio/UI events carry a CPU-cycle stamp, not wall-clock. Disk-turbo (~60×) collapses wall-clock gaps to zero across an audio-buffer tick. Example: `FloppySoundDevice::drainCommands` consumes the stamp from `DiskIICard::seekPhaseW`.
+- **Never hold `stateMutex` across file I/O** — the lock is taken by the CPU
+  worker every 4096-cycle chunk *and* by the UI thread to paint every frame, so
+  slow work inside it freezes the machine and the window together, cancel
+  button included. Mount media through the two-phase form (`MediaMount.h`:
+  read + decode unlocked, take the lock only to swap the finished object in).
+  Measured floor for the naive form: 12.8 ms to read a 32 MB image on a warm
+  cache, 30.1 ms for a 4 MB write + one `fsync`, against a 20 ms PAL frame.
+  One documented exception survives, in `MainWindow_Slots.cpp`'s profile-switch
+  remount, where atomicity against the AI server outranks latency and the CPU
+  worker is stopped anyway.
+- **Every long-lived thread wears an exception barrier** — an exception
+  escaping a `std::thread` callable calls `std::terminate()`, killing the
+  process with no log line: a crash the user cannot report and you cannot
+  diagnose. Spawn through `pom2::guardedThread(tag, fn)` or wrap the body in
+  `pom2::runGuarded` (`ThreadGuard.h`). Pinned by `thread_guard`, which forks a
+  child so the regression fails a test instead of killing the runner.
 - **Reach the emulated state through the lock** — `controller->lockState()` returns a `pom2::StateAccess` RAII handle that hands back `Memory` and the CPU, so `st.memory()` cannot be written without having taken `stateMutex`. Bare `stateMutex()` is reserved for mutual exclusion that touches neither (serialising a card pointer against a profile switch, say). It is **non-recursive** — a helper called from both locked and unlocked callers takes a `const pom2::StateAccess&` and lets the caller prove ownership (`MainWindow::plugSlotsFromSettings`). Only three things may reach `memory()`/`cpu()` unlocked: code running before the CPU worker starts, the keyboard latch / paste queue (own `Memory::kbMutex`) and atomics, and UI-thread-confined SlotBus *topology* reads.
 - **Docs in English** — English is the reference language for all Markdown docs (README, CLAUDE, DEV, TODO, CHANGELOG, `docs/`). Write new docs and edits in English; the historical snapshots under `docs/archive/` are unmaintained and may still be French.
 
@@ -73,6 +89,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Slot bus + wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [§ Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | DiskImage / DiskIICard / Snapshot | `DiskImage.*`, `DiskIICard.*`, `SnapshotIO.*` | [§ Storage](DEV.md#storage) |
 | Atomic **+ durable** file commit — every write-back goes through it | `AtomicFileReplace.h` | [§ Write-back commit](DEV.md#how-a-media-write-back-commits-atomicfilereplaceh) |
+| Two-phase media mount — keeps the file read off `stateMutex` | `MediaMount.h/.cpp` | [§ Two-phase mount](DEV.md#two-phase-media-mount-mediamounthcpp) |
 | Machine snapshot + Rewind ring (MicroM8-style) | `MachineSnapshot.*`, `RewindBuffer.*` | [§ Rewind](DEV.md#rewind--time-travel) |
 | 3D voxel view (MicroM8-style) + camera math | `Voxel3DRenderer.*`, `Mat4.h` | [§ 3D voxel](DEV.md#3d-voxel-view) |
 | ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodosharddiskcard-hdv--synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
@@ -109,6 +126,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Clickable Apple //e keyboard (photo + measured hotspots) | `Keyboard_ImGui.*`, `AppleIIeKeyboardLayout.*` (generated), `AppleKeyLatch.h`, `tools/gen_keyboard_layout.py` | [§ Keyboard panel](DEV.md#apple-e-keyboard-panel) |
 | Floppy Emu (BMOW SD/OLED) | `FloppyEmuDevice.*`, `FloppyEmu_ImGui.*` | [§ Floppy Emu](DEV.md#floppy-emu-bmow) |
 | Clock & threading | `EmulationController.h/.cpp` | [§ Threading](DEV.md#clock--threading) |
+| Thread exception barrier (every long-lived thread) | `ThreadGuard.h` | [§ Threading](DEV.md#thread-exception-barrier-threadguardh) |
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
 | CLI | `CliDispatcher.h/.cpp` | [§ CLI](DEV.md#cli-clidispatcher) |
 | WebAssembly build | `build_wasm.sh`, `wasm/shell.html` | [§ WASM](DEV.md#webassembly-browser-build) |

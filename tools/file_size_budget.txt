@@ -1,0 +1,15 @@
+# POM2 file-size budget — see tools/check_file_sizes.sh
+#
+# Ceilings for every first-party file at or above 2000 lines.
+# A number here may go DOWN (record the win); it may not go up.
+# Growing one of these means editing this file in the same commit.
+#
+# Regenerate with: tools/check_file_sizes.sh --update
+
+src/Apple2Display.cpp                    2700
+src/DiskImage.cpp                        2822
+src/hgrpaint/HgrPaintEditor.cpp          2509
+src/ImageWriter.cpp                      2141
+src/M6502.cpp                            2137
+src/MainWindow.cpp                       11486
+src/Memory.cpp                           2505
