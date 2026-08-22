@@ -1,0 +1,32 @@
+# ThreadSanitizer suppressions for the POM2 test suite.
+#
+# Everything here is a THIRD-PARTY library that ships without TSan
+# instrumentation. TSan cannot see the synchronisation inside such a library,
+# so it reports its ordinary internal traffic as races — the classic
+# uninstrumented-library false positive. Suppressing those is not the same as
+# ignoring a finding: it is the only way the report stays readable enough for a
+# real POM2 race to be visible in it.
+#
+# Nothing in POM2's own sources belongs in this file. If a race in src/ ever
+# needs silencing, that is a bug to fix or an item for TODO.md, not a line here.
+#
+# ── libpulse ─────────────────────────────────────────────────────────────
+# Found 2026-08-22 while validating the nightly TSan job before shipping it.
+# `rewind_transport` constructs an EmulationController, which opens miniaudio,
+# which on Linux opens PulseAudio. TSan then reports a write/write race on a
+# pa_xmalloc'd heap block between the main thread's ma_context_init__pulse and
+# miniaudio's ma_worker_thread, both inside pa_iochannel_read_with_ancil_data.
+# Both stacks are entirely within libpulsecommon: the object is Pulse's, the
+# access is Pulse's, and the ordering that makes it safe is Pulse's own,
+# invisible to TSan.
+#
+# The patterns are deliberately narrow. TSan treats a `called_from_lib` pattern
+# that matches MORE THAN ONE loaded library as a fatal error, not a warning —
+# a bare `libpulse` matches both libpulse.so and libpulsecommon-*.so and kills
+# every test outright. Only the library the reports actually name is listed.
+called_from_lib:libpulsecommon
+
+# Nothing is listed speculatively. A pattern for a library that has never
+# actually appeared in a report is not free: if it happens to match two loaded
+# objects on some host, TSan kills the run. Add a line when a report names the
+# library, not before.

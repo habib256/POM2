@@ -107,8 +107,25 @@ to look. Added a
 nightly ASan+UBSan and TSan matrix: `POM2_SANITIZE` had been a CMake option
 that CI never once used, which left the "controller TSan clean" result in
 `TODO.md` with nothing keeping it true. The sanitizer job sets
-`POM2_TEST_TIMEOUT_SCALE=6`, since instrumented code runs 2-5x slower and would
-otherwise report timeouts instead of findings.
+`POM2_TEST_TIMEOUT_SCALE=6`, measured rather than guessed: the suite takes 71 s
+uninstrumented and 417 s under ASan+UBSan on the same host.
+
+Both sanitizer variants were run locally before the job was added — shipping a
+CI job nobody has executed is how a pipeline becomes decorative — and two
+things would have made it red on its first night. TSan dies instantly on
+kernels >= 6.6 with "unexpected memory mapping", because the default
+`vm.mmap_rnd_bits=32` puts mappings outside the range its shadow memory
+assumes; `setarch -R` around ctest fixes it (6 of 8 tests died without it, 8 of
+8 pass with it) and costs the other sanitizers nothing. And TSan reported a
+write/write race inside libpulsecommon, reached through miniaudio's PulseAudio
+backend — both stacks entirely in Pulse's own code, the classic
+uninstrumented-library false positive — so `tests/tsan.supp` suppresses that
+one library. Its patterns are deliberately narrow: TSan treats a
+`called_from_lib` pattern matching more than one loaded object as a FATAL
+error, and a bare `libpulse` matches both `libpulse.so` and
+`libpulsecommon-*.so`, killing every test outright. Nothing is listed there
+speculatively, for the same reason. Final: ASan+UBSan 191/191, TSan subset 8/8
+across three consecutive runs.
 
 **`MainWindow.cpp` grew 74 % *after* the rule against growing it.** The
 standing instruction in `TODO.md` is "do not grow the god-objects", target
