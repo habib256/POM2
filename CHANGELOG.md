@@ -124,8 +124,19 @@ one library. Its patterns are deliberately narrow: TSan treats a
 `called_from_lib` pattern matching more than one loaded object as a FATAL
 error, and a bare `libpulse` matches both `libpulse.so` and
 `libpulsecommon-*.so`, killing every test outright. Nothing is listed there
-speculatively, for the same reason. Final: ASan+UBSan 191/191, TSan subset 8/8
-across three consecutive runs.
+speculatively, for the same reason. Final locally: ASan+UBSan 191/191, TSan subset
+8/8 across three consecutive runs.
+
+Running it on the real CI then found three more things local runs could not,
+which is its own small lesson about validating a pipeline on the pipeline. The
+TSan leg died after a 51-minute build on a bash syntax error: `-R (a|b)`
+interpolated bare into the run line is unquoted shell, so the filter now
+travels through the environment and is quoted at use. Fifty of those
+fifty-one minutes were spent compiling two hundred test binaries to run eight,
+so that leg now names its eight targets. And the ASan leg ran past 100 minutes
+without reaching ctest at all: `--parallel 2` is the convention the other jobs
+use and this one cannot afford it, so the sanitizer build takes the runner's
+full four cores and the job's ceiling moved to 180 minutes.
 
 **`MainWindow.cpp` grew 74 % *after* the rule against growing it.** The
 standing instruction in `TODO.md` is "do not grow the god-objects", target

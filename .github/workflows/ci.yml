@@ -239,21 +239,29 @@ jobs:
     name: Nightly ASan/UBSan + TSan
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - san: address,undefined
             name: asan-ubsan
-            tests: ''
+            # Empty filter = the whole suite, and therefore the whole tree has
+            # to be built.
+            filter: ''
+            targets: ''
           - san: thread
             name: tsan
             # The threading contract: the CPU worker's park/resume protocol,
             # the rewind transport across it, the audio source teardown, the
             # HTTP server's handler thread, the SP link worker and the print
             # spooler. These are the tests that have more than one thread.
-            tests: '-R (rewind_transport|audio_source_teardown|ai_control_server_smoke|sp_over_slip_link|printer_history|thread_guard|fujinet_net_device|child_process)'
+            #
+            # `targets` lists their executables so this leg builds EIGHT
+            # binaries instead of two hundred. The first run of this job spent
+            # 50 of its 51 minutes compiling test binaries it then never ran.
+            filter: '(rewind_transport|audio_source_teardown|ai_control_server_smoke|sp_over_slip_link|printer_history|thread_guard|fujinet_net_device|child_process)'
+            targets: '--target test_rewind_transport test_audio_source_teardown test_ai_control_server test_sp_over_slip_link test_printer_history test_thread_guard test_fujinet_net_device test_child_process'
     steps:
       - uses: actions/checkout@v4
 
@@ -289,8 +297,12 @@ jobs:
             -DPOM2_SANITIZE=${{ matrix.san }} \
             -DPOM2_TEST_TIMEOUT_SCALE=6
 
+      # --parallel 4, not 2: the runner has four cores, and at two the
+      # instrumented build of the whole test tree ran past 100 minutes without
+      # ever reaching ctest. The other jobs' `--parallel 2` is a convention
+      # this one cannot afford.
       - name: Build
-        run: cmake --build build-san --parallel 2
+        run: cmake --build build-san --parallel 4 ${{ matrix.targets }}
 
       # `setarch -R` disables ASLR for the whole ctest tree, and TSan needs it:
       # on kernels >= 6.6 the default vm.mmap_rnd_bits=32 puts mappings outside
@@ -310,7 +322,17 @@ jobs:
           # The suppressions file holds third-party libraries only, and each
           # entry is there because a report named it — see tests/tsan.supp.
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/tests/tsan.supp
-        run: setarch -R ctest --output-on-failure --parallel 2 ${{ matrix.tests }}
+          # Passed through the environment, not interpolated into the command
+          # line: `-R (a|b)` unquoted is a bash syntax error, which is exactly
+          # how the first run of this job died after a 50-minute build.
+          POM2_TEST_FILTER: ${{ matrix.filter }}
+        run: |
+          set -euo pipefail
+          if [ -n "$POM2_TEST_FILTER" ]; then
+            setarch -R ctest --output-on-failure --parallel 4 -R "$POM2_TEST_FILTER"
+          else
+            setarch -R ctest --output-on-failure --parallel 4
+          fi
 
   wasm:
     name: WASM verification build
