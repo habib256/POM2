@@ -427,3 +427,71 @@ RAM and framebuffer hashes identical on all six, before and after each step.
 | `SlotBus::advanceCycles` fan-out | ~4 % (disk) | one virtual call per plugged card per instruction; a "needs ticking" mask would save the idle ones at the cost of every card having to keep it honest |
 | `renderText` + `glyphRows7` | ~3 % (banner) | the full-frame static-text skip already covers the static case |
 
+
+---
+
+## 8. Debugger hooks — 2026-08-22
+
+The run-control debugger (`Debugger.h`, DEV § Debugger) needs two things from
+the hot paths: a per-instruction hook so a breakpoint can stop the CPU, and a
+per-access hook so a watchpoint can see memory traffic. Both were measured
+before they were kept, and only one of them survived.
+
+Method: `pom2_bench`, best of seven per workload, three series, RAM hash
+checked identical on every run. Baseline taken on the unmodified tree
+immediately before the change, on the same host and the same build flags.
+
+| Workload | Baseline | With the CPU hook | With the memory tap too |
+|---|---|---|---|
+| `--frames 30000` (][+ banner) | 1.968 s | 1.94 s | 2.231 s |
+| `--rom apple2e.rom --iie --frames 30000` | 2.241 s | 2.24 s | 2.610 s |
+| `--disk … --frames 6000` (Disk II LSS) | 0.990 s | 0.99 s | 1.081 s |
+
+### 8.1 The CPU hook is free, and why
+
+`M6502::run` picks between two loops **once per call**, not once per
+instruction:
+
+```cpp
+if (debugHook_) { /* loop with the per-instruction check */ }
+while (running && cyclesExecuted < maxCycles) { step(); ... }   // unchanged
+```
+
+The chunk is 4096 cycles, so the un-armed cost is one predictable branch per
+few thousand instructions — below the noise floor of the measurement, which is
+what the table shows. The fast loop is byte-for-byte the code that was there
+before, which is the property that makes that claim safe to keep making.
+
+`EmulationController::syncDebugHook()` is what holds it: the hook is attached
+only while `Debugger::armed()`, and clearing the last breakpoint detaches it
+again. Pinned by the `debugger` test, which asserts on
+`M6502::getDebugHook() == nullptr` for exactly this reason.
+
+### 8.2 The naive watchpoint tap costs 13–16 %, so it was reverted
+
+The obvious shape — wrap `memRead`/`memWrite`, test one pointer, call a sink
+when it is set — measured **+13.4 %**, **+16.5 %** and **+9.2 %** on the three
+workloads. That is not payable for a feature that is off by default, and it is
+an order of magnitude above the budget every other item in this document is
+held to.
+
+Forcing the wrapped body inline with `always_inline` made it **worse** (2.416 s
+on the ][+ banner, against 2.231 s for the plain wrapper), which locates the
+cost: it is the extra branch and the code growth around the hottest function in
+the emulator, not an inlining regression that could be argued away.
+
+So watchpoints are **not implemented**, and `Debugger` carries the API for them
+unhooked rather than pretending. The design that would pay for itself is
+recorded in `TODO.md`: `memWrite`'s fast path already consults a per-address
+`writable[]` byte, so a watched address can be made to *fail* that test and
+fall to `memWriteSlow`, which notices the watch and performs the write itself —
+**zero new branches on the fast path**, write watchpoints only. Reads have no
+equivalent per-address table in their fast path, and that is the honest reason
+read watchpoints would cost something.
+
+### 8.3 What this section is really for
+
+The measurement that mattered here was the one that killed a feature. A
+debugger with watchpoints would have been better than one without — and it
+would have made every session that never opens the debugger 13 % slower. The
+numbers are recorded so nobody re-derives them by shipping the regression.

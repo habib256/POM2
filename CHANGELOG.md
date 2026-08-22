@@ -5,6 +5,64 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-22 (newest) — A debugger, and the watchpoints that measurement refused
+
+The audit two entries down named the debugger the highest-leverage thing left
+in the backlog, on the grounds that its return is every other item. The
+argument was countable rather than rhetorical: `tests/` held **24 one-off
+trace / dump / probe binaries, 5 535 lines, of which 4 129 were registered as
+no test at all** — compiled on every build, run by nothing. Every parity hunt
+was paying for a throwaway binary because nothing could stop a running machine
+and look at it.
+
+**What shipped**: breakpoints, single-step, step-over, run-to-cursor, and a
+banner that says *why* the machine stopped — "it stopped" and "it stopped
+because you asked it to break at $C600" being different facts, only one of them
+useful. `Debugger.h/.cpp` for the core, `Debugger_ImGui.*` for the panel:
+registers, a disassembly that follows the PC, and a breakpoint gutter you click
+the way every debugger since Turbo Pascal has worked.
+
+**The CPU does not know about it.** `M6502.h` declares a two-method interface
+and `Debugger` implements it, so the dependency runs one way and `M6502.cpp`
+gained no include. `MainWindow.cpp` gained **six lines** — three to own and
+show the panel, three to register it — and the F7/F8 shortcuts live in the
+panel rather than in MainWindow's global key routing, because a feature that
+can keep its keys out of the god-object should. Those six lines were not free:
+the file-size ratchet added last week failed the build and forced the budget
+edit into the same commit. That is the mechanism working, not being worked
+around.
+
+**A breakpoint stops BEFORE its instruction**, so the registers you read are
+the state going in. Writing the test for that took two attempts, and the first
+one is the interesting one: "check before the instruction at PC" and "check
+after the previous instruction" leave the machine in the *same* observable
+state everywhere except one place — a breakpoint on the entry PC of a run. The
+first stops immediately having executed nothing; the second runs the
+instruction and then never matches, missing the breakpoint entirely. The
+original assertions passed under both. The test now breaks on the entry point,
+and a hook moved after `step()` fails it.
+
+**Cost when nobody is debugging: none, measured.** `M6502::run` picks between
+two loops once per *call* — one branch per 4096-cycle chunk, not per
+instruction — and the hook stays detached until something is armed. Three
+`pom2_bench` workloads, three series, RAM hashes identical, no change outside
+the noise floor.
+
+**Watchpoints did not ship, and that is the part worth reading.** The obvious
+implementation — wrap `memRead`/`memWrite`, test one pointer, call a sink —
+measured **+13.4 %, +16.5 % and +9.2 %** on the three workloads. Forcing the
+wrapped body inline made it *worse*, which locates the cost in the extra branch
+and the code growth around the emulator's hottest function rather than in an
+inlining accident that could be argued away. Thirteen percent is not payable
+for a feature that is off by default, so the tap was reverted and `Debugger`
+carries the watchpoint API **unhooked** — an API honest about being inert
+beats one that is faked, and beats one that silently taxes every session that
+never opens the debugger. The design that would be free for writes (arm the
+watch by clearing the `writable[]` byte the fast path already consults, so the
+address falls to `memWriteSlow` on its own) is written down in `TODO.md`, and
+the numbers are in `docs/PERFORMANCE.md` § 8 so nobody re-derives them by
+shipping the regression.
+
 ## 2026-08-22 (latest) — Architecture audit: the crashes you cannot report, and the freezes you cannot cancel
 
 An audit pass over stability and solidity rather than over any one subsystem.

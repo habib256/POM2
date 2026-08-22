@@ -134,6 +134,12 @@ EmulationController::EmulationController()
     // pointer; nullptr disables (MainWindow toggles via setEnabled()).
     noSlotClock_ = std::make_unique<pom2::NoSlotClock>();
 
+    // Run-control debugger. Constructed always, attached to the CPU never —
+    // until something is armed. An un-armed debugger holds no memory (its
+    // bitmaps are lazy) and leaves `M6502::run` on the loop it has always
+    // used, so a session that does not debug pays nothing for it.
+    debugger_ = std::make_unique<pom2::Debugger>();
+
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
     mem.setCassetteDevice(tape.get());
@@ -731,6 +737,14 @@ int EmulationController::runCpuSlice(int chunk)
         return spent;
     }
     const int spent = processor.run(chunk);
+    // A debugger stop ends the slice early. Handled HERE, in the one funnel
+    // both drivers (worker thread and the WASM RAF tick) go through, rather
+    // than duplicated into each: the worker's inner loop re-reads `mode` at
+    // the top of every iteration, so parking here stops it within one chunk.
+    if (debugger_ && debugger_->stopRequested()) {
+        noteDebuggerStop();
+        return spent;
+    }
     // Symmetric hand-over: the 6502 yields mid-chunk when its $CnXX
     // write grants the bus (the card calls M6502::stop()); give the
     // remainder to the new claimant instead of burning a dead chunk.
@@ -739,6 +753,81 @@ int EmulationController::runCpuSlice(int chunk)
             return spent + dma->dmaRun(chunk - spent);
     }
     return spent;
+}
+
+void EmulationController::noteDebuggerStop()
+{
+    // The CPU halted with the PC still on the breakpoint instruction, which
+    // is the whole point: the register dump the user reads is the state going
+    // IN to it, and resuming re-tries it rather than skipping it.
+    setMode(Mode::Stopped);
+}
+
+void EmulationController::syncDebugHook()
+{
+    processor.setDebugHook(debugger_->armed() ? debugger_.get() : nullptr);
+}
+
+void EmulationController::debugResume()
+{
+    // Amnesty for exactly one instruction at the current PC. Without it Run
+    // would re-trigger the breakpoint the machine is standing on and nothing
+    // would ever move.
+    debugger_->armResumeFrom(processor.getProgramCounter());
+    debugger_->clearHit();
+}
+
+void EmulationController::debugStepInstruction()
+{
+    {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        debugResume();
+    }
+    requestStep(1);
+}
+
+void EmulationController::debugStepOver()
+{
+    uint16_t resumeAt = 0;
+    bool     over     = false;
+    {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        const uint16_t pc = processor.getProgramCounter();
+        // $20 = JSR, the only 6502 instruction with a subroutine to step over.
+        // Everything else — including JMP, which does not come back — is an
+        // ordinary single step, because there is nothing to step over.
+        //
+        // peekMainRam, not memRead: a debugger must never perturb the machine
+        // it is inspecting, and memRead on a $C0xx address FLIPS SOFT
+        // SWITCHES. It reads main RAM only, which is the same view the
+        // Disasm panel and MemoryViewer already show — so on a //e running
+        // code out of aux, or under a Language Card bank, this can misread
+        // the opcode. The failure is benign in both directions: a missed JSR
+        // becomes a single step, and a phantom JSR arms a transient that
+        // simply never fires, leaving the user to press Stop.
+        if (mem.peekMainRam(pc) == 0x20) {
+            resumeAt = static_cast<uint16_t>(pc + 3);
+            over     = true;
+            debugger_->setTransient(resumeAt, pom2::Debugger::Reason::StepOver);
+            debugResume();
+            syncDebugHook();
+        } else {
+            debugResume();
+        }
+    }
+    if (over) setMode(Mode::Running);
+    else      requestStep(1);
+}
+
+void EmulationController::debugRunToCursor(uint16_t addr)
+{
+    {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        debugger_->setTransient(addr, pom2::Debugger::Reason::RunToCursor);
+        debugResume();
+        syncDebugHook();
+    }
+    setMode(Mode::Running);
 }
 
 // One single-instruction step of whichever CPU owns the bus. The

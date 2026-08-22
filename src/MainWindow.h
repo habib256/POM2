@@ -98,6 +98,7 @@ namespace pom2 {
     enum class CharRomLocale : uint8_t;
 }
 class MemoryViewer_ImGui;
+namespace pom2 { class Debugger_ImGui; }
 class Pom2HgrPaintHost;
 namespace hgrpaint { class HgrPaintEditor; }
 namespace hgrsprite { class HgrSpriteEditor; }
@@ -269,6 +270,10 @@ private:
     Apple2Display::HiResMode lastColorHiResMode_ = Apple2Display::HiResMode::ColorNTSC;
     Apple2Display::HiResMode lastMonoHiResMode_  = Apple2Display::HiResMode::MonoWhite;
     std::unique_ptr<MemoryViewer_ImGui>           memViewer;
+    /// Run-control debugger panel. All of its state and every decision it
+    /// makes live in Debugger_ImGui — MainWindow only owns it and shows it.
+    std::unique_ptr<pom2::Debugger_ImGui>        debuggerPanel;
+    bool showDebugger = false;
     std::unique_ptr<pom2::Settings>               settings;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
     std::unique_ptr<pom2::Rewind_ImGui>           rewindPanel_;

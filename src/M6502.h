@@ -25,6 +25,23 @@
 
 #include <atomic>
 
+/// Per-instruction debug hook. Deliberately an interface declared HERE rather
+/// than an include of Debugger.h: the CPU must not depend on the debugger, and
+/// this way the dependency runs one way only (Debugger implements this).
+///
+/// Costs nothing when unset — `M6502::run` picks between two loops once per
+/// call, so an un-armed hook is a branch per 4096-cycle chunk, not per
+/// instruction. See Debugger.h.
+class M6502DebugHook
+{
+public:
+    virtual ~M6502DebugHook() = default;
+    /// Called BEFORE the instruction at `pc` executes. Returning true halts
+    /// the CPU with `pc` unchanged, so the instruction has not run and a
+    /// later resume re-tries it.
+    virtual bool onInstruction(uint16_t pc) = 0;
+};
+
 class M6502
 {
 public:
@@ -104,6 +121,13 @@ public:
     uint16_t memReadAbsolute(uint16_t adr);
     
     // Nouvelles méthodes pour l'exécution et l'affichage
+    /// Attach (or detach, with nullptr) the per-instruction debug hook. The
+    /// CPU keeps a bare pointer and never owns it; the hook must outlive the
+    /// CPU or be detached first. Set and cleared under `stateMutex`, like
+    /// every other piece of emulated state.
+    void setDebugHook(M6502DebugHook* hook) { debugHook_ = hook; }
+    M6502DebugHook* getDebugHook() const { return debugHook_; }
+
     void step(void);  // Exécuter une instruction
     /// Run until at least `maxCycles` 6502 cycles have elapsed (or `stop()`
     /// is called). Per-instruction granularity means we typically overshoot
@@ -322,6 +346,9 @@ private :
     void Unoff5C(void);     // 3-byte, 8-cycle 65C02 oddball $5C
     void Hang(void);
     void executeOpcode(void);
+
+    /// Per-instruction debug hook, or nullptr. See setDebugHook().
+    M6502DebugHook* debugHook_ = nullptr;
 
     /// Emit the intermediate RMW bus cycle between the initial read and
     /// the modified-value write. On NMOS (MAME `om6502.lst:161-164`)
