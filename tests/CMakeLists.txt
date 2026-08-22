@@ -1231,6 +1231,24 @@ add_executable(test_disk_media_state
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
 )
 target_include_directories(test_disk_media_state PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ─── Two-phase mount ────────────────────────────────────────────────────
+# Pins DiskIICard::prepareDisk / installDisk. Case 3 is the one that matters:
+# phase 1 reads before phase 2 flushes, so re-inserting a file the guest has
+# written to must NOT roll those writes back. See the file header.
+add_executable(test_two_phase_mount
+    two_phase_mount_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+)
+target_include_directories(test_two_phase_mount PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME two_phase_mount COMMAND test_two_phase_mount)
+set_tests_properties(two_phase_mount PROPERTIES TIMEOUT 30)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_disk_media_state PRIVATE Threads::Threads)
 endif()
@@ -5256,6 +5274,19 @@ target_include_directories(test_atomic_file_replace PRIVATE ${CMAKE_SOURCE_DIR}/
 add_test(NAME atomic_file_replace COMMAND test_atomic_file_replace)
 set_tests_properties(atomic_file_replace PROPERTIES TIMEOUT 30)
 
+# ─── Thread exception barrier ───────────────────────────────────────────
+# Pins src/ThreadGuard.h. A regression here does not fail an assertion, it
+# kills the process — so the throwing cases run in a forked child whose exit
+# status is checked. See the file header.
+add_executable(test_thread_guard
+    thread_guard_test.cpp
+)
+target_include_directories(test_thread_guard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+find_package(Threads REQUIRED)
+target_link_libraries(test_thread_guard PRIVATE Threads::Threads)
+add_test(NAME thread_guard COMMAND test_thread_guard)
+set_tests_properties(thread_guard PROPERTIES TIMEOUT 30)
+
 
 # ─── Package payload manifest ───────────────────────────────────────────
 # Not a C++ test: what needs pinning here is packaging/bundle.manifest and its
@@ -5367,3 +5398,80 @@ target_include_directories(test_fuzz_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 add_test(NAME fuzz_snapshot COMMAND test_fuzz_snapshot)
 set_tests_properties(fuzz_snapshot PROPERTIES TIMEOUT 120)
+
+
+# ─── Test timeout policy ────────────────────────────────────────────────────
+# Applied ONCE, here, over every test defined above — not per add_test, so it
+# cannot drift back out of alignment as tests are added.
+#
+# Why it exists. 132 of the 189 declared TIMEOUTs were 5 or 10 seconds. That
+# was fine at `ctest --parallel 2` (what CI used) and false at anything wider:
+# on a 16-core box at `--parallel 8`, diskii_lss_smoke and printer_history both
+# blew their budget while taking 0.30 s and 1.24 s when run alone. A gate whose
+# greenness depends on the width of the runner is not a gate — it is a coin
+# toss that happens to be landing heads, and it fails at exactly the moment
+# somebody adds a test or CI moves to a bigger machine.
+#
+# FLOOR raises every test to a budget that survives a loaded machine. It does
+# NOT weaken the gate: these are pass/fail assertions, not benchmarks, so a
+# test that needs 30 s instead of 0.3 s is broken either way and the timeout is
+# a deadlock backstop, not a performance bound.
+#
+# SCALE multiplies everything for environments where the whole suite is slower
+# by a known factor: sanitizers (ASan+UBSan is 2-5x), an emulated architecture,
+# a shared runner. CI's nightly sanitizer job sets it to 6.
+set(POM2_TEST_TIMEOUT_FLOOR 30 CACHE STRING
+    "Minimum ctest TIMEOUT in seconds, applied to every POM2 test")
+set(POM2_TEST_TIMEOUT_SCALE 1 CACHE STRING
+    "Integer multiplier applied to every ctest TIMEOUT (sanitizers: 6)")
+
+if(NOT POM2_TEST_TIMEOUT_SCALE MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR
+        "POM2_TEST_TIMEOUT_SCALE must be a positive integer, got "
+        "'${POM2_TEST_TIMEOUT_SCALE}'")
+endif()
+
+get_property(_pom2_all_tests DIRECTORY PROPERTY TESTS)
+foreach(_pom2_t IN LISTS _pom2_all_tests)
+    get_test_property(${_pom2_t} TIMEOUT _pom2_to)
+    if(NOT _pom2_to MATCHES "^[0-9]+$")
+        set(_pom2_to 0)                       # no TIMEOUT set — take the floor
+    endif()
+    if(_pom2_to LESS ${POM2_TEST_TIMEOUT_FLOOR})
+        set(_pom2_to ${POM2_TEST_TIMEOUT_FLOOR})
+    endif()
+    math(EXPR _pom2_to "${_pom2_to} * ${POM2_TEST_TIMEOUT_SCALE}")
+    set_tests_properties(${_pom2_t} PROPERTIES TIMEOUT ${_pom2_to})
+endforeach()
+
+# Tests whose assertions are about ELAPSED WALL-CLOCK TIME — a bounded wait, a
+# poll deadline, a timeout that must fire — plus the one that binds a fixed
+# loopback port (ai_control_server_smoke, port 36502). Neither kind can be made
+# robust by a bigger budget: the first measures the very thing contention
+# distorts, the second needs the port to itself. ctest runs a RUN_SERIAL test
+# with nothing else in flight, which is the only property that actually holds
+# for them. They are short, so the cost to total suite time is small.
+set(POM2_WALLCLOCK_TESTS
+    ai_control_server_smoke
+    ai_mouse_hle_probe
+    child_process
+    display_dirty_skip
+    fujinet_card
+    fujinet_net_device
+    prodos_decode_safety
+    rewind_transport
+    serial_port
+    sp_over_slip_link
+    tnfs_client
+    tnfs_client_hostile
+    w5100_udp_recv
+)
+foreach(_pom2_t IN LISTS POM2_WALLCLOCK_TESTS)
+    if(TEST ${_pom2_t})
+        set_tests_properties(${_pom2_t} PROPERTIES RUN_SERIAL TRUE)
+    else()
+        message(FATAL_ERROR
+            "POM2_WALLCLOCK_TESTS names '${_pom2_t}', which is not a test. "
+            "Renamed or removed? Update the list in tests/CMakeLists.txt.")
+    endif()
+endforeach()

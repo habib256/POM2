@@ -24,6 +24,7 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "MediaMount.h"
 
 // Same heavy-includes-here pattern as MainWindow.cpp — MainWindow.h
 // forward-declares the controller / cards / panels.
@@ -748,12 +749,10 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(buf[0] == '\0');
                     if (ImGui::Button("Insert")) {
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = d2->insertDisk(drv, buf);
-                            if (ok) d2->seekTrack0();
-                        }
+                        std::string mountErr;
+                        const bool ok = pom2::mountDiskII(
+                            *controller, *d2, drv, buf, mountErr,
+                            /*seekTrack0=*/true);
                         // Only drive 1 has a persisted path key (disk_path_slotN);
                         // drive 2 mounts are session-only (matches legacy scheme).
                         if (ok && drv == 0) {
@@ -1454,6 +1453,13 @@ bool MainWindow::restartEmulationFromSettings()
         std::error_code ec;
         if (!diskPath.empty() &&
             std::filesystem::is_regular_file(diskPath, ec)) {
+            // Deliberately the INLINE insert, not the two-phase mount every
+            // other call site now uses: the block comment above is the reason
+            // — the SlotBus rebuild and these remounts have to be one atomic
+            // step against the AI server's handlers, and a two-phase mount
+            // would have to drop the lock between them. The stall it costs is
+            // bounded and invisible here: this runs on a profile switch, with
+            // the CPU worker already stopped and a cold boot to follow.
             (void)c->insertDisk(diskPath);
         }
     }

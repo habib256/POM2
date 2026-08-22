@@ -330,6 +330,23 @@ DiskIICard::~DiskIICard()
     (void)flushPendingWrites();
 }
 
+// Phase 1 of the two-phase mount — see the header. Pure file I/O against a
+// detached image: no card state is read or written, so this needs no lock.
+bool DiskIICard::prepareDisk(const std::string& path, bool writeBackEnabled,
+                             DiskImage& out, std::string& error)
+{
+    DiskImage staged;
+    staged.setWriteBackEnabled(writeBackEnabled);
+    if (!staged.loadFile(path)) {
+        error = staged.getLastError();
+        pom2::log().warn("Disk II", "Insert failed: " + error);
+        return false;
+    }
+    error.clear();
+    out = std::move(staged);
+    return true;
+}
+
 bool DiskIICard::insertDisk(int drive, const std::string& path)
 {
     if (drive < 0 || drive >= kDriveCount) {
@@ -337,13 +354,29 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
             "insertDisk: invalid drive index " + std::to_string(drive));
         return false;
     }
-    // Commit the in-flight write burst BEFORE saveDirty() below, and before
-    // the LSS reset further down drops the buffer. Dropping a new disk on the
-    // window while the guest is mid-`SAVE`/`INIT` used to lose the sector the
-    // controller was writing, even with write-back on.
+    // Inline form: keep the historical ORDER — flush the outgoing medium
+    // first, then read the new one. It matters when both are the same file
+    // (re-inserting a disk the guest has written to): loading first would
+    // read the pre-flush bytes and then overwrite them. installDisk() below
+    // detects that collision for the two-phase callers.
     commitInFlightWrite();
+    if (!flushOutgoingForSwap(drive)) return false;
+
+    DiskImage replacement;
+    std::string error;
+    if (!prepareDisk(path, writeBackEnabled, replacement, error)) {
+        mediaErrors[drive] = error;
+        return false;
+    }
+    return installPreparedLocked(drive, std::move(replacement));
+}
+
+// Flush a drive's medium before it is dropped. Returns false — and records the
+// error — if the write-back could not be committed, which refuses the swap and
+// leaves the dirty medium in the drive for the user to retry.
+bool DiskIICard::flushOutgoingForSwap(int drive)
+{
     DiskImage& img = images[drive];
-    // Save any pending writes from the previous image before we drop it.
     if (img.isLoaded() && img.hasUnsavedChanges()) {
         if (!img.saveDirty()) {
             mediaErrors[drive] = img.getLastError();
@@ -352,13 +385,53 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
             return false;
         }
     }
-    DiskImage replacement;
-    replacement.setWriteBackEnabled(writeBackEnabled);
-    if (!replacement.loadFile(path)) {
-        mediaErrors[drive] = replacement.getLastError();
-        pom2::log().warn("Disk II", "Insert failed: " + replacement.getLastError());
+    return true;
+}
+
+// Phase 2 of the two-phase mount — see the header.
+bool DiskIICard::installDisk(int drive, DiskImage&& prepared)
+{
+    if (drive < 0 || drive >= kDriveCount) {
+        pom2::log().warn("Disk II",
+            "installDisk: invalid drive index " + std::to_string(drive));
         return false;
     }
+    if (!prepared.isLoaded()) {
+        pom2::log().warn("Disk II", "installDisk: image was not prepared");
+        return false;
+    }
+    commitInFlightWrite();
+
+    // Same file, and the outgoing copy has unsaved changes: the prepared image
+    // was read BEFORE that flush, so installing it would silently roll the
+    // guest's writes back. Flush, then re-read under the lock. This is the one
+    // path where the two-phase form degrades to the inline cost, and it is the
+    // rare one — write-back is opt-in and the paths have to match exactly.
+    DiskImage& img = images[drive];
+    const bool sameFileStillDirty =
+        img.isLoaded() && img.hasUnsavedChanges() &&
+        !img.getPath().empty() && img.getPath() == prepared.getPath();
+
+    if (!flushOutgoingForSwap(drive)) return false;
+
+    if (sameFileStillDirty) {
+        const std::string path = prepared.getPath();
+        DiskImage reread;
+        std::string error;
+        if (!prepareDisk(path, writeBackEnabled, reread, error)) {
+            mediaErrors[drive] = error;
+            return false;
+        }
+        prepared = std::move(reread);
+    }
+    return installPreparedLocked(drive, std::move(prepared));
+}
+
+// The state mutation shared by both entry points: adopt the image and re-anchor
+// every piece of controller state that depends on the medium.
+bool DiskIICard::installPreparedLocked(int drive, DiskImage&& replacement)
+{
+    DiskImage& img = images[drive];
     img = std::move(replacement);
     mediaErrors[drive].clear();
     trackPos[drive] = 0;

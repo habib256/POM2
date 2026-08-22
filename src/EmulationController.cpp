@@ -7,6 +7,7 @@
 
 #include "CpuClock.h"
 #include "Logger.h"
+#include "ThreadGuard.h"
 
 #include <algorithm>
 #include <chrono>
@@ -213,18 +214,62 @@ void EmulationController::setCassetteVolume(float v) { tape->setVolume(v); }
 bool EmulationController::mount35(int idx, const std::string& path)
 {
     if (idx < 0 || idx > 1) return false;
+
+    // Two-phase, for the reason in MediaMount.h: `stateMtx` is held by the CPU
+    // worker every 4096-cycle chunk and by the UI thread on every frame, so
+    // reading and GCR-decoding an 800K image inside it froze the machine and
+    // the window together. Phase 1 is that read, with no lock held; phase 2
+    // below is a move.
+    //
+    // Phase 1 needs one thing from the object — the write-back flag — plus a
+    // hint about whether the read is worth doing at all: re-inserting the file
+    // the guest has unsaved writes to would capture pre-flush bytes, and
+    // installing those rolls the writes back.
+    //
+    // The hint is only a hint. It is read under one lock and acted on under
+    // another, so the guest can dirty the medium in between; the decision that
+    // MATTERS is re-taken below, under the same lock as the flush, and a
+    // wasted phase-1 read is simply discarded. `DiskIICard::installDisk` does
+    // not need this dance because its caller holds one lock across both steps.
+    bool writeBack = false;
+    bool skipRead  = false;
+    {
+        std::lock_guard<std::mutex> lk(stateMtx);
+        pom2::Disk35Image* image = idx == 0 ? image35Int.get() : image35Ext.get();
+        if (!image) return false;
+        writeBack = image->isWriteBackEnabled();
+        skipRead  = image->isLoaded() && image->hasUnsavedChanges() &&
+                    !image->path().empty() && image->path() == path;
+    }
+
+    pom2::Disk35Image staged;
+    staged.setWriteBackEnabled(writeBack);
+    if (!skipRead && !staged.loadFile(path)) return false;
+
+    // Phase 2.
     std::lock_guard<std::mutex> lk(stateMtx);
     pom2::Disk35Image*  image = idx == 0 ? image35Int.get() : image35Ext.get();
     pom2::Sony35Drive*  drive = idx == 0 ? drive35Int.get() : drive35Ext.get();
     if (!image || !drive) return false;
+
+    // Decided HERE, under the lock that also does the flush, so no window
+    // exists between the two.
+    const bool staleAfterFlush =
+        image->isLoaded() && image->hasUnsavedChanges() &&
+        !image->path().empty() && image->path() == path;
+
     if (image->isLoaded() && image->hasUnsavedChanges() &&
         !image->saveDirty()) {
         return false;  // keep the only in-memory copy mounted for retry
     }
-    pom2::Disk35Image replacement;
-    replacement.setWriteBackEnabled(image->isWriteBackEnabled());
-    if (!replacement.loadFile(path)) return false;
-    *image = std::move(replacement);
+    if (staleAfterFlush || !staged.isLoaded()) {
+        // Rare: the file the guest just wrote to. The flush above has landed,
+        // so read it back here, under the lock, and pay the inline cost.
+        staged = pom2::Disk35Image{};
+        staged.setWriteBackEnabled(writeBack);
+        if (!staged.loadFile(path)) return false;
+    }
+    *image = std::move(staged);
     drive->notifyMediaChange();
     // User-initiated mount → one-shot insert click. Same pattern as
     // `DiskIICard::insertDisk` (5.25"). Silent when no FloppySoundDevice
@@ -278,7 +323,18 @@ void EmulationController::start()
     wakeCv.notify_all();
 #ifndef __EMSCRIPTEN__
     if (worker.joinable()) return;
-    worker = std::thread([this] { workerLoop(); });
+    // Guarded: an exception escaping workerLoop() would call std::terminate()
+    // and take the process with it, silently. workerLoop() captures rewind
+    // frames — multi-MB vector growth against a 256 MiB budget — so bad_alloc
+    // is a live possibility, not a theoretical one. On the way out (clean or
+    // not) publish a coherent state: Stopped and parked, so waitUntilParked()
+    // returns at once instead of burning its 200-step poll on a dead thread.
+    worker = std::thread([this] {
+        pom2::runGuarded("Emulation", [this] { workerLoop(); });
+        mode.store(Mode::Stopped);
+        workerParked_.store(true);
+        wakeCv.notify_all();
+    });
 #endif
     // Under Emscripten the browser owns the frame schedule — the host
     // calls tickFrame() once per RAF. No worker thread is spawned.

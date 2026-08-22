@@ -9,6 +9,7 @@
 #include "SpOverSlipLink.h"
 
 #include "Logger.h"
+#include "ThreadGuard.h"
 
 #include <algorithm>
 #include <chrono>
@@ -125,7 +126,7 @@ bool SpOverSlipLink::start(std::string& errOut)
         lastError_.clear();
     }
     running_.store(true);
-    worker_ = std::thread(&SpOverSlipLink::workerLoop, this);
+    worker_ = pom2::guardedThread("FujiNet", [this] { workerLoop(); });
     return true;
 }
 

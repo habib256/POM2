@@ -10,6 +10,7 @@
 
 #include "AtomicFileReplace.h"
 #include "Logger.h"
+#include "ThreadGuard.h"
 
 // Declarations only — the single non-static stb implementations live in
 // Pom2HgrPaintHost.cpp, the same arrangement ImageWriterPdf.cpp documents.
@@ -279,7 +280,7 @@ PrinterHistory::~PrinterHistory()
 void PrinterHistory::startWriter()
 {
     if (writer_.joinable()) return;
-    writer_ = std::thread(&PrinterHistory::writerLoop, this);
+    writer_ = pom2::guardedThread("PrinterHistory", [this] { writerLoop(); });
 }
 
 void PrinterHistory::stopWriter()

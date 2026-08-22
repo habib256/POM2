@@ -6,6 +6,7 @@
 #include "SuperSerialCard.h"
 #include "Pom2Build.h"
 #include "Logger.h"
+#include "ThreadGuard.h"
 #include "SocketUtil.h"
 #include "M6502.h"
 
@@ -212,7 +213,7 @@ bool SuperSerialCard::startListening(uint16_t newPort)
 
     stopRequested = false;
     listening     = true;
-    worker        = std::thread(&SuperSerialCard::runWorker, this);
+    worker        = pom2::guardedThread("SSC", [this] { runWorker(); });
     pom2::log().info("SSC",
         "listening on 127.0.0.1:" + std::to_string(port) +
         " (telnet to connect to slot " + std::to_string(slot) + ")");

@@ -10,32 +10,52 @@ then [Quick wins](#quick-wins), then [Backlog by subsystem](#backlog).
 
 ## Open, and known to be open — 2026-08-22 bug hunt
 
-Three findings from the 2026-08-22 sweep were **deliberately not fixed**.
-They sit at the top because each is something POM2 currently gets wrong that
-somebody would otherwise rediscover the hard way — and because the reason for
-leaving them is part of the finding.
+Findings that are **deliberately not fixed**. They sit at the top because each
+is something POM2 currently gets wrong that somebody would otherwise rediscover
+the hard way — and because the reason for leaving them is part of the finding.
 
-- 🔵 **Blocking work under `stateMutex` — a family, found 2026-08-22.** The
-  emulator's state mutex is taken by the CPU worker for each 4096-cycle
-  chunk AND by the UI thread to paint every frame, so anything slow holding
-  it freezes the machine *and* the window, buttons included. Four sites, none
-  fixed yet because the fix is structural (do the slow part unlocked, swap the
-  finished object in under the lock) rather than a patch:
-  - `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
+The 2026-08-22 architecture audit closed the exception-barrier gap, the file
+size ratchet, the CI platform gap, the test-timing gap and most of the
+`stateMutex` family; what it left is recorded below and in `CHANGELOG.md`.
+
+- 🟠 **Blocking work under `stateMutex` — what is LEFT of the family.** The
+  state mutex is taken by the CPU worker for each 4096-cycle chunk AND by the
+  UI thread to paint every frame, so anything slow holding it freezes the
+  machine *and* the window, buttons included. The 2026-08-22 audit found the
+  family was ~20 sites rather than the four first recorded, and fixed the
+  structural cause for most of them (`MediaMount.h`: read + decode unlocked,
+  swap the finished object in under the lock). **Done**: every Disk II 5.25"
+  mount (17 sites), `EmulationController::mount35`, and the AI server's
+  `/snapshot/save` + `/snapshot/load` (which now serialise into RAM under the
+  lock and commit through `pom2::writeFileAtomic` outside it). **Left**:
+  - 🟠 **HDV / block-device mount** — `MainWindow.cpp` routeMountHdv,
+    renderHdvPanelWindow, renderHdvFileDialog. Reads up to 32 MiB under the
+    lock, the worst case in the tree. *The obvious shortcut is a trap*: the
+    `ProDOSBlockCard::loadImageFromBytes` already on the interface is for
+    **synthesised** volumes only — it skips the 2IMG header parse, forces
+    `synth_`, and disables write-back — so mounting a real `.hdv`/`.2mg`
+    through it would silently break write-back and write-protect. The real
+    fix is to split `Block512Backing::loadImage` into a static
+    `readImageFile(path, bytes, err)` (the read; unlocked) and an
+    `adoptImageBytes(bytes, path)` (`saveDirty` + 2IMG parse + adopt; locked),
+    expose the pair on `ProDOSBlockCard`, and forward it from `CffaCard` and
+    `ProDOSHardDiskCard`, which both already delegate to a `Block512Backing`.
+    Handle the same-file-still-dirty collision the way `DiskIICard::installDisk`
+    does. The `SmartPortUnit` branch needs the same on its own interface.
+    *~half a day, and it is on the storage write-back path — the place where a
+    mistake costs somebody their disk, so it wants its own test pass.*
+  - 🟡 `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
     5000 ms configurable) inside a SmartPort call. A dead FujiNet helper mid
     ProDOS boot makes POM2 look hung, and the FujiNet panel's own Stop button
     is unreachable because rendering it needs the same mutex.
-  - Mounting an HDV / 3.5" image from the UI reads the whole file (up to
-    32 MiB) **and** rewrites the outgoing one with two `fsync`s, all under the
-    lock (`MainWindow.cpp` routeMountHdv / renderHdvPanelWindow /
-    renderHdvFileDialog, `EmulationController::mount35`).
-  - `/snapshot/save` and `/snapshot/load` hold it across the file write and
-    the atomic replace. `SnapshotWriter` already has a `std::vector<uint8_t>&`
-    constructor, so serialising in memory and writing after unlocking is the
-    ready-made fix.
-  - The FujiNet Stop / Drop-peer buttons, and `slotBus().clear()` on a profile
-    switch, hold it across a thread `join()` whose worker polls on a 200 ms
-    step.
+  - 🟡 The FujiNet Stop / Drop-peer buttons, and `slotBus().clear()` on a
+    profile switch, hold it across a thread `join()` whose worker polls on a
+    200 ms step.
+  - 🟢 Deliberate, documented, and staying: the profile-switch remount in
+    `MainWindow_Slots.cpp` (the SlotBus rebuild and the remounts must be one
+    atomic step against the AI server, and the CPU worker is stopped anyway),
+    and the outgoing medium's write-back inside `installDisk` (swapping before
+    knowing the old medium could be written loses the user's changes).
   Deliberate and bounded, so listed for completeness rather than as a defect:
   the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
 
@@ -63,6 +83,10 @@ leaving them is part of the finding.
   artefact. Next step: log `errno`/`WSAGetLastError` on the failing poll and
   check whether the guest socket's ephemeral port is being reused from an
   earlier test whose socket closed with data still queued.
+  **2026-08-22 update**: the test is now `RUN_SERIAL` (tests/CMakeLists.txt),
+  which removes cross-test contention as a variable — so if it still drops a
+  datagram, the cause is in the code rather than in the schedule. That does not
+  close the finding, it narrows it.
 
 ## MAME ↔ POM2 parity (dashboard)
 
@@ -145,13 +169,14 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 
 | Pri | Item | Status | Detail |
 | --- | ---- | ------ | ------ |
-| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | 🟠 open (`MainWindow.cpp` **10 669** lines, still growing since the 2026-05-31 ~6700 audit) | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object |
-| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟠 open (controller TSan clean 2026-08-17; GUI / `demodMutex` / slot re-plug under load remain). OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
+| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | 🟡 **bleeding stopped 2026-08-22**, split still open. `MainWindow.cpp` measured 5 590 → 6 622 (the audit that set the target) → **11 511**, i.e. +74 % *after* the rule was written. `tools/check_file_sizes.sh` is now a CI ratchet over `tools/file_size_budget.txt`: ceilings may fall, never rise, and a new file over 3 000 lines fails. Growing the god-object now costs a visible budget edit in the same commit. | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object |
+| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟡 open, but no longer unattended: a **nightly ASan+UBSan / TSan matrix** runs in `ci.yml` as of 2026-08-22 (`POM2_SANITIZE` had been a CMake option CI never used, so the "controller TSan clean 2026-08-17" result had nothing keeping it true). GUI / `demodMutex` / slot re-plug under load still need a targeted pass. OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
 | **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
 | **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟠 open | [Arch](#arch-refactor--tooling); Quick wins #4 |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
-| **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
+| **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
+| **P3** | Finish the `stateMutex` family: the HDV / block-device mount is the last big one (32 MiB under the lock). Do **not** reach for `loadImageFromBytes` — it is synth-only and would break write-back; the shape is a `readImageFile` / `adoptImageBytes` split on `Block512Backing`. | 🟠 open (rest of the family done 2026-08-22) | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
 | **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
 
 **Explicitly not architecture** — do not pick these ahead of P0–P4. They stay

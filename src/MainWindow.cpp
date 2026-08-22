@@ -5,6 +5,8 @@
 
 #include "MainWindow.h"
 
+#include "MediaMount.h"
+
 // Heavy headers — pulled here so MainWindow.h can stay forward-declared.
 // Touch any of these only recompiles the MainWindow_*.cpp TUs, not every
 // file that includes MainWindow.h.
@@ -4492,13 +4494,11 @@ void MainWindow::kioskMountSelected()
     DiskIICard* boot = kioskBootDiskCard();
     if (!boot) { kioskStatus_ = "No Disk II card in this config"; return; }
 
-    bool ok = false;
-    {
-        // Same lock the CPU worker takes around softSwitchAccess: insertDisk
-        // rebuilds the drive's track buffers, so it must not race the LSS.
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        ok = boot->insertDisk(0, path);   // in-place swap, no cold boot
-    }
+    // Two-phase: the file read happens here, unlocked; MediaMount takes the
+    // lock only to swap the finished image in. In kiosk the window has no
+    // other affordance, so a stall would look exactly like a hang.
+    std::string mountErr;
+    const bool ok = pom2::mountDiskII(*controller, *boot, 0, path, mountErr);
     if (ok) {
         // Keep the menu open so the user can chain a Restart (reboot on the
         // just-mounted disk) without reopening; B / Start dismisses it.
@@ -8177,14 +8177,9 @@ void MainWindow::renderDiskPanelWindow()
         }
         if (!result.requestInsertAndBoot.empty()) {
             const std::string path = result.requestInsertAndBoot;
-            bool ok = false;
             std::string err;
-            {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                ok = card->insertDisk(path);
-                if (ok) card->seekTrack0();
-                else    err = card->getLastError();
-            }
+            const bool ok = pom2::mountDiskII(*controller, *card, 0, path, err,
+                                              /*seekTrack0=*/true);
             if (ok) {
                 controller->coldBoot();
                 controller->setMode(EmulationController::Mode::Running);
@@ -8199,13 +8194,8 @@ void MainWindow::renderDiskPanelWindow()
         }
         if (!result.requestInsertOnly.empty()) {
             const std::string path = result.requestInsertOnly;
-            bool ok = false;
             std::string err;
-            {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                ok = card->insertDisk(path);
-                if (!ok) err = card->getLastError();
-            }
+            const bool ok = pom2::mountDiskII(*controller, *card, 0, path, err);
             if (ok) {
                 pom2::log().info("Disk II",
                     "slot " + std::to_string(card->getSlot()) +
@@ -8638,13 +8628,8 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             for (auto* c : diskCards) if (c && c->getSlot() == 6) { target = c; break; }
             if (!target) target = diskCard;
             if (!target) { errOut = "no Disk II card in the current config"; return false; }
-            bool ok = false;
-            {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                ok = target->insertDisk(0, path);
-                if (ok) target->seekTrack0();
-                else    errOut = target->getLastError(0);
-            }
+            const bool ok = pom2::mountDiskII(*controller, *target, 0, path,
+                                              errOut, /*seekTrack0=*/true);
             if (!ok) return false;
             if (!controller->bootFromSlot(target->getSlot())) {
                 errOut = "slot " + std::to_string(target->getSlot()) +
@@ -8844,16 +8829,10 @@ void MainWindow::renderDiskLibraryWindow()
         DiskIICard* target = resolve525(r.request525Slot);
         const int   drive  = (r.request525Drive == 1) ? 1 : 0;
         const std::string path = r.request525InsertAndBoot;
-        bool ok = false;
         std::string err;
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (target) {
-                ok = target->insertDisk(drive, path);
-                if (ok) target->seekTrack0();
-                else    err = target->getLastError(drive);
-            }
-        }
+        const bool ok = target && pom2::mountDiskII(*controller, *target, drive,
+                                                    path, err,
+                                                    /*seekTrack0=*/true);
         if (ok && target) {
             // Boot the target card's slot (its boot PROM boots drive 1).
             const bool booted = controller->bootFromSlot(target->getSlot());
@@ -8870,15 +8849,15 @@ void MainWindow::renderDiskLibraryWindow()
     if (!r.request525InsertOnly.empty()) {
         DiskIICard* target = resolve525(r.request525Slot);
         const int   drive  = (r.request525Drive == 1) ? 1 : 0;
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (target && target->insertDisk(drive, r.request525InsertOnly)) {
+        std::string err = "no DiskII card";
+        if (target && pom2::mountDiskII(*controller, *target, drive,
+                                        r.request525InsertOnly, err)) {
             tapeStatusMessage = "Library: inserted (slot " +
                 std::to_string(target->getSlot()) + " drive " +
                 std::to_string(drive + 1) + ", no boot): " +
                 r.request525InsertOnly;
         } else {
-            tapeStatusMessage = "Library: insert failed: " +
-                (target ? target->getLastError(drive) : std::string("no DiskII card"));
+            tapeStatusMessage = "Library: insert failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
@@ -8985,9 +8964,7 @@ void MainWindow::renderDiskLibraryWindow()
         switch (classifyDiskForSlot(path)) {
             case DiskSlotClass::Floppy525:
                 if (diskCard) {
-                    std::lock_guard<std::mutex> lk(controller->stateMutex());
-                    ok = diskCard->insertDisk(path);
-                    if (!ok) err = diskCard->getLastError(0);
+                    ok = pom2::mountDiskII(*controller, *diskCard, 0, path, err);
                 } else {
                     err = "no Disk II card in the current config";
                 }
@@ -9592,17 +9569,14 @@ void MainWindow::renderFloppyEmuWindow()
         switch (m) {
             case Mode::Disk525: {
                 if (!diskCard) { floppyEmuStatus = controllerHint(m); break; }
-                // Same lock as ejectCurrent below (and every other insert
-                // path): insertDisk replaces the DiskImage track buffers
-                // the worker's LSS streams from on every CPU tick.
-                bool ok;
-                {
-                    std::lock_guard<std::mutex> lk(controller->stateMutex());
-                    ok = diskCard->insertDisk(path);
-                    // Park the head before the boot PROM reads: the same
-                    // step insertAndBootImage does for a library click.
-                    if (ok) diskCard->seekTrack0();
-                }
+                // Two-phase (MediaMount): the decode runs unlocked, and the
+                // lock is taken only to swap the track buffers the worker's
+                // LSS streams from. seekTrack0 parks the head before the boot
+                // PROM reads — the same step insertAndBootImage does.
+                std::string mountErr;
+                const bool ok = pom2::mountDiskII(*controller, *diskCard, 0,
+                                                  path, mountErr,
+                                                  /*seekTrack0=*/true);
                 if (ok) bootTarget = diskCard->getSlot();
                 floppyEmuStatus = ok
                     ? ("Booting " + baseName(path))
@@ -10089,13 +10063,14 @@ void MainWindow::renderDiskFileDialog()
     ImGui::Separator();
     if (ImGui::Button("Insert", ImVec2(120, 0))) {
         if (popupCard && popupPanel && !popupPanel->dialogPath.empty()) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (popupCard->insertDisk(popupPanel->dialogPath)) {
+            std::string err;
+            if (pom2::mountDiskII(*controller, *popupCard, 0,
+                                  popupPanel->dialogPath, err)) {
                 tapeStatusMessage = "Disk inserted (slot " +
                     std::to_string(popupCard->getSlot()) + "): " +
                     popupPanel->dialogPath;
             } else {
-                tapeStatusMessage = "Insert failed: " + popupCard->getLastError();
+                tapeStatusMessage = "Insert failed: " + err;
             }
             tapeStatusUntil = lastFrameTime + 5.0;
         }

@@ -20,6 +20,10 @@ on:
     tags: ['v*', '[0-9]*']   # both tag forms accepted by release.yml
   pull_request:
   workflow_dispatch:
+  schedule:
+    # 03:17 UTC daily — the sanitizer job below. Off the hour on purpose:
+    # GitHub queues cron runs and the top of the hour is the busiest slot.
+    - cron: '17 3 * * *'
 
 # A newer push to the same ref cancels the older in-flight run.
 concurrency:
@@ -32,6 +36,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Cheap, and first: TODO.md's standing rule is "do not grow the
+      # god-objects" (target < 3000 lines). It had no mechanism, and
+      # MainWindow.cpp went 5590 -> 11511 lines with the rule in force. This
+      # is the mechanism — growing a file over its recorded ceiling now needs
+      # tools/file_size_budget.txt edited in the same commit, which is exactly
+      # when someone should be asked whether the code belongs in a new TU.
+      - name: File-size ratchet
+        run: tools/check_file_sizes.sh
 
       - name: Install build dependencies
         run: |
@@ -63,9 +76,16 @@ jobs:
       - name: Build everything
         run: cmake --build build --parallel 2
 
+      # --parallel $(nproc), not the historical 2. The suite used to be green
+      # only BECAUSE it ran two-wide: 132 of 189 declared TIMEOUTs were 5 or
+      # 10 s, and at --parallel 8 on a 16-core box two tests blew budgets they
+      # clear in under 1.3 s alone. That is fixed at the source now (a 30 s
+      # floor plus RUN_SERIAL on the wall-clock tests, tests/CMakeLists.txt),
+      # so the runner's real width is safe to use — and using it is what keeps
+      # the fix honest, since a two-wide run would hide a regression of it.
       - name: Run ctest
         working-directory: build
-        run: ctest --output-on-failure --parallel 2
+        run: ctest --output-on-failure --parallel $(nproc)
 
       # The binary this job just built and tested, kept so a run can be
       # checked out rather than only read about. Not a release package (no
@@ -108,6 +128,158 @@ jobs:
             echo "ERROR: GLES build links desktop libGL"; exit 1
           fi
           echo "OK: GLES tier builds and links GLESv2 only"
+
+  # ── The two platforms that used to compile only at tag time ──────────────
+  # POM2 ships macOS .app and Windows .zip packages, and carries 62 `_WIN32`
+  # directives (SocketCompat.h alone has 29) plus a macOS-only path or two.
+  # None of it was compiled between releases: the windows/macos jobs live in
+  # release.yml, which triggers on tag push. So a break on either platform was
+  # discovered DURING a release, with the version already tagged — the worst
+  # possible moment and the hardest to back out of.
+  #
+  # These two are build-only on purpose. Packaging, signing, universal-binary
+  # lipo and the payload verification are release concerns and stay there; all
+  # this has to answer is "does the tree still compile for that toolchain",
+  # which is the question whose answer used to arrive too late.
+
+  macos:
+    name: macOS build (no packaging)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Dear ImGui (pinned)
+        run: tools/fetch_imgui_pinned.sh
+
+      # Homebrew's glfw, not the universal static build release.yml makes:
+      # this job is a compile check, and a universal build would spend most of
+      # its runtime on a slice nothing here inspects.
+      - name: Install build dependencies
+        run: brew install glfw
+
+      - name: Configure + build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPOM2_ENABLE_TESTS=ON
+          cmake --build build --parallel 3
+
+      # macOS is a genuine second platform for the suite, not just a second
+      # compiler: a different libc++, filesystem semantics and thread
+      # scheduling. Running it here is how an assumption that only holds on
+      # glibc gets caught.
+      - name: Run ctest
+        working-directory: build
+        run: ctest --output-on-failure --parallel 3
+
+  windows:
+    name: Windows build (no packaging)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Dear ImGui (pinned)
+        shell: bash
+        run: tools/fetch_imgui_pinned.sh
+
+      # Same triplet as release.yml: x64-windows-static carries
+      # VCPKG_CRT_LINKAGE=static and so matches POM2's own static CRT. Using a
+      # different triplet here would compile a configuration the release never
+      # builds, which defeats the point of the job.
+      - name: Install GLFW via vcpkg (manifest mode, static triplet)
+        run: vcpkg install --triplet x64-windows-static
+
+      # Tests OFF, matching release.yml: the suite has never been built for
+      # MSVC and turning it on here would report a backlog of test-code
+      # portability work as a CI failure on unrelated commits. The application
+      # is what ships on Windows and the application is what this proves.
+      - name: Configure + build
+        shell: cmd
+        run: |
+          cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DPOM2_ENABLE_TESTS=OFF
+          cmake --build build --config Release --parallel 3
+
+  # ── Nightly sanitizers ───────────────────────────────────────────────────
+  # POM2_SANITIZE has been a CMake option for a while and CI never once used
+  # it, so the "controller TSan clean" result recorded in TODO.md had nothing
+  # keeping it true. Baseline established 2026-08-22 before this job was
+  # added: 191/191 green under ASan+UBSan with detect_leaks=1, so a red here
+  # is a regression and not a backlog. ASan+UBSan runs the whole suite; TSan runs the subset that
+  # actually exercises the threading contract, because TSan and ASan cannot be
+  # combined and a full TSan pass over pure-computation tests buys nothing.
+  #
+  # Nightly rather than per-push: the instrumented suite is several times
+  # slower, and a race that appears today was almost never introduced in the
+  # last commit anyway.
+  sanitizers:
+    name: Nightly ASan/UBSan + TSan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - san: address,undefined
+            name: asan-ubsan
+            tests: ''
+          - san: thread
+            name: tsan
+            # The threading contract: the CPU worker's park/resume protocol,
+            # the rewind transport across it, the audio source teardown, the
+            # HTTP server's handler thread, the SP link worker and the print
+            # spooler. These are the tests that have more than one thread.
+            tests: '-R (rewind_transport|audio_source_teardown|ai_control_server_smoke|sp_over_slip_link|printer_history|thread_guard|fujinet_net_device|child_process)'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev
+
+      - name: Fetch Dear ImGui (pinned)
+        run: |
+          set -euo pipefail
+          source ./imgui_pin.env
+          git init -q imgui
+          git -C imgui remote add origin "$IMGUI_REPO"
+          git -C imgui fetch --depth 1 origin "$IMGUI_COMMIT"
+          git -C imgui checkout -q FETCH_HEAD
+          test "$(git -C imgui rev-parse HEAD)" = "$IMGUI_COMMIT"
+
+      # RelWithDebInfo, not Release: sanitizer reports without line numbers
+      # cost more time to act on than the run costs to produce.
+      #
+      # POM2_TEST_TIMEOUT_SCALE=6 from measurement, not a guess: the full
+      # suite takes 71 s uninstrumented and 417 s under ASan+UBSan on the same
+      # host — x5.9. The suite's timeouts are sized for an uninstrumented
+      # build, so without the scale this job reports timeouts (which read as
+      # hangs) instead of the memory and race findings it exists for.
+      - name: Configure (${{ matrix.name }})
+        run: |
+          cmake -S . -B build-san \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DPOM2_ENABLE_TESTS=ON \
+            -DPOM2_SANITIZE=${{ matrix.san }} \
+            -DPOM2_TEST_TIMEOUT_SCALE=6
+
+      - name: Build
+        run: cmake --build build-san --parallel 2
+
+      - name: Run ctest under ${{ matrix.name }}
+        working-directory: build-san
+        env:
+          # halt_on_error keeps the first report as the failure, instead of a
+          # log where the real one scrolled past a hundred later ones.
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1:detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --output-on-failure --parallel 2 ${{ matrix.tests }}
 
   wasm:
     name: WASM verification build
