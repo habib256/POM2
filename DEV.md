@@ -5246,6 +5246,69 @@ across an audio-buffer tick). Canonical example:
 `FloppySoundDevice::drainCommands` uses the cycle stamp passed by
 `DiskIICard::seekPhaseW`.
 
+### Debugger (`Debugger.h/.cpp`, `Debugger_ImGui.*`)
+
+Breakpoints, single-step, step-over, run-to-cursor, and a stop reason. What it
+is *for* is not the end user: it is the instrument POM2 is debugged with.
+
+The 2026-08-22 architecture audit put a number on the gap. `tests/` had
+accumulated **24 one-off trace / dump / probe binaries, 5 535 lines**, of which
+**4 129 lines were registered as no test at all** — built on every build,
+executed by nothing (`choplifter_iie_trace`, `cffa_boot_dump`, `dd2_ay_trace`,
+`iic_boot_trace`, `drol_probe`, `hero_probe`, `u5_woz_save_probe`, …). Every
+parity hunt was paying for a throwaway binary because there was no way to stop
+a running machine and look at it. That is the cost this closes.
+
+**Layering.** The CPU does not know about the debugger. `M6502.h` declares a
+two-method interface, `M6502DebugHook`, and `Debugger` implements it — so the
+dependency runs one way and `M6502.cpp` needs no new include.
+`EmulationController` owns the `Debugger`, and `Debugger_ImGui` owns every
+decision the panel makes. `MainWindow.cpp` gained **six lines**: three to own
+and show the panel, three to register it with the palette and the View menu.
+That was not free — the file-size ratchet failed the build and made the budget
+edit visible in the same commit, which is exactly what it is for.
+
+**Where the stop happens.** `runCpuSlice` is the single funnel both drivers
+(the worker thread and the WASM RAF tick) go through, so the check lives there
+once instead of in each. The worker's inner loop re-reads `mode` at the top of
+every iteration, so parking inside the funnel stops the machine within one
+4096-cycle chunk.
+
+**A breakpoint stops BEFORE its instruction.** The hook is called with the PC
+still on the instruction, which has not run. That is the difference between a
+register dump showing the state going *in* and one showing the state coming
+*out*, and only the first is useful. It has a second consequence that is easy
+to get wrong: resuming has to grant the current PC one instruction of amnesty
+(`armResumeFrom`), or Run re-triggers the same breakpoint forever and the
+button looks dead.
+
+The `debugger` test pins both, and case 2 took two attempts to write. "Check
+before the instruction at PC" and "check after the previous instruction" leave
+the machine in the *same* state everywhere except one place: a breakpoint on
+the entry PC of a run. Check-before stops immediately with nothing executed;
+check-after runs the instruction first and then never matches, missing the
+breakpoint entirely. That is run-to-cursor on the current line, and a loop
+re-entering its own head — so the test now breaks on `kStart`, and a hook moved
+after `step()` fails it.
+
+**Cost when nobody is debugging: none, measured.** `M6502::run` picks between
+two loops once per *call*, so the un-armed cost is one branch per 4096-cycle
+chunk. `syncDebugHook()` keeps the hook detached until something is armed.
+Three `pom2_bench` workloads, identical RAM hashes, no measurable change —
+docs/PERFORMANCE.md § 8.
+
+**Watchpoints are NOT implemented**, deliberately, and the API is present
+unhooked rather than faked. The naive tap on `memRead`/`memWrite` measured
++13.4 % / +16.5 % / +9.2 %, which is not payable for an off-by-default feature.
+The design that would be free for writes is in `TODO.md`. See PERFORMANCE § 8.2.
+
+**Known limit.** Step-over reads the opcode at the PC with `peekMainRam`, not
+`memRead` — a debugger must never flip a soft switch to inspect the machine —
+so it sees main RAM only, the same view the Disasm panel and MemoryViewer
+already show. On a //e running from aux, or under a Language Card bank, it can
+misread. Both failure directions are benign: a missed JSR becomes a single
+step, and a phantom JSR arms a transient that never fires.
+
 ### Thread exception barrier (`ThreadGuard.h`)
 
 An exception that escapes the callable of a `std::thread` propagates nowhere:

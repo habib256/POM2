@@ -1,0 +1,282 @@
+// Run-control debugger — pins src/Debugger.{h,cpp} and the M6502 hook.
+//
+// The contract these cases exist to hold, in order of how badly a regression
+// would hurt:
+//
+//   1. A breakpoint stops BEFORE its instruction runs. That is the whole
+//      point of a breakpoint: the registers the user reads are the state
+//      going in, and resuming re-tries the instruction rather than skipping
+//      it. A hook called after the instruction would look almost right and be
+//      useless.
+//   2. Resuming actually moves. The PC still points at the breakpoint when
+//      you press Run, so without one instruction of amnesty the machine
+//      re-triggers the same stop forever and the button appears dead.
+//   3. An un-armed debugger leaves the CPU on its ordinary loop. This is the
+//      performance contract: measured on pom2_bench, the hook costs nothing
+//      when detached, and it only stays nothing while `armed()` gates it.
+//   4. Transients are one-shot. Step-over installs a breakpoint at the return
+//      address; leaving it behind would turn every step-over into a permanent
+//      breakpoint the user never asked for.
+
+#include "Debugger.h"
+#include "M6502.h"
+#include "Memory.h"
+
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+
+namespace {
+
+// A tiny program at $0300:
+//   $0300  LDA #$11     A9 11
+//   $0302  LDA #$22     A9 22
+//   $0304  LDA #$33     A9 33
+//   $0306  JMP $0306    4C 06 03
+constexpr uint16_t kStart = 0x0300;
+const uint8_t kProgram[] = {
+    0xA9, 0x11,
+    0xA9, 0x22,
+    0xA9, 0x33,
+    0x4C, 0x06, 0x03,
+};
+
+void loadProgram(Memory& mem)
+{
+    for (std::size_t i = 0; i < sizeof(kProgram); ++i)
+        mem.writeRamUnchecked(static_cast<uint16_t>(kStart + i), kProgram[i]);
+}
+
+// ── 1. Bookkeeping ───────────────────────────────────────────────────────
+void testBreakpointBookkeeping()
+{
+    pom2::Debugger dbg;
+    assert(!dbg.armed() && "a fresh debugger must be un-armed");
+    assert(dbg.breakpointCount() == 0);
+
+    dbg.addBreakpoint(0x0302);
+    assert(dbg.armed());
+    assert(dbg.hasBreakpoint(0x0302));
+    assert(!dbg.hasBreakpoint(0x0303));
+    assert(dbg.breakpointCount() == 1);
+
+    // Adding twice must not double-count, or removing once would leave a
+    // phantom that keeps the CPU on its slow loop forever.
+    dbg.addBreakpoint(0x0302);
+    assert(dbg.breakpointCount() == 1);
+
+    dbg.addBreakpoint(0xFFFF);          // top of the address space
+    dbg.addBreakpoint(0x0000);          // and the bottom
+    assert(dbg.breakpointCount() == 3);
+    const std::vector<uint16_t> list = dbg.breakpoints();
+    assert(list.size() == 3);
+    assert(list[0] == 0x0000 && list[1] == 0x0302 && list[2] == 0xFFFF &&
+           "breakpoints() must come back sorted for the UI list");
+
+    dbg.toggleBreakpoint(0x0302);
+    assert(!dbg.hasBreakpoint(0x0302) && dbg.breakpointCount() == 2);
+    dbg.toggleBreakpoint(0x0302);
+    assert(dbg.hasBreakpoint(0x0302) && dbg.breakpointCount() == 3);
+
+    // Removing one that is not there must not underflow the count.
+    dbg.removeBreakpoint(0x1234);
+    assert(dbg.breakpointCount() == 3);
+
+    dbg.clearBreakpoints();
+    assert(!dbg.armed() && dbg.breakpointCount() == 0);
+    assert(!dbg.hasBreakpoint(0x0302));
+
+    std::printf("[ OK ] breakpoint bookkeeping\n");
+}
+
+// ── 2. THE case: a breakpoint stops before its instruction ───────────────
+void testBreakStopsBeforeTheInstruction()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadProgram(mem);
+
+    // Break on the SECOND LDA. When it fires, A must still hold $11 from the
+    // first one — proof the instruction at the breakpoint has not run.
+    dbg.addBreakpoint(0x0302);
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(kStart);
+
+    const int spent = cpu.run(1000);
+    assert(dbg.stopRequested() && "the breakpoint did not fire");
+
+    const pom2::Debugger::Hit hit = dbg.lastHit();
+    assert(hit.reason == pom2::Debugger::Reason::Breakpoint);
+    assert(hit.pc == 0x0302);
+    assert(cpu.getProgramCounter() == 0x0302 &&
+           "the PC must still be ON the breakpoint");
+    assert(cpu.getAccumulator() == 0x11 &&
+           "the breakpoint's own instruction was executed — it must not be");
+    assert(spent > 0 && spent < 1000 && "the run must end early, not run out");
+
+    // The case that actually DISCRIMINATES, and the reason this one is
+    // written out separately: "check before the instruction at PC" and
+    // "check after the previous instruction" put the machine in the same
+    // state everywhere except the very first instruction of a run. Break on
+    // the ENTRY point and the difference is total — checking before stops
+    // immediately with nothing executed, checking after runs the instruction
+    // first and then never matches, so the breakpoint is simply missed.
+    //
+    // That is not a corner case: it is run-to-cursor on the current line, and
+    // it is a loop re-entering its own head.
+    {
+        Memory mem2;
+        M6502  cpu2(&mem2);
+        pom2::Debugger dbg2;
+        loadProgram(mem2);
+
+        dbg2.addBreakpoint(kStart);
+        cpu2.setDebugHook(&dbg2);
+        cpu2.setProgramCounter(kStart);
+        cpu2.setAccumulator(0x99);          // a sentinel the program overwrites
+
+        const int spent2 = cpu2.run(1000);
+        assert(dbg2.stopRequested() &&
+               "a breakpoint on the entry PC was missed entirely");
+        assert(cpu2.getProgramCounter() == kStart);
+        assert(cpu2.getAccumulator() == 0x99 &&
+               "the entry instruction ran — the check is happening too late");
+        assert(spent2 == 0 && "nothing should have been executed at all");
+    }
+
+    std::printf("[ OK ] a breakpoint stops before its instruction\n");
+}
+
+// ── 3. Resuming moves ────────────────────────────────────────────────────
+void testResumeMakesProgress()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadProgram(mem);
+
+    dbg.addBreakpoint(0x0302);
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(kStart);
+    cpu.run(1000);
+    assert(cpu.getProgramCounter() == 0x0302);
+
+    // Resume the way EmulationController::debugResume does.
+    dbg.armResumeFrom(cpu.getProgramCounter());
+    dbg.clearHit();
+    assert(!dbg.stopRequested());
+
+    cpu.run(1000);
+    // The amnesty is ONE instruction: $0302 ran (A = $22), the program went
+    // on, and — since it loops at $0306 and never returns to $0302 — nothing
+    // stops it again. Without the amnesty this run would halt at $0302 again
+    // having executed nothing, which is the "Run button does nothing" bug.
+    assert(cpu.getAccumulator() == 0x33 &&
+           "the resumed run did not get past the breakpoint");
+    assert(cpu.getProgramCounter() == 0x0306);
+
+    std::printf("[ OK ] resuming past a breakpoint makes progress\n");
+}
+
+// ── 4. The performance contract ──────────────────────────────────────────
+void testUnarmedIsDetached()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadProgram(mem);
+
+    // What EmulationController::syncDebugHook does: attach only while armed.
+    auto sync = [&] { cpu.setDebugHook(dbg.armed() ? &dbg : nullptr); };
+
+    sync();
+    assert(cpu.getDebugHook() == nullptr &&
+           "an un-armed debugger must leave the CPU's fast loop alone");
+
+    dbg.addBreakpoint(0x0302);
+    sync();
+    assert(cpu.getDebugHook() == &dbg);
+
+    dbg.clearBreakpoints();
+    sync();
+    assert(cpu.getDebugHook() == nullptr &&
+           "clearing the last breakpoint must detach the hook again");
+
+    // And with no hook the CPU runs the program to completion, untouched.
+    cpu.setProgramCounter(kStart);
+    cpu.run(1000);
+    assert(cpu.getAccumulator() == 0x33);
+    assert(cpu.getProgramCounter() == 0x0306);
+
+    std::printf("[ OK ] an un-armed debugger is detached from the CPU\n");
+}
+
+// ── 5. Transients are one-shot ───────────────────────────────────────────
+void testTransientFiresOnce()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+
+    // $0300 LDA #$11 / $0302 JMP $0300 — comes back round to $0302 forever,
+    // so a transient that failed to clear itself would fire a second time.
+    mem.writeRamUnchecked(0x0300, 0xA9);
+    mem.writeRamUnchecked(0x0301, 0x11);
+    mem.writeRamUnchecked(0x0302, 0x4C);
+    mem.writeRamUnchecked(0x0303, 0x00);
+    mem.writeRamUnchecked(0x0304, 0x03);
+
+    dbg.setTransient(0x0302, pom2::Debugger::Reason::StepOver);
+    assert(dbg.armed() && dbg.hasTransient());
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(0x0300);
+
+    cpu.run(1000);
+    assert(dbg.lastHit().reason == pom2::Debugger::Reason::StepOver);
+    assert(cpu.getProgramCounter() == 0x0302);
+    assert(!dbg.hasTransient() && "a transient must clear itself when it fires");
+    assert(!dbg.armed() && "a spent transient must leave the debugger un-armed");
+
+    // Round the loop again: nothing should stop it now.
+    dbg.armResumeFrom(cpu.getProgramCounter());
+    dbg.clearHit();
+    cpu.run(1000);
+    assert(!dbg.stopRequested() && "the spent transient fired a second time");
+
+    std::printf("[ OK ] a transient breakpoint fires exactly once\n");
+}
+
+// ── 6. A real breakpoint outlives a transient at the same address ────────
+void testTransientDoesNotEatARealBreakpoint()
+{
+    pom2::Debugger dbg;
+    dbg.addBreakpoint(0x0400);
+    dbg.setTransient(0x0400, pom2::Debugger::Reason::RunToCursor);
+
+    // The transient wins the stop (it is checked first) but must not take the
+    // user's breakpoint with it when it clears.
+    assert(dbg.onInstruction(0x0400));
+    assert(dbg.lastHit().reason == pom2::Debugger::Reason::RunToCursor);
+    assert(!dbg.hasTransient());
+    assert(dbg.hasBreakpoint(0x0400) &&
+           "run-to-cursor deleted the user's breakpoint at the same address");
+    assert(dbg.armed());
+
+    std::printf("[ OK ] a transient does not consume a real breakpoint\n");
+}
+
+}  // namespace
+
+int main()
+{
+    testBreakpointBookkeeping();
+    testBreakStopsBeforeTheInstruction();
+    testResumeMakesProgress();
+    testUnarmedIsDetached();
+    testTransientFiresOnce();
+    testTransientDoesNotEatARealBreakpoint();
+    std::printf("debugger: all assertions passed\n");
+    return 0;
+}

@@ -12,6 +12,7 @@
 
 #include "AudioDevice.h"
 #include "CassetteDevice.h"
+#include "Debugger.h"
 #include "Disk35Image.h"
 #include "FloppySoundDevice.h"
 #include "IWMDevice.h"
@@ -54,6 +55,38 @@ public:
     /// rewind().setEnabled(true). The worker thread captures one frame at
     /// each 60 Hz boundary while enabled — see workerLoop().
     pom2::RewindBuffer& rewind() { return rewind_; }
+
+    /// Run-control debugger — breakpoints and the stop reason. Always
+    /// constructed; it costs nothing until something is armed, at which point
+    /// `syncDebugHook()` attaches it to the CPU and the CPU switches to its
+    /// debugged loop. Every mutating call must be made under `stateMutex`
+    /// (see Debugger.h § Threading).
+    pom2::Debugger& debugger() { return *debugger_; }
+    const pom2::Debugger& debugger() const { return *debugger_; }
+
+    /// Attach or detach the CPU hook to match the debugger's armed state.
+    /// Call after ANY breakpoint mutation — this is what keeps an un-armed
+    /// debugger off the CPU's hot loop entirely. Caller holds `stateMutex`.
+    void syncDebugHook();
+
+    /// Resume from a debugger stop: clears the hit and grants the current PC
+    /// one instruction of amnesty, so Run does not re-trigger the breakpoint
+    /// it is standing on. Caller holds `stateMutex`.
+    void debugResume();
+
+    /// Step one instruction even when stopped at a breakpoint: the same
+    /// amnesty as debugResume(), then one queued step. Takes `stateMutex`
+    /// itself, so the caller must NOT hold it.
+    void debugStepInstruction();
+
+    /// Run until control returns past the current instruction — a step OVER.
+    /// For a JSR that is the address after it; for anything else this is an
+    /// ordinary single step, because there is nothing to step over. Takes
+    /// `stateMutex` itself.
+    void debugStepOver();
+
+    /// Run until the PC reaches `addr`, then stop. Takes `stateMutex` itself.
+    void debugRunToCursor(uint16_t addr);
     CassetteDevice&    cassette()    { return *tape; }
     SpeakerDevice&     speaker()     { return *spk; }
     /// 5.25" Disk II mechanical sounds (head step / motor / click).
@@ -251,6 +284,7 @@ private:
     std::unique_ptr<pom2::NoSlotClock>  noSlotClock_;
 
     pom2::RewindBuffer rewind_;
+    std::unique_ptr<pom2::Debugger> debugger_;
 
     std::atomic<Mode> mode{Mode::Stopped};
     std::atomic<int>  cyclesPerFrame{17045};
@@ -287,6 +321,9 @@ private:
     /// both branches (the card converts its own clock — emuCycles never
     /// leaves the 6502 domain).
     int  runCpuSlice(int chunk);
+    /// Park the machine after a debugger stop. Called from runCpuSlice with
+    /// `stateMutex` held.
+    void noteDebuggerStop();
     /// One single-instruction step of the current bus master: the DMA
     /// claimant's processor when a card owns the bus (SoftCard Z80),
     /// else the 6502. All Step verbs (debugger, CLI --step, AI /step)

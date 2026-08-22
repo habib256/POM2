@@ -174,6 +174,8 @@ set(SOURCES
     src/Disk35Controller_ImGui.cpp
     src/DiskController_ImGui.cpp
     src/DiskIICard.cpp
+    src/Debugger.cpp
+    src/Debugger_ImGui.cpp
     src/MediaMount.cpp
     src/DiskImage.cpp
     src/DiskLibrary_ImGui.cpp
@@ -276,6 +278,8 @@ set(HEADERS
     src/SoftCardZ80.h
     src/ByteIO.h
     src/Memory.h
+    src/Debugger.h
+    src/Debugger_ImGui.h
     src/MediaMount.h
     src/MemoryProfile.h
     src/MemoryProfile_IIcClass.h
@@ -686,6 +690,7 @@ add_executable(pom2_headless
     src/DiskImage.cpp
     src/DiskIICard.cpp
     src/EmulationController.cpp
+    src/Debugger.cpp
     src/FloppySoundDevice.cpp
     src/IWMDevice.cpp
     src/SmartPortHub.cpp

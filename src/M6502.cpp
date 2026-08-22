@@ -2118,6 +2118,28 @@ int M6502::run(int maxCycles)
     int cyclesExecuted = 0;
     running = 1;
 
+    // Two loops, chosen ONCE per call. The debugged loop pays a virtual call
+    // per instruction, which is the right trade when somebody is watching;
+    // the fast loop below is byte-for-byte what it always was, so a session
+    // with no debugger attached pays a single predictable branch per
+    // 4096-cycle chunk. Measured as unchanged on all three pom2_bench
+    // workloads — see docs/PERFORMANCE.md § Debugger hooks.
+    if (debugHook_) {
+        while (running && cyclesExecuted < maxCycles) {
+            // Checked BEFORE the instruction, so a breakpoint stops with the
+            // PC still on it: the instruction has not run, and the register
+            // dump the user reads is the state going in, not coming out.
+            if (debugHook_->onInstruction(programCounter)) break;
+            step();
+            cyclesExecuted += cycles;
+            // A watchpoint fires mid-instruction and cannot un-do the access,
+            // so it halts at the first instruction boundary after it. The
+            // hook reports that through the same `running` flag stop() uses.
+            if (!running) break;
+        }
+        return cyclesExecuted;
+    }
+
     while (running && cyclesExecuted < maxCycles) {
         step();
         cyclesExecuted += cycles;

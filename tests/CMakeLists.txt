@@ -533,6 +533,7 @@ set_tests_properties(rewind_delta PROPERTIES TIMEOUT 5)
 add_executable(test_rewind_transport
     rewind_transport_test.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
@@ -3993,6 +3994,7 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
@@ -4236,6 +4238,7 @@ add_executable(test_ai_mouse_hle_probe
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
@@ -4465,6 +4468,7 @@ add_executable(test_softcard_toggle
     ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
     ${CMAKE_SOURCE_DIR}/src/Z80.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
@@ -5286,6 +5290,20 @@ find_package(Threads REQUIRED)
 target_link_libraries(test_thread_guard PRIVATE Threads::Threads)
 add_test(NAME thread_guard COMMAND test_thread_guard)
 set_tests_properties(thread_guard PROPERTIES TIMEOUT 30)
+
+# ─── Run-control debugger ───────────────────────────────────────────────
+# Pins src/Debugger.{h,cpp} and the M6502 hook. Case 2 is the load-bearing
+# one: a breakpoint must stop BEFORE its instruction runs, or the register
+# dump the user reads is the state coming out instead of going in. See the
+# file header.
+add_executable(test_debugger
+    debugger_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_debugger PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME debugger COMMAND test_debugger)
+set_tests_properties(debugger PROPERTIES TIMEOUT 30)
 
 
 # ─── Package payload manifest ───────────────────────────────────────────

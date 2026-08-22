@@ -49,6 +49,7 @@
 #include "LeChatMauveCard.h"
 #include "LeChatMauve_ImGui.h"
 #include "Logger.h"
+#include "Debugger_ImGui.h"
 #include "MemoryViewer_ImGui.h"
 #include "HgrPaintEditor.h"     // portable hgrpaint/ editor (shared with POM1)
 #include "HgrSpriteEditor.h"    // portable hgrsprite/ editor (same host seam)
@@ -176,6 +177,7 @@ MainWindow::MainWindow(bool forceIIPlus)
     : controller     (std::make_unique<EmulationController>()),
       display        (std::make_unique<Apple2Display>()),
       memViewer      (std::make_unique<MemoryViewer_ImGui>(&controller->memory())),
+      debuggerPanel  (std::make_unique<pom2::Debugger_ImGui>()),
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
@@ -2653,6 +2655,7 @@ void MainWindow::renderCommandPalette()
     panel("panel.mouse",       "Mouse inspector",         &showMouseInspector);
     panel("panel.nsclock",     "No-Slot Clock",           &showNoSlotClockPanel);
     panel("panel.memviewer",   "Memory viewer",           &showMemViewer);
+    panel("panel.debugger",    "Debugger",                &showDebugger);
     panel("panel.membar",      "Memory map bar",          &showMemoryBar);
     panel("panel.membarh",     "Memory map bar (horizontal)", &showMemoryBarH);
     panel("panel.memgrid",     "Memory map grid",         &showMemoryGrid);
@@ -2770,6 +2773,7 @@ void MainWindow::runCommand(const std::string& id)
         { "panel.mouse",        &showMouseInspector    },
         { "panel.nsclock",      &showNoSlotClockPanel  },
         { "panel.memviewer",    &showMemViewer         },
+        { "panel.debugger",     &showDebugger          },
         { "panel.membar",       &showMemoryBar         },
         { "panel.membarh",      &showMemoryBarH        },
         { "panel.memgrid",      &showMemoryGrid        },
@@ -3555,6 +3559,7 @@ void MainWindow::renderMenuBar()
         ImGui::Separator();
 
         ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
+        ImGui::MenuItem("Debugger",                    nullptr, &showDebugger);
         ImGui::Separator();
         ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
         ImGui::MenuItem("Memory Map Bar (Horizontal)", nullptr, &showMemoryBarH);
@@ -11407,6 +11412,7 @@ void MainWindow::render()
     renderDockSpace();
     renderScreenWindow();
     renderMemoryViewerWindow();
+    debuggerPanel->render(*controller, &showDebugger);
     if (showMemoryBar)  renderMemoryBarWindow();
     if (showMemoryBarH) renderMemoryBarHorizontalWindow();
     if (showMemoryGrid) renderMemoryGridWindow();

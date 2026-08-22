@@ -73,6 +73,29 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   `rewind().clear()` after a snapshot load for exactly this reason; the GUI
   resume paths need the same guard.
 
+- 🟡 **Watchpoints are missing from the debugger, and the reason is a
+  measurement — 2026-08-22.** Breakpoints, step, step-over and run-to-cursor
+  shipped; memory watchpoints did not. `Debugger` carries their API
+  (`setWatchpoint`, `watchArmed`, the `WatchRead`/`WatchWrite` stop reasons)
+  **unhooked**, because an API that is present and honest about being inert is
+  better than one that is faked or one that silently costs everyone.
+  The naive shape — wrap `memRead`/`memWrite`, test one pointer, call a sink —
+  measured **+13.4 % / +16.5 % / +9.2 %** on the three `pom2_bench` workloads.
+  Forcing the wrapped body inline made it worse, which locates the cost in the
+  extra branch and the code growth around the emulator's hottest function
+  rather than in an inlining accident. Not payable for a feature that is off
+  by default. Full numbers: [PERFORMANCE § 8.2](docs/PERFORMANCE.md).
+  **The design that would be free, for writes at least**: `memWrite`'s fast
+  path already consults a per-address `writable[]` byte. Arm a watchpoint by
+  clearing that byte (keeping the real writability in a shadow table) and the
+  address falls to `memWriteSlow` on its own — **no new branch on the fast
+  path** — where the slow path notices the watch, reports it, and performs the
+  write using the shadowed permission. Two things to get right: `writable[]`
+  is rewritten by Language-Card paging, so the shadow has to survive that; and
+  a snapshot restore rebuilds it wholesale. Reads have no equivalent
+  per-address table in their fast path, which is the honest reason read
+  watchpoints are the harder half.
+
 - 🟠 **`disk_path_snapshot` dies with SIGBUS on arm64 macOS — found
   2026-08-22, on the first CI run that ever executed the suite there.** 191 of
   192 tests pass on `macos-15`; this one is killed by a bus error. It is green
@@ -173,7 +196,7 @@ see [Architect attack order](#architect-attack-order) (P0 freeze of
 | 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | cuts recompiles; architect **P2** (after an I/O test net; not merged with the `memRead` dispatch) |
-| 4 | Debugger runtime glue (BP / watch / step) | 3-5 d | 80% of the bricks are there (Disassembler + MemView); architect **P2** |
+| 4 | ~~Debugger runtime glue (BP / step)~~ ✅ DONE 2026-08-22 | — | breakpoints, step, step-over, run-to-cursor; watchpoints deferred on a measurement (see [Open](#open-and-known-to-be-open--2026-08-22-bug-hunt)) |
 | 4b | ~~Digidream 1 tempo regression~~ ✅ DONE | — | cause measured (`caughtUp` paced against the last write, not CPU-now) and fixed 2026-08-01 (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (182 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
@@ -196,7 +219,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 | **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟡 open, but no longer unattended: a **nightly ASan+UBSan / TSan matrix** runs in `ci.yml` as of 2026-08-22 (`POM2_SANITIZE` had been a CMake option CI never used, so the "controller TSan clean 2026-08-17" result had nothing keeping it true). GUI / `demodMutex` / slot re-plug under load still need a targeted pass. OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
 | **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
-| **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟠 open | [Arch](#arch-refactor--tooling); Quick wins #4 |
+| **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟢 **BP + step + step-over + run-to-cursor DONE 2026-08-22** (`Debugger.h/.cpp`, `Debugger_ImGui.*`, pinned `debugger`; zero measurable cost when un-armed, PERFORMANCE § 8). **Watch NOT done** — the naive tap cost 13-16 %, see below. | [Arch](#arch-refactor--tooling); [§ Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui) |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
 | **P3** | Finish the `stateMutex` family: the HDV / block-device mount is the last big one (32 MiB under the lock). Do **not** reach for `loadImageFromBytes` — it is synth-only and would break write-back; the shape is a `readImageFile` / `adoptImageBytes` split on `Block512Backing`. | 🟠 open (rest of the family done 2026-08-22) | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
