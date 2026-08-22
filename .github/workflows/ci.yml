@@ -269,7 +269,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev
+            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev ccache
 
       - name: Fetch Dear ImGui (pinned)
         run: |
@@ -280,6 +280,26 @@ jobs:
           git -C imgui fetch --depth 1 origin "$IMGUI_COMMIT"
           git -C imgui checkout -q FETCH_HEAD
           test "$(git -C imgui rev-parse HEAD)" = "$IMGUI_COMMIT"
+
+      # Measured, and the reason this step exists: the ASan leg compiles the
+      # WHOLE test tree instrumented, and on a four-core runner that took about
+      # two hours before it ever reached ctest — a nightly that spends its night
+      # compiling reports nothing. Nearly all of it is unchanged translation
+      # units from the night before, which is exactly what ccache is for. The
+      # key carries the sanitizer flavour so the two legs never share objects
+      # compiled with different instrumentation.
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-san-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-san-${{ matrix.name }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2G
+          ccache --zero-stats
 
       # RelWithDebInfo, not Release: sanitizer reports without line numbers
       # cost more time to act on than the run costs to produce.
@@ -295,7 +315,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DPOM2_ENABLE_TESTS=ON \
             -DPOM2_SANITIZE=${{ matrix.san }} \
-            -DPOM2_TEST_TIMEOUT_SCALE=6
+            -DPOM2_TEST_TIMEOUT_SCALE=6 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # --parallel 4, not 2: the runner has four cores, and at two the
       # instrumented build of the whole test tree ran past 100 minutes without
@@ -303,6 +325,12 @@ jobs:
       # this one cannot afford.
       - name: Build
         run: cmake --build build-san --parallel 4 ${{ matrix.targets }}
+
+      # Printed so a night that got slow again is diagnosable from the log:
+      # a hit rate near zero means the cache key stopped matching, not that
+      # the tree suddenly grew.
+      - name: ccache statistics
+        run: ccache --show-stats
 
       # `setarch -R` disables ASLR for the whole ctest tree, and TSan needs it:
       # on kernels >= 6.6 the default vm.mmap_rnd_bits=32 puts mappings outside

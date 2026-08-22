@@ -138,6 +138,14 @@ without reaching ctest at all: `--parallel 2` is the convention the other jobs
 use and this one cannot afford it, so the sanitizer build takes the runner's
 full four cores and the job's ceiling moved to 180 minutes.
 
+Four cores turned out not to be enough either — the instrumented build of the
+whole test tree still ran about two hours before ctest, and a nightly that
+spends its night compiling reports nothing. Almost all of that is translation
+units identical to the night before, so the job now carries a ccache keyed on
+the sanitizer flavour (never sharing objects between differently instrumented
+legs) and prints its hit rate, so a night that goes slow again is diagnosable
+from the log rather than by guesswork.
+
 **`MainWindow.cpp` grew 74 % *after* the rule against growing it.** The
 standing instruction in `TODO.md` is "do not grow the god-objects", target
 < 3000 lines. The measurement: 5590 lines on 2026-05-27, 6622 at the audit that
