@@ -82,6 +82,18 @@ retry got the *next* one; its DIB claimed to be a block device and its
 general-status call answered with the network status, whose first byte reads
 as "offline"; and the `$FFFF`-wrap guard the relay path has was missing.
 
+**One wire, two answers.** Write-protect on a Disk II is a single signal, and
+POM2 offered two ways to read it: the canonical
+`LDA $C08D,X / LDA $C08E,X / BMI` sequence, which reported an empty drive as
+protected, and POM2's own shortcut at `$C0nD`, which reported it as writable.
+What a guest was told depended on which idiom it happened to use. Protected is
+the right answer, and not only because the other probe says so — the sense is a
+phototransistor watching the write-enable notch, and with no disk in the way
+the light reaches it, which *is* the protected state. Both sites agree now,
+pinned by `diskii_empty_drive` on both gates, empty and loaded. (The loaded
+half of that check needs write-back ON: without it `isWriteProtected()` is true
+for every image and the test would be exercising the toggle, not the probes.)
+
 `test_fujinet_card` had not linked since the built-in `N:` landed — ctest was
 running a stale binary and reporting a pass. Two new pinned suites:
 `tnfs_client_hostile` (a server that lies) and, in `fujinet_net_device`, a

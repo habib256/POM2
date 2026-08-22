@@ -141,6 +141,68 @@ long pollUntilByteReady(bool useBitLss, const std::string& p6Rom,
     return -1;
 }
 
+
+// ── The other thing an empty drive has to answer consistently ────────────
+//
+// Write-protect is ONE wire, and POM2 offers two ways to read it: the
+// canonical `LDA $C08D,X / LDA $C08E,X / BMI` sequence the Apple II actually
+// uses, and a shortcut at $C0nD that POM2 answers directly. They used to
+// disagree about an empty drive — $C0nE said protected, $C0nD said writable —
+// so what a guest was told depended on which idiom it happened to use.
+//
+// Protected is the right answer, and not merely for consistency: the sense is
+// a phototransistor watching the write-enable notch, and with no disk in the
+// way the light reaches it, which IS the protected state.
+struct WpAnswers {
+    uint8_t shortcut;    ///< read $C0nD
+    uint8_t canonical;   ///< read $C0nD (Q6 high), then $C0nE (Q7 low)
+    bool    ok;
+};
+
+WpAnswers readWriteProtect(bool useBitLss, const std::string& p6Rom,
+                           const std::string& nib, bool probeLoadedDrive)
+{
+    Memory mem;
+    auto card = std::make_unique<DiskIICard>();
+    if (useBitLss && !card->loadLssRom(p6Rom)) {
+        std::fprintf(stderr, "FAIL: P6 LSS PROM would not load\n");
+        return { 0, 0, false };
+    }
+    // Drive 1 gets the media, which is also what arms the bit-level LSS.
+    if (!card->insertDisk(0, nib)) {
+        std::fprintf(stderr, "FAIL: cannot mount %s\n", nib.c_str());
+        return { 0, 0, false };
+    }
+    // Write-back ON, so "loaded" really means write-ENABLED. Without it
+    // isWriteProtected() is true for every image — POM2 refuses writes until
+    // the user opts in — and the loaded case would prove nothing about the
+    // probes, only about the toggle.
+    card->setWriteBackEnabled(true);
+
+    DiskIICard* raw = card.get();
+    mem.slotBus().plug(6, std::move(card));
+    M6502 cpu(&mem);
+    mem.setCpu(&cpu);
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.slotBus().reset();
+    cpu.hardReset();
+
+    if (raw->usingBitLss() != useBitLss) {
+        std::fprintf(stderr, "FAIL: wanted bitLss=%d, card reports %d\n",
+                     useBitLss ? 1 : 0, raw->usingBitLss() ? 1 : 0);
+        return { 0, 0, false };
+    }
+
+    mem.memRead(0xC0E9);                                   // motor on
+    mem.memRead(probeLoadedDrive ? 0xC0EA : 0xC0EB);       // select the drive
+
+    const uint8_t shortcut = mem.memRead(0xC0ED);          // POM2's own probe
+    mem.memRead(0xC0ED);                                   // Q6 high
+    const uint8_t canonical = mem.memRead(0xC0EE);         // Q7 low -> WP in b7
+    return { shortcut, canonical, true };
+}
+
 struct Case {
     bool        bitLss;
     int         emptyDrive;      // 0 = drive 1, 1 = drive 2
@@ -188,6 +250,38 @@ int main()
         } else {
             std::printf("[ OK ] %-44s byte ready after %6ld cycles\n",
                         c.what, cycles);
+        }
+    }
+
+    // Both probes, both gates, empty and loaded.
+    for (bool bitLss : { true, false }) {
+        for (bool loaded : { false, true }) {
+            const WpAnswers w = readWriteProtect(bitLss, p6, nib, loaded);
+            if (!w.ok) return 1;
+            const char* gate = bitLss ? "bit-LSS" : "legacy ";
+            const char* what = loaded ? "loaded, write-enabled" : "empty drive";
+            // The point of the loaded case: the fix must not turn every drive
+            // into a protected one. It has to still distinguish them.
+            const bool wantProtected = !loaded;
+            const bool sProt = (w.shortcut  & 0x80) != 0;
+            const bool cProt = (w.canonical & 0x80) != 0;
+            if (sProt != cProt) {
+                std::fprintf(stderr,
+                    "FAIL: %s %s — the two write-protect probes disagree "
+                    "($C0nD says %s, $C0nE says %s). One wire, one answer.\n",
+                    gate, what, sProt ? "protected" : "writable",
+                    cProt ? "protected" : "writable");
+                ++failures;
+            } else if (sProt != wantProtected) {
+                std::fprintf(stderr,
+                    "FAIL: %s %s — both probes say %s, expected %s.\n",
+                    gate, what, sProt ? "protected" : "writable",
+                    wantProtected ? "protected" : "writable");
+                ++failures;
+            } else {
+                std::printf("[ OK ] %s %-21s both WP probes say %s\n",
+                            gate, what, sProt ? "protected" : "writable");
+            }
         }
     }
 

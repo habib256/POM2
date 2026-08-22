@@ -400,17 +400,21 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Storage] disks & images
 
-- 🔵 **Empty Disk II drive: the two write-protect answers disagree.**
-  `$C0nE` after Q6H returns `0x80` (write-protected) for an empty drive,
-  which is right and is what the canonical
-  `LDA $C08D,X / LDA $C08E,X / BMI` sequence reads. POM2's own non-MAME
-  shortcut at `$C0nD` returns `0x00` (writable) when `!isLoaded()`. A
-  guest probing with `LDA $C08D,X / BMI` alone is therefore told an empty
-  drive is writable. Pre-existing (`be6d8be`, 2026-05-27), found during
-  the 2026-08-22 bug hunt while auditing the empty-drive noise fix. No
-  title is known to use the single-read idiom, so this is recorded rather
-  than fixed — the impact is unsubstantiated and the fix would touch a
-  path every disk read goes through.
+- 🟢 **Empty Disk II drive: the two write-protect answers disagreed — ✅
+  RESOLVED 2026-08-22.** Write-protect is ONE wire and POM2 offered two
+  ways to read it: the canonical `LDA $C08D,X / LDA $C08E,X / BMI`
+  sequence, which returned `0x80` (protected) for an empty drive, and
+  POM2's own shortcut at `$C0nD`, which returned `0x00` (writable) when
+  `!isLoaded()`. What a guest was told therefore depended on which idiom
+  it used. Protected is the correct answer and not only for consistency:
+  the sense is a phototransistor watching the write-enable notch, and
+  with no disk in the way the light reaches it, which *is* the protected
+  state. Both sites (bit-LSS and legacy gate) now answer alike.
+  Pre-existing since `be6d8be` (2026-05-27), surfaced by the 2026-08-22
+  bug hunt. Pinned by `diskii_empty_drive`, which checks both probes
+  against each other on both gates, empty and loaded — the loaded case
+  with write-back ON, or `isWriteProtected()` is true for every image and
+  the check would only be exercising the toggle.
 
 - 🟢 **//c+ 5.25" dual-controller — ✅ RESOLVED 2026-07-29.** The repro
   (headless //c+ cold boot, `tests/iicplus_boot_probe`) exposed that the

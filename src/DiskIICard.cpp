@@ -1537,10 +1537,17 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         }
         // For odd offsets MAME returns 0xFF (open bus), but POM2 still
         // needs the write-protect probe at $C0nD (low4=0xD, !writeMode).
+        //
+        // An EMPTY drive reads as WRITE-PROTECTED, same as the $C0nE answer
+        // above. That is what the hardware does — the sense is a phototransistor
+        // watching the notch, and with no disk in the way the light reaches it,
+        // which is the protected state — and it is what this card already told
+        // anyone who asked through $C0nE. Answering 0x00 here said "writable"
+        // about a drive with nothing in it, so the two probes for one wire
+        // disagreed depending on which idiom the guest happened to use.
         if (low4 == 0xD && !writeMode) {
             DiskImage& img = images[activeDrive];
-            if (!img.isLoaded()) return 0x00;
-            return img.isWriteProtected() ? 0x80 : 0x00;
+            return (!img.isLoaded() || img.isWriteProtected()) ? 0x80 : 0x00;
         }
         return 0xFF;
     }
@@ -1578,9 +1585,10 @@ uint8_t DiskIICard::deviceSelectRead(uint8_t low4)
         byteReady = false;
         return out;
     }
+    // Same wire, same answer as the bit-LSS path and as $C0nE: no disk reads
+    // as write-protected.
     if (low4 == 0xD && !writeMode) {
-        if (!img.isLoaded()) return 0x00;
-        return img.isWriteProtected() ? 0x80 : 0x00;
+        return (!img.isLoaded() || img.isWriteProtected()) ? 0x80 : 0x00;
     }
     return 0;
 }
