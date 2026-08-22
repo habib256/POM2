@@ -1250,6 +1250,20 @@ add_executable(test_two_phase_mount
 target_include_directories(test_two_phase_mount PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME two_phase_mount COMMAND test_two_phase_mount)
 set_tests_properties(two_phase_mount PROPERTIES TIMEOUT 30)
+
+# ─── Two-phase BLOCK mount (HDV / 2IMG) ─────────────────────────────────
+# Pins Block512Backing::readImageFile / adoptImage. This is the storage
+# write-back path; case 2 is the one that guards the documented trap —
+# loadImageFromBytes looks like a ready-made phase 2 and would silently drop
+# the 2IMG parse, write-protect and write-back. See the file header.
+add_executable(test_two_phase_block_mount
+    two_phase_block_mount_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_two_phase_block_mount PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME two_phase_block_mount COMMAND test_two_phase_block_mount)
+set_tests_properties(two_phase_block_mount PROPERTIES TIMEOUT 30)
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_disk_media_state PRIVATE Threads::Threads)
 endif()

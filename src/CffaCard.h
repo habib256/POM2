@@ -27,6 +27,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <vector>
 
@@ -49,6 +50,9 @@ public:
     /// Image management — forwarded to the ATA device's block backing so the
     /// HDV Library can mount .hdv/.2mg into the CFFA exactly like the HDV card.
     bool loadImage(const std::string& path) override;
+    /// Two-phase mount, phase 2 — forwards to the backing store.
+    bool adoptImage(pom2::Block512Backing::PreparedImage&& p) override
+    { return ata_.backing().adoptImage(std::move(p)); }
     bool loadImageFromBytes(std::vector<uint8_t> bytes, const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
     bool ejectImage() override;

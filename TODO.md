@@ -28,22 +28,18 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   mount (17 sites), `EmulationController::mount35`, and the AI server's
   `/snapshot/save` + `/snapshot/load` (which now serialise into RAM under the
   lock and commit through `pom2::writeFileAtomic` outside it). **Left**:
-  - 🟠 **HDV / block-device mount** — `MainWindow.cpp` routeMountHdv,
-    renderHdvPanelWindow, renderHdvFileDialog. Reads up to 32 MiB under the
-    lock, the worst case in the tree. *The obvious shortcut is a trap*: the
-    `ProDOSBlockCard::loadImageFromBytes` already on the interface is for
-    **synthesised** volumes only — it skips the 2IMG header parse, forces
-    `synth_`, and disables write-back — so mounting a real `.hdv`/`.2mg`
-    through it would silently break write-back and write-protect. The real
-    fix is to split `Block512Backing::loadImage` into a static
-    `readImageFile(path, bytes, err)` (the read; unlocked) and an
-    `adoptImageBytes(bytes, path)` (`saveDirty` + 2IMG parse + adopt; locked),
-    expose the pair on `ProDOSBlockCard`, and forward it from `CffaCard` and
-    `ProDOSHardDiskCard`, which both already delegate to a `Block512Backing`.
-    Handle the same-file-still-dirty collision the way `DiskIICard::installDisk`
-    does. The `SmartPortUnit` branch needs the same on its own interface.
-    *~half a day, and it is on the storage write-back path — the place where a
-    mistake costs somebody their disk, so it wants its own test pass.*
+  - ✅ **HDV / block-device mount — DONE 2026-08-22.** Was the worst case in
+    the tree (32 MiB under the lock). `Block512Backing::loadImage` split into a
+    static `readImageFile` (unlocked) and `adoptImage` (locked, no syscalls);
+    the pair is on `ProDOSBlockCard` and `SmartPortUnit`, forwarded in one line
+    each by `CffaCard`, `ProDOSHardDiskCard` and `SmartPortHdvUnit`. All seven
+    UI sites go through `pom2::mountBlockCard` / `mountSmartPortUnit`.
+    Measured on a 32 MiB image: **25.8 ms under the lock → 0.0 ms**, because a
+    raw `.hdv` now moves phase 1's buffer instead of copying it. The inline
+    path halved as a side effect (25.8 → 13.4 ms), which the CLI and the
+    profile-switch remount get for free. Pinned by `two_phase_block_mount`,
+    whose case 2 guards the `loadImageFromBytes` trap and was verified to fail
+    when the trap is walked into. → [DEV](DEV.md#the-block-device-half-hdv--2img-converted-2026-08-22)
   - 🟡 `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
     5000 ms configurable) inside a SmartPort call. A dead FujiNet helper mid
     ProDOS boot makes POM2 look hung, and the FujiNet panel's own Stop button
@@ -222,7 +218,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 | **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟢 **BP + step + step-over + run-to-cursor DONE 2026-08-22** (`Debugger.h/.cpp`, `Debugger_ImGui.*`, pinned `debugger`; zero measurable cost when un-armed, PERFORMANCE § 8). **Watch NOT done** — the naive tap cost 13-16 %, see below. | [Arch](#arch-refactor--tooling); [§ Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui) |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
-| **P3** | Finish the `stateMutex` family: the HDV / block-device mount is the last big one (32 MiB under the lock). Do **not** reach for `loadImageFromBytes` — it is synth-only and would break write-back; the shape is a `readImageFile` / `adoptImageBytes` split on `Block512Backing`. | 🟠 open (rest of the family done 2026-08-22) | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
+| **P3** | ~~Finish the `stateMutex` family: the HDV / block-device mount~~ ✅ **DONE 2026-08-22** — 25.8 ms under the lock → 0.0 ms. What is left of the family is the FujiNet `transact` wait and two thread `join()`s, both 🟡. | ✅ | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
 | **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
 
 **Explicitly not architecture** — do not pick these ahead of P0–P4. They stay

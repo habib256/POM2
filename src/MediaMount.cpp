@@ -5,7 +5,10 @@
 
 #include "DiskIICard.h"
 #include "DiskImage.h"
+#include "Block512Backing.h"
 #include "EmulationController.h"
+#include "ProDOSBlockCard.h"
+#include "SmartPortUnit.h"
 
 #include <mutex>
 #include <utility>
@@ -39,6 +42,81 @@ bool mountDiskII(EmulationController& ctrl, DiskIICard& card, int drive,
     }
     if (!ok && error.empty()) error = "insert failed";
     return ok;
+}
+
+// ── Block devices: the 32 MiB case ──────────────────────────────────────
+
+namespace {
+
+/// Shared by both block-device helpers: phase 1 without the lock, then a
+/// caller-supplied phase 2 with it. Templated on the adopt step because
+/// ProDOSBlockCard and SmartPortUnit are unrelated types that happen to
+/// expose the same two-phase shape.
+template <class AdoptFn, class ErrFn, class InlineFn>
+bool mountBlockLike(EmulationController& ctrl, const std::string& path,
+                    std::string& error, AdoptFn adopt, ErrFn lastError,
+                    InlineFn inlineLoad)
+{
+    error.clear();
+
+    // Phase 1 — no lock. The whole file read and the size gates happen here,
+    // so the CPU worker keeps running and the UI keeps painting through all
+    // of it. Static: it touches no card state at all.
+    Block512Backing::PreparedImage prepared;
+    if (!Block512Backing::readImageFile(path, prepared, error)) return false;
+
+    // Phase 2 — the lock, held for the 2IMG parse and the adopt. No file I/O
+    // in there, except in the one documented same-file-still-dirty case where
+    // correctness costs a re-read.
+    bool ok          = false;
+    bool unsupported = false;
+    {
+        std::lock_guard<std::mutex> lk(ctrl.stateMutex());
+        ok = adopt(std::move(prepared));
+        if (!ok) {
+            error = lastError();
+            // An empty error from adoptImage is the "this unit kind has no
+            // block backing" answer, not a failure — see SmartPortUnit.h.
+            unsupported = error.empty();
+        }
+    }
+    if (ok) return true;
+    if (!unsupported) return false;
+
+    // Fall back to the inline form for a unit that cannot do phase 2. It
+    // costs the stall, and it is the honest behaviour: refusing the mount
+    // because the fast path does not apply would be worse.
+    std::lock_guard<std::mutex> lk(ctrl.stateMutex());
+    if (inlineLoad(path)) { error.clear(); return true; }
+    error = lastError();
+    if (error.empty()) error = "mount failed";
+    return false;
+}
+
+}  // namespace
+
+bool mountBlockCard(EmulationController& ctrl, ProDOSBlockCard& card,
+                    const std::string& path, std::string& error)
+{
+    return mountBlockLike(
+        ctrl, path, error,
+        [&card](Block512Backing::PreparedImage&& p) {
+            return card.adoptImage(std::move(p));
+        },
+        [&card] { return card.getLastError(); },
+        [&card](const std::string& p) { return card.loadImage(p); });
+}
+
+bool mountSmartPortUnit(EmulationController& ctrl, SmartPortUnit& unit,
+                        const std::string& path, std::string& error)
+{
+    return mountBlockLike(
+        ctrl, path, error,
+        [&unit](Block512Backing::PreparedImage&& p) {
+            return unit.adoptImage(std::move(p));
+        },
+        [&unit] { return unit.lastError(); },
+        [&unit](const std::string& p) { return unit.loadImage(p); });
 }
 
 } // namespace pom2

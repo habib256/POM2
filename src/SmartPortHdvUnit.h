@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace pom2 {
 
@@ -55,6 +56,9 @@ public:
     bool     writeBlock(uint32_t idx, const uint8_t* in) override;
 
     bool     loadImage(const std::string& path) override;
+    /// Two-phase mount, phase 2 — forwards to the backing store.
+    bool     adoptImage(Block512Backing::PreparedImage&& p) override
+    { return backing_.adoptImage(std::move(p)); }
     bool     eject() override;
     const std::string& path()      const override { return backing_.path(); }
     const std::string& lastError() const override { return backing_.lastError(); }

@@ -8398,9 +8398,11 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
     // from a lambda in renderDiskLibraryWindow.
     if (!iicClass) {
         if (pom2::ProDOSBlockCard* dev = hdvDevice()) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (!dev->loadImage(path)) {
-                errOut = dev->getLastError();
+            // Two-phase: up to 32 MiB read with no lock held, then the lock
+            // only for the 2IMG parse and the swap. This was the largest
+            // single stall in the tree — 12.8 ms warm-cache, most of a PAL
+            // frame with the machine and the window both stopped.
+            if (!pom2::mountBlockCard(*controller, *dev, path, errOut)) {
                 hdvStatus = "no image mounted";
                 return false;
             }
@@ -8430,10 +8432,13 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
             u = smartPortCard->unit(0);
             replaced = true;
         }
-        if (!u->loadImage(path)) {
-            errOut = u->lastError();
+        // Same two-phase mount as the dedicated HDV card above: the unit
+        // swap needs the lock (it mutates the card's unit table), the 32 MiB
+        // read does not. The 3.5" branch above deliberately stays inline —
+        // its unit has no block backing, so it would pay for a phase-1 read
+        // it then discards.
+        if (!pom2::mountSmartPortUnit(*controller, *u, path, errOut))
             return false;
-        }
         settings->setString(base + "_type",
             std::string(pom2::SmartPortHdvUnit::kKindKey));
         settings->setString(base + "_path", path);
@@ -9143,15 +9148,15 @@ void MainWindow::renderSmartPortPanelWindow()
         }
 
         if (!a.mountPath.empty()) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (u->loadImage(a.mountPath)) {
+            std::string mountErr;
+            if (pom2::mountSmartPortUnit(*controller, *u, a.mountPath, mountErr)) {
                 settings->setString(base + "_path", a.mountPath);
                 dirtySettings = true;
                 tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
                     ": mounted " + a.mountPath;
             } else {
                 tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                    ": mount failed: " + u->lastError();
+                    ": mount failed: " + mountErr;
             }
             tapeStatusUntil = lastFrameTime + 4.0;
         }
@@ -9905,13 +9910,11 @@ void MainWindow::renderHdvPanelWindow()
         bool ok = false;
         std::string err;
         {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = hdvCard->loadImage(path);
+            ok = pom2::mountBlockCard(*controller, *hdvCard, path, err);
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
             } else {
-                err = hdvCard->getLastError();
                 hdvStatus = "no image mounted";
             }
         }
@@ -9958,13 +9961,11 @@ void MainWindow::renderHdvPanelWindow()
                 hdvStatus = err;
             }
         } else {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = hdvCard->loadImage(path);
+            ok = pom2::mountBlockCard(*controller, *hdvCard, path, err);
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
             } else {
-                err = hdvCard->getLastError();
                 hdvStatus = "no image mounted";
             }
         }
@@ -10130,14 +10131,15 @@ void MainWindow::renderHdvFileDialog()
     const bool canMount = hdvCard && !hdvPanel->dialogPath.empty();
     ImGui::BeginDisabled(!canMount);
     if (ImGui::Button("Mount", ImVec2(120, 0))) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (hdvCard->loadImage(hdvPanel->dialogPath)) {
+        std::string mountErr;
+        if (pom2::mountBlockCard(*controller, *hdvCard, hdvPanel->dialogPath,
+                                 mountErr)) {
             hdvPath   = hdvPanel->dialogPath;
             hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;
             tapeStatusMessage = "HDV mounted: " + hdvPanel->dialogPath;
         } else {
             hdvStatus = "no image mounted";
-            tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
+            tapeStatusMessage = "HDV mount failed: " + mountErr;
         }
         tapeStatusUntil = lastFrameTime + 5.0;
         ImGui::CloseCurrentPopup();
@@ -10146,14 +10148,15 @@ void MainWindow::renderHdvFileDialog()
     if (ImGui::Button("Mount and Boot", ImVec2(160, 0))) {
         bool ok = false;
         {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = hdvCard->loadImage(hdvPanel->dialogPath);
+            std::string mountErr;
+            ok = pom2::mountBlockCard(*controller, *hdvCard,
+                                      hdvPanel->dialogPath, mountErr);
             if (ok) {
                 hdvPath   = hdvPanel->dialogPath;
                 hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;
             } else {
                 hdvStatus = "no image mounted";
-                tapeStatusMessage = "HDV mount failed: " + hdvCard->getLastError();
+                tapeStatusMessage = "HDV mount failed: " + mountErr;
                 tapeStatusUntil   = lastFrameTime + 5.0;
             }
         }

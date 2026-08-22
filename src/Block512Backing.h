@@ -42,7 +42,53 @@ public:
     /// Load a raw .hdv or 2IMG/.2mg image. Parses + strips the 2IMG header,
     /// validates ProDOS block order, 512-byte multiple, and ≤65536 blocks.
     /// On failure leaves the store empty and sets lastError().
+    ///
+    /// Reads the file INLINE, so a caller holding `stateMutex` holds it across
+    /// the whole read — up to 32 MiB, the largest single stall in the tree.
+    /// UI callers want the two-phase pair below; this stays for the
+    /// single-threaded callers (CLI, tests, the profile-switch remount).
     bool loadImage(const std::string& path);
+
+    /// ── Two-phase mount ─────────────────────────────────────────────────
+    /// What phase 1 hands to phase 2. Just bytes and the two facts about the
+    /// FILE that phase 2 would otherwise have to go back to the filesystem
+    /// for — so phase 2 makes no syscalls at all.
+    struct PreparedImage {
+        std::vector<uint8_t> bytes;
+        std::string          path;
+        /// False when the file could not be opened for writing. Probed in
+        /// phase 1 because it is a syscall, and because a chmod-read-only
+        /// image must mount write-protected rather than accept a session of
+        /// writes and fail at flush time.
+        bool                 hostWritable = true;
+        bool                 valid        = false;
+    };
+
+    /// Phase 1, to be called WITHOUT `stateMutex`: read `path` whole, with the
+    /// same size and emptiness gates loadImage() applies. Touches no object
+    /// state — it is static for exactly that reason.
+    static bool readImageFile(const std::string& path, PreparedImage& out,
+                              std::string& error);
+
+    /// Phase 2, to be called WITH `stateMutex` held: flush the outgoing
+    /// medium, then parse and adopt what phase 1 read. All the 2IMG decoding
+    /// and validation lives here, so nothing is skipped relative to
+    /// loadImage() — this is the same code, reached from the other side.
+    ///
+    /// Re-reads under the lock in one case, deliberately: when the outgoing
+    /// medium is the SAME file with unsaved changes, the prepared bytes
+    /// predate the flush and installing them would roll the guest's writes
+    /// back. Rare (write-back is opt-in and the paths must match exactly) and
+    /// correct beats fast on the write-back path.
+    bool adoptImage(PreparedImage&& prepared);
+
+private:
+    /// The parse-and-adopt half both entry points share. Performs NO file
+    /// I/O — everything it needs is already in `prepared` — so it is the part
+    /// that is cheap to run under the lock.
+    bool adoptPrepared(PreparedImage&& prepared);
+
+public:
 
     /// Replace the image with synthesised bytes (e.g. a host-folder volume).
     /// `hostFolder` non-empty marks it a synth volume whose write-back decodes

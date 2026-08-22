@@ -5,6 +5,56 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-22 (last) — The 32 MiB stall: HDV mounts stop freezing the machine
+
+The last big member of the `stateMutex` family, and the one with the worst
+number on it. Mounting an HDV held the lock the CPU worker takes every
+4096-cycle chunk and the UI thread takes to paint every frame, across a read of
+up to 32 MiB — so the machine and the window stopped together, cancel button
+included, for most of a PAL frame at best.
+
+`Block512Backing::loadImage` was 131 lines doing four things, and it is now
+split at the seam that matters: `readImageFile` is **static** — it touches no
+object state, which is exactly why it can run with no lock — and does the open,
+the size gates, the read, and the host-writability probe (a syscall, so it
+belongs on that side). `adoptImage` does the flush, the 2IMG parse and the
+adopt, under the lock, making **no syscalls at all**. `ProDOSBlockCard` and
+`SmartPortUnit` each carry a matching `adoptImage`; `CffaCard`,
+`ProDOSHardDiskCard` and `SmartPortHdvUnit` forward it in one line each. All
+seven UI mount sites now go through `pom2::mountBlockCard` /
+`mountSmartPortUnit`.
+
+Measured on a 32 MiB image: **25.8 ms under the lock, down to 0.0 ms.** The
+zero is not rounding. Splitting alone got it to 10.4 ms — the remainder being a
+straight 32 MiB copy out of phase 1's buffer into the backing store — so a raw
+`.hdv`, where the payload IS the whole file, now moves that buffer instead of
+copying it and the memcpy becomes a pointer swap. A 2IMG still copies: its
+payload starts 64 bytes in, and moving then shifting it down would be the same
+memcpy wearing a different hat. Containers are the smaller case and the honest
+one to pay for.
+
+The inline `loadImage` halved as a side effect, 25.8 → 13.4 ms, which the CLI,
+the tests and the profile-switch remount all get for nothing since they share
+the adopt half.
+
+**The trap was real, and it is now guarded.** `loadImageFromBytes` was already
+on the interface and looks exactly like a ready-made phase 2. It is for
+SYNTHESISED volumes: it skips the 2IMG header parse, forces `synth_`, and ties
+write-back to it — so a real `.hdv`/`.2mg` routed through it would mount 64
+bytes of container header as block data with write-protect and write-back
+quietly wrong. Case 2 of `two_phase_block_mount` exists to fail loudly if
+anyone simplifies back onto it, and it was verified by doing exactly that: the
+mount is refused outright.
+
+The other five cases cover what splitting a write-back path can break rather
+than what it was split for: a raw image mounting identically both ways, the
+2IMG offset and locked flag surviving, a chmod-read-only file still coming up
+write-protected (the probe moved translation units), write-back still
+preserving the container, and — the same hazard the Disk II split had —
+re-mounting the SAME file while the guest holds unsaved writes, which must
+flush and re-read rather than adopt bytes that predate the flush. That one was
+verified falsifiable too.
+
 ## 2026-08-22 (newest) — A debugger, and the watchpoints that measurement refused
 
 The audit two entries down named the debugger the highest-leverage thing left
