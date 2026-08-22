@@ -4,8 +4,65 @@ Status as of 2026-08-19. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.m
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
-[Architect attack order](#architect-attack-order) (sequencing), then
-[Quick wins](#quick-wins), then [Backlog by subsystem](#backlog).
+[Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt)
+first, then [Architect attack order](#architect-attack-order) (sequencing),
+then [Quick wins](#quick-wins), then [Backlog by subsystem](#backlog).
+
+## Open, and known to be open — 2026-08-22 bug hunt
+
+Three findings from the 2026-08-22 sweep were **deliberately not fixed**.
+They sit at the top because each is something POM2 currently gets wrong that
+somebody would otherwise rediscover the hard way — and because the reason for
+leaving them is part of the finding.
+
+- 🔵 **Blocking work under `stateMutex` — a family, found 2026-08-22.** The
+  emulator's state mutex is taken by the CPU worker for each 4096-cycle
+  chunk AND by the UI thread to paint every frame, so anything slow holding
+  it freezes the machine *and* the window, buttons included. Four sites, none
+  fixed yet because the fix is structural (do the slow part unlocked, swap the
+  finished object in under the lock) rather than a patch:
+  - `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
+    5000 ms configurable) inside a SmartPort call. A dead FujiNet helper mid
+    ProDOS boot makes POM2 look hung, and the FujiNet panel's own Stop button
+    is unreachable because rendering it needs the same mutex.
+  - Mounting an HDV / 3.5" image from the UI reads the whole file (up to
+    32 MiB) **and** rewrites the outgoing one with two `fsync`s, all under the
+    lock (`MainWindow.cpp` routeMountHdv / renderHdvPanelWindow /
+    renderHdvFileDialog, `EmulationController::mount35`).
+  - `/snapshot/save` and `/snapshot/load` hold it across the file write and
+    the atomic replace. `SnapshotWriter` already has a `std::vector<uint8_t>&`
+    constructor, so serialising in memory and writing after unlocking is the
+    ready-made fix.
+  - The FujiNet Stop / Drop-peer buttons, and `slotBus().clear()` on a profile
+    switch, hold it across a thread `join()` whose worker polls on a 200 ms
+    step.
+  Deliberate and bounded, so listed for completeness rather than as a defect:
+  the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
+
+- 🔵 **Rewind: resuming from anywhere but "resume here" leaves the ring
+  non-monotonic — found 2026-08-22.** `RewindBuffer::indexForCycle` early-breaks
+  on the first frame past the target, which is only correct while stamps
+  increase. Only `rewindEndAndResume` truncates the abandoned future and clears
+  `Rewind_ImGui::scrubbing_`; the toolbar Play button, Machine ▸ Run, the
+  `machine.run` palette command and the kiosk menu all call `setMode(Running)`
+  directly. Scrub back, then press toolbar Play: new frames are appended with
+  stamps *earlier* than the tail, so the span readout lies and seeking lands
+  far from the requested cycle — and because `scrubbing_` stays true, the next
+  drag skips the `setMode(Stopped)` + `waitUntilParked()` and the slider
+  visibly does nothing. `AiControlServer` and `CliRunner` already call
+  `rewind().clear()` after a snapshot load for exactly this reason; the GUI
+  resume paths need the same guard.
+
+- 🔵 **`w5100_udp_recv` loses a loopback datagram about once in 25 runs —
+  seen 2026-08-22.** `testFittingDatagramLandsWhole` polls for 2 s and
+  occasionally never sees a 1472-byte datagram the peer definitely sent
+  (`sendToGuest` asserts the send). Measured on a pristine tree, so it predates
+  the 2026-08-22 sweep; it is recorded rather than papered over with a retry
+  because the cause is not understood, and "the guest sometimes does not
+  receive a datagram" would be a real bug if it turns out not to be a test
+  artefact. Next step: log `errno`/`WSAGetLastError` on the failing poll and
+  check whether the guest socket's ephemeral port is being reused from an
+  earlier test whose socket closed with data still queued.
 
 ## MAME ↔ POM2 parity (dashboard)
 
@@ -674,18 +731,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Network]
 
-- 🔵 **`w5100_udp_recv` loses a loopback datagram about once in 25 runs —
-  seen 2026-08-22.** `testFittingDatagramLandsWhole` polls for 2 s and
-  occasionally never sees a 1472-byte datagram the peer definitely sent
-  (`sendToGuest` asserts the send). Measured on a pristine tree, so it predates
-  the 2026-08-22 sweep; it is recorded rather than papered over with a retry
-  because the cause is not understood, and "the guest sometimes does not
-  receive a datagram" would be a real bug if it turns out not to be a test
-  artefact. Next step: log `errno`/`WSAGetLastError` on the failing poll and
-  check whether the guest socket's ephemeral port is being reused from an
-  earlier test whose socket closed with data still queued.
-
-
 - ✅ **FujiNet relay (SP-over-SLIP)** — DONE (2026-08-10). `FujiNetCard`
   presents a SmartPort controller and forwards every call to a real
   FujiNet: a desktop build over loopback TCP 1985, or a **physical ESP32
@@ -992,44 +1037,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   preserves the container — a separate job, and one nobody has asked for.
 
 ### [Arch] refactor & tooling
-
-- 🔵 **Blocking work under `stateMutex` — a family, found 2026-08-22.** The
-  emulator's state mutex is taken by the CPU worker for each 4096-cycle
-  chunk AND by the UI thread to paint every frame, so anything slow holding
-  it freezes the machine *and* the window, buttons included. Four sites, none
-  fixed yet because the fix is structural (do the slow part unlocked, swap the
-  finished object in under the lock) rather than a patch:
-  - `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
-    5000 ms configurable) inside a SmartPort call. A dead FujiNet helper mid
-    ProDOS boot makes POM2 look hung, and the FujiNet panel's own Stop button
-    is unreachable because rendering it needs the same mutex.
-  - Mounting an HDV / 3.5" image from the UI reads the whole file (up to
-    32 MiB) **and** rewrites the outgoing one with two `fsync`s, all under the
-    lock (`MainWindow.cpp` routeMountHdv / renderHdvPanelWindow /
-    renderHdvFileDialog, `EmulationController::mount35`).
-  - `/snapshot/save` and `/snapshot/load` hold it across the file write and
-    the atomic replace. `SnapshotWriter` already has a `std::vector<uint8_t>&`
-    constructor, so serialising in memory and writing after unlocking is the
-    ready-made fix.
-  - The FujiNet Stop / Drop-peer buttons, and `slotBus().clear()` on a profile
-    switch, hold it across a thread `join()` whose worker polls on a 200 ms
-    step.
-  Deliberate and bounded, so listed for completeness rather than as a defect:
-  the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
-
-- 🔵 **Rewind: resuming from anywhere but "resume here" leaves the ring
-  non-monotonic — found 2026-08-22.** `RewindBuffer::indexForCycle` early-breaks
-  on the first frame past the target, which is only correct while stamps
-  increase. Only `rewindEndAndResume` truncates the abandoned future and clears
-  `Rewind_ImGui::scrubbing_`; the toolbar Play button, Machine ▸ Run, the
-  `machine.run` palette command and the kiosk menu all call `setMode(Running)`
-  directly. Scrub back, then press toolbar Play: new frames are appended with
-  stamps *earlier* than the tail, so the span readout lies and seeking lands
-  far from the requested cycle — and because `scrubbing_` stays true, the next
-  drag skips the `setMode(Stopped)` + `waitUntilParked()` and the slider
-  visibly does nothing. `AiControlServer` and `CliRunner` already call
-  `rewind().clear()` after a snapshot load for exactly this reason; the GUI
-  resume paths need the same guard.
 
 - 🟢 **Z80/SoftCard cleanup backlog** (2026-07-12 bug-hunt survivors — quality,
   not correctness): SoftCardZ80 SFZ2 blob → `pom2::byteio` putU16/Reader like
