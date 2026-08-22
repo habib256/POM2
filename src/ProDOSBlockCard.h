@@ -15,6 +15,7 @@
 #ifndef POM2_PRODOS_BLOCK_CARD_H
 #define POM2_PRODOS_BLOCK_CARD_H
 
+#include "Block512Backing.h"
 #include "MountableMediaCard.h"
 
 #include <cstddef>
@@ -32,6 +33,17 @@ public:
     virtual int  getSlot() const = 0;
 
     virtual bool loadImage(const std::string& path) = 0;
+
+    /// Phase 2 of the two-phase mount. Phase 1 is the static
+    /// `Block512Backing::readImageFile`, which needs no card at all — it is
+    /// pure file I/O and is what the caller runs WITHOUT `stateMutex`.
+    ///
+    /// Not to be confused with `loadImageFromBytes` below: that one is for
+    /// SYNTHESISED volumes and is the wrong tool here, loudly. It skips the
+    /// 2IMG header parse, forces `synth_`, and ties write-back to it — so a
+    /// real .hdv/.2mg routed through it would mount with its header bytes
+    /// treated as data, and with write-protect and write-back quietly wrong.
+    virtual bool adoptImage(Block512Backing::PreparedImage&& prepared) = 0;
     virtual bool loadImageFromBytes(std::vector<uint8_t> bytes,
                                     const std::string& label,
                                     const std::string& hostFolder) = 0;

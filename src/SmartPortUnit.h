@@ -22,6 +22,8 @@
 #ifndef POM2_SMARTPORT_UNIT_H
 #define POM2_SMARTPORT_UNIT_H
 
+#include "Block512Backing.h"
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -102,6 +104,18 @@ public:
     /// Replaces any currently-loaded media (saves dirty first when
     /// write-back is on — same UX as the Disk II / HDV panels).
     virtual bool loadImage(const std::string& path) = 0;
+
+    /// Phase 2 of the two-phase mount, for the unit kinds that have a
+    /// Block512Backing under them (today: the HDV unit). Phase 1 is the static
+    /// `Block512Backing::readImageFile`, run by the caller WITHOUT
+    /// `stateMutex` — which is the point, since an HDV can be 32 MiB.
+    ///
+    /// Default is "not supported", not a pure virtual: a 3.5" unit has no
+    /// block backing and nothing sensible to do here, and forcing it to
+    /// implement a stub would be a worse abstraction than letting the caller
+    /// fall back to the inline `loadImage`. Callers MUST honour false.
+    virtual bool adoptImage(Block512Backing::PreparedImage&& /*prepared*/)
+    { return false; }
 
     /// Persist + clear media. Auto-saves dirty blocks when write-back
     /// is enabled. Idempotent on empty drives.

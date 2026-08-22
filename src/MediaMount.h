@@ -32,6 +32,11 @@ class DiskIICard;
 class EmulationController;
 
 namespace pom2 {
+class ProDOSBlockCard;
+class SmartPortUnit;
+}
+
+namespace pom2 {
 
 /// Mount `path` into `card`'s `drive` (0 or 1) without holding `stateMutex`
 /// across the file read.
@@ -53,6 +58,25 @@ namespace pom2 {
 bool mountDiskII(EmulationController& ctrl, DiskIICard& card, int drive,
                  const std::string& path, std::string& error,
                  bool seekTrack0 = false);
+
+/// Mount `path` into a ProDOS block device (CFFA, the synthetic HDV card)
+/// without holding `stateMutex` across the file read.
+///
+/// This is the big one: an HDV is up to 32 MiB, the largest single stall the
+/// tree had. Measured warm-cache floor for the inline form, 12.8 ms — most of
+/// a PAL frame, with the machine and the window both stopped.
+///
+/// Same caller contract as mountDiskII: UI thread only, because the two
+/// phases take the lock separately and a profile switch destroys card
+/// pointers under it.
+bool mountBlockCard(EmulationController& ctrl, ProDOSBlockCard& card,
+                    const std::string& path, std::string& error);
+
+/// Same, for a SmartPort unit. Units whose kind has no block backing (the
+/// 3.5" unit) report that from `adoptImage`, and this falls back to the
+/// inline `loadImage` for them rather than failing the mount.
+bool mountSmartPortUnit(EmulationController& ctrl, SmartPortUnit& unit,
+                        const std::string& path, std::string& error);
 
 } // namespace pom2
 

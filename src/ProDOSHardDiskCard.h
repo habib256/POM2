@@ -34,6 +34,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <vector>
 
@@ -53,6 +54,9 @@ public:
     int getSlot() const override { return slot; }
 
     bool loadImage(const std::string& path) override;
+    /// Two-phase mount, phase 2 — forwards to the backing store.
+    bool adoptImage(pom2::Block512Backing::PreparedImage&& p) override
+    { return backing_.adoptImage(std::move(p)); }
     /// Replace the in-memory image with synthesised bytes (e.g. produced by
     /// pom2::buildVolumeFromFolder). `label` is what the UI shows; it does
     /// not have to be a real filesystem path. `hostFolder`, when non-empty,

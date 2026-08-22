@@ -1597,15 +1597,49 @@ self back on that second flush and silently reverts track 0. Verified
 falsifiable: with the collision check forced to `false`, the test fails on
 exactly that assertion.
 
-The HDV / block-device mount is **not** converted yet and is the last big one
-(up to 32 MiB under the lock) — see `TODO.md`. Note for whoever takes it: the
-`ProDOSBlockCard::loadImageFromBytes` already on the interface looks like the
-ready-made phase 2 and is not. It is for **synthesised** volumes — it skips the
-2IMG header parse, sets `synth_`, and ties write-back to it — so mounting a
-real `.hdv`/`.2mg` through it would quietly disable write-back and
-write-protect. The shape that works is a `readImageFile` / `adoptImageBytes`
-split on `Block512Backing`, which `CffaCard` and `ProDOSHardDiskCard` both
-already delegate to.
+#### The block-device half (HDV / 2IMG), converted 2026-08-22
+
+`Block512Backing::loadImage` was 131 lines doing four things: flush the
+outgoing medium, read the file, parse the 2IMG container, adopt the result. It
+is now split at the seam that matters —
+
+* `readImageFile(path, PreparedImage&, error)` — **static**, because it touches
+  no object state at all: open, size gates, read, and the host-writability
+  probe (a syscall, so it belongs on this side). Runs with no lock held.
+* `adoptImage(PreparedImage&&)` — flush, parse, adopt. Under the lock, and it
+  makes **no syscalls**: everything it needs is in the struct.
+
+`ProDOSBlockCard` and `SmartPortUnit` each carry a matching `adoptImage`;
+`CffaCard`, `ProDOSHardDiskCard` and `SmartPortHdvUnit` forward it to their
+`Block512Backing` in one line each. `SmartPortUnit`'s default returns false —
+a 3.5" unit has no block backing, and a stub would be a worse abstraction than
+letting `pom2::mountSmartPortUnit` fall back to the inline path.
+
+**The trap, for whoever touches this next.** `loadImageFromBytes` was already
+on the interface and looks exactly like a ready-made phase 2. It is not. It is
+for **synthesised** volumes: it skips the 2IMG header parse, forces `synth_`,
+and ties `supportsWriteBack_` to it. Route a real `.hdv`/`.2mg` through it and
+the container's 64-byte header becomes block data, while write-protect and
+write-back go quietly wrong. `two_phase_block_mount` case 2 exists to fail
+loudly if anyone "simplifies" back onto it — verified by doing exactly that.
+
+**What it bought, measured on a 32 MiB image:**
+
+| | before | after |
+|---|---|---|
+| held under `stateMutex` | 25.8 ms | **0.0 ms** |
+| unlocked read | — | 13.5 ms |
+| inline `loadImage` total | 25.8 ms | 13.4 ms |
+
+The locked half reaching zero is not rounding: after the parse, a raw `.hdv`
+(no container, payload is the whole file) **moves** the buffer phase 1 already
+allocated instead of copying it — a memcpy of the medium becomes a pointer
+swap. A 2IMG still copies, because its payload starts 64 bytes in and moving
+then shifting would be the same memcpy wearing a different hat.
+
+The inline path halving is a side effect of the same change, and it is free:
+the CLI, the tests and the profile-switch remount all go through `adoptPrepared`
+too.
 
 #### How a media write-back commits (`AtomicFileReplace.h`)
 

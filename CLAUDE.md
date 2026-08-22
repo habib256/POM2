@@ -24,9 +24,11 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
   read + decode unlocked, take the lock only to swap the finished object in).
   Measured floor for the naive form: 12.8 ms to read a 32 MB image on a warm
   cache, 30.1 ms for a 4 MB write + one `fsync`, against a 20 ms PAL frame.
-  One documented exception survives, in `MainWindow_Slots.cpp`'s profile-switch
-  remount, where atomicity against the AI server outranks latency and the CPU
-  worker is stopped anyway.
+  Block devices go through the same shape (`Block512Backing::readImageFile` +
+  `adoptImage`, wrapped by `pom2::mountBlockCard`): 32 MiB HDV mounts hold the
+  lock for **0 ms**. One documented exception survives, in
+  `MainWindow_Slots.cpp`'s profile-switch remount, where atomicity against the
+  AI server outranks latency and the CPU worker is stopped anyway.
 - **Every long-lived thread wears an exception barrier** — an exception
   escaping a `std::thread` callable calls `std::terminate()`, killing the
   process with no log line: a crash the user cannot report and you cannot
