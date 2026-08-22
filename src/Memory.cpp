@@ -900,10 +900,28 @@ void Memory::appendSnapshotState(std::vector<uint8_t>& out)
     }
 }
 
+void Memory::resetVideoEventLogForClockJump()
+{
+    videoEvents_.clear();
+    publishedEvents_.clear();
+    constexpr uint64_t kCyclesPerScanline = 65;   // as in advanceCycles
+    const uint64_t kCyclesPerFrame =
+        kCyclesPerScanline *
+        static_cast<uint64_t>(
+            pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+    lastVideoFrameStart_ = cycleCounter - (cycleCounter % kCyclesPerFrame);
+}
+
 bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
 {
     size_t pos = 0;
-    auto need  = [&](size_t k) { return pos + k <= n; };
+    // `k <= n - pos`, NOT `pos + k <= n`: k comes straight out of the blob as
+    // a uint32_t (the RamWorks backing size, among others), and on a 32-bit
+    // size_t — the wasm32 target is one — `pos + 0xFFFFFFFF` wraps to
+    // `pos - 1` and sails through, after which the memcpys below read tens of
+    // megabytes past the payload. The subtraction form cannot overflow,
+    // because pos <= n holds throughout.
+    auto need  = [&](size_t k) { return pos <= n && k <= n - pos; };
     auto getU8 = [&]() -> uint8_t { return data[pos++]; };
     auto getU16 = [&]() -> uint16_t {
         uint16_t v = static_cast<uint16_t>(data[pos] | (data[pos + 1] << 8));
@@ -951,16 +969,9 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
         // state) while videoEvents_ carried the stale tail forever and
         // grew without bound. Start the log fresh from the restored
         // display state and clock.
-        videoEvents_.clear();
-        publishedEvents_.clear();
         displayAtFrameStart_ = ds;
         publishedFrameStart_ = ds;
-        constexpr uint64_t kCyclesPerScanline = 65;   // as in advanceCycles
-        const uint64_t kCyclesPerFrame =
-            kCyclesPerScanline *
-            static_cast<uint64_t>(
-                pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
-        lastVideoFrameStart_ = cycleCounter - (cycleCounter % kCyclesPerFrame);
+        resetVideoEventLogForClockJump();
     }
 
     if (!need(lcBank1.size() + lcBank2.size() + lcHigh.size())) return false;

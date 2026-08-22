@@ -241,6 +241,39 @@ inline bool errInProgress(int e)
 #endif
 }
 
+/// An accept() failure that says nothing about the LISTENING socket.
+///
+/// These are per-connection or per-resource conditions: the pending client
+/// vanished before it could be accepted (ECONNABORTED/EPROTO — trivially
+/// triggered by any local process doing connect + SO_LINGER{1,0} + close), or
+/// the process/system momentarily has no descriptors (EMFILE/ENFILE) or no
+/// buffers (ENOBUFS/ENOMEM). The listener is still bound and still valid, so
+/// treating any of them as "the socket is gone" retires an accept loop for
+/// good over a condition that clears by itself.
+inline bool errTransientAccept(int e)
+{
+#ifdef _WIN32
+    return e == WSAECONNRESET || e == WSAECONNABORTED ||
+           e == WSAEMFILE     || e == WSAENOBUFS;
+#else
+    return e == ECONNABORTED || e == EPROTO  || e == EMFILE ||
+           e == ENFILE       || e == ENOBUFS || e == ENOMEM;
+#endif
+}
+
+/// The subset of the above that means "out of resources" rather than "that
+/// one client went away". The pending connection is still queued, so the next
+/// poll returns readable immediately — a bare retry would spin at 100% CPU
+/// until the pressure lifts. Callers back off instead.
+inline bool errAcceptExhaustion(int e)
+{
+#ifdef _WIN32
+    return e == WSAEMFILE || e == WSAENOBUFS;
+#else
+    return e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM;
+#endif
+}
+
 inline bool errInterrupted(int e)
 {
 #ifdef _WIN32
@@ -417,6 +450,23 @@ inline iolen_t sendSocket(socket_t s, const void* buf, std::size_t n)
     return ::send(s, buf, n, MSG_NOSIGNAL);
 #else
     return ::send(s, buf, n, 0);
+#endif
+}
+
+/// sendto() that cannot raise SIGPIPE — the explicit-destination sibling of
+/// sendSocket(), for the UDP/IPRAW paths. Same platform split, and the same
+/// requirement that the caller has run disableSigpipe() on the socket where
+/// MSG_NOSIGNAL does not exist.
+inline iolen_t sendToSocket(socket_t s, const void* buf, std::size_t n,
+                            const sockaddr* to, socklen_c tolen)
+{
+#ifdef _WIN32
+    return ::sendto(s, static_cast<const char*>(buf), static_cast<int>(n), 0,
+                    to, static_cast<int>(tolen));
+#elif defined(MSG_NOSIGNAL)
+    return ::sendto(s, buf, n, MSG_NOSIGNAL, to, tolen);
+#else
+    return ::sendto(s, buf, n, 0, to, tolen);
 #endif
 }
 

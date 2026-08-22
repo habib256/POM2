@@ -4358,7 +4358,16 @@ void MainWindow::kioskRescanDisks()
     std::error_code ec;
 
     DiskIICard* boot = kioskBootDiskCard();
-    const std::string cur = boot ? boot->getDiskPath(0) : std::string{};
+    // Copied UNDER the lock. getDiskPath() hands back a reference into live
+    // DiskImage state, and the AI control server's HTTP thread reassigns that
+    // very string on /disk and /eject — copy-constructing from it while its
+    // heap buffer is being freed is a garbage path at best and a segfault at
+    // worst. renderStatusBar already snapshots for exactly this reason.
+    std::string cur;
+    if (boot) {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        cur = boot->getDiskPath(0);
+    }
 
     // Scan the booted disk's own folder PLUS every configured extra ROM
     // folder. Unlike the old build we do NOT filter out unrelated titles:
@@ -5434,7 +5443,13 @@ void MainWindow::bootHdvImage()
         tapeStatusUntil   = lastFrameTime + 4.0;
         return;
     }
-    const std::string p = dev->getImagePath();
+    // Under the lock, same reason as kioskRescanDisks: this is a reference
+    // into live card state that another thread can reassign.
+    std::string p;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        p = dev->getImagePath();
+    }
     // Boot from the slot the HDV/CFFA card is actually plugged in — the user
     // can move it to slot 2 / 7 / etc. via Slot Configuration and the
     // boot path follows. The card's slot ROM bakes its slot number into

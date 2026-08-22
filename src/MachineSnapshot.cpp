@@ -9,6 +9,8 @@
 
 #include "MachineSnapshot.h"
 
+#include "Logger.h"
+
 #include "M6502.h"
 #include "Memory.h"
 #include "SlotBus.h"
@@ -208,6 +210,14 @@ RestoreResult applyMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
         // user) believing a load happened.
         return { false, "snapshot contains no restorable CPU/MEM sections" };
     }
+    // The clock has just moved, possibly backwards, so the beam-race event
+    // log is stale by construction. MEX's own restore does this — but SECTION
+    // ORDER COMES FROM THE FILE and is not constrained, so a file that puts
+    // CPU last applied `setCycleCounter` after that cleanup and left the log
+    // holding future-stamped events. Doing it here, once, after everything
+    // has been applied, is order-independent. Idempotent, so the MEX path
+    // doing it too costs nothing.
+    mem.resetVideoEventLogForClockJump();
     return {};
 }
 
@@ -267,6 +277,26 @@ RestoreResult restoreMachineState(SnapshotReader& r, M6502& cpu, Memory& mem,
     }
     if (!haveCpu || !haveMem)
         return { false, "snapshot must contain one valid CPU and MEM section" };
+    // MEX is the ONLY carrier of the IIe paging mode, the language-card
+    // latches, all 64 KB of aux RAM, the RamWorks banks and the display state.
+    // Without it, restore replaces main RAM, the CPU and the clock while every
+    // soft switch keeps whatever the LIVE session had — and it used to report
+    // success. On the default //e profile with ALTZP set, zero page and the
+    // stack then resolve to the wrong 64 KB and the machine dies at once, with
+    // nothing anywhere to explain why.
+    //
+    // v1 files predate the section, so they still load — but say so, because
+    // the same half-restore applies to them.
+    if (!haveMex) {
+        if (r.version() >= 2)
+            return { false, "snapshot has no MEX section: paging, aux RAM and "
+                            "the language card would keep the live machine's "
+                            "values while main RAM and the CPU are replaced" };
+        pom2::log().warn("Snapshot",
+            "v1 snapshot has no MEX section — paging, aux RAM, the language "
+            "card and the display mode keep their CURRENT values; only main "
+            "RAM and the CPU are restored");
+    }
     if (!stagedWriter.finish())
         return { false, "cannot stage snapshot for validation" };
 

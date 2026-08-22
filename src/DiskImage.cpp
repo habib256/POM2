@@ -171,8 +171,9 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
     //   byte[1]    in [1..63] (Pascal-string filename length)
     //   byte[1+1+len] == 0  (terminator after the filename)
     //   byte[122,123] == 0  (reserved field — zeroes in real MacBinary)
-    // Hitting all four is exceedingly unlikely on a random disk image,
-    // so this is safe to apply unconditionally before format detection.
+    // All four fit inside the image's own first sector, and ordinary disk
+    // images DO hit them by chance — the claim that this is "safe to apply
+    // unconditionally" was wrong. See the guard below the lambda.
     auto looksLikeMacBinary = [](const uint8_t* p, std::size_t n) -> bool {
         if (n < 128)             return false;
         if (p[0] != 0x00)        return false;
@@ -182,7 +183,33 @@ DiskImage::DetectResult DiskImage::detectFormat(const std::string& path,
         if (p[122] != 0x00 || p[123] != 0x00) return false;
         return true;
     };
-    if (looksLikeMacBinary(bytes.data(), totalLen)) {
+    // The sniff above is only FOUR bytes wide and every one of them lives
+    // inside the image's own first sector, so ordinary disk images hit it by
+    // chance — and stripping 128 bytes off one leaves a length that matches
+    // nothing, so the file becomes unloadable with a diagnostic blaming a
+    // MacBinary header it never had. Strip only when doing so actually turns
+    // an unrecognised length INTO a recognised one; a buffer that already has
+    // a valid size is not a wrapper, whatever its first bytes look like.
+    auto knownPayloadLength = [](std::size_t len) {
+        return len == static_cast<std::size_t>(kBytesPerImage)    ||
+               len == static_cast<std::size_t>(kBytesPerImage13)  ||
+               len == static_cast<std::size_t>(kTracks) * kNibblesPerTrack ||
+               len == static_cast<std::size_t>(kTracks) * 6384;
+    };
+    // Magic-based formats have no fixed length — a 2IMG carries a header, a
+    // payload and an optional comment — so they are recognised by signature
+    // instead. (WOZ has its own MacBinary handling in loadWoz; accepting it
+    // here too costs nothing and keeps this one rule.)
+    auto magicAfterStrip = [&]() {
+        if (totalLen < 128 + 4) return false;
+        const uint8_t* q = bytes.data() + 128;
+        return std::memcmp(q, "2IMG", 4) == 0 ||
+               std::memcmp(q, "WOZ1", 4) == 0 ||
+               std::memcmp(q, "WOZ2", 4) == 0;
+    };
+    if (looksLikeMacBinary(bytes.data(), totalLen) &&
+        !knownPayloadLength(totalLen) &&
+        (knownPayloadLength(totalLen - 128) || magicAfterStrip())) {
         baseOff = 128;
         macBinaryStripped = true;
     }
@@ -2308,6 +2335,41 @@ bool writeFileAtomic(const std::string& path, std::string& lastError,
 }
 }  // namespace
 
+namespace {
+
+/// A dirty track whose nibble stream no longer decodes cannot be written back
+/// to a SECTOR format at all — .dsk/.do/.po hold decoded sectors, so there is
+/// nowhere to put a stream the decoder cannot parse.
+///
+/// What used to happen was worse than failing: the track was skipped, the
+/// remaining tracks were written, `dirty` was cleared and the function
+/// returned true, logging "Saved 0 modified track(s)". `hasUnsavedChanges()`
+/// went false and `getLastError()` stayed empty, so the eject path saw a clean
+/// success — and the guest's sector silently reverted to its previous
+/// contents. A guest whose write splice damaged the very data field it was
+/// writing lost it with a success message rather than a retryable error.
+///
+/// Failing keeps the dirty flags set, so nothing is thrown away and the user
+/// can retry. Turning write-back off is the escape hatch if the track is
+/// permanently unparseable: saveDirty is then a no-op that succeeds, and the
+/// disk ejects.
+bool reportUndecodable(const std::vector<int>& tracks, std::string& lastError)
+{
+    std::string list;
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (i) list += ", ";
+        list += std::to_string(tracks[i]);
+    }
+    lastError = "track " + list + " was modified but its nibble stream no "
+                "longer decodes into sectors, so it cannot be written back to "
+                "this format. Nothing was saved and the changes are kept in "
+                "memory; retry, or turn write-back off to eject without saving.";
+    pom2::log().warn("Disk II", "Save refused — " + lastError);
+    return false;
+}
+
+}  // namespace
+
 bool DiskImage::saveDirty()
 {
     if (!loaded || !anyDirty || !writeBackEnabled || fileWriteProtected) {
@@ -2386,6 +2448,39 @@ bool DiskImage::saveDirty()
     // header bytes + payload + trailer so the file remains a valid 2IMG
     // after the round-trip.
     if (nibFormat) {
+        // CNib2's 6384-byte tracks are padded to the 6656-nibble runtime width
+        // at load, and only the first 6384 go back to the file — so nibbles
+        // 6384..6655 are a WRITE BLACK HOLE covering ~4 % of every track. The
+        // guest's write lands there, saveDirty reports success, and the bytes
+        // are gone on reload with nothing said.
+        //
+        // The pad is $FF, which is also what sync bytes are, so a write that
+        // happens to be sync loses nothing and must not fail the save. Compare
+        // instead of guessing: only real, differing content is a loss, and a
+        // loss is worth refusing over.
+        if (cnib2Format) {
+            std::vector<int> lossy;
+            for (int t = 0; t < kTracks; ++t) {
+                if (!dirty[t]) continue;
+                for (std::size_t k = 6384; k < static_cast<std::size_t>(kNibblesPerTrack); ++k) {
+                    if (tracks[t][k] != 0xFF) { lossy.push_back(t); break; }
+                }
+            }
+            if (!lossy.empty()) {
+                std::string list;
+                for (std::size_t i = 0; i < lossy.size(); ++i) {
+                    if (i) list += ", ";
+                    list += std::to_string(lossy[i]);
+                }
+                lastError = "track " + list + " carries data past nibble 6384, "
+                            "which this image's CNib2 6384-per-track layout has "
+                            "nowhere to store. Nothing was saved and the changes "
+                            "are kept in memory; convert the image to a full "
+                            "6656-per-track .nib or to WOZ to keep writing to it.";
+                pom2::log().warn("Disk II", "Save refused — " + lastError);
+                return false;
+            }
+        }
         const bool wrote = writeFileAtomic(path, lastError,
             [&](std::ofstream& f) {
                 if (twoImgFormat && !twoImgHeaderRaw.empty()) {
@@ -2435,6 +2530,7 @@ bool DiskImage::saveDirty()
             }
         }
         int decodedTracks = 0;
+        std::vector<int> undecodable;
         for (int t = 0; t < kTracks; ++t) {
             if (!dirty[t]) continue;
             uint8_t sectors[kSectorsPerTrack13][kSectorBytes];
@@ -2442,12 +2538,13 @@ bool DiskImage::saveDirty()
                 std::memcpy(sectors[s],
                     bytes.data() + (t * kSectorsPerTrack13 + s) * kSectorBytes,
                     kSectorBytes);
-            if (!decodeTrack13(t, sectors)) continue;
+            if (!decodeTrack13(t, sectors)) { undecodable.push_back(t); continue; }
             for (int s = 0; s < kSectorsPerTrack13; ++s)
                 std::memcpy(bytes.data() + (t * kSectorsPerTrack13 + s) * kSectorBytes,
                     sectors[s], kSectorBytes);
             ++decodedTracks;
         }
+        if (!undecodable.empty()) return reportUndecodable(undecodable, lastError);
         const bool wrote = writeFileAtomic(path, lastError,
             [&](std::ofstream& wf) {
                 if (twoImgFormat && !twoImgHeaderRaw.empty()) {
@@ -2492,6 +2589,7 @@ bool DiskImage::saveDirty()
                       : kDos33LogicalForPhysical;
 
     int decodedTracks = 0;
+    std::vector<int> undecodable;
     for (int t = 0; t < kTracks; ++t) {
         if (!dirty[t]) continue;
         uint8_t sectors[kSectorsPerTrack][kSectorBytes];
@@ -2503,7 +2601,7 @@ bool DiskImage::saveDirty()
             const size_t off  = (t * kSectorsPerTrack + logical) * kSectorBytes;
             std::memcpy(sectors[p], bytes.data() + off, kSectorBytes);
         }
-        if (!decodeTrack(t, sectors)) continue;   // no parseable sector
+        if (!decodeTrack(t, sectors)) { undecodable.push_back(t); continue; }
         // Re-pack into the file at logical positions.
         for (int p = 0; p < kSectorsPerTrack; ++p) {
             const int logical = skew[p];
@@ -2512,6 +2610,8 @@ bool DiskImage::saveDirty()
         }
         ++decodedTracks;
     }
+
+    if (!undecodable.empty()) return reportUndecodable(undecodable, lastError);
 
     const bool wrote = writeFileAtomic(path, lastError,
         [&](std::ofstream& wf) {

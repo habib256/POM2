@@ -37,7 +37,9 @@
 
 #include "SocketCompat.h"
 
+#include <chrono>
 #include <cstddef>
+#include <thread>
 
 namespace pom2 {
 
@@ -68,6 +70,22 @@ inline PollAccept pollAcceptOnce(socket_t listenFd, int timeoutMs,
     if (!isValidSocket(fd)) {
         const int e = lastSocketError();
         if (errInterrupted(e) || errWouldBlock(e)) return PollAccept::Retry;
+        // Not every accept() failure means the LISTENER is gone. An aborted
+        // client (any local process can produce one with connect +
+        // SO_LINGER{1,0} + close) or a momentary descriptor shortage used to
+        // retire the accept loop permanently: the worker thread returned, the
+        // listener stayed bound with its backlog filling, and the owner still
+        // reported itself as running. Both callers — the AI control server and
+        // the SSC telnet bridge — then accepted nothing, for ever, with no
+        // error anywhere to point at.
+        if (errTransientAccept(e)) {
+            // Back off on resource exhaustion: the pending connection is still
+            // queued, so the next poll is readable immediately and a bare
+            // retry would spin a core until the pressure lifts.
+            if (errAcceptExhaustion(e))
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            return PollAccept::Retry;
+        }
         return PollAccept::Shutdown;   // listening socket closed under us
     }
     outFd = fd;
