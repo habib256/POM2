@@ -71,13 +71,17 @@ std::vector<uint16_t> Debugger::breakpoints() const
     std::vector<uint16_t> out;
     if (bpBits_.empty()) return out;
     out.reserve(bpCount_);
+    // A plain bit loop, not a count-trailing-zeros intrinsic: `__builtin_ctz`
+    // is GCC/Clang only and MSVC rejects it outright (caught by the Windows CI
+    // job, on a push rather than at tag time — which is what that job is for).
+    // There is no portability cost to pay here anyway: this runs once per UI
+    // frame over 8 KiB, never on the CPU's path.
     for (std::size_t i = 0; i < kBpBytes; ++i) {
-        uint8_t byte = bpBits_[i];
-        while (byte) {
-            const int bit = __builtin_ctz(byte);
-            out.push_back(static_cast<uint16_t>(i * 8 + static_cast<std::size_t>(bit)));
-            byte = static_cast<uint8_t>(byte & (byte - 1));
-        }
+        const uint8_t byte = bpBits_[i];
+        if (!byte) continue;
+        for (int bit = 0; bit < 8; ++bit)
+            if (byte & (1u << bit))
+                out.push_back(static_cast<uint16_t>(i * 8 + static_cast<std::size_t>(bit)));
     }
     return out;
 }
