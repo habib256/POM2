@@ -5651,20 +5651,22 @@ enough. Pinned locally by `headless_boot_capture`. With no disk it also skips
 plugging the Disk II: an empty drive parks the II+ autostart in the boot PROM
 forever and photographs the uninitialised text page.
 
-**`tools/wasm_stamp.sh`** fingerprints the *sources* that determine the
-committed `wasm/` bundle (GitHub Pages serves that folder straight from the
-branch, so it is published content, not a build artifact). `--check` runs in
-both CI and the release `wasm` job. Sources, not bytes: emcc is not
-reproducible across emsdk versions. The file list comes from `git ls-files`
-(tracked files only, byte-sorted regardless of locale) and each line is
-recomposed locally, because `sha256sum` / `shasum` / `openssl` all format
-their output differently.
+**The browser demo deploys from CI, not from the branch** (2026-08-23).
+`ci.yml`'s `wasm` job stages the bundle it just built under `_site/wasm/`
+and the `pages` job ships it with `actions/deploy-pages` on every push to
+`main`, so the demo at `habib256.github.io/pom2/wasm/` is always the commit
+it claims to be. Before that, Pages served a committed `wasm/` copy and
+`tools/wasm_stamp.sh` fingerprinted the sources to catch it going stale — which
+turned every push touching `src/` red until someone re-committed 38 MB of
+binaries (`POM2.wasm`: 39 commits, packfile 383 MiB). Both the guard and the
+committed copy are gone; `wasm/` keeps only `shell.html` and `serve.py`, and
+the staged outputs are `.gitignore`d.
 
 ## WebAssembly (browser build)
 
 Driver: `build_wasm.sh` → `wasm/{index.html, POM2.js, POM2.wasm,
-POM2.data, serve.py, SOURCE_STAMP}` (the shell template is
-`wasm/shell.html`). User-facing summary lives in `README.md`
+POM2.data}` (untracked; the shell template is `wasm/shell.html`, the dev
+server `wasm/serve.py`). User-facing summary lives in `README.md`
 § "🌐 WebAssembly".
 
 **Single-threaded by design**. No `std::thread`, no `SharedArrayBuffer`,

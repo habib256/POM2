@@ -1,6 +1,13 @@
 build/
 build-*/
 build_wasm/
+# build_wasm.sh stages the browser bundle here; CI deploys it to Pages, it is
+# never committed (see ci.yml `pages`).
+wasm/index.html
+wasm/POM2.js
+wasm/POM2.wasm
+wasm/POM2.data
+wasm/POM2.worker.js
 DIST/
 imgui/
 *.o
