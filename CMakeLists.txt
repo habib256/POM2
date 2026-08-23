@@ -156,6 +156,7 @@ set(SOURCES
     src/SoftCardZ80.cpp
     src/Memory.cpp
     src/MemoryWatch.cpp
+    src/Keyboard.cpp
     src/MemoryProfile_IIcClass.cpp
     src/MachineSnapshot.cpp
     src/RewindBuffer.cpp
@@ -706,6 +707,7 @@ add_executable(pom2_headless
     src/MachineSnapshot.cpp
     src/Memory.cpp
     src/MemoryWatch.cpp
+    src/Keyboard.cpp
     src/MemoryProfile_IIcClass.cpp
     src/Mockingboard.cpp
     src/NoSlotClock.cpp
@@ -774,6 +776,7 @@ add_executable(pom2_bench
     src/M6502.cpp
     src/Memory.cpp
     src/MemoryWatch.cpp
+    src/Keyboard.cpp
     src/MemoryProfile_IIcClass.cpp
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp

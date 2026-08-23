@@ -600,10 +600,7 @@ void Memory::resetSoftSwitchesWarm()
         resetSoftSwitches();
         return;
     }
-    std::lock_guard<std::mutex> kb(kbMutex);
-    keyReady = false;
-    pasteQueue.clear();   // a reset abandons any in-flight host paste
-    publishKbLatch();
+    keyboard_.reset();   // abandon any in-flight paste, drop the strobe
     // NB: cnxx-slot tracker analogue lives in SlotBus, which the caller
     // (EmulationController::softReset) drives via slotBus().reset();
     // nothing else needs touching here on II/II+.
@@ -675,10 +672,7 @@ void Memory::resetSoftSwitches()
     if (iieMode && ramWorksBanks_ > 1) {
         ramWorksSwapToBank(0);
     }
-    std::lock_guard<std::mutex> kb(kbMutex);
-    keyReady = false;
-    pasteQueue.clear();   // a reset abandons any in-flight host paste
-    publishKbLatch();
+    keyboard_.reset();   // abandon any in-flight paste, drop the strobe
 }
 
 void Memory::clearRam()
@@ -831,7 +825,7 @@ void Memory::appendSnapshotState(std::vector<uint8_t>& out)
         putU8(display.eightyStore ? 1 : 0);
     }
     putU64(cycleCounter);
-    putU64(paddleLatchCycle);
+    putU64(paddles_.latchCycle());
 
     // Main Language-Card RAM (II/II+ and IIe main-bank LC live here; the
     // mem[] $D000-$FFFF region is always the ROM mirror).
@@ -966,7 +960,7 @@ bool Memory::loadSnapshotState(const uint8_t* data, size_t n)
     ds.altChar     = getU8() != 0; ds.dhgr      = getU8() != 0; ds.eightyStore = getU8() != 0;
     cycleCounter     = getU64();
     vblNextEventCycle_ = 0;     // re-derive the VBL/frame gate from the new counter
-    paddleLatchCycle = getU64();
+    paddles_.setLatchCycle(getU64());
     {
         std::lock_guard<std::mutex> lk(stateMutex);
         display = ds;
@@ -1097,140 +1091,6 @@ void Memory::restoreMainRam(const uint8_t* data, size_t n)
     }
 }
 
-void Memory::queueKey(uint8_t apple2Key)
-{
-    std::lock_guard<std::mutex> lk(kbMutex);
-    const uint8_t b = apple2Key & 0x7F;
-    if (!pasteQueue.empty()) {
-        // A host paste is draining — append so this live keystroke is
-        // delivered in order AFTER it, instead of clobbering the currently
-        // latched paste byte and jumping the FIFO.
-        pasteQueue.push_back(b);
-    } else {
-        // No paste in flight: behave like the hardware latch — newest key
-        // wins (fast typing overwrites an unread key, as on real hardware).
-        lastKey  = b;
-        keyReady = true;
-        publishKbLatch();
-    }
-}
-
-void Memory::clearKeyStrobe()
-{
-    std::lock_guard<std::mutex> lk(kbMutex);
-    // Apple II hardware leaves the key byte in the latch and only releases
-    // the strobe — KEYIN re-polls $C000 until a fresh key arrives.
-    keyReady = false;
-    // Paste-queue drain: if the user has a paste in flight, the moment
-    // the strobe is cleared we promote the next byte into the latch and
-    // re-arm the strobe. The CPU's $C000-poll loop will see the next char
-    // on its very next iteration — no timing tricks, the ROM clocks the
-    // paste out at exactly the rate it can consume.
-    if (!pasteQueue.empty()) {
-        lastKey  = pasteQueue.front() & 0x7F;
-        keyReady = true;
-        pasteQueue.pop_front();
-    }
-    publishKbLatch();
-}
-
-size_t Memory::pasteText(const char* data, size_t length)
-{
-    if (!data || length == 0) return 0;
-    std::lock_guard<std::mutex> lk(kbMutex);
-
-    // Cap against the LIVE queue size, not just this call, so repeated pastes
-    // can't grow pasteQueue without bound (a memory DoS via the AI-control or
-    // clipboard paths).
-    const size_t inFlight = pasteQueue.size() + (keyReady ? 1u : 0u);
-    const size_t room = (inFlight >= kPasteMaxChars) ? 0u : (kPasteMaxChars - inFlight);
-
-    size_t queued = 0;
-    bool   prevWasCR = false;
-    for (size_t i = 0; i < length && queued < room; ++i) {
-        uint8_t b = static_cast<uint8_t>(data[i]);
-
-        // Line-ending normalisation: \r, \n, and \r\n all collapse to one
-        // CR ($0D). Track the previous byte so the LF after CR doesn't
-        // produce a second CR.
-        if (b == '\r') {
-            b = 0x0D;
-            prevWasCR = true;
-        } else if (b == '\n') {
-            if (prevWasCR) { prevWasCR = false; continue; }  // swallowed
-            b = 0x0D;
-            prevWasCR = false;
-        } else {
-            prevWasCR = false;
-        }
-
-        // Drop unprintable controls except CR and HT. Apple II keyboard
-        // ROM doesn't emit anything below $20 outside those two anyway.
-        if (b < 0x20 && b != 0x0D && b != 0x09) continue;
-        // Strip the high bit — Apple II is 7-bit ASCII.
-        b &= 0x7F;
-        // The ][ / ][+ keyboard has no lowercase; fold a-z → A-Z so pasted
-        // BASIC/Monitor input is accepted (a real II keyboard can't emit
-        // $61-$7A). IIe-class keyboards do have lowercase, so leave them.
-        if (!iieMode && b >= 'a' && b <= 'z') b = static_cast<uint8_t>(b - 'a' + 'A');
-
-        // First byte goes straight into the latch if it's empty; rest go
-        // into the queue and drain via clearKeyStrobe().
-        if (!keyReady && pasteQueue.empty()) {
-            lastKey  = b;
-            keyReady = true;
-            publishKbLatch();
-        } else {
-            pasteQueue.push_back(b);
-        }
-        ++queued;
-    }
-    return queued;
-}
-
-size_t Memory::pasteRawKeys(const char* data, size_t length)
-{
-    if (!data || length == 0) return 0;
-    std::lock_guard<std::mutex> lk(kbMutex);
-    const size_t inFlight = pasteQueue.size() + (keyReady ? 1u : 0u);
-    const size_t room = (inFlight >= kPasteMaxChars) ? 0u : (kPasteMaxChars - inFlight);
-    size_t queued = 0;
-    for (size_t i = 0; i < length && queued < room; ++i) {
-        const uint8_t b = static_cast<uint8_t>(data[i]) & 0x7F;
-        if (!keyReady && pasteQueue.empty()) {
-            lastKey  = b;
-            keyReady = true;
-            publishKbLatch();
-        } else {
-            pasteQueue.push_back(b);
-        }
-        ++queued;
-    }
-    return queued;
-}
-
-size_t Memory::pendingPasteSize() const
-{
-    std::lock_guard<std::mutex> lk(kbMutex);
-    return pasteQueue.size();
-}
-
-void Memory::cancelPaste()
-{
-    std::lock_guard<std::mutex> lk(kbMutex);
-    pasteQueue.clear();
-}
-
-void Memory::setPaddle(int idx, uint8_t value)
-{
-    if (idx >= 0 && idx < 4) paddleValue[idx] = value;
-}
-
-void Memory::setPaddleButton(int idx, bool down)
-{
-    if (idx >= 0 && idx < 3) paddleButton[idx] = down;
-}
-
 uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
 {
     // Soft-switch byte is in $C000-$C07F. Many switches respond to either
@@ -1244,7 +1104,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // ~5 % of a banner profile on its own.
     const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
     const uint8_t kbLatch =
-        (low < 0x20) ? kbLatchMirror_.load(std::memory_order_relaxed) : uint8_t{0};
+        (low < 0x20) ? keyboard_.latchMirror() : uint8_t{0};
 
     // Keyboard latch + IIe paging soft switches at $C000-$C00F.
     //
@@ -1324,8 +1184,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         const bool on = (low == 0x11) ? lcBank2Active : lcReadRam;
         uint8_t low7 = 0;
         if (iieMode) {
-            std::lock_guard<std::mutex> lk(kbMutex);
-            low7 = static_cast<uint8_t>(lastKey & 0x7F);
+            low7 = keyboard_.lastKey7();
         }
         return static_cast<uint8_t>((on ? 0x80 : 0x00) | low7);
     }
@@ -1364,8 +1223,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     if (iieMode && low == 0x19) {
         uint8_t low7 = 0;
         {
-            std::lock_guard<std::mutex> lk(kbMutex);
-            low7 = static_cast<uint8_t>(lastKey & 0x7F);
+            low7 = keyboard_.lastKey7();
         }
         // //c-class: $C019 is VBLINT — the LATCHED "a VBL interrupt
         // occurred" flag, not the live beam state. MAME `c000_iic_r`
@@ -1659,17 +1517,12 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
         const uint8_t mirrored = static_cast<uint8_t>(0x60 | (low & 0x07));
         const uint8_t bit7 = [&]() -> uint8_t {
             switch (mirrored) {
-                case 0x61: return (paddleButton[0] || openAppleKey.load())  ? 0x80 : 0x00;
-                case 0x62: return (paddleButton[1] || solidAppleKey.load()) ? 0x80 : 0x00;
-                case 0x63: return (paddleButton[2]
-                                  || (iieMode && shiftKey.load()))          ? 0x80 : 0x00;
+                case 0x61: return paddles_.button0() ? 0x80 : 0x00;
+                case 0x62: return paddles_.button1() ? 0x80 : 0x00;
+                case 0x63: return paddles_.button2(iieMode) ? 0x80 : 0x00;
                 case 0x64: case 0x65: case 0x66: case 0x67: {
                     const int idx = mirrored - 0x64;
-                    const uint64_t elapsed = cycleCounter - paddleLatchCycle;
-                    // ~11 cycles per paddle-value step (max ~2816c).
-                    const uint64_t threshold =
-                        static_cast<uint64_t>(paddleValue[idx]) * 11;
-                    return (elapsed < threshold) ? 0x80 : 0x00;
+                    return paddles_.discharging(idx, cycleCounter) ? 0x80 : 0x00;
                 }
                 case 0x60:
                     // $C068 mirrors $C060 (cassette comparator) per the
@@ -1703,7 +1556,7 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // both fire on the same access — they share the bus, neither
     // shadows the other.
     if (low >= 0x70 && low <= 0x7F) {
-        paddleLatchCycle = cycleCounter;
+        paddles_.rearm(cycleCounter);
         // //c-class: ANY $C070-$C07F access acknowledges the VBL
         // interrupt — MAME `apple2e.cpp` c000_iic_r/w case 0x70-0x7F:
         // `if (m_isiic ...) lower_irq(IRQ_VBL);` (~:2014-2017). Pairs
@@ -1831,8 +1684,7 @@ bool Memory::iieReadStatus(uint16_t addr, uint8_t& out) const
     // `lastKey` is the same latch as MAME's m_transchar.
     uint8_t transchar = 0;
     {
-        std::lock_guard<std::mutex> lk(kbMutex);
-        transchar = static_cast<uint8_t>(lastKey & 0x7F);
+        transchar = keyboard_.lastKey7();
     }
     auto bit = [transchar](bool on) -> uint8_t {
         return static_cast<uint8_t>((on ? 0x80 : 0x00) | transchar);

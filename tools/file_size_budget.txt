@@ -12,4 +12,4 @@ src/hgrpaint/HgrPaintEditor.cpp          2509
 src/ImageWriter.cpp                      2141
 src/M6502.cpp                            2159
 src/MainWindow.cpp                       9650
-src/Memory.cpp                           2539
+src/Memory.cpp                           2391

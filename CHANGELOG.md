@@ -5,6 +5,34 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — Keyboard and PaddleInputs leave the Memory god-object
+
+The order the TODO insisted on: the I/O-path test net first, the split second.
+`input_io_smoke` pins the observable bus behaviour — the $C000/$C010 latch as
+newest-wins-key plus FIFO-paste, the $C061-$C063 buttons and Open/Solid-Apple,
+the $C064-$C067 paddle RC timing and the $C070 re-arm — all through
+`memRead`/`memWrite`, so the extraction has something to be checked against
+rather than a promise that it "looks the same".
+
+Then both concerns came out. `PaddleInputs.h` owns the game port: four
+paddles, three buttons, the Open/Solid-Apple and Shift modifiers, and the
+$C070 RC-discharge latch, with the read logic (`button0/1/2`, `discharging`)
+that the $C061-$C067 path now calls. `Keyboard.h/.cpp` owns the latch and the
+host paste FIFO — the control-byte filter, the CR/LF collapse, the ][/][+
+case-fold (now a `foldToUpper` parameter Memory passes as `!iieMode`), the
+runaway-paste cap, and the lock-free `$C000` mirror that keeps the hot read
+off the mutex. `Memory` keeps one of each and forwards; the softswitch path
+calls `keyboard_.latchMirror()` / `lastKey7()` and `paddles_.discharging()`
+directly. The hot path is unchanged — the same atomic load on $C000, the same
+lock discipline the joystick block already used for paddles.
+
+Behaviour-preserving, and checked as such: `input_io_smoke`, `paste_smoke`
+(case-fold, cap, ordering, reset), `iie_memory_smoke`, both snapshot
+round-trips and `ui_worker_contention` all green. `Memory.cpp` 2539 → 2391 and
+`Memory.h` shed its keyboard/paddle members; the perf job (the 256-entry
+`memRead` dispatch) stays in Memory and stays a separate item, deliberately
+not merged with this compileability split.
+
 ## 2026-08-23 — A TSan pass for the contention the GUI actually creates
 
 The nightly TSan matrix covered the worker's park/resume, rewind, the audio
