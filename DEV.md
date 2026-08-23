@@ -5506,19 +5506,39 @@ machine then drops.
 `Memory` reports through `MemoryWatchSink` (`MemoryWatchSink.h`), a two-line
 interface, rather than calling `Debugger` directly: `Memory.cpp` is linked into
 two dozen test binaries and a benchmark, and none of them should have to pull
-the debugger in behind it.
+the debugger in behind it. The arm / disarm bookkeeping for both halves lives
+in `MemoryWatch.cpp` (linked beside `Memory.cpp` everywhere, like
+`MemoryProfile_IIcClass.cpp`): a concern of its own, and `Memory.cpp` is a
+god-object the file-size ratchet refuses to grow. The two hot-path pieces stay
+where they must — the `writable[]` test in `memWrite`, and the `memReadSlow`
+report wrapper in `Memory.cpp`, whose slow body is force-inlined into it.
 
 The stop lands at the first instruction boundary AFTER the access, which cannot
 be un-done — so `Hit::pc` (latched by `onInstruction` as `curPc_`) names the
 instruction that *wrote*, while the machine's live PC is the instruction after
 it. Both facts are in the stop banner.
 
-**Read watchpoints are still NOT implemented**, and the API says so:
-`setWatchpoint` keeps only the Write bit, so a `Read` request arms nothing,
-`ReadWrite` degrades to `Write`, and `watchpointAt` reports what can actually
-fire (the panel offers only writes; pinned by `debugger` case 1). `memRead`'s
-fast path has no per-address table to hide a watch in — that is the whole
-reason the write half was free and the read half is not.
+**Read watchpoints** (2026-08-23) work by a coarser mechanism, because
+`memRead`'s fast path has no per-address table to hide a watch in. One flag,
+`Memory::readDivert_`, is true while ANY read watch is armed; while it is,
+every read falls through to `memReadSlow`, which performs the read and then
+reports the watched ones (`Memory::readWatch_`, one byte per address, empty
+until the first arm). The flag is never *tested* on the fast path — a test
+there measured +7.2 % — it is folded into three derived bytes that replace
+tests the path already made (`plainRead_` for `!iieMode || testMode`,
+`iieFastRead_` for `!bankTrace_`, `romFastRead_` for `!iicProfile_`), kept
+current by `refreshReadFastFlags()` at every writer of a source flag. Un-armed
+cost: none (+0.0 % / −3.0 % / −0.5 %); armed: every bus read out of line,
++11 % to +55 % depending on the workload, paid only while armed. Numbers and
+the two traps (the flag test, the un-inlined slow body) in
+[PERFORMANCE § 8.5](docs/PERFORMANCE.md). A read watch fires on the bus
+ACCESS after the read, opcode fetches included — a watch on `$FBB3` answers
+"who checks the ROM ID byte" — and soft-switch reads included, with their
+side effects, as on the real bus; the memory viewer peeks `mem[]` and never
+fires. The panel offers R / W / RW and defaults to W, which is free in both
+states. Pinned by `debugger` cases 10 (stop, reader named, value carried,
+opcode fetch, soft switch, disarm reopens the fast path) and 11 (an unwatched
+read under an armed watch does not stop).
 
 **Known limit.** Step-over reads the opcode at the PC with `peekMainRam`, not
 `memRead` — a debugger must never flip a soft switch to inspect the machine —

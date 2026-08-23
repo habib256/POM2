@@ -100,8 +100,9 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   `rewind_transport` case 6, each half verified falsifiable on its own.
   → [DEV](DEV.md#rewind--time-travel)
 
-- 🟢 **Watchpoints: the WRITE half shipped free — 2026-08-22 finding, DONE
-  2026-08-23. Reads stay out, on the same measurement.** The naive shape (wrap
+- ✅ **Watchpoints: the WRITE half shipped free — 2026-08-22 finding, DONE
+  2026-08-23; the READ half the same day, by a coarser shape that measured
+  free too.** The naive shape (wrap
   `memRead`/`memWrite`, test one pointer, call a sink) measured **+13.4 % /
   +16.5 % / +9.2 %** and was thrown away; forcing it inline made it worse,
   which located the cost in the extra branch and the code growth around the
@@ -122,14 +123,17 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   byte. Of the two caveats this item used to list, **one did not exist**:
   Language-Card paging does not rewrite `writable[]` at all — `markRomRegion`
   is its only mutator and the LC has its own path — so the shadow only had to
-  survive that one function. **Read watchpoints remain unimplemented**:
-  `memRead`'s fast path has no per-address table to hide one in, which is the
-  whole reason the write half was free. The panel offers writes only, and
-  since 2026-08-23 the API no longer pretends otherwise: `setWatchpoint`
-  keeps only the Write bit, so a Read request arms nothing and
-  `watchpointAt` says so (pinned in `debugger` case 1) — storing the request
-  verbatim promised a stop that never came.
-  Numbers: [PERFORMANCE § 8.3](docs/PERFORMANCE.md)
+  survive that one function. **Read watchpoints** have no per-address table
+  to hide in, so they use ONE flag that diverts every read to `memReadSlow`
+  while any read watch is armed. Testing that flag on the fast path measured
+  **+7.2 % / +4.2 %** and was rejected; folding it into three tests the path
+  already made (`plainRead_` / `iieFastRead_` / `romFastRead_`) measured
+  **+0.0 % / −3.0 % / −0.5 %** un-armed. Armed, every read goes out of line
+  (+11 % to +55 %), paid only by the session that armed one. A second trap
+  on the way — the wrapped slow body left out of line, +1.0 % on the ][+
+  banner — was caught by the same measurement and force-inlined. The panel
+  offers R / W / RW, default W. Pinned by `debugger` cases 10-11.
+  Numbers: [PERFORMANCE § 8.3 + 8.5](docs/PERFORMANCE.md)
   → [DEV](DEV.md#debugger-debuggerhcpp-debugger_imgui)
 
 - ✅ **`disk_path_snapshot` SIGBUS on arm64 macOS — found 2026-08-22, DONE
@@ -223,7 +227,7 @@ see [Architect attack order](#architect-attack-order) (P0 freeze of
 | 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 | 3 | Memory god-object split                 | 2 d     | cuts recompiles; architect **P2** (after an I/O test net; not merged with the `memRead` dispatch) |
-| 4 | ~~Debugger runtime glue (BP / watch / step)~~ ✅ DONE 2026-08-22, watch 2026-08-23 | — | breakpoints, step, step-over, run-to-cursor + **write** watchpoints (free — the address is diverted off `memWrite`'s fast path); read watchpoints still deferred on the measurement (see [Open](#open-and-known-to-be-open--2026-08-22-bug-hunt)) |
+| 4 | ~~Debugger runtime glue (BP / watch / step)~~ ✅ DONE 2026-08-22, watchpoints 2026-08-23 | — | breakpoints, step, step-over, run-to-cursor + **write** watchpoints (free — the address is diverted off `memWrite`'s fast path) + **read** watchpoints (free un-armed — the divert flag is folded into tests the fast path already made; see [Open](#open-and-known-to-be-open--2026-08-22-bug-hunt)) |
 | 4b | ~~Digidream 1 tempo regression~~ ✅ DONE | — | cause measured (`caughtUp` paced against the last write, not CPU-now) and fixed 2026-08-01 (see [Audio]) |
 | 5 | ~~CI GitHub Actions (`ctest` headless)~~ ✅ DONE | — | the dormant ctest suite (182 tests) now gated (see [Arch]) |
 | 6 | ~~Desktop drag-drop disk (`glfwSetDropCallback`)~~ ✅ DONE | — | README promise kept (see [UI/UX]) |
@@ -246,7 +250,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 | **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟡 open, but no longer unattended: a **nightly ASan+UBSan / TSan matrix** runs in `ci.yml` as of 2026-08-22 (`POM2_SANITIZE` had been a CMake option CI never used, so the "controller TSan clean 2026-08-17" result had nothing keeping it true). GUI / `demodMutex` / slot re-plug under load still need a targeted pass. OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
 | **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
-| **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | ✅ **BP + step + step-over + run-to-cursor DONE 2026-08-22; WRITE watchpoints DONE 2026-08-23** (`Debugger.h/.cpp`, `Debugger_ImGui.*`, `MemoryWatchSink.h`, pinned `debugger`; zero measurable cost armed or not, PERFORMANCE § 8.3). Read watchpoints stay out — no free hook exists on `memRead`. | [Arch](#arch-refactor--tooling); [§ Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui) |
+| **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | ✅ **BP + step + step-over + run-to-cursor DONE 2026-08-22; WRITE watchpoints DONE 2026-08-23** (`Debugger.h/.cpp`, `Debugger_ImGui.*`, `MemoryWatchSink.h`, pinned `debugger`; zero measurable cost armed or not, PERFORMANCE § 8.3). READ watchpoints the same day: no free per-address hook on `memRead`, so one divert flag folded into existing fast-path tests — +0.0 % un-armed, PERFORMANCE § 8.5. | [Arch](#arch-refactor--tooling); [§ Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui) |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
 | **P3** | ~~Finish the `stateMutex` family: the HDV / block-device mount~~ ✅ **DONE 2026-08-22** — 25.8 ms under the lock → 0.0 ms. What is left of the family is the FujiNet `transact` wait and two thread `join()`s, both 🟡. | ✅ | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
@@ -1276,8 +1280,9 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   2026-08-23 (**write** watchpoints, free: the address is diverted off
   `memWrite`'s fast path instead of the fast path testing for it).
   `Debugger.h/.cpp`, `Debugger_ImGui.*`, `MemoryWatchSink.h`, pinned by
-  `debugger`. Read watchpoints stay out — `memRead` has no per-address
-  table to hide one in ([PERFORMANCE § 8.2-8.3](docs/PERFORMANCE.md)).
+  `debugger`. Read watchpoints (2026-08-23) divert every read while one is
+  armed, through a flag folded into the fast path's existing tests —
+  measured free un-armed ([PERFORMANCE § 8.2-8.5](docs/PERFORMANCE.md)).
 - 🟡 **`POM2_IWM_LEGACY_DATA_PATH` / IWM vs Disk II shadow** —
   architect **P3**. `Memory::setIWMAuthoritative` (`Memory.h`) still
   offers a dual data path. Either IWM is the truth and the shadow goes,

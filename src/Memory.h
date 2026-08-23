@@ -141,7 +141,7 @@ public:
     /// by the Klaus Dormann functional test, which expects the whole
     /// address space to behave as RAM. Must NOT be enabled in normal
     /// emulation; no safety checks remain.
-    void setTestMode(bool enabled) { testMode = enabled; }
+    void setTestMode(bool enabled) { testMode = enabled; refreshReadFastFlags(); }
     bool isTestMode() const        { return testMode; }
 
     /// Test/debug accessor for the current floating-bus byte (the value an
@@ -186,25 +186,35 @@ public:
     // function's own guards, so behaviour is identical by construction.
     uint8_t memRead(uint16_t addr)
     {
+        // Read watchpoints live in this function WITHOUT a test of their
+        // own: a flag test added here measured +7.2 % / +4.2 % (PERFORMANCE
+        // § 8.5), so instead the three derived bytes `plainRead_`,
+        // `iieFastRead_` and `romFastRead_` each fold `readDivert_` into a
+        // test that was already being made. Arming a read watch clears all
+        // three; the fast path then falls through to memReadSlow on the
+        // branches it already had. See refreshReadFastFlags().
         if (addr < 0xC000) {
             // testMode (Klaus harness) = flat RAM over the whole space, and
             // it is checked first in memReadSlow too — keep that order.
-            if (!iieMode || testMode) return mem[addr];
+            // (`plainRead_` = `!iieMode || testMode`, minus any read watch.)
+            if (plainRead_) return mem[addr];
             // //e aux routing. `bankTrace_` is a debug-only diagnostic; when
             // it is armed the slow path takes over so the tracing lives in
-            // exactly one place.
-            if (!bankTrace_) return iieReadFromAux(addr) ? aux[addr] : mem[addr];
+            // exactly one place. (`iieFastRead_` = //e, `!bankTrace_`, no
+            // read watch.)
+            if (iieFastRead_) return iieReadFromAux(addr) ? aux[addr] : mem[addr];
             return memReadSlow(addr);
         }
         if (testMode) return mem[addr];
-        // ROM window. `!lcReadRam` → the LC maps ROM; `!iicProfile_` → no //c
-        // alt-firmware bank can override it; the last clause is the exact
-        // NoSlotClock intercept condition ($F800+ on a II/II+ with a chip
-        // fitted), which is the only other reader of this range.
+        // ROM window. `!lcReadRam` → the LC maps ROM; `romFastRead_` → no //c
+        // alt-firmware bank can override it (`!iicProfile_`) and no read
+        // watch is armed; the last clause is the exact NoSlotClock intercept
+        // condition ($F800+ on a II/II+ with a chip fitted), which is the
+        // only other reader of this range.
         // (Tried 2026-08-20: caching these three tests in one bool measured
         // 4 % SLOWER on an M1 — they are adjacent loads the compiler already
         // schedules well. Leave the condition written out.)
-        if (addr >= 0xD000 && !lcReadRam && !iicProfile_
+        if (addr >= 0xD000 && !lcReadRam && romFastRead_
             && !(noSlotClock_ && !iieMode && addr >= 0xF800))
             return mem[addr];
         // //e internal $C100-$CFFF I/O ROM. The //e executes its keyboard
@@ -228,7 +238,7 @@ public:
         // (`addr < 0xD000` matters: a $D000+ read that was NOT the ROM window
         // above — the language card mapping RAM — must not land here.)
         if (iieMode && addr >= 0xC100 && addr < 0xD000 && addr != 0xCFFF
-            && !iicProfile_ && !noSlotClock_) {
+            && romFastRead_ && !noSlotClock_) {
             const bool c3 = (addr & 0xFF00u) == 0xC300u;
             const bool slotC3 = (iieMemMode & MF_SLOTC3ROM) != 0;
             if (iieMemMode & MF_INTCXROM) {
@@ -304,6 +314,30 @@ public:
             return (writeWatch_[addr] & kWatchWasWritable) != 0;
         return writable[addr];
     }
+
+    // ── Read watchpoints ─────────────────────────────────────────────────
+    // Reads have no per-address table on their fast path to hide a watch in
+    // (that is why the write half above was free and this half is not), so
+    // the design is one level coarser: `readDivert_` is true while ANY read
+    // watch is armed, and `memRead` then sends every read to `memReadSlow`,
+    // which reports the watched ones to the sink after performing the read.
+    //   * Un-armed cost: one byte load and a predictable branch on each of
+    //     memRead's two halves — measured at the noise floor on all three
+    //     pom2_bench workloads (PERFORMANCE § 8.5), not assumed.
+    //   * Armed cost: every bus read goes out of line — roughly the
+    //     pre-2026-08 profile (§ 3.2). Paid only by the session that armed a
+    //     read watch, and only while it is armed.
+    //   * Fires on the bus ACCESS, after the read, with the value read:
+    //     opcode fetches included (a watch on $FBB3 sees the ROM-ID check),
+    //     soft-switch reads included (with their side effects, as on the
+    //     real bus). The UI's memory viewer peeks `mem[]` and never fires.
+    //   * The watch is on the ADDRESS, not the bank (same rule as writes).
+    void setReadWatch(uint16_t addr, bool on);
+    void clearReadWatches();
+    bool hasReadWatch(uint16_t addr) const {
+        return !readWatch_.empty() && readWatch_[addr] != 0;
+    }
+    std::size_t readWatchCount() const { return readWatchCount_; }
 
     // Diagnostic — used by M6502's BRK trace.
     std::string busStateSummary() const;
@@ -660,6 +694,29 @@ private:
     std::vector<uint8_t> writeWatch_;
     std::size_t          writeWatchCount_ = 0;
     pom2::MemoryWatchSink* watchSink_ = nullptr;
+    // Read-watchpoint table, same lifetime rule. `readDivert_` is
+    // `readWatchCount_ != 0`; memRead never tests it directly — it is folded
+    // into the three derived fast-path bytes below by refreshReadFastFlags().
+    std::vector<uint8_t> readWatch_;
+    std::size_t          readWatchCount_ = 0;
+    bool                 readDivert_ = false;
+    // memRead's fast-path gates, each a test the function already made with
+    // `readDivert_` folded in (so a read watch costs the hot path nothing):
+    //   plainRead_   = (!iieMode || testMode) && !readDivert_
+    //   iieFastRead_ = iieMode && !testMode && !bankTrace_ && !readDivert_
+    //   romFastRead_ = !iicProfile_ && !readDivert_
+    // Every writer of iieMode / testMode / bankTrace_ / iicProfile_ /
+    // readDivert_ calls refreshReadFastFlags(); forgetting one does not
+    // crash, it silently takes the slow path (or skips a watch) — pinned by
+    // `debugger` case 10 and the fast-path parity tests.
+    bool                 plainRead_   = true;
+    bool                 iieFastRead_ = false;
+    bool                 romFastRead_ = true;
+    void refreshReadFastFlags() {
+        plainRead_   = (!iieMode || testMode) && !readDivert_;
+        iieFastRead_ = iieMode && !testMode && !bankTrace_ && !readDivert_;
+        romFastRead_ = !iicProfile_ && !readDivert_;
+    }
     // Apple II/II+ 16 KB Language Card. $D000-$DFFF has two 4 KB banks;
     // $E000-$FFFF is one shared 8 KB bank. Together with base 48 KB RAM
     // this gives the II+ its ProDOS-required 64 KB.
@@ -929,6 +986,16 @@ private:
     /// former body of memRead(), moved wholesale — see the comment on
     /// memRead() for why the split exists.
     uint8_t memReadSlow(uint16_t addr);
+    /// The original body of memReadSlow(); memReadSlow() itself is the
+    /// read-watch report wrapped around it (§ Read watchpoints). Forced
+    /// inline: left to itself the compiler kept this large body out of line
+    /// and the extra call measured +1.0 % on the ][+ banner, whose keyboard
+    /// poll lives on the slow path (PERFORMANCE § 8.5).
+#if defined(_MSC_VER)
+    __forceinline uint8_t memReadSlowBody(uint16_t addr);
+#else
+    __attribute__((always_inline)) uint8_t memReadSlowBody(uint16_t addr);
+#endif
     /// Video-timing half of advanceCycles() — see the inline part.
     void    advanceCyclesVideo();
     /// Out-of-line so Memory.h needs only the CassetteDevice forward decl.

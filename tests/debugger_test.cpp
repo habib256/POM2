@@ -131,19 +131,16 @@ void testBreakpointBookkeeping()
     assert(!dbg.armed() && dbg.breakpointCount() == 0);
     assert(!dbg.hasBreakpoint(0x0302));
 
-    // A watchpoint the machine cannot fire must not be reported as armed:
-    // only the Write half has a hook (Debugger.h), so a Read request arms
-    // nothing and ReadWrite degrades to Write. Pre-fix the API stored the
-    // request verbatim and watchpointAt() promised a stop that never came.
+    // Watchpoint bookkeeping: the access is stored as asked, because both
+    // halves can fire (cases 7 and 10), and re-arming with a different access
+    // REPLACES rather than accumulates — one address, one entry.
     dbg.setWatchpoint(0x0300, pom2::Debugger::Read);
-    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::None);
-    assert(dbg.watchpointCount() == 0 && !dbg.armed());
-    dbg.setWatchpoint(0x0300, pom2::Debugger::ReadWrite);
-    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::Write);
+    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::Read);
     assert(dbg.watchpointCount() == 1 && dbg.armed());
-    // Downgrading an armed Write watch to Read must REMOVE it, not leave a
-    // phantom that keeps the count (and the CPU's slow loop) alive.
-    dbg.setWatchpoint(0x0300, pom2::Debugger::Read);
+    dbg.setWatchpoint(0x0300, pom2::Debugger::Write);
+    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::Write);
+    assert(dbg.watchpointCount() == 1);
+    dbg.setWatchpoint(0x0300, pom2::Debugger::None);
     assert(dbg.watchpointAt(0x0300) == pom2::Debugger::None);
     assert(dbg.watchpointCount() == 0 && !dbg.armed());
 
@@ -442,6 +439,128 @@ void testRestoreIgnoresTheDiversion()
     std::printf("[ OK ] a state restore ignores the watchpoint diversion\n");
 }
 
+// A program that LOADS, at $0320:
+//   $0320  LDA $0360    AD 60 03
+//   $0323  LDA #$77     A9 77
+//   $0325  JMP $0325    4C 25 03
+constexpr uint16_t kLoadStart = 0x0320;
+constexpr uint16_t kLoadNext  = 0x0323;
+constexpr uint16_t kLoadAddr  = 0x0360;
+const uint8_t kLoadProgram[] = {
+    0xAD, 0x60, 0x03,
+    0xA9, 0x77,
+    0x4C, 0x25, 0x03,
+};
+
+void loadLoadProgram(Memory& mem)
+{
+    for (std::size_t i = 0; i < sizeof(kLoadProgram); ++i)
+        mem.writeRamUnchecked(static_cast<uint16_t>(kLoadStart + i), kLoadProgram[i]);
+    mem.writeRamUnchecked(kLoadAddr, 0x5A);
+}
+
+// Arm a read watch the way syncDebugHook() does — both tables, or the test
+// passes while the shipped wiring is broken (same rule as armWriteWatch).
+void armReadWatch(Memory& mem, pom2::Debugger& dbg, uint16_t addr)
+{
+    dbg.setWatchpoint(addr, pom2::Debugger::Read);
+    mem.setWatchSink(&dbg);
+    mem.setReadWatch(addr, true);
+}
+
+void disarmReadWatch(Memory& mem, pom2::Debugger& dbg, uint16_t addr)
+{
+    dbg.setWatchpoint(addr, pom2::Debugger::None);
+    mem.setReadWatch(addr, false);
+}
+
+// ── 10. THE read watchpoint case ─────────────────────────────────────────
+void testReadWatchStopsAndTheReadHappened()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadLoadProgram(mem);
+
+    // Un-armed, the address is an ordinary fast-path read: nothing to see.
+    assert(mem.readWatchCount() == 0 && !mem.hasReadWatch(kLoadAddr));
+
+    armReadWatch(mem, dbg, kLoadAddr);
+    assert(dbg.armed() && mem.hasReadWatch(kLoadAddr) && mem.readWatchCount() == 1);
+
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(kLoadStart);
+    const int spent = cpu.run(1000);
+
+    assert(dbg.stopRequested() && "the read watchpoint did not fire");
+    const pom2::Debugger::Hit hit = dbg.lastHit();
+    assert(hit.reason == pom2::Debugger::Reason::WatchRead);
+    assert(hit.addr  == kLoadAddr);
+    assert(hit.value == 0x5A && "the hit must carry the value the bus read");
+    assert(hit.pc == kLoadStart && "the hit must name the instruction that read");
+    // Same stop discipline as a write: the read is done, the machine halts at
+    // the next boundary, and the load itself must have landed in A.
+    assert(cpu.getProgramCounter() == kLoadNext);
+    assert(cpu.getAccumulator() == 0x5A && "the watched read was not performed");
+    assert(spent > 0 && spent < 1000);
+    dbg.clearHit();
+
+    // A read watch on the instruction's OWN address fires on the opcode
+    // fetch — that is how "who checks the ROM ID byte at $FBB3" is answered.
+    disarmReadWatch(mem, dbg, kLoadAddr);
+    armReadWatch(mem, dbg, kLoadStart);
+    cpu.setProgramCounter(kLoadStart);
+    cpu.run(1000);
+    assert(dbg.stopRequested());
+    assert(dbg.lastHit().reason == pom2::Debugger::Reason::WatchRead);
+    assert(dbg.lastHit().addr == kLoadStart && dbg.lastHit().value == 0xAD);
+    dbg.clearHit();
+
+    // A soft-switch read ($C000+) fires too — it was already on the slow path.
+    disarmReadWatch(mem, dbg, kLoadStart);
+    armReadWatch(mem, dbg, 0xC000);
+    mem.writeRamUnchecked(kLoadStart + 1, 0x00);   // LDA $C000
+    mem.writeRamUnchecked(kLoadStart + 2, 0xC0);
+    cpu.setProgramCounter(kLoadStart);
+    cpu.run(1000);
+    assert(dbg.stopRequested() && dbg.lastHit().addr == 0xC000);
+    dbg.clearHit();
+
+    // Disarming the last read watch drops the diversion: the table is gone
+    // and a run no longer stops.
+    disarmReadWatch(mem, dbg, 0xC000);
+    assert(!dbg.armed() && mem.readWatchCount() == 0 && !mem.hasReadWatch(0xC000));
+    cpu.setDebugHook(nullptr);
+    cpu.setProgramCounter(kLoadStart);
+    const int full = cpu.run(1000);
+    assert(full >= 1000 && !dbg.stopRequested());
+
+    std::printf("[ OK ] a read watchpoint stops, names the reader, and the read happened\n");
+}
+
+// ── 11. The read diversion is precise: an unwatched read does not stop ───
+void testUnwatchedReadDoesNotStop()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadLoadProgram(mem);
+
+    // Armed on the byte NEXT to the one the program reads. Every read is now
+    // diverted through memReadSlow, which is exactly where a sloppy report
+    // ("something was read while a watch is armed") would show up.
+    armReadWatch(mem, dbg, static_cast<uint16_t>(kLoadAddr + 1));
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(kLoadStart);
+    const int spent = cpu.run(1000);
+    assert(!dbg.stopRequested() && "an unwatched read fired the watchpoint");
+    assert(spent >= 1000 && cpu.getAccumulator() == 0x77);
+    // …and the diverted read returned the right byte.
+    assert(mem.memRead(kLoadAddr) == 0x5A);
+
+    std::printf("[ OK ] an unwatched read under an armed read watch does not stop\n");
+}
+
 }  // namespace
 
 int main()
@@ -455,6 +574,8 @@ int main()
     testWriteWatchStopsAndTheWriteLands();
     testWatchDoesNotUnprotectRom();
     testRestoreIgnoresTheDiversion();
+    testReadWatchStopsAndTheReadHappened();
+    testUnwatchedReadDoesNotStop();
     std::printf("debugger: all assertions passed\n");
     return 0;
 }

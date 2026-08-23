@@ -788,16 +788,19 @@ void EmulationController::noteDebuggerStop()
 void EmulationController::syncDebugHook()
 {
     processor.setDebugHook(debugger_->armed() ? debugger_.get() : nullptr);
-    // Write watchpoints are not a hook Memory calls on every access — they
-    // are addresses DIVERTED off memWrite's fast path (Memory.h § Write
-    // watchpoints), so Memory keeps a table that has to follow the
+    // Watchpoints are not a hook Memory calls on every access — a write
+    // watch is an address DIVERTED off memWrite's fast path, a read watch
+    // flips the one flag that diverts every read (Memory.h § Write / § Read
+    // watchpoints) — so Memory keeps tables that have to follow the
     // debugger's. Rebuilt wholesale rather than incrementally: this runs on a
-    // UI edit and never on the CPU's path, and one authority for two tables
-    // beats two that can drift. Read watches are skipped because nothing can
-    // deliver them — see Debugger::noteAccess.
+    // UI edit and never on the CPU's path, and one authority for the tables
+    // beats several that can drift.
     mem.clearWriteWatches();
-    for (const auto& w : debugger_->watchpoints())
+    mem.clearReadWatches();
+    for (const auto& w : debugger_->watchpoints()) {
         if (w.access & pom2::Debugger::Write) mem.setWriteWatch(w.addr, true);
+        if (w.access & pom2::Debugger::Read)  mem.setReadWatch(w.addr, true);
+    }
 }
 
 void EmulationController::debugResume()

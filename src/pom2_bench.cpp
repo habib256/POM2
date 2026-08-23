@@ -128,6 +128,9 @@ void usage(const char* prog)
         "  --hash-frame        Force the framebuffer hash on (see note on\n"
         "                      floating-point pipelines below).\n"
         "  --quiet             One line of output, nothing else.\n"
+        "  --read-watch HEX    Arm a read watchpoint on that address — no\n"
+        "                      sink, so nothing stops; measures the cost of\n"
+        "                      the armed read diversion (PERFORMANCE 8.5).\n"
         "\n"
         "The RAM hash is always printed and is integer-exact on every host;\n"
         "the framebuffer hash is printed for integer pipelines only, because\n"
@@ -150,6 +153,7 @@ int main(int argc, char** argv)
     bool hashAll        = false;
     bool quiet          = false;
     bool dumpText       = false;
+    int  readWatch      = -1;        // --read-watch, or none
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -166,6 +170,8 @@ int main(int argc, char** argv)
         else if (a == "--hash-frame") hashFrameForce = true;
         else if (a == "--hash-all")   hashAll = true;
         else if (a == "--quiet")      quiet = true;
+        else if (a == "--read-watch" && i + 1 < argc)
+                                      readWatch = static_cast<int>(std::strtol(argv[++i], nullptr, 16));
         else if (a == "--dump-text")  dumpText = true;
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
@@ -243,6 +249,7 @@ int main(int argc, char** argv)
     }
 
     M6502 cpu(&mem);
+    if (readWatch >= 0) mem.setReadWatch(static_cast<uint16_t>(readWatch), true);
     cpu.hardReset();
     mem.slotBus().reset();
     if (booting) cpu.setProgramCounter(0xC600);   // Disk II boot PROM entry

@@ -79,6 +79,9 @@ private:
     /// Same, for the watchpoint box. Separate storage so typing in one does
     /// not clear the other.
     char      wpEntry_[8]  = {0};
+    /// Access the next watchpoint is armed with (Debugger::Access bits).
+    /// Defaults to Write: it is free while armed, a read watch is not.
+    int       wpAccess_    = 2;
     /// The address the user last clicked in the disassembly — the target for
     /// Run To Cursor.
     uint16_t  cursorAddr_  = 0;

@@ -5,6 +5,46 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — Read watchpoints, and the flag that is never tested
+
+The debugger's write half shipped free in the morning because `memWrite`'s
+fast path already consults a per-address byte a watch can hide in. `memRead`
+has no such byte — `mem[addr]` on a ][+, a paging computation on a //e — and
+that was the honest reason reads stayed out. The shape that fits is one level
+coarser: a single flag, `Memory::readDivert_`, true while ANY read watch is
+armed, under which every read takes `memReadSlow`, which performs the read and
+reports the watched ones after it.
+
+The obvious implementation — test the flag at the top of `memRead` — measured
+**+7.2 % / +4.2 %** on the ][+ and //e banners: one byte load and a branch
+that always predicts, and still half the cost of the naive tap rejected on
+2026-08-22. What shipped tests nothing new. The fast path already decided
+three things — `!iieMode || testMode`, `!bankTrace_`, `!iicProfile_` — and
+each became a derived byte with `readDivert_` folded in
+(`plainRead_`, `iieFastRead_`, `romFastRead_`, recomputed by
+`refreshReadFastFlags()` wherever a source flag is written). Arming a read
+watch closes all three gates and the reads fall through on branches that were
+already there; the ][+ path went from two tests to one on the way. Interleaved
+best-of-9 on the three `pom2_bench` workloads, RAM hashes identical:
+**+0.0 % / −3.0 % / −0.5 %**.
+
+A second trap was caught by the same discipline: wrapping the original slow
+body in the report left the compiler keeping that large body out of line, a
+reproducible **+1.0 %** across three best-of-15 series on the ][+ banner, whose
+keyboard poll lives on the slow path. `always_inline` took it to +0.0 %.
+
+Armed, the cost is the pre-2026-08 profile coming back — every bus read out of
+line — measured with the new `pom2_bench --read-watch` at **+38 % / +55 % /
++11 %**, paid only by the session that armed one and only while it is armed;
+the machine still runs at well over 100× real time under the bench. The panel
+offers R / W / RW and defaults to W, which is free in both states. Morning's
+"the API keeps only the Write bit" is gone with the reason for it; a read watch
+fires on the bus access after the read, opcode fetches included — a watch on
+`$FBB3` answers "who checks the ROM ID byte" — and soft-switch reads included,
+with their side effects, as on the real bus. Pinned by `debugger` cases 10-11.
+→ [DEV § Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui),
+[PERFORMANCE § 8.5](docs/PERFORMANCE.md)
+
 ## 2026-08-23 — The macOS SIGBUS was a stack overflow, and a real one
 
 The first macOS CI run ever to execute the suite came back 191/192, with

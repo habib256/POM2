@@ -329,23 +329,25 @@ void Debugger_ImGui::drawBreakpointList(EmulationController& ctrl,
 
 // ── Watchpoint list ──────────────────────────────────────────────────────
 //
-// Write watchpoints only, and the UI says so rather than offering a Read box
-// that would never fire: `memWrite`'s fast path carries a per-address
-// `writable[]` byte a watch can hide inside for free, and `memRead` has no
-// equivalent — a branch there measured +13-16 % on pom2_bench
-// (docs/PERFORMANCE.md § 8.2).
+// Write watches are free armed or not (`memWrite`'s fast path carries a
+// per-address `writable[]` byte a watch hides inside); a read watch is free
+// only while NONE is armed — `memRead` has no such table, so arming one
+// flips a flag that sends every read out of line (Memory.h § Read
+// watchpoints, docs/PERFORMANCE.md § 8.5). The default is W for that reason.
 
 void Debugger_ImGui::drawWatchpointList(EmulationController& ctrl,
                                         const Snapshot& snap)
 {
-    ImGui::TextUnformatted("Watch (writes)");
+    ImGui::TextUnformatted("Watch");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Stops the machine when a write reaches the address.\n"
-                          "Costs nothing while none is armed: the address is\n"
-                          "diverted off memWrite's fast path rather than the\n"
-                          "fast path testing for it.\n"
-                          "Read watchpoints are not offered — memRead has no\n"
-                          "equivalent free hook (PERFORMANCE 8.2).");
+        ImGui::SetTooltip("Stops the machine when the address is accessed.\n"
+                          "W: a write watch costs nothing, armed or not — the\n"
+                          "address is diverted off memWrite's fast path.\n"
+                          "R: a read watch costs nothing while none is armed,\n"
+                          "but WHILE one is, every bus read goes out of line\n"
+                          "(roughly the speed of the pre-2026-08 core).\n"
+                          "Fires on the access, with the value read/written;\n"
+                          "opcode fetches and soft-switch reads included.");
     ImGui::Separator();
 
     ImGui::SetNextItemWidth(70);
@@ -353,14 +355,20 @@ void Debugger_ImGui::drawWatchpointList(EmulationController& ctrl,
                                           ImGuiInputTextFlags_CharsHexadecimal |
                                           ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
+    ImGui::RadioButton("R", &wpAccess_, Debugger::Read);
+    ImGui::SameLine();
+    ImGui::RadioButton("W", &wpAccess_, Debugger::Write);
+    ImGui::SameLine();
+    ImGui::RadioButton("RW", &wpAccess_, Debugger::ReadWrite);
+    ImGui::SameLine();
     const bool add = ImGui::Button("Watch") || entered;
     if (add && wpEntry_[0]) {
         unsigned v = 0;
         if (std::sscanf(wpEntry_, "%x", &v) == 1) {
             auto st = ctrl.lockState();
             ctrl.debugger().setWatchpoint(static_cast<uint16_t>(v & 0xFFFF),
-                                          Debugger::Write);
-            ctrl.syncDebugHook();      // installs Memory's diversion
+                                          static_cast<Debugger::Access>(wpAccess_));
+            ctrl.syncDebugHook();      // installs Memory's diversions
         }
         wpEntry_[0] = '\0';
     }
@@ -378,7 +386,9 @@ void Debugger_ImGui::drawWatchpointList(EmulationController& ctrl,
         }
         ImGui::SameLine();
         char t[16];
-        std::snprintf(t, sizeof(t), "$%04X", w.addr);
+        std::snprintf(t, sizeof(t), "$%04X %s", w.addr,
+                      w.access == Debugger::ReadWrite ? "RW"
+                      : w.access == Debugger::Read    ? "R" : "W");
         if (ImGui::Selectable(t)) {
             viewAddr_ = w.addr;
             followPc_ = false;

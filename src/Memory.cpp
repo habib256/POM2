@@ -69,6 +69,7 @@ Memory::Memory()
         writeVal_.assign(0xC000, 0);
         std::fprintf(stderr, "[BANK] write/read bank-mismatch detector ARMED\n");
     }
+    refreshReadFastFlags();
 }
 
 void Memory::noteBankWrite(uint16_t addr, bool toAux, uint8_t v)
@@ -137,45 +138,6 @@ void Memory::markRomRegion(uint16_t lo, uint16_t hi)
     if (writeWatch_.empty()) return;
     for (int a = lo; a <= hi; ++a)
         writeWatch_[a] = static_cast<uint8_t>(writeWatch_[a] & ~kWatchWasWritable);
-}
-
-void Memory::setWriteWatch(uint16_t addr, bool on)
-{
-    if (on) {
-        if (writeWatch_.empty()) writeWatch_.assign(0x10000, 0);
-        if (writeWatch_[addr] & kWatchArmed) return;      // keep the count honest
-        writeWatch_[addr] = static_cast<uint8_t>(
-            kWatchArmed | (writable[addr] ? kWatchWasWritable : 0));
-        // THE diversion: the fast path's own test now fails for this address,
-        // which is the whole trick. Below $C000 only — above it every write
-        // already reaches memWriteSlow.
-        if (addr < 0xC000) writable[addr] = false;
-        ++writeWatchCount_;
-        return;
-    }
-    if (writeWatch_.empty() || !(writeWatch_[addr] & kWatchArmed)) return;
-    if (addr < 0xC000)
-        writable[addr] = (writeWatch_[addr] & kWatchWasWritable) != 0;
-    writeWatch_[addr] = 0;
-    if (--writeWatchCount_ == 0) {
-        // Un-armed means un-allocated, same rule as Debugger's bitmaps: the
-        // table exists only while somebody is debugging.
-        writeWatch_.clear();
-        writeWatch_.shrink_to_fit();
-    }
-}
-
-void Memory::clearWriteWatches()
-{
-    if (writeWatch_.empty()) return;
-    for (std::size_t a = 0; a < writeWatch_.size(); ++a) {
-        if (!(writeWatch_[a] & kWatchArmed)) continue;
-        if (a < 0xC000)
-            writable[a] = (writeWatch_[a] & kWatchWasWritable) != 0;
-    }
-    writeWatch_.clear();
-    writeWatch_.shrink_to_fit();
-    writeWatchCount_ = 0;
 }
 
 bool Memory::loadRomBytes(const uint8_t* src, size_t length, uint16_t addr)
@@ -294,6 +256,7 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
     } else {
         iicProfile_.reset();
         }
+    refreshReadFastFlags();   // romFastRead_ follows iicProfile_
 
     if (iieMode && payloadSize == 16 * 1024) {
         // IIe split: bytes 0x0000-0x00FF map to $C000-$C0FF (I/O page,
@@ -755,6 +718,7 @@ void Memory::clearRam()
 void Memory::setIIEMode(bool on)
 {
     iieMode = on;
+    refreshReadFastFlags();
     iieMemMode = 0;
     {
         std::lock_guard<std::mutex> lk(stateMutex);
@@ -2167,9 +2131,20 @@ std::string Memory::recentIoReadSummary() const
 
 // The slow half of the bus read. memRead() in the header decides the two hot
 // cases inline (main RAM below $C000, ROM at $D000+) and calls this for
-// everything else; this body is unchanged, so any path that reaches it
-// behaves exactly as before the split.
+// everything else — and for EVERYTHING while a read watchpoint is armed
+// (`readDivert_`), which is the only time the test below can succeed. The
+// report happens after the read so the hit carries the value the bus saw.
 uint8_t Memory::memReadSlow(uint16_t addr)
+{
+    const uint8_t v = memReadSlowBody(addr);
+    if (readDivert_ && readWatch_[addr] && watchSink_)
+        watchSink_->noteAccess(addr, v, /*write=*/false);
+    return v;
+}
+
+// memReadSlow's body, unchanged from before the fast-path split: any path
+// that reaches it behaves exactly as it always did.
+inline uint8_t Memory::memReadSlowBody(uint16_t addr)
 {
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) return mem[addr];
