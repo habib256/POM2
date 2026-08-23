@@ -266,6 +266,20 @@ private:
     /// taking it again there deadlocks the CPU thread with the emulated 6502
     /// parked mid-SmartPort-call, which is as bad as it sounds.
     void peerLostLocked();   ///< callMtx_ MUST be held
+
+    /// Consecutive `transact()` calls that timed out with no reply. Guarded
+    /// by `callMtx_` — transact() holds it for the whole exchange, and
+    /// peerLostLocked() is only ever reached with it held.
+    ///
+    /// This exists because a bounded stall repeated without bound is not
+    /// bounded. `transact()` waits up to `timeoutMs_` (250 ms default) inside
+    /// a SmartPort call, on the CPU thread, holding the emulator's stateMutex
+    /// — so a peer that ACCEPTS writes but never answers used to cost that
+    /// much per call, for every call, forever: a ProDOS boot became a string
+    /// of quarter-second freezes with the FujiNet panel's own Stop button
+    /// unreachable, because drawing it needs the same mutex. A write failure
+    /// already declared the peer lost; a silence did not.
+    unsigned consecutiveTimeouts_ = 0;
     void handlePeerLost();   ///< callMtx_ must NOT be held
 
     uint8_t nextSequence();
