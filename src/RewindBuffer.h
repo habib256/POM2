@@ -93,6 +93,14 @@ public:
 
     /// Append a snapshot of the current machine state (keyframe or delta).
     /// No-op when disabled. Evicts the oldest frame(s) when over the cap.
+    ///
+    /// The ring's cycle stamps are STRICTLY INCREASING, and this is where
+    /// that is enforced rather than assumed: a capture whose stamp is not
+    /// newer than the tail means the machine jumped back in time (a scrub
+    /// resumed without `truncateAfter`, a snapshot load), so the abandoned
+    /// future is dropped first. Every seek helper — `indexForCycle` and the
+    /// span readout above it — walks the deque expecting that order and
+    /// silently lies without it.
     void capture(M6502& cpu, Memory& mem);
 
     size_t size()  const { return frames_.size(); }
@@ -131,6 +139,9 @@ private:
     };
 
     void evictToCap();
+    // Drop every frame stamped at-or-after `cycle`: the future the machine
+    // has just abandoned by jumping back. One compare on the hot path.
+    void dropAbandonedFuture(uint64_t cycle);
     // Rebuild the full snapshot blob for frame `index` into `out`.
     void reconstruct(size_t index, std::vector<uint8_t>& out) const;
     void resyncSinceKeyframe();

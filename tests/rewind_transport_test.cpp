@@ -7,7 +7,11 @@
 //   2. while parked, no new frames are captured (the timeline is frozen);
 //   3. seek restores exact historical state (cycle counter == frame stamp);
 //   4. seekToCycle lands on the right frame;
-//   5. resume truncates the abandoned future and runs again.
+//   5. resume truncates the abandoned future and runs again;
+//   6. a resume that did NOT come through rewindEndAndResume (the toolbar
+//      Play button, Machine > Run, the `machine.run` palette command, the
+//      kiosk menu all call setMode(Running) directly) still ends the scrub
+//      and still leaves the ring strictly increasing.
 //
 // The guest is a 3-byte `JMP $0800` self-loop so the CPU advances
 // deterministically forever (no jam, distinct cycle stamp per frame).
@@ -121,6 +125,48 @@ int main()
     const size_t afterResume = ringSize(ctrl);
     assert(waitForFrames(ctrl, afterResume + 3, 2000) && "capture did not resume");
 
+    // (6) A BARE resume — setMode(Running), no rewindEndAndResume. Four UI
+    //     paths do exactly this. Two things used to break: the scrub stayed
+    //     flagged live (so the panel's next drag seeked a running machine and
+    //     the slider visibly did nothing), and the abandoned future stayed in
+    //     the ring, so the frames captured from the rewound point carried
+    //     stamps EARLIER than the tail — `indexForCycle` walks the deque
+    //     expecting the opposite, so seeks landed far from the cycle asked
+    //     for and the span readout lied.
+    assert(waitForFrames(ctrl, 24, 4000) && "ring did not refill");
+    assert(ctrl.rewindBeginScrub());
+    assert(ctrl.rewindScrubbing() && "begin-scrub did not flag the scrub");
+    const size_t sizeBefore = ringSize(ctrl);
+    const size_t bareAt     = sizeBefore / 3;
+    assert(bareAt + 4 < sizeBefore && "need an abandoned future worth dropping");
+    assert(ctrl.rewindSeek(bareAt) == bareAt);
+    const uint64_t bareCycle = frameCycle(ctrl, bareAt);
+    assert(liveCycle(ctrl) == bareCycle);
+
+    ctrl.setMode(EmulationController::Mode::Running);   // the toolbar Play path
+    assert(!ctrl.rewindScrubbing() && "a bare resume left the scrub flagged live");
+
+    // The first capture from the rewound point drops the future, so the ring
+    // SHRINKS before it grows again — a ring that only ever grows is the bug.
+    bool shrank = false;
+    for (int i = 0; i < 4000 && !shrank; ++i) {
+        if (ringSize(ctrl) < sizeBefore) shrank = true;
+        else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(shrank && "the abandoned future was never dropped");
+
+    // Let the new timeline record a few frames, then check the invariant the
+    // seek helpers rely on: stamps strictly increasing, end to end.
+    assert(waitForFrames(ctrl, bareAt + 6, 4000) && "new timeline did not record");
+    {
+        std::lock_guard<std::mutex> lk(ctrl.stateMutex());
+        const pom2::RewindBuffer& rb = ctrl.rewind();
+        for (size_t i = 1; i < rb.size(); ++i)
+            assert(rb.infoAt(i).cycle > rb.infoAt(i - 1).cycle &&
+                   "ring stamps went backwards after a bare resume");
+        assert(rb.newestCycle() >= bareCycle);
+    }
+
     ctrl.stop();   // dtor also joins, but be explicit
 
     // ── WASM path: tickFrame() captures too (no worker thread) ─────────────
@@ -147,6 +193,6 @@ int main()
         assert(liveCycle(wasm) == c);
     }
 
-    std::printf("Rewind transport: OK (park + frozen + seek + seekToCycle + resume + tickFrame)\n");
+    std::printf("Rewind transport: OK (park + frozen + seek + seekToCycle + resume + bare-resume + tickFrame)\n");
     return 0;
 }

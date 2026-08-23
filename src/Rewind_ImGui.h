@@ -50,6 +50,10 @@ public:
 private:
     void beginScrubIfNeeded(EmulationController& ctrl);
     void seekTo(EmulationController& ctrl, long index);
+    /// Re-read the controller's scrub state before acting on our own copy.
+    /// The panel is not the only way out of a scrub — see
+    /// `EmulationController::rewindScrubbing`.
+    void syncScrub(EmulationController& ctrl);
 
     bool   scrubbing_   = false;
     size_t cursor_      = 0;     // viewed frame index while scrubbing

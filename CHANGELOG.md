@@ -5,6 +5,54 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — Rewind stops recording a timeline that runs backwards
+
+`RewindBuffer`'s whole seek layer assumes one thing about the ring: cycle
+stamps increase. `indexForCycle` scans forward and **breaks** at the first
+frame past its target, which is only a correct search while that holds. It was
+assumed rather than enforced, and the machine breaks it routinely.
+
+`rewindEndAndResume` is only one of the ways POM2 resumes. It is the only one
+that truncates the abandoned future — and the toolbar Play button, Machine ▸
+Run, the `machine.run` palette command and the kiosk menu all call
+`setMode(Mode::Running)` directly instead. So: scrub ten seconds back, press
+Play on the toolbar rather than "resume here", and the frames captured from the
+rewound point were appended *after* frames stamped ten seconds later. Nothing
+crashed. The timeline simply started lying — the span readout went wrong (and
+could go negative through an unsigned subtract), and every seek past the join
+landed somewhere other than the cycle asked for.
+
+The second half was worse to use. `Rewind_ImGui::scrubbing_` also stayed true,
+because only the panel's own buttons cleared it. `beginScrubIfNeeded` early-outs
+when that flag is set, so the next drag skipped the `setMode(Stopped)` +
+`waitUntilParked()` and seeked a **running** machine: the slider visibly did
+nothing. A released `F6` hold, meanwhile, called `rewindEndAndResume` with a
+stale cursor and teleported the machine into a timeline the user had left.
+
+Fixed at the two layers that own the two halves, not at the four call sites:
+
+* **`RewindBuffer::capture`** drops every frame stamped at-or-after the incoming
+  one before appending. One compare on the hot path; the walk is O(dropped). A
+  jump back past the oldest retained frame clears the ring instead, so the
+  restart is a keyframe rather than a delta against a base blob from a timeline
+  that no longer exists. Being in the one funnel every capture goes through, it
+  also covers a snapshot load that forgot its `rewind().clear()` — and resume
+  paths nobody has written yet.
+* **`EmulationController` owns the scrub** (`scrubIndex_`, read via
+  `rewindScrubbing()`); `setMode(m != Stopped)` ends it, whoever asked. The
+  panel's flag became a view of it, resynced on entry to `render`,
+  `beginScrubIfNeeded` and `releaseHold`.
+
+The truncation is deliberately *not* done inside `setMode`: it is reached from
+callers already holding `stateMutex` (the Disk II Library's boot buttons take
+`lockState()` and then resume), and `stateMutex` is non-recursive — truncating
+there would deadlock the machine to fix a cosmetic bug. Deferring the drop to
+the worker's next capture keeps every resume path lock-free.
+
+Pinned by `rewind_roundtrip` case 5 and `rewind_transport` case 6; each half
+verified falsifiable on its own (disable the drop → the transport test's ring
+never shrinks; disable the scrub clear → the bare resume is still flagged live).
+
 ## 2026-08-23 — A dead FujiNet helper stops costing 250 ms per call
 
 The `stateMutex` family's last substantive member, and the one whose

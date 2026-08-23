@@ -519,6 +519,7 @@ void EmulationController::coldBoot()
     if (tape)   tape->resetCpuSide();
     processor.hardReset();
     rewind_.clear();   // RAM wiped → the recorded timeline is a different machine
+    scrubIndex_.store(pom2::RewindBuffer::kNoFrame);
     pom2::log().info("Emul", "Cold boot (RAM wiped)");
 }
 
@@ -542,6 +543,7 @@ bool EmulationController::bootFromSlot(int slot)
     if (iwmDev) iwmDev->reset();
     if (hub)    hub->reset();
     rewind_.clear();   // RAM wiped → the recorded timeline is a different machine
+    scrubIndex_.store(pom2::RewindBuffer::kNoFrame);
     // Card-has-boot-entry sanity check. Apple II Ref Manual Appx C
     // describes 4 signature bytes ($Cn01=$20, $Cn03=$00, $Cn05=$03,
     // $Cn07=$3C); the F8 Autostart Monitor (Apple part 341-0020-00)
@@ -638,6 +640,16 @@ void EmulationController::setMode(Mode m)
     // while a Running frame is still about to run. Only the worker ever sets
     // it back to true, and only once it genuinely re-enters the Stopped wait.
     if (m != Mode::Stopped) workerParked_.store(false);
+    // Leaving Stopped ends any scrub, whoever asked. `rewindEndAndResume` is
+    // only ONE of the ways the machine resumes — the toolbar Play button,
+    // Machine > Run, the `machine.run` palette command and the kiosk menu all
+    // land here instead, and they used to leave the scrub flagged as live.
+    // Clearing it here (rather than at each of those sites) is what keeps the
+    // UI honest for resume paths that do not exist yet. The abandoned future
+    // itself is dropped by the next `RewindBuffer::capture`, which is on the
+    // worker and therefore cannot deadlock against callers that reach setMode
+    // while already holding stateMtx (the Disk II Library's boot buttons do).
+    if (m != Mode::Stopped) scrubIndex_.store(pom2::RewindBuffer::kNoFrame);
     mode.store(m);
     wakeCv.notify_all();
 }
@@ -660,7 +672,9 @@ bool EmulationController::rewindBeginScrub()
     setMode(Mode::Stopped);
     waitUntilParked();
     std::lock_guard<std::mutex> lk(stateMtx);
-    return !rewind_.empty();
+    if (rewind_.empty()) return false;
+    scrubIndex_.store(rewind_.size() - 1);
+    return true;
 }
 
 size_t EmulationController::rewindSeek(size_t index)
@@ -670,6 +684,7 @@ size_t EmulationController::rewindSeek(size_t index)
     const size_t clamped = std::min(index, rewind_.size() - 1);
     if (!rewind_.restore(clamped, processor, mem))
         return pom2::RewindBuffer::kNoFrame;
+    scrubIndex_.store(clamped);
     flushAudioForRewind();
     return clamped;
 }
@@ -678,7 +693,10 @@ size_t EmulationController::rewindSeekToCycle(uint64_t cycle)
 {
     std::lock_guard<std::mutex> lk(stateMtx);
     const size_t got = rewind_.restoreToCycle(cycle, processor, mem);
-    if (got != pom2::RewindBuffer::kNoFrame) flushAudioForRewind();
+    if (got != pom2::RewindBuffer::kNoFrame) {
+        scrubIndex_.store(got);
+        flushAudioForRewind();
+    }
     return got;
 }
 

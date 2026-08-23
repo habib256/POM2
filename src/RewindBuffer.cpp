@@ -133,6 +133,21 @@ void RewindBuffer::capture(M6502& cpu, Memory& mem)
 {
     if (!enabled_.load()) return;
 
+    // Time must move forward across the ring. It does not always move forward
+    // in the machine: a scrub that resumes through anything but
+    // `rewindEndAndResume` (the toolbar Play button, Machine > Run, the
+    // `machine.run` palette command, the kiosk menu) leaves the abandoned
+    // future in the deque, and the frames captured from the rewound point
+    // then carry stamps EARLIER than the tail. Nothing crashes; the timeline
+    // simply starts lying — `indexForCycle` stops at the first frame past its
+    // target, so a seek lands far from the cycle asked for, and the "span"
+    // readout (newest - oldest) goes wrong or negative.
+    //
+    // Drop that future here rather than at each resume site: this is the one
+    // funnel every capture goes through, so the invariant holds for callers
+    // that do not exist yet, and for a snapshot load that forgot to clear.
+    dropAbandonedFuture(mem.getCycleCounter());
+
     // Serialize current state into captureScratch_ (the memory-backed writer
     // assigns the blob on scope exit).
     {
@@ -201,6 +216,30 @@ void RewindBuffer::reconstruct(size_t index, std::vector<uint8_t>& out) const
     out = frames_[k].data;
     for (size_t j = k + 1; j <= index; ++j)
         applyXorDelta(out, frames_[j].data);
+}
+
+void RewindBuffer::dropAbandonedFuture(uint64_t cycle)
+{
+    // Hot path: one compare per captured frame. The early-out is `<` and not
+    // `<=` on purpose — a capture stamped exactly at the tail has not moved
+    // forward either, and appending it would leave two frames the seek
+    // helpers would have to tie-break.
+    if (frames_.empty() || frames_.back().cycle < cycle) return;
+
+    // Keep every frame strictly older than the incoming stamp. Walking from
+    // the back is O(dropped), not O(size) — the common non-empty case here is
+    // "the user scrubbed a few seconds back".
+    size_t keep = frames_.size();
+    while (keep > 0 && frames_[keep - 1].cycle >= cycle) --keep;
+    if (keep == 0) {
+        // Every retained frame is in the abandoned future (a full rewind to
+        // before the oldest frame, or a snapshot load from another session).
+        // clear() also resets the delta base, so the next capture is a
+        // keyframe rather than a delta against a blob from that other future.
+        clear();
+        return;
+    }
+    truncateAfter(keep - 1);   // rebuilds prevBlob_ + sinceKeyframe_
 }
 
 void RewindBuffer::resyncSinceKeyframe()

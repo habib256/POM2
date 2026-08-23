@@ -41,8 +41,22 @@ double effectiveCpuHz(EmulationController& ctrl)
 
 }  // namespace
 
+void Rewind_ImGui::syncScrub(EmulationController& ctrl)
+{
+    // The controller owns the scrub; this flag is a view of it. Any resume
+    // that did not come through this panel — toolbar Play, Machine > Run, the
+    // `machine.run` palette command, the kiosk menu — ended the scrub behind
+    // our back. Without this resync `scrubbing_` stayed true forever: the next
+    // drag skipped beginScrubIfNeeded's park (early-out below), so it seeked a
+    // RUNNING machine and the slider visibly did nothing, and a released F6
+    // hold called rewindEndAndResume with a stale cursor, teleporting the
+    // machine back into a timeline the user had already left.
+    if (scrubbing_ && !ctrl.rewindScrubbing()) scrubbing_ = false;
+}
+
 void Rewind_ImGui::beginScrubIfNeeded(EmulationController& ctrl)
 {
+    syncScrub(ctrl);
     if (scrubbing_) return;
     if (ctrl.rewindBeginScrub()) {
         scrubbing_ = true;
@@ -66,6 +80,7 @@ void Rewind_ImGui::holdRewind(EmulationController& ctrl, size_t frames)
 
 void Rewind_ImGui::releaseHold(EmulationController& ctrl)
 {
+    syncScrub(ctrl);
     if (!scrubbing_) return;
     ctrl.rewindEndAndResume(cursor_);
     scrubbing_ = false;
@@ -76,6 +91,8 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
                                                float /*deltaSeconds*/)
 {
     FrameResult res;
+
+    syncScrub(ctrl);
 
     // Read ring stats once, under the lock.
     bool     enabled = false;
