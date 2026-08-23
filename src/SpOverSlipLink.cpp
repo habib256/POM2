@@ -345,6 +345,7 @@ void SpOverSlipLink::peerLostLocked()
                    std::to_string(timeouts) + " timeout(s)");
     }
 
+    consecutiveTimeouts_ = 0;      // a replacement peer starts with a clean slate
     if (transport_) transport_->dropPeer();
     // Bytes from the dead peer must not glue themselves to the first packet
     // of the next one.
@@ -430,6 +431,15 @@ uint8_t SpOverSlipLink::nextSequence()
     return sequence_;
 }
 
+namespace {
+/// Consecutive unanswered calls before the peer is declared lost. Three, not
+/// one: a single timeout is an ordinary hiccup on a busy helper, and dropping
+/// a live peer for one slow reply would be its own bug. Three at the 250 ms
+/// default is 0.75 s of freeze before the link goes quiet — bounded, and after
+/// that every call fails instantly instead of costing another quarter second.
+constexpr unsigned kMaxConsecutiveTimeouts = 3;
+}  // namespace
+
 SpOverSlipLink::Response
 SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                          const uint8_t fields[5],
@@ -503,8 +513,23 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
             noteTruncatedFrames(truncated);
-            std::lock_guard<std::mutex> sl(statsMtx_);
-            ++stats_.timeouts;
+            {
+                std::lock_guard<std::mutex> sl(statsMtx_);
+                ++stats_.timeouts;
+            }
+            // A peer that accepts writes and never answers is gone in every
+            // way that matters here. Declaring it lost closes the socket, so
+            // the next call returns at the isOpen() gate instead of paying
+            // another `timeoutMs_` — which is the difference between a boot
+            // that stalls once and one that stalls on every block.
+            if (++consecutiveTimeouts_ >= kMaxConsecutiveTimeouts) {
+                log().warn("FujiNet",
+                           "peer stopped answering (" +
+                           std::to_string(consecutiveTimeouts_) +
+                           " consecutive timeouts) — dropping the link so "
+                           "calls fail fast instead of freezing the machine");
+                peerLostLocked();            // callMtx_ is ours right now
+            }
             return out;                      // replied = false
         }
         const int waitMs = static_cast<int>(
@@ -553,6 +578,7 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
                 }
                 out.replied = true;
                 out.status  = f[1];
+                consecutiveTimeouts_ = 0;    // the peer is answering again
                 out.data.assign(f.begin() + kResponseHeaderBytes, f.end());
                 if (traceEnabled())
                     log().info("FujiNet",

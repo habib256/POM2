@@ -374,6 +374,66 @@ void testTimeoutAndRecovery()
     link.stop();
 }
 
+// ── A peer that never answers is dropped, not paid for on every call ────
+//
+// The bug this pins is not "a call can time out" — testTimeoutAndRecovery
+// covers that, and one timeout is an ordinary hiccup. It is that a bounded
+// stall repeated without bound is not bounded: transact() waits inside a
+// SmartPort call, on the CPU thread, holding the emulator's stateMutex, so a
+// helper that ACCEPTS writes and never replies used to cost the full budget
+// per call FOREVER. A ProDOS boot became a string of quarter-second freezes,
+// and the FujiNet panel's own Stop button was unreachable because drawing it
+// needs that same mutex. A write failure already declared the peer lost; a
+// silence did not.
+void testSilentPeerIsDroppedRatherThanPaidForEveryCall()
+{
+    SpOverSlipLink link;
+    link.setTimeoutMs(120);
+    const uint16_t port = startLink(link);
+
+    std::atomic<bool> mute{false};
+    FakePeer peer(port, [&](const std::vector<uint8_t>& req,
+                            std::vector<uint8_t>& wire) {
+        if (mute.load()) return;              // accept the write, answer nothing
+        standardHandler(req, wire);
+    });
+
+    assert(waitFor([&] { return link.deviceCount() == 2; }));
+    assert(link.isConnected());
+
+    mute.store(true);
+
+    // Each call costs its budget until the link gives up. The threshold is 3,
+    // so three calls is the whole price of a dead helper.
+    int paid = 0;
+    for (int i = 0; i < 3; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto r  = link.readBlock(1, static_cast<uint32_t>(i));
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        assert(!r.replied);
+        if (ms >= 100) ++paid;
+    }
+    assert(paid >= 1 && "the link never actually waited — the test proves nothing");
+
+    // Now the important half: the link has dropped the peer, so further calls
+    // cost nothing at all.
+    assert(!link.isConnected() &&
+           "a peer that answered nothing three times is still held open");
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto after = link.readBlock(1, 99);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+    assert(!after.replied);
+    assert(ms < 60 &&
+           "a call after the peer was dropped still paid the timeout budget — "
+           "every guest block read would freeze the machine again");
+
+    peer.stop();
+    link.stop();
+}
+
 // ── No peer at all: calls fail immediately, nothing hangs ────────────────
 void testNoPeer()
 {
@@ -572,6 +632,7 @@ int main()
     testReadWriteBlock();
     testStaleResponseDiscarded();
     testTimeoutAndRecovery();
+    testSilentPeerIsDroppedRatherThanPaidForEveryCall();
     testNoPeer();
     testGuestResetNotifiesDevices();
     testCleanShutdown();

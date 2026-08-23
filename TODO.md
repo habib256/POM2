@@ -40,13 +40,37 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
     profile-switch remount get for free. Pinned by `two_phase_block_mount`,
     whose case 2 guards the `loadImageFromBytes` trap and was verified to fail
     when the trap is walked into. → [DEV](DEV.md#the-block-device-half-hdv--2img-converted-2026-08-22)
-  - 🟡 `SpOverSlipLink::transact` waits up to `timeoutMs()` (250 ms default,
-    5000 ms configurable) inside a SmartPort call. A dead FujiNet helper mid
-    ProDOS boot makes POM2 look hung, and the FujiNet panel's own Stop button
-    is unreachable because rendering it needs the same mutex.
-  - 🟡 The FujiNet Stop / Drop-peer buttons, and `slotBus().clear()` on a
-    profile switch, hold it across a thread `join()` whose worker polls on a
-    200 ms step.
+  - ✅ **`SpOverSlipLink::transact` — DONE 2026-08-23.** The wait itself was
+    never the bug; a bounded stall repeated without bound is not bounded. A
+    write failure already declared the peer lost, but a SILENCE did not — so a
+    helper that accepted writes and never answered cost the full `timeoutMs()`
+    (250 ms default) on *every* call, forever, and a ProDOS boot became a
+    string of quarter-second freezes with the panel's own Stop button
+    unreachable. Three consecutive timeouts now drop the link
+    (`kMaxConsecutiveTimeouts`), which closes the socket, so every later call
+    returns at the `isOpen()` gate for nothing. Three, not one: a single
+    timeout is an ordinary hiccup on a busy helper. Total cost of a dead peer
+    goes from unbounded to ~0.75 s. Pinned by
+    `sp_over_slip_link` / `testSilentPeerIsDroppedRatherThanPaidForEveryCall`,
+    verified falsifiable.
+  - 🟢 **The thread `join()`s — examined 2026-08-23, deliberately left.** Both
+    turn out to be defensible, and the analysis is recorded so nobody
+    re-derives it:
+    * `slotBus().clear()` on a profile switch is not a machine freeze at all —
+      `applyProfile` has already stopped the CPU worker, so only the UI blocks,
+      during a modal operation that is a full cold reset anyway. Same class as
+      the profile-switch remount above.
+    * The FujiNet **Stop / Drop-peer** buttons genuinely need that lock. It is
+      not there for tidiness: `FujiNetCard` reaches `transact()` from the CPU
+      thread *under* `stateMutex`, and `stop()` ends in `transport_.reset()` —
+      so dropping the lock trades a 200 ms wait for a use-after-free on a live
+      `SpTransport*`. The clean fix is to move that mutual exclusion onto the
+      link's own `callMtx_` (lock order `callMtx_` → `stateMtx_` is already
+      what `transact` uses, so there is no inversion), letting the caller stop
+      taking `stateMutex`. It is worth doing, but it is a lock-order change in
+      a three-thread subsystem to save 200 ms on a button the user pressed on
+      purpose — a one-off, expected pause, not the repeated freeze the item
+      above was. Not a good trade to make in a hurry.
   - 🟢 Deliberate, documented, and staying: the profile-switch remount in
     `MainWindow_Slots.cpp` (the SlotBus rebuild and the remounts must be one
     atomic step against the AI server, and the CPU worker is stopped anyway),

@@ -5,6 +5,47 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — A dead FujiNet helper stops costing 250 ms per call
+
+The `stateMutex` family's last substantive member, and the one whose
+description was slightly wrong about itself. The item read "transact waits up
+to timeoutMs inside a SmartPort call" — but the wait was never the bug. A
+bounded stall repeated without bound is not bounded.
+
+`transact()` already declared the peer lost when a WRITE failed. A silence did
+not: a helper that accepted writes and never answered kept its socket open, so
+every subsequent call paid the full budget again. 250 ms per call, forever. A
+ProDOS boot reads a lot of blocks, which is why the symptom people reported was
+"POM2 hangs" rather than "one call was slow" — and the FujiNet panel's own Stop
+button was unreachable throughout, because drawing it needs the same mutex the
+CPU thread is sitting on inside the call.
+
+Three consecutive timeouts now drop the link. That closes the socket, so every
+later call returns at the `isOpen()` gate having waited for nothing. Three
+rather than one, deliberately: a single timeout is an ordinary hiccup on a busy
+helper, and dropping a live peer over one slow reply would be its own bug.
+A dead peer now costs ~0.75 s in total instead of ~250 ms per block.
+
+Pinned by a new case in `sp_over_slip_link`, and it is worth saying what it
+pins, because the file already had a timeout test. `testTimeoutAndRecovery`
+covers "a call can time out and the link survives" — which must keep working,
+and does. The new case covers the other thing: a peer that answers NOTHING is
+dropped, and the call after that costs under 60 ms rather than another full
+budget. Verified falsifiable by disabling the counter.
+
+**The two thread `join()`s in the same family were examined and deliberately
+left**, with the reasoning recorded in `TODO.md` so it is not re-derived.
+`slotBus().clear()` on a profile switch is not a machine freeze at all —
+`applyProfile` has already stopped the CPU worker, so only the UI blocks,
+during a modal cold reset. And the FujiNet Stop / Drop-peer buttons genuinely
+need their lock: `FujiNetCard` reaches `transact()` from the CPU thread under
+`stateMutex`, and `stop()` ends in `transport_.reset()`, so dropping it trades
+200 ms for a use-after-free on a live transport. The clean fix is to move that
+exclusion onto the link's own `callMtx_` — the lock order `transact` already
+uses, so no inversion — but that is a lock-order change in a three-thread
+subsystem to save 200 ms on a button the user pressed on purpose. A one-off
+expected pause is not the repeated freeze this entry is about.
+
 ## 2026-08-22 (last) — The 32 MiB stall: HDV mounts stop freezing the machine
 
 The last big member of the `stateMutex` family, and the one with the worst
